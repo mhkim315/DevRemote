@@ -24,6 +24,7 @@ import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
+import '../widgets/dev_keypad.dart';
 
 final initText = '1' * 1024;
 
@@ -658,62 +659,55 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final keyboardIsVisible = keyboardVisibilityController.isVisible;
     return Container(
         color: MyTheme.canvasColor,
-        child: Stack(children: () {
-          final paints = [
-            ImagePaint(ffiModel: gFFI.ffiModel),
-            Positioned(
-              top: 10,
-              right: 10,
-              child: QualityMonitor(gFFI.qualityMonitorModel),
+        child: Column(
+          children: [
+            Expanded(
+              child: Stack(children: () {
+                final paints = [
+                  ImagePaint(ffiModel: gFFI.ffiModel),
+                  Positioned(
+                    top: 10,
+                    right: 10,
+                    child: QualityMonitor(gFFI.qualityMonitorModel),
+                  ),
+                  KeyHelpTools(
+                      keyboardIsVisible: keyboardIsVisible,
+                      showGestureHelp: _showGestureHelp),
+                  SizedBox(
+                    width: 0,
+                    height: 0,
+                    child: !_showEdit
+                        ? Container()
+                        : TextFormField(
+                            textInputAction: TextInputAction.newline,
+                            autocorrect: false,
+                            autofocus: true,
+                            focusNode: _mobileFocusNode,
+                            maxLines: null,
+                            controller: _textController,
+                            keyboardType: TextInputType.multiline,
+                            onChanged: handleSoftKeyboardInput,
+                          ).workaroundFreezeLinuxMint(),
+                  ),
+                ];
+                if (showCursorPaint) {
+                  paints.add(CursorPaint(widget.id));
+                }
+                if (gFFI.ffiModel.touchMode) {
+                  paints.add(FloatingMouse(
+                    ffi: gFFI,
+                  ));
+                } else {
+                  paints.add(FloatingMouseWidgets(
+                    ffi: gFFI,
+                  ));
+                }
+                return paints;
+              }()),
             ),
-            KeyHelpTools(
-                keyboardIsVisible: keyboardIsVisible,
-                showGestureHelp: _showGestureHelp),
-            SizedBox(
-              width: 0,
-              height: 0,
-              child: !_showEdit
-                  ? Container()
-                  : TextFormField(
-                      textInputAction: TextInputAction.newline,
-                      autocorrect: false,
-                      // Flutter 3.16.9 Android.
-                      // `enableSuggestions` causes secure keyboard to be shown.
-                      // https://github.com/flutter/flutter/issues/139143
-                      // https://github.com/flutter/flutter/issues/146540
-                      // enableSuggestions: false,
-                      autofocus: true,
-                      focusNode: _mobileFocusNode,
-                      maxLines: null,
-                      controller: _textController,
-                      // trick way to make backspace work always
-                      keyboardType: TextInputType.multiline,
-                      // `onChanged` may be called depending on the input method if this widget is wrapped in
-                      // `Focus(onKeyEvent: ..., child: ...)`
-                      // For `Backspace` button in the soft keyboard:
-                      // en/fr input method:
-                      //      1. The button will not trigger `onKeyEvent` if the text field is not empty.
-                      //      2. The button will trigger `onKeyEvent` if the text field is empty.
-                      // ko/zh/ja input method: the button will trigger `onKeyEvent`
-                      //                     and the event will not popup if `KeyEventResult.handled` is returned.
-                      onChanged: handleSoftKeyboardInput,
-                    ).workaroundFreezeLinuxMint(),
-            ),
-          ];
-          if (showCursorPaint) {
-            paints.add(CursorPaint(widget.id));
-          }
-          if (gFFI.ffiModel.touchMode) {
-            paints.add(FloatingMouse(
-              ffi: gFFI,
-            ));
-          } else {
-            paints.add(FloatingMouseWidgets(
-              ffi: gFFI,
-            ));
-          }
-          return paints;
-        }()));
+            DevKeypad(inputModel: inputModel), // Developer custom keypad overlay
+          ],
+        ));
   }
 
   Widget getBodyForDesktopWithListener() {
