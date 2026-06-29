@@ -40,3 +40,7 @@
 * 코딩 에이전트 전용 원격 제어 및 HITL(Human-In-The-Loop) 모바일 관제 시장 분석
 * 해결하고자 하는 킬러 페인포인트 및 떠오르는 스타트업 동향
 * API 기반 대시보드 vs 하이브리드(DevRemote) 접근법 차별화 우위
+
+### [08. 차기 AI 에이전트 인수인계서 (Handoff Guide)](file:///Users/mhk/.gemini/antigravity/brain/14e337a1-787e-4ec1-a00b-0108fbd60e7d/08-agent-handoff-guide.md)
+* 타겟 시장 피봇 (B2C 바이브 코딩) 및 아키텍처 결론 (Two-Track) 최종 요약
+* 차기 에이전트가 즉시 착수해야 할 Action Items 및 기술 스택 가이드
