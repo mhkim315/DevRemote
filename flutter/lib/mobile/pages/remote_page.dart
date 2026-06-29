@@ -63,6 +63,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Timer? _timer;
   bool _showBar = !isWebDesktop;
   bool _showGestureHelp = false;
+  bool _devKeypadVisible = false; // DevRemote: Toggle for DevKeypad
   String _value = '';
   Orientation? _currentOrientation;
   final _uniqueKey = UniqueKey();
@@ -453,50 +454,30 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       },
       child: Scaffold(
           // workaround for https://github.com/rustdesk/rustdesk/issues/3131
-          floatingActionButtonLocation: keyboardIsVisible
-              ? FABLocation(FloatingActionButtonLocation.endFloat, 0, -35)
-              : null,
-          floatingActionButton: !showActionButton
-              ? null
-              : FloatingActionButton(
-                  mini: !keyboardIsVisible,
-                  child: Icon(
-                    (keyboardIsVisible || _showGestureHelp)
-                        ? Icons.expand_more
-                        : Icons.expand_less,
-                    color: Colors.white,
-                  ),
-                  backgroundColor: MyTheme.accent,
-                  onPressed: () {
-                    setState(() {
-                      if (keyboardIsVisible) {
-                        _showEdit = false;
-                        gFFI.invokeMethod("enable_soft_keyboard", false);
-                        _mobileFocusNode.unfocus();
-                        _physicalFocusNode.requestFocus();
-                      } else if (_showGestureHelp) {
-                        _showGestureHelp = false;
-                      } else {
-                        _showBar = !_showBar;
-                      }
-                    });
-                  }),
-          bottomNavigationBar: Obx(() => Stack(
-                alignment: Alignment.bottomCenter,
-                children: [
-                  gFFI.ffiModel.pi.isSet.isTrue &&
-                          gFFI.ffiModel.waitForFirstImage.isTrue
-                      ? emptyOverlay(MyTheme.canvasColor)
-                      : () {
-                          gFFI.ffiModel.tryShowAndroidActionsOverlay();
-                          return Offstage();
-                        }(),
-                  _bottomWidget(),
-                  gFFI.ffiModel.pi.isSet.isFalse
-                      ? emptyOverlay(MyTheme.canvasColor)
-                      : Offstage(),
-                ],
-              )),
+          floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+          floatingActionButton: FloatingActionButton(
+            mini: false,
+            child: Icon(
+              _devKeypadVisible ? Icons.keyboard_hide : Icons.keyboard,
+              color: Colors.white,
+            ),
+            backgroundColor: MyTheme.accent,
+            onPressed: () {
+              setState(() {
+                _devKeypadVisible = !_devKeypadVisible;
+                if (_devKeypadVisible) {
+                  gFFI.invokeMethod("enable_soft_keyboard", true);
+                  _physicalFocusNode.unfocus();
+                  _mobileFocusNode.requestFocus();
+                } else {
+                  gFFI.invokeMethod("enable_soft_keyboard", false);
+                  _mobileFocusNode.unfocus();
+                  _physicalFocusNode.requestFocus();
+                }
+              });
+            },
+          ),
+          bottomNavigationBar: null, // DevRemote: Removed complex toolbar
           body: Obx(
             () => getRawPointerAndKeyBody(Overlay(
               initialEntries: [
@@ -705,7 +686,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 return paints;
               }()),
             ),
-            DevKeypad(inputModel: inputModel), // Developer custom keypad overlay
+            Visibility(
+              visible: _devKeypadVisible,
+              child: DevKeypad(inputModel: inputModel), // Developer custom keypad overlay
+            ),
           ],
         ));
   }

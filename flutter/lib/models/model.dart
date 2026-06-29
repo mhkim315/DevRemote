@@ -118,7 +118,8 @@ class FfiModel with ChangeNotifier {
   final _permissions = <String, bool>{};
   bool? _secure;
   bool? _direct;
-  bool _touchMode = false;
+  bool _touchMode = true; // DevRemote: Default to touch mode
+  bool zoomLock = false; // DevRemote: Zoom/Pan lock
   late VirtualMouseMode virtualMouseMode;
   Timer? _timer;
   Timer? _restartReconnectDelayTimer;
@@ -2647,6 +2648,7 @@ class CanvasModel with ChangeNotifier {
 
   // mobile only
   updateScale(double v, Offset focalPoint) {
+    if (zoomLock) return;
     if (parent.target?.imageModel.image == null) return;
     final s = _scale;
     _scale *= v;
@@ -3172,6 +3174,7 @@ class CursorModel with ChangeNotifier {
   }
 
   updatePan(Offset delta, Offset localPosition, bool touchMode) async {
+    if (zoomLock) return; // DevRemote: Ignore if locked
     if (touchMode) {
       await _handleTouchMode(delta, localPosition);
       return;

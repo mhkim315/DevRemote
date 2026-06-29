@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../common.dart';
 import '../../models/input_model.dart';
 
@@ -12,6 +13,8 @@ class DevKeypad extends StatefulWidget {
 }
 
 class _DevKeypadState extends State<DevKeypad> {
+  bool _selectMode = false;
+
   // Toggle modifiers
   void _toggleModifier(String modifier) {
     setState(() {
@@ -60,6 +63,36 @@ class _DevKeypadState extends State<DevKeypad> {
       widget.inputModel.ctrl = oldCtrl;
       widget.inputModel.alt = oldAlt;
       widget.inputModel.shift = oldShift;
+    });
+  }
+
+  void _syncAndPaste() async {
+    // 1. Sync phone clipboard to PC
+    gFFI.invokeMethod("try_sync_clipboard");
+    
+    // 2. Wait a moment for sync to propagate to PC
+    await Future.delayed(Duration(milliseconds: 300));
+    
+    // 3. Send Ctrl+V
+    _sendMacro('VK_V', ctrl: true);
+  }
+
+  void _toggleSelectMode() {
+    setState(() {
+      _selectMode = !_selectMode;
+      if (_selectMode) {
+        // Press left mouse down to start dragging
+        widget.inputModel.inputMouse(0, 0, 0, 'down');
+      } else {
+        // Release left mouse
+        widget.inputModel.inputMouse(0, 0, 0, 'up');
+      }
+    });
+  }
+
+  void _toggleZoomLock() {
+    setState(() {
+      gFFI.ffiModel.zoomLock = !gFFI.ffiModel.zoomLock;
     });
   }
 
@@ -136,6 +169,42 @@ class _DevKeypadState extends State<DevKeypad> {
         child: Row(
           children: [
             SizedBox(width: 4),
+            // DevRemote Toggles
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2.0),
+              child: Material(
+                color: gFFI.ffiModel.zoomLock ? Colors.redAccent : Colors.grey[800],
+                borderRadius: BorderRadius.circular(4.0),
+                child: InkWell(
+                  onTap: _toggleZoomLock,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+                    child: Text(
+                      '🔒 Lock',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2.0),
+              child: Material(
+                color: _selectMode ? Colors.greenAccent[700] : Colors.grey[800],
+                borderRadius: BorderRadius.circular(4.0),
+                child: InkWell(
+                  onTap: _toggleSelectMode,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+                    child: Text(
+                      '🖱️ Select',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Container(width: 1, height: 20, color: Colors.grey, margin: EdgeInsets.symmetric(horizontal: 4)),
             // Modifiers
             _buildModifierButton('Cmd', widget.inputModel.command),
             _buildModifierButton('Ctrl', widget.inputModel.ctrl),
@@ -144,7 +213,23 @@ class _DevKeypadState extends State<DevKeypad> {
             Container(width: 1, height: 20, color: Colors.grey, margin: EdgeInsets.symmetric(horizontal: 4)),
             // Macros
             _buildMacroButton('Copy', 'VK_C', cmd: true),
-            _buildMacroButton('Paste', 'VK_V', cmd: true),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2.0),
+              child: Material(
+                color: Colors.orangeAccent[700],
+                borderRadius: BorderRadius.circular(4.0),
+                child: InkWell(
+                  onTap: _syncAndPaste,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+                    child: Text(
+                      '📋 Paste',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ),
             _buildMacroButton('Undo', 'VK_Z', cmd: true),
             _buildMacroButton('Save', 'VK_S', cmd: true),
             _buildMacroButton('S+Tab', 'VK_TAB', shift: true),
