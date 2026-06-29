@@ -2653,7 +2653,7 @@ class CanvasModel with ChangeNotifier {
 
   // mobile only
   updateScale(double v, Offset focalPoint) {
-    if (zoomLock) return;
+    if (parent.target?.ffiModel.zoomLock == true) return;
     if (parent.target?.imageModel.image == null) return;
     final s = _scale;
     _scale *= v;
@@ -3179,7 +3179,7 @@ class CursorModel with ChangeNotifier {
   }
 
   updatePan(Offset delta, Offset localPosition, bool touchMode) async {
-    if (zoomLock) return; // DevRemote: Ignore if locked
+    if (parent.target?.ffiModel.zoomLock == true) return;
     if (touchMode) {
       await _handleTouchMode(delta, localPosition);
       return;
