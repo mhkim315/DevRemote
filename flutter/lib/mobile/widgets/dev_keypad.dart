@@ -5,15 +5,16 @@ import '../../models/input_model.dart';
 
 class DevKeypad extends StatefulWidget {
   final InputModel inputModel;
+  final VoidCallback? onClose;
+  final VoidCallback? onToggleKeyboard;
 
-  const DevKeypad({Key? key, required this.inputModel}) : super(key: key);
+  const DevKeypad({Key? key, required this.inputModel, this.onClose, this.onToggleKeyboard}) : super(key: key);
 
   @override
   _DevKeypadState createState() => _DevKeypadState();
 }
 
 class _DevKeypadState extends State<DevKeypad> {
-  bool _selectMode = false;
 
   // Toggle modifiers
   void _toggleModifier(String modifier) {
@@ -70,24 +71,11 @@ class _DevKeypadState extends State<DevKeypad> {
     // 1. Sync phone clipboard to PC
     gFFI.invokeMethod("try_sync_clipboard");
     
-    // 2. Wait a moment for sync to propagate to PC
-    await Future.delayed(Duration(milliseconds: 300));
+    // 2. Wait a moment for sync to propagate to PC (increased to 800ms per user feedback)
+    await Future.delayed(Duration(milliseconds: 800));
     
     // 3. Send Ctrl+V
     _sendMacro('VK_V', ctrl: true);
-  }
-
-  void _toggleSelectMode() {
-    setState(() {
-      _selectMode = !_selectMode;
-      if (_selectMode) {
-        // Press left mouse down to start dragging
-        widget.inputModel.inputMouse(0, 0, 0, 'down');
-      } else {
-        // Release left mouse
-        widget.inputModel.inputMouse(0, 0, 0, 'up');
-      }
-    });
   }
 
   void _toggleZoomLock() {
@@ -190,14 +178,31 @@ class _DevKeypadState extends State<DevKeypad> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 2.0),
               child: Material(
-                color: _selectMode ? Colors.greenAccent[700] : Colors.grey[800],
+                color: Colors.blueAccent[700],
                 borderRadius: BorderRadius.circular(4.0),
                 child: InkWell(
-                  onTap: _toggleSelectMode,
+                  onTap: widget.onToggleKeyboard,
                   child: Container(
                     padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
                     child: Text(
-                      '🖱️ Select',
+                      '⌨️ Keyboard',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2.0),
+              child: Material(
+                color: Colors.red[900],
+                borderRadius: BorderRadius.circular(4.0),
+                child: InkWell(
+                  onTap: widget.onClose,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+                    child: Text(
+                      '🔌 Close',
                       style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
                     ),
                   ),

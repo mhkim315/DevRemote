@@ -95,6 +95,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    gFFI.ffiModel.setTouchMode(true); // DevRemote: Force Touch Mode
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
     gFFI.start(
       widget.id,
@@ -465,15 +466,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             onPressed: () {
               setState(() {
                 _devKeypadVisible = !_devKeypadVisible;
-                if (_devKeypadVisible) {
-                  gFFI.invokeMethod("enable_soft_keyboard", true);
-                  _physicalFocusNode.unfocus();
-                  _mobileFocusNode.requestFocus();
-                } else {
-                  gFFI.invokeMethod("enable_soft_keyboard", false);
-                  _mobileFocusNode.unfocus();
-                  _physicalFocusNode.requestFocus();
-                }
               });
             },
           ),
@@ -688,7 +680,26 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             ),
             Visibility(
               visible: _devKeypadVisible,
-              child: DevKeypad(inputModel: inputModel), // Developer custom keypad overlay
+              child: DevKeypad(
+                inputModel: inputModel,
+                onClose: () {
+                  clientClose(sessionId, gFFI);
+                },
+                onToggleKeyboard: () {
+                  final keyboardIsVisible = keyboardVisibilityController.isVisible && _showEdit;
+                  if (keyboardIsVisible) {
+                    setState(() => _showEdit = false);
+                    gFFI.invokeMethod("enable_soft_keyboard", false);
+                    _mobileFocusNode.unfocus();
+                    _physicalFocusNode.requestFocus();
+                  } else {
+                    setState(() => _showEdit = true);
+                    gFFI.invokeMethod("enable_soft_keyboard", true);
+                    _physicalFocusNode.unfocus();
+                    _mobileFocusNode.requestFocus();
+                  }
+                },
+              ), // Developer custom keypad overlay
             ),
           ],
         ));

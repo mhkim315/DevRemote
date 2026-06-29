@@ -217,6 +217,11 @@ class FfiModel with ChangeNotifier {
     }
   }
 
+  setTouchMode(bool value) {
+    _touchMode = value;
+    notifyListeners();
+  }
+
   updatePermission(Map<String, dynamic> evt, String id) {
     // Track previous keyboard permission to detect revocation.
     final hadKeyboardPerm = _permissions['keyboard'] != false;
