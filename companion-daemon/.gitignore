@@ -1,0 +1,4 @@
+devremote.exe
+*.exe
+*.exe~
+firebase-credentials.json
