@@ -38,6 +38,7 @@ dependencies:
   url_launcher: ^6.3.1
   url_launcher_ios: ^6.3.2
   toggle_switch: ^2.1.0
+  web_socket_channel: ^2.4.4
   dash_chat_2:
     git:
       url: https://github.com/rustdesk-org/Dash-Chat-2
