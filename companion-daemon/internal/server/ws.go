@@ -16,10 +16,13 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type AlertHandler func(detector.Alert)
+
 // Hub manages connected mobile clients and broadcasts alerts.
 type Hub struct {
 	mu         sync.RWMutex
 	clients    map[*websocket.Conn]bool
+	listeners  []AlertHandler
 	OnResponse func(clientIP string, msg map[string]interface{})
 }
 
@@ -31,7 +34,7 @@ func NewHub(onResponse func(clientIP string, msg map[string]interface{})) *Hub {
 	}
 }
 
-// HandleAlert is a detector.OnAlert callback that broadcasts to all clients.
+// HandleAlert broadcasts to all clients and listeners.
 func (h *Hub) HandleAlert(a detector.Alert) {
 	data, _ := json.Marshal(a)
 	h.mu.RLock()
@@ -39,6 +42,16 @@ func (h *Hub) HandleAlert(a detector.Alert) {
 	for conn := range h.clients {
 		conn.WriteMessage(websocket.TextMessage, data)
 	}
+	for _, l := range h.listeners {
+		l(a)
+	}
+}
+
+// AddListener registers a handler that receives all alerts (e.g., WebRTC).
+func (h *Hub) AddListener(handler AlertHandler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.listeners = append(h.listeners, handler)
 }
 
 // ServeHTTP handles WebSocket upgrades.

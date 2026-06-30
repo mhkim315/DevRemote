@@ -13,6 +13,7 @@ import (
 	"devremote/companion-daemon/internal/detector"
 	"devremote/companion-daemon/internal/server"
 	"devremote/companion-daemon/internal/watcher"
+	devwebrtc "devremote/companion-daemon/internal/webrtc"
 )
 
 func main() {
@@ -20,12 +21,13 @@ func main() {
 	port := flag.String("port", "9171", "WebSocket server port")
 	execClaude := flag.Bool("exec", false, "Run 'claude' as a child process and relay mobile responses to its stdin")
 	workDir := flag.String("workdir", "", "Working directory for --exec (default: current directory)")
+	signalingURL := flag.String("signaling", "", "Signaling server URL for remote WebRTC access (e.g., ws://168.107.59.177:9173)")
 	flag.Parse()
 
 	if *projectDir == "" {
-		fmt.Fprintf(os.Stderr, "Usage: devremote watch --project <path> [--exec] [--workdir <path>]\n")
+		fmt.Fprintf(os.Stderr, "Usage: devremote watch --project <path> [--exec] [--signaling <url>]\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  devremote watch --project \"C:\\Users\\user\\.claude\\projects\\C--Users-user-Documents-remote-control\" --exec\n")
+		fmt.Fprintf(os.Stderr, "  devremote watch --project \"C:\\Users\\user\\.claude\\projects\\...\" --signaling ws://168.107.59.177:9173\n")
 		os.Exit(1)
 	}
 
@@ -37,22 +39,19 @@ func main() {
 		log.Fatalf("Project directory not found: %s", absDir)
 	}
 
-	// Response relay writes to Claude Code's stdin.
 	var pushTokens []string
 	var stdinWriter io.Writer
 	onResponse := func(clientIP string, msg map[string]interface{}) {
 		msgType, _ := msg["type"].(string)
 
-		// Push token registration from mobile.
 		if msgType == "register" {
 			if tok, ok := msg["pushToken"].(string); ok && tok != "" {
 				pushTokens = append(pushTokens, tok)
-				log.Printf("ws: push token registered from %s (%d total)", clientIP, len(pushTokens))
+				log.Printf("push token registered from %s (%d total)", clientIP, len(pushTokens))
 			}
 			return
 		}
 
-		// Response relay to Claude Code stdin.
 		if msgType != "response" || stdinWriter == nil {
 			return
 		}
@@ -65,7 +64,7 @@ func main() {
 			if approved && answer != "" {
 				input = answer + "\n"
 			} else {
-				input = "\n" // empty response skips the question
+				input = "\n"
 			}
 		} else {
 			if approved {
@@ -74,7 +73,7 @@ func main() {
 				input = "n\n"
 			}
 		}
-		log.Printf("ws: relaying to claude stdin: %q", input)
+		log.Printf("relaying to claude stdin: %q", input)
 		stdinWriter.Write([]byte(input))
 	}
 
@@ -122,6 +121,22 @@ func main() {
 		}()
 	}
 
+	// Optionally start WebRTC for remote access.
+	var webrtcSess *devwebrtc.Session
+	if *signalingURL != "" {
+		webrtcSess = devwebrtc.New(*signalingURL,
+			[]string{"stun:stun.l.google.com:19302"},
+			absDir,
+		)
+		hub.AddListener(webrtcSess.HandleAlert)
+
+		go func() {
+			if err := webrtcSess.Start(onResponse); err != nil {
+				log.Printf("webrtc: start failed: %v", err)
+			}
+		}()
+	}
+
 	fmt.Println("\n=== DevRemote Daemon ===")
 	fmt.Println("Mobile app connect to one of:")
 	for _, ip := range server.LocalIPs() {
@@ -129,6 +144,10 @@ func main() {
 	}
 	if *execClaude {
 		fmt.Println("Claude Code relay: ENABLED")
+	}
+	if webrtcSess != nil {
+		fmt.Printf("\nRemote access code: %s\n", webrtcSess.Code())
+		fmt.Printf("Signaling: %s\n", *signalingURL)
 	}
 	fmt.Println("========================")
 
@@ -142,4 +161,7 @@ func main() {
 	signal.Notify(sig, os.Interrupt)
 	<-sig
 	log.Println("Shutting down...")
+	if webrtcSess != nil {
+		webrtcSess.Close()
+	}
 }
