@@ -18,14 +18,16 @@ var upgrader = websocket.Upgrader{
 
 // Hub manages connected mobile clients and broadcasts alerts.
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]bool
+	mu         sync.RWMutex
+	clients    map[*websocket.Conn]bool
+	OnResponse func(clientIP string, msg map[string]interface{})
 }
 
 // NewHub creates a Hub.
-func NewHub() *Hub {
+func NewHub(onResponse func(clientIP string, msg map[string]interface{})) *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]bool),
+		clients:    make(map[*websocket.Conn]bool),
+		OnResponse: onResponse,
 	}
 }
 
@@ -72,6 +74,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			log.Printf("ws: response from %s: %s", clientIP, string(message))
+
+			var msg map[string]interface{}
+			if json.Unmarshal(message, &msg) == nil && h.OnResponse != nil {
+				h.OnResponse(clientIP, msg)
+			}
 		}
 	}()
 }

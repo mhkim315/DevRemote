@@ -10,6 +10,7 @@ import (
 // Alert is emitted when a tool_use needs user approval.
 type Alert struct {
 	SessionID   string `json:"sessionId"`
+	ToolUseID   string `json:"toolUseId"`
 	ToolName    string `json:"toolName"`
 	Description string `json:"description"`
 	Question    string `json:"question"`
@@ -84,6 +85,7 @@ func (s *State) Feed(ev watcher.RawEvent) {
 
 		s.OnAlert(Alert{
 			SessionID:   ev.SessionID,
+			ToolUseID:   tu.ID,
 			ToolName:    "AskUserQuestion",
 			Description: desc,
 			Question:    question,
@@ -105,6 +107,7 @@ func (s *State) Feed(ev watcher.RawEvent) {
 			delete(s.pending, tu.ID)
 			s.OnAlert(Alert{
 				SessionID:   ev.SessionID,
+				ToolUseID:   tu.ID,
 				ToolName:    tu.Name,
 				Description: desc,
 				Timestamp:   ev.Timestamp,
