@@ -23,10 +23,11 @@ interface Alert {
 
 interface Props {
   wsUrl: string;
+  pushToken: string | null;
   onDisconnect: () => void;
 }
 
-export default function SessionScreen({wsUrl, onDisconnect}: Props) {
+export default function SessionScreen({wsUrl, pushToken, onDisconnect}: Props) {
   const [alerts, setAlerts] = useState<(Alert & {id: string; dismissed?: boolean})[]>([]);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -39,6 +40,9 @@ export default function SessionScreen({wsUrl, onDisconnect}: Props) {
 
     socket.onopen = () => {
       setStatus('connected');
+      if (pushToken) {
+        socket.send(JSON.stringify({type: 'register', pushToken}));
+      }
     };
 
     socket.onmessage = event => {

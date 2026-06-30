@@ -16,9 +16,7 @@
       "bundleIdentifier": "com.devremote.mobile",
       "infoPlist": {
         "UIBackgroundModes": [
-          "fetch",
-          "remote-notification",
-          "processing"
+          "remote-notification"
         ]
       }
     },
@@ -28,12 +26,7 @@
       },
       "package": "com.devremote.mobile",
       "permissions": [
-        "RECEIVE_BOOT_COMPLETED",
-        "SCHEDULE_EXACT_ALARM",
-        "USE_EXACT_ALARM",
-        "POST_NOTIFICATIONS",
-        "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_DATA_SYNC"
+        "POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
@@ -42,18 +35,6 @@
         {
           "icon": "./assets/notification-icon.png",
           "color": "#238636"
-        }
-      ],
-      [
-        "expo-background-fetch",
-        {
-          "minimumInterval": 60
-        }
-      ],
-      [
-        "expo-live-activity",
-        {
-          "frequentUpdates": true
         }
       ]
     ],

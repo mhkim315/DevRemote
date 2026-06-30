@@ -38,9 +38,22 @@ func main() {
 	}
 
 	// Response relay writes to Claude Code's stdin.
+	var pushTokens []string
 	var stdinWriter io.Writer
 	onResponse := func(clientIP string, msg map[string]interface{}) {
-		if stdinWriter == nil {
+		msgType, _ := msg["type"].(string)
+
+		// Push token registration from mobile.
+		if msgType == "register" {
+			if tok, ok := msg["pushToken"].(string); ok && tok != "" {
+				pushTokens = append(pushTokens, tok)
+				log.Printf("ws: push token registered from %s (%d total)", clientIP, len(pushTokens))
+			}
+			return
+		}
+
+		// Response relay to Claude Code stdin.
+		if msgType != "response" || stdinWriter == nil {
 			return
 		}
 		approved, _ := msg["approved"].(bool)
