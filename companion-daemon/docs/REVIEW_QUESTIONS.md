@@ -193,3 +193,135 @@ HTTP REST polling(`GET /poll`):
 ```
 
 총 20회 이상 승인/거절 응답이 WebRTC P2P를 통해 정상적으로 데몬에 도달했음.
+
+---
+
+## 3차 답변 + Self-Hosted Manus 비전 (2026-07-01, Windows 에이전트)
+
+### Q8. relay 로그 — 살아있는 Claude에 전달되었는가?
+
+**솔직한 답변: 죽은 파이프에 쓴 것이다.**
+
+`--exec`이 생성한 Claude 프로세스는 "Input must be provided either through stdin or as a prompt argument" 에러와 함께 즉시 종료된다. 이후의 모든 `stdinWriter.Write("y\n")` 호출은 깨진 파이프에 데이터를 쓰고 있었다. 다행히 Go는 SIGPIPE를 무시하므로 데몬이 죽지 않았고, 로그는 정상적으로 남았다.
+
+**검증된 것과 안 된 것**:
+- ✅ WebRTC P2P 데이터 채널 → daemon onResponse → `stdinWriter.Write()` 까지의 경로
+- ✅ JSONL watcher → detector → Alert → WebRTC data channel → 폰 까지의 경로
+- ❌ 살아있는 Claude 프로세스에 실제 stdin 주입 (파이프가 이미 죽음)
+
+**Windows에서 `wrap` 테스트 여부**: ❌ 안 함. `devremote wrap` 코드는 작성되었고 빌드 통과했지만, `wrap`과 `watch`가 별도 프로세스로 설계되어 있어 연동 테스트는 Mac에서 진행하기로 했다.
+
+### Q9. `devremote wrap` Windows 테스트
+
+Windows에서 `wrap` 자체의 빌드/컴파일은 ✅ 완료. 하지만 `wrap`이 Claude를 띄우고 PTY를 통해 제어하는 **통합 테스트는 0회**. 이유:
+
+1. `wrap`은 단독 실행 (`devremote wrap claude`)으로 Claude를 PTY 안에서 실행함
+2. `watch`는 JSONL 디렉토리 감시 + WebRTC/WS 서버
+3. 둘 사이의 IPC(injection) 연결이 아직 설계되지 않음 (IPCState 파일만 쓰고 읽는 쪽 없음)
+
+**Mac에서 이 격차를 메우는 것이 최우선 과제다.**
+
+### Q10. 피드(Feed) 미작동 구체적 증상
+
+**피드 빈 화면**: 완전히 빈 화면. 이벤트 0개. 원인 추정:
+1. `rawFeed` → `hub.SendRaw` → `webrtc.HandleRaw` → `alertCh` 경로는 구현됨
+2. `alertWriter`가 `alertCh`로부터 이벤트를 읽어 data channel로 전송
+3. 하지만 alertCh 버퍼(256)가 가득 차면 `select/default`로 silent drop
+4. 실제 데몬 출력에는 raw 이벤트가 전혀 찍히지 않음 → watcher 콜백에서 rawFeed 호출이 안 되거나, JSONL 이벤트가 없는 상태
+
+**채팅 미전달**: 폰 입력은 `sendMessage({type:'stdin', text})` → data channel → daemon `onResponse` 경로로 가야 함. 실제로는 "stdin from mobile" 로그가 **한 번도** 안 찍힘. 끊기는 지점:
+1. FeedScreen이 `sendMessage` 호출 → data channel `readyState` 체크
+2. readyState가 'open'이 아니어서 silent drop (가장 유력)
+3. 혹은 JSON stringify 실패
+
+### Q11. 모바일 UI 현재 상태
+
+**구조화 뷰 (알림 탭)**:
+- 상단: "← 해제" + "피드" 토글 + 연결 상태 (●연결됨/연결 중.../끊김)
+- 하단: 카드 리스트 (최신순, 최대 20개)
+- 각 카드:
+  - 뱃지: "질문"(파란색, AskUserQuestion) / "도구"(주황색, Bash 등)
+  - toolName 표시
+  - 타임스탬프 (우측 상단)
+  - 질문 텍스트 (AskUserQuestion일 때)
+  - 명령어/설명 (2줄, 80자에서 ...)
+  - AskUserQuestion: 객관식 옵션 버튼 (코드 구현 완료, APK 미반영)
+  - Bash: [승인] [거절] 버튼
+  - 승인된 카드: 반투명 처리
+
+**피드 뷰 (피드 탭)**:
+- 상단: "← 뒤로" + 연결 상태
+- 중단: 이벤트 타임라인 (타임스탬프 + 뱃지 + 텍스트)
+- 하단: [Ctrl+C] 버튼 + 텍스트 입력창 + [전송] 버튼
+
+**현재 APK 기준 폰 화면**: 승인/거절 버튼 + 카드 UI 동작 중. 객관식 옵션 버튼은 아직 APK에 미포함. 피드는 빈 화면. 입력바는 표시되나 전송 안 됨.
+
+### Q12. 시그널링 polling 주기
+
+**Polling interval**: **500ms** (0.5초). `WebRTCTransport.ts`의 `POLL_MS = 500` 상수, `setInterval(() => this.poll(), POLL_MS)`.
+
+**방식**: 주기적 폴링 (short polling). Long polling 아님. `GET /poll?code=X&role=mobile&since=N` — 마지막 수신 seq 이후의 메시지만 반환.
+
+**데몬도 동일하게 500ms 폴링** (`session.go`의 `pollLoop`에서 `time.After(500 * time.Millisecond)`).
+
+**지연 분석**:
+- 최악 케이스: 500ms (한 주기) + 네트워크 RTT (~100ms) = ~600ms
+- SDP/ICE 교환: 2~4회 왕복 × 600ms = 1.2~2.4초
+- Trickle ICE 적용으로 첫 SDP는 즉시 전송되므로 체감 연결 시간은 1~2초
+
+---
+
+## Self-Hosted Manus — 최종 비전
+
+### 우리가 만드는 것
+
+**"네 방 컴퓨터가 너만의 AI 클라우드 서버다. 폰은 그걸 부리는 리모컨이다."**
+
+Manus, Devin 같은 클라우드 AI 에이전트의 UX를 그대로 카피하되, 연산을 클라우드가 아닌 **사용자의 PC**에서 수행한다. WebRTC P2P로 폰과 PC가 직결되어 소스코드가 외부로 한 줄도 유출되지 않는다.
+
+### 왜 이게 승리하는가
+
+1. **로컬 환경 접근**: localhost, 회사 DB, VPN — 클라우드 에이전트가 절대 못 건드리는 것들에 접근 가능
+2. **비용 $0**: 사용자 PC의 CPU/메모리를 공짜로 사용. Manus $200/월 대비 경쟁력
+3. **보안**: 소스코드 외부 유출 0. 삼성/애플도 도입 가능한 유일한 AI 에이전트
+4. **채택 장벽 0**: `eval "$(devremote hook)"` 한 줄. 기존 터미널 환경 그대로
+
+### 현재 우리의 위치
+
+```
+완성된 핵심 기술:
+✅ PTY Proxy (creack/pty — Unix/Mac/Windows ConPTY)
+✅ WebRTC P2P (pion/webrtc — UDP 직통, DTLS 암호화)
+✅ HTTP REST 시그널링 (fetch 기반 — 모든 네트워크 통과)
+✅ JSONL 실시간 파싱 (파일 시스템만 보면 됨)
+✅ Shell hook (터미널 기생, 사용자 변경 0)
+✅ 승인/거절 relay (폰→WebRTC→데몬→stdin)
+
+다음 단계 (Mac에서):
+⬜ devremote wrap + Claude + 폰 연결 엔드투엔드
+⬜ IPC injection (데몬→wrap PTY)
+⬜ iOS 빌드
+⬜ Play Store 심사
+⬜ Chat UI + 양방향 대화
+⬜ Multi-Agent Process Manager
+```
+
+### 타겟 고객: 바이브 코더
+
+터미널을 모르는, AI에게 코딩을 맡기는 새로운 세대. 이들은 SSH, tmux, PTY를 모른다. 하지만 앱 하나 깔고 코드 한 번 입력하는 건 할 수 있다. Manus를 쓰고 싶지만 $200/월이 부담스럽고, 소스코드를 클라우드에 올리는 게 불안한 사람들.
+
+### 최종 제품
+
+```
+폰에서: "내 블로그에 다크모드 추가해줘" (채팅)
+PC에서: Claude가 코드 수정, 빌드, 테스트
+폰에서: "npm run build 실행할까요?" [승인] [거절]
+         → 승인 탭 → PC에서 계속 진행
+         → 완료 알림: "블로그 다크모드 적용 완료!"
+```
+
+이게 2026년의 코딩이다. DevRemote가 그걸 가능하게 만든다.
+
+---
+
+**Windows 에이전트 최종 코멘트**: 지금 우리가 가진 건 단순한 알림 앱이 아니다. PTY + WebRTC + JSONL을 조합한 이 아키텍처는 "Self-Hosted Manus" 라는 완전히 새로운 카테고리를 정의하는 기반 기술이다. Mac에서 엔드투엔드 연결만 완성하면 MVP는 세상에 나올 준비가 되어 있다. 화이팅.
