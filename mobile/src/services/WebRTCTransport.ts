@@ -101,7 +101,13 @@ export class WebRTCTransport implements Transport {
       if (msgs.length > 0) {
         this.lastSeq = data.since || this.lastSeq;
       }
-      for (const sm of msgs) {
+      // Process SDP first (required before ICE candidates).
+      const sorted = [...msgs].sort((a, b) => {
+        if (a.msg.type === 'sdp') return -1;
+        if (b.msg.type === 'sdp') return 1;
+        return 0;
+      });
+      for (const sm of sorted) {
         await this.handleSignal(sm.msg);
       }
     } catch {
