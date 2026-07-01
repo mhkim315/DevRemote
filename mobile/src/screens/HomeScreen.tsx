@@ -18,7 +18,7 @@ interface Props {
   onConnect: (config: ConnectionConfig) => void;
 }
 
-const DEFAULT_SIGNALING = 'ws://168.107.59.177:9173';
+const DEFAULT_SIGNALING = 'wss://api.fullcount.kr/signal/';
 
 export default function HomeScreen({onConnect}: Props) {
   const [host, setHost] = useState('192.168.0.');
