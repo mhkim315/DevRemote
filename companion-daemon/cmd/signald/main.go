@@ -3,24 +3,12 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
 	"sync"
-	"time"
-
-	"github.com/gorilla/websocket"
 )
-
-func randomKey() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
 
 type message struct {
 	Type          string `json:"type"`
@@ -29,91 +17,71 @@ type message struct {
 	Key           string `json:"key,omitempty"`
 	Peer          string `json:"peer,omitempty"`
 	SDP           string `json:"sdp,omitempty"`
+	SDPType       string `json:"sdpType,omitempty"`
 	Candidate     string `json:"candidate,omitempty"`
 	SDPMid        string `json:"sdpMid,omitempty"`
 	SDPMLineIndex int    `json:"sdpMLineIndex,omitempty"`
 	ErrorMessage  string `json:"message,omitempty"`
 }
 
-type peer struct {
-	role string
-	key  string
-	conn *websocket.Conn
-	mu   sync.Mutex
-}
-
-func (p *peer) sendJSON(v interface{}) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.conn.WriteJSON(v)
+type queuedMsg struct {
+	Seq int     `json:"seq"`
+	Msg message `json:"msg"`
 }
 
 type session struct {
-	daemon *peer
-	mobile *peer
-	mu     sync.Mutex
+	mu          sync.Mutex
+	daemonInbox []queuedMsg
+	mobileInbox []queuedMsg
+	daemonSeq   int
+	mobileSeq   int
+	nextSeq     int
 }
 
-func (s *session) pair(p *peer) {
+func newSession() *session {
+	return &session{nextSeq: 1}
+}
+
+func (s *session) push(role string, msg message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if p.role == "daemon" {
-		s.daemon = p
+	qm := queuedMsg{Seq: s.nextSeq, Msg: msg}
+	s.nextSeq++
+	if role == "mobile" {
+		s.daemonInbox = append(s.daemonInbox, qm)
 	} else {
-		s.mobile = p
-	}
-
-	p.sendJSON(message{Type: "joined"})
-
-	if s.daemon != nil && s.mobile != nil {
-		s.mobile.sendJSON(message{Type: "paired", Peer: "daemon"})
-		s.daemon.sendJSON(message{Type: "paired", Peer: "mobile"})
+		s.mobileInbox = append(s.mobileInbox, qm)
 	}
 }
 
-func (s *session) disconnect(p *peer) {
+func (s *session) poll(role string, since int) []queuedMsg {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if p.role == "daemon" || s.daemon == p {
-		s.daemon = nil
+	var inbox *[]queuedMsg
+	var seen *int
+	if role == "daemon" {
+		inbox = &s.daemonInbox
+		seen = &s.daemonSeq
 	} else {
-		s.mobile = nil
+		inbox = &s.mobileInbox
+		seen = &s.mobileSeq
 	}
-
-	// Notify remaining peer.
-	if s.daemon != nil {
-		s.daemon.sendJSON(message{Type: "peer_disconnected"})
-	}
-	if s.mobile != nil {
-		s.mobile.sendJSON(message{Type: "peer_disconnected"})
-	}
-}
-
-// relayFrom receives messages from one peer and sends to the other.
-func relayFrom(from, to *peer) {
-	defer func() {
-		from.conn.Close()
-	}()
-	for {
-		var msg message
-		if err := from.conn.ReadJSON(&msg); err != nil {
-			return
-		}
-		// Forward sdp, ice, and error messages to the paired peer.
-		if msg.Type == "sdp" || msg.Type == "ice" || msg.Type == "error" {
-			if to != nil {
-				to.sendJSON(msg)
+	var msgs []queuedMsg
+	for _, m := range *inbox {
+		if m.Seq > since {
+			msgs = append(msgs, m)
+			if m.Seq > *seen {
+				*seen = m.Seq
 			}
 		}
 	}
+	return msgs
 }
 
 type hub struct {
 	mu       sync.RWMutex
-	sessions map[string]*session // keyed by persistent key
-	codes    map[string]string   // code -> key mapping (for first-time pairing)
+	sessions map[string]*session  // keyed by persistent key
+	codes    map[string]string    // code -> key
 }
 
 func newHub() *hub {
@@ -123,101 +91,190 @@ func newHub() *hub {
 	}
 }
 
-func (h *hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("upgrade: %v", err)
-		return
-	}
-
-	// Read join message (5s timeout).
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var join message
-	if err := conn.ReadJSON(&join); err != nil || join.Type != "join" {
-		conn.WriteJSON(message{Type: "error", ErrorMessage: "expected join message"})
-		conn.Close()
-		return
-	}
-	conn.SetReadDeadline(time.Time{}) // clear deadline
-
-	if join.Role != "daemon" && join.Role != "mobile" {
-		conn.WriteJSON(message{Type: "error", ErrorMessage: "role must be daemon or mobile"})
-		conn.Close()
-		return
-	}
-
-	// Resolve session by key or code.
-	sessionKey := join.Key
-	if sessionKey == "" && join.Code != "" {
-		// First-time pairing: look up code.
+func (h *hub) resolveSession(code string) (string, *session, bool) {
+	h.mu.RLock()
+	key, ok := h.codes[code]
+	h.mu.RUnlock()
+	if ok {
 		h.mu.RLock()
-		key, ok := h.codes[join.Code]
+		sess := h.sessions[key]
 		h.mu.RUnlock()
-		if !ok {
-			if join.Role == "daemon" {
-				// Daemon creates new code.
-				sessionKey = randomKey()
-				h.mu.Lock()
-				h.codes[join.Code] = sessionKey
-				h.mu.Unlock()
-			} else {
-				conn.WriteJSON(message{Type: "error", ErrorMessage: "invalid code"})
-				conn.Close()
-				return
-			}
-		} else {
+		return key, sess, sess != nil
+	}
+	return "", nil, false
+}
+
+func (h *hub) getOrCreate(key string) *session {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sess, ok := h.sessions[key]
+	if !ok {
+		sess = newSession()
+		h.sessions[key] = sess
+	}
+	return sess
+}
+
+func (h *hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+
+	path := r.URL.Path
+	switch path {
+	case "/join":
+		h.handleJoin(w, r)
+	case "/send":
+		h.handleSend(w, r)
+	case "/poll":
+		h.handlePoll(w, r)
+	case "/leave":
+		h.handleLeave(w, r)
+	default:
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})
+	}
+}
+
+func (h *hub) handleJoin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+		Role string `json:"role"`
+		Key  string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "bad request")
+		return
+	}
+	if req.Role != "daemon" && req.Role != "mobile" {
+		writeError(w, "role must be daemon or mobile")
+		return
+	}
+
+	sessionKey := req.Key
+	if sessionKey == "" && req.Code != "" {
+		key, sess, ok := h.resolveSession(req.Code)
+		if ok {
 			sessionKey = key
+		} else {
+			sessionKey = randomKey()
+			h.mu.Lock()
+			h.codes[req.Code] = sessionKey
+			h.sessions[sessionKey] = newSession()
+			h.mu.Unlock()
 		}
+		_ = sess
 	}
 	if sessionKey == "" {
-		conn.WriteJSON(message{Type: "error", ErrorMessage: "key or code required"})
-		conn.Close()
+		writeError(w, "code or key required")
 		return
 	}
 
-	log.Printf("join: role=%s key=%s code=%s", join.Role, sessionKey, join.Code)
+	sess := h.getOrCreate(sessionKey)
 
-	h.mu.Lock()
-	sess, ok := h.sessions[sessionKey]
+	// Push paired notification to the other peer.
+	otherRole := "daemon"
+	if req.Role == "daemon" {
+		otherRole = "mobile"
+	}
+	sess.push(req.Role, message{Type: "paired", Peer: req.Role})
+	sess.push(otherRole, message{Type: "paired", Peer: req.Role})
+
+	log.Printf("join: role=%s key=%s code=%s", req.Role, sessionKey, req.Code)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "ok",
+		"key":    sessionKey,
+	})
+}
+
+func (h *hub) handleSend(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string  `json:"code"`
+		Role string  `json:"role"`
+		Msg  message `json:"msg"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "bad request")
+		return
+	}
+
+	key, _, ok := h.resolveSession(req.Code)
 	if !ok {
-		sess = &session{}
-		h.sessions[sessionKey] = sess
+		writeError(w, "invalid code")
+		return
 	}
-	h.mu.Unlock()
+	sess := h.getOrCreate(key)
+	sess.push(req.Role, req.Msg)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
 
-	p := &peer{role: join.Role, key: sessionKey, conn: conn}
-	sess.pair(p)
-
-	// Send the persistent key to mobile so it can store it.
-	if join.Role == "mobile" && join.Code != "" {
-		sess.mu.Lock()
-		if sess.mobile != nil {
-			sess.mobile.sendJSON(message{Type: "key", Key: sessionKey})
-		}
-		sess.mu.Unlock()
-	}
-
-	// Find the other peer for relaying.
-	getOther := func() *peer {
-		sess.mu.Lock()
-		defer sess.mu.Unlock()
-		if p.role == "daemon" {
-			return sess.mobile
-		}
-		return sess.daemon
+func (h *hub) handlePoll(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	role := r.URL.Query().Get("role")
+	if code == "" || role == "" {
+		writeError(w, "code and role required")
+		return
 	}
 
-	// Block on reading from this peer and relay to the other.
-	relayFrom(p, getOther())
+	var since int
+	json.Unmarshal([]byte(r.URL.Query().Get("since")), &since)
 
-	// Cleanup.
-	sess.disconnect(p)
-	h.mu.Lock()
-	if sess.daemon == nil && sess.mobile == nil {
-		delete(h.sessions, sessionKey)
+	key, _, ok := h.resolveSession(code)
+	if !ok {
+		// No session yet — return empty.
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"messages": []queuedMsg{},
+			"since":    since,
+		})
+		return
 	}
-	h.mu.Unlock()
-	log.Printf("disconnect: role=%s key=%s", join.Role, sessionKey)
+
+	sess := h.getOrCreate(key)
+	msgs := sess.poll(role, since)
+
+	lastSeq := since
+	if len(msgs) > 0 {
+		lastSeq = msgs[len(msgs)-1].Seq
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"messages": msgs,
+		"since":    lastSeq,
+	})
+}
+
+func (h *hub) handleLeave(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+		Role string `json:"role"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	key, _, ok := h.resolveSession(req.Code)
+	if !ok {
+		writeError(w, "invalid code")
+		return
+	}
+	sess := h.getOrCreate(key)
+	sess.push(req.Role, message{Type: "peer_disconnected"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = key
+}
+
+func writeError(w http.ResponseWriter, msg string) {
+	w.WriteHeader(400)
+	json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": msg})
+}
+
+func randomKey() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func main() {
@@ -227,7 +284,7 @@ func main() {
 	h := newHub()
 	http.Handle("/", h)
 
-	log.Printf("Signaling server listening on :%s", *port)
+	log.Printf("HTTP signaling server listening on :%s", *port)
 	if err := http.ListenAndServe(":"+*port, nil); err != nil {
 		log.Fatalf("ListenAndServe: %v", err)
 	}

@@ -8,15 +8,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {Transport, TransportStatus, Alert} from './types';
 
 const PEER_KEY_STORAGE = '@devremote/peer_key';
+const POLL_MS = 500;
+
+interface SignalingMsg {
+  seq: number;
+  msg: Record<string, any>;
+}
 
 export class WebRTCTransport implements Transport {
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
-  private sig: WebSocket | null = null;
   private alertHandler: ((alert: Alert) => void) | null = null;
   private statusHandler: ((s: TransportStatus) => void) | null = null;
-  private pending: Array<{pred: (msg: Record<string, any>) => boolean; resolve: () => void}> = [];
-  private paired = false;
+  private lastSeq = 0;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private stopped = false;
 
   status: TransportStatus = 'disconnected';
 
@@ -28,62 +34,33 @@ export class WebRTCTransport implements Transport {
   async connect(): Promise<void> {
     this.status = 'connecting';
     this.statusHandler?.(this.status);
+    this.stopped = false;
 
     const peerKey = await AsyncStorage.getItem(PEER_KEY_STORAGE);
 
-    // 1. Connect to signaling server.
-    console.log('[DevRemote] connecting to:', this.signalingUrl);
-    this.sig = new WebSocket(this.signalingUrl);
-    this.sig.onerror = (e) => {
-      console.log('[DevRemote] WS error:', JSON.stringify(e));
-    };
-    try {
-      await this.waitForSigOpen();
-      console.log('[DevRemote] WS open');
-    } catch (err: any) {
-      console.log('[DevRemote] WS fail:', err?.message || String(err));
-      this.status = 'disconnected';
-      this.statusHandler?.(this.status);
-      throw err;
+    // 1. Join session via HTTP.
+    console.log('[DevRemote] joining:', this.signalingUrl);
+    const joinResp = await fetch(`${this.signalingUrl}/join`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(
+        peerKey
+          ? {code: this.sessionCode, role: 'mobile', key: peerKey}
+          : {code: this.sessionCode, role: 'mobile'},
+      ),
+    });
+    const joinData = await joinResp.json();
+    console.log('[DevRemote] join response:', JSON.stringify(joinData));
+
+    if (joinData.status !== 'ok') {
+      throw new Error(joinData.message || 'Join failed');
     }
 
-    // 2. Handle all signaling messages.
-    this.sig.onmessage = (event: MessageEvent) => {
-      const m = JSON.parse(typeof event.data === 'string' ? event.data : '');
-      // Give pending waiters first shot, remove matched ones.
-      for (let i = this.pending.length - 1; i >= 0; i--) {
-        if (this.pending[i].pred(m)) {
-          this.pending[i].resolve();
-          this.pending.splice(i, 1);
-          return;
-        }
-      }
-      // Otherwise, handle normally.
-      this.handleSignaling(m);
-    };
+    if (joinData.key && !peerKey) {
+      await AsyncStorage.setItem(PEER_KEY_STORAGE, joinData.key);
+    }
 
-    // 3. Join as mobile.
-    this.sig.send(JSON.stringify(
-      peerKey
-        ? {type: 'join', role: 'mobile', key: peerKey}
-        : {type: 'join', role: 'mobile', code: this.sessionCode},
-    ));
-
-    // 4. Wait for joined + optional key + paired.
-    await this.waitFor(m => m.type === 'joined' || m.type === 'error');
-    await this.waitFor(m => {
-      if (m.type === 'key' && m.key) {
-        AsyncStorage.setItem(PEER_KEY_STORAGE, m.key);
-        return true;
-      }
-      if (m.type === 'paired' || m.type === 'error') return true;
-      return false;
-    });
-    await this.waitFor(m => m.type === 'paired' || m.type === 'error');
-
-    this.paired = true;
-
-    // 5. Create peer connection.
+    // 2. Create peer connection.
     this.pc = new RTCPeerConnection({
       iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
     });
@@ -110,42 +87,66 @@ export class WebRTCTransport implements Transport {
 
     this.pc.onicecandidate = event => {
       if (event.candidate) {
-        this.sig?.send(JSON.stringify({
+        this.sendSignal({
           type: 'ice',
           candidate: event.candidate.candidate,
           sdpMid: event.candidate.sdpMid,
           sdpMLineIndex: event.candidate.sdpMLineIndex,
-        }));
+        });
       }
     };
+
+    // 3. Start polling for signaling messages.
+    this.pollTimer = setInterval(() => this.poll(), POLL_MS);
+    this.poll();
   }
 
-  private handleSignaling(m: Record<string, any>) {
+  private async poll(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      const resp = await fetch(
+        `${this.signalingUrl}/poll?code=${this.sessionCode}&role=mobile&since=${this.lastSeq}`,
+      );
+      const data = await resp.json();
+      const msgs: SignalingMsg[] = data.messages || [];
+      if (msgs.length > 0) {
+        this.lastSeq = data.since || this.lastSeq;
+      }
+      for (const sm of msgs) {
+        await this.handleSignal(sm.msg);
+      }
+    } catch {
+      // retry on next poll
+    }
+  }
+
+  private async handleSignal(m: Record<string, any>): Promise<void> {
     switch (m.type) {
+      case 'paired':
+        // Other peer has joined.
+        break;
       case 'sdp': {
         const sdp = new RTCSessionDescription({
-          type: m.sdp?.type || 'offer',
+          type: m.sdpType === 'answer' ? 'answer' : 'offer',
           sdp: m.sdp,
         });
-        this.pc?.setRemoteDescription(sdp).then(() => {
-          if (sdp.type === 'offer') {
-            this.pc?.createAnswer().then(answer => {
-              this.pc?.setLocalDescription(answer);
-              this.sig?.send(JSON.stringify({type: 'sdp', sdpType: 'answer', sdp: answer.sdp}));
-            }).catch(() => {});
-          }
-        }).catch(() => {});
+        await this.pc?.setRemoteDescription(sdp);
+        if (sdp.type === 'offer') {
+          const answer = await this.pc?.createAnswer();
+          await this.pc?.setLocalDescription(answer!);
+          this.sendSignal({type: 'sdp', sdpType: 'answer', sdp: answer!.sdp});
+        }
         break;
       }
       case 'ice':
-        if (this.pc && m.candidate) {
-          this.pc.addIceCandidate(
+        if (m.candidate) {
+          await this.pc?.addIceCandidate(
             new RTCIceCandidate({
               candidate: m.candidate,
               sdpMid: m.sdpMid,
               sdpMLineIndex: m.sdpMLineIndex,
             }),
-          ).catch(() => {});
+          );
         }
         break;
       case 'peer_disconnected':
@@ -154,42 +155,35 @@ export class WebRTCTransport implements Transport {
     }
   }
 
-  private waitFor(predicate: (msg: Record<string, any>) => boolean): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const t = setTimeout(() => {
-        // Remove stale waiter on timeout.
-        const idx = this.pending.findIndex(w => w.resolve === r);
-        if (idx >= 0) this.pending.splice(idx, 1);
-        reject(new Error('Signaling timeout'));
-      }, 15000);
-      const r = () => { clearTimeout(t); resolve(); };
-      this.pending.push({pred: predicate, resolve: r});
-    });
-  }
-
-  private waitForSigOpen(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('timeout')), 10000);
-      this.sig!.onopen = () => {
-        clearTimeout(t);
-        resolve();
-      };
-      this.sig!.onerror = () => {
-        clearTimeout(t);
-        reject(new Error('Signaling connect failed'));
-      };
-    });
+  private async sendSignal(msg: Record<string, any>): Promise<void> {
+    try {
+      await fetch(`${this.signalingUrl}/send`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({code: this.sessionCode, role: 'mobile', msg}),
+      });
+    } catch {
+      // ignore send errors
+    }
   }
 
   disconnect(): void {
+    this.stopped = true;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
     this.dc?.close();
     this.pc?.close();
-    this.sig?.close();
     this.dc = null;
     this.pc = null;
-    this.sig = null;
     this.status = 'disconnected';
     this.statusHandler?.(this.status);
+    fetch(`${this.signalingUrl}/leave`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({code: this.sessionCode, role: 'mobile'}),
+    }).catch(() => {});
   }
 
   onStatusChange(handler: (status: TransportStatus) => void): void {
