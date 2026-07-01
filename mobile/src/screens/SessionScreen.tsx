@@ -23,6 +23,7 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
   const [alerts, setAlerts] = useState<(Alert & {id: string; dismissed?: boolean})[]>([]);
   const [status, setStatus] = useState<TransportStatus>(transport.status);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const transportRef = useRef(transport);
 
   transportRef.current = transport;
@@ -40,8 +41,8 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
       if (pushToken) {
         transport.sendMessage({type: 'register', pushToken});
       }
-    }).catch(() => {
-      // Connection failed — status is already set to 'disconnected' by transport
+    }).catch((err: any) => {
+      setErrorMsg(err?.message || String(err));
     });
   }, [transport, pushToken]);
 
@@ -185,6 +186,9 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
             <View style={[styles.statusDot, {backgroundColor: statusColor}]} />
             <Text style={styles.statusText}>{statusText}</Text>
           </View>
+          {errorMsg ? (
+            <Text style={styles.errorText} numberOfLines={3}>{errorMsg}</Text>
+          ) : null}
         </View>
 
         {alerts.length === 0 ? (
@@ -222,6 +226,7 @@ const styles = StyleSheet.create({
   statusRow: {flexDirection: 'row', alignItems: 'center'},
   statusDot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
   statusText: {color: '#8b949e', fontSize: 13},
+  errorText: {color: '#f85149', fontSize: 12, marginTop: 6, maxWidth: 200},
   list: {padding: 16, paddingBottom: 32},
   alertCard: {
     backgroundColor: '#161b22', borderRadius: 10, padding: 16,

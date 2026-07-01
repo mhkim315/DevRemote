@@ -32,8 +32,20 @@ export class WebRTCTransport implements Transport {
     const peerKey = await AsyncStorage.getItem(PEER_KEY_STORAGE);
 
     // 1. Connect to signaling server.
+    console.log('[DevRemote] connecting to:', this.signalingUrl);
     this.sig = new WebSocket(this.signalingUrl);
-    await this.waitForSigOpen();
+    this.sig.onerror = (e) => {
+      console.log('[DevRemote] WS error:', JSON.stringify(e));
+    };
+    try {
+      await this.waitForSigOpen();
+      console.log('[DevRemote] WS open');
+    } catch (err: any) {
+      console.log('[DevRemote] WS fail:', err?.message || String(err));
+      this.status = 'disconnected';
+      this.statusHandler?.(this.status);
+      throw err;
+    }
 
     // 2. Handle all signaling messages.
     this.sig.onmessage = (event: MessageEvent) => {
