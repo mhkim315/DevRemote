@@ -36,18 +36,13 @@ export class WebRTCTransport implements Transport {
     this.statusHandler?.(this.status);
     this.stopped = false;
 
-    const peerKey = await AsyncStorage.getItem(PEER_KEY_STORAGE);
-
-    // 1. Join session via HTTP.
+    // 1. Join session via HTTP — always use code, not stored key.
+    // The code is the unique session identifier. Daemon creates the session.
     console.log('[DevRemote] joining:', this.signalingUrl);
     const joinResp = await fetch(`${this.signalingUrl}/join`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(
-        peerKey
-          ? {code: this.sessionCode, role: 'mobile', key: peerKey}
-          : {code: this.sessionCode, role: 'mobile'},
-      ),
+      body: JSON.stringify({code: this.sessionCode, role: 'mobile'}),
     });
     const joinData = await joinResp.json();
     console.log('[DevRemote] join response:', JSON.stringify(joinData));

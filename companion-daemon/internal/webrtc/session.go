@@ -115,7 +115,10 @@ func (s *Session) Start(onResponse func(clientIP string, msg map[string]interfac
 		})
 	})
 
-	// 3. Create and send offer.
+	// 3. Start polling immediately so we can receive the mobile's answer.
+	go s.pollLoop(onResponse)
+
+	// 4. Create and send offer.
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
 		return fmt.Errorf("create offer: %w", err)
@@ -123,7 +126,17 @@ func (s *Session) Start(onResponse func(clientIP string, msg map[string]interfac
 	if err := pc.SetLocalDescription(offer); err != nil {
 		return fmt.Errorf("set local: %w", err)
 	}
-	<-webrtc.GatheringCompletePromise(pc)
+
+	// Wait for ICE gathering with 15s timeout.
+	gatherDone := make(chan struct{})
+	go func() {
+		<-webrtc.GatheringCompletePromise(pc)
+		close(gatherDone)
+	}()
+	select {
+	case <-gatherDone:
+	case <-time.After(15 * time.Second):
+	}
 
 	s.httpPost("/send", map[string]interface{}{
 		"code": s.code,
@@ -133,9 +146,6 @@ func (s *Session) Start(onResponse func(clientIP string, msg map[string]interfac
 			"sdp":  pc.LocalDescription().SDP,
 		},
 	})
-
-	// 4. Start polling for signaling messages.
-	go s.pollLoop(onResponse)
 
 	return nil
 }

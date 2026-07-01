@@ -155,9 +155,10 @@ func (h *hub) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionKey := req.Key
-	if sessionKey == "" && req.Code != "" {
-		key, sess, ok := h.resolveSession(req.Code)
+	sessionKey := ""
+	if req.Code != "" {
+		// Code always takes priority — resolves to the daemon-created session.
+		key, _, ok := h.resolveSession(req.Code)
 		if ok {
 			sessionKey = key
 		} else {
@@ -167,7 +168,8 @@ func (h *hub) handleJoin(w http.ResponseWriter, r *http.Request) {
 			h.sessions[sessionKey] = newSession()
 			h.mu.Unlock()
 		}
-		_ = sess
+	} else if req.Key != "" {
+		sessionKey = req.Key
 	}
 	if sessionKey == "" {
 		writeError(w, "code or key required")
