@@ -21,6 +21,7 @@ export class WebRTCTransport implements Transport {
   private lastSeq = 0;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private queuedIce: RTCIceCandidate[] = [];
 
   status: TransportStatus = 'disconnected';
 
@@ -118,7 +119,6 @@ export class WebRTCTransport implements Transport {
   private async handleSignal(m: Record<string, any>): Promise<void> {
     switch (m.type) {
       case 'paired':
-        // Other peer has joined.
         break;
       case 'sdp': {
         const sdp = new RTCSessionDescription({
@@ -126,6 +126,11 @@ export class WebRTCTransport implements Transport {
           sdp: m.sdp,
         });
         await this.pc?.setRemoteDescription(sdp);
+        // Flush queued ICE candidates now that remote description is set.
+        for (const c of this.queuedIce) {
+          try { await this.pc?.addIceCandidate(c); } catch {}
+        }
+        this.queuedIce = [];
         if (sdp.type === 'offer') {
           const answer = await this.pc?.createAnswer();
           await this.pc?.setLocalDescription(answer!);
@@ -135,13 +140,17 @@ export class WebRTCTransport implements Transport {
       }
       case 'ice':
         if (m.candidate) {
-          await this.pc?.addIceCandidate(
-            new RTCIceCandidate({
-              candidate: m.candidate,
-              sdpMid: m.sdpMid,
-              sdpMLineIndex: m.sdpMLineIndex,
-            }),
-          );
+          const c = new RTCIceCandidate({
+            candidate: m.candidate,
+            sdpMid: m.sdpMid,
+            sdpMLineIndex: m.sdpMLineIndex,
+          });
+          // Queue ICE if remote description isn't set yet.
+          if (!this.pc?.remoteDescription) {
+            this.queuedIce.push(c);
+          } else {
+            try { await this.pc?.addIceCandidate(c); } catch {}
+          }
         }
         break;
       case 'peer_disconnected':

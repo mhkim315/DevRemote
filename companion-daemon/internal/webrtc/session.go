@@ -127,17 +127,8 @@ func (s *Session) Start(onResponse func(clientIP string, msg map[string]interfac
 		return fmt.Errorf("set local: %w", err)
 	}
 
-	// Wait for ICE gathering with 15s timeout.
-	gatherDone := make(chan struct{})
-	go func() {
-		<-webrtc.GatheringCompletePromise(pc)
-		close(gatherDone)
-	}()
-	select {
-	case <-gatherDone:
-	case <-time.After(15 * time.Second):
-	}
-
+	// Trickle ICE: send SDP offer immediately, ICE candidates follow as they arrive.
+	// No need to block on GatheringCompletePromise.
 	s.httpPost("/send", map[string]interface{}{
 		"code": s.code,
 		"role": "daemon",
