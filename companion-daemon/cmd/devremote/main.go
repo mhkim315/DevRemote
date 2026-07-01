@@ -11,12 +11,45 @@ import (
 	"path/filepath"
 
 	"devremote/companion-daemon/internal/detector"
+	"devremote/companion-daemon/internal/push"
 	"devremote/companion-daemon/internal/server"
 	"devremote/companion-daemon/internal/watcher"
 	devwebrtc "devremote/companion-daemon/internal/webrtc"
 )
 
+// printHookScript outputs shell script that intercepts AI CLI commands.
+// The user adds `eval "$(devremote hook)"` to .bashrc/.zshrc once.
+func printHookScript() {
+	fmt.Println(`# DevRemote Hook — intercepts AI CLI commands for mobile monitoring.
+# Add this to your .bashrc or .zshrc:
+#   eval "$(devremote hook)"
+
+_devremote_wrap() {
+  # Notify daemon, then run the original command.
+  # Daemon auto-discovers PID from JSONL directory.
+  command "$@"
+}
+
+# Intercept common AI CLI tools.
+alias claude='_devremote_wrap claude'
+alias codex='_devremote_wrap codex'
+alias gemini='_devremote_wrap gemini'
+alias aider='_devremote_wrap aider'
+
+if [ -z "$DEVSETUP_PROJECT" ]; then
+  echo "DevRemote: Set DEVSETUP_PROJECT to your Claude project path."
+  echo "  export DEVSETUP_PROJECT=\"$HOME/.claude/projects/...\""
+fi`)
+}
+
 func main() {
+	// Subcommand: devremote hook
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		printHookScript()
+		return
+	}
+
+	// Default: devremote watch
 	projectDir := flag.String("project", "", "Path to Claude project directory to watch (required)")
 	port := flag.String("port", "9171", "WebSocket server port")
 	execClaude := flag.Bool("exec", false, "Run 'claude' as a child process and relay mobile responses to its stdin")
@@ -78,7 +111,30 @@ func main() {
 	}
 
 	hub := server.NewHub(onResponse)
-	state := detector.NewState(hub.HandleAlert)
+
+	// WebRTC session, initialized later if --signaling is set.
+	// Must be declared before onAlert so the closure can reference it.
+	var webrtcSess *devwebrtc.Session
+
+	// Wrap OnAlert with "Push on Idle" policy.
+	onAlert := func(a detector.Alert) {
+		hub.HandleAlert(a)
+
+		activeConns := hub.ActiveClientCount()
+		if webrtcSess != nil && webrtcSess.IsConnected() {
+			activeConns++
+		}
+		if activeConns == 0 && len(pushTokens) > 0 {
+			push.Send(
+				pushTokens,
+				"Claude 승인 필요",
+				push.DescriptionFor(a.ToolName, a.Description),
+				a.SessionID,
+				a.ToolName,
+			)
+		}
+	}
+	state := detector.NewState(onAlert)
 
 	t, err := watcher.New(absDir, state.Feed)
 	if err != nil {
@@ -122,7 +178,6 @@ func main() {
 	}
 
 	// Optionally start WebRTC for remote access.
-	var webrtcSess *devwebrtc.Session
 	if *signalingURL != "" {
 		webrtcSess = devwebrtc.New(*signalingURL,
 			[]string{"stun:stun.l.google.com:19302"},

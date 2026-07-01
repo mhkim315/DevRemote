@@ -229,6 +229,16 @@ func (s *Session) alertWriter() {
 	}
 }
 
+// IsConnected returns true if the data channel is open.
+func (s *Session) IsConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.dc == nil {
+		return false
+	}
+	return s.dc.ReadyState() == webrtc.DataChannelStateOpen
+}
+
 // Close tears down the session.
 func (s *Session) Close() {
 	s.mu.Lock()

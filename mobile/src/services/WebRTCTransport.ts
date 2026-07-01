@@ -15,7 +15,7 @@ export class WebRTCTransport implements Transport {
   private sig: WebSocket | null = null;
   private alertHandler: ((alert: Alert) => void) | null = null;
   private statusHandler: ((s: TransportStatus) => void) | null = null;
-  private pending: Array<(msg: Record<string, any>) => boolean> = [];
+  private pending: Array<{pred: (msg: Record<string, any>) => boolean; resolve: () => void}> = [];
   private paired = false;
 
   status: TransportStatus = 'disconnected';
@@ -38,9 +38,13 @@ export class WebRTCTransport implements Transport {
     // 2. Handle all signaling messages.
     this.sig.onmessage = (event: MessageEvent) => {
       const m = JSON.parse(typeof event.data === 'string' ? event.data : '');
-      // Give pending waiters first shot.
-      for (const waiter of this.pending) {
-        if (waiter(m)) return;
+      // Give pending waiters first shot, remove matched ones.
+      for (let i = this.pending.length - 1; i >= 0; i--) {
+        if (this.pending[i].pred(m)) {
+          this.pending[i].resolve();
+          this.pending.splice(i, 1);
+          return;
+        }
       }
       // Otherwise, handle normally.
       this.handleSignaling(m);
@@ -115,7 +119,7 @@ export class WebRTCTransport implements Transport {
           if (sdp.type === 'offer') {
             this.pc?.createAnswer().then(answer => {
               this.pc?.setLocalDescription(answer);
-              this.sig?.send(JSON.stringify({type: 'sdp', sdp: answer.sdp}));
+              this.sig?.send(JSON.stringify({type: 'sdp', sdpType: 'answer', sdp: answer.sdp}));
             }).catch(() => {});
           }
         }).catch(() => {});
@@ -139,14 +143,15 @@ export class WebRTCTransport implements Transport {
   }
 
   private waitFor(predicate: (msg: Record<string, any>) => boolean): Promise<void> {
-    return new Promise(resolve => {
-      this.pending.push(msg => {
-        if (predicate(msg)) {
-          resolve();
-          return true;
-        }
-        return false;
-      });
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => {
+        // Remove stale waiter on timeout.
+        const idx = this.pending.findIndex(w => w.resolve === r);
+        if (idx >= 0) this.pending.splice(idx, 1);
+        reject(new Error('Signaling timeout'));
+      }, 15000);
+      const r = () => { clearTimeout(t); resolve(); };
+      this.pending.push({pred: predicate, resolve: r});
     });
   }
 

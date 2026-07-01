@@ -20,6 +20,7 @@ type RawEvent struct {
 	Message    json.RawMessage `json:"message"`
 	Timestamp  string          `json:"timestamp"`
 	SessionID  string          `json:"sessionId"`
+	PID        int             `json:"-"` // populated by detector.FindClaudePIDs
 }
 
 // ToolUse extracted from an assistant message content block.

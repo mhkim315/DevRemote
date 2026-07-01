@@ -103,6 +103,13 @@ func (h *Hub) Start(addr string) error {
 	return http.ListenAndServe(addr, nil)
 }
 
+// ActiveClientCount returns the number of connected WebSocket clients.
+func (h *Hub) ActiveClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 // LocalIPs returns non-loopback local IP addresses for discovery.
 func LocalIPs() []string {
 	addrs, err := net.InterfaceAddrs()
