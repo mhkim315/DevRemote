@@ -40,15 +40,11 @@
       ],
       "expo-status-bar"
     ],
-    "updates": {
-      "url": "https://u.expo.dev/399f2e5f-7899-4edc-a4f7-09a9a5d0c483"
-    },
-    "runtimeVersion": "1.0.0",
     "extra": {
       "eas": {
-        "projectId": "399f2e5f-7899-4edc-a4f7-09a9a5d0c483"
+        "projectId": "a90804c1-76d7-4e3c-b351-fbe287a15ce7"
       }
     },
-    "owner": "nanimi"
+    "owner": "minani"
   }
 }

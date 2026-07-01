@@ -1,3 +1,14 @@
+// DevRemote — Human-in-the-Loop mobile dashboard for AI CLI tools.
+//
+// Subcommands:
+//
+//	watch    Start the daemon: watch JSONL files, serve WebSocket + WebRTC
+//	hook     Print shell script to intercept AI CLI commands (.bashrc/.zshrc)
+//	wrap     Run a CLI inside a PTY proxy for full stdin/stdout control
+//
+// The daemon watches Claude Code's JSONL session files for tool_use events,
+// broadcasts alerts to a mobile app via WebSocket (LAN) or WebRTC (remote),
+// and relays mobile responses (approve/deny, stdin text, Ctrl-C) back to the AI CLI.
 package main
 
 import (
