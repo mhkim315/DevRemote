@@ -65,14 +65,14 @@ func Command(dir, name string, args ...string) error {
 		defer os.Remove(ipcPath)
 	}
 
-	// Raw terminal mode (Unix-only; ConPTY on Windows handles this automatically).
-	if runtime.GOOS != "windows" {
-		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-		if err != nil {
-			return fmt.Errorf("make raw: %w", err)
-		}
-		defer term.Restore(int(os.Stdin.Fd()), oldState)
+	// Raw terminal mode — works on all platforms.
+	// Unix: term.MakeRaw disables line buffering/echo.
+	// Windows: sets console to raw input mode for ConPTY passthrough.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("make raw: %w", err)
 	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	// Window resize handling.
 	resizeLoop(tty)
