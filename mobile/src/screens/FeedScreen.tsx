@@ -45,10 +45,18 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
 
   const sendStdin = useCallback(() => {
     if (stdin.trim()) {
-      transport.sendMessage({type: 'stdin', text: stdin.trim() + '\n'});
+      const text = stdin.trim();
+      transportRef.current.sendMessage({type: 'stdin', text: text + '\n'});
+      // Local echo
+      setItems(prev => [{
+        id: `${Date.now()}-me-${Math.random().toString(36).slice(2, 4)}`,
+        type: 'me',
+        time: new Date().toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit'}),
+        text,
+      }, ...prev.slice(0, 99)]);
       setStdin('');
     }
-  }, [stdin, transport]);
+  }, [stdin]);
 
   const sendInterrupt = useCallback(() => {
     transport.sendMessage({type: 'interrupt'});
@@ -64,6 +72,7 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
       case 'raw': return '#484f58';
       case 'AskUserQuestion': return '#d29922';
       case 'Bash': return '#f0883e';
+      case 'me': return '#238636';
       default: return '#484f58';
     }
   };

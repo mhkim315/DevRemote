@@ -36,6 +36,18 @@ type session struct {
 	daemonSeq   int
 	mobileSeq   int
 	nextSeq     int
+	joined      map[string]bool // tracks which roles have already joined
+}
+
+func (s *session) isRejoin(role string) bool {
+	return s.joined[role]
+}
+
+func (s *session) markJoined(role string) {
+	if s.joined == nil {
+		s.joined = make(map[string]bool)
+	}
+	s.joined[role] = true
 }
 
 func newSession() *session {
@@ -75,7 +87,21 @@ func (s *session) poll(role string, since int) []queuedMsg {
 			}
 		}
 	}
+	// Prune processed messages to prevent unbounded growth (BUG-012).
+	if len(msgs) > 0 && len(*inbox) > 32 {
+		*inbox = (*inbox)[len(*inbox)-16:]
+	}
 	return msgs
+}
+
+// reset clears inboxes for a fresh reconnection (BUG-008).
+func (s *session) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.daemonInbox = nil
+	s.mobileInbox = nil
+	s.daemonSeq = 0
+	s.mobileSeq = 0
 }
 
 type hub struct {
@@ -178,13 +204,24 @@ func (h *hub) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 	sess := h.getOrCreate(sessionKey)
 
-	// Push paired notification to the other peer.
-	otherRole := "daemon"
-	if req.Role == "daemon" {
-		otherRole = "mobile"
+	// Track whether this peer is rejoining.
+	isRejoin := sess.isRejoin(req.Role)
+
+	// Reset inboxes on rejoin to prevent stale SDP/ICE replay (BUG-008).
+	if isRejoin {
+		sess.reset()
 	}
-	sess.push(req.Role, message{Type: "paired", Peer: req.Role})
-	sess.push(otherRole, message{Type: "paired", Peer: req.Role})
+	sess.markJoined(req.Role)
+
+	// Push paired only when both peers have joined (at least one rejoin).
+	if isRejoin {
+		otherRole := "daemon"
+		if req.Role == "daemon" {
+			otherRole = "mobile"
+		}
+		sess.push(req.Role, message{Type: "paired", Peer: req.Role})
+		sess.push(otherRole, message{Type: "paired", Peer: req.Role})
+	}
 
 	log.Printf("join: role=%s key=%s code=%s", req.Role, sessionKey, req.Code)
 

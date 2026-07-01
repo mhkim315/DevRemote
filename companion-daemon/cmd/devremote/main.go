@@ -12,6 +12,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -114,8 +115,13 @@ func main() {
 		// Raw stdin text from mobile.
 		if msgType == "stdin" {
 			if text, ok := msg["text"].(string); ok && stdinWriter != nil {
-				stdinWriter.Write([]byte(text))
-				log.Printf("stdin from mobile: %q", text)
+				if _, err := stdinWriter.Write([]byte(text)); err != nil {
+					log.Printf("stdin write failed (claude may have exited): %v", err)
+					// BUG-013: broken pipe — claude is dead, clear writer
+					stdinWriter = nil
+				} else {
+					log.Printf("stdin from mobile: %q", text)
+				}
 			}
 			return
 		}
@@ -123,8 +129,13 @@ func main() {
 		// Interrupt / Ctrl-C.
 		if msgType == "interrupt" {
 			if claudeCmd != nil && claudeCmd.Process != nil {
-				claudeCmd.Process.Signal(os.Interrupt)
-				log.Printf("interrupt sent to claude pid=%d", claudeCmd.Process.Pid)
+				if err := wrap.Interrupt(claudeCmd.Process.Pid); err != nil {
+					log.Printf("interrupt failed: %v", err)
+					// Fallback: kill
+					wrap.KillProcess(claudeCmd.Process)
+				} else {
+					log.Printf("interrupt sent to claude pid=%d", claudeCmd.Process.Pid)
+				}
 			}
 			return
 		}
@@ -182,9 +193,29 @@ func main() {
 
 	// Raw event stream: forward every JSONL event to connected clients as type=raw.
 	rawFeed := func(ev watcher.RawEvent) {
-		desc := ""
-		if msg, err := ev.Message.MarshalJSON(); err == nil {
-			desc = string(msg)
+		desc := fmt.Sprintf("[%s] %s", ev.Type, ev.Timestamp)
+		// Try to extract useful info from the message.
+		var msg map[string]interface{}
+		if json.Unmarshal(ev.Message, &msg) == nil {
+			if role, ok := msg["role"].(string); ok {
+				desc = fmt.Sprintf("[%s:%s]", ev.Type, role)
+			}
+			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
+				if block, ok := content[0].(map[string]interface{}); ok {
+					switch block["type"] {
+					case "tool_use":
+						desc = fmt.Sprintf("[%s:%s] %v", ev.Type, block["name"], block["input"])
+					case "text":
+						txt := block["text"].(string)
+						if len(txt) > 60 {
+							txt = txt[:60] + "..."
+						}
+						desc = fmt.Sprintf("[%s] %q", ev.Type, txt)
+					case "thinking":
+						desc = fmt.Sprintf("[%s:thinking]", ev.Type)
+					}
+				}
+			}
 		}
 		a := detector.Alert{
 			SessionID:   ev.SessionID,

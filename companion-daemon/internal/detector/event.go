@@ -124,12 +124,10 @@ func (s *State) Feed(ev watcher.RawEvent) {
 		return
 	}
 
-	// Only Bash and similar tools need user approval.
-	// Read, Edit, Write, etc. are auto-approved by Claude.
-	if tu.Name != "Bash" {
-		return
-	}
-
+	// Apply 3s timer to ALL tool_use events (not just Bash).
+	// Auto-approved tools will have their timers cancelled by the
+	// tool_result arriving within 3 seconds. Only tools that actually
+	// wait for user approval will fire the alert.
 	desc := getToolDescription(tu)
 	pu := &PendingToolUse{
 		ToolUse: *tu,

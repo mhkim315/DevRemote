@@ -46,7 +46,7 @@ func New(signalingURL string, stunServers []string, keyDir string) *Session {
 		stunServers:  stunServers,
 		peerKey:      loadOrCreateKey(keyDir),
 		code:         randomCode(),
-		alertCh:      make(chan detector.Alert, 64),
+		alertCh:      make(chan detector.Alert, 256),
 		pollStop:     make(chan struct{}),
 	}
 }
@@ -199,6 +199,62 @@ func (s *Session) pollLoop(onResponse func(clientIP string, msg map[string]inter
 				}
 				s.pc.AddICECandidate(candidate)
 
+			case "paired":
+				// Mobile reconnected — recreate peer connection + offer (BUG-008).
+				log.Printf("webrtc: peer reconnected")
+				s.mu.Lock()
+				// Close old connection if any.
+				if s.pc != nil {
+					s.pc.Close()
+				}
+				pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
+					ICEServers: []webrtc.ICEServer{{URLs: s.stunServers}},
+				})
+				if err != nil {
+					log.Printf("webrtc: recreate pc: %v", err)
+					s.mu.Unlock()
+					continue
+				}
+				dc, err := pc.CreateDataChannel("devremote", nil)
+				if err != nil {
+					log.Printf("webrtc: recreate dc: %v", err)
+					pc.Close()
+					s.mu.Unlock()
+					continue
+				}
+				s.pc = pc
+				s.dc = dc
+				dc.OnOpen(func() { log.Printf("webrtc: data channel opened"); go s.alertWriter() })
+				dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+					var m map[string]interface{}
+					if json.Unmarshal(msg.Data, &m) == nil && onResponse != nil {
+						onResponse("webrtc", m)
+					}
+				})
+				pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+					if c == nil { return }
+					candidate := c.ToJSON()
+					s.httpPost("/send", map[string]interface{}{
+						"code": s.code, "role": "daemon",
+						"msg": map[string]interface{}{
+							"type": "ice", "candidate": candidate.Candidate,
+							"sdpMid": candidate.SDPMid, "sdpMLineIndex": candidate.SDPMLineIndex,
+						},
+					})
+				})
+				s.mu.Unlock()
+
+				offer, err := pc.CreateOffer(nil)
+				if err != nil {
+					log.Printf("webrtc: recreate offer: %v", err)
+					continue
+				}
+				pc.SetLocalDescription(offer)
+				s.httpPost("/send", map[string]interface{}{
+					"code": s.code, "role": "daemon",
+					"msg": map[string]interface{}{"type": "sdp", "sdp": pc.LocalDescription().SDP},
+				})
+
 			case "peer_disconnected":
 				log.Printf("webrtc: peer disconnected")
 				return
@@ -252,12 +308,6 @@ func httpGet(url string) ([]byte, error) {
 
 func (s *Session) alertWriter() {
 	for a := range s.alertCh {
-		s.mu.Lock()
-		closed := s.closed
-		s.mu.Unlock()
-		if closed {
-			return
-		}
 		data, _ := json.Marshal(a)
 		if err := s.dc.SendText(string(data)); err != nil {
 			return
@@ -276,9 +326,14 @@ func (s *Session) IsConnected() bool {
 
 func (s *Session) Close() {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	s.closed = true
 	s.mu.Unlock()
 	close(s.pollStop)
+	close(s.alertCh) // BUG-014: unblock alertWriter goroutine
 	if s.dc != nil {
 		s.dc.Close()
 	}

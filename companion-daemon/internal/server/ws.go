@@ -41,11 +41,14 @@ func NewHub(onResponse func(clientIP string, msg map[string]interface{})) *Hub {
 func (h *Hub) HandleAlert(a detector.Alert) {
 	data, _ := json.Marshal(a)
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	// Copy listeners to avoid holding lock during callbacks.
+	listeners := make([]AlertHandler, len(h.listeners))
+	copy(listeners, h.listeners)
 	for conn := range h.clients {
-		conn.WriteMessage(websocket.TextMessage, data)
+		go conn.WriteMessage(websocket.TextMessage, data) // BUG-015: async writes
 	}
-	for _, l := range h.listeners {
+	h.mu.RUnlock()
+	for _, l := range listeners {
 		l(a)
 	}
 }
@@ -54,11 +57,13 @@ func (h *Hub) HandleAlert(a detector.Alert) {
 func (h *Hub) SendRaw(a detector.Alert) {
 	data, _ := json.Marshal(a)
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	listeners := make([]RawEventHandler, len(h.rawListeners))
+	copy(listeners, h.rawListeners)
 	for conn := range h.clients {
-		conn.WriteMessage(websocket.TextMessage, data)
+		go conn.WriteMessage(websocket.TextMessage, data) // BUG-015: async writes
 	}
-	for _, l := range h.rawListeners {
+	h.mu.RUnlock()
+	for _, l := range listeners {
 		l(a)
 	}
 }
