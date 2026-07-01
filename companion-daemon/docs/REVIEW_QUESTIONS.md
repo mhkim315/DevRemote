@@ -140,6 +140,42 @@ Oracle `168.107.59.177:9173`이 단일 장애점이다.
 
 ---
 
+---
+
+## 2차 추가 질문 (2026-07-01, 상세 답변 이후)
+
+### Q8. `y\n` relay 로그 — 진짜 살아있는 Claude에 전달되었는가?
+
+로그에 20회+ `relaying to claude stdin: "y\n"`이 찍혔는데, `--exec`는 pipe 때문에 Claude가 바로 죽는다고 했다.
+**저 relay 로그는 살아있는 Claude 세션에 전달된 것인가, 아니면 이미 죽은 파이프에 쓴 것인가?**
+Windows에서 `devremote wrap`(PTY)도 테스트했는가?
+
+### Q9. `devremote wrap`은 어디서 테스트되었는가?
+
+"Mac에서 `devremote wrap`으로 실제 Claude를 띄워야 한다"고 했는데,
+**Windows에서는 `wrap`을 테스트해봤는가?**
+Windows에서 wrap + 실제 Claude + 폰 연결 + 승인까지 완료되었는지 궁금하다.
+
+### Q10. 피드(Feed) 미작동의 구체적 증상
+
+- **피드 빈 화면**: 폰에 아예 아무것도 안 뜨는가, 아니면 특정 이벤트 타입만 누락되는가?
+- **채팅 미전달**: 폰 입력 → data channel → 데몬 경로 중 어디서 끊기는가?
+
+### Q11. 모바일 UI 현재 상태
+
+폰에서 실제 보이는 화면:
+- 승인/거절 버튼만 있는 단순 UI인가?
+- AI의 현재 작업 내용(파일명, 명령어, tool name)이 카드 형태로 표시되는가?
+- 스크린샷이나 UI 구조 설명 가능한가?
+
+### Q12. 시그널링 polling 주기
+
+HTTP REST polling(`GET /poll`):
+- **polling interval은 몇 초인가?** 너무 길면 SDP 교환 지연.
+- long polling인가 주기적 폴링인가?
+
+---
+
 ### 증거: WebRTC P2P 실제 검증 로그
 
 ```
