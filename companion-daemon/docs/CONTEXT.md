@@ -48,3 +48,27 @@ Mobile 승인 → WebRTC Data Channel → daemon onResponse → stdinWriter → 
 
 "Self-Hosted Manus" — 내 PC를 AI 클라우드로. 소스코드 외부 유출 0.
 타겟: 바이브코더, Claude Code 사용자. Manus 대비 $0 서버비용 + 로컬환경 접근.
+
+---
+
+## 인수인계 (2026-07-01, 새 Claude 세션)
+
+이전 세션에서 RustDesk 포크 관련 논의 → 이 레포(`companion-daemon`)로 피벗 완료.
+아키텍처/방향성 검토 완료. 자세한 질문 목록은 `docs/REVIEW_QUESTIONS.md` 참고.
+
+### 인수인계자가 확인한 것
+
+- ✅ Go 데몬 코드 (`cmd/devremote/main.go`, `internal/`) — 구조 깔끔, MIT 전부
+- ✅ PROJECT.md / VISION.md — 방향 명확, B2C 바이브코더 타겟
+- ✅ BUGREPORT.md — 7개 버그 기록 + 해결 완료
+- ✅ JSONL 접근법 — 화면 캡처보다 훨씬 우월한 접근
+
+### 가장 시급한 질문 (빠른 답변 필요)
+
+1. APK 실제 폰에서 엔드투엔드 테스트 완료했는가? (연결→승인→stdin relay)
+2. 버그 수정 후 재검증 완료했는가?
+3. iOS WebRTC 백그라운드 유지 가능한가?
+4. 시그널링 서버 다운 시 이미 연결된 세션 유지되는가?
+5. Windows 빌드/테스트 해봤는가?
+
+전체 질문 목록: `docs/REVIEW_QUESTIONS.md`
