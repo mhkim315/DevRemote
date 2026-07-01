@@ -28,18 +28,19 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
   useEffect(() => {
     transport.onStatusChange(setStatus);
     transport.onAlert((a: Alert) => {
-      const typeLabel = a.type === 'raw' ? a.description?.substring(0, 50) || '···' : `${a.toolName}: ${a.description || a.question}`;
+      const isRaw = a.type === 'raw';
+      const label = isRaw
+        ? `[${a.type}] ${a.description?.substring(0, 80) || '···'}`
+        : `[${a.toolName || a.type || 'event'}] ${a.description || a.question || ''}`;
       setItems(prev => [{
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         type: a.type || a.toolName || 'event',
         time: new Date(a.timestamp).toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit'}),
-        text: typeof typeLabel === 'string' ? typeLabel : String(typeLabel),
+        text: label.substring(0, 200),
       }, ...prev.slice(0, 99)]);
     });
-    transport.connect().then(() => {
-      if (pushToken) transport.sendMessage({type: 'register', pushToken});
-    }).catch(() => {});
-    return () => {};
+    // Don't reconnect — transport is already active from SessionScreen.
+    if (pushToken) transport.sendMessage({type: 'register', pushToken});
   }, [transport, pushToken]);
 
   const sendStdin = useCallback(() => {

@@ -34,7 +34,7 @@ export default function SessionScreen({transport, pushToken, onDisconnect, onFee
     transport.onAlert((a: Alert) => {
       setAlerts(prev => [
         {id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...a},
-        ...prev,
+        ...prev.slice(0, 19),
       ]);
     });
 
@@ -147,8 +147,8 @@ export default function SessionScreen({transport, pushToken, onDisconnect, onFee
 
         {/* Full command/description */}
         {item.description ? (
-          <Text style={styles.description}>
-            {item.description}
+          <Text style={styles.description} numberOfLines={2}>
+            {item.description.length > 80 ? item.description.substring(0, 80) + '...' : item.description}
           </Text>
         ) : null}
 
