@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "splash": {
       "backgroundColor": "#0d1117",
       "resizeMode": "contain"
@@ -36,12 +35,14 @@
           "icon": "./assets/notification-icon.png",
           "color": "#238636"
         }
-      ]
+      ],
+      "expo-status-bar"
     ],
     "extra": {
       "eas": {
-        "projectId": ""
+        "projectId": "399f2e5f-7899-4edc-a4f7-09a9a5d0c483"
       }
-    }
+    },
+    "owner": "nanimi"
   }
 }
