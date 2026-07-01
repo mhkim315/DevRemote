@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -19,6 +21,22 @@ type IPCState struct {
 	PID  int    `json:"pid"`
 	PTY  string `json:"pty,omitempty"`  // PTY device path (Unix) or name (Windows)
 	Port int    `json:"port,omitempty"` // reserved for future socket injection
+}
+
+// ReadIPC reads the IPC state file written by the wrap process.
+func ReadIPC(dir string) (IPCState, error) {
+	path := dir + "/devremote_wrap.json"
+	if runtime.GOOS == "windows" {
+		path = dir + "\\devremote_wrap.json"
+	}
+	var state IPCState
+	f, err := os.Open(path)
+	if err != nil {
+		return state, err
+	}
+	defer f.Close()
+	err = json.NewDecoder(f).Decode(&state)
+	return state, err
 }
 
 // WriteIPC writes the IPC state file so the daemon can discover this wrapper.
@@ -55,9 +73,17 @@ func Command(dir, name string, args ...string) error {
 		ptyPath = "unknown"
 	}
 
+	// Start localhost HTTP server for stdin injection from the daemon.
+	stdinPort, err := startStdinServer(tty)
+	if err != nil {
+		log.Printf("wrap: stdin server: %v", err)
+		stdinPort = 0
+	}
+
 	ipcPath, err := WriteIPC(os.TempDir(), IPCState{
-		PID: cmd.Process.Pid,
-		PTY: ptyPath,
+		PID:  cmd.Process.Pid,
+		PTY:  ptyPath,
+		Port: stdinPort,
 	})
 	if err != nil {
 		log.Printf("wrap: ipc write failed: %v", err)
@@ -66,8 +92,6 @@ func Command(dir, name string, args ...string) error {
 	}
 
 	// Raw terminal mode — works on all platforms.
-	// Unix: term.MakeRaw disables line buffering/echo.
-	// Windows: sets console to raw input mode for ConPTY passthrough.
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return fmt.Errorf("make raw: %w", err)
@@ -82,6 +106,39 @@ func Command(dir, name string, args ...string) error {
 	go io.Copy(os.Stdout, tty)
 
 	return cmd.Wait()
+}
+
+// startStdinServer opens a localhost HTTP server on a random port.
+// POST /stdin with {"text":"y\n"} writes to the PTY.
+// Returns the port number.
+func startStdinServer(tty *os.File) (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stdin", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		if req.Text != "" {
+			tty.Write([]byte(req.Text))
+		}
+		w.WriteHeader(200)
+	})
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	go http.Serve(listener, mux)
+	return port, nil
 }
 
 func ptyName(master *os.File, pid int) (string, error) {

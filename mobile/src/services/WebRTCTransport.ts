@@ -22,6 +22,7 @@ export class WebRTCTransport implements Transport {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private queuedIce: RTCIceCandidate[] = [];
+  private messageQueue: Record<string, unknown>[] = [];
 
   status: TransportStatus = 'disconnected';
 
@@ -68,6 +69,11 @@ export class WebRTCTransport implements Transport {
       this.dc.onopen = () => {
         this.status = 'connected';
         this.statusHandler?.(this.status);
+        // Flush queued messages now that the channel is open.
+        for (const msg of this.messageQueue) {
+          this.dc?.send(JSON.stringify(msg));
+        }
+        this.messageQueue = [];
       };
       this.dc.onclose = () => {
         this.status = 'disconnected';
@@ -201,6 +207,9 @@ export class WebRTCTransport implements Transport {
   sendMessage(payload: Record<string, unknown>): void {
     if (this.dc?.readyState === 'open') {
       this.dc.send(JSON.stringify(payload));
+    } else {
+      // Queue for when the channel opens.
+      this.messageQueue.push(payload);
     }
   }
 }

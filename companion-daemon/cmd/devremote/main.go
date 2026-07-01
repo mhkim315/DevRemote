@@ -12,11 +12,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -101,6 +103,35 @@ func main() {
 	var pushTokens []string
 	var stdinWriter io.Writer
 	var claudeCmd *exec.Cmd // for sending signals
+
+	// sendToWrap tries the wrap IPC HTTP server, falls back to pipe.
+	sendToWrap := func(text string) {
+		// Try piping through the wrap's localhost HTTP server.
+		state, err := wrap.ReadIPC(os.TempDir())
+		if err == nil && state.Port > 0 {
+			body, _ := json.Marshal(map[string]string{"text": text})
+			resp, err := http.Post(
+				fmt.Sprintf("http://127.0.0.1:%d/stdin", state.Port),
+				"application/json",
+				bytes.NewReader(body),
+			)
+			if err == nil && resp.StatusCode == 200 {
+				resp.Body.Close()
+				return
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+		// Fallback: direct pipe (--exec mode).
+		if stdinWriter != nil {
+			if _, err := stdinWriter.Write([]byte(text)); err != nil {
+				log.Printf("stdin write failed (claude may have exited): %v", err)
+				stdinWriter = nil
+			}
+		}
+	}
+
 	onResponse := func(clientIP string, msg map[string]interface{}) {
 		msgType, _ := msg["type"].(string)
 
@@ -114,14 +145,9 @@ func main() {
 
 		// Raw stdin text from mobile.
 		if msgType == "stdin" {
-			if text, ok := msg["text"].(string); ok && stdinWriter != nil {
-				if _, err := stdinWriter.Write([]byte(text)); err != nil {
-					log.Printf("stdin write failed (claude may have exited): %v", err)
-					// BUG-013: broken pipe — claude is dead, clear writer
-					stdinWriter = nil
-				} else {
-					log.Printf("stdin from mobile: %q", text)
-				}
+			if text, ok := msg["text"].(string); ok {
+				sendToWrap(text)
+				log.Printf("stdin from mobile: %q", text)
 			}
 			return
 		}
@@ -131,7 +157,6 @@ func main() {
 			if claudeCmd != nil && claudeCmd.Process != nil {
 				if err := wrap.Interrupt(claudeCmd.Process.Pid); err != nil {
 					log.Printf("interrupt failed: %v", err)
-					// Fallback: kill
 					wrap.KillProcess(claudeCmd.Process)
 				} else {
 					log.Printf("interrupt sent to claude pid=%d", claudeCmd.Process.Pid)
@@ -140,7 +165,7 @@ func main() {
 			return
 		}
 
-		if msgType != "response" || stdinWriter == nil {
+		if msgType != "response" {
 			return
 		}
 		approved, _ := msg["approved"].(bool)
@@ -162,7 +187,7 @@ func main() {
 			}
 		}
 		log.Printf("relaying to claude stdin: %q", input)
-		stdinWriter.Write([]byte(input))
+		sendToWrap(input)
 	}
 
 	hub := server.NewHub(onResponse)
