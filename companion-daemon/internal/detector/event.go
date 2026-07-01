@@ -7,14 +7,29 @@ import (
 	"devremote/companion-daemon/internal/watcher"
 )
 
+// QuestionOption is a single choice in an AskUserQuestion.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// QuestionItem is one question in an AskUserQuestion.
+type QuestionItem struct {
+	Question string           `json:"question"`
+	Header   string           `json:"header"`
+	Options  []QuestionOption `json:"options"`
+}
+
 // Alert is emitted when a tool_use needs user approval.
 type Alert struct {
-	SessionID   string `json:"sessionId"`
-	ToolUseID   string `json:"toolUseId"`
-	ToolName    string `json:"toolName"`
-	Description string `json:"description"`
-	Question    string `json:"question"`
-	Timestamp   string `json:"timestamp"`
+	SessionID   string         `json:"sessionId"`
+	ToolUseID   string         `json:"toolUseId"`
+	ToolName    string         `json:"toolName"`
+	Description string         `json:"description"`
+	Question    string         `json:"question"`
+	Questions   []QuestionItem `json:"questions,omitempty"`
+	Type        string         `json:"type,omitempty"`
+	Timestamp   string         `json:"timestamp"`
 }
 
 // State tracks pending tool approvals for a session.
@@ -46,7 +61,6 @@ func (s *State) Feed(ev watcher.RawEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if this is a tool_result for a pending tool.
 	if ev.Type == "user" {
 		if pu, ok := s.pending[ev.ParentUUID]; ok {
 			pu.Timer.Stop()
@@ -55,31 +69,46 @@ func (s *State) Feed(ev watcher.RawEvent) {
 		return
 	}
 
-	// Check if this is an assistant tool_use.
 	tu := watcher.ExtractToolUse(ev)
 	if tu == nil {
 		return
 	}
 
-	// AskUserQuestion: alert immediately.
 	if tu.Name == "AskUserQuestion" {
+		var questions []QuestionItem
 		question := ""
 		desc := ""
-		if input, ok := tu.Input["questions"].([]interface{}); ok && len(input) > 0 {
-			if q, ok := input[0].(map[string]interface{}); ok {
-				if txt, ok := q["question"].(string); ok {
-					question = txt
+
+		if input, ok := tu.Input["questions"].([]interface{}); ok {
+			for _, qi := range input {
+				if qm, ok := qi.(map[string]interface{}); ok {
+					q := QuestionItem{}
+					if txt, ok := qm["question"].(string); ok {
+						q.Question = txt
+						question = txt
+					}
+					if h, ok := qm["header"].(string); ok {
+						q.Header = h
+					}
+					if opts, ok := qm["options"].([]interface{}); ok {
+						for _, oi := range opts {
+							if om, ok := oi.(map[string]interface{}); ok {
+								opt := QuestionOption{}
+								if l, ok := om["label"].(string); ok {
+									opt.Label = l
+								}
+								if d, ok := om["description"].(string); ok {
+									opt.Description = d
+								}
+								q.Options = append(q.Options, opt)
+							}
+						}
+					}
+					questions = append(questions, q)
 				}
 			}
 		}
-		if input, ok := tu.Input["question"]; ok {
-			if q, ok := input.(string); ok {
-				question = q
-			} else {
-				desc = "질문이 있습니다"
-			}
-		}
-		if desc == "" && question == "" {
+		if len(questions) == 0 {
 			desc = "Claude가 질문을 보냈습니다"
 		}
 
@@ -89,12 +118,18 @@ func (s *State) Feed(ev watcher.RawEvent) {
 			ToolName:    "AskUserQuestion",
 			Description: desc,
 			Question:    question,
+			Questions:   questions,
 			Timestamp:   ev.Timestamp,
 		})
 		return
 	}
 
-	// Other tool_use: start timeout timer.
+	// Only Bash and similar tools need user approval.
+	// Read, Edit, Write, etc. are auto-approved by Claude.
+	if tu.Name != "Bash" {
+		return
+	}
+
 	desc := getToolDescription(tu)
 	pu := &PendingToolUse{
 		ToolUse: *tu,
@@ -119,9 +154,6 @@ func (s *State) Feed(ev watcher.RawEvent) {
 
 func getToolDescription(tu *watcher.ToolUse) string {
 	if cmd, ok := tu.Input["command"].(string); ok {
-		if len(cmd) > 120 {
-			cmd = cmd[:120] + "..."
-		}
 		return cmd
 	}
 	if desc, ok := tu.Input["description"].(string); ok {

@@ -5,6 +5,7 @@ import * as Device from 'expo-device';
 import HomeScreen from './src/screens/HomeScreen';
 import type {ConnectionConfig} from './src/screens/HomeScreen';
 import SessionScreen from './src/screens/SessionScreen';
+import FeedScreen from './src/screens/FeedScreen';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {WebSocketTransport} from './src/services/WebSocketTransport';
 import {WebRTCTransport} from './src/services/WebRTCTransport';
@@ -21,54 +22,55 @@ Notifications.setNotificationHandler({
 });
 
 async function getPushToken(): Promise<string | null> {
-  if (!Device.isDevice) {
-    return null;
-  }
+  if (!Device.isDevice) return null;
   const {status: existing} = await Notifications.getPermissionsAsync();
   let finalStatus = existing;
   if (existing !== 'granted') {
     const {status} = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }
-  if (finalStatus !== 'granted') {
-    return null;
-  }
+  if (finalStatus !== 'granted') return null;
   const token = await Notifications.getExpoPushTokenAsync();
   return token.data;
 }
 
 export default function App() {
   const [connection, setConnection] = useState<ConnectionConfig | null>(null);
+  const [isFeed, setIsFeed] = useState(false);
   const pushToken = useRef<string | null>(null);
 
   useEffect(() => {
-    getPushToken().then(t => {
-      pushToken.current = t;
-    });
+    getPushToken().then(t => { pushToken.current = t; });
   }, []);
 
   const transport = useMemo<Transport | null>(() => {
     if (!connection) return null;
-    if (connection.type === 'ws') {
-      return new WebSocketTransport(connection.url);
-    }
+    if (connection.type === 'ws') return new WebSocketTransport(connection.url);
     return new WebRTCTransport(connection.signalingUrl, connection.code);
   }, [connection]);
 
-  const screen = transport ? (
-    <SessionScreen
-      transport={transport}
-      pushToken={pushToken.current}
-      onDisconnect={() => setConnection(null)}
-    />
-  ) : (
-    <HomeScreen onConnect={config => setConnection(config)} />
-  );
+  if (!transport) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <HomeScreen onConnect={config => { setIsFeed(false); setConnection(config); }} />
+      </SafeAreaProvider>
+    );
+  }
+
+  if (isFeed) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <FeedScreen transport={transport} pushToken={pushToken.current} onBack={() => setIsFeed(false)} />
+      </SafeAreaProvider>
+    );
+  }
 
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      {screen}
+      <SessionScreen transport={transport} pushToken={pushToken.current} onDisconnect={() => setConnection(null)} onFeedToggle={() => setIsFeed(true)} />
     </SafeAreaProvider>
   );
 }

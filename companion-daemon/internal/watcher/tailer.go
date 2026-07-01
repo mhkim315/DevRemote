@@ -84,6 +84,8 @@ func (t *Tailer) tailFile(path string) error {
 	if err != nil {
 		return err
 	}
+	// Seek to end for existing files — only process new events.
+	f.Seek(0, 2)
 	t.files[path] = f
 
 	go func() {

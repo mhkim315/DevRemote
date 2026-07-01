@@ -60,6 +60,15 @@ func (s *Session) HandleAlert(a detector.Alert) {
 	}
 }
 
+func (s *Session) HandleRaw(a detector.Alert) {
+	// Send raw events with type=raw over data channel.
+	a.Type = "raw"
+	select {
+	case s.alertCh <- a:
+	default:
+	}
+}
+
 func (s *Session) Start(onResponse func(clientIP string, msg map[string]interface{})) error {
 	// 1. Join session via HTTP.
 	if err := s.httpPost("/join", map[string]interface{}{

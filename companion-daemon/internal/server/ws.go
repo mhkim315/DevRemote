@@ -17,13 +17,16 @@ var upgrader = websocket.Upgrader{
 }
 
 type AlertHandler func(detector.Alert)
+type RawEventHandler func(detector.Alert)
 
 // Hub manages connected mobile clients and broadcasts alerts.
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[*websocket.Conn]bool
-	listeners  []AlertHandler
-	OnResponse func(clientIP string, msg map[string]interface{})
+	mu            sync.RWMutex
+	clients       map[*websocket.Conn]bool
+	listeners     []AlertHandler
+	rawListeners  []RawEventHandler
+	OnRawAlert    func(detector.Alert)
+	OnResponse    func(clientIP string, msg map[string]interface{})
 }
 
 // NewHub creates a Hub.
@@ -45,6 +48,26 @@ func (h *Hub) HandleAlert(a detector.Alert) {
 	for _, l := range h.listeners {
 		l(a)
 	}
+}
+
+// SendRaw broadcasts a raw JSONL event to all clients and listeners.
+func (h *Hub) SendRaw(a detector.Alert) {
+	data, _ := json.Marshal(a)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for conn := range h.clients {
+		conn.WriteMessage(websocket.TextMessage, data)
+	}
+	for _, l := range h.rawListeners {
+		l(a)
+	}
+}
+
+// AddRawListener registers a handler for raw JSONL events.
+func (h *Hub) AddRawListener(handler RawEventHandler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rawListeners = append(h.rawListeners, handler)
 }
 
 // AddListener registers a handler that receives all alerts (e.g., WebRTC).

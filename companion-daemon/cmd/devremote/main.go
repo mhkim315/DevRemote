@@ -88,6 +88,7 @@ func main() {
 
 	var pushTokens []string
 	var stdinWriter io.Writer
+	var claudeCmd *exec.Cmd // for sending signals
 	onResponse := func(clientIP string, msg map[string]interface{}) {
 		msgType, _ := msg["type"].(string)
 
@@ -95,6 +96,24 @@ func main() {
 			if tok, ok := msg["pushToken"].(string); ok && tok != "" {
 				pushTokens = append(pushTokens, tok)
 				log.Printf("push token registered from %s (%d total)", clientIP, len(pushTokens))
+			}
+			return
+		}
+
+		// Raw stdin text from mobile.
+		if msgType == "stdin" {
+			if text, ok := msg["text"].(string); ok && stdinWriter != nil {
+				stdinWriter.Write([]byte(text))
+				log.Printf("stdin from mobile: %q", text)
+			}
+			return
+		}
+
+		// Interrupt / Ctrl-C.
+		if msgType == "interrupt" {
+			if claudeCmd != nil && claudeCmd.Process != nil {
+				claudeCmd.Process.Signal(os.Interrupt)
+				log.Printf("interrupt sent to claude pid=%d", claudeCmd.Process.Pid)
 			}
 			return
 		}
@@ -150,7 +169,24 @@ func main() {
 	}
 	state := detector.NewState(onAlert)
 
-	t, err := watcher.New(absDir, state.Feed)
+	// Raw event stream: forward every JSONL event to connected clients as type=raw.
+	rawFeed := func(ev watcher.RawEvent) {
+		desc := ""
+		if msg, err := ev.Message.MarshalJSON(); err == nil {
+			desc = string(msg)
+		}
+		a := detector.Alert{
+			SessionID:   ev.SessionID,
+			Type:        ev.Type,
+			Description: desc,
+			Timestamp:   ev.Timestamp,
+		}
+		hub.SendRaw(a)
+	}
+	t, err := watcher.New(absDir, func(ev watcher.RawEvent) {
+		rawFeed(ev)
+		state.Feed(ev)
+	})
 	if err != nil {
 		log.Fatalf("Failed to create watcher: %v", err)
 	}
@@ -182,6 +218,7 @@ func main() {
 		if err := cmd.Start(); err != nil {
 			log.Fatalf("Failed to start claude: %v", err)
 		}
+		claudeCmd = cmd
 		log.Printf("Started claude in %s (pid=%d)", cwd, cmd.Process.Pid)
 
 		defer func() {
@@ -198,6 +235,7 @@ func main() {
 			absDir,
 		)
 		hub.AddListener(webrtcSess.HandleAlert)
+			hub.AddRawListener(webrtcSess.HandleRaw)
 
 		go func() {
 			if err := webrtcSess.Start(onResponse); err != nil {

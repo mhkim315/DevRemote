@@ -1,9 +1,21 @@
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface QuestionItem {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+}
+
 export interface Alert {
   sessionId: string;
   toolUseId: string;
   toolName: string;
   description: string;
   question: string;
+  questions?: QuestionItem[];
   timestamp: string;
 }
 

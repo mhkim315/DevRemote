@@ -17,9 +17,10 @@ interface Props {
   transport: Transport;
   pushToken: string | null;
   onDisconnect: () => void;
+  onFeedToggle: () => void;
 }
 
-export default function SessionScreen({transport, pushToken, onDisconnect}: Props) {
+export default function SessionScreen({transport, pushToken, onDisconnect, onFeedToggle}: Props) {
   const [alerts, setAlerts] = useState<(Alert & {id: string; dismissed?: boolean})[]>([]);
   const [status, setStatus] = useState<TransportStatus>(transport.status);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -122,15 +123,38 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
           <Text style={styles.question}>{item.question}</Text>
         ) : null}
 
+        {/* AskUserQuestion multi-choice options */}
+        {isQuestion && item.questions?.map((qi, qiIdx) => (
+          <View key={qiIdx} style={styles.questionBlock}>
+            {qi.header ? <Text style={styles.questionHeader}>{qi.header}</Text> : null}
+            {qi.options.map((opt, optIdx) => (
+              <TouchableOpacity
+                key={optIdx}
+                style={styles.optionBtn}
+                onPress={() => {
+                  const label = opt.label || opt.description;
+                  setAnswer(item.id, label);
+                  respond(item, true);
+                }}>
+                <Text style={styles.optionLabel}>{opt.label}</Text>
+                {opt.description ? (
+                  <Text style={styles.optionDesc}>{opt.description}</Text>
+                ) : null}
+              </TouchableOpacity>
+            ))}
+          </View>
+        ))}
+
+        {/* Full command/description */}
         {item.description ? (
-          <Text style={styles.description} numberOfLines={3}>
+          <Text style={styles.description}>
             {item.description}
           </Text>
         ) : null}
 
         {!item.dismissed && (
           <>
-            {isQuestion ? (
+            {isQuestion && (!item.questions || item.questions.length === 0) ? (
               <View style={styles.answerRow}>
                 <TextInput
                   style={styles.answerInput}
@@ -153,7 +177,9 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
                   </TouchableOpacity>
                 </View>
               </View>
-            ) : (
+            ) : null}
+
+            {!isQuestion ? (
               <View style={styles.actions}>
                 <TouchableOpacity
                   style={[styles.actionBtn, styles.approveBtn, {flex: 1}]}
@@ -166,7 +192,7 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
                   <Text style={styles.actionBtnText}>거절</Text>
                 </TouchableOpacity>
               </View>
-            )}
+            ) : null}
           </>
         )}
       </View>
@@ -180,7 +206,10 @@ export default function SessionScreen({transport, pushToken, onDisconnect}: Prop
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.topBar}>
           <TouchableOpacity onPress={onDisconnect} style={styles.backBtn}>
-            <Text style={styles.backBtnText}>← 연결 해제</Text>
+            <Text style={styles.backBtnText}>← 해제</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onFeedToggle} style={styles.feedBtn}>
+            <Text style={styles.feedBtnText}>피드</Text>
           </TouchableOpacity>
           <View style={styles.statusRow}>
             <View style={[styles.statusDot, {backgroundColor: statusColor}]} />
@@ -221,8 +250,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12,
     borderBottomWidth: 1, borderBottomColor: '#21262d',
   },
-  backBtn: {paddingVertical: 4, paddingRight: 12},
-  backBtnText: {color: '#58a6ff', fontSize: 15},
+  backBtn: {paddingVertical: 4, paddingRight: 8},
+  backBtnText: {color: '#58a6ff', fontSize: 14},
+  feedBtn: {paddingVertical: 4, paddingHorizontal: 8, borderRadius: 4, borderWidth: 1, borderColor: '#484f58'},
+  feedBtnText: {color: '#8b949e', fontSize: 12},
   statusRow: {flexDirection: 'row', alignItems: 'center'},
   statusDot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
   statusText: {color: '#8b949e', fontSize: 13},
@@ -250,6 +281,14 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   question: {color: '#f0f6fc', fontSize: 15, lineHeight: 22, marginBottom: 8},
+  questionBlock: {marginBottom: 10},
+  questionHeader: {color: '#8b949e', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', marginBottom: 4},
+  optionBtn: {
+    backgroundColor: '#0d1117', borderRadius: 8, padding: 12,
+    marginBottom: 6, borderWidth: 1, borderColor: '#30363d',
+  },
+  optionLabel: {color: '#58a6ff', fontSize: 15, fontWeight: '600'},
+  optionDesc: {color: '#8b949e', fontSize: 12, marginTop: 2},
   description: {
     color: '#8b949e', fontSize: 13, lineHeight: 18,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
