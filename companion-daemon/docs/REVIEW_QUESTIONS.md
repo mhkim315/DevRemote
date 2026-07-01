@@ -56,5 +56,25 @@ Oracle `168.107.59.177:9173`이 단일 장애점이다.
 ## 요약
 
 전체 아키텍처와 방향성은 완벽하다. 
-가장 시급한 건 **실제 폰에서 엔드투엔드 연결 + 승인 테스트 완료**.
-iOS 빌드와 Windows 검증은 그 다음.
+**가장 시급히 해결해야 할 것**: Mac에서 엔드투엔드 검증 (폰 연결 + `devremote wrap`으로 Claude 승인 테스트)
+
+---
+
+## 이전 에이전트 답변 현황 (2026-07-01)
+
+| # | 질문 | 답변 | 상태 |
+|---|---|---|---|
+| 1 | 엔드투엔드 검증 | Windows에서 WebRTC P2P + relay 성공. Mac은 미검증. `--exec` 안 됨 → `devremote wrap` 사용 | ⚠️ Mac 검증 필요 |
+| 2 | iOS 백그라운드 | 답변 없음 | ❌ |
+| 3 | Expo vs EAS | 답변 없음. minani 계정 2/15 빌드 남음 | ❌ |
+| 4 | Windows | ✅ WebRTC P2P + 승인/거절 검증 완료. Ctrl-C는 미검증 | ⚠️ |
+| 5 | 시그널링 SPOF | 답변 없음 | ❌ |
+| 6 | 멀티 AI CLI | 답변 없음 | ❌ |
+| 7 | Play Store | 답변 없음 | ❌ |
+
+### 추가로 발견된 중요 정보
+
+- **`--exec` 모드 버그**: pipe 때문에 Claude가 바로 종료됨. `devremote wrap` (PTY)로 우회해야 함
+- **CONTEXT.md의 "Mac에서 할 일" 섹션에 `--exec`가 아직 기재되어 있음** → 수정 완료
+- **시그널링 서버**: `ssh -i ~/.ssh/oracle.key opc@168.107.59.177`, systemd `devremote-signald.service`
+- **Expo 빌드 계정**: kmwh94315@gmail.com (2/15 사용)

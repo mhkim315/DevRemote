@@ -87,12 +87,33 @@ Mobile 승인 → WebRTC Data Channel → daemon onResponse → stdinWriter → 
 - ✅ BUGREPORT.md — 7개 버그 기록 + 해결 완료
 - ✅ JSONL 접근법 — 화면 캡처보다 훨씬 우월한 접근
 
-### 가장 시급한 질문 (빠른 답변 필요)
+### 이전 에이전트 답변 요약 (2026-07-01 업데이트)
 
-1. APK 실제 폰에서 엔드투엔드 테스트 완료했는가? (연결→승인→stdin relay)
-2. 버그 수정 후 재검증 완료했는가?
-3. iOS WebRTC 백그라운드 유지 가능한가?
-4. 시그널링 서버 다운 시 이미 연결된 세션 유지되는가?
-5. Windows 빌드/테스트 해봤는가?
+| 질문 | 답변 |
+|---|---|
+| Windows 빌드/테스트? | ✅ Windows에서 WebRTC P2P 원격 연결 성공, 승인/거절 relay 검증 완료 |
+| APK 폰 테스트? | ⚠️ Windows에서는 성공. **Mac에서는 아직 검증 안 됨** |
+| `--exec` 모드? | ❌ pipe 때문에 Claude가 바로 죽음. **`devremote wrap` (PTY)로 해야 함** |
+| 피드/채팅? | ❌ 미검증 (raw 피드 빈 화면, 채팅 stdin 미전달) |
+| Expo 빌드 계정? | `minani`(kmwh94315@gmail.com) 2/15 사용. Mac에서 새 계정 가능 |
+
+### 여전히 답변 없는 질문
+
+1. iOS WebRTC 백그라운드 유지 가능한가? (VISION.md "미검증" 상태)
+2. 시그널링 서버(Oracle) 다운 시 이미 연결된 WebRTC 세션은 유지되는가?
+3. Expo Go vs EAS Build 결정했는가?
+4. BUG-001~007 수정 후 재검증 완료했는가?
+5. Play Store 배포 준비 상태? (개인정보처리방침 등)
+
+### 수정 필요: Mac에서 할 일
+
+`--exec`가 작동하지 않으므로 아래로 교체:
+```bash
+# --exec 대신 devremote wrap 사용
+go build -o devremote ./cmd/devremote/
+./devremote --project ~/.claude/projects/... --signaling http://168.107.59.177:9173
+# 다른 터미널에서:
+devremote wrap claude
+```
 
 전체 질문 목록: `docs/REVIEW_QUESTIONS.md`
