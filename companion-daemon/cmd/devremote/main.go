@@ -15,6 +15,7 @@ import (
 	"devremote/companion-daemon/internal/server"
 	"devremote/companion-daemon/internal/watcher"
 	devwebrtc "devremote/companion-daemon/internal/webrtc"
+	"devremote/companion-daemon/internal/wrap"
 )
 
 // printHookScript outputs shell script that intercepts AI CLI commands.
@@ -25,12 +26,11 @@ func printHookScript() {
 #   eval "$(devremote hook)"
 
 _devremote_wrap() {
-  # Notify daemon, then run the original command.
-  # Daemon auto-discovers PID from JSONL directory.
-  command "$@"
+  # Run the command inside DevRemote's PTY proxy for mobile control.
+  devremote wrap "$@"
 }
 
-# Intercept common AI CLI tools.
+# Intercept common AI CLI tools — transparent PTY proxy.
 alias claude='_devremote_wrap claude'
 alias codex='_devremote_wrap codex'
 alias gemini='_devremote_wrap gemini'
@@ -46,6 +46,20 @@ func main() {
 	// Subcommand: devremote hook
 	if len(os.Args) > 1 && os.Args[1] == "hook" {
 		printHookScript()
+		return
+	}
+
+	// Subcommand: devremote wrap <command> [args...]
+	if len(os.Args) > 1 && os.Args[1] == "wrap" {
+		if len(os.Args) < 3 {
+			fmt.Fprintf(os.Stderr, "Usage: devremote wrap <command> [args...]\n")
+			os.Exit(1)
+		}
+		name := os.Args[2]
+		args := os.Args[3:]
+		if err := wrap.Command(".", name, args...); err != nil {
+			log.Fatalf("wrap: %v", err)
+		}
 		return
 	}
 
