@@ -43,6 +43,7 @@ export class WebSocketTransport implements Transport {
         clearTimeout(timeout);
         this.status = 'disconnected';
         this.statusHandler?.(this.status);
+        reject(new Error('WebSocket error'));
       };
 
       socket.onclose = () => {
