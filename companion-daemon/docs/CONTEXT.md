@@ -1,6 +1,6 @@
 # DevRemote Session Context — 2026-07-01
 
-> Mac에서 이어서 작업할 때 참고. 마지막 커밋: `67ef8aa`
+> Mac에서 이어서 작업할 때 참고. 마지막 커밋: `284ba6d`
 
 ## 현재 상태
 
@@ -23,6 +23,30 @@
 2. **피드 빈 화면**: raw 이벤트 포맷만 개선, 실제 전달은 검증 안 됨
 3. **피드 채팅 미전달**: data channel sendMessage 경로 확인 필요
 4. **Windows Ctrl-C**: GenerateConsoleCtrlEvent 구현했으나 미검증
+
+## 새 에이전트를 위한 인수인계
+
+> Windows에서 Mac으로 전환. 아래 내용을 먼저 확인하세요.
+
+### 자주 묻는 질문
+
+**Q: 프로젝트 구조가 어떻게 되나요?**
+A: `companion-daemon/` (Go 데몬) + `mobile/` (React Native Expo). 두 개가 한 쌍입니다. `companion-daemon/docs/PROJECT.md` 에 전체 구조가 문서화되어 있습니다.
+
+**Q: 어떤 테스트가 진행되었나요?**
+A: Windows에서 WebRTC P2P 원격 연결 성공. 승인/거절 relay 검증 완료. LAN WebSocket 부분 성공. 피드(raw feed)와 채팅(stdin)은 미검증.
+
+**Q: 현재 어떤 버그가 있나요?**
+A: BUGREPORT.md 참고. 주요 이슈: signald 재연결, 피드 빈 화면, 피드 채팅 미전달, --exec 모드에서 Claude 파이프 종료.
+
+**Q: Oracle 서버 접속 정보는?**
+A: `ssh -i ~/.ssh/oracle.key opc@168.107.59.177`, signald는 `/usr/local/bin/signald`, systemd `devremote-signald.service`
+
+**Q: Expo 빌드는 어디서 하나요?**
+A: Windows `nanimi` 계정 15회 소진. `minani` 계정(kmwh94315@gmail.com) 2/15 사용. Mac에서 새 계정으로 가능.
+
+**Q: 실제 Claude 승인 테스트는 어떻게 하나요?**
+A: `devremote wrap` (PTY 모드)로 해야 합니다. `--exec` 모드는 pipe 때문에 Claude가 바로 죽습니다.
 
 ## Mac에서 할 일
 
