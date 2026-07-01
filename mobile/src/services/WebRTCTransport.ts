@@ -4,10 +4,8 @@ import {
   RTCIceCandidate,
   RTCDataChannelEvent,
 } from 'react-native-webrtc';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {Transport, TransportStatus, Alert} from './types';
 
-const PEER_KEY_STORAGE = '@devremote/peer_key';
 const POLL_MS = 500;
 
 interface SignalingMsg {
@@ -49,10 +47,6 @@ export class WebRTCTransport implements Transport {
 
     if (joinData.status !== 'ok') {
       throw new Error(joinData.message || 'Join failed');
-    }
-
-    if (joinData.key && !peerKey) {
-      await AsyncStorage.setItem(PEER_KEY_STORAGE, joinData.key);
     }
 
     // 2. Create peer connection.
