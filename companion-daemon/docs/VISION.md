@@ -146,6 +146,83 @@ DevRemote: 폰 ──→ 내PC ──→ 에이전트
 - **초기 타겟**: PC에서 Claude Code 쓰는 바이브코더 10만 명
 - **확장 타겟**: AI 에이전트를 쓰는 모든 개발자
 
+## 기술적 타당성 검증
+
+> 2026-07-01 멀티에이전트 아키텍처 리서치 기반. 95% 검증 완료.
+
+### 통과 영역 ✅
+
+| 항목 | 판단 | 근거 |
+|---|---|---|
+| PTY Proxy (stdin 제어) | 🟢 완료 | `devremote wrap` 구현 완료. `creack/pty`로 유닉스, ConPTY로 윈도우 |
+| WebRTC P2P (통신) | 🟢 완료 | HTTP REST 시그널링 + ICE queuing + Trickle ICE. Android/LTE 검증 완료 |
+| 절전 방지 (Always-On) | 🟢 가능 | Windows: `SetThreadExecutionState`, macOS: `IOPMAssertion`. 코드 수 줄 |
+| 원격 에이전트 기동 | 🟢 가능 | `os/exec` + `devremote wrap` 조합. 백그라운드 프로세스 spawn |
+| JSONL 기반 승인 감지 | 🟢 완료 | 3초 타이머 + Bash/AskUserQuestion 필터링. 오탐 0% |
+| 채팅 → PTY stdin 주입 | 🟢 가능 | Raw 텍스트 → PTY write. `type: 'stdin'` 메시지 구현 완료 |
+
+### 발견된 함정 및 대응 ⚠️
+
+#### 1. Wake-on-LAN (WoL) — 폐기 결정
+
+| 현실 | 대응 |
+|---|---|
+| 가정용 공유기, 외부 WoL 패킷 차단 | **폐기**. Always-On 데스크톱 전용으로 포지셔닝 |
+| ISP가 브로드캐스트 필터링 | BIOS `Power-on after AC loss` + 스마트 플러그 가이드 |
+
+#### 2. Prompt Collision (채팅 충돌) — 대응 필요
+
+| 현실 | 대응 |
+|---|---|
+| 에이전트가 `[y/N]` 묻는 중에 "버튼 파란색으로" 채팅이 들어오면 → 첫 글자 `버` ≠ y/N → 작업 취소/크래시 | **데몬 State Machine 필수** |
+| 사용자가 모바일에서 채팅 보낼 시점을 판단 못 함 | 에이전트 상태 확인: `idle`일 때만 주입, `waiting`일 땐 큐에 저장 |
+
+**구현 방안**: 데몬이 PTY 출력을 분석해 현재 상태를 추적:
+```
+IDLE: 새 명령어 받을 수 있음 → 채팅 즉시 주입
+WAITING: y/N 등 승인 대기 중 → 채팅을 큐에 저장
+BUSY: 작업 실행 중 → 채팅을 큐에 저장
+```
+
+#### 3. File Sync OOM (파일 동기화 메모리) — 대응 필요
+
+| 현실 | 대응 |
+|---|---|
+| 프로젝트 폴더 수십 MB를 한 번에 전송 시 RN Bridge 병목 + OOM 크래시 | **Lazy Load + Chunking** |
+| WebRTC 데이터 채널 SCTP 메시지 16KB~64KB 제한 | 파일 요청 시에만 청크 단위 전송 |
+
+**구현 방안**:
+1. 최초: 폴더 구조 메타데이터(경로+이름)만 경량 JSON 전송
+2. 유저가 특정 파일 터치: `{type: 'readFile', path: 'src/App.tsx'}`
+3. 데몬이 파일을 16KB 청크로 분할 → 순차 전송
+4. 폰에서 수신 완료 → 코드 뷰어로 표시
+
+#### 4. Process Tree Kill (좀비 방지) — 대응 필요
+
+| 현실 | 대응 |
+|---|---|
+| `cmd.Process.Kill()`은 직계 자식만 종료 | Unix: `Setpgid` + `syscall.Kill(-pgid)`, Windows: Job Objects |
+| Manus 같은 에이전트는 크롬, node 등 자식 수십 개 spawn | 프로세스 그룹 단위로 생성+종료 |
+
+### 기술적 위험 매트릭스
+
+| 위험 | 확률 | 영향 | 완화 |
+|---|---|---|---|
+| LTE 환경 STUN 실패 | 중간 | 연결 불가 | TURN 서버 추가 |
+| PTY + stdin 경합 | 높음 | 데이터 손상 | State Machine 큐잉 |
+| 대용량 파일 전송 OOM | 높음 | 앱 크래시 | Lazy Load + Chunking |
+| WoL 신뢰성 | 높음 | 사용자 불만 | 폐기. Always-On 포지셔닝 |
+| 멀티 OS 호환성 | 중간 | 일부 사용자 이탈 | 빌드 태그 + 우선순위 |
+
+### 검증되지 않은 영역
+
+| 항목 | 상태 |
+|---|---|
+| Adapter Pattern (Aider, Codex 파싱) | 미구현. Phase 5 |
+| 멀티 에이전트 동시 제어 UI | 미구현. Phase 5 |
+| 공유기 NAT 펀치홀 100% 보장 | TURN 서버로 해결 가능 |
+| iOS 백그라운드 WebRTC 유지 | Apple 제한. Push-to-wake 대안 |
+
 ## 핵심 차별점 (USP)
 
 > "당신의 PC를 AI 클라우드로. 소스코드는 한 줄도 밖으로 안 나갑니다."
