@@ -99,6 +99,11 @@ func (s *Session) Start(onResponse func(clientIP string, msg map[string]interfac
 		log.Printf("webrtc: data channel opened")
 		go s.alertWriter()
 	})
+	// Fix: if channel is already open, start alertWriter immediately.
+	if dc.ReadyState() == webrtc.DataChannelStateOpen {
+		log.Printf("webrtc: data channel already open, starting alertWriter")
+		go s.alertWriter()
+	}
 
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m map[string]interface{}

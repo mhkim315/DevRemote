@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState, useMemo} from 'react';
 import {StatusBar} from 'expo-status-bar';
+import {View} from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import HomeScreen from './src/screens/HomeScreen';
@@ -58,19 +59,18 @@ export default function App() {
     );
   }
 
-  if (isFeed) {
-    return (
-      <SafeAreaProvider>
-        <StatusBar style="light" />
-        <FeedScreen transport={transport} pushToken={pushToken.current} onBack={() => setIsFeed(false)} />
-      </SafeAreaProvider>
-    );
-  }
-
+  // Always mount both screens — never unmount (keeps listeners + transport alive).
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <SessionScreen transport={transport} pushToken={pushToken.current} onDisconnect={() => setConnection(null)} onFeedToggle={() => setIsFeed(true)} />
+      <View style={{flex: 1}}>
+        <View style={{flex: 1, display: isFeed ? 'none' : 'flex'}}>
+          <SessionScreen transport={transport} pushToken={pushToken.current} onDisconnect={() => setConnection(null)} onFeedToggle={() => setIsFeed(true)} />
+        </View>
+        <View style={{flex: 1, display: isFeed ? 'flex' : 'none'}}>
+          <FeedScreen transport={transport} pushToken={pushToken.current} onBack={() => setIsFeed(false)} />
+        </View>
+      </View>
     </SafeAreaProvider>
   );
 }

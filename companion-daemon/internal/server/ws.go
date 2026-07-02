@@ -124,9 +124,63 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// handleApproval receives approval prompts from wrap PTY stdout scanner.
+func (h *Hub) handleApproval(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		ToolName    string `json:"toolName"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+	log.Printf("approval: prompt from wrap: %q", req.Description)
+
+	// Forward directly to all mobile clients.
+	h.HandleAlert(detector.Alert{
+		SessionID:   "wrap",
+		ToolUseID:   "",
+		ToolName:    req.ToolName,
+		Description: req.Description,
+	})
+	w.WriteHeader(200)
+}
+
+// handlePTY receives raw PTY output from wrap and broadcasts to mobile clients.
+func (h *Hub) handlePTY(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+	if req.Text == "" {
+		w.WriteHeader(200)
+		return
+	}
+	log.Printf("pty: %d chars → %d clients", len(req.Text), h.ActiveClientCount())
+	h.SendRaw(detector.Alert{
+		Type:        "pty",
+		Description: req.Text,
+	})
+	w.WriteHeader(200)
+}
+
 // Start begins listening on the given address (e.g. ":9171").
 func (h *Hub) Start(addr string) error {
 	http.Handle("/ws", h)
+	http.HandleFunc("/approval", h.handleApproval)
+	http.HandleFunc("/pty", h.handlePTY)
 	log.Printf("WebSocket server listening on %s", addr)
 	return http.ListenAndServe(addr, nil)
 }

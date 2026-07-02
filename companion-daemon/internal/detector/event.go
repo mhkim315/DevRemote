@@ -56,6 +56,18 @@ func NewState(onAlert func(Alert)) *State {
 
 const approvalTimeout = 3 * time.Second
 
+// needsApproval returns true for tools that require user approval.
+// Read-only / auto-approved tools return false and are silently skipped.
+func needsApproval(toolName string) bool {
+	switch toolName {
+	case "Bash", "Write", "Edit", "NotebookEdit",
+		"AskUserQuestion", "Skill", "WebFetch":
+		return true
+	default:
+		return false
+	}
+}
+
 // Feed processes a raw event from the watcher.
 func (s *State) Feed(ev watcher.RawEvent) {
 	s.mu.Lock()
@@ -124,30 +136,6 @@ func (s *State) Feed(ev watcher.RawEvent) {
 		return
 	}
 
-	// Apply 3s timer to ALL tool_use events (not just Bash).
-	// Auto-approved tools will have their timers cancelled by the
-	// tool_result arriving within 3 seconds. Only tools that actually
-	// wait for user approval will fire the alert.
-	desc := getToolDescription(tu)
-	pu := &PendingToolUse{
-		ToolUse: *tu,
-		Event:   ev,
-	}
-	pu.Timer = time.AfterFunc(approvalTimeout, func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if _, ok := s.pending[tu.ID]; ok {
-			delete(s.pending, tu.ID)
-			s.OnAlert(Alert{
-				SessionID:   ev.SessionID,
-				ToolUseID:   tu.ID,
-				ToolName:    tu.Name,
-				Description: desc,
-				Timestamp:   ev.Timestamp,
-			})
-		}
-	})
-	s.pending[tu.ID] = pu
 }
 
 func getToolDescription(tu *watcher.ToolUse) string {

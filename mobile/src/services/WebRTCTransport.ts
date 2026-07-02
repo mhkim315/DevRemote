@@ -16,8 +16,9 @@ interface SignalingMsg {
 export class WebRTCTransport implements Transport {
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
-  private alertHandler: ((alert: Alert) => void) | null = null;
-  private statusHandler: ((s: TransportStatus) => void) | null = null;
+  // Multi-listener pattern: Set-based so FeedScreen + SessionScreen coexist.
+  private alertHandlers = new Set<(alert: Alert) => void>();
+  private statusHandlers = new Set<(s: TransportStatus) => void>();
   private lastSeq = 0;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
@@ -33,11 +34,10 @@ export class WebRTCTransport implements Transport {
 
   async connect(): Promise<void> {
     this.status = 'connecting';
-    this.statusHandler?.(this.status);
+    this.statusHandlers.forEach(h => h(this.status));
     this.stopped = false;
 
-    // 1. Join session via HTTP — always use code, not stored key.
-    // The code is the unique session identifier. Daemon creates the session.
+    // 1. Join session via HTTP.
     console.log('[DevRemote] joining:', this.signalingUrl);
     const joinResp = await fetch(`${this.signalingUrl}/join`, {
       method: 'POST',
@@ -58,27 +58,35 @@ export class WebRTCTransport implements Transport {
 
     this.pc.ondatachannel = (event: RTCDataChannelEvent) => {
       this.dc = event.channel;
-      this.dc.onmessage = e => {
-        try {
-          const alert: Alert = JSON.parse(typeof e.data === 'string' ? e.data : '');
-          this.alertHandler?.(alert);
-        } catch {
-          // skip
-        }
-      };
-      this.dc.onopen = () => {
+
+      const handleOpen = () => {
         this.status = 'connected';
-        this.statusHandler?.(this.status);
-        // Flush queued messages now that the channel is open.
+        this.statusHandlers.forEach(h => h(this.status));
+        // Flush queued messages.
         for (const msg of this.messageQueue) {
           this.dc?.send(JSON.stringify(msg));
         }
         this.messageQueue = [];
       };
+
+      this.dc.onmessage = e => {
+        try {
+          const alert: Alert = JSON.parse(typeof e.data === 'string' ? e.data : '');
+          this.alertHandlers.forEach(h => h(alert));
+        } catch {
+          // skip
+        }
+      };
+      this.dc.onopen = handleOpen;
       this.dc.onclose = () => {
         this.status = 'disconnected';
-        this.statusHandler?.(this.status);
+        this.statusHandlers.forEach(h => h(this.status));
       };
+
+      // Fix: if channel is already open, trigger open handler immediately.
+      if (this.dc.readyState === 'open') {
+        handleOpen();
+      }
     };
 
     this.pc.onicecandidate = event => {
@@ -108,7 +116,6 @@ export class WebRTCTransport implements Transport {
       if (msgs.length > 0) {
         this.lastSeq = data.since || this.lastSeq;
       }
-      // Process SDP first (required before ICE candidates).
       const sorted = [...msgs].sort((a, b) => {
         if (a.msg.type === 'sdp') return -1;
         if (b.msg.type === 'sdp') return 1;
@@ -132,7 +139,6 @@ export class WebRTCTransport implements Transport {
           sdp: m.sdp,
         });
         await this.pc?.setRemoteDescription(sdp);
-        // Flush queued ICE candidates now that remote description is set.
         for (const c of this.queuedIce) {
           try { await this.pc?.addIceCandidate(c); } catch {}
         }
@@ -151,7 +157,6 @@ export class WebRTCTransport implements Transport {
             sdpMid: m.sdpMid,
             sdpMLineIndex: m.sdpMLineIndex,
           });
-          // Queue ICE if remote description isn't set yet.
           if (!this.pc?.remoteDescription) {
             this.queuedIce.push(c);
           } else {
@@ -173,7 +178,7 @@ export class WebRTCTransport implements Transport {
         body: JSON.stringify({code: this.sessionCode, role: 'mobile', msg}),
       });
     } catch {
-      // ignore send errors
+      // ignore
     }
   }
 
@@ -188,7 +193,7 @@ export class WebRTCTransport implements Transport {
     this.dc = null;
     this.pc = null;
     this.status = 'disconnected';
-    this.statusHandler?.(this.status);
+    this.statusHandlers.forEach(h => h(this.status));
     fetch(`${this.signalingUrl}/leave`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -196,19 +201,21 @@ export class WebRTCTransport implements Transport {
     }).catch(() => {});
   }
 
-  onStatusChange(handler: (status: TransportStatus) => void): void {
-    this.statusHandler = handler;
+  // Multi-listener: returns cleanup function.
+  onStatusChange(handler: (status: TransportStatus) => void): () => void {
+    this.statusHandlers.add(handler);
+    return () => { this.statusHandlers.delete(handler); };
   }
 
-  onAlert(handler: (alert: Alert) => void): void {
-    this.alertHandler = handler;
+  onAlert(handler: (alert: Alert) => void): () => void {
+    this.alertHandlers.add(handler);
+    return () => { this.alertHandlers.delete(handler); };
   }
 
   sendMessage(payload: Record<string, unknown>): void {
     if (this.dc?.readyState === 'open') {
       this.dc.send(JSON.stringify(payload));
     } else {
-      // Queue for when the channel opens.
       this.messageQueue.push(payload);
     }
   }

@@ -181,9 +181,9 @@ func main() {
 			}
 		} else {
 			if approved {
-				input = "y\n"
+				input = "1\n" // Claude numbered menu: first option = Yes
 			} else {
-				input = "n\n"
+				input = "3\n" // Claude numbered menu: last option = No
 			}
 		}
 		log.Printf("relaying to claude stdin: %q", input)

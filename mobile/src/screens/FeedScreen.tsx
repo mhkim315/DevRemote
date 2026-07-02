@@ -26,11 +26,11 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
   transportRef.current = transport;
 
   useEffect(() => {
-    transport.onStatusChange(setStatus);
-    transport.onAlert((a: Alert) => {
-      const isRaw = a.type === 'raw';
+    const unsubStatus = transport.onStatusChange(setStatus);
+    const unsubAlert = transport.onAlert((a: Alert) => {
+      const isRaw = a.type === 'raw' || a.type === 'pty';
       const label = isRaw
-        ? `[${a.type}] ${a.description?.substring(0, 80) || '···'}`
+        ? a.description?.substring(0, 200) || '···'
         : `[${a.toolName || a.type || 'event'}] ${a.description || a.question || ''}`;
       setItems(prev => [{
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -39,8 +39,8 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
         text: label.substring(0, 200),
       }, ...prev.slice(0, 99)]);
     });
-    // Don't reconnect — transport is already active from SessionScreen.
     if (pushToken) transport.sendMessage({type: 'register', pushToken});
+    return () => { unsubStatus(); unsubAlert(); };
   }, [transport, pushToken]);
 
   const sendStdin = useCallback(() => {

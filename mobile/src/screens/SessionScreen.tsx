@@ -30,8 +30,10 @@ export default function SessionScreen({transport, pushToken, onDisconnect, onFee
   transportRef.current = transport;
 
   const connect = useCallback(() => {
-    transport.onStatusChange(setStatus);
-    transport.onAlert((a: Alert) => {
+    const unsubStatus = transport.onStatusChange(setStatus);
+    const unsubAlert = transport.onAlert((a: Alert) => {
+      // Filter out PTY mirroring events — they belong to FeedScreen only.
+      if (a.type === 'raw' || a.type === 'pty') return;
       setAlerts(prev => [
         {id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...a},
         ...prev.slice(0, 19),
@@ -45,10 +47,12 @@ export default function SessionScreen({transport, pushToken, onDisconnect, onFee
     }).catch((err: any) => {
       setErrorMsg(err?.message || String(err));
     });
+
+    return { unsubStatus, unsubAlert };
   }, [transport, pushToken]);
 
   useEffect(() => {
-    connect();
+    const { unsubStatus, unsubAlert } = connect();
 
     const sub = AppState.addEventListener('change', state => {
       if (state === 'active' && transportRef.current.status === 'disconnected') {
@@ -58,7 +62,8 @@ export default function SessionScreen({transport, pushToken, onDisconnect, onFee
 
     return () => {
       sub.remove();
-      transportRef.current.disconnect();
+      unsubStatus();
+      unsubAlert();
     };
   }, [connect]);
 
