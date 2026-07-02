@@ -56,13 +56,45 @@ devremote/
 | `/debug/cmd` | POST, GET | Command queue (AI가 명령어 주입 시 사용) |
 | `/push/register` | GET | 모바일 앱에서 발급받은 Expo Push Token 등록 |
 
-## 🚀 다음 에이전트가 할 일 (Phase 4 우선순위)
+## 📱 앱 테스트 및 빌드 방법 (중요)
 
-1. **Claude Shell Hook 고도화**
-   - 현재 데몬에서 `[Approval Required]` 문자열만 감지하고 있음.
-   - `devremote hook` 명령어를 만들어 `.zshrc`에 등록하고, Aider/Claude 등 실제 AI 에이전트의 프롬프트 입력을 가로채서 더 정교하게 푸시를 쏘는 기능 구현 필요.
-2. **Dashboard 동적 데이터 연동**
-   - 현재 `DashboardScreen.tsx`의 에이전트 목록이 하드코딩되어 있음.
-   - 데몬이 실행 중인 `tmux` 세션들이나 AI 프로세스들을 스캔해서 앱의 대시보드 리스트에 동적으로 띄우는 기능.
-3. **앱 배포 파이프라인 (EAS Build)**
-   - iOS/Android 스토어 정식 배포 준비.
+### 1. 개발 모드 (에뮬레이터)
+```bash
+cd mobile
+npx expo start
+```
+- Android 에뮬레이터를 띄우고 `a`를 눌러 실행합니다.
+- `FeedScreen.tsx`에는 `assets/terminal.html`이 로드되어 있으며, 데몬의 `https://term.fullcount.kr/term/ws`로 자동 연결됩니다.
+
+### 2. APK 빌드 방법 (실제 폰 테스트용)
+```bash
+cd mobile/android
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
+ANDROID_HOME="$HOME/Library/Android/sdk" \
+./gradlew assembleRelease
+# 빌드된 APK 경로: mobile/android/app/build/outputs/apk/release/app-release.apk
+```
+
+## 🕵️‍♂️ Emulator Spy (AI 자동화 테스트 도구)
+
+AI 에이전트는 폰 화면을 직접 볼 수 없으므로, **Spy 시스템**이 내장되어 있습니다. `FeedScreen` 안의 `terminal.html`이 2초마다 터미널 화면의 텍스트를 긁어서 데몬(`/debug/dump`)으로 보냅니다.
+
+```bash
+# 1. 폰(에뮬레이터) 화면 글자 읽기
+grep 'PHONE:' /tmp/gz.log | tail -n 5
+
+# 2. 폰의 터미널 뷰로 명령어 원격 주입 (자동 타이핑)
+curl -X POST http://127.0.0.1:9171/debug/cmd -d 'echo hello'
+```
+*주의:* 위 명령을 실행하면 AI가 타이핑한 것처럼 폰 화면의 터미널에 `echo hello`가 실행됩니다.
+
+## 🚀 다음 에이전트가 즉시 해야 할 일 (Phase 4 핵심 과제)
+
+1. **🚨 PTY 아키텍처 대통합 (가장 시급함)**
+   - 현재 `pty.go`의 `HandleWS` 함수는 접속할 때마다 새로운 `bash`를 띄우는 치명적 버그(?)가 남아 있습니다. (과거 WebRTC 시절의 잔재)
+   - **조치:** `HandleWS`가 새 bash를 띄우지 말고, `tmux new-session -A -s devremote`에 붙도록(`attach`) 코드를 뜯어고쳐야 완벽한 세션 영속성이 보장됩니다.
+2. **모바일 네이티브 모달 팝업 띄우기**
+   - 현재 `OnApproval`이 트리거되면 데몬이 Push를 쏘기만 합니다.
+   - **조치:** 모바일 앱(`FeedScreen.tsx`)에 상태 오버레이 UI를 만들어서, 푸시 알림이 오거나 `[Approval Required]` 상태일 때 화면 아래에 **[Yes / No]** 모달 팝업을 예쁘게 띄우고 터치 시 `y\n`을 전송하도록 만들어야 합니다.
+3. **Claude Shell Hook 고도화**
+   - 현재 단순 문자열 매칭(`Do you want` 등)만 사용 중이므로, 더 정교한 CLI 래퍼(Wrapper) 스크립트 개발이 필요합니다.
