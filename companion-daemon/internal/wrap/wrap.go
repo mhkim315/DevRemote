@@ -10,9 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -90,8 +88,8 @@ func Command(dir, name string, args ...string) error {
 
 	resizeLoop(tty)
 
-	// stdin → PTY (with local echo).
-	go io.Copy(tty, io.TeeReader(os.Stdin, os.Stdout))
+	// stdin → PTY (PTY naturally echoes to stdout).
+	go io.Copy(tty, os.Stdin)
 
 	// PTY → stdout + daemon streaming (raw, no ANSI cleaning).
 	go streamPTY(tty, os.Stdout, 9171)
@@ -99,28 +97,16 @@ func Command(dir, name string, args ...string) error {
 	return cmd.Wait()
 }
 
-var approvalPattern = regexp.MustCompile(`(?i)(do you want|proceed\?|\(y/n\)|1\.\s*Yes.*\d+\.\s*No)`)
-
 func streamPTY(src io.Reader, dst io.Writer, daemonPort int) {
 	buf := make([]byte, 4096)
 	var batch []byte
 	var lastFlush = time.Now()
-	var lastApproval time.Time
 
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
-		text := string(batch)
-		post(daemonPort, "pty", text)
-
-		// Detect approval prompts (cooldown: 5s).
-		if time.Since(lastApproval) > 5*time.Second && approvalPattern.MatchString(text) {
-			desc := extractApproval(text)
-			log.Printf("wrap: approval detected: %q", desc)
-			post(daemonPort, "approval", desc)
-			lastApproval = time.Now()
-		}
+		post(daemonPort, "pty", string(batch))
 		batch = nil
 	}
 
@@ -142,16 +128,6 @@ func streamPTY(src io.Reader, dst io.Writer, daemonPort int) {
 			return
 		}
 	}
-}
-
-func extractApproval(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if approvalPattern.MatchString(trimmed) {
-			return trimmed
-		}
-	}
-	return "Claude 승인이 필요합니다"
 }
 
 func post(daemonPort int, endpoint, text string) {
