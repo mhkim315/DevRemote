@@ -1,107 +1,100 @@
-# DevRemote Ground Zero — 인수인계 (2026-07-03)
+# DevRemote 인수인계 (2026-07-03 오전)
 
 ## 현재 상태
 
-**터미널 미러링 작동 확인 완료!**
+**WebSocket 터미널: 완벽 작동** ✅
+- Daemon `:9171` → `/term/` (xterm.js) + `/term/ws` (PTY bash)
+- Phone WebView → Daemon URL → WebSocket → 터미널 렌더링
+- Spy: `/debug/dump` (화면 캡처) + `/debug/cmd` (명령어 주입)
+- FeedScreen: WebView + TextInput + `injectJavaScript` → `window.ws.send()`
 
-```
-Phone WebView → Cloudflare HTTPS → Daemon (:9171) → WebSocket → PTY bash
-```
+## 아키텍처 결정: WebSocket + Cloudflare 터널 (WebRTC 폐기)
 
-- `echo` 명령어: 폰에서 실행, 화면에 출력 확인 ✅
-- Spy: AI가 폰 화면을 실시간 모니터링 가능 ✅
-- Command Injection: AI가 `curl /debug/cmd -d 'ls'`로 명령 주입 가능 ✅
+**이유**: 
+- Local signaling = 같은 네트워크에서만 WebRTC 작동 (터널 불필요면 WebSocket으로 충분)
+- WebRTC 디버깅 3일 실패 vs WebSocket 2일 검증 완료
+- Cloudflare 터널로 원격 접속 해결 (무료, `./cloudflared tunnel --url http://localhost:9171`)
 
 ## 브랜치: `ground-zero`
 
-GitHub: `https://github.com/mhkim315/DevRemote`, branch `ground-zero`
+## 실행
+
+```bash
+# 1. Daemon
+cd companion-daemon
+go build -o devremote ./cmd/devremote/
+./devremote
+# → http://localhost:9171/term/
+
+# 2. Cloudflare tunnel (원격용)
+./cloudflared tunnel --url http://localhost:9171
+# → https://xxxx.trycloudflare.com URL
+
+# 3. APK 빌드
+cd mobile/android
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
+ANDROID_HOME="$HOME/Library/Android/sdk" \
+./gradlew assembleRelease
+# FeedScreen.tsx의 TERM_URL을 Wi-Fi IP 또는 Cloudflare URL로 변경 후 빌드
+```
 
 ## 파일 구조
 
 ```
 devremote/
 ├── companion-daemon/
-│   ├── cmd/devremote/main.go    (8줄 — HTTP 서버)
-│   ├── internal/term/pty.go     (90줄 — WS PTY + spy + cmd injection)
-│   ├── go.mod, go.sum
-│   └── devremote                (빌드된 바이너리)
+│   ├── cmd/devremote/main.go       (60줄, HTTP + WebRTC + PTY)
+│   ├── internal/term/pty.go        (HandleWS + HandleHTML + HandleDump/Cmd + StartPTY)
+│   ├── internal/signal/local.go    (local signaling for WebRTC - 미사용)
+│   ├── internal/webrtc/session.go  (WebRTC session - 미사용)
+│   ├── internal/push/expo.go       (Expo push notifications - 미사용)
+│   └── internal/watcher/           (JSONL watcher - 미사용)
 ├── mobile/
-│   ├── App.tsx                  (10줄 — FeedScreen 직통)
-│   ├── src/screens/FeedScreen.tsx (40줄 — WebView + TextInput)
-│   ├── assets/terminal.html     (로컬 xterm.js)
-│   └── android/                 (Expo prebuild + release APK)
-├── cloudflared                  (Cloudflare tunnel 바이너리)
-└── HANDOVER.md                  (이 문서)
+│   ├── App.tsx                     (Dashboard ↔ FeedScreen)
+│   ├── src/screens/FeedScreen.tsx  (WebView → daemon URL, TextInput)
+│   ├── src/screens/terminalHtml.ts (WebRTC inline HTML - 미사용)
+│   ├── src/screens/dashboard/DashboardScreen.tsx
+│   └── assets/terminal.html
+├── cloudflared                     (Cloudflare tunnel binary)
+└── HANDOVER.md
 ```
 
-## 실행 방법
+## API
 
-### 1. Daemon 시작
-```bash
-cd companion-daemon
-go build -o devremote ./cmd/devremote/
-./devremote
-# → http://localhost:9171/term/ 에서 xterm.js 터미널
-```
+| Endpoint | Method | 설명 |
+|---|---|---|
+| `/term/` | GET | xterm.js HTML + spy (WebSocket auto-connect) |
+| `/term/ws` | WebSocket | PTY bash |
+| `/debug/dump` | POST | Phone screen dump 수신 |
+| `/debug/cmd` | POST | Command queue (AI 주입) |
+| `/debug/cmd` | GET | Poll pending command (spy가 2초마다 호출) |
+| `/join`, `/poll`, `/send` | HTTP | Local signaling (WebRTC용, 미사용) |
 
-### 2. Cloudflare 터널 (원격 접속용)
-```bash
-./cloudflared tunnel --url http://localhost:9171
-# → https://xxxx.trycloudflare.com URL 출력
-```
+## Spy 활용
 
-### 3. APK 빌드
-```bash
-cd mobile/android
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
-ANDROID_HOME="$HOME/Library/Android/sdk" \
-./gradlew assembleRelease
-# → app/build/outputs/apk/release/app-release.apk
-```
-
-FeedScreen.tsx의 `TERM_URL`을 Cloudflare URL로 변경 후 빌드.
-
-### 4. Spy 모니터링
 ```bash
 # 폰 화면 보기
 grep 'PHONE:' /tmp/gz.log | tail -3
 
-# 명령 주입
+# 명령어 주입 (spy가 2초 내 polling)
 curl -X POST http://127.0.0.1:9171/debug/cmd -d 'echo hello'
 
-# WS 데이터 보기
-grep 'WS recv' /tmp/gz.log
+# Daemon 상태
+curl http://127.0.0.1:9171/term/  # 200 = 정상
 ```
 
-## 핵심 API
+## 앞으로 할 일 (우선순위)
 
-| Endpoint | Method | 설명 |
-|---|---|---|
-| `/term/` | GET | xterm.js HTML + spy 코드 |
-| `/term/ws` | WebSocket | PTY bash 연결 |
-| `/debug/dump` | POST | 폰 화면 덤프 수신 |
-| `/debug/cmd` | GET | 다음 명령어 반환 (spy poll) |
-| `/debug/cmd` | POST | 명령어 큐에 추가 |
+1. **Cloudflare 터널 자동화** — daemon 시작 시 자동 터널, 고정 URL
+2. **Omnara Dashboard 통합** — DashboardScreen과 FeedScreen 자연스럽게 연결
+3. **푸시 알림 (FCM)** — Expo Push Token 등록 → Claude 승인 시 알림
+4. **Claude Shell Hook** — `devremote hook` → `.zshrc`에 alias
+5. **iOS 빌드** — EAS Build
+6. **Play Store 배포**
 
-## 알려진 이슈
+## WebRTC 폐기 근거
 
-1. **Cloudflare 터널**: daemon 재시작 시 터널도 재시작 필요 (URL 변경됨)
-2. **에뮬레이터**: 불안정 (crash 반복). 실제 폰 테스트 권장
-3. **Android cleartext**: `network_security_config.xml` + `usesCleartextTraffic` 설정됨
-4. **터미널 깨짐**: ANSI 코드/스피너 출력이 지저분할 수 있음 (정상)
-
-## 다음 할 일 (우선순위)
-
-1. **Omnara UI 통합**: `omnara-mobile/` → 대시보드, AgentFleet, CommandDeck
-2. **FCM 푸시 알림**: Expo Push Token → 승인 요청 시 알림
-3. **Shell Hook**: `devremote hook` → 터미널 기생
-4. **Play Store 배포**: 앱 서명 + 스토어 등록
-5. **iOS 빌드**: EAS Build로 iOS 버전
-
-## 검증 방법
-
-내일 아침 결과 확인:
-1. Daemon 실행 중인지: `curl http://127.0.0.1:9171/term/`
-2. Cloudflare 터널 살아있는지: `curl https://xxxx.trycloudflare.com/term/`
-3. APK 최신 버전: `ls -la mobile/android/app/build/outputs/apk/release/app-release.apk`
-4. Spy 작동: `grep 'PHONE:' /tmp/gz.log | tail -1`
+- Local signaling(`127.0.0.1:9171`): 같은 네트워크에서만 작동 → WebSocket이 더 빠르고 간단
+- Public signaling(Oracle 168.107.59.177): 추가 인프라 필요 → Cloudflare 터널이 더 간단
+- 3일 디버깅해도 연결 실패 (SDP 교환, CORS, inline HTML origin 문제)
+- 터미널 텍스트 전송에서는 WebRTC P2P의 저레이턴시 이점이 거의 없음
