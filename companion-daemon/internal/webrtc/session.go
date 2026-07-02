@@ -315,7 +315,9 @@ func (s *Session) alertWriter() {
 	for a := range s.alertCh {
 		data, _ := json.Marshal(a)
 		if err := s.dc.SendText(string(data)); err != nil {
-			return
+			log.Printf("webrtc: send failed: %v — alertWriter staying alive", err)
+			// Don't return — keep reading so alertCh doesn't fill up.
+			continue
 		}
 	}
 }

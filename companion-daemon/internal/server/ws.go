@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"sync"
 
 	"devremote/companion-daemon/internal/detector"
@@ -153,6 +154,11 @@ func (h *Hub) handleApproval(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
+// mouseRe strips ONLY ANSI mouse tracking codes from PTY output.
+// X11 mouse: \x1b[M + 3 bytes. SGR mouse: \x1b[< + digits + m/M.
+// Must NOT match \x1b[32m (color codes use [digit, not [< or [M).
+var mouseRe = regexp.MustCompile(`\x1b\[<[0-9;]*[mM]|\x1b\[M...`)
+
 // handlePTY receives raw PTY output from wrap and broadcasts to mobile clients.
 func (h *Hub) handlePTY(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -167,17 +173,24 @@ func (h *Hub) handlePTY(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		return
 	}
-	text := req.Base64
+	text := req.Text
 	if text == "" {
-		text = req.Text
+		text = req.Base64
 	}
 	if text == "" {
 		w.WriteHeader(200)
 		return
 	}
+	// Strip mouse tracking ANSI codes (garbage on mobile).
+	clean := mouseRe.ReplaceAllString(text, "")
+	log.Printf("pty: %d chars → %d after mouse filter", len(text), len(clean))
+	if clean == "" {
+		w.WriteHeader(200)
+		return
+	}
 	h.SendRaw(detector.Alert{
 		Type:        "pty",
-		Description: text,
+		Description: clean,
 	})
 	w.WriteHeader(200)
 }

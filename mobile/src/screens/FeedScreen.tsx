@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
-import type {Transport, TransportStatus} from '../services/types';
+import type {Transport} from '../services/types';
 
 interface Props {
   transport: Transport;
@@ -12,25 +12,23 @@ interface Props {
   onBack: () => void;
 }
 
+const SIGNAL_POLL_MS = 500;
+
 export default function FeedScreen({transport, pushToken, onBack}: Props) {
-  const [status, setStatus] = useState<TransportStatus>(transport.status);
+  const [status, setStatus] = useState(transport.status);
   const [stdin, setStdin] = useState('');
   const webViewRef = useRef<WebView>(null);
   const transportRef = useRef(transport);
   transportRef.current = transport;
 
+  // React Native handles WebRTC, passes raw PTY data to WebView.
   useEffect(() => {
     const unsubStatus = transport.onStatusChange(setStatus);
     const unsubAlert = transport.onAlert(a => {
       if (a.type === 'pty' || a.type === 'raw') {
-        const encoded = a.description || '';
-        if (!encoded || !webViewRef.current) return;
-        // Shell Mirror style: decode base64 → write directly to xterm.js.
-        try {
-          const raw = atob(encoded);
-          webViewRef.current.postMessage(raw);
-        } catch {
-          webViewRef.current.postMessage(encoded);
+        const text = a.description || '';
+        if (text && webViewRef.current) {
+          webViewRef.current.postMessage(text);
         }
       }
     });
@@ -57,7 +55,6 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack}>
           <Text style={styles.backBtn}>← 뒤로</Text>
@@ -65,10 +62,8 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
         <Text style={styles.statusText}>
           {status === 'connected' ? '● 연결됨' : status === 'connecting' ? '◌ 연결 중...' : '○ 끊김'}
         </Text>
-        <View style={{width: 50}} />
       </View>
 
-      {/* Terminal (xterm.js WebView) */}
       <View style={styles.termContainer}>
         <WebView
           ref={webViewRef}
@@ -83,7 +78,6 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
         />
       </View>
 
-      {/* Chat input */}
       <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
@@ -126,16 +120,3 @@ const styles = StyleSheet.create({
   },
   sendBtnText: {color: '#fff', fontWeight: '600', fontSize: 13},
 });
-
-function decodeBase64(b64: string): string {
-  try {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return b64; // fallback: use as-is
-  }
-}
