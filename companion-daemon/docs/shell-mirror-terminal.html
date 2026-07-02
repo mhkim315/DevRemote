@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+    <link rel="icon" type="image/png" href="/images/favicon.png">
+    <title>Terminal Mirror</title>
+    
+    <!-- Google Analytics 4 -->
+    <script>
+        // Initialize dataLayer and gtag function first
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-LG7ZGLB8FK');
+        
+        // Load gtag script with proper error handling
+        (function() {
+            var script = document.createElement('script');
+            script.async = true;
+            script.src = 'https://www.googletagmanager.com/gtag/js?id=G-LG7ZGLB8FK';
+            script.onload = function() {
+                console.log('✅ Google Analytics script loaded successfully');
+                window.gtagLoaded = true;
+            };
+            script.onerror = function() {
+                console.warn('❌ Failed to load Google Analytics script');
+                window.gtagLoaded = false;
+            };
+            document.head.appendChild(script);
+        })();
+        
+        // Google Analytics helper function
+        function sendGAEvent(eventName, eventParams) {
+            if (typeof gtag === 'function') {
+                console.log('📊 [GA] Sending event:', eventName, eventParams);
+                gtag('event', eventName, eventParams);
+                return true;
+            } else {
+                console.warn('❌ [GA] gtag not available, event not sent:', eventName);
+                return false;
+            }
+        }
+    </script>
+    
+    <!-- Microsoft Clarity -->
+    <script type="text/javascript">
+        (function(c,l,a,r,i,t,y){
+            c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+            t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+            y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+        })(window, document, "clarity", "script", "sy1w2d7il7");
+    </script>
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@4.15.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@4.15.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.5.0/lib/xterm-addon-fit.js"></script>
+    <style>
+      body, html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background-color: #1e1e1e;
+        color: #ccc;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        box-sizing: border-box;
+        /* JS sets --keyboard-inset on <html> via visualViewport to shrink
+           the body when the on-screen keyboard opens. The flex column inside
+           shrinks with it so the FAB rides above the keyboard. */
+        padding-bottom: var(--keyboard-inset, 0px);
+        transition: padding-bottom 0.15s ease-out;
+      }
+      #terminal-container {
+        display: none;
+        height: 100%;
+        width: 100%;
+        background-color: #000000;
+      }
+
+      #terminal-container.show {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+      
+      /* Session Header - Unified Design */
+      .session-header {
+        background: #2a2a2a;
+        color: #ccc;
+        padding: 8px 16px;
+        border-bottom: 1px solid #444;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 0.9em;
+        z-index: 100;
+        height: 40px;
+      }
+
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        position: relative;
+      }
+
+      .header-center {
+        flex: 1;
+        display: flex;
+        justify-content: center;
+      }
+
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      /* Connection Status Indicator */
+      .connection-status {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #ff4444;
+        margin-right: 12px;
+        flex-shrink: 0;
+      }
+
+      .connection-status.connecting {
+        background: #ffaa44;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      .connection-status.connected {
+        background: #44ff44;
+        box-shadow: 0 0 6px rgba(68, 255, 68, 0.5);
+      }
+
+      /* Session Tab Bar */
+      .session-tab-bar {
+        display: flex;
+        gap: 4px;
+        padding: 8px;
+        background: #2a2a2a;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        flex: 1;
+        align-items: center;
+      }
+
+      .session-tab-bar::-webkit-scrollbar {
+        height: 4px;
+      }
+
+      .session-tab-bar::-webkit-scrollbar-thumb {
+        background: #555;
+        border-radius: 2px;
+      }
+
+      .session-tab {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 8px;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        color: #888;
+        min-width: 100px;
+        white-space: nowrap;
+        transition: all 0.2s ease;
+        flex-shrink: 0;
+        border-radius: 6px 6px 0 0;
+      }
+
+      .session-tab:hover {
+        background: #3a3a3a;
+        color: #ccc;
+      }
+
+      .session-tab.active {
+        /* Colors set by inline styles from JavaScript */
+        font-weight: 600;
+      }
+
+      .session-tab-name {
+        flex: 1;
+        padding: 2px 4px;
+      }
+
+      .session-tab-close {
+        background: none;
+        border: none;
+        color: #666;
+        font-size: 1.1rem;
+        cursor: pointer;
+        padding: 0 4px;
+        line-height: 1;
+        border-radius: 3px;
+        opacity: 0;
+        transition: all 0.2s ease;
+      }
+
+      .session-tab:hover .session-tab-close {
+        opacity: 0.7;
+      }
+
+      .session-tab-close:hover {
+        opacity: 1 !important;
+        background: rgba(255, 100, 100, 0.3);
+        color: #ff6b6b;
+      }
+
+      .session-tab-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .session-tab-new {
+        padding: 6px 12px;
+        background: #667eea;
+        border-radius: 4px;
+        color: white;
+        border: none;
+        cursor: pointer;
+        margin-left: 4px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        flex-shrink: 0;
+      }
+
+      .session-tab-new:hover {
+        background: #5568d3;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      @keyframes calm-pulsate {
+        0%, 100% {
+          box-shadow: 0 0 0 rgba(255, 170, 68, 0);
+          border-color: #444;
+        }
+        50% {
+          box-shadow: 0 0 12px rgba(255, 170, 68, 0.6);
+          border-color: #ffaa44;
+        }
+      }
+
+      /* Header Buttons */
+      .header-btn {
+        background: transparent;
+        border: 1px solid #444;
+        color: #ccc;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.9em;
+        text-decoration: none;
+        transition: all 0.2s ease;
+      }
+
+      .header-btn:hover {
+        background: #3a3a3a;
+        border-color: #667eea;
+      }
+
+      .dashboard-btn.pulsate {
+        animation: calm-pulsate 2s ease-in-out infinite;
+      }
+
+      .help-btn .btn-text {
+        display: none;
+      }
+
+      @media (min-width: 768px) {
+        .help-btn .btn-text {
+          display: inline;
+        }
+      }
+
+      #terminal {
+        padding: 8px;  /* Mac Terminal.app padding */
+        background-color: #000000;
+        flex: 1 1 auto;
+        min-height: 0;  /* critical: lets xterm shrink as the column shortens */
+        width: 100%;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+      #connect-container { padding: 2em; text-align: center; }
+      #agent-id-input { font-size: 1.2em; padding: 8px; width: 400px; margin-bottom: 1em; }
+      #connect-btn { font-size: 1.2em; padding: 10px 20px; }
+
+      /* Help Modal - Tab Navigation (Dark Kraken Style) */
+      .help-tabs {
+        display: flex;
+        padding: 0;
+        border-bottom: 1px solid #2a2b30;
+        background: #0a0b0d;
+      }
+
+      .help-tab {
+        flex: 1;
+        padding: 12px 20px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+        font-size: 0.85rem;
+        color: #5a5f6a;
+        transition: all 0.15s ease;
+      }
+
+      .help-tab:hover {
+        color: #8a8f98;
+        background: #141519;
+      }
+
+      .help-tab.active {
+        color: #fff;
+        border-bottom-color: #5d5fef;
+        font-weight: 500;
+      }
+
+      /* Help Modal - Tab Content */
+      .help-tab-content {
+        display: none;
+      }
+
+      .help-tab-content.active {
+        display: block;
+      }
+
+      /* Help Modal - Content Sections */
+      .help-section {
+        margin-bottom: 24px;
+      }
+
+      .help-section h4 {
+        color: #333;
+        font-size: 1rem;
+        margin-bottom: 12px;
+      }
+
+      .help-section p {
+        color: #333;
+        line-height: 1.6;
+        margin-bottom: 8px;
+      }
+
+      .help-section ul {
+        list-style: none;
+        padding: 0;
+        margin: 8px 0;
+      }
+
+      .help-section li {
+        padding: 4px 0;
+        color: #333;
+        line-height: 1.6;
+      }
+
+      /* Help Modal - Mobile Responsiveness */
+      @media (max-width: 768px) {
+        .help-tabs {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+
+        .help-tab {
+          font-size: 0.8rem;
+          padding: 10px 12px;
+          white-space: nowrap;
+        }
+      }
+
+      /* ========================================
+         Floating Buttons - Mobile CLI Shortcuts
+         ======================================== */
+      .floating-buttons {
+        /* In-flow flex child of #terminal-container. Layout (not the
+           compositor) decides where the strip sits, which avoids iOS Safari's
+           position:fixed + backdrop-filter freeze during keyboard transitions. */
+        position: relative;
+        align-self: center;
+        margin: 0 auto 8px;
+        padding-bottom: env(safe-area-inset-bottom, 0);
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        gap: 0;
+        flex-shrink: 0;
+      }
+
+      /* Toggle button (collapse/expand) */
+      .fab-toggle {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: rgba(20, 21, 25, 0.95);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid #2a2b30;
+        color: #fff;
+        font-size: 18px;
+        cursor: pointer;
+        flex-shrink: 0;
+        margin-right: 4px;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      .fab-toggle:active {
+        background: #22232a;
+      }
+
+      /* Scroll indicators */
+      .fab-scroll {
+        width: 28px;
+        height: 48px;
+        background: rgba(20, 21, 25, 0.9);
+        border: none;
+        color: #8a8f98;
+        font-size: 22px;
+        font-weight: 300;
+        cursor: pointer;
+        flex-shrink: 0;
+        opacity: 0.8;
+        transition: opacity 0.15s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      .fab-scroll:active { opacity: 1; background: #22232a; }
+      .fab-scroll.hidden { opacity: 0; pointer-events: none; width: 0; }
+
+      .fab-scroll-left {
+        border-radius: 10px 0 0 10px;
+        border: 1px solid #2a2b30;
+        border-right: none;
+      }
+      .fab-scroll-right {
+        border-radius: 0 10px 10px 0;
+        border: 1px solid #2a2b30;
+        border-left: none;
+      }
+
+      /* Scrollable button strip */
+      .fab-strip {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+        padding: 6px 10px;
+        background: rgba(20, 21, 25, 0.95);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border-top: 1px solid #2a2b30;
+        border-bottom: 1px solid #2a2b30;
+        max-width: calc(100vw - 104px); /* toggle 44 + two scroll chevrons 56 + 4 slack */
+        scrollbar-width: none;
+        transition: max-width 0.2s, opacity 0.2s, padding 0.2s;
+      }
+
+      .fab-strip::-webkit-scrollbar { display: none; }
+
+      /* Collapsed state */
+      .floating-buttons.collapsed .fab-strip,
+      .floating-buttons.collapsed .fab-scroll {
+        max-width: 0;
+        width: 0;
+        padding: 0;
+        opacity: 0;
+        overflow: hidden;
+        border: none;
+      }
+
+      /* Individual buttons */
+      .fab-btn {
+        flex-shrink: 0;
+        min-width: 48px;
+        height: 44px;
+        padding: 0 12px;
+        border-radius: 8px;
+        background: #1a1b20;
+        color: #fff;
+        border: 1px solid #2a2b30;
+        font-size: 13px;
+        font-weight: 600;
+        scroll-snap-align: center;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: background 0.1s;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      .fab-btn:active { background: #22232a; }
+
+      /* Highlight most critical button (Mode switcher) */
+      .fab-btn.fab-primary {
+        background: #5d5fef;
+        border-color: #5d5fef;
+      }
+
+      .fab-btn.fab-primary:active {
+        background: #4a4cd6;
+      }
+
+      /* Transient notice bubble above the strip (paste failures etc.) */
+      .fab-notice {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(20, 21, 25, 0.95);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid #2a2b30;
+        color: #8a8f98;
+        font-size: 12px;
+        padding: 6px 12px;
+        border-radius: 8px;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+        z-index: 1001;
+      }
+
+      .fab-notice.visible { opacity: 1; }
+
+      /* Desktop (mouse + hover only): hide floating buttons.
+         Touch tablets like iPad Pro 11"/12.9" landscape (1194/1366px) keep the strip. */
+      @media (min-width: 1025px) and (hover: hover) and (pointer: fine) {
+        .floating-buttons { display: none; }
+      }
+
+      /* Phones: tighter sizing so the primary group (⇧Tab…⏎) stays visible */
+      @media (max-width: 430px) {
+        .fab-btn {
+          min-width: 40px;
+          padding: 0 8px;
+          font-size: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="connect-container">
+        <h2>Terminal Mirror</h2>
+        <p>Connecting to terminal...</p>
+    </div>
+    <div id="terminal-container">
+        <div class="session-header" id="session-header">
+            <!-- Connection Status Indicator -->
+            <div class="connection-status" id="connection-status"></div>
+
+            <!-- Session Tab Bar -->
+            <div class="session-tab-bar" id="session-tab-bar">
+                <!-- Tabs will be rendered here by JavaScript -->
+            </div>
+
+            <!-- Header Right Section -->
+            <div class="header-right">
+                <button class="header-btn help-btn" onclick="showHelpModal()">
+                    <span>📖</span>
+                    <span class="btn-text">Help</span>
+                </button>
+                <a href="/app/dashboard.html" class="header-btn dashboard-btn">
+                    <span class="btn-text">Dashboard</span>
+                </a>
+            </div>
+        </div>
+        <div id="terminal"></div>
+
+        <!-- Floating Buttons - Mobile CLI Shortcuts (flex child so it reserves layout space) -->
+        <div id="floating-buttons" class="floating-buttons">
+          <!-- Transient notice (e.g. clipboard paste failures) -->
+          <div class="fab-notice" id="fabNotice" role="status"></div>
+
+          <!-- Toggle button (collapse/expand) -->
+          <button class="fab-toggle" id="fabToggle" aria-label="Toggle keyboard shortcuts" tabindex="-1">
+            <span class="fab-toggle-icon">⌨</span>
+          </button>
+
+          <!-- Left scroll indicator -->
+          <button class="fab-scroll fab-scroll-left hidden" id="fabScrollLeft" aria-label="Scroll left" tabindex="-1">
+            <span>‹</span>
+          </button>
+
+          <!-- Scrollable button strip -->
+          <div class="fab-strip" id="fabStrip">
+            <!-- Control group (scroll left to reveal) -->
+            <button class="fab-btn" data-keys="ctrl+l" title="Clear screen" tabindex="-1">^L</button>
+            <button class="fab-btn" data-keys="ctrl+d" title="EOF/Exit" tabindex="-1">^D</button>
+            <button class="fab-btn" data-keys="ctrl+c" title="Interrupt" tabindex="-1">^C</button>
+
+            <!-- Primary group (default visible - AI CLI essentials) -->
+            <button class="fab-btn fab-primary" data-keys="shift+tab" title="Mode: Normal → Auto → Plan" tabindex="-1">⇧Tab</button>
+            <button class="fab-btn" data-keys="tab" title="Autocomplete / Thinking" tabindex="-1">Tab</button>
+            <button class="fab-btn" data-keys="up" data-repeat="true" title="History up" tabindex="-1">↑</button>
+            <button class="fab-btn" data-keys="down" data-repeat="true" title="History down" tabindex="-1">↓</button>
+            <button class="fab-btn" data-keys="escape" title="Cancel / Rewind (2x)" tabindex="-1">Esc</button>
+            <button class="fab-btn fab-primary" data-keys="enter" title="Enter / Confirm" tabindex="-1">⏎</button>
+
+            <!-- Navigation group (scroll right to reveal) -->
+            <button class="fab-btn" data-keys="left" title="Cursor left" tabindex="-1">←</button>
+            <button class="fab-btn" data-keys="right" title="Cursor right" tabindex="-1">→</button>
+            <button class="fab-btn" data-keys="alt+enter" title="Newline without submit" tabindex="-1">⏎+</button>
+            <button class="fab-btn" id="fabPaste" title="Paste from clipboard" tabindex="-1">📋</button>
+          </div>
+
+          <!-- Right scroll indicator -->
+          <button class="fab-scroll fab-scroll-right" id="fabScrollRight" aria-label="Scroll right" tabindex="-1">
+            <span>›</span>
+          </button>
+        </div>
+    </div>
+
+    <!-- Help Modal (Dark Kraken Style) -->
+    <div id="help-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.85); align-items: center; justify-content: center; z-index: 20000;">
+        <div style="background: #141519; border-radius: 8px; max-width: 500px; width: 90%; max-height: 80vh; overflow: hidden; border: 1px solid #2a2b30; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+            <!-- Header -->
+            <div style="padding: 16px 20px; border-bottom: 1px solid #2a2b30; display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 1rem; color: #fff; font-weight: 600;">Shell Mirror Terminal</h3>
+                <button onclick="closeHelpModal()" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; padding: 4px 8px; border-radius: 4px; color: #5a5f6a; transition: all 0.15s;">×</button>
+            </div>
+
+            <!-- Tab Navigation -->
+            <div class="help-tabs" style="display: flex; border-bottom: 1px solid #2a2b30; background: #0a0b0d;">
+                <button class="help-tab active" onclick="showHelpTab('sessions')" style="flex: 1; padding: 12px; background: none; border: none; color: #8a8f98; cursor: pointer; font-size: 0.85rem; border-bottom: 2px solid transparent;">Sessions</button>
+                <button class="help-tab" onclick="showHelpTab('help')" style="flex: 1; padding: 12px; background: none; border: none; color: #8a8f98; cursor: pointer; font-size: 0.85rem; border-bottom: 2px solid transparent;">Troubleshooting</button>
+            </div>
+
+            <!-- Tab Content -->
+            <div style="padding: 20px; max-height: 60vh; overflow-y: auto; color: #8a8f98; font-size: 0.85rem;">
+                <!-- Sessions Tab -->
+                <div id="tab-sessions" class="help-tab-content active">
+                    <p style="margin-top: 0; margin-bottom: 16px; color: #8a8f98;">Sessions let you run multiple terminals simultaneously.</p>
+
+                    <h4 style="margin-top: 16px; margin-bottom: 8px; color: #fff; font-size: 0.85rem; font-weight: 500;">Creating</h4>
+                    <ul style="list-style: none; padding: 0; margin: 0; color: #5a5f6a;">
+                        <li style="padding: 3px 0;">• Tap "Sessions" → "+ New Session"</li>
+                        <li style="padding: 3px 0;">• Each session runs independently</li>
+                    </ul>
+
+                    <h4 style="margin-top: 16px; margin-bottom: 8px; color: #fff; font-size: 0.85rem; font-weight: 500;">Switching</h4>
+                    <ul style="list-style: none; padding: 0; margin: 0; color: #5a5f6a;">
+                        <li style="padding: 3px 0;">• Tap "Sessions" dropdown</li>
+                        <li style="padding: 3px 0;">• Select any session</li>
+                        <li style="padding: 3px 0;">• Your processes keep running in background</li>
+                    </ul>
+
+                    <h4 style="margin-top: 16px; margin-bottom: 8px; color: #fff; font-size: 0.85rem; font-weight: 500;">Limits</h4>
+                    <ul style="list-style: none; padding: 0; margin: 0; color: #5a5f6a;">
+                        <li style="padding: 3px 0;">• Max 10 sessions per Mac</li>
+                        <li style="padding: 3px 0;">• Auto-deleted after 24h inactive</li>
+                    </ul>
+                </div>
+
+                <!-- Troubleshooting Tab -->
+                <div id="tab-help" class="help-tab-content" style="display: none;">
+                    <h4 style="margin-top: 0; margin-bottom: 8px; color: #fff; font-size: 0.85rem; font-weight: 500;">Connection stuck?</h4>
+                    <ul style="list-style: none; padding: 0; margin: 0 0 16px 0; color: #5a5f6a;">
+                        <li style="padding: 3px 0;">• Wait 10 seconds for auto-retry</li>
+                        <li style="padding: 3px 0;">• Still red? Return to Dashboard → Reconnect</li>
+                    </ul>
+
+                    <h4 style="margin-top: 16px; margin-bottom: 8px; color: #fff; font-size: 0.85rem; font-weight: 500;">Slow connection?</h4>
+                    <ul style="list-style: none; padding: 0; margin: 0 0 16px 0; color: #5a5f6a;">
+                        <li style="padding: 3px 0;">• App tries: Local network → WebRTC → Fallback</li>
+                        <li style="padding: 3px 0;">• First connect may take 30 seconds</li>
+                        <li style="padding: 3px 0;">• WebRTC works best (100-500ms)</li>
+                    </ul>
+
+                    <h4 style="margin-top: 16px; margin-bottom: 8px; color: #fff; font-size: 0.85rem; font-weight: 500;">Behind corporate firewall?</h4>
+                    <ul style="list-style: none; padding: 0; margin: 0; color: #5a5f6a;">
+                        <li style="padding: 3px 0;">• May need IT to whitelist STUN servers</li>
+                        <li style="padding: 3px 0;">• Contact: stun.l.google.com port 19302</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Help Modal Functions
+        function showHelpModal() {
+            const modal = document.getElementById('help-modal');
+            modal.style.display = 'flex';
+        }
+
+        function closeHelpModal() {
+            const modal = document.getElementById('help-modal');
+            modal.style.display = 'none';
+        }
+
+        function showHelpTab(tabName) {
+            // Hide all tab content
+            document.querySelectorAll('.help-tab-content').forEach(content => {
+                content.classList.remove('active');
+                content.style.display = 'none';
+            });
+
+            // Remove active from all tab buttons
+            document.querySelectorAll('.help-tab').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab content
+            const selectedContent = document.getElementById('tab-' + tabName);
+            if (selectedContent) {
+                selectedContent.classList.add('active');
+                selectedContent.style.display = 'block';
+            }
+
+            // Activate corresponding button
+            event.target.classList.add('active');
+        }
+
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('help-modal');
+            if (event.target === modal) {
+                closeHelpModal();
+            }
+            const closeModal = document.getElementById('close-session-modal');
+            if (event.target === closeModal) {
+                hideCloseSessionModal();
+            }
+        });
+    </script>
+
+    <!-- Close Session Confirmation Modal -->
+    <div id="close-session-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.85); align-items: center; justify-content: center; z-index: 20000;">
+        <div style="background: #2a2a2a; border-radius: 12px; max-width: 400px; width: 90%; overflow: hidden; border: 1px solid #444; box-shadow: 0 10px 40px rgba(0,0,0,0.5);">
+            <!-- Header -->
+            <div style="padding: 20px 24px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 1.1rem; color: #fff;">Close Session?</h3>
+                <button onclick="hideCloseSessionModal()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; padding: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #888;">&times;</button>
+            </div>
+
+            <!-- Content -->
+            <div style="padding: 24px;">
+                <div id="close-session-info" style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px; padding-left: 16px; border-left: 4px solid #888;">
+                    <div style="font-size: 2.5rem;">🗑️</div>
+                    <div>
+                        <div id="close-session-name" style="font-size: 1.1rem; font-weight: 500; margin-bottom: 4px;">Session 1</div>
+                        <div id="close-session-duration" style="font-size: 0.85rem; color: #888;">Duration: 5 minutes</div>
+                    </div>
+                </div>
+
+                <p style="color: #bbb; margin: 0 0 24px 0; font-size: 0.9rem; line-height: 1.5;">
+                    This will terminate the terminal session. Any running processes will be stopped.
+                </p>
+
+                <!-- Buttons -->
+                <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                    <button onclick="hideCloseSessionModal()" style="padding: 10px 20px; background: #444; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: background 0.2s;">Cancel</button>
+                    <button id="confirm-close-session-btn" onclick="confirmCloseSession()" style="padding: 10px 20px; background: #dc3545; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background 0.2s;">Close Session</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Close Session Modal Functions
+        let pendingCloseSessionId = null;
+
+        function showCloseSessionModal(sessionId, sessionName, createdAt, sessionColor) {
+            pendingCloseSessionId = sessionId;
+
+            // Calculate duration
+            const duration = createdAt ? formatDuration(Date.now() - createdAt) : 'Unknown';
+
+            document.getElementById('close-session-name').textContent = sessionName || 'Session';
+            document.getElementById('close-session-duration').textContent = `Duration: ${duration}`;
+
+            // Apply session color to border and name
+            const infoDiv = document.getElementById('close-session-info');
+            const nameDiv = document.getElementById('close-session-name');
+            if (sessionColor) {
+                infoDiv.style.borderLeftColor = sessionColor.border;
+                nameDiv.style.color = sessionColor.border;
+            } else {
+                infoDiv.style.borderLeftColor = '#888';
+                nameDiv.style.color = '#fff';
+            }
+
+            document.getElementById('close-session-modal').style.display = 'flex';
+        }
+
+        function hideCloseSessionModal() {
+            document.getElementById('close-session-modal').style.display = 'none';
+            pendingCloseSessionId = null;
+        }
+
+        function confirmCloseSession() {
+            if (pendingCloseSessionId) {
+                // Call the actual close function from terminal.js
+                doCloseSession(pendingCloseSessionId);
+            }
+            hideCloseSessionModal();
+        }
+
+        function formatDuration(ms) {
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (days > 0) return `${days}d ${hours % 24}h`;
+            if (hours > 0) return `${hours}h ${minutes % 60}m`;
+            if (minutes > 0) return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+            return `${seconds} second${seconds !== 1 ? 's' : ''}`;
+        }
+    </script>
+
+    <script src="/app/config.js"></script>
+    <script src="/app/terminal.js?v=1.5.94"></script>
+  </body>
+</html>

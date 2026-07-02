@@ -320,6 +320,16 @@ func (s *Session) alertWriter() {
 	}
 }
 
+// SendRawBytes sends raw binary data directly through the data channel (no JSON).
+func (s *Session) SendRawBytes(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.dc == nil || s.dc.ReadyState() != webrtc.DataChannelStateOpen {
+		return fmt.Errorf("data channel not open")
+	}
+	return s.dc.Send(data)
+}
+
 func (s *Session) IsConnected() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

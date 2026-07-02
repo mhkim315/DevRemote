@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -27,6 +28,7 @@ type Hub struct {
 	rawListeners  []RawEventHandler
 	OnRawAlert    func(detector.Alert)
 	OnResponse    func(clientIP string, msg map[string]interface{})
+	OnRawBytes    func([]byte) error // direct binary PTY streaming
 }
 
 // NewHub creates a Hub.
@@ -158,22 +160,79 @@ func (h *Hub) handlePTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		Base64 string `json:"base64"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		return
 	}
-	if req.Text == "" {
+	text := req.Base64
+	if text == "" {
+		text = req.Text
+	}
+	if text == "" {
 		w.WriteHeader(200)
 		return
 	}
-	log.Printf("pty: %d chars → %d clients", len(req.Text), h.ActiveClientCount())
 	h.SendRaw(detector.Alert{
 		Type:        "pty",
-		Description: req.Text,
+		Description: text,
 	})
 	w.WriteHeader(200)
+}
+
+// Omnara-compatible REST API handlers (MVP stubs).
+
+func (h *Hub) handleGetAgents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"agent_types": []map[string]interface{}{
+			{
+				"id": "claude-code", "name": "Claude Code",
+				"recent_instances": []map[string]interface{}{
+					{"id": "session-1", "agent_type_id": "claude-code", "status": "ACTIVE", "started_at": "2026-07-02T00:00:00Z"},
+				},
+			},
+		},
+	})
+}
+
+func (h *Hub) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": "session-1", "agent_type_id": "claude-code", "status": "ACTIVE",
+		"started_at": "2026-07-02T00:00:00Z",
+	})
+}
+
+func (h *Hub) handleGetInstance(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id": "session-1", "status": "ACTIVE", "started_at": "2026-07-02T00:00:00Z",
+		"messages": []map[string]interface{}{
+			{"id": "msg-1", "content": "DevRemote connected", "sender_type": "AGENT", "created_at": "2026-07-02T00:00:00Z", "requires_user_input": false},
+		},
+	})
+}
+
+func (h *Hub) handleGetMessages(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// SSE endpoint — WebRTC DataChannel handles the actual streaming.
+	// Return a keep-alive comment for now.
+	fmt.Fprintf(w, ": connected to DevRemote\n\n")
+}
+
+func (h *Hub) handlePostMessage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Content string `json:"content"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	log.Printf("api: message received: %q", req.Content)
+	w.WriteHeader(201)
 }
 
 // Start begins listening on the given address (e.g. ":9171").
@@ -181,7 +240,18 @@ func (h *Hub) Start(addr string) error {
 	http.Handle("/ws", h)
 	http.HandleFunc("/approval", h.handleApproval)
 	http.HandleFunc("/pty", h.handlePTY)
-	log.Printf("WebSocket server listening on %s", addr)
+	// Omnara-compatible REST API.
+	http.HandleFunc("/api/v1/agents", h.handleGetAgents)
+	http.HandleFunc("/api/v1/agent-instances", h.handleCreateInstance)
+	http.HandleFunc("/api/v1/agent-instances/", h.handleGetInstance)
+	http.HandleFunc("/api/v1/agent-instances/session-1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			h.handleGetMessages(w, r)
+		} else {
+			h.handlePostMessage(w, r)
+		}
+	})
+	log.Printf("WebSocket + REST API listening on %s", addr)
 	return http.ListenAndServe(addr, nil)
 }
 

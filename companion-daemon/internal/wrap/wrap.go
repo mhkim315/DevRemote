@@ -2,6 +2,7 @@ package wrap
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -131,7 +132,10 @@ func streamPTY(src io.Reader, dst io.Writer, daemonPort int) {
 }
 
 func post(daemonPort int, endpoint, text string) {
-	body, _ := json.Marshal(map[string]string{"text": text})
+	body, _ := json.Marshal(map[string]string{
+		"text":   text,
+		"base64": base64.StdEncoding.EncodeToString([]byte(text)),
+	})
 	resp, err := http.Post(
 		fmt.Sprintf("http://127.0.0.1:%d/%s", daemonPort, endpoint),
 		"application/json", bytes.NewReader(body),

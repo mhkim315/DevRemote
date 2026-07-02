@@ -22,13 +22,15 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
   useEffect(() => {
     const unsubStatus = transport.onStatusChange(setStatus);
     const unsubAlert = transport.onAlert(a => {
-      // Feed raw PTY output directly into xterm.js.
       if (a.type === 'pty' || a.type === 'raw') {
-        const text = a.description || '';
-        if (text && webViewRef.current) {
-          webViewRef.current.injectJavaScript(
-            `window.postMessage(${JSON.stringify(text)}, '*');true;`
-          );
+        const encoded = a.description || '';
+        if (!encoded || !webViewRef.current) return;
+        // Shell Mirror style: decode base64 → write directly to xterm.js.
+        try {
+          const raw = atob(encoded);
+          webViewRef.current.postMessage(raw);
+        } catch {
+          webViewRef.current.postMessage(encoded);
         }
       }
     });
@@ -46,15 +48,9 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
   }, []);
 
   const sendStdin = useCallback(() => {
-    if (stdin.trim()) {
-      const text = stdin.trim() + '\n';
+    const text = stdin + '\n';
+    if (text.trim()) {
       transportRef.current.sendMessage({type: 'stdin', text});
-      // Also write directly to the terminal WebView for local echo.
-      if (webViewRef.current) {
-        webViewRef.current.injectJavaScript(
-          `window.postMessage(${JSON.stringify(text)}, '*');true;`
-        );
-      }
       setStdin('');
     }
   }, [stdin]);
@@ -130,3 +126,16 @@ const styles = StyleSheet.create({
   },
   sendBtnText: {color: '#fff', fontWeight: '600', fontSize: 13},
 });
+
+function decodeBase64(b64: string): string {
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return b64; // fallback: use as-is
+  }
+}

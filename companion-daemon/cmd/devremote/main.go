@@ -216,43 +216,8 @@ func main() {
 	}
 	state := detector.NewState(onAlert)
 
-	// Raw event stream: forward every JSONL event to connected clients as type=raw.
-	rawFeed := func(ev watcher.RawEvent) {
-		desc := fmt.Sprintf("[%s] %s", ev.Type, ev.Timestamp)
-		// Try to extract useful info from the message.
-		var msg map[string]interface{}
-		if json.Unmarshal(ev.Message, &msg) == nil {
-			if role, ok := msg["role"].(string); ok {
-				desc = fmt.Sprintf("[%s:%s]", ev.Type, role)
-			}
-			if content, ok := msg["content"].([]interface{}); ok && len(content) > 0 {
-				if block, ok := content[0].(map[string]interface{}); ok {
-					switch block["type"] {
-					case "tool_use":
-						desc = fmt.Sprintf("[%s:%s] %v", ev.Type, block["name"], block["input"])
-					case "text":
-						txt := block["text"].(string)
-						if len(txt) > 60 {
-							txt = txt[:60] + "..."
-						}
-						desc = fmt.Sprintf("[%s] %q", ev.Type, txt)
-					case "thinking":
-						desc = fmt.Sprintf("[%s:thinking]", ev.Type)
-					}
-				}
-			}
-		}
-		a := detector.Alert{
-			SessionID:   ev.SessionID,
-			Type:        ev.Type,
-			Description: desc,
-			Timestamp:   ev.Timestamp,
-		}
-		hub.SendRaw(a)
-	}
 	t, err := watcher.New(absDir, func(ev watcher.RawEvent) {
-		rawFeed(ev)
-		state.Feed(ev)
+		state.Feed(ev) // only feed detector, no broadcast
 	})
 	if err != nil {
 		log.Fatalf("Failed to create watcher: %v", err)
@@ -303,6 +268,7 @@ func main() {
 		)
 		hub.AddListener(webrtcSess.HandleAlert)
 			hub.AddRawListener(webrtcSess.HandleRaw)
+			hub.OnRawBytes = webrtcSess.SendRawBytes
 
 		go func() {
 			if err := webrtcSess.Start(onResponse); err != nil {
