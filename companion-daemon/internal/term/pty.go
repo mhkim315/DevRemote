@@ -14,20 +14,65 @@ import (
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
+// OnApproval is called when Claude asks for user approval.
+var OnApproval func(string)
+
 func HandleWS(w http.ResponseWriter, r *http.Request) {
-	cmd := exec.Command("bash")
+	// 1. Use tmux to ensure session persistence across WebSocket reconnects
+	cmd := exec.Command("tmux", "new-session", "-A", "-s", "devremote")
 	tty, err := pty.Start(cmd)
-	if err != nil { http.Error(w, "pty failed", 500); return }
+	if err != nil {
+		// Fallback to bash if tmux is not installed
+		cmd = exec.Command("bash")
+		tty, err = pty.Start(cmd)
+		if err != nil {
+			http.Error(w, "pty failed", 500)
+			return
+		}
+	}
 	defer tty.Close()
-	defer cmd.Process.Kill()
+	// Do NOT kill cmd.Process here, so tmux session stays alive in background!
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil { return }
 	defer conn.Close()
+
 	go func() {
 		buf := make([]byte, 4096)
-		for { n, _ := tty.Read(buf); if n > 0 { conn.WriteMessage(websocket.TextMessage, buf[:n]) } }
+		for {
+			n, err := tty.Read(buf)
+			if n > 0 {
+				data := buf[:n]
+				conn.WriteMessage(websocket.TextMessage, data)
+				
+				// 2. Approval detection: Send push notification via callback
+				if OnApproval != nil && isApprovalPrompt(data) {
+					// We launch it in a goroutine so it doesn't block PTY reading
+					go OnApproval("Agent Claude requires your approval!")
+				}
+			}
+			if err != nil {
+				log.Printf("pty read err or closed: %v", err)
+				return
+			}
+		}
 	}()
-	for { _, msg, _ := conn.ReadMessage(); tty.Write(msg) }
+
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		tty.Write(msg)
+	}
+}
+
+func isApprovalPrompt(data []byte) bool {
+	return bytes.Contains(data, []byte("Do you want")) ||
+		bytes.Contains(data, []byte("proceed?")) ||
+		bytes.Contains(data, []byte("(y/n)")) ||
+		bytes.Contains(data, []byte("(y/N)")) ||
+		(bytes.Contains(data, []byte("1. Yes")) && bytes.Contains(data, []byte("No")))
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
@@ -59,46 +104,4 @@ func HandleCmd(w http.ResponseWriter, r *http.Request) {
 func HandleDump(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	log.Printf("PHONE: %s", string(body))
-}
-
-// StartPTY starts a tmux shell in a PTY and reads its output.
-func StartPTY(onMessage func([]byte), onPush func(string)) (io.Writer, error) {
-	cmd := exec.Command("tmux", "new-session", "-A", "-s", "devremote")
-	tty, err := pty.Start(cmd)
-	if err != nil {
-		// Fallback to bash if tmux is not installed
-		cmd = exec.Command("bash")
-		tty, err = pty.Start(cmd)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := tty.Read(buf)
-			if n > 0 {
-				data := buf[:n]
-				
-				// --- Phase 3: Claude Hook & Push Notification ---
-				if bytes.Contains(data, []byte("[Approval Required]")) {
-					log.Println("🚨 [PUSH NOTIFICATION] Agent Claude requires your approval!")
-					if onPush != nil {
-						onPush("Agent Claude requires your approval!")
-					}
-				}
-
-				if onMessage != nil {
-					onMessage(data)
-				}
-			}
-			if err != nil {
-				log.Printf("pty read err: %v", err)
-				return
-			}
-		}
-	}()
-
-	return tty, nil
 }

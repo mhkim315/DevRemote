@@ -3,7 +3,7 @@ import {View, Text, TextInput, StyleSheet, TouchableOpacity} from 'react-native'
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
-const TERM_URL = 'https://term.fullcount.kr/term/';
+const TERM_URL = 'http://10.0.2.2:9171/term/';
 
 interface Props { onBack: () => void }
 export default function FeedScreen({onBack}: Props) {

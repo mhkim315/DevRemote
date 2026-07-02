@@ -9,20 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"devremote/companion-daemon/internal/signal"
 	"devremote/companion-daemon/internal/term"
-	"devremote/companion-daemon/internal/webrtc"
 )
 
 func main() {
-	home, _ := os.UserHomeDir()
-	keyDir := filepath.Join(home, ".devremote")
-
-	// 1. Local signaling store (no Oracle dependency)
-	sig := signal.NewStore()
-	http.HandleFunc("/join", sig.Join)
-	http.HandleFunc("/poll", sig.Poll)
-	http.HandleFunc("/send", sig.Send)
+	// 1. Core Endpoints
 	http.HandleFunc("/term/ws", term.HandleWS)
 	http.HandleFunc("/term/", term.HandleHTML)
 	var pushToken string
@@ -35,6 +26,14 @@ func main() {
 		}
 		w.WriteHeader(200)
 	})
+
+	// Wire approval detection → push notification
+	term.OnApproval = func(msg string) {
+		log.Printf("🚨 APPROVAL DETECTED: %s", msg)
+		if pushToken != "" {
+			go sendPushNotification(pushToken, msg)
+		}
+	}
 
 	http.HandleFunc("/debug/dump", term.HandleDump)
 	http.HandleFunc("/debug/cmd", term.HandleCmd)
@@ -54,40 +53,9 @@ func main() {
 		}
 	}()
 
-	// 3. Start HTTP server first
-	go func() {
-		log.Printf("DevRemote :9171")
-		log.Fatal(http.ListenAndServe(":9171", nil))
-	}()
-
-	// 4. WebRTC — use local signaling (Deprecated but kept for reference)
-	sess := webrtc.New("http://127.0.0.1:9171", []string{"stun:stun.l.google.com:19302"}, keyDir)
-
-	// 5. PTY → WebRTC
-	tty, err := term.StartPTY(func(data []byte) {
-		sess.SendRawBytes(data)
-	}, func(msg string) {
-		if pushToken != "" {
-			go sendPushNotification(pushToken, msg)
-		}
-	})
-	if err != nil {
-		log.Fatalf("PTY: %v", err)
-	}
-
-	// 6. WebRTC → PTY
-	err = sess.Start(func(data []byte) {
-		tty.Write(data)
-	}, func() {
-		log.Printf("Data channel opened!")
-	})
-	if err != nil {
-		log.Fatalf("WebRTC: %v", err)
-	}
-
-	log.Printf("CODE: %s", sess.Code())
-
-	select {} // keep running
+	// 3. Start HTTP server
+	log.Printf("DevRemote :9171")
+	log.Fatal(http.ListenAndServe(":9171", nil))
 }
 
 func sendPushNotification(token, message string) {

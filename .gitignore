@@ -1,0 +1,17 @@
+# Binaries
+companion-daemon/devremote
+cloudflared
+
+# MacOS
+.DS_Store
+
+# Logs
+*.log
+/tmp/
+
+# Android Build
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/app/.cxx/
+mobile/node_modules/
+mobile/.expo/
