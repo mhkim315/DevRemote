@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -100,29 +99,14 @@ func Command(dir, name string, args ...string) error {
 
 func streamPTY(src io.Reader, dst io.Writer, daemonPort int) {
 	buf := make([]byte, 4096)
-	var batch []byte
-	var lastFlush = time.Now()
-
-	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		post(daemonPort, "pty", string(batch))
-		batch = nil
-	}
-
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
 			dst.Write(buf[:n])
-			batch = append(batch, buf[:n]...)
-			if time.Since(lastFlush) > 100*time.Millisecond || len(batch) > 4096 {
-				flush()
-				lastFlush = time.Now()
-			}
+			// Send immediately — no batching (prevents first/last char loss).
+			post(daemonPort, "pty", string(buf[:n]))
 		}
 		if err != nil {
-			flush()
 			if err != io.EOF {
 				log.Printf("wrap: read: %v", err)
 			}
