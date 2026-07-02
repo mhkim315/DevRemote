@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+export const terminalHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -49,7 +49,9 @@
       pc.ondatachannel = function(event) {
         dc = event.channel;
         dc.onopen = function() {
-          term.writeln("\r\nCONNECTED via WebRTC P2P!\r\n");
+          term.writeln("
+CONNECTED via WebRTC P2P!
+");
           // Re-route terminal input to WebRTC DataChannel
           term.onData(function(d) {
             if (dc.readyState === "open") dc.send(d);
@@ -82,12 +84,14 @@
         var s="";
         for(var i=0;i<term.rows;i++){
           var l=term.buffer.active.getLine(i);
-          if(l) s+=l.translateToString(true)+"\n";
+          if(l) s+=l.translateToString(true)+"
+";
         }
         fetch("http://10.0.2.2:9171/debug/dump", {method:"POST", body:s}).catch(function(){});
         fetch("http://10.0.2.2:9171/debug/cmd")
           .then(function(r){return r.text()})
-          .then(function(t){if(t && window.dc && window.dc.readyState==="open") window.dc.send(t+"\n")})
+          .then(function(t){if(t && window.dc && window.dc.readyState==="open") window.dc.send(t+"
+")})
           .catch(function(){});
       }, 2000);
 
@@ -135,4 +139,4 @@
   setTimeout(function() { term.focus() }, 500);
 </script>
 </body>
-</html>
+</html>`;
