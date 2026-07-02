@@ -1,9 +1,10 @@
-import React, {useEffect, useRef, useState, useCallback} from 'react';
+import React, {useEffect, useRef, useCallback, useState} from 'react';
 import {
-  View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity, Platform,
+  View, Text, TextInput, StyleSheet, TouchableOpacity, Platform,
 } from 'react-native';
+import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
-import type {Transport, TransportStatus, Alert} from '../services/types';
+import type {Transport, TransportStatus} from '../services/types';
 
 interface Props {
   transport: Transport;
@@ -11,115 +12,95 @@ interface Props {
   onBack: () => void;
 }
 
-interface FeedItem {
-  id: string;
-  type: string;
-  time: string;
-  text: string;
-}
-
 export default function FeedScreen({transport, pushToken, onBack}: Props) {
-  const [items, setItems] = useState<FeedItem[]>([]);
   const [status, setStatus] = useState<TransportStatus>(transport.status);
   const [stdin, setStdin] = useState('');
+  const webViewRef = useRef<WebView>(null);
   const transportRef = useRef(transport);
   transportRef.current = transport;
 
   useEffect(() => {
     const unsubStatus = transport.onStatusChange(setStatus);
-    const unsubAlert = transport.onAlert((a: Alert) => {
-      const isRaw = a.type === 'raw' || a.type === 'pty';
-      const label = isRaw
-        ? a.description?.substring(0, 200) || '···'
-        : `[${a.toolName || a.type || 'event'}] ${a.description || a.question || ''}`;
-      setItems(prev => [{
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        type: a.type || a.toolName || 'event',
-        time: new Date(a.timestamp).toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit'}),
-        text: label.substring(0, 200),
-      }, ...prev.slice(0, 99)]);
+    const unsubAlert = transport.onAlert(a => {
+      // Feed raw PTY output directly into xterm.js.
+      if (a.type === 'pty' || a.type === 'raw') {
+        const text = a.description || '';
+        if (text && webViewRef.current) {
+          webViewRef.current.injectJavaScript(
+            `window.postMessage(${JSON.stringify(text)}, '*');true;`
+          );
+        }
+      }
     });
     if (pushToken) transport.sendMessage({type: 'register', pushToken});
     return () => { unsubStatus(); unsubAlert(); };
   }, [transport, pushToken]);
 
+  const onWebViewMessage = useCallback((event: any) => {
+    try {
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type === 'stdin' && msg.text) {
+        transportRef.current.sendMessage({type: 'stdin', text: msg.text});
+      }
+    } catch {}
+  }, []);
+
   const sendStdin = useCallback(() => {
     if (stdin.trim()) {
-      const text = stdin.trim();
-      transportRef.current.sendMessage({type: 'stdin', text: text + '\n'});
-      // Local echo
-      setItems(prev => [{
-        id: `${Date.now()}-me-${Math.random().toString(36).slice(2, 4)}`,
-        type: 'me',
-        time: new Date().toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit'}),
-        text,
-      }, ...prev.slice(0, 99)]);
+      const text = stdin.trim() + '\n';
+      transportRef.current.sendMessage({type: 'stdin', text});
+      // Also write directly to the terminal WebView for local echo.
+      if (webViewRef.current) {
+        webViewRef.current.injectJavaScript(
+          `window.postMessage(${JSON.stringify(text)}, '*');true;`
+        );
+      }
       setStdin('');
     }
   }, [stdin]);
 
-  const sendInterrupt = useCallback(() => {
-    transport.sendMessage({type: 'interrupt'});
-  }, [transport]);
-
-  const statusColor = status === 'connected' ? '#3fb950' : status === 'connecting' ? '#d29922' : '#f85149';
-  const statusText = status === 'connected' ? '연결됨' : status === 'connecting' ? '연결 중...' : '끊김';
-
-  const badgeColor = (t: string) => {
-    switch (t) {
-      case 'assistant': return '#58a6ff';
-      case 'user': return '#3fb950';
-      case 'raw': return '#484f58';
-      case 'AskUserQuestion': return '#d29922';
-      case 'Bash': return '#f0883e';
-      case 'me': return '#238636';
-      default: return '#484f58';
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Text style={styles.backBtnText}>← 뒤로</Text>
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={onBack}>
+          <Text style={styles.backBtn}>← 뒤로</Text>
         </TouchableOpacity>
-        <View style={styles.statusRow}>
-          <View style={[styles.statusDot, {backgroundColor: statusColor}]} />
-          <Text style={styles.statusText}>{statusText}</Text>
-        </View>
+        <Text style={styles.statusText}>
+          {status === 'connected' ? '● 연결됨' : status === 'connecting' ? '◌ 연결 중...' : '○ 끊김'}
+        </Text>
+        <View style={{width: 50}} />
       </View>
 
-      <FlatList
-        data={items}
-        keyExtractor={item => item.id}
-        contentContainerStyle={styles.list}
-        inverted={false}
-        renderItem={({item}) => (
-          <View style={styles.itemRow}>
-            <Text style={styles.itemTime}>{item.time}</Text>
-            <View style={[styles.itemBadge, {backgroundColor: badgeColor(item.type)}]}>
-              <Text style={styles.itemBadgeText}>{item.type.substring(0, 4)}</Text>
-            </View>
-            <Text style={styles.itemText} numberOfLines={2}>{item.text}</Text>
-          </View>
-        )}
-      />
+      {/* Terminal (xterm.js WebView) */}
+      <View style={styles.termContainer}>
+        <WebView
+          ref={webViewRef}
+          source={Platform.OS === 'android'
+            ? {uri: 'file:///android_asset/terminal.html'}
+            : {uri: 'terminal.html'}}
+          style={styles.webview}
+          javaScriptEnabled
+          domStorageEnabled
+          onMessage={onWebViewMessage}
+          originWhitelist={['*']}
+        />
+      </View>
 
-      <View style={styles.inputBar}>
-        <TouchableOpacity style={styles.ctrlCButton} onPress={sendInterrupt}>
-          <Text style={styles.ctrlCText}>Ctrl+C</Text>
-        </TouchableOpacity>
+      {/* Chat input */}
+      <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
+          placeholder="채팅 입력..."
+          placeholderTextColor="#666"
           value={stdin}
           onChangeText={setStdin}
-          placeholder="텍스트 입력..."
-          placeholderTextColor="#484f58"
           onSubmitEditing={sendStdin}
           returnKeyType="send"
+          autoCorrect={false}
         />
-        <TouchableOpacity style={styles.sendButton} onPress={sendStdin}>
-          <Text style={styles.sendText}>전송</Text>
+        <TouchableOpacity onPress={sendStdin} style={styles.sendBtn}>
+          <Text style={styles.sendBtnText}>전송</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -128,48 +109,24 @@ export default function FeedScreen({transport, pushToken, onBack}: Props) {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#0d1117'},
-  topBar: {
+  header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#21262d',
+    paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#161b22',
   },
-  backBtn: {paddingVertical: 4, paddingRight: 12},
-  backBtnText: {color: '#58a6ff', fontSize: 15},
-  statusRow: {flexDirection: 'row', alignItems: 'center'},
-  statusDot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
-  statusText: {color: '#8b949e', fontSize: 13},
-  list: {padding: 12, paddingBottom: 8},
-  itemRow: {
-    flexDirection: 'row', alignItems: 'center', paddingVertical: 6,
-    borderBottomWidth: 1, borderBottomColor: '#161b22',
+  backBtn: {color: '#58a6ff', fontSize: 14},
+  statusText: {color: '#8b949e', fontSize: 12},
+  termContainer: {flex: 1},
+  webview: {flex: 1, backgroundColor: '#0d1117'},
+  inputRow: {
+    flexDirection: 'row', padding: 8, backgroundColor: '#161b22', alignItems: 'center',
   },
-  itemTime: {
-    color: '#484f58', fontSize: 11, width: 52,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  itemBadge: {
-    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, marginRight: 8,
-    minWidth: 32, alignItems: 'center',
-  },
-  itemBadgeText: {color: '#fff', fontSize: 9, fontWeight: '700'},
-  itemText: {
-    color: '#c9d1d9', fontSize: 12, flex: 1,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  inputBar: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
-    paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#21262d',
-  },
-  ctrlCButton: {
-    backgroundColor: '#f8514966', borderRadius: 6, paddingVertical: 10, paddingHorizontal: 10, marginRight: 8,
-  },
-  ctrlCText: {color: '#f85149', fontSize: 13, fontWeight: '700'},
   input: {
-    flex: 1, backgroundColor: '#161b22', color: '#c9d1d9', fontSize: 14,
-    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8,
-    borderWidth: 1, borderColor: '#30363d',
+    flex: 1, backgroundColor: '#21262d', color: '#c9d1d9',
+    borderRadius: 6, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14,
   },
-  sendButton: {
-    backgroundColor: '#238636', borderRadius: 6, paddingVertical: 10, paddingHorizontal: 14, marginLeft: 8,
+  sendBtn: {
+    marginLeft: 8, backgroundColor: '#238636', borderRadius: 6,
+    paddingHorizontal: 14, paddingVertical: 8,
   },
-  sendText: {color: '#fff', fontSize: 14, fontWeight: '600'},
+  sendBtnText: {color: '#fff', fontWeight: '600', fontSize: 13},
 });
