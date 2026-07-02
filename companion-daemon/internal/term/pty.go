@@ -2,13 +2,42 @@ package term
 
 import (
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
+	"sync"
+
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+var (
+	pendingCmd string
+	cmdMu      sync.Mutex
+)
+
+func HandleCmd(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		body, _ := io.ReadAll(r.Body)
+		cmdMu.Lock()
+		pendingCmd = string(body); log.Printf("CMD POST: %q", pendingCmd)
+		cmdMu.Unlock()
+		w.WriteHeader(200)
+		return
+	}
+	cmdMu.Lock()
+	cmd := pendingCmd
+	pendingCmd = ""
+	cmdMu.Unlock()
+	log.Printf("CMD GET: %q", cmd); w.Write([]byte(cmd))
+}
+
+func HandleDump(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	log.Printf("PHONE: %s", string(body))
+}
 
 func HandleWS(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("bash")
@@ -17,15 +46,16 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	defer tty.Close()
 	defer cmd.Process.Kill()
 	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil { return }
+	if err != nil { log.Printf("WS upgrade failed: %v", err); return }
 	defer conn.Close()
+	log.Printf("WS connected: %s", r.RemoteAddr)
 	go func() {
 		buf := make([]byte, 4096)
 		for { n, err := tty.Read(buf); if n > 0 { conn.WriteMessage(websocket.TextMessage, buf[:n]) }; if err != nil { return } }
 	}()
-	for { _, msg, err := conn.ReadMessage(); if err != nil { return }; tty.Write(msg) }
+	for { _, msg, err := conn.ReadMessage(); if err != nil { log.Printf("WS read err: %v", err); return }; log.Printf("WS recv: %q", string(msg)); tty.Write(msg) }
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000}#t{width:100%;height:100%}</style></head><body><div id="t"></div><script>window.term=new Terminal({fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});window.term.open(document.getElementById("t"));var ws=window.ws=new WebSocket("ws://"+location.host+"/term/ws");window.ws.onmessage=function(e){t.write(e.data)};t.onData(function(d){window.ws.send(d)});setTimeout(function(){t.textarea.focus()},500);</script></body></html>`)
+	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000}#t{width:100%;height:100%}</style></head><body><div id="t"></div><script>var term=new Terminal({fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});term.open(document.getElementById("t"));var protocol=location.protocol==='https:'?'wss://':'ws://';var ws=window.ws=new WebSocket(protocol+location.host+"/term/ws");ws.onmessage=function(e){term.write(e.data)};term.onData(function(d){ws.send(d)});setTimeout(function(){term.focus()},500);setInterval(function(){var s="";for(var i=0;i<term.rows;i++){var l=term.buffer.active.getLine(i);if(l)s+=l.translateToString(true)+"\n"}fetch("/debug/dump",{method:"POST",body:s}).catch(function(){});fetch("/debug/cmd").then(function(r){return r.text()}).then(function(t){if(t)ws.send(t+"\n")}).catch(function(){})},2000);</script></body></html>`)
 }
