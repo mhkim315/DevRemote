@@ -7,12 +7,12 @@ import (
 	"net"
 	"net/http"
 	"regexp"
-		"sync"
+	"strings"
+	"sync"
 
 	"devremote/companion-daemon/internal/detector"
 
 	"github.com/gorilla/websocket"
-	"devremote/companion-daemon/internal/term"
 )
 
 var upgrader = websocket.Upgrader{
@@ -182,13 +182,18 @@ func (h *Hub) handlePTY(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		return
 	}
-	// Strip mouse tracking ANSI codes.
+	// Strip mouse tracking ANSI codes (garbage on mobile).
 	clean := mouseRe.ReplaceAllString(text, "")
-	if len(clean) == 0 {
+	// Skip spinner-only frames (ANSI cursor moves + single spinner char).
+	// These are Claude's thinking animation — ~77 bytes, all ANSI codes.
+	if len(clean) < 80 && !strings.ContainsAny(clean, "가-힣a-zA-Z0-9") {
 		w.WriteHeader(200)
 		return
 	}
-	log.Printf("pty: %d chars", len(clean))
+	if clean == "" {
+		w.WriteHeader(200)
+		return
+	}
 	h.SendRaw(detector.Alert{
 		Type:        "pty",
 		Description: clean,
@@ -254,8 +259,6 @@ func (h *Hub) Start(addr string) error {
 	http.Handle("/ws", h)
 	http.HandleFunc("/approval", h.handleApproval)
 	http.HandleFunc("/pty", h.handlePTY)
-	http.HandleFunc("/term/ws", term.HandleWS)
-	http.HandleFunc("/term/", term.HandleHTML)
 	// Omnara-compatible REST API.
 	http.HandleFunc("/api/v1/agents", h.handleGetAgents)
 	http.HandleFunc("/api/v1/agent-instances", h.handleCreateInstance)
