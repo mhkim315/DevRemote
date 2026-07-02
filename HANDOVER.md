@@ -1,100 +1,68 @@
-# DevRemote 인수인계 (2026-07-03 오전)
+# DevRemote 인수인계 (Phase 3 완료 - 최종 아키텍처 확정)
 
-## 현재 상태
+## 🌟 현재 상태 (Phase 3 달성)
 
-**WebSocket 터미널: 완벽 작동** ✅
-- Daemon `:9171` → `/term/` (xterm.js) + `/term/ws` (PTY bash)
-- Phone WebView → Daemon URL → WebSocket → 터미널 렌더링
-- Spy: `/debug/dump` (화면 캡처) + `/debug/cmd` (명령어 주입)
-- FeedScreen: WebView + TextInput + `injectJavaScript` → `window.ws.send()`
+WebRTC의 모순을 버리고 **"Cloudflare 고정 터널 + WebSocket"** 으로 최종 진화했습니다.
 
-## 아키텍처 결정: WebSocket + Cloudflare 터널 (WebRTC 폐기)
+1. **영구 고정 터널 (`term.fullcount.kr`)** ✅
+   - 사용자 소유 도메인(`fullcount.kr`)으로 Cloudflare 터널 `devremote`를 영구 생성.
+   - 앱 소스코드(`FeedScreen.tsx`)에 주소를 고정으로 박아넣어 "1초 자동 연결" UX 완성.
+2. **데몬 완전 자동화 (`main.go`)** ✅
+   - 데몬 실행 시 `cloudflared tunnel run devremote` 서브프로세스를 알아서 백그라운드에 띄움.
+3. **Omnara Dashboard 통합** ✅
+   - `App.tsx`에서 정적 대시보드 렌더링. 에이전트 터치 시 즉각 터미널(`FeedScreen.tsx`) 진입.
+4. **Push 알림 인프라 (FCM/Expo)** ✅
+   - 폰에서 Expo Push Token을 발급받아 Mac 데몬(`/push/register`)에 등록.
+   - PTY에서 `[Approval Required]` 출력 시, 데몬이 감지하여 Expo API로 푸시 발송.
+5. **PTY 영속성 확보 (`tmux`)** ✅
+   - 터널이 끊기더라도 `tmux`를 사용하여 이전 세션이 날아가지 않고 그대로 유지됨.
 
-**이유**: 
-- Local signaling = 같은 네트워크에서만 WebRTC 작동 (터널 불필요면 WebSocket으로 충분)
-- WebRTC 디버깅 3일 실패 vs WebSocket 2일 검증 완료
-- Cloudflare 터널로 원격 접속 해결 (무료, `./cloudflared tunnel --url http://localhost:9171`)
-
-## 브랜치: `ground-zero`
-
-## 실행
+## 📁 실행 방법
 
 ```bash
-# 1. Daemon
+# 1. Daemon 켜기 (터널 자동 실행됨)
 cd companion-daemon
 go build -o devremote ./cmd/devremote/
 ./devremote
-# → http://localhost:9171/term/
+# → 로컬 9171 포트 및 term.fullcount.kr 동시 서빙 시작
 
-# 2. Cloudflare tunnel (원격용)
-./cloudflared tunnel --url http://localhost:9171
-# → https://xxxx.trycloudflare.com URL
-
-# 3. APK 빌드
-cd mobile/android
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
-ANDROID_HOME="$HOME/Library/Android/sdk" \
-./gradlew assembleRelease
-# FeedScreen.tsx의 TERM_URL을 Wi-Fi IP 또는 Cloudflare URL로 변경 후 빌드
+# 2. 모바일 앱 빌드 및 실행
+cd mobile
+npx expo start
 ```
 
-## 파일 구조
+## 🏗 파일 구조 변화 (Phase 3 핵심)
 
 ```
 devremote/
 ├── companion-daemon/
-│   ├── cmd/devremote/main.go       (60줄, HTTP + WebRTC + PTY)
-│   ├── internal/term/pty.go        (HandleWS + HandleHTML + HandleDump/Cmd + StartPTY)
-│   ├── internal/signal/local.go    (local signaling for WebRTC - 미사용)
-│   ├── internal/webrtc/session.go  (WebRTC session - 미사용)
-│   ├── internal/push/expo.go       (Expo push notifications - 미사용)
-│   └── internal/watcher/           (JSONL watcher - 미사용)
+│   ├── cmd/devremote/main.go       (HTTP 서버 + Push 토큰 등록 + cloudflared 자동실행)
+│   ├── internal/term/pty.go        (tmux PTY + [Approval Required] 감지 푸시 후킹 + WebSocket)
+│   └── cloudflared                 (터널 바이너리, main.go가 호출함)
 ├── mobile/
-│   ├── App.tsx                     (Dashboard ↔ FeedScreen)
-│   ├── src/screens/FeedScreen.tsx  (WebView → daemon URL, TextInput)
-│   ├── src/screens/terminalHtml.ts (WebRTC inline HTML - 미사용)
-│   ├── src/screens/dashboard/DashboardScreen.tsx
-│   └── assets/terminal.html
-├── cloudflared                     (Cloudflare tunnel binary)
+│   ├── App.tsx                     (Expo Push Token 발급 및 등록 + Dashboard 라우팅)
+│   ├── src/screens/FeedScreen.tsx  (고정 주소 term.fullcount.kr/term/ WebView)
+│   ├── assets/terminal.html        (local emulator spy 로직 포함)
 └── HANDOVER.md
 ```
 
-## API
+## 📡 API (최종 확정)
 
 | Endpoint | Method | 설명 |
 |---|---|---|
 | `/term/` | GET | xterm.js HTML + spy (WebSocket auto-connect) |
-| `/term/ws` | WebSocket | PTY bash |
-| `/debug/dump` | POST | Phone screen dump 수신 |
-| `/debug/cmd` | POST | Command queue (AI 주입) |
-| `/debug/cmd` | GET | Poll pending command (spy가 2초마다 호출) |
-| `/join`, `/poll`, `/send` | HTTP | Local signaling (WebRTC용, 미사용) |
+| `/term/ws` | WebSocket | tmux PTY bash (메인 통신 채널) |
+| `/debug/dump` | POST | Phone screen dump (에뮬레이터 디버깅 전용) |
+| `/debug/cmd` | POST, GET | Command queue (AI가 명령어 주입 시 사용) |
+| `/push/register` | GET | 모바일 앱에서 발급받은 Expo Push Token 등록 |
 
-## Spy 활용
+## 🚀 다음 에이전트가 할 일 (Phase 4 우선순위)
 
-```bash
-# 폰 화면 보기
-grep 'PHONE:' /tmp/gz.log | tail -3
-
-# 명령어 주입 (spy가 2초 내 polling)
-curl -X POST http://127.0.0.1:9171/debug/cmd -d 'echo hello'
-
-# Daemon 상태
-curl http://127.0.0.1:9171/term/  # 200 = 정상
-```
-
-## 앞으로 할 일 (우선순위)
-
-1. **Cloudflare 터널 자동화** — daemon 시작 시 자동 터널, 고정 URL
-2. **Omnara Dashboard 통합** — DashboardScreen과 FeedScreen 자연스럽게 연결
-3. **푸시 알림 (FCM)** — Expo Push Token 등록 → Claude 승인 시 알림
-4. **Claude Shell Hook** — `devremote hook` → `.zshrc`에 alias
-5. **iOS 빌드** — EAS Build
-6. **Play Store 배포**
-
-## WebRTC 폐기 근거
-
-- Local signaling(`127.0.0.1:9171`): 같은 네트워크에서만 작동 → WebSocket이 더 빠르고 간단
-- Public signaling(Oracle 168.107.59.177): 추가 인프라 필요 → Cloudflare 터널이 더 간단
-- 3일 디버깅해도 연결 실패 (SDP 교환, CORS, inline HTML origin 문제)
-- 터미널 텍스트 전송에서는 WebRTC P2P의 저레이턴시 이점이 거의 없음
+1. **Claude Shell Hook 고도화**
+   - 현재 데몬에서 `[Approval Required]` 문자열만 감지하고 있음.
+   - `devremote hook` 명령어를 만들어 `.zshrc`에 등록하고, Aider/Claude 등 실제 AI 에이전트의 프롬프트 입력을 가로채서 더 정교하게 푸시를 쏘는 기능 구현 필요.
+2. **Dashboard 동적 데이터 연동**
+   - 현재 `DashboardScreen.tsx`의 에이전트 목록이 하드코딩되어 있음.
+   - 데몬이 실행 중인 `tmux` 세션들이나 AI 프로세스들을 스캔해서 앱의 대시보드 리스트에 동적으로 띄우는 기능.
+3. **앱 배포 파이프라인 (EAS Build)**
+   - iOS/Android 스토어 정식 배포 준비.

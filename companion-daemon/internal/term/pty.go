@@ -62,7 +62,7 @@ func HandleDump(w http.ResponseWriter, r *http.Request) {
 }
 
 // StartPTY starts a tmux shell in a PTY and reads its output.
-func StartPTY(onMessage func([]byte)) (io.Writer, error) {
+func StartPTY(onMessage func([]byte), onPush func(string)) (io.Writer, error) {
 	cmd := exec.Command("tmux", "new-session", "-A", "-s", "devremote")
 	tty, err := pty.Start(cmd)
 	if err != nil {
@@ -82,9 +82,11 @@ func StartPTY(onMessage func([]byte)) (io.Writer, error) {
 				data := buf[:n]
 				
 				// --- Phase 3: Claude Hook & Push Notification ---
-				// If we detect the agent asking for approval, trigger push
 				if bytes.Contains(data, []byte("[Approval Required]")) {
-					log.Println("🚨 [PUSH NOTIFICATION] Sending FCM to mobile: 'Agent Claude requires your approval!'")
+					log.Println("🚨 [PUSH NOTIFICATION] Agent Claude requires your approval!")
+					if onPush != nil {
+						onPush("Agent Claude requires your approval!")
+					}
 				}
 
 				if onMessage != nil {
