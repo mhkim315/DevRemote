@@ -17,6 +17,7 @@ func main() {
 	http.HandleFunc("/api/sessions", term.HandleSessions)
 	http.HandleFunc("/term/ws", term.HandleWS)
 	http.HandleFunc("/term/", term.HandleHTML)
+	http.HandleFunc("/term/resize", term.HandleResize)
 	var pushToken string
 
 	http.HandleFunc("/push/register", func(w http.ResponseWriter, r *http.Request) {
