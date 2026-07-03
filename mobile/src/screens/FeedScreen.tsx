@@ -115,8 +115,8 @@ export default function FeedScreen({onBack, session}: Props) {
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
           <Text style={styles.headerTitle}>{session}</Text>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
-            <TouchableOpacity onPress={handleCopyRequest} style={{marginRight: 12}}><Text style={styles.iconBtn}>📋</Text></TouchableOpacity>
-            <TouchableOpacity onPress={handlePasteRequest} style={{marginRight: 12}}><Text style={styles.iconBtn}>📝</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>Copy</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>Paste</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => {
               if (wv.current) wv.current.reload();
             }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
@@ -202,6 +202,8 @@ const styles = StyleSheet.create({
   backBtn: {fontSize: 24, color: '#fff'},
   reloadBtn: {fontSize: 20, color: '#58a6ff', paddingHorizontal: 4},
   iconBtn: {fontSize: 18},
+  textBtn: {backgroundColor: '#21262d', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#30363d', marginRight: 10},
+  textBtnText: {color: '#c9d1d9', fontSize: 12, fontWeight: '600'},
   webview: {flex:1, backgroundColor:'#000'},
   macroContainer: { backgroundColor: '#161b22', borderTopWidth: 1, borderTopColor: '#30363d' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
