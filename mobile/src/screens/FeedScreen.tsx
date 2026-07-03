@@ -130,6 +130,56 @@ export default function FeedScreen({onBack, session, token}: Props) {
     } catch (e) {}
   }, []);
 
+  const pinchZoomInjection = `
+    (function() {
+      let initialDistance = null;
+      let initialFontSize = null;
+
+      document.addEventListener('touchstart', function(e) {
+        if(e.touches.length === 2 && window.term) {
+          initialDistance = Math.hypot(
+            e.touches[0].pageX - e.touches[1].pageX,
+            e.touches[0].pageY - e.touches[1].pageY
+          );
+          initialFontSize = window.term.options.fontSize || 12;
+        }
+      });
+
+      document.addEventListener('touchmove', function(e) {
+        if(e.touches.length === 2 && initialDistance && window.term) {
+          const currentDistance = Math.hypot(
+            e.touches[0].pageX - e.touches[1].pageX,
+            e.touches[0].pageY - e.touches[1].pageY
+          );
+          const scale = currentDistance / initialDistance;
+          const newFontSize = Math.max(6, Math.min(60, Math.round(initialFontSize * scale)));
+          
+          if (window.term.options.fontSize !== newFontSize) {
+            window.term.options.fontSize = newFontSize;
+          }
+        }
+      });
+
+      document.addEventListener('touchend', function(e) {
+        if(e.touches.length < 2) {
+          initialDistance = null;
+        }
+      });
+      
+      // Also inject a helper function to send selected text to React Native
+      window.getTerminalText = function() {
+        if (window.term && window.term.hasSelection()) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'copy',
+            text: window.term.getSelection()
+          }));
+        }
+      };
+      
+      true; // ensure it doesn't cause JSON parsing issues when injected
+    })();
+  `;
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.flex}>
@@ -137,9 +187,9 @@ export default function FeedScreen({onBack, session, token}: Props) {
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
           <Text style={styles.headerTitle}>{session}</Text>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
-            <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>Copy</Text></TouchableOpacity>
-            <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>Paste</Text></TouchableOpacity>
-            <TouchableOpacity onPress={handleScrollToggle} style={[styles.textBtn, isScrollMode && {backgroundColor: '#238636', borderColor: '#2ea043'}]}><Text style={[styles.textBtnText, isScrollMode && {color: '#fff'}]}>{isScrollMode ? 'Scroll: ON' : 'Scroll: OFF'}</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>COPY</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>PASTE</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handleScrollToggle} style={[styles.textBtn, isScrollMode && {backgroundColor: '#1E91B3'}]}><Text style={[styles.textBtnText, isScrollMode && {color: '#fff'}]}>{isScrollMode ? 'SCROLL: ON' : 'SCROLL: OFF'}</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => {
               if (wv.current) wv.current.reload();
             }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
@@ -152,6 +202,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           style={styles.webview}
           javaScriptEnabled
           domStorageEnabled
+          injectedJavaScript={pinchZoomInjection}
           originWhitelist={['*']}
           cacheEnabled={false}
           onMessage={onMessage}
