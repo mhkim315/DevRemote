@@ -10,7 +10,7 @@ interface Props {
 
 function jsSend(chars: number[]): string {
   const arr = JSON.stringify(chars);
-  return `var a=${arr};for(var i=0;i<a.length;i++)window.ws.send(String.fromCharCode(a[i]))`;
+  return `window.ws.send(String.fromCharCode.apply(null, ${arr}))`;
 }
 
 const MACROS: { label: string; chars: number[] }[] = [
