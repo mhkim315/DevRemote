@@ -1,4 +1,4 @@
-import React, {useRef, useState, useCallback, useEffect} from 'react';
+import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, KeyboardAvoidingView, Platform, Keyboard, Animated} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -34,7 +34,8 @@ export default function FeedScreen({onBack, session}: Props) {
   const [kbHeight, setKbHeight] = useState(0);
   const [wsReady, setWsReady] = useState(false);
 
-  const termUrl = `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`;
+  const termUrl = useMemo(() => `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`, [session]);
+  const source = useMemo(() => ({uri: termUrl}), [termUrl]);
 
   // Track keyboard height on Android
   useEffect(() => {
@@ -106,7 +107,7 @@ export default function FeedScreen({onBack, session}: Props) {
 
         <WebView
           ref={wv}
-          source={{uri: termUrl}}
+          source={source}
           style={styles.webview}
           javaScriptEnabled
           domStorageEnabled
