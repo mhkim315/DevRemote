@@ -23,9 +23,9 @@ const MACROS: { label: string; chars: number[] }[] = [
   { label: '↓',       chars: [27, 91, 66] },
   { label: '←',       chars: [27, 91, 68] },
   { label: '→',       chars: [27, 91, 67] },
-  { label: 'Y',       chars: [121, 10] },
-  { label: 'N',       chars: [110, 10] },
-  { label: 'Enter',   chars: [10] },
+  { label: 'Y',       chars: [121, 13] },
+  { label: 'N',       chars: [110, 13] },
+  { label: 'Enter',   chars: [13] },
 ];
 
 export default function FeedScreen({onBack, session}: Props) {
@@ -56,7 +56,7 @@ export default function FeedScreen({onBack, session}: Props) {
   const doSend = useCallback((text: string) => {
     const t = text.trim();
     if (!t || !wv.current) return;
-    inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(t+'\n')+')');
+    inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(t+'\r')+')');
   }, [inject]);
 
   const send = useCallback(() => {
