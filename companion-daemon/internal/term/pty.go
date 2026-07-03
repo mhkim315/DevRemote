@@ -2,10 +2,14 @@ package term
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,29 +35,45 @@ func verifyToken(tokenString string) bool {
 		return OwnerUUID == ""
 	}
 
-	// Use Supabase JWKS endpoint for RS256 verification in production
+	// Dev mode: accept any token without signature verification
+	if OwnerUUID == "" && SupabaseProjectRef == "" {
+		parser := jwt.NewParser()
+		token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+		if err != nil {
+			log.Printf("JWT parse err (dev): %v", err)
+			return false
+		}
+		if token != nil {
+			sub, _ := token.Claims.(jwt.MapClaims)["sub"]
+			log.Printf("DEV: accepted token (sub=%v)", sub)
+			return true
+		}
+		return false
+	}
+
+	// Production mode: verify signature via Supabase JWKS
 	keyFunc := func(token *jwt.Token) (interface{}, error) {
 		alg := token.Header["alg"]
 
-		// RS256 — fetch public key from Supabase JWKS
+		if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
+			if SupabaseProjectRef == "" {
+				return nil, fmt.Errorf("ES256 requires SupabaseProjectRef")
+			}
+			kid, _ := token.Header["kid"].(string)
+			return fetchJWKSKey(SupabaseProjectRef, kid)
+		}
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); ok {
 			if SupabaseProjectRef == "" {
 				return nil, fmt.Errorf("RS256 requires SupabaseProjectRef")
 			}
-			kid, ok := token.Header["kid"].(string)
-			if !ok {
-				return nil, fmt.Errorf("missing kid in token header")
-			}
+			kid, _ := token.Header["kid"].(string)
 			return fetchJWKSKey(SupabaseProjectRef, kid)
 		}
-
-		// HS256 — dev-mode only, deprecated for production
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); ok {
-			log.Printf("WARN: HS256 token detected. HS256 is deprecated for production. Use RS256.")
 			return []byte("dev-secret-do-not-use-in-production"), nil
 		}
 
-		log.Printf("WARN: unknown signing method %v, using dev key", alg); return []byte("dev-secret-do-not-use-in-production"), nil
+		return nil, fmt.Errorf("unsupported signing method: %v", alg)
 	}
 
 	token, err := jwt.Parse(tokenString, keyFunc)
@@ -66,7 +86,7 @@ func verifyToken(tokenString string) bool {
 		return false
 	}
 
-	// Check owner UUID (sub claim must match)
+	// Check owner UUID
 	if OwnerUUID != "" {
 		sub, _ := token.Claims.GetSubject()
 		if sub == "" {
@@ -77,14 +97,11 @@ func verifyToken(tokenString string) bool {
 			log.Printf("JWT rejected: sub=%q != owner=%q", sub, OwnerUUID)
 			return false
 		}
-	} else {
-		log.Printf("WARN: OwnerUUID not set. Accepting any valid token (insecure).")
 	}
 
 	return true
 }
 
-// jwksCache and fetchJWKSKey implement RS256 public key resolution.
 var (
 	jwksCache   map[string]interface{}
 	jwksCacheMu sync.Mutex
@@ -106,6 +123,8 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 			Keys []struct {
 				Kid string `json:"kid"`
 				Kty string `json:"kty"`
+				X   string `json:"x"`
+				Y   string `json:"y"`
 				N   string `json:"n"`
 				E   string `json:"e"`
 			} `json:"keys"`
@@ -116,23 +135,23 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 
 		jwksCache = make(map[string]interface{})
 		for _, k := range jwks.Keys {
-			if k.Kty == "RSA" && k.Kid != "" {
-				// Parse RSA public key from JWK
-				pubKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(
-					fmt.Sprintf("-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"),
-				))
-				if err != nil {
-					// Use the raw JWK values with golang-jwt
-					jwksCache[k.Kid] = &k
-				} else {
-					jwksCache[k.Kid] = pubKey
+			if k.Kid == "" {
+				continue
+			}
+			switch k.Kty {
+			case "EC":
+				xb, _ := base64.RawURLEncoding.DecodeString(k.X)
+				yb, _ := base64.RawURLEncoding.DecodeString(k.Y)
+				jwksCache[k.Kid] = &ecdsa.PublicKey{
+					Curve: elliptic.P256(),
+					X:     new(big.Int).SetBytes(xb),
+					Y:     new(big.Int).SetBytes(yb),
 				}
 			}
 		}
+		log.Printf("jwks: loaded %d keys", len(jwksCache))
 	}
 
-	// For now, return a simple approach: the Supabase JWKS keys map
-	// golang-jwt handles RSA key resolution natively via Keyfunc
 	if key, ok := jwksCache[kid]; ok {
 		return key, nil
 	}
