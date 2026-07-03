@@ -177,12 +177,9 @@ export default function FeedScreen({onBack, session}: Props) {
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.modalScroll}>
-              <TextInput
-                style={styles.modalText}
-                value={copyText}
-                multiline={true}
-                editable={false}
-              />
+              <Text style={styles.modalText} selectable={true}>
+                {copyText}
+              </Text>
             </ScrollView>
             <View style={styles.modalFooter}>
               <Text style={styles.modalHint}>Long press on the text above to select and copy.</Text>
