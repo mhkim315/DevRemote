@@ -7,6 +7,7 @@ import * as Clipboard from 'expo-clipboard';
 interface Props {
   onBack: () => void;
   session: string;
+  token?: string;
 }
 
 function jsSend(chars: number[]): string {
@@ -35,7 +36,7 @@ const SCROLL_MACROS: { label: string; chars: number[] }[] = [
   { label: '❌ Exit Scroll',chars: [113] }, // 'q' to exit tmux copy mode
 ];
 
-export default function FeedScreen({onBack, session}: Props) {
+export default function FeedScreen({onBack, session, token}: Props) {
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
@@ -45,7 +46,13 @@ export default function FeedScreen({onBack, session}: Props) {
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
 
-  const termUrl = useMemo(() => `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`, [session]);
+  const termUrl = useMemo(() => {
+    let url = `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`;
+    if (token) {
+      url += `&token=${encodeURIComponent(token)}`;
+    }
+    return url;
+  }, [session, token]);
   const source = useMemo(() => ({uri: termUrl}), [termUrl]);
 
   useEffect(() => {
