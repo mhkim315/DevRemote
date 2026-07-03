@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Platform, KeyboardAvoidingView, Alert } from 'react-native';
-import { FontAwesome5 } from '@expo/vector-icons';
+import Svg, { Path } from 'react-native-svg';
 import { RUNNERS, PRESET_COLORS } from '../lib/runners';
 
 interface Props {
   visible: boolean;
   onClose: () => void;
   onSave: (id: string, runner: string, color: string) => void;
-  onDelete?: (id: string) => void; // If provided, we are in Edit mode
+  onDelete?: (id: string) => void;
   initialId?: string;
   initialRunner?: string;
   initialColor?: string;
@@ -46,19 +46,19 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
           </View>
 
           <ScrollView style={styles.scroll}>
-            <Text style={styles.label}>Agent Name</Text>
+            <Text style={styles.label}>AGENT NAME</Text>
             <TextInput
               style={styles.input}
-              placeholder="e.g. backend-dev"
-              placeholderTextColor="#666"
+              placeholder="E.G. BACKEND-DEV"
+              placeholderTextColor="#1E91B3"
               value={id}
               onChangeText={setId}
               autoCapitalize="none"
               autoCorrect={false}
-              editable={!isEditMode} // Cannot change tmux session name easily after creation
+              editable={!isEditMode}
             />
 
-            <Text style={styles.label}>Select Runner</Text>
+            <Text style={styles.label}>SELECT RUNNER</Text>
             <View style={styles.grid}>
               {RUNNERS.map(r => {
                 const selected = r.id === runner;
@@ -71,14 +71,16 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
                       selected && { borderColor: color, backgroundColor: color + '20' }
                     ]}
                   >
-                    <FontAwesome5 name={r.icon} size={18} color={selected ? color : '#8b949e'} />
-                    <Text style={[styles.runnerText, selected && { color: '#fff' }]}>{r.name}</Text>
+                    <Svg width={24} height={24} viewBox="0 0 388 388">
+                      <Path d={r.frames[0]} fill={selected ? color : '#1E91B3'} />
+                    </Svg>
+                    <Text style={[styles.runnerText, selected && { color: '#ffffff' }]}>{r.name.toUpperCase()}</Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
 
-            <Text style={styles.label}>Select Color</Text>
+            <Text style={styles.label}>SELECT COLOR</Text>
             <View style={styles.colorGrid}>
               {PRESET_COLORS.map(c => (
                 <TouchableOpacity
@@ -92,7 +94,7 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
 
           <View style={styles.footer}>
             <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-              <Text style={styles.saveBtnText}>Save</Text>
+              <Text style={styles.saveBtnText}>SAVE</Text>
             </TouchableOpacity>
             
             {isEditMode && onDelete && (
@@ -105,7 +107,7 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
                   ]);
                 }}
               >
-                <Text style={styles.deleteBtnText}>Terminate Agent</Text>
+                <Text style={styles.deleteBtnText}>TERMINATE AGENT</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -117,22 +119,22 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
 
 const styles = StyleSheet.create({
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#161b22', borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: '90%' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#30363d' },
-  title: { color: '#fff', fontSize: 18, fontWeight: '700' },
-  closeBtn: { color: '#8b949e', fontSize: 16 },
+  modalContent: { backgroundColor: '#0D2D45', borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: '90%' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#1E91B3' },
+  title: { color: '#ffffff', fontSize: 18, fontWeight: '800', letterSpacing: 1.2 },
+  closeBtn: { color: '#45EBE9', fontSize: 13, fontWeight: '700', letterSpacing: 0.96 },
   scroll: { padding: 20 },
-  label: { color: '#c9d1d9', fontSize: 14, fontWeight: '600', marginBottom: 8, marginTop: 12 },
-  input: { backgroundColor: '#0d1117', color: '#fff', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#30363d', fontSize: 16, marginBottom: 8 },
+  label: { color: '#45EBE9', fontSize: 12, fontWeight: '700', marginBottom: 8, marginTop: 12, letterSpacing: 0.96 },
+  input: { backgroundColor: '#000000', color: '#ffffff', padding: 12, borderRadius: 4, borderWidth: 1, borderColor: '#1E91B3', fontSize: 16, marginBottom: 8 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  runnerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, borderColor: '#30363d', backgroundColor: 'transparent' },
-  runnerText: { color: '#8b949e', fontWeight: '500' },
+  runnerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 32, borderWidth: 1.5, borderColor: '#1E91B3', backgroundColor: 'transparent' },
+  runnerText: { color: '#1E91B3', fontWeight: '700', letterSpacing: 0.96 },
   colorGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 40 },
   colorBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, borderColor: 'transparent' },
-  colorSelected: { borderColor: '#fff' },
-  footer: { padding: 20, borderTopWidth: 1, borderTopColor: '#30363d', gap: 12 },
-  saveBtn: { backgroundColor: '#238636', padding: 16, borderRadius: 8, alignItems: 'center' },
-  saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  deleteBtn: { backgroundColor: 'transparent', padding: 16, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#f85149' },
-  deleteBtnText: { color: '#f85149', fontSize: 16, fontWeight: '600' }
+  colorSelected: { borderColor: '#ffffff' },
+  footer: { padding: 20, borderTopWidth: 1, borderTopColor: '#1E91B3', gap: 12 },
+  saveBtn: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#45EBE9', padding: 16, borderRadius: 32, alignItems: 'center' },
+  saveBtnText: { color: '#ffffff', fontSize: 13, fontWeight: '700', letterSpacing: 1.17 },
+  deleteBtn: { backgroundColor: 'transparent', padding: 16, borderRadius: 32, alignItems: 'center', borderWidth: 1, borderColor: '#f85149' },
+  deleteBtnText: { color: '#f85149', fontSize: 13, fontWeight: '700', letterSpacing: 1.17 }
 });

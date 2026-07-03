@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert, Platform } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 
@@ -44,6 +44,17 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     const isEdit = !!editSession;
     const method = isEdit ? 'PUT' : 'POST';
     
+    // Optimistic Update
+    setSessions(prev => {
+      if (isEdit) {
+        return prev.map(s => s.id === id ? { ...s, runner, runnerColor: color } : s);
+      } else {
+        return [...prev, { id, state: 'idle', load: 0, runner, runnerColor: color }];
+      }
+    });
+    setModalVisible(false);
+    setEditSession(null);
+
     try {
       const res = await fetch('https://term.fullcount.kr/api/sessions', {
         method,
@@ -55,10 +66,10 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       });
       if (!res.ok) throw new Error('API Error');
       fetchSessions();
-      setModalVisible(false);
-      setEditSession(null);
     } catch (e) {
+      // Revert optimism on error would be good, but fetchSessions poll will overwrite it anyway
       Alert.alert('Error', 'Failed to save agent profile');
+      fetchSessions();
     }
   };
 
@@ -82,15 +93,15 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>POKIT Agents</Text>
+        <Text style={styles.headerTitle}>POKIT AGENTS</Text>
         <TouchableOpacity onPress={onSnippets} style={styles.snippetBtn}>
-          <Text style={styles.snippetBtnText}>📝 Snippets</Text>
+          <Text style={styles.snippetBtnText}>SNIPPETS</Text>
         </TouchableOpacity>
       </View>
 
       <View style={styles.content}>
         {loading ? (
-          <ActivityIndicator size="large" color="#58a6ff" style={{ marginTop: 40 }} />
+          <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
         ) : (
           <FlatList
             data={dataWithAdd}
@@ -107,7 +118,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
                       activeOpacity={0.7}
                     >
                       <Text style={styles.addCardPlus}>+</Text>
-                      <Text style={styles.addCardText}>New Agent</Text>
+                      <Text style={styles.addCardText}>NEW AGENT</Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -139,24 +150,25 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#090a0f' },
+  container: { flex: 1, backgroundColor: '#000000' },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#1e212b'
+    paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#0D2D45'
   },
-  headerTitle: { fontSize: 24, fontWeight: '700', color: '#fff', letterSpacing: -0.5 },
-  snippetBtn: { backgroundColor: '#21262d', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: '#30363d' },
-  snippetBtnText: { color: '#c9d1d9', fontSize: 13, fontWeight: '600' },
+  headerTitle: { fontSize: 24, fontWeight: '800', color: '#ffffff', letterSpacing: 1.2, fontFamily: Platform.OS === 'ios' ? 'HelveticaNeue-CondensedBold' : 'sans-serif-condensed' },
+  snippetBtn: { backgroundColor: 'transparent', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 32, borderWidth: 1, borderColor: '#45EBE9' },
+  snippetBtnText: { color: '#ffffff', fontSize: 12, fontWeight: '700', letterSpacing: 0.96 },
   content: { flex: 1 },
   gridContainer: {
     padding: 12,
   },
   addCard: {
     padding: 16, borderRadius: 16,
-    borderWidth: 1.5, borderColor: '#30363d', borderStyle: 'dashed',
+    borderWidth: 1.5, borderColor: '#1E91B3', borderStyle: 'dashed',
     flex: 1, alignItems: 'center', justifyContent: 'center',
     minHeight: 140,
+    backgroundColor: 'transparent'
   },
-  addCardPlus: { fontSize: 36, color: '#8b949e', fontWeight: '300' },
-  addCardText: { fontSize: 14, color: '#8b949e', fontWeight: '600', marginTop: 8 }
+  addCardPlus: { fontSize: 36, color: '#1E91B3', fontWeight: '300' },
+  addCardText: { fontSize: 12, color: '#1E91B3', fontWeight: '700', marginTop: 8, letterSpacing: 0.96 }
 });

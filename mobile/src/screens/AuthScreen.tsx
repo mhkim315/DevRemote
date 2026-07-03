@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, StyleSheet, View, Text, TextInput, TouchableOpacity, AppState, Platform } from 'react-native';
+import { Alert, StyleSheet, View, Text, TextInput, TouchableOpacity, AppState, Platform, Image } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -46,32 +46,33 @@ export default function AuthScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
+        <Image source={require('../../assets/logo.png')} style={styles.logo} />
         <Text style={styles.title}>POKIT</Text>
-        <Text style={styles.subtitle}>AI Coding in your pocket</Text>
+        <Text style={styles.subtitle}>AI CODING IN YOUR POCKET</Text>
       </View>
 
       <View style={styles.form}>
         <View style={styles.inputContainer}>
-          <Text style={styles.label}>Email</Text>
+          <Text style={styles.label}>EMAIL</Text>
           <TextInput
             style={styles.input}
             onChangeText={(text) => setEmail(text)}
             value={email}
-            placeholder="developer@example.com"
-            placeholderTextColor="#8b949e"
+            placeholder="DEVELOPER@EXAMPLE.COM"
+            placeholderTextColor="#5a5a5f"
             autoCapitalize="none"
             keyboardType="email-address"
           />
         </View>
         <View style={styles.inputContainer}>
-          <Text style={styles.label}>Password</Text>
+          <Text style={styles.label}>PASSWORD</Text>
           <TextInput
             style={styles.input}
             onChangeText={(text) => setPassword(text)}
             value={password}
             secureTextEntry={true}
             placeholder="••••••••"
-            placeholderTextColor="#8b949e"
+            placeholderTextColor="#5a5a5f"
             autoCapitalize="none"
           />
         </View>
@@ -81,7 +82,7 @@ export default function AuthScreen() {
           disabled={loading} 
           onPress={signInWithEmail}
         >
-          <Text style={styles.buttonText}>{loading ? 'Loading...' : 'Sign In'}</Text>
+          <Text style={styles.buttonText}>{loading ? 'LOADING...' : 'SIGN IN'}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity 
@@ -89,7 +90,7 @@ export default function AuthScreen() {
           disabled={loading} 
           onPress={signUpWithEmail}
         >
-          <Text style={styles.secondaryButtonText}>Create Account</Text>
+          <Text style={styles.secondaryButtonText}>CREATE ACCOUNT</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -99,7 +100,7 @@ export default function AuthScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d1117',
+    backgroundColor: '#000000',
     padding: 24,
     justifyContent: 'center',
   },
@@ -107,64 +108,77 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 48,
   },
+  logo: {
+    width: 120,
+    height: 120,
+    resizeMode: 'contain',
+    marginBottom: 24,
+  },
   title: {
-    fontSize: 42,
+    fontSize: 60,
     fontWeight: '800',
-    color: '#e6edf3',
-    letterSpacing: 2,
+    color: '#ffffff',
+    letterSpacing: 1.6,
     marginBottom: 8,
+    fontFamily: Platform.OS === 'ios' ? 'HelveticaNeue-CondensedBold' : 'sans-serif-condensed',
   },
   subtitle: {
-    fontSize: 16,
-    color: '#8b949e',
-    fontWeight: '500',
+    fontSize: 13,
+    color: '#45EBE9',
+    fontWeight: '700',
+    letterSpacing: 1.17,
   },
   form: {
     width: '100%',
   },
   inputContainer: {
-    marginBottom: 20,
+    marginBottom: 24,
   },
   label: {
-    color: '#c9d1d9',
-    fontSize: 14,
-    fontWeight: '600',
+    color: '#1E91B3',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.96,
     marginBottom: 8,
     marginLeft: 4,
   },
   input: {
-    backgroundColor: '#161b22',
+    backgroundColor: '#000000',
     borderWidth: 1,
-    borderColor: '#30363d',
-    borderRadius: 8,
-    color: '#e6edf3',
+    borderColor: '#1E91B3',
+    borderRadius: 4,
+    color: '#ffffff',
     paddingHorizontal: 16,
     paddingVertical: Platform.OS === 'ios' ? 14 : 10,
     fontSize: 16,
   },
   button: {
-    borderRadius: 8,
-    paddingVertical: 14,
+    borderRadius: 32,
+    paddingVertical: 18,
     alignItems: 'center',
     marginTop: 12,
   },
   primaryButton: {
-    backgroundColor: '#238636',
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#45EBE9',
   },
   secondaryButton: {
     backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: '#30363d',
+    borderColor: '#1E91B3',
     marginTop: 16,
   },
   buttonText: {
     color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 1.17,
   },
   secondaryButtonText: {
-    color: '#c9d1d9',
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 1.17,
   },
 });
