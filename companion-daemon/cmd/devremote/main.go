@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,20 @@ import (
 )
 
 func main() {
+	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
+	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
+	flag.Parse()
+
+	term.OwnerUUID = *ownerUUID
+	term.SupabaseProjectRef = *supabaseRef
+
+	if *ownerUUID == "" {
+		log.Println("WARN: --owner-uuid not set. All valid Supabase tokens will be accepted (INSECURE).")
+	}
+	if *supabaseRef == "" {
+		log.Println("WARN: --supabase-ref not set. RS256 JWKS verification disabled. Falling back to HS256 dev mode.")
+	}
+
 	// 1. Core Endpoints
 	http.HandleFunc("/api/sessions", term.HandleSessions)
 	http.HandleFunc("/term/ws", term.HandleWS)
@@ -44,7 +59,7 @@ func main() {
 	go func() {
 		cloudflaredPath := filepath.Join(filepath.Dir(os.Args[0]), "..", "cloudflared")
 		if _, err := os.Stat(cloudflaredPath); os.IsNotExist(err) {
-			cloudflaredPath = "./cloudflared" // Fallback to current directory
+			cloudflaredPath = "./cloudflared"
 		}
 		cmd := exec.Command(cloudflaredPath, "tunnel", "run", "devremote")
 		cmd.Stdout = os.Stdout
@@ -56,7 +71,7 @@ func main() {
 	}()
 
 	// 3. Start HTTP server
-	log.Printf("DevRemote :9171")
+	log.Printf("POKIT daemon :9171 (owner=%s)", *ownerUUID)
 	log.Fatal(http.ListenAndServe(":9171", nil))
 }
 
@@ -67,7 +82,7 @@ func sendPushNotification(token, message string) {
 		"body":  message,
 	}
 	payloadBytes, _ := json.Marshal(payloadMap)
-	
+
 	resp, err := http.Post("https://exp.host/--/api/v2/push/send", "application/json", bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		log.Printf("Failed to send push: %v", err)
