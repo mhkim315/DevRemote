@@ -18,14 +18,29 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 // OnApproval is called when Claude asks for user approval.
 var OnApproval func(string)
 
+// sessionConns tracks the active WebSocket per session to prevent multiple PTYs.
+var (
+	sessionConns   = map[string]*websocket.Conn{}
+	sessionConnsMu sync.Mutex
+)
+
 func HandleWS(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
-	
-	// 1. Use the selected multiplexer (tmux, cumx, etc.) to ensure session persistence
+	if session == "" {
+		session = "devremote"
+	}
+
+	// Kick old connection for this session to prevent PTY pile-up
+	sessionConnsMu.Lock()
+	if old, ok := sessionConns[session]; ok {
+		old.Close()
+	}
+	sessionConnsMu.Unlock()
+
+	// Use the selected multiplexer (tmux, cumx, etc.)
 	cmd := DefaultMux.AttachCmd(session)
 	tty, err := pty.Start(cmd)
 	if err != nil {
-		// Fallback to bash if multiplexer is not available
 		cmd = exec.Command("bash")
 		tty, err = pty.Start(cmd)
 		if err != nil {
@@ -34,14 +49,26 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer tty.Close()
-	// Do NOT kill cmd.Process here, so tmux session stays alive in background!
-	log.Printf("WS connected: %s", r.RemoteAddr)
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+
+	// Register this connection
+	sessionConnsMu.Lock()
+	sessionConns[session] = conn
+	sessionConnsMu.Unlock()
+	defer func() {
+		sessionConnsMu.Lock()
+		if sessionConns[session] == conn {
+			delete(sessionConns, session)
+		}
+		sessionConnsMu.Unlock()
+	}()
+
+	log.Printf("WS [%s]: %s", session, r.RemoteAddr)
 
 	go func() {
 		buf := make([]byte, 4096)
@@ -79,7 +106,7 @@ func isApprovalPrompt(data []byte) (bool, string) {
 		!(bytes.Contains(data, []byte("1. Yes")) && bytes.Contains(data, []byte("No"))) {
 		return false, ""
 	}
-	
+
 	// Clean ANSI for push notification
 	cleanLine := ""
 	inEsc := false
@@ -94,12 +121,11 @@ func isApprovalPrompt(data []byte) (bool, string) {
 			}
 			continue
 		}
-		// Allow printable ascii and basic whitespace
 		if b >= 32 && b <= 126 || b == '\n' || b == '\t' {
 			cleanLine += string(b)
 		}
 	}
-	
+
 	if len(cleanLine) > 150 {
 		cleanLine = "..." + cleanLine[len(cleanLine)-150:]
 	}
@@ -148,7 +174,7 @@ func HandleSessions(w http.ResponseWriter, r *http.Request) {
 	if sessions == nil {
 		sessions = []string{}
 	}
-	
+
 	jsonBytes, _ := json.Marshal(sessions)
 	w.Write(jsonBytes)
 }
