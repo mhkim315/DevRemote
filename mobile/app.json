@@ -4,15 +4,15 @@
     "slug": "pokit",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/logo.png",
     "userInterfaceStyle": "dark",
     "splash": {
-      "backgroundColor": "#0d1117",
+      "backgroundColor": "#000000",
       "resizeMode": "contain"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.devremote.mobile",
+      "bundleIdentifier": "com.pokit.mobile",
       "infoPlist": {
         "UIBackgroundModes": [
           "remote-notification"
@@ -21,9 +21,9 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#0d1117"
+        "backgroundColor": "#000000"
       },
-      "package": "com.devremote.mobile",
+      "package": "com.pokit.mobile",
       "usesCleartextTraffic": true,
       "permissions": [
         "POST_NOTIFICATIONS",

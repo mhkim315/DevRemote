@@ -58,27 +58,6 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
               editable={!isEditMode}
             />
 
-            <Text style={styles.label}>SELECT RUNNER</Text>
-            <View style={styles.grid}>
-              {RUNNERS.map(r => {
-                const selected = r.id === runner;
-                return (
-                  <TouchableOpacity
-                    key={r.id}
-                    onPress={() => setRunner(r.id)}
-                    style={[
-                      styles.runnerBtn,
-                      selected && { borderColor: color, backgroundColor: color + '20' }
-                    ]}
-                  >
-                    <Svg width={24} height={24} viewBox="0 0 388 388">
-                      <Path d={r.frames[0]} fill={selected ? color : '#1E91B3'} />
-                    </Svg>
-                    <Text style={[styles.runnerText, selected && { color: '#ffffff' }]}>{r.name.toUpperCase()}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
 
             <Text style={styles.label}>SELECT COLOR</Text>
             <View style={styles.colorGrid}>
