@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"fmt"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -60,8 +60,14 @@ func main() {
 }
 
 func sendPushNotification(token, message string) {
-	payload := fmt.Sprintf(`{"to": "%s", "title": "DevRemote", "body": "%s"}`, token, message)
-	resp, err := http.Post("https://exp.host/--/api/v2/push/send", "application/json", bytes.NewBuffer([]byte(payload)))
+	payloadMap := map[string]string{
+		"to":    token,
+		"title": "DevRemote",
+		"body":  message,
+	}
+	payloadBytes, _ := json.Marshal(payloadMap)
+	
+	resp, err := http.Post("https://exp.host/--/api/v2/push/send", "application/json", bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		log.Printf("Failed to send push: %v", err)
 		return
