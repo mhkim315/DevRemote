@@ -1,61 +1,66 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, SafeAreaView, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList } from 'react-native';
+import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 
 interface Props {
   onSelectAgent: (sessionName: string) => void;
 }
 
 export default function DashboardScreen({ onSelectAgent }: Props) {
-  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('https://term.fullcount.kr/api/sessions')
-      .then(res => res.json())
-      .then(data => {
-        // Support both legacy string[] and v2 {id,state,load}[]
-        const normalized = (data || []).map((s: any) =>
-          typeof s === 'string' ? {id: s, state: 'active', load: 0} : s
-        );
-        setSessions(normalized);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        setLoading(false);
-      });
+    const fetchSessions = () => {
+      fetch('https://term.fullcount.kr/api/sessions')
+        .then(res => res.json())
+        .then(data => {
+          const normalized = (data || []).map((s: any) =>
+            typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
+          );
+          setSessions(normalized);
+          setLoading(false);
+        })
+        .catch(err => {
+          console.error(err);
+          setLoading(false);
+        });
+    };
+
+    fetchSessions(); // initial fetch
+
+    // Poll every 1.5 seconds to get real-time state for animations
+    const interval = setInterval(fetchSessions, 1500);
+    return () => clearInterval(interval);
   }, []);
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>DevRemote</Text>
-        <View style={styles.badge}><Text style={styles.badgeText}>Local Daemon</Text></View>
+        <Text style={styles.headerTitle}>POKIT Agents</Text>
+        <View style={styles.badge}><Text style={styles.badgeText}>Live Monitor</Text></View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.sectionTitle}>Active Sessions (Agents)</Text>
-
+      <View style={styles.content}>
         {loading ? (
-          <ActivityIndicator size="large" color="#58a6ff" style={{marginTop: 20}} />
+          <ActivityIndicator size="large" color="#58a6ff" style={{ marginTop: 40 }} />
         ) : sessions.length === 0 ? (
-          <Text style={{color:'#8b949e', textAlign:'center', marginTop:20}}>No active sessions found.</Text>
+          <Text style={styles.emptyText}>No active agents found.</Text>
         ) : (
-          sessions.map((s) => (
-            <TouchableOpacity key={s.id} style={styles.card} onPress={() => onSelectAgent(s.id)} activeOpacity={0.8}>
-              <View style={styles.cardHeader}>
-                <View style={[styles.dot, s.state === 'idle' ? styles.dotIdle : styles.dotActive]} />
-                <Text style={styles.cardTitle}>{s.id}</Text>
-              </View>
-              <Text style={styles.cardSubtitle}>Terminal Observer</Text>
-              <View style={styles.statusRow}>
-                <Text style={styles.statusText}>{s.state === 'idle' ? 'Idle' : 'Awaiting input'}</Text>
-                <Text style={styles.timeText}>Active</Text>
-              </View>
-            </TouchableOpacity>
-          ))
+          <FlatList
+            data={sessions}
+            keyExtractor={(item) => item.id}
+            numColumns={2}
+            contentContainerStyle={styles.gridContainer}
+            renderItem={({ item }) => (
+              <AgentCard
+                session={item}
+                onPress={() => onSelectAgent(item.id)}
+              />
+            )}
+          />
         )}
-      </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -69,19 +74,9 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 24, fontWeight: '700', color: '#fff', letterSpacing: -0.5 },
   badge: { backgroundColor: '#161b22', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: '#30363d' },
   badgeText: { color: '#58a6ff', fontSize: 12, fontWeight: '600' },
-  content: { padding: 20 },
-  sectionTitle: { fontSize: 18, fontWeight: '600', color: '#8b949e', marginBottom: 16 },
-  card: {
-    backgroundColor: '#161b22', padding: 16, borderRadius: 16,
-    borderWidth: 1, borderColor: '#30363d', marginBottom: 12,
+  content: { flex: 1 },
+  gridContainer: {
+    padding: 12,
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  dot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  dotActive: { backgroundColor: '#238636' },
-  dotIdle: { backgroundColor: '#e3b341' },
-  cardTitle: { fontSize: 16, fontWeight: '600', color: '#c9d1d9' },
-  cardSubtitle: { fontSize: 14, color: '#8b949e', marginLeft: 16, marginBottom: 12 },
-  statusRow: { flexDirection: 'row', justifyContent: 'space-between', marginLeft: 16 },
-  statusText: { fontSize: 12, color: '#e3b341', fontWeight: '500' },
-  timeText: { fontSize: 12, color: '#484f58' }
+  emptyText: { color: '#8b949e', textAlign: 'center', marginTop: 40, fontSize: 16 }
 });
