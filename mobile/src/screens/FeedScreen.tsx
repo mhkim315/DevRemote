@@ -3,7 +3,6 @@ import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView} from 'r
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
-const TERM_URL = 'https://term.fullcount.kr/term/';
 
 const MACROS = [
   { label: 'Ctrl+C', value: '\x03' },
@@ -19,10 +18,15 @@ const MACROS = [
   { label: 'Enter', value: '\n' },
 ];
 
-interface Props { onBack: () => void }
-export default function FeedScreen({onBack}: Props) {
+interface Props { 
+  onBack: () => void;
+  session: string;
+}
+export default function FeedScreen({onBack, session}: Props) {
   const wv = useRef<any>(null);
   const [cmd, setCmd] = useState('');
+
+  const termUrl = `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`;
 
   const send = useCallback(() => {
     if (cmd.trim() && wv.current) {
@@ -43,7 +47,7 @@ export default function FeedScreen({onBack}: Props) {
         <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
       </View>
       
-      <WebView ref={wv} source={{uri: TERM_URL}} style={{flex:1,backgroundColor:'#000'}} javaScriptEnabled domStorageEnabled originWhitelist={['*']} />
+      <WebView ref={wv} source={{uri: termUrl}} style={{flex:1,backgroundColor:'#000'}} javaScriptEnabled domStorageEnabled originWhitelist={['*']} />
       
       <View style={styles.macroContainer}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>

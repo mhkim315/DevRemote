@@ -14,6 +14,7 @@ import (
 
 func main() {
 	// 1. Core Endpoints
+	http.HandleFunc("/api/sessions", term.HandleSessions)
 	http.HandleFunc("/term/ws", term.HandleWS)
 	http.HandleFunc("/term/", term.HandleHTML)
 	var pushToken string

@@ -1,11 +1,27 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, SafeAreaView } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, SafeAreaView, ActivityIndicator } from 'react-native';
 
 interface Props {
-  onSelectAgent: () => void;
+  onSelectAgent: (sessionName: string) => void;
 }
 
 export default function DashboardScreen({ onSelectAgent }: Props) {
+  const [sessions, setSessions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('https://term.fullcount.kr/api/sessions')
+      .then(res => res.json())
+      .then(data => {
+        setSessions(data || []);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error(err);
+        setLoading(false);
+      });
+  }, []);
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -14,31 +30,27 @@ export default function DashboardScreen({ onSelectAgent }: Props) {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.sectionTitle}>Agent Fleet</Text>
+        <Text style={styles.sectionTitle}>Active Sessions (Agents)</Text>
         
-        <TouchableOpacity style={styles.card} onPress={onSelectAgent} activeOpacity={0.8}>
-          <View style={styles.cardHeader}>
-            <View style={styles.dot} />
-            <Text style={styles.cardTitle}>Claude-3.5-Sonnet</Text>
-          </View>
-          <Text style={styles.cardSubtitle}>Terminal Observer</Text>
-          <View style={styles.statusRow}>
-            <Text style={styles.statusText}>Awaiting input</Text>
-            <Text style={styles.timeText}>Just now</Text>
-          </View>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={[styles.card, styles.cardInactive]} activeOpacity={0.8}>
-          <View style={styles.cardHeader}>
-            <View style={[styles.dot, styles.dotInactive]} />
-            <Text style={styles.cardTitle}>GPT-4o</Text>
-          </View>
-          <Text style={styles.cardSubtitle}>Background Worker</Text>
-          <View style={styles.statusRow}>
-            <Text style={styles.statusText}>Sleeping</Text>
-            <Text style={styles.timeText}>2h ago</Text>
-          </View>
-        </TouchableOpacity>
+        {loading ? (
+          <ActivityIndicator size="large" color="#58a6ff" style={{marginTop: 20}} />
+        ) : sessions.length === 0 ? (
+          <Text style={{color:'#8b949e', textAlign:'center', marginTop:20}}>No active sessions found.</Text>
+        ) : (
+          sessions.map((sessionName) => (
+            <TouchableOpacity key={sessionName} style={styles.card} onPress={() => onSelectAgent(sessionName)} activeOpacity={0.8}>
+              <View style={styles.cardHeader}>
+                <View style={styles.dot} />
+                <Text style={styles.cardTitle}>{sessionName}</Text>
+              </View>
+              <Text style={styles.cardSubtitle}>Terminal Observer</Text>
+              <View style={styles.statusRow}>
+                <Text style={styles.statusText}>Awaiting input</Text>
+                <Text style={styles.timeText}>Active</Text>
+              </View>
+            </TouchableOpacity>
+          ))
+        )}
       </ScrollView>
     </SafeAreaView>
   );

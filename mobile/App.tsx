@@ -7,6 +7,7 @@ import * as Notifications from 'expo-notifications';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'dashboard' | 'terminal'>('dashboard');
+  const [currentSession, setCurrentSession] = useState<string>('devremote');
 
   useEffect(() => {
     async function setupPush() {
@@ -33,9 +34,12 @@ export default function App() {
     <SafeAreaProvider>
       <StatusBar style="light" />
       {currentScreen === 'dashboard' ? (
-        <DashboardScreen onSelectAgent={() => setCurrentScreen('terminal')} />
+        <DashboardScreen onSelectAgent={(session) => {
+          setCurrentSession(session);
+          setCurrentScreen('terminal');
+        }} />
       ) : (
-        <FeedScreen onBack={() => setCurrentScreen('dashboard')} />
+        <FeedScreen session={currentSession} onBack={() => setCurrentScreen('dashboard')} />
       )}
     </SafeAreaProvider>
   );
