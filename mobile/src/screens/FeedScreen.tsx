@@ -45,7 +45,6 @@ export default function FeedScreen({onBack, session}: Props) {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
         <View style={styles.header}>
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
@@ -83,6 +82,7 @@ export default function FeedScreen({onBack, session}: Props) {
             returnKeyType="send"
             autoCorrect={false}
             autoCapitalize="none"
+            multiline={false}
             blurOnSubmit={false}
           />
           <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
