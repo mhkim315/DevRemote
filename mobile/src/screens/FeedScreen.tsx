@@ -16,10 +16,11 @@ function jsSend(chars: number[]): string {
 
 const MACROS: { label: string; chars: number[] }[] = [
   { label: 'Ctrl+C',  chars: [3] },
-  { label: 'C+C x2',  chars: [3, 3] },
-  { label: 'Ctrl+D',  chars: [4] },
   { label: 'Esc',     chars: [27] },
   { label: 'Tab',     chars: [9] },
+  { label: '📜 Scroll Mode', chars: [2, 91] }, // Ctrl+B, [
+  { label: 'PgUp',    chars: [27, 91, 53, 126] },
+  { label: 'PgDn',    chars: [27, 91, 54, 126] },
   { label: '↑',       chars: [27, 91, 65] },
   { label: '↓',       chars: [27, 91, 66] },
   { label: '←',       chars: [27, 91, 68] },
