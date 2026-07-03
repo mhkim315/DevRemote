@@ -11,9 +11,11 @@ import (
 
 // SessionTelemetry holds the calculated state of a tmux session.
 type SessionTelemetry struct {
-	ID    string `json:"id"`
-	State string `json:"state"` // "idle", "thinking", "working", "waiting"
-	Load  int    `json:"load"`  // 0-100 (animation speed)
+	ID          string `json:"id"`
+	State       string `json:"state"` // "idle", "thinking", "working", "waiting"
+	Load        int    `json:"load"`  // 0-100 (animation speed)
+	Runner      string `json:"runner"`
+	RunnerColor string `json:"runnerColor"`
 }
 
 type sessionStateData struct {
@@ -21,6 +23,8 @@ type sessionStateData struct {
 	LastActivity time.Time
 	State        string
 	Load         int
+	Runner       string
+	RunnerColor  string
 }
 
 var (
@@ -64,12 +68,29 @@ func StartTelemetryLoop() {
 					continue
 				}
 
+				envCmd := exec.Command("tmux", "show-environment", "-t", s)
+				envOut, _ := envCmd.Output()
+				
+				runner := "cat"
+				runnerColor := "#58a6ff"
+				envLines := strings.Split(string(envOut), "\n")
+				for _, el := range envLines {
+					if strings.HasPrefix(el, "POKIT_RUNNER=") {
+						runner = strings.TrimPrefix(el, "POKIT_RUNNER=")
+					} else if strings.HasPrefix(el, "POKIT_RUNNER_COLOR=") {
+						runnerColor = strings.TrimPrefix(el, "POKIT_RUNNER_COLOR=")
+					}
+				}
+
 				telemetryMu.Lock()
 				stateData := telemetryCache[s]
 				if stateData == nil {
 					telemetryMu.Unlock()
 					continue
 				}
+
+				stateData.Runner = runner
+				stateData.RunnerColor = runnerColor
 
 				diffSize := len(out) - len(stateData.LastOutput)
 				if diffSize < 0 {
@@ -118,9 +139,13 @@ func StartTelemetryLoop() {
 					stateData.Load = 50
 					stateData.LastActivity = time.Now()
 				} else {
-					if time.Since(stateData.LastActivity) > 60*time.Second {
+					if time.Since(stateData.LastActivity) > 5*time.Second {
 						stateData.State = "idle"
 						stateData.Load = 0
+					} else {
+						// Grace period: slow down to thinking before falling asleep
+						stateData.State = "thinking"
+						stateData.Load = 20
 					}
 				}
 
@@ -146,9 +171,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sessions {
 		data := telemetryCache[s]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0})
+			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff"})
 		} else {
-			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load})
+			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor})
 		}
 	}
 	telemetryMu.Unlock()

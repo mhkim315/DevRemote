@@ -30,7 +30,7 @@ func main() {
 
 	// 1. Core Endpoints
 	term.StartTelemetryLoop()
-	http.HandleFunc("/api/sessions", term.HandleSessionsV2)
+	http.HandleFunc("/api/sessions", term.HandleSessionsAPI)
 	http.HandleFunc("/term/ws", term.HandleWS)
 	http.HandleFunc("/term/", term.HandleHTML)
 	http.HandleFunc("/term/size", term.HandleSize)

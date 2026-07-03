@@ -102,6 +102,62 @@ func verifyToken(tokenString string) bool {
 	return true
 }
 
+func HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		HandleSessionsV2(w, r)
+	} else {
+		HandleSessionCRUD(w, r)
+	}
+}
+
+func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
+	// Auth check
+	token := r.Header.Get("Authorization")
+	if len(token) > 7 && token[:7] == "Bearer " {
+		token = token[7:]
+	} else {
+		token = r.URL.Query().Get("token")
+	}
+	if !verifyToken(token) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method == "POST" || r.Method == "PUT" {
+		var req struct {
+			ID          string `json:"id"`
+			Runner      string `json:"runner"`
+			RunnerColor string `json:"runnerColor"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+
+		if r.Method == "POST" {
+			exec.Command("tmux", "new-session", "-d", "-s", req.ID).Run()
+		}
+		exec.Command("tmux", "set-environment", "-t", req.ID, "POKIT_RUNNER", req.Runner).Run()
+		exec.Command("tmux", "set-environment", "-t", req.ID, "POKIT_RUNNER_COLOR", req.RunnerColor).Run()
+		
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+
+	if r.Method == "DELETE" {
+		id := r.URL.Query().Get("id")
+		if id != "" {
+			exec.Command("tmux", "kill-session", "-t", id).Run()
+		}
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+
+	http.Error(w, "Method not allowed", 405)
+}
+
 var (
 	jwksCache   map[string]interface{}
 	jwksCacheMu sync.Mutex

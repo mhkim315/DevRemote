@@ -52,6 +52,7 @@ export default function App() {
         <AuthScreen />
       ) : currentScreen === 'dashboard' ? (
         <DashboardScreen 
+          token={session.access_token}
           onSelectAgent={(sess) => {
             setCurrentSession(sess);
             setCurrentScreen('terminal');
