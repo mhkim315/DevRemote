@@ -1,5 +1,5 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, KeyboardAvoidingView, Platform, Keyboard, Animated} from 'react-native';
+import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, KeyboardAvoidingView, Platform, Keyboard} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
@@ -30,14 +30,13 @@ const MACROS: { label: string; chars: number[] }[] = [
 
 export default function FeedScreen({onBack, session}: Props) {
   const wv = useRef<any>(null);
+  const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
-  const [wsReady, setWsReady] = useState(false);
 
   const termUrl = useMemo(() => `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`, [session]);
   const source = useMemo(() => ({uri: termUrl}), [termUrl]);
 
-  // Track keyboard height on Android
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (e) => {
       setKbHeight(e.endCoordinates.height);
@@ -54,38 +53,30 @@ export default function FeedScreen({onBack, session}: Props) {
     }
   }, []);
 
+  const doSend = useCallback((text: string) => {
+    const t = text.trim();
+    if (!t || !wv.current) return;
+    inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(t+'\n')+')');
+  }, [inject]);
+
   const send = useCallback(() => {
-    if (cmd.trim() && wv.current) {
-      inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(cmd.trim()+'\n')+')');
-      setCmd('');
-    }
-  }, [cmd, inject]);
+    doSend(cmd);
+    setCmd('');
+  }, [cmd, doSend]);
 
   const sendMacro = useCallback((chars: number[]) => {
     inject('if(window.ws&&window.ws.readyState===1){'+jsSend(chars)+'}');
   }, [inject]);
 
-  const handleMessage = useCallback((e: any) => {
-    try {
-      const msg = JSON.parse(e.nativeEvent.data);
-      if (msg.type === 'ws') {
-        setWsReady(msg.state === 1);
-      }
-    } catch {}
-  }, []);
-
-  // JS to inject after page load — detect WS state
-  const onLoadScript = `
-    setTimeout(function(){
-      var s=window.ws?window.ws.readyState:-1;
-      window.ReactNativeWebView.postMessage(JSON.stringify({type:'ws',state:s}));
-      setInterval(function(){
-        var ns=window.ws?window.ws.readyState:-1;
-        window.ReactNativeWebView.postMessage(JSON.stringify({type:'ws',state:ns}));
-      },3000);
-    },1000);
-    true;
-  `;
+  const handleChangeText = useCallback((text: string) => {
+    cmdRef.current = text;
+    if (text.endsWith('\n')) {
+      doSend(text.replace(/\n/g, ''));
+      setCmd('');
+    } else {
+      setCmd(text);
+    }
+  }, [doSend]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -96,10 +87,7 @@ export default function FeedScreen({onBack, session}: Props) {
       >
         <View style={styles.header}>
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
-          <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
-            <View style={[styles.wsDot, wsReady ? styles.wsOn : styles.wsOff]} />
-            <Text style={styles.headerTitle}>{session}</Text>
-          </View>
+          <Text style={styles.headerTitle}>{session}</Text>
           <TouchableOpacity onPress={() => {
             if (wv.current) wv.current.reload();
           }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
@@ -112,8 +100,6 @@ export default function FeedScreen({onBack, session}: Props) {
           javaScriptEnabled
           domStorageEnabled
           originWhitelist={['*']}
-          onMessage={handleMessage}
-          injectedJavaScript={onLoadScript}
           cacheEnabled={false}
         />
 
@@ -133,21 +119,7 @@ export default function FeedScreen({onBack, session}: Props) {
             placeholder="$ type a command..."
             placeholderTextColor="#666"
             value={cmd}
-            onChangeText={(text) => {
-              if (text.endsWith('\n')) {
-                setCmd('');
-                if (wv.current) {
-                  wv.current.injectJavaScript('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(text.trim()+'\n')+');true;');
-                }
-              } else {
-                setCmd(text);
-              }
-            }}
-            onKeyPress={({nativeEvent}) => {
-              if (nativeEvent.key === 'Enter') {
-                send();
-              }
-            }}
+            onChangeText={handleChangeText}
             onSubmitEditing={send}
             returnKeyType="send"
             autoCorrect={false}
@@ -172,9 +144,6 @@ const styles = StyleSheet.create({
   headerTitle: {fontSize: 14, color: '#8b949e', fontWeight: '500'},
   backBtn: {fontSize: 24, color: '#fff'},
   reloadBtn: {fontSize: 20, color: '#58a6ff', paddingHorizontal: 4},
-  wsDot: {width:6, height:6, borderRadius:3},
-  wsOn: {backgroundColor:'#238636'},
-  wsOff: {backgroundColor:'#f85149'},
   webview: {flex:1, backgroundColor:'#000'},
   macroContainer: { backgroundColor: '#161b22', borderTopWidth: 1, borderTopColor: '#30363d' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
