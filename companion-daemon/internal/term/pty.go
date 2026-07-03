@@ -53,6 +53,9 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	
+	// Force a "sweet spot" size (100 cols, 40 rows) for optimal PC/Mobile hybrid viewing
+	pty.Setsize(tty, &pty.Winsize{Cols: 100, Rows: 40})
 	defer tty.Close()
 	
 	sessionPtyMu.Lock()
