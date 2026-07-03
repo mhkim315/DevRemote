@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync"
 
 	"github.com/creack/pty"
@@ -150,7 +149,7 @@ func isApprovalPrompt(data []byte) (bool, string) {
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000;overflow:hidden}#t{width:100%;height:100%}#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7)}.xterm-viewport{overflow-y:auto !important; -webkit-overflow-scrolling:touch !important;}</style></head><body><div id="t"></div><div id="status">connecting</div><script>var raw='',reconnecting=false,reconnectTimer=null,decoder=new TextDecoder("utf-8");function processData(buffer){var t=decoder.decode(buffer,{stream:true});raw+=t;term.write(new Uint8Array(buffer))}function connect(){if(reconnecting)return;var protocol=location.protocol==='https:'?'wss://':'ws://';var s=document.getElementById('status');if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);window.ws=ws;ws.binaryType='arraybuffer';s.textContent='connecting';s.style.color='#e3b341';ws.onopen=function(){s.textContent='live';s.style.color='#238636';reconnecting=false;doResize()};ws.onmessage=function(e){if(typeof e.data==='string'){raw+=e.data;term.write(e.data)}else if(e.data instanceof ArrayBuffer){processData(e.data)}else if(e.data instanceof Blob){e.data.arrayBuffer().then(processData)}};ws.onclose=function(){if(!reconnecting){reconnecting=true;s.textContent='reconnecting';s.style.color='#f85149';reconnectTimer=setTimeout(function(){reconnecting=false;connect()},2000)}};ws.onerror=function(e){console.error('ws error', e)}}var term=new Terminal({fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});var fitAddon=new FitAddon.FitAddon();term.loadAddon(fitAddon);term.open(document.getElementById("t"));function doResize(){try{fitAddon.fit();var search=location.search||'?session=devremote';fetch("/term/resize"+search+"&cols="+term.cols+"&rows="+term.rows)}catch(e){}}window.addEventListener('resize',doResize);term.onData(function(d){var w=window.ws;if(w&&w.readyState===1)try{w.send(d)}catch(e){}});setTimeout(function(){term.focus();doResize()},500);setInterval(function(){fetch("/debug/cmd"+location.search).then(function(r){return r.text()}).then(function(d){var w=window.ws;if(d&&w&&w.readyState===1)try{w.send(d+"\r")}catch(e){}}).catch(function(){})},2000);connect();</script></body></html>`)
+	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000;overflow:auto}#t{width:100%;height:100%}#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7)}.xterm-viewport{overflow-x:auto !important; overflow-y:auto !important; -webkit-overflow-scrolling:touch !important;}</style></head><body><div id="t"></div><div id="status">connecting</div><script>var raw='',reconnecting=false,reconnectTimer=null,decoder=new TextDecoder("utf-8");function processData(buffer){var t=decoder.decode(buffer,{stream:true});raw+=t;term.write(new Uint8Array(buffer))}function connect(){if(reconnecting)return;var protocol=location.protocol==='https:'?'wss://':'ws://';var s=document.getElementById('status');if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);window.ws=ws;ws.binaryType='arraybuffer';s.textContent='connecting';s.style.color='#e3b341';ws.onopen=function(){s.textContent='live';s.style.color='#238636';reconnecting=false;doSyncSize()};ws.onmessage=function(e){if(typeof e.data==='string'){raw+=e.data;term.write(e.data)}else if(e.data instanceof ArrayBuffer){processData(e.data)}else if(e.data instanceof Blob){e.data.arrayBuffer().then(processData)}};ws.onclose=function(){if(!reconnecting){reconnecting=true;s.textContent='reconnecting';s.style.color='#f85149';reconnectTimer=setTimeout(function(){reconnecting=false;connect()},2000)}};ws.onerror=function(e){console.error('ws error', e)}}var term=new Terminal({fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});term.open(document.getElementById("t"));function doSyncSize(){try{var search=location.search||'?session=devremote';fetch("/term/size"+search).then(r=>r.json()).then(s=>{term.resize(s.cols,s.rows)})}catch(e){}}term.onData(function(d){var w=window.ws;if(w&&w.readyState===1)try{w.send(d)}catch(e){}});setTimeout(function(){term.focus();doSyncSize()},500);setInterval(function(){fetch("/debug/cmd"+location.search).then(function(r){return r.text()}).then(function(d){var w=window.ws;if(d&&w&&w.readyState===1)try{w.send(d+"\r")}catch(e){}}).catch(function(){})},2000);connect();</script></body></html>`)
 }
 
 var (
@@ -181,22 +180,24 @@ func HandleCmd(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(cmd))
 }
 
-func HandleResize(w http.ResponseWriter, r *http.Request) {
+func HandleSize(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {
 		session = "devremote"
 	}
-	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
-	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
-
 	sessionPtyMu.Lock()
 	tty := sessionPty[session]
 	sessionPtyMu.Unlock()
 
-	if tty != nil && cols > 0 && rows > 0 {
-		pty.Setsize(tty, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	w.Header().Set("Content-Type", "application/json")
+	if tty != nil {
+		ws, err := pty.GetsizeFull(tty)
+		if err == nil {
+			json.NewEncoder(w).Encode(map[string]int{"cols": int(ws.Cols), "rows": int(ws.Rows)})
+			return
+		}
 	}
-	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(map[string]int{"cols": 80, "rows": 24})
 }
 
 func HandleSessions(w http.ResponseWriter, r *http.Request) {
