@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 
 interface Props {
   onSelectAgent: (sessionName: string) => void;
+  onSnippets: () => void;
 }
 
-export default function DashboardScreen({ onSelectAgent }: Props) {
+export default function DashboardScreen({ onSelectAgent, onSnippets }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -38,7 +39,9 @@ export default function DashboardScreen({ onSelectAgent }: Props) {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>POKIT Agents</Text>
-        <View style={styles.badge}><Text style={styles.badgeText}>Live Monitor</Text></View>
+        <TouchableOpacity onPress={onSnippets} style={styles.snippetBtn}>
+          <Text style={styles.snippetBtnText}>📝 Snippets</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.content}>
@@ -72,8 +75,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#1e212b'
   },
   headerTitle: { fontSize: 24, fontWeight: '700', color: '#fff', letterSpacing: -0.5 },
-  badge: { backgroundColor: '#161b22', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: '#30363d' },
-  badgeText: { color: '#58a6ff', fontSize: 12, fontWeight: '600' },
+  snippetBtn: { backgroundColor: '#21262d', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: '#30363d' },
+  snippetBtnText: { color: '#c9d1d9', fontSize: 13, fontWeight: '600' },
   content: { flex: 1 },
   gridContainer: {
     padding: 12,

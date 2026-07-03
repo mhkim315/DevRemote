@@ -8,9 +8,11 @@ import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
 
+import SnippetsScreen from './src/screens/SnippetsScreen';
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [currentScreen, setCurrentScreen] = useState<'dashboard' | 'terminal'>('dashboard');
+  const [currentScreen, setCurrentScreen] = useState<'dashboard' | 'terminal' | 'snippets'>('dashboard');
   const [currentSession, setCurrentSession] = useState<string>('devremote');
 
   useEffect(() => {
@@ -37,7 +39,6 @@ export default function App() {
       const token = tokenData.data;
       console.log('Push token:', token);
       
-      // Register with our daemon
       fetch(`https://term.fullcount.kr/push/register?token=${encodeURIComponent(token)}`)
         .catch(console.error);
     }
@@ -50,10 +51,15 @@ export default function App() {
       {!session ? (
         <AuthScreen />
       ) : currentScreen === 'dashboard' ? (
-        <DashboardScreen onSelectAgent={(sess) => {
-          setCurrentSession(sess);
-          setCurrentScreen('terminal');
-        }} />
+        <DashboardScreen 
+          onSelectAgent={(sess) => {
+            setCurrentSession(sess);
+            setCurrentScreen('terminal');
+          }}
+          onSnippets={() => setCurrentScreen('snippets')}
+        />
+      ) : currentScreen === 'snippets' ? (
+        <SnippetsScreen onBack={() => setCurrentScreen('dashboard')} />
       ) : (
         <FeedScreen 
           session={currentSession} 
