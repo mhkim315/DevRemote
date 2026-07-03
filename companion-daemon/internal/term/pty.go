@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 
@@ -39,9 +40,11 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Use the selected multiplexer (tmux, cumx, etc.)
 	cmd := DefaultMux.AttachCmd(session)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	tty, err := pty.Start(cmd)
 	if err != nil {
 		cmd = exec.Command("bash")
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 		tty, err = pty.Start(cmd)
 		if err != nil {
 			http.Error(w, "pty failed", 500)
