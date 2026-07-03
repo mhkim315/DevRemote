@@ -132,7 +132,21 @@ export default function FeedScreen({onBack, session}: Props) {
             placeholder="$ type a command..."
             placeholderTextColor="#666"
             value={cmd}
-            onChangeText={setCmd}
+            onChangeText={(text) => {
+              if (text.endsWith('\n')) {
+                setCmd('');
+                if (wv.current) {
+                  wv.current.injectJavaScript('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(text.trim()+'\n')+');true;');
+                }
+              } else {
+                setCmd(text);
+              }
+            }}
+            onKeyPress={({nativeEvent}) => {
+              if (nativeEvent.key === 'Enter') {
+                send();
+              }
+            }}
             onSubmitEditing={send}
             returnKeyType="send"
             autoCorrect={false}
