@@ -182,7 +182,6 @@ export default function FeedScreen({onBack, session}: Props) {
                 value={copyText}
                 multiline={true}
                 editable={false}
-                selectable={true}
               />
             </ScrollView>
             <View style={styles.modalFooter}>
