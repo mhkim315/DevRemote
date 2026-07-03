@@ -152,7 +152,59 @@ func isApprovalPrompt(data []byte) (bool, string) {
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000;overflow:auto}#t{width:100%;height:100%}#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7)}.xterm-viewport{overflow-x:auto !important; overflow-y:auto !important; -webkit-overflow-scrolling:touch !important;}</style></head><body><div id="t"></div><div id="status">connecting</div><script>var raw='',reconnecting=false,reconnectTimer=null,decoder=new TextDecoder("utf-8");function processData(buffer){var t=decoder.decode(buffer,{stream:true});raw+=t;term.write(new Uint8Array(buffer))}function connect(){if(reconnecting)return;var protocol=location.protocol==='https:'?'wss://':'ws://';var s=document.getElementById('status');if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);window.ws=ws;ws.binaryType='arraybuffer';s.textContent='connecting';s.style.color='#e3b341';ws.onopen=function(){s.textContent='live';s.style.color='#238636';reconnecting=false;doSyncSize()};ws.onmessage=function(e){if(typeof e.data==='string'){raw+=e.data;term.write(e.data)}else if(e.data instanceof ArrayBuffer){processData(e.data)}else if(e.data instanceof Blob){e.data.arrayBuffer().then(processData)}};ws.onclose=function(){if(!reconnecting){reconnecting=true;s.textContent='reconnecting';s.style.color='#f85149';reconnectTimer=setTimeout(function(){reconnecting=false;connect()},2000)}};ws.onerror=function(e){console.error('ws error', e)}}var term=new Terminal({fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});term.open(document.getElementById("t"));function doSyncSize(){try{var search=location.search||'?session=devremote';fetch("/term/size"+search).then(r=>r.json()).then(s=>{term.resize(s.cols,s.rows)})}catch(e){}}term.onData(function(d){var w=window.ws;if(w&&w.readyState===1)try{w.send(d)}catch(e){}});setTimeout(function(){term.focus();doSyncSize()},500);setInterval(function(){fetch("/debug/cmd"+location.search).then(function(r){return r.text()}).then(function(d){var w=window.ws;if(d&&w&&w.readyState===1)try{w.send(d+"\r")}catch(e){}}).catch(function(){})},2000);connect();</script></body></html>`)
+	html := `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<style>
+*{margin:0;padding:0} html,body{width:100%;height:100%;background:#000;overflow:auto}
+#t{width:100%;height:100%}
+#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7)}
+.xterm-viewport{overflow-x:auto !important; overflow-y:auto !important; -webkit-overflow-scrolling:touch !important;}
+</style></head><body>
+<div id="t"></div><div id="status">connecting</div>
+<script>
+var raw='',reconnecting=false,reconnectTimer=null,decoder=new TextDecoder("utf-8");
+function processData(buffer){var t=decoder.decode(buffer,{stream:true});raw+=t;term.write(new Uint8Array(buffer))}
+function connect(){
+  if(reconnecting)return;
+  var protocol=location.protocol==='https:'?'wss://':'ws://';
+  var s=document.getElementById('status');
+  if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
+  var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);
+  window.ws=ws; ws.binaryType='arraybuffer'; s.textContent='connecting'; s.style.color='#e3b341';
+  ws.onopen=function(){s.textContent='live';s.style.color='#238636';reconnecting=false;doSyncSize()};
+  ws.onmessage=function(e){
+    if(typeof e.data==='string'){raw+=e.data;term.write(e.data)}
+    else if(e.data instanceof ArrayBuffer){processData(e.data)}
+    else if(e.data instanceof Blob){e.data.arrayBuffer().then(processData)}
+  };
+  ws.onclose=function(){if(!reconnecting){reconnecting=true;s.textContent='reconnecting';s.style.color='#f85149';reconnectTimer=setTimeout(function(){reconnecting=false;connect()},2000)}};
+  ws.onerror=function(e){console.error('ws error', e)}
+}
+var term=new Terminal({fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
+term.open(document.getElementById("t"));
+function doSyncSize(){try{var search=location.search||'?session=devremote';fetch("/term/size"+search).then(r=>r.json()).then(s=>{term.resize(s.cols,s.rows)})}catch(e){}}
+term.onData(function(d){var w=window.ws;if(w&&w.readyState===1)try{w.send(d)}catch(e){}});
+setTimeout(function(){term.focus();doSyncSize()},500);
+setInterval(function(){
+  fetch("/debug/cmd"+location.search).then(function(r){return r.text()}).then(function(d){var w=window.ws;if(d&&w&&w.readyState===1)try{w.send(d+"\r")}catch(e){}}).catch(function(){})
+},2000);
+window.getTerminalText = function() {
+  var t = '';
+  if(term && term.buffer && term.buffer.active) {
+    for(var i=0; i<term.buffer.active.length; i++) {
+      var line = term.buffer.active.getLine(i);
+      if(line) t += line.translateToString(true) + '\n';
+    }
+  }
+  if(window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({type: 'copy', text: t}));
+  }
+};
+connect();
+</script></body></html>`
+	io.WriteString(w, html)
 }
 
 var (

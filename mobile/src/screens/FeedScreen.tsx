@@ -1,7 +1,8 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, KeyboardAvoidingView, Platform, Keyboard} from 'react-native';
+import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, KeyboardAvoidingView, Platform, Keyboard, Modal} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 
 interface Props {
   onBack: () => void;
@@ -34,6 +35,9 @@ export default function FeedScreen({onBack, session}: Props) {
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
 
+  const [copyModalVisible, setCopyModalVisible] = useState(false);
+  const [copyText, setCopyText] = useState('');
+
   const termUrl = useMemo(() => `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`, [session]);
   const source = useMemo(() => ({uri: termUrl}), [termUrl]);
 
@@ -54,13 +58,14 @@ export default function FeedScreen({onBack, session}: Props) {
   }, []);
 
   const doSend = useCallback((text: string) => {
-    const t = text.trim();
-    if (!t || !wv.current) return;
-    inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(t+'\r')+')');
+    if (!text || !wv.current) return;
+    // Replace newlines with \r to match terminal enter behavior
+    const parsedText = text.replace(/\n/g, '\r');
+    inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(parsedText)+')');
   }, [inject]);
 
   const send = useCallback(() => {
-    doSend(cmd);
+    doSend(cmd + '\r');
     setCmd('');
   }, [cmd, doSend]);
 
@@ -71,12 +76,33 @@ export default function FeedScreen({onBack, session}: Props) {
   const handleChangeText = useCallback((text: string) => {
     cmdRef.current = text;
     if (text.endsWith('\n')) {
-      doSend(text.replace(/\n/g, ''));
+      doSend(text.replace(/\n/g, '') + '\r');
       setCmd('');
     } else {
       setCmd(text);
     }
   }, [doSend]);
+
+  const handleCopyRequest = useCallback(() => {
+    inject('if(window.getTerminalText) window.getTerminalText();');
+  }, [inject]);
+
+  const handlePasteRequest = useCallback(async () => {
+    const text = await Clipboard.getStringAsync();
+    if (text) {
+      doSend(text);
+    }
+  }, [doSend]);
+
+  const onMessage = useCallback((event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'copy') {
+        setCopyText(data.text);
+        setCopyModalVisible(true);
+      }
+    } catch (e) {}
+  }, []);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -88,9 +114,13 @@ export default function FeedScreen({onBack, session}: Props) {
         <View style={styles.header}>
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
           <Text style={styles.headerTitle}>{session}</Text>
-          <TouchableOpacity onPress={() => {
-            if (wv.current) wv.current.reload();
-          }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
+          <View style={{flexDirection: 'row', alignItems: 'center'}}>
+            <TouchableOpacity onPress={handleCopyRequest} style={{marginRight: 12}}><Text style={styles.iconBtn}>📋</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handlePasteRequest} style={{marginRight: 12}}><Text style={styles.iconBtn}>📝</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => {
+              if (wv.current) wv.current.reload();
+            }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
+          </View>
         </View>
 
         <WebView
@@ -101,6 +131,7 @@ export default function FeedScreen({onBack, session}: Props) {
           domStorageEnabled
           originWhitelist={['*']}
           cacheEnabled={false}
+          onMessage={onMessage}
         />
 
         <View style={styles.macroContainer}>
@@ -130,6 +161,36 @@ export default function FeedScreen({onBack, session}: Props) {
           <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={copyModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setCopyModalVisible(false)}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select & Copy Text</Text>
+              <TouchableOpacity onPress={() => setCopyModalVisible(false)}>
+                <Text style={styles.closeBtn}>Close</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalScroll}>
+              <TextInput
+                style={styles.modalText}
+                value={copyText}
+                multiline={true}
+                editable={false}
+                selectable={true}
+              />
+            </ScrollView>
+            <View style={styles.modalFooter}>
+              <Text style={styles.modalHint}>Long press on the text above to select and copy.</Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -144,6 +205,7 @@ const styles = StyleSheet.create({
   headerTitle: {fontSize: 14, color: '#8b949e', fontWeight: '500'},
   backBtn: {fontSize: 24, color: '#fff'},
   reloadBtn: {fontSize: 20, color: '#58a6ff', paddingHorizontal: 4},
+  iconBtn: {fontSize: 18},
   webview: {flex:1, backgroundColor:'#000'},
   macroContainer: { backgroundColor: '#161b22', borderTopWidth: 1, borderTopColor: '#30363d' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
@@ -159,4 +221,13 @@ const styles = StyleSheet.create({
   },
   btn: {marginLeft:8, backgroundColor:'#238636', borderRadius:6, paddingHorizontal:14, paddingVertical:10},
   btnT: {color:'#fff', fontWeight:'600', fontSize:13},
+  modalBg: {flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end'},
+  modalContainer: {height: '80%', backgroundColor: '#161b22', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16},
+  modalHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12},
+  modalTitle: {color: '#fff', fontSize: 16, fontWeight: '600'},
+  closeBtn: {color: '#58a6ff', fontSize: 16, fontWeight: '500'},
+  modalScroll: {flex: 1, backgroundColor: '#0d1117', borderRadius: 8, padding: 12, borderWidth: 1, borderColor: '#30363d'},
+  modalText: {color: '#c9d1d9', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'},
+  modalFooter: {marginTop: 12, alignItems: 'center'},
+  modalHint: {color: '#8b949e', fontSize: 12},
 });
