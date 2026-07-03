@@ -6,14 +6,18 @@ interface Props {
 }
 
 export default function DashboardScreen({ onSelectAgent }: Props) {
-  const [sessions, setSessions] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetch('https://term.fullcount.kr/api/sessions')
       .then(res => res.json())
       .then(data => {
-        setSessions(data || []);
+        // Support both legacy string[] and v2 {id,state,load}[]
+        const normalized = (data || []).map((s: any) =>
+          typeof s === 'string' ? {id: s, state: 'active', load: 0} : s
+        );
+        setSessions(normalized);
         setLoading(false);
       })
       .catch(err => {
@@ -31,21 +35,21 @@ export default function DashboardScreen({ onSelectAgent }: Props) {
 
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.sectionTitle}>Active Sessions (Agents)</Text>
-        
+
         {loading ? (
           <ActivityIndicator size="large" color="#58a6ff" style={{marginTop: 20}} />
         ) : sessions.length === 0 ? (
           <Text style={{color:'#8b949e', textAlign:'center', marginTop:20}}>No active sessions found.</Text>
         ) : (
-          sessions.map((sessionName) => (
-            <TouchableOpacity key={sessionName} style={styles.card} onPress={() => onSelectAgent(sessionName)} activeOpacity={0.8}>
+          sessions.map((s) => (
+            <TouchableOpacity key={s.id} style={styles.card} onPress={() => onSelectAgent(s.id)} activeOpacity={0.8}>
               <View style={styles.cardHeader}>
-                <View style={styles.dot} />
-                <Text style={styles.cardTitle}>{sessionName}</Text>
+                <View style={[styles.dot, s.state === 'idle' ? styles.dotIdle : styles.dotActive]} />
+                <Text style={styles.cardTitle}>{s.id}</Text>
               </View>
               <Text style={styles.cardSubtitle}>Terminal Observer</Text>
               <View style={styles.statusRow}>
-                <Text style={styles.statusText}>Awaiting input</Text>
+                <Text style={styles.statusText}>{s.state === 'idle' ? 'Idle' : 'Awaiting input'}</Text>
                 <Text style={styles.timeText}>Active</Text>
               </View>
             </TouchableOpacity>
@@ -71,10 +75,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#161b22', padding: 16, borderRadius: 16,
     borderWidth: 1, borderColor: '#30363d', marginBottom: 12,
   },
-  cardInactive: { opacity: 0.6 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#238636', marginRight: 8 },
-  dotInactive: { backgroundColor: '#484f58' },
+  dot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
+  dotActive: { backgroundColor: '#238636' },
+  dotIdle: { backgroundColor: '#e3b341' },
   cardTitle: { fontSize: 16, fontWeight: '600', color: '#c9d1d9' },
   cardSubtitle: { fontSize: 14, color: '#8b949e', marginLeft: 16, marginBottom: 12 },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', marginLeft: 16 },

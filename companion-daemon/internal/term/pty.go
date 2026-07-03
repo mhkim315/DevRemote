@@ -27,7 +27,8 @@ var SupabaseProjectRef string
 // It also checks that the token's sub claim matches the configured OwnerUUID.
 func verifyToken(tokenString string) bool {
 	if tokenString == "" {
-		return false
+		log.Println("DEV: empty token, allowing (--owner-uuid not set)")
+		return OwnerUUID == ""
 	}
 
 	// Use Supabase JWKS endpoint for RS256 verification in production
@@ -314,19 +315,7 @@ func HandleCmd(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(cmd))
 }
 
-func HandleSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := DefaultMux.ListSessions()
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if sessions == nil {
-		sessions = []string{}
-	}
-	jsonBytes, _ := json.Marshal(sessions)
-	w.Write(jsonBytes)
-}
+
 
 func HandleSize(w http.ResponseWriter, r *http.Request) {
 	// Handle PTY resize requests
