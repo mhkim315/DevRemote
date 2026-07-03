@@ -10,9 +10,31 @@ import (
 	"os/exec"
 	"sync"
 
+	"fmt"
 	"github.com/creack/pty"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
+
+var JWTSecret = "thpmlWKkZWyvmRqPJqlwlQhSUvftURAEwmu0lwxOU4S8vva/lY6RvAKnc66qRQVTkyM6rwPyS7+EqI3Thh5Cvw=="
+
+func verifyToken(tokenString string) bool {
+	if tokenString == "" {
+		return false
+	}
+	
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(JWTSecret), nil
+	})
+
+	if err != nil {
+		return false
+	}
+	return token.Valid
+}
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
@@ -28,6 +50,13 @@ var (
 )
 
 func HandleWS(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if !verifyToken(token) {
+		log.Printf("WS Unauthorized connection attempt from %s", r.RemoteAddr)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	session := r.URL.Query().Get("session")
 	if session == "" {
 		session = "devremote"
@@ -152,6 +181,13 @@ func isApprovalPrompt(data []byte) (bool, string) {
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if !verifyToken(token) {
+		log.Printf("HTML Unauthorized connection attempt from %s", r.RemoteAddr)
+		http.Error(w, "Unauthorized: Valid Supabase JWT token required", http.StatusUnauthorized)
+		return
+	}
+
 	html := `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
