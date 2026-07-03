@@ -14,13 +14,10 @@ function jsSend(chars: number[]): string {
   return `window.ws.send(String.fromCharCode.apply(null, ${arr}))`;
 }
 
-const MACROS: { label: string; chars: number[] }[] = [
+const NORMAL_MACROS: { label: string; chars: number[] }[] = [
   { label: 'Ctrl+C',  chars: [3] },
   { label: 'Esc',     chars: [27] },
   { label: 'Tab',     chars: [9] },
-  { label: '📜 Scroll Mode', chars: [2, 91] }, // Ctrl+B, [
-  { label: 'PgUp',    chars: [27, 91, 53, 126] },
-  { label: 'PgDn',    chars: [27, 91, 54, 126] },
   { label: '↑',       chars: [27, 91, 65] },
   { label: '↓',       chars: [27, 91, 66] },
   { label: '←',       chars: [27, 91, 68] },
@@ -30,11 +27,20 @@ const MACROS: { label: string; chars: number[] }[] = [
   { label: 'Enter',   chars: [13] },
 ];
 
+const SCROLL_MACROS: { label: string; chars: number[] }[] = [
+  { label: '▲ Page Up',    chars: [27, 91, 53, 126] },
+  { label: '▼ Page Down',  chars: [27, 91, 54, 126] },
+  { label: '↑ Line Up',    chars: [27, 91, 65] },
+  { label: '↓ Line Down',  chars: [27, 91, 66] },
+  { label: '❌ Exit Scroll',chars: [113] }, // 'q' to exit tmux copy mode
+];
+
 export default function FeedScreen({onBack, session}: Props) {
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
+  const [isScrollMode, setIsScrollMode] = useState(false);
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
@@ -95,6 +101,18 @@ export default function FeedScreen({onBack, session}: Props) {
     }
   }, [doSend]);
 
+  const handleScrollToggle = useCallback(() => {
+    if (isScrollMode) {
+      // Exit scroll mode ('q')
+      inject('if(window.ws&&window.ws.readyState===1){'+jsSend([113])+'}');
+      setIsScrollMode(false);
+    } else {
+      // Enter scroll mode (Ctrl+B, [)
+      inject('if(window.ws&&window.ws.readyState===1){'+jsSend([2, 91])+'}');
+      setIsScrollMode(true);
+    }
+  }, [isScrollMode, inject]);
+
   const onMessage = useCallback((event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -118,6 +136,7 @@ export default function FeedScreen({onBack, session}: Props) {
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
             <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>Copy</Text></TouchableOpacity>
             <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>Paste</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handleScrollToggle} style={[styles.textBtn, isScrollMode && {backgroundColor: '#238636', borderColor: '#2ea043'}]}><Text style={[styles.textBtnText, isScrollMode && {color: '#fff'}]}>{isScrollMode ? 'Scroll: ON' : 'Scroll: OFF'}</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => {
               if (wv.current) wv.current.reload();
             }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
@@ -135,11 +154,11 @@ export default function FeedScreen({onBack, session}: Props) {
           onMessage={onMessage}
         />
 
-        <View style={styles.macroContainer}>
+        <View style={[styles.macroContainer, isScrollMode && {backgroundColor: '#1b120f', borderTopColor: '#d29922'}]}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
-            {MACROS.map((m, i) => (
-              <TouchableOpacity key={i} style={styles.macroBtn} onPress={() => sendMacro(m.chars)}>
-                <Text style={styles.macroText}>{m.label}</Text>
+            {(isScrollMode ? SCROLL_MACROS : NORMAL_MACROS).map((m, i) => (
+              <TouchableOpacity key={i} style={[styles.macroBtn, isScrollMode && {backgroundColor: '#3d2b1f', borderColor: '#d29922'}]} onPress={() => m.label === '❌ Exit Scroll' ? handleScrollToggle() : sendMacro(m.chars)}>
+                <Text style={[styles.macroText, isScrollMode && {color: '#e3b341'}]}>{m.label}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
