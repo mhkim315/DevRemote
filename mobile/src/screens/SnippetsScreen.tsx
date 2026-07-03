@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, FlatList, TextInput, Alert, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, FlatList, TextInput, Alert, Modal, Platform } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { getSnippets, saveSnippet, deleteSnippet, Snippet } from '../lib/storage';
 
@@ -87,7 +87,7 @@ export default function SnippetsScreen({ onBack }: Props) {
       />
 
       <Modal visible={isAddModalVisible} animationType="slide" transparent={true}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBg}>
+        <View style={styles.modalBg}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Add New Snippet</Text>
             
@@ -121,7 +121,7 @@ export default function SnippetsScreen({ onBack }: Props) {
               </TouchableOpacity>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </SafeAreaView>
   );
