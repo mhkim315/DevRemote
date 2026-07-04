@@ -39,7 +39,7 @@ func verifyToken(tokenString string) bool {
 	if OwnerUUID == "" && SupabaseProjectRef == "" {
 		parser := jwt.NewParser()
 		token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-		if err != nil { log.Printf("WS pty read err: %v", err)
+		if err != nil { log.Printf("WS pty start err: %v", err)
 			log.Printf("JWT parse err (dev): %v", err)
 			return false
 		}
@@ -77,7 +77,7 @@ func verifyToken(tokenString string) bool {
 	}
 
 	token, err := jwt.Parse(tokenString, keyFunc)
-	if err != nil { log.Printf("WS pty read err: %v", err)
+	if err != nil { log.Printf("WS pty start err: %v", err)
 		log.Printf("JWT parse err: %v", err)
 		return false
 	}
@@ -170,7 +170,7 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 	if jwksCache == nil {
 		url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
 		resp, err := http.Get(url)
-		if err != nil { log.Printf("WS pty read err: %v", err)
+		if err != nil { log.Printf("WS pty start err: %v", err)
 			return nil, fmt.Errorf("jwks fetch: %w", err)
 		}
 		defer resp.Body.Close()
@@ -255,19 +255,20 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	cmd := DefaultMux.AttachCmd(session)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	tty, err := pty.Start(cmd)
-	if err != nil { log.Printf("WS pty read err: %v", err)
+	if err != nil { log.Printf("WS pty start err: %v", err)
 		cmd = exec.Command("bash")
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 		tty, err = pty.Start(cmd)
-		if err != nil { log.Printf("WS pty read err: %v", err)
+		if err != nil { log.Printf("WS pty start err: %v", err)
 			http.Error(w, "pty failed", 500)
 			return
 		}
 	}
 	defer tty.Close()
+		pty.Setsize(tty, &pty.Winsize{Rows: 60, Cols: 100})
 
 	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil { log.Printf("WS pty read err: %v", err)
+	if err != nil { log.Printf("WS pty start err: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -299,7 +300,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if err != nil { log.Printf("WS pty read err: %v", err)
+			if err != nil { log.Printf("WS pty start err: %v", err)
 				return
 			}
 		}
@@ -307,7 +308,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		_, msg, err := conn.ReadMessage()
-		if err != nil { log.Printf("WS pty read err: %v", err)
+		if err != nil { log.Printf("WS pty start err: %v", err)
 			break
 		}
 		tty.Write(msg)
