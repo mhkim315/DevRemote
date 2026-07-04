@@ -48,9 +48,11 @@ export function HistoryModal({ visible, onClose, session }: Props) {
               <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
             ) : (
               <ScrollView style={styles.modalScroll}>
-                <Text style={styles.modalText} selectable={true}>
-                  {history}
-                </Text>
+                <ScrollView horizontal={true} contentContainerStyle={{flexGrow: 1}}>
+                  <Text style={styles.modalText} selectable={true}>
+                    {history}
+                  </Text>
+                </ScrollView>
               </ScrollView>
             )}
           </View>

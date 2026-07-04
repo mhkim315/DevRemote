@@ -265,6 +265,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer tty.Close()
+	exec.Command("tmux", "set", "-t", session, "status", "off").Run()
 		pty.Setsize(tty, &pty.Winsize{Rows: 60, Cols: 100})
 
 	conn, err := upgrader.Upgrade(w, r, nil)

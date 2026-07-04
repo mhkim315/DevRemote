@@ -239,12 +239,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
                 cacheEnabled={false}
                 onMessage={onMessage}
               />
-              <TouchableOpacity 
-                style={styles.floatingHistoryBtn} 
-                onPress={() => setHistoryModalVisible(true)}
-              >
-                <Text style={styles.floatingHistoryText}>History 🕒</Text>
-              </TouchableOpacity>
             </View>
 
             <View style={styles.macroContainer}>
