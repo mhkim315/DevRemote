@@ -1,4 +1,4 @@
-import { config } from '../../config';
+import { config } from '../config';
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, ActivityIndicator, Platform } from 'react-native';
 

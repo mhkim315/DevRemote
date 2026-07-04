@@ -1,4 +1,4 @@
-import { config } from '../../config';
+import { config } from '../config';
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 

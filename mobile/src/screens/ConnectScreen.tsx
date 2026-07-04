@@ -69,7 +69,7 @@ export default function ConnectScreen({ onConnect }: Props) {
           barcodeScannerSettings={{
             barcodeTypes: ["qr"],
           }}
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
         />
         <View style={styles.overlay}>
           <View style={styles.scanBox} />
@@ -125,7 +125,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: 'center',
     alignItems: 'center',
   },
