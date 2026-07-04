@@ -161,7 +161,7 @@ func main() {
 					urlFound = true
 					
 					// Clear terminal a bit
-					fmt.Println("\n\n\n\n\n")
+					fmt.Print("\n\n\n\n\n")
 					
 					// Print the QR Code
 					config := qrterminal.Config{
