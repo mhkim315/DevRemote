@@ -29,8 +29,13 @@ func runClient(args []string) {
 	}
 	defer conn.Close()
 
-	// Send the command as the first line
+	// Send the command and terminal environment as headers
 	fmt.Fprintf(conn, "cmd:%s\n", command)
+	termEnv := os.Getenv("TERM")
+	if termEnv == "" {
+		termEnv = "xterm-256color"
+	}
+	fmt.Fprintf(conn, "term:%s\n", termEnv)
 
 	// Put local terminal into raw mode
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
@@ -44,26 +49,15 @@ func runClient(args []string) {
 		}
 	}()
 
-	// Send current terminal size to daemon
-	sendTermSize := func() {
-		if !isRaw {
-			return
-		}
+	// Send current terminal size to daemon and EOH
+	if isRaw {
 		w, h, err := term.GetSize(int(os.Stdin.Fd()))
 		if err == nil && w > 0 && h > 0 {
 			fmt.Fprintf(conn, "size:%dx%d\n", w, h)
 		}
 	}
-	sendTermSize()
-
-	// Handle SIGWINCH to sync terminal size
-	sigWinch := make(chan os.Signal, 1)
-	signal.Notify(sigWinch, syscall.SIGWINCH)
-	go func() {
-		for range sigWinch {
-			sendTermSize()
-		}
-	}()
+	// End of Headers
+	fmt.Fprintf(conn, "\n")
 
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)

@@ -134,7 +134,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if r.Method == "POST" {
-			mux.NewSession(req.ID, "bash")
+			mux.NewSession(req.ID, "xterm-256color", "bash")
 		}
 		
 		w.WriteHeader(200)
@@ -241,7 +241,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	s, ok := mux.GetSession(session)
 	if !ok {
 		var err error
-		s, err = mux.NewSession(session, "bash")
+		s, err = mux.NewSession(session, "xterm-256color", "bash")
 		if err != nil {
 			log.Printf("WS new session err: %v", err)
 			http.Error(w, "session failed", 500)

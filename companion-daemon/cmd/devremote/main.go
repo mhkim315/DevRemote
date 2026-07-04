@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 
 	"github.com/mdp/qrterminal/v3"
 
@@ -132,54 +130,34 @@ func main() {
 			}
 		}
 
-		// Use dynamic tunnel
-		cmd := exec.Command(cloudflaredPath, "tunnel", "--url", "http://127.0.0.1:9171")
+		// Use named tunnel
+		cmd := exec.Command(cloudflaredPath, "tunnel", "run", "devremote")
 		cmd.Stdout = os.Stdout
-
-		stderrPipe, err := cmd.StderrPipe()
-		if err != nil {
-			log.Printf("Failed to get cloudflared stderr: %v", err)
-			return
-		}
+		cmd.Stderr = os.Stderr
 
 		if err := cmd.Start(); err != nil {
 			log.Printf("Failed to start cloudflared: %v", err)
 			return
 		}
 
-		urlRegex := regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`)
-		scanner := bufio.NewScanner(stderrPipe)
-		urlFound := false
+		// Clear terminal a bit
+		fmt.Print("\n\n\n\n\n")
 
-		for scanner.Scan() {
-			line := scanner.Text()
-			// Forward stderr to our stderr so we still see logs
-			fmt.Fprintln(os.Stderr, line)
-
-			if !urlFound {
-				if match := urlRegex.FindString(line); match != "" {
-					urlFound = true
-					
-					// Clear terminal a bit
-					fmt.Print("\n\n\n\n\n")
-					
-					// Print the QR Code
-					config := qrterminal.Config{
-						Level:     qrterminal.L,
-						Writer:    os.Stdout,
-						BlackChar: qrterminal.BLACK,
-						WhiteChar: qrterminal.WHITE,
-						QuietZone: 2,
-					}
-					qrterminal.GenerateWithConfig(match, config)
-					
-					// Print the URL as text as well
-					fmt.Printf("\n🚀 POKIT Daemon is live at: %s\n", match)
-					fmt.Println("👉 Scan this QR code with the POKIT mobile app to connect instantly.")
-					fmt.Println("\nWaiting for connections...")
-				}
-			}
+		// Print the QR Code for named tunnel
+		tunnelURL := "https://term.fullcount.kr"
+		config := qrterminal.Config{
+			Level:     qrterminal.L,
+			Writer:    os.Stdout,
+			BlackChar: qrterminal.BLACK,
+			WhiteChar: qrterminal.WHITE,
+			QuietZone: 2,
 		}
+		qrterminal.GenerateWithConfig(tunnelURL, config)
+
+		// Print the URL as text as well
+		fmt.Printf("\n🚀 POKIT Daemon is live at: %s\n", tunnelURL)
+		fmt.Println("👉 Scan this QR code with the POKIT mobile app to connect instantly.")
+		fmt.Println("\nWaiting for connections...")
 
 		if err := cmd.Wait(); err != nil {
 			log.Printf("cloudflared tunnel exited: %v", err)

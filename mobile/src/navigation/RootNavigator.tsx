@@ -14,6 +14,7 @@ const Stack = createNativeStackNavigator();
 
 function DashboardStackScreen({ route }: any) {
   const token = route.params?.token;
+  const onDisconnect = route.params?.onDisconnect;
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="DashboardMain">
@@ -21,6 +22,7 @@ function DashboardStackScreen({ route }: any) {
           <DashboardScreen 
             {...props} 
             token={token}
+            onDisconnect={onDisconnect}
             onSelectAgent={(session) => props.navigation.navigate('Terminal', { session })}
             onSnippets={() => props.navigation.navigate('Snippets')}
           />
@@ -48,7 +50,7 @@ function DashboardStackScreen({ route }: any) {
   );
 }
 
-export function RootTabs({ token }: { token?: string }) {
+export function RootTabs({ token, onDisconnect }: { token?: string, onDisconnect?: () => void }) {
   return (
     <NavigationContainer theme={DarkTheme}>
       <Tab.Navigator
@@ -77,7 +79,7 @@ export function RootTabs({ token }: { token?: string }) {
         <Tab.Screen 
           name="DashboardStack" 
           component={DashboardStackScreen}
-          initialParams={{ token }}
+          initialParams={{ token, onDisconnect }}
           options={{ title: 'Dashboard' }} 
         />
         <Tab.Screen 

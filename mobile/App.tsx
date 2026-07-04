@@ -65,7 +65,7 @@ export default function App() {
       ) : !isConnected ? (
         <ConnectScreen onConnect={() => setIsConnected(true)} />
       ) : (
-        <RootTabs token={session.access_token} />
+        <RootTabs token={session.access_token} onDisconnect={() => setIsConnected(false)} />
       )}
     </SafeAreaProvider>
   );

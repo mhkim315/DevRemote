@@ -2,7 +2,6 @@ package term
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"log"
 	"net"
@@ -49,27 +48,51 @@ func handleIPCConnection(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
-	// First line is the command, e.g. "cmd:claude"
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		log.Printf("IPC read error: %v", err)
-		return
+	
+	cmdStr := ""
+	termEnv := "xterm-256color"
+	var initialW, initialH int
+
+	// Parse headers until empty line (EOH)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			log.Printf("IPC read error: %v", err)
+			return
+		}
+		
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break // End of Headers
+		}
+
+		if strings.HasPrefix(line, "cmd:") {
+			cmdStr = strings.TrimPrefix(line, "cmd:")
+		} else if strings.HasPrefix(line, "term:") {
+			termEnv = strings.TrimPrefix(line, "term:")
+		} else if strings.HasPrefix(line, "size:") {
+			fmt.Sscanf(line, "size:%dx%d", &initialW, &initialH)
+		}
 	}
 
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "cmd:") {
-		log.Printf("IPC invalid command format: %s", line)
+	if cmdStr == "" {
+		log.Printf("IPC missing cmd header")
 		return
 	}
-
-	cmdStr := strings.TrimPrefix(line, "cmd:")
 
 	// Spawn a new native multiplexer session
 	sessionID := cmdStr // Simple ID for now
-	s, err := mux.NewSession(sessionID, "sh", "-c", cmdStr)
+	s, err := mux.NewSession(sessionID, termEnv, "sh", "-c", cmdStr)
 	if err != nil {
 		log.Println("failed to spawn session:", err)
 		return
+	}
+
+	// Set initial PTY size if provided
+	if initialW > 0 && initialH > 0 {
+		if szErr := pty.Setsize(s.PTY, &pty.Winsize{Rows: uint16(initialH), Cols: uint16(initialW)}); szErr != nil {
+			log.Printf("IPC resize err: %v", szErr)
+		}
 	}
 
 	// Stream PTY stdout to IPC connection
@@ -84,24 +107,21 @@ func handleIPCConnection(conn net.Conn) {
 		}
 	}()
 
-	// Stream IPC connection to PTY stdin
-	lineBuf := make([]byte, 4096)
+	// Stream IPC connection to PTY stdin (Raw byte copy)
+	// We use io.Copy so it copies efficiently directly into s.PTY
+	// Since we already used bufio.Reader, we must write its remaining buffer first
+	if reader.Buffered() > 0 {
+		bufferedData, _ := reader.Peek(reader.Buffered())
+		s.Write(bufferedData)
+		reader.Discard(reader.Buffered())
+	}
+	
+	buf := make([]byte, 4096)
 	for {
-		n, err := reader.Read(lineBuf)
+		n, err := conn.Read(buf)
 		if err != nil {
 			break
 		}
-		data := lineBuf[:n]
-		// Handle PTY resize commands from the client
-		if bytes.HasPrefix(data, []byte("size:")) {
-			var w, h int
-			if _, e := fmt.Sscanf(string(data), "size:%dx%d\n", &w, &h); e == nil && w > 0 && h > 0 {
-				if szErr := pty.Setsize(s.PTY, &pty.Winsize{Rows: uint16(h), Cols: uint16(w)}); szErr != nil {
-					log.Printf("IPC resize err: %v", szErr)
-				}
-			}
-			continue
-		}
-		s.Write(data)
+		s.Write(buf[:n])
 	}
 }

@@ -10,9 +10,10 @@ interface Props {
   onSelectAgent: (sessionName: string) => void;
   onSnippets: () => void;
   token?: string;
+  onDisconnect?: () => void;
 }
 
-export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Props) {
+export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDisconnect }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -105,7 +106,9 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         <View style={{flexDirection:'row', gap:6}}>
           <TouchableOpacity onPress={() => {
             AsyncStorage.removeItem('BASE_URL').then(() => {
-              Alert.alert('Reset', 'QR scanner will show on next launch');
+              if (onDisconnect) {
+                onDisconnect();
+              }
             });
           }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
             <Text style={[styles.snippetBtnText, {color: '#f85149'}]}>↻ RESCAN</Text>

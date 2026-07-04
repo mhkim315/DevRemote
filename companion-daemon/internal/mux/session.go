@@ -29,7 +29,7 @@ var (
 )
 
 // NewSession spawns a new background process with a PTY and a VT100 emulator attached.
-func NewSession(id string, command string, args ...string) (*Session, error) {
+func NewSession(id string, termEnv string, command string, args ...string) (*Session, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -38,7 +38,30 @@ func NewSession(id string, command string, args ...string) (*Session, error) {
 	}
 
 	cmd := exec.Command(command, args...)
-	cmd.Env = os.Environ() // Inherit shell environment (API keys, PATH, etc.)
+	
+	// Inherit shell environment (API keys, PATH, etc.)
+	env := os.Environ()
+	// Replace or append TERM
+	termFound := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "TERM=") {
+			if termEnv != "" {
+				env[i] = "TERM=" + termEnv
+			} else {
+				env[i] = "TERM=xterm-256color"
+			}
+			termFound = true
+			break
+		}
+	}
+	if !termFound {
+		if termEnv != "" {
+			env = append(env, "TERM="+termEnv)
+		} else {
+			env = append(env, "TERM=xterm-256color")
+		}
+	}
+	cmd.Env = env
 
 	// Start the command with a pty.
 	ptm, err := pty.Start(cmd)
