@@ -76,6 +76,18 @@ export default function ConnectScreen({ onConnect }: Props) {
         </View>
       </View>
       
+      <View style={styles.manualContainer}>
+        <View style={styles.manualBtn}>
+          <Button title="Connect to term.fullcount.kr" onPress={async () => {
+            const url = 'https://term.fullcount.kr';
+            config.BASE_URL = url;
+            await AsyncStorage.setItem('BASE_URL', url);
+            onConnect();
+          }} color="#45EBE9" />
+        </View>
+        <Text style={styles.manualHint}>Tap above to skip QR. Or scan the terminal QR code.</Text>
+      </View>
+
       {scanned && (
         <Button title={'Tap to Scan Again'} onPress={() => setScanned(false)} />
       )}
@@ -136,5 +148,17 @@ const styles = StyleSheet.create({
     borderColor: '#4ade80',
     backgroundColor: 'transparent',
     borderRadius: 10,
+  },
+  manualContainer: {
+    marginTop: 20,
+    alignItems: 'center',
+  },
+  manualBtn: {
+    marginBottom: 10,
+  },
+  manualHint: {
+    color: '#666',
+    fontSize: 12,
+    marginTop: 5,
   },
 });
