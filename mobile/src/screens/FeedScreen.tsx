@@ -144,7 +144,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
       let initialFontSize = null;
 
       const style = document.createElement('style');
-      style.innerHTML = '.xterm-viewport { user-select: none !important; -webkit-user-select: none !important; touch-action: none !important; overflow: hidden !important; } .xterm-screen { user-select: none !important; -webkit-user-select: none !important; touch-action: none !important; }';
+      style.innerHTML = '.xterm-viewport { user-select: none !important; -webkit-user-select: none !important; } .xterm-screen { user-select: none !important; -webkit-user-select: none !important; }';
       document.head.appendChild(style);
 
       document.addEventListener('touchstart', function(e) {
