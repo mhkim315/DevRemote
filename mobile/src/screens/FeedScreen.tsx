@@ -31,20 +31,14 @@ const NORMAL_MACROS: { label: string; chars: number[] }[] = [
   { label: 'Enter',   chars: [13] },
 ];
 
-const SCROLL_MACROS: { label: string; chars: number[] }[] = [
-  { label: '▲ Page Up',    chars: [27, 91, 53, 126] },
-  { label: '▼ Page Down',  chars: [27, 91, 54, 126] },
-  { label: '↑ Line Up',    chars: [27, 91, 65] },
-  { label: '↓ Line Down',  chars: [27, 91, 66] },
-  { label: '❌ Exit Scroll',chars: [113] }, // 'q' to exit tmux copy mode
-];
+
 
 export default function FeedScreen({onBack, session, token}: Props) {
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
-  const [isScrollMode, setIsScrollMode] = useState(false);
+
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('terminal');
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
 
@@ -132,15 +126,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
     }
   }, [doSend]);
 
-  const handleScrollToggle = useCallback(() => {
-    if (isScrollMode) {
-      inject('if(window.ws&&window.ws.readyState===1){'+jsSend([113])+'}');
-      setIsScrollMode(false);
-    } else {
-      inject('if(window.ws&&window.ws.readyState===1){window.ws.send(String.fromCharCode(2));setTimeout(function(){window.ws.send(String.fromCharCode(91))},50)}');
-      setIsScrollMode(true);
-    }
-  }, [isScrollMode, inject]);
+
 
   const onMessage = useCallback((event: any) => {
     try {
@@ -156,6 +142,10 @@ export default function FeedScreen({onBack, session, token}: Props) {
     (function() {
       let initialDistance = null;
       let initialFontSize = null;
+
+      const style = document.createElement('style');
+      style.innerHTML = '.xterm-viewport { user-select: none !important; -webkit-user-select: none !important; touch-action: none !important; overflow: hidden !important; } .xterm-screen { user-select: none !important; -webkit-user-select: none !important; touch-action: none !important; }';
+      document.head.appendChild(style);
 
       document.addEventListener('touchstart', function(e) {
         if(e.touches.length === 2 && window.term) {
@@ -212,7 +202,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
               <>
                 <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>COPY</Text></TouchableOpacity>
                 <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>PASTE</Text></TouchableOpacity>
-                <TouchableOpacity onPress={handleScrollToggle} style={[styles.textBtn, isScrollMode && {backgroundColor: '#1E91B3'}]}><Text style={[styles.textBtnText, isScrollMode && {color: '#fff'}]}>{isScrollMode ? 'SCROLL: ON' : 'SCROLL: OFF'}</Text></TouchableOpacity>
                 <TouchableOpacity onPress={() => {
                   if (wv.current) wv.current.reload();
                 }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
@@ -258,11 +247,14 @@ export default function FeedScreen({onBack, session, token}: Props) {
               </TouchableOpacity>
             </View>
 
-            <View style={[styles.macroContainer, isScrollMode && {backgroundColor: '#1b120f', borderTopColor: '#d29922'}]}>
+            <View style={styles.macroContainer}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
-                {(isScrollMode ? SCROLL_MACROS : NORMAL_MACROS).map((m, i) => (
-                  <TouchableOpacity key={i} style={[styles.macroBtn, isScrollMode && {backgroundColor: '#3d2b1f', borderColor: '#d29922'}]} onPress={() => m.label === '❌ Exit Scroll' ? handleScrollToggle() : sendMacro(m.chars)}>
-                    <Text style={[styles.macroText, isScrollMode && {color: '#e3b341'}]}>{m.label}</Text>
+                <TouchableOpacity style={styles.macroBtn} onPress={() => setHistoryModalVisible(true)}>
+                  <Text style={styles.macroText}>📋 History</Text>
+                </TouchableOpacity>
+                {NORMAL_MACROS.map((m, i) => (
+                  <TouchableOpacity key={i} style={styles.macroBtn} onPress={() => sendMacro(m.chars)}>
+                    <Text style={styles.macroText}>{m.label}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
