@@ -15,7 +15,9 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"time"
 
+	"devremote/companion-daemon/internal/parsers"
 	"github.com/creack/pty"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
@@ -270,6 +272,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	sessionPty[session] = tty
 	sessionPtyMu.Unlock()
 	exec.Command("tmux", "set", "-t", session, "status", "off").Run()
+	exec.Command("tmux", "set", "-t", session, "history-limit", "50000").Run()
 		pty.Setsize(tty, &pty.Winsize{Rows: 30, Cols: 80})
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -300,12 +303,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 			if n > 0 {
 				data := buf[:n]
 				if writeErr := conn.WriteMessage(websocket.BinaryMessage, data); writeErr != nil { log.Printf("WS write err: %v", writeErr); return }
-				if matched, promptStr := isApprovalPrompt(data); matched {
-					EmitEvent(session, "approval_request", "Approval Required", promptStr)
-					if OnApproval != nil {
-						go OnApproval(promptStr)
-					}
-				}
+
 			}
 			if err != nil { log.Printf("WS pty start err: %v", err)
 				return
