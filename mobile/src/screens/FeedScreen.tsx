@@ -5,7 +5,6 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { EventBubble } from '../components/EventBubble';
 import { SessionTelemetry } from '../components/AgentCard';
-import { HistoryModal } from '../components/HistoryModal';
 
 interface Props {
   onBack: () => void;
@@ -39,12 +38,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
 
-  const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('terminal');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('activity');
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
+  const [historyEvents, setHistoryEvents] = useState<any[]>([]);
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
-  const [historyModalVisible, setHistoryModalVisible] = useState(false);
 
   const termUrl = useMemo(() => {
     let url = `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`;
@@ -78,8 +77,24 @@ export default function FeedScreen({onBack, session, token}: Props) {
           })
           .catch(err => console.error(err));
       };
+      
+      const fetchHistory = () => {
+        fetch(`https://term.fullcount.kr/api/sessions?history=${encodeURIComponent(session)}`)
+          .then(res => res.json())
+          .then(data => {
+            if (Array.isArray(data)) {
+              setHistoryEvents(data);
+            }
+          })
+          .catch(err => console.error(err));
+      };
+
       fetchSession();
-      const interval = setInterval(fetchSession, 3000);
+      fetchHistory();
+      const interval = setInterval(() => {
+        fetchSession();
+        fetchHistory();
+      }, 3000);
       return () => clearInterval(interval);
     }
   }, [activeTab, session]);
@@ -243,9 +258,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
             <View style={styles.macroContainer}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
-                <TouchableOpacity style={styles.macroBtn} onPress={() => setHistoryModalVisible(true)}>
-                  <Text style={styles.macroText}>📋 History</Text>
-                </TouchableOpacity>
+
                 {NORMAL_MACROS.map((m, i) => (
                   <TouchableOpacity key={i} style={styles.macroBtn} onPress={() => sendMacro(m.chars)}>
                     <Text style={styles.macroText}>{m.label}</Text>
@@ -273,11 +286,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
           </>
         ) : (
           <View style={styles.activityContainer}>
-            {!sessionData ? (
+            {!historyEvents || historyEvents.length === 0 ? (
               <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
             ) : (
               <FlatList
-                data={(sessionData.events || []).slice().reverse()}
+                data={historyEvents.slice().reverse()}
                 keyExtractor={(item, idx) => item.id || String(idx)}
                 contentContainerStyle={styles.activityList}
                 renderItem={({ item }) => (
@@ -317,12 +330,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
           </View>
         </View>
       </Modal>
-
-      <HistoryModal
-        visible={historyModalVisible}
-        onClose={() => setHistoryModalVisible(false)}
-        session={session}
-      />
     </SafeAreaView>
   );
 }

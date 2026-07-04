@@ -170,9 +170,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			data, err := os.ReadFile(logPath)
 			if err == nil {
-				formatted := formatJSONLToText(data)
-				w.Header().Set("Content-Type", "text/plain")
-				w.Write([]byte(formatted))
+				events := parseJSONLToEvents(data, historyID)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(events)
 				return
 			}
 		}
@@ -184,8 +184,13 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write(out)
+		
+		// Fallback returns empty event list or dummy event
+		w.Header().Set("Content-Type", "application/json")
+		fallbackEvents := []AgentEvent{{
+			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Legacy Tmux History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
+		}}
+		json.NewEncoder(w).Encode(fallbackEvents)
 		return
 	}
 
@@ -217,10 +222,11 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
-func formatJSONLToText(data []byte) string {
+func parseJSONLToEvents(data []byte, session string) []AgentEvent {
 	lines := strings.Split(string(data), "\n")
-	var sb strings.Builder
-	for _, line := range lines {
+	var events []AgentEvent
+
+	for i, line := range lines {
 		if line == "" {
 			continue
 		}
@@ -230,23 +236,29 @@ func formatJSONLToText(data []byte) string {
 		}
 
 		typ, _ := payload["type"].(string)
+		
+		var eventType, summary, detail string
+		
 		if typ == "tool_use" {
+			eventType = "tool_use"
 			name, _ := payload["name"].(string)
-			sb.WriteString(fmt.Sprintf("\n[🛠️ Tool: %s]\n", name))
+			summary = fmt.Sprintf("Tool: %s", name)
 			if input, ok := payload["input"]; ok {
 				b, _ := json.MarshalIndent(input, "", "  ")
-				sb.WriteString(string(b) + "\n")
+				detail = string(b)
 			}
 		} else if typ == "tool_result" {
+			eventType = "tool_result"
+			summary = "Result"
 			content, _ := payload["content"].(string)
-			if content != "" {
-				sb.WriteString(fmt.Sprintf("\n[✅ Result]\n%s\n", content))
-			}
+			detail = content
 		} else if typ == "user" {
+			eventType = "user"
+			summary = "User"
 			msg, ok := payload["message"].(map[string]interface{})
 			if ok {
 				if content, ok := msg["content"].(string); ok {
-					sb.WriteString(fmt.Sprintf("\n[👤 User]\n%s\n", content))
+					detail = content
 				}
 			}
 		} else if typ == "assistant" {
@@ -264,14 +276,46 @@ func formatJSONLToText(data []byte) string {
 					continue
 				}
 				if itemMap["type"] == "text" {
+					eventType = "message"
+					summary = "Claude"
 					text, _ := itemMap["text"].(string)
-					sb.WriteString(fmt.Sprintf("\n[🤖 Claude]\n%s\n", text))
+					detail = text
 				} else if itemMap["type"] == "thinking" {
+					eventType = "message"
+					summary = "Claude (Thinking)"
 					thinking, _ := itemMap["thinking"].(string)
-					sb.WriteString(fmt.Sprintf("\n[🤔 Thinking]\n%s\n", thinking))
+					detail = thinking
 				}
 			}
+		} else if typ == "message" {
+			eventType = "message"
+			summary = "Claude"
+			msg, ok := payload["message"].(map[string]interface{})
+			if ok {
+				if content, ok := msg["content"].(string); ok {
+					detail = content
+				}
+			}
+		} else if typ == "text" {
+			eventType = "message"
+			summary = "Claude"
+			content, _ := payload["text"].(string)
+			detail = content
 		}
+
+		// Avoid empty events
+		if detail == "" {
+			continue
+		}
+
+		events = append(events, AgentEvent{
+			ID:        fmt.Sprintf("hist-%d", i),
+			Session:   session,
+			Type:      eventType,
+			Summary:   summary,
+			Detail:    detail,
+			Timestamp: time.Now().Format(time.RFC3339),
+		})
 	}
-	return sb.String()
+	return events
 }
