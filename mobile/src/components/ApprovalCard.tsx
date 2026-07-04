@@ -1,3 +1,4 @@
+import { config } from '../../config';
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
@@ -14,7 +15,7 @@ export function ApprovalCard({ sessionId, promptText, token, onResolved }: Props
   const handleAction = async (approve: boolean) => {
     setLoading(true);
     try {
-      const res = await fetch(`https://term.fullcount.kr/debug/cmd?session=${encodeURIComponent(sessionId)}`, {
+      const res = await fetch(`${config.BASE_URL}/debug/cmd?session=${encodeURIComponent(sessionId)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain',

@@ -1,3 +1,4 @@
+import { config } from '../config';
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,7 +14,7 @@ export default function GlobalFeedScreen({ token }: Props) {
   const [loading, setLoading] = useState(true);
 
   const fetchSessions = () => {
-    fetch('https://term.fullcount.kr/api/sessions')
+    fetch(`${config.BASE_URL}/api/sessions`)
       .then(res => res.json())
       .then(data => {
         const normalized = (data || []).map((s: any) =>

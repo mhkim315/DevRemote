@@ -1,3 +1,4 @@
+import { config } from '../config';
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
 import {WebView} from 'react-native-webview';
@@ -46,7 +47,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [copyText, setCopyText] = useState('');
 
   const termUrl = useMemo(() => {
-    let url = `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`;
+    let url = `${config.BASE_URL}/term/?session=${encodeURIComponent(session)}`;
     if (token) {
       url += `&token=${encodeURIComponent(token)}`;
     }
@@ -66,7 +67,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   useEffect(() => {
     const fetchSession = () => {
-      fetch(`https://term.fullcount.kr/api/sessions`)
+      fetch(`${config.BASE_URL}/api/sessions`)
         .then(res => res.json())
         .then(data => {
           const sess = data.find((s: any) => (s.id || s) === session);
@@ -78,7 +79,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
     };
     
     const fetchHistory = () => {
-      fetch(`https://term.fullcount.kr/api/sessions?history=${encodeURIComponent(session)}`)
+      fetch(`${config.BASE_URL}/api/sessions?history=${encodeURIComponent(session)}`)
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data)) {

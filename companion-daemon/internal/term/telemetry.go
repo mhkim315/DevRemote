@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/mux"
 )
 
 // SessionTelemetry holds the calculated state of a tmux session.
@@ -18,7 +21,7 @@ type SessionTelemetry struct {
 	Load        int          `json:"load"`  // 0-100 (animation speed)
 	Runner      string       `json:"runner"`
 	RunnerColor string       `json:"runnerColor"`
-	Events      []AgentEvent `json:"events"`
+	Events      []models.AgentEvent `json:"events"`
 }
 
 type sessionStateData struct {
@@ -41,7 +44,7 @@ func StartTelemetryLoop() {
 	go func() {
 		for {
 			time.Sleep(2 * time.Second)
-			sessions, _ := DefaultMux.ListSessions()
+			sessions := mux.ListSessions()
 
 			telemetryMu.Lock()
 			// Clean up old sessions
@@ -187,18 +190,14 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		
 		// Fallback returns empty event list or dummy event
 		w.Header().Set("Content-Type", "application/json")
-		fallbackEvents := []AgentEvent{{
+		fallbackEvents := []models.AgentEvent{{
 			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Legacy Tmux History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
 		}}
 		json.NewEncoder(w).Encode(fallbackEvents)
 		return
 	}
 
-	sessions, err := DefaultMux.ListSessions()
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
+	sessions := mux.ListSessions()
 	
 	w.Header().Set("Content-Type", "application/json")
 	var res []SessionTelemetry
@@ -207,9 +206,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sessions {
 		data := telemetryCache[s]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Events: GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Events: models.GetEvents(s)})
 		} else {
-			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Events: GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Events: models.GetEvents(s)})
 		}
 	}
 	telemetryMu.Unlock()
@@ -222,9 +221,10 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
-func parseJSONLToEvents(data []byte, session string) []AgentEvent {
+func parseJSONLToEvents(data []byte, session string) []models.AgentEvent {
+	// A simple heuristic parser for JSONL transcripts
+	var events []models.AgentEvent
 	lines := strings.Split(string(data), "\n")
-	var events []AgentEvent
 
 	for i, line := range lines {
 		if line == "" {
@@ -308,7 +308,7 @@ func parseJSONLToEvents(data []byte, session string) []AgentEvent {
 			continue
 		}
 
-		events = append(events, AgentEvent{
+		events = append(events, models.AgentEvent{
 			ID:        fmt.Sprintf("hist-%d", i),
 			Session:   session,
 			Type:      eventType,

@@ -1,3 +1,4 @@
+import { config } from '../../config';
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, ActivityIndicator, Platform } from 'react-native';
 
@@ -14,7 +15,7 @@ export function HistoryModal({ visible, onClose, session }: Props) {
   useEffect(() => {
     if (visible) {
       setLoading(true);
-      fetch(`https://term.fullcount.kr/api/sessions?history=${session}`)
+      fetch(`${config.BASE_URL}/api/sessions?history=${session}`)
         .then(res => res.text())
         .then(text => {
           // Strip ANSI codes using a standard regex pattern

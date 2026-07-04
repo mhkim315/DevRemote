@@ -1,3 +1,4 @@
+import { config } from '../../config';
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert, Platform } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
@@ -18,7 +19,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
-    fetch('https://term.fullcount.kr/api/sessions')
+    fetch(`${config.BASE_URL}/api/sessions`)
       .then(res => res.json())
       .then(data => {
         const normalized = (data || []).map((s: any) =>
@@ -57,7 +58,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     setEditSession(null);
 
     try {
-      const res = await fetch('https://term.fullcount.kr/api/sessions', {
+      const res = await fetch(`${config.BASE_URL}/api/sessions`, {
         method,
         headers: {
           'Content-Type': 'application/json',
@@ -76,7 +77,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
 
   const handleDeleteProfile = async (id: string) => {
     try {
-      const res = await fetch(`https://term.fullcount.kr/api/sessions?id=${encodeURIComponent(id)}`, {
+      const res = await fetch(`${config.BASE_URL}/api/sessions?id=${encodeURIComponent(id)}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });

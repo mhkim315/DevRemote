@@ -11,15 +11,10 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"os"
-	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 
-	"devremote/companion-daemon/internal/parsers"
-	"github.com/creack/pty"
+	"devremote/companion-daemon/internal/mux"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
@@ -139,10 +134,8 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if r.Method == "POST" {
-			exec.Command("tmux", "new-session", "-d", "-s", req.ID).Run()
+			mux.NewSession(req.ID, "bash")
 		}
-		exec.Command("tmux", "set-environment", "-t", req.ID, "POKIT_RUNNER", req.Runner).Run()
-		exec.Command("tmux", "set-environment", "-t", req.ID, "POKIT_RUNNER_COLOR", req.RunnerColor).Run()
 		
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -152,7 +145,9 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		if id != "" {
-			exec.Command("tmux", "kill-session", "-t", id).Run()
+			if s, ok := mux.GetSession(id); ok {
+				s.PTY.Close()
+			}
 		}
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -223,13 +218,6 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 // OnApproval is called when Claude asks for user approval.
 var OnApproval func(string)
 
-var (
-	sessionPty     = map[string]*os.File{}
-	sessionPtyMu   sync.Mutex
-	sessionConns   = map[string]*websocket.Conn{}
-	sessionConnsMu sync.Mutex
-)
-
 func HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	token := r.Header.Get("Authorization")
@@ -250,109 +238,43 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		session = "devremote"
 	}
 
-	sessionConnsMu.Lock()
-	if old, ok := sessionConns[session]; ok {
-		old.Close()
-	}
-	sessionConnsMu.Unlock()
-
-	cmd := DefaultMux.AttachCmd(session)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	tty, err := pty.Start(cmd)
-	if err != nil { log.Printf("WS pty start err: %v", err)
-		cmd = exec.Command("bash")
-		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-		tty, err = pty.Start(cmd)
-		if err != nil { log.Printf("WS pty start err: %v", err)
-			http.Error(w, "pty failed", 500)
+	s, ok := mux.GetSession(session)
+	if !ok {
+		var err error
+		s, err = mux.NewSession(session, "bash")
+		if err != nil {
+			log.Printf("WS new session err: %v", err)
+			http.Error(w, "session failed", 500)
 			return
 		}
 	}
-	defer tty.Close()
-	sessionPtyMu.Lock()
-	sessionPty[session] = tty
-	sessionPtyMu.Unlock()
-	exec.Command("tmux", "set", "-t", session, "status", "off").Run()
-	exec.Command("tmux", "set", "-t", session, "history-limit", "50000").Run()
-		pty.Setsize(tty, &pty.Winsize{Rows: 30, Cols: 80})
 
 	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil { log.Printf("WS pty start err: %v", err)
+	if err != nil { log.Printf("WS upgrade err: %v", err)
 		return
 	}
 	defer conn.Close()
-		tty.Write([]byte("\033[8;30;80t"))
-		pty.Setsize(tty, &pty.Winsize{Rows: 30, Cols: 80})
 
-	sessionConnsMu.Lock()
-	sessionConns[session] = conn
-	sessionConnsMu.Unlock()
-	defer func() {
-		sessionConnsMu.Lock()
-		if sessionConns[session] == conn {
-			delete(sessionConns, session)
-		}
-		sessionConnsMu.Unlock()
-	}()
+	ch := make(chan []byte, 100)
+	s.AddListener(ch)
+	defer s.RemoveListener(ch)
 
-	log.Printf("WS [%s]: %s", session, r.RemoteAddr)
+	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)
 
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := tty.Read(buf)
-			if n > 0 {
-				data := buf[:n]
-				if writeErr := conn.WriteMessage(websocket.BinaryMessage, data); writeErr != nil { log.Printf("WS write err: %v", writeErr); return }
-
-			}
-			if err != nil { log.Printf("WS pty start err: %v", err)
+		for data := range ch {
+			if writeErr := conn.WriteMessage(websocket.BinaryMessage, data); writeErr != nil {
 				return
-			}
-		}
-	}()
-
-	// Start auto-discovery for agent JSONL logs
-	go func() {
-		time.Sleep(2 * time.Second) // wait for agent to start
-		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", session, "#{pane_current_path}")
-		out, _ := cmdCwd.Output()
-		paneCwd := strings.TrimSpace(string(out))
-
-		logPath, err := FindAgentLogPath(session, paneCwd)
-		if err != nil {
-			log.Printf("Auto-discovery failed for pane %s: %v", session, err)
-			return
-		}
-		
-		log.Printf("Auto-discovered log path: %s", logPath)
-		
-		lineCh := make(chan string)
-		stopCh := make(chan struct{})
-		defer close(stopCh)
-		
-		go StartTailing(logPath, lineCh, stopCh)
-		
-		// Future: dynamically pick parser based on agentType
-		parser := parsers.NewClaudeParser()
-		
-		for line := range lineCh {
-			eType, eSum, eDet, _ := parser.ParseLine(line)
-			if eType != "" {
-				EmitEvent(session, eType, eSum, eDet)
-				if eType == "approval_request" && OnApproval != nil {
-					go OnApproval(eDet)
-				}
 			}
 		}
 	}()
 
 	for {
 		_, msg, err := conn.ReadMessage()
-		if err != nil { log.Printf("WS pty start err: %v", err)
+		if err != nil {
 			break
 		}
-		tty.Write(msg)
+		s.Write(msg)
 	}
 }
 
@@ -390,6 +312,7 @@ func isApprovalPrompt(data []byte) (bool, string) {
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
+	// ... we will keep HandleHTML as is, though not heavily used
 	// Auth check
 	token := r.Header.Get("Authorization")
 	if len(token) > 7 && token[:7] == "Bearer " {
@@ -435,8 +358,6 @@ func HandleCmd(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(cmd))
 }
 
-
-
 func HandleSize(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {
@@ -445,13 +366,10 @@ func HandleSize(w http.ResponseWriter, r *http.Request) {
 	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
 	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
 	if rows > 0 && cols > 0 {
-		sessionPtyMu.Lock()
-		if tty, ok := sessionPty[session]; ok {
-			pty.Setsize(tty, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+		if s, ok := mux.GetSession(session); ok {
+			s.Resize(rows, cols)
 		}
-		sessionPtyMu.Unlock()
 	}
-
 }
 
 func HandleDump(w http.ResponseWriter, r *http.Request) {

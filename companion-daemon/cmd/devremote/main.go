@@ -10,14 +10,30 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/watcher"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "run" {
+		runClient(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		printShellHook()
+		return
+	}
+
 	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
 	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
-	flag.Parse()
+	
+	// If the user specifies "daemon" explicitly, parse flags starting from Args[2]
+	if len(os.Args) > 1 && os.Args[1] == "daemon" {
+		flag.CommandLine.Parse(os.Args[2:])
+	} else {
+		flag.Parse()
+	}
 
 	term.OwnerUUID = *ownerUUID
 	term.SupabaseProjectRef = *supabaseRef
@@ -53,7 +69,7 @@ func main() {
 			if session == "" {
 				session = "devremote"
 			}
-			term.EmitEvent(session, "file_edit", toolUse.Name, file)
+			models.EmitEvent(session, "file_edit", toolUse.Name, file)
 		}
 	})
 	if err == nil {
@@ -65,6 +81,13 @@ func main() {
 	http.HandleFunc("/term/", term.HandleHTML)
 	http.HandleFunc("/term/size", term.HandleSize)
 	var pushToken string
+
+	// Start Unix Socket IPC Server for local 'pokit run' commands
+	socketPath := "/tmp/pokit.sock"
+	if err := term.StartIPCServer(socketPath); err != nil {
+		log.Printf("Failed to start IPC server: %v", err)
+	}
+	defer os.Remove(socketPath)
 
 	http.HandleFunc("/push/register", func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
