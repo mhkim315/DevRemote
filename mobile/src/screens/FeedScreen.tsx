@@ -250,7 +250,9 @@ export default function FeedScreen({onBack, session, token}: Props) {
           >
             <Text style={[styles.tabText, activeTab === 'activity' && styles.activeTabText]}>ACTIVITY</Text>
           </TouchableOpacity>
-             <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
+        </View>
+
+        <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
           <WebView
             ref={wv}
             source={source}
@@ -309,7 +311,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           />
           <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
         </View>
-      </View>     </View>
+      </View>
 
       <Modal
         visible={copyModalVisible}
