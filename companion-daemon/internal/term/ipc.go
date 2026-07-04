@@ -95,15 +95,17 @@ func handleIPCConnection(conn net.Conn) {
 		}
 	}
 
-	// Stream PTY stdout to IPC connection
+	// Stream PTY stdout to IPC connection securely via Listener
+	// DO NOT read from s.PTY directly, as native mux already reads from it.
+	ch := make(chan []byte, 100)
+	s.AddListener(ch)
 	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := s.PTY.Read(buf)
+		defer s.RemoveListener(ch)
+		for data := range ch {
+			_, err := conn.Write(data)
 			if err != nil {
 				break
 			}
-			conn.Write(buf[:n])
 		}
 	}()
 
