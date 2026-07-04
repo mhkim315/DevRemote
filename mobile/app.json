@@ -16,7 +16,8 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "remote-notification"
-        ]
+        ],
+        "NSCameraUsageDescription": "Allow POKIT to scan the terminal QR code to connect."
       }
     },
     "android": {
@@ -27,7 +28,8 @@
       "usesCleartextTraffic": true,
       "permissions": [
         "POST_NOTIFICATIONS",
-        "INTERNET"
+        "INTERNET",
+        "CAMERA"
       ]
     },
     "plugins": [
@@ -36,6 +38,12 @@
         {
           "icon": "./assets/notification-icon.png",
           "color": "#238636"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow POKIT to scan the terminal QR code to connect."
         }
       ],
       "expo-status-bar"
