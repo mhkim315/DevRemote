@@ -266,15 +266,15 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tty.Close()
 	exec.Command("tmux", "set", "-t", session, "status", "off").Run()
-		pty.Setsize(tty, &pty.Winsize{Rows: 60, Cols: 100})
+		pty.Setsize(tty, &pty.Winsize{Rows: 30, Cols: 80})
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil { log.Printf("WS pty start err: %v", err)
 		return
 	}
 	defer conn.Close()
-		tty.Write([]byte("[8;60;100t"))
-		pty.Setsize(tty, &pty.Winsize{Rows: 60, Cols: 100})
+		tty.Write([]byte("\033[8;30;80t"))
+		pty.Setsize(tty, &pty.Winsize{Rows: 30, Cols: 80})
 
 	sessionConnsMu.Lock()
 	sessionConns[session] = conn
