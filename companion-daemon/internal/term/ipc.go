@@ -80,12 +80,16 @@ func handleIPCConnection(conn net.Conn) {
 		return
 	}
 
-	// Spawn a new native multiplexer session
+	// Spawn a new native multiplexer session, or use existing one
 	sessionID := cmdStr // Simple ID for now
-	s, err := mux.NewSession(sessionID, termEnv, "sh", "-c", cmdStr)
-	if err != nil {
-		log.Println("failed to spawn session:", err)
-		return
+	s, ok := mux.GetSession(sessionID)
+	if !ok {
+		var err error
+		s, err = mux.NewSession(sessionID, termEnv, "sh", "-c", cmdStr)
+		if err != nil {
+			log.Println("failed to spawn session:", err)
+			return
+		}
 	}
 
 	// Set initial PTY size if provided
