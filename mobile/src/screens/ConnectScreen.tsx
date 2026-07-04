@@ -24,8 +24,8 @@ export default function ConnectScreen({ onConnect }: Props) {
   const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
     
-    // Check if it's a trycloudflare URL
-    if (data.includes('trycloudflare.com')) {
+    // Accept any HTTPS URL
+    if (data.startsWith('https://')) {
       setScanned(true);
       
       // Save it to config in memory
