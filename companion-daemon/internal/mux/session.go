@@ -38,6 +38,7 @@ func NewSession(id string, command string, args ...string) (*Session, error) {
 	}
 
 	cmd := exec.Command(command, args...)
+	cmd.Env = os.Environ() // Inherit shell environment (API keys, PATH, etc.)
 
 	// Start the command with a pty.
 	ptm, err := pty.Start(cmd)

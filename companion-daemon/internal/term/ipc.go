@@ -2,10 +2,14 @@ package term
 
 import (
 	"bufio"
+	"bytes"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"strings"
+
+	"github.com/creack/pty"
 
 	"devremote/companion-daemon/internal/mux"
 )
@@ -81,12 +85,23 @@ func handleIPCConnection(conn net.Conn) {
 	}()
 
 	// Stream IPC connection to PTY stdin
-	buf := make([]byte, 1024)
+	lineBuf := make([]byte, 4096)
 	for {
-		n, err := reader.Read(buf)
+		n, err := reader.Read(lineBuf)
 		if err != nil {
 			break
 		}
-		s.Write(buf[:n])
+		data := lineBuf[:n]
+		// Handle PTY resize commands from the client
+		if bytes.HasPrefix(data, []byte("size:")) {
+			var w, h int
+			if _, e := fmt.Sscanf(string(data), "size:%dx%d\n", &w, &h); e == nil && w > 0 && h > 0 {
+				if szErr := pty.Setsize(s.PTY, &pty.Winsize{Rows: uint16(h), Cols: uint16(w)}); szErr != nil {
+					log.Printf("IPC resize err: %v", szErr)
+				}
+			}
+			continue
+		}
+		s.Write(data)
 	}
 }

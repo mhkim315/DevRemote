@@ -13,8 +13,6 @@ import (
 	"golang.org/x/term"
 )
 
-// runClient acts as a thin wrapper that sends local input to the background daemon
-// and receives the daemon's PTY output over a Unix Domain Socket.
 func runClient(args []string) {
 	if len(args) == 0 {
 		fmt.Println("Usage: pokit run <command>")
@@ -38,11 +36,32 @@ func runClient(args []string) {
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	isRaw := err == nil
 	if err != nil {
-		log.Printf("WARN: Failed to set raw mode (not a TTY?): %v", err)
+		log.Printf("WARN: Not a TTY, output may be garbled: %v", err)
 	}
 	defer func() {
 		if isRaw {
 			term.Restore(int(os.Stdin.Fd()), oldState)
+		}
+	}()
+
+	// Send current terminal size to daemon
+	sendTermSize := func() {
+		if !isRaw {
+			return
+		}
+		w, h, err := term.GetSize(int(os.Stdin.Fd()))
+		if err == nil && w > 0 && h > 0 {
+			fmt.Fprintf(conn, "size:%dx%d\n", w, h)
+		}
+	}
+	sendTermSize()
+
+	// Handle SIGWINCH to sync terminal size
+	sigWinch := make(chan os.Signal, 1)
+	signal.Notify(sigWinch, syscall.SIGWINCH)
+	go func() {
+		for range sigWinch {
+			sendTermSize()
 		}
 	}()
 
