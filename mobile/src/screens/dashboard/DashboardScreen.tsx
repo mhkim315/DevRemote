@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert, Platform } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
+import { ApprovalCard } from '../../components/ApprovalCard';
 
 interface Props {
   onSelectAgent: (sessionName: string) => void;
@@ -90,6 +91,11 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
 
   const dataWithAdd = [...sessions, { isAddBtn: true, id: 'add-btn' }];
 
+  const approvalsRequired = sessions.filter(s => 
+    s.state === 'waiting' && 
+    s.events?.slice().reverse().find(e => e.type === 'approval_request')
+  );
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -100,6 +106,19 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       </View>
 
       <View style={styles.content}>
+        {approvalsRequired.map(s => {
+          const prompt = s.events?.slice().reverse().find(e => e.type === 'approval_request')?.detail || 'Do you want to proceed?';
+          return (
+            <ApprovalCard 
+              key={`approval-${s.id}`}
+              sessionId={s.id}
+              promptText={prompt}
+              token={token}
+              onResolved={fetchSessions}
+            />
+          );
+        })}
+
         {loading ? (
           <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
         ) : (

@@ -3,6 +3,15 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { RUNNERS } from '../lib/runners';
 
+export interface AgentEvent {
+  id: string;
+  session: string;
+  type: string; // "file_edit", "approval_request", "error", "done"
+  summary: string;
+  detail: string;
+  timestamp: string;
+}
+
 export interface SessionTelemetry {
   id: string;
   state: 'idle' | 'thinking' | 'working' | 'waiting';
@@ -10,6 +19,7 @@ export interface SessionTelemetry {
   runner?: string;
   runnerColor?: string;
   isAddBtn?: boolean;
+  events?: AgentEvent[];
 }
 
 interface Props {
@@ -58,6 +68,9 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
     ? runnerDef.idle 
     : runnerDef.frames[frameIndex];
 
+  const recentEdit = session.events?.slice().reverse().find(e => e.type === 'file_edit');
+  const needsApproval = session.state === 'waiting' && session.events?.slice().reverse().find(e => e.type === 'approval_request');
+
   return (
     <View style={styles.cardWrapper}>
       <TouchableOpacity 
@@ -68,6 +81,11 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
         <View style={styles.header}>
           <Text style={styles.sessionName} numberOfLines={1}>{session.id}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {needsApproval && (
+              <View style={styles.approvalBadge}>
+                <Text style={styles.approvalBadgeText}>ACTION</Text>
+              </View>
+            )}
             <View style={[styles.statusDot, { backgroundColor: getStatusColor(session.state) }]} />
             {onSettings && (
               <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.settingsBtn}>
@@ -82,6 +100,12 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
             <Path d={pathD} fill={session.state === 'waiting' ? '#f85149' : runnerColor} />
           </Svg>
         </View>
+
+        {recentEdit && (
+          <Text style={styles.recentEdit} numberOfLines={1}>
+            📝 {recentEdit.summary}
+          </Text>
+        )}
 
         <View style={styles.footer}>
           <Text style={[styles.stateText, session.state === 'waiting' && {color: '#f85149'}]}>
@@ -112,5 +136,8 @@ const styles = StyleSheet.create({
   animationContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginVertical: 8 },
   footer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 4 },
   stateText: { fontSize: 11, color: '#45EBE9', fontWeight: '700', letterSpacing: 0.96 },
-  loadText: { fontSize: 11, color: '#1E91B3', fontWeight: '700' }
+  loadText: { fontSize: 11, color: '#1E91B3', fontWeight: '700' },
+  recentEdit: { fontSize: 10, color: '#8b949e', marginBottom: 6, marginTop: -4 },
+  approvalBadge: { backgroundColor: '#f85149', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8 },
+  approvalBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' }
 });

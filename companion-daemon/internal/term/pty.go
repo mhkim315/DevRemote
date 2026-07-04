@@ -39,7 +39,7 @@ func verifyToken(tokenString string) bool {
 	if OwnerUUID == "" && SupabaseProjectRef == "" {
 		parser := jwt.NewParser()
 		token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-		if err != nil {
+		if err != nil { log.Printf("WS pty read err: %v", err)
 			log.Printf("JWT parse err (dev): %v", err)
 			return false
 		}
@@ -77,7 +77,7 @@ func verifyToken(tokenString string) bool {
 	}
 
 	token, err := jwt.Parse(tokenString, keyFunc)
-	if err != nil {
+	if err != nil { log.Printf("WS pty read err: %v", err)
 		log.Printf("JWT parse err: %v", err)
 		return false
 	}
@@ -170,7 +170,7 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 	if jwksCache == nil {
 		url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
 		resp, err := http.Get(url)
-		if err != nil {
+		if err != nil { log.Printf("WS pty read err: %v", err)
 			return nil, fmt.Errorf("jwks fetch: %w", err)
 		}
 		defer resp.Body.Close()
@@ -255,11 +255,11 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	cmd := DefaultMux.AttachCmd(session)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	tty, err := pty.Start(cmd)
-	if err != nil {
+	if err != nil { log.Printf("WS pty read err: %v", err)
 		cmd = exec.Command("bash")
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 		tty, err = pty.Start(cmd)
-		if err != nil {
+		if err != nil { log.Printf("WS pty read err: %v", err)
 			http.Error(w, "pty failed", 500)
 			return
 		}
@@ -267,7 +267,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	defer tty.Close()
 
 	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
+	if err != nil { log.Printf("WS pty read err: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -291,14 +291,15 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 			n, err := tty.Read(buf)
 			if n > 0 {
 				data := buf[:n]
-				conn.WriteMessage(websocket.TextMessage, data)
-				if OnApproval != nil {
-					if matched, promptStr := isApprovalPrompt(data); matched {
+				if writeErr := conn.WriteMessage(websocket.BinaryMessage, data); writeErr != nil { log.Printf("WS write err: %v", writeErr); return }
+				if matched, promptStr := isApprovalPrompt(data); matched {
+					EmitEvent(session, "approval_request", "Approval Required", promptStr)
+					if OnApproval != nil {
 						go OnApproval(promptStr)
 					}
 				}
 			}
-			if err != nil {
+			if err != nil { log.Printf("WS pty read err: %v", err)
 				return
 			}
 		}
@@ -306,7 +307,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		_, msg, err := conn.ReadMessage()
-		if err != nil {
+		if err != nil { log.Printf("WS pty read err: %v", err)
 			break
 		}
 		tty.Write(msg)

@@ -11,11 +11,12 @@ import (
 
 // SessionTelemetry holds the calculated state of a tmux session.
 type SessionTelemetry struct {
-	ID          string `json:"id"`
-	State       string `json:"state"` // "idle", "thinking", "working", "waiting"
-	Load        int    `json:"load"`  // 0-100 (animation speed)
-	Runner      string `json:"runner"`
-	RunnerColor string `json:"runnerColor"`
+	ID          string       `json:"id"`
+	State       string       `json:"state"` // "idle", "thinking", "working", "waiting"
+	Load        int          `json:"load"`  // 0-100 (animation speed)
+	Runner      string       `json:"runner"`
+	RunnerColor string       `json:"runnerColor"`
+	Events      []AgentEvent `json:"events"`
 }
 
 type sessionStateData struct {
@@ -171,9 +172,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sessions {
 		data := telemetryCache[s]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff"})
+			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Events: GetEvents(s)})
 		} else {
-			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor})
+			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Events: GetEvents(s)})
 		}
 	}
 	telemetryMu.Unlock()

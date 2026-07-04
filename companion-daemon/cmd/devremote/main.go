@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"devremote/companion-daemon/internal/term"
+	"devremote/companion-daemon/internal/watcher"
 )
 
 func main() {
@@ -30,6 +31,35 @@ func main() {
 
 	// 1. Core Endpoints
 	term.StartTelemetryLoop()
+
+	// Start JSONL watcher for Claude logs
+	homeDir, _ := os.UserHomeDir()
+	claudeLogDir := filepath.Join(homeDir, ".claude")
+	if _, err := os.Stat(claudeLogDir); os.IsNotExist(err) {
+		claudeLogDir = "."
+	}
+	t, err := watcher.New(claudeLogDir, func(ev watcher.RawEvent) {
+		toolUse := watcher.ExtractToolUse(ev)
+		if toolUse != nil && (toolUse.Name == "Replace" || toolUse.Name == "Edit" || toolUse.Name == "Write" || toolUse.Name == "StrReplace" || toolUse.Name == "GlobReplace" || toolUse.Name == "View" || toolUse.Name == "Bash") {
+			file := "file"
+			if f, ok := toolUse.Input["file_path"].(string); ok {
+				file = f
+			} else if f, ok := toolUse.Input["path"].(string); ok {
+				file = f
+			} else if f, ok := toolUse.Input["command"].(string); ok {
+				file = f
+			}
+			session := ev.SessionID
+			if session == "" {
+				session = "devremote"
+			}
+			term.EmitEvent(session, "file_edit", toolUse.Name, file)
+		}
+	})
+	if err == nil {
+		t.Start()
+	}
+
 	http.HandleFunc("/api/sessions", term.HandleSessionsAPI)
 	http.HandleFunc("/term/ws", term.HandleWS)
 	http.HandleFunc("/term/", term.HandleHTML)
