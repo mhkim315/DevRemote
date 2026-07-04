@@ -8,12 +8,11 @@ import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
 
+import { RootTabs } from './src/navigation/RootNavigator';
 import SnippetsScreen from './src/screens/SnippetsScreen';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [currentScreen, setCurrentScreen] = useState<'dashboard' | 'terminal' | 'snippets'>('dashboard');
-  const [currentSession, setCurrentSession] = useState<string>('devremote');
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -50,23 +49,8 @@ export default function App() {
       <StatusBar style="light" />
       {!session ? (
         <AuthScreen />
-      ) : currentScreen === 'dashboard' ? (
-        <DashboardScreen 
-          token={session.access_token}
-          onSelectAgent={(sess) => {
-            setCurrentSession(sess);
-            setCurrentScreen('terminal');
-          }}
-          onSnippets={() => setCurrentScreen('snippets')}
-        />
-      ) : currentScreen === 'snippets' ? (
-        <SnippetsScreen onBack={() => setCurrentScreen('dashboard')} />
       ) : (
-        <FeedScreen 
-          session={currentSession} 
-          token={session.access_token} 
-          onBack={() => setCurrentScreen('dashboard')} 
-        />
+        <RootTabs token={session.access_token} />
       )}
     </SafeAreaProvider>
   );

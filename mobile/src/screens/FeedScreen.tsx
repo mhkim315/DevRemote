@@ -1,8 +1,11 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal} from 'react-native';
+import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
+import { EventBubble } from '../components/EventBubble';
+import { SessionTelemetry } from '../components/AgentCard';
+import { HistoryModal } from '../components/HistoryModal';
 
 interface Props {
   onBack: () => void;
@@ -42,9 +45,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
   const [isScrollMode, setIsScrollMode] = useState(false);
+  const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('terminal');
+  const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
 
   const termUrl = useMemo(() => {
     let url = `https://term.fullcount.kr/term/?session=${encodeURIComponent(session)}`;
@@ -65,6 +71,25 @@ export default function FeedScreen({onBack, session, token}: Props) {
     return () => { show.remove(); hide.remove(); };
   }, []);
 
+  useEffect(() => {
+    if (activeTab === 'activity') {
+      const fetchSession = () => {
+        fetch(`https://term.fullcount.kr/api/sessions`)
+          .then(res => res.json())
+          .then(data => {
+            const sess = data.find((s: any) => (s.id || s) === session);
+            if (sess && typeof sess !== 'string') {
+              setSessionData(sess);
+            }
+          })
+          .catch(err => console.error(err));
+      };
+      fetchSession();
+      const interval = setInterval(fetchSession, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, session]);
+
   const inject = useCallback((js: string) => {
     if (wv.current) {
       wv.current.injectJavaScript(js + ';true;');
@@ -73,7 +98,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const doSend = useCallback((text: string) => {
     if (!text || !wv.current) return;
-    // Replace newlines with \r to match terminal enter behavior
     const parsedText = text.replace(/\n/g, '\r');
     inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(parsedText)+')');
   }, [inject]);
@@ -110,12 +134,10 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const handleScrollToggle = useCallback(() => {
     if (isScrollMode) {
-      // Exit scroll mode ('q')
       inject('if(window.ws&&window.ws.readyState===1){'+jsSend([113])+'}');
       setIsScrollMode(false);
     } else {
-      // Enter scroll mode (Ctrl+B, [)
-      inject('if(window.ws&&window.ws.readyState===1){'+jsSend([2, 91])+'}');
+      inject('if(window.ws&&window.ws.readyState===1){window.ws.send(String.fromCharCode(2));setTimeout(function(){window.ws.send(String.fromCharCode(91))},50)}');
       setIsScrollMode(true);
     }
   }, [isScrollMode, inject]);
@@ -166,7 +188,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
         }
       });
       
-      // Also inject a helper function to send selected text to React Native
       window.getTerminalText = function() {
         if (window.term && window.term.hasSelection()) {
           window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -176,7 +197,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
         }
       };
       
-      true; // ensure it doesn't cause JSON parsing issues when injected
+      true;
     })();
   `;
 
@@ -187,53 +208,102 @@ export default function FeedScreen({onBack, session, token}: Props) {
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
           <Text style={styles.headerTitle}>{session}</Text>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
-            <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>COPY</Text></TouchableOpacity>
-            <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>PASTE</Text></TouchableOpacity>
-            <TouchableOpacity onPress={handleScrollToggle} style={[styles.textBtn, isScrollMode && {backgroundColor: '#1E91B3'}]}><Text style={[styles.textBtnText, isScrollMode && {color: '#fff'}]}>{isScrollMode ? 'SCROLL: ON' : 'SCROLL: OFF'}</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => {
-              if (wv.current) wv.current.reload();
-            }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
+            {activeTab === 'terminal' && (
+              <>
+                <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>COPY</Text></TouchableOpacity>
+                <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>PASTE</Text></TouchableOpacity>
+                <TouchableOpacity onPress={handleScrollToggle} style={[styles.textBtn, isScrollMode && {backgroundColor: '#1E91B3'}]}><Text style={[styles.textBtnText, isScrollMode && {color: '#fff'}]}>{isScrollMode ? 'SCROLL: ON' : 'SCROLL: OFF'}</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => {
+                  if (wv.current) wv.current.reload();
+                }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
 
-        <WebView
-          ref={wv}
-          source={source}
-          style={styles.webview}
-          javaScriptEnabled
-          domStorageEnabled
-          injectedJavaScript={pinchZoomInjection}
-          originWhitelist={['*']}
-          cacheEnabled={false}
-          onMessage={onMessage}
-        />
+        <View style={styles.tabBar}>
+          <TouchableOpacity 
+            style={[styles.tab, activeTab === 'terminal' && styles.activeTab]} 
+            onPress={() => setActiveTab('terminal')}
+          >
+            <Text style={[styles.tabText, activeTab === 'terminal' && styles.activeTabText]}>TERMINAL</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={[styles.tab, activeTab === 'activity' && styles.activeTab]} 
+            onPress={() => setActiveTab('activity')}
+          >
+            <Text style={[styles.tabText, activeTab === 'activity' && styles.activeTabText]}>ACTIVITY</Text>
+          </TouchableOpacity>
+        </View>
 
-        <View style={[styles.macroContainer, isScrollMode && {backgroundColor: '#1b120f', borderTopColor: '#d29922'}]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
-            {(isScrollMode ? SCROLL_MACROS : NORMAL_MACROS).map((m, i) => (
-              <TouchableOpacity key={i} style={[styles.macroBtn, isScrollMode && {backgroundColor: '#3d2b1f', borderColor: '#d29922'}]} onPress={() => m.label === '❌ Exit Scroll' ? handleScrollToggle() : sendMacro(m.chars)}>
-                <Text style={[styles.macroText, isScrollMode && {color: '#e3b341'}]}>{m.label}</Text>
+        {activeTab === 'terminal' ? (
+          <>
+            <View style={{flex: 1}}>
+              <WebView
+                ref={wv}
+                source={source}
+                style={styles.webview}
+                javaScriptEnabled
+                domStorageEnabled
+                injectedJavaScript={pinchZoomInjection}
+                originWhitelist={['*']}
+                cacheEnabled={false}
+                onMessage={onMessage}
+              />
+              <TouchableOpacity 
+                style={styles.floatingHistoryBtn} 
+                onPress={() => setHistoryModalVisible(true)}
+              >
+                <Text style={styles.floatingHistoryText}>History 🕒</Text>
               </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
+            </View>
 
-        <View style={[styles.inputContainer, {paddingBottom: Math.max(kbHeight, Platform.OS === 'ios' ? 20 : 6)}]}>
-          <TextInput
-            style={styles.input}
-            placeholder="$ type a command..."
-            placeholderTextColor="#666"
-            value={cmd}
-            onChangeText={handleChangeText}
-            onSubmitEditing={send}
-            returnKeyType="send"
-            autoCorrect={false}
-            autoCapitalize="none"
-            multiline={false}
-            blurOnSubmit={false}
-          />
-          <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
-        </View>
+            <View style={[styles.macroContainer, isScrollMode && {backgroundColor: '#1b120f', borderTopColor: '#d29922'}]}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
+                {(isScrollMode ? SCROLL_MACROS : NORMAL_MACROS).map((m, i) => (
+                  <TouchableOpacity key={i} style={[styles.macroBtn, isScrollMode && {backgroundColor: '#3d2b1f', borderColor: '#d29922'}]} onPress={() => m.label === '❌ Exit Scroll' ? handleScrollToggle() : sendMacro(m.chars)}>
+                    <Text style={[styles.macroText, isScrollMode && {color: '#e3b341'}]}>{m.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
+            <View style={[styles.inputContainer, {paddingBottom: Math.max(kbHeight, Platform.OS === 'ios' ? 20 : 6)}]}>
+              <TextInput
+                style={styles.input}
+                placeholder="$ type a command..."
+                placeholderTextColor="#666"
+                value={cmd}
+                onChangeText={handleChangeText}
+                onSubmitEditing={send}
+                returnKeyType="send"
+                autoCorrect={false}
+                autoCapitalize="none"
+                multiline={false}
+                blurOnSubmit={false}
+              />
+              <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <View style={styles.activityContainer}>
+            {!sessionData ? (
+              <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
+            ) : (
+              <FlatList
+                data={(sessionData.events || []).slice().reverse()}
+                keyExtractor={(item, idx) => item.id || String(idx)}
+                contentContainerStyle={styles.activityList}
+                renderItem={({ item }) => (
+                  <EventBubble event={item} runnerId={sessionData.runner} runnerColor={sessionData.runnerColor} />
+                )}
+                ListEmptyComponent={
+                  <Text style={styles.emptyActivityText}>No activity recorded yet.</Text>
+                }
+              />
+            )}
+          </View>
+        )}
       </View>
 
       <Modal
@@ -261,6 +331,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
           </View>
         </View>
       </Modal>
+
+      <HistoryModal
+        visible={historyModalVisible}
+        onClose={() => setHistoryModalVisible(false)}
+        session={session}
+      />
     </SafeAreaView>
   );
 }
@@ -275,9 +351,33 @@ const styles = StyleSheet.create({
   headerTitle: {fontSize: 14, color: '#1E91B3', fontWeight: '700', letterSpacing: 0.96},
   backBtn: {fontSize: 24, color: '#45EBE9'},
   reloadBtn: {fontSize: 20, color: '#45EBE9', paddingHorizontal: 4},
-  iconBtn: {fontSize: 18},
   textBtn: {backgroundColor: 'transparent', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 32, borderWidth: 1, borderColor: '#1E91B3', marginRight: 10},
   textBtnText: {color: '#1E91B3', fontSize: 12, fontWeight: '700', letterSpacing: 0.96},
+  
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#0D2D45',
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  activeTab: {
+    borderBottomWidth: 2,
+    borderBottomColor: '#45EBE9',
+  },
+  tabText: {
+    color: '#8b949e',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  activeTabText: {
+    color: '#45EBE9',
+  },
+
   webview: {flex:1, backgroundColor:'#000'},
   macroContainer: { backgroundColor: '#000000', borderTopWidth: 1, borderTopColor: '#0D2D45' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
@@ -293,6 +393,21 @@ const styles = StyleSheet.create({
   },
   btn: {marginLeft:8, backgroundColor:'transparent', borderRadius:32, paddingHorizontal:14, paddingVertical:10, borderWidth: 1, borderColor: '#45EBE9'},
   btnT: {color:'#ffffff', fontWeight:'700', fontSize:13, letterSpacing: 1.17},
+
+  activityContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  activityList: {
+    paddingVertical: 16,
+  },
+  emptyActivityText: {
+    color: '#8b949e',
+    textAlign: 'center',
+    marginTop: 40,
+    fontSize: 14,
+  },
+
   modalBg: {flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end'},
   modalContainer: {height: '80%', backgroundColor: '#0D2D45', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16},
   modalHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12},
@@ -302,4 +417,22 @@ const styles = StyleSheet.create({
   modalText: {color: '#45EBE9', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'},
   modalFooter: {marginTop: 12, alignItems: 'center'},
   modalHint: {color: '#1E91B3', fontSize: 12, fontWeight: '700', letterSpacing: 0.96},
+  floatingHistoryBtn: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(13, 45, 69, 0.8)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E91B3',
+    flexDirection: 'row',
+    alignItems: 'center'
+  },
+  floatingHistoryText: {
+    color: '#45EBE9',
+    fontSize: 12,
+    fontWeight: '700'
+  },
 });

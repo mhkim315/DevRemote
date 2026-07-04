@@ -159,6 +159,18 @@ func StartTelemetryLoop() {
 
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
+	if historyID := r.URL.Query().Get("history"); historyID != "" {
+		cmd := exec.Command("tmux", "capture-pane", "-e", "-t", historyID, "-p", "-S", "-1000")
+		out, err := cmd.Output()
+		if err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(out)
+		return
+	}
+
 	sessions, err := DefaultMux.ListSessions()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
