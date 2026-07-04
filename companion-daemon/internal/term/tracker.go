@@ -117,7 +117,7 @@ func findAgentProcess(parentPID int) (string, int, error) {
 
 	for _, childPID := range children[parentPID] {
 		if t, p := search(childPID); t != "" {
-			return t, p
+			return t, p, nil
 		}
 	}
 
@@ -150,6 +150,7 @@ func getClaudeLogPath(pid int, cwd string) (string, error) {
 	}
 
 	encodedCwd := strings.ReplaceAll(cwd, "/", "-")
+	encodedCwd = strings.ReplaceAll(encodedCwd, ".", "-")
 	logPath := filepath.Join(homeDir, ".claude", "projects", encodedCwd, fmt.Sprintf("%s.jsonl", session.SessionID))
 
 	return logPath, nil

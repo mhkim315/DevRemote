@@ -2,7 +2,9 @@ package term
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -160,8 +162,24 @@ func StartTelemetryLoop() {
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
+		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", historyID, "#{pane_current_path}")
+		out, _ := cmdCwd.Output()
+		paneCwd := strings.TrimSpace(string(out))
+
+		logPath, err := FindAgentLogPath(historyID, paneCwd)
+		if err == nil {
+			data, err := os.ReadFile(logPath)
+			if err == nil {
+				formatted := formatJSONLToText(data)
+				w.Header().Set("Content-Type", "text/plain")
+				w.Write([]byte(formatted))
+				return
+			}
+		}
+
+		// Fallback to tmux capture-pane
 		cmd := exec.Command("tmux", "capture-pane", "-e", "-t", historyID, "-p", "-S", "-10000")
-		out, err := cmd.Output()
+		out, err = cmd.Output()
 		if err != nil {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
@@ -197,4 +215,63 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	
 	jsonBytes, _ := json.Marshal(res)
 	w.Write(jsonBytes)
+}
+
+func formatJSONLToText(data []byte) string {
+	lines := strings.Split(string(data), "\n")
+	var sb strings.Builder
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			continue
+		}
+
+		typ, _ := payload["type"].(string)
+		if typ == "tool_use" {
+			name, _ := payload["name"].(string)
+			sb.WriteString(fmt.Sprintf("\n[🛠️ Tool: %s]\n", name))
+			if input, ok := payload["input"]; ok {
+				b, _ := json.MarshalIndent(input, "", "  ")
+				sb.WriteString(string(b) + "\n")
+			}
+		} else if typ == "tool_result" {
+			content, _ := payload["content"].(string)
+			if content != "" {
+				sb.WriteString(fmt.Sprintf("\n[✅ Result]\n%s\n", content))
+			}
+		} else if typ == "user" {
+			msg, ok := payload["message"].(map[string]interface{})
+			if ok {
+				if content, ok := msg["content"].(string); ok {
+					sb.WriteString(fmt.Sprintf("\n[👤 User]\n%s\n", content))
+				}
+			}
+		} else if typ == "assistant" {
+			msg, ok := payload["message"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			contentArr, ok := msg["content"].([]interface{})
+			if !ok {
+				continue
+			}
+			for _, item := range contentArr {
+				itemMap, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if itemMap["type"] == "text" {
+					text, _ := itemMap["text"].(string)
+					sb.WriteString(fmt.Sprintf("\n[🤖 Claude]\n%s\n", text))
+				} else if itemMap["type"] == "thinking" {
+					thinking, _ := itemMap["thinking"].(string)
+					sb.WriteString(fmt.Sprintf("\n[🤔 Thinking]\n%s\n", thinking))
+				}
+			}
+		}
+	}
+	return sb.String()
 }

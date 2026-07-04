@@ -3,8 +3,6 @@ package parsers
 import (
 	"encoding/json"
 	"strings"
-
-	"devremote/companion-daemon/internal/term"
 )
 
 type AntigravityParser struct{}
@@ -13,11 +11,11 @@ func NewAntigravityParser() *AntigravityParser {
 	return &AntigravityParser{}
 }
 
-func (p *AntigravityParser) ParseLine(line string) (*term.AgentEvent, error) {
+func (p *AntigravityParser) ParseLine(line string) (eventType, summary, detail string, err error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &payload); err != nil {
 		// Not a JSON line, ignore safely
-		return nil, nil
+		return "", "", "", nil
 	}
 
 	typ, _ := payload["type"].(string)
@@ -40,23 +38,15 @@ func (p *AntigravityParser) ParseLine(line string) (*term.AgentEvent, error) {
 					}
 				}
 
-				return &term.AgentEvent{
-					Type:    eventType,
-					Summary: "Antigravity Tool: " + name,
-					Detail:  detail,
-				}, nil
+				return eventType, "Antigravity Tool: " + name, detail, nil
 			}
 		}
 
 		// Parse thinking
 		if thinking, ok := payload["thinking"].(string); ok && thinking != "" {
-			return &term.AgentEvent{
-				Type:    "message",
-				Summary: "Antigravity Thinking",
-				Detail:  thinking,
-			}, nil
+			return "message", "Antigravity Thinking", thinking, nil
 		}
 	}
 
-	return nil, nil
+	return "", "", "", nil
 }

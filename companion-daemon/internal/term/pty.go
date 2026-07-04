@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -307,6 +308,41 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil { log.Printf("WS pty start err: %v", err)
 				return
+			}
+		}
+	}()
+
+	// Start auto-discovery for agent JSONL logs
+	go func() {
+		time.Sleep(2 * time.Second) // wait for agent to start
+		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", session, "#{pane_current_path}")
+		out, _ := cmdCwd.Output()
+		paneCwd := strings.TrimSpace(string(out))
+
+		logPath, err := FindAgentLogPath(session, paneCwd)
+		if err != nil {
+			log.Printf("Auto-discovery failed for pane %s: %v", session, err)
+			return
+		}
+		
+		log.Printf("Auto-discovered log path: %s", logPath)
+		
+		lineCh := make(chan string)
+		stopCh := make(chan struct{})
+		defer close(stopCh)
+		
+		go StartTailing(logPath, lineCh, stopCh)
+		
+		// Future: dynamically pick parser based on agentType
+		parser := parsers.NewClaudeParser()
+		
+		for line := range lineCh {
+			eType, eSum, eDet, _ := parser.ParseLine(line)
+			if eType != "" {
+				EmitEvent(session, eType, eSum, eDet)
+				if eType == "approval_request" && OnApproval != nil {
+					go OnApproval(eDet)
+				}
 			}
 		}
 	}()

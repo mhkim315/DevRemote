@@ -3,8 +3,6 @@ package parsers
 import (
 	"encoding/json"
 	"strings"
-
-	"devremote/companion-daemon/internal/term"
 )
 
 type ClaudeParser struct{}
@@ -13,11 +11,11 @@ func NewClaudeParser() *ClaudeParser {
 	return &ClaudeParser{}
 }
 
-func (p *ClaudeParser) ParseLine(line string) (*term.AgentEvent, error) {
+func (p *ClaudeParser) ParseLine(line string) (eventType, summary, detail string, err error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &payload); err != nil {
 		// Not a JSON line, ignore safely
-		return nil, nil
+		return "", "", "", nil
 	}
 
 	typ, _ := payload["type"].(string)
@@ -37,20 +35,16 @@ func (p *ClaudeParser) ParseLine(line string) (*term.AgentEvent, error) {
 			}
 		}
 
-		return &term.AgentEvent{
-			Type:    eventType,
-			Summary: "Claude Tool: " + name,
-			Detail:  detail,
-		}, nil
+		return eventType, "Claude Tool: " + name, detail, nil
 
 	} else if typ == "assistant" {
 		msgMap, ok := payload["message"].(map[string]interface{})
 		if !ok {
-			return nil, nil
+			return "", "", "", nil
 		}
 		contentArr, ok := msgMap["content"].([]interface{})
 		if !ok {
-			return nil, nil
+			return "", "", "", nil
 		}
 		for _, item := range contentArr {
 			itemMap, ok := item.(map[string]interface{})
@@ -59,14 +53,10 @@ func (p *ClaudeParser) ParseLine(line string) (*term.AgentEvent, error) {
 			}
 			if itemMap["type"] == "text" {
 				text, _ := itemMap["text"].(string)
-				return &term.AgentEvent{
-					Type:    "message",
-					Summary: "Claude Message",
-					Detail:  text,
-				}, nil
+				return "message", "Claude Message", text, nil
 			}
 		}
 	}
 
-	return nil, nil
+	return "", "", "", nil
 }
