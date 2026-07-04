@@ -65,39 +65,37 @@ export default function FeedScreen({onBack, session, token}: Props) {
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'activity') {
-      const fetchSession = () => {
-        fetch(`https://term.fullcount.kr/api/sessions`)
-          .then(res => res.json())
-          .then(data => {
-            const sess = data.find((s: any) => (s.id || s) === session);
-            if (sess && typeof sess !== 'string') {
-              setSessionData(sess);
-            }
-          })
-          .catch(err => console.error(err));
-      };
-      
-      const fetchHistory = () => {
-        fetch(`https://term.fullcount.kr/api/sessions?history=${encodeURIComponent(session)}`)
-          .then(res => res.json())
-          .then(data => {
-            if (Array.isArray(data)) {
-              setHistoryEvents(data);
-            }
-          })
-          .catch(err => console.error(err));
-      };
+    const fetchSession = () => {
+      fetch(`https://term.fullcount.kr/api/sessions`)
+        .then(res => res.json())
+        .then(data => {
+          const sess = data.find((s: any) => (s.id || s) === session);
+          if (sess && typeof sess !== 'string') {
+            setSessionData(sess);
+          }
+        })
+        .catch(err => console.error(err));
+    };
+    
+    const fetchHistory = () => {
+      fetch(`https://term.fullcount.kr/api/sessions?history=${encodeURIComponent(session)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setHistoryEvents(data);
+          }
+        })
+        .catch(err => console.error(err));
+    };
 
+    fetchSession();
+    fetchHistory();
+    const interval = setInterval(() => {
       fetchSession();
       fetchHistory();
-      const interval = setInterval(() => {
-        fetchSession();
-        fetchHistory();
-      }, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [activeTab, session]);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [session]);
 
   const inject = useCallback((js: string) => {
     if (wv.current) {
@@ -112,11 +110,25 @@ export default function FeedScreen({onBack, session, token}: Props) {
   }, [inject]);
 
   const send = useCallback(() => {
-    doSend(cmd + '\r');
+    if (!cmd.trim()) return;
+    const textToSend = cmd;
+    doSend(textToSend + '\r');
     setCmd('');
-  }, [cmd, doSend]);
-
+    
+    setHistoryEvents(prev => {
+      const optEvent = {
+        id: 'opt-' + Date.now(),
+        session: session,
+        type: 'user',
+        summary: 'User',
+        detail: textToSend,
+        timestamp: new Date().toISOString()
+      };
+      return [...prev, optEvent];
+    });
+  }, [cmd, doSend, session]);
   const sendMacro = useCallback((chars: number[]) => {
+    const jsSend = (c: number[]) => c.map(ch => `window.ws.send(String.fromCharCode(${ch}))`).join(';');
     inject('if(window.ws&&window.ws.readyState===1){'+jsSend(chars)+'}');
   }, [inject]);
 
@@ -238,72 +250,66 @@ export default function FeedScreen({onBack, session, token}: Props) {
           >
             <Text style={[styles.tabText, activeTab === 'activity' && styles.activeTabText]}>ACTIVITY</Text>
           </TouchableOpacity>
+             <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
+          <WebView
+            ref={wv}
+            source={source}
+            style={styles.webview}
+            javaScriptEnabled
+            domStorageEnabled
+            injectedJavaScript={pinchZoomInjection}
+            originWhitelist={['*']}
+            cacheEnabled={false}
+            onMessage={onMessage}
+          />
         </View>
 
-        {activeTab === 'terminal' ? (
-          <>
-            <View style={{flex: 1}}>
-              <WebView
-                ref={wv}
-                source={source}
-                style={styles.webview}
-                javaScriptEnabled
-                domStorageEnabled
-                injectedJavaScript={pinchZoomInjection}
-                originWhitelist={['*']}
-                cacheEnabled={false}
-                onMessage={onMessage}
-              />
-            </View>
+        <View style={[styles.activityContainer, {display: activeTab === 'activity' ? 'flex' : 'none'}]}>
+          {!historyEvents || historyEvents.length === 0 ? (
+            <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
+          ) : (
+            <FlatList
+              data={historyEvents.slice().reverse()}
+              keyExtractor={(item, idx) => item.id || String(idx)}
+              contentContainerStyle={styles.activityList}
+              renderItem={({ item }) => (
+                <EventBubble event={item} runnerId={sessionData?.runner} runnerColor={sessionData?.runnerColor} />
+              )}
+              ListEmptyComponent={
+                <Text style={styles.emptyActivityText}>No activity recorded yet.</Text>
+              }
+              inverted={true}
+            />
+          )}
+        </View>
 
-            <View style={styles.macroContainer}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
+        <View style={styles.macroContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
+            {NORMAL_MACROS.map((m, i) => (
+              <TouchableOpacity key={i} style={styles.macroBtn} onPress={() => sendMacro(m.chars)}>
+                <Text style={styles.macroText}>{m.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
 
-                {NORMAL_MACROS.map((m, i) => (
-                  <TouchableOpacity key={i} style={styles.macroBtn} onPress={() => sendMacro(m.chars)}>
-                    <Text style={styles.macroText}>{m.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-
-            <View style={[styles.inputContainer, {paddingBottom: Math.max(kbHeight, Platform.OS === 'ios' ? 20 : 6)}]}>
-              <TextInput
-                style={styles.input}
-                placeholder="$ type a command..."
-                placeholderTextColor="#666"
-                value={cmd}
-                onChangeText={handleChangeText}
-                onSubmitEditing={send}
-                returnKeyType="send"
-                autoCorrect={false}
-                autoCapitalize="none"
-                multiline={false}
-                blurOnSubmit={false}
-              />
-              <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
-            </View>
-          </>
-        ) : (
-          <View style={styles.activityContainer}>
-            {!historyEvents || historyEvents.length === 0 ? (
-              <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
-            ) : (
-              <FlatList
-                data={historyEvents.slice().reverse()}
-                keyExtractor={(item, idx) => item.id || String(idx)}
-                contentContainerStyle={styles.activityList}
-                renderItem={({ item }) => (
-                  <EventBubble event={item} runnerId={sessionData.runner} runnerColor={sessionData.runnerColor} />
-                )}
-                ListEmptyComponent={
-                  <Text style={styles.emptyActivityText}>No activity recorded yet.</Text>
-                }
-              />
-            )}
-          </View>
-        )}
-      </View>
+        <View style={[styles.inputContainer, {paddingBottom: Math.max(kbHeight, Platform.OS === 'ios' ? 20 : 6)}]}>
+          <TextInput
+            style={styles.input}
+            placeholder="$ type a command..."
+            placeholderTextColor="#666"
+            value={cmd}
+            onChangeText={handleChangeText}
+            onSubmitEditing={send}
+            returnKeyType="send"
+            autoCorrect={false}
+            autoCapitalize="none"
+            multiline={false}
+            blurOnSubmit={false}
+          />
+          <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
+        </View>
+      </View>     </View>
 
       <Modal
         visible={copyModalVisible}
