@@ -1,6 +1,7 @@
 import { config } from '../../config';
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
@@ -101,9 +102,18 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>POKIT AGENTS</Text>
-        <TouchableOpacity onPress={onSnippets} style={styles.snippetBtn}>
-          <Text style={styles.snippetBtnText}>SNIPPETS</Text>
-        </TouchableOpacity>
+        <View style={{flexDirection:'row', gap:6}}>
+          <TouchableOpacity onPress={() => {
+            AsyncStorage.removeItem('BASE_URL').then(() => {
+              Alert.alert('Reset', 'QR scanner will show on next launch');
+            });
+          }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
+            <Text style={[styles.snippetBtnText, {color: '#f85149'}]}>↻ RESCAN</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onSnippets} style={styles.snippetBtn}>
+            <Text style={styles.snippetBtnText}>SNIPPETS</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.content}>
