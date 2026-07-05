@@ -71,10 +71,16 @@ func GetAllSessionsCached() []Session {
 	}
 
 	var all []Session
+	seen := make(map[string]bool)
 	for _, a := range adapters {
 		sessions, err := a.ListSessions()
 		if err == nil {
-			all = append(all, sessions...)
+			for _, s := range sessions {
+				if !seen[s.ID()] {
+					seen[s.ID()] = true
+					all = append(all, s)
+				}
+			}
 		}
 	}
 	cachedSessions = all

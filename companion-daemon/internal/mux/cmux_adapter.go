@@ -29,12 +29,29 @@ func (a *cmuxAdapter) ListSessions() ([]Session, error) {
 	seen := make(map[string]bool)
 	var all []Session
 
-	// Scan workspaces 1-5 (stable indices)
-	for i := 0; i <= 5; i++ {
-		ws := ""
-		if i > 0 {
-			ws = fmt.Sprintf("%d", i)
+	// Collect workspace IDs to scan
+	var workspaces []string
+	workspaces = append(workspaces, "") // Default workspace context
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	wsOut, err := exec.CommandContext(ctx, "cmux", "workspace", "list").Output()
+
+	if err == nil {
+		// Extract all workspace IDs, including UUIDs like workspace:33 or workspace:a1b2...
+		wsRe := regexp.MustCompile(`workspace:([a-zA-Z0-9\-]+)`)
+		matches := wsRe.FindAllStringSubmatch(string(wsOut), -1)
+		for _, m := range matches {
+			workspaces = append(workspaces, m[1])
 		}
+	} else {
+		// Fallback to stable indices if list command fails
+		for i := 1; i <= 5; i++ {
+			workspaces = append(workspaces, fmt.Sprintf("%d", i))
+		}
+	}
+
+	for _, ws := range workspaces {
 		sessions, err := a.listPanels(ws)
 		if err != nil {
 			continue
