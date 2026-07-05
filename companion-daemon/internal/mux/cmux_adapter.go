@@ -55,7 +55,7 @@ func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
 		args = append(args, "--workspace", workspaceID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	
 	out, err := exec.CommandContext(ctx, "cmux", args...).Output()
