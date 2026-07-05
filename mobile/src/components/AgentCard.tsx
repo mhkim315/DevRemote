@@ -80,16 +80,16 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
         activeOpacity={0.8}
       >
         <View style={styles.header}>
-          <Text style={styles.sessionName} numberOfLines={1}>{session.id}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+            {session.adapter && session.adapter !== 'native' && (
+              <Text style={styles.adapterTag}>[{session.adapter}]</Text>
+            )}
+            <Text style={styles.sessionName} numberOfLines={1}>{session.id.replace(/^(tmux|cmux):/, '')}</Text>
+          </View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             {needsApproval && (
               <View style={styles.approvalBadge}>
                 <Text style={styles.approvalBadgeText}>ACTION</Text>
-              </View>
-            )}
-            {session.adapter && session.adapter !== 'native' && (
-              <View style={styles.mirrorBadge}>
-                <Text style={styles.mirrorBadgeText}>💻 MIRROR</Text>
               </View>
             )}
             <View style={[styles.statusDot, { backgroundColor: getStatusColor(session.state) }]} />
@@ -147,5 +147,5 @@ const styles = StyleSheet.create({
   approvalBadge: { backgroundColor: '#f85149', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8 },
   approvalBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' },
   mirrorBadge: { backgroundColor: '#1f6feb', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8, borderWidth: 1, borderColor: '#58a6ff' },
-  mirrorBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' }
+    adapterTag: { fontSize: 9, color: '#45EBE9', fontWeight: '600', marginRight: 4 },
 });

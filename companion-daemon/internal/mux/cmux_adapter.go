@@ -34,7 +34,7 @@ func (a *cmuxAdapter) ListSessions() ([]Session, error) {
 	var workspaces []string
 	workspaces = append(workspaces, "") // Default workspace context
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	wsOut, err := exec.CommandContext(ctx, "cmux", "workspace", "list").Output()
 
@@ -154,7 +154,7 @@ func (s *CmuxSession) pollScreen() {
 		case <-s.done:
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			out, err := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.surfaceID).Output()
 			cancel()
 
@@ -182,7 +182,7 @@ func (s *CmuxSession) Read(p []byte) (n int, err error) {
 }
 
 func (s *CmuxSession) Write(p []byte) (n int, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	// Use send-panel to send arbitrary byte sequences/text
