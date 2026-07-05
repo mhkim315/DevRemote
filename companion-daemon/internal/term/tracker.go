@@ -1,54 +1,76 @@
 package term
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// FindAgentLogPath finds the log path for Claude or Aider running in the given pane.
-func FindAgentLogPath(paneID string, cwd string) (string, error) {
+// FindAgentLogRef finds the LogRef for Claude, Codex, or Gemini running in the given pane.
+func FindAgentLogRef(ctx context.Context, paneID string, cwd string) (LogRef, error) {
 	// 1. Get shell PID for paneID
-	cmd := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_pid}")
+	cmd := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_start_time},#{pane_pid}")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to get pane pid: %w", err)
+		return LogRef{}, fmt.Errorf("failed to get pane pid: %w", err)
 	}
 
-	shellPIDStr := strings.TrimSpace(string(out))
-	if shellPIDStr == "" {
-		return "", fmt.Errorf("empty pane pid returned")
+	parts := strings.Split(strings.TrimSpace(string(out)), ",")
+	if len(parts) != 2 {
+		return LogRef{}, fmt.Errorf("invalid tmux pane output")
 	}
 
-	shellPID, err := strconv.Atoi(shellPIDStr)
-	if err != nil {
-		return "", fmt.Errorf("invalid pane pid %q: %w", shellPIDStr, err)
+	startTimeUnix, _ := strconv.ParseInt(parts[0], 10, 64)
+	shellPID, _ := strconv.Atoi(parts[1])
+
+	processInfo := ProcessInfo{
+		PID:       shellPID, // initially shell PID
+		CWD:       cwd,
+		StartedAt: time.Unix(startTimeUnix, 0),
+		PaneID:    paneID,
 	}
 
-	// 2. Find child processes to identify claude or aider
+	// Try Gemini via env var (wrapper mode)
+	geminiRes := &GeminiResolver{}
+	if ref, err := geminiRes.Resolve(ctx, processInfo); err == nil {
+		return ref, nil
+	}
+
+	// 2. Find child processes to identify claude, codex, or aider
 	agentType, agentPID, err := findAgentProcess(shellPID)
 	if err != nil {
-		return "", fmt.Errorf("failed to find agent process: %w", err)
+		return LogRef{}, fmt.Errorf("failed to find agent process: %w", err)
 	}
 
 	if agentType == "" {
-		return "", fmt.Errorf("no supported agent (claude/aider) found in pane %s", paneID)
+		return LogRef{}, fmt.Errorf("no supported agent found in pane %s", paneID)
 	}
 
-	// 3. If claude, read session file
+	// Fetch actual agent start time using ps
+	cmdTime := exec.Command("ps", "-p", strconv.Itoa(agentPID), "-o", "lstart=")
+	outTime, err := cmdTime.Output()
+	if err == nil {
+		if t, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(outTime)), time.Local); err == nil {
+			processInfo.StartedAt = t
+		}
+	}
+
+	processInfo.PID = agentPID
+
+	var resolver AgentLogResolver
 	if agentType == "claude" {
-		return getClaudeLogPath(agentPID, cwd)
+		resolver = &ClaudeResolver{}
+	} else if agentType == "codex" {
+		resolver = &CodexResolver{}
+	} else {
+		return LogRef{}, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
 
-	if agentType == "aider" {
-		return getAiderLogPath(agentPID, cwd)
-	}
-
-	return "", fmt.Errorf("unsupported agent type: %s", agentType)
+	return resolver.Resolve(ctx, processInfo)
 }
 
 func findAgentProcess(parentPID int) (string, int, error) {
@@ -106,6 +128,9 @@ func findAgentProcess(parentPID int) (string, int, error) {
 		if strings.Contains(commLower, "aider") {
 			return "aider", pid
 		}
+		if strings.Contains(commLower, "codex") {
+			return "codex", pid
+		}
 		
 		for _, childPID := range children[pid] {
 			if t, p := search(childPID); t != "" {
@@ -124,39 +149,38 @@ func findAgentProcess(parentPID int) (string, int, error) {
 	return "", 0, nil
 }
 
-type claudeSession struct {
-	SessionID string `json:"sessionId"`
-}
-
-func getClaudeLogPath(pid int, cwd string) (string, error) {
-	homeDir, err := os.UserHomeDir()
+// ValidateLogPath safely evaluates symlinks and ensures target stays within base.
+func ValidateLogPath(base, target string) error {
+	evalBase, err := filepath.EvalSymlinks(base)
 	if err != nil {
-		return "", fmt.Errorf("failed to get home dir: %w", err)
+		evalBase = filepath.Clean(base) // fallback if base doesn't exist yet
 	}
-
-	sessionFile := filepath.Join(homeDir, ".claude", "sessions", fmt.Sprintf("%d.json", pid))
-	data, err := os.ReadFile(sessionFile)
+	
+	evalTarget, err := filepath.EvalSymlinks(target)
 	if err != nil {
-		return "", fmt.Errorf("failed to read claude session file: %w", err)
+		// Target might not exist yet, resolve its directory
+		evalDir, errDir := filepath.EvalSymlinks(filepath.Dir(target))
+		if errDir == nil {
+			evalTarget = filepath.Join(evalDir, filepath.Base(target))
+		} else {
+			evalTarget = filepath.Clean(target)
+		}
 	}
 
-	var session claudeSession
-	if err := json.Unmarshal(data, &session); err != nil {
-		return "", fmt.Errorf("failed to parse claude session file: %w", err)
+	rel, err := filepath.Rel(evalBase, evalTarget)
+	if err != nil {
+		return fmt.Errorf("failed to compute relative path: %w", err)
 	}
 
-	if session.SessionID == "" {
-		return "", fmt.Errorf("no sessionId found in claude session file")
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path traversal detected: %s", target)
+	}
+	
+	if !strings.HasSuffix(target, ".jsonl") && !strings.HasSuffix(target, ".json") {
+		return fmt.Errorf("invalid log file extension: %s", target)
 	}
 
-	encodedCwd := strings.ReplaceAll(cwd, "/", "-")
-	encodedCwd = strings.ReplaceAll(encodedCwd, ".", "-")
-	logPath := filepath.Join(homeDir, ".claude", "projects", encodedCwd, fmt.Sprintf("%s.jsonl", session.SessionID))
-
-	return logPath, nil
+	return nil
 }
 
-func getAiderLogPath(pid int, cwd string) (string, error) {
-	// Stub for Aider implementation
-	return "", fmt.Errorf("aider tracking not yet implemented")
-}
+

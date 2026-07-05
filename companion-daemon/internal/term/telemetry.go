@@ -3,9 +3,7 @@ package term
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -33,6 +31,8 @@ type sessionStateData struct {
 	Load         int
 	Runner       string
 	RunnerColor  string
+	Cursor       *LogCursor
+	Parser       AgentLogParser
 }
 
 var (
@@ -96,11 +96,50 @@ func StartTelemetryLoop(ctx context.Context) {
 				}
 				rawID := parts[1]
 
-				cmd := exec.Command("tmux", "capture-pane", "-t", rawID, "-p")
-				out, err := cmd.Output()
-				if err != nil {
-					continue
+				cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", rawID, "#{pane_current_path}")
+				outCwd, _ := cmdCwd.Output()
+				paneCwd := strings.TrimSpace(string(outCwd))
+
+				logRef, logErr := FindAgentLogRef(ctx, rawID, paneCwd)
+				
+				var parsedNewEvents bool
+				var lastEvent models.AgentEvent
+				
+				if logErr == nil {
+					telemetryMu.Lock()
+					stateData := telemetryCache[s]
+					if stateData != nil {
+						if stateData.Cursor == nil || stateData.Cursor.Path != logRef.Path {
+							stateData.Cursor = &LogCursor{Path: logRef.Path, Offset: 0, Inode: 0}
+							if logRef.Agent == "claude" {
+								stateData.Parser = &ClaudeParser{Session: rawID}
+							} else if logRef.Agent == "codex" {
+								stateData.Parser = &CodexParser{Session: rawID}
+							} else if logRef.Agent == "gemini" {
+								stateData.Parser = &GeminiParser{Session: rawID}
+							}
+						}
+
+						cursor := stateData.Cursor
+						parser := stateData.Parser
+						telemetryMu.Unlock()
+
+						if parser != nil {
+							newEvents, readErr := ReadNewEvents(cursor, parser, 500)
+							if readErr == nil && len(newEvents) > 0 {
+								models.AppendEvents(rawID, newEvents)
+								parsedNewEvents = true
+								lastEvent = newEvents[len(newEvents)-1]
+							}
+						}
+					} else {
+						telemetryMu.Unlock()
+					}
 				}
+
+				// Always fetch capture-pane as fallback for approvals and missing logs
+				cmd := exec.Command("tmux", "capture-pane", "-t", rawID, "-p")
+				out, _ := cmd.Output()
 
 				envCmd := exec.Command("tmux", "show-environment", "-t", rawID)
 				envOut, _ := envCmd.Output()
@@ -133,7 +172,6 @@ func StartTelemetryLoop(ctx context.Context) {
 
 				// Extract the last 5 lines for keyword analysis
 				isWaiting := false
-				isThinking := false
 				lines := strings.Split(string(out), "\n")
 				
 				tailLines := lines
@@ -148,42 +186,89 @@ func StartTelemetryLoop(ctx context.Context) {
 					}
 				}
 
-				if !isWaiting {
+				isThinkingFallback := false
+				if logErr != nil {
 					for _, line := range tailLines {
 						if strings.Contains(line, "Thinking...") || strings.Contains(line, "Querying") {
-							isThinking = true
+							isThinkingFallback = true
 							break
 						}
 					}
 				}
 
-				if isWaiting {
-					stateData.State = "waiting"
-					stateData.Load = 0
-				} else if diffSize > 50 {
-					stateData.State = "working"
-					stateData.Load = 100
-					stateData.LastActivity = time.Now()
-				} else if diffSize > 0 || isThinking {
-					stateData.State = "thinking"
-					stateData.Load = 50
-					stateData.LastActivity = time.Now()
-				} else {
-					if time.Since(stateData.LastActivity) > 5*time.Second {
-						stateData.State = "idle"
-						stateData.Load = 0
-					} else {
-						// Grace period: slow down to thinking before falling asleep
-						stateData.State = "thinking"
-						stateData.Load = 20
-					}
-				}
+				evaluateState(stateData, parsedNewEvents, lastEvent, logErr, isWaiting, isThinkingFallback, diffSize)
 
 				stateData.LastOutput = out
 				telemetryMu.Unlock()
 			}
 		}
 	}()
+}
+
+// evaluateState contains the core telemetry state machine logic for unit testing
+func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent models.AgentEvent, logErr error, isWaiting bool, isThinkingFallback bool, diffSize int) {
+	if isWaiting {
+		stateData.State = "waiting"
+		stateData.Load = 0
+	} else if parsedNewEvents {
+		stateData.LastActivity = time.Now()
+		if lastEvent.Type == "user" {
+			stateData.State = "thinking"
+			stateData.Load = 50
+		} else if lastEvent.Type == "tool_use" {
+			stateData.State = "working"
+			stateData.Load = 100
+		} else if lastEvent.Type == "tool_result" {
+			stateData.State = "thinking"
+			stateData.Load = 50
+		} else if lastEvent.Type == "message" {
+			if strings.Contains(lastEvent.Summary, "Thinking") || strings.Contains(lastEvent.Summary, "Reasoning") {
+				stateData.State = "thinking"
+				stateData.Load = 50
+			} else {
+				stateData.State = "idle"
+				stateData.Load = 0
+			}
+		} else {
+			stateData.State = "working"
+			stateData.Load = 50
+		}
+	} else if logErr == nil {
+		// JSONL log found but NO new events parsed this tick. Apply idle timeout to prevent permanent lock.
+		if time.Since(stateData.LastActivity) > 10*time.Second {
+			if stateData.State == "working" {
+				stateData.State = "thinking"
+				stateData.Load = 50
+				stateData.LastActivity = time.Now() // reset so it waits before dropping to idle
+			} else if stateData.State == "thinking" || stateData.State == "waiting" {
+				stateData.State = "idle"
+				stateData.Load = 0
+			}
+		} else if stateData.State == "waiting" && !isWaiting {
+			// Prompt disappeared but no events parsed yet
+			stateData.State = "idle"
+			stateData.Load = 0
+		}
+	} else {
+		// Fallback to capture-pane heuristics only if we failed to find an agent log
+		if diffSize > 50 {
+			stateData.State = "working"
+			stateData.Load = 100
+			stateData.LastActivity = time.Now()
+		} else if diffSize > 0 || isThinkingFallback {
+			stateData.State = "thinking"
+			stateData.Load = 50
+			stateData.LastActivity = time.Now()
+		} else {
+			if time.Since(stateData.LastActivity) > 5*time.Second {
+				stateData.State = "idle"
+				stateData.Load = 0
+			} else {
+				stateData.State = "thinking"
+				stateData.Load = 20
+			}
+		}
+	}
 }
 
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
@@ -194,32 +279,22 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "History not implemented for adapter", http.StatusNotImplemented)
 			return
 		}
-		
-		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", ref.RawID, "#{pane_current_path}")
-		out, _ := cmdCwd.Output()
-		paneCwd := strings.TrimSpace(string(out))
 
-		logPath, err := FindAgentLogPath(ref.RawID, paneCwd)
-		if err == nil {
-			data, err := os.ReadFile(logPath)
-			if err == nil {
-				events := parseJSONLToEvents(data, historyID)
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(events)
-				return
-			}
+		events := models.GetEvents(ref.RawID)
+		w.Header().Set("Content-Type", "application/json")
+		if len(events) > 0 {
+			json.NewEncoder(w).Encode(events)
+			return
 		}
 
 		// Fallback to tmux capture-pane
 		cmd := exec.Command("tmux", "capture-pane", "-e", "-t", ref.RawID, "-p", "-S", "-10000")
-		out, err = cmd.Output()
+		out, err := cmd.Output()
 		if err != nil {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
 		
-		// Fallback returns empty event list or dummy event
-		w.Header().Set("Content-Type", "application/json")
 		fallbackEvents := []models.AgentEvent{{
 			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Legacy Tmux History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
 		}}
@@ -250,101 +325,3 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
-func parseJSONLToEvents(data []byte, session string) []models.AgentEvent {
-	// A simple heuristic parser for JSONL transcripts
-	var events []models.AgentEvent
-	lines := strings.Split(string(data), "\n")
-
-	for i, line := range lines {
-		if line == "" {
-			continue
-		}
-		var payload map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &payload); err != nil {
-			continue
-		}
-
-		typ, _ := payload["type"].(string)
-		
-		var eventType, summary, detail string
-		
-		if typ == "tool_use" {
-			eventType = "tool_use"
-			name, _ := payload["name"].(string)
-			summary = fmt.Sprintf("Tool: %s", name)
-			if input, ok := payload["input"]; ok {
-				b, _ := json.MarshalIndent(input, "", "  ")
-				detail = string(b)
-			}
-		} else if typ == "tool_result" {
-			eventType = "tool_result"
-			summary = "Result"
-			content, _ := payload["content"].(string)
-			detail = content
-		} else if typ == "user" {
-			eventType = "user"
-			summary = "User"
-			msg, ok := payload["message"].(map[string]interface{})
-			if ok {
-				if content, ok := msg["content"].(string); ok {
-					detail = content
-				}
-			}
-		} else if typ == "assistant" {
-			msg, ok := payload["message"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			contentArr, ok := msg["content"].([]interface{})
-			if !ok {
-				continue
-			}
-			for _, item := range contentArr {
-				itemMap, ok := item.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if itemMap["type"] == "text" {
-					eventType = "message"
-					summary = "Claude"
-					text, _ := itemMap["text"].(string)
-					detail = text
-				} else if itemMap["type"] == "thinking" {
-					eventType = "message"
-					summary = "Claude (Thinking)"
-					thinking, _ := itemMap["thinking"].(string)
-					detail = thinking
-				}
-			}
-		} else if typ == "message" {
-			eventType = "message"
-			summary = "Claude"
-			msg, ok := payload["message"].(map[string]interface{})
-			if ok {
-				if content, ok := msg["content"].(string); ok {
-					detail = content
-				}
-			}
-		} else if typ == "text" {
-			eventType = "message"
-			summary = "Claude"
-			content, _ := payload["text"].(string)
-			detail = content
-		}
-
-		// Avoid empty events
-		if detail == "" {
-			continue
-		}
-
-		events = append(events, models.AgentEvent{
-			ID:        fmt.Sprintf("hist-%d", i),
-			Session:   session,
-			Type:      eventType,
-			Summary:   summary,
-			Detail:    detail,
-			Timestamp: time.Now().Format(time.RFC3339),
-		})
-	}
-	return events
-}

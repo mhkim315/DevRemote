@@ -1,0 +1,3 @@
+{"type":"user","message":{"content":"Hello Claude"},"timestamp":1678888888}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hello User!"},{"type":"thinking","thinking":"Hmm..."}]},"timestamp":1678888889}
+{"type":"message","message":{"content":[{"type":"tool_use","name":"list_files","id":"call-456","input":{"path":"."}}]},"timestamp":1678888890}

@@ -1,0 +1,4 @@
+{"type":"event_msg","timestamp":"2026-07-05T12:00:00Z","payload":{"type":"user_message","message":"Hello Codex"}}
+{"type":"response_item","timestamp":"2026-07-05T12:00:01Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello User!"}]}}
+{"type":"event_msg","timestamp":"2026-07-05T12:00:02Z","payload":{"type":"function_call","name":"list_files","arguments":{"path":"."},"call_id":"call-123"}}
+{"type":"event_msg","timestamp":"2026-07-05T12:00:03Z","payload":{"type":"function_call_output","output":"file1.txt","call_id":"call-123"}}

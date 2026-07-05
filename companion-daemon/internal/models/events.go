@@ -6,12 +6,14 @@ import (
 )
 
 type AgentEvent struct {
-	ID        string `json:"id"`
-	Session   string `json:"session"`
-	Type      string `json:"type"` // "file_edit", "approval_request", "error", "done"
-	Summary   string `json:"summary"`
-	Detail    string `json:"detail"`
-	Timestamp string `json:"timestamp"`
+	ID         string `json:"id"`
+	Session    string `json:"session"`
+	Agent      string `json:"agent"`       // "codex", "claude", "gemini"
+	Type       string `json:"type"`        // "message", "tool_use", "tool_result", "user"
+	Timestamp  string `json:"timestamp"`   // Original timestamp from the log
+	ToolCallID string `json:"toolCallId"`  // Used to link tool_use and tool_result blocks
+	Summary    string `json:"summary"`
+	Detail     string `json:"detail"`
 }
 
 var (
@@ -35,6 +37,17 @@ func EmitEvent(session, eventType, summary, detail string) {
 
 	if len(eventsCache[session]) > 100 {
 		eventsCache[session] = eventsCache[session][len(eventsCache[session])-100:]
+	}
+}
+
+// AppendEvents adds multiple parsed events, maintaining a maximum size of 500.
+func AppendEvents(session string, evs []AgentEvent) {
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	
+	eventsCache[session] = append(eventsCache[session], evs...)
+	if len(eventsCache[session]) > 500 {
+		eventsCache[session] = eventsCache[session][len(eventsCache[session])-500:]
 	}
 }
 
