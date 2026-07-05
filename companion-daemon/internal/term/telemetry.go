@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/mux"
 )
 
 // SessionTelemetry holds the calculated state of a tmux session.
@@ -217,6 +218,11 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	
 	w.Header().Set("Content-Type", "application/json")
 	var res []SessionTelemetry
+
+	// Add sessions from all registered adapters (cmux, tmux, native)
+	for _, s := range mux.GetAllSessions() {
+		res = append(res, SessionTelemetry{ID: s.ID(), State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())})
+	}
 
 	telemetryMu.Lock()
 	for _, s := range sessions {
