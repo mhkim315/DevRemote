@@ -32,6 +32,7 @@ func main() {
 
 	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
 	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
+	insecureLocalOnly := flag.Bool("insecure-local-only", false, "Disable authentication (DANGEROUS)")
 	
 	// If the user specifies "daemon" explicitly, parse flags starting from Args[2]
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
@@ -42,6 +43,7 @@ func main() {
 
 	term.OwnerUUID = *ownerUUID
 	term.SupabaseProjectRef = *supabaseRef
+	term.InsecureLocalOnly = *insecureLocalOnly
 
 	if *ownerUUID == "" {
 		log.Println("WARN: --owner-uuid not set. All valid Supabase tokens will be accepted (INSECURE).")
@@ -69,9 +71,9 @@ func main() {
 
 	startWatcher()
 
-	http.HandleFunc("/api/sessions", term.HandleSessionsAPI)
-	http.HandleFunc("/term/ws", term.HandleWS)
-	http.HandleFunc("/term/", term.HandleHTML)
+	http.HandleFunc("/api/sessions", term.AuthMiddleware(term.HandleSessionsAPI))
+	http.HandleFunc("/term/ws", term.AuthMiddleware(term.HandleWS))
+	http.HandleFunc("/term/", term.AuthMiddleware(term.HandleHTML))
 	var pushToken string
 
 	// Start Unix Socket IPC Server for local 'pokit run' commands
@@ -81,14 +83,14 @@ func main() {
 	}
 	defer os.Remove(socketPath)
 
-	http.HandleFunc("/push/register", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/push/register", term.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
 		if token != "" {
 			pushToken = token
 			log.Printf("📱 Push token registered: %s", token)
 		}
 		w.WriteHeader(200)
-	})
+	}))
 
 	// Wire approval detection → push notification
 	term.OnApproval = func(msg string) {
@@ -98,8 +100,8 @@ func main() {
 		}
 	}
 
-	http.HandleFunc("/debug/dump", term.HandleDump)
-	http.HandleFunc("/debug/cmd", term.HandleCmd)
+	http.HandleFunc("/debug/dump", term.AuthMiddleware(term.HandleDump))
+	http.HandleFunc("/debug/cmd", term.AuthMiddleware(term.HandleCmd))
 
 	go startTunnel()
 

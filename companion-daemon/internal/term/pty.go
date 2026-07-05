@@ -25,25 +25,30 @@ var OwnerUUID string
 // Used to dynamically fetch the JWKS public key for RS256 token verification.
 var SupabaseProjectRef string
 
-// verifyToken validates a Supabase JWT using RS256 (JWKS) or HS256 (dev fallback).
+var InsecureLocalOnly bool
+
+// VerifyToken validates a Supabase JWT using RS256 (JWKS) or HS256 (dev fallback).
 // It also checks that the token's sub claim matches the configured OwnerUUID.
-func verifyToken(tokenString string) bool {
+func VerifyToken(tokenString string) bool {
 	if tokenString == "" {
-		log.Println("DEV: empty token, allowing (--owner-uuid not set)")
-		return OwnerUUID == ""
+		if InsecureLocalOnly {
+			log.Println("WARN: empty token allowed due to --insecure-local-only")
+			return true
+		}
+		return false
 	}
 
-	// Dev mode: accept any token without signature verification
-	if OwnerUUID == "" && SupabaseProjectRef == "" {
+	// Dev mode: accept any token without signature verification ONLY if explicitly enabled
+	if InsecureLocalOnly {
 		parser := jwt.NewParser()
 		token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-		if err != nil { log.Printf("WS pty start err: %v", err)
+		if err != nil {
 			log.Printf("JWT parse err (dev): %v", err)
 			return false
 		}
 		if token != nil {
 			sub, _ := token.Claims.(jwt.MapClaims)["sub"]
-			log.Printf("DEV: accepted token (sub=%v)", sub)
+			log.Printf("WARN: accepted unverified token in insecure mode (sub=%v)", sub)
 			return true
 		}
 		return false
@@ -107,7 +112,7 @@ func HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 		HandleSessionCRUD(w, r)
 	}
 }
-func extractToken(r *http.Request) string {
+func ExtractToken(r *http.Request) string {
 	token := r.Header.Get("Authorization")
 	if len(token) > 7 && token[:7] == "Bearer " {
 		return token[7:]
@@ -115,13 +120,21 @@ func extractToken(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
-func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
-	// Auth check
-	token := extractToken(r)
-	if !verifyToken(token) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
+func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := ExtractToken(r)
+		if !VerifyToken(token) {
+			log.Printf("Auth failed for %s", r.URL.Path)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
 	}
+}
+
+func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
+	// Auth check is handled by middleware
+
 
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req struct {
@@ -219,13 +232,8 @@ var OnApproval func(string)
 
 func HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Extract JWT from Authorization header (preferred) or ?token= query param
-	token := extractToken(r)
+	// Auth check is handled by middleware
 
-	if !verifyToken(token) {
-		log.Printf("WS Unauthorized from %s", r.RemoteAddr)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
 
 	session := r.URL.Query().Get("session")
 	if session == "" {
@@ -278,12 +286,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
 	// ... we will keep HandleHTML as is, though not heavily used
-	// Auth check
-	token := extractToken(r)
-	if !verifyToken(token) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
+	// Auth check is handled by middleware
 
 	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000}#t{width:100%;height:100%}#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7);display:none}</style></head><body><div id="t"></div><div id="status" style="display:none"></div><script>var raw='',reconnecting=false;function connect(){if(reconnecting)return;var protocol=location.protocol==='https:'?'wss://':'ws://';var s=document.getElementById('status');if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);window.ws=ws;ws.binaryType='arraybuffer';ws.onopen=function(){reconnecting=false;setTimeout(function(){fitTerminal()},500)};ws.onmessage=function(e){var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);raw+=t;term.write(t)};ws.onclose=function(){if(!reconnecting){reconnecting=true;setTimeout(function(){reconnecting=false;connect()},2000)}};ws.onerror=function(){ws.close()}}var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});term.open(document.getElementById("t"));term.onData(function(d){var w=window.ws;if(w&&w.readyState===1)try{w.send(d)}catch(e){}});setTimeout(function(){term.focus();fitTerminal();},500);
 function fitTerminal(){var h=document.getElementById('t').clientHeight;var w=document.getElementById('t').clientWidth;var rows=Math.floor(h/17);var cols=Math.floor(w/7.8);if(rows>0&&cols>0){var p=new URLSearchParams(location.search);var sess=p.get('session');var tok=p.get('token');var hdrs={};if(tok)hdrs['Authorization']='Bearer '+tok;fetch('/term/size?session='+encodeURIComponent(sess)+'&rows='+rows+'&cols='+cols,{method:'POST',headers:hdrs}).catch(function(){})}};

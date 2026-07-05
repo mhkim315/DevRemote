@@ -6,16 +6,20 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   session: string;
+  token?: string;
 }
 
-export function HistoryModal({ visible, onClose, session }: Props) {
+export function HistoryModal({ visible, onClose, session, token }: Props) {
   const [history, setHistory] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (visible) {
       setLoading(true);
-      fetch(`${config.BASE_URL}/api/sessions?history=${session}`)
+      const headers: any = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      fetch(`${config.BASE_URL}/api/sessions?history=${session}`, { headers })
         .then(res => res.text())
         .then(text => {
           // Strip ANSI codes using a standard regex pattern

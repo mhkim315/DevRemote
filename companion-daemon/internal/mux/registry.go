@@ -76,8 +76,9 @@ func GetAllSessionsCached() []Session {
 		sessions, err := a.ListSessions()
 		if err == nil {
 			for _, s := range sessions {
-				if !seen[s.ID()] {
-					seen[s.ID()] = true
+				key := s.AdapterName() + ":" + s.ID()
+				if !seen[key] {
+					seen[key] = true
 					all = append(all, s)
 				}
 			}

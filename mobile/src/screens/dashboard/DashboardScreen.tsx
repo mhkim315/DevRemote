@@ -21,7 +21,10 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDi
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
-    fetch(`${config.BASE_URL}/api/sessions`)
+    const headers: any = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    
+    fetch(`${config.BASE_URL}/api/sessions`, { headers })
       .then(res => res.json())
       .then(data => {
         const normalized = (data || []).map((s: any) =>
