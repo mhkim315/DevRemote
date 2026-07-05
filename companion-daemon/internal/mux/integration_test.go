@@ -11,9 +11,9 @@ func TestTmuxAdapter_ListSessions(t *testing.T) {
 		t.Skip("tmux is not installed, skipping integration test")
 	}
 
-	// Create a dummy session
+	// Create a dummy session. Since tmux is installed, failure here is a real error.
 	if err := exec.Command("tmux", "new-session", "-d", "-s", "test-tmux-adapter-session").Run(); err != nil {
-		t.Skipf("Failed to create tmux session (possibly no tmux server running): %v", err)
+		t.Fatalf("Failed to create tmux session: %v", err)
 	}
 	defer exec.Command("tmux", "kill-session", "-t", "test-tmux-adapter-session").Run()
 

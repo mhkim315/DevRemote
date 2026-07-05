@@ -173,6 +173,10 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ref := mux.ParseSessionID(req.ID)
+		if ref.Adapter != "" && ref.Adapter != "tmux" {
+			http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
+			return
+		}
 
 		if r.Method == "POST" {
 			exec.Command("tmux", "new-session", "-d", "-s", ref.RawID).Run()
@@ -187,6 +191,10 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		if id != "" {
 			ref := mux.ParseSessionID(id)
+			if ref.Adapter != "" && ref.Adapter != "tmux" {
+				http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
+				return
+			}
 			exec.Command("tmux", "kill-session", "-t", ref.RawID).Run()
 		}
 		w.WriteHeader(200)
@@ -207,62 +215,73 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 	jwksCacheMu.Lock()
 	defer jwksCacheMu.Unlock()
 
-	if jwksCache == nil || time.Now().After(jwksCacheExpiry) {
+	needsFetch := jwksCache == nil || time.Now().After(jwksCacheExpiry)
+	if !needsFetch {
+		if _, ok := jwksCache[kid]; !ok {
+			needsFetch = true
+		}
+	}
+
+	if needsFetch {
 		url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(url)
-		if err != nil {
-			return nil, fmt.Errorf("jwks fetch: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("jwks fetch failed with status %d", resp.StatusCode)
-		}
-
-		var jwks struct {
-			Keys []struct {
-				Kid string `json:"kid"`
-				Kty string `json:"kty"`
-				X   string `json:"x"`
-				Y   string `json:"y"`
-				N   string `json:"n"`
-				E   string `json:"e"`
-			} `json:"keys"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-			return nil, fmt.Errorf("jwks decode: %w", err)
-		}
-
-		jwksCache = make(map[string]interface{})
-		for _, k := range jwks.Keys {
-			if k.Kid == "" {
-				continue
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var jwks struct {
+					Keys []struct {
+						Kid string `json:"kid"`
+						Kty string `json:"kty"`
+						X   string `json:"x"`
+						Y   string `json:"y"`
+						N   string `json:"n"`
+						E   string `json:"e"`
+					} `json:"keys"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&jwks); err == nil {
+					newCache := make(map[string]interface{})
+					for _, k := range jwks.Keys {
+						if k.Kid == "" {
+							continue
+						}
+						switch k.Kty {
+						case "RSA":
+							nBytes, err1 := base64.RawURLEncoding.DecodeString(k.N)
+							eBytes, err2 := base64.RawURLEncoding.DecodeString(k.E)
+							if err1 != nil || err2 != nil || len(eBytes) == 0 {
+								continue
+							}
+							e := int(new(big.Int).SetBytes(eBytes).Int64())
+							newCache[k.Kid] = &rsa.PublicKey{
+								N: new(big.Int).SetBytes(nBytes),
+								E: e,
+							}
+						case "EC":
+							xb, err1 := base64.RawURLEncoding.DecodeString(k.X)
+							yb, err2 := base64.RawURLEncoding.DecodeString(k.Y)
+							if err1 != nil || err2 != nil {
+								continue
+							}
+							newCache[k.Kid] = &ecdsa.PublicKey{
+								Curve: elliptic.P256(),
+								X:     new(big.Int).SetBytes(xb),
+								Y:     new(big.Int).SetBytes(yb),
+							}
+						}
+					}
+					jwksCache = newCache
+					jwksCacheExpiry = time.Now().Add(1 * time.Hour)
+					log.Printf("jwks: loaded %d keys", len(jwksCache))
+				} else {
+					log.Printf("jwks decode err: %v", err)
+				}
+			} else {
+				log.Printf("jwks fetch status %d", resp.StatusCode)
 			}
-			switch k.Kty {
-			case "RSA":
-				nBytes, _ := base64.RawURLEncoding.DecodeString(k.N)
-				eBytes, _ := base64.RawURLEncoding.DecodeString(k.E)
-				if len(eBytes) == 0 {
-					continue
-				}
-				e := int(new(big.Int).SetBytes(eBytes).Int64())
-				jwksCache[k.Kid] = &rsa.PublicKey{
-					N: new(big.Int).SetBytes(nBytes),
-					E: e,
-				}
-			case "EC":
-				xb, _ := base64.RawURLEncoding.DecodeString(k.X)
-				yb, _ := base64.RawURLEncoding.DecodeString(k.Y)
-				jwksCache[k.Kid] = &ecdsa.PublicKey{
-					Curve: elliptic.P256(),
-					X:     new(big.Int).SetBytes(xb),
-					Y:     new(big.Int).SetBytes(yb),
-				}
-			}
+		} else {
+			log.Printf("jwks fetch err: %v", err)
 		}
-		jwksCacheExpiry = time.Now().Add(1 * time.Hour)
-		log.Printf("jwks: loaded %d keys", len(jwksCache))
 	}
 
 	if key, ok := jwksCache[kid]; ok {

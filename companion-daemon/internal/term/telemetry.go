@@ -190,6 +190,10 @@ func StartTelemetryLoop(ctx context.Context) {
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
 		ref := mux.ParseSessionID(historyID)
+		if ref.Adapter != "" && ref.Adapter != "tmux" {
+			http.Error(w, "History not implemented for adapter", http.StatusNotImplemented)
+			return
+		}
 		
 		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", ref.RawID, "#{pane_current_path}")
 		out, _ := cmdCwd.Output()

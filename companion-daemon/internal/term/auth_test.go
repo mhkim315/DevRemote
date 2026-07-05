@@ -7,6 +7,15 @@ import (
 )
 
 func TestVerifyToken_EmptyProdMode(t *testing.T) {
+	oldInsecure := InsecureLocalOnly
+	oldOwner := OwnerUUID
+	oldProject := SupabaseProjectRef
+	defer func() {
+		InsecureLocalOnly = oldInsecure
+		OwnerUUID = oldOwner
+		SupabaseProjectRef = oldProject
+	}()
+
 	// Prod mode with missing config should fail closed
 	InsecureLocalOnly = false
 	OwnerUUID = ""
@@ -22,6 +31,9 @@ func TestVerifyToken_EmptyProdMode(t *testing.T) {
 }
 
 func TestVerifyToken_EmptyInsecureMode(t *testing.T) {
+	oldInsecure := InsecureLocalOnly
+	defer func() { InsecureLocalOnly = oldInsecure }()
+
 	// Insecure mode should allow empty token
 	InsecureLocalOnly = true
 	
@@ -31,6 +43,15 @@ func TestVerifyToken_EmptyInsecureMode(t *testing.T) {
 }
 
 func TestAuthMiddleware(t *testing.T) {
+	oldInsecure := InsecureLocalOnly
+	oldOwner := OwnerUUID
+	oldProject := SupabaseProjectRef
+	defer func() {
+		InsecureLocalOnly = oldInsecure
+		OwnerUUID = oldOwner
+		SupabaseProjectRef = oldProject
+	}()
+
 	InsecureLocalOnly = false
 	OwnerUUID = ""
 	SupabaseProjectRef = ""
