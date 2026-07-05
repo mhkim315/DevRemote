@@ -24,34 +24,7 @@ func (a *cmuxAdapter) Name() string {
 var panelRe = regexp.MustCompile(`surface:(\d+)\s+\S+(?:\s+\[.*?\])?\s+"(.*?)"`)
 
 func (a *cmuxAdapter) ListSessions() ([]Session, error) {
-	var allSessions []Session
-
-	// First, get current workspace panels (no --workspace flag)
-	if sessions, err := a.listPanels(""); err == nil {
-		allSessions = append(allSessions, sessions...)
-	}
-
-	// Then try all workspace indices (1-10 covers typical usage)
-	for i := 1; i <= 10; i++ {
-		sessions, err := a.listPanels(fmt.Sprintf("%d", i))
-		if err != nil {
-			continue
-		}
-		for _, s := range sessions {
-			found := false
-			for _, existing := range allSessions {
-				if existing.ID() == s.ID() {
-					found = true
-					break
-				}
-			}
-			if !found {
-				allSessions = append(allSessions, s)
-			}
-		}
-	}
-
-	return allSessions, nil
+	return a.listPanels("")
 }
 
 func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
