@@ -5,6 +5,9 @@ type Session interface {
 	// ID returns the unique identifier for the session
 	ID() string
 	
+	// AdapterName returns the name of the adapter managing this session
+	AdapterName() string
+	
 	// Write sends input (keystrokes) to the session's PTY
 	Write(p []byte) (n int, err error)
 	

@@ -160,6 +160,10 @@ func (s *NativeSession) ID() string {
 	return s.id
 }
 
+func (s *NativeSession) AdapterName() string {
+	return "native"
+}
+
 // Write writes data to the PTY (injects keystrokes).
 func (s *NativeSession) Write(p []byte) (n int, err error) {
 	s.mu.Lock()

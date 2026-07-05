@@ -21,6 +21,7 @@ type SessionTelemetry struct {
 	Load        int          `json:"load"`  // 0-100 (animation speed)
 	Runner      string       `json:"runner"`
 	RunnerColor string       `json:"runnerColor"`
+	Adapter     string       `json:"adapter"`
 	Events      []models.AgentEvent `json:"events"`
 }
 
@@ -207,9 +208,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		s := sessionObj.ID()
 		data := telemetryCache[s]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Events: models.GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: sessionObj.AdapterName(), Events: models.GetEvents(s)})
 		} else {
-			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Events: models.GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: sessionObj.AdapterName(), Events: models.GetEvents(s)})
 		}
 	}
 	telemetryMu.Unlock()

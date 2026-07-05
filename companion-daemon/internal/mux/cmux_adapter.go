@@ -1,10 +1,12 @@
 package mux
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 type cmuxAdapter struct {
@@ -78,12 +80,26 @@ func (s *CmuxSession) ID() string {
 	return s.id
 }
 
+func (s *CmuxSession) AdapterName() string {
+	return "cmux"
+}
+
 func (s *CmuxSession) Write(p []byte) (n int, err error) {
-	// cmux send-key-panel --panel <id> <p>
-	// Note: We need to map bytes to keys, which might be tricky for complex sequences.
-	// We could also write directly to the PTY if we know the slave path and have permissions.
-	// For now, returning err.
-	return 0, fmt.Errorf("cmux write not implemented yet")
+	// Try cmux send-panel first, but for arbitrary bytes (ANSI sequences, arrow keys),
+	// tmux load-buffer + paste-buffer is much safer and handles raw bytes perfectly.
+	
+	// We'll use the tmux fallback since we are using tmux for listing anyway in TrackCmuxPanels
+	cmd := exec.Command("tmux", "load-buffer", "-b", "devremote_"+s.id, "-")
+	cmd.Stdin = bytes.NewReader(p)
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("failed to load buffer: %w", err)
+	}
+
+	cmd2 := exec.Command("tmux", "paste-buffer", "-d", "-b", "devremote_"+s.id, "-t", s.id)
+	if err := cmd2.Run(); err != nil {
+		return 0, fmt.Errorf("failed to paste buffer: %w", err)
+	}
+	return len(p), nil
 }
 
 func (s *CmuxSession) CaptureScreen() string {
@@ -108,14 +124,33 @@ func (s *CmuxSession) AddListener(ch chan []byte) {
 	defer s.mu.Unlock()
 	s.listeners = append(s.listeners, ch)
 	
-	// Send initial screen
-	screen := s.CaptureScreen()
-	if screen != "" {
-		go func() {
-			ch <- []byte("\033[2J\033[H")
-			ch <- []byte(strings.ReplaceAll(screen, "\n", "\r\n"))
-		}()
-	}
+	// Start a simple polling loop to send screen updates (Live Stream approximation)
+	go func() {
+		lastScreen := ""
+		for {
+			// Check if listener is still attached
+			s.mu.Lock()
+			active := false
+			for _, l := range s.listeners {
+				if l == ch {
+					active = true
+					break
+				}
+			}
+			s.mu.Unlock()
+			if !active {
+				break
+			}
+
+			screen := s.CaptureScreen()
+			if screen != "" && screen != lastScreen {
+				ch <- []byte("\033[2J\033[H")
+				ch <- []byte(strings.ReplaceAll(screen, "\n", "\r\n"))
+				lastScreen = screen
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
 }
 
 func (s *CmuxSession) RemoveListener(ch chan []byte) {

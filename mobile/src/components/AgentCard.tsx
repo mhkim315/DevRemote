@@ -86,6 +86,11 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
                 <Text style={styles.approvalBadgeText}>ACTION</Text>
               </View>
             )}
+            {session.adapter && session.adapter !== 'native' && (
+              <View style={styles.mirrorBadge}>
+                <Text style={styles.mirrorBadgeText}>💻 MIRROR</Text>
+              </View>
+            )}
             <View style={[styles.statusDot, { backgroundColor: getStatusColor(session.state) }]} />
             {onSettings && (
               <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.settingsBtn}>
@@ -139,5 +144,7 @@ const styles = StyleSheet.create({
   loadText: { fontSize: 11, color: '#1E91B3', fontWeight: '700' },
   recentEdit: { fontSize: 10, color: '#8b949e', marginBottom: 6, marginTop: -4 },
   approvalBadge: { backgroundColor: '#f85149', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8 },
-  approvalBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' }
+  approvalBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' },
+  mirrorBadge: { backgroundColor: '#1f6feb', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8, borderWidth: 1, borderColor: '#58a6ff' },
+  mirrorBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' }
 });
