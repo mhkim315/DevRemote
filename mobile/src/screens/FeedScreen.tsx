@@ -66,8 +66,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
   }, []);
 
   useEffect(() => {
+    const headers: any = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     const fetchSession = () => {
-      fetch(`${config.BASE_URL}/api/sessions`)
+      fetch(`${config.BASE_URL}/api/sessions`, { headers })
         .then(res => res.json())
         .then(data => {
           const sess = data.find((s: any) => (s.id || s) === session);
@@ -79,7 +82,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
     };
     
     const fetchHistory = () => {
-      fetch(`${config.BASE_URL}/api/sessions?history=${encodeURIComponent(session)}`)
+      fetch(`${config.BASE_URL}/api/sessions?history=${encodeURIComponent(session)}`, { headers })
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data)) {

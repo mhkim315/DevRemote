@@ -6,8 +6,15 @@ import (
 )
 
 func TestTmuxAdapter_ListSessions(t *testing.T) {
+	// Skip if tmux is not installed
+	if err := exec.Command("tmux", "-V").Run(); err != nil {
+		t.Skip("tmux is not installed, skipping integration test")
+	}
+
 	// Create a dummy session
-	exec.Command("tmux", "new-session", "-d", "-s", "test-tmux-adapter-session").Run()
+	if err := exec.Command("tmux", "new-session", "-d", "-s", "test-tmux-adapter-session").Run(); err != nil {
+		t.Skipf("Failed to create tmux session (possibly no tmux server running): %v", err)
+	}
 	defer exec.Command("tmux", "kill-session", "-t", "test-tmux-adapter-session").Run()
 
 	adapter := NewTmuxAdapter()

@@ -3,6 +3,7 @@ package term
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sync"
+	"time"
 
 	"devremote/companion-daemon/internal/mux"
 	"github.com/golang-jwt/jwt/v5"
@@ -58,13 +60,6 @@ func VerifyToken(tokenString string) bool {
 	keyFunc := func(token *jwt.Token) (interface{}, error) {
 		alg := token.Header["alg"]
 
-		if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
-			if SupabaseProjectRef == "" {
-				return nil, fmt.Errorf("ES256 requires SupabaseProjectRef")
-			}
-			kid, _ := token.Header["kid"].(string)
-			return fetchJWKSKey(SupabaseProjectRef, kid)
-		}
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); ok {
 			if SupabaseProjectRef == "" {
 				return nil, fmt.Errorf("RS256 requires SupabaseProjectRef")
@@ -72,8 +67,12 @@ func VerifyToken(tokenString string) bool {
 			kid, _ := token.Header["kid"].(string)
 			return fetchJWKSKey(SupabaseProjectRef, kid)
 		}
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); ok {
-			return []byte("dev-secret-do-not-use-in-production"), nil
+		if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
+			if SupabaseProjectRef == "" {
+				return nil, fmt.Errorf("ES256 requires SupabaseProjectRef")
+			}
+			kid, _ := token.Header["kid"].(string)
+			return fetchJWKSKey(SupabaseProjectRef, kid)
 		}
 
 		return nil, fmt.Errorf("unsupported signing method: %v", alg)
@@ -180,11 +179,16 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 
 	if jwksCache == nil {
 		url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
-		resp, err := http.Get(url)
-		if err != nil { log.Printf("WS pty start err: %v", err)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(url)
+		if err != nil {
 			return nil, fmt.Errorf("jwks fetch: %w", err)
 		}
 		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("jwks fetch failed with status %d", resp.StatusCode)
+		}
 
 		var jwks struct {
 			Keys []struct {
@@ -206,6 +210,17 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 				continue
 			}
 			switch k.Kty {
+			case "RSA":
+				nBytes, _ := base64.RawURLEncoding.DecodeString(k.N)
+				eBytes, _ := base64.RawURLEncoding.DecodeString(k.E)
+				if len(eBytes) == 0 {
+					continue
+				}
+				e := int(new(big.Int).SetBytes(eBytes).Int64())
+				jwksCache[k.Kid] = &rsa.PublicKey{
+					N: new(big.Int).SetBytes(nBytes),
+					E: e,
+				}
 			case "EC":
 				xb, _ := base64.RawURLEncoding.DecodeString(k.X)
 				yb, _ := base64.RawURLEncoding.DecodeString(k.Y)

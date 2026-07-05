@@ -2,6 +2,7 @@ package mux
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,11 +30,24 @@ func GetAdapters() []Adapter {
 	return list
 }
 
-// FindSession looks across all adapters to find a session by ID.
 func FindSession(id string) (Session, error) {
 	adaptersMu.RLock()
 	defer adaptersMu.RUnlock()
 	
+	parts := strings.SplitN(id, ":", 2)
+	if len(parts) == 2 {
+		adapterName := parts[0]
+		rawID := parts[1]
+		if a, ok := adapters[adapterName]; ok {
+			s, err := a.GetSession(rawID)
+			if err == nil && s != nil {
+				return s, nil
+			}
+			return nil, fmt.Errorf("session %s not found in adapter %s", rawID, adapterName)
+		}
+	}
+
+	// Fallback to searching all adapters if no prefix is given (for backward compatibility)
 	for _, a := range adapters {
 		s, err := a.GetSession(id)
 		if err == nil && s != nil {

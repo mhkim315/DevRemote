@@ -103,11 +103,17 @@ func main() {
 	http.HandleFunc("/debug/dump", term.AuthMiddleware(term.HandleDump))
 	http.HandleFunc("/debug/cmd", term.AuthMiddleware(term.HandleCmd))
 
-	go startTunnel()
+	addr := ":9171"
+	if term.InsecureLocalOnly {
+		addr = "127.0.0.1:9171"
+		log.Println("WARNING: Running in local-only insecure mode. Bound to 127.0.0.1:9171.")
+	} else {
+		go startTunnel()
+	}
 
 	// 3. Start HTTP server
-	log.Printf("POKIT daemon :9171 (owner=%s)", *ownerUUID)
-	log.Fatal(http.ListenAndServe(":9171", nil))
+	log.Printf("POKIT daemon %s (owner=%s)", addr, *ownerUUID)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
 func startWatcher() *watcher.Tailer {
