@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -290,12 +289,6 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
-		ref := mux.ParseSessionID(historyID)
-		if ref.Adapter != "" && ref.Adapter != "tmux" {
-			http.Error(w, "History not implemented for adapter", http.StatusNotImplemented)
-			return
-		}
-
 		events := models.GetEvents(historyID) // historyID is the canonical ID passed from the frontend
 		w.Header().Set("Content-Type", "application/json")
 		if len(events) > 0 {
@@ -303,16 +296,27 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Fallback to tmux capture-pane
-		cmd := exec.Command("tmux", "capture-pane", "-e", "-t", ref.RawID, "-p", "-S", "-10000")
-		out, err := cmd.Output()
-		if err != nil {
-			http.Error(w, "session not found", http.StatusNotFound)
+		// Fallback to adapter's capability for history reading
+		var out []byte
+		var err error
+		sess, err := mux.FindSession(mux.MigrateLegacyID(historyID))
+		if err == nil {
+			if hr, ok := sess.(mux.HistoryReader); ok {
+				out, err = hr.ReadHistory(context.Background(), 10000)
+			} else if sr, ok := sess.(mux.ScreenReader); ok {
+				out, err = sr.ReadScreen(context.Background())
+			} else {
+				err = fmt.Errorf("session does not support history or screen reading")
+			}
+		}
+
+		if err != nil || len(out) == 0 {
+			http.Error(w, "session not found or history unavailable", http.StatusNotFound)
 			return
 		}
 		
 		fallbackEvents := []models.AgentEvent{{
-			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Legacy Tmux History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
+			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Terminal History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
 		}}
 		json.NewEncoder(w).Encode(fallbackEvents)
 		return

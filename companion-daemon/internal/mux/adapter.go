@@ -17,11 +17,17 @@ type Session interface {
 	
 	// Title returns the display name or title of the session
 	Title() string
-	
+}
+
+// TerminalStream represents an open PTY connection to a session
+type TerminalStream interface {
 	io.ReadWriteCloser
-	
-	// Resize informs the session that the client's terminal size has changed
 	Resize(rows, cols int) error
+}
+
+// StreamOpener represents the ability to open a live PTY stream to the session
+type StreamOpener interface {
+	OpenStream(ctx context.Context) (TerminalStream, error)
 }
 
 // Capability Interfaces
@@ -54,6 +60,33 @@ type ScreenReader interface {
 // ProcessProvider represents the ability to resolve the actual shell PID running inside the session
 type ProcessProvider interface {
 	ProcessInfo(ctx context.Context) (models.ProcessInfo, error)
+}
+
+// HistoryReader represents the ability to read the scrollback buffer of the session
+type HistoryReader interface {
+	ReadHistory(ctx context.Context, lines int) ([]byte, error)
+}
+
+// KeyWriter represents the ability to send special keys to the terminal
+type KeyWriter interface {
+	WriteKey(ctx context.Context, key string) error
+}
+
+// SessionCreator represents an adapter that can spawn new sessions
+type SessionCreator interface {
+	CreateSession(ctx context.Context, opts CreateOptions) (string, error)
+}
+
+// SessionTerminator represents an adapter that can kill sessions
+type SessionTerminator interface {
+	TerminateSession(ctx context.Context, id string) error
+}
+
+type CreateOptions struct {
+	Name        string
+	WorkspaceID string
+	CWD         string
+	Command     string
 }
 
 // Adapter defines the interface for different session backends (Native, cmux, tmux)

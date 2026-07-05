@@ -11,7 +11,6 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -164,6 +163,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req struct {
 			ID          string `json:"id"`
+			WorkspaceID string `json:"workspaceId"`
 			Runner      string `json:"runner"`
 			RunnerColor string `json:"runnerColor"`
 		}
@@ -173,15 +173,40 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ref := mux.ParseSessionID(req.ID)
-		if ref.Adapter != "" && ref.Adapter != "tmux" {
-			http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
+		
+		adapterName := ref.Adapter
+		if adapterName == "" {
+			adapterName = "tmux" // Fallback
+		}
+		
+		adapter, ok := mux.GetAdapter(adapterName)
+		if !ok {
+			http.Error(w, "Adapter not found", http.StatusBadRequest)
 			return
 		}
 
 		if r.Method == "POST" {
-			exec.Command("tmux", "new-session", "-d", "-s", ref.RawID).Run()
+			if creator, ok := adapter.(mux.SessionCreator); ok {
+				opts := mux.CreateOptions{
+					Name:        ref.RawID,
+					WorkspaceID: req.WorkspaceID,
+				}
+				createdID, err := creator.CreateSession(r.Context(), opts)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, createdID)))
+				return
+			} else {
+				http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
+				return
+			}
 		}
 		
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
 		return
@@ -191,12 +216,28 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		if id != "" {
 			ref := mux.ParseSessionID(id)
-			if ref.Adapter != "" && ref.Adapter != "tmux" {
+			adapterName := ref.Adapter
+			if adapterName == "" {
+				adapterName = "tmux"
+			}
+			
+			adapter, ok := mux.GetAdapter(adapterName)
+			if !ok {
+				http.Error(w, "Adapter not found", http.StatusBadRequest)
+				return
+			}
+			
+			if terminator, ok := adapter.(mux.SessionTerminator); ok {
+				if err := terminator.TerminateSession(r.Context(), ref.RawID); err != nil {
+					http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
+					return
+				}
+			} else {
 				http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
 				return
 			}
-			exec.Command("tmux", "kill-session", "-t", ref.RawID).Run()
 		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
 		return
@@ -316,7 +357,20 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	defer s.Close()
+
+	var stream mux.TerminalStream
+	if opener, ok := s.(mux.StreamOpener); ok {
+		stream, err = opener.OpenStream(r.Context())
+		if err != nil {
+			log.Printf("WS stream open err: %v", err)
+			http.Error(w, "stream failed", 500)
+			return
+		}
+		defer stream.Close()
+	} else {
+		http.Error(w, "Session does not support streaming", http.StatusNotImplemented)
+		return
+	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil { log.Printf("WS upgrade err: %v", err)
@@ -326,25 +380,32 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)
 
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := s.Read(buf)
-			if err != nil {
-				break
+	if stream != nil {
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := stream.Read(buf)
+				if err != nil {
+					break
+				}
+				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+					break
+				}
 			}
-			if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
-				break
-			}
-		}
-	}()
+		}()
+	}
 
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
-		s.Write(msg)
+		
+		if writer, ok := s.(mux.InputWriter); ok {
+			writer.WriteInput(r.Context(), msg)
+		} else if stream != nil {
+			stream.Write(msg)
+		}
 	}
 }
 

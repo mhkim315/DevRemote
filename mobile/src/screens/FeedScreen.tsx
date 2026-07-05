@@ -132,8 +132,8 @@ export default function FeedScreen({onBack, session, token}: Props) {
     });
   }, [cmd, doSend, session]);
   const sendMacro = useCallback((chars: number[]) => {
-    const jsSend = (c: number[]) => c.map(ch => `window.ws.send(String.fromCharCode(${ch}))`).join(';');
-    inject('if(window.ws&&window.ws.readyState===1){'+jsSend(chars)+'}');
+    const jsSend = `window.ws.send(String.fromCharCode.apply(null, [${chars.join(',')}]));`;
+    inject('if(window.ws&&window.ws.readyState===1){'+jsSend+'}');
   }, [inject]);
 
   const handleChangeText = useCallback((text: string) => {

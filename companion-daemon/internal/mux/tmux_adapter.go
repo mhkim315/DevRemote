@@ -20,11 +20,11 @@ type tmuxSession struct {
 
 func (s *tmuxSession) ID() string { return s.id }
 func (s *tmuxSession) AdapterName() string { return s.adapter.Name() }
-func (s *tmuxSession) Title() string { return s.id } // tmux pane title not parsed yet
-func (s *tmuxSession) Read(p []byte) (n int, err error) { return 0, fmt.Errorf("not connected") }
-func (s *tmuxSession) Write(p []byte) (n int, err error) { return 0, fmt.Errorf("not connected") }
-func (s *tmuxSession) Close() error { return nil }
-func (s *tmuxSession) Resize(rows, cols int) error { return nil }
+func (s *tmuxSession) Title() string { return s.id }
+
+func (s *tmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
+	return SpawnPTY(s.id, "xterm-256color", "tmux", "attach", "-t", s.id)
+}
 
 func (s *tmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, error) {
 	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", s.id, "#{pane_start_time},#{pane_pid},#{pane_current_path}")
@@ -51,9 +51,35 @@ func (s *tmuxSession) ReadScreen(ctx context.Context) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (s *tmuxSession) WriteInput(ctx context.Context, data []byte) error {
-	cmd := exec.CommandContext(ctx, "tmux", "send-keys", "-t", s.id, string(data))
-	return cmd.Run()
+func (s *tmuxSession) ReadHistory(ctx context.Context, lines int) ([]byte, error) {
+	if lines < 1 {
+		lines = 1000
+	} else if lines > 10000 {
+		lines = 10000
+	}
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", s.id, "-p", "-S", fmt.Sprintf("-%d", lines))
+	return cmd.Output()
+}
+
+func (a *tmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (string, error) {
+	cmd := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", opts.Name)
+	if opts.CWD != "" {
+		cmd.Dir = opts.CWD
+	}
+	err := cmd.Run()
+	if err == nil {
+		InvalidateCache()
+	}
+	return opts.Name, err
+}
+
+func (a *tmuxAdapter) TerminateSession(ctx context.Context, id string) error {
+	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", id)
+	err := cmd.Run()
+	if err == nil {
+		InvalidateCache()
+	}
+	return err
 }
 
 func NewTmuxAdapter() Adapter {
@@ -88,9 +114,10 @@ func (a *tmuxAdapter) GetSession(id string) (Session, error) {
 		return nil, fmt.Errorf("session not found")
 	}
 
-	// Simple and elegant Phase 4 approach:
-	// Allocate a Native PTY and run the command `tmux attach -t <session_id>` inside it.
-	return SpawnPTY(id, "xterm-256color", "tmux", "attach", "-t", id)
+	return &tmuxSession{
+		id:      id,
+		adapter: a,
+	}, nil
 }
 
 func init() {

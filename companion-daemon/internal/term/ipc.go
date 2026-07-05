@@ -2,6 +2,7 @@ package term
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -135,11 +136,23 @@ func handleIPCConnection(conn net.Conn) {
 			return
 		}
 	}
-	defer s.Close()
+
+	var stream mux.TerminalStream
+	if opener, ok := s.(mux.StreamOpener); ok {
+		stream, err = opener.OpenStream(context.Background())
+		if err != nil {
+			log.Println("failed to open IPC stream:", err)
+			return
+		}
+		defer stream.Close()
+	} else {
+		log.Println("session does not support opening streams")
+		return
+	}
 
 	// Set initial PTY size if provided
 	if initialW > 0 && initialH > 0 {
-		if szErr := s.Resize(initialH, initialW); szErr != nil {
+		if szErr := stream.Resize(initialH, initialW); szErr != nil {
 			log.Printf("IPC resize err: %v", szErr)
 		}
 	}
@@ -148,7 +161,7 @@ func handleIPCConnection(conn net.Conn) {
 	go func() {
 		buf := make([]byte, 1024)
 		for {
-			n, err := s.Read(buf)
+			n, err := stream.Read(buf)
 			if err != nil {
 				break
 			}
@@ -161,7 +174,11 @@ func handleIPCConnection(conn net.Conn) {
 	// Stream IPC connection to PTY stdin (Raw byte copy)
 	if reader.Buffered() > 0 {
 		bufferedData, _ := reader.Peek(reader.Buffered())
-		s.Write(bufferedData)
+		if writer, ok := s.(mux.InputWriter); ok {
+			writer.WriteInput(context.Background(), bufferedData)
+		} else {
+			stream.Write(bufferedData)
+		}
 		reader.Discard(reader.Buffered())
 	}
 	
@@ -171,6 +188,10 @@ func handleIPCConnection(conn net.Conn) {
 		if err != nil {
 			break
 		}
-		s.Write(buf[:n])
+		if writer, ok := s.(mux.InputWriter); ok {
+			writer.WriteInput(context.Background(), buf[:n])
+		} else {
+			stream.Write(buf[:n])
+		}
 	}
 }

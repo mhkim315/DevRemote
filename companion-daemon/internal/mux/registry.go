@@ -2,21 +2,32 @@ package mux
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var legacyCmuxRe = regexp.MustCompile(`^cmux:(\d+)$`)
 
 var (
 	adapters   = make(map[string]Adapter)
 	adaptersMu sync.RWMutex
 )
 
-// RegisterAdapter adds a new multiplexer adapter.
+// RegisterAdapter adds a new session adapter to the registry.
 func RegisterAdapter(a Adapter) {
 	adaptersMu.Lock()
 	defer adaptersMu.Unlock()
 	adapters[a.Name()] = a
+}
+
+// GetAdapter retrieves an adapter by name
+func GetAdapter(name string) (Adapter, bool) {
+	adaptersMu.RLock()
+	defer adaptersMu.RUnlock()
+	a, ok := adapters[name]
+	return a, ok
 }
 
 // GetAdapters returns a list of all registered adapters.
@@ -30,7 +41,17 @@ func GetAdapters() []Adapter {
 	return list
 }
 
+// MigrateLegacyID converts old cmux:38 formats to cmux:surface:38
+func MigrateLegacyID(id string) string {
+	if m := legacyCmuxRe.FindStringSubmatch(id); m != nil {
+		return "cmux:surface:" + m[1]
+	}
+	return id
+}
+
 func FindSession(id string) (Session, error) {
+	id = MigrateLegacyID(id)
+
 	adaptersMu.RLock()
 	defer adaptersMu.RUnlock()
 	
@@ -65,10 +86,18 @@ var (
 	sessionsCacheMu  sync.RWMutex
 )
 
-// GetAllSessionsCached returns sessions from all adapters, refreshing at most every 30s.
+// InvalidateCache forcefully clears the session list cache
+func InvalidateCache() {
+	sessionsCacheMu.Lock()
+	cachedSessions = nil
+	cachedSessionsAt = time.Time{}
+	sessionsCacheMu.Unlock()
+}
+
+// GetAllSessionsCached returns sessions from all adapters, refreshing at most every 10s.
 func GetAllSessionsCached() []Session {
 	sessionsCacheMu.RLock()
-	if time.Since(cachedSessionsAt) < 30*time.Second && cachedSessions != nil {
+	if time.Since(cachedSessionsAt) < 10*time.Second && cachedSessions != nil {
 		result := cachedSessions
 		sessionsCacheMu.RUnlock()
 		return result

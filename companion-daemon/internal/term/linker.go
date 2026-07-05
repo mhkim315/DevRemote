@@ -61,8 +61,16 @@ func LoadLinks() error {
 		return err
 	}
 
+	var migrated bool
 	// Validate and detect stale links
 	for i, link := range links {
+		newID := mux.MigrateLegacyID(link.SessionID)
+		if newID != link.SessionID {
+			migrated = true
+			link.SessionID = newID
+			links[i].SessionID = newID
+		}
+
 		// Verify if the session still matches the expected title
 		sess, err := mux.FindSession(link.SessionID)
 		if err == nil {
@@ -76,6 +84,10 @@ func LoadLinks() error {
 			// For now, assume it's pending/offline
 		}
 		sessionLinks[link.SessionID] = links[i]
+	}
+
+	if migrated {
+		saveLinksLocked()
 	}
 
 	return nil
@@ -120,6 +132,8 @@ func saveLinksLocked() error {
 }
 
 func LinkSession(link SessionLink) error {
+	link.SessionID = mux.MigrateLegacyID(link.SessionID)
+
 	// First fetch the session to get the current title and avoid stale mismatches
 	sess, err := mux.FindSession(link.SessionID)
 	if err == nil {
@@ -142,6 +156,8 @@ func LinkSession(link SessionLink) error {
 }
 
 func UnlinkSession(sessionID string) error {
+	sessionID = mux.MigrateLegacyID(sessionID)
+
 	linkerMu.Lock()
 	delete(sessionLinks, sessionID)
 	err := saveLinksLocked()
@@ -158,6 +174,8 @@ func UnlinkSession(sessionID string) error {
 }
 
 func GetLink(sessionID string) (SessionLink, bool) {
+	sessionID = mux.MigrateLegacyID(sessionID)
+
 	linkerMu.RLock()
 	defer linkerMu.RUnlock()
 	l, ok := sessionLinks[sessionID]
