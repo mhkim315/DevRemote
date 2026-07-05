@@ -189,11 +189,13 @@ func StartTelemetryLoop(ctx context.Context) {
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
-		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", historyID, "#{pane_current_path}")
+		ref := mux.ParseSessionID(historyID)
+		
+		cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", ref.RawID, "#{pane_current_path}")
 		out, _ := cmdCwd.Output()
 		paneCwd := strings.TrimSpace(string(out))
 
-		logPath, err := FindAgentLogPath(historyID, paneCwd)
+		logPath, err := FindAgentLogPath(ref.RawID, paneCwd)
 		if err == nil {
 			data, err := os.ReadFile(logPath)
 			if err == nil {
@@ -205,7 +207,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Fallback to tmux capture-pane
-		cmd := exec.Command("tmux", "capture-pane", "-e", "-t", historyID, "-p", "-S", "-10000")
+		cmd := exec.Command("tmux", "capture-pane", "-e", "-t", ref.RawID, "-p", "-S", "-10000")
 		out, err = cmd.Output()
 		if err != nil {
 			http.Error(w, "session not found", http.StatusNotFound)
@@ -229,9 +231,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		compoundID := s.AdapterName() + ":" + s.ID()
 		data := telemetryCache[compoundID]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: compoundID, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(compoundID)})
+			res = append(res, SessionTelemetry{ID: compoundID, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())}) // Use s.ID() (RawID) for GetEvents because watcher uses RawID
 		} else {
-			res = append(res, SessionTelemetry{ID: compoundID, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: s.AdapterName(), Events: models.GetEvents(compoundID)})
+			res = append(res, SessionTelemetry{ID: compoundID, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())}) // Use s.ID() (RawID)
 		}
 	}
 	telemetryMu.Unlock()

@@ -56,6 +56,12 @@ func VerifyToken(tokenString string) bool {
 		return false
 	}
 
+	// Production mode: fail closed if required config is missing
+	if OwnerUUID == "" || SupabaseProjectRef == "" {
+		log.Printf("ERR: Missing OwnerUUID or SupabaseProjectRef in production mode")
+		return false
+	}
+
 	// Production mode: verify signature via Supabase JWKS
 	keyFunc := func(token *jwt.Token) (interface{}, error) {
 		alg := token.Header["alg"]
@@ -88,17 +94,37 @@ func VerifyToken(tokenString string) bool {
 		return false
 	}
 
+	// Check issuer
+	iss, _ := token.Claims.GetIssuer()
+	expectedIss := "https://" + SupabaseProjectRef + ".supabase.co/auth/v1"
+	if iss != expectedIss {
+		log.Printf("JWT rejected: invalid issuer %q", iss)
+		return false
+	}
+
+	// Check audience
+	aud, _ := token.Claims.GetAudience()
+	validAud := false
+	for _, a := range aud {
+		if a == "authenticated" {
+			validAud = true
+			break
+		}
+	}
+	if !validAud {
+		log.Printf("JWT rejected: invalid audience %v", aud)
+		return false
+	}
+
 	// Check owner UUID
-	if OwnerUUID != "" {
-		sub, _ := token.Claims.GetSubject()
-		if sub == "" {
-			log.Printf("JWT rejected: missing sub claim")
-			return false
-		}
-		if sub != OwnerUUID {
-			log.Printf("JWT rejected: sub=%q != owner=%q", sub, OwnerUUID)
-			return false
-		}
+	sub, _ := token.Claims.GetSubject()
+	if sub == "" {
+		log.Printf("JWT rejected: missing sub claim")
+		return false
+	}
+	if sub != OwnerUUID {
+		log.Printf("JWT rejected: sub=%q != owner=%q", sub, OwnerUUID)
+		return false
 	}
 
 	return true
@@ -146,8 +172,10 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		ref := mux.ParseSessionID(req.ID)
+
 		if r.Method == "POST" {
-			exec.Command("tmux", "new-session", "-d", "-s", req.ID).Run()
+			exec.Command("tmux", "new-session", "-d", "-s", ref.RawID).Run()
 		}
 		
 		w.WriteHeader(200)
@@ -158,7 +186,8 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		if id != "" {
-			exec.Command("tmux", "kill-session", "-t", id).Run()
+			ref := mux.ParseSessionID(id)
+			exec.Command("tmux", "kill-session", "-t", ref.RawID).Run()
 		}
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -169,15 +198,16 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	jwksCache   map[string]interface{}
-	jwksCacheMu sync.Mutex
+	jwksCache       map[string]interface{}
+	jwksCacheExpiry time.Time
+	jwksCacheMu     sync.Mutex
 )
 
 func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 	jwksCacheMu.Lock()
 	defer jwksCacheMu.Unlock()
 
-	if jwksCache == nil {
+	if jwksCache == nil || time.Now().After(jwksCacheExpiry) {
 		url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(url)
@@ -231,6 +261,7 @@ func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
 				}
 			}
 		}
+		jwksCacheExpiry = time.Now().Add(1 * time.Hour)
 		log.Printf("jwks: loaded %d keys", len(jwksCache))
 	}
 
