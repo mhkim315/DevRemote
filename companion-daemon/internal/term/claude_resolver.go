@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"devremote/companion-daemon/internal/models"
 )
 
 type ClaudeResolver struct{}
@@ -15,7 +17,7 @@ type claudeSessionMeta struct {
 	SessionID string `json:"sessionId"`
 }
 
-func (r *ClaudeResolver) Resolve(ctx context.Context, p ProcessInfo) (LogRef, error) {
+func (r *ClaudeResolver) Resolve(ctx context.Context, p models.ProcessInfo) (LogRef, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return LogRef{}, fmt.Errorf("failed to get home dir: %w", err)

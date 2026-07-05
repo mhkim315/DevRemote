@@ -3,6 +3,7 @@ package term
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -39,6 +40,13 @@ var (
 	telemetryCache = make(map[string]*sessionStateData)
 	telemetryMu    sync.Mutex
 )
+
+// ClearTelemetryCache completely resets the state and cursor for a given session.
+func ClearTelemetryCache(sessionID string) {
+	telemetryMu.Lock()
+	defer telemetryMu.Unlock()
+	delete(telemetryCache, sessionID)
+}
 
 // StartTelemetryLoop runs in the background and periodically takes snapshots of
 // all active tmux sessions to calculate their speed and state.
@@ -89,19 +97,28 @@ func StartTelemetryLoop(ctx context.Context) {
 
 			// Check each active session
 			for _, s := range sessions {
-				parts := strings.SplitN(s, ":", 2)
-				if len(parts) != 2 || parts[0] != "tmux" {
-					// We only know how to capture-pane for tmux right now
-					continue
-				}
-				rawID := parts[1]
-
-				cmdCwd := exec.Command("tmux", "display-message", "-p", "-t", rawID, "#{pane_current_path}")
-				outCwd, _ := cmdCwd.Output()
-				paneCwd := strings.TrimSpace(string(outCwd))
-
-				logRef, logErr := FindAgentLogRef(ctx, rawID, paneCwd)
+				var logRef LogRef
+				var logErr error = fmt.Errorf("no log")
 				
+				// 1. LinkedLogResolver (Explicit Links)
+				if link, ok := GetLink(s); ok && !link.Stale {
+					if link.Provider == "gemini-antigravity" {
+						res := &AntigravityResolver{}
+						logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
+					}
+				}
+				
+				// 2. ProcessProvider (System Process)
+				if logErr != nil {
+					if sess, err := mux.FindSession(s); err == nil {
+						if pp, ok := sess.(mux.ProcessProvider); ok {
+							if pinfo, err := pp.ProcessInfo(ctx); err == nil {
+								logRef, logErr = ResolveAgentLog(ctx, pinfo)
+							}
+						}
+					}
+				}
+
 				var parsedNewEvents bool
 				var lastEvent models.AgentEvent
 				
@@ -112,11 +129,11 @@ func StartTelemetryLoop(ctx context.Context) {
 						if stateData.Cursor == nil || stateData.Cursor.Path != logRef.Path {
 							stateData.Cursor = &LogCursor{Path: logRef.Path, Offset: 0, Inode: 0}
 							if logRef.Agent == "claude" {
-								stateData.Parser = &ClaudeParser{Session: rawID}
+								stateData.Parser = &ClaudeParser{Session: s}
 							} else if logRef.Agent == "codex" {
-								stateData.Parser = &CodexParser{Session: rawID}
+								stateData.Parser = &CodexParser{Session: s}
 							} else if logRef.Agent == "gemini" {
-								stateData.Parser = &GeminiParser{Session: rawID}
+								stateData.Parser = &GeminiParser{Session: s}
 							}
 						}
 
@@ -127,7 +144,7 @@ func StartTelemetryLoop(ctx context.Context) {
 						if parser != nil {
 							newEvents, readErr := ReadNewEvents(cursor, parser, 500)
 							if readErr == nil && len(newEvents) > 0 {
-								models.AppendEvents(rawID, newEvents)
+								models.AppendEvents(s, newEvents)
 								parsedNewEvents = true
 								lastEvent = newEvents[len(newEvents)-1]
 							}
@@ -138,22 +155,21 @@ func StartTelemetryLoop(ctx context.Context) {
 				}
 
 				// Always fetch capture-pane as fallback for approvals and missing logs
-				cmd := exec.Command("tmux", "capture-pane", "-t", rawID, "-p")
-				out, _ := cmd.Output()
-
-				envCmd := exec.Command("tmux", "show-environment", "-t", rawID)
-				envOut, _ := envCmd.Output()
-				
-				runner := "cat"
-				runnerColor := "#58a6ff"
-				envLines := strings.Split(string(envOut), "\n")
-				for _, el := range envLines {
-					if strings.HasPrefix(el, "POKIT_RUNNER=") {
-						runner = strings.TrimPrefix(el, "POKIT_RUNNER=")
-					} else if strings.HasPrefix(el, "POKIT_RUNNER_COLOR=") {
-						runnerColor = strings.TrimPrefix(el, "POKIT_RUNNER_COLOR=")
+				var out []byte
+				if sess, err := mux.FindSession(s); err == nil {
+					if sr, ok := sess.(mux.ScreenReader); ok {
+						out, _ = sr.ReadScreen(ctx)
 					}
 				}
+				
+				// POKIT_RUNNER is no longer extracted here directly from tmux,
+				// as it's typically set globally or via the Linker/ProcessResolver.
+				// We'll default to the agent type we found, or the logRef.Agent.
+				runner := "agent"
+				if logRef.Agent != "" {
+					runner = logRef.Agent
+				}
+				runnerColor := "#58a6ff"
 
 				telemetryMu.Lock()
 				stateData := telemetryCache[s]
@@ -280,7 +296,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		events := models.GetEvents(ref.RawID)
+		events := models.GetEvents(historyID) // historyID is the canonical ID passed from the frontend
 		w.Header().Set("Content-Type", "application/json")
 		if len(events) > 0 {
 			json.NewEncoder(w).Encode(events)
@@ -310,9 +326,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		compoundID := s.AdapterName() + ":" + s.ID()
 		data := telemetryCache[compoundID]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: compoundID, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())}) // Use s.ID() (RawID) for GetEvents because watcher uses RawID
+			res = append(res, SessionTelemetry{ID: compoundID, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(compoundID)})
 		} else {
-			res = append(res, SessionTelemetry{ID: compoundID, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())}) // Use s.ID() (RawID)
+			res = append(res, SessionTelemetry{ID: compoundID, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: s.AdapterName(), Events: models.GetEvents(compoundID)})
 		}
 	}
 	telemetryMu.Unlock()

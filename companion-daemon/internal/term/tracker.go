@@ -8,46 +8,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"devremote/companion-daemon/internal/models"
 )
 
-// FindAgentLogRef finds the LogRef for Claude, Codex, or Gemini running in the given pane.
-func FindAgentLogRef(ctx context.Context, paneID string, cwd string) (LogRef, error) {
-	// 1. Get shell PID for paneID
-	cmd := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_start_time},#{pane_pid}")
-	out, err := cmd.Output()
-	if err != nil {
-		return LogRef{}, fmt.Errorf("failed to get pane pid: %w", err)
-	}
-
-	parts := strings.Split(strings.TrimSpace(string(out)), ",")
-	if len(parts) != 2 {
-		return LogRef{}, fmt.Errorf("invalid tmux pane output")
-	}
-
-	startTimeUnix, _ := strconv.ParseInt(parts[0], 10, 64)
-	shellPID, _ := strconv.Atoi(parts[1])
-
-	processInfo := ProcessInfo{
-		PID:       shellPID, // initially shell PID
-		CWD:       cwd,
-		StartedAt: time.Unix(startTimeUnix, 0),
-		PaneID:    paneID,
-	}
-
+// ResolveAgentLog finds the LogRef for Claude, Codex, or Gemini based on ProcessInfo.
+func ResolveAgentLog(ctx context.Context, p models.ProcessInfo) (LogRef, error) {
 	// Try Gemini via env var (wrapper mode)
 	geminiRes := &GeminiResolver{}
-	if ref, err := geminiRes.Resolve(ctx, processInfo); err == nil {
+	if ref, err := geminiRes.Resolve(ctx, p); err == nil {
 		return ref, nil
 	}
 
 	// 2. Find child processes to identify claude, codex, or aider
-	agentType, agentPID, err := findAgentProcess(shellPID)
+	agentType, agentPID, err := findAgentProcess(p.PID)
 	if err != nil {
 		return LogRef{}, fmt.Errorf("failed to find agent process: %w", err)
 	}
 
 	if agentType == "" {
-		return LogRef{}, fmt.Errorf("no supported agent found in pane %s", paneID)
+		return LogRef{}, fmt.Errorf("no supported agent found in pane %s", p.PaneID)
 	}
 
 	// Fetch actual agent start time using ps
@@ -55,11 +35,11 @@ func FindAgentLogRef(ctx context.Context, paneID string, cwd string) (LogRef, er
 	outTime, err := cmdTime.Output()
 	if err == nil {
 		if t, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(outTime)), time.Local); err == nil {
-			processInfo.StartedAt = t
+			p.StartedAt = t
 		}
 	}
 
-	processInfo.PID = agentPID
+	p.PID = agentPID
 
 	var resolver AgentLogResolver
 	if agentType == "claude" {
@@ -70,7 +50,7 @@ func FindAgentLogRef(ctx context.Context, paneID string, cwd string) (LogRef, er
 		return LogRef{}, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
 
-	return resolver.Resolve(ctx, processInfo)
+	return resolver.Resolve(ctx, p)
 }
 
 func findAgentProcess(parentPID int) (string, int, error) {

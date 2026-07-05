@@ -25,6 +25,10 @@ func main() {
 		runClient(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "link" || os.Args[1] == "unlink" || os.Args[1] == "links") {
+		runLinkerClient(os.Args[1], os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "hook" {
 		printShellHook()
 		return
@@ -67,11 +71,15 @@ func main() {
 	}()
 
 	// 1. Core Endpoints
+	if err := term.LoadLinks(); err != nil {
+		log.Printf("Failed to load session links: %v", err)
+	}
 	term.StartTelemetryLoop(ctx)
 
 	startWatcher()
 
 	http.HandleFunc("/api/sessions", term.AuthMiddleware(term.HandleSessionsAPI))
+	http.HandleFunc("/api/v2/links", term.AuthMiddleware(term.HandleLinksAPI))
 	http.HandleFunc("/term/ws", term.AuthMiddleware(term.HandleWS))
 	http.HandleFunc("/term/", term.AuthMiddleware(term.HandleHTML))
 	var pushToken string

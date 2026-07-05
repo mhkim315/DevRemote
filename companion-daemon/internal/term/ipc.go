@@ -2,6 +2,7 @@ package term
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -51,7 +52,53 @@ func handleIPCConnection(conn net.Conn) {
 	termEnv := "xterm-256color"
 	var initialW, initialH int
 
-	// Parse headers until empty line (EOH)
+	// Check if the connection starts with JSON (new protocol)
+	firstByte, err := reader.Peek(1)
+	if err != nil {
+		log.Printf("IPC read error: %v", err)
+		return
+	}
+	if firstByte[0] == '{' {
+		// It's a JSON request
+		var req struct {
+			Version           int    `json:"version"`
+			Operation         string `json:"operation"`
+			SessionID         string `json:"sessionId"`
+			Provider          string `json:"provider"`
+			ExternalSessionID string `json:"externalSessionId"`
+		}
+		if err := json.NewDecoder(reader).Decode(&req); err != nil {
+			conn.Write([]byte(fmt.Sprintf("error decoding json: %v\n", err)))
+			return
+		}
+		
+		if req.Operation == "link" {
+			link := SessionLink{
+				SessionID:         req.SessionID,
+				Provider:          req.Provider,
+				ExternalSessionID: req.ExternalSessionID,
+			}
+			if err := LinkSession(link); err != nil {
+				conn.Write([]byte(fmt.Sprintf("error linking: %v\n", err)))
+			} else {
+				conn.Write([]byte("linked\n"))
+			}
+		} else if req.Operation == "unlink" {
+			if err := UnlinkSession(req.SessionID); err != nil {
+				conn.Write([]byte(fmt.Sprintf("error unlinking: %v\n", err)))
+			} else {
+				conn.Write([]byte("unlinked\n"))
+			}
+		} else if req.Operation == "links" {
+			links := GetAllLinks()
+			json.NewEncoder(conn).Encode(links)
+		} else {
+			conn.Write([]byte("unknown operation\n"))
+		}
+		return
+	}
+
+	// Fallback to legacy plain-text protocol
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -82,4 +83,51 @@ func runClient(args []string) {
 
 	// Read from local Stdin, write to Socket
 	io.Copy(conn, os.Stdin)
+}
+
+func runLinkerClient(cmd string, args []string) {
+	socketPath := "/tmp/pokit.sock"
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		log.Fatalf("Failed to connect to POKIT daemon: %v", err)
+	}
+	defer conn.Close()
+
+	var req map[string]interface{}
+
+	if cmd == "link" {
+		if len(args) < 3 {
+			log.Fatalf("Usage: pokit link <sessionId> <provider> <externalSessionId>")
+		}
+		req = map[string]interface{}{
+			"version":           1,
+			"operation":         "link",
+			"sessionId":         args[0],
+			"provider":          args[1],
+			"externalSessionId": args[2],
+		}
+	} else if cmd == "unlink" {
+		if len(args) < 1 {
+			log.Fatalf("Usage: pokit unlink <sessionId>")
+		}
+		req = map[string]interface{}{
+			"version":   1,
+			"operation": "unlink",
+			"sessionId": args[0],
+		}
+	} else if cmd == "links" {
+		req = map[string]interface{}{
+			"version":   1,
+			"operation": "links",
+		}
+	}
+
+	importJSON, _ := json.Marshal(req)
+	conn.Write(importJSON)
+	conn.Write([]byte("\n"))
+
+	// Read response
+	buf := make([]byte, 4096)
+	n, _ := conn.Read(buf)
+	fmt.Print(string(buf[:n]))
 }

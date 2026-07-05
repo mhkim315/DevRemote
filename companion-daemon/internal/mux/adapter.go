@@ -1,6 +1,11 @@
 package mux
 
-import "io"
+import (
+	"context"
+	"io"
+
+	"devremote/companion-daemon/internal/models"
+)
 
 // Session represents an abstract terminal session that can be viewed and controlled remotely.
 type Session interface {
@@ -10,10 +15,45 @@ type Session interface {
 	// AdapterName returns the name of the adapter managing this session
 	AdapterName() string
 	
+	// Title returns the display name or title of the session
+	Title() string
+	
 	io.ReadWriteCloser
 	
 	// Resize informs the session that the client's terminal size has changed
 	Resize(rows, cols int) error
+}
+
+// Capability Interfaces
+
+// OutputStream represents a continuous stream of terminal output (e.g. for WebSockets)
+type OutputStream interface {
+	Read(p []byte) (n int, err error)
+}
+
+// InputWriter represents the ability to send arbitrary keystrokes to the terminal
+type InputWriter interface {
+	WriteInput(ctx context.Context, data []byte) error
+}
+
+// Resizer represents the ability to resize the terminal window
+type Resizer interface {
+	Resize(ctx context.Context, rows, cols int) error
+}
+
+// Closer represents the ability to close or terminate the session stream
+type Closer interface {
+	Close() error
+}
+
+// ScreenReader represents the ability to take a one-shot snapshot of the terminal screen
+type ScreenReader interface {
+	ReadScreen(ctx context.Context) ([]byte, error)
+}
+
+// ProcessProvider represents the ability to resolve the actual shell PID running inside the session
+type ProcessProvider interface {
+	ProcessInfo(ctx context.Context) (models.ProcessInfo, error)
 }
 
 // Adapter defines the interface for different session backends (Native, cmux, tmux)

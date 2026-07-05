@@ -79,6 +79,10 @@ func (s *NativeSession) AdapterName() string {
 	return "native"
 }
 
+func (s *NativeSession) Title() string {
+	return "Native Shell"
+}
+
 func (s *NativeSession) Read(p []byte) (n int, err error) {
 	return s.PTY.Read(p)
 }

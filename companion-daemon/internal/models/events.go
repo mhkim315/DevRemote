@@ -63,3 +63,10 @@ func GetEvents(session string) []AgentEvent {
 	}
 	return []AgentEvent{}
 }
+
+// ClearEvents removes all cached events for a given session.
+func ClearEvents(session string) {
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	delete(eventsCache, session)
+}

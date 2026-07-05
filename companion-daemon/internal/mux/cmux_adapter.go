@@ -92,7 +92,7 @@ func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
 		if len(matches) == 3 {
 			surfaceID := matches[1]
 			title := matches[2]
-			sessionID := fmt.Sprintf("cmux-%s", surfaceID)
+			sessionID := surfaceID
 			sessions = append(sessions, &CmuxSession{
 				id:    sessionID,
 				title: title,
@@ -105,8 +105,8 @@ func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
 }
 
 func (a *cmuxAdapter) GetSession(id string) (Session, error) {
-	// Extract surface ID from session ID (e.g., "cmux-39" → "39")
-	surfaceID := strings.TrimPrefix(id, "cmux-")
+	// The id passed in is the raw surface ID (e.g., "38")
+	surfaceID := id
 
 	// Verify the surface exists by listing panels
 	sessions, err := a.ListSessions()
@@ -176,6 +176,7 @@ func (s *CmuxSession) pollScreen() {
 
 func (s *CmuxSession) AdapterName() string                 { return "cmux" }
 func (s *CmuxSession) ID() string                        { return s.id }
+func (s *CmuxSession) Title() string                     { return s.title }
 
 func (s *CmuxSession) Read(p []byte) (n int, err error) {
 	return s.pr.Read(p)
@@ -202,8 +203,17 @@ func (s *CmuxSession) Close() error {
 }
 
 func (s *CmuxSession) Resize(rows, cols int) error {
-	// Not natively supported by simple polling yet
 	return nil
+}
+
+func (s *CmuxSession) ReadScreen(ctx context.Context) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.surfaceID)
+	return cmd.Output()
+}
+
+func (s *CmuxSession) WriteInput(ctx context.Context, data []byte) error {
+	cmd := exec.CommandContext(ctx, "cmux", "send-panel", "--panel", s.surfaceID, string(data))
+	return cmd.Run()
 }
 
 func init() {

@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"devremote/companion-daemon/internal/models"
 )
 
 type GeminiResolver struct{}
 
-func (r *GeminiResolver) Resolve(ctx context.Context, p ProcessInfo) (LogRef, error) {
+func (r *GeminiResolver) Resolve(ctx context.Context, p models.ProcessInfo) (LogRef, error) {
 	if p.PaneID == "" {
 		return LogRef{}, fmt.Errorf("gemini resolver requires pane ID to query environment variables")
 	}

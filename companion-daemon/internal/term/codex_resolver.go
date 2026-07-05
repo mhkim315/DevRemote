@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"devremote/companion-daemon/internal/models"
 )
 
 type CodexResolver struct{}
@@ -21,7 +23,7 @@ type codexSessionMeta struct {
 	} `json:"payload"`
 }
 
-func (r *CodexResolver) Resolve(ctx context.Context, p ProcessInfo) (LogRef, error) {
+func (r *CodexResolver) Resolve(ctx context.Context, p models.ProcessInfo) (LogRef, error) {
 	// 1. Try lsof on PID and its children
 	pidsToScan := append([]int{p.PID}, getChildPIDs(p.PID)...)
 
