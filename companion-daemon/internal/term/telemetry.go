@@ -197,13 +197,14 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessions := mux.ListSessions()
+	sessions := mux.GetAllSessions()
 	
 	w.Header().Set("Content-Type", "application/json")
 	var res []SessionTelemetry
 
 	telemetryMu.Lock()
-	for _, s := range sessions {
+	for _, sessionObj := range sessions {
+		s := sessionObj.ID()
 		data := telemetryCache[s]
 		if data == nil {
 			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Events: models.GetEvents(s)})

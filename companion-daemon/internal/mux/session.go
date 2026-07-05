@@ -12,9 +12,9 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
-// Session represents a running background PTY process with an in-memory screen buffer.
-type Session struct {
-	ID      string
+// NativeSession represents a running background PTY process with an in-memory screen buffer.
+type NativeSession struct {
+	id      string
 	Cmd     *exec.Cmd
 	PTY     *os.File
 	Term    vt.Terminal
@@ -25,16 +25,16 @@ type Session struct {
 }
 
 var (
-	sessions = make(map[string]*Session)
-	mu       sync.Mutex
+	nativeSessions = make(map[string]*NativeSession)
+	nativeMu       sync.Mutex
 )
 
 // NewSession spawns a new background process with a PTY and a VT100 emulator attached.
-func NewSession(id string, termEnv string, command string, args ...string) (*Session, error) {
-	mu.Lock()
-	defer mu.Unlock()
+func NewSession(id string, termEnv string, command string, args ...string) (*NativeSession, error) {
+	nativeMu.Lock()
+	defer nativeMu.Unlock()
 
-	if _, exists := sessions[id]; exists {
+	if _, exists := nativeSessions[id]; exists {
 		return nil, fmt.Errorf("session %s already exists", id)
 	}
 
@@ -78,15 +78,15 @@ func NewSession(id string, termEnv string, command string, args ...string) (*Ses
 	go io.Copy(io.Discard, term)
 
 
-	s := &Session{
-		ID:      id,
+	s := &NativeSession{
+		id:      id,
 		Cmd:     cmd,
 		PTY:     ptm,
 		Term:    term,
 		running: true,
 	}
 
-	sessions[id] = s
+	nativeSessions[id] = s
 
 	// Wait for the command to finish in the background
 	go func() {
@@ -98,9 +98,9 @@ func NewSession(id string, termEnv string, command string, args ...string) (*Ses
 		s.running = false
 		s.mu.Unlock()
 
-		mu.Lock()
-		delete(sessions, id)
-		mu.Unlock()
+		nativeMu.Lock()
+		delete(nativeSessions, id)
+		nativeMu.Unlock()
 	}()
 
 	// Feed PTY output into the VT100 emulator AND our JSON scanner
@@ -138,26 +138,30 @@ func NewSession(id string, termEnv string, command string, args ...string) (*Ses
 }
 
 // GetSession retrieves an active session by ID.
-func GetSession(id string) (*Session, bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	s, ok := sessions[id]
+func GetSession(id string) (*NativeSession, bool) {
+	nativeMu.Lock()
+	defer nativeMu.Unlock()
+	s, ok := nativeSessions[id]
 	return s, ok
 }
 
 // ListSessions returns a list of all active session IDs.
 func ListSessions() []string {
-	mu.Lock()
-	defer mu.Unlock()
+	nativeMu.Lock()
+	defer nativeMu.Unlock()
 	var list []string
-	for id := range sessions {
+	for id := range nativeSessions {
 		list = append(list, id)
 	}
 	return list
 }
 
+func (s *NativeSession) ID() string {
+	return s.id
+}
+
 // Write writes data to the PTY (injects keystrokes).
-func (s *Session) Write(p []byte) (n int, err error) {
+func (s *NativeSession) Write(p []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running {
@@ -167,7 +171,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 }
 
 // CaptureScreen returns the current text representation of the screen buffer.
-func (s *Session) CaptureScreen() string {
+func (s *NativeSession) CaptureScreen() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running {
@@ -177,7 +181,7 @@ func (s *Session) CaptureScreen() string {
 }
 
 // Resize resizes the PTY and the virtual terminal.
-func (s *Session) Resize(rows, cols int) error {
+func (s *NativeSession) Resize(rows, cols int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -201,7 +205,7 @@ func (s *Session) Resize(rows, cols int) error {
 
 // AddListener registers a channel to receive PTY output bytes.
 // It also returns the current screen buffer as the first message so the client syncs state.
-func (s *Session) AddListener(ch chan []byte) {
+func (s *NativeSession) AddListener(ch chan []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listeners = append(s.listeners, ch)
@@ -220,7 +224,7 @@ func (s *Session) AddListener(ch chan []byte) {
 }
 
 // RemoveListener unregisters a channel from receiving PTY output bytes.
-func (s *Session) RemoveListener(ch chan []byte) {
+func (s *NativeSession) RemoveListener(ch chan []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, listener := range s.listeners {
@@ -229,4 +233,14 @@ func (s *Session) RemoveListener(ch chan []byte) {
 			break
 		}
 	}
+}
+
+// Close terminates the native session
+func (s *NativeSession) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running {
+		return fmt.Errorf("session already closed")
+	}
+	return s.PTY.Close()
 }

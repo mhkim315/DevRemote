@@ -145,8 +145,8 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		if id != "" {
-			if s, ok := mux.GetSession(id); ok {
-				s.PTY.Close()
+			if s, err := mux.FindSession(id); err == nil {
+				s.Close()
 			}
 		}
 		w.WriteHeader(200)
@@ -238,9 +238,10 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		session = "devremote"
 	}
 
-	s, ok := mux.GetSession(session)
-	if !ok {
-		var err error
+	var s mux.Session
+	var err error
+	s, err = mux.FindSession(session)
+	if err != nil {
 		s, err = mux.NewSession(session, "xterm-256color", "bash")
 		if err != nil {
 			log.Printf("WS new session err: %v", err)
@@ -367,7 +368,7 @@ func HandleSize(w http.ResponseWriter, r *http.Request) {
 	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
 	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
 	if rows > 0 && cols > 0 {
-		if s, ok := mux.GetSession(session); ok {
+		if s, err := mux.FindSession(session); err == nil {
 			s.Resize(rows, cols)
 		}
 	}
