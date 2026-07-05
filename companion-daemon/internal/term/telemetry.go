@@ -220,7 +220,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	var res []SessionTelemetry
 
 	// Add sessions from all registered adapters (cmux, tmux, native)
-	for _, s := range mux.GetAllSessions() {
+	for _, s := range mux.GetAllSessionsCached() {
 		res = append(res, SessionTelemetry{ID: s.ID(), State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())})
 	}
 

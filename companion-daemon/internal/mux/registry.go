@@ -3,6 +3,7 @@ package mux
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 var (
@@ -43,6 +44,44 @@ func FindSession(id string) (Session, error) {
 }
 
 // GetAllSessions returns all sessions from all registered adapters.
+
+var (
+	cachedSessions   []Session
+	cachedSessionsAt time.Time
+	sessionsCacheMu  sync.RWMutex
+)
+
+// GetAllSessionsCached returns sessions from all adapters, refreshing at most every 30s.
+func GetAllSessionsCached() []Session {
+	sessionsCacheMu.RLock()
+	if time.Since(cachedSessionsAt) < 30*time.Second && cachedSessions != nil {
+		result := cachedSessions
+		sessionsCacheMu.RUnlock()
+		return result
+	}
+	sessionsCacheMu.RUnlock()
+
+	// Refresh cache
+	sessionsCacheMu.Lock()
+	defer sessionsCacheMu.Unlock()
+
+	// Double-check
+	if time.Since(cachedSessionsAt) < 30*time.Second && cachedSessions != nil {
+		return cachedSessions
+	}
+
+	var all []Session
+	for _, a := range adapters {
+		sessions, err := a.ListSessions()
+		if err == nil {
+			all = append(all, sessions...)
+		}
+	}
+	cachedSessions = all
+	cachedSessionsAt = time.Now()
+	return all
+}
+
 func GetAllSessions() []Session {
 	adaptersMu.RLock()
 	defer adaptersMu.RUnlock()
