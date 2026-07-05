@@ -1,10 +1,12 @@
 package mux
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type cmuxAdapter struct{}
@@ -53,7 +55,10 @@ func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
 		args = append(args, "--workspace", workspaceID)
 	}
 
-	out, err := exec.Command("cmux", args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	
+	out, err := exec.CommandContext(ctx, "cmux", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("cmux list-panels: %w", err)
 	}
