@@ -1,5 +1,12 @@
 package mux
 
+import (
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+)
+
 type cmuxAdapter struct{}
 
 func NewCmuxAdapter() Adapter {
@@ -10,24 +17,118 @@ func (a *cmuxAdapter) Name() string {
 	return "cmux"
 }
 
-// CmuxPanelInfo represents the data we get from cmux list-panels or similar
+// parsePanelLine extracts surface ID and title from cmux output like:
+//
+//	* surface:1  terminal  [focused]  "My Panel Title"
+//	 surface:5  terminal  "Another"
+var panelRe = regexp.MustCompile(`surface:(\d+)\s+\S+(?:\s+\[.*?\])?\s+"(.*?)"`)
+
+func (a *cmuxAdapter) ListSessions() ([]Session, error) {
+	var allSessions []Session
+
+	// First, get current workspace panels (no --workspace flag)
+	if sessions, err := a.listPanels(""); err == nil {
+		allSessions = append(allSessions, sessions...)
+	}
+
+	// Then try all workspace indices (1-10 covers typical usage)
+	for i := 1; i <= 10; i++ {
+		sessions, err := a.listPanels(fmt.Sprintf("%d", i))
+		if err != nil {
+			continue
+		}
+		for _, s := range sessions {
+			found := false
+			for _, existing := range allSessions {
+				if existing.ID() == s.ID() {
+					found = true
+					break
+				}
+			}
+			if !found {
+				allSessions = append(allSessions, s)
+			}
+		}
+	}
+
+	return allSessions, nil
+}
+
+func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
+	args := []string{"list-panels"}
+	if workspaceID != "" {
+		args = append(args, "--workspace", workspaceID)
+	}
+
+	out, err := exec.Command("cmux", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("cmux list-panels: %w", err)
+	}
+
+	var sessions []Session
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		matches := panelRe.FindStringSubmatch(line)
+		if len(matches) == 3 {
+			surfaceID := matches[1]
+			title := matches[2]
+			sessionID := fmt.Sprintf("cmux-%s", surfaceID)
+			sessions = append(sessions, &CmuxSession{
+				id:    sessionID,
+				title: title,
+				pid:   0, // TODO: resolve PID via cmux or ps
+			})
+		}
+	}
+
+	return sessions, nil
+}
+
+func (a *cmuxAdapter) GetSession(id string) (Session, error) {
+	// Extract surface ID from session ID (e.g., "cmux-39" → "39")
+	surfaceID := strings.TrimPrefix(id, "cmux-")
+
+	// Verify the surface exists by listing panels
+	sessions, err := a.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range sessions {
+		if s.ID() == id {
+			// Use SpawnPTY with cmux read-screen + send-panel
+			return SpawnPTY(id, "xterm-256color", "cmux", "attach-surface", "--surface", surfaceID)
+		}
+	}
+	return nil, fmt.Errorf("session %s not found in cmux", id)
+}
+
+// CmuxSession implements the Session interface for a cmux panel
+type CmuxSession struct {
+	id    string
+	title string
+	pid   int
+}
+
+func (s *CmuxSession) AdapterName() string                 { return "cmux" }
+func (s *CmuxSession) ID() string                        { return s.id }
+func (s *CmuxSession) Read(p []byte) (n int, err error)   { return 0, fmt.Errorf("not connected") }
+func (s *CmuxSession) Write(p []byte) (n int, err error)  { return 0, fmt.Errorf("not connected") }
+func (s *CmuxSession) Close() error                        { return nil }
+func (s *CmuxSession) Resize(rows, cols int) error         { return nil }
+
+
+func init() {
+	RegisterAdapter(NewCmuxAdapter())
+}
+
+// CmuxPanelInfo represents the data we get from cmux list-panels
 type CmuxPanelInfo struct {
 	ID    string
 	Title string
 	TTY   string
 	PID   int
-}
-
-func (a *cmuxAdapter) ListSessions() ([]Session, error) {
-	return nil, nil
-}
-
-func (a *cmuxAdapter) GetSession(id string) (Session, error) {
-	// Fallback for CmuxAdapter using the same Phase 4 approach
-	// Assuming cmux panels are accessible via tmux
-	return SpawnPTY(id, "xterm-256color", "tmux", "attach", "-t", id)
-}
-
-func init() {
-	RegisterAdapter(NewCmuxAdapter())
 }
