@@ -88,16 +88,3 @@ func GetAllSessionsCached() []Session {
 	return all
 }
 
-func GetAllSessions() []Session {
-	adaptersMu.RLock()
-	defer adaptersMu.RUnlock()
-	
-	var all []Session
-	for _, a := range adapters {
-		sessions, err := a.ListSessions()
-		if err == nil {
-			all = append(all, sessions...)
-		}
-	}
-	return all
-}

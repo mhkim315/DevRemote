@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -112,10 +113,20 @@ func (a *cmuxAdapter) GetSession(id string) (Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	
 	for _, s := range sessions {
 		if s.ID() == id {
-			// Use SpawnPTY with cmux read-screen + send-panel
-			return SpawnPTY(id, "xterm-256color", "cmux", "attach-surface", "--surface", surfaceID)
+			pr, pw := io.Pipe()
+			cs := &CmuxSession{
+				id:        id,
+				title:     "cmux panel",
+				surfaceID: surfaceID,
+				pr:        pr,
+				pw:        pw,
+				done:      make(chan struct{}),
+			}
+			go cs.pollScreen()
+			return cs, nil
 		}
 	}
 	return nil, fmt.Errorf("session %s not found in cmux", id)
@@ -123,18 +134,77 @@ func (a *cmuxAdapter) GetSession(id string) (Session, error) {
 
 // CmuxSession implements the Session interface for a cmux panel
 type CmuxSession struct {
-	id    string
-	title string
-	pid   int
+	id        string
+	title     string
+	surfaceID string
+	pid       int
+
+	pr   *io.PipeReader
+	pw   *io.PipeWriter
+	done chan struct{}
+}
+
+func (s *CmuxSession) pollScreen() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastContent string
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			out, err := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.surfaceID).Output()
+			cancel()
+
+			if err == nil {
+				currentContent := string(out)
+				if currentContent != lastContent {
+					// Clear screen and redraw for xterm.js
+					payload := "\033[2J\033[H" + currentContent
+					// Ensure CRLF for xterm.js line breaks
+					payload = strings.ReplaceAll(payload, "\n", "\r\n")
+
+					s.pw.Write([]byte(payload))
+					lastContent = currentContent
+				}
+			}
+		}
+	}
 }
 
 func (s *CmuxSession) AdapterName() string                 { return "cmux" }
 func (s *CmuxSession) ID() string                        { return s.id }
-func (s *CmuxSession) Read(p []byte) (n int, err error)   { return 0, fmt.Errorf("not connected") }
-func (s *CmuxSession) Write(p []byte) (n int, err error)  { return 0, fmt.Errorf("not connected") }
-func (s *CmuxSession) Close() error                        { return nil }
-func (s *CmuxSession) Resize(rows, cols int) error         { return nil }
 
+func (s *CmuxSession) Read(p []byte) (n int, err error) {
+	return s.pr.Read(p)
+}
+
+func (s *CmuxSession) Write(p []byte) (n int, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Use send-panel to send arbitrary byte sequences/text
+	text := string(p)
+	err = exec.CommandContext(ctx, "cmux", "send-panel", "--panel", s.surfaceID, text).Run()
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (s *CmuxSession) Close() error {
+	close(s.done)
+	s.pw.Close()
+	s.pr.Close()
+	return nil
+}
+
+func (s *CmuxSession) Resize(rows, cols int) error {
+	// Not natively supported by simple polling yet
+	return nil
+}
 
 func init() {
 	RegisterAdapter(NewCmuxAdapter())

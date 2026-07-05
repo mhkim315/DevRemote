@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,9 +10,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
-
-	"github.com/mdp/qrterminal/v3"
+	"syscall"
+	"time"
 
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/term"
@@ -48,41 +50,28 @@ func main() {
 		log.Println("WARN: --supabase-ref not set. RS256 JWKS verification disabled. Falling back to HS256 dev mode.")
 	}
 
-	// 1. Core Endpoints
-	term.StartTelemetryLoop()
+	// Implement Graceful Shutdown context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Start JSONL watcher for Claude logs
-	homeDir, _ := os.UserHomeDir()
-	claudeLogDir := filepath.Join(homeDir, ".claude")
-	if _, err := os.Stat(claudeLogDir); os.IsNotExist(err) {
-		claudeLogDir = "."
-	}
-	t, err := watcher.New(claudeLogDir, func(ev watcher.RawEvent) {
-		toolUse := watcher.ExtractToolUse(ev)
-		if toolUse != nil && (toolUse.Name == "Replace" || toolUse.Name == "Edit" || toolUse.Name == "Write" || toolUse.Name == "StrReplace" || toolUse.Name == "GlobReplace" || toolUse.Name == "View" || toolUse.Name == "Bash") {
-			file := "file"
-			if f, ok := toolUse.Input["file_path"].(string); ok {
-				file = f
-			} else if f, ok := toolUse.Input["path"].(string); ok {
-				file = f
-			} else if f, ok := toolUse.Input["command"].(string); ok {
-				file = f
-			}
-			session := ev.SessionID
-			if session == "" {
-				session = "devremote"
-			}
-			models.EmitEvent(session, "file_edit", toolUse.Name, file)
-		}
-	})
-	if err == nil {
-		t.Start()
-	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("Received termination signal, shutting down gracefully...")
+		cancel()
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(0)
+	}()
+
+	// 1. Core Endpoints
+	term.StartTelemetryLoop(ctx)
+
+	startWatcher()
 
 	http.HandleFunc("/api/sessions", term.HandleSessionsAPI)
 	http.HandleFunc("/term/ws", term.HandleWS)
 	http.HandleFunc("/term/", term.HandleHTML)
-	http.HandleFunc("/term/size", term.HandleSize)
 	var pushToken string
 
 	// Start Unix Socket IPC Server for local 'pokit run' commands
@@ -112,61 +101,80 @@ func main() {
 	http.HandleFunc("/debug/dump", term.HandleDump)
 	http.HandleFunc("/debug/cmd", term.HandleCmd)
 
-	// 2. Start Cloudflared tunnel automatically
-	go func() {
-		cloudflaredPath := "cloudflared" // assume in PATH first
-		
-		// Search upwards from executable dir up to 4 levels
-		exePath, err := os.Executable()
-		if err == nil {
-			dir := filepath.Dir(exePath)
-			for i := 0; i < 5; i++ {
-				p := filepath.Join(dir, "cloudflared")
-				if stat, err := os.Stat(p); err == nil && !stat.IsDir() {
-					cloudflaredPath = p
-					break
-				}
-				dir = filepath.Dir(dir)
-			}
-		}
-
-		// Use named tunnel
-		cmd := exec.Command(cloudflaredPath, "tunnel", "run", "devremote")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Start(); err != nil {
-			log.Printf("Failed to start cloudflared: %v", err)
-			return
-		}
-
-		// Clear terminal a bit
-		fmt.Print("\n\n\n\n\n")
-
-		// Print the QR Code for named tunnel
-		tunnelURL := "https://term.fullcount.kr"
-		config := qrterminal.Config{
-			Level:     qrterminal.L,
-			Writer:    os.Stdout,
-			BlackChar: qrterminal.BLACK,
-			WhiteChar: qrterminal.WHITE,
-			QuietZone: 2,
-		}
-		qrterminal.GenerateWithConfig(tunnelURL, config)
-
-		// Print the URL as text as well
-		fmt.Printf("\n🚀 POKIT Daemon is live at: %s\n", tunnelURL)
-		fmt.Println("👉 Scan this QR code with the POKIT mobile app to connect instantly.")
-		fmt.Println("\nWaiting for connections...")
-
-		if err := cmd.Wait(); err != nil {
-			log.Printf("cloudflared tunnel exited: %v", err)
-		}
-	}()
+	go startTunnel()
 
 	// 3. Start HTTP server
 	log.Printf("POKIT daemon :9171 (owner=%s)", *ownerUUID)
 	log.Fatal(http.ListenAndServe(":9171", nil))
+}
+
+func startWatcher() *watcher.Tailer {
+	homeDir, _ := os.UserHomeDir()
+	claudeLogDir := filepath.Join(homeDir, ".claude")
+	if _, err := os.Stat(claudeLogDir); os.IsNotExist(err) {
+		claudeLogDir = "."
+	}
+	t, err := watcher.New(claudeLogDir, func(ev watcher.RawEvent) {
+		toolUse := watcher.ExtractToolUse(ev)
+		if toolUse != nil && (toolUse.Name == "Replace" || toolUse.Name == "Edit" || toolUse.Name == "Write" || toolUse.Name == "StrReplace" || toolUse.Name == "GlobReplace" || toolUse.Name == "View" || toolUse.Name == "Bash") {
+			file := "file"
+			if f, ok := toolUse.Input["file_path"].(string); ok {
+				file = f
+			} else if f, ok := toolUse.Input["path"].(string); ok {
+				file = f
+			} else if f, ok := toolUse.Input["command"].(string); ok {
+				file = f
+			}
+			session := ev.SessionID
+			if session == "" {
+				session = "devremote"
+			}
+			models.EmitEvent(session, "file_edit", toolUse.Name, file)
+		}
+	})
+	if err == nil {
+		t.Start()
+	}
+	return t
+}
+
+func startTunnel() {
+	cloudflaredPath := "cloudflared" // assume in PATH first
+	
+	// Search upwards from executable dir up to 4 levels
+	exePath, err := os.Executable()
+	if err == nil {
+		dir := filepath.Dir(exePath)
+		for i := 0; i < 5; i++ {
+			p := filepath.Join(dir, "cloudflared")
+			if stat, err := os.Stat(p); err == nil && !stat.IsDir() {
+				cloudflaredPath = p
+				break
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+
+	// Use named tunnel
+	cmd := exec.Command(cloudflaredPath, "tunnel", "run", "devremote")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to start cloudflared: %v", err)
+		return
+	}
+
+	fmt.Println("\n===========================================")
+	fmt.Println("🚀 POKIT Daemon Started")
+	fmt.Println("===========================================")
+
+	// Note: URL fetching is removed for now, or you can restore the old logic
+	// if needed, but since it's a named tunnel the URL is handled by cloudflare.
+	
+	if err := cmd.Wait(); err != nil {
+		log.Printf("cloudflared tunnel exited: %v", err)
+	}
 }
 
 func sendPushNotification(token, message string) {

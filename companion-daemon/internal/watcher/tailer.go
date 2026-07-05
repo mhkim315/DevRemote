@@ -185,13 +185,3 @@ func ExtractToolUse(ev RawEvent) *ToolUse {
 	return nil
 }
 
-// IsToolResult checks if this user event contains a matching tool_result.
-func IsToolResult(ev RawEvent, toolUseID string) bool {
-	if ev.Type != "user" {
-		return false
-	}
-	if ev.ParentUUID != toolUseID {
-		return false
-	}
-	return true
-}

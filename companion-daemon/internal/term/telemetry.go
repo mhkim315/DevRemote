@@ -1,6 +1,7 @@
 package term
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -41,10 +42,25 @@ var (
 
 // StartTelemetryLoop runs in the background and periodically takes snapshots of
 // all active tmux sessions to calculate their speed and state.
-func StartTelemetryLoop() {
+
+func isApprovalPrompt(line string) bool {
+	return strings.Contains(line, "Do you want") ||
+		strings.Contains(line, "proceed?") ||
+		strings.Contains(line, "(y/n)") ||
+		strings.Contains(line, "(y/N)") ||
+		(strings.Contains(line, "1. Yes") && strings.Contains(line, "No"))
+}
+
+func StartTelemetryLoop(ctx context.Context) {
 	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
 		for {
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			var sessions []string
 			out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 			if err == nil {
@@ -123,11 +139,7 @@ func StartTelemetryLoop() {
 				}
 
 				for _, line := range tailLines {
-					if strings.Contains(line, "Do you want") ||
-						strings.Contains(line, "proceed?") ||
-						strings.Contains(line, "(y/n)") ||
-						strings.Contains(line, "(y/N)") ||
-						(strings.Contains(line, "1. Yes") && strings.Contains(line, "No")) {
+					if isApprovalPrompt(line) {
 						isWaiting = true
 						break
 					}
@@ -206,31 +218,17 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sessions []string
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
-	if err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			if line != "" {
-				sessions = append(sessions, line)
-			}
-		}
-	}
-	
 	w.Header().Set("Content-Type", "application/json")
 	var res []SessionTelemetry
 
-	// Add sessions from all registered adapters (cmux, tmux, native)
-	for _, s := range mux.GetAllSessionsCached() {
-		res = append(res, SessionTelemetry{ID: s.ID(), State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(s.ID())})
-	}
-
 	telemetryMu.Lock()
-	for _, s := range sessions {
-		data := telemetryCache[s]
+	for _, s := range mux.GetAllSessionsCached() {
+		id := s.ID()
+		data := telemetryCache[id]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: "tmux", Events: models.GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: id, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(id)})
 		} else {
-			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: "tmux", Events: models.GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: id, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: s.AdapterName(), Events: models.GetEvents(id)})
 		}
 	}
 	telemetryMu.Unlock()

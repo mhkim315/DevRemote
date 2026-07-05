@@ -1,7 +1,6 @@
 package term
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"encoding/base64"
@@ -12,7 +11,6 @@ import (
 	"math/big"
 	"net/http"
 	"os/exec"
-	"strconv"
 	"sync"
 
 	"devremote/companion-daemon/internal/mux"
@@ -109,15 +107,17 @@ func HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 		HandleSessionCRUD(w, r)
 	}
 }
+func extractToken(r *http.Request) string {
+	token := r.Header.Get("Authorization")
+	if len(token) > 7 && token[:7] == "Bearer " {
+		return token[7:]
+	}
+	return r.URL.Query().Get("token")
+}
 
 func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	// Auth check
-	token := r.Header.Get("Authorization")
-	if len(token) > 7 && token[:7] == "Bearer " {
-		token = token[7:]
-	} else {
-		token = r.URL.Query().Get("token")
-	}
+	token := extractToken(r)
 	if !verifyToken(token) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -219,12 +219,7 @@ var OnApproval func(string)
 
 func HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Extract JWT from Authorization header (preferred) or ?token= query param
-	token := r.Header.Get("Authorization")
-	if len(token) > 7 && token[:7] == "Bearer " {
-		token = token[7:]
-	} else {
-		token = r.URL.Query().Get("token")
-	}
+	token := extractToken(r)
 
 	if !verifyToken(token) {
 		log.Printf("WS Unauthorized from %s", r.RemoteAddr)
@@ -280,48 +275,11 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func isApprovalPrompt(data []byte) (bool, string) {
-	if !bytes.Contains(data, []byte("Do you want")) &&
-		!bytes.Contains(data, []byte("proceed?")) &&
-		!bytes.Contains(data, []byte("(y/n)")) &&
-		!bytes.Contains(data, []byte("(y/N)")) &&
-		!(bytes.Contains(data, []byte("1. Yes")) && bytes.Contains(data, []byte("No"))) {
-		return false, ""
-	}
-
-	cleanLine := ""
-	inEsc := false
-	for _, b := range data {
-		if b == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		if b >= 32 && b <= 126 || b == '\n' || b == '\t' {
-			cleanLine += string(b)
-		}
-	}
-
-	if len(cleanLine) > 150 {
-		cleanLine = "..." + cleanLine[len(cleanLine)-150:]
-	}
-	return true, "Agent: " + cleanLine
-}
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
 	// ... we will keep HandleHTML as is, though not heavily used
 	// Auth check
-	token := r.Header.Get("Authorization")
-	if len(token) > 7 && token[:7] == "Bearer " {
-		token = token[7:]
-	} else {
-		token = r.URL.Query().Get("token")
-	}
+	token := extractToken(r)
 	if !verifyToken(token) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -360,22 +318,6 @@ func HandleCmd(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(cmd))
 }
 
-func HandleSize(w http.ResponseWriter, r *http.Request) {
-	session := r.URL.Query().Get("session")
-	if session == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
-	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
-	if rows > 0 && cols > 0 {
-		// With tmux attach we shouldn't create a new attached session just to resize.
-		// Tmux automatically resizes panes based on attached clients.
-		// If explicit resizing is needed, we could run:
-		// exec.Command("tmux", "resize-window", "-t", session, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)).Run()
-	}
-	w.WriteHeader(http.StatusOK)
-}
 
 func HandleDump(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
