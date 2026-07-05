@@ -2,6 +2,7 @@ package mux
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -72,6 +73,10 @@ func NewSession(id string, termEnv string, command string, args ...string) (*Ses
 	// Create a safe, concurrent virtual terminal emulator
 	term := vt.NewSafeEmulator(80, 24)
 	term.SetScrollbackSize(10000)
+
+	// MUST drain the terminal's response pipe so it doesn't deadlock on OSC queries
+	go io.Copy(io.Discard, term)
+
 
 	s := &Session{
 		ID:      id,
