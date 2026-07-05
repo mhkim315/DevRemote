@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/models"
-	"devremote/companion-daemon/internal/mux"
 )
 
 // SessionTelemetry holds the calculated state of a tmux session.
@@ -45,7 +44,15 @@ func StartTelemetryLoop() {
 	go func() {
 		for {
 			time.Sleep(2 * time.Second)
-			sessions := mux.ListSessions()
+			var sessions []string
+			out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+			if err == nil {
+				for _, line := range strings.Split(string(out), "\n") {
+					if line != "" {
+						sessions = append(sessions, line)
+					}
+				}
+			}
 
 			telemetryMu.Lock()
 			// Clean up old sessions
@@ -198,19 +205,26 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessions := mux.GetAllSessions()
+	var sessions []string
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if line != "" {
+				sessions = append(sessions, line)
+			}
+		}
+	}
 	
 	w.Header().Set("Content-Type", "application/json")
 	var res []SessionTelemetry
 
 	telemetryMu.Lock()
-	for _, sessionObj := range sessions {
-		s := sessionObj.ID()
+	for _, s := range sessions {
 		data := telemetryCache[s]
 		if data == nil {
-			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: sessionObj.AdapterName(), Events: models.GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: s, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: "tmux", Events: models.GetEvents(s)})
 		} else {
-			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: sessionObj.AdapterName(), Events: models.GetEvents(s)})
+			res = append(res, SessionTelemetry{ID: s, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: "tmux", Events: models.GetEvents(s)})
 		}
 	}
 	telemetryMu.Unlock()

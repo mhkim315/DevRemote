@@ -11,6 +11,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"sync"
 
@@ -134,7 +135,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if r.Method == "POST" {
-			mux.NewSession(req.ID, "xterm-256color", "bash")
+			exec.Command("tmux", "new-session", "-d", "-s", req.ID).Run()
 		}
 		
 		w.WriteHeader(200)
@@ -145,9 +146,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		if id != "" {
-			if s, err := mux.FindSession(id); err == nil {
-				s.Close()
-			}
+			exec.Command("tmux", "kill-session", "-t", id).Run()
 		}
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -249,6 +248,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	defer s.Close()
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil { log.Printf("WS upgrade err: %v", err)
@@ -256,16 +256,17 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	ch := make(chan []byte, 100)
-	s.AddListener(ch)
-	defer s.RemoveListener(ch)
-
 	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)
 
 	go func() {
-		for data := range ch {
-			if writeErr := conn.WriteMessage(websocket.BinaryMessage, data); writeErr != nil {
-				return
+		buf := make([]byte, 1024)
+		for {
+			n, err := s.Read(buf)
+			if err != nil {
+				break
+			}
+			if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+				break
 			}
 		}
 	}()
@@ -368,9 +369,10 @@ func HandleSize(w http.ResponseWriter, r *http.Request) {
 	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
 	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
 	if rows > 0 && cols > 0 {
-		if s, err := mux.FindSession(session); err == nil {
-			s.Resize(rows, cols)
-		}
+		// With tmux attach we shouldn't create a new attached session just to resize.
+		// Tmux automatically resizes panes based on attached clients.
+		// If explicit resizing is needed, we could run:
+		// exec.Command("tmux", "resize-window", "-t", session, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)).Run()
 	}
 	w.WriteHeader(http.StatusOK)
 }

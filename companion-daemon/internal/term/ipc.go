@@ -8,8 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/creack/pty"
-
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -82,40 +80,38 @@ func handleIPCConnection(conn net.Conn) {
 
 	// Spawn a new native multiplexer session, or use existing one
 	sessionID := cmdStr // Simple ID for now
-	s, ok := mux.GetSession(sessionID)
-	if !ok {
-		var err error
-		s, err = mux.NewSession(sessionID, termEnv, "sh", "-c", cmdStr)
+	s, err := mux.FindSession(sessionID)
+	if err != nil {
+		s, err = mux.NewSession(sessionID, termEnv, "bash", "-c", cmdStr)
 		if err != nil {
 			log.Println("failed to spawn session:", err)
 			return
 		}
 	}
+	defer s.Close()
 
 	// Set initial PTY size if provided
 	if initialW > 0 && initialH > 0 {
-		if szErr := pty.Setsize(s.PTY, &pty.Winsize{Rows: uint16(initialH), Cols: uint16(initialW)}); szErr != nil {
+		if szErr := s.Resize(initialH, initialW); szErr != nil {
 			log.Printf("IPC resize err: %v", szErr)
 		}
 	}
 
-	// Stream PTY stdout to IPC connection securely via Listener
-	// DO NOT read from s.PTY directly, as native mux already reads from it.
-	ch := make(chan []byte, 100)
-	s.AddListener(ch)
+	// Stream PTY stdout to IPC connection securely
 	go func() {
-		defer s.RemoveListener(ch)
-		for data := range ch {
-			_, err := conn.Write(data)
+		buf := make([]byte, 1024)
+		for {
+			n, err := s.Read(buf)
 			if err != nil {
+				break
+			}
+			if _, wErr := conn.Write(buf[:n]); wErr != nil {
 				break
 			}
 		}
 	}()
 
 	// Stream IPC connection to PTY stdin (Raw byte copy)
-	// We use io.Copy so it copies efficiently directly into s.PTY
-	// Since we already used bufio.Reader, we must write its remaining buffer first
 	if reader.Buffered() > 0 {
 		bufferedData, _ := reader.Peek(reader.Buffered())
 		s.Write(bufferedData)

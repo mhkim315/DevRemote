@@ -172,8 +172,41 @@ export default function FeedScreen({onBack, session, token}: Props) {
       let initialFontSize = null;
 
       const style = document.createElement('style');
-      style.innerHTML = '.xterm-viewport { } .xterm-screen { }';
+      style.innerHTML = '.xterm-viewport { overflow: hidden !important; } .xterm-screen { }';
       document.head.appendChild(style);
+
+      // Override fitTerminal to be accurate and actually call term.resize()
+      window.fitTerminal = function() {
+        if (!window.term) return;
+        var h = document.getElementById('t').clientHeight;
+        var w = document.getElementById('t').clientWidth;
+        
+        var span = document.createElement('span');
+        span.textContent = 'W';
+        span.style.fontFamily = window.term.options.fontFamily;
+        span.style.fontSize = window.term.options.fontSize + 'px';
+        span.style.visibility = 'hidden';
+        document.body.appendChild(span);
+        var cw = span.getBoundingClientRect().width;
+        var ch = span.getBoundingClientRect().height;
+        document.body.removeChild(span);
+
+        var rows = Math.floor(h / ch);
+        var cols = Math.floor(w / cw);
+        if (rows > 0 && cols > 0) {
+          window.term.resize(cols, rows);
+          var p = new URLSearchParams(location.search);
+          var sess = p.get('session');
+          var tok = p.get('token');
+          var hdrs = {};
+          if(tok) hdrs['Authorization']='Bearer '+tok;
+          fetch('/term/size?session='+encodeURIComponent(sess)+'&rows='+rows+'&cols='+cols, {method:'POST',headers:hdrs}).catch(function(){});
+        }
+      };
+
+      window.addEventListener('resize', function() {
+        if (window.fitTerminal) window.fitTerminal();
+      });
 
       document.addEventListener('touchstart', function(e) {
         if(e.touches.length === 2 && window.term) {
@@ -196,6 +229,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           
           if (window.term.options.fontSize !== newFontSize) {
             window.term.options.fontSize = newFontSize;
+            window.fitTerminal();
           }
         }
       });
@@ -214,6 +248,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
           }));
         }
       };
+
+      // Force an initial resize when this script is loaded
+      setTimeout(function() {
+        if (window.fitTerminal) window.fitTerminal();
+      }, 500);
       
       true;
     })();
