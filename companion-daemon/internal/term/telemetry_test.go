@@ -173,7 +173,7 @@ func TestStartTelemetryLoop_StopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	reg := mux.NewRegistry()
 
-	done := StartTelemetryLoop(ctx, reg)
+	done := StartTelemetryLoop(ctx, reg, NewMemoryEventStore())
 
 	cancel()
 

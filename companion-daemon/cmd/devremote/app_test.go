@@ -172,8 +172,8 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	regA.Register(adapterA)
 	regB.Register(adapterB)
 
-	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier()}
-	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier()}
+	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier(), Events: nilEvents()}
+	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier(), Events: nilEvents()}
 
 	if hA.Registry == hB.Registry {
 		t.Fatal("expected different registries")
@@ -377,7 +377,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 	app.ipcPath = socketPath
 
-	srv, err := term.StartIPCServer(socketPath, app.registry)
+	srv, err := term.StartIPCServer(socketPath, app.registry, nilEvents())
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 
 	// Rebind without manual Remove.
-	srv2, err := term.StartIPCServer(socketPath, app.registry)
+	srv2, err := term.StartIPCServer(socketPath, app.registry, nilEvents())
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -440,7 +440,7 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 	cfg := Config{InsecureLocalOnly: false}
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -477,7 +477,7 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -505,7 +505,7 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -546,7 +546,7 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{waitErr: shutdownErr}, nil
 		},
 	})
@@ -657,6 +657,11 @@ func insecureVerifier() term.TokenVerifier {
 	return term.NewSupabaseVerifier(term.AuthConfig{InsecureLocalOnly: true})
 }
 
+// nilEvents returns a no-op EventStore for tests that don't need events.
+func nilEvents() term.EventStore {
+	return term.NewMemoryEventStore()
+}
+
 // ── Helpers ──
 
 func indexOf(slice []string, s string) int {
@@ -681,7 +686,7 @@ func TestApp_InjectedVerifierUsedByRoutes(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Verifier:     fv,
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})

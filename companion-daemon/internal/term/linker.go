@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -40,7 +39,7 @@ func getLinksPath() (string, error) {
 }
 
 // LoadLinks reads links from disk and validates them.
-func LoadLinks(reg *mux.Registry) error {
+func LoadLinks(reg *mux.Registry, events EventStore) error {
 	linkerMu.Lock()
 	defer linkerMu.Unlock()
 
@@ -132,7 +131,7 @@ func saveLinksLocked() error {
 	return os.Rename(tmpPath, path)
 }
 
-func LinkSession(link SessionLink, reg *mux.Registry) error {
+func LinkSession(link SessionLink, reg *mux.Registry, events EventStore) error {
 	link.SessionID = mux.MigrateLegacyID(link.SessionID)
 
 	// First fetch the session to get the current title and avoid stale mismatches
@@ -152,11 +151,11 @@ func LinkSession(link SessionLink, reg *mux.Registry) error {
 
 	// Lock-free cache clearing
 	ClearTelemetryCache(link.SessionID)
-	models.ClearEvents(link.SessionID)
+	events.Clear(link.SessionID)
 	return nil
 }
 
-func UnlinkSession(sessionID string, reg *mux.Registry) error {
+func UnlinkSession(sessionID string, reg *mux.Registry, events EventStore) error {
 	sessionID = mux.MigrateLegacyID(sessionID)
 
 	linkerMu.Lock()
@@ -170,7 +169,7 @@ func UnlinkSession(sessionID string, reg *mux.Registry) error {
 
 	// Lock-free cache clearing
 	ClearTelemetryCache(sessionID)
-	models.ClearEvents(sessionID)
+	events.Clear(sessionID)
 	return nil
 }
 
@@ -226,7 +225,7 @@ func (h *Handlers) HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := LinkSession(link, reg); err != nil {
+		if err := LinkSession(link, reg, h.Events); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -238,7 +237,7 @@ func (h *Handlers) HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing session parameter", http.StatusBadRequest)
 			return
 		}
-		if err := UnlinkSession(sessionID, reg); err != nil {
+		if err := UnlinkSession(sessionID, reg, h.Events); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

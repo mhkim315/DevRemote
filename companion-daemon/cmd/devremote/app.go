@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/watcher"
@@ -50,7 +49,7 @@ type tunnelResource interface {
 type Dependencies struct {
 	Verifier     term.TokenVerifier // if nil, created from Config in NewAppWithDeps
 	StartWatcher func() (watcherResource, error)
-	StartIPC     func(path string, reg *mux.Registry) (ipcResource, error)
+	StartIPC     func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error)
 	StartTunnel  func() tunnelResource
 }
 
@@ -74,6 +73,7 @@ type App struct {
 
 	registry *mux.Registry
 	server   *http.Server
+	events   term.EventStore // agent event storage
 
 	// IPC path is owned by App so Shutdown can clean it up.
 	ipcPath string
@@ -102,7 +102,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	reg.Register(cmuxAdapter)
 	reg.Register(mux.NewTmuxAdapter())
 
-	if err := term.LoadLinks(reg); err != nil {
+	events := term.NewMemoryEventStore()
+
+	if err := term.LoadLinks(reg, events); err != nil {
 		log.Printf("Failed to load session links: %v", err)
 	}
 
@@ -115,7 +117,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			InsecureLocalOnly:  cfg.InsecureLocalOnly,
 		})
 	}
-	h := &term.Handlers{Registry: reg, Verifier: verifier}
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
@@ -154,6 +156,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		deps:     deps,
 		registry: reg,
 		server:   &http.Server{Addr: addr, Handler: serveMux},
+		events:   events,
 		ipcPath:  "/tmp/pokit.sock",
 	}, nil
 }
@@ -164,7 +167,7 @@ func (a *App) Run(ctx context.Context) error {
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
 	a.telemetryCancel = cancelTelemetry
-	a.telemetryDone = term.StartTelemetryLoop(telemetryCtx, a.registry)
+	a.telemetryDone = term.StartTelemetryLoop(telemetryCtx, a.registry, a.events)
 
 	a.watcher = a.startWatcher()
 
@@ -293,14 +296,14 @@ func (a *App) startWatcher() watcherResource {
 		}
 		return w
 	}
-	return startWatcherProd()
+	return startWatcherProd(a.events)
 }
 
 func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
-		return a.deps.StartIPC(a.ipcPath, a.registry)
+		return a.deps.StartIPC(a.ipcPath, a.registry, a.events)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events)
 }
 
 func (a *App) startTunnel() tunnelResource {
@@ -339,7 +342,7 @@ func runDaemon(cfg Config) {
 
 // ── Production implementations ──
 
-func startWatcherProd() *watcher.Tailer {
+func startWatcherProd(events term.EventStore) *watcher.Tailer {
 	homeDir, _ := os.UserHomeDir()
 	claudeLogDir := filepath.Join(homeDir, ".claude")
 	if _, err := os.Stat(claudeLogDir); os.IsNotExist(err) {
@@ -360,7 +363,7 @@ func startWatcherProd() *watcher.Tailer {
 			if session == "" {
 				session = "devremote"
 			}
-			models.EmitEvent(session, "file_edit", toolUse.Name, file)
+			events.Emit(session, "file_edit", toolUse.Name, file)
 		}
 	})
 	if err == nil {

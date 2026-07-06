@@ -94,7 +94,7 @@ func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[s
 // StartTelemetryLoop runs background telemetry sampling. Returns a channel that
 // closes when the goroutine has exited. The caller should cancel ctx to request
 // a stop, then wait on the returned channel (with a deadline).
-func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) <-chan struct{} {
+func StartTelemetryLoop(ctx context.Context, reg *mux.Registry, events EventStore) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -184,7 +184,7 @@ func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) <-chan struct{} 
 						if parser != nil {
 							newEvents, readErr := ReadNewEvents(cursor, parser, 500)
 							if readErr == nil && len(newEvents) > 0 {
-								models.AppendEvents(s, newEvents)
+								events.Append(s, newEvents)
 								parsedNewEvents = true
 								lastEvent = newEvents[len(newEvents)-1]
 							}
@@ -332,7 +332,7 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
-		events := models.GetEvents(historyID) // historyID is the canonical ID passed from the frontend
+		events := h.Events.List(historyID) // historyID is the canonical ID passed from the frontend
 		w.Header().Set("Content-Type", "application/json")
 		if len(events) > 0 {
 			json.NewEncoder(w).Encode(events)
@@ -391,7 +391,7 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		isStale := snap.LastError != nil
 
 		// Fetch events outside the lock
-		events := models.GetEvents(compoundID)
+		events := h.Events.List(compoundID)
 
 		data := stateCopies[compoundID]
 		if data == nil {
