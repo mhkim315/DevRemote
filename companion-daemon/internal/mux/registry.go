@@ -3,7 +3,6 @@ package mux
 import (
 	"context"
 	"fmt"
-
 	"regexp"
 	"strings"
 	"sync"
@@ -12,73 +11,83 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-var legacyCmuxRe = regexp.MustCompile(`^cmux:(\d+)$`)
-
-var (
-	adapters   = make(map[string]Adapter)
+// Registry owns the adapter, session, and snapshot state for all multiplexer backends.
+//
+// Phase 1 transitional note: a package-level Default instance is used by existing
+// callers until Phase 2 provides an App-level composition root.
+type Registry struct {
 	adaptersMu sync.RWMutex
-)
+	adapters   map[string]Adapter
 
-// RegisterAdapter adds a new session adapter to the registry.
-func RegisterAdapter(a Adapter) {
-	adaptersMu.Lock()
-	defer adaptersMu.Unlock()
-	adapters[a.Name()] = a
+	snapshotsMu sync.RWMutex
+	snapshots   map[string]AdapterSnapshot
+	refresh     singleflight.Group
 }
 
-// GetAdapter retrieves an adapter by name
-func GetAdapter(name string) (Adapter, bool) {
-	adaptersMu.RLock()
-	defer adaptersMu.RUnlock()
-	a, ok := adapters[name]
+// NewRegistry creates a Registry pre-populated with the given adapters.
+func NewRegistry(adapters ...Adapter) *Registry {
+	r := &Registry{
+		adapters:  make(map[string]Adapter),
+		snapshots: make(map[string]AdapterSnapshot),
+	}
+	for _, a := range adapters {
+		r.adapters[a.Name()] = a
+	}
+	return r
+}
+
+// Default is the transitional package-level registry.
+// It is set by main() during startup. Tests create their own Registry.
+var Default = NewRegistry()
+
+// Register adds an adapter and immediately refreshes its session list.
+func (r *Registry) Register(adapter Adapter) {
+	r.adaptersMu.Lock()
+	r.adapters[adapter.Name()] = adapter
+	r.adaptersMu.Unlock()
+}
+
+// Adapter returns a registered adapter by name.
+func (r *Registry) Adapter(name string) (Adapter, bool) {
+	r.adaptersMu.RLock()
+	defer r.adaptersMu.RUnlock()
+	a, ok := r.adapters[name]
 	return a, ok
 }
 
-// GetAdapters returns a list of all registered adapters.
-func GetAdapters() []Adapter {
-	adaptersMu.RLock()
-	defer adaptersMu.RUnlock()
-	var list []Adapter
-	for _, a := range adapters {
+// Adapters returns a snapshot of all registered adapters.
+func (r *Registry) Adapters() []Adapter {
+	r.adaptersMu.RLock()
+	defer r.adaptersMu.RUnlock()
+	list := make([]Adapter, 0, len(r.adapters))
+	for _, a := range r.adapters {
 		list = append(list, a)
 	}
 	return list
 }
 
-// MigrateLegacyID converts old cmux:38 formats to cmux:surface:38
-func MigrateLegacyID(id string) string {
-	if m := legacyCmuxRe.FindStringSubmatch(id); m != nil {
-		return "cmux:surface:" + m[1]
-	}
-	return id
-}
-
-func FindSession(id string) (Session, error) {
+// FindSession looks up a session by its canonical ID across all adapters.
+func (r *Registry) FindSession(id string) (Session, error) {
 	id = MigrateLegacyID(id)
 
-	// Try the cache first (without triggering a refresh)
-	if s, err := FindSessionInCache(id); err == nil {
+	if s, err := r.FindSessionInCache(id); err == nil {
 		return s, nil
 	}
 
-	// If not found, trigger a forced refresh of the relevant adapter
 	parts := strings.SplitN(id, ":", 2)
 	if len(parts) == 2 {
-		RefreshAdapter(context.Background(), parts[0], true)
+		r.Refresh(context.Background(), parts[0], true)
 	} else {
-		GetAllSessionsCached()
+		r.Sessions(context.Background())
 	}
 
-	// Try one more time
-	if s, err := FindSessionInCache(id); err == nil {
+	if s, err := r.FindSessionInCache(id); err == nil {
 		return s, nil
 	}
-
 	return nil, fmt.Errorf("session %s not found in any adapter", id)
 }
 
-// GetAllSessions returns all sessions from all registered adapters.
-
+// AdapterSnapshot holds a point-in-time snapshot of an adapter's sessions.
 type AdapterSnapshot struct {
 	Sessions      []Session
 	LastSuccessAt time.Time
@@ -86,52 +95,44 @@ type AdapterSnapshot struct {
 	LastError     error
 }
 
-var (
-	snapshots       = make(map[string]AdapterSnapshot)
-	sessionsCacheMu sync.RWMutex
-	refreshGroup    singleflight.Group
-)
-
-// InvalidateCache forcefully expires the cache so the next call triggers a refresh,
-// while preserving the stale data in case the refresh fails.
-func InvalidateCache() {
-	sessionsCacheMu.Lock()
-	defer sessionsCacheMu.Unlock()
-	for k, snap := range snapshots {
+// Invalidate marks all adapter caches as expired so the next access triggers a refresh.
+func (r *Registry) Invalidate() {
+	r.snapshotsMu.Lock()
+	defer r.snapshotsMu.Unlock()
+	for k, snap := range r.snapshots {
 		snap.LastAttemptAt = time.Time{}
-		snapshots[k] = snap
+		r.snapshots[k] = snap
 	}
 }
 
-// RefreshAdapter refreshes a specific adapter and returns its snapshot.
-func RefreshAdapter(ctx context.Context, name string, force bool) (AdapterSnapshot, error) {
-	adaptersMu.RLock()
-	adapter, exists := adapters[name]
-	adaptersMu.RUnlock()
+// Refresh forces or conditionally refreshes the session list for a single adapter.
+func (r *Registry) Refresh(ctx context.Context, name string, force bool) (AdapterSnapshot, error) {
+	r.adaptersMu.RLock()
+	adapter, exists := r.adapters[name]
+	r.adaptersMu.RUnlock()
 
 	if !exists {
-		return AdapterSnapshot{LastError: fmt.Errorf("adapter %s not found", name)}, fmt.Errorf("adapter %s not found", name)
+		err := fmt.Errorf("adapter %s not found", name)
+		return AdapterSnapshot{LastError: err}, err
 	}
 
-	res, err, _ := refreshGroup.Do(name, func() (interface{}, error) {
+	res, err, _ := r.refresh.Do(name, func() (interface{}, error) {
 		var needsRefresh bool
-		sessionsCacheMu.RLock()
-		snap, hasSnap := snapshots[name]
+		r.snapshotsMu.RLock()
+		snap, hasSnap := r.snapshots[name]
 		if force || !hasSnap || time.Since(snap.LastAttemptAt) > 10*time.Second {
 			needsRefresh = true
 		}
-		sessionsCacheMu.RUnlock()
+		r.snapshotsMu.RUnlock()
 
 		if !needsRefresh {
 			return deepCopySnapshot(snap), nil
 		}
 
-		// Lock-free discovery execution
 		sessions, adErr := adapter.ListSessions()
 
-		// Write lock only for state update
-		sessionsCacheMu.Lock()
-		currentSnap := snapshots[name]
+		r.snapshotsMu.Lock()
+		currentSnap := r.snapshots[name]
 		currentSnap.LastAttemptAt = time.Now()
 		currentSnap.LastError = adErr
 
@@ -139,11 +140,10 @@ func RefreshAdapter(ctx context.Context, name string, force bool) (AdapterSnapsh
 			currentSnap.Sessions = sessions
 			currentSnap.LastSuccessAt = time.Now()
 		} else {
-			// Keep stale Sessions if err != nil
 			fmt.Printf("registry: adapter %s refresh failed (retaining stale cache): %v\n", name, adErr)
 		}
-		snapshots[name] = currentSnap
-		sessionsCacheMu.Unlock()
+		r.snapshots[name] = currentSnap
+		r.snapshotsMu.Unlock()
 
 		return deepCopySnapshot(currentSnap), adErr
 	})
@@ -157,13 +157,13 @@ func RefreshAdapter(ctx context.Context, name string, force bool) (AdapterSnapsh
 	return res.(AdapterSnapshot), nil
 }
 
-// GetAllSessionsCached returns sessions from all adapters, refreshing at most every 10s.
-func GetAllSessionsCached() []Session {
+// Sessions returns the full set of sessions from all adapters.
+func (r *Registry) Sessions(ctx context.Context) []Session {
 	var all []Session
 	seen := make(map[string]bool)
 
-	for _, adapter := range GetAdapters() {
-		snap, _ := RefreshAdapter(context.Background(), adapter.Name(), false)
+	for _, adapter := range r.Adapters() {
+		snap, _ := r.Refresh(ctx, adapter.Name(), false)
 		for _, s := range snap.Sessions {
 			key := s.AdapterName() + ":" + s.ID()
 			if !seen[key] {
@@ -172,39 +172,27 @@ func GetAllSessionsCached() []Session {
 			}
 		}
 	}
-
 	return all
 }
 
-// GetAdapterSnapshot safely returns a deep copy of the current snapshot for an adapter
-func GetAdapterSnapshot(adapterName string) (AdapterSnapshot, bool) {
-	sessionsCacheMu.RLock()
-	snap, exists := snapshots[adapterName]
-	sessionsCacheMu.RUnlock()
-
+// Snapshot returns a copy of the cached snapshot for an adapter.
+func (r *Registry) Snapshot(name string) (AdapterSnapshot, bool) {
+	r.snapshotsMu.RLock()
+	snap, exists := r.snapshots[name]
+	r.snapshotsMu.RUnlock()
 	if !exists {
 		return AdapterSnapshot{}, false
 	}
 	return deepCopySnapshot(snap), true
 }
 
-func deepCopySnapshot(snap AdapterSnapshot) AdapterSnapshot {
-	copySnap := snap
-	if snap.Sessions != nil {
-		copySnap.Sessions = make([]Session, len(snap.Sessions))
-		copy(copySnap.Sessions, snap.Sessions)
-	}
-	return copySnap
-}
-
-// FindSessionInCache specifically looks for a session in the existing cache
-// without triggering a refresh or calling adapter.GetSession.
-func FindSessionInCache(id string) (Session, error) {
+// FindSessionInCache searches the snapshot cache without refreshing.
+func (r *Registry) FindSessionInCache(id string) (Session, error) {
 	id = MigrateLegacyID(id)
 
-	sessionsCacheMu.RLock()
-	defer sessionsCacheMu.RUnlock()
-	for _, snap := range snapshots {
+	r.snapshotsMu.RLock()
+	defer r.snapshotsMu.RUnlock()
+	for _, snap := range r.snapshots {
 		for _, s := range snap.Sessions {
 			key := s.AdapterName() + ":" + s.ID()
 			if key == id {
@@ -213,4 +201,27 @@ func FindSessionInCache(id string) (Session, error) {
 		}
 	}
 	return nil, fmt.Errorf("session %s not found in cache", id)
+}
+
+// ── Legacy ID migration (pure function, not stateful) ──
+
+var legacyCmuxRe = regexp.MustCompile(`^cmux:(\d+)$`)
+
+// MigrateLegacyID converts old cmux:38 formats to cmux:surface:38
+func MigrateLegacyID(id string) string {
+	if m := legacyCmuxRe.FindStringSubmatch(id); m != nil {
+		return "cmux:surface:" + m[1]
+	}
+	return id
+}
+
+// ── Internal helpers ──
+
+func deepCopySnapshot(snap AdapterSnapshot) AdapterSnapshot {
+	copySnap := snap
+	if snap.Sessions != nil {
+		copySnap.Sessions = make([]Session, len(snap.Sessions))
+		copy(copySnap.Sessions, snap.Sessions)
+	}
+	return copySnap
 }

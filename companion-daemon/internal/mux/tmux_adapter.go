@@ -68,7 +68,7 @@ func (a *tmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 	}
 	err := cmd.Run()
 	if err == nil {
-		InvalidateCache()
+		Default.Invalidate()
 	}
 	return opts.Name, err
 }
@@ -77,7 +77,7 @@ func (a *tmuxAdapter) TerminateSession(ctx context.Context, id string) error {
 	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", id)
 	err := cmd.Run()
 	if err == nil {
-		InvalidateCache()
+		Default.Invalidate()
 	}
 	return err
 }
@@ -120,6 +120,3 @@ func (a *tmuxAdapter) GetSession(id string) (Session, error) {
 	}, nil
 }
 
-func init() {
-	RegisterAdapter(NewTmuxAdapter())
-}

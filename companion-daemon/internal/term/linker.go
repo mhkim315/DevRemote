@@ -72,7 +72,7 @@ func LoadLinks() error {
 		}
 
 		// Verify if the session still matches the expected title
-		sess, err := mux.FindSession(link.SessionID)
+		sess, err := mux.Default.FindSession(link.SessionID)
 		if err == nil {
 			if sess.Title() != link.SessionTitle {
 				links[i].Stale = true
@@ -135,7 +135,7 @@ func LinkSession(link SessionLink) error {
 	link.SessionID = mux.MigrateLegacyID(link.SessionID)
 
 	// First fetch the session to get the current title and avoid stale mismatches
-	sess, err := mux.FindSession(link.SessionID)
+	sess, err := mux.Default.FindSession(link.SessionID)
 	if err == nil {
 		link.SessionTitle = sess.Title()
 	}
@@ -181,7 +181,7 @@ func GetLink(sessionID string) (SessionLink, bool) {
 	l, ok := sessionLinks[sessionID]
 	// Check if we need to evaluate staleness dynamically
 	if ok && !l.Stale {
-		sess, err := mux.FindSession(sessionID)
+		sess, err := mux.Default.FindSession(sessionID)
 		if err == nil && sess.Title() != l.SessionTitle {
 			l.Stale = true
 		}

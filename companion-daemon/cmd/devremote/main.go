@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/watcher"
 )
@@ -69,6 +70,10 @@ func main() {
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(0)
 	}()
+
+	// 0. Register adapters (init() removed in Phase 1 refactor)
+	mux.Default.Register(mux.NewCmuxAdapter())
+	mux.Default.Register(mux.NewTmuxAdapter())
 
 	// 1. Core Endpoints
 	if err := term.LoadLinks(); err != nil {

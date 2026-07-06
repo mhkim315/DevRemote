@@ -317,7 +317,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 				consecutiveErrs++
 				if consecutiveErrs >= maxErrs {
 					// Force adapter refresh to update health status
-					RefreshAdapter(context.Background(), "cmux", true)
+					Default.Refresh(context.Background(), "cmux", true)
 					// Close with error to notify reader
 					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
 					return
@@ -455,7 +455,7 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
 
-	InvalidateCache()
+	Default.Invalidate()
 
 	// Parse output to find "surface:NN"
 	outStr := string(out)
@@ -474,14 +474,11 @@ func (a *cmuxAdapter) TerminateSession(ctx context.Context, rawID string) error 
 	}
 	_, err := a.runner.Run(ctx, CommandOptions{}, "close-surface", "--surface", rawID)
 	if err == nil {
-		InvalidateCache()
+		Default.Invalidate()
 	}
 	return err
 }
 
-func init() {
-	RegisterAdapter(NewCmuxAdapter())
-}
 
 // CmuxPanelInfo represents the data we get from cmux list-panels
 type CmuxPanelInfo struct {

@@ -69,9 +69,9 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 		stream: &mockStream{pr: pr, pw: pw},
 	}
 	adapter := &mockAdapter{session: mockSess}
-	mux.RegisterAdapter(adapter)
-	mux.InvalidateCache()
-	mux.GetAllSessionsCached() // Force cache population
+	mux.Default.Register(adapter)
+	mux.Default.Invalidate()
+	mux.Default.Sessions(context.Background()) // Force cache population
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=mock:test"
@@ -116,9 +116,9 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 		stream: &mockStream{pr: pr, pw: pw},
 	}
 	adapter := &mockAdapter{session: mockSess}
-	mux.RegisterAdapter(adapter)
-	mux.InvalidateCache()
-	mux.GetAllSessionsCached()
+	mux.Default.Register(adapter)
+	mux.Default.Invalidate()
+	mux.Default.Sessions(context.Background())
 
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
