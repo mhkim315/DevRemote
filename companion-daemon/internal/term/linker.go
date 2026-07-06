@@ -2,6 +2,7 @@ package term
 
 import (
 	"encoding/json"
+	"devremote/companion-daemon/internal/mux"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ func getLinksPath() (string, error) {
 }
 
 // LoadLinks reads links from disk and validates them.
-func LoadLinks() error {
+func LoadLinks(reg *mux.Registry) error {
 	linkerMu.Lock()
 	defer linkerMu.Unlock()
 
@@ -63,7 +64,7 @@ func LoadLinks() error {
 	var migrated bool
 	// Validate and detect stale links
 	for i, link := range links {
-		newID := MigrateLegacyID(link.SessionID)
+		newID := mux.MigrateLegacyID(link.SessionID)
 		if newID != link.SessionID {
 			migrated = true
 			link.SessionID = newID
@@ -71,7 +72,7 @@ func LoadLinks() error {
 		}
 
 		// Verify if the session still matches the expected title
-		sess, err := FindSession(link.SessionID)
+		sess, err := reg.FindSession(link.SessionID)
 		if err == nil {
 			if sess.Title() != link.SessionTitle {
 				links[i].Stale = true
@@ -130,11 +131,11 @@ func saveLinksLocked() error {
 	return os.Rename(tmpPath, path)
 }
 
-func LinkSession(link SessionLink) error {
-	link.SessionID = MigrateLegacyID(link.SessionID)
+func LinkSession(link SessionLink, reg *mux.Registry) error {
+	link.SessionID = mux.MigrateLegacyID(link.SessionID)
 
 	// First fetch the session to get the current title and avoid stale mismatches
-	sess, err := FindSession(link.SessionID)
+	sess, err := reg.FindSession(link.SessionID)
 	if err == nil {
 		link.SessionTitle = sess.Title()
 	}
@@ -154,8 +155,8 @@ func LinkSession(link SessionLink) error {
 	return nil
 }
 
-func UnlinkSession(sessionID string) error {
-	sessionID = MigrateLegacyID(sessionID)
+func UnlinkSession(sessionID string, reg *mux.Registry) error {
+	sessionID = mux.MigrateLegacyID(sessionID)
 
 	linkerMu.Lock()
 	delete(sessionLinks, sessionID)
@@ -172,15 +173,15 @@ func UnlinkSession(sessionID string) error {
 	return nil
 }
 
-func GetLink(sessionID string) (SessionLink, bool) {
-	sessionID = MigrateLegacyID(sessionID)
+func GetLink(sessionID string, reg *mux.Registry) (SessionLink, bool) {
+	sessionID = mux.MigrateLegacyID(sessionID)
 
 	linkerMu.RLock()
 	defer linkerMu.RUnlock()
 	l, ok := sessionLinks[sessionID]
 	// Check if we need to evaluate staleness dynamically
 	if ok && !l.Stale {
-		sess, err := FindSession(sessionID)
+		sess, err := reg.FindSession(sessionID)
 		if err == nil && sess.Title() != l.SessionTitle {
 			l.Stale = true
 		}
@@ -199,6 +200,7 @@ func GetAllLinks() []SessionLink {
 }
 
 func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
+	reg := RegistryFromContext(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		links := GetAllLinks()
@@ -222,7 +224,7 @@ func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := LinkSession(link); err != nil {
+		if err := LinkSession(link, reg); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -234,7 +236,7 @@ func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing session parameter", http.StatusBadRequest)
 			return
 		}
-		if err := UnlinkSession(sessionID); err != nil {
+		if err := UnlinkSession(sessionID, reg); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -91,7 +91,7 @@ func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[s
 	return snapshots, batchAdapters, failedAdapters
 }
 
-func StartTelemetryLoop(ctx context.Context) {
+func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) {
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -103,8 +103,8 @@ func StartTelemetryLoop(ctx context.Context) {
 			}
 
 			// 1. Gather sessions and build process snapshots
-			sessions := Sessions(context.Background())
-			processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, R.Registry.Adapters())
+			sessions := reg.Sessions(context.Background())
+			processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, reg.Adapters())
 
 			telemetryMu.Lock()
 			// Clean up old sessions
@@ -134,7 +134,7 @@ func StartTelemetryLoop(ctx context.Context) {
 				var logErr error = fmt.Errorf("no log")
 
 				// 1. LinkedLogResolver (Explicit Links)
-				if link, ok := GetLink(s); ok && !link.Stale {
+				if link, ok := GetLink(s, reg); ok && !link.Stale {
 					if link.Provider == "gemini-antigravity" {
 						res := &AntigravityResolver{}
 						logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
@@ -335,7 +335,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		// Fallback to adapter's capability for history reading
 		var out []byte
 		var err error
-		sess, err := FindSession(MigrateLegacyID(historyID))
+		sess, err := RegistryFromContext(r.Context()).FindSession(mux.MigrateLegacyID(historyID))
 		if err == nil {
 			if hr, ok := sess.(mux.HistoryReader); ok {
 				out, err = hr.ReadHistory(context.Background(), 10000)
@@ -361,7 +361,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	res := make([]SessionTelemetry, 0)
 
-	sessions := Sessions(context.Background())
+	sessions := RegistryFromContext(r.Context()).Sessions(context.Background())
 
 	// Collect telemetry data under lock
 	telemetryMu.Lock()
@@ -376,7 +376,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sessions {
 		compoundID := s.AdapterName() + ":" + s.ID()
 
-		snap, _ := R.Registry.Snapshot(s.AdapterName())
+		snap, _ := RegistryFromContext(r.Context()).Snapshot(s.AdapterName())
 		var errStr string
 		if snap.LastError != nil {
 			errStr = snap.LastError.Error()

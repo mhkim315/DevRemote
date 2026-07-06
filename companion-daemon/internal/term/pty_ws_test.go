@@ -65,7 +65,6 @@ func (a *mockAdapter) TerminateSession(ctx context.Context, id string) error { r
 
 func TestHandleWS_CloseCode1011(t *testing.T) {
 	reg := mux.NewRegistry()
-	R = &Runtime{Registry: reg}
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},
@@ -76,6 +75,7 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(WithRegistry(r.Context(), reg))
 		r.URL.RawQuery = "session=mock:test"
 		// Skip auth for test
 		HandleWS(w, r)
@@ -114,7 +114,7 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 
 func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	reg := mux.NewRegistry()
-	R = &Runtime{Registry: reg}
+	// Registry injected via request context below
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},

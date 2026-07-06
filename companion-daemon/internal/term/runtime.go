@@ -2,32 +2,28 @@ package term
 
 import (
 	"context"
+	"net/http"
 
 	"devremote/companion-daemon/internal/mux"
 )
 
-// Runtime holds the daemon's live dependencies.
-// Created in main(), passed to all handlers and services.
-// Phase 1 minimal form — will grow in Phase 2+.
-type Runtime struct {
-	Registry *mux.Registry
+// registryCtxKey is used to store the Registry in a request context.
+type registryCtxKey struct{}
+
+// WithRegistry returns a context carrying the Registry.
+func WithRegistry(ctx context.Context, reg *mux.Registry) context.Context {
+	return context.WithValue(ctx, registryCtxKey{}, reg)
 }
 
-// R is the active Runtime, set by main() during startup.
-// Phase 1 transitional — Phase 2 will inject explicitly.
-var R *Runtime
-
-// Sessions returns cached sessions using the active Runtime.
-func Sessions(ctx context.Context) []mux.Session {
-	return R.Registry.Sessions(ctx)
+// RegistryFromContext extracts the Registry from a context.
+func RegistryFromContext(ctx context.Context) *mux.Registry {
+	reg, _ := ctx.Value(registryCtxKey{}).(*mux.Registry)
+	return reg
 }
 
-// FindSession looks up a session in the active Runtime's Registry.
-func FindSession(id string) (mux.Session, error) {
-	return R.Registry.FindSession(id)
-}
-
-// MigrateLegacyID delegates to the mux package function.
-func MigrateLegacyID(id string) string {
-	return mux.MigrateLegacyID(id)
+// InjectRegistry wraps an HTTP handler so it receives the Registry via context.
+func InjectRegistry(reg *mux.Registry, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r.WithContext(WithRegistry(r.Context(), reg)))
+	}
 }

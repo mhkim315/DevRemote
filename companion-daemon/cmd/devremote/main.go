@@ -71,30 +71,31 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// 0. Create Registry and Runtime
+	// 0. Create Registry (Phase 1: injected via context + params, no global)
 	reg := mux.NewRegistry()
-	term.R = &term.Runtime{Registry: reg}
 	reg.Register(mux.NewCmuxAdapter(reg))
 	reg.Register(mux.NewTmuxAdapter(reg))
 
-	// 1. Core Endpoints
-	if err := term.LoadLinks(); err != nil {
+	// 1. Core Endpoints (Registry injected via context)
+	if err := term.LoadLinks(reg); err != nil {
 		log.Printf("Failed to load session links: %v", err)
 	}
-	term.StartTelemetryLoop(ctx)
+	term.StartTelemetryLoop(ctx, reg)
 
 	startWatcher()
 
-	http.HandleFunc("/api/sessions", term.AuthMiddleware(term.HandleSessionsAPI))
-	http.HandleFunc("/api/v2/links", term.AuthMiddleware(term.HandleLinksAPI))
-	http.HandleFunc("/term/ws", term.AuthMiddleware(term.HandleWS))
-	http.HandleFunc("/term/", term.AuthMiddleware(term.HandleHTML))
+	withReg := func(h http.HandlerFunc) http.HandlerFunc {
+		return term.InjectRegistry(reg, h)
+	}
+	http.HandleFunc("/api/sessions", term.AuthMiddleware(withReg(term.HandleSessionsAPI)))
+	http.HandleFunc("/api/v2/links", term.AuthMiddleware(withReg(term.HandleLinksAPI)))
+	http.HandleFunc("/term/ws", term.AuthMiddleware(withReg(term.HandleWS)))
+	http.HandleFunc("/term/", term.AuthMiddleware(withReg(term.HandleHTML)))
 	var pushToken string
 
-	// Start Unix Socket IPC Server for local 'pokit run' commands
+	// Start Unix Socket IPC Server for local pokit run commands
 	socketPath := "/tmp/pokit.sock"
-	if err := term.StartIPCServer(socketPath); err != nil {
-		log.Printf("Failed to start IPC server: %v", err)
+	if err := term.StartIPCServer(socketPath, reg); err != nil {
 	}
 	defer os.Remove(socketPath)
 

@@ -14,7 +14,7 @@ import (
 )
 
 // StartIPCServer starts a Unix Domain Socket server to listen for local 'pokit run' commands.
-func StartIPCServer(socketPath string) error {
+func StartIPCServer(socketPath string, reg *mux.Registry) error {
 	// Clean up old socket if it exists
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
@@ -37,14 +37,14 @@ func StartIPCServer(socketPath string) error {
 				log.Printf("IPC accept error: %v", err)
 				continue
 			}
-			go handleIPCConnection(conn)
+			go handleIPCConnection(conn, reg)
 		}
 	}()
 
 	return nil
 }
 
-func handleIPCConnection(conn net.Conn) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -79,13 +79,13 @@ func handleIPCConnection(conn net.Conn) {
 				Provider:          req.Provider,
 				ExternalSessionID: req.ExternalSessionID,
 			}
-			if err := LinkSession(link); err != nil {
+			if err := LinkSession(link, reg); err != nil {
 				conn.Write([]byte(fmt.Sprintf("error linking: %v\n", err)))
 			} else {
 				conn.Write([]byte("linked\n"))
 			}
 		} else if req.Operation == "unlink" {
-			if err := UnlinkSession(req.SessionID); err != nil {
+			if err := UnlinkSession(req.SessionID, reg); err != nil {
 				conn.Write([]byte(fmt.Sprintf("error unlinking: %v\n", err)))
 			} else {
 				conn.Write([]byte("unlinked\n"))
@@ -128,7 +128,7 @@ func handleIPCConnection(conn net.Conn) {
 
 	// Spawn a new native multiplexer session, or use existing one
 	sessionID := cmdStr // Simple ID for now
-	s, err := FindSession(sessionID)
+	s, err := reg.FindSession(sessionID)
 	if err != nil {
 		s, err = mux.NewSession(sessionID, termEnv, "bash", "-c", cmdStr)
 		if err != nil {

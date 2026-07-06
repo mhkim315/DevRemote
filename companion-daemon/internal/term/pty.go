@@ -179,7 +179,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			adapterName = "tmux" // Fallback
 		}
 
-		adapter, ok := R.Registry.Adapter(adapterName)
+		adapter, ok := RegistryFromContext(r.Context()).Adapter(adapterName)
 		if !ok {
 			http.Error(w, "Adapter not found", http.StatusBadRequest)
 			return
@@ -221,7 +221,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				adapterName = "tmux"
 			}
 
-			adapter, ok := R.Registry.Adapter(adapterName)
+			adapter, ok := RegistryFromContext(r.Context()).Adapter(adapterName)
 			if !ok {
 				http.Error(w, "Adapter not found", http.StatusBadRequest)
 				return
@@ -347,7 +347,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	var s mux.Session
 	var err error
-	s, err = FindSession(session)
+	s, err = RegistryFromContext(r.Context()).FindSession(session)
 	if err != nil {
 		log.Printf("WS session not found err: %v", err)
 		http.Error(w, "session not found", http.StatusNotFound)
