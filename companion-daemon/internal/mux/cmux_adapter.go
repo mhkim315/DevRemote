@@ -328,7 +328,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 				consecutiveErrs++
 				if consecutiveErrs >= maxErrs {
 					// Signal registry to invalidate cache for this adapter.
-					s.session.invalidate.Invalidate()
+					s.session.invalidate.InvalidateAdapter("cmux")
 					// Close with error to notify reader
 					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
 					return

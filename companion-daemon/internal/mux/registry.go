@@ -148,6 +148,16 @@ type AdapterSnapshot struct {
 }
 
 // Invalidate marks all adapter caches as expired so the next access triggers a refresh.
+func (r *Registry) InvalidateAdapter(name string) {
+	r.snapshotsMu.Lock()
+	defer r.snapshotsMu.Unlock()
+	snap, ok := r.snapshots[name]
+	if ok {
+		snap.LastAttemptAt = time.Time{}
+		r.snapshots[name] = snap
+	}
+}
+
 func (r *Registry) Invalidate() {
 	r.snapshotsMu.Lock()
 	defer r.snapshotsMu.Unlock()

@@ -91,10 +91,10 @@ type CreateOptions struct {
 }
 
 // InvalidationSender is a one-way signal that an adapter's session list has changed.
-// The adapter signals invalidation without depending on the Registry's refresh contract.
+// The adapter signals invalidation by name without depending on the Registry's refresh contract.
 // Phase 3: cmux adapter migrated from RegistryHealth (bidirectional) to InvalidationSender.
 type InvalidationSender interface {
-	Invalidate()
+	InvalidateAdapter(name string)
 }
 
 // Adapter defines the interface for different session backends (Native, cmux, tmux).

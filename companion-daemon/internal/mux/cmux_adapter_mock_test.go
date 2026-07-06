@@ -337,7 +337,7 @@ func TestNewCmuxAdapterStoresHealth(t *testing.T) {
 	}
 }
 
-func (m *mockRegistryHealth) Invalidate() {
+func (m *mockRegistryHealth) InvalidateAdapter(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.invalidateCalls++
