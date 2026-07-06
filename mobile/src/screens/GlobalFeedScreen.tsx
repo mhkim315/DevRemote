@@ -1,5 +1,5 @@
-import { config } from '../config';
 import React, { useState, useEffect } from 'react';
+import { listSessions } from '../lib/client';
 import { View, Text, StyleSheet, FlatList, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SessionTelemetry, AgentEvent } from '../components/AgentCard';
@@ -14,11 +14,7 @@ export default function GlobalFeedScreen({ token }: Props) {
   const [loading, setLoading] = useState(true);
 
   const fetchSessions = () => {
-    const headers: any = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
-    fetch(`${config.BASE_URL}/api/sessions`, { headers })
-      .then(res => res.json())
+    listSessions(token)
       .then(data => {
         const normalized = (data || []).map((s: any) =>
           typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Button, Dimensions } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useConnection } from '../lib/connection';
 import { config } from '../config';
 
 type Props = {
@@ -9,6 +9,7 @@ type Props = {
 };
 
 export default function ConnectScreen({ onConnect }: Props) {
+  const { connect } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
 
@@ -28,16 +29,7 @@ export default function ConnectScreen({ onConnect }: Props) {
     if (data.startsWith('https://')) {
       setScanned(true);
       
-      // Save it to config in memory
-      config.BASE_URL = data;
-      
-      // Persist to AsyncStorage
-      try {
-        await AsyncStorage.setItem('BASE_URL', data);
-      } catch (e) {
-        console.error('Failed to save BASE_URL to storage', e);
-      }
-
+      await connect(data);
       onConnect();
     }
   };
@@ -79,9 +71,7 @@ export default function ConnectScreen({ onConnect }: Props) {
       <View style={styles.manualContainer}>
         <View style={styles.manualBtn}>
           <Button title="Connect to term.fullcount.kr" onPress={async () => {
-            const url = 'https://term.fullcount.kr';
-            config.BASE_URL = url;
-            await AsyncStorage.setItem('BASE_URL', url);
+            await connect('https://term.fullcount.kr');
             onConnect();
           }} color="#45EBE9" />
         </View>

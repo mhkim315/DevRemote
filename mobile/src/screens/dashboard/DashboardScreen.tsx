@@ -1,10 +1,10 @@
-import { config } from '../../config';
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert, Platform } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
+import { listSessions, createOrUpdateSession, deleteSession } from '../../lib/client';
+import { useConnection } from '../../lib/connection';
 
 interface Props {
   onSelectAgent: (sessionName: string) => void;
@@ -16,16 +16,13 @@ interface Props {
 export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDisconnect }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
-  
+  const { disconnect } = useConnection();
+
   const [modalVisible, setModalVisible] = useState(false);
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
-    const headers: any = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    
-    fetch(`${config.BASE_URL}/api/sessions`, { headers })
-      .then(res => res.json())
+    listSessions(token)
       .then(data => {
         const normalized = (data || []).map((s: any) =>
           typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
@@ -49,8 +46,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDi
 
   const handleSaveProfile = async (id: string, runner: string, color: string) => {
     const isEdit = !!editSession;
-    const method = isEdit ? 'PUT' : 'POST';
-    
+
     // Optimistic Update
     setSessions(prev => {
       if (isEdit) {
@@ -63,15 +59,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDi
     setEditSession(null);
 
     try {
-      const res = await fetch(`${config.BASE_URL}/api/sessions`, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ id, runner, runnerColor: color })
-      });
-      if (!res.ok) throw new Error('API Error');
+      await createOrUpdateSession(id, runner, color, token);
       fetchSessions();
     } catch (e) {
       // Revert optimism on error would be good, but fetchSessions poll will overwrite it anyway
@@ -82,11 +70,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDi
 
   const handleDeleteProfile = async (id: string) => {
     try {
-      const res = await fetch(`${config.BASE_URL}/api/sessions?id=${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!res.ok) throw new Error('API Error');
+      await deleteSession(id, token);
       fetchSessions();
       setModalVisible(false);
       setEditSession(null);
@@ -107,12 +91,9 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDi
       <View style={styles.header}>
         <Text style={styles.headerTitle}>POKIT AGENTS</Text>
         <View style={{flexDirection:'row', gap:6}}>
-          <TouchableOpacity onPress={() => {
-            AsyncStorage.removeItem('BASE_URL').then(() => {
-              if (onDisconnect) {
-                onDisconnect();
-              }
-            });
+          <TouchableOpacity onPress={async () => {
+            await disconnect();
+            if (onDisconnect) onDisconnect();
           }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
             <Text style={[styles.snippetBtnText, {color: '#f85149'}]}>↻ RESCAN</Text>
           </TouchableOpacity>

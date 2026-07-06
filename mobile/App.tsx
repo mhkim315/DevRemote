@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import {StatusBar} from 'expo-status-bar';
-import {SafeAreaProvider} from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { config } from './src/config';
+import { getBaseURL, setBaseURL, registerPushToken } from './src/lib/client';
+import { ConnectionProvider } from './src/lib/connection';
 
 import AuthScreen from './src/screens/AuthScreen';
 import ConnectScreen from './src/screens/ConnectScreen';
@@ -27,7 +28,7 @@ export default function App() {
 
     AsyncStorage.getItem('BASE_URL').then((url) => {
       if (url) {
-        config.BASE_URL = url;
+        setBaseURL(url);
         setIsConnected(true);
       }
       setLoading(false);
@@ -36,7 +37,7 @@ export default function App() {
 
   useEffect(() => {
     async function setupPush() {
-      if (!isConnected) return; // Don't register push if no daemon URL
+      if (!isConnected) return;
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
       if (existingStatus !== 'granted') {
@@ -48,9 +49,8 @@ export default function App() {
       const tokenData = await Notifications.getExpoPushTokenAsync({ projectId: 'devremote-mhk' });
       const token = tokenData.data;
       console.log('Push token:', token);
-      
-      fetch(`${config.BASE_URL}/push/register?token=${encodeURIComponent(token)}`)
-        .catch(console.error);
+
+      registerPushToken('', token).catch(console.error);
     }
     setupPush();
   }, [isConnected]);
@@ -58,15 +58,17 @@ export default function App() {
   if (loading) return null;
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
-      {!session ? (
-        <AuthScreen />
-      ) : !isConnected ? (
-        <ConnectScreen onConnect={() => setIsConnected(true)} />
-      ) : (
-        <RootTabs token={session.access_token} onDisconnect={() => setIsConnected(false)} />
-      )}
-    </SafeAreaProvider>
+    <ConnectionProvider>
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        {!session ? (
+          <AuthScreen />
+        ) : !isConnected ? (
+          <ConnectScreen onConnect={() => setIsConnected(true)} />
+        ) : (
+          <RootTabs token={session.access_token} onDisconnect={() => setIsConnected(false)} />
+        )}
+      </SafeAreaProvider>
+    </ConnectionProvider>
   );
 }

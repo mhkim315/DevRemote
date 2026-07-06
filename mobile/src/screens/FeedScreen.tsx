@@ -1,5 +1,5 @@
-import { config } from '../config';
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
+import { getBaseURL, terminalURL, listSessions, getSessionHistory } from '../lib/client';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -47,7 +47,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [copyText, setCopyText] = useState('');
 
   const termUrl = useMemo(() => {
-    let url = `${config.BASE_URL}/term/?session=${encodeURIComponent(session)}`;
+    let url = terminalURL(session, token);
     if (token) {
       url += `&token=${encodeURIComponent(token)}`;
     }
@@ -70,7 +70,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const fetchSession = () => {
-      fetch(`${config.BASE_URL}/api/sessions`, { headers })
+      listSessions(token)
         .then(res => res.json())
         .then(data => {
           const sess = data.find((s: any) => (s.id || s) === session);
@@ -82,7 +82,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
     };
     
     const fetchHistory = () => {
-      fetch(`${config.BASE_URL}/api/sessions?history=${encodeURIComponent(session)}`, { headers })
+      getSessionHistory(session, token)
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data)) {

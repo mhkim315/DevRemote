@@ -1,5 +1,5 @@
-import { config } from '../config';
 import React, { useState } from 'react';
+import { sendDebugCommand } from '../lib/client';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
 interface Props {
@@ -15,14 +15,7 @@ export function ApprovalCard({ sessionId, promptText, token, onResolved }: Props
   const handleAction = async (approve: boolean) => {
     setLoading(true);
     try {
-      const res = await fetch(`${config.BASE_URL}/debug/cmd?session=${encodeURIComponent(sessionId)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: approve ? "y\n" : "n\n"
-      });
+      const res = await sendDebugCommand(sessionId, approve ? "y\n" : "n\n", token);
       if (!res.ok) {
         throw new Error('Failed to send command');
       }

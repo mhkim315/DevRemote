@@ -1,5 +1,5 @@
-import { config } from '../config';
 import React, { useEffect, useState } from 'react';
+import { getBaseURL } from '../lib/client';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, ActivityIndicator, Platform } from 'react-native';
 
 interface Props {
@@ -18,8 +18,7 @@ export function HistoryModal({ visible, onClose, session, token }: Props) {
       setLoading(true);
       const headers: any = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      fetch(`${config.BASE_URL}/api/sessions?history=${session}`, { headers })
+      fetch(`${getBaseURL()}/api/sessions?history=${session}`, { headers })
         .then(res => res.text())
         .then(text => {
           // Strip ANSI codes using a standard regex pattern
