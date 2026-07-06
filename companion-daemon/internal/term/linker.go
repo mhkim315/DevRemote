@@ -66,7 +66,6 @@ func UnlinkSession(sessionID string, reg *mux.Registry, store LinkStore, events 
 		return err
 	}
 
-	// Telemetry state cleared by TelemetryService.Run on next cycle.sessionID)
 	events.Clear(sessionID)
 	return nil
 }
