@@ -201,7 +201,9 @@ func GetAllLinks() []SessionLink {
 }
 
 func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
-	reg, _ := RegistryFromContext(r.Context())
+	reg, ok := requireRegistry(w, r)
+	if !ok { return }
+
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		links := GetAllLinks()

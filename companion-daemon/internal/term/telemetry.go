@@ -324,6 +324,8 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
+	reg, ok := requireRegistry(w, r)
+	if !ok { return }
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
 		events := models.GetEvents(historyID) // historyID is the canonical ID passed from the frontend
 		w.Header().Set("Content-Type", "application/json")
@@ -335,7 +337,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		// Fallback to adapter's capability for history reading
 		var out []byte
 		var err error
-		reg, _ := RegistryFromContext(r.Context()); sess, err := reg.FindSession(r.Context(), mux.MigrateLegacyID(historyID))
+		sess, err := reg.FindSession(r.Context(), mux.MigrateLegacyID(historyID))
 		if err == nil {
 			if hr, ok := sess.(mux.HistoryReader); ok {
 				out, err = hr.ReadHistory(context.Background(), 10000)
@@ -361,7 +363,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	res := make([]SessionTelemetry, 0)
 
-	reg, _ := RegistryFromContext(r.Context()); sessions := reg.Sessions(r.Context())
+	sessions := reg.Sessions(r.Context())
 
 	// Collect telemetry data under lock
 	telemetryMu.Lock()

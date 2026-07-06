@@ -158,7 +158,8 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
-	// Auth check is handled by middleware
+	reg, ok := requireRegistry(w, r)
+	if !ok { return }
 
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req struct {
@@ -179,11 +180,8 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			adapterName = "tmux" // Fallback
 		}
 
-		reg, _ := RegistryFromContext(r.Context()); _, _ = reg.Adapter(adapterName)
 
 		if r.Method == "POST" {
-			reg, regErr := RegistryFromContext(r.Context())
-			if regErr != nil { http.Error(w, "server error", 500); return }
 			opts := mux.CreateOptions{Name: ref.RawID, WorkspaceID: req.WorkspaceID}
 			createdID, err := reg.CreateSession(r.Context(), adapterName, opts)
 			if err != nil { http.Error(w, err.Error(), 500); return }
@@ -208,10 +206,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				adapterName = "tmux"
 			}
 
-			reg, _ := RegistryFromContext(r.Context()); _, _ = reg.Adapter(adapterName)
 
-			reg, regErr := RegistryFromContext(r.Context())
-			if regErr != nil { http.Error(w, "server error", 500); return }
 			if err := reg.TerminateSession(r.Context(), adapterName, ref.RawID); err != nil {
 				http.Error(w, err.Error(), 500); return
 			}
@@ -316,6 +311,9 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 var OnApproval func(string)
 
 func HandleWS(w http.ResponseWriter, r *http.Request) {
+	reg, ok := requireRegistry(w, r)
+	if !ok { return }
+
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware
 
@@ -326,7 +324,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	var s mux.Session
 	var err error
-	reg, _ := RegistryFromContext(r.Context()); s, err = reg.FindSession(r.Context(), session)
+	s, err = reg.FindSession(r.Context(), session)
 	if err != nil {
 		log.Printf("WS session not found err: %v", err)
 		http.Error(w, "session not found", http.StatusNotFound)
