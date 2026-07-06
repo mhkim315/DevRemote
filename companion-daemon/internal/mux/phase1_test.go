@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +186,9 @@ func TestFindSession_AdapterUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("FindSession with missing adapter: got nil, want error")
 	}
+	if err == nil {
+		t.Fatal("FindSession got nil error, want ErrAdapterUnavailable")
+	}
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
 	}
@@ -329,6 +331,9 @@ func TestFindSession_StaleCacheAndRefreshFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("FindSession got nil, want ErrAdapterUnavailable")
 	}
+	if err == nil {
+		t.Fatal("FindSession got nil error, want ErrAdapterUnavailable")
+	}
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
 	}
@@ -342,8 +347,6 @@ func TestFindSession_StaleCacheAndRefreshFailure(t *testing.T) {
 func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 	// Colon + Unicode in local ID must survive URL query encode/decode.
 	// Mobile clients encode session IDs in query parameters.
-	import_url := `"net/url"`
-	_ = import_url
 	localID := "session:with:colons_한글"
 	ref := SessionRef{Adapter: "tmux", LocalID: localID}
 	canonical := ref.Canonical()
@@ -367,24 +370,24 @@ func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCmuxCreateSession_ParseSurfaceID(t *testing.T) {
-	// cmux create output: "Created surface: 42" -> local ID "surface:42"
-	// Verify that the parser returns a local ID, not canonical.
-	// This is the contract that handler wraps exactly once.
-	re := regexp.MustCompile(` +"surface:\s*(\d+)"`)
-	_ = re // silence unused
-	// Simulate the cmux adapter's parse logic:
-	outStr := "Created new surface: surface:42 (workspace: workspace:1)"
-	matches := regexp.MustCompile(`surface:\s*(\d+)`).FindStringSubmatch(outStr)
-	if matches == nil {
-		t.Fatal("cmux surface regex did not match")
+func TestCmuxAdapter_CreateSessionReturnsLocalID(t *testing.T) {
+	// cmux adapter's CreateSession must return local ID "surface:42",
+	// not canonical "cmux:surface:42". Handler wraps exactly once.
+	mockRunner := &mockCmuxRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("Created new surface: surface:42 (workspace: workspace:1)"), nil
+		},
 	}
-	localID := "surface:" + matches[1]
-	if localID != "surface:42" {
-		t.Errorf("localID = %q, want surface:42", localID)
+	adapter := &cmuxAdapter{runner: mockRunner}
+	id, err := adapter.CreateSession(context.Background(), CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
 	}
-	// Handler wraps to canonical.
-	canonical := SessionRef{Adapter: "cmux", LocalID: localID}.Canonical()
+	if id != "surface:42" {
+		t.Errorf("CreateSession returned %q, want local ID surface:42", id)
+	}
+	// Handler canonicalization (exactly once).
+	canonical := SessionRef{Adapter: "cmux", LocalID: id}.Canonical()
 	if canonical != "cmux:surface:42" {
 		t.Errorf("canonical = %q, want cmux:surface:42", canonical)
 	}
