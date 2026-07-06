@@ -25,11 +25,12 @@ type IPCServer struct {
 	reg       *mux.Registry
 	events    EventStore
 	links     LinkStore
+	telemetry *TelemetryService
 }
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService) (*IPCServer, error) {
 	// Clean up old socket if it exists
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
@@ -45,11 +46,12 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 	log.Printf("IPC Server listening on %s", socketPath)
 
 	srv := &IPCServer{
-		listener: listener,
-		done:     make(chan struct{}),
-		reg:      reg,
-		events:   events,
-		links:    links,
+		listener:  listener,
+		done:      make(chan struct{}),
+		reg:       reg,
+		events:    events,
+		links:     links,
+		telemetry: telemetry,
 	}
 
 	go srv.serve()
@@ -68,7 +70,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.links)
+		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry)
 	}
 }
 
@@ -91,7 +93,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -129,12 +131,18 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			if err := LinkSession(link, reg, links, events); err != nil {
 				conn.Write([]byte(fmt.Sprintf("error linking: %v\n", err)))
 			} else {
+				if telemetry != nil {
+					telemetry.Clear(link.SessionID)
+				}
 				conn.Write([]byte("linked\n"))
 			}
 		} else if req.Operation == "unlink" {
 			if err := UnlinkSession(req.SessionID, reg, links, events); err != nil {
 				conn.Write([]byte(fmt.Sprintf("error unlinking: %v\n", err)))
 			} else {
+				if telemetry != nil {
+					telemetry.Clear(req.SessionID)
+				}
 				conn.Write([]byte("unlinked\n"))
 			}
 		} else if req.Operation == "links" {

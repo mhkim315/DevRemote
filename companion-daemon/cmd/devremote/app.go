@@ -53,7 +53,7 @@ type Dependencies struct {
 	Links        term.LinkStore     // if nil, NewFileLinkStore used
 	Cmds         term.CommandBroker // if nil, NewCommandBroker used
 	StartWatcher func() (watcherResource, error)
-	StartIPC     func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error)
+	StartIPC     func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error)
 	StartTunnel  func() tunnelResource
 }
 
@@ -145,7 +145,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 
-	notifier := &pushNotifier{}
+	notifier := newPushNotifier()
 	serveMux.HandleFunc("/push/register", h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
 		if token != "" {
@@ -319,9 +319,9 @@ func (a *App) startWatcher() watcherResource {
 
 func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
-		return a.deps.StartIPC(a.ipcPath, a.registry, a.events)
+		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry)
 }
 
 func (a *App) startTunnel() tunnelResource {
@@ -360,9 +360,16 @@ func runDaemon(cfg Config) {
 
 // ── Notifier ──
 
+type pushSender func(token, message string)
+
 type pushNotifier struct {
 	mu    sync.RWMutex
 	token string
+	send  pushSender // injectable for tests
+}
+
+func newPushNotifier() *pushNotifier {
+	return &pushNotifier{send: sendPushNotification}
 }
 
 func (n *pushNotifier) SetToken(token string) {
@@ -376,8 +383,8 @@ func (n *pushNotifier) ApprovalRequired(_ context.Context, _ string, message str
 	token := n.token
 	n.mu.RUnlock()
 	log.Printf("🚨 APPROVAL DETECTED: %s", message)
-	if token != "" {
-		go sendPushNotification(token, message)
+	if token != "" && n.send != nil {
+		go n.send(token, message)
 	}
 	return nil
 }

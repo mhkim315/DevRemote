@@ -258,10 +258,6 @@ function fitTerminal(){var h=document.getElementById('t').clientHeight;var w=doc
 window.addEventListener('resize',function(){fitTerminal()});setInterval(function(){var p=new URLSearchParams(location.search);var sess=p.get('session');var tok=p.get('token');var hdrs={};if(tok)hdrs['Authorization']='Bearer '+tok;fetch("/debug/cmd?session="+encodeURIComponent(sess),{headers:hdrs}).then(function(r){return r.text()}).then(function(d){var w=window.ws;if(d&&w&&w.readyState===1)try{w.send(d+"\n")}catch(e){}}).catch(function(){})},2000);connect();</script></body></html>`)
 }
 
-var (
-// CommandBroker moved to term.Handlers.Cmds (Phase 4.3)
-)
-
 func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {

@@ -379,7 +379,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 	app.ipcPath = socketPath
 
-	srv, err := term.StartIPCServer(socketPath, app.registry, term.NewMemoryEventStore(), term.NewNopLinkStore())
+	srv, err := term.StartIPCServer(socketPath, app.registry, term.NewMemoryEventStore(), term.NewNopLinkStore(), nil)
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 
 	// Rebind without manual Remove.
-	srv2, err := term.StartIPCServer(socketPath, app.registry, term.NewMemoryEventStore(), term.NewNopLinkStore())
+	srv2, err := term.StartIPCServer(socketPath, app.registry, term.NewMemoryEventStore(), term.NewNopLinkStore(), nil)
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 		Events:       term.NewMemoryEventStore(),
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -448,7 +448,7 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 		Events:       term.NewMemoryEventStore(),
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -488,7 +488,7 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 		Events:       term.NewMemoryEventStore(),
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -519,7 +519,7 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 		Events:       term.NewMemoryEventStore(),
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -563,7 +563,7 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 		Events:       term.NewMemoryEventStore(),
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{waitErr: shutdownErr}, nil
 		},
 	})
@@ -708,7 +708,7 @@ func TestApp_InjectedVerifierUsedByRoutes(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Verifier:     fv,
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -748,7 +748,7 @@ func (f *fakeAuthVerifier) Verify(ctx context.Context, token string) error {
 
 func TestPushNotifier_TokenRace(t *testing.T) {
 	// Verify that concurrent SetToken and ApprovalRequired don't race.
-	n := &pushNotifier{}
+	n := &pushNotifier{send: func(token, msg string) {}} // no-op sender
 	n.SetToken("test-token")
 
 	var wg sync.WaitGroup
