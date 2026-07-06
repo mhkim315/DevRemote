@@ -43,6 +43,9 @@ func (e *CmuxError) Unwrap() error {
 	return e.Err
 }
 
+// CommandOptions carries optional execution parameters.
+// Timeout is controlled via context.Context passed to Run.
+// Stderr is captured in the returned error when the command fails.
 type CommandOptions struct {
 	Dir string
 }
