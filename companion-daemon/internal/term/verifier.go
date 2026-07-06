@@ -30,11 +30,29 @@ type TokenVerifier interface {
 	Verify(ctx context.Context, token string) error
 }
 
+// VerifierOption configures a SupabaseVerifier.
+type VerifierOption func(*SupabaseVerifier)
+
+// WithHTTPClient sets the HTTP client used for JWKS fetching.
+func WithHTTPClient(client *http.Client) VerifierOption {
+	return func(v *SupabaseVerifier) {
+		v.client = client
+	}
+}
+
+// WithJWKSTTL sets the JWKS cache time-to-live.
+func WithJWKSTTL(ttl time.Duration) VerifierOption {
+	return func(v *SupabaseVerifier) {
+		v.jwksTTL = ttl
+	}
+}
+
 // SupabaseVerifier validates Supabase JWT tokens using RS256/ES256 (JWKS)
-// or HS256 (dev fallback). It owns the JWKS cache and HTTP client.
+// or skips verification in insecure mode. It owns the JWKS cache.
 type SupabaseVerifier struct {
-	config AuthConfig
-	client *http.Client
+	config  AuthConfig
+	client  *http.Client
+	jwksTTL time.Duration
 
 	mu      sync.Mutex
 	keys    map[string]interface{} // kid → crypto.PublicKey
@@ -42,16 +60,21 @@ type SupabaseVerifier struct {
 }
 
 // NewSupabaseVerifier creates a verifier for the given auth configuration.
-func NewSupabaseVerifier(cfg AuthConfig) *SupabaseVerifier {
-	return &SupabaseVerifier{
-		config: cfg,
-		client: &http.Client{Timeout: 10 * time.Second},
+func NewSupabaseVerifier(cfg AuthConfig, opts ...VerifierOption) *SupabaseVerifier {
+	v := &SupabaseVerifier{
+		config:  cfg,
+		client:  &http.Client{Timeout: 10 * time.Second},
+		jwksTTL: 1 * time.Hour,
 	}
+	for _, o := range opts {
+		o(v)
+	}
+	return v
 }
 
 // Verify validates a Supabase JWT token against the configured owner and project.
-// Returns nil if the token is valid, or an error describing why it was rejected.
-func (v *SupabaseVerifier) Verify(_ context.Context, tokenString string) error {
+// The context is propagated to JWKS HTTP requests and can cancel them.
+func (v *SupabaseVerifier) Verify(ctx context.Context, tokenString string) error {
 	if tokenString == "" {
 		if v.config.InsecureLocalOnly {
 			log.Println("WARN: empty token allowed due to --insecure-local-only")
@@ -87,13 +110,12 @@ func (v *SupabaseVerifier) Verify(_ context.Context, tokenString string) error {
 		alg := token.Header["alg"]
 		kid, _ := token.Header["kid"].(string)
 
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); ok {
-			return v.jwksKey(kid)
+		switch token.Method.(type) {
+		case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+			return v.jwksKey(ctx, kid)
+		default:
+			return nil, fmt.Errorf("unsupported signing method: %v", alg)
 		}
-		if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
-			return v.jwksKey(kid)
-		}
-		return nil, fmt.Errorf("unsupported signing method: %v", alg)
 	}
 
 	token, err := jwt.Parse(tokenString, keyFunc)
@@ -143,7 +165,7 @@ func (v *SupabaseVerifier) Verify(_ context.Context, tokenString string) error {
 }
 
 // jwksKey returns the public key for a given key ID, fetching the JWKS if needed.
-func (v *SupabaseVerifier) jwksKey(kid string) (interface{}, error) {
+func (v *SupabaseVerifier) jwksKey(ctx context.Context, kid string) (interface{}, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -155,7 +177,7 @@ func (v *SupabaseVerifier) jwksKey(kid string) (interface{}, error) {
 	}
 
 	if needsFetch {
-		v.fetchJWKS()
+		v.fetchJWKS(ctx)
 	}
 
 	if key, ok := v.keys[kid]; ok {
@@ -166,10 +188,15 @@ func (v *SupabaseVerifier) jwksKey(kid string) (interface{}, error) {
 
 // fetchJWKS downloads and caches the JWKS key set from Supabase.
 // Must be called with v.mu held.
-func (v *SupabaseVerifier) fetchJWKS() {
+func (v *SupabaseVerifier) fetchJWKS(ctx context.Context) {
 	projectRef := v.config.SupabaseProjectRef
 	url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
-	resp, err := v.client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		log.Printf("jwks request err: %v", err)
+		return
+	}
+	resp, err := v.client.Do(req)
 	if err != nil {
 		log.Printf("jwks fetch err: %v", err)
 		return
@@ -227,6 +254,6 @@ func (v *SupabaseVerifier) fetchJWKS() {
 		}
 	}
 	v.keys = newCache
-	v.expires = time.Now().Add(1 * time.Hour)
-	log.Printf("jwks: loaded %d keys", len(v.keys))
+	v.expires = time.Now().Add(v.jwksTTL)
+	log.Printf("jwks: loaded %d keys (ttl=%v)", len(v.keys), v.jwksTTL)
 }

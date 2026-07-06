@@ -48,6 +48,7 @@ type tunnelResource interface {
 // Dependencies holds injectable resource factories for testing.
 // A nil field means "use the production default".
 type Dependencies struct {
+	Verifier     term.TokenVerifier // if nil, created from Config in NewAppWithDeps
 	StartWatcher func() (watcherResource, error)
 	StartIPC     func(path string, reg *mux.Registry) (ipcResource, error)
 	StartTunnel  func() tunnelResource
@@ -106,11 +107,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).
-	verifier := term.NewSupabaseVerifier(term.AuthConfig{
-		OwnerUUID:          cfg.OwnerUUID,
-		SupabaseProjectRef: cfg.SupabaseProjectRef,
-		InsecureLocalOnly:  cfg.InsecureLocalOnly,
-	})
+	verifier := deps.Verifier
+	if verifier == nil {
+		verifier = term.NewSupabaseVerifier(term.AuthConfig{
+			OwnerUUID:          cfg.OwnerUUID,
+			SupabaseProjectRef: cfg.SupabaseProjectRef,
+			InsecureLocalOnly:  cfg.InsecureLocalOnly,
+		})
+	}
 	h := &term.Handlers{Registry: reg, Verifier: verifier}
 
 	serveMux := http.NewServeMux()
