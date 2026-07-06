@@ -74,11 +74,12 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 	adapter := &mockAdapter{session: mockSess}
 	reg.Register(adapter)
 
+	h := &Handlers{Registry: reg}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(WithRegistry(r.Context(), reg))
 		r.URL.RawQuery = "session=mock:test"
 		// Skip auth for test
-		HandleWS(w, r)
+		h.HandleWS(w, r)
 	}))
 	defer server.Close()
 
@@ -116,7 +117,6 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	t.Parallel()
 
 	reg := mux.NewRegistry()
-	// Registry injected via request context below
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},
@@ -124,12 +124,13 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	adapter := &mockAdapter{session: mockSess}
 	reg.Register(adapter)
 
+	h := &Handlers{Registry: reg}
+
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
-		r = r.WithContext(WithRegistry(r.Context(), reg))
 		r.URL.RawQuery = "session=mock:test"
-		HandleWS(w, r)
+		h.HandleWS(w, r)
 	}))
 	defer server.Close()
 

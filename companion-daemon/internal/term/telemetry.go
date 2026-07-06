@@ -91,8 +91,13 @@ func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[s
 	return snapshots, batchAdapters, failedAdapters
 }
 
-func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) {
+// StartTelemetryLoop runs background telemetry sampling. Returns a channel that
+// closes when the goroutine has exited. The caller should cancel ctx to request
+// a stop, then wait on the returned channel (with a deadline).
+func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -254,6 +259,7 @@ func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) {
 			}
 		}
 	}()
+	return done
 }
 
 // evaluateState contains the core telemetry state machine logic for unit testing
@@ -323,11 +329,8 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 }
 
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
-func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
-	reg, ok := requireRegistry(w, r)
-	if !ok {
-		return
-	}
+func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
+	reg := h.Registry
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
 		events := models.GetEvents(historyID) // historyID is the canonical ID passed from the frontend
 		w.Header().Set("Content-Type", "application/json")

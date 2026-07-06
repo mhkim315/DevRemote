@@ -3,8 +3,6 @@ package term
 import (
 	"context"
 	"errors"
-	"log"
-	"net/http"
 
 	"devremote/companion-daemon/internal/mux"
 )
@@ -28,21 +26,8 @@ func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
 	return reg, nil
 }
 
-// InjectRegistry wraps an HTTP handler so it receives the Registry via context.
-func InjectRegistry(reg *mux.Registry, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		next(w, r.WithContext(WithRegistry(r.Context(), reg)))
-	}
-}
-
-// requireRegistry extracts the Registry from the request context and writes
-// an HTTP 500 error if it is missing. Returns (reg, true) on success.
-func requireRegistry(w http.ResponseWriter, r *http.Request) (*mux.Registry, bool) {
-	reg, err := RegistryFromContext(r.Context())
-	if err != nil {
-		log.Printf("request registry unavailable: %v", err)
-		http.Error(w, "server configuration error", http.StatusInternalServerError)
-		return nil, false
-	}
-	return reg, true
+// Handlers groups HTTP handler dependencies so they are visible as struct fields
+// rather than hidden behind context extraction or package globals.
+type Handlers struct {
+	Registry *mux.Registry
 }

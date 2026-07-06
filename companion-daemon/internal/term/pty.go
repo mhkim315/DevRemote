@@ -130,11 +130,11 @@ func VerifyToken(tokenString string) bool {
 	return true
 }
 
-func HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		HandleSessionsV2(w, r)
+		h.HandleSessionsV2(w, r)
 	} else {
-		HandleSessionCRUD(w, r)
+		h.HandleSessionCRUD(w, r)
 	}
 }
 func ExtractToken(r *http.Request) string {
@@ -157,11 +157,8 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
-	reg, ok := requireRegistry(w, r)
-	if !ok {
-		return
-	}
+func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
+	reg := h.Registry
 
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req struct {
@@ -314,11 +311,8 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 // OnApproval is called when Claude asks for user approval.
 var OnApproval func(string)
 
-func HandleWS(w http.ResponseWriter, r *http.Request) {
-	reg, ok := requireRegistry(w, r)
-	if !ok {
-		return
-	}
+func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
+	reg := h.Registry
 
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware
@@ -472,7 +466,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	<-writerDone
 }
 
-func HandleHTML(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleHTML(w http.ResponseWriter, r *http.Request) {
 	// ... we will keep HandleHTML as is, though not heavily used
 	// Auth check is handled by middleware
 

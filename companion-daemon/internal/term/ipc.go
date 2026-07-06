@@ -4,44 +4,85 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	"devremote/companion-daemon/internal/mux"
 )
 
-// StartIPCServer starts a Unix Domain Socket server to listen for local 'pokit run' commands.
-func StartIPCServer(socketPath string, reg *mux.Registry) error {
+// IPCServer owns a Unix domain socket listener and its accept goroutine.
+// Close stops the listener and Wait blocks until the goroutine has returned.
+type IPCServer struct {
+	listener  net.Listener
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
+// The caller owns the returned IPCServer and must call Close + Wait to clean up.
+func StartIPCServer(socketPath string, reg *mux.Registry) (*IPCServer, error) {
 	// Clean up old socket if it exists
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	log.Printf("IPC Server listening on %s", socketPath)
 
-	go func() {
-		defer listener.Close()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("IPC accept error: %v", err)
-				continue
-			}
-			go handleIPCConnection(conn, reg)
-		}
-	}()
+	srv := &IPCServer{
+		listener: listener,
+		done:     make(chan struct{}),
+	}
 
-	return nil
+	go srv.serve(reg)
+	return srv, nil
+}
+
+// serve runs the accept loop. It returns when the listener is closed.
+func (s *IPCServer) serve(reg *mux.Registry) {
+	defer close(s.done)
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return // normal shutdown
+			}
+			log.Printf("IPC accept error: %v", err)
+			return // unexpected error, stop serving
+		}
+		go handleIPCConnection(conn, reg)
+	}
+}
+
+// Close stops the listener. It is idempotent.
+func (s *IPCServer) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = s.listener.Close()
+	})
+	return s.closeErr
+}
+
+// Wait blocks until the accept goroutine returns or ctx is cancelled.
+// Returns an error only if the deadline expires.
+func (s *IPCServer) Wait(ctx context.Context) error {
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func handleIPCConnection(conn net.Conn, reg *mux.Registry) {

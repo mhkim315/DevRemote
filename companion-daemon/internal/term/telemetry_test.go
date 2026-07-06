@@ -167,6 +167,23 @@ func TestEvaluateState(t *testing.T) {
 	}
 }
 
+func TestStartTelemetryLoop_StopsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reg := mux.NewRegistry()
+
+	done := StartTelemetryLoop(ctx, reg)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("telemetry loop did not stop within deadline after cancel")
+	}
+}
+
 func TestCollectProcessSnapshotsUsesOneBatchPerAdapter(t *testing.T) {
 	healthy := &telemetryBatchAdapter{
 		name: "healthy",
