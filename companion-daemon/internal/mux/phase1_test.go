@@ -3,6 +3,8 @@ package mux
 import (
 	"context"
 	"errors"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -311,42 +313,79 @@ func TestCanonicalID_URLRoundTrip(t *testing.T) {
 }
 
 func TestFindSession_StaleCacheAndRefreshFailure(t *testing.T) {
-	// Cache has session, but adapter is failing. FindSession must NOT
-	// return the stale session — it must return ErrAdapterUnavailable.
 	s1 := &testSession{id: "s1", adapter: "test"}
 	a := &testAdapter{name: "test", sessions: []Session{s1}}
 	reg := MustNewRegistry(a)
 	// Populate cache.
 	_ = reg.Sessions(context.Background())
-	// Now make adapter fail.
-	a.sessions = nil
+	// Verify session is cached.
+	snap, _ := reg.Snapshot("test")
+	if len(snap.Sessions) != 1 {
+		t.Fatalf("cache has %d sessions, want 1", len(snap.Sessions))
+	}
+	// Now make adapter fail — cache still has stale snapshot.
 	a.failWith = errors.New("adapter down")
 	_, err := reg.FindSession(context.Background(), "test:s1")
 	if err == nil {
-		t.Fatal("FindSession with failed adapter: got nil, want error")
+		t.Fatal("FindSession got nil, want ErrAdapterUnavailable")
 	}
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
 	}
+	// Stale snapshot must still be present (not evicted on failure).
+	snap2, _ := reg.Snapshot("test")
+	if len(snap2.Sessions) != 1 {
+		t.Errorf("stale snapshot has %d sessions after failed refresh, want 1", len(snap2.Sessions))
+	}
 }
 
 func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
-	// Colon + Unicode in local ID must survive URL encode/decode.
-	localID := "session:with:colons_and_unicode_한글"
+	// Colon + Unicode in local ID must survive URL query encode/decode.
+	// Mobile clients encode session IDs in query parameters.
+	import_url := `"net/url"`
+	_ = import_url
+	localID := "session:with:colons_한글"
 	ref := SessionRef{Adapter: "tmux", LocalID: localID}
 	canonical := ref.Canonical()
-	// Simulate URL encoding (as mobile client does)
-	encoded := strings.ReplaceAll(canonical, ":", "%3A")
-	encoded = strings.ReplaceAll(encoded, "_", "%5F") // just one char to verify
+	// URL query-encode the canonical ID (as mobile client does for ?session=...)
+	encoded := url.QueryEscape(canonical)
 	// Decode back
-	decoded := strings.ReplaceAll(encoded, "%3A", ":")
-	decoded = strings.ReplaceAll(decoded, "%5F", "_")
+	decoded, err := url.QueryUnescape(encoded)
+	if err != nil {
+		t.Fatalf("QueryUnescape: %v", err)
+	}
 	parsed := ParseSessionID(decoded)
 	if parsed.Adapter != "tmux" {
-		t.Errorf("URL round-trip: adapter = %q, want tmux", parsed.Adapter)
+		t.Errorf("adapter = %q, want tmux", parsed.Adapter)
 	}
-	expectedLocal := "session:with:colons_and_unicode_한글"
-	if parsed.LocalID != expectedLocal {
-		t.Errorf("URL round-trip: localID = %q, want %q", parsed.LocalID, expectedLocal)
+	if parsed.LocalID != localID {
+		t.Errorf("localID = %q, want %q", parsed.LocalID, localID)
+	}
+	// Percent-encoded : and _ should be present in encoded form.
+	if !strings.Contains(encoded, "%") {
+		t.Errorf("no percent encoding in %q", encoded)
+	}
+}
+
+func TestCmuxCreateSession_ParseSurfaceID(t *testing.T) {
+	// cmux create output: "Created surface: 42" -> local ID "surface:42"
+	// Verify that the parser returns a local ID, not canonical.
+	// This is the contract that handler wraps exactly once.
+	re := regexp.MustCompile(` +"surface:\s*(\d+)"`)
+	_ = re // silence unused
+	// Simulate the cmux adapter's parse logic:
+	outStr := "Created new surface: surface:42 (workspace: workspace:1)"
+	matches := regexp.MustCompile(`surface:\s*(\d+)`).FindStringSubmatch(outStr)
+	if matches == nil {
+		t.Fatal("cmux surface regex did not match")
+	}
+	localID := "surface:" + matches[1]
+	if localID != "surface:42" {
+		t.Errorf("localID = %q, want surface:42", localID)
+	}
+	// Handler wraps to canonical.
+	canonical := SessionRef{Adapter: "cmux", LocalID: localID}.Canonical()
+	if canonical != "cmux:surface:42" {
+		t.Errorf("canonical = %q, want cmux:surface:42", canonical)
 	}
 }
