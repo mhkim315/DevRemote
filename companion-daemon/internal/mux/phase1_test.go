@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -431,14 +432,15 @@ func TestRegistry_SlowAdapterDoesNotBlock(t *testing.T) {
 	reg := MustNewRegistry(fast, slow)
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	sessions := reg.Sessions(ctx)
 	elapsed := time.Since(start)
-	// Fast adapter results must arrive quickly, not wait for slow adapter timeout (3s).
-	if elapsed > 5*time.Second {
-		t.Errorf("Sessions took %v, want <5s (slow adapter should not block fast)", elapsed)
+	// Fast adapter result must be returned within the 200ms collection window,
+	// not delayed by the slow (blocking) adapter.
+	if elapsed > time.Second {
+		t.Errorf("Sessions took %v, want <1s (slow adapter should not block fast)", elapsed)
 	}
 	found := false
 	for _, s := range sessions {
@@ -470,41 +472,182 @@ func TestProbeAdapter_Cancel(t *testing.T) {
 	if err == nil {
 		t.Fatal("ProbeAdapter with cancelled context: got nil, want error")
 	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error does not wrap Canceled: %v", err)
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Errorf("error does not wrap ErrAdapterUnavailable: %v", err)
+	}
+}
+
+// recordingRunner records every Run call for exact-args contract tests.
+type recordingRunner struct {
+	calls   []runnerCall
+	runFunc func(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error)
+}
+
+type runnerCall struct {
+	opts CommandOptions
+	args []string
+}
+
+func (r *recordingRunner) Run(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error) {
+	argsCopy := make([]string, len(args))
+	copy(argsCopy, args)
+	r.calls = append(r.calls, runnerCall{opts: opts, args: argsCopy})
+	if r.runFunc != nil {
+		return r.runFunc(ctx, opts, args...)
+	}
+	return nil, nil
 }
 
 func TestTmuxAdapter_CreateSessionUsesRunner(t *testing.T) {
-	var called bool
-	runner := &mockCmuxRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			called = true
-			return nil, nil
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(runner)
-	_, err := adapter.(SessionCreator).CreateSession(context.Background(), CreateOptions{Name: "test"})
+	rec := &recordingRunner{}
+	adapter := NewTmuxAdapterWithRunner(rec)
+	_, err := adapter.(SessionCreator).CreateSession(context.Background(), CreateOptions{Name: "test", CWD: "/tmp/work"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if !called {
-		t.Error("runner was not called for CreateSession")
+	if len(rec.calls) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(rec.calls))
+	}
+	c := rec.calls[0]
+	wantArgs := []string{"tmux", "new-session", "-d", "-s", "test"}
+	if fmt.Sprint(c.args) != fmt.Sprint(wantArgs) {
+		t.Errorf("args = %v, want %v", c.args, wantArgs)
+	}
+	if c.opts.Dir != "/tmp/work" {
+		t.Errorf("opts.Dir = %q, want /tmp/work", c.opts.Dir)
 	}
 }
 
 func TestTmuxAdapter_TerminateSessionUsesRunner(t *testing.T) {
-	var called bool
-	runner := &mockCmuxRunner{
+	// TerminateSession calls the runner twice: once to list-sessions (resolve target)
+	// and once to kill-session.
+	rec := &recordingRunner{
 		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			called = true
-			return []byte("dummy_session::POKIT::test"), nil
+			if args[1] == "list-sessions" {
+				return []byte("$8::POKIT::test"), nil
+			}
+			return nil, nil
 		},
 	}
-	adapter := NewTmuxAdapterWithRunner(runner).(*tmuxAdapter)
+	adapter := NewTmuxAdapterWithRunner(rec).(*tmuxAdapter)
 	err := adapter.TerminateSession(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("TerminateSession: %v", err)
 	}
-	if !called {
-		t.Error("runner was not called for TerminateSession")
+	if len(rec.calls) != 2 {
+		t.Fatalf("runner called %d times, want 2 (resolve + kill)", len(rec.calls))
+	}
+	// Call 1: resolveTmuxTarget → list-sessions
+	if c := rec.calls[0]; c.args[1] != "list-sessions" {
+		t.Errorf("resolve call args = %v, want list-sessions", c.args)
+	}
+	// Call 2: kill-session
+	wantKill := []string{"tmux", "kill-session", "-t", "$8"}
+	if fmt.Sprint(rec.calls[1].args) != fmt.Sprint(wantKill) {
+		t.Errorf("kill args = %v, want %v", rec.calls[1].args, wantKill)
+	}
+}
+
+func TestTmuxAdapter_ReadScreenUsesRunner(t *testing.T) {
+	rec := &recordingRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("screen content"), nil
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(rec)
+	sess := &tmuxSession{id: "dev", target: "@3", adapter: adapter}
+	out, err := sess.ReadScreen(context.Background())
+	if err != nil {
+		t.Fatalf("ReadScreen: %v", err)
+	}
+	if string(out) != "screen content" {
+		t.Errorf("ReadScreen = %q, want 'screen content'", string(out))
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(rec.calls))
+	}
+	wantArgs := []string{"tmux", "capture-pane", "-t", "@3", "-p"}
+	if fmt.Sprint(rec.calls[0].args) != fmt.Sprint(wantArgs) {
+		t.Errorf("args = %v, want %v", rec.calls[0].args, wantArgs)
+	}
+}
+
+func TestTmuxAdapter_ReadHistoryUsesRunner(t *testing.T) {
+	rec := &recordingRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("history"), nil
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(rec)
+	sess := &tmuxSession{id: "dev", target: "@3", adapter: adapter}
+	_, err := sess.ReadHistory(context.Background(), 500)
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(rec.calls))
+	}
+	wantArgs := []string{"tmux", "capture-pane", "-t", "@3", "-p", "-S", "-500"}
+	if fmt.Sprint(rec.calls[0].args) != fmt.Sprint(wantArgs) {
+		t.Errorf("args = %v, want %v", rec.calls[0].args, wantArgs)
+	}
+}
+
+func TestTmuxAdapter_ProcessInfoUsesRunner(t *testing.T) {
+	rec := &recordingRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("1000000000,12345,/home/user/project"), nil
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(rec)
+	sess := &tmuxSession{id: "dev", target: "@3", adapter: adapter}
+	info, err := sess.ProcessInfo(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessInfo: %v", err)
+	}
+	if info.PID != 12345 {
+		t.Errorf("PID = %d, want 12345", info.PID)
+	}
+	if info.CWD != "/home/user/project" {
+		t.Errorf("CWD = %q, want /home/user/project", info.CWD)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("runner called %d times, want 1", len(rec.calls))
+	}
+	c := rec.calls[0]
+	if c.args[0] != "tmux" || c.args[1] != "display-message" {
+		t.Errorf("args = %v, want display-message", c.args)
+	}
+}
+
+func TestTmuxAdapter_CreateSession_RunnerError(t *testing.T) {
+	rec := &recordingRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("no tmux server running"), fmt.Errorf("exit status 1")
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(rec)
+	_, err := adapter.(SessionCreator).CreateSession(context.Background(), CreateOptions{Name: "test"})
+	if err == nil {
+		t.Fatal("CreateSession with runner error: got nil, want error")
+	}
+}
+
+func TestTmuxAdapter_ReadScreen_RunnerError(t *testing.T) {
+	runnerErr := fmt.Errorf("tcgetattr: Inappropriate ioctl for device")
+	rec := &recordingRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("stderr output"), runnerErr
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(rec)
+	sess := &tmuxSession{id: "dev", adapter: adapter}
+	_, err := sess.ReadScreen(context.Background())
+	if err == nil {
+		t.Fatal("ReadScreen with runner error: got nil, want error")
 	}
 }
 

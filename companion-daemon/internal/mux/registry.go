@@ -246,9 +246,11 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 	if len(adapters) == 0 {
 		return nil
 	}
-	// Phase 3: parallel refresh with per-adapter timeout. A slow adapter
-	// does not block healthy ones — results are returned as they arrive,
-	// with a hard deadline from the caller's context.
+	// Phase 3: parallel refresh with per-adapter timeout (3s). Results are
+	// collected as they arrive. After the first result, a 200ms collection
+	// window batches near-simultaneous results without waiting for slow
+	// adapters. Caller ctx provides a hard upper bound.
+	const collectionWindow = 200 * time.Millisecond
 	type result struct {
 		sessions []Session
 	}
@@ -268,6 +270,8 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 	var all []Session
 	seen := make(map[string]bool)
 	remaining := len(adapters)
+	var collectTimer *time.Timer
+	var collectC <-chan time.Time
 	for remaining > 0 {
 		select {
 		case r := <-results:
@@ -279,10 +283,21 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 					all = append(all, s)
 				}
 			}
+			if remaining == 0 {
+				break
+			}
+			if collectTimer == nil {
+				collectTimer = time.NewTimer(collectionWindow)
+				collectC = collectTimer.C
+			}
+		case <-collectC:
+			remaining = 0
 		case <-ctx.Done():
 			remaining = 0
-			remaining = 0
 		}
+	}
+	if collectTimer != nil {
+		collectTimer.Stop()
 	}
 	sort.SliceStable(all, func(i, j int) bool {
 		left := all[i].AdapterName() + ":" + all[i].ID()
