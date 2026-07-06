@@ -128,7 +128,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry) {
 
 	// Spawn a new native multiplexer session, or use existing one
 	sessionID := cmdStr // Simple ID for now
-	s, err := reg.FindSession(sessionID)
+	s, err := reg.FindSession(context.Background(), sessionID)
 	if err != nil {
 		s, err = mux.NewSession(sessionID, termEnv, "bash", "-c", cmdStr)
 		if err != nil {

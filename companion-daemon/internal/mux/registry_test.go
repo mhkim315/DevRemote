@@ -57,7 +57,7 @@ func TestRegistryDeadlockAndCache(t *testing.T) {
 	r.Sessions(context.Background())
 
 	// 1. Test canonical ID lookup
-	s, err := r.FindSession("test1:s1")
+	s, err := r.FindSession(context.Background(), "test1:s1")
 	if err != nil {
 		t.Fatalf("expected to find test1:s1, got err: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRegistryDeadlockAndCache(t *testing.T) {
 	}
 
 	// 2. Test legacy migration
-	s2, err := r.FindSession("cmux:40")
+	s2, err := r.FindSession(context.Background(), "cmux:40")
 	if err == nil {
 		t.Errorf("expected error for non-existent migrated session, got %v", s2)
 	}
@@ -80,7 +80,7 @@ func TestRegistryDeadlockAndCache(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r.FindSession("test1:s1")
+				r.FindSession(context.Background(), "test1:s1")
 			}()
 
 			wg.Add(1)
@@ -188,20 +188,20 @@ func TestRegistryIsolation(t *testing.T) {
 	r2.Sessions(context.Background())
 
 	// r1 should not see r2's sessions
-	if _, err := r1.FindSession("a2:y"); err == nil {
+	if _, err := r1.FindSession(context.Background(), "a2:y"); err == nil {
 		t.Fatal("r1 should not see r2's sessions")
 	}
-	if _, err := r2.FindSession("a1:x"); err == nil {
+	if _, err := r2.FindSession(context.Background(), "a1:x"); err == nil {
 		t.Fatal("r2 should not see r1's sessions")
 	}
 
 	// Each should see their own
-	if s, err := r1.FindSession("a1:x"); err != nil {
+	if s, err := r1.FindSession(context.Background(), "a1:x"); err != nil {
 		t.Fatalf("r1 should see its own session: %v", err)
 	} else if s.ID() != "x" {
 		t.Errorf("wrong session: %s", s.ID())
 	}
-	if s, err := r2.FindSession("a2:y"); err != nil {
+	if s, err := r2.FindSession(context.Background(), "a2:y"); err != nil {
 		t.Fatalf("r2 should see its own session: %v", err)
 	} else if s.ID() != "y" {
 		t.Errorf("wrong session: %s", s.ID())

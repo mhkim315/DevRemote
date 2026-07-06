@@ -73,8 +73,12 @@ func main() {
 
 	// 0. Create Registry (Phase 1: injected via context + params, no global)
 	reg := mux.NewRegistry()
-	reg.Register(mux.NewCmuxAdapter(reg))
-	reg.Register(mux.NewTmuxAdapter(reg))
+	cmuxAdapter, cErr := mux.NewCmuxAdapter(reg)
+	if cErr != nil {
+		log.Fatalf("failed to create cmux adapter: %v", cErr)
+	}
+	reg.Register(cmuxAdapter)
+	reg.Register(mux.NewTmuxAdapter())
 
 	// 1. Core Endpoints (Registry injected via context)
 	if err := term.LoadLinks(reg); err != nil {

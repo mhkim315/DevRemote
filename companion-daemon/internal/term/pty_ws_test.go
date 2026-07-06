@@ -127,7 +127,7 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
-		r.URL.RawQuery = "session=mock:test"
+		r = r.WithContext(WithRegistry(r.Context(), reg)); r.URL.RawQuery = "session=mock:test"
 		HandleWS(w, r)
 	}))
 	defer server.Close()

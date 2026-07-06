@@ -335,7 +335,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		// Fallback to adapter's capability for history reading
 		var out []byte
 		var err error
-		sess, err := RegistryFromContext(r.Context()).FindSession(mux.MigrateLegacyID(historyID))
+		sess, err := RegistryFromContext(r.Context()).FindSession(r.Context(), mux.MigrateLegacyID(historyID))
 		if err == nil {
 			if hr, ok := sess.(mux.HistoryReader); ok {
 				out, err = hr.ReadHistory(context.Background(), 10000)

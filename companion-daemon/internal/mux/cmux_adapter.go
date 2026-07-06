@@ -132,10 +132,14 @@ type cmuxAdapter struct {
 	health RegistryHealth
 }
 
-func NewCmuxAdapter(health RegistryHealth) Adapter {
+func NewCmuxAdapter(health RegistryHealth) (Adapter, error) {
+	if health == nil {
+		return nil, fmt.Errorf("cmux adapter requires RegistryHealth")
+	}
 	return &cmuxAdapter{
 		runner: &serialCommandRunner{delegate: newExecCommandRunner()},
-	}
+		health: health,
+	}, nil
 }
 
 func (a *cmuxAdapter) Name() string {
@@ -157,7 +161,7 @@ func (a *cmuxAdapter) ListSessions() ([]Session, error) {
 		return nil, fmt.Errorf("cmux tree failed: %w", err)
 	}
 
-	return parseCmuxTree(out, a.runner)
+	return parseCmuxTree(out, a.runner, a.health)
 }
 
 var (
@@ -165,7 +169,7 @@ var (
 	surfaceRe   = regexp.MustCompile(`\bsurface\s+(surface:[^\s]+)\s+\[([^\]]+)\]\s+"([^"]*)"`)
 )
 
-func parseCmuxTree(out []byte, runner CommandRunner) ([]Session, error) {
+func parseCmuxTree(out []byte, runner CommandRunner, health RegistryHealth) ([]Session, error) {
 	var sessions []Session
 	lines := strings.Split(string(out), "\n")
 
@@ -208,6 +212,7 @@ func parseCmuxTree(out []byte, runner CommandRunner) ([]Session, error) {
 				surfaceID:   surfaceID,
 				workspaceID: currentWorkspace,
 				runner:      runner,
+					health:      health,
 			})
 		}
 	}
@@ -240,6 +245,7 @@ func (a *cmuxAdapter) GetSession(id string) (Session, error) {
 		title:     "cmux panel",
 		surfaceID: id,
 		runner:    a.runner,
+			health:    a.health,
 	}, nil
 }
 
@@ -251,6 +257,7 @@ type CmuxSession struct {
 	workspaceID string
 	pid         int
 	runner      CommandRunner
+	health      RegistryHealth
 }
 
 type CmuxStream struct {
@@ -318,7 +325,10 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 				consecutiveErrs++
 				if consecutiveErrs >= maxErrs {
 					// Force adapter refresh to update health status
-					// health refresh: adapter would call registry.Invalidate() here
+					_, refreshErr := s.session.health.Refresh(s.ctx, "cmux", true)
+				if refreshErr != nil {
+					log.Printf("cmux health refresh failed: %v", refreshErr)
+				}
 					// Close with error to notify reader
 					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
 					return
@@ -456,7 +466,6 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
 
-	a.health.Invalidate()
 
 	// Parse output to find "surface:NN"
 	outStr := string(out)
@@ -475,7 +484,6 @@ func (a *cmuxAdapter) TerminateSession(ctx context.Context, rawID string) error 
 	}
 	_, err := a.runner.Run(ctx, CommandOptions{}, "close-surface", "--surface", rawID)
 	if err == nil {
-		a.health.Invalidate()
 	}
 	return err
 }

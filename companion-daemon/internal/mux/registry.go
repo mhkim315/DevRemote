@@ -13,7 +13,6 @@ import (
 
 // Registry owns the adapter, session, and snapshot state for all multiplexer backends.
 //
-// Phase 1 transitional note: a package-level Default instance is used by existing
 // callers until Phase 2 provides an App-level composition root.
 type Registry struct {
 	adaptersMu sync.RWMutex
@@ -43,6 +42,41 @@ func (r *Registry) Register(adapter Adapter) {
 	r.adaptersMu.Unlock()
 }
 
+// CreateSession delegates to the named adapter and invalidates the cache on success.
+func (r *Registry) CreateSession(ctx context.Context, adapterName string, opts CreateOptions) (string, error) {
+	adapter, ok := r.Adapter(adapterName)
+	if !ok {
+		return "", fmt.Errorf("adapter %s not found", adapterName)
+	}
+	creator, ok := adapter.(SessionCreator)
+	if !ok {
+		return "", fmt.Errorf("adapter %s does not support session creation", adapterName)
+	}
+	id, err := creator.CreateSession(ctx, opts)
+	if err != nil {
+		return "", err
+	}
+	r.Invalidate()
+	return id, nil
+}
+
+// TerminateSession delegates to the named adapter and invalidates the cache on success.
+func (r *Registry) TerminateSession(ctx context.Context, adapterName string, id string) error {
+	adapter, ok := r.Adapter(adapterName)
+	if !ok {
+		return fmt.Errorf("adapter %s not found", adapterName)
+	}
+	terminator, ok := adapter.(SessionTerminator)
+	if !ok {
+		return fmt.Errorf("adapter %s does not support session termination", adapterName)
+	}
+	if err := terminator.TerminateSession(ctx, id); err != nil {
+		return err
+	}
+	r.Invalidate()
+	return nil
+}
+
 // Adapter returns a registered adapter by name.
 func (r *Registry) Adapter(name string) (Adapter, bool) {
 	r.adaptersMu.RLock()
@@ -63,7 +97,7 @@ func (r *Registry) Adapters() []Adapter {
 }
 
 // FindSession looks up a session by its canonical ID across all adapters.
-func (r *Registry) FindSession(id string) (Session, error) {
+func (r *Registry) FindSession(ctx context.Context, id string) (Session, error) {
 	id = MigrateLegacyID(id)
 
 	if s, err := r.FindSessionInCache(id); err == nil {
@@ -72,9 +106,9 @@ func (r *Registry) FindSession(id string) (Session, error) {
 
 	parts := strings.SplitN(id, ":", 2)
 	if len(parts) == 2 {
-		r.Refresh(context.Background(), parts[0], true)
+		_, _ = r.Refresh(ctx, parts[0], true)
 	} else {
-		r.Sessions(context.Background())
+		_ = r.Sessions(ctx)
 	}
 
 	if s, err := r.FindSessionInCache(id); err == nil {

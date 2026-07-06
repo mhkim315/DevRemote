@@ -19,7 +19,7 @@ func TestTmuxAdapter_ListSessions(t *testing.T) {
 	}
 	defer exec.Command("tmux", "kill-session", "-t", "test-tmux-adapter-session").Run()
 
-	adapter := NewTmuxAdapter(nil)
+	adapter := NewTmuxAdapter()
 	sessions, err := adapter.ListSessions()
 	if err != nil {
 		t.Fatalf("ListSessions failed: %v", err)

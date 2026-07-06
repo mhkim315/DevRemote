@@ -347,7 +347,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	var s mux.Session
 	var err error
-	s, err = RegistryFromContext(r.Context()).FindSession(session)
+	s, err = RegistryFromContext(r.Context()).FindSession(r.Context(), session)
 	if err != nil {
 		log.Printf("WS session not found err: %v", err)
 		http.Error(w, "session not found", http.StatusNotFound)

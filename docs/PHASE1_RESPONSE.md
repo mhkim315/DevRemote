@@ -32,4 +32,3 @@ go vet ./...: PASS
 go test -race ./...: PASS
 git diff --check: PASS
 ```
-

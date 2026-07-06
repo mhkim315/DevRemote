@@ -108,6 +108,8 @@ func TestPollScreenFailures(t *testing.T) {
 		id:        "surface:1",
 		surfaceID: "surface:1",
 		runner:    mockRunner,
+		
+		health:    &mockRegistryHealth{},
 	}
 
 	stream, err := session.OpenStream(context.Background())
@@ -159,6 +161,7 @@ func TestPollScreenBlockedWriteClose(t *testing.T) {
 		id:        "surface:1",
 		surfaceID: "surface:1",
 		runner:    mockRunner,
+		
 	}
 
 	stream, err := session.OpenStream(context.Background())
@@ -213,6 +216,7 @@ func TestPollScreenCloseCancelsInFlightCommand(t *testing.T) {
 		id:        "surface:1",
 		surfaceID: "surface:1",
 		runner:    mockRunner,
+		
 	}
 	stream, err := session.OpenStream(context.Background())
 	if err != nil {
@@ -306,4 +310,10 @@ func TestSerialCommandRunnerPreventsConcurrentSocketWrites(t *testing.T) {
 	default:
 		t.Fatal("second command never ran after the first completed")
 	}
+}
+
+type mockRegistryHealth struct{}
+
+func (m *mockRegistryHealth) Refresh(ctx context.Context, name string, force bool) (AdapterSnapshot, error) {
+	return AdapterSnapshot{}, nil
 }

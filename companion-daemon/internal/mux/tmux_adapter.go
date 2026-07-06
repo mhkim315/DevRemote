@@ -11,7 +11,7 @@ import (
 	"devremote/companion-daemon/internal/models"
 )
 
-type tmuxAdapter struct{ health RegistryHealth }
+type tmuxAdapter struct{}
 
 type tmuxSession struct {
 	id      string
@@ -67,22 +67,15 @@ func (a *tmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		cmd.Dir = opts.CWD
 	}
 	err := cmd.Run()
-	if err == nil {
-		a.health.Invalidate()
-	}
 	return opts.Name, err
 }
 
 func (a *tmuxAdapter) TerminateSession(ctx context.Context, id string) error {
 	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", id)
-	err := cmd.Run()
-	if err == nil {
-		a.health.Invalidate()
-	}
-	return err
+	return cmd.Run()
 }
 
-func NewTmuxAdapter(health RegistryHealth) Adapter {
+func NewTmuxAdapter() Adapter {
 	return &tmuxAdapter{}
 }
 
@@ -94,29 +87,19 @@ func (a *tmuxAdapter) ListSessions() ([]Session, error) {
 	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, nil // Return empty if no sessions or tmux not installed
+		return nil, nil
 	}
-
-	var sessions []Session
-	lines := strings.Split(string(out), "\n")
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	sessions := make([]Session, 0, len(lines))
 	for _, line := range lines {
-		if line != "" {
-			sessions = append(sessions, &tmuxSession{id: line, adapter: a})
+		if line == "" {
+			continue
 		}
+		sessions = append(sessions, &tmuxSession{id: line, adapter: a})
 	}
 	return sessions, nil
 }
 
 func (a *tmuxAdapter) GetSession(id string) (Session, error) {
-	// Check if session exists first
-	cmd := exec.Command("tmux", "has-session", "-t", id)
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("session not found")
-	}
-
-	return &tmuxSession{
-		id:      id,
-		adapter: a,
-	}, nil
+	return &tmuxSession{id: id, adapter: a}, nil
 }
-

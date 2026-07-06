@@ -98,7 +98,6 @@ type CreateOptions struct {
 // report session list changes without depending on the concrete Registry type.
 type RegistryHealth interface {
 	Refresh(ctx context.Context, name string, force bool) (AdapterSnapshot, error)
-	Invalidate()
 }
 
 // Adapter defines the interface for different session backends (Native, cmux, tmux)

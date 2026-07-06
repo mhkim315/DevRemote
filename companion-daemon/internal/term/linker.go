@@ -1,6 +1,7 @@
 package term
 
 import (
+	"context"
 	"encoding/json"
 	"devremote/companion-daemon/internal/mux"
 	"net/http"
@@ -72,7 +73,7 @@ func LoadLinks(reg *mux.Registry) error {
 		}
 
 		// Verify if the session still matches the expected title
-		sess, err := reg.FindSession(link.SessionID)
+		sess, err := reg.FindSession(context.Background(), link.SessionID)
 		if err == nil {
 			if sess.Title() != link.SessionTitle {
 				links[i].Stale = true
@@ -135,7 +136,7 @@ func LinkSession(link SessionLink, reg *mux.Registry) error {
 	link.SessionID = mux.MigrateLegacyID(link.SessionID)
 
 	// First fetch the session to get the current title and avoid stale mismatches
-	sess, err := reg.FindSession(link.SessionID)
+	sess, err := reg.FindSession(context.Background(), link.SessionID)
 	if err == nil {
 		link.SessionTitle = sess.Title()
 	}
@@ -181,7 +182,7 @@ func GetLink(sessionID string, reg *mux.Registry) (SessionLink, bool) {
 	l, ok := sessionLinks[sessionID]
 	// Check if we need to evaluate staleness dynamically
 	if ok && !l.Stale {
-		sess, err := reg.FindSession(sessionID)
+		sess, err := reg.FindSession(context.Background(), sessionID)
 		if err == nil && sess.Title() != l.SessionTitle {
 			l.Stale = true
 		}
