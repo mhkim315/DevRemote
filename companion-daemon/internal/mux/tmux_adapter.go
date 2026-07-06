@@ -43,8 +43,7 @@ func (s *tmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
 }
 
 func (s *tmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", s.targetName(), "#{pane_start_time},#{pane_pid},#{pane_current_path}")
-	out, err := cmd.Output()
+	out, err := s.adapter.(*tmuxAdapter).runner.Run(ctx, CommandOptions{}, "tmux", "display-message", "-p", "-t", s.targetName(), "#{pane_start_time},#{pane_pid},#{pane_current_path}")
 	if err != nil {
 		return models.ProcessInfo{}, err
 	}
@@ -63,8 +62,7 @@ func (s *tmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, erro
 }
 
 func (s *tmuxSession) ReadScreen(ctx context.Context) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", s.targetName(), "-p")
-	return cmd.Output()
+	return s.adapter.(*tmuxAdapter).runner.Run(ctx, CommandOptions{}, "tmux", "capture-pane", "-t", s.targetName(), "-p")
 }
 
 func (s *tmuxSession) ReadHistory(ctx context.Context, lines int) ([]byte, error) {
@@ -73,8 +71,7 @@ func (s *tmuxSession) ReadHistory(ctx context.Context, lines int) ([]byte, error
 	} else if lines > 10000 {
 		lines = 10000
 	}
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", s.targetName(), "-p", "-S", fmt.Sprintf("-%d", lines))
-	return cmd.Output()
+	return s.adapter.(*tmuxAdapter).runner.Run(ctx, CommandOptions{}, "tmux", "capture-pane", "-t", s.targetName(), "-p", "-S", fmt.Sprintf("-%d", lines))
 }
 
 func (s *tmuxSession) targetName() string {
@@ -85,11 +82,7 @@ func (s *tmuxSession) targetName() string {
 }
 
 func (a *tmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (string, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", opts.Name)
-	if opts.CWD != "" {
-		cmd.Dir = opts.CWD
-	}
-	err := cmd.Run()
+	_, err := a.runner.Run(ctx, CommandOptions{Dir: opts.CWD}, "tmux", "new-session", "-d", "-s", opts.Name)
 	return opts.Name, err
 }
 
@@ -98,8 +91,8 @@ func (a *tmuxAdapter) TerminateSession(ctx context.Context, id string) error {
 	if resolved, err := resolveTmuxTarget(ctx, id); err == nil {
 		target = resolved
 	}
-	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", target)
-	return cmd.Run()
+	_, err := a.runner.Run(ctx, CommandOptions{}, "tmux", "kill-session", "-t", target)
+	return err
 }
 
 func NewTmuxAdapter() Adapter {
