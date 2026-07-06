@@ -489,6 +489,12 @@ fix: complete instance-owned mux registry wiring
 
 ## Phase 2: App composition root와 HTTP Server 도입
 
+> 검증 상태(2026-07-06): 실행 에이전트의 `146eeb3e8`은 구조적 진전은
+> 확인됐으나 watcher/tunnel no-op 회귀와 실제 IPC/telemetry 종료 보장 부재로
+> REJECT됐다. 재작업 범위와 acceptance test는
+> [`PHASE2_146EEB3_CORRECTIVE_GUIDE.md`](./PHASE2_146EEB3_CORRECTIVE_GUIDE.md)를
+> 따른다. 해당 조건이 충족되기 전에는 Phase 3을 시작하지 않는다.
+
 ### 목적
 
 daemon 전체 의존성을 `main()`에서 명시적으로 조립하고 default HTTP mux를 제거한다.
