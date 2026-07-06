@@ -100,6 +100,7 @@ func main() {
 	// Start Unix Socket IPC Server for local pokit run commands
 	socketPath := "/tmp/pokit.sock"
 	if err := term.StartIPCServer(socketPath, reg); err != nil {
+		log.Printf("Failed to start IPC server: %v", err)
 	}
 	defer os.Remove(socketPath)
 

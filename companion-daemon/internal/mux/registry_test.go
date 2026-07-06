@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,15 +10,33 @@ import (
 )
 
 type dummyAdapter struct {
-	name     string
-	sessions []Session
-	err      error
-	callCnt  int
-	mu       sync.Mutex
+	name            string
+	sessions        []Session
+	err             error
+	callCnt         int
+	createID        string
+	createErr       error
+	createCalls     int
+	terminateErr    error
+	terminateCalls  int
+	lastCreateOpts  CreateOptions
+	lastTerminateID string
+	listStarted     chan struct{}
+	listRelease     chan struct{}
+	mu              sync.Mutex
 }
 
 func (a *dummyAdapter) Name() string { return a.name }
 func (a *dummyAdapter) ListSessions() ([]Session, error) {
+	if a.listStarted != nil {
+		select {
+		case a.listStarted <- struct{}{}:
+		default:
+		}
+	}
+	if a.listRelease != nil {
+		<-a.listRelease
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.callCnt++
@@ -28,9 +47,19 @@ func (a *dummyAdapter) ListSessions() ([]Session, error) {
 }
 func (a *dummyAdapter) GetSession(id string) (Session, error) { return nil, nil }
 func (a *dummyAdapter) CreateSession(ctx context.Context, opts CreateOptions) (string, error) {
-	return "", nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.createCalls++
+	a.lastCreateOpts = opts
+	return a.createID, a.createErr
 }
-func (a *dummyAdapter) TerminateSession(ctx context.Context, id string) error { return nil }
+func (a *dummyAdapter) TerminateSession(ctx context.Context, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.terminateCalls++
+	a.lastTerminateID = id
+	return a.terminateErr
+}
 
 type dummySession struct {
 	id      string
@@ -206,4 +235,127 @@ func TestRegistryIsolation(t *testing.T) {
 	} else if s.ID() != "y" {
 		t.Errorf("wrong session: %s", s.ID())
 	}
+}
+
+func TestRegistryCreateSessionInvalidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		createErr       error
+		wantInvalidated bool
+	}{
+		{name: "success invalidates", wantInvalidated: true},
+		{name: "failure preserves cache", createErr: errors.New("create failed")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &dummyAdapter{
+				name:      "fake",
+				createID:  "created",
+				createErr: tt.createErr,
+				sessions:  []Session{&dummySession{id: "existing", adapter: "fake"}},
+			}
+			registry := NewRegistry(adapter)
+			registry.Sessions(context.Background())
+
+			before, ok := registry.Snapshot("fake")
+			if !ok || before.LastAttemptAt.IsZero() {
+				t.Fatal("expected populated snapshot before mutation")
+			}
+
+			opts := CreateOptions{Name: "new-session", WorkspaceID: "workspace:1"}
+			id, err := registry.CreateSession(context.Background(), "fake", opts)
+			if !errors.Is(err, tt.createErr) {
+				t.Fatalf("CreateSession error = %v, want %v", err, tt.createErr)
+			}
+			if tt.createErr == nil && id != "created" {
+				t.Fatalf("created ID = %q, want created", id)
+			}
+
+			after, _ := registry.Snapshot("fake")
+			if after.LastAttemptAt.IsZero() != tt.wantInvalidated {
+				t.Fatalf("LastAttemptAt zero = %v, want %v", after.LastAttemptAt.IsZero(), tt.wantInvalidated)
+			}
+			if adapter.createCalls != 1 || adapter.lastCreateOpts != opts {
+				t.Fatalf("unexpected create call: count=%d opts=%+v", adapter.createCalls, adapter.lastCreateOpts)
+			}
+		})
+	}
+}
+
+func TestRegistryTerminateSessionInvalidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		terminateErr    error
+		wantInvalidated bool
+	}{
+		{name: "success invalidates", wantInvalidated: true},
+		{name: "failure preserves cache", terminateErr: errors.New("terminate failed")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &dummyAdapter{
+				name:         "fake",
+				terminateErr: tt.terminateErr,
+				sessions:     []Session{&dummySession{id: "existing", adapter: "fake"}},
+			}
+			registry := NewRegistry(adapter)
+			registry.Sessions(context.Background())
+
+			err := registry.TerminateSession(context.Background(), "fake", "existing")
+			if !errors.Is(err, tt.terminateErr) {
+				t.Fatalf("TerminateSession error = %v, want %v", err, tt.terminateErr)
+			}
+
+			after, _ := registry.Snapshot("fake")
+			if after.LastAttemptAt.IsZero() != tt.wantInvalidated {
+				t.Fatalf("LastAttemptAt zero = %v, want %v", after.LastAttemptAt.IsZero(), tt.wantInvalidated)
+			}
+			if adapter.terminateCalls != 1 || adapter.lastTerminateID != "existing" {
+				t.Fatalf("unexpected terminate call: count=%d id=%q", adapter.terminateCalls, adapter.lastTerminateID)
+			}
+		})
+	}
+}
+
+func TestRegistryFindSessionPropagatesCancellation(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	adapter := &dummyAdapter{
+		name:        "blocking",
+		listStarted: started,
+		listRelease: release,
+	}
+	registry := NewRegistry(adapter)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := registry.FindSession(ctx, "blocking:missing")
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("adapter refresh did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("FindSession error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("FindSession did not return after cancellation")
+	}
+	close(release)
 }

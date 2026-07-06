@@ -64,6 +64,8 @@ func (a *mockAdapter) CreateSession(ctx context.Context, opts mux.CreateOptions)
 func (a *mockAdapter) TerminateSession(ctx context.Context, id string) error { return nil }
 
 func TestHandleWS_CloseCode1011(t *testing.T) {
+	t.Parallel()
+
 	reg := mux.NewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
@@ -71,8 +73,6 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 	}
 	adapter := &mockAdapter{session: mockSess}
 	reg.Register(adapter)
-
-
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(WithRegistry(r.Context(), reg))
@@ -113,6 +113,8 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 }
 
 func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
+	t.Parallel()
+
 	reg := mux.NewRegistry()
 	// Registry injected via request context below
 	pr, pw := io.Pipe()
@@ -122,12 +124,11 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	adapter := &mockAdapter{session: mockSess}
 	reg.Register(adapter)
 
-
-
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
-		r = r.WithContext(WithRegistry(r.Context(), reg)); r.URL.RawQuery = "session=mock:test"
+		r = r.WithContext(WithRegistry(r.Context(), reg))
+		r.URL.RawQuery = "session=mock:test"
 		HandleWS(w, r)
 	}))
 	defer server.Close()
@@ -166,4 +167,3 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 		t.Fatal("output producer remained blocked after disconnect")
 	}
 }
-func testRegistry() *mux.Registry { return mux.NewRegistry() }

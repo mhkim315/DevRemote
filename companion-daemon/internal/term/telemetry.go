@@ -103,7 +103,7 @@ func StartTelemetryLoop(ctx context.Context, reg *mux.Registry) {
 			}
 
 			// 1. Gather sessions and build process snapshots
-			sessions := reg.Sessions(context.Background())
+			sessions := reg.Sessions(ctx)
 			processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, reg.Adapters())
 
 			telemetryMu.Lock()
@@ -325,7 +325,9 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 // HandleSessionsV2 replaces the old HandleSessions API and returns rich JSON metadata
 func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	reg, ok := requireRegistry(w, r)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
 		events := models.GetEvents(historyID) // historyID is the canonical ID passed from the frontend
 		w.Header().Set("Content-Type", "application/json")
@@ -340,9 +342,9 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		sess, err := reg.FindSession(r.Context(), mux.MigrateLegacyID(historyID))
 		if err == nil {
 			if hr, ok := sess.(mux.HistoryReader); ok {
-				out, err = hr.ReadHistory(context.Background(), 10000)
+				out, err = hr.ReadHistory(r.Context(), 10000)
 			} else if sr, ok := sess.(mux.ScreenReader); ok {
-				out, err = sr.ReadScreen(context.Background())
+				out, err = sr.ReadScreen(r.Context())
 			} else {
 				err = fmt.Errorf("session does not support history or screen reading")
 			}

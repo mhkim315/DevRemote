@@ -159,7 +159,9 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	reg, ok := requireRegistry(w, r)
-	if !ok { return }
+	if !ok {
+		return
+	}
 
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req struct {
@@ -180,11 +182,13 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			adapterName = "tmux" // Fallback
 		}
 
-
-		if r.Method == "POST" {
+		if r.Method == http.MethodPost {
 			opts := mux.CreateOptions{Name: ref.RawID, WorkspaceID: req.WorkspaceID}
 			createdID, err := reg.CreateSession(r.Context(), adapterName, opts)
-			if err != nil { http.Error(w, err.Error(), 500); return }
+			if err != nil {
+				http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, createdID)))
@@ -206,9 +210,9 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				adapterName = "tmux"
 			}
 
-
 			if err := reg.TerminateSession(r.Context(), adapterName, ref.RawID); err != nil {
-				http.Error(w, err.Error(), 500); return
+				http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
+				return
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -312,7 +316,9 @@ var OnApproval func(string)
 
 func HandleWS(w http.ResponseWriter, r *http.Request) {
 	reg, ok := requireRegistry(w, r)
-	if !ok { return }
+	if !ok {
+		return
+	}
 
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware

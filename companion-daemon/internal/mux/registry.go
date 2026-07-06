@@ -12,8 +12,6 @@ import (
 )
 
 // Registry owns the adapter, session, and snapshot state for all multiplexer backends.
-//
-// callers until Phase 2 provides an App-level composition root.
 type Registry struct {
 	adaptersMu sync.RWMutex
 	adapters   map[string]Adapter
@@ -35,7 +33,7 @@ func NewRegistry(adapters ...Adapter) *Registry {
 	return r
 }
 
-// Register adds an adapter and immediately refreshes its session list.
+// Register adds an adapter. Sessions are refreshed on first access.
 func (r *Registry) Register(adapter Adapter) {
 	r.adaptersMu.Lock()
 	r.adapters[adapter.Name()] = adapter
@@ -110,6 +108,9 @@ func (r *Registry) FindSession(ctx context.Context, id string) (Session, error) 
 	} else {
 		_ = r.Sessions(ctx)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	if s, err := r.FindSessionInCache(id); err == nil {
 		return s, nil
@@ -146,7 +147,7 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 		return AdapterSnapshot{LastError: err}, err
 	}
 
-	res, err, _ := r.refresh.Do(name, func() (interface{}, error) {
+	resultCh := r.refresh.DoChan(name, func() (interface{}, error) {
 		var needsRefresh bool
 		r.snapshotsMu.RLock()
 		snap, hasSnap := r.snapshots[name]
@@ -178,13 +179,19 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 		return deepCopySnapshot(currentSnap), adErr
 	})
 
-	if err != nil {
-		if snap, ok := res.(AdapterSnapshot); ok {
-			return snap, err
+	select {
+	case <-ctx.Done():
+		snap, _ := r.Snapshot(name)
+		return snap, ctx.Err()
+	case result := <-resultCh:
+		if result.Err != nil {
+			if snap, ok := result.Val.(AdapterSnapshot); ok {
+				return snap, result.Err
+			}
+			return AdapterSnapshot{LastError: result.Err}, result.Err
 		}
-		return AdapterSnapshot{LastError: err}, err
+		return result.Val.(AdapterSnapshot), nil
 	}
-	return res.(AdapterSnapshot), nil
 }
 
 // Sessions returns the full set of sessions from all adapters.

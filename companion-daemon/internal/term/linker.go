@@ -3,7 +3,6 @@ package term
 import (
 	"context"
 	"encoding/json"
-	"devremote/companion-daemon/internal/mux"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"sync"
 
 	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/mux"
 )
 
 type SessionLink struct {
@@ -202,7 +202,9 @@ func GetAllLinks() []SessionLink {
 
 func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 	reg, ok := requireRegistry(w, r)
-	if !ok { return }
+	if !ok {
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {

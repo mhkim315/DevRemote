@@ -212,7 +212,7 @@ func parseCmuxTree(out []byte, runner CommandRunner, health RegistryHealth) ([]S
 				surfaceID:   surfaceID,
 				workspaceID: currentWorkspace,
 				runner:      runner,
-					health:      health,
+				health:      health,
 			})
 		}
 	}
@@ -245,7 +245,7 @@ func (a *cmuxAdapter) GetSession(id string) (Session, error) {
 		title:     "cmux panel",
 		surfaceID: id,
 		runner:    a.runner,
-			health:    a.health,
+		health:    a.health,
 	}, nil
 }
 
@@ -326,9 +326,9 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 				if consecutiveErrs >= maxErrs {
 					// Force adapter refresh to update health status
 					_, refreshErr := s.session.health.Refresh(s.ctx, "cmux", true)
-				if refreshErr != nil {
-					log.Printf("cmux health refresh failed: %v", refreshErr)
-				}
+					if refreshErr != nil {
+						log.Printf("cmux health refresh failed: %v", refreshErr)
+					}
 					// Close with error to notify reader
 					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
 					return
@@ -466,7 +466,6 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
 
-
 	// Parse output to find "surface:NN"
 	outStr := string(out)
 	re := regexp.MustCompile(`surface:\s*(\d+)`)
@@ -483,11 +482,8 @@ func (a *cmuxAdapter) TerminateSession(ctx context.Context, rawID string) error 
 		return fmt.Errorf("invalid surface ID format (must be surface:<id>)")
 	}
 	_, err := a.runner.Run(ctx, CommandOptions{}, "close-surface", "--surface", rawID)
-	if err == nil {
-	}
 	return err
 }
-
 
 // CmuxPanelInfo represents the data we get from cmux list-panels
 type CmuxPanelInfo struct {

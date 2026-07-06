@@ -89,6 +89,7 @@ func TestCmuxWriteInputSplitsTextAndLineEndings(t *testing.T) {
 
 func TestPollScreenFailures(t *testing.T) {
 	var calls int
+	health := &mockRegistryHealth{}
 
 	mockRunner := &mockCmuxRunner{
 		runFunc: func(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error) {
@@ -108,8 +109,7 @@ func TestPollScreenFailures(t *testing.T) {
 		id:        "surface:1",
 		surfaceID: "surface:1",
 		runner:    mockRunner,
-		
-		health:    &mockRegistryHealth{},
+		health:    health,
 	}
 
 	stream, err := session.OpenStream(context.Background())
@@ -145,6 +145,12 @@ func TestPollScreenFailures(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timeout waiting for stream to close due to max errors")
 	}
+
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	if health.calls != 1 || health.name != "cmux" || !health.force {
+		t.Fatalf("unexpected health refresh: calls=%d name=%q force=%v", health.calls, health.name, health.force)
+	}
 }
 
 func TestPollScreenBlockedWriteClose(t *testing.T) {
@@ -161,7 +167,6 @@ func TestPollScreenBlockedWriteClose(t *testing.T) {
 		id:        "surface:1",
 		surfaceID: "surface:1",
 		runner:    mockRunner,
-		
 	}
 
 	stream, err := session.OpenStream(context.Background())
@@ -216,7 +221,6 @@ func TestPollScreenCloseCancelsInFlightCommand(t *testing.T) {
 		id:        "surface:1",
 		surfaceID: "surface:1",
 		runner:    mockRunner,
-		
 	}
 	stream, err := session.OpenStream(context.Background())
 	if err != nil {
@@ -312,8 +316,40 @@ func TestSerialCommandRunnerPreventsConcurrentSocketWrites(t *testing.T) {
 	}
 }
 
-type mockRegistryHealth struct{}
+func TestNewCmuxAdapterRejectsNilHealth(t *testing.T) {
+	if _, err := NewCmuxAdapter(nil); err == nil {
+		t.Fatal("expected nil RegistryHealth to be rejected")
+	}
+}
 
-func (m *mockRegistryHealth) Refresh(ctx context.Context, name string, force bool) (AdapterSnapshot, error) {
-	return AdapterSnapshot{}, nil
+func TestNewCmuxAdapterStoresHealth(t *testing.T) {
+	health := &mockRegistryHealth{}
+	adapter, err := NewCmuxAdapter(health)
+	if err != nil {
+		t.Fatalf("NewCmuxAdapter failed: %v", err)
+	}
+	cmux, ok := adapter.(*cmuxAdapter)
+	if !ok {
+		t.Fatalf("adapter type = %T, want *cmuxAdapter", adapter)
+	}
+	if cmux.health != health {
+		t.Fatal("adapter did not retain the supplied RegistryHealth")
+	}
+}
+
+type mockRegistryHealth struct {
+	mu         sync.Mutex
+	calls      int
+	name       string
+	force      bool
+	refreshErr error
+}
+
+func (m *mockRegistryHealth) Refresh(_ context.Context, name string, force bool) (AdapterSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	m.name = name
+	m.force = force
+	return AdapterSnapshot{}, m.refreshErr
 }
