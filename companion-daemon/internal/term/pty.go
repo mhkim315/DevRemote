@@ -262,31 +262,23 @@ window.addEventListener('resize',function(){fitTerminal()});setInterval(function
 }
 
 var (
-	pendingCmds = make(map[string]string)
-	cmdMu       sync.Mutex
+// CommandBroker moved to term.Handlers.Cmds (Phase 4.3)
 )
 
-func HandleCmd(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {
 		session = "devremote"
 	}
 	if r.Method == "POST" {
 		body, _ := io.ReadAll(r.Body)
-		cmdMu.Lock()
-		pendingCmds[session] = string(body)
-		log.Printf("CMD POST [%s]: %q", session, pendingCmds[session])
-		cmdMu.Unlock()
+		h.Cmds.Put(session, body)
+		log.Printf("CMD POST [%s]: %q", session, string(body))
 		w.WriteHeader(200)
 		return
 	}
-	cmdMu.Lock()
-	cmd := pendingCmds[session]
-	if cmd != "" {
-		pendingCmds[session] = ""
-	}
-	cmdMu.Unlock()
-	w.Write([]byte(cmd))
+	cmd := h.Cmds.Take(session)
+	w.Write(cmd)
 }
 
 func HandleDump(w http.ResponseWriter, r *http.Request) {

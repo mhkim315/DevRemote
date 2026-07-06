@@ -104,6 +104,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	reg.Register(mux.NewTmuxAdapter())
 
 	events := term.NewMemoryEventStore()
+	cmds := term.NewCommandBroker()
 	links, linkErr := term.NewFileLinkStore()
 	if linkErr != nil {
 		log.Printf("Failed to create link store: %v (links disabled)", linkErr)
@@ -124,7 +125,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			InsecureLocalOnly:  cfg.InsecureLocalOnly,
 		})
 	}
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links}
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
@@ -151,7 +152,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
-	serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(term.HandleCmd))
+	serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {
