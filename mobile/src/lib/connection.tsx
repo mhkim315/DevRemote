@@ -4,6 +4,7 @@ import { setBaseURL, getBaseURL } from './client';
 
 interface ConnectionState {
   baseURL: string;
+  isConnected: boolean;
   loading: boolean;
   connect: (url: string) => Promise<void>;
   disconnect: () => Promise<void>;
@@ -11,6 +12,7 @@ interface ConnectionState {
 
 const ConnectionContext = createContext<ConnectionState>({
   baseURL: '',
+  isConnected: false,
   loading: true,
   connect: async () => {},
   disconnect: async () => {},
@@ -22,14 +24,16 @@ export function useConnection() {
 
 export function ConnectionProvider({ children }: { children: React.ReactNode }) {
   const [baseURL, setBaseURLState] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Restore saved URL on mount.
+  // Restore saved URL on mount. This is the single AsyncStorage read point.
   useEffect(() => {
     AsyncStorage.getItem('BASE_URL').then((url) => {
       if (url) {
         setBaseURLState(url);
         setBaseURL(url);
+        setIsConnected(true);
       }
       setLoading(false);
     }).catch(() => setLoading(false));
@@ -38,6 +42,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const connect = useCallback(async (url: string) => {
     setBaseURLState(url);
     setBaseURL(url);
+    setIsConnected(true);
     try {
       await AsyncStorage.setItem('BASE_URL', url);
     } catch (e) {
@@ -47,6 +52,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
 
   const disconnect = useCallback(async () => {
     setBaseURLState('');
+    setIsConnected(false);
     try {
       await AsyncStorage.removeItem('BASE_URL');
     } catch (e) {
@@ -55,7 +61,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   return (
-    <ConnectionContext.Provider value={{ baseURL, loading, connect, disconnect }}>
+    <ConnectionContext.Provider value={{ baseURL, isConnected, loading, connect, disconnect }}>
       {children}
     </ConnectionContext.Provider>
   );

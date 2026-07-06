@@ -4,11 +4,7 @@ import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
 import { config } from '../config';
 
-type Props = {
-  onConnect: () => void;
-};
-
-export default function ConnectScreen({ onConnect }: Props) {
+export default function ConnectScreen() {
   const { connect } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
@@ -30,7 +26,6 @@ export default function ConnectScreen({ onConnect }: Props) {
       setScanned(true);
       
       await connect(data);
-      onConnect();
     }
   };
 
@@ -72,7 +67,6 @@ export default function ConnectScreen({ onConnect }: Props) {
         <View style={styles.manualBtn}>
           <Button title="Connect to term.fullcount.kr" onPress={async () => {
             await connect('https://term.fullcount.kr');
-            onConnect();
           }} color="#45EBE9" />
         </View>
         <Text style={styles.manualHint}>Tap above to skip QR. Or scan the terminal QR code.</Text>

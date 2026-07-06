@@ -4,18 +4,16 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getBaseURL, setBaseURL, registerPushToken } from './src/lib/client';
-import { ConnectionProvider } from './src/lib/connection';
+import { registerPushToken } from './src/lib/client';
+import { ConnectionProvider, useConnection } from './src/lib/connection';
 
 import AuthScreen from './src/screens/AuthScreen';
 import ConnectScreen from './src/screens/ConnectScreen';
 import { RootTabs } from './src/navigation/RootNavigator';
 
-export default function App() {
+function AppContent() {
   const [session, setSession] = useState<Session | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const { isConnected, loading } = useConnection();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -25,19 +23,11 @@ export default function App() {
     supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
-
-    AsyncStorage.getItem('BASE_URL').then((url) => {
-      if (url) {
-        setBaseURL(url);
-        setIsConnected(true);
-      }
-      setLoading(false);
-    });
   }, []);
 
   useEffect(() => {
     async function setupPush() {
-      if (!isConnected) return;
+      if (!isConnected || !session) return;
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
       if (existingStatus !== 'granted') {
@@ -47,28 +37,34 @@ export default function App() {
       if (finalStatus !== 'granted') return;
 
       const tokenData = await Notifications.getExpoPushTokenAsync({ projectId: 'devremote-mhk' });
-      const token = tokenData.data;
-      console.log('Push token:', token);
+      const pushToken = tokenData.data;
+      console.log('Push token:', pushToken);
 
-      registerPushToken('', token).catch(console.error);
+      registerPushToken(session.access_token, pushToken).catch(console.error);
     }
     setupPush();
-  }, [isConnected]);
+  }, [isConnected, session]);
 
   if (loading) return null;
 
   return (
+    <SafeAreaProvider>
+      <StatusBar style="light" />
+      {!session ? (
+        <AuthScreen />
+      ) : !isConnected ? (
+        <ConnectScreen />
+      ) : (
+        <RootTabs token={session.access_token} />
+      )}
+    </SafeAreaProvider>
+  );
+}
+
+export default function App() {
+  return (
     <ConnectionProvider>
-      <SafeAreaProvider>
-        <StatusBar style="light" />
-        {!session ? (
-          <AuthScreen />
-        ) : !isConnected ? (
-          <ConnectScreen onConnect={() => setIsConnected(true)} />
-        ) : (
-          <RootTabs token={session.access_token} onDisconnect={() => setIsConnected(false)} />
-        )}
-      </SafeAreaProvider>
+      <AppContent />
     </ConnectionProvider>
   );
 }

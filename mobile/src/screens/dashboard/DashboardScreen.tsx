@@ -10,10 +10,9 @@ interface Props {
   onSelectAgent: (sessionName: string) => void;
   onSnippets: () => void;
   token?: string;
-  onDisconnect?: () => void;
 }
 
-export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDisconnect }: Props) {
+export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const { disconnect } = useConnection();
@@ -93,7 +92,6 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, onDi
         <View style={{flexDirection:'row', gap:6}}>
           <TouchableOpacity onPress={async () => {
             await disconnect();
-            if (onDisconnect) onDisconnect();
           }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
             <Text style={[styles.snippetBtnText, {color: '#f85149'}]}>↻ RESCAN</Text>
           </TouchableOpacity>

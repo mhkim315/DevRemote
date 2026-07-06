@@ -20,7 +20,7 @@ export function HistoryModal({ visible, onClose, session, token }: Props) {
         .then(data => {
           // data is AgentEvent[] — extract terminal output Detail fields.
           const text = Array.isArray(data)
-            ? data.map(e => e.Detail || e.Summary || '').join('\n')
+            ? data.map((e: any) => e.detail || e.summary || '').join('\n')
             : JSON.stringify(data);
           const strippedText = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
           setHistory(strippedText);
