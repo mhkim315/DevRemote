@@ -234,18 +234,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 4. Signal tunnel and wait for exit. If the tunnel already exited,
-	// skip the signal to avoid os.ErrProcessDone.
+	// 4. Signal tunnel and wait for exit. Ignore os.ErrProcessDone
+	// (process already exited between the check and the signal).
 	if a.tunnel != nil {
-		select {
-		case <-a.tunnel.Done():
-			log.Println("Shutdown: tunnel already exited")
-		default:
-			log.Println("Shutdown: signalling tunnel...")
-			if err := a.tunnel.Signal(syscall.SIGTERM); err != nil {
-				log.Printf("Tunnel signal error: %v", err)
-				errs = append(errs, fmt.Errorf("tunnel signal: %w", err))
-			}
+		log.Println("Shutdown: signalling tunnel...")
+		if err := a.tunnel.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			log.Printf("Tunnel signal error: %v", err)
+			errs = append(errs, fmt.Errorf("tunnel signal: %w", err))
 		}
 		select {
 		case <-a.tunnel.Done():

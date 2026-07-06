@@ -119,6 +119,18 @@ func newFakeTunnelDone() *fakeTunnel {
 	return t
 }
 
+// recordingListener wraps a net.Listener and records when Close is called.
+type recordingListener struct {
+	net.Listener
+	order *[]string
+	name  string
+}
+
+func (r *recordingListener) Close() error {
+	*r.order = append(*r.order, r.name+":close")
+	return r.Listener.Close()
+}
+
 // ── Tests ──
 
 func TestNewApp_CreatesPrivateMux(t *testing.T) {
@@ -232,34 +244,39 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 }
 
 func TestApp_ShutdownOrder(t *testing.T) {
-	// Verify full shutdown order: HTTP -> telemetry -> watcher -> IPC.
+	// Verify shutdown order: HTTP → telemetry → watcher → IPC.
+	// HTTP shutdown is verified by checking the listener is closed after Shutdown.
+	// telemetry/watcher/IPC order is verified via the recorder.
 	term.InsecureLocalOnly = true
 
 	var order []string
 
-	// Use a real httptest server so we can verify HTTP is shut down first.
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 
-	// Replace server with httptest so we control its lifecycle.
-	ts := httptest.NewServer(app.server.Handler)
-	app.server = ts.Config
-	app.server.Addr = ts.Listener.Addr().String()
+	// Real listener so we can verify it's closed after Shutdown.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	app.server.Addr = l.Addr().String()
+	go app.server.Serve(l)
 
 	// Inject fake resources with order recorder.
 	app.watcher = &fakeWatcher{closeOrdr: &order, name: "watcher"}
 	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
-	tCtx, tCancel := context.WithCancel(context.Background())
-	app.telemetryCancel = tCancel
-	app.telemetryDone = term.StartTelemetryLoop(tCtx, app.registry)
+	// Telemetry: custom done channel to record cancel timing.
+	telemetryDone := make(chan struct{})
+	app.telemetryDone = telemetryDone
+	app.telemetryCancel = func() {
+		order = append(order, "telemetry:cancel")
+		close(telemetryDone)
+	}
 
-	// Shutdown. We use ts.Close() first to stop HTTP, then verify order.
-	// The Shutdown method calls server.Shutdown which will succeed because
-	// httptest server uses its own listener.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -267,19 +284,23 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Shutdown failed: %v", err)
 	}
-	ts.Close() // ensure test server is fully closed
 
 	t.Logf("shutdown order: %v", order)
 
-	if len(order) < 3 {
-		t.Fatalf("expected at least 3 order entries, got %d: %v", len(order), order)
+	// 1. HTTP server stopped accepting (listener closed).
+	if _, err := net.Dial("tcp", l.Addr().String()); err == nil {
+		t.Error("HTTP listener still accepting after Shutdown")
 	}
 
-	// Verify watcher before IPC.
+	// 2. Verify telemetry → watcher → IPC order.
+	telIdx := indexOf(order, "telemetry:cancel")
 	watcherIdx := indexOf(order, "watcher:close")
 	ipcCloseIdx := indexOf(order, "ipc:close")
 	ipcWaitIdx := indexOf(order, "ipc:wait")
 
+	if telIdx < 0 {
+		t.Error("telemetry was not cancelled")
+	}
 	if watcherIdx < 0 {
 		t.Error("watcher was not closed")
 	}
@@ -289,9 +310,16 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	if ipcWaitIdx < 0 {
 		t.Error("ipc Wait was not called")
 	}
+
+	// Telemetry must precede watcher.
+	if telIdx >= 0 && watcherIdx >= 0 && telIdx > watcherIdx {
+		t.Error("telemetry cancelled after watcher close — order violation")
+	}
+	// Watcher must precede IPC.
 	if watcherIdx >= 0 && ipcCloseIdx >= 0 && watcherIdx > ipcCloseIdx {
 		t.Error("watcher closed after ipc close — order violation")
 	}
+	// IPC close before IPC wait.
 	if ipcCloseIdx >= 0 && ipcWaitIdx >= 0 && ipcCloseIdx > ipcWaitIdx {
 		t.Error("ipc close after ipc wait — order violation")
 	}
@@ -623,7 +651,8 @@ func TestApp_TunnelShutdownSignalsAndWaits(t *testing.T) {
 }
 
 func TestApp_TunnelAlreadyExitedSkipsSignal(t *testing.T) {
-	// If the tunnel already exited before Shutdown, Signal is skipped.
+	// When the tunnel already exited, Signal returns os.ErrProcessDone
+	// which must be ignored (not treated as a shutdown error).
 	term.InsecureLocalOnly = true
 
 	var order []string
@@ -631,7 +660,7 @@ func TestApp_TunnelAlreadyExitedSkipsSignal(t *testing.T) {
 		done:      make(chan struct{}),
 		sigOrdr:   &order,
 		name:      "tunnel",
-		signalErr: errors.New("should not be called"),
+		signalErr: os.ErrProcessDone,
 	}
 	close(tun.done) // already exited
 
@@ -648,10 +677,11 @@ func TestApp_TunnelAlreadyExitedSkipsSignal(t *testing.T) {
 
 	shutdownErr := app.Shutdown(ctx)
 	if shutdownErr != nil {
-		t.Fatalf("Shutdown failed (tunnel already exited): %v", shutdownErr)
+		t.Fatalf("Shutdown should ignore os.ErrProcessDone, got: %v", shutdownErr)
 	}
-	if idx := indexOf(order, "tunnel:signal"); idx >= 0 {
-		t.Error("tunnel was signalled even though it already exited")
+	// Signal was called and returned os.ErrProcessDone which was ignored.
+	if idx := indexOf(order, "tunnel:signal"); idx < 0 {
+		t.Error("tunnel was not signalled")
 	}
 }
 
