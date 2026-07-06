@@ -254,12 +254,14 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	app.watcher = &fakeWatcher{closeOrdr: &order, name: "watcher"}
 	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
-	// Telemetry: custom done channel to record cancel timing.
-	telemetryDone := make(chan struct{})
-	app.telemetryDone = telemetryDone
-	app.telemetryCancel = func() {
+	// Telemetry: record cancel timing. Use a minimal service so Done() is already closed.
+	app.telemetry = term.NewTelemetryService(app.registry, app.events, app.links, nil)
+	app.telemetryCtxCancel = func() {
 		order = append(order, "telemetry:cancel")
-		close(telemetryDone)
+		// Start + immediately cancel so Done() is closed.
+		ctx, c := context.WithCancel(context.Background())
+		go app.telemetry.Run(ctx)
+		c()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

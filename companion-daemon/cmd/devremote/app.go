@@ -83,11 +83,11 @@ type App struct {
 	ipcPath string
 
 	// Background resources owned by App for lifecycle control.
-	telemetryDone   <-chan struct{}    // closed when telemetry goroutine exits
-	telemetryCancel context.CancelFunc // cancels telemetry context
-	ipc             ipcResource
-	watcher         watcherResource
-	tunnel          tunnelResource // nil in insecure mode
+	telemetry          *term.TelemetryService // telemetry sampling (owns state machine)
+	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
+	ipc                ipcResource
+	watcher            watcherResource
+	tunnel             tunnelResource // nil in insecure mode
 }
 
 // NewApp creates the App with production defaults.
@@ -154,13 +154,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		w.WriteHeader(200)
 	}))
 
-	// term.OnApproval is a package global (deferred to Phase 5).
-	term.OnApproval = func(msg string) {
-		log.Printf("🚨 APPROVAL DETECTED: %s", msg)
-		if pushToken != "" {
-			go sendPushNotification(pushToken, msg)
-		}
-	}
+	// 3. Telemetry service owns the state machine and approval detection.
+	notifier := &pushNotifier{token: &pushToken}
+	telemetry := term.NewTelemetryService(reg, events, links, notifier)
+	h.Telemetry = telemetry
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
 	serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
@@ -171,13 +168,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	return &App{
-		config:   cfg,
-		deps:     deps,
-		registry: reg,
-		server:   &http.Server{Addr: addr, Handler: serveMux},
-		events:   events,
-		links:    links,
-		ipcPath:  "/tmp/pokit.sock",
+		config:    cfg,
+		deps:      deps,
+		registry:  reg,
+		server:    &http.Server{Addr: addr, Handler: serveMux},
+		events:    events,
+		links:     links,
+		telemetry: telemetry,
+		ipcPath:   "/tmp/pokit.sock",
 	}, nil
 }
 
@@ -186,8 +184,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 func (a *App) Run(ctx context.Context) error {
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
-	a.telemetryCancel = cancelTelemetry
-	a.telemetryDone = term.StartTelemetryLoop(telemetryCtx, a.registry, a.events, a.links)
+	a.telemetryCtxCancel = cancelTelemetry
+	go a.telemetry.Run(telemetryCtx)
 
 	a.watcher = a.startWatcher()
 
@@ -245,11 +243,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 
 	// 2. Stop telemetry.
-	if a.telemetryCancel != nil {
+	if a.telemetry != nil && a.telemetryCtxCancel != nil {
 		log.Println("Shutdown: stopping telemetry...")
-		a.telemetryCancel()
+		a.telemetryCtxCancel()
 		select {
-		case <-a.telemetryDone:
+		case <-a.telemetry.Done():
 			log.Println("Shutdown: telemetry stopped")
 		case <-ctx.Done():
 			log.Println("Shutdown: telemetry stop deadline exceeded")
@@ -358,6 +356,20 @@ func runDaemon(cfg Config) {
 		log.Fatalf("Daemon error: %v", err)
 	}
 	log.Println("Daemon stopped.")
+}
+
+// ── Notifier ──
+
+type pushNotifier struct {
+	token *string
+}
+
+func (n *pushNotifier) ApprovalRequired(_ context.Context, _ string, message string) error {
+	log.Printf("🚨 APPROVAL DETECTED: %s", message)
+	if *n.token != "" {
+		go sendPushNotification(*n.token, message)
+	}
+	return nil
 }
 
 // ── Production implementations ──

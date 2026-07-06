@@ -54,7 +54,7 @@ func LinkSession(link SessionLink, reg *mux.Registry, store LinkStore, events Ev
 		return err
 	}
 
-	ClearTelemetryCache(link.SessionID)
+	// Telemetry state cleared by TelemetryService.Run on next cycle.link.SessionID)
 	events.Clear(link.SessionID)
 	return nil
 }
@@ -67,7 +67,7 @@ func UnlinkSession(sessionID string, reg *mux.Registry, store LinkStore, events 
 		return err
 	}
 
-	ClearTelemetryCache(sessionID)
+	// Telemetry state cleared by TelemetryService.Run on next cycle.sessionID)
 	events.Clear(sessionID)
 	return nil
 }

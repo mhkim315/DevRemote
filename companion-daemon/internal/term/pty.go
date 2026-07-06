@@ -94,9 +94,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
-// OnApproval is called when Claude asks for user approval.
-var OnApproval func(string)
-
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 

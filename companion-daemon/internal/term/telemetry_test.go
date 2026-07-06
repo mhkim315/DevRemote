@@ -167,20 +167,20 @@ func TestEvaluateState(t *testing.T) {
 	}
 }
 
-func TestStartTelemetryLoop_StopsOnCancel(t *testing.T) {
+func TestTelemetryService_StopsOnCancel(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	reg := mux.NewRegistry()
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
 
-	done := StartTelemetryLoop(ctx, reg, NewMemoryEventStore(), nil)
-
+	go svc.Run(ctx)
 	cancel()
 
 	select {
-	case <-done:
+	case <-svc.Done():
 	case <-time.After(2 * time.Second):
-		t.Fatal("telemetry loop did not stop within deadline after cancel")
+		t.Fatal("telemetry service did not stop within deadline after cancel")
 	}
 }
 
