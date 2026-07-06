@@ -13,6 +13,8 @@ import (
 
 type tmuxAdapter struct{}
 
+const tmuxSessionFormat = "#{session_id}::POKIT::#{session_name}"
+
 type tmuxSession struct {
 	id      string
 	target  string
@@ -99,10 +101,14 @@ func (a *tmuxAdapter) Name() string {
 }
 
 func (a *tmuxAdapter) ListSessions() ([]Session, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_id}\t#{session_name}")
-	out, err := cmd.Output()
+	cmd := exec.Command("tmux", "list-sessions", "-F", tmuxSessionFormat)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, nil
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return nil, fmt.Errorf("tmux list-sessions: %w", err)
+		}
+		return nil, fmt.Errorf("tmux list-sessions: %w: %s", err, detail)
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	sessions := make([]Session, 0, len(lines))
@@ -116,6 +122,9 @@ func (a *tmuxAdapter) ListSessions() ([]Session, error) {
 		}
 		sessions = append(sessions, &tmuxSession{id: name, target: target, adapter: a})
 	}
+	if len(sessions) == 0 && strings.TrimSpace(string(out)) != "" {
+		return nil, fmt.Errorf("tmux list-sessions returned no parseable sessions: %q", strings.TrimSpace(string(out)))
+	}
 	return sessions, nil
 }
 
@@ -125,7 +134,7 @@ func (a *tmuxAdapter) GetSession(id string) (Session, error) {
 }
 
 func parseTmuxListSessionLine(line string) (target string, name string, ok bool) {
-	parts := strings.SplitN(line, "\t", 2)
+	parts := strings.SplitN(line, "::POKIT::", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", false
 	}
@@ -133,7 +142,7 @@ func parseTmuxListSessionLine(line string) (target string, name string, ok bool)
 }
 
 func resolveTmuxTarget(ctx context.Context, name string) (string, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_id}\t#{session_name}")
+	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", tmuxSessionFormat)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

@@ -3,7 +3,7 @@ package mux
 import "testing"
 
 func TestParseTmuxListSessionLine(t *testing.T) {
-	target, name, ok := parseTmuxListSessionLine("$8\ttmux:aider")
+	target, name, ok := parseTmuxListSessionLine("$8::POKIT::tmux:aider")
 	if !ok {
 		t.Fatal("expected parse to succeed")
 	}
