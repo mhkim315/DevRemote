@@ -360,3 +360,26 @@ func (a *bareAdapter) GetSession(id string) (mux.Session, error) {
 	}
 	return nil, mux.ErrSessionNotFound
 }
+
+func TestAPIGolden_BackwardCompat_MissingNewFields(t *testing.T) {
+	// Verify that old daemon responses without displayId/capabilities
+	// still deserialize correctly. New fields are omitempty.
+	oldFormat := `[{"id":"tmux:old","state":"idle","load":0,"runner":"cat","runnerColor":"#58a6ff","adapter":"tmux","events":[]}]`
+	var sessions []SessionTelemetry
+	if err := json.Unmarshal([]byte(oldFormat), &sessions); err != nil {
+		t.Fatalf("old format deserialize: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	s := sessions[0]
+	if s.ID != "tmux:old" {
+		t.Errorf("id = %q", s.ID)
+	}
+	if s.DisplayID != "" {
+		t.Errorf("displayId = %q, want empty (omitempty field)", s.DisplayID)
+	}
+	if s.Capabilities != nil {
+		t.Errorf("capabilities = %v, want nil (omitempty field)", s.Capabilities)
+	}
+}
