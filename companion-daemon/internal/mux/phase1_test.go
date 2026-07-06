@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,10 @@ func (a *testAdapter) GetSession(id string) (Session, error) {
 	return nil, ErrSessionNotFound
 }
 
+func (a *testAdapter) CreateSession(_ context.Context, opts CreateOptions) (string, error) {
+	return opts.Name, nil
+}
+
 func TestRegistry_RejectDuplicateAdapter(t *testing.T) {
 	reg := MustNewRegistry()
 	if err := reg.Register(&testAdapter{name: "dup"}); err != nil {
@@ -93,5 +98,100 @@ func TestSentinelErrors_Distinguishable(t *testing.T) {
 				t.Errorf("%v and %v should be distinct", e1, e2)
 			}
 		}
+	}
+}
+
+// Phase 1 contract regression tests.
+
+func TestValidateAdapterName(t *testing.T) {
+	valid := []string{"tmux", "cmux", "test-adapter", "backend_2", "a"}
+	for _, name := range valid {
+		if err := ValidateAdapterName(name); err != nil {
+			t.Errorf("ValidateAdapterName(%q) = %v, want nil", name, err)
+		}
+	}
+	invalid := []string{"", "Tmux", "tmux:bad", "has space", "a\x00b", "9start"}
+	for _, name := range invalid {
+		if err := ValidateAdapterName(name); err == nil {
+			t.Errorf("ValidateAdapterName(%q) = nil, want error", name)
+		}
+	}
+}
+
+func TestNewRegistry_DuplicateAdapter(t *testing.T) {
+	a1 := &testAdapter{name: "dup"}
+	a2 := &testAdapter{name: "dup"}
+	_, err := NewRegistry(a1, a2)
+	if err == nil {
+		t.Fatal("NewRegistry with duplicate names: got nil, want error")
+	}
+	if !errors.Is(err, ErrDuplicateAdapter) {
+		t.Errorf("error = %v, want ErrDuplicateAdapter", err)
+	}
+}
+
+func TestRegister_InvalidName(t *testing.T) {
+	reg := MustNewRegistry()
+	err := reg.Register(&testAdapter{name: "BAD"})
+	if err == nil {
+		t.Fatal("Register with uppercase name: got nil, want error")
+	}
+	if !errors.Is(err, ErrInvalidSessionID) {
+		t.Errorf("error = %v, want ErrInvalidSessionID", err)
+	}
+}
+
+func TestFindSession_InvalidID(t *testing.T) {
+	reg := MustNewRegistry()
+	ctx := context.Background()
+	_, err := reg.FindSession(ctx, "")
+	if err == nil {
+		t.Fatal("FindSession with empty ID: got nil, want error")
+	}
+	if !errors.Is(err, ErrInvalidSessionID) {
+		t.Errorf("error = %v, want ErrInvalidSessionID", err)
+	}
+	_, err = reg.FindSession(ctx, "bad\x1fid")
+	if err == nil {
+		t.Fatal("FindSession with control char: got nil, want error")
+	}
+}
+
+func TestFindSession_AdapterUnavailable(t *testing.T) {
+	reg := MustNewRegistry()
+	ctx := context.Background()
+	_, err := reg.FindSession(ctx, "nonexistent:session")
+	if err == nil {
+		t.Fatal("FindSession with missing adapter: got nil, want error")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
+	}
+}
+
+func TestRefresh_TimeoutPreservation(t *testing.T) {
+	// Verify that context.DeadlineExceeded is wrapped with ErrTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	// The context is already expired, so the adapter will see DeadlineExceeded.
+	reg := MustNewRegistry(&testAdapter{name: "test"})
+	_, err := reg.Refresh(ctx, "test", true)
+	if err == nil {
+		t.Fatal("Refresh with expired context: got nil, want error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestCreateSession_ReturnsLocalID(t *testing.T) {
+	reg := MustNewRegistry(&testAdapter{name: "test"})
+	id, err := reg.CreateSession(context.Background(), "test", CreateOptions{Name: "session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Creator must return local ID (not canonical prefix).
+	if strings.Contains(id, "test:") {
+		t.Errorf("CreateSession returned %q, want local ID without adapter prefix", id)
 	}
 }

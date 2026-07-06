@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -167,6 +168,10 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 		return AdapterSnapshot{LastError: err}, err
 	}
 
+	// Phase 3 deferred: singleflight shares first waiter's context across all
+	// concurrent callers. If the first caller cancels, other waiters get the
+	// cancelled result. Phase 3 lifecycle/concurrency will add per-caller
+	// timeout isolation.
 	resultCh := r.refresh.DoChan(name, func() (interface{}, error) {
 		var needsRefresh bool
 		r.snapshotsMu.RLock()
@@ -192,7 +197,12 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 			currentSnap.LastSuccessAt = time.Now()
 		} else {
 			fmt.Printf("registry: adapter %s refresh failed (retaining stale cache): %v\n", name, adErr)
-			wrapped := fmt.Errorf("%w: %w", ErrAdapterUnavailable, adErr)
+			var wrapped error
+			if errors.Is(adErr, context.DeadlineExceeded) {
+				wrapped = fmt.Errorf("%w: %w: %w", ErrTimeout, ErrAdapterUnavailable, adErr)
+			} else {
+				wrapped = fmt.Errorf("%w: %w", ErrAdapterUnavailable, adErr)
+			}
 			currentSnap.LastError = wrapped
 			adErr = wrapped
 		}
