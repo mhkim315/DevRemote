@@ -255,3 +255,42 @@ func (a *goldenScreenAdapter) GetSession(id string) (mux.Session, error) {
 }
 
 var _ mux.Adapter = (*goldenAdapter)(nil) // compile-time check
+
+func TestAPIGolden_PostCreateCmuxSession_CanonicalID(t *testing.T) {
+	// cmux create must return canonical ID via handler exactly once.
+	reg := mux.MustNewRegistry(&cmuxCreateAdapter{})
+	h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+
+	body := strings.NewReader(`{"id":"cmux:test","runner":"agent","runnerColor":"#58a6ff"}`)
+	req := httptest.NewRequest("POST", "/api/sessions", body)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST cmux create: status = %d, want 200", rec.Code)
+	}
+	var resp struct {
+		Status string `json:"status"`
+		ID     string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("POST cmux create: invalid JSON: %v", err)
+	}
+	// Handler must canonicalize exactly once: adapter "cmux" + ":" + local "surface:42" = "cmux:surface:42"
+	if resp.ID != "cmux:surface:42" {
+		t.Errorf("id = %q, want canonical 'cmux:surface:42' (not double-prefixed)", resp.ID)
+	}
+}
+
+type cmuxCreateAdapter struct{}
+
+func (a *cmuxCreateAdapter) Name() string { return "cmux" }
+func (a *cmuxCreateAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
+	return nil, nil
+}
+func (a *cmuxCreateAdapter) GetSession(id string) (mux.Session, error) {
+	return nil, mux.ErrSessionNotFound
+}
+func (a *cmuxCreateAdapter) CreateSession(_ context.Context, opts mux.CreateOptions) (string, error) {
+	return "surface:42", nil // local ID (Phase 1 contract)
+}

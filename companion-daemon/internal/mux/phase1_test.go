@@ -186,9 +186,6 @@ func TestFindSession_AdapterUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("FindSession with missing adapter: got nil, want error")
 	}
-	if err == nil {
-		t.Fatal("FindSession got nil error, want ErrAdapterUnavailable")
-	}
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
 	}
