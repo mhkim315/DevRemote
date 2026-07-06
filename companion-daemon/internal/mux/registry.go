@@ -303,3 +303,17 @@ func deepCopySnapshot(snap AdapterSnapshot) AdapterSnapshot {
 	}
 	return copySnap
 }
+
+// ProbeAdapter checks whether an adapter is reachable by calling ListSessions
+// with a short timeout. Returns nil if healthy, error if unavailable.
+// This is separate from runtime health (snapshot.LastError) which tracks
+// the most recent refresh result during normal operation.
+func ProbeAdapter(ctx context.Context, adapter Adapter, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, err := adapter.ListSessions(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrAdapterUnavailable, err)
+	}
+	return nil
+}

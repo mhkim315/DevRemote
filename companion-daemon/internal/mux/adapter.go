@@ -92,8 +92,17 @@ type CreateOptions struct {
 
 // RegistryHealth is the minimal callback interface an adapter needs to
 // report session list changes without depending on the concrete Registry type.
+// Phase 3 deferred: replace with InvalidationSender (one-way signal) to
+// fully decouple adapter from Registry. See ADAPTER_EXPANSION_PLAN.md §5 Phase 3.
 type RegistryHealth interface {
 	Refresh(ctx context.Context, name string, force bool) (AdapterSnapshot, error)
+}
+
+// InvalidationSender is a one-way signal that an adapter's session list has changed.
+// Unlike RegistryHealth, the adapter does not wait for or depend on the refresh result.
+// Phase 3: cmux adapter will use this instead of RegistryHealth.
+type InvalidationSender interface {
+	Invalidate()
 }
 
 // Adapter defines the interface for different session backends (Native, cmux, tmux).
