@@ -72,21 +72,31 @@ state machine, 모바일 화면을 수정하지 않는 구조를 만든다.
 type Adapter interface {
     Descriptor() Descriptor
     ListSessions(ctx context.Context) ([]Session, error)
-    LookupSession(ctx context.Context, localID string) (Session, error)
 }
 
 type Descriptor struct {
     Name         string
     DisplayName  string
-    Capabilities CapabilitySet
+    Capabilities CapabilitySet // adapter가 제공할 수 있는 capability의 상한
 }
 
 type Session interface {
     LocalID() string
     Title() string
-    AdapterName() string
 }
 ```
+
+`LookupSession`은 필수 계약으로 두지 않는다. Registry의 정상 lookup 경로는 adapter 하나의
+list snapshot을 refresh한 뒤 local ID를 찾는 방식으로 통일한다. enumeration 없이
+안전하게 직접 조회할 수 있는 backend가 실제로 필요할 때만 선택 capability
+`SessionLookup`을 추가하며, 이 경로도 list lookup과 동일한 not-found/unavailable 의미를
+지켜야 한다.
+
+adapter 이름은 등록 시 Registry가 소유하며 session이 중복 보고하지 않는다. Registry는
+`SessionRef{Adapter, LocalID}`를 session과 함께 운반하거나 API DTO를 만들 때 결합한다.
+`Descriptor.Capabilities`는 adapter가 제공 가능한 기능의 상한이고, API/UI가 사용하는
+effective capability는 실제 session이 구현한 capability에서 산출한다. 두 집합이
+불일치하면 contract test가 실패해야 한다.
 
 선택 capability:
 
@@ -131,16 +141,22 @@ test: lock terminal adapter behavior matrix
 
 - `SessionRef{Adapter, LocalID}`를 canonical ID의 유일한 parser/formatter로 만든다.
 - local ID에는 `:`가 포함될 수 있음을 테스트한다 (`tmux:aider` 회귀).
-- `ListSessions(ctx)`와 `LookupSession(ctx, localID)`의 오류 의미를 정의한다.
+- snapshot refresh 후 lookup을 기본으로 하고, 선택 `SessionLookup`을 도입할 조건과
+  동일한 오류 의미를 정의한다.
 - not found, unavailable, unsupported, timeout을 구분할 typed/sentinel error를 정한다.
 - duplicate adapter name 등록은 명시적으로 실패시킨다.
 - deterministic ordering은 Registry 정책으로 유지한다.
+- adapter name 문법과 빈 adapter/local ID, control character를 거부하는 규칙을 정한다.
+- create 결과는 local ID로 통일하고 Registry/API 경계에서 정확히 한 번 canonicalize한다.
+- stale snapshot의 session을 발견한 경우 live I/O 전 강제 refresh 성공 시 not-found와
+  refresh 실패 시 unavailable을 구분한다.
 
 합격 기준:
 
 - handler/mobile/core가 정규식이나 문자열 split으로 backend를 추측하지 않는다.
 - 빈 목록과 adapter 조회 실패가 구분된다.
-- 콜론 포함 이름, Unicode 이름, 세션 종료 race가 테스트된다.
+- 콜론 포함 이름, Unicode 이름, URL encode/decode, duplicate local ID, 세션 종료 race가
+  테스트된다.
 
 ### Phase 2 — Capability 모델 정리
 
@@ -152,12 +168,17 @@ test: lock terminal adapter behavior matrix
 - unsupported 응답의 HTTP status와 JSON error 형식을 고정한다.
 - `/api/sessions`에 최소 capability metadata를 추가할 필요를 검증한다.
   추가한다면 모바일은 metadata만 소비하고 backend 이름을 분기하지 않는다.
+- API에는 기존 필드를 유지하면서 additive `displayId`, effective `capabilities`,
+  adapter health를 추가하고 구버전 payload를 읽는 모바일 호환 테스트를 둔다.
+- 모바일의 backend 이름 정규식 제거와 capability 기반 버튼 처리를 이 Phase에서
+  완료한다. fixture와 실제 세 번째 backend보다 뒤로 미루지 않는다.
 
 합격 기준:
 
 - `internal/term` production code에 `tmux`/`cmux` 조건문이 없다.
 - capability가 없는 fixture session도 panic, reconnect storm, silent fallback 없이 동작한다.
 - 기존 API 호환이 유지되거나 명시적 versioning 계획이 있다.
+- 미지의 adapter와 capability 필드가 없는 구버전 응답을 모두 안전하게 표시한다.
 
 ### Phase 3 — 실행 환경과 adapter lifecycle 표준화
 
@@ -168,6 +189,8 @@ test: lock terminal adapter behavior matrix
 - availability probe와 runtime health를 분리한다.
 - adapter가 Registry를 역참조하는 cmux refresh callback을 event/invalidation 계약으로
   치환할지 검증한다.
+- adapter가 Registry refresh를 동기 호출하지 않도록 one-way invalidation/health event의
+  소유권, backpressure, 종료 순서를 정의한다.
 - LaunchAgent, foreground terminal, GUI socket 환경 차이를 health diagnostics에 반영한다.
 
 합격 기준:
@@ -175,6 +198,8 @@ test: lock terminal adapter behavior matrix
 - 테스트가 실제 tmux/cmux 바이너리 없이 주요 오류 경로를 재현한다.
 - 명령 실패가 `nil, nil` 또는 빈 세션 성공으로 변환되지 않는다.
 - 한 adapter 고장이 다른 adapter 목록과 I/O를 막지 않는다.
+- adapter refresh를 독립적인 timeout 아래 병렬화해 느린 adapter가 다른 adapter의
+  discovery 응답을 지연시키지 않는다.
 - stale snapshot 여부와 마지막 오류가 관측 가능하다.
 
 ### Phase 4 — 공통 contract test harness
@@ -184,17 +209,22 @@ test: lock terminal adapter behavior matrix
 - adapter factory를 받아 동일 테스트를 실행하는 reusable suite를 만든다.
 - 필수 항목:
   - descriptor/name 안정성
-  - list/lookup identity 일치
+  - list/snapshot lookup identity 일치
   - context cancellation과 timeout
   - not-found 의미
   - concurrent list 안전성
   - transient failure 후 stale snapshot
   - colon/Unicode local ID
+  - invalid/empty ID, URL round-trip, duplicate adapter/local ID
+  - stale session의 종료 race와 unavailable/not-found 구분
+  - create가 local ID를 반환하고 API가 한 번만 canonicalize함
+  - 한 adapter의 hang/error가 다른 adapter 응답을 지연·차단하지 않음
 - capability별 suite:
   - live read/write/resize/close
   - screen/history
   - create→discover→terminate
   - process snapshot key identity
+  - descriptor 상한과 session effective capability 일치
 - tmux/cmux mock runner가 이 suite를 통과하게 한다.
 
 합격 기준:
@@ -244,14 +274,12 @@ test: lock terminal adapter behavior matrix
 - 공통 contract suite와 실제 smoke test를 통과한다.
 - backend가 설치되지 않은 사용자의 기존 동작에 영향이 없다.
 
-### Phase 7 — 모바일 capability-driven UX와 운영 문서
+### Phase 7 — 운영 진단과 문서
 
 작업:
 
-- 모바일의 `replace(/^(tmux|cmux):/, '')`를 canonical parser 결과 또는 server display
-  field로 교체한다.
-- adapter 이름이 아니라 capability에 따라 버튼을 표시/비활성화한다.
-- unavailable/degraded/ended 상태를 구분한다.
+- Phase 2에서 확정한 모바일 capability-driven UX를 실제 세 번째 backend로 smoke한다.
+- unavailable/degraded/ended 상태 표현과 구버전 daemon 연결을 회귀 검증한다.
 - 설치 조건, 권한, socket, foreground/LaunchAgent 지원 범위를 adapter별 문서화한다.
 - adapter 진단 endpoint 또는 CLI의 필요성을 검증한다.
 
