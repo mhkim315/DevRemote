@@ -51,11 +51,11 @@ func (r *Registry) Register(adapter Adapter) error {
 func (r *Registry) CreateSession(ctx context.Context, adapterName string, opts CreateOptions) (string, error) {
 	adapter, ok := r.Adapter(adapterName)
 	if !ok {
-		return "", fmt.Errorf("adapter %s not found", adapterName)
+		return "", fmt.Errorf("%w: adapter %s", ErrAdapterUnavailable, adapterName)
 	}
 	creator, ok := adapter.(SessionCreator)
 	if !ok {
-		return "", fmt.Errorf("adapter %s does not support session creation", adapterName)
+		return "", fmt.Errorf("%w: adapter %s", ErrUnsupported, adapterName)
 	}
 	id, err := creator.CreateSession(ctx, opts)
 	if err != nil {
@@ -69,11 +69,11 @@ func (r *Registry) CreateSession(ctx context.Context, adapterName string, opts C
 func (r *Registry) TerminateSession(ctx context.Context, adapterName string, id string) error {
 	adapter, ok := r.Adapter(adapterName)
 	if !ok {
-		return fmt.Errorf("adapter %s not found", adapterName)
+		return fmt.Errorf("%w: adapter %s", ErrAdapterUnavailable, adapterName)
 	}
 	terminator, ok := adapter.(SessionTerminator)
 	if !ok {
-		return fmt.Errorf("adapter %s does not support session termination", adapterName)
+		return fmt.Errorf("%w: adapter %s", ErrUnsupported, adapterName)
 	}
 	if err := terminator.TerminateSession(ctx, id); err != nil {
 		return err
@@ -102,6 +102,8 @@ func (r *Registry) Adapters() []Adapter {
 }
 
 // FindSession looks up a session by its canonical ID across all adapters.
+// Phase 1: snapshot refresh is the primary lookup path. Cache hits return
+// immediately; callers needing live verification should call Refresh(true) first.
 func (r *Registry) FindSession(ctx context.Context, id string) (Session, error) {
 	id = MigrateLegacyID(id)
 
@@ -122,7 +124,7 @@ func (r *Registry) FindSession(ctx context.Context, id string) (Session, error) 
 	if s, err := r.FindSessionInCache(id); err == nil {
 		return s, nil
 	}
-	return nil, fmt.Errorf("session %s not found in any adapter", id)
+	return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 }
 
 // AdapterSnapshot holds a point-in-time snapshot of an adapter's sessions.
