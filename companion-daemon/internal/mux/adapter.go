@@ -42,26 +42,10 @@ type StreamOpener interface {
 	OpenStream(ctx context.Context) (TerminalStream, error)
 }
 
-// Capability Interfaces
-
-// OutputStream represents a continuous stream of terminal output (e.g. for WebSockets)
-type OutputStream interface {
-	Read(p []byte) (n int, err error)
-}
-
-// InputWriter represents the ability to send arbitrary keystrokes to the terminal
+// InputWriter represents the ability to send keystrokes/input to the session.
+// Distinct from TerminalStream.Write which writes raw bytes to a PTY stream.
 type InputWriter interface {
 	WriteInput(ctx context.Context, data []byte) error
-}
-
-// Resizer represents the ability to resize the terminal window
-type Resizer interface {
-	Resize(ctx context.Context, rows, cols int) error
-}
-
-// Closer represents the ability to close or terminate the session stream
-type Closer interface {
-	Close() error
 }
 
 // ScreenReader represents the ability to take a one-shot snapshot of the terminal screen

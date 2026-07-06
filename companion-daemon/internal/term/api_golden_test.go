@@ -309,3 +309,54 @@ func (a *cmuxCreateAdapter) GetSession(id string) (mux.Session, error) {
 func (a *cmuxCreateAdapter) CreateSession(_ context.Context, opts mux.CreateOptions) (string, error) {
 	return "surface:42", nil // local ID (Phase 1 contract)
 }
+
+// Phase 2: unsupported capability and capability-less session tests.
+
+func TestAPIGolden_CapabilityLessSession_NoPanic(t *testing.T) {
+	sess := &bareSession{}
+	adapter := &bareAdapter{sessions: []mux.Session{sess}}
+	reg := mux.MustNewRegistry(adapter)
+	h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bare session GET: status = %d, want 200", rec.Code)
+	}
+	var sessions []SessionTelemetry
+	json.Unmarshal(rec.Body.Bytes(), &sessions)
+	for _, s := range sessions {
+		if s.ID == "bare:test" && len(s.Capabilities) != 0 {
+			t.Errorf("bare session has capabilities %v, want empty", s.Capabilities)
+		}
+	}
+
+	wsReq := httptest.NewRequest("GET", "/term/ws?session=bare:test", nil)
+	wsRec := httptest.NewRecorder()
+	h.HandleWS(wsRec, wsReq)
+	if wsRec.Code != http.StatusNotImplemented {
+		t.Errorf("bare session WS: status = %d, want 501", wsRec.Code)
+	}
+}
+
+type bareSession struct{}
+
+func (s *bareSession) ID() string          { return "test" }
+func (s *bareSession) Title() string       { return "Bare" }
+func (s *bareSession) AdapterName() string { return "bare" }
+
+type bareAdapter struct{ sessions []mux.Session }
+
+func (a *bareAdapter) Name() string { return "bare" }
+func (a *bareAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
+	return a.sessions, nil
+}
+func (a *bareAdapter) GetSession(id string) (mux.Session, error) {
+	for _, s := range a.sessions {
+		if s.ID() == id {
+			return s, nil
+		}
+	}
+	return nil, mux.ErrSessionNotFound
+}
