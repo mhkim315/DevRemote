@@ -11,9 +11,19 @@ import (
 	"devremote/companion-daemon/internal/models"
 )
 
-type tmuxAdapter struct{}
+type tmuxAdapter struct {
+	runner CommandRunner
+}
 
 const tmuxSessionFormat = "#{session_id}::POKIT::#{session_name}"
+
+// tmuxExecRunner implements CommandRunner using exec.CommandContext.
+type tmuxExecRunner struct{}
+
+func (r *tmuxExecRunner) Run(ctx context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	return cmd.CombinedOutput()
+}
 
 type tmuxSession struct {
 	id      string
@@ -93,7 +103,12 @@ func (a *tmuxAdapter) TerminateSession(ctx context.Context, id string) error {
 }
 
 func NewTmuxAdapter() Adapter {
-	return &tmuxAdapter{}
+	return &tmuxAdapter{runner: &tmuxExecRunner{}}
+}
+
+// NewTmuxAdapterWithRunner creates a tmux adapter with an injected CommandRunner.
+func NewTmuxAdapterWithRunner(runner CommandRunner) Adapter {
+	return &tmuxAdapter{runner: runner}
 }
 
 func (a *tmuxAdapter) Name() string {
@@ -101,8 +116,7 @@ func (a *tmuxAdapter) Name() string {
 }
 
 func (a *tmuxAdapter) ListSessions(ctx context.Context) ([]Session, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", tmuxSessionFormat)
-	out, err := cmd.CombinedOutput()
+	out, err := a.runner.Run(ctx, CommandOptions{}, "tmux", "list-sessions", "-F", tmuxSessionFormat)
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail == "" {
