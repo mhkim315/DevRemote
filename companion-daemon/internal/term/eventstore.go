@@ -10,7 +10,7 @@ import (
 // EventStore is the interface for agent event storage.
 // Tests can inject a fake implementation.
 type EventStore interface {
-	// Emit appends a single event for the given session (capped at 100).
+	// Emit appends a single event (capped at 500 same as Append).
 	Emit(session, eventType, summary, detail string)
 	// Append adds multiple parsed events (capped at 500).
 	Append(session string, events []models.AgentEvent)
@@ -19,6 +19,8 @@ type EventStore interface {
 	// Clear removes all cached events for a session.
 	Clear(session string)
 }
+
+const maxEventsPerSession = 500
 
 // NewMemoryEventStore creates an in-memory EventStore.
 func NewMemoryEventStore() EventStore {
@@ -44,8 +46,8 @@ func (s *memoryEventStore) Emit(session, eventType, summary, detail string) {
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 	s.events[session] = append(s.events[session], ev)
-	if len(s.events[session]) > 100 {
-		s.events[session] = s.events[session][len(s.events[session])-100:]
+	if len(s.events[session]) > maxEventsPerSession {
+		s.events[session] = s.events[session][len(s.events[session])-maxEventsPerSession:]
 	}
 }
 
@@ -53,8 +55,8 @@ func (s *memoryEventStore) Append(session string, evs []models.AgentEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events[session] = append(s.events[session], evs...)
-	if len(s.events[session]) > 500 {
-		s.events[session] = s.events[session][len(s.events[session])-500:]
+	if len(s.events[session]) > maxEventsPerSession {
+		s.events[session] = s.events[session][len(s.events[session])-maxEventsPerSession:]
 	}
 }
 

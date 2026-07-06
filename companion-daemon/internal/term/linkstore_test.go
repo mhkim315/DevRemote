@@ -1,0 +1,153 @@
+package term
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestFileLinkStore_PutGetListDelete(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	s, err := NewFileLinkStoreAt(path)
+	if err != nil {
+		t.Fatalf("NewFileLinkStoreAt: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Put a link.
+	if err := s.Put(ctx, SessionLink{SessionID: "tmux:test", Provider: "p", ExternalSessionID: "ext"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Get it back.
+	link, ok := s.Get("tmux:test")
+	if !ok {
+		t.Fatal("Get returned false")
+	}
+	if link.Provider != "p" {
+		t.Errorf("Provider = %q", link.Provider)
+	}
+
+	// List.
+	all := s.List()
+	if len(all) != 1 {
+		t.Fatalf("List = %d, want 1", len(all))
+	}
+
+	// Delete.
+	if err := s.Delete(ctx, "tmux:test"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := s.Get("tmux:test"); ok {
+		t.Error("Get after Delete returned true")
+	}
+}
+
+func TestFileLinkStore_Persistence(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	// Create, put, then re-open.
+	s1, _ := NewFileLinkStoreAt(path)
+	s1.Put(context.Background(), SessionLink{SessionID: "tmux:s", Provider: "persist"})
+
+	s2, _ := NewFileLinkStoreAt(path)
+	s2.Load(context.Background())
+	link, ok := s2.Get("tmux:s")
+	if !ok || link.Provider != "persist" {
+		t.Errorf("link did not persist: ok=%v provider=%q", ok, link.Provider)
+	}
+}
+
+func TestFileLinkStore_InstanceIsolation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s1, _ := NewFileLinkStoreAt(filepath.Join(dir, "a.json"))
+	s2, _ := NewFileLinkStoreAt(filepath.Join(dir, "b.json"))
+
+	s1.Put(context.Background(), SessionLink{SessionID: "tmux:a"})
+	if _, ok := s2.Get("tmux:a"); ok {
+		t.Error("link leaked between instances")
+	}
+}
+
+func TestFileLinkStore_FilePermissions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	s, _ := NewFileLinkStoreAt(path)
+	s.Put(context.Background(), SessionLink{SessionID: "tmux:p"})
+
+	// Check file mode.
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Mode().Perm()&0077 != 0 {
+		t.Errorf("file perms %o, want no group/other access", fi.Mode().Perm())
+	}
+}
+
+func TestFileLinkStore_LegacyIDMigration(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	s, _ := NewFileLinkStoreAt(path)
+	ctx := context.Background()
+
+	// Put a legacy cmux ID.
+	if err := s.Put(ctx, SessionLink{SessionID: "cmux:42", Provider: "legacy"}); err != nil {
+		t.Fatalf("Put legacy: %v", err)
+	}
+	// Put the canonical version.
+	if err := s.Put(ctx, SessionLink{SessionID: "cmux:surface:42", Provider: "canonical"}); err != nil {
+		t.Fatalf("Put canonical: %v", err)
+	}
+
+	// Both should resolve to the same canonical entry.
+	link, ok := s.Get("cmux:42") // legacy lookup
+	if !ok || link.Provider != "canonical" {
+		t.Errorf("legacy lookup: ok=%v provider=%q, want canonical", ok, link.Provider)
+	}
+
+	// List should not have duplicate.
+	all := s.List()
+	count := 0
+	for _, l := range all {
+		if l.Provider == "canonical" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("canonical entry appears %d times in List, want 1", count)
+	}
+}
+
+func TestFileLinkStore_NilSafe(t *testing.T) {
+	// Verify that NewNopLinkStore never panics on nil receiver.
+	s := NewNopLinkStore()
+	ctx := context.Background()
+	s.Load(ctx)
+	s.Get("x")
+	s.List()
+	s.Put(ctx, SessionLink{SessionID: "x"})
+	s.Delete(ctx, "x")
+}
+
+func TestFileLinkStore_DeleteNonExistent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s, _ := NewFileLinkStoreAt(filepath.Join(dir, "links.json"))
+	// Deleting a non-existent key should not error.
+	if err := s.Delete(context.Background(), "nonexistent"); err != nil {
+		t.Errorf("Delete non-existent: %v", err)
+	}
+}

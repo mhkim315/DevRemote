@@ -48,6 +48,9 @@ type tunnelResource interface {
 // A nil field means "use the production default".
 type Dependencies struct {
 	Verifier     term.TokenVerifier // if nil, created from Config in NewAppWithDeps
+	Events       term.EventStore    // if nil, NewMemoryEventStore used
+	Links        term.LinkStore     // if nil, NewFileLinkStore used
+	Cmds         term.CommandBroker // if nil, NewCommandBroker used
 	StartWatcher func() (watcherResource, error)
 	StartIPC     func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error)
 	StartTunnel  func() tunnelResource
@@ -103,17 +106,25 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	reg.Register(cmuxAdapter)
 	reg.Register(mux.NewTmuxAdapter())
 
-	events := term.NewMemoryEventStore()
-	cmds := term.NewCommandBroker()
-	links, linkErr := term.NewFileLinkStore()
-	if linkErr != nil {
-		log.Printf("Failed to create link store: %v (links disabled)", linkErr)
-		links = nil
+	events := deps.Events
+	if events == nil {
+		events = term.NewMemoryEventStore()
 	}
-	if links != nil {
-		if err := term.LoadLinks(reg, links); err != nil {
-			log.Printf("Failed to load session links: %v", err)
+	cmds := deps.Cmds
+	if cmds == nil {
+		cmds = term.NewCommandBroker()
+	}
+	links := deps.Links
+	if links == nil {
+		var linkErr error
+		links, linkErr = term.NewFileLinkStore()
+		if linkErr != nil {
+			log.Printf("Failed to create link store: %v (links disabled)", linkErr)
+			links = term.NewNopLinkStore()
 		}
+	}
+	if err := term.LoadLinks(reg, links); err != nil {
+		log.Printf("Failed to load session links: %v", err)
 	}
 
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).

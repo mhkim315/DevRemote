@@ -139,12 +139,10 @@ func StartTelemetryLoop(ctx context.Context, reg *mux.Registry, events EventStor
 				var logErr error = fmt.Errorf("no log")
 
 				// 1. LinkedLogResolver (Explicit Links)
-				if links != nil {
-					if link, ok := GetLink(s, reg, links); ok && !link.Stale {
-						if link.Provider == "gemini-antigravity" {
-							res := &AntigravityResolver{}
-							logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
-						}
+				if link, ok := GetLink(s, reg, links); ok && !link.Stale {
+					if link.Provider == "gemini-antigravity" {
+						res := &AntigravityResolver{}
+						logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
 					}
 				}
 
