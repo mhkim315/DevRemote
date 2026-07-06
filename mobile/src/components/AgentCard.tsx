@@ -86,7 +86,7 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
             {session.adapter && session.adapter !== 'native' && (
               <Text style={styles.adapterTag}>[{session.adapter}]</Text>
             )}
-            <Text style={styles.sessionName} numberOfLines={1}>{session.displayId || session.id}</Text>
+            <Text style={styles.sessionName} numberOfLines={1}>{session.displayId ?? session.id}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             {needsApproval && (
@@ -122,6 +122,10 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
           {session.state === 'working' && (
             <Text style={styles.loadText}>{session.load}%</Text>
           )}
+          {/* Phase 2: capability-driven indicator — no backend name branching */}
+          {session.capabilities && session.capabilities.length > 0 && (
+            <Text style={styles.capTag}>{session.capabilities.includes('live_stream') ? '▶' : '■'}</Text>
+          )}
         </View>
       </TouchableOpacity>
     </View>
@@ -150,4 +154,5 @@ const styles = StyleSheet.create({
   approvalBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' },
   mirrorBadge: { backgroundColor: '#1f6feb', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8, borderWidth: 1, borderColor: '#58a6ff' },
     adapterTag: { fontSize: 9, color: '#45EBE9', fontWeight: '600', marginRight: 4 },
+  capTag: { fontSize: 10, color: '#1E91B3', marginLeft: 6 },
 });
