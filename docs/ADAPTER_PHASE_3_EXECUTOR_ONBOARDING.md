@@ -2,43 +2,84 @@
 
 Date: 2026-07-07
 
-Audience: a fresh execution agent with no prior conversation context.
+Audience: a fresh **execution agent** with no previous conversation context.
 
-Current branch: `feature/phase10-multi-adapter`
+This document exists because the prior execution agent lost context. It is the
+bootstrap instruction set for continuing the adapter expansion implementation
+work without relying on chat history.
 
-Current verifier head before this onboarding document: `fd70496`
+## Your role
 
-Latest rejected executor commit: `4a41eff565ff`
+You are the implementation/execution agent.
 
-Latest unverified executor commit observed while writing this document:
-`baa2a3d`
+There is a separate verifier role. The verifier reviews your commits, writes
+accept/reject documents, and decides whether a phase may proceed. Do not treat a
+phase as accepted unless a verifier document explicitly says it is accepted.
 
-## Role
+Your task is to implement the smallest coherent correction requested by the
+latest verifier document, commit it, push it, and hand the commit back for
+verification.
 
-You are the **execution agent** for Phase 3 of the terminal adapter expansion
-work.
+## Branch and synchronization
 
-Your job is not to redesign the whole adapter system. Your job is to make the
-smallest coherent Phase 3 correction that satisfies the verifier's current
-blockers, commit it, and push it for another verification pass.
+Work on:
 
-Do not skip ahead to Phase 4. Do not implement the fixture adapter. Do not start
-the real third backend.
+```text
+feature/phase10-multi-adapter
+```
 
-## Required reading before editing
+Before editing:
 
-Read these files in this order:
+```sh
+git fetch origin feature/phase10-multi-adapter
+git status --short --branch
+git log --oneline -12
+```
+
+If your local branch is behind, fast-forward or rebase your local work onto
+`origin/feature/phase10-multi-adapter`. Do not force-push. Do not discard
+existing user/verifier commits.
+
+## Current known timeline
+
+Accepted phases:
+
+- Phase 0 accepted: executor `d6166fd8`, verifier `efbde27`
+- Phase 1 accepted: executor `1f1b5de`, verifier `056189a`
+- Phase 2 accepted: executor `7a4018b`, verifier `c62a1b7`
+
+Phase 3 is the active phase.
+
+Known Phase 3 commits:
+
+- `d2eb546` — initial Phase 3 attempt, rejected
+- `0a6bd8e` — self-check revision, rejected
+- `fe5e964` — second revision, rejected
+- `4a41eff` — third revision, rejected by `fd70496`
+- `baa2a3d` — newer executor revision observed after `fd70496`; treat as
+  unaccepted until a verifier document accepts it
+
+This onboarding document may not be the newest document by the time you read it.
+Always use the latest verifier document as the primary source of truth.
+
+## Required reading order
+
+Read the documents first, then inspect code.
+
+Documents:
 
 1. `docs/ADAPTER_EXPANSION_PLAN.md`
 2. `docs/ADAPTER_PHASE_0_ACCEPTANCE.md`
 3. `docs/ADAPTER_PHASE_1_ACCEPTANCE.md`
 4. `docs/ADAPTER_PHASE_2_ACCEPTANCE.md`
-5. `docs/ADAPTER_PHASE_3_REVERIFICATION.md`
-6. `docs/ADAPTER_PHASE_3_SELF_CHECK_REVIEW.md`
-7. `docs/ADAPTER_PHASE_3_REVERIFICATION_2.md`
-8. `docs/ADAPTER_PHASE_3_REVERIFICATION_3.md`
+5. Latest Phase 3 verifier document, in chronological order if needed:
+   - `docs/ADAPTER_PHASE_3_REVERIFICATION.md`
+   - `docs/ADAPTER_PHASE_3_SELF_CHECK_REVIEW.md`
+   - `docs/ADAPTER_PHASE_3_REVERIFICATION_2.md`
+   - `docs/ADAPTER_PHASE_3_REVERIFICATION_3.md`
+   - any newer `docs/ADAPTER_PHASE_3_*` document
 
-Then inspect the relevant code:
+Code:
 
 1. `companion-daemon/internal/mux/adapter.go`
 2. `companion-daemon/internal/mux/registry.go`
@@ -46,220 +87,220 @@ Then inspect the relevant code:
 4. `companion-daemon/internal/mux/cmux_adapter.go`
 5. `companion-daemon/internal/mux/phase1_test.go`
 6. `companion-daemon/internal/term/gemini_resolver.go`
+7. Any file named by the latest verifier document
 
-## Accepted baseline
+Use `rg` to find existing tests and hardcoded backend assumptions before
+editing:
 
-These phases are already accepted and should not be reopened unless your change
-would otherwise regress them:
-
-- Phase 0 accepted at executor commit `d6166fd8`, verifier commit `efbde27`
-- Phase 1 accepted at executor commit `1f1b5de`, verifier commit `056189a`
-- Phase 2 accepted at executor commit `7a4018b`, verifier commit `c62a1b7`
-
-The current Phase 3 work is not accepted yet.
-
-## Current Phase 3 state
-
-Executor revision `4a41eff565ff` improved behavior but was still rejected by
-the verifier in `docs/ADAPTER_PHASE_3_REVERIFICATION_3.md`.
-
-After that rejection, a newer executor commit was observed:
-
-```text
-baa2a3d fix: Phase 3 remove fixed deadline, precise runner tests, taxonomy
+```sh
+rg -n 'tmux|cmux|ProbeAdapter|SlowAdapter|CommandRunner|Runner|Sessions\\(|deadline|timeout|DeadlineExceeded|ErrTimeout|ErrAdapterUnavailable' companion-daemon/internal
 ```
 
-If you are starting from a checkout that includes `baa2a3d`, do not blindly
-reapply the older instructions. First ask for or wait for the verifier's
-decision on `baa2a3d`. If `baa2a3d` is rejected, use the verifier's latest
-document as the primary source of truth and use this onboarding file only as
-background context.
+## Work protocol
 
-Confirmed improvements:
+1. Identify the exact latest verifier decision.
+2. Extract only the required executor actions from that decision.
+3. Make minimal implementation/test changes to satisfy those actions.
+4. Preserve accepted Phase 0/1/2 behavior.
+5. Run targeted tests repeatedly.
+6. Run package tests and vet.
+7. Commit and push.
+8. Report the commit hash and verification commands.
 
-- `Registry.Sessions` no longer waits for the full per-adapter 3 second timeout
-  before returning fast adapter sessions.
-- The current slow-adapter test repeatedly completes in about `0.50s`.
-- Basic tests now prove that `CreateSession` and `TerminateSession` call an
-  injected tmux runner at least once.
-- The `gemini_resolver.go` Phase 3/Phase 4 comment contradiction was reduced.
+Do not implement unrelated cleanup while fixing a verifier rejection. If you
+discover a real unrelated bug, document it in the handoff instead of expanding
+the current patch.
 
-These improvements should be preserved unless the latest verifier decision says
-otherwise.
+## Phase 3 purpose
 
-## Current blockers to fix
+Phase 3 standardizes adapter execution environment and lifecycle behavior.
 
-### 1. Define and enforce the `Registry.Sessions` latency contract
+The goal is not to add a third backend yet. The goal is to make tmux/cmux
+behavior precise enough that a third backend can later be added without
+guessing lifecycle, timeout, runner, or error semantics.
 
-Problem at rejected commit `4a41eff565ff`:
+Phase 3 acceptance requires evidence that:
 
-- `Registry.Sessions` uses a hidden fixed collector deadline:
+- command execution is injectable/testable without real tmux/cmux binaries;
+- binary/exec/stderr/timeout failures preserve useful diagnostics;
+- availability probe and runtime refresh behavior are distinguishable;
+- one bad/slow adapter does not block healthy adapter discovery;
+- stale snapshots survive transient refresh failures;
+- adapter health/error state remains observable;
+- cmux invalidation does not require unsafe Registry back-calls;
+- tests pin these contracts tightly enough to prevent regressions.
 
-  ```go
-  deadline := time.After(500 * time.Millisecond)
-  ```
+## Current known Phase 3 correction areas
 
-- The test only asserts `< 2s`, which proves only that the old 3 second timeout
-  is avoided.
+These are the known areas from the last rejected verifier pass. If a newer
+verifier document supersedes any item, follow the newer document.
 
-Required correction:
+### 1. Registry session collection latency
 
-- Decide and encode the actual Phase 3 contract.
-- If the intended behavior is "return healthy adapter results without waiting
-  for slow adapters", do not leave a hidden 500ms delay as the core policy.
-- If a short grace window is intentionally required, document it as the explicit
-  SLA and assert it directly with a tight test.
-- The test must fail for large latency regressions.
+The verifier rejected a version where `Registry.Sessions` avoided a 3 second
+delay but used a hidden fixed `500ms` collector deadline.
 
-Practical guidance:
+Required execution behavior:
 
-- Keep stale snapshot preservation.
-- Keep per-adapter timeout isolation.
-- Avoid making one adapter's slow `ListSessions` delay every other adapter's
-  healthy result path.
-- Do not introduce goroutine leaks when returning early.
+- Do not let a slow adapter delay healthy adapter discovery beyond the explicit
+  contract.
+- If there is a grace window, name it, document it, and assert it directly.
+- If the intended contract is immediate return of available healthy results,
+  implement that instead of a hidden fixed wait.
+- Ensure returning early does not leak goroutines or corrupt stale snapshots.
 
-### 2. Strengthen tmux runner contract tests
+Tests should assert the actual latency contract, not a loose condition like
+`elapsed < 2*time.Second`.
 
-Problem at rejected commit `4a41eff565ff`:
+### 2. Tmux runner injection contract
 
-- `TestTmuxAdapter_CreateSessionUsesRunner` and
-  `TestTmuxAdapter_TerminateSessionUsesRunner` only check a boolean `called`.
+The verifier rejected boolean-only tests that merely proved a runner was called.
 
-Required correction:
+Required execution behavior:
 
-- Record runner calls and assert exact command arguments/options for:
+- Record runner calls in tests.
+- Assert exact command arguments and options for:
   - `CreateSession`
   - `TerminateSession`
   - `ReadScreen`
   - `ReadHistory`
   - `ProcessInfo`
-- For terminate, assert the expected resolve-then-kill sequence.
-- For create, assert name handling and working directory option behavior.
-- Add runner error propagation tests for representative paths.
+- For terminate, assert the expected lookup/resolve step and kill step.
+- For create, assert session name handling and working directory behavior.
+- Assert representative runner error propagation.
 
-The verifier will reject tests that only prove "some command was called."
+Do not leave tests that would pass if the wrong tmux command were invoked.
 
-### 3. Strengthen ProbeAdapter and refresh error taxonomy tests
+### 3. Probe/refresh error taxonomy and stale snapshots
 
-Problem at rejected commit `4a41eff565ff`:
+Required execution behavior:
 
-- Timeout/cancel tests check that an error exists, but do not prove the expected
-  sentinel/context taxonomy.
-- Stale snapshot preservation after failed refresh/probe is not proven tightly
-  enough.
+- Timeout errors should be checkable with `errors.Is`.
+- Cancellation errors should be checkable with `errors.Is`.
+- Adapter unavailability should not be converted to a successful empty list.
+- Failed refresh/probe should preserve the last successful snapshot.
 
-Required correction:
+Tests must prove these behaviors directly.
 
-- Assert timeout behavior with `errors.Is`.
-- Assert cancellation behavior with `errors.Is`.
-- Assert that a transient adapter failure preserves the last successful
-  snapshot.
-- Assert that timeout/unavailable errors are not silently converted to
-  `nil, nil` or an empty successful list.
+### 4. Tmux binary and command failure policy
 
-### 4. Fix or test the tmux binary assumption
+The verifier rejected the assumption that tmux is always in `PATH`.
 
-Problem at rejected commit `4a41eff565ff`:
+Required execution behavior:
 
-`tmux_adapter.go` still says:
+- Remove comments that claim tmux is always available.
+- Preserve lookup/exec failure details.
+- Preserve stderr/combined-output diagnostics where applicable.
+- Preserve timeout/cancellation semantics.
+- Do not build a broad binary discovery framework unless required by the latest
+  verifier document.
 
-```go
-// No binary discovery: tmux is a core macOS/Linux tool always in PATH.
-```
+## Hard constraints
 
-This is not a valid production invariant.
+Do not:
 
-Required correction:
+- start Phase 4;
+- add the fixture adapter;
+- add a real third backend;
+- rewrite the mobile UI unless the latest verifier document explicitly requires
+  it;
+- change canonical ID format;
+- remove support for local IDs containing `:`;
+- break tmux internal `$session_id` targeting;
+- replace cmux GUI socket/reconnect behavior with generic polling;
+- hide adapter errors by returning `nil, nil` or empty successful results;
+- broad-rename packages or interfaces outside the verifier's requested scope.
 
-- Replace the comment with the actual current behavior.
-- Add tests for lookup/exec failure, stderr/combined-output diagnostics, and
-  timeout/cancellation propagation where practical.
-- Do not introduce a broad binary discovery subsystem unless it is necessary for
-  Phase 3. The immediate requirement is to stop documenting an unsafe invariant
-  and to preserve observable failure information.
+## Preservation requirements
 
-## Non-goals for this correction
+Preserve these behaviors unless a verifier document explicitly changes the
+contract:
 
-Do not do these in the next Phase 3 fix unless the verifier explicitly asks:
+- canonical ID format remains `<adapter>:<local-id>`;
+- local IDs may contain `:` and Unicode;
+- duplicate adapter names fail;
+- deterministic session ordering remains Registry policy;
+- stale snapshots are retained after transient adapter failures;
+- tmux display name and internal tmux target remain distinct;
+- cmux reconnect/invalidation behavior remains adapter-scoped;
+- existing mobile/API compatibility from accepted phases remains intact.
 
-- Do not start Phase 4 contract harness.
-- Do not add the fixture adapter.
-- Do not add a real third backend.
-- Do not rewrite the mobile UI.
-- Do not change canonical ID format.
-- Do not remove tmux internal `$session_id` targeting.
-- Do not replace cmux GUI socket behavior with generic polling.
-- Do not perform broad package renames.
-- Do not hide adapter errors by returning empty successful results.
+## Test expectations
 
-## Test expectations before handing back
-
-At minimum, run:
+From `companion-daemon`:
 
 ```sh
-cd companion-daemon
 GOCACHE=/tmp/devremote-phase3-executor-go-cache go test ./internal/mux -count=1
 GOCACHE=/tmp/devremote-phase3-executor-go-cache go test ./internal/mux ./internal/term -count=1
 GOCACHE=/tmp/devremote-phase3-executor-go-cache go vet ./...
 ```
 
-Also run the relevant targeted tests repeatedly, for example:
+Run targeted tests repeatedly for the area you changed. Example:
 
 ```sh
 GOCACHE=/tmp/devremote-phase3-executor-go-cache go test ./internal/mux -run 'TestRegistry_SlowAdapterDoesNotBlock|TestProbeAdapter|TestTmuxAdapter|Test.*Runner' -count=20 -v
 ```
 
-If `internal/term` fails in a sandbox with:
+If you changed concurrency, run the relevant package with `-race`:
+
+```sh
+GOCACHE=/tmp/devremote-phase3-executor-go-cache go test -race ./internal/mux -count=1
+```
+
+If `internal/term` fails only because a sandbox blocks localhost listeners:
 
 ```text
 httptest: failed to listen on a port: bind: operation not permitted
 ```
 
-that is a sandbox limitation. Rerun in an environment that allows localhost
-test listeners and record that distinction.
+rerun in an environment that allows local listener tests and state that the
+first failure was sandbox-related.
 
-If mobile files are touched, also run:
+If mobile files are changed:
 
 ```sh
 cd mobile
 npx tsc --noEmit
 ```
 
-## Handoff format after your fix
+## Commit requirements
 
-When done, commit and push your changes. Then report:
+Commit only your intentional changes.
+
+Use a clear message, for example:
+
+```text
+fix: tighten phase 3 adapter lifecycle contracts
+```
+
+or, if the change is test-only:
+
+```text
+test: pin phase 3 adapter lifecycle contracts
+```
+
+Push to `feature/phase10-multi-adapter`.
+
+## Handoff back to verifier
+
+After pushing, report:
 
 ```text
 Phase 3 correction ready
-Commit: <hash>
+Commit: <full or short hash>
 
-Summary:
+What changed:
 - ...
 
-Verification:
+Verifier actions addressed:
+- ...
+
+Verification run:
 - ...
 
 Known deferrals:
 - ...
 ```
 
-The verifier will independently inspect the diff and rerun tests. Do not rely on
-claims in the summary as a substitute for tests and code evidence.
-
-## Current verifier decision
-
-Phase 3 remains blocked at `4a41eff565ff`.
-
-`baa2a3d` was present on the remote when this onboarding document was added, but
-had not yet been independently accepted in this document. Treat it as
-**pending verification**, not accepted.
-
-The next correction should focus on contract precision and test strength, not
-new architecture. The most likely passing path is:
-
-1. make `Registry.Sessions` latency behavior explicit and tightly tested;
-2. upgrade tmux runner tests from boolean smoke tests to exact call-contract
-   tests;
-3. prove timeout/cancel/stale-snapshot error semantics;
-4. remove or test the unsafe tmux binary assumption.
+Be precise. The verifier will independently inspect the diff and rerun tests.
+Do not claim acceptance. Only the verifier can accept the phase.
