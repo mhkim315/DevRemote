@@ -394,8 +394,6 @@ func (s *CmuxSession) WriteInput(ctx context.Context, data []byte) error {
 		return s.WriteKey(ctx, "ctrl-c")
 	} else if str == "\x1b" {
 		return s.WriteKey(ctx, "escape")
-	} else if str == "\r" || str == "\n" || str == "\r\n" {
-		return s.WriteKey(ctx, "enter")
 	} else if str == "\x1b[A" {
 		return s.WriteKey(ctx, "up")
 	} else if str == "\x1b[B" {
@@ -406,8 +404,34 @@ func (s *CmuxSession) WriteInput(ctx context.Context, data []byte) error {
 		return s.WriteKey(ctx, "left")
 	}
 
-	_, err := s.runner.Run(ctx, CommandOptions{}, "send", "--surface", s.surfaceID, str)
-	return err
+	// Mobile clients commonly send a submitted command and its newline in one
+	// WebSocket message (for example, "ls\n"). cmux `send` treats that newline
+	// as text rather than an Enter key, so split line endings into send-key
+	// calls. Treat CRLF as one Enter while preserving repeated independent
+	// newlines.
+	textStart := 0
+	for i := 0; i < len(str); i++ {
+		if str[i] != '\r' && str[i] != '\n' {
+			continue
+		}
+		if textStart < i {
+			if _, err := s.runner.Run(ctx, CommandOptions{}, "send", "--surface", s.surfaceID, str[textStart:i]); err != nil {
+				return err
+			}
+		}
+		if err := s.WriteKey(ctx, "enter"); err != nil {
+			return err
+		}
+		if str[i] == '\r' && i+1 < len(str) && str[i+1] == '\n' {
+			i++
+		}
+		textStart = i + 1
+	}
+	if textStart < len(str) {
+		_, err := s.runner.Run(ctx, CommandOptions{}, "send", "--surface", s.surfaceID, str[textStart:])
+		return err
+	}
+	return nil
 }
 
 func (s *CmuxSession) WriteKey(ctx context.Context, key string) error {

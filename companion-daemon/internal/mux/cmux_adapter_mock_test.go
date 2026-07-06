@@ -20,6 +20,73 @@ func (m *mockCmuxRunner) Run(ctx context.Context, opts CommandOptions, args ...s
 	return nil, nil
 }
 
+func TestCmuxWriteInputSplitsTextAndLineEndings(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want [][]string
+	}{
+		{
+			name: "mobile command with LF",
+			data: "echo hello\n",
+			want: [][]string{
+				{"send", "--surface", "surface:1", "echo hello"},
+				{"send-key", "--surface", "surface:1", "enter"},
+			},
+		},
+		{
+			name: "CRLF is one enter",
+			data: "pwd\r\n",
+			want: [][]string{
+				{"send", "--surface", "surface:1", "pwd"},
+				{"send-key", "--surface", "surface:1", "enter"},
+			},
+		},
+		{
+			name: "text after newline is preserved",
+			data: "cd /tmp\npwd",
+			want: [][]string{
+				{"send", "--surface", "surface:1", "cd /tmp"},
+				{"send-key", "--surface", "surface:1", "enter"},
+				{"send", "--surface", "surface:1", "pwd"},
+			},
+		},
+		{
+			name: "repeated LF sends repeated enter",
+			data: "\n\n",
+			want: [][]string{
+				{"send-key", "--surface", "surface:1", "enter"},
+				{"send-key", "--surface", "surface:1", "enter"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got [][]string
+			runner := &mockCmuxRunner{
+				runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+					got = append(got, append([]string(nil), args...))
+					return nil, nil
+				},
+			}
+			session := &CmuxSession{surfaceID: "surface:1", runner: runner}
+
+			if err := session.WriteInput(context.Background(), []byte(tt.data)); err != nil {
+				t.Fatalf("WriteInput failed: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d calls %v, want %d calls %v", len(got), got, len(tt.want), tt.want)
+			}
+			for i := range tt.want {
+				if strings.Join(got[i], "\x00") != strings.Join(tt.want[i], "\x00") {
+					t.Errorf("call %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestPollScreenFailures(t *testing.T) {
 	var calls int
 
