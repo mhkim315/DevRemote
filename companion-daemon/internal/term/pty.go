@@ -199,7 +199,7 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if sr, ok := s.(mux.ScreenReader); ok && s.AdapterName() == "tmux" {
+	if sr, ok := s.(mux.ScreenReader); ok {
 		if initial, snapErr := sr.ReadScreen(r.Context()); snapErr == nil && len(initial) > 0 {
 			payload := "\033[2J\033[H" + string(initial)
 			payload = strings.ReplaceAll(payload, "\n", "\r\n")
