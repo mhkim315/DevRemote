@@ -1,5 +1,5 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import { getBaseURL, terminalURL, listSessions, getSessionHistory } from '../lib/client';
+import { terminalURL, listSessions, getSessionHistory } from '../lib/client';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';

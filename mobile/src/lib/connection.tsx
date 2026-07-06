@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { setBaseURL, getBaseURL } from './client';
+import { setBaseURL } from './client';
 
 interface ConnectionState {
   baseURL: string;

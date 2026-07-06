@@ -11,6 +11,12 @@ export function getBaseURL(): string {
   return _baseURL;
 }
 
+async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(url, init);
+  if (!res.ok) throw new Error(`API ${res.status}: ${url}`);
+  return res;
+}
+
 function authHeaders(token?: string): Record<string, string> {
   const h: Record<string, string> = {};
   if (token) h['Authorization'] = `Bearer ${token}`;
@@ -18,33 +24,29 @@ function authHeaders(token?: string): Record<string, string> {
 }
 
 export async function listSessions(token?: string): Promise<any[]> {
-  const res = await fetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });
+  const res = await checkedFetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });
   return res.json();
 }
 
-export async function createOrUpdateSession(
-  id: string, runner: string, color: string, token?: string
-) {
-  const res = await fetch(`${_baseURL}/api/sessions`, {
+export async function createOrUpdateSession(id: string, runner: string, color: string, token?: string) {
+  const res = await checkedFetch(`${_baseURL}/api/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
     body: JSON.stringify({ id, runner, runnerColor: color }),
   });
-  if (!res.ok) throw new Error('API Error');
   return res.json();
 }
 
 export async function deleteSession(id: string, token?: string) {
-  const res = await fetch(`${_baseURL}/api/sessions?id=${encodeURIComponent(id)}`, {
+  const res = await checkedFetch(`${_baseURL}/api/sessions?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: authHeaders(token),
   });
-  if (!res.ok) throw new Error('API Error');
   return res.json();
 }
 
 export async function getSessionHistory(sessionID: string, token?: string) {
-  const res = await fetch(
+  const res = await checkedFetch(
     `${_baseURL}/api/sessions?history=${encodeURIComponent(sessionID)}`,
     { headers: authHeaders(token) }
   );
@@ -52,7 +54,7 @@ export async function getSessionHistory(sessionID: string, token?: string) {
 }
 
 export async function sendDebugCommand(sessionID: string, command: string, token?: string) {
-  const res = await fetch(
+  const res = await checkedFetch(
     `${_baseURL}/debug/cmd?session=${encodeURIComponent(sessionID)}`,
     { method: 'POST', headers: authHeaders(token), body: command }
   );
@@ -60,7 +62,7 @@ export async function sendDebugCommand(sessionID: string, command: string, token
 }
 
 export async function registerPushToken(token: string, pushToken: string) {
-  const res = await fetch(
+  const res = await checkedFetch(
     `${_baseURL}/push/register?token=${encodeURIComponent(pushToken)}`,
     { headers: authHeaders(token) }
   );

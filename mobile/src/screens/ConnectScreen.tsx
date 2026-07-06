@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Button, Dimensions } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
-import { config } from '../config';
 
 export default function ConnectScreen() {
   const { connect } = useConnection();
