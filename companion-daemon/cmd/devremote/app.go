@@ -104,8 +104,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cmux adapter: %w", err)
 	}
-	_ = reg.Register(cmuxAdapter)
-	_ = reg.Register(mux.NewTmuxAdapter())
+	if err := reg.Register(cmuxAdapter); err != nil {
+		return nil, fmt.Errorf("register cmux: %w", err)
+	}
+	if err := reg.Register(mux.NewTmuxAdapter()); err != nil {
+		return nil, fmt.Errorf("register tmux: %w", err)
+	}
 
 	events := deps.Events
 	if events == nil {

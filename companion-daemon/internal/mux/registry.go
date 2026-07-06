@@ -167,7 +167,7 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 			return deepCopySnapshot(snap), nil
 		}
 
-		sessions, adErr := adapter.ListSessions()
+		sessions, adErr := adapter.ListSessions(ctx)
 
 		r.snapshotsMu.Lock()
 		currentSnap := r.snapshots[name]

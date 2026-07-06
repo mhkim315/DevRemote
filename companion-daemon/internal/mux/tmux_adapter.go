@@ -100,7 +100,7 @@ func (a *tmuxAdapter) Name() string {
 	return "tmux"
 }
 
-func (a *tmuxAdapter) ListSessions() ([]Session, error) {
+func (a *tmuxAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 	cmd := exec.Command("tmux", "list-sessions", "-F", tmuxSessionFormat)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

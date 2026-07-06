@@ -10,8 +10,7 @@ import (
 // handler/mobile must use this type instead of string split or regex.
 type SessionRef struct {
 	Adapter string
-	LocalID string // renamed from RawID — this is the local ID within the adapter
-	RawID   string // deprecated alias for LocalID, kept for backward compat
+	LocalID string
 }
 
 // ParseSessionID splits a compound session ID at the first ':'.
@@ -19,9 +18,9 @@ type SessionRef struct {
 func ParseSessionID(id string) SessionRef {
 	parts := strings.SplitN(id, ":", 2)
 	if len(parts) == 2 {
-		return SessionRef{Adapter: parts[0], LocalID: parts[1], RawID: parts[1]}
+		return SessionRef{Adapter: parts[0], LocalID: parts[1]}
 	}
-	return SessionRef{Adapter: "", LocalID: id, RawID: id}
+	return SessionRef{Adapter: "", LocalID: id}
 }
 
 // Canonical returns the canonical form: "<adapter>:<local-id>".
@@ -32,11 +31,10 @@ func (r SessionRef) Canonical() string {
 	return r.Adapter + ":" + r.LocalID
 }
 
-// String returns the canonical form.
 func (r SessionRef) String() string { return r.Canonical() }
 
 // Validate checks that the adapter name and local ID are non-empty and
-// contain no control characters. Returns nil if valid.
+// contain no control characters (including newline, tab). Returns nil if valid.
 func (r SessionRef) Validate() error {
 	if r.Adapter == "" {
 		return fmt.Errorf("%w: adapter name is empty", ErrInvalidSessionID)
@@ -44,11 +42,15 @@ func (r SessionRef) Validate() error {
 	if r.LocalID == "" {
 		return fmt.Errorf("%w: local ID is empty", ErrInvalidSessionID)
 	}
-	if strings.ContainsAny(r.Adapter, "\x00\x1f\x7f") {
-		return fmt.Errorf("%w: adapter name contains control characters", ErrInvalidSessionID)
+	for _, ch := range r.Adapter {
+		if ch < 0x20 || ch == 0x7f {
+			return fmt.Errorf("%w: adapter name contains control character U+%04X", ErrInvalidSessionID, ch)
+		}
 	}
-	if strings.ContainsAny(r.LocalID, "\x00\x1f\x7f") {
-		return fmt.Errorf("%w: local ID contains control characters", ErrInvalidSessionID)
+	for _, ch := range r.LocalID {
+		if ch < 0x20 || ch == 0x7f {
+			return fmt.Errorf("%w: local ID contains control character U+%04X", ErrInvalidSessionID, ch)
+		}
 	}
 	return nil
 }

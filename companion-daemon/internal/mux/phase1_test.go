@@ -1,6 +1,7 @@
 package mux
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -19,7 +20,7 @@ func TestSessionRef_Canonical(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			ref := SessionRef{Adapter: tt.adapter, LocalID: tt.localID, RawID: tt.localID}
+			ref := SessionRef{Adapter: tt.adapter, LocalID: tt.localID}
 			got := ref.Canonical()
 			if got != tt.want {
 				t.Errorf("Canonical() = %q, want %q", got, tt.want)
@@ -32,7 +33,7 @@ func TestSessionRef_Canonical(t *testing.T) {
 }
 
 func TestSessionRef_Validate(t *testing.T) {
-	valid := SessionRef{Adapter: "tmux", LocalID: "session", RawID: "session"}
+	valid := SessionRef{Adapter: "tmux", LocalID: "session"}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("Validate() on valid ref: %v", err)
 	}
@@ -41,10 +42,10 @@ func TestSessionRef_Validate(t *testing.T) {
 		name string
 		ref  SessionRef
 	}{
-		{"empty adapter", SessionRef{Adapter: "", LocalID: "x", RawID: "x"}},
-		{"empty local", SessionRef{Adapter: "tmux", LocalID: "", RawID: ""}},
-		{"control char in adapter", SessionRef{Adapter: "tm\x00ux", LocalID: "x", RawID: "x"}},
-		{"control char in local", SessionRef{Adapter: "tmux", LocalID: "x\x1fy", RawID: "x\x1fy"}},
+		{"empty adapter", SessionRef{Adapter: "", LocalID: "x"}},
+		{"empty local", SessionRef{Adapter: "tmux", LocalID: ""}},
+		{"control char in adapter", SessionRef{Adapter: "tm\x00ux", LocalID: "x"}},
+		{"control char in local", SessionRef{Adapter: "tmux", LocalID: "x\x1fy"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -57,8 +58,8 @@ func TestSessionRef_Validate(t *testing.T) {
 
 type testAdapter struct{ name string }
 
-func (a *testAdapter) Name() string                     { return a.name }
-func (a *testAdapter) ListSessions() ([]Session, error) { return nil, nil }
+func (a *testAdapter) Name() string                                        { return a.name }
+func (a *testAdapter) ListSessions(ctx context.Context) ([]Session, error) { return nil, nil }
 func (a *testAdapter) GetSession(id string) (Session, error) {
 	return nil, ErrSessionNotFound
 }

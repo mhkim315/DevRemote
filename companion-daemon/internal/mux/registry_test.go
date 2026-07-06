@@ -27,7 +27,7 @@ type dummyAdapter struct {
 }
 
 func (a *dummyAdapter) Name() string { return a.name }
-func (a *dummyAdapter) ListSessions() ([]Session, error) {
+func (a *dummyAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 	if a.listStarted != nil {
 		select {
 		case a.listStarted <- struct{}{}:

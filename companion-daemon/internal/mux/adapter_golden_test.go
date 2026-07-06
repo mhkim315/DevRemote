@@ -45,8 +45,8 @@ func TestCanonicalID_Golden(t *testing.T) {
 			if ref.Adapter != tt.adapter {
 				t.Errorf("ParseSessionID(%q).Adapter = %q, want %q", tt.input, ref.Adapter, tt.adapter)
 			}
-			if ref.RawID != tt.localID {
-				t.Errorf("ParseSessionID(%q).RawID = %q, want %q", tt.input, ref.RawID, tt.localID)
+			if ref.LocalID != tt.localID {
+				t.Errorf("ParseSessionID(%q).RawID = %q, want %q", tt.input, ref.LocalID, tt.localID)
 			}
 
 			migrated := MigrateLegacyID(tt.input)
@@ -57,7 +57,7 @@ func TestCanonicalID_Golden(t *testing.T) {
 			// Canonical ID round-trip: migrate → parse → reassemble.
 			canonical := MigrateLegacyID(tt.input)
 			ref2 := ParseSessionID(canonical)
-			reassembled := ref2.Adapter + ":" + ref2.RawID
+			reassembled := ref2.Adapter + ":" + ref2.LocalID
 			if reassembled != canonical {
 				t.Errorf("round-trip: %q → MigrateLegacyID → %q → ParseSessionID → reassemble %q, want %q",
 					tt.input, canonical, reassembled, canonical)
@@ -87,8 +87,8 @@ func TestCanonicalID_LocalIDWithColon(t *testing.T) {
 			if ref.Adapter != tt.adapter {
 				t.Errorf("adapter = %q, want %q", ref.Adapter, tt.adapter)
 			}
-			if ref.RawID != tt.localID {
-				t.Errorf("localID = %q, want %q", ref.RawID, tt.localID)
+			if ref.LocalID != tt.localID {
+				t.Errorf("localID = %q, want %q", ref.LocalID, tt.localID)
 			}
 			if strings.Contains(ref.Adapter, ":") {
 				t.Errorf("adapter %q contains colon", ref.Adapter)
@@ -107,7 +107,7 @@ func TestCanonicalID_Unicode(t *testing.T) {
 	for _, id := range tests {
 		t.Run(id, func(t *testing.T) {
 			ref := ParseSessionID(id)
-			if ref.RawID == "" {
+			if ref.LocalID == "" {
 				t.Errorf("RawID is empty for %q", id)
 			}
 			migrated := MigrateLegacyID(id)

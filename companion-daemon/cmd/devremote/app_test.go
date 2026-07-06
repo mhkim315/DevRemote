@@ -34,7 +34,7 @@ type testAdapter struct {
 }
 
 func (a *testAdapter) Name() string                         { return a.name }
-func (a *testAdapter) ListSessions() ([]mux.Session, error) { return a.sessions, nil }
+func (a *testAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) { return a.sessions, nil }
 func (a *testAdapter) GetSession(id string) (mux.Session, error) {
 	for _, s := range a.sessions {
 		if s.ID() == id {

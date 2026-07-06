@@ -55,7 +55,7 @@ type mockAdapter struct {
 func (a *mockAdapter) Name() string                              { return "mock" }
 func (a *mockAdapter) GetSession(id string) (mux.Session, error) { return a.session, nil }
 
-func (a *mockAdapter) ListSessions() ([]mux.Session, error) {
+func (a *mockAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
 	return []mux.Session{a.session}, nil
 }
 func (a *mockAdapter) CreateSession(ctx context.Context, opts mux.CreateOptions) (string, error) {

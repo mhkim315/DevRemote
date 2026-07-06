@@ -152,8 +152,8 @@ func (a *cmuxAdapter) Name() string {
 //     surface:5  terminal  "Another"
 var panelRe = regexp.MustCompile(`(surface:\d+)\s+\S+(?:\s+\[.*?\])?\s+"(.*?)"`)
 
-func (a *cmuxAdapter) ListSessions() ([]Session, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func (a *cmuxAdapter) ListSessions(ctx context.Context) ([]Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
 	out, err := a.runner.Run(ctx, CommandOptions{}, "tree", "--all")
@@ -466,15 +466,15 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
 
-	// Parse output to find "surface:NN"
+	// Parse output to find "surface:NN" — return local ID only.
+	// Phase 1: handler canonicalizes to cmux:surface:NN.
 	outStr := string(out)
 	re := regexp.MustCompile(`surface:\s*(\d+)`)
 	if m := re.FindStringSubmatch(outStr); m != nil {
-		return "cmux:surface:" + m[1], nil
+		return "surface:" + m[1], nil
 	}
 
-	// Fallback if parsing fails but command succeeded
-	return "cmux:unknown", nil
+	return "", fmt.Errorf("cmux new-surface: could not parse surface ID from output: %s", outStr)
 }
 
 func (a *cmuxAdapter) TerminateSession(ctx context.Context, rawID string) error {

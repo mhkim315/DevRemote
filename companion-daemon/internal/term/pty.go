@@ -52,7 +52,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if r.Method == http.MethodPost {
-			opts := mux.CreateOptions{Name: ref.RawID, WorkspaceID: req.WorkspaceID}
+			opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID}
 			createdID, err := reg.CreateSession(r.Context(), adapterName, opts)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
@@ -60,7 +60,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
-			canonicalID := mux.SessionRef{Adapter: adapterName, LocalID: createdID, RawID: createdID}.Canonical()
+			canonicalID := mux.SessionRef{Adapter: adapterName, LocalID: createdID}.Canonical()
 			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
 			return
 		}
@@ -80,7 +80,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				adapterName = "tmux"
 			}
 
-			if err := reg.TerminateSession(r.Context(), adapterName, ref.RawID); err != nil {
+			if err := reg.TerminateSession(r.Context(), adapterName, ref.LocalID); err != nil {
 				http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
 				return
 			}

@@ -19,7 +19,7 @@ type telemetryBatchAdapter struct {
 }
 
 func (a *telemetryBatchAdapter) Name() string { return a.name }
-func (a *telemetryBatchAdapter) ListSessions() ([]mux.Session, error) {
+func (a *telemetryBatchAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
 	return nil, nil
 }
 func (a *telemetryBatchAdapter) GetSession(id string) (mux.Session, error) {
