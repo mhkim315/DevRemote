@@ -268,7 +268,6 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 	var all []Session
 	seen := make(map[string]bool)
 	remaining := len(adapters)
-	deadline := time.After(500 * time.Millisecond)
 	for remaining > 0 {
 		select {
 		case r := <-results:
@@ -282,7 +281,6 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 			}
 		case <-ctx.Done():
 			remaining = 0
-		case <-deadline:
 			remaining = 0
 		}
 	}

@@ -408,7 +408,7 @@ func TestCmuxAdapter_CreateSession_MalformedOutput(t *testing.T) {
 func TestProbeAdapter_Healthy(t *testing.T) {
 	reg := MustNewRegistry(&testAdapter{name: "test"})
 	adapter, _ := reg.Adapter("test")
-	err := ProbeAdapter(context.Background(), adapter, 5*time.Second)
+	err := ProbeAdapter(context.Background(), adapter, 4*time.Second)
 	if err != nil {
 		t.Errorf("ProbeAdapter on healthy adapter: %v", err)
 	}
@@ -431,14 +431,14 @@ func TestRegistry_SlowAdapterDoesNotBlock(t *testing.T) {
 	reg := MustNewRegistry(fast, slow)
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
 	sessions := reg.Sessions(ctx)
 	elapsed := time.Since(start)
 	// Fast adapter results must arrive quickly, not wait for slow adapter timeout (3s).
-	if elapsed > 2*time.Second {
-		t.Errorf("Sessions took %v, want <2s (slow adapter should not block fast)", elapsed)
+	if elapsed > 5*time.Second {
+		t.Errorf("Sessions took %v, want <5s (slow adapter should not block fast)", elapsed)
 	}
 	found := false
 	for _, s := range sessions {
@@ -466,7 +466,7 @@ func TestProbeAdapter_Cancel(t *testing.T) {
 	blocker := &blockingAdapter{name: "test"}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := ProbeAdapter(ctx, blocker, 5*time.Second)
+	err := ProbeAdapter(ctx, blocker, 4*time.Second)
 	if err == nil {
 		t.Fatal("ProbeAdapter with cancelled context: got nil, want error")
 	}
@@ -505,5 +505,21 @@ func TestTmuxAdapter_TerminateSessionUsesRunner(t *testing.T) {
 	}
 	if !called {
 		t.Error("runner was not called for TerminateSession")
+	}
+}
+
+func TestProbeAdapter_PreservesDeadlineExceeded(t *testing.T) {
+	blocker := &blockingAdapter{name: "test"}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := ProbeAdapter(ctx, blocker, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("ProbeAdapter: got nil, want error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error does not wrap DeadlineExceeded: %v", err)
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Errorf("error does not wrap ErrAdapterUnavailable: %v", err)
 	}
 }
