@@ -18,9 +18,9 @@ type tmuxSession struct {
 	adapter Adapter
 }
 
-func (s *tmuxSession) ID() string { return s.id }
+func (s *tmuxSession) ID() string          { return s.id }
 func (s *tmuxSession) AdapterName() string { return s.adapter.Name() }
-func (s *tmuxSession) Title() string { return s.id }
+func (s *tmuxSession) Title() string       { return s.id }
 
 func (s *tmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
 	return SpawnPTY(s.id, "xterm-256color", "tmux", "attach", "-t", s.id)

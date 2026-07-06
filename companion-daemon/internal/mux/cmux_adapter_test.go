@@ -1,9 +1,9 @@
 package mux
 
 import (
+	"strconv"
 	"strings"
 	"testing"
-	"strconv"
 )
 
 func TestCmuxTopParser(t *testing.T) {
@@ -32,7 +32,9 @@ process	9837	surface:1	bash
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" { continue }
+		if line == "" {
+			continue
+		}
 		parts := strings.Split(line, "\t")
 		for i, p := range parts {
 			p = strings.TrimSpace(p)
@@ -78,8 +80,12 @@ process	9837	surface:1	bash
 		isOnSurface := false
 		hasAgentTag := false
 		for _, parent := range parents {
-			if parent == "surface:1" { isOnSurface = true }
-			if targetTagRef != "" && parent == targetTagRef { hasAgentTag = true }
+			if parent == "surface:1" {
+				isOnSurface = true
+			}
+			if targetTagRef != "" && parent == targetTagRef {
+				hasAgentTag = true
+			}
 		}
 		if isOnSurface && hasAgentTag {
 			agentPID = pid

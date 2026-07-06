@@ -1,0 +1,14 @@
+window window:1 [current] ◀ active
+├── workspace workspace:1 "✳ 커밋 내역 및 인수 인계 확인"
+│   └── pane pane:1
+│       └── surface surface:1 [terminal] "✳ 커밋 내역 및 인수 인계 확인" tty=ttys000
+├── workspace workspace:34 "codex"
+│   └── pane pane:40
+│       └── surface surface:40 [terminal] "codex" tty=ttys010
+├── workspace workspace:2 "browser tests"
+│   └── pane pane:5
+│       └── surface surface:5 [browser] "Google" https://google.com
+├── workspace workspace:3 "empty workspace"
+└── workspace workspace:4
+    └── pane pane:7 [focused]
+        └── surface surface:2 [terminal] "✳ approval-detection-hook" [selected] tty=ttys001

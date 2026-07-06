@@ -11,10 +11,10 @@ import (
 type Session interface {
 	// ID returns the unique identifier for the session
 	ID() string
-	
+
 	// AdapterName returns the name of the adapter managing this session
 	AdapterName() string
-	
+
 	// Title returns the display name or title of the session
 	Title() string
 }
@@ -62,6 +62,11 @@ type ProcessProvider interface {
 	ProcessInfo(ctx context.Context) (models.ProcessInfo, error)
 }
 
+// ProcessSnapshotProvider represents the ability to fetch all process info in a single batch
+type ProcessSnapshotProvider interface {
+	ProcessSnapshot(ctx context.Context) (map[string]models.ProcessInfo, error)
+}
+
 // HistoryReader represents the ability to read the scrollback buffer of the session
 type HistoryReader interface {
 	ReadHistory(ctx context.Context, lines int) ([]byte, error)
@@ -93,10 +98,10 @@ type CreateOptions struct {
 type Adapter interface {
 	// Name returns the identifier of this adapter (e.g., "native", "cmux", "tmux")
 	Name() string
-	
+
 	// ListSessions returns all active sessions managed by this adapter
 	ListSessions() ([]Session, error)
-	
+
 	// GetSession returns a specific session by ID
 	GetSession(id string) (Session, error)
 }

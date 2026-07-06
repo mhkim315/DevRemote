@@ -20,7 +20,7 @@ type NativeSession struct {
 // It does NOT keep track of it in a global map.
 func SpawnPTY(id string, termEnv string, command string, args ...string) (*NativeSession, error) {
 	cmd := exec.Command(command, args...)
-	
+
 	// Inherit shell environment (API keys, PATH, etc.)
 	env := os.Environ()
 	termFound := false

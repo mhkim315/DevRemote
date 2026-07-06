@@ -26,111 +26,96 @@ func (a *cmuxAdapter) Name() string {
 
 // parsePanelLine extracts surface ID and title from cmux output like:
 //
-//	* surface:1  terminal  [focused]  "My Panel Title"
-//	 surface:5  terminal  "Another"
+//   - surface:1  terminal  [focused]  "My Panel Title"
+//     surface:5  terminal  "Another"
 var panelRe = regexp.MustCompile(`(surface:\d+)\s+\S+(?:\s+\[.*?\])?\s+"(.*?)"`)
 
 func (a *cmuxAdapter) ListSessions() ([]Session, error) {
-	seen := make(map[string]bool)
-	var all []Session
-
-	// Collect workspace IDs to scan
-	var workspaces []string
-	workspaces = append(workspaces, "") // Default workspace context
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	wsOut, err := exec.CommandContext(ctx, "cmux", "workspace", "list").Output()
 
-	if err == nil {
-		// Extract all workspace IDs, including UUIDs like workspace:33 or workspace:a1b2...
-		wsRe := regexp.MustCompile(`workspace:[a-zA-Z0-9\-]+`)
-		matches := wsRe.FindAllStringSubmatch(string(wsOut), -1)
-		for _, m := range matches {
-			workspaces = append(workspaces, m[0])
-		}
-	} else {
-		// Fallback to stable indices if list command fails
-		for i := 1; i <= 5; i++ {
-			workspaces = append(workspaces, fmt.Sprintf("%d", i))
-		}
+	out, err := exec.CommandContext(ctx, "cmux", "tree", "--all").Output()
+	if err != nil {
+		return nil, fmt.Errorf("cmux tree failed: %w", err)
 	}
 
-	for _, ws := range workspaces {
-		sessions, err := a.listPanels(ws)
-		if err != nil {
-			continue
-		}
-		for _, s := range sessions {
-			if !seen[s.ID()] {
-				seen[s.ID()] = true
-				all = append(all, s)
-			}
-		}
-	}
-	return all, nil
+	return parseCmuxTree(out)
 }
 
-func (a *cmuxAdapter) listPanels(workspaceID string) ([]Session, error) {
-	args := []string{"list-panels"}
-	if workspaceID != "" {
-		args = append(args, "--workspace", workspaceID)
-	}
+var (
+	workspaceRe = regexp.MustCompile(`\bworkspace\s+(workspace:[^\s]+)`)
+	surfaceRe   = regexp.MustCompile(`\bsurface\s+(surface:[^\s]+)\s+\[([^\]]+)\]\s+"([^"]*)"`)
+)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	
-	out, err := exec.CommandContext(ctx, "cmux", args...).Output()
-	if err != nil {
-		return nil, fmt.Errorf("cmux list-panels: %w", err)
-	}
-
+func parseCmuxTree(out []byte) ([]Session, error) {
 	var sessions []Session
 	lines := strings.Split(string(out), "\n")
+
+	var currentWorkspace string
+	var sawTreeStructure bool
+	var sawTerminalSurfaceLine bool
+
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
-		matches := panelRe.FindStringSubmatch(line)
-		if len(matches) == 3 {
-			surfaceID := matches[1]
-			title := matches[2]
-			sessionID := surfaceID
+
+		if strings.Contains(line, "window") || strings.Contains(line, "workspace") {
+			sawTreeStructure = true
+		}
+		if strings.Contains(line, "surface") {
+			if strings.Contains(line, "[terminal]") {
+				sawTerminalSurfaceLine = true
+			}
+		}
+
+		if m := workspaceRe.FindStringSubmatch(line); m != nil {
+			currentWorkspace = m[1]
+			continue
+		}
+
+		if m := surfaceRe.FindStringSubmatch(line); m != nil {
+			surfaceID := m[1]
+			surfaceType := m[2]
+			title := m[3]
+
+			if surfaceType != "terminal" {
+				continue
+			}
+
 			sessions = append(sessions, &CmuxSession{
-				id:          sessionID,
+				id:          surfaceID,
 				title:       title,
 				surfaceID:   surfaceID,
-				workspaceID: workspaceID,
-				pid:         0, // TODO: resolve PID via cmux or ps
+				workspaceID: currentWorkspace,
 			})
 		}
+	}
+
+	// We only error out if we explicitly saw a terminal surface line but failed to parse it.
+	// If we only saw [browser] surfaces (or no surfaces at all), we return the empty slice without error.
+	if sawTreeStructure && sawTerminalSurfaceLine && len(sessions) == 0 {
+		return nil, fmt.Errorf("unexpected format: saw terminal surface lines but failed to parse them")
 	}
 
 	return sessions, nil
 }
 
 func (a *cmuxAdapter) GetSession(id string) (Session, error) {
-	// The id passed in is the raw surface ID (e.g., "38")
-	surfaceID := id
+	if !strings.HasPrefix(id, "surface:") {
+		return nil, fmt.Errorf("invalid cmux session id format: %s", id)
+	}
+	numStr := strings.TrimPrefix(id, "surface:")
+	if _, err := strconv.Atoi(numStr); err != nil {
+		return nil, fmt.Errorf("invalid cmux session id format: %s", id)
+	}
 
-	// Verify the surface exists by listing panels
-	sessions, err := a.ListSessions()
-	if err != nil {
-		return nil, err
-	}
-	
-	for _, s := range sessions {
-		if s.ID() == id {
-			cs := &CmuxSession{
-				id:        id,
-				title:     "cmux panel",
-				surfaceID: surfaceID,
-			}
-			return cs, nil
-		}
-	}
-	return nil, fmt.Errorf("session %s not found in cmux", id)
+	return &CmuxSession{
+		id:        id,
+		title:     "cmux panel",
+		surfaceID: id,
+	}, nil
 }
 
 // CmuxSession implements the Session interface for a cmux panel
@@ -202,6 +187,11 @@ func (s *CmuxStream) Resize(rows, cols int) error {
 }
 
 func (s *CmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
+	// Preflight validation to ensure the surface is alive
+	if _, err := s.ReadScreen(ctx); err != nil {
+		return nil, fmt.Errorf("preflight read-screen failed: %w", err)
+	}
+
 	pr, pw := io.Pipe()
 	stream := &CmuxStream{
 		session: s,
@@ -213,9 +203,9 @@ func (s *CmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
 	return stream, nil
 }
 
-func (s *CmuxSession) AdapterName() string                 { return "cmux" }
-func (s *CmuxSession) ID() string                        { return s.id }
-func (s *CmuxSession) Title() string                     { return s.title }
+func (s *CmuxSession) AdapterName() string { return "cmux" }
+func (s *CmuxSession) ID() string          { return s.id }
+func (s *CmuxSession) Title() string       { return s.title }
 
 func (s *CmuxSession) ReadScreen(ctx context.Context) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.surfaceID)
@@ -274,21 +264,21 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 	if opts.CWD != "" {
 		cmd.Dir = opts.CWD
 	}
-	
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
-	
+
 	InvalidateCache()
-	
+
 	// Parse output to find "surface:NN"
 	outStr := string(out)
 	re := regexp.MustCompile(`surface:\s*(\d+)`)
 	if m := re.FindStringSubmatch(outStr); m != nil {
 		return "cmux:surface:" + m[1], nil
 	}
-	
+
 	// Fallback if parsing fails but command succeeded
 	return "cmux:unknown", nil
 }
@@ -317,39 +307,45 @@ type CmuxPanelInfo struct {
 	PID   int
 }
 
-func (s *CmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, error) {
-	cmd := exec.CommandContext(ctx, "cmux", "top", "--all", "--processes", "--format", "tsv")
-	out, err := cmd.Output()
-	if err != nil {
-		return models.ProcessInfo{}, fmt.Errorf("cmux top failed: %w", err)
-	}
+// CmuxTopSnapshot represents the raw parsed data from cmux top
+type CmuxTopSnapshot struct {
+	Processes []TopProcess
+	Tags      []TopTag
+}
 
+type TopProcess struct {
+	PID    int
+	Parent string
+	Name   string
+}
+
+type TopTag struct {
+	Ref       string
+	Workspace string
+	Provider  string
+}
+
+type AgentProcess struct {
+	PID      int
+	Provider string
+}
+
+func parseCmuxTop(out []byte) (CmuxTopSnapshot, error) {
 	lines := strings.Split(string(out), "\n")
-	
-	type TopProcess struct {
-		PID    int
-		Parent string
-		Name   string
-	}
-	type TopTag struct {
-		Ref       string
-		Workspace string
-		Provider  string
-	}
-	
-	var processes []TopProcess
-	var tags []TopTag
-	
+	var snap CmuxTopSnapshot
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" { continue }
-		
+		if line == "" {
+			continue
+		}
+
 		parts := strings.Split(line, "\t")
-		
+
 		for i, p := range parts {
 			p = strings.TrimSpace(p)
 			if p == "tag" && i+3 < len(parts) {
-				tags = append(tags, TopTag{
+				snap.Tags = append(snap.Tags, TopTag{
 					Ref:       strings.TrimSpace(parts[i+1]),
 					Workspace: strings.TrimSpace(parts[i+2]),
 					Provider:  strings.TrimSpace(parts[i+3]),
@@ -357,7 +353,7 @@ func (s *CmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, erro
 				break
 			} else if p == "process" && i+3 < len(parts) {
 				if pid, err := strconv.Atoi(strings.TrimSpace(parts[i+1])); err == nil {
-					processes = append(processes, TopProcess{
+					snap.Processes = append(snap.Processes, TopProcess{
 						PID:    pid,
 						Parent: strings.TrimSpace(parts[i+2]),
 						Name:   strings.TrimSpace(parts[i+3]),
@@ -367,60 +363,106 @@ func (s *CmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, erro
 			}
 		}
 	}
+	return snap, nil
+}
 
-	// Build relations
-	// PID -> []Parents
-	pidParents := make(map[int][]string)
-	for _, p := range processes {
-		pidParents[p.PID] = append(pidParents[p.PID], p.Parent)
-	}
-
-	// Find the tagRef containing claude_code or codex
-	var targetTagRef string
-	for _, t := range tags {
+func mapAgentProcesses(snap CmuxTopSnapshot) (map[string]AgentProcess, error) {
+	agentTags := make(map[string]string)
+	for _, t := range snap.Tags {
 		lowerRef := strings.ToLower(t.Ref)
-		if strings.Contains(lowerRef, "claude_code") || strings.Contains(lowerRef, "codex") || strings.Contains(lowerRef, "gemini") {
-			targetTagRef = t.Ref
-			break
+		lowerProvider := strings.ToLower(t.Provider)
+		if strings.Contains(lowerRef, "claude_code") || strings.Contains(lowerProvider, "claude_code") {
+			agentTags[t.Ref] = "claude"
+		} else if strings.Contains(lowerRef, "codex") || strings.Contains(lowerProvider, "codex") {
+			agentTags[t.Ref] = "codex"
+		} else if strings.Contains(lowerRef, "gemini") || strings.Contains(lowerProvider, "gemini") {
+			agentTags[t.Ref] = "gemini"
 		}
 	}
 
-	var candidatePIDs []int
-	var agentPID int
+	pidParents := make(map[int][]string)
+	pidNames := make(map[int]string)
+	for _, p := range snap.Processes {
+		pidParents[p.PID] = append(pidParents[p.PID], p.Parent)
+		pidNames[p.PID] = p.Name
+	}
+
+	result := make(map[string]AgentProcess)
+	surfaceCandidates := make(map[string][]int) // surfaceID -> PIDs
 
 	for pid, parents := range pidParents {
-		isOnSurface := false
-		hasAgentTag := false
-		
+		var surfaceID string
+		var provider string
+
 		for _, parent := range parents {
-			if parent == s.surfaceID {
-				isOnSurface = true
+			if strings.HasPrefix(parent, "surface:") {
+				surfaceID = parent
 			}
-			if targetTagRef != "" && parent == targetTagRef {
-				hasAgentTag = true
+			if p, ok := agentTags[parent]; ok {
+				provider = p
 			}
 		}
-		
-		if isOnSurface {
-			candidatePIDs = append(candidatePIDs, pid)
-			if hasAgentTag {
-				agentPID = pid
+
+		if provider == "" {
+			name := strings.ToLower(pidNames[pid])
+			if strings.Contains(name, "claude") {
+				provider = "claude"
+			} else if strings.Contains(name, "codex") {
+				provider = "codex"
+			} else if strings.Contains(name, "gemini") {
+				provider = "gemini"
+			}
+		}
+
+		if surfaceID != "" {
+			surfaceCandidates[surfaceID] = append(surfaceCandidates[surfaceID], pid)
+			if provider != "" {
+				if existing, ok := result[surfaceID]; ok {
+					return nil, fmt.Errorf("ambiguous agent processes on surface %s: %v and %v", surfaceID, existing.PID, pid)
+				}
+				result[surfaceID] = AgentProcess{
+					PID:      pid,
+					Provider: provider,
+				}
 			}
 		}
 	}
 
-	if agentPID > 0 {
-		return s.resolveProcessInfo(agentPID)
+	// Fallback to min PID if no agent tag was found
+	for surfaceID, pids := range surfaceCandidates {
+		if _, ok := result[surfaceID]; !ok && len(pids) > 0 {
+			minPID := pids[0]
+			for _, pid := range pids {
+				if pid < minPID {
+					minPID = pid
+				}
+			}
+			result[surfaceID] = AgentProcess{PID: minPID}
+		}
 	}
 
-	if len(candidatePIDs) > 0 {
-		minPID := candidatePIDs[0]
-		for _, pid := range candidatePIDs {
-			if pid < minPID {
-				minPID = pid
-			}
-		}
-		return s.resolveProcessInfo(minPID)
+	return result, nil
+}
+
+func (s *CmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, error) {
+	cmd := exec.CommandContext(ctx, "cmux", "top", "--all", "--processes", "--format", "tsv")
+	out, err := cmd.Output()
+	if err != nil {
+		return models.ProcessInfo{}, fmt.Errorf("cmux top failed: %w", err)
+	}
+
+	snap, err := parseCmuxTop(out)
+	if err != nil {
+		return models.ProcessInfo{}, err
+	}
+
+	mapped, err := mapAgentProcesses(snap)
+	if err != nil {
+		return models.ProcessInfo{}, err
+	}
+
+	if ap, ok := mapped[s.surfaceID]; ok {
+		return s.resolveProcessInfo(ap.PID)
 	}
 
 	return models.ProcessInfo{}, fmt.Errorf("no processes found for surface %s", s.surfaceID)
@@ -455,4 +497,31 @@ func (s *CmuxSession) resolveProcessInfo(pid int) (models.ProcessInfo, error) {
 	}
 
 	return info, nil
+}
+
+func (a *cmuxAdapter) ProcessSnapshot(ctx context.Context) (map[string]models.ProcessInfo, error) {
+	cmd := exec.CommandContext(ctx, "cmux", "top", "--all", "--processes", "--format", "tsv")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("cmux top failed: %w", err)
+	}
+
+	snap, err := parseCmuxTop(out)
+	if err != nil {
+		return nil, err
+	}
+
+	mapped, err := mapAgentProcesses(snap)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]models.ProcessInfo)
+	for surfaceID, ap := range mapped {
+		dummy := &CmuxSession{surfaceID: surfaceID}
+		if info, err := dummy.resolveProcessInfo(ap.PID); err == nil {
+			result[surfaceID] = info
+		}
+	}
+	return result, nil
 }

@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-
 // TrackCmuxPanels is a helper to run cmux list-panels and parse output
 func TrackCmuxPanels() ([]CmuxPanelInfo, error) {
 	// In a real implementation, cmux list-panels --json might be used
