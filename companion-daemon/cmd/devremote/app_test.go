@@ -2,87 +2,102 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
-	"devremote/companion-daemon/internal/watcher"
 )
 
-// fakeIPC is a test-only IPC server that records Close calls.
+// ── Fake resources ──
+
 type fakeIPC struct {
-	mu         sync.Mutex
-	closeCalls int
-	waitErr    error
-	closeErr   error
+	mu        sync.Mutex
+	closeErr  error
+	waitErr   error
+	closeCnt  int
+	closeOrdr *[]string
+	name      string
+	blocking  bool // if true, Wait blocks until ctx is done
 }
 
 func (f *fakeIPC) Close() error {
 	f.mu.Lock()
-	f.closeCalls++
+	f.closeCnt++
 	f.mu.Unlock()
+	if f.closeOrdr != nil {
+		*f.closeOrdr = append(*f.closeOrdr, f.name+":close")
+	}
 	return f.closeErr
 }
 
 func (f *fakeIPC) Wait(ctx context.Context) error {
-	return f.waitErr
+	if f.closeOrdr != nil {
+		*f.closeOrdr = append(*f.closeOrdr, f.name+":wait")
+	}
+	if f.waitErr != nil {
+		return f.waitErr
+	}
+	if f.blocking {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
 }
 
-// fakeWatcher implements enough to satisfy the test lifecycle.
-// It's a *watcher.Tailer, so we use the real type — but fake its Close.
-// We use a wrapper type instead.
 type fakeWatcher struct {
-	mu       sync.Mutex
-	closed   bool
-	closeErr error
-	startErr error
+	mu        sync.Mutex
+	closeErr  error
+	closed    bool
+	closeOrdr *[]string
+	name      string
 }
 
 func (f *fakeWatcher) Close() error {
 	f.mu.Lock()
 	f.closed = true
 	f.mu.Unlock()
+	if f.closeOrdr != nil {
+		*f.closeOrdr = append(*f.closeOrdr, f.name+":close")
+	}
 	return f.closeErr
 }
 
-// orderedResource records the order in which resources are cleaned up.
-type orderedRecorder struct {
-	mu     sync.Mutex
-	order  []string
-	errors map[string]error
+type fakeTunnel struct {
+	done      chan struct{}
+	signalErr error
+	sigOrdr   *[]string
+	name      string
 }
 
-func (r *orderedRecorder) record(name string, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.order = append(r.order, name)
-	if err != nil {
-		r.errors[name] = err
+func (f *fakeTunnel) Done() <-chan struct{} { return f.done }
+
+func (f *fakeTunnel) Signal(sig os.Signal) error {
+	if f.sigOrdr != nil {
+		*f.sigOrdr = append(*f.sigOrdr, f.name+":signal")
 	}
+	return f.signalErr
 }
 
-func (r *orderedRecorder) getOrder() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, len(r.order))
-	copy(out, r.order)
-	return out
+func newFakeTunnelDone() *fakeTunnel {
+	t := &fakeTunnel{done: make(chan struct{})}
+	close(t.done) // already exited
+	return t
 }
 
 // ── Tests ──
 
 func TestNewApp_CreatesPrivateMux(t *testing.T) {
 	// Not Parallel — NewApp sets term.OnApproval global (Phase 5 deferred).
-
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
@@ -101,7 +116,6 @@ func TestNewApp_CreatesPrivateMux(t *testing.T) {
 
 func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
 	// Not Parallel — NewApp sets term.OnApproval global (Phase 5 deferred).
-
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
@@ -114,15 +128,11 @@ func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
 
 func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	// Not Parallel — NewApp sets term.OnApproval global.
-
-	// Auth globals must match config for insecure mode.
 	term.InsecureLocalOnly = true
 
-	// Create two handlers with separate registries containing different adapters.
 	regA := mux.NewRegistry()
 	regB := mux.NewRegistry()
 
-	// Use test-only adapters to inject known sessions into each registry.
 	adapterA := &mux.StaticAdapter{
 		AdapterNameStr: "test-a",
 		SessionsList: []mux.Session{
@@ -174,138 +184,160 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 		t.Errorf("server B status = %d, want 200", respB.StatusCode)
 	}
 
-	// Read bodies and verify data isolation.
-	var bodyA, bodyB []term.SessionTelemetry
-	// Simple check: bodies should differ because adapters differ.
-	bufA := make([]byte, 4096)
+	// Read all body bytes.
+	bufA := make([]byte, 8192)
 	nA, _ := respA.Body.Read(bufA)
-	bufB := make([]byte, 4096)
-	nB, _ := respB.Body.Read(bufB)
-	_ = bodyA
-	_ = bodyB
-
 	bodyStrA := string(bufA[:nA])
+
+	bufB := make([]byte, 8192)
+	nB, _ := respB.Body.Read(bufB)
 	bodyStrB := string(bufB[:nB])
 
-	// A's response should contain session-a, not session-b.
-	if !containsStr(bodyStrA, "session-a") {
+	if !strings.Contains(bodyStrA, "session-a") {
 		t.Errorf("server A response missing 'session-a': %s", bodyStrA)
 	}
-	if containsStr(bodyStrA, "session-b") {
+	if strings.Contains(bodyStrA, "session-b") {
 		t.Errorf("server A response leaked 'session-b' from registry B: %s", bodyStrA)
 	}
-	// B's response should contain session-b, not session-a.
-	if !containsStr(bodyStrB, "session-b") {
+	if !strings.Contains(bodyStrB, "session-b") {
 		t.Errorf("server B response missing 'session-b': %s", bodyStrB)
 	}
-	if containsStr(bodyStrB, "session-a") {
+	if strings.Contains(bodyStrB, "session-a") {
 		t.Errorf("server B response leaked 'session-a' from registry A: %s", bodyStrB)
 	}
 }
 
 func TestApp_ShutdownOrder(t *testing.T) {
-	// Verify shutdown order without needing real FS resources.
-	rec := &orderedRecorder{errors: make(map[string]error)}
+	// Verify resources are cleaned up in the correct order.
+	term.InsecureLocalOnly = true
+
+	var order []string
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) {
-			return nil, nil // no watcher for this test
+		StartWatcher: func() (watcherResource, error) {
+			return &fakeWatcher{closeOrdr: &order, name: "watcher"}, nil
 		},
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			// We can't fake IPCServer easily (it's a concrete type).
-			// Test real IPC lifecycle separately in ipc_test.go.
-			return nil, fmt.Errorf("test: ipc not started")
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{closeOrdr: &order, name: "ipc"}, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
-	_ = rec
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Inject fakes directly so Shutdown has resources to clean up.
+	app.watcher = &fakeWatcher{closeOrdr: &order, name: "watcher"}
+	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
-	// Shutdown should complete even when IPC failed to start.
-	shutdownErr := app.Shutdown(ctx)
-	t.Logf("Shutdown returned: %v", shutdownErr)
-}
+	// Start telemetry with cancel so we can observe its stop order.
+	tCtx, tCancel := context.WithCancel(context.Background())
+	app.telemetryCancel = tCancel
+	app.telemetryDone = term.StartTelemetryLoop(tCtx, app.registry)
 
-func TestApp_ShutdownContinuesAfterError(t *testing.T) {
-	// Verify that all resources are cleaned up even when shutdown errors occur.
-	cfg := Config{InsecureLocalOnly: true}
-
-	dir, err := os.MkdirTemp("", "p2")
-	if err != nil {
-		t.Fatalf("MkdirTemp failed: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	socketPath := filepath.Join(dir, "s")
-
-	app, err := NewAppWithDeps(cfg, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) {
-			return nil, nil
-		},
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			return term.StartIPCServer(socketPath, reg)
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewAppWithDeps failed: %v", err)
-	}
-	app.ipcPath = socketPath
-
-	// Start IPC.
-	ipc, err := app.startIPC()
-	if err != nil {
-		t.Fatalf("startIPC failed: %v", err)
-	}
-	app.ipc = ipc
-
-	// Normal shutdown (non-expired deadline).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	err = app.Shutdown(ctx)
 	if err != nil {
-		t.Logf("Shutdown returned error: %v (non-fatal — some cleanup errors expected)", err)
+		t.Fatalf("Shutdown failed: %v", err)
 	}
 
-	// Verify socket was cleaned up.
-	if _, statErr := os.Stat(socketPath); !os.IsNotExist(statErr) {
-		t.Errorf("socket still exists after Shutdown: %v", statErr)
+	// Expected order: telemetry cancel, watcher close, then ipc close/wait.
+	// The order must satisfy: telemetry.cancel → watcher:close → ipc:close → ipc:wait.
+	t.Logf("shutdown order: %v", order)
+
+	if len(order) < 3 {
+		t.Fatalf("expected at least 3 order entries (watcher:close, ipc:close, ipc:wait), got %d: %v", len(order), order)
+	}
+
+	// Verify watcher is closed before IPC.
+	watcherIdx := indexOf(order, "watcher:close")
+	ipcCloseIdx := indexOf(order, "ipc:close")
+	ipcWaitIdx := indexOf(order, "ipc:wait")
+
+	if watcherIdx < 0 {
+		t.Error("watcher was not closed")
+	}
+	if ipcCloseIdx < 0 {
+		t.Error("ipc was not closed")
+	}
+	if ipcWaitIdx < 0 {
+		t.Error("ipc Wait was not called")
+	}
+	if watcherIdx >= 0 && ipcCloseIdx >= 0 && watcherIdx > ipcCloseIdx {
+		t.Error("watcher closed after ipc close — order violation")
+	}
+	if ipcCloseIdx >= 0 && ipcWaitIdx >= 0 && ipcCloseIdx > ipcWaitIdx {
+		t.Error("ipc close after ipc wait — order violation")
+	}
+}
+
+func TestApp_ShutdownContinuesAfterError(t *testing.T) {
+	// Verify that when one resource errors, subsequent resources are still cleaned up.
+	term.InsecureLocalOnly = true
+
+	var order []string
+
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewAppWithDeps(cfg, Dependencies{
+		StartWatcher: func() (watcherResource, error) {
+			return &fakeWatcher{closeOrdr: &order, name: "watcher", closeErr: errors.New("watcher close failed")}, nil
+		},
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{closeOrdr: &order, name: "ipc"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppWithDeps failed: %v", err)
+	}
+	app.watcher = &fakeWatcher{closeOrdr: &order, name: "watcher", closeErr: errors.New("watcher close failed")}
+	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	shutdownErr := app.Shutdown(ctx)
+	if shutdownErr == nil {
+		t.Fatal("expected shutdown error from failing watcher, got nil")
+	}
+	if !strings.Contains(shutdownErr.Error(), "watcher close failed") {
+		t.Errorf("error should mention watcher: %v", shutdownErr)
+	}
+
+	// IPC should still have been cleaned up despite watcher error.
+	if idx := indexOf(order, "ipc:close"); idx < 0 {
+		t.Error("ipc was not closed — cleanup continued after error")
 	}
 }
 
 func TestApp_ShutdownRespectsDeadline(t *testing.T) {
-	cfg := Config{InsecureLocalOnly: true}
+	// Verify that a blocking IPC Wait respects the shutdown deadline.
+	term.InsecureLocalOnly = true
 
-	app, err := NewAppWithDeps(cfg, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) { return nil, nil },
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			return nil, fmt.Errorf("ipc skipped")
-		},
-	})
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewAppWithDeps(cfg, Dependencies{})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 
-	// Start telemetry so we can test deadline against it.
-	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
-	app.telemetryCancel = cancelTelemetry
-	app.telemetryDone = term.StartTelemetryLoop(telemetryCtx, app.registry)
+	// Inject an IPC that blocks forever on Wait.
+	app.ipc = &fakeIPC{blocking: true}
 
-	// Shutdown with very short deadline that might not be enough for telemetry to stop.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	time.Sleep(5 * time.Millisecond) // use up some time
-	err = app.Shutdown(ctx)
-	// Whether or not we get an error depends on timing, but shutdown must return.
-	t.Logf("Shutdown returned: %v", err)
+	shutdownErr := app.Shutdown(ctx)
+	if shutdownErr == nil {
+		t.Fatal("expected shutdown deadline error, got nil")
+	}
+	if !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got: %v", shutdownErr)
+	}
 }
 
 func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
+	// Verify App-level IPC lifecycle: bind, shutdown, rebind.
 	dir, err := os.MkdirTemp("", "p2")
 	if err != nil {
 		t.Fatalf("MkdirTemp failed: %v", err)
@@ -313,136 +345,132 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	defer os.RemoveAll(dir)
 	socketPath := filepath.Join(dir, "s")
 
-	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) { return nil, nil },
-	})
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewAppWithDeps(cfg, Dependencies{})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 	app.ipcPath = socketPath
 
-	// Start IPC on temp path.
-	ipc, err := term.StartIPCServer(socketPath, app.registry)
+	// Start real IPC.
+	srv, err := term.StartIPCServer(socketPath, app.registry)
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
-	app.ipc = ipc
+	app.ipc = srv
 
-	// Verify socket exists.
-	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-		t.Fatal("socket does not exist after StartIPCServer")
-	}
-
-	// Shutdown.
+	// Shutdown should remove the socket.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	err = app.Shutdown(ctx)
-	if err != nil {
-		t.Logf("Shutdown returned: %v (non-fatal)", err)
+	if err := app.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
 	}
 
-	// Socket should be removed by Shutdown.
 	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
-		t.Logf("socket still exists after Shutdown: %v (may be removed asynchronously)", err)
+		t.Errorf("socket still exists after Shutdown: %v", err)
 	}
 
-	// Rebind should succeed without test-side Remove.
-	ipc2, err := term.StartIPCServer(socketPath, app.registry)
+	// Rebind without manual Remove.
+	srv2, err := term.StartIPCServer(socketPath, app.registry)
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
-	ipc2.Close()
-	ipc2.Wait(ctx)
-
-	// Clean up.
-	os.Remove(socketPath)
+	srv2.Close()
+	srv2.Wait(ctx)
 }
 
-func TestApp_TunnelStartByMode(t *testing.T) {
-	// InsecureLocalOnly → tunnel NOT started.
-	appInsecure, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) { return nil, nil },
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			return nil, fmt.Errorf("skipped")
+func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
+	// Insecure mode: Run must NOT start a tunnel.
+	term.InsecureLocalOnly = true
+
+	tunnelStarted := false
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewAppWithDeps(cfg, Dependencies{
+		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{waitErr: context.DeadlineExceeded}, nil
+		},
+		StartTunnel: func() tunnelResource {
+			tunnelStarted = true
+			return newFakeTunnelDone()
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 
-	// simulate Run's start logic without actually calling Run
-	appInsecure.watcher = appInsecure.startWatcher()
-	ipc, _ := appInsecure.startIPC()
-	appInsecure.ipc = ipc
-
-	// In insecure mode, tunnel should not be started.
-	if appInsecure.config.InsecureLocalOnly {
-		cmd := appInsecure.startTunnel()
-		if cmd != nil {
-			t.Error("tunnel was started in insecure mode")
-		}
+	// Simulate what Run does WITHOUT calling Run (which would ListenAndServe).
+	app.watcher = app.startWatcher()
+	ipc, _ := app.startIPC()
+	app.ipc = ipc
+	if !app.config.InsecureLocalOnly {
+		app.tunnel = app.startTunnel()
 	}
 
-	// Production mode → tunnel IS started (with fake).
-	tunnelCalled := false
-	appProd, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) { return nil, nil },
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			return nil, fmt.Errorf("skipped")
+	if tunnelStarted {
+		t.Error("tunnel was started in insecure mode")
+	}
+	if app.tunnel != nil {
+		t.Error("tunnel resource is non-nil in insecure mode")
+	}
+}
+
+func TestApp_TunnelStartedInProductionMode(t *testing.T) {
+	// Production mode: Run must start a tunnel.
+	term.InsecureLocalOnly = true // for auth bypass
+
+	tunnelStarted := false
+	cfg := Config{InsecureLocalOnly: false}
+	app, err := NewAppWithDeps(cfg, Dependencies{
+		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{waitErr: context.DeadlineExceeded}, nil
 		},
-		StartTunnel: func() *exec.Cmd {
-			tunnelCalled = true
-			return nil
+		StartTunnel: func() tunnelResource {
+			tunnelStarted = true
+			return newFakeTunnelDone()
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 
-	appProd.watcher = appProd.startWatcher()
-	ipc2, _ := appProd.startIPC()
-	appProd.ipc = ipc2
+	app.watcher = app.startWatcher()
+	ipc, _ := app.startIPC()
+	app.ipc = ipc
+	if !app.config.InsecureLocalOnly {
+		app.tunnel = app.startTunnel()
+	}
 
-	if !appProd.config.InsecureLocalOnly {
-		cmd := appProd.startTunnel()
-		if cmd != nil || !tunnelCalled {
-			t.Error("tunnel was not started in production mode")
-		}
+	if !tunnelStarted {
+		t.Error("tunnel was NOT started in production mode")
+	}
+	if app.tunnel == nil {
+		t.Error("tunnel resource is nil in production mode")
 	}
 }
 
 func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 	// Verify that context cancellation triggers clean shutdown returning nil.
-	cfg := Config{InsecureLocalOnly: true}
 	term.InsecureLocalOnly = true
 
+	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) { return nil, nil },
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			return term.StartIPCServer(path, reg)
+		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{}, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 
-	dir, err := os.MkdirTemp("", "p2")
-	if err != nil {
-		t.Fatalf("MkdirTemp failed: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	app.ipcPath = filepath.Join(dir, "s")
-
-	// Start the IPC server so shutdown has real resources.
-	ipc, err := app.startIPC()
-	if err != nil {
-		t.Fatalf("startIPC failed: %v", err)
-	}
+	app.watcher = app.startWatcher()
+	ipc, _ := app.startIPC()
 	app.ipc = ipc
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	runErr := app.Run(ctx)
 	if runErr != nil {
@@ -450,68 +478,147 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 	}
 }
 
-func TestApp_ShutdownPreservesErrors(t *testing.T) {
-	// Verify that shutdown with an expired deadline returns the deadline error.
-	// We use an IPC server that is actively accepting (not closed) so Wait blocks
-	// and hits the context deadline.
-	cfg := Config{InsecureLocalOnly: true}
+func TestApp_RunReturnsHTTPServeError(t *testing.T) {
+	// Verify that a non-ErrServerClosed HTTP error is preserved by Run.
+	// We keep a listener open on the port so ListenAndServe cannot bind.
 	term.InsecureLocalOnly = true
 
-	dir, err := os.MkdirTemp("", "p2")
-	if err != nil {
-		t.Fatalf("MkdirTemp failed: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	socketPath := filepath.Join(dir, "s")
-
+	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		StartWatcher: func() (*watcher.Tailer, error) { return nil, nil },
-		StartIPC: func(path string, reg *mux.Registry) (*term.IPCServer, error) {
-			return term.StartIPCServer(socketPath, reg)
+		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{}, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
-	app.ipcPath = socketPath
 
-	// Start IPC — it's now running and blocked on Accept.
-	ipc, err := app.startIPC()
-	if err != nil {
-		t.Fatalf("startIPC failed: %v", err)
-	}
+	app.watcher = app.startWatcher()
+	ipc, _ := app.startIPC()
 	app.ipc = ipc
 
-	// Call Wait directly with expired deadline, without calling Close first.
-	// The serve goroutine is blocked on Accept, so Wait should hit the deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	// Keep a listener open to block the port.
+	l, err := listenFreeTCP()
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	defer l.Close()
+	addr := l.Addr().String()
+	app.server.Addr = addr
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	waitErr := ipc.Wait(ctx)
-	if waitErr == nil {
-		t.Error("expected deadline error from Wait without Close, got nil")
+	runErr := app.Run(ctx)
+	if runErr == nil {
+		t.Error("expected non-nil error from Run (serve error or context deadline)")
 	}
-	t.Logf("Wait without Close returned: %v", waitErr)
+	t.Logf("Run error: %v", runErr)
+}
 
-	// Now close cleanly.
-	ipc.Close()
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	ipc.Wait(ctx2)
+func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
+	// Verify errors.Join preserves both serve and shutdown errors.
+	term.InsecureLocalOnly = true
+
+	shutdownErr := errors.New("shutdown-failed")
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewAppWithDeps(cfg, Dependencies{
+		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			// IPC that fails on Wait.
+			return &fakeIPC{waitErr: shutdownErr}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppWithDeps failed: %v", err)
+	}
+
+	app.watcher = app.startWatcher()
+	ipc, _ := app.startIPC()
+	app.ipc = ipc
+
+	l, err := listenFreeTCP()
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	defer l.Close()
+	addr := l.Addr().String()
+
+	app.server.Addr = addr
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	runErr := app.Run(ctx)
+	if runErr == nil {
+		t.Fatal("expected joined error, got nil")
+	}
+	// shutdownErr should be detectable via errors.Is.
+	if !errors.Is(runErr, shutdownErr) {
+		t.Errorf("shutdown error %q not found in Run result: %v", shutdownErr, runErr)
+	}
+}
+
+func TestApp_TunnelShutdownSignalsAndWaits(t *testing.T) {
+	// Verify that Shutdown signals the tunnel and waits for Done().
+	term.InsecureLocalOnly = true
+
+	var order []string
+	tun := &fakeTunnel{
+		done:    make(chan struct{}),
+		sigOrdr: &order,
+		name:    "tunnel",
+	}
+
+	cfg := Config{InsecureLocalOnly: false}
+	app, err := NewAppWithDeps(cfg, Dependencies{})
+	if err != nil {
+		t.Fatalf("NewAppWithDeps failed: %v", err)
+	}
+	app.tunnel = tun
+	app.ipc = &fakeIPC{} // prevent nil panic
+
+	// Shutdown in a goroutine — it will block on tunnel.Done().
+	errCh := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		errCh <- app.Shutdown(ctx)
+	}()
+
+	// Give it time to signal.
+	time.Sleep(100 * time.Millisecond)
+	close(tun.done) // tunnel exits
+
+	select {
+	case shutdownErr := <-errCh:
+		if shutdownErr != nil {
+			t.Fatalf("Shutdown failed: %v", shutdownErr)
+		}
+		// Verify signal was called.
+		if idx := indexOf(order, "tunnel:signal"); idx < 0 {
+			t.Error("tunnel was not signalled")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Shutdown did not complete within deadline")
+	}
 }
 
 // ── Helpers ──
 
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+func indexOf(slice []string, s string) int {
+	for i, v := range slice {
+		if v == s {
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
-// listenTCP creates a TCP listener on the given address for testing.
-func listenTCP(addr string) (net.Listener, error) {
-	return net.Listen("tcp", addr)
+func listenFreeTCP() (net.Listener, error) {
+	return net.Listen("tcp", "127.0.0.1:0")
 }
+
+// Ensure net import is used (referenced from helpers).
+var _ = fmt.Sprintf

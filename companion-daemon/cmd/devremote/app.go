@@ -26,13 +26,44 @@ type Config struct {
 	InsecureLocalOnly  bool
 }
 
-// Dependencies holds injectable resource factories for testing.
-// Production defaults are used when a field is nil.
-type Dependencies struct {
-	StartWatcher func() (*watcher.Tailer, error)
-	StartIPC     func(path string, reg *mux.Registry) (*term.IPCServer, error)
-	StartTunnel  func() *exec.Cmd
+// ── Test seam interfaces ──
+
+// ipcResource abstracts *term.IPCServer so tests can inject fakes.
+type ipcResource interface {
+	Close() error
+	Wait(ctx context.Context) error
 }
+
+// watcherResource abstracts *watcher.Tailer so tests can inject fakes.
+type watcherResource interface {
+	Close() error
+}
+
+// tunnelResource abstracts a running tunnel process so tests can inject fakes.
+type tunnelResource interface {
+	Done() <-chan struct{} // closed when the process exits
+	Signal(os.Signal) error
+}
+
+// Dependencies holds injectable resource factories for testing.
+// A nil field means "use the production default".
+type Dependencies struct {
+	StartWatcher func() (watcherResource, error)
+	StartIPC     func(path string, reg *mux.Registry) (ipcResource, error)
+	StartTunnel  func() tunnelResource
+}
+
+// ── tunnelProc: production tunnelResource ──
+
+type tunnelProc struct {
+	cmd  *exec.Cmd
+	done chan struct{}
+}
+
+func (t *tunnelProc) Done() <-chan struct{}      { return t.done }
+func (t *tunnelProc) Signal(sig os.Signal) error { return t.cmd.Process.Signal(sig) }
+
+// ── App ──
 
 // App owns all runtime dependencies and background resources.
 // Every resource's lifecycle is explicit — no fire-and-forget goroutines.
@@ -49,13 +80,12 @@ type App struct {
 	// Background resources owned by App for lifecycle control.
 	telemetryDone   <-chan struct{}    // closed when telemetry goroutine exits
 	telemetryCancel context.CancelFunc // cancels telemetry context
-	ipc             *term.IPCServer
-	watcher         *watcher.Tailer
-	tunnelCmd       *exec.Cmd // cloudflared process (nil in insecure mode)
+	ipc             ipcResource
+	watcher         watcherResource
+	tunnel          tunnelResource // nil in insecure mode
 }
 
-// NewApp creates the App, registers adapters, wires HTTP routes.
-// All runtime dependencies are explicitly assembled here.
+// NewApp creates the App with production defaults.
 func NewApp(cfg Config) (*App, error) {
 	return NewAppWithDeps(cfg, Dependencies{})
 }
@@ -95,7 +125,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}))
 
 	// term.OnApproval is a package global (deferred to Phase 5).
-	// This means two parallel Apps share the same callback — a known limitation.
 	term.OnApproval = func(msg string) {
 		log.Printf("🚨 APPROVAL DETECTED: %s", msg)
 		if pushToken != "" {
@@ -106,7 +135,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("/debug/dump", term.AuthMiddleware(term.HandleDump))
 	serveMux.HandleFunc("/debug/cmd", term.AuthMiddleware(term.HandleCmd))
 
-	// 3. Address selection.
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {
 		addr = "127.0.0.1:9171"
@@ -123,9 +151,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 // Run starts all background resources and the HTTP server.
 // Blocks until ctx is cancelled, then shuts down gracefully.
-// Returns any HTTP serve error (except http.ErrServerClosed) joined with shutdown errors.
 func (a *App) Run(ctx context.Context) error {
-	// 4. Start background resources.
+	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
 	a.telemetryCancel = cancelTelemetry
 	a.telemetryDone = term.StartTelemetryLoop(telemetryCtx, a.registry)
@@ -139,12 +166,12 @@ func (a *App) Run(ctx context.Context) error {
 	a.ipc = ipc
 
 	if !a.config.InsecureLocalOnly {
-		a.tunnelCmd = a.startTunnel()
+		a.tunnel = a.startTunnel()
 	}
 
 	log.Printf("POKIT daemon %s (owner=%s)", a.server.Addr, a.config.OwnerUUID)
 
-	// 5. Serve HTTP in background; wait for shutdown signal or HTTP error.
+	// 4. Serve HTTP in background; wait for shutdown signal or HTTP error.
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- a.server.ListenAndServe()
@@ -161,12 +188,10 @@ func (a *App) Run(ctx context.Context) error {
 		log.Println("Shutting down (HTTP ended)...")
 	}
 
-	// Normalize: ErrServerClosed is expected shutdown.
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil
 	}
 
-	// 6. Graceful shutdown with deadline.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
@@ -174,20 +199,20 @@ func (a *App) Run(ctx context.Context) error {
 	return errors.Join(serveErr, shutdownErr)
 }
 
-// Shutdown stops all resources in order: HTTP → telemetry → watcher → IPC socket.
+// Shutdown stops all resources in order: HTTP → telemetry → watcher → tunnel → IPC.
 // Resources are cleaned up even if earlier steps fail.
 // Errors are joined so the caller can inspect each cause with errors.Is / errors.As.
 func (a *App) Shutdown(ctx context.Context) error {
 	var errs []error
 
-	// 1. Stop accepting new HTTP connections.
+	// 1. Stop HTTP.
 	log.Println("Shutdown: stopping HTTP server...")
 	if err := a.server.Shutdown(ctx); err != nil {
 		log.Printf("HTTP shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("http: %w", err))
 	}
 
-	// 2. Stop telemetry and wait for goroutine exit.
+	// 2. Stop telemetry.
 	if a.telemetryCancel != nil {
 		log.Println("Shutdown: stopping telemetry...")
 		a.telemetryCancel()
@@ -200,7 +225,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 3. Close watcher (filesystem tailing).
+	// 3. Close watcher.
 	if a.watcher != nil {
 		log.Println("Shutdown: closing watcher...")
 		if err := a.watcher.Close(); err != nil {
@@ -209,18 +234,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 4. Close tunnel process if running.
-	if a.tunnelCmd != nil && a.tunnelCmd.Process != nil {
+	// 4. Signal tunnel and wait for exit.
+	if a.tunnel != nil {
 		log.Println("Shutdown: signalling tunnel...")
-		if err := a.tunnelCmd.Process.Signal(syscall.SIGTERM); err != nil {
+		if err := a.tunnel.Signal(syscall.SIGTERM); err != nil {
 			log.Printf("Tunnel signal error: %v", err)
 			errs = append(errs, fmt.Errorf("tunnel signal: %w", err))
 		}
-		// Wait for tunnel to exit with deadline.
-		tunnelDone := make(chan error, 1)
-		go func() { tunnelDone <- a.tunnelCmd.Wait() }()
 		select {
-		case <-tunnelDone:
+		case <-a.tunnel.Done():
 			log.Println("Shutdown: tunnel exited")
 		case <-ctx.Done():
 			log.Println("Shutdown: tunnel wait deadline exceeded")
@@ -228,7 +250,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 5. Close IPC listener and wait for accept loop exit.
+	// 5. Close IPC and remove socket.
 	if a.ipc != nil {
 		log.Println("Shutdown: closing IPC server...")
 		if err := a.ipc.Close(); err != nil {
@@ -239,10 +261,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 			log.Printf("IPC wait error: %v", err)
 			errs = append(errs, fmt.Errorf("ipc wait: %w", err))
 		}
-	}
-
-	// 6. Remove IPC socket pathname after listener is fully stopped.
-	if a.ipc != nil {
 		if err := os.Remove(a.ipcPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("IPC socket remove error: %v", err)
 			errs = append(errs, fmt.Errorf("ipc remove: %w", err))
@@ -254,44 +272,42 @@ func (a *App) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// startWatcher initialises filesystem watching for JSONL agent logs.
-func (a *App) startWatcher() *watcher.Tailer {
+// ── Resource starters (respect Dependencies injection) ──
+
+func (a *App) startWatcher() watcherResource {
 	if a.deps.StartWatcher != nil {
-		t, err := a.deps.StartWatcher()
+		w, err := a.deps.StartWatcher()
 		if err != nil {
 			log.Printf("Watcher start error: %v", err)
 			return nil
 		}
-		return t
+		return w
 	}
 	return startWatcherProd()
 }
 
-// startIPC creates the Unix socket listener.
-func (a *App) startIPC() (*term.IPCServer, error) {
+func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry)
 	}
 	return term.StartIPCServer(a.ipcPath, a.registry)
 }
 
-// startTunnel launches cloudflared for remote access.
-func (a *App) startTunnel() *exec.Cmd {
+func (a *App) startTunnel() tunnelResource {
 	if a.deps.StartTunnel != nil {
 		return a.deps.StartTunnel()
 	}
 	return startTunnelProd()
 }
 
-// runDaemon is the entry point called from main().
-// It only does config wiring, object assembly, and execution.
+// ── runDaemon ──
+
 func runDaemon(cfg Config) {
 	app, err := NewApp(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create app: %v", err)
 	}
 
-	// Auth globals — Phase 3 will encapsulate these inside a verifier.
 	term.OwnerUUID = cfg.OwnerUUID
 	term.SupabaseProjectRef = cfg.SupabaseProjectRef
 	term.InsecureLocalOnly = cfg.InsecureLocalOnly
@@ -315,7 +331,8 @@ func runDaemon(cfg Config) {
 	log.Println("Daemon stopped.")
 }
 
-// startWatcherProd is the production watcher implementation.
+// ── Production implementations ──
+
 func startWatcherProd() *watcher.Tailer {
 	homeDir, _ := os.UserHomeDir()
 	claudeLogDir := filepath.Join(homeDir, ".claude")
@@ -346,12 +363,8 @@ func startWatcherProd() *watcher.Tailer {
 	return t
 }
 
-// startTunnelProd is the production cloudflared tunnel implementation.
-// A background goroutine calls cmd.Wait() to reap the child process.
-func startTunnelProd() *exec.Cmd {
-	cloudflaredPath := "cloudflared" // assume in PATH first
-
-	// Search upwards from executable dir up to 4 levels
+func startTunnelProd() *tunnelProc {
+	cloudflaredPath := "cloudflared"
 	exePath, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exePath)
@@ -378,12 +391,10 @@ func startTunnelProd() *exec.Cmd {
 	fmt.Println("🚀 POKIT Daemon Started")
 	fmt.Println("===========================================")
 
-	// Reap the child process in background so it doesn't become a zombie.
+	tp := &tunnelProc{cmd: cmd, done: make(chan struct{})}
 	go func() {
-		if err := cmd.Wait(); err != nil {
-			log.Printf("cloudflared tunnel exited: %v", err)
-		}
+		_ = cmd.Wait()
+		close(tp.done)
 	}()
-
-	return cmd
+	return tp
 }
