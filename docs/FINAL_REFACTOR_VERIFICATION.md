@@ -139,7 +139,40 @@ HTTP Handlers{Registry, Verifier, Events, Links, Cmds, Telemetry}
 | go vet, unit test, race test, tsc 통과 | PASS |
 | Protocol 또는 보안 정책 암묵적 변경 없음 | PASS |
 
-## 7. 후속 작업
+## 7. 실환경 Smoke Test (Section 6.3)
+
+### 7.1 macOS Daemon
+
+```text
+Daemon PID:      22748
+Listening:       localhost:9171 (TCP)
+cmux socket:     ~/.local/state/cmux/cmux.sock (srw-rw-rw-)
+IPC socket:      /tmp/pokit.sock (managed by App.ipcPath)
+```
+
+Session 상태:
+
+```text
+/api/sessions → 12 sessions (cmux 3, tmux 9)
+All stale:      false / N/A
+All lastError:  null / N/A
+cmux history:   surface:1 → 1 event, actual terminal content returned
+daemon log:     no Broken pipe, no cmux tree failed
+```
+
+### 7.2 Mobile (검증 에이전트 확인 필요)
+
+실기기 smoke test 항목:
+
+- tmux: dashboard/live/input/Enter/Ctrl+C/resize/reconnect
+- cmux: dashboard/initial screen/live update/input/LF·CR·CRLF/arrow/Esc
+- background→foreground 전환
+- daemon restart 후 reconnect
+- session 전환
+- approval Y/N
+- history/activity 표시
+
+## 8. 후속 작업
 
 - Adapter contract 정리 (별도 follow-up): capability interface 문서화, 공통 contract test
-- tmux/cmux 실기기 smoke test
+- Mobile 실기기 smoke test (Section 7.2)
