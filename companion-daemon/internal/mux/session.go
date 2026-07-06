@@ -98,6 +98,36 @@ func (s *NativeSession) Resize(rows, cols int) error {
 	})
 }
 
+// StaticSession is a minimal Session implementation for use in tests.
+// It satisfies the Session interface with no external dependencies.
+type StaticSession struct {
+	IDStr      string
+	TitleStr   string
+	AdapterStr string
+}
+
+func (s *StaticSession) ID() string          { return s.IDStr }
+func (s *StaticSession) Title() string       { return s.TitleStr }
+func (s *StaticSession) AdapterName() string { return s.AdapterStr }
+
+// StaticAdapter is a minimal Adapter implementation for use in tests.
+// It serves a pre-configured list of sessions.
+type StaticAdapter struct {
+	AdapterNameStr string
+	SessionsList   []Session
+}
+
+func (a *StaticAdapter) Name() string                     { return a.AdapterNameStr }
+func (a *StaticAdapter) ListSessions() ([]Session, error) { return a.SessionsList, nil }
+func (a *StaticAdapter) GetSession(id string) (Session, error) {
+	for _, s := range a.SessionsList {
+		if s.ID() == id {
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("session %s not found", id)
+}
+
 func (s *NativeSession) Close() error {
 	if s.Cmd.Process != nil {
 		s.Cmd.Process.Kill()
