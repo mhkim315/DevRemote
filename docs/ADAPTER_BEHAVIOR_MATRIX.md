@@ -2,98 +2,109 @@
 
 - 기준 커밋: `dc026d5`
 - **Code**: interface 구현 존재 여부
-- **Effect**: 실제 효과
+- **Effect**: 실제 효과 (실제 CLI 실행 / no-op)
 - **Verified**: 실기기 확인 여부
 - **Status**: Contract (보장) / Accidental (변경 가능)
 
-## 1. Session Capability Matrix
+## 1. Adapter Capabilities (receiver: adapter struct, not session)
 
-각 adapter의 session struct가 직접 구현한 capability. `OpenStream`이 반환하는
-`TerminalStream`의 write/resize는 별도 섹션에 기록한다.
-
-### tmux session
-
-| Capability | Code | Effect | Verified | Notes |
-|---|---|---|---|---|
-| `OpenStream` | YES | PTY attach | PASS | |
-| `ScreenReader` | YES | `capture-pane -p` | PASS | |
-| `HistoryReader` | YES | `capture-pane -pS -N` | PASS | |
-| `ProcessProvider` | YES | `display-message -p -t <target> #{pane_start_time},#{pane_pid},#{pane_current_path}` | PASS | |
-| `ProcessSnapshotProvider` | NO | — | N/A | |
-| `SessionCreator` | YES | `tmux new-session -d -s <name>` | PASS | |
-| `SessionTerminator` | YES | `tmux kill-session -t <name>` | PASS | |
-| `InputWriter` | NO | — | — | input via `TerminalStream.Write` |
-| `Resizer` | NO | — | — | resize via `TerminalStream.Resize` |
-| `KeyWriter` | NO | — | — | |
-
-### cmux session
-
-| Capability | Code | Effect | Verified | Notes |
-|---|---|---|---|---|
-| `OpenStream` | YES | surface pipe (500ms poll, 1.5s timeout) | PASS | |
-| `ScreenReader` | YES | `read-screen --surface <id>` (plain text, no ANSI) | PASS | |
-| `HistoryReader` | YES | `read-screen --surface <id> --scrollback --lines N` | PASS | |
-| `ProcessProvider` | YES | `top --all --processes --format tsv` → PID resolve | PASS | |
-| `ProcessSnapshotProvider` | YES | `top --all --processes --format tsv` (all surfaces) | NOT TESTED | |
-| `SessionCreator` | YES | `new-surface --type terminal --workspace <ws>` | NOT TESTED | |
-| `SessionTerminator` | YES | `close-surface --surface <id>` | NOT TESTED | |
-| `InputWriter` | YES | `send --surface <id> <text>` | PASS | |
-| `KeyWriter` | YES | `send-key --surface <id> <key>` | PASS | Esc, arrows |
-
-### cmux Ctrl+C
-
-| Path | Code | Effect | Verified |
+| Capability | tmux | cmux | Notes |
 |---|---|---|---|
-| `WriteInput("\x03")` → `WriteKey("ctrl-c")` | YES | NOT SUPPORTED | FAIL (실기기 미작동) |
+| `ListSessions` | YES | YES | 필수 계약. tmux: `list-sessions -F "#{session_id}::POKIT::#{session_name}"` 고정 delimiter. cmux: `tree --all` (3s timeout) |
+| `SessionCreator` | YES | YES | tmux: `new-session -d -s <name>`. cmux: `new-surface --type terminal --workspace <ws>` |
+| `SessionTerminator` | YES | YES | tmux: `kill-session -t <name>`. cmux: `close-surface --surface <id>` |
+| `ProcessSnapshotProvider` | NO | YES | cmux: `top --all --processes --format tsv` (all surfaces batch) |
 
-## 2. TerminalStream Capability (returned by OpenStream)
+## 2. Session Capabilities (receiver: session struct)
+
+| Capability | tmux | cmux | Notes |
+|---|---|---|---|
+| `OpenStream` | YES | YES | tmux: PTY attach. cmux: surface pipe (500ms poll, 1.5s timeout) |
+| `ScreenReader` | YES | YES | tmux: `capture-pane -p -t $session_id`. cmux: `read-screen --surface <id>` (plain text, no ANSI) |
+| `HistoryReader` | YES | YES | tmux: `capture-pane -pS -N -t $session_id`. cmux: `read-screen --surface <id> --scrollback --lines N` |
+| `ProcessProvider` | YES | YES | tmux: `display-message -p -t <target> #{pane_start_time},#{pane_pid},#{pane_current_path}`. cmux: `top --all --processes --format tsv` → PID resolve |
+| `InputWriter` | NO | YES | tmux input via `TerminalStream.Write`. cmux: `send --surface <id> <text>` |
+| `KeyWriter` | NO | YES | cmux: `send-key --surface <id> <key>` |
+| Resize | NO (on stream) | NO (on session) | tmux: stream.Resize=YES. cmux: stream.Resize=NO-OP |
+
+## 3. TerminalStream Capabilities (returned by OpenStream)
 
 | Capability | tmux (PTY) | cmux (pipe) |
 |---|---|---|
 | `Read` | YES | YES |
-| `Write` | YES | NO (cmux uses session `WriteInput`) |
+| `Write` | YES | NO |
 | `Close` | YES | YES |
-| `Resize` | YES (PTY resize) | YES (**NO-OP**, success return only) |
+| `Resize` | YES (PTY resize) | YES (NO-OP, success only) |
 
-## 3. Discovery
+## 4. Functional Behavior Matrix — Common Dimensions
 
-| Item | tmux | cmux |
-|---|---|---|
-| Command | `tmux ls` | `cmux tree --all` |
-| Timeout | N/A | 3s (`exec.CommandContext`) |
-| Ordering | canonical ID lexical ascending (`adapter:local`) | same |
-| Stale on failure | preserved | preserved |
+tmux와 cmux에 동일 항목 적용. 미지원은 "NOT SUPPORTED"로 기록.
 
-## 4. Canonical ID Golden Examples
+| Dimension | tmux | cmux | Status |
+|---|---|---|---|
+| **Discovery** | | | |
+| Command | `list-sessions -F "#{session_id}::POKIT::#{session_name}"` | `tree --all` | Accidental |
+| Internal target vs title | `$session_id` target / `#{session_name}` title | surface ID / `[state] "title"` | Accidental |
+| New session appears | Next refresh (≤10s TTL) | Next refresh (≤10s TTL) | Contract |
+| Deleted session removed | Next refresh | Next refresh | Contract |
+| Healthy ordering | canonical ID lexical ascending | same | Contract |
+| Stale on adapter failure | preserved | preserved | Contract |
+| **Initial Screen** | | | |
+| WS connect first frame | `capture-pane -p` snapshot + PTY | pipe first read | Accidental |
+| Adapter-name branch in handler | YES (`pty.go` tmux check) | N/A | Accidental |
+| **Live Output** | | | |
+| Stream type | Binary PTY | 500ms poll (1.5s timeout) | Accidental |
+| ANSI color/style | YES (raw PTY) | NO (plain text) | Accidental |
+| Latency | Real-time | ≤500ms | Accidental |
+| **Text Input** | | | |
+| Printable ASCII | PASS (stream.Write) | PASS (`send --surface`) | Verified |
+| Enter | CR/LF/CRLF → stream.Write | LF → `send-key enter` | Verified |
+| Ctrl+C | SIGINT (stream.Write 0x03) | `WriteKey("ctrl-c")` — NOT SUPPORTED | Verified |
+| Arrow/Up/Down/Left/Right | escape sequences (stream.Write) | `send-key` keyCode | Verified |
+| Escape | escape sequence (stream.Write) | `send-key escape` | Verified |
+| Unicode/CJK | PASS (stream.Write) | Limited (`send` text) | Verified (tmux only) |
+| **Session Lifecycle** | | | |
+| POST create result | local ID returned (accidental) | code exists, not tested | Accidental |
+| DELETE terminate | `kill-session` | `close-surface` | Accidental |
+| **Disconnect / Reconnect** | | | |
+| Client disconnect | stream.Close, WS 1011 close | stream.Close, WS 1011 close | Contract |
+| Daemon restart | sessions re-discovered | sessions re-discovered | Contract |
+| New WS = new stream | YES | YES | Contract |
+| **Error Handling** | | | |
+| Session not found | HTTP 404 | HTTP 404 | Contract |
+| Stream read error | WS 1011 close | WS 1011 close | Contract |
+| Transient adapter failure | stale snapshot preserved | stale snapshot preserved | Contract |
+
+## 5. Canonical ID Golden
 
 ```text
-tmux:ai               → adapter=tmux, localID=ai
-tmux:aider            → adapter=tmux, localID=aider
-tmux:tmux:aider       → adapter=tmux, localID=tmux:aider (local has ':')
-tmux:한글             → adapter=tmux, localID=한글 (Unicode)
-cmux:surface:1        → adapter=cmux, localID=surface:1
-cmux:42               → Parse→(cmux,42), MigrateLegacyID→cmux:surface:42
+tmux:ai               → (tmux, ai)
+tmux:tmux:aider        → (tmux, tmux:aider) local has ':'
+tmux:한글             → (tmux, 한글) Unicode
+cmux:surface:1        → (cmux, surface:1)
+cmux:42               → Parse→(cmux,42), Migrate→cmux:surface:42
 ```
 
-## 5. API Response Golden Fixtures (dc026d5)
+## 6. API Golden (dc026d5)
 
-- GET `/api/sessions`: 200, JSON array of `SessionTelemetry` (keys: `id`,`state`,`load`,`runner`,`runnerColor`,`adapter`,`events`; omitempty: `stale`,`lastSuccessAt`,`lastError`)
-- POST `/api/sessions`: `{"id":"tmux:test",...}` → `{"status":"ok","id":"test"}` (local ID — accidental; Phase 1 canonicalizes)
-- DELETE `/api/sessions?id=tmux:test`: `{"status":"ok"}`
-- GET `/api/sessions?history=...`: events JSON or 404; screen fallback returns `[{"id","session","type","summary","detail","timestamp","agent","toolCallId"}]`
+- GET `/api/sessions`: 200, `[{id,state,load,runner,runnerColor,adapter,events,stale?,lastSuccessAt?,lastError?}]`
+- POST: `{"id":"tmux:test",...}` → `{"status":"ok","id":"test"}` (local ID — accidental; Phase 1 canonicalizes)
+- DELETE: `{"status":"ok"}`
+- GET history: events JSON or 404; screen fallback returns `AgentEvent[]`
 
-## 6. Contract vs Accidental
+## 7. Contract vs Accidental
 
 | Behavior | Status |
 |---|---|
 | Canonical ID `<adapter>:<local-id>` | Contract |
-| Legacy migration `cmux:N`→`cmux:surface:N` | Contract |
+| Legacy `cmux:N`→`cmux:surface:N` | Contract |
+| ID lexical ascending ordering | Contract |
 | Stale snapshot on refresh failure | Contract |
 | Session not found → 404 | Contract |
 | Stream error → WS 1011 | Contract |
-| Ordering: canonical ID lexical ascending | Contract (Registry sort) |
 | POST returns local ID | **Accidental** — Phase 1 |
+| tmux "tmux" fallback in create | **Accidental** — Phase 1 |
 | cmux resize no-op | **Accidental** — Phase 2 |
-| cmux command names (`tree`,`read-screen`,`new-surface`) | Accidental |
-| cmux timeouts (3s discovery, 1.5s stream) | Accidental |
+| All backend command names/flags | Accidental |
+| cmux timeouts (3s/1.5s) | Accidental |
 | mobile `replace(/^(tmux\|cmux):/, '')` | Accidental — Phase 2 |
