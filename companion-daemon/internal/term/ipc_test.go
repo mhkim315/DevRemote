@@ -69,6 +69,33 @@ func TestIPCServer_CloseIdempotent(t *testing.T) {
 	}
 }
 
+func TestIPCServer_SocketMode0600(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "test.sock")
+	reg := mux.NewRegistry()
+
+	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
+	if err != nil {
+		t.Fatalf("StartIPCServer failed: %v", err)
+	}
+	defer func() {
+		srv.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		srv.Wait(ctx)
+	}()
+
+	fi, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	if fi.Mode().Perm() != 0600 {
+		t.Errorf("socket mode = %o, want 0600", fi.Mode().Perm())
+	}
+}
+
 func TestIPCServer_RebindAfterClose(t *testing.T) {
 	t.Parallel()
 

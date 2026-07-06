@@ -123,7 +123,7 @@ func newFakeTunnelDone() *fakeTunnel {
 // ── Tests ──
 
 func TestNewApp_CreatesPrivateMux(t *testing.T) {
-	// Not Parallel — shared global state in verifier/auth pending Phase 6+.
+	// Not Parallel — shared config mutation in verifier creation.
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestNewApp_CreatesPrivateMux(t *testing.T) {
 }
 
 func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
-	// Not Parallel — shared global state in verifier/auth pending Phase 6+.
+	// Not Parallel — shared config mutation in verifier creation.
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {

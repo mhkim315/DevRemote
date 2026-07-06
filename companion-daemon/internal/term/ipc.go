@@ -43,6 +43,12 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 		return nil, err
 	}
 
+	// Enforce user-only access on the socket.
+	if err := os.Chmod(socketPath, 0600); err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("chmod %s: %w", socketPath, err)
+	}
+
 	log.Printf("IPC Server listening on %s", socketPath)
 
 	srv := &IPCServer{
