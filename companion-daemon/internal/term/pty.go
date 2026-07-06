@@ -56,9 +56,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		adapterName := ref.Adapter
-		if adapterName == "" {
-			adapterName = "tmux" // Fallback
-		}
 
 		if r.Method == http.MethodPost {
 			opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID}
@@ -95,9 +92,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			}
 
 			adapterName := ref.Adapter
-			if adapterName == "" {
-				adapterName = "tmux"
-			}
 
 			if err := reg.TerminateSession(r.Context(), adapterName, ref.LocalID); err != nil {
 				http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)

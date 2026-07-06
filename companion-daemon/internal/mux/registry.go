@@ -103,19 +103,18 @@ func (r *Registry) Adapters() []Adapter {
 	return list
 }
 
-// FindSession looks up a session by its canonical ID across all adapters.
-// Phase 1: snapshot refresh is the primary lookup path. Cache hits return
-// immediately; callers needing live verification should call Refresh(true) first.
+// FindSession looks up a session by canonical ID, force-refreshing the target
+// adapter first. Returns ErrSessionNotFound if not found, ErrAdapterUnavailable
+// if the adapter cannot be reached.
 func (r *Registry) FindSession(ctx context.Context, id string) (Session, error) {
 	id = MigrateLegacyID(id)
 
-	if s, err := r.FindSessionInCache(id); err == nil {
-		return s, nil
-	}
-
 	parts := strings.SplitN(id, ":", 2)
 	if len(parts) == 2 {
-		_, _ = r.Refresh(ctx, parts[0], true)
+		_, err := r.Refresh(ctx, parts[0], true)
+		if err != nil {
+			return nil, fmt.Errorf("%w: adapter %s refresh failed: %w", ErrAdapterUnavailable, parts[0], err)
+		}
 	} else {
 		_ = r.Sessions(ctx)
 	}
@@ -154,7 +153,7 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 	r.adaptersMu.RUnlock()
 
 	if !exists {
-		err := fmt.Errorf("adapter %s not found", name)
+		err := fmt.Errorf("%w: adapter %s", ErrAdapterUnavailable, name)
 		return AdapterSnapshot{LastError: err}, err
 	}
 
@@ -183,6 +182,7 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 			currentSnap.LastSuccessAt = time.Now()
 		} else {
 			fmt.Printf("registry: adapter %s refresh failed (retaining stale cache): %v\n", name, adErr)
+			currentSnap.LastError = fmt.Errorf("%w: %w", ErrAdapterUnavailable, adErr)
 		}
 		r.snapshots[name] = currentSnap
 		r.snapshotsMu.Unlock()
