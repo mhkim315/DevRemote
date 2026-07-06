@@ -15,13 +15,16 @@ import (
 
 // SessionTelemetry holds the calculated state of a tmux session.
 type SessionTelemetry struct {
-	ID          string              `json:"id"`
-	State       string              `json:"state"` // "idle", "thinking", "working", "waiting"
-	Load        int                 `json:"load"`  // 0-100 (animation speed)
-	Runner      string              `json:"runner"`
-	RunnerColor string              `json:"runnerColor"`
-	Adapter     string              `json:"adapter"`
-	Events      []models.AgentEvent `json:"events"`
+	ID            string              `json:"id"`
+	State         string              `json:"state"` // "idle", "thinking", "working", "waiting"
+	Load          int                 `json:"load"`  // 0-100 (animation speed)
+	Runner        string              `json:"runner"`
+	RunnerColor   string              `json:"runnerColor"`
+	Adapter       string              `json:"adapter"`
+	Events        []models.AgentEvent `json:"events"`
+	Stale         bool                `json:"stale,omitempty"`
+	LastSuccessAt time.Time           `json:"lastSuccessAt,omitempty"`
+	LastError     string              `json:"lastError,omitempty"`
 }
 
 type sessionStateData struct {
@@ -333,24 +336,62 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	var res []SessionTelemetry
+	res := make([]SessionTelemetry, 0)
 
+	sessions := mux.GetAllSessionsCached()
+
+	// Collect telemetry data under lock
 	telemetryMu.Lock()
-	for _, s := range mux.GetAllSessionsCached() {
-		compoundID := s.AdapterName() + ":" + s.ID()
-		data := telemetryCache[compoundID]
-		if data == nil {
-			res = append(res, SessionTelemetry{ID: compoundID, State: "idle", Load: 0, Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(), Events: models.GetEvents(compoundID)})
-		} else {
-			res = append(res, SessionTelemetry{ID: compoundID, State: data.State, Load: data.Load, Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: s.AdapterName(), Events: models.GetEvents(compoundID)})
-		}
+	stateCopies := make(map[string]*sessionStateData)
+	for id, data := range telemetryCache {
+		// Shallow copy is enough for State, Load, Runner, RunnerColor
+		copyData := *data
+		stateCopies[id] = &copyData
 	}
 	telemetryMu.Unlock()
 
-	if res == nil {
-		res = []SessionTelemetry{}
+	for _, s := range sessions {
+		compoundID := s.AdapterName() + ":" + s.ID()
+
+		snap, _ := mux.GetAdapterSnapshot(s.AdapterName())
+		var errStr string
+		if snap.LastError != nil {
+			errStr = snap.LastError.Error()
+		}
+		isStale := snap.LastError != nil
+
+		// Fetch events outside the lock
+		events := models.GetEvents(compoundID)
+
+		data := stateCopies[compoundID]
+		if data == nil {
+			res = append(res, SessionTelemetry{
+				ID:            compoundID,
+				State:         "idle",
+				Load:          0,
+				Runner:        "cat",
+				RunnerColor:   "#58a6ff",
+				Adapter:       s.AdapterName(),
+				Events:        events,
+				Stale:         isStale,
+				LastSuccessAt: snap.LastSuccessAt,
+				LastError:     errStr,
+			})
+		} else {
+			res = append(res, SessionTelemetry{
+				ID:            compoundID,
+				State:         data.State,
+				Load:          data.Load,
+				Runner:        data.Runner,
+				RunnerColor:   data.RunnerColor,
+				Adapter:       s.AdapterName(),
+				Events:        events,
+				Stale:         isStale,
+				LastSuccessAt: snap.LastSuccessAt,
+				LastError:     errStr,
+			})
+		}
 	}
 
-	jsonBytes, _ := json.Marshal(res)
-	w.Write(jsonBytes)
+	json.NewEncoder(w).Encode(res)
 }

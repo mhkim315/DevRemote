@@ -11,7 +11,7 @@ func TestCmuxTreeParserRealFixture(t *testing.T) {
 		t.Fatalf("failed to read fixture: %v", err)
 	}
 
-	sessions, err := parseCmuxTree(data)
+	sessions, err := parseCmuxTree(data, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestCmuxTreeParserRealFixture(t *testing.T) {
 
 func TestCmuxTreeParserMissingSurfaces(t *testing.T) {
 	// Completely empty output with no tree structure should be an error
-	_, err := parseCmuxTree([]byte{})
+	_, err := parseCmuxTree([]byte{}, nil)
 	if err == nil {
 		t.Fatalf("expected ErrUnexpectedFormat for completely empty output")
 	}
@@ -51,7 +51,7 @@ window window:1 [current] ◀ active
 ├── workspace workspace:1 "empty"
 │   └── pane pane:1
 `)
-	sessions, err := parseCmuxTree(data)
+	sessions, err := parseCmuxTree(data, nil)
 	if err != nil {
 		t.Fatalf("expected no error for genuinely empty tree, got: %v", err)
 	}
@@ -68,7 +68,7 @@ window window:1 [current] ◀ active
 │       └── surface surface:5 [browser] "Google" https://google.com
 `)
 	// Browser surfaces are ignored, so this should return 0 sessions with NO error.
-	sessions, err := parseCmuxTree(data)
+	sessions, err := parseCmuxTree(data, nil)
 	if err != nil {
 		t.Fatalf("expected no error for browser-only tree, got %v", err)
 	}

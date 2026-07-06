@@ -3,6 +3,8 @@ package mux
 import (
 	"context"
 	"fmt"
+	"log"
+
 	"io"
 	"os/exec"
 	"regexp"
@@ -14,10 +16,111 @@ import (
 	"devremote/companion-daemon/internal/models"
 )
 
-type cmuxAdapter struct{}
+// CmuxError represents a structured error returned by the cmux runner
+type CmuxError struct {
+	Path     string
+	Args     []string
+	ExitCode int
+	Stderr   string
+	Duration time.Duration
+	Err      error
+}
+
+func (e *CmuxError) Error() string {
+	// Provide a sanitized summary for clients.
+	// The detailed log (with Stderr, Path) should be written to the server log by the caller.
+	operation := "command"
+	if len(e.Args) > 0 {
+		operation = e.Args[0]
+	}
+	if e.ExitCode == -1 {
+		return fmt.Sprintf("cmux %s timed out or failed to start", operation)
+	}
+	return fmt.Sprintf("cmux %s failed (exit %d)", operation, e.ExitCode)
+}
+
+func (e *CmuxError) Unwrap() error {
+	return e.Err
+}
+
+type CommandOptions struct {
+	Dir string
+}
+
+// CommandRunner allows injecting a mock executor for testing
+type CommandRunner interface {
+	Run(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error)
+}
+
+type execCommandRunner struct {
+	binaryPath string
+	lookupErr  error
+}
+
+func newExecCommandRunner() *execCommandRunner {
+	path, err := exec.LookPath("cmux")
+	if err != nil {
+		path = "cmux"
+	}
+	return &execCommandRunner{binaryPath: path, lookupErr: err}
+}
+
+func (r *execCommandRunner) Run(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error) {
+	start := time.Now()
+	// Copy args to prevent modification
+	argsCopy := make([]string, len(args))
+	copy(argsCopy, args)
+
+	if r.lookupErr != nil {
+		ce := &CmuxError{
+			Path:     r.binaryPath,
+			Args:     argsCopy,
+			Err:      r.lookupErr,
+			Duration: time.Since(start),
+			ExitCode: -1,
+		}
+		logCmuxError(ce)
+		return nil, ce
+	}
+
+	cmd := exec.CommandContext(ctx, r.binaryPath, argsCopy...)
+	if opts.Dir != "" {
+		cmd.Dir = opts.Dir
+	}
+
+	out, err := cmd.Output() // We use Output(), which gives stdout. If it fails, error often is ExitError holding Stderr
+	duration := time.Since(start)
+
+	if err != nil {
+		ce := &CmuxError{
+			Path:     r.binaryPath,
+			Args:     argsCopy,
+			Err:      err,
+			Duration: duration,
+			ExitCode: -1, // default to -1 for timeout/not started
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			ce.ExitCode = exitErr.ExitCode()
+			ce.Stderr = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		logCmuxError(ce)
+		return nil, ce
+	}
+	return out, nil
+}
+
+func logCmuxError(err *CmuxError) {
+	log.Printf("[Cmux Runner] ERROR: path=%s args=%v exit=%d duration=%v err=%v stderr=%q", err.Path, err.Args, err.ExitCode, err.Duration, err.Err, err.Stderr)
+}
+
+type cmuxAdapter struct {
+	runner CommandRunner
+}
 
 func NewCmuxAdapter() Adapter {
-	return &cmuxAdapter{}
+	return &cmuxAdapter{
+		runner: newExecCommandRunner(),
+	}
 }
 
 func (a *cmuxAdapter) Name() string {
@@ -34,12 +137,12 @@ func (a *cmuxAdapter) ListSessions() ([]Session, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "cmux", "tree", "--all").Output()
+	out, err := a.runner.Run(ctx, CommandOptions{}, "tree", "--all")
 	if err != nil {
 		return nil, fmt.Errorf("cmux tree failed: %w", err)
 	}
 
-	return parseCmuxTree(out)
+	return parseCmuxTree(out, a.runner)
 }
 
 var (
@@ -47,7 +150,7 @@ var (
 	surfaceRe   = regexp.MustCompile(`\bsurface\s+(surface:[^\s]+)\s+\[([^\]]+)\]\s+"([^"]*)"`)
 )
 
-func parseCmuxTree(out []byte) ([]Session, error) {
+func parseCmuxTree(out []byte, runner CommandRunner) ([]Session, error) {
 	var sessions []Session
 	lines := strings.Split(string(out), "\n")
 
@@ -89,6 +192,7 @@ func parseCmuxTree(out []byte) ([]Session, error) {
 				title:       title,
 				surfaceID:   surfaceID,
 				workspaceID: currentWorkspace,
+				runner:      runner,
 			})
 		}
 	}
@@ -120,6 +224,7 @@ func (a *cmuxAdapter) GetSession(id string) (Session, error) {
 		id:        id,
 		title:     "cmux panel",
 		surfaceID: id,
+		runner:    a.runner,
 	}, nil
 }
 
@@ -130,41 +235,81 @@ type CmuxSession struct {
 	surfaceID   string
 	workspaceID string
 	pid         int
+	runner      CommandRunner
 }
 
 type CmuxStream struct {
 	session *CmuxSession
 	pr      *io.PipeReader
 	pw      *io.PipeWriter
+	ctx     context.Context
+	cancel  context.CancelFunc
 	done    chan struct{}
 	once    sync.Once
 }
 
-func (s *CmuxStream) pollScreen() {
+func (s *CmuxStream) pollScreen(initialFrame []byte) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	var lastContent string
+	consecutiveErrs := 0
+	maxErrs := 3
+
+	// Send initial frame immediately if valid
+	if len(initialFrame) > 0 {
+		currentContent := string(initialFrame)
+		payload := "\033[2J\033[H" + currentContent
+		payload = strings.ReplaceAll(payload, "\n", "\r\n")
+		if _, err := s.pw.Write([]byte(payload)); err != nil {
+			return
+		}
+		lastContent = currentContent
+	}
+
+	// Helper to run one poll iteration
+	pollOnce := func() error {
+		ctx, cancel := context.WithTimeout(s.ctx, 1500*time.Millisecond)
+		defer cancel()
+
+		out, err := s.session.runner.Run(ctx, CommandOptions{}, "read-screen", "--surface", s.session.surfaceID)
+		if err != nil {
+			return err
+		}
+
+		currentContent := string(out)
+		if currentContent != lastContent {
+			// Clear screen and redraw for xterm.js
+			payload := "\033[2J\033[H" + currentContent
+			// Ensure CRLF for xterm.js line breaks
+			payload = strings.ReplaceAll(payload, "\n", "\r\n")
+
+			if _, err := s.pw.Write([]byte(payload)); err != nil {
+				return err
+			}
+			lastContent = currentContent
+		}
+		return nil
+	}
+
+	// First iteration logic is removed since initial frame is handled above
+
 	for {
 		select {
-		case <-s.done:
+		case <-s.ctx.Done(): // Context cancellation check
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			out, err := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.session.surfaceID).Output()
-			cancel()
-
-			if err == nil {
-				currentContent := string(out)
-				if currentContent != lastContent {
-					// Clear screen and redraw for xterm.js
-					payload := "\033[2J\033[H" + currentContent
-					// Ensure CRLF for xterm.js line breaks
-					payload = strings.ReplaceAll(payload, "\n", "\r\n")
-
-					s.pw.Write([]byte(payload))
-					lastContent = currentContent
+			if err := pollOnce(); err != nil {
+				consecutiveErrs++
+				if consecutiveErrs >= maxErrs {
+					// Force adapter refresh to update health status
+					RefreshAdapter(context.Background(), "cmux", true)
+					// Close with error to notify reader
+					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
+					return
 				}
+			} else {
+				consecutiveErrs = 0
 			}
 		}
 	}
@@ -180,7 +325,7 @@ func (s *CmuxStream) Write(p []byte) (n int, err error) {
 
 func (s *CmuxStream) Close() error {
 	s.once.Do(func() {
-		close(s.done)
+		s.cancel() // Cancel context to stop polling
 		s.pw.Close()
 		s.pr.Close()
 	})
@@ -192,19 +337,22 @@ func (s *CmuxStream) Resize(rows, cols int) error {
 }
 
 func (s *CmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
-	// Preflight validation to ensure the surface is alive
-	if _, err := s.ReadScreen(ctx); err != nil {
+	// Preflight validation to ensure the surface is alive and to capture the first frame
+	initialFrame, err := s.ReadScreen(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("preflight read-screen failed: %w", err)
 	}
 
+	streamCtx, cancel := context.WithCancel(ctx)
 	pr, pw := io.Pipe()
 	stream := &CmuxStream{
 		session: s,
 		pr:      pr,
 		pw:      pw,
-		done:    make(chan struct{}),
+		ctx:     streamCtx,
+		cancel:  cancel,
 	}
-	go stream.pollScreen()
+	go stream.pollScreen(initialFrame)
 	return stream, nil
 }
 
@@ -213,8 +361,7 @@ func (s *CmuxSession) ID() string          { return s.id }
 func (s *CmuxSession) Title() string       { return s.title }
 
 func (s *CmuxSession) ReadScreen(ctx context.Context) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.surfaceID)
-	return cmd.Output()
+	return s.runner.Run(ctx, CommandOptions{}, "read-screen", "--surface", s.surfaceID)
 }
 
 func (s *CmuxSession) ReadHistory(ctx context.Context, lines int) ([]byte, error) {
@@ -223,8 +370,7 @@ func (s *CmuxSession) ReadHistory(ctx context.Context, lines int) ([]byte, error
 	} else if lines > 10000 {
 		lines = 10000
 	}
-	cmd := exec.CommandContext(ctx, "cmux", "read-screen", "--surface", s.surfaceID, "--scrollback", "--lines", fmt.Sprintf("%d", lines))
-	return cmd.Output()
+	return s.runner.Run(ctx, CommandOptions{}, "read-screen", "--surface", s.surfaceID, "--scrollback", "--lines", fmt.Sprintf("%d", lines))
 }
 
 func (s *CmuxSession) WriteInput(ctx context.Context, data []byte) error {
@@ -246,13 +392,13 @@ func (s *CmuxSession) WriteInput(ctx context.Context, data []byte) error {
 		return s.WriteKey(ctx, "left")
 	}
 
-	cmd := exec.CommandContext(ctx, "cmux", "send", "--surface", s.surfaceID, str)
-	return cmd.Run()
+	_, err := s.runner.Run(ctx, CommandOptions{}, "send", "--surface", s.surfaceID, str)
+	return err
 }
 
 func (s *CmuxSession) WriteKey(ctx context.Context, key string) error {
-	cmd := exec.CommandContext(ctx, "cmux", "send-key", "--surface", s.surfaceID, key)
-	return cmd.Run()
+	_, err := s.runner.Run(ctx, CommandOptions{}, "send-key", "--surface", s.surfaceID, key)
+	return err
 }
 
 func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (string, error) {
@@ -265,12 +411,8 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		return "", fmt.Errorf("invalid workspace ID format (must be workspace:<id>)")
 	}
 
-	cmd := exec.CommandContext(ctx, "cmux", "new-surface", "--type", "terminal", "--workspace", ws)
-	if opts.CWD != "" {
-		cmd.Dir = opts.CWD
-	}
-
-	out, err := cmd.CombinedOutput()
+	// CommandRunner Options: pass Dir via CommandOptions
+	out, err := a.runner.Run(ctx, CommandOptions{Dir: opts.CWD}, "new-surface", "--type", "terminal", "--workspace", ws)
 	if err != nil {
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
@@ -292,8 +434,7 @@ func (a *cmuxAdapter) TerminateSession(ctx context.Context, rawID string) error 
 	if !strings.HasPrefix(rawID, "surface:") {
 		return fmt.Errorf("invalid surface ID format (must be surface:<id>)")
 	}
-	cmd := exec.CommandContext(ctx, "cmux", "close-surface", "--surface", rawID)
-	err := cmd.Run()
+	_, err := a.runner.Run(ctx, CommandOptions{}, "close-surface", "--surface", rawID)
 	if err == nil {
 		InvalidateCache()
 	}
@@ -463,8 +604,7 @@ func mapAgentProcesses(snap CmuxTopSnapshot) (ProcessSnapshotResult, error) {
 }
 
 func (s *CmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, error) {
-	cmd := exec.CommandContext(ctx, "cmux", "top", "--all", "--processes", "--format", "tsv")
-	out, err := cmd.Output()
+	out, err := s.runner.Run(ctx, CommandOptions{}, "top", "--all", "--processes", "--format", "tsv")
 	if err != nil {
 		return models.ProcessInfo{}, fmt.Errorf("cmux top failed: %w", err)
 	}
@@ -522,8 +662,7 @@ func (s *CmuxSession) resolveProcessInfo(pid int) (models.ProcessInfo, error) {
 }
 
 func (a *cmuxAdapter) ProcessSnapshot(ctx context.Context) (map[string]models.ProcessInfo, error) {
-	cmd := exec.CommandContext(ctx, "cmux", "top", "--all", "--processes", "--format", "tsv")
-	out, err := cmd.Output()
+	out, err := a.runner.Run(ctx, CommandOptions{}, "top", "--all", "--processes", "--format", "tsv")
 	if err != nil {
 		return nil, fmt.Errorf("cmux top failed: %w", err)
 	}

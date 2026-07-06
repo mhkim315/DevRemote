@@ -349,12 +349,9 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	var err error
 	s, err = mux.FindSession(session)
 	if err != nil {
-		s, err = mux.NewSession(session, "xterm-256color", "bash")
-		if err != nil {
-			log.Printf("WS new session err: %v", err)
-			http.Error(w, "session failed", 500)
-			return
-		}
+		log.Printf("WS session not found err: %v", err)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
 	}
 
 	var stream mux.TerminalStream
@@ -380,16 +377,82 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)
 
+	type wsOutbound struct {
+		messageType int
+		payload     []byte
+	}
+
+	outbound := make(chan wsOutbound, 32)
+	fatalErr := make(chan error, 1)
+	fatalRequested := make(chan struct{})
+	shutdown := make(chan struct{})
+	writerDone := make(chan struct{})
+	var closeOnce sync.Once
+	var shutdownOnce sync.Once
+
+	// Helper to trigger a graceful close
+	triggerClose := func(err error) {
+		closeOnce.Do(func() {
+			close(fatalRequested)
+			fatalErr <- err
+		})
+	}
+	stopWriter := func() {
+		shutdownOnce.Do(func() {
+			close(shutdown)
+		})
+	}
+
+	// Single writer goroutine to prevent Gorilla WS panic
+	go func() {
+		defer close(writerDone)
+		defer conn.Close()
+		for {
+			select {
+			case msg := <-outbound:
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if err := conn.WriteMessage(msg.messageType, msg.payload); err != nil {
+					return
+				}
+			case err := <-fatalErr:
+				// Send 1011 close frame
+				reason := "stream error"
+				if err != nil {
+					// Ensure valid UTF-8 and < 125 bytes
+					errMsg := err.Error()
+					if len(errMsg) > 100 {
+						errMsg = errMsg[:100] + "..."
+					}
+					reason = "error: " + errMsg
+				}
+				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1011, reason))
+				return
+			case <-shutdown:
+				return
+			}
+		}
+	}()
+
 	if stream != nil {
 		go func() {
 			buf := make([]byte, 1024)
 			for {
 				n, err := stream.Read(buf)
 				if err != nil {
+					log.Printf("WS stream read err: %v", err)
+					triggerClose(fmt.Errorf("stream failed"))
 					break
 				}
-				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
-					break
+				// Copy buffer since we're passing it to channel
+				payload := make([]byte, n)
+				copy(payload, buf[:n])
+				select {
+				case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: payload}:
+				case <-writerDone:
+					return
+				case <-r.Context().Done():
+					return
 				}
 			}
 		}()
@@ -402,11 +465,28 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if writer, ok := s.(mux.InputWriter); ok {
-			writer.WriteInput(r.Context(), msg)
+			if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
+				log.Printf("WS input write err: %v", inErr)
+				triggerClose(fmt.Errorf("input failed"))
+				break
+			}
 		} else if stream != nil {
 			stream.Write(msg)
 		}
 	}
+
+	// Ensure stream closes when client disconnects
+	if stream != nil {
+		stream.Close()
+	}
+	closeOnce.Do(func() {}) // prevent fatalErr channel block
+	select {
+	case <-fatalRequested:
+		// The writer owns the 1011 close handshake.
+	default:
+		stopWriter()
+	}
+	<-writerDone
 }
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {

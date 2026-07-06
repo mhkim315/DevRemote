@@ -181,9 +181,14 @@ func TestStaleCacheOnFailure(t *testing.T) {
 	cmux.err = fmt.Errorf("socket connection failed")
 	cmux.mu.Unlock()
 
-	// Need to invalidate cache so GetAllSessionsCached triggers refresh immediately
-	InvalidateCache()
-	GetAllSessionsCached()
+	// A forced refresh returns the error while preserving stale sessions.
+	refreshed, refreshErr := RefreshAdapter(context.Background(), "cmux", true)
+	if refreshErr == nil {
+		t.Fatal("expected forced refresh to return the adapter error")
+	}
+	if len(refreshed.Sessions) != 2 {
+		t.Fatalf("expected forced refresh to return 2 stale sessions, got %d", len(refreshed.Sessions))
+	}
 
 	// Should still have 2 cmux sessions (stale cache retained)
 	sessionsCacheMu.RLock()

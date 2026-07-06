@@ -1,7 +1,9 @@
 package mux
 
 import (
+	"context"
 	"fmt"
+
 	"regexp"
 	"strings"
 	"sync"
@@ -62,7 +64,7 @@ func FindSession(id string) (Session, error) {
 	// If not found, trigger a forced refresh of the relevant adapter
 	parts := strings.SplitN(id, ":", 2)
 	if len(parts) == 2 {
-		RefreshAdapterNow(parts[0])
+		RefreshAdapter(context.Background(), parts[0], true)
 	} else {
 		GetAllSessionsCached()
 	}
@@ -101,56 +103,68 @@ func InvalidateCache() {
 	}
 }
 
+// RefreshAdapter refreshes a specific adapter and returns its snapshot.
+func RefreshAdapter(ctx context.Context, name string, force bool) (AdapterSnapshot, error) {
+	adaptersMu.RLock()
+	adapter, exists := adapters[name]
+	adaptersMu.RUnlock()
+
+	if !exists {
+		return AdapterSnapshot{LastError: fmt.Errorf("adapter %s not found", name)}, fmt.Errorf("adapter %s not found", name)
+	}
+
+	res, err, _ := refreshGroup.Do(name, func() (interface{}, error) {
+		var needsRefresh bool
+		sessionsCacheMu.RLock()
+		snap, hasSnap := snapshots[name]
+		if force || !hasSnap || time.Since(snap.LastAttemptAt) > 10*time.Second {
+			needsRefresh = true
+		}
+		sessionsCacheMu.RUnlock()
+
+		if !needsRefresh {
+			return deepCopySnapshot(snap), nil
+		}
+
+		// Lock-free discovery execution
+		sessions, adErr := adapter.ListSessions()
+
+		// Write lock only for state update
+		sessionsCacheMu.Lock()
+		currentSnap := snapshots[name]
+		currentSnap.LastAttemptAt = time.Now()
+		currentSnap.LastError = adErr
+
+		if adErr == nil {
+			currentSnap.Sessions = sessions
+			currentSnap.LastSuccessAt = time.Now()
+		} else {
+			// Keep stale Sessions if err != nil
+			fmt.Printf("registry: adapter %s refresh failed (retaining stale cache): %v\n", name, adErr)
+		}
+		snapshots[name] = currentSnap
+		sessionsCacheMu.Unlock()
+
+		return deepCopySnapshot(currentSnap), adErr
+	})
+
+	if err != nil {
+		if snap, ok := res.(AdapterSnapshot); ok {
+			return snap, err
+		}
+		return AdapterSnapshot{LastError: err}, err
+	}
+	return res.(AdapterSnapshot), nil
+}
+
 // GetAllSessionsCached returns sessions from all adapters, refreshing at most every 10s.
 func GetAllSessionsCached() []Session {
 	var all []Session
 	seen := make(map[string]bool)
 
 	for _, adapter := range GetAdapters() {
-		name := adapter.Name()
-		// Use singleflight to deduplicate concurrent refresh requests for the same adapter
-		res, err, _ := refreshGroup.Do(name, func() (interface{}, error) {
-			var needsRefresh bool
-			sessionsCacheMu.RLock()
-			snap, exists := snapshots[name]
-			if !exists || time.Since(snap.LastAttemptAt) > 10*time.Second {
-				needsRefresh = true
-			}
-			sessionsCacheMu.RUnlock()
-
-			if !needsRefresh {
-				return snap.Sessions, nil
-			}
-
-			// Lock-free discovery execution
-			sessions, adErr := adapter.ListSessions()
-
-			// Write lock only for state update
-			sessionsCacheMu.Lock()
-			currentSnap := snapshots[name]
-			currentSnap.LastAttemptAt = time.Now()
-			currentSnap.LastError = adErr
-
-			if adErr == nil {
-				currentSnap.Sessions = sessions
-				currentSnap.LastSuccessAt = time.Now()
-			} else {
-				// Keep stale Sessions if err != nil
-				fmt.Printf("registry: adapter %s refresh failed (retaining stale cache): %v\n", name, adErr)
-			}
-			snapshots[name] = currentSnap
-			sessionsCacheMu.Unlock()
-
-			return currentSnap.Sessions, nil
-		})
-
-		if err != nil {
-			fmt.Printf("registry: singleflight err: %v\n", err)
-			continue
-		}
-
-		sessions := res.([]Session)
-		for _, s := range sessions {
+		snap, _ := RefreshAdapter(context.Background(), adapter.Name(), false)
+		for _, s := range snap.Sessions {
 			key := s.AdapterName() + ":" + s.ID()
 			if !seen[key] {
 				seen[key] = true
@@ -162,27 +176,25 @@ func GetAllSessionsCached() []Session {
 	return all
 }
 
-// RefreshAdapterNow forces an immediate refresh of a specific adapter, bypassing the 10s throttle.
-func RefreshAdapterNow(adapterName string) error {
-	adaptersMu.RLock()
-	_, exists := adapters[adapterName]
-	adaptersMu.RUnlock()
+// GetAdapterSnapshot safely returns a deep copy of the current snapshot for an adapter
+func GetAdapterSnapshot(adapterName string) (AdapterSnapshot, bool) {
+	sessionsCacheMu.RLock()
+	snap, exists := snapshots[adapterName]
+	sessionsCacheMu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("adapter %s not found", adapterName)
+		return AdapterSnapshot{}, false
 	}
+	return deepCopySnapshot(snap), true
+}
 
-	// Mark it expired so the singleflight execution allows it
-	sessionsCacheMu.Lock()
-	if snap, ok := snapshots[adapterName]; ok {
-		snap.LastAttemptAt = time.Time{}
-		snapshots[adapterName] = snap
+func deepCopySnapshot(snap AdapterSnapshot) AdapterSnapshot {
+	copySnap := snap
+	if snap.Sessions != nil {
+		copySnap.Sessions = make([]Session, len(snap.Sessions))
+		copy(copySnap.Sessions, snap.Sessions)
 	}
-	sessionsCacheMu.Unlock()
-
-	// Run GetAllSessionsCached which will now refresh this adapter immediately
-	GetAllSessionsCached()
-	return nil
+	return copySnap
 }
 
 // FindSessionInCache specifically looks for a session in the existing cache
