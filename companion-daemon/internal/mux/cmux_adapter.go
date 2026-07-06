@@ -131,17 +131,17 @@ func logCmuxError(err *CmuxError) {
 }
 
 type cmuxAdapter struct {
-	runner CommandRunner
-	health RegistryHealth
+	runner     CommandRunner
+	invalidate InvalidationSender
 }
 
-func NewCmuxAdapter(health RegistryHealth) (Adapter, error) {
-	if health == nil {
-		return nil, fmt.Errorf("cmux adapter requires RegistryHealth")
+func NewCmuxAdapter(invalidate InvalidationSender) (Adapter, error) {
+	if invalidate == nil {
+		return nil, fmt.Errorf("cmux adapter requires InvalidationSender")
 	}
 	return &cmuxAdapter{
-		runner: &serialCommandRunner{delegate: newExecCommandRunner()},
-		health: health,
+		runner:     &serialCommandRunner{delegate: newExecCommandRunner()},
+		invalidate: invalidate,
 	}, nil
 }
 
@@ -164,7 +164,7 @@ func (a *cmuxAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 		return nil, fmt.Errorf("cmux tree failed: %w", err)
 	}
 
-	return parseCmuxTree(out, a.runner, a.health)
+	return parseCmuxTree(out, a.runner, a.invalidate)
 }
 
 var (
@@ -172,7 +172,7 @@ var (
 	surfaceRe   = regexp.MustCompile(`\bsurface\s+(surface:[^\s]+)\s+\[([^\]]+)\]\s+"([^"]*)"`)
 )
 
-func parseCmuxTree(out []byte, runner CommandRunner, health RegistryHealth) ([]Session, error) {
+func parseCmuxTree(out []byte, runner CommandRunner, invalidate InvalidationSender) ([]Session, error) {
 	var sessions []Session
 	lines := strings.Split(string(out), "\n")
 
@@ -215,7 +215,7 @@ func parseCmuxTree(out []byte, runner CommandRunner, health RegistryHealth) ([]S
 				surfaceID:   surfaceID,
 				workspaceID: currentWorkspace,
 				runner:      runner,
-				health:      health,
+				invalidate:  invalidate,
 			})
 		}
 	}
@@ -244,11 +244,11 @@ func (a *cmuxAdapter) GetSession(id string) (Session, error) {
 	}
 
 	return &CmuxSession{
-		id:        id,
-		title:     "cmux panel",
-		surfaceID: id,
-		runner:    a.runner,
-		health:    a.health,
+		id:         id,
+		title:      "cmux panel",
+		surfaceID:  id,
+		runner:     a.runner,
+		invalidate: a.invalidate,
 	}, nil
 }
 
@@ -260,7 +260,7 @@ type CmuxSession struct {
 	workspaceID string
 	pid         int
 	runner      CommandRunner
-	health      RegistryHealth
+	invalidate  InvalidationSender
 }
 
 type CmuxStream struct {
@@ -327,11 +327,8 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 			if err := pollOnce(); err != nil {
 				consecutiveErrs++
 				if consecutiveErrs >= maxErrs {
-					// Force adapter refresh to update health status
-					_, refreshErr := s.session.health.Refresh(s.ctx, "cmux", true)
-					if refreshErr != nil {
-						log.Printf("cmux health refresh failed: %v", refreshErr)
-					}
+					// Signal registry to invalidate cache for this adapter.
+					s.session.invalidate.Invalidate()
 					// Close with error to notify reader
 					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
 					return

@@ -106,10 +106,10 @@ func TestPollScreenFailures(t *testing.T) {
 	}
 
 	session := &CmuxSession{
-		id:        "surface:1",
-		surfaceID: "surface:1",
-		runner:    mockRunner,
-		health:    health,
+		id:         "surface:1",
+		surfaceID:  "surface:1",
+		runner:     mockRunner,
+		invalidate: health,
 	}
 
 	stream, err := session.OpenStream(context.Background())
@@ -148,8 +148,8 @@ func TestPollScreenFailures(t *testing.T) {
 
 	health.mu.Lock()
 	defer health.mu.Unlock()
-	if health.calls != 1 || health.name != "cmux" || !health.force {
-		t.Fatalf("unexpected health refresh: calls=%d name=%q force=%v", health.calls, health.name, health.force)
+	if health.invalidateCalls < 1 {
+		t.Fatalf("expected Invalidate to be called at least once, got %d", health.invalidateCalls)
 	}
 }
 
@@ -332,17 +332,24 @@ func TestNewCmuxAdapterStoresHealth(t *testing.T) {
 	if !ok {
 		t.Fatalf("adapter type = %T, want *cmuxAdapter", adapter)
 	}
-	if cmux.health != health {
+	if cmux.invalidate != health {
 		t.Fatal("adapter did not retain the supplied RegistryHealth")
 	}
 }
 
+func (m *mockRegistryHealth) Invalidate() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.invalidateCalls++
+}
+
 type mockRegistryHealth struct {
-	mu         sync.Mutex
-	calls      int
-	name       string
-	force      bool
-	refreshErr error
+	mu              sync.Mutex
+	calls           int
+	invalidateCalls int
+	name            string
+	force           bool
+	refreshErr      error
 }
 
 func (m *mockRegistryHealth) Refresh(_ context.Context, name string, force bool) (AdapterSnapshot, error) {

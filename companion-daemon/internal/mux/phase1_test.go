@@ -373,7 +373,7 @@ func TestCmuxAdapter_CreateSessionReturnsLocalID(t *testing.T) {
 			return []byte("Created new surface: surface:42 (workspace: workspace:1)"), nil
 		},
 	}
-	adapter := &cmuxAdapter{runner: mockRunner}
+	adapter := &cmuxAdapter{runner: mockRunner, invalidate: &mockRegistryHealth{}}
 	id, err := adapter.CreateSession(context.Background(), CreateOptions{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -395,7 +395,7 @@ func TestCmuxAdapter_CreateSession_MalformedOutput(t *testing.T) {
 			return []byte("garbage output with no surface id"), nil
 		},
 	}
-	adapter := &cmuxAdapter{runner: mockRunner}
+	adapter := &cmuxAdapter{runner: mockRunner, invalidate: &mockRegistryHealth{}}
 	id, err := adapter.CreateSession(context.Background(), CreateOptions{})
 	if err == nil {
 		t.Fatalf("CreateSession with malformed output: got nil error, id=%q", id)
