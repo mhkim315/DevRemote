@@ -32,7 +32,7 @@ export function EventBubble({ event, runnerId, runnerColor }: Props) {
           <Text style={styles.timeRight}>{timeStr}</Text>
         </View>
         <View style={[styles.bubble, styles.userBubble]}>
-          <Text style={styles.userText}>{event.detail || event.summary}</Text>
+          <Text style={styles.userText} selectable={true}>{event.detail || event.summary}</Text>
         </View>
       </View>
     );
@@ -43,7 +43,7 @@ export function EventBubble({ event, runnerId, runnerColor }: Props) {
       <View style={[styles.container, styles.leftAlign]}>
         <View style={styles.totemPlaceholder} />
         <TouchableOpacity style={styles.resultCollapsed} onPress={() => setExpanded(true)}>
-          <Text style={styles.resultCollapsedText}>✅ {event.summary} (Tap to expand)</Text>
+          <Text style={styles.resultCollapsedText} selectable={true}>✅ {event.summary} (Tap to expand)</Text>
           <Text style={styles.time}>{timeStr}</Text>
         </TouchableOpacity>
       </View>
@@ -72,7 +72,7 @@ export function EventBubble({ event, runnerId, runnerColor }: Props) {
             {isTool ? '🛠️ ' + event.summary : (isResult ? '✅ ' + event.summary : '🤖 Claude')}
           </Text>
         </View>
-        <Text style={[styles.detail, isResult && styles.resultDetail]}>
+        <Text style={[styles.detail, isResult && styles.resultDetail]} selectable={true}>
           {event.detail || event.summary}
         </Text>
       </View>

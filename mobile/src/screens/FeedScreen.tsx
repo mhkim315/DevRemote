@@ -146,8 +146,14 @@ export default function FeedScreen({onBack, session, token}: Props) {
     }
   }, [doSend]);
 
-  const handleCopyRequest = useCallback(() => {
-    inject('if(window.getTerminalText) window.getTerminalText();');
+  const handleCopyRequest = useCallback(async () => {
+    // Get terminal text and copy directly
+    const js = '(function(){var s="";for(var i=0;i<term.rows;i++){var l=term.buffer.active.getLine(i);if(l)s+=l.translateToString(true)+"\n"}return s})()';
+    inject('window.ReactNativeWebView.postMessage(JSON.stringify({type:"copy",text:'+js+'}))');
+    // Also try to get via clipboard directly from the WebView
+    try {
+      inject('window.ReactNativeWebView.postMessage(JSON.stringify({type:"copy",text:(function(){var s="";for(var i=0;i<term.rows;i++){var l=term.buffer.active.getLine(i);if(l)s+=l.translateToString(true)+"\n"}return s})()}))');
+    } catch(e) {}
   }, [inject]);
 
   const handlePasteRequest = useCallback(async () => {
@@ -175,7 +181,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
       let initialFontSize = null;
 
       const style = document.createElement('style');
-      style.innerHTML = '.xterm-viewport { overflow: hidden !important; } .xterm-screen { }';
+      style.innerHTML = '.xterm-viewport { } .xterm-screen { user-select: text; -webkit-user-select: text; }';
       document.head.appendChild(style);
 
       // Override fitTerminal to be accurate and actually call term.resize()
