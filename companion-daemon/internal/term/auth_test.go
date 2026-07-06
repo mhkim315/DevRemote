@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -403,32 +404,86 @@ func TestSupabaseVerifier_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
-	if !isContextCanceled(err) {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled in chain, got: %v", err)
 	}
 }
 
-func isContextCanceled(err error) bool {
-	if err == nil {
-		return false
+func TestSupabaseVerifier_StaleCacheUsedOnFetchFailure(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	// First JWKS request succeeds; subsequent requests return 500.
+	var fetchCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetchCount++
+		if fetchCount > 1 {
+			w.WriteHeader(500)
+			return
+		}
+		resp := struct {
+			Keys []jwksKeyEntry `json:"keys"`
+		}{Keys: []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)}}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+	v.jwksTTL = 50 * time.Millisecond
+
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key, "k1")
+
+	// First verify — succeeds, caches key.
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("first verify: %v", err)
 	}
-	for {
-		if e, ok := err.(interface{ Unwrap() []error }); ok {
-			for _, u := range e.Unwrap() {
-				if isContextCanceled(u) {
-					return true
-				}
-			}
-			return false
-		}
-		if err == context.Canceled {
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
+	if fetchCount != 1 {
+		t.Fatalf("fetchCount = %d, want 1", fetchCount)
+	}
+
+	// Wait for TTL to expire.
+	time.Sleep(100 * time.Millisecond)
+
+	// Second verify — TTL expired, re-fetch fails (500), uses stale key.
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("second verify should use stale cache: %v", err)
+	}
+	if fetchCount != 2 {
+		t.Errorf("fetchCount = %d, want 2 (re-fetch attempted)", fetchCount)
+	}
+
+	// Verify the stale key is still valid.
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("stale key should still verify: %v", err)
+	}
+	// No additional fetch because expires was NOT updated after the 500.
+	if fetchCount != 3 {
+		t.Errorf("fetchCount = %d, want 3 (fetch retried each time on stale)", fetchCount)
+	}
+}
+
+func TestSupabaseVerifier_StaleCacheDoesNotCreateMissingKey(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+	// Pre-populate with key "k1" but token uses "k2".
+	v.mu.Lock()
+	v.keys = map[string]interface{}{"k1": &key.PublicKey}
+	v.expires = time.Time{} // expired → will try to fetch
+	v.mu.Unlock()
+
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key, "k2")
+
+	err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected error for unknown kid after fetch failure, got nil")
 	}
 }
 

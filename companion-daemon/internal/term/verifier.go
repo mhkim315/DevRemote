@@ -170,6 +170,9 @@ func (v *SupabaseVerifier) Verify(ctx context.Context, tokenString string) error
 }
 
 // jwksKey returns the public key for a given key ID, fetching the JWKS if needed.
+// If a refresh fails but the stale cache has the key, it is returned
+// (preserving the existing stale-cache behaviour). Context cancellation
+// takes precedence over stale fallback.
 func (v *SupabaseVerifier) jwksKey(ctx context.Context, kid string) (interface{}, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -183,6 +186,15 @@ func (v *SupabaseVerifier) jwksKey(ctx context.Context, kid string) (interface{}
 
 	if needsFetch {
 		if err := v.fetchJWKS(ctx); err != nil {
+			// Context cancelled → do not use stale cache.
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("jwks fetch: %w", err)
+			}
+			// Stale fallback: if we have the key cached, keep using it.
+			if key, ok := v.keys[kid]; ok {
+				log.Printf("jwks: refresh failed (%v), using stale key %q", err, kid)
+				return key, nil
+			}
 			return nil, fmt.Errorf("jwks fetch: %w", err)
 		}
 	}
