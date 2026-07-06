@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Phase 1: Identity and discovery contract tests.
@@ -68,10 +69,14 @@ func (s *testSession) AdapterName() string { return s.adapter }
 type testAdapter struct {
 	name     string
 	sessions []Session
+	failWith error
 }
 
 func (a *testAdapter) Name() string { return a.name }
 func (a *testAdapter) ListSessions(_ context.Context) ([]Session, error) {
+	if a.failWith != nil {
+		return nil, a.failWith
+	}
 	if a.sessions == nil {
 		return nil, nil
 	}
@@ -213,9 +218,11 @@ func TestCreateSession_ReturnsLocalID(t *testing.T) {
 }
 
 func TestRefresh_TimeoutWrapsErrTimeout(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	// Use a blocking adapter so the singleflight closure respects ctx.Done().
+	blocker := &blockingAdapter{name: "test"}
+	reg := MustNewRegistry(blocker)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	reg := MustNewRegistry(&testAdapter{name: "test"})
 	_, err := reg.Refresh(ctx, "test", true)
 	if err == nil {
 		t.Fatal("Refresh with expired context: got nil, want error")
@@ -228,10 +235,21 @@ func TestRefresh_TimeoutWrapsErrTimeout(t *testing.T) {
 	}
 }
 
+type blockingAdapter struct{ name string }
+
+func (a *blockingAdapter) Name() string { return a.name }
+func (a *blockingAdapter) ListSessions(ctx context.Context) ([]Session, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (a *blockingAdapter) GetSession(id string) (Session, error) {
+	return nil, ErrSessionNotFound
+}
+
 func TestRefresh_CancelNotTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	reg := MustNewRegistry(&testAdapter{name: "test"})
+	reg := MustNewRegistry(&blockingAdapter{name: "test"})
 	_, err := reg.Refresh(ctx, "test", true)
 	if err == nil {
 		t.Fatal("Refresh with cancelled context: got nil, want error")
@@ -289,5 +307,46 @@ func TestCanonicalID_URLRoundTrip(t *testing.T) {
 	parsed := ParseSessionID(canonical)
 	if parsed.Adapter != "tmux" || parsed.LocalID != localID {
 		t.Errorf("round-trip: %q -> Parse -> adapter=%q local=%q", canonical, parsed.Adapter, parsed.LocalID)
+	}
+}
+
+func TestFindSession_StaleCacheAndRefreshFailure(t *testing.T) {
+	// Cache has session, but adapter is failing. FindSession must NOT
+	// return the stale session — it must return ErrAdapterUnavailable.
+	s1 := &testSession{id: "s1", adapter: "test"}
+	a := &testAdapter{name: "test", sessions: []Session{s1}}
+	reg := MustNewRegistry(a)
+	// Populate cache.
+	_ = reg.Sessions(context.Background())
+	// Now make adapter fail.
+	a.sessions = nil
+	a.failWith = errors.New("adapter down")
+	_, err := reg.FindSession(context.Background(), "test:s1")
+	if err == nil {
+		t.Fatal("FindSession with failed adapter: got nil, want error")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
+	}
+}
+
+func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
+	// Colon + Unicode in local ID must survive URL encode/decode.
+	localID := "session:with:colons_and_unicode_한글"
+	ref := SessionRef{Adapter: "tmux", LocalID: localID}
+	canonical := ref.Canonical()
+	// Simulate URL encoding (as mobile client does)
+	encoded := strings.ReplaceAll(canonical, ":", "%3A")
+	encoded = strings.ReplaceAll(encoded, "_", "%5F") // just one char to verify
+	// Decode back
+	decoded := strings.ReplaceAll(encoded, "%3A", ":")
+	decoded = strings.ReplaceAll(decoded, "%5F", "_")
+	parsed := ParseSessionID(decoded)
+	if parsed.Adapter != "tmux" {
+		t.Errorf("URL round-trip: adapter = %q, want tmux", parsed.Adapter)
+	}
+	expectedLocal := "session:with:colons_and_unicode_한글"
+	if parsed.LocalID != expectedLocal {
+		t.Errorf("URL round-trip: localID = %q, want %q", parsed.LocalID, expectedLocal)
 	}
 }

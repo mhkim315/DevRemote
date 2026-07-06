@@ -50,11 +50,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := ref.Validate(); err != nil {
-			http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
-			return
-		}
-
 		adapterName := ref.Adapter
 
 		if r.Method == http.MethodPost {
@@ -81,11 +76,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		if id != "" {
 			ref := mux.ParseSessionID(id)
-			if err := ref.Validate(); err != nil {
-				http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
-				return
-			}
-
 			if err := ref.Validate(); err != nil {
 				http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
 				return
