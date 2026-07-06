@@ -18,6 +18,8 @@ type tmuxAdapter struct {
 const tmuxSessionFormat = "#{session_id}::POKIT::#{session_name}"
 
 // tmuxExecRunner implements CommandRunner using exec.CommandContext.
+// No binary discovery: tmux is a core macOS/Linux tool always in PATH.
+// CombinedOutput captures both stdout and stderr for error diagnostics.
 type tmuxExecRunner struct{}
 
 func (r *tmuxExecRunner) Run(ctx context.Context, _ CommandOptions, args ...string) ([]byte, error) {
