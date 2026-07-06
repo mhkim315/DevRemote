@@ -129,7 +129,9 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		defer stream.Close()
 	} else {
-		http.Error(w, "Session does not support streaming", http.StatusNotImplemented)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotImplemented)
+		w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
 		return
 	}
 

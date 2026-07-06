@@ -86,7 +86,7 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
             {session.adapter && session.adapter !== 'native' && (
               <Text style={styles.adapterTag}>[{session.adapter}]</Text>
             )}
-            <Text style={styles.sessionName} numberOfLines={1}>{session.displayId || session.id.replace(/^(tmux|cmux):/, '')}</Text>
+            <Text style={styles.sessionName} numberOfLines={1}>{session.displayId || session.id}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             {needsApproval && (

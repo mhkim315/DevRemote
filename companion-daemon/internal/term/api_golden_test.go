@@ -325,7 +325,9 @@ func TestAPIGolden_CapabilityLessSession_NoPanic(t *testing.T) {
 		t.Fatalf("bare session GET: status = %d, want 200", rec.Code)
 	}
 	var sessions []SessionTelemetry
-	json.Unmarshal(rec.Body.Bytes(), &sessions)
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("bare session GET: invalid JSON: %v", err)
+	}
 	for _, s := range sessions {
 		if s.ID == "bare:test" && len(s.Capabilities) != 0 {
 			t.Errorf("bare session has capabilities %v, want empty", s.Capabilities)
@@ -337,6 +339,9 @@ func TestAPIGolden_CapabilityLessSession_NoPanic(t *testing.T) {
 	h.HandleWS(wsRec, wsReq)
 	if wsRec.Code != http.StatusNotImplemented {
 		t.Errorf("bare session WS: status = %d, want 501", wsRec.Code)
+	}
+	if !strings.Contains(wsRec.Body.String(), "\"error\"") {
+		t.Errorf("bare session WS error is not JSON: %s", wsRec.Body.String())
 	}
 }
 
