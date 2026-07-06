@@ -320,24 +320,22 @@ func TestFindSession_StaleCacheAndRefreshFailure(t *testing.T) {
 	reg := MustNewRegistry(a)
 	// Populate cache.
 	_ = reg.Sessions(context.Background())
-	// Verify session is cached.
 	snap, _ := reg.Snapshot("test")
 	if len(snap.Sessions) != 1 {
 		t.Fatalf("cache has %d sessions, want 1", len(snap.Sessions))
 	}
-	// Now make adapter fail — cache still has stale snapshot.
 	a.failWith = errors.New("adapter down")
-	_, err := reg.FindSession(context.Background(), "test:s1")
-	if err == nil {
-		t.Fatal("FindSession got nil, want ErrAdapterUnavailable")
-	}
+	s, err := reg.FindSession(context.Background(), "test:s1")
 	if err == nil {
 		t.Fatal("FindSession got nil error, want ErrAdapterUnavailable")
+	}
+	if s != nil {
+		t.Errorf("FindSession returned non-nil session on adapter failure: %v", s)
 	}
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
 	}
-	// Stale snapshot must still be present (not evicted on failure).
+	// Stale snapshot still present.
 	snap2, _ := reg.Snapshot("test")
 	if len(snap2.Sessions) != 1 {
 		t.Errorf("stale snapshot has %d sessions after failed refresh, want 1", len(snap2.Sessions))
@@ -390,5 +388,22 @@ func TestCmuxAdapter_CreateSessionReturnsLocalID(t *testing.T) {
 	canonical := SessionRef{Adapter: "cmux", LocalID: id}.Canonical()
 	if canonical != "cmux:surface:42" {
 		t.Errorf("canonical = %q, want cmux:surface:42", canonical)
+	}
+}
+
+func TestCmuxAdapter_CreateSession_MalformedOutput(t *testing.T) {
+	// Malformed output must return error, not a fake ID.
+	mockRunner := &mockCmuxRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			return []byte("garbage output with no surface id"), nil
+		},
+	}
+	adapter := &cmuxAdapter{runner: mockRunner}
+	id, err := adapter.CreateSession(context.Background(), CreateOptions{})
+	if err == nil {
+		t.Fatalf("CreateSession with malformed output: got nil error, id=%q", id)
+	}
+	if id != "" {
+		t.Errorf("CreateSession on parse failure returned id=%q, want empty", id)
 	}
 }
