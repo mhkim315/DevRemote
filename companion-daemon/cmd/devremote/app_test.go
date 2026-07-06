@@ -119,18 +119,6 @@ func newFakeTunnelDone() *fakeTunnel {
 	return t
 }
 
-// recordingListener wraps a net.Listener and records when Close is called.
-type recordingListener struct {
-	net.Listener
-	order *[]string
-	name  string
-}
-
-func (r *recordingListener) Close() error {
-	*r.order = append(*r.order, r.name+":close")
-	return r.Listener.Close()
-}
-
 // ── Tests ──
 
 func TestNewApp_CreatesPrivateMux(t *testing.T) {
