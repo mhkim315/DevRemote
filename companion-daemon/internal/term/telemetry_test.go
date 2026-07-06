@@ -1,12 +1,34 @@
 package term
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/mux"
 )
+
+type telemetryBatchAdapter struct {
+	name     string
+	snapshot map[string]models.ProcessInfo
+	err      error
+	calls    int
+}
+
+func (a *telemetryBatchAdapter) Name() string { return a.name }
+func (a *telemetryBatchAdapter) ListSessions() ([]mux.Session, error) {
+	return nil, nil
+}
+func (a *telemetryBatchAdapter) GetSession(id string) (mux.Session, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (a *telemetryBatchAdapter) ProcessSnapshot(ctx context.Context) (map[string]models.ProcessInfo, error) {
+	a.calls++
+	return a.snapshot, a.err
+}
 
 func TestEvaluateState(t *testing.T) {
 	now := time.Now()
@@ -142,5 +164,36 @@ func TestEvaluateState(t *testing.T) {
 				t.Errorf("expected load %d, got %d", tt.expectedLoad, stateData.Load)
 			}
 		})
+	}
+}
+
+func TestCollectProcessSnapshotsUsesOneBatchPerAdapter(t *testing.T) {
+	healthy := &telemetryBatchAdapter{
+		name: "healthy",
+		snapshot: map[string]models.ProcessInfo{
+			"session-1": {PID: 101},
+		},
+	}
+	failing := &telemetryBatchAdapter{
+		name: "failing",
+		err:  errors.New("socket unavailable"),
+	}
+
+	snapshots, batchAdapters, failedAdapters := collectProcessSnapshots(
+		context.Background(),
+		[]mux.Adapter{healthy, failing},
+	)
+
+	if healthy.calls != 1 || failing.calls != 1 {
+		t.Fatalf("expected one batch call per adapter, got healthy=%d failing=%d", healthy.calls, failing.calls)
+	}
+	if snapshots["healthy:session-1"].PID != 101 {
+		t.Fatalf("missing canonical batch snapshot: %#v", snapshots)
+	}
+	if !batchAdapters["healthy"] || !batchAdapters["failing"] {
+		t.Fatalf("batch-capable adapters were not recorded: %#v", batchAdapters)
+	}
+	if failedAdapters["healthy"] || !failedAdapters["failing"] {
+		t.Fatalf("unexpected failed adapter set: %#v", failedAdapters)
 	}
 }

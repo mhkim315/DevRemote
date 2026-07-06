@@ -52,6 +52,20 @@ type CommandRunner interface {
 	Run(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error)
 }
 
+// serialCommandRunner protects cmux's single Unix socket from command bursts.
+// Every CmuxSession created by an adapter shares this runner, so discovery,
+// telemetry, and live-screen polling cannot write to the socket concurrently.
+type serialCommandRunner struct {
+	mu       sync.Mutex
+	delegate CommandRunner
+}
+
+func (r *serialCommandRunner) Run(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.delegate.Run(ctx, opts, args...)
+}
+
 type execCommandRunner struct {
 	binaryPath string
 	lookupErr  error
@@ -119,7 +133,7 @@ type cmuxAdapter struct {
 
 func NewCmuxAdapter() Adapter {
 	return &cmuxAdapter{
-		runner: newExecCommandRunner(),
+		runner: &serialCommandRunner{delegate: newExecCommandRunner()},
 	}
 }
 

@@ -61,6 +61,36 @@ func isApprovalPrompt(line string) bool {
 		(strings.Contains(line, "1. Yes") && strings.Contains(line, "No"))
 }
 
+// collectProcessSnapshots performs at most one process discovery command per
+// batch-capable adapter in a telemetry cycle. A missing surface in a successful
+// batch is not retried through ProcessInfo because that fallback would execute
+// the same expensive adapter-wide command once per session.
+func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[string]models.ProcessInfo, map[string]bool, map[string]bool) {
+	snapshots := make(map[string]models.ProcessInfo)
+	batchAdapters := make(map[string]bool)
+	failedAdapters := make(map[string]bool)
+
+	for _, adapter := range adapters {
+		name := adapter.Name()
+		provider, ok := adapter.(mux.ProcessSnapshotProvider)
+		if !ok {
+			continue
+		}
+
+		batchAdapters[name] = true
+		snapshot, err := provider.ProcessSnapshot(ctx)
+		if err != nil {
+			failedAdapters[name] = true
+			continue
+		}
+		for sessionID, info := range snapshot {
+			snapshots[name+":"+sessionID] = info
+		}
+	}
+
+	return snapshots, batchAdapters, failedAdapters
+}
+
 func StartTelemetryLoop(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
@@ -74,18 +104,7 @@ func StartTelemetryLoop(ctx context.Context) {
 
 			// 1. Gather sessions and build process snapshots
 			sessions := mux.GetAllSessionsCached()
-			processSnapshots := make(map[string]models.ProcessInfo)
-
-			for _, adapter := range mux.GetAdapters() {
-				name := adapter.Name()
-				if psp, ok := adapter.(mux.ProcessSnapshotProvider); ok {
-					if snap, err := psp.ProcessSnapshot(ctx); err == nil {
-						for sid, info := range snap {
-							processSnapshots[name+":"+sid] = info
-						}
-					}
-				}
-			}
+			processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, mux.GetAdapters())
 
 			telemetryMu.Lock()
 			// Clean up old sessions
@@ -126,9 +145,11 @@ func StartTelemetryLoop(ctx context.Context) {
 				if logErr != nil {
 					if info, ok := processSnapshots[s]; ok {
 						logRef, logErr = ResolveAgentLog(ctx, info)
-					} else if pp, ok := sess.(mux.ProcessProvider); ok {
-						if pinfo, err := pp.ProcessInfo(ctx); err == nil {
-							logRef, logErr = ResolveAgentLog(ctx, pinfo)
+					} else if !batchAdapters[sess.AdapterName()] {
+						if pp, ok := sess.(mux.ProcessProvider); ok {
+							if pinfo, err := pp.ProcessInfo(ctx); err == nil {
+								logRef, logErr = ResolveAgentLog(ctx, pinfo)
+							}
 						}
 					}
 				}
@@ -170,8 +191,10 @@ func StartTelemetryLoop(ctx context.Context) {
 
 				// Always fetch capture-pane as fallback for approvals and missing logs
 				var out []byte
-				if sr, ok := sess.(mux.ScreenReader); ok {
-					out, _ = sr.ReadScreen(ctx)
+				if !failedAdapters[sess.AdapterName()] {
+					if sr, ok := sess.(mux.ScreenReader); ok {
+						out, _ = sr.ReadScreen(ctx)
+					}
 				}
 
 				// POKIT_RUNNER is no longer extracted here directly from tmux,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -194,5 +195,48 @@ func TestExecRunnerPreservesLookupError(t *testing.T) {
 	}
 	if cmuxErr.ExitCode != -1 {
 		t.Fatalf("expected exit code -1, got %d", cmuxErr.ExitCode)
+	}
+}
+
+func TestSerialCommandRunnerPreventsConcurrentSocketWrites(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	delegate := &mockCmuxRunner{
+		runFunc: func(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error) {
+			started <- struct{}{}
+			<-release
+			return nil, nil
+		},
+	}
+	runner := &serialCommandRunner{delegate: delegate}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = runner.Run(context.Background(), CommandOptions{}, "ping")
+		}()
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first command did not start")
+	}
+
+	select {
+	case <-started:
+		t.Fatal("second command started before the first released the socket")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	wg.Wait()
+
+	select {
+	case <-started:
+	default:
+		t.Fatal("second command never ran after the first completed")
 	}
 }
