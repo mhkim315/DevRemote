@@ -343,6 +343,23 @@ func TestAPIGolden_CapabilityLessSession_NoPanic(t *testing.T) {
 	if !strings.Contains(wsRec.Body.String(), "\"error\"") {
 		t.Errorf("bare session WS error is not JSON: %s", wsRec.Body.String())
 	}
+	ct := wsRec.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("WS unsupported: Content-Type = %q, want application/json", ct)
+	}
+	var errResp struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if e := json.Unmarshal(wsRec.Body.Bytes(), &errResp); e != nil {
+		t.Fatalf("WS unsupported: invalid JSON: %v", e)
+	}
+	if errResp.Error != "unsupported" {
+		t.Errorf("WS unsupported: error = %q, want 'unsupported'", errResp.Error)
+	}
+	if errResp.Detail == "" {
+		t.Error("WS unsupported: detail is empty")
+	}
 }
 
 type bareSession struct{}
