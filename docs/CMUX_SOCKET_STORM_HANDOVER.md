@@ -229,6 +229,31 @@ daemon 로그에서 한 telemetry 주기에 다음을 확인한다.
 성공한다면, 그때 daemon 환경 차이 또는 macOS process context를 다시 조사한다.
 현재 증거만으로 launchctl/Aqua 문제를 전제하지 않는다.
 
+## 11. 최종 실행 환경 판정
+
+추가 검증에서 Antigravity background task로 시작된 daemon은 cmux terminal의
+`CMUX_WORKSPACE_ID`, `CMUX_SURFACE_ID`, `CMUX_SOCKET_PATH`를 모두 상속했는데도
+`Broken pipe`가 지속됐다. 동일 환경의 CLI를 호스트 권한으로 실행하면 `ping`과
+`read-screen`이 성공했다.
+
+최신 daemon을 호스트 foreground 프로세스로 실행한 결과:
+
+- cmux session 6개 모두 `stale=false`
+- `lastError=null`
+- `lastSuccessAt`이 현재 시각으로 갱신
+- `surface:38` 실제 history 반환
+
+cmux의 기본 socket access mode는 `cmuxOnly`다. cmux terminal에서 시작한 host
+foreground 프로세스는 정상 동작했지만, LaunchAgent는 같은 사용자라도 기존 cmux
+서버가 `cmuxOnly` 상태인 동안에는 거부됐다. `reload-config`만으로는 이 상태가
+바뀌지 않았고, cmux 서버 재시작이 필요했다.
+
+따라서 원인은 nohup이나 TTY 부재가 아니라 cmux socket의 caller ancestry 정책이다.
+재발 방지를 위해 `companion-daemon/scripts/install-launchagent.sh`를 사용해
+사용자 GUI domain LaunchAgent로 daemon을 설치하고, cmux 쪽에는
+`socketControlMode: "allowAll"`을 적용한 뒤 반드시 cmux를 재시작한다. socket
+파일은 사용자 전용 mode `0600`을 유지한다.
+
 ## 10. 후속 최적화
 
 이번 수정은 command storm을 차단하는 최소 안전 변경이다. 아래 항목은 후속 작업으로
