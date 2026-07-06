@@ -6,7 +6,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +18,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// ── Token generation helpers ──
+// ── Helpers ──
 
 func mustGenerateRSAKey() *rsa.PrivateKey {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -46,9 +49,9 @@ func signJWT(t *testing.T, claims jwt.MapClaims, method jwt.SigningMethod, key i
 	return signed
 }
 
-func validClaims(owner string) jwt.MapClaims {
+func validClaims(owner, projectRef string) jwt.MapClaims {
 	return jwt.MapClaims{
-		"iss": "https://testproject.supabase.co/auth/v1",
+		"iss": "https://" + projectRef + ".supabase.co/auth/v1",
 		"sub": owner,
 		"aud": "authenticated",
 		"iat": time.Now().Unix(),
@@ -56,220 +59,125 @@ func validClaims(owner string) jwt.MapClaims {
 	}
 }
 
+// jwksServer returns an httptest server serving a valid JWKS response
+// containing the given keys, and a pointer to the request count.
+func jwksServer(t *testing.T, keys []jwksKeyEntry) (*httptest.Server, *int) {
+	t.Helper()
+	var count int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count++
+		resp := struct {
+			Keys []jwksKeyEntry `json:"keys"`
+		}{Keys: keys}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	return srv, &count
+}
+
+type jwksKeyEntry struct {
+	Kid string `json:"kid"`
+	Kty string `json:"kty"`
+	N   string `json:"n,omitempty"`
+	E   string `json:"e,omitempty"`
+	X   string `json:"x,omitempty"`
+	Y   string `json:"y,omitempty"`
+}
+
+func rsaJWKSEntry(kid string, pub *rsa.PublicKey) jwksKeyEntry {
+	return jwksKeyEntry{
+		Kid: kid,
+		Kty: "RSA",
+		N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}
+}
+
+func ecJWKSEntry(kid string, pub *ecdsa.PublicKey) jwksKeyEntry {
+	return jwksKeyEntry{
+		Kid: kid,
+		Kty: "EC",
+		X:   base64.RawURLEncoding.EncodeToString(pub.X.Bytes()),
+		Y:   base64.RawURLEncoding.EncodeToString(pub.Y.Bytes()),
+	}
+}
+
+// verifierWithServer creates a verifier pointed at a fake JWKS server.
+// SupabaseProjectRef defaults to "test" if not set in cfg.
+func verifierWithServer(t *testing.T, cfg AuthConfig, srv *httptest.Server) *SupabaseVerifier {
+	t.Helper()
+	if cfg.SupabaseProjectRef == "" {
+		cfg.SupabaseProjectRef = "test"
+	}
+	v := NewSupabaseVerifier(cfg)
+	v.jwksURL = srv.URL
+	v.client = srv.Client()
+	return v
+}
+
 // ── Basic tests ──
 
 func TestSupabaseVerifier_EmptyTokenProdMode(t *testing.T) {
 	t.Parallel()
-
-	v := NewSupabaseVerifier(AuthConfig{
-		InsecureLocalOnly:  false,
-		OwnerUUID:          "",
-		SupabaseProjectRef: "",
-	})
-
+	v := NewSupabaseVerifier(AuthConfig{InsecureLocalOnly: false, OwnerUUID: "", SupabaseProjectRef: ""})
 	if err := v.Verify(context.Background(), "dummy-token"); err == nil {
-		t.Error("Verify should fail when required config is missing in production mode")
+		t.Error("should fail when config missing in production mode")
 	}
-
 	if err := v.Verify(context.Background(), ""); err == nil {
-		t.Error("Verify should fail when token is empty in production mode")
+		t.Error("should fail when token is empty in production mode")
 	}
 }
 
 func TestSupabaseVerifier_EmptyTokenInsecureMode(t *testing.T) {
 	t.Parallel()
-
-	v := NewSupabaseVerifier(AuthConfig{
-		InsecureLocalOnly: true,
-	})
-
+	v := NewSupabaseVerifier(AuthConfig{InsecureLocalOnly: true})
 	if err := v.Verify(context.Background(), ""); err != nil {
-		t.Errorf("Verify should pass when token is empty in insecure mode, got: %v", err)
+		t.Errorf("empty token should pass in insecure mode, got: %v", err)
 	}
 }
 
 func TestSupabaseVerifier_AuthMiddleware(t *testing.T) {
 	t.Parallel()
-
-	v := NewSupabaseVerifier(AuthConfig{
-		InsecureLocalOnly:  false,
-		OwnerUUID:          "",
-		SupabaseProjectRef: "",
-	})
-
+	v := NewSupabaseVerifier(AuthConfig{InsecureLocalOnly: false, OwnerUUID: "", SupabaseProjectRef: ""})
 	h := &Handlers{Verifier: v}
-	handler := h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
+	handler := h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	req, _ := http.NewRequest("GET", "/api/sessions", nil)
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("Expected 401 Unauthorized for empty token in prod mode, got %d", rr.Code)
+	if rr.Code != 401 {
+		t.Errorf("got %d, want 401", rr.Code)
 	}
 }
 
 func TestSupabaseVerifier_NoVerifierRejectsAll(t *testing.T) {
 	t.Parallel()
-
 	h := &Handlers{Verifier: nil}
-	handler := h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
+	handler := h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	req, _ := http.NewRequest("GET", "/api/sessions", nil)
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("Expected 401 Unauthorized when no verifier configured, got %d", rr.Code)
+	if rr.Code != 401 {
+		t.Errorf("got %d, want 401", rr.Code)
 	}
 }
 
-// ── JWT claim validation tests ──
+// ── JWT claim validation (using fake JWKS server) ──
 
-// preloadRSAKey sets a key in the verifier's JWKS cache so that token
-// signature verification passes and claim validation is tested.
-func preloadRSAKey(v *SupabaseVerifier, kid string, key *rsa.PrivateKey) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.keys = map[string]interface{}{kid: &key.PublicKey}
-	v.expires = time.Now().Add(1 * time.Hour)
-}
-
-func TestSupabaseVerifier_OwnerUUIDMismatch(t *testing.T) {
+func TestSupabaseVerifier_ValidRSAToken(t *testing.T) {
 	t.Parallel()
 
 	key := mustGenerateRSAKey()
-	token := signJWT(t, validClaims("other-owner"), jwt.SigningMethodRS256, key, "test-kid")
+	srv, reqCount := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
 
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
-	preloadRSAKey(v, "test-kid", key)
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key, "k1")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
 
-	err := v.Verify(context.Background(), token)
-	if err == nil {
-		t.Fatal("expected owner mismatch error, got nil")
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("valid RSA token rejected: %v", err)
 	}
-	if err.Error() != "owner mismatch" {
-		t.Errorf("expected 'owner mismatch', got: %v", err)
-	}
-}
-
-func TestSupabaseVerifier_IssuerMismatch(t *testing.T) {
-	t.Parallel()
-
-	key := mustGenerateRSAKey()
-	claims := validClaims("my-owner")
-	claims["iss"] = "https://wrong.supabase.co/auth/v1"
-	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "test-kid")
-
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
-	preloadRSAKey(v, "test-kid", key)
-
-	err := v.Verify(context.Background(), token)
-	if err == nil {
-		t.Fatal("expected issuer mismatch error, got nil")
-	}
-	if err.Error() != "invalid issuer" {
-		t.Errorf("expected 'invalid issuer', got: %v", err)
-	}
-}
-
-func TestSupabaseVerifier_AudienceMismatch(t *testing.T) {
-	t.Parallel()
-
-	key := mustGenerateRSAKey()
-	claims := validClaims("my-owner")
-	claims["aud"] = "wrong-audience"
-	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "test-kid")
-
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
-	preloadRSAKey(v, "test-kid", key)
-
-	err := v.Verify(context.Background(), token)
-	if err == nil {
-		t.Fatal("expected audience mismatch error, got nil")
-	}
-	if err.Error() != "invalid audience" {
-		t.Errorf("expected 'invalid audience', got: %v", err)
-	}
-}
-
-func TestSupabaseVerifier_MissingSubject(t *testing.T) {
-	t.Parallel()
-
-	key := mustGenerateRSAKey()
-	claims := validClaims("my-owner")
-	delete(claims, "sub")
-	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "test-kid")
-
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
-	preloadRSAKey(v, "test-kid", key)
-
-	err := v.Verify(context.Background(), token)
-	if err == nil {
-		t.Fatal("expected missing sub error, got nil")
-	}
-	if err.Error() != "missing sub claim" {
-		t.Errorf("expected 'missing sub claim', got: %v", err)
-	}
-}
-
-func TestSupabaseVerifier_UnsupportedSigningMethod(t *testing.T) {
-	t.Parallel()
-
-	// HS256 is not supported in production mode (only RS256/ES256 via JWKS).
-	key := []byte("not-a-valid-hmac-key-for-production")
-	claims := validClaims("my-owner")
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(key)
-	if err != nil {
-		t.Fatalf("sign HS256: %v", err)
-	}
-
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
-
-	err = v.Verify(context.Background(), signed)
-	if err == nil {
-		t.Fatal("expected unsupported signing method error, got nil")
-	}
-}
-
-func TestSupabaseVerifier_ValidToken(t *testing.T) {
-	t.Parallel()
-
-	key := mustGenerateRSAKey()
-	token := signJWT(t, validClaims("my-owner"), jwt.SigningMethodRS256, key, "test-kid")
-
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
-
-	err := v.Verify(context.Background(), token)
-	// Expect key-not-found because JWKS fetch will fail (no real server).
-	// The test verifies that the flow reaches JWKS fetch, not that it succeeds.
-	if err == nil {
-		t.Log("token verified (JWKS fetch may have cached)")
+	if *reqCount != 1 {
+		t.Errorf("JWKS fetched %d times, want 1", *reqCount)
 	}
 }
 
@@ -277,16 +185,116 @@ func TestSupabaseVerifier_ValidECDSAToken(t *testing.T) {
 	t.Parallel()
 
 	key := mustGenerateECDSAKey()
-	token := signJWT(t, validClaims("my-owner"), jwt.SigningMethodES256, key, "test-ec-kid")
+	srv, reqCount := jwksServer(t, []jwksKeyEntry{ecJWKSEntry("ec1", &key.PublicKey)})
+	defer srv.Close()
 
-	v := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "my-owner",
-		SupabaseProjectRef: "testproject",
-	})
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodES256, key, "ec1")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("valid ECDSA token rejected: %v", err)
+	}
+	if *reqCount != 1 {
+		t.Errorf("JWKS fetched %d times, want 1", *reqCount)
+	}
+}
+
+func TestSupabaseVerifier_OwnerUUIDMismatch(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	srv, _ := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
+
+	token := signJWT(t, validClaims("other-owner", "test"), jwt.SigningMethodRS256, key, "k1")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "my-owner"}, srv)
 
 	err := v.Verify(context.Background(), token)
 	if err == nil {
-		t.Log("EC token verified (JWKS fetch may have cached)")
+		t.Fatal("expected owner mismatch, got nil")
+	}
+	if err.Error() != "owner mismatch" {
+		t.Errorf("got %q, want 'owner mismatch'", err.Error())
+	}
+}
+
+func TestSupabaseVerifier_IssuerMismatch(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	srv, _ := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
+
+	claims := validClaims("owner", "test")
+	claims["iss"] = "https://wrong.supabase.co/auth/v1"
+	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "k1")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+
+	err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected issuer mismatch, got nil")
+	}
+	if err.Error() != "invalid issuer" {
+		t.Errorf("got %q, want 'invalid issuer'", err.Error())
+	}
+}
+
+func TestSupabaseVerifier_AudienceMismatch(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	srv, _ := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
+
+	claims := validClaims("owner", "test")
+	claims["aud"] = "wrong-audience"
+	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "k1")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+
+	err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected audience mismatch, got nil")
+	}
+	if err.Error() != "invalid audience" {
+		t.Errorf("got %q, want 'invalid audience'", err.Error())
+	}
+}
+
+func TestSupabaseVerifier_MissingSubject(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	srv, _ := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
+
+	claims := validClaims("owner", "test")
+	delete(claims, "sub")
+	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "k1")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+
+	err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected missing sub, got nil")
+	}
+	if err.Error() != "missing sub claim" {
+		t.Errorf("got %q, want 'missing sub claim'", err.Error())
+	}
+}
+
+func TestSupabaseVerifier_UnsupportedSigningMethod(t *testing.T) {
+	t.Parallel()
+
+	key := mustGenerateRSAKey()
+	srv, _ := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
+
+	// HS256 is never supported in production mode.
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodHS256, []byte("secret"), "")
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+
+	err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected unsupported signing method, got nil")
 	}
 }
 
@@ -295,127 +303,177 @@ func TestSupabaseVerifier_ValidECDSAToken(t *testing.T) {
 func TestSupabaseVerifier_JWKSCacheIndependence(t *testing.T) {
 	t.Parallel()
 
-	v1 := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "owner-1",
-		SupabaseProjectRef: "project-1",
-	})
-	v2 := NewSupabaseVerifier(AuthConfig{
-		OwnerUUID:          "owner-2",
-		SupabaseProjectRef: "project-2",
-	})
+	key1 := mustGenerateRSAKey()
+	key2 := mustGenerateRSAKey()
 
-	// Different verifier instances must have independent JWKS caches.
-	if v1.keys != nil || v2.keys != nil {
-		t.Log("caches pre-populated (unexpected before first Verify)")
+	srv1, c1 := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key1.PublicKey)})
+	defer srv1.Close()
+	srv2, c2 := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k2", &key2.PublicKey)})
+	defer srv2.Close()
+
+	v1 := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv1)
+	v2 := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv2)
+
+	// Verify token against v1 — only srv1 should be hit.
+	token1 := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key1, "k1")
+	if err := v1.Verify(context.Background(), token1); err != nil {
+		t.Fatalf("v1: %v", err)
+	}
+	if *c1 != 1 || *c2 != 0 {
+		t.Errorf("c1=%d c2=%d, want c1=1 c2=0", *c1, *c2)
 	}
 
-	// Trigger JWKS fetch on v1 (will fail, but keys map stays nil).
-	_ = v1.Verify(context.Background(), "dummy-token")
-	_ = v2.Verify(context.Background(), "dummy-token")
-
-	// Both should still be independent instances.
-	if &v1.keys == &v2.keys {
-		t.Error("verifiers share the same JWKS cache map")
+	// Verify token against v2 — only srv2 should be hit.
+	token2 := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key2, "k2")
+	if err := v2.Verify(context.Background(), token2); err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+	if *c2 != 1 {
+		t.Errorf("c2=%d, want 1", *c2)
 	}
 }
 
-func TestSupabaseVerifier_CacheTTL(t *testing.T) {
+func TestSupabaseVerifier_CacheTTLAndFetchCount(t *testing.T) {
 	t.Parallel()
 
-	v := NewSupabaseVerifier(
-		AuthConfig{
-			OwnerUUID:          "owner",
-			SupabaseProjectRef: "testproject",
-		},
-		WithJWKSTTL(50*time.Millisecond),
-	)
+	key := mustGenerateRSAKey()
+	srv, reqCount := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
 
-	// Manually set a key to simulate a cached JWKS entry.
-	v.mu.Lock()
-	v.keys = map[string]interface{}{"k1": "fake-key"}
-	v.expires = time.Now().Add(50 * time.Millisecond)
-	v.mu.Unlock()
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
+	// Override TTL to be short.
+	v.jwksTTL = 50 * time.Millisecond
 
-	// Key is available before TTL expiry.
-	key, err := v.jwksKey(context.Background(), "k1")
-	if err != nil {
-		t.Fatalf("expected cached key, got: %v", err)
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key, "k1")
+
+	// First verify — triggers fetch.
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("first verify: %v", err)
 	}
-	if key != "fake-key" {
-		t.Errorf("expected fake-key, got %v", key)
+	if *reqCount != 1 {
+		t.Fatalf("first fetch count = %d, want 1", *reqCount)
+	}
+	fc1 := v.FetchCount()
+	if fc1 != 1 {
+		t.Fatalf("FetchCount = %d, want 1", fc1)
+	}
+
+	// Second verify within TTL — should NOT trigger another fetch.
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("second verify: %v", err)
+	}
+	if *reqCount != 1 {
+		t.Errorf("second verify: reqCount = %d, want 1 (cached)", *reqCount)
 	}
 
 	// Wait for TTL to expire.
 	time.Sleep(100 * time.Millisecond)
 
-	// After TTL expiry, a fetch is attempted but fails (no network).
-	// The stale cache is preserved (fetch failure does not evict).
-	key2, err := v.jwksKey(context.Background(), "k1")
-	if err != nil {
-		t.Fatalf("stale cache should be preserved after fetch failure: %v", err)
+	// Third verify after TTL — should trigger a re-fetch.
+	if err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("third verify: %v", err)
 	}
-	if key2 != "fake-key" {
-		t.Error("stale cache key was evicted after fetch failure")
+	if *reqCount != 2 {
+		t.Errorf("third verify: reqCount = %d, want 2 (re-fetched)", *reqCount)
 	}
-
-	// Verify the cache did attempt to refresh (expires was updated).
-	v.mu.Lock()
-	exp := v.expires
-	v.mu.Unlock()
-	if !exp.After(time.Now().Add(-200 * time.Millisecond)) {
-		t.Error("cache expiry was not updated after attempted re-fetch")
+	fc3 := v.FetchCount()
+	if fc3 != 2 {
+		t.Errorf("FetchCount = %d, want 2", fc3)
 	}
 }
 
 func TestSupabaseVerifier_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	v := NewSupabaseVerifier(
-		AuthConfig{
-			OwnerUUID:          "owner",
-			SupabaseProjectRef: "testproject",
-		},
-		WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
-	)
+	key := mustGenerateRSAKey()
+	srv, _ := jwksServer(t, []jwksKeyEntry{rsaJWKSEntry("k1", &key.PublicKey)})
+	defer srv.Close()
 
-	// Manually expire the cache so the next Verify triggers a fetch.
+	v := verifierWithServer(t, AuthConfig{OwnerUUID: "owner"}, srv)
 	v.mu.Lock()
-	v.keys = nil
 	v.expires = time.Time{}
 	v.mu.Unlock()
 
-	// Cancelled context should propagate to JWKS fetch.
+	token := signJWT(t, validClaims("owner", "test"), jwt.SigningMethodRS256, key, "k1")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// With a real token, the key lookup will trigger fetchJWKS which uses the context.
-	key := mustGenerateRSAKey()
-	claims := validClaims("owner")
-	claims["iss"] = "https://testproject.supabase.co/auth/v1"
-	token := signJWT(t, claims, jwt.SigningMethodRS256, key, "test-kid")
-
 	err := v.Verify(ctx, token)
 	if err == nil {
-		t.Log("token verified (JWKS may have been cached)")
+		t.Fatal("expected error from cancelled context, got nil")
 	}
-	// The context cancellation should cause the HTTP request to fail.
-	// We verify no panic and that the function returns.
+	if !isContextCanceled(err) {
+		t.Errorf("expected context.Canceled in chain, got: %v", err)
+	}
 }
+
+func isContextCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	for {
+		if e, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, u := range e.Unwrap() {
+				if isContextCanceled(u) {
+					return true
+				}
+			}
+			return false
+		}
+		if err == context.Canceled {
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+}
+
+// ── Options ──
 
 func TestSupabaseVerifier_Options(t *testing.T) {
 	t.Parallel()
-
 	customClient := &http.Client{Timeout: 5 * time.Second}
-	v := NewSupabaseVerifier(
-		AuthConfig{InsecureLocalOnly: true},
-		WithHTTPClient(customClient),
-		WithJWKSTTL(30*time.Minute),
-	)
-
+	v := NewSupabaseVerifier(AuthConfig{InsecureLocalOnly: true}, WithHTTPClient(customClient), WithJWKSTTL(30*time.Minute))
 	if v.client != customClient {
-		t.Error("WithHTTPClient option not applied")
+		t.Error("WithHTTPClient not applied")
 	}
 	if v.jwksTTL != 30*time.Minute {
-		t.Errorf("WithJWKSTTL: got %v, want 30m", v.jwksTTL)
+		t.Errorf("WithJWKSTTL: got %v", v.jwksTTL)
 	}
+}
+
+// ── App route verifier injection ──
+
+func TestHandlers_AuthMiddlewareUsesInjectedVerifier(t *testing.T) {
+	// fakeVerifier records that it was called and returns a fixed error.
+	fv := &fakeVerifier{reject: "test-rejection"}
+	h := &Handlers{Verifier: fv}
+	handler := h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	req, _ := http.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if !fv.called {
+		t.Error("fake verifier was not called")
+	}
+	if rr.Code != 401 {
+		t.Errorf("got %d, want 401 (rejected by fake verifier)", rr.Code)
+	}
+}
+
+type fakeVerifier struct {
+	called bool
+	reject string
+}
+
+func (f *fakeVerifier) Verify(ctx context.Context, token string) error {
+	f.called = true
+	if f.reject != "" {
+		return fmt.Errorf("%s", f.reject)
+	}
+	return nil
 }

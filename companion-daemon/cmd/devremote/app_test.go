@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -665,6 +666,57 @@ func indexOf(slice []string, s string) int {
 		}
 	}
 	return -1
+}
+
+func TestApp_InjectedVerifierUsedByRoutes(t *testing.T) {
+	// Verify that a fake verifier injected via Dependencies.Verifier
+	// is actually called when hitting app routes.
+	cfg := Config{
+		InsecureLocalOnly:  false,
+		OwnerUUID:          "owner",
+		SupabaseProjectRef: "test",
+	}
+
+	fv := &fakeAuthVerifier{reject: "injected-verifier"}
+	app, err := NewAppWithDeps(cfg, Dependencies{
+		Verifier:     fv,
+		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
+		StartIPC: func(path string, reg *mux.Registry) (ipcResource, error) {
+			return &fakeIPC{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppWithDeps failed: %v", err)
+	}
+
+	ts := httptest.NewServer(app.server.Handler)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("got %d, want 401 (rejected by injected verifier)", resp.StatusCode)
+	}
+	if !fv.called {
+		t.Error("injected verifier was not called by route handler")
+	}
+}
+
+type fakeAuthVerifier struct {
+	called bool
+	reject string
+}
+
+func (f *fakeAuthVerifier) Verify(ctx context.Context, token string) error {
+	f.called = true
+	if f.reject != "" {
+		return fmt.Errorf("%s", f.reject)
+	}
+	return nil
 }
 
 func listenFreeTCPOnAddr(addr string) (net.Listener, error) {

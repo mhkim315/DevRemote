@@ -54,9 +54,14 @@ type SupabaseVerifier struct {
 	client  *http.Client
 	jwksTTL time.Duration
 
-	mu      sync.Mutex
-	keys    map[string]interface{} // kid → crypto.PublicKey
-	expires time.Time
+	// jwksURL overrides the constructed JWKS endpoint (for tests).
+	// If empty, the URL is built from SupabaseProjectRef.
+	jwksURL string
+
+	mu         sync.Mutex
+	keys       map[string]interface{} // kid → crypto.PublicKey
+	expires    time.Time
+	fetchCount int // number of JWKS network fetch attempts
 }
 
 // NewSupabaseVerifier creates a verifier for the given auth configuration.
@@ -177,7 +182,9 @@ func (v *SupabaseVerifier) jwksKey(ctx context.Context, kid string) (interface{}
 	}
 
 	if needsFetch {
-		v.fetchJWKS(ctx)
+		if err := v.fetchJWKS(ctx); err != nil {
+			return nil, fmt.Errorf("jwks fetch: %w", err)
+		}
 	}
 
 	if key, ok := v.keys[kid]; ok {
@@ -186,26 +193,38 @@ func (v *SupabaseVerifier) jwksKey(ctx context.Context, kid string) (interface{}
 	return nil, fmt.Errorf("key %q not found in JWKS", kid)
 }
 
+// FetchCount returns the number of JWKS network fetch attempts (for tests).
+func (v *SupabaseVerifier) FetchCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.fetchCount
+}
+
 // fetchJWKS downloads and caches the JWKS key set from Supabase.
+// Returns context errors wrapped with %w so callers can use errors.Is.
 // Must be called with v.mu held.
-func (v *SupabaseVerifier) fetchJWKS(ctx context.Context) {
-	projectRef := v.config.SupabaseProjectRef
-	url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
+func (v *SupabaseVerifier) fetchJWKS(ctx context.Context) error {
+	url := v.jwksURL
+	if url == "" {
+		projectRef := v.config.SupabaseProjectRef
+		url = fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		log.Printf("jwks request err: %v", err)
-		return
+		return fmt.Errorf("jwks request: %w", err)
 	}
+	v.fetchCount++
 	resp, err := v.client.Do(req)
 	if err != nil {
 		log.Printf("jwks fetch err: %v", err)
-		return
+		return fmt.Errorf("jwks fetch: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("jwks fetch status %d", resp.StatusCode)
-		return
+		return fmt.Errorf("jwks fetch status %d", resp.StatusCode)
 	}
 
 	var jwks struct {
@@ -220,7 +239,7 @@ func (v *SupabaseVerifier) fetchJWKS(ctx context.Context) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
 		log.Printf("jwks decode err: %v", err)
-		return
+		return fmt.Errorf("jwks decode: %w", err)
 	}
 
 	newCache := make(map[string]interface{})
@@ -256,4 +275,5 @@ func (v *SupabaseVerifier) fetchJWKS(ctx context.Context) {
 	v.keys = newCache
 	v.expires = time.Now().Add(v.jwksTTL)
 	log.Printf("jwks: loaded %d keys (ttl=%v)", len(v.keys), v.jwksTTL)
+	return nil
 }
