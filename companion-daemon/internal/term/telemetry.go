@@ -94,7 +94,7 @@ func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[s
 // StartTelemetryLoop runs background telemetry sampling. Returns a channel that
 // closes when the goroutine has exited. The caller should cancel ctx to request
 // a stop, then wait on the returned channel (with a deadline).
-func StartTelemetryLoop(ctx context.Context, reg *mux.Registry, events EventStore) <-chan struct{} {
+func StartTelemetryLoop(ctx context.Context, reg *mux.Registry, events EventStore, links LinkStore) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -139,10 +139,12 @@ func StartTelemetryLoop(ctx context.Context, reg *mux.Registry, events EventStor
 				var logErr error = fmt.Errorf("no log")
 
 				// 1. LinkedLogResolver (Explicit Links)
-				if link, ok := GetLink(s, reg); ok && !link.Stale {
-					if link.Provider == "gemini-antigravity" {
-						res := &AntigravityResolver{}
-						logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
+				if links != nil {
+					if link, ok := GetLink(s, reg, links); ok && !link.Stale {
+						if link.Provider == "gemini-antigravity" {
+							res := &AntigravityResolver{}
+							logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
+						}
 					}
 				}
 

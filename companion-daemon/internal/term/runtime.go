@@ -34,6 +34,7 @@ type Handlers struct {
 	Registry *mux.Registry
 	Verifier TokenVerifier // may be nil if auth is not configured
 	Events   EventStore    // agent event storage (never nil in production)
+	Links    LinkStore     // session link storage (never nil in production)
 }
 
 // AuthMiddleware returns an HTTP middleware that validates JWT tokens using

@@ -74,6 +74,7 @@ type App struct {
 	registry *mux.Registry
 	server   *http.Server
 	events   term.EventStore // agent event storage
+	links    term.LinkStore  // session link storage
 
 	// IPC path is owned by App so Shutdown can clean it up.
 	ipcPath string
@@ -103,9 +104,15 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	reg.Register(mux.NewTmuxAdapter())
 
 	events := term.NewMemoryEventStore()
-
-	if err := term.LoadLinks(reg, events); err != nil {
-		log.Printf("Failed to load session links: %v", err)
+	links, linkErr := term.NewFileLinkStore()
+	if linkErr != nil {
+		log.Printf("Failed to create link store: %v (links disabled)", linkErr)
+		links = nil
+	}
+	if links != nil {
+		if err := term.LoadLinks(reg, links); err != nil {
+			log.Printf("Failed to load session links: %v", err)
+		}
 	}
 
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).
@@ -117,7 +124,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			InsecureLocalOnly:  cfg.InsecureLocalOnly,
 		})
 	}
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events}
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
@@ -157,6 +164,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		registry: reg,
 		server:   &http.Server{Addr: addr, Handler: serveMux},
 		events:   events,
+		links:    links,
 		ipcPath:  "/tmp/pokit.sock",
 	}, nil
 }
@@ -167,7 +175,7 @@ func (a *App) Run(ctx context.Context) error {
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
 	a.telemetryCancel = cancelTelemetry
-	a.telemetryDone = term.StartTelemetryLoop(telemetryCtx, a.registry, a.events)
+	a.telemetryDone = term.StartTelemetryLoop(telemetryCtx, a.registry, a.events, a.links)
 
 	a.watcher = a.startWatcher()
 
@@ -303,7 +311,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry, a.events)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links)
 }
 
 func (a *App) startTunnel() tunnelResource {

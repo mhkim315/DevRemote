@@ -18,7 +18,7 @@ func TestIPCServer_Lifecycle(t *testing.T) {
 	socketPath := filepath.Join(dir, "test.sock")
 	reg := mux.NewRegistry()
 
-	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore())
+	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestIPCServer_CloseIdempotent(t *testing.T) {
 	socketPath := filepath.Join(dir, "test.sock")
 	reg := mux.NewRegistry()
 
-	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore())
+	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestIPCServer_RebindAfterClose(t *testing.T) {
 	socketPath := filepath.Join(dir, "test.sock")
 	reg := mux.NewRegistry()
 
-	srv1, err := StartIPCServer(socketPath, reg, NewMemoryEventStore())
+	srv1, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("first StartIPCServer failed: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestIPCServer_RebindAfterClose(t *testing.T) {
 	// Remove the socket so we can rebind.
 	os.Remove(socketPath)
 
-	srv2, err := StartIPCServer(socketPath, reg, NewMemoryEventStore())
+	srv2, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("second StartIPCServer failed: %v", err)
 	}

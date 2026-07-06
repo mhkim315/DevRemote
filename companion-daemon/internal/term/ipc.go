@@ -24,11 +24,12 @@ type IPCServer struct {
 	closeErr  error
 	reg       *mux.Registry
 	events    EventStore
+	links     LinkStore
 }
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore) (*IPCServer, error) {
 	// Clean up old socket if it exists
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
@@ -48,6 +49,7 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore) (*I
 		done:     make(chan struct{}),
 		reg:      reg,
 		events:   events,
+		links:    links,
 	}
 
 	go srv.serve()
@@ -66,7 +68,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events)
+		go handleIPCConnection(conn, s.reg, s.events, s.links)
 	}
 }
 
@@ -89,7 +91,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -124,20 +126,20 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore) {
 				Provider:          req.Provider,
 				ExternalSessionID: req.ExternalSessionID,
 			}
-			if err := LinkSession(link, reg, events); err != nil {
+			if err := LinkSession(link, reg, links, events); err != nil {
 				conn.Write([]byte(fmt.Sprintf("error linking: %v\n", err)))
 			} else {
 				conn.Write([]byte("linked\n"))
 			}
 		} else if req.Operation == "unlink" {
-			if err := UnlinkSession(req.SessionID, reg, events); err != nil {
+			if err := UnlinkSession(req.SessionID, reg, links, events); err != nil {
 				conn.Write([]byte(fmt.Sprintf("error unlinking: %v\n", err)))
 			} else {
 				conn.Write([]byte("unlinked\n"))
 			}
 		} else if req.Operation == "links" {
-			links := GetAllLinks()
-			json.NewEncoder(conn).Encode(links)
+			allLinks := GetAllLinks(links)
+			json.NewEncoder(conn).Encode(allLinks)
 		} else {
 			conn.Write([]byte("unknown operation\n"))
 		}

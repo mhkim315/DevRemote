@@ -377,7 +377,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 	app.ipcPath = socketPath
 
-	srv, err := term.StartIPCServer(socketPath, app.registry, nilEvents())
+	srv, err := term.StartIPCServer(socketPath, app.registry, nilEvents(), term.NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 
 	// Rebind without manual Remove.
-	srv2, err := term.StartIPCServer(socketPath, app.registry, nilEvents())
+	srv2, err := term.StartIPCServer(socketPath, app.registry, nilEvents(), term.NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
