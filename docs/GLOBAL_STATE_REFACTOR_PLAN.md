@@ -9,6 +9,7 @@
 - Phase 1 보완 시도: `398a319` — 재검증 REJECT
 - Context 주입 보완 시도: `3a08d38` — 전체 race test FAIL, 재검증 REJECT
 - 안전 주입 보완 시도: `590d62c` — 핵심 구조 PASS, CRUD/context/검사 마무리 필요
+- CRUD/context 보완 시도: `821e3ea` — error 무시와 acceptance test 누락으로 REJECT
 - 목적: 현재 동작하는 tmux/cmux 모바일 E2E를 보존하면서 mutable package global을
   명시적인 객체 수명과 의존성 주입 구조로 전환한다.
 - 구현 담당: 후속 작업 에이전트
@@ -68,6 +69,8 @@ Decision: REJECT
 - `docs/PHASE1_CONTEXT_INJECTION_REVIEW.md`
 - `docs/PHASE1_EXECUTOR_INSTRUCTIONS.md`
 - `docs/PHASE1_590D62C_REVIEW.md`
+- `docs/PHASE1_821E3EA_REVIEW.md`
+- `docs/PHASE1_821E3EA_FINAL_FIX_GUIDE.md`
 
 `49912f2`의 `Registry` 타입 자체는 재사용할 수 있다. 그러나 package-level
 `mux.Default`와 그것을 참조하는 production/test call site는 전부 제거해야 한다.
