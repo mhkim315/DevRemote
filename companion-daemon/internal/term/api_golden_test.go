@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,14 +36,12 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 	// Verify raw JSON keys. Missing/renamed keys would still produce zero values
 	// after Go unmarshal, so we check raw body for expected field names.
 	raw := rec.Body.String()
-	requiredKeys := []string{`"id"`, `"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"adapter"`, `"events"`}
+	requiredKeys := []string{`"id"`, `"displayId"`, `"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"adapter"`, `"capabilities"`, `"events"`}
 	for _, k := range requiredKeys {
 		if !strings.Contains(raw, k) {
 			t.Errorf("GET /api/sessions: JSON missing key %s", k)
 		}
 	}
-	// Optional omitempty fields: stale, lastSuccessAt, lastError — present only when non-zero.
-	// We verify they don't appear unexpectedly for a healthy session.
 
 	var sessions []SessionTelemetry
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
@@ -56,10 +55,15 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 			if s.Adapter != "tmux" {
 				t.Errorf("adapter = %q, want tmux", s.Adapter)
 			}
+			if s.DisplayID != "golden" {
+				t.Errorf("displayId = %q, want 'golden'", s.DisplayID)
+			}
+			if len(s.Capabilities) == 0 {
+				t.Error("capabilities is empty")
+			}
 			if s.State == "" {
 				t.Error("state is empty")
 			}
-			// Healthy session without lastError should not have stale=true.
 			if s.Stale {
 				t.Error("stale is true for healthy golden session")
 			}
@@ -130,9 +134,9 @@ func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
 
 	h.HandleSessionsAPI(rec, req)
 
-	// History for a session without events and without ScreenReader → 404.
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("GET /api/sessions?history=tmux:golden (no events): status = %d, want 404", rec.Code)
+	// Golden session has ScreenReader capability → history falls back to screen content.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/sessions?history=tmux:golden: status = %d, want 200 (screen fallback)", rec.Code)
 	}
 }
 
@@ -194,9 +198,20 @@ func goldenHandlers(t *testing.T) *Handlers {
 
 type goldenSession struct{}
 
-func (s *goldenSession) ID() string          { return "golden" }
-func (s *goldenSession) Title() string       { return "Golden Session" }
-func (s *goldenSession) AdapterName() string { return "tmux" }
+func (s *goldenSession) ID() string                                     { return "golden" }
+func (s *goldenSession) Title() string                                  { return "Golden Session" }
+func (s *goldenSession) AdapterName() string                            { return "tmux" }
+func (s *goldenSession) ReadScreen(ctx context.Context) ([]byte, error) { return []byte("screen"), nil }
+func (s *goldenSession) OpenStream(ctx context.Context) (mux.TerminalStream, error) {
+	return &goldenStream{}, nil
+}
+
+type goldenStream struct{}
+
+func (s *goldenStream) Read(p []byte) (int, error)  { return 0, io.EOF }
+func (s *goldenStream) Write(p []byte) (int, error) { return len(p), nil }
+func (s *goldenStream) Close() error                { return nil }
+func (s *goldenStream) Resize(rows, cols int) error { return nil }
 
 type goldenAdapter struct {
 	sessions []mux.Session

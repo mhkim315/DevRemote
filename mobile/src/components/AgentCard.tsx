@@ -14,11 +14,13 @@ export interface AgentEvent {
 
 export interface SessionTelemetry {
   id: string;
+  displayId?: string;
   state: 'idle' | 'thinking' | 'working' | 'waiting';
   load: number;
   runner?: string;
   runnerColor?: string;
   adapter?: string;
+  capabilities?: string[];
   isAddBtn?: boolean;
   events?: AgentEvent[];
 }
@@ -84,7 +86,7 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
             {session.adapter && session.adapter !== 'native' && (
               <Text style={styles.adapterTag}>[{session.adapter}]</Text>
             )}
-            <Text style={styles.sessionName} numberOfLines={1}>{session.id.replace(/^(tmux|cmux):/, '')}</Text>
+            <Text style={styles.sessionName} numberOfLines={1}>{session.displayId || session.id.replace(/^(tmux|cmux):/, '')}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             {needsApproval && (
