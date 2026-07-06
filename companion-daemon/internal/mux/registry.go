@@ -34,11 +34,17 @@ func NewRegistry(adapters ...Adapter) *Registry {
 	return r
 }
 
-// Register adds an adapter. Sessions are refreshed on first access.
-func (r *Registry) Register(adapter Adapter) {
+// Register adds an adapter. Returns ErrDuplicateAdapter if an adapter with
+// the same name is already registered.
+func (r *Registry) Register(adapter Adapter) error {
+	name := adapter.Name()
 	r.adaptersMu.Lock()
-	r.adapters[adapter.Name()] = adapter
-	r.adaptersMu.Unlock()
+	defer r.adaptersMu.Unlock()
+	if _, exists := r.adapters[name]; exists {
+		return fmt.Errorf("%w: %s", ErrDuplicateAdapter, name)
+	}
+	r.adapters[name] = adapter
+	return nil
 }
 
 // CreateSession delegates to the named adapter and invalidates the cache on success.

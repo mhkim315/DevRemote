@@ -2,9 +2,21 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"devremote/companion-daemon/internal/models"
+)
+
+// Sentinel errors for adapter operations. Handlers use errors.Is to distinguish
+// not-found, unavailable, unsupported, and timeout conditions.
+var (
+	ErrSessionNotFound    = errors.New("session not found")
+	ErrAdapterUnavailable = errors.New("adapter unavailable")
+	ErrUnsupported        = errors.New("operation not supported by adapter")
+	ErrTimeout            = errors.New("operation timed out")
+	ErrInvalidSessionID   = errors.New("invalid session ID")
+	ErrDuplicateAdapter   = errors.New("duplicate adapter name")
 )
 
 // Session represents an abstract terminal session that can be viewed and controlled remotely.

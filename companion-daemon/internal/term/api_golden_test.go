@@ -70,9 +70,8 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 	}
 }
 
-func TestAPIGolden_PostCreateSession_ReturnsLocalID(t *testing.T) {
-	// Phase 0 baseline: POST create returns LOCAL ID (not canonical).
-	// This is accidental behavior. Phase 1 will change to canonical.
+func TestAPIGolden_PostCreateSession_ReturnsCanonicalID(t *testing.T) {
+	// Phase 1: POST create returns CANONICAL ID (<adapter>:<local-id>).
 	h := goldenHandlers(t)
 
 	body := strings.NewReader(`{"id":"tmux:test","runner":"claude","runnerColor":"#58a6ff"}`)
@@ -95,10 +94,9 @@ func TestAPIGolden_PostCreateSession_ReturnsLocalID(t *testing.T) {
 	if resp.Status != "ok" {
 		t.Errorf("status = %q, want ok", resp.Status)
 	}
-	// CURRENT BEHAVIOR: returns local ID "test", not canonical "tmux:test".
-	// This is accidental. Phase 1 will change this to "tmux:test".
-	if resp.ID != "test" {
-		t.Errorf("id = %q, want \"test\" (current local-ID behavior; Phase 1 will canonicalize)", resp.ID)
+	// Phase 1: canonical ID includes adapter prefix.
+	if resp.ID != "tmux:test" {
+		t.Errorf("id = %q, want canonical \"tmux:test\"", resp.ID)
 	}
 }
 

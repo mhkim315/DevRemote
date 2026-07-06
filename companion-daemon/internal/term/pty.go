@@ -60,7 +60,8 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
-			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, createdID)))
+			canonicalID := mux.SessionRef{Adapter: adapterName, LocalID: createdID, RawID: createdID}.Canonical()
+			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
 			return
 		}
 
