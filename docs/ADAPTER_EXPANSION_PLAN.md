@@ -263,6 +263,18 @@ test: lock terminal adapter behavior matrix
 
 ## 6. 단계 운영 규칙
 
+역할은 분리한다.
+
+- 실행 에이전트는 승인된 Phase만 구현하고 커밋을 제출한다.
+- 검증 에이전트는 실행 커밋을 독립적으로 검토하고 테스트하며 검증 문서에 코멘트를
+  남긴다.
+- 이 문서를 이어받는 다음 세션의 에이전트는 검증 에이전트다.
+- 검증 에이전트는 사용자가 명시적으로 역할을 변경하지 않는 한 구현을 대신하지 않는다.
+- REJECT 판정 시 검증 에이전트는 파일/line, 재현 근거, 기대 동작, 수정 방법을 포함한
+  corrective guide를 커밋·푸시한다.
+- 실행 에이전트는 해당 corrective guide를 반영한 새 커밋을 제출한다.
+- 검증 에이전트가 ACCEPT를 문서화하기 전에는 다음 Phase를 시작하지 않는다.
+
 각 Phase는 별도 커밋으로 제출하며 다음 Phase 구현 전에 검증 판정을 받는다.
 
 ```text
@@ -310,4 +322,3 @@ npx tsc --noEmit
 - adapter 장애 격리, stale cache, diagnostics가 자동 검증된다.
 - 실제 세 번째 backend가 feature flag 아래에서 최소 read/write vertical slice를 통과한다.
 - 기존 모바일 실기기 tmux/cmux 양방향 동작에 회귀가 없다.
-

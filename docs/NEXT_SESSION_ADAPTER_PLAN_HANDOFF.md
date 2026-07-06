@@ -1,5 +1,35 @@
 # Next Session Handoff — Adapter Expansion Plan Verification
 
+## 역할 분담 — 반드시 유지
+
+이 작업에는 두 역할이 존재한다.
+
+- **실행 에이전트**: 승인된 계획에 따라 각 Phase를 구현하고 커밋을 제출한다.
+- **검증 에이전트**: 현재 문서를 읽는 다음 세션의 에이전트다. 구현을 대신 진행하지
+  않고 실행 에이전트의 결과를 독립적으로 검증한다.
+
+다음 세션의 너는 **검증 에이전트**다. 사용자가 별도로 역할 변경을 지시하지 않는 한
+실행 에이전트 역할로 전환하면 안 된다.
+
+검증 에이전트의 책임:
+
+1. 실행 에이전트가 제시한 커밋과 그 부모 커밋의 diff를 모두 읽는다.
+2. 계획의 해당 Phase 범위, 금지 사항, 합격 기준을 항목별로 대조한다.
+3. 구현 주장이나 자체 테스트 결과를 그대로 신뢰하지 않고 직접 재현한다.
+4. `go vet`, 전체 test, race test와 Phase별 targeted test를 직접 실행한다.
+5. 실제 tmux/cmux 동작에 영향이 있으면 host integration과 모바일 smoke 필요 여부를
+   명시한다.
+6. 하드코딩, silent fallback, 오류 은폐, stale cache 파괴, canonical ID 회귀,
+   reconnect storm 가능성을 꼼꼼히 검색한다.
+7. 발견 사항에는 심각도, 코드 파일/line, 재현 방법, 기대 동작, 수정 방향을 적는다.
+8. 검증 결과와 실행 에이전트에게 전달할 구체적인 수정 지시를 **문서 코멘트로 남긴다**.
+9. 검증 문서도 커밋하고 원격 브랜치에 푸시해 실행 에이전트가 확인할 수 있게 한다.
+10. REJECT이면 다음 Phase 진행을 허용하지 않는다. ACCEPT일 때만 다음 Phase를 안내한다.
+
+검증 에이전트는 단순히 테스트 통과 여부만 확인하지 않는다. 구조가 확장 목표에 실제로
+가까워졌는지, 세 번째 adapter 추가 시 기존 파일을 수정하게 만드는 새 결합이 생기지
+않았는지까지 판단한다.
+
 ## 요청
 
 새 대화에서는 구현하지 말고 `docs/ADAPTER_EXPANSION_PLAN.md`를 먼저 객관적으로
@@ -74,6 +104,38 @@ Compatibility review:
 Required document edits:
 ```
 
+실행 커밋 검증 시에는 별도 검증 코멘트를 아래 형식으로 작성한다.
+
+```text
+Phase:
+Executor commit:
+Verifier decision: ACCEPT | REJECT
+
+Scope verification:
+Contract verification:
+Backward compatibility:
+Automated verification:
+Host/mobile verification:
+
+Findings:
+- [P0|P1|P2] file:line — 문제, 근거, 재현, 요구 수정
+
+Required executor actions:
+1. ...
+
+Deferred items:
+- ...
+
+Next phase permission: ALLOWED | BLOCKED
+```
+
+검증 코멘트 권장 파일명:
+
+```text
+docs/ADAPTER_PHASE_<N>_VERIFICATION.md
+docs/ADAPTER_PHASE_<N>_CORRECTIVE_GUIDE.md
+```
+
 ## 주의할 현재 코드 사실
 
 - `term/pty.go`에는 tmux fallback과 tmux 이름 기반 initial snapshot 분기가 남아 있다.
@@ -92,4 +154,3 @@ Required document edits:
 3. 계획에 대한 판정 보고
 4. 필요한 경우 `ADAPTER_EXPANSION_PLAN.md`만 보완
 5. 사용자가 명시적으로 승인하기 전 Phase 0 구현 금지
-
