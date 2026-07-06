@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"devremote/companion-daemon/internal/models"
-	"devremote/companion-daemon/internal/mux"
 )
 
 type SessionLink struct {
@@ -64,7 +63,7 @@ func LoadLinks() error {
 	var migrated bool
 	// Validate and detect stale links
 	for i, link := range links {
-		newID := mux.MigrateLegacyID(link.SessionID)
+		newID := MigrateLegacyID(link.SessionID)
 		if newID != link.SessionID {
 			migrated = true
 			link.SessionID = newID
@@ -72,7 +71,7 @@ func LoadLinks() error {
 		}
 
 		// Verify if the session still matches the expected title
-		sess, err := mux.Default.FindSession(link.SessionID)
+		sess, err := FindSession(link.SessionID)
 		if err == nil {
 			if sess.Title() != link.SessionTitle {
 				links[i].Stale = true
@@ -132,10 +131,10 @@ func saveLinksLocked() error {
 }
 
 func LinkSession(link SessionLink) error {
-	link.SessionID = mux.MigrateLegacyID(link.SessionID)
+	link.SessionID = MigrateLegacyID(link.SessionID)
 
 	// First fetch the session to get the current title and avoid stale mismatches
-	sess, err := mux.Default.FindSession(link.SessionID)
+	sess, err := FindSession(link.SessionID)
 	if err == nil {
 		link.SessionTitle = sess.Title()
 	}
@@ -156,7 +155,7 @@ func LinkSession(link SessionLink) error {
 }
 
 func UnlinkSession(sessionID string) error {
-	sessionID = mux.MigrateLegacyID(sessionID)
+	sessionID = MigrateLegacyID(sessionID)
 
 	linkerMu.Lock()
 	delete(sessionLinks, sessionID)
@@ -174,14 +173,14 @@ func UnlinkSession(sessionID string) error {
 }
 
 func GetLink(sessionID string) (SessionLink, bool) {
-	sessionID = mux.MigrateLegacyID(sessionID)
+	sessionID = MigrateLegacyID(sessionID)
 
 	linkerMu.RLock()
 	defer linkerMu.RUnlock()
 	l, ok := sessionLinks[sessionID]
 	// Check if we need to evaluate staleness dynamically
 	if ok && !l.Stale {
-		sess, err := mux.Default.FindSession(sessionID)
+		sess, err := FindSession(sessionID)
 		if err == nil && sess.Title() != l.SessionTitle {
 			l.Stale = true
 		}

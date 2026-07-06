@@ -36,10 +36,6 @@ func NewRegistry(adapters ...Adapter) *Registry {
 	return r
 }
 
-// Default is the transitional package-level registry.
-// It is set by main() during startup. Tests create their own Registry.
-var Default = NewRegistry()
-
 // Register adds an adapter and immediately refreshes its session list.
 func (r *Registry) Register(adapter Adapter) {
 	r.adaptersMu.Lock()

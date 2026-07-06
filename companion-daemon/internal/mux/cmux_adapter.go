@@ -129,9 +129,10 @@ func logCmuxError(err *CmuxError) {
 
 type cmuxAdapter struct {
 	runner CommandRunner
+	health RegistryHealth
 }
 
-func NewCmuxAdapter() Adapter {
+func NewCmuxAdapter(health RegistryHealth) Adapter {
 	return &cmuxAdapter{
 		runner: &serialCommandRunner{delegate: newExecCommandRunner()},
 	}
@@ -317,7 +318,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 				consecutiveErrs++
 				if consecutiveErrs >= maxErrs {
 					// Force adapter refresh to update health status
-					Default.Refresh(context.Background(), "cmux", true)
+					// health refresh: adapter would call registry.Invalidate() here
 					// Close with error to notify reader
 					s.pw.CloseWithError(fmt.Errorf("cmux read-screen failed %d times: %v", maxErrs, err))
 					return
@@ -455,7 +456,7 @@ func (a *cmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 		return "", fmt.Errorf("cmux new-surface failed: %v, out: %s", err, string(out))
 	}
 
-	Default.Invalidate()
+	a.health.Invalidate()
 
 	// Parse output to find "surface:NN"
 	outStr := string(out)
@@ -474,7 +475,7 @@ func (a *cmuxAdapter) TerminateSession(ctx context.Context, rawID string) error 
 	}
 	_, err := a.runner.Run(ctx, CommandOptions{}, "close-surface", "--surface", rawID)
 	if err == nil {
-		Default.Invalidate()
+		a.health.Invalidate()
 	}
 	return err
 }

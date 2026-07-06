@@ -94,6 +94,13 @@ type CreateOptions struct {
 	Command     string
 }
 
+// RegistryHealth is the minimal callback interface an adapter needs to
+// report session list changes without depending on the concrete Registry type.
+type RegistryHealth interface {
+	Refresh(ctx context.Context, name string, force bool) (AdapterSnapshot, error)
+	Invalidate()
+}
+
 // Adapter defines the interface for different session backends (Native, cmux, tmux)
 type Adapter interface {
 	// Name returns the identifier of this adapter (e.g., "native", "cmux", "tmux")

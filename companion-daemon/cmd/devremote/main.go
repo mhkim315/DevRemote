@@ -71,9 +71,11 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// 0. Register adapters (init() removed in Phase 1 refactor)
-	mux.Default.Register(mux.NewCmuxAdapter())
-	mux.Default.Register(mux.NewTmuxAdapter())
+	// 0. Create Registry and Runtime
+	reg := mux.NewRegistry()
+	term.R = &term.Runtime{Registry: reg}
+	reg.Register(mux.NewCmuxAdapter(reg))
+	reg.Register(mux.NewTmuxAdapter(reg))
 
 	// 1. Core Endpoints
 	if err := term.LoadLinks(); err != nil {

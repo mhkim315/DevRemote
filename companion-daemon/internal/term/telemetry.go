@@ -103,8 +103,8 @@ func StartTelemetryLoop(ctx context.Context) {
 			}
 
 			// 1. Gather sessions and build process snapshots
-			sessions := mux.Default.Sessions(context.Background())
-			processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, mux.Default.Adapters())
+			sessions := Sessions(context.Background())
+			processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, R.Registry.Adapters())
 
 			telemetryMu.Lock()
 			// Clean up old sessions
@@ -335,7 +335,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		// Fallback to adapter's capability for history reading
 		var out []byte
 		var err error
-		sess, err := mux.Default.FindSession(mux.MigrateLegacyID(historyID))
+		sess, err := FindSession(MigrateLegacyID(historyID))
 		if err == nil {
 			if hr, ok := sess.(mux.HistoryReader); ok {
 				out, err = hr.ReadHistory(context.Background(), 10000)
@@ -361,7 +361,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	res := make([]SessionTelemetry, 0)
 
-	sessions := mux.Default.Sessions(context.Background())
+	sessions := Sessions(context.Background())
 
 	// Collect telemetry data under lock
 	telemetryMu.Lock()
@@ -376,7 +376,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sessions {
 		compoundID := s.AdapterName() + ":" + s.ID()
 
-		snap, _ := mux.Default.Snapshot(s.AdapterName())
+		snap, _ := R.Registry.Snapshot(s.AdapterName())
 		var errStr string
 		if snap.LastError != nil {
 			errStr = snap.LastError.Error()

@@ -64,14 +64,16 @@ func (a *mockAdapter) CreateSession(ctx context.Context, opts mux.CreateOptions)
 func (a *mockAdapter) TerminateSession(ctx context.Context, id string) error { return nil }
 
 func TestHandleWS_CloseCode1011(t *testing.T) {
+	reg := mux.NewRegistry()
+	R = &Runtime{Registry: reg}
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},
 	}
 	adapter := &mockAdapter{session: mockSess}
-	mux.Default.Register(adapter)
-	mux.Default.Invalidate()
-	mux.Default.Sessions(context.Background()) // Force cache population
+	reg.Register(adapter)
+
+
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=mock:test"
@@ -111,14 +113,16 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 }
 
 func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
+	reg := mux.NewRegistry()
+	R = &Runtime{Registry: reg}
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},
 	}
 	adapter := &mockAdapter{session: mockSess}
-	mux.Default.Register(adapter)
-	mux.Default.Invalidate()
-	mux.Default.Sessions(context.Background())
+	reg.Register(adapter)
+
+
 
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -162,3 +166,4 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 		t.Fatal("output producer remained blocked after disconnect")
 	}
 }
+func testRegistry() *mux.Registry { return mux.NewRegistry() }
