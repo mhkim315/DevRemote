@@ -3,6 +3,8 @@ package term
 import (
 	"context"
 	"errors"
+	"log"
+	"net/http"
 
 	"devremote/companion-daemon/internal/mux"
 )
@@ -30,4 +32,23 @@ func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
 // rather than hidden behind context extraction or package globals.
 type Handlers struct {
 	Registry *mux.Registry
+	Verifier TokenVerifier // may be nil if auth is not configured
+}
+
+// AuthMiddleware returns an HTTP middleware that validates JWT tokens using
+// the configured TokenVerifier. If no verifier is set, all requests are rejected.
+func (h *Handlers) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.Verifier == nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		token := ExtractToken(r)
+		if err := h.Verifier.Verify(r.Context(), token); err != nil {
+			log.Printf("Auth failed for %s: %v", r.URL.Path, err)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }

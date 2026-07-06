@@ -153,8 +153,6 @@ func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
 
 func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	// Not Parallel — NewApp sets term.OnApproval global.
-	term.InsecureLocalOnly = true
-
 	regA := mux.NewRegistry()
 	regB := mux.NewRegistry()
 
@@ -173,20 +171,20 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	regA.Register(adapterA)
 	regB.Register(adapterB)
 
-	hA := &term.Handlers{Registry: regA}
-	hB := &term.Handlers{Registry: regB}
+	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier()}
+	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier()}
 
 	if hA.Registry == hB.Registry {
 		t.Fatal("expected different registries")
 	}
 
 	muxA := http.NewServeMux()
-	muxA.HandleFunc("/api/sessions", term.AuthMiddleware(hA.HandleSessionsAPI))
+	muxA.HandleFunc("/api/sessions", hA.AuthMiddleware(hA.HandleSessionsAPI))
 	srvA := httptest.NewServer(muxA)
 	defer srvA.Close()
 
 	muxB := http.NewServeMux()
-	muxB.HandleFunc("/api/sessions", term.AuthMiddleware(hB.HandleSessionsAPI))
+	muxB.HandleFunc("/api/sessions", hB.AuthMiddleware(hB.HandleSessionsAPI))
 	srvB := httptest.NewServer(muxB)
 	defer srvB.Close()
 
@@ -235,8 +233,6 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	// Verify shutdown order: HTTP → telemetry → watcher → IPC.
 	// HTTP shutdown is verified by checking the listener is closed after Shutdown.
 	// telemetry/watcher/IPC order is verified via the recorder.
-	term.InsecureLocalOnly = true
-
 	var order []string
 
 	cfg := Config{InsecureLocalOnly: true}
@@ -315,8 +311,6 @@ func TestApp_ShutdownOrder(t *testing.T) {
 
 func TestApp_ShutdownContinuesAfterError(t *testing.T) {
 	// When one resource errors, subsequent resources are still cleaned up.
-	term.InsecureLocalOnly = true
-
 	var order []string
 	watcherCloseErr := errors.New("watcher close failed")
 
@@ -348,8 +342,6 @@ func TestApp_ShutdownContinuesAfterError(t *testing.T) {
 
 func TestApp_ShutdownRespectsDeadline(t *testing.T) {
 	// A blocking IPC Wait must respect the shutdown deadline.
-	term.InsecureLocalOnly = true
-
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{})
 	if err != nil {
@@ -410,8 +402,6 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 }
 
 func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
-	term.InsecureLocalOnly = true
-
 	tunnelStarted := false
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
@@ -445,8 +435,6 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 }
 
 func TestApp_TunnelStartedInProductionMode(t *testing.T) {
-	term.InsecureLocalOnly = true
-
 	tunnelStarted := false
 	cfg := Config{InsecureLocalOnly: false}
 	app, err := NewAppWithDeps(cfg, Dependencies{
@@ -480,8 +468,6 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 
 func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 	// Cancel before Run starts → clean shutdown, nil return.
-	term.InsecureLocalOnly = true
-
 	// Use httptest to get a unique port, then use it for the app.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	addr := ts.Listener.Addr().String()
@@ -510,8 +496,6 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 
 func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 	// A non-ErrServerClosed serve error must be preserved by Run.
-	term.InsecureLocalOnly = true
-
 	// Use httptest to get a unique port.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	addr := ts.Listener.Addr().String()
@@ -552,8 +536,6 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 
 func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 	// Both serve and shutdown errors must be present via errors.Is.
-	term.InsecureLocalOnly = true
-
 	shutdownErr := errors.New("shutdown-ipc-failed")
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -598,8 +580,6 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 }
 
 func TestApp_TunnelShutdownSignalsAndWaits(t *testing.T) {
-	term.InsecureLocalOnly = true
-
 	var order []string
 	tun := &fakeTunnel{
 		done:    make(chan struct{}),
@@ -641,8 +621,6 @@ func TestApp_TunnelShutdownSignalsAndWaits(t *testing.T) {
 func TestApp_TunnelAlreadyExitedSkipsSignal(t *testing.T) {
 	// When the tunnel already exited, Signal returns os.ErrProcessDone
 	// which must be ignored (not treated as a shutdown error).
-	term.InsecureLocalOnly = true
-
 	var order []string
 	tun := &fakeTunnel{
 		done:      make(chan struct{}),
@@ -671,6 +649,11 @@ func TestApp_TunnelAlreadyExitedSkipsSignal(t *testing.T) {
 	if idx := indexOf(order, "tunnel:signal"); idx < 0 {
 		t.Error("tunnel was not signalled")
 	}
+}
+
+// insecureVerifier returns a verifier that accepts empty tokens (insecure mode).
+func insecureVerifier() term.TokenVerifier {
+	return term.NewSupabaseVerifier(term.AuthConfig{InsecureLocalOnly: true})
 }
 
 // ── Helpers ──

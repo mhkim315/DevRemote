@@ -1,134 +1,17 @@
 package term
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net/http"
 	"sync"
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
-
-// OwnerUUID is set by the daemon on startup. All JWT tokens must have this sub claim.
-var OwnerUUID string
-
-// SupabaseProjectRef is the Supabase project reference (e.g. "abcdefghijklmnop").
-// Used to dynamically fetch the JWKS public key for RS256 token verification.
-var SupabaseProjectRef string
-
-var InsecureLocalOnly bool
-
-// VerifyToken validates a Supabase JWT using RS256 (JWKS) or HS256 (dev fallback).
-// It also checks that the token's sub claim matches the configured OwnerUUID.
-func VerifyToken(tokenString string) bool {
-	if tokenString == "" {
-		if InsecureLocalOnly {
-			log.Println("WARN: empty token allowed due to --insecure-local-only")
-			return true
-		}
-		return false
-	}
-
-	// Dev mode: accept any token without signature verification ONLY if explicitly enabled
-	if InsecureLocalOnly {
-		parser := jwt.NewParser()
-		token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-		if err != nil {
-			log.Printf("JWT parse err (dev): %v", err)
-			return false
-		}
-		if token != nil {
-			sub, _ := token.Claims.(jwt.MapClaims)["sub"]
-			log.Printf("WARN: accepted unverified token in insecure mode (sub=%v)", sub)
-			return true
-		}
-		return false
-	}
-
-	// Production mode: fail closed if required config is missing
-	if OwnerUUID == "" || SupabaseProjectRef == "" {
-		log.Printf("ERR: Missing OwnerUUID or SupabaseProjectRef in production mode")
-		return false
-	}
-
-	// Production mode: verify signature via Supabase JWKS
-	keyFunc := func(token *jwt.Token) (interface{}, error) {
-		alg := token.Header["alg"]
-
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); ok {
-			if SupabaseProjectRef == "" {
-				return nil, fmt.Errorf("RS256 requires SupabaseProjectRef")
-			}
-			kid, _ := token.Header["kid"].(string)
-			return fetchJWKSKey(SupabaseProjectRef, kid)
-		}
-		if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
-			if SupabaseProjectRef == "" {
-				return nil, fmt.Errorf("ES256 requires SupabaseProjectRef")
-			}
-			kid, _ := token.Header["kid"].(string)
-			return fetchJWKSKey(SupabaseProjectRef, kid)
-		}
-
-		return nil, fmt.Errorf("unsupported signing method: %v", alg)
-	}
-
-	token, err := jwt.Parse(tokenString, keyFunc)
-	if err != nil {
-		log.Printf("WS pty start err: %v", err)
-		log.Printf("JWT parse err: %v", err)
-		return false
-	}
-
-	if !token.Valid {
-		return false
-	}
-
-	// Check issuer
-	iss, _ := token.Claims.GetIssuer()
-	expectedIss := "https://" + SupabaseProjectRef + ".supabase.co/auth/v1"
-	if iss != expectedIss {
-		log.Printf("JWT rejected: invalid issuer %q", iss)
-		return false
-	}
-
-	// Check audience
-	aud, _ := token.Claims.GetAudience()
-	validAud := false
-	for _, a := range aud {
-		if a == "authenticated" {
-			validAud = true
-			break
-		}
-	}
-	if !validAud {
-		log.Printf("JWT rejected: invalid audience %v", aud)
-		return false
-	}
-
-	// Check owner UUID
-	sub, _ := token.Claims.GetSubject()
-	if sub == "" {
-		log.Printf("JWT rejected: missing sub claim")
-		return false
-	}
-	if sub != OwnerUUID {
-		log.Printf("JWT rejected: sub=%q != owner=%q", sub, OwnerUUID)
-		return false
-	}
-
-	return true
-}
 
 func (h *Handlers) HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
@@ -143,18 +26,6 @@ func ExtractToken(r *http.Request) string {
 		return token[7:]
 	}
 	return r.URL.Query().Get("token")
-}
-
-func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := ExtractToken(r)
-		if !VerifyToken(token) {
-			log.Printf("Auth failed for %s", r.URL.Path)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
-	}
 }
 
 func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
@@ -219,91 +90,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", 405)
-}
-
-var (
-	jwksCache       map[string]interface{}
-	jwksCacheExpiry time.Time
-	jwksCacheMu     sync.Mutex
-)
-
-func fetchJWKSKey(projectRef, kid string) (interface{}, error) {
-	jwksCacheMu.Lock()
-	defer jwksCacheMu.Unlock()
-
-	needsFetch := jwksCache == nil || time.Now().After(jwksCacheExpiry)
-	if !needsFetch {
-		if _, ok := jwksCache[kid]; !ok {
-			needsFetch = true
-		}
-	}
-
-	if needsFetch {
-		url := fmt.Sprintf("https://%s.supabase.co/auth/v1/.well-known/jwks.json", projectRef)
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Get(url)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				var jwks struct {
-					Keys []struct {
-						Kid string `json:"kid"`
-						Kty string `json:"kty"`
-						X   string `json:"x"`
-						Y   string `json:"y"`
-						N   string `json:"n"`
-						E   string `json:"e"`
-					} `json:"keys"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&jwks); err == nil {
-					newCache := make(map[string]interface{})
-					for _, k := range jwks.Keys {
-						if k.Kid == "" {
-							continue
-						}
-						switch k.Kty {
-						case "RSA":
-							nBytes, err1 := base64.RawURLEncoding.DecodeString(k.N)
-							eBytes, err2 := base64.RawURLEncoding.DecodeString(k.E)
-							if err1 != nil || err2 != nil || len(eBytes) == 0 {
-								continue
-							}
-							e := int(new(big.Int).SetBytes(eBytes).Int64())
-							newCache[k.Kid] = &rsa.PublicKey{
-								N: new(big.Int).SetBytes(nBytes),
-								E: e,
-							}
-						case "EC":
-							xb, err1 := base64.RawURLEncoding.DecodeString(k.X)
-							yb, err2 := base64.RawURLEncoding.DecodeString(k.Y)
-							if err1 != nil || err2 != nil {
-								continue
-							}
-							newCache[k.Kid] = &ecdsa.PublicKey{
-								Curve: elliptic.P256(),
-								X:     new(big.Int).SetBytes(xb),
-								Y:     new(big.Int).SetBytes(yb),
-							}
-						}
-					}
-					jwksCache = newCache
-					jwksCacheExpiry = time.Now().Add(1 * time.Hour)
-					log.Printf("jwks: loaded %d keys", len(jwksCache))
-				} else {
-					log.Printf("jwks decode err: %v", err)
-				}
-			} else {
-				log.Printf("jwks fetch status %d", resp.StatusCode)
-			}
-		} else {
-			log.Printf("jwks fetch err: %v", err)
-		}
-	}
-
-	if key, ok := jwksCache[kid]; ok {
-		return key, nil
-	}
-	return nil, fmt.Errorf("key %q not found in JWKS", kid)
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}

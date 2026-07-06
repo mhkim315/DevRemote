@@ -106,16 +106,21 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).
-	h := &term.Handlers{Registry: reg}
+	verifier := term.NewSupabaseVerifier(term.AuthConfig{
+		OwnerUUID:          cfg.OwnerUUID,
+		SupabaseProjectRef: cfg.SupabaseProjectRef,
+		InsecureLocalOnly:  cfg.InsecureLocalOnly,
+	})
+	h := &term.Handlers{Registry: reg, Verifier: verifier}
 
 	serveMux := http.NewServeMux()
-	serveMux.HandleFunc("/api/sessions", term.AuthMiddleware(h.HandleSessionsAPI))
-	serveMux.HandleFunc("/api/v2/links", term.AuthMiddleware(h.HandleLinksAPI))
-	serveMux.HandleFunc("/term/ws", term.AuthMiddleware(h.HandleWS))
-	serveMux.HandleFunc("/term/", term.AuthMiddleware(h.HandleHTML))
+	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
+	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
+	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
+	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 
 	var pushToken string
-	serveMux.HandleFunc("/push/register", term.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	serveMux.HandleFunc("/push/register", h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
 		if token != "" {
 			pushToken = token
@@ -132,8 +137,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		}
 	}
 
-	serveMux.HandleFunc("/debug/dump", term.AuthMiddleware(term.HandleDump))
-	serveMux.HandleFunc("/debug/cmd", term.AuthMiddleware(term.HandleCmd))
+	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
+	serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(term.HandleCmd))
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {
@@ -308,10 +313,6 @@ func runDaemon(cfg Config) {
 	if err != nil {
 		log.Fatalf("Failed to create app: %v", err)
 	}
-
-	term.OwnerUUID = cfg.OwnerUUID
-	term.SupabaseProjectRef = cfg.SupabaseProjectRef
-	term.InsecureLocalOnly = cfg.InsecureLocalOnly
 
 	if cfg.OwnerUUID == "" {
 		log.Println("WARN: --owner-uuid not set. All valid Supabase tokens will be accepted (INSECURE).")
