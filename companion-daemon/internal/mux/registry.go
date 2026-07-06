@@ -23,6 +23,8 @@ type Registry struct {
 }
 
 // NewRegistry creates a Registry pre-populated with the given adapters.
+// Duplicate names are silently overwritten (last wins). For strict duplicate
+// rejection at runtime, use Register() which returns ErrDuplicateAdapter.
 func NewRegistry(adapters ...Adapter) *Registry {
 	r := &Registry{
 		adapters:  make(map[string]Adapter),

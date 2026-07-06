@@ -113,9 +113,9 @@ type RegistryHealth interface {
 }
 
 // Adapter defines the interface for different session backends (Native, cmux, tmux).
-// Phase 1: ListSessions accepts context for cancellation/timeout propagation.
+// Phase 1: ListSessions accepts context. GetSession is removed from mandatory
+// contract; lookup uses snapshot refresh or optional SessionLookup capability.
 type Adapter interface {
 	Name() string
 	ListSessions(ctx context.Context) ([]Session, error)
-	GetSession(id string) (Session, error)
 }
