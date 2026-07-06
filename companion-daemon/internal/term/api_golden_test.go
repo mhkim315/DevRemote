@@ -31,18 +31,36 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
+	// Verify raw JSON keys. Missing/renamed keys would still produce zero values
+	// after Go unmarshal, so we check raw body for expected field names.
+	raw := rec.Body.String()
+	requiredKeys := []string{`"id"`, `"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"adapter"`, `"events"`}
+	for _, k := range requiredKeys {
+		if !strings.Contains(raw, k) {
+			t.Errorf("GET /api/sessions: JSON missing key %s", k)
+		}
+	}
+	// Optional omitempty fields: stale, lastSuccessAt, lastError — present only when non-zero.
+	// We verify they don't appear unexpectedly for a healthy session.
+
 	var sessions []SessionTelemetry
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("GET /api/sessions: invalid JSON: %v", err)
 	}
 
-	// Must contain our golden session.
 	found := false
 	for _, s := range sessions {
 		if s.ID == "tmux:golden" {
 			found = true
 			if s.Adapter != "tmux" {
 				t.Errorf("adapter = %q, want tmux", s.Adapter)
+			}
+			if s.State == "" {
+				t.Error("state is empty")
+			}
+			// Healthy session without lastError should not have stale=true.
+			if s.Stale {
+				t.Error("stale is true for healthy golden session")
 			}
 		}
 	}
@@ -106,16 +124,39 @@ func TestAPIGolden_DeleteSession(t *testing.T) {
 	}
 }
 
-func TestAPIGolden_GetSessionsHistory(t *testing.T) {
+func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
 	h := goldenHandlers(t)
 	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:golden", nil)
 	rec := httptest.NewRecorder()
 
 	h.HandleSessionsAPI(rec, req)
 
-	// History for a session without events returns 404.
+	// History for a session without events and without ScreenReader → 404.
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("GET /api/sessions?history=tmux:golden: status = %d, want 404", rec.Code)
+		t.Fatalf("GET /api/sessions?history=tmux:golden (no events): status = %d, want 404", rec.Code)
+	}
+}
+
+func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
+	// When a session implements ScreenReader, history falls back to screen content.
+	h := goldenHandlersWithScreenReader(t)
+	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:golden", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleSessionsAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/sessions?history=tmux:golden (screen fallback): status = %d, want 200", rec.Code)
+	}
+	raw := rec.Body.String()
+	requiredKeys := []string{`"id"`, `"type"`, `"summary"`, `"detail"`}
+	for _, k := range requiredKeys {
+		if !strings.Contains(raw, k) {
+			t.Errorf("history response missing key %s", k)
+		}
+	}
+	if !strings.Contains(raw, "GOLDEN_SCREEN") {
+		t.Errorf("history response missing screen content: %s", raw)
 	}
 }
 
@@ -163,6 +204,35 @@ func (a *goldenAdapter) CreateSession(_ context.Context, opts mux.CreateOptions)
 }
 func (a *goldenAdapter) TerminateSession(_ context.Context, id string) error {
 	return nil
+}
+
+// goldenHandlersWithScreenReader returns handlers where the session implements ScreenReader.
+func goldenHandlersWithScreenReader(t *testing.T) *Handlers {
+	t.Helper()
+	sess := &goldenScreenSession{}
+	reg := mux.NewRegistry(&goldenScreenAdapter{sessions: []mux.Session{sess}})
+	return &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+}
+
+type goldenScreenSession struct{ goldenSession }
+
+func (s *goldenScreenSession) ReadScreen(_ context.Context) ([]byte, error) {
+	return []byte("GOLDEN_SCREEN_content"), nil
+}
+
+type goldenScreenAdapter struct {
+	sessions []mux.Session
+}
+
+func (a *goldenScreenAdapter) Name() string                         { return "tmux" }
+func (a *goldenScreenAdapter) ListSessions() ([]mux.Session, error) { return a.sessions, nil }
+func (a *goldenScreenAdapter) GetSession(id string) (mux.Session, error) {
+	for _, s := range a.sessions {
+		if s.ID() == id {
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
 }
 
 var _ mux.Adapter = (*goldenAdapter)(nil) // compile-time check

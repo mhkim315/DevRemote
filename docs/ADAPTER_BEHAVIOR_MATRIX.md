@@ -1,171 +1,127 @@
 # Terminal Adapter Behavior Matrix — Phase 0 Baseline
 
 - 기준 커밋: `dc026d5`
-- 실기기 검증: macOS daemon + Android mobile
-- 목적: tmux/cmux의 현재 동작을 객관적으로 기록하고, 이후 Phase에서 회귀 판단 기준으로 사용
+- 실기기 검증: macOS daemon + Android mobile (2026-07-06)
+- **Code**: interface 구현 존재 여부
+- **Effect**: 실제 효과 (no-op / 동작함 / 미구현)
+- **Verified**: 실기기/테스트 확인
+- **Status**: Contract (보장) / Accidental (현재 동작일 뿐, 변경 가능)
 
 ## 1. Adapter Capability Matrix
 
-| Capability | tmux | cmux | Notes |
-|---|---|---|---|
-| Discovery (`ListSessions`) | PASS | PASS | cmux uses `cmux top`, tmux uses `tmux ls` |
-| Session identity (canonical ID) | `tmux:<name>` | `cmux:surface:<id>` | Legacy `cmux:<N>` migrated to `cmux:surface:<N>` |
-| Local ID contains `:` | PASS | N/A | `tmux:aider`, `tmux:cmux-38` 등 콜론 포함 이름 정상 |
-| Display title | session name | `surface:N "title"` | |
-| Live stream (OpenStream) | PTY attach | surface pipe read | |
-| Live input (WriteInput) | PTY write | surface keystroke inject | |
-| Enter (CR/LF/CRLF) | PASS | PASS | LF → `send-key enter` 변환 |
-| Ctrl+C | PASS | NOT SUPPORTED | tmux: SIGINT via PTY |
-| Resize | PASS | PASS | |
-| Screen snapshot (ReadScreen) | `capture-pane -p` | `surface get --name ...` | Plain text only; cmux no ANSI |
-| History (ReadHistory) | `capture-pane -pS -<lines>` | `surface get --lines <n>` | |
-| Process info (ProcessInfo) | `tmux list-panes -F #{pane_pid}` | `surface info --name` → PID lookup | |
-| Batch process (ProcessSnapshotProvider) | PASS | FAIL (list-based, not batch) | tmux: one `tmux` call; cmux: per-session |
-| Create session (SessionCreator) | `tmux new-session -d -s <name>` | NOT SUPPORTED | |
-| Terminate session (SessionTerminator) | `tmux kill-session -t <name>` | NOT SUPPORTED | |
-| WriteKey (special keys) | NOT SUPPORTED | PASS | cmux: Esc, arrows via keyCode injection |
-| Reconnect (stream recovery) | PASS | PASS | New PTY attach / new pipe |
-| Stale snapshot on adapter failure | PASS | PASS | Registry preserves last successful snapshot |
+### tmux
+
+| Capability | Code | Effect | Verified | Status |
+|---|---|---|---|---|
+| Discovery (`ListSessions`) | YES | `tmux ls` | PASS | Accidental |
+| LiveStreamer (`OpenStream`) | YES | PTY attach | PASS | Accidental |
+| InputWriter (`WriteInput`) | YES | PTY write | PASS | Accidental |
+| ScreenReader (`ReadScreen`) | YES | `capture-pane -p` | PASS | Accidental |
+| HistoryReader (`ReadHistory`) | YES | `capture-pane -pS -N` | PASS | Accidental |
+| Resizer (`Resize`) | YES | PTY resize | PASS | Accidental |
+| ProcessProvider (`ProcessInfo`) | YES | `list-panes -F #{pane_pid}` | PASS | Accidental |
+| ProcessSnapshotProvider | NO | — | N/A | — |
+| SessionCreator | YES | `tmux new-session -d -s <name>` | PASS | Accidental |
+| SessionTerminator | YES | `tmux kill-session -t <name>` | PASS | Accidental |
+| KeyWriter (`WriteKey`) | NO | — | N/A | — |
+| Ctrl+C | N/A | SIGINT via PTY (raw input) | PASS | Accidental |
+
+### cmux
+
+| Capability | Code | Effect | Verified | Status |
+|---|---|---|---|---|
+| Discovery (`ListSessions`) | YES | `cmux tree --all` (3s timeout) | PASS | Accidental |
+| LiveStreamer (`OpenStream`) | YES | surface pipe read (500ms poll, 1.5s stream timeout) | PASS | Accidental |
+| InputWriter (`WriteInput`) | YES | surface keystroke inject | PASS | Accidental |
+| ScreenReader (`ReadScreen`) | YES | `cmux read-screen --name ...` (plain text, no ANSI) | PASS | Accidental |
+| HistoryReader (`ReadHistory`) | YES | `cmux read-screen --name ... --lines N` | PASS | Accidental |
+| Resizer (`Resize`) | YES | **NO-OP** (function exists, no actual resize) | NOT TESTED | Accidental |
+| ProcessProvider (`ProcessInfo`) | YES | `cmux top --all --processes --format tsv` → PID | PASS | Accidental |
+| ProcessSnapshotProvider | YES | `cmux top --all --processes --format tsv` (all surfaces) | NOT TESTED | Accidental |
+| SessionCreator | YES | `cmux surface create --name` | NOT TESTED | Accidental |
+| SessionTerminator | YES | `cmux surface delete --name` | NOT TESTED | Accidental |
+| KeyWriter (`WriteKey`) | YES | keyCode injection (Esc, arrows) | PASS | Accidental |
+| Ctrl+C | NO | — | NOT SUPPORTED | — |
 
 ## 2. Behavior Matrix — Functional Dimensions
 
-| Dimension | tmux | cmux |
-|---|---|---|
-| **Discovery** | | |
-| Session list stability | Stable (alphabetical) | Stable (numeric order) |
-| New session appears | Next refresh (≤10s TTL) | Next refresh (≤10s TTL) |
-| Deleted session removed | Next refresh | Next refresh |
-| Transient failure | Stale cache preserved | Stale cache preserved |
-| **Initial Screen** | | |
-| First frame after connect | PTY attach → immediate output | Pipe first read |
-| tmux-specific snapshot | `capture-pane -p` sent as initial frame | N/A |
-| **Live Output** | | |
-| Streaming mode | Binary PTY pipe | Polling (500ms) |
-| ANSI color/style | PASS (raw PTY) | NOT SUPPORTED (plain text snapshot) |
-| Output latency | Real-time | Up to 500ms |
-| **Text Input** | | |
-| Printable ASCII | PASS | PASS |
-| Unicode / CJK | PASS | Limited (surface keyCode) |
-| Enter (CR/LF/CRLF) | Direct PTY write | `send-key enter` |
-| Ctrl+C | SIGINT via PTY | NOT SUPPORTED |
-| Arrow keys | PASS (escape sequences) | PASS (keyCode injection) |
-| **Session Lifecycle** | | |
-| Create from API | PASS | NOT SUPPORTED |
-| Delete from API | PASS | NOT SUPPORTED |
-| External create detection | Next refresh | Next refresh |
-| External termination | Session removed on next list | Session removed on next list |
-| **History** | | |
-| Scrollback access | `capture-pane -pS -N` | `surface get --lines N` |
-| History line limit | 10000 | configurable |
-| **Process** | | |
-| PID detection | `list-panes -F #{pane_pid}` | `surface info` → PID |
-| Agent log resolution | PASS (Claude/Codex/Gemini) | PASS |
-| **Reconnect** | | |
-| Daemon restart | Sessions re-discovered | Sessions re-discovered |
-| Client disconnect | Stream closed, new WS = new stream | Stream closed, new WS = new stream |
-| **Error Handling** | | |
-| Adapter unavailable | Stale cache preserved | Stale cache preserved |
-| Session not found | HTTP 404 | HTTP 404 |
-| Stream read error | WS 1011 close | WS 1011 close |
-| Command timeout | N/A | 5s per command |
+| Dimension | tmux | cmux | Status |
+|---|---|---|---|
+| **Discovery** | | | |
+| Command | `tmux ls` | `cmux tree --all` | Accidental (adapter internal) |
+| Timeout | N/A | 3s (`exec.CommandContext`) | Accidental |
+| Ordering | Alphabetical | Numeric | Accidental (Registry ordering) |
+| **Live Output** | | | |
+| Streaming | Binary PTY pipe | Polling (500ms) | Accidental |
+| Stream timeout | N/A | 1.5s per `read-screen` | Accidental |
+| ANSI | PASS (raw PTY) | NOT SUPPORTED (plain text) | Accidental |
+| **Text Input** | | | |
+| ASCII | PASS | PASS | Verified |
+| Enter | Direct PTY write | LF → `send-key enter` | Verified |
+| Ctrl+C | SIGINT via PTY | NOT SUPPORTED | Verified |
+| Arrow/Esc | PASS (escape seq) | PASS (keyCode) | Verified |
+| Unicode/CJK | PASS | Limited | Verified (tmux) |
+| **Lifecycle** | | | |
+| Create API | local ID returned | code exists | Accidental: POST returns local `test`, not canonical `tmux:test` |
+| Delete API | PASS | code exists | |
+| **Screen/History** | | | |
+| Screen command | `capture-pane -p` | `read-screen --name` | Accidental |
+| History command | `capture-pane -pS -N` | `read-screen --name --lines N` | Accidental |
+| **Process** | | | |
+| PID command | `list-panes -F #{pane_pid}` | `top --all --processes --format tsv` | Accidental |
+| **Reconnect** | | | |
+| Daemon restart | re-discovered | re-discovered | Contract (Registry) |
+| Client disconnect | stream closed, new WS | stream closed, new WS | Contract (HandleWS) |
+| **Errors** | | | |
+| Session not found | HTTP 404 | HTTP 404 | Contract |
+| Stream read error | WS 1011 | WS 1011 | Contract |
+| Stale snapshot | preserved | preserved | Contract (Registry) |
 
-## 3. Canonical ID Examples (Golden)
+## 3. Canonical ID Golden Examples
 
 ```text
 # tmux
-tmux:ai
-tmux:aider
-tmux:cmux-1
-tmux:cmux-38
-tmux:____
+canonical: tmux:ai              → adapter=tmux, localID=ai
+canonical: tmux:aider           → adapter=tmux, localID=aider
+canonical: tmux:tmux:aider      → adapter=tmux, localID=tmux:aider (local has ':')
+canonical: tmux:한글            → adapter=tmux, localID=한글 (Unicode)
 
 # cmux (canonical after migration)
-cmux:surface:1
-cmux:surface:2
-cmux:surface:3
+canonical: cmux:surface:1       → adapter=cmux, localID=surface:1
 
-# Legacy cmux (migrated to canonical on first access)
-cmux:42  →  cmux:surface:42
+# Legacy cmux → ParseSessionID splits at first ':', MigrateLegacyID canonicalizes
+legacy:   cmux:42               → ParseSessionID → adapter=cmux, localID=42
+                                 → MigrateLegacyID → cmux:surface:42
 ```
 
-## 4. API Response Golden Fixture
+## 4. API Response Golden Fixtures (dc026d5 behavior)
 
-### GET /api/sessions (excerpt)
+### GET /api/sessions
+- Status: 200, Content-Type: application/json
+- Response is `[]SessionTelemetry` with fields: `id`, `state`, `load`, `runner`, `runnerColor`, `adapter`, `events`, `stale` (omitempty), `lastSuccessAt` (omitempty), `lastError` (omitempty)
 
-```json
-[
-  {
-    "id": "cmux:surface:1",
-    "state": "idle",
-    "load": 0,
-    "runner": "agent",
-    "runnerColor": "#58a6ff",
-    "adapter": "cmux",
-    "events": [],
-    "lastSuccessAt": "2026-07-06T12:13:05.175722Z"
-  },
-  {
-    "id": "tmux:ai",
-    "state": "working",
-    "load": 100,
-    "runner": "claude",
-    "runnerColor": "#58a6ff",
-    "adapter": "tmux",
-    "events": [
-      {
-        "id": "20260706120415.000001",
-        "session": "tmux:ai",
-        "type": "tool_use",
-        "summary": "Write",
-        "detail": "/path/to/file"
-      }
-    ],
-    "lastSuccessAt": "2026-07-06T12:13:05.185496Z"
-  }
-]
-```
-
-### GET /api/sessions?history=cmux:surface:1 (excerpt)
-
-```json
-[
-  {
-    "id": "fallback-0",
-    "session": "cmux:surface:1",
-    "type": "message",
-    "summary": "Terminal History",
-    "detail": "actual terminal content...",
-    "timestamp": "2026-07-06T12:00:00Z"
-  }
-]
-```
-
-### POST /api/sessions (create tmux)
-
-```json
-// Request
-{"id": "tmux:test", "runner": "claude", "runnerColor": "#58a6ff"}
-
-// Response
-{"status": "ok", "id": "tmux:test"}
-```
+### POST /api/sessions (create)
+- Request: `{"id":"tmux:test","runner":"claude","runnerColor":"#58a6ff"}`
+- Response: `{"status":"ok","id":"test"}` — **returns local ID** (accidental). Phase 1 will canonicalize.
 
 ### DELETE /api/sessions?id=tmux:test
+- Response: `{"status":"ok"}`
 
-```json
-{"status": "ok"}
-```
+### GET /api/sessions?history=tmux:golden (no events)
+- Status: 404
 
-## 5. "Accidentally Working" vs "Guaranteed Contract"
+## 5. Contract vs Accidental
 
-| Behavior | Status | Rationale |
-|---|---|---|
-| cmux session polling interval (500ms) | Accidental | tmux adapter has no equivalent; not in Adapter contract |
-| tmux initial snapshot on WS connect | Accidental | Hardcoded in `pty.go` by adapter name check |
-| create API defaults to "tmux" | Accidental | `HandleSessionCRUD` has `adapterName = "tmux"` fallback |
-| mobile `replace(/^(tmux\|cmux):/, '')` | Accidental | Mobile knows backend names |
-| canonical ID format `<adapter>:<local-id>` | Contract | Central to API stability |
-| stale snapshot on refresh failure | Contract | Explicit in Registry |
-| adapter error → last snapshot preserved | Contract | Explicit in Registry.Refresh() |
-| session not found → HTTP 404 | Contract | Explicit in handler |
-| stream error → WS 1011 | Contract | Explicit in HandleWS |
+| Behavior | Status |
+|---|---|
+| Canonical ID `<adapter>:<local-id>` format | Contract |
+| Legacy `cmux:N` → `cmux:surface:N` migration | Contract |
+| Stale snapshot on refresh failure | Contract |
+| Session not found → HTTP 404 | Contract |
+| Stream error → WS 1011 | Contract |
+| POST returns local ID (not canonical) | **Accidental** — Phase 1 changes |
+| cmux resize no-op | **Accidental** — Phase 2 may implement |
+| tmux "tmux" fallback in create handler | **Accidental** — Phase 1 removes |
+| cmux command names (`tree`, `read-screen`) | Accidental |
+| cmux timeouts (3s discovery, 1.5s stream) | Accidental |
+| mobile `replace(/^(tmux\|cmux):/, '')` | Accidental — Phase 2 removes |
