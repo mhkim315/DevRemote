@@ -37,6 +37,10 @@ func RunAdapterContract(t *testing.T, name string, factory ContractAdapterFactor
 		t.Run("ProbeAdapter_ErrorTaxonomy", func(t *testing.T) { testProbeAdapterTaxonomy(t) })
 		t.Run("SentinelErrors_Distinct", func(t *testing.T) { testSentinelErrorsDistinct(t) })
 		t.Run("CanonicalID_Stability", func(t *testing.T) { testCanonicalIDStability(t) })
+		t.Run("StaleSession_EndedRace", func(t *testing.T) { testStaleSessionEndedRace(t, factory) })
+		t.Run("UnavailableVsNotFound", func(t *testing.T) { testUnavailableVsNotFound(t, factory) })
+		t.Run("CreateSession_ReturnsLocalID", func(t *testing.T) { testCreateSessionReturnsLocalID(t, factory) })
+		t.Run("SlowAdapter_DoesNotBlock", func(t *testing.T) { testSlowAdapterDoesNotBlock(t, factory) })
 	})
 }
 
@@ -367,6 +371,257 @@ func testCanonicalIDStability(t *testing.T) {
 			_ = MigrateLegacyID(id)
 		}
 	})
+}
+
+// testStaleSessionEndedRace verifies that when a session exists in cache but
+// disappears after a forced refresh, the Registry returns ErrSessionNotFound.
+func testStaleSessionEndedRace(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	base := factory(t)
+	s1 := &testSession{id: "s1", adapter: base.Name()}
+	cfg := &configurableAdapter{
+		name:     base.Name(),
+		sessions: []Session{s1},
+	}
+	reg := MustNewRegistry(cfg)
+
+	// Populate cache.
+	_ = reg.Sessions(context.Background())
+
+	// Remove session from adapter — it "ended".
+	cfg.mu.Lock()
+	cfg.sessions = nil
+	cfg.mu.Unlock()
+
+	_, err := reg.FindSession(context.Background(), base.Name()+":s1")
+	if err == nil {
+		t.Fatal("FindSession for ended session: got nil, want error")
+	}
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+// testUnavailableVsNotFound verifies the Registry distinguishes adapter
+// connectivity failure (ErrAdapterUnavailable) from missing sessions
+// (ErrSessionNotFound).
+func testUnavailableVsNotFound(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	base := factory(t)
+
+	t.Run("unregistered_adapter_returns_ErrAdapterUnavailable", func(t *testing.T) {
+		reg := MustNewRegistry()
+		_, err := reg.FindSession(context.Background(), "nonexistent:s1")
+		if err == nil {
+			t.Fatal("FindSession with missing adapter: got nil, want error")
+		}
+		if !errors.Is(err, ErrAdapterUnavailable) {
+			t.Errorf("error = %v, want ErrAdapterUnavailable", err)
+		}
+	})
+
+	t.Run("adapter_down_returns_ErrAdapterUnavailable_not_ErrSessionNotFound", func(t *testing.T) {
+		s1 := &testSession{id: "s1", adapter: base.Name()}
+		cfg := &configurableAdapter{
+			name:     base.Name(),
+			sessions: []Session{s1},
+		}
+		reg := MustNewRegistry(cfg)
+		_ = reg.Sessions(context.Background())
+
+		// Make adapter fail.
+		cfg.mu.Lock()
+		cfg.failWith = errors.New("adapter down")
+		cfg.mu.Unlock()
+
+		s, err := reg.FindSession(context.Background(), base.Name()+":s1")
+		if err == nil {
+			t.Fatal("FindSession got nil error, want ErrAdapterUnavailable")
+		}
+		if s != nil {
+			t.Errorf("FindSession returned non-nil session on adapter failure: %v", s)
+		}
+		if !errors.Is(err, ErrAdapterUnavailable) {
+			t.Errorf("error = %v, want ErrAdapterUnavailable", err)
+		}
+		if errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("error wraps ErrSessionNotFound, want ErrAdapterUnavailable only")
+		}
+	})
+}
+
+// testCreateSessionReturnsLocalID verifies CreateSession returns a local ID
+// without the adapter prefix (canonicalization happens once in the handler).
+func testCreateSessionReturnsLocalID(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	adapter := factory(t)
+	if _, ok := adapter.(SessionCreator); !ok {
+		t.Skip("adapter does not implement SessionCreator")
+	}
+	reg := MustNewRegistry(adapter)
+	id, err := reg.CreateSession(context.Background(), adapter.Name(), CreateOptions{Name: "contract-test"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if stringsContains(id, adapter.Name()+":") {
+		t.Errorf("CreateSession returned %q, want local ID without adapter prefix", id)
+	}
+	// Handler canonicalizes: adapter + ":" + localID exactly once.
+	canonical := SessionRef{Adapter: adapter.Name(), LocalID: id}.Canonical()
+	if canonical != adapter.Name()+":"+id {
+		t.Errorf("canonical = %q, want %s:%s", canonical, adapter.Name(), id)
+	}
+}
+
+// testSlowAdapterDoesNotBlock verifies a slow/hanging adapter does not delay
+// discovery of sessions from a healthy adapter. Uses the 200ms collection
+// window contract established in Phase 3.
+func testSlowAdapterDoesNotBlock(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	fast := factory(t)
+	slow := &blockingAdapter{name: "slow"}
+	reg := MustNewRegistry(fast, slow)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessions := reg.Sessions(ctx)
+	elapsed := time.Since(start)
+	if elapsed > time.Second {
+		t.Errorf("Sessions took %v, want <1s (slow adapter should not block fast)", elapsed)
+	}
+
+	// Verify fast adapter sessions are present.
+	fastFound := false
+	for _, s := range sessions {
+		if s.AdapterName() == fast.Name() {
+			fastFound = true
+			break
+		}
+	}
+	if !fastFound {
+		t.Errorf("fast adapter sessions not found (slow adapter may have blocked)")
+	}
+}
+
+// --- Capability-specific contract suites ---
+
+// RunScreenHistoryContract runs screen capture and history scrollback tests
+// against an adapter whose sessions implement ScreenReader and HistoryReader.
+func RunScreenHistoryContract(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	adapter := factory(t)
+	sessions, err := adapter.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Skip("no sessions — skipping screen/history contract")
+	}
+
+	s := sessions[0]
+
+	t.Run("ScreenReader", func(t *testing.T) {
+		sr, ok := s.(ScreenReader)
+		if !ok {
+			t.Skip("session does not implement ScreenReader")
+		}
+		out, err := sr.ReadScreen(context.Background())
+		if err != nil {
+			t.Fatalf("ReadScreen: %v", err)
+		}
+		if out == nil {
+			t.Error("ReadScreen returned nil output")
+		}
+	})
+
+	t.Run("HistoryReader", func(t *testing.T) {
+		hr, ok := s.(HistoryReader)
+		if !ok {
+			t.Skip("session does not implement HistoryReader")
+		}
+		out, err := hr.ReadHistory(context.Background(), 200)
+		if err != nil {
+			t.Fatalf("ReadHistory: %v", err)
+		}
+		if out == nil {
+			t.Error("ReadHistory returned nil output")
+		}
+	})
+}
+
+// RunProcessInfoContract runs process info resolution tests against an
+// adapter whose sessions implement ProcessProvider.
+func RunProcessInfoContract(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	adapter := factory(t)
+	sessions, err := adapter.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Skip("no sessions — skipping process info contract")
+	}
+
+	s := sessions[0]
+	pp, ok := s.(ProcessProvider)
+	if !ok {
+		t.Skip("session does not implement ProcessProvider")
+	}
+	info, err := pp.ProcessInfo(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessInfo: %v", err)
+	}
+	if info.PID == 0 && info.CWD == "" {
+		t.Error("ProcessInfo returned empty PID and CWD — possible parse failure")
+	}
+}
+
+// RunCreateDiscoverTerminateContract runs the full create→list→terminate
+// lifecycle against an adapter that implements SessionCreator and SessionTerminator.
+func RunCreateDiscoverTerminateContract(t *testing.T, factory ContractAdapterFactory) {
+	t.Helper()
+	adapter := factory(t)
+	if _, ok := adapter.(SessionCreator); !ok {
+		t.Skip("adapter does not implement SessionCreator")
+	}
+	if _, ok := adapter.(SessionTerminator); !ok {
+		t.Skip("adapter does not implement SessionTerminator")
+	}
+
+	reg := MustNewRegistry(adapter)
+	testName := "cdt-contract-test"
+
+	// 1. Create
+	createID, err := reg.CreateSession(context.Background(), adapter.Name(), CreateOptions{Name: testName})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if createID == "" {
+		t.Fatal("CreateSession returned empty ID")
+	}
+
+	// 2. Discover via fresh list
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	reg.InvalidateAdapter(adapter.Name())
+	sessions := reg.Sessions(ctx)
+	found := false
+	for _, s := range sessions {
+		if s.ID() == createID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("created session %q not found in Sessions() after create", createID)
+	}
+
+	// 3. Terminate
+	if err := reg.TerminateSession(context.Background(), adapter.Name(), createID); err != nil {
+		t.Fatalf("TerminateSession: %v", err)
+	}
 }
 
 // --- Helpers ---

@@ -317,26 +317,57 @@ func TestSerialCommandRunnerPreventsConcurrentSocketWrites(t *testing.T) {
 }
 
 func TestCmuxAdapter_Contract(t *testing.T) {
-	RunAdapterContract(t, "cmux", func(t *testing.T) Adapter {
+	factory := func(t *testing.T) Adapter {
 		health := &mockRegistryHealth{}
+		// Track created surfaces so they appear in subsequent tree listings.
+		var created []string
 		return &cmuxAdapter{
 			runner: &mockCmuxRunner{
 				runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-					if len(args) > 0 && args[0] == "tree" {
-						return []byte(`window window:1 [current]
+					if len(args) == 0 {
+						return nil, nil
+					}
+					switch args[0] {
+					case "new-surface":
+						const newID = "surface:99"
+						created = append(created, newID)
+						return []byte("Created new surface: " + newID + " (workspace: workspace:1)"), nil
+					case "close-surface":
+						return nil, nil
+					case "tree":
+						base := `window window:1 [current]
 ├── workspace workspace:1 "DevRemote"
 │   └── pane pane:1
 │       └── surface surface:1 [terminal] "dev" tty=ttys000
 ├── workspace workspace:2 "Build"
 │   └── pane pane:2
-│       └── surface surface:2 [terminal] "build" tty=ttys001`), nil
+│       └── surface surface:2 [terminal] "build" tty=ttys001`
+						for _, id := range created {
+							base += "\n│       └── surface " + id + ` [terminal] "contract" tty=ttys099`
+						}
+						return []byte(base), nil
+					case "read-screen":
+						for _, a := range args {
+							if a == "--scrollback" {
+								return []byte("scrollback history"), nil
+							}
+						}
+						return []byte("screen content"), nil
+					case "top":
+						return []byte(`tag	tag:agent1	workspace:1	claude
+process	12345	surface:1	bash`), nil
+					default:
+						return nil, nil
 					}
-					return nil, nil
 				},
 			},
 			invalidate: health,
 		}
-	})
+	}
+	RunAdapterContract(t, "cmux", factory)
+	RunScreenHistoryContract(t, factory)
+	RunProcessInfoContract(t, factory)
+	RunCreateDiscoverTerminateContract(t, factory)
 }
 
 func TestNewCmuxAdapterRejectsNilHealth(t *testing.T) {
