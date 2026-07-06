@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getBaseURL } from '../lib/client';
+import { getSessionHistory } from '../lib/client';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, ActivityIndicator, Platform } from 'react-native';
 
 interface Props {
@@ -16,12 +16,12 @@ export function HistoryModal({ visible, onClose, session, token }: Props) {
   useEffect(() => {
     if (visible) {
       setLoading(true);
-      const headers: any = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      fetch(`${getBaseURL()}/api/sessions?history=${session}`, { headers })
-        .then(res => res.text())
-        .then(text => {
-          // Strip ANSI codes using a standard regex pattern
+      getSessionHistory(session, token)
+        .then(data => {
+          // data is AgentEvent[] — extract terminal output Detail fields.
+          const text = Array.isArray(data)
+            ? data.map(e => e.Detail || e.Summary || '').join('\n')
+            : JSON.stringify(data);
           const strippedText = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
           setHistory(strippedText);
         })

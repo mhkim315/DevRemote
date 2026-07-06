@@ -46,13 +46,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
 
-  const termUrl = useMemo(() => {
-    let url = terminalURL(session, token);
-    if (token) {
-      url += `&token=${encodeURIComponent(token)}`;
-    }
-    return url;
-  }, [session, token]);
+  const termUrl = useMemo(() => terminalURL(session, token), [session, token]);
   const source = useMemo(() => ({uri: termUrl}), [termUrl]);
 
   useEffect(() => {
@@ -71,7 +65,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
     const fetchSession = () => {
       listSessions(token)
-        .then(res => res.json())
         .then(data => {
           const sess = data.find((s: any) => (s.id || s) === session);
           if (sess && typeof sess !== 'string') {
@@ -83,7 +76,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
     
     const fetchHistory = () => {
       getSessionHistory(session, token)
-        .then(res => res.json())
         .then(data => {
           if (Array.isArray(data)) {
             setHistoryEvents(data);

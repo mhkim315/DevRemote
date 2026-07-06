@@ -17,7 +17,7 @@ function authHeaders(token?: string): Record<string, string> {
   return h;
 }
 
-export async function listSessions(token?: string) {
+export async function listSessions(token?: string): Promise<any[]> {
   const res = await fetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });
   return res.json();
 }
