@@ -66,7 +66,7 @@ func (a *mockAdapter) TerminateSession(ctx context.Context, id string) error { r
 func TestHandleWS_CloseCode1011(t *testing.T) {
 	t.Parallel()
 
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},
@@ -116,7 +116,7 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	t.Parallel()
 
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		stream: &mockStream{pr: pr, pw: pw},

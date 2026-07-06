@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,23 +22,35 @@ type Registry struct {
 }
 
 // NewRegistry creates a Registry pre-populated with the given adapters.
-// Duplicate names are silently overwritten (last wins). For strict duplicate
-// rejection at runtime, use Register() which returns ErrDuplicateAdapter.
-func NewRegistry(adapters ...Adapter) *Registry {
+// NewRegistry creates a Registry. Returns error on duplicate or invalid adapter names.
+func NewRegistry(adapters ...Adapter) (*Registry, error) {
 	r := &Registry{
 		adapters:  make(map[string]Adapter),
 		snapshots: make(map[string]AdapterSnapshot),
 	}
 	for _, a := range adapters {
-		r.adapters[a.Name()] = a
+		if err := r.Register(a); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}
+
+// MustNewRegistry is like NewRegistry but panics on error. For tests.
+func MustNewRegistry(adapters ...Adapter) *Registry {
+	r, err := NewRegistry(adapters...)
+	if err != nil {
+		panic(fmt.Sprintf("MustNewRegistry: %v", err))
 	}
 	return r
 }
 
-// Register adds an adapter. Returns ErrDuplicateAdapter if an adapter with
-// the same name is already registered.
+// Register adds an adapter. Checks name validity, rejects duplicates.
 func (r *Registry) Register(adapter Adapter) error {
 	name := adapter.Name()
+	if err := ValidateAdapterName(name); err != nil {
+		return err
+	}
 	r.adaptersMu.Lock()
 	defer r.adaptersMu.Unlock()
 	if _, exists := r.adapters[name]; exists {
@@ -105,27 +116,26 @@ func (r *Registry) Adapters() []Adapter {
 
 // FindSession looks up a session by canonical ID, force-refreshing the target
 // adapter first. Returns ErrSessionNotFound if not found, ErrAdapterUnavailable
-// if the adapter cannot be reached.
+// if the adapter cannot be reached, ErrInvalidSessionID if the ID is malformed.
 func (r *Registry) FindSession(ctx context.Context, id string) (Session, error) {
 	id = MigrateLegacyID(id)
+	ref := ParseSessionID(id)
+	if err := ref.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidSessionID, err)
+	}
+	canonical := ref.Canonical()
 
-	parts := strings.SplitN(id, ":", 2)
-	if len(parts) == 2 {
-		_, err := r.Refresh(ctx, parts[0], true)
-		if err != nil {
-			return nil, fmt.Errorf("%w: adapter %s refresh failed: %w", ErrAdapterUnavailable, parts[0], err)
-		}
-	} else {
-		_ = r.Sessions(ctx)
+	if _, err := r.Refresh(ctx, ref.Adapter, true); err != nil {
+		return nil, fmt.Errorf("%w: adapter %s refresh failed: %w", ErrAdapterUnavailable, ref.Adapter, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if s, err := r.FindSessionInCache(id); err == nil {
+	if s, err := r.FindSessionInCache(canonical); err == nil {
 		return s, nil
 	}
-	return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, canonical)
 }
 
 // AdapterSnapshot holds a point-in-time snapshot of an adapter's sessions.
@@ -182,7 +192,9 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 			currentSnap.LastSuccessAt = time.Now()
 		} else {
 			fmt.Printf("registry: adapter %s refresh failed (retaining stale cache): %v\n", name, adErr)
-			currentSnap.LastError = fmt.Errorf("%w: %w", ErrAdapterUnavailable, adErr)
+			wrapped := fmt.Errorf("%w: %w", ErrAdapterUnavailable, adErr)
+			currentSnap.LastError = wrapped
+			adErr = wrapped
 		}
 		r.snapshots[name] = currentSnap
 		r.snapshotsMu.Unlock()

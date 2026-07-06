@@ -54,3 +54,24 @@ func (r SessionRef) Validate() error {
 	}
 	return nil
 }
+
+// ValidateAdapterName checks that an adapter name is a non-empty lower-case ASCII
+// identifier matching [a-z][a-z0-9_-]*. Returns ErrInvalidSessionID if invalid.
+func ValidateAdapterName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: adapter name is empty", ErrInvalidSessionID)
+	}
+	if strings.Contains(name, ":") {
+		return fmt.Errorf("%w: adapter name %q contains colon", ErrInvalidSessionID, name)
+	}
+	for i, ch := range name {
+		if ch >= 'a' && ch <= 'z' {
+			continue
+		}
+		if i > 0 && (ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+			continue
+		}
+		return fmt.Errorf("%w: adapter name %q contains invalid character %q at position %d", ErrInvalidSessionID, name, ch, i)
+	}
+	return nil
+}

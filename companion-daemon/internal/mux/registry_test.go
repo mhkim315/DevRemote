@@ -73,7 +73,7 @@ func (s *dummySession) Title() string       { return "dummy" }
 func TestRegistryDeadlockAndCache(t *testing.T) {
 	t.Parallel()
 
-	r := NewRegistry(
+	r := MustNewRegistry(
 		&dummyAdapter{
 			name: "test1",
 			sessions: []Session{
@@ -147,7 +147,7 @@ func TestStaleCacheOnFailure(t *testing.T) {
 		},
 	}
 
-	r := NewRegistry(cmux, tmux)
+	r := MustNewRegistry(cmux, tmux)
 
 	// 1. Initial success: 2 cmux, 1 tmux
 	r.Sessions(context.Background())
@@ -210,7 +210,7 @@ func TestStaleCacheOnFailure(t *testing.T) {
 func TestRegistrySessionsStableOrder(t *testing.T) {
 	t.Parallel()
 
-	registry := NewRegistry(
+	registry := MustNewRegistry(
 		&dummyAdapter{
 			name: "tmux",
 			sessions: []Session{
@@ -241,8 +241,8 @@ func TestRegistrySessionsStableOrder(t *testing.T) {
 func TestRegistryIsolation(t *testing.T) {
 	t.Parallel()
 
-	r1 := NewRegistry(&dummyAdapter{name: "a1", sessions: []Session{&dummySession{id: "x", adapter: "a1"}}})
-	r2 := NewRegistry(&dummyAdapter{name: "a2", sessions: []Session{&dummySession{id: "y", adapter: "a2"}}})
+	r1 := MustNewRegistry(&dummyAdapter{name: "a1", sessions: []Session{&dummySession{id: "x", adapter: "a1"}}})
+	r2 := MustNewRegistry(&dummyAdapter{name: "a2", sessions: []Session{&dummySession{id: "y", adapter: "a2"}}})
 
 	r1.Sessions(context.Background())
 	r2.Sessions(context.Background())
@@ -288,7 +288,7 @@ func TestRegistryCreateSessionInvalidation(t *testing.T) {
 				createErr: tt.createErr,
 				sessions:  []Session{&dummySession{id: "existing", adapter: "fake"}},
 			}
-			registry := NewRegistry(adapter)
+			registry := MustNewRegistry(adapter)
 			registry.Sessions(context.Background())
 
 			before, ok := registry.Snapshot("fake")
@@ -335,7 +335,7 @@ func TestRegistryTerminateSessionInvalidation(t *testing.T) {
 				terminateErr: tt.terminateErr,
 				sessions:     []Session{&dummySession{id: "existing", adapter: "fake"}},
 			}
-			registry := NewRegistry(adapter)
+			registry := MustNewRegistry(adapter)
 			registry.Sessions(context.Background())
 
 			err := registry.TerminateSession(context.Background(), "fake", "existing")
@@ -364,7 +364,7 @@ func TestRegistryFindSessionPropagatesCancellation(t *testing.T) {
 		listStarted: started,
 		listRelease: release,
 	}
-	registry := NewRegistry(adapter)
+	registry := MustNewRegistry(adapter)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

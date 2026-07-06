@@ -154,8 +154,8 @@ func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
 
 func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	// Not Parallel — NewApp sets term.OnApproval global.
-	regA := mux.NewRegistry()
-	regB := mux.NewRegistry()
+	regA := mux.MustNewRegistry()
+	regB := mux.MustNewRegistry()
 
 	adapterA := &testAdapter{
 		name: "test-a",

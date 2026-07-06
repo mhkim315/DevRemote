@@ -25,8 +25,8 @@ func TestRegistryFromContextMissingReturnsError(t *testing.T) {
 func TestHandlersKeepsRegistryIndependent(t *testing.T) {
 	t.Parallel()
 
-	registryA := mux.NewRegistry()
-	registryB := mux.NewRegistry()
+	registryA := mux.MustNewRegistry()
+	registryB := mux.MustNewRegistry()
 
 	handler := func(h *Handlers) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

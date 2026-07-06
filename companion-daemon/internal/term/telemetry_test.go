@@ -197,7 +197,7 @@ func TestTelemetryService_StopsOnCancel(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
 
 	go svc.Run(ctx)

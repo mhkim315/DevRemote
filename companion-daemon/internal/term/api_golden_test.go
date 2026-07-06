@@ -180,7 +180,7 @@ func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
 func goldenHandlers(t *testing.T) *Handlers {
 	t.Helper()
 
-	reg := mux.NewRegistry(&goldenAdapter{
+	reg := mux.MustNewRegistry(&goldenAdapter{
 		sessions: []mux.Session{&goldenSession{}},
 	})
 
@@ -227,7 +227,7 @@ func (a *goldenAdapter) TerminateSession(_ context.Context, id string) error {
 func goldenHandlersWithScreenReader(t *testing.T) *Handlers {
 	t.Helper()
 	sess := &goldenScreenSession{}
-	reg := mux.NewRegistry(&goldenScreenAdapter{sessions: []mux.Session{sess}})
+	reg := mux.MustNewRegistry(&goldenScreenAdapter{sessions: []mux.Session{sess}})
 	return &Handlers{Registry: reg, Events: NewMemoryEventStore()}
 }
 

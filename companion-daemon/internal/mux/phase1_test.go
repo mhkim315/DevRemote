@@ -65,7 +65,7 @@ func (a *testAdapter) GetSession(id string) (Session, error) {
 }
 
 func TestRegistry_RejectDuplicateAdapter(t *testing.T) {
-	reg := NewRegistry()
+	reg := MustNewRegistry()
 	if err := reg.Register(&testAdapter{name: "dup"}); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}

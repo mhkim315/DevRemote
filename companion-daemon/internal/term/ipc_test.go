@@ -16,7 +16,7 @@ func TestIPCServer_Lifecycle(t *testing.T) {
 
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "test.sock")
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 
 	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestIPCServer_CloseIdempotent(t *testing.T) {
 
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "test.sock")
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 
 	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestIPCServer_SocketMode0600(t *testing.T) {
 
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "test.sock")
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 
 	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestIPCServer_RebindAfterClose(t *testing.T) {
 
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "test.sock")
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 
 	srv1, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), NewNopLinkStore(), nil)
 	if err != nil {

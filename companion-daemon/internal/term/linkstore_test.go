@@ -259,7 +259,7 @@ func TestHandleLinksAPI_ClearsCanonicalTelemetryForLegacyID(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewFileLinkStoreAt(filepath.Join(dir, "links.json"))
 	events := NewMemoryEventStore()
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 	telemetry := NewTelemetryService(reg, events, store, nil)
 
 	// Pre-populate telemetry with state for the canonical key.

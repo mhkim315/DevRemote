@@ -99,7 +99,7 @@ func NewApp(cfg Config) (*App, error) {
 // NewAppWithDeps creates an App with injectable dependencies for testing.
 func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// 1. Registry — instance-owned, no package global.
-	reg := mux.NewRegistry()
+	reg := mux.MustNewRegistry()
 	cmuxAdapter, err := mux.NewCmuxAdapter(reg)
 	if err != nil {
 		return nil, fmt.Errorf("cmux adapter: %w", err)
