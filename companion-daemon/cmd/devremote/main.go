@@ -120,8 +120,8 @@ func main() {
 		}
 	}
 
-	http.HandleFunc("/debug/dump", term.AuthMiddleware(term.HandleDump))
-	http.HandleFunc("/debug/cmd", term.AuthMiddleware(term.HandleCmd))
+	http.HandleFunc("/debug/dump", term.AuthMiddleware(withReg(term.HandleDump)))
+	http.HandleFunc("/debug/cmd", term.AuthMiddleware(withReg(term.HandleCmd)))
 
 	addr := ":9171"
 	if term.InsecureLocalOnly {

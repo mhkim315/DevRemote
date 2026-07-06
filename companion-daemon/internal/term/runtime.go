@@ -2,6 +2,7 @@ package term
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"devremote/companion-daemon/internal/mux"
@@ -16,9 +17,14 @@ func WithRegistry(ctx context.Context, reg *mux.Registry) context.Context {
 }
 
 // RegistryFromContext extracts the Registry from a context.
-func RegistryFromContext(ctx context.Context) *mux.Registry {
-	reg, _ := ctx.Value(registryCtxKey{}).(*mux.Registry)
-	return reg
+var ErrRegistryMissing = errors.New("registry missing from request context")
+
+func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
+	reg, ok := ctx.Value(registryCtxKey{}).(*mux.Registry)
+	if !ok || reg == nil {
+		return nil, ErrRegistryMissing
+	}
+	return reg, nil
 }
 
 // InjectRegistry wraps an HTTP handler so it receives the Registry via context.

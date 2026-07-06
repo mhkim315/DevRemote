@@ -179,31 +179,18 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			adapterName = "tmux" // Fallback
 		}
 
-		adapter, ok := RegistryFromContext(r.Context()).Adapter(adapterName)
-		if !ok {
-			http.Error(w, "Adapter not found", http.StatusBadRequest)
-			return
-		}
+		reg, _ := RegistryFromContext(r.Context()); _, _ = reg.Adapter(adapterName)
 
 		if r.Method == "POST" {
-			if creator, ok := adapter.(mux.SessionCreator); ok {
-				opts := mux.CreateOptions{
-					Name:        ref.RawID,
-					WorkspaceID: req.WorkspaceID,
-				}
-				createdID, err := creator.CreateSession(r.Context(), opts)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(200)
-				w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, createdID)))
-				return
-			} else {
-				http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
-				return
-			}
+			reg, regErr := RegistryFromContext(r.Context())
+			if regErr != nil { http.Error(w, "server error", 500); return }
+			opts := mux.CreateOptions{Name: ref.RawID, WorkspaceID: req.WorkspaceID}
+			createdID, err := reg.CreateSession(r.Context(), adapterName, opts)
+			if err != nil { http.Error(w, err.Error(), 500); return }
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, createdID)))
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -221,20 +208,12 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				adapterName = "tmux"
 			}
 
-			adapter, ok := RegistryFromContext(r.Context()).Adapter(adapterName)
-			if !ok {
-				http.Error(w, "Adapter not found", http.StatusBadRequest)
-				return
-			}
+			reg, _ := RegistryFromContext(r.Context()); _, _ = reg.Adapter(adapterName)
 
-			if terminator, ok := adapter.(mux.SessionTerminator); ok {
-				if err := terminator.TerminateSession(r.Context(), ref.RawID); err != nil {
-					http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				http.Error(w, "Not implemented for adapter", http.StatusNotImplemented)
-				return
+			reg, regErr := RegistryFromContext(r.Context())
+			if regErr != nil { http.Error(w, "server error", 500); return }
+			if err := reg.TerminateSession(r.Context(), adapterName, ref.RawID); err != nil {
+				http.Error(w, err.Error(), 500); return
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -347,7 +326,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	var s mux.Session
 	var err error
-	s, err = RegistryFromContext(r.Context()).FindSession(r.Context(), session)
+	reg, _ := RegistryFromContext(r.Context()); s, err = reg.FindSession(r.Context(), session)
 	if err != nil {
 		log.Printf("WS session not found err: %v", err)
 		http.Error(w, "session not found", http.StatusNotFound)

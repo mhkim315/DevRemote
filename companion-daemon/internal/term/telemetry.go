@@ -335,7 +335,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		// Fallback to adapter's capability for history reading
 		var out []byte
 		var err error
-		sess, err := RegistryFromContext(r.Context()).FindSession(r.Context(), mux.MigrateLegacyID(historyID))
+		reg, _ := RegistryFromContext(r.Context()); sess, err := reg.FindSession(r.Context(), mux.MigrateLegacyID(historyID))
 		if err == nil {
 			if hr, ok := sess.(mux.HistoryReader); ok {
 				out, err = hr.ReadHistory(context.Background(), 10000)
@@ -361,7 +361,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	res := make([]SessionTelemetry, 0)
 
-	sessions := RegistryFromContext(r.Context()).Sessions(context.Background())
+	reg, _ := RegistryFromContext(r.Context()); sessions := reg.Sessions(r.Context())
 
 	// Collect telemetry data under lock
 	telemetryMu.Lock()
@@ -376,7 +376,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sessions {
 		compoundID := s.AdapterName() + ":" + s.ID()
 
-		snap, _ := RegistryFromContext(r.Context()).Snapshot(s.AdapterName())
+		snap, _ := reg.Snapshot(s.AdapterName())
 		var errStr string
 		if snap.LastError != nil {
 			errStr = snap.LastError.Error()
