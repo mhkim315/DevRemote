@@ -90,7 +90,7 @@ func (a *tmuxAdapter) CreateSession(ctx context.Context, opts CreateOptions) (st
 
 func (a *tmuxAdapter) TerminateSession(ctx context.Context, id string) error {
 	target := id
-	if resolved, err := resolveTmuxTarget(ctx, id); err == nil {
+	if resolved, err := resolveTmuxTarget(ctx, a.runner, id); err == nil {
 		target = resolved
 	}
 	_, err := a.runner.Run(ctx, CommandOptions{}, "tmux", "kill-session", "-t", target)
@@ -138,7 +138,7 @@ func (a *tmuxAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 func (a *tmuxAdapter) GetSession(id string) (Session, error) {
-	target, _ := resolveTmuxTarget(context.Background(), id)
+	target, _ := resolveTmuxTarget(context.Background(), a.runner, id)
 	return &tmuxSession{id: id, target: target, adapter: a}, nil
 }
 
@@ -150,9 +150,8 @@ func parseTmuxListSessionLine(line string) (target string, name string, ok bool)
 	return parts[0], parts[1], true
 }
 
-func resolveTmuxTarget(ctx context.Context, name string) (string, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", tmuxSessionFormat)
-	out, err := cmd.Output()
+func resolveTmuxTarget(ctx context.Context, runner CommandRunner, name string) (string, error) {
+	out, err := runner.Run(ctx, CommandOptions{}, "tmux", "list-sessions", "-F", tmuxSessionFormat)
 	if err != nil {
 		return "", err
 	}
