@@ -215,6 +215,9 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 	select {
 	case <-ctx.Done():
 		snap, _ := r.Snapshot(name)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return snap, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
+		}
 		return snap, ctx.Err()
 	case result := <-resultCh:
 		if result.Err != nil {

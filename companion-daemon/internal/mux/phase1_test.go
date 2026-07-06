@@ -57,10 +57,26 @@ func TestSessionRef_Validate(t *testing.T) {
 	}
 }
 
-type testAdapter struct{ name string }
+type testSession struct {
+	id, adapter string
+}
 
-func (a *testAdapter) Name() string                                        { return a.name }
-func (a *testAdapter) ListSessions(ctx context.Context) ([]Session, error) { return nil, nil }
+func (s *testSession) ID() string          { return s.id }
+func (s *testSession) Title() string       { return s.id }
+func (s *testSession) AdapterName() string { return s.adapter }
+
+type testAdapter struct {
+	name     string
+	sessions []Session
+}
+
+func (a *testAdapter) Name() string { return a.name }
+func (a *testAdapter) ListSessions(_ context.Context) ([]Session, error) {
+	if a.sessions == nil {
+		return nil, nil
+	}
+	return a.sessions, nil
+}
 func (a *testAdapter) GetSession(id string) (Session, error) {
 	return nil, ErrSessionNotFound
 }
@@ -193,5 +209,85 @@ func TestCreateSession_ReturnsLocalID(t *testing.T) {
 	// Creator must return local ID (not canonical prefix).
 	if strings.Contains(id, "test:") {
 		t.Errorf("CreateSession returned %q, want local ID without adapter prefix", id)
+	}
+}
+
+func TestRefresh_TimeoutWrapsErrTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	reg := MustNewRegistry(&testAdapter{name: "test"})
+	_, err := reg.Refresh(ctx, "test", true)
+	if err == nil {
+		t.Fatal("Refresh with expired context: got nil, want error")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("error does not wrap ErrTimeout: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error does not wrap DeadlineExceeded: %v", err)
+	}
+}
+
+func TestRefresh_CancelNotTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reg := MustNewRegistry(&testAdapter{name: "test"})
+	_, err := reg.Refresh(ctx, "test", true)
+	if err == nil {
+		t.Fatal("Refresh with cancelled context: got nil, want error")
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Errorf("cancel should NOT wrap ErrTimeout: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error does not wrap Canceled: %v", err)
+	}
+}
+
+func TestFindSession_EndedSession(t *testing.T) {
+	// Simulate: cache has session, but forced refresh shows it's gone.
+	s1 := &testSession{id: "gone", adapter: "test"}
+	a := &testAdapter{name: "test", sessions: []Session{s1}}
+	reg := MustNewRegistry(a)
+	// Force cache population.
+	_ = reg.Sessions(context.Background())
+	// Remove session from adapter — now it's "ended".
+	a.sessions = nil
+	_, err := reg.FindSession(context.Background(), "test:gone")
+	if err == nil {
+		t.Fatal("FindSession for ended session: got nil, want error")
+	}
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestCreateSession_TmuxCanonicalContract(t *testing.T) {
+	// tmux adapter creates session by name and returns local ID.
+	// Handler wraps with adapter prefix exactly once.
+	reg := MustNewRegistry(&testAdapter{name: "tmux"})
+	localID, err := reg.CreateSession(context.Background(), "tmux", CreateOptions{Name: "test-session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Local ID must NOT contain adapter prefix.
+	if strings.Contains(localID, "tmux:") {
+		t.Errorf("create returned %q, want local ID 'test-session' (not canonical)", localID)
+	}
+	// Handler canonicalizes: adapter + ":" + localID.
+	canonical := SessionRef{Adapter: "tmux", LocalID: localID}.Canonical()
+	if canonical != "tmux:test-session" {
+		t.Errorf("canonical = %q, want tmux:test-session", canonical)
+	}
+}
+
+func TestCanonicalID_URLRoundTrip(t *testing.T) {
+	// Colon in local ID must survive encode/decode round-trip.
+	localID := "session:with:colons"
+	ref := SessionRef{Adapter: "tmux", LocalID: localID}
+	canonical := ref.Canonical()
+	parsed := ParseSessionID(canonical)
+	if parsed.Adapter != "tmux" || parsed.LocalID != localID {
+		t.Errorf("round-trip: %q -> Parse -> adapter=%q local=%q", canonical, parsed.Adapter, parsed.LocalID)
 	}
 }
