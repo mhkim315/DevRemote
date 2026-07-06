@@ -55,7 +55,7 @@ tmux와 cmux에 동일 항목 적용. 미지원은 "NOT SUPPORTED"로 기록.
 | **Live Output** | | | |
 | Stream type | Binary PTY | 500ms poll (1.5s timeout) | Accidental |
 | ANSI color/style | YES (raw PTY) | NO (plain text) | Accidental |
-| Latency | Real-time | ≤500ms | Accidental |
+| Latency | Real-time | poll interval 500ms + command/queue time | Accidental |
 | **Text Input** | | | |
 | Printable ASCII | PASS (stream.Write) | PASS (`send --surface`) | Verified |
 | Enter | CR/LF/CRLF → stream.Write | LF → `send-key enter` | Verified |
@@ -67,7 +67,8 @@ tmux와 cmux에 동일 항목 적용. 미지원은 "NOT SUPPORTED"로 기록.
 | POST create result | local ID returned (accidental) | code exists, not tested | Accidental |
 | DELETE terminate | `kill-session` | `close-surface` | Accidental |
 | **Disconnect / Reconnect** | | | |
-| Client disconnect | stream.Close, WS 1011 close | stream.Close, WS 1011 close | Contract |
+| Client disconnect | stream.Close + writer shutdown | stream.Close + writer shutdown | Contract |
+| Stream/input fatal error | WS 1011 close | WS 1011 close | Contract |
 | Daemon restart | sessions re-discovered | sessions re-discovered | Contract |
 | New WS = new stream | YES | YES | Contract |
 | **Error Handling** | | | |

@@ -157,24 +157,23 @@ func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
 		}
 	}
 	if !strings.Contains(raw, "GOLDEN_SCREEN") {
-
-		// Typed decode to verify value types, not just key presence.
-		var events []models.AgentEvent
-		if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
-			t.Fatalf("history response: invalid AgentEvent JSON: %v", err)
-		}
-		if len(events) == 0 {
-			t.Fatal("history response: empty events array")
-		}
-		e := events[0]
-		if e.ID == "" || e.Session == "" || e.Type == "" || e.Timestamp == "" {
-			t.Errorf("history event has empty required field: id=%q session=%q type=%q ts=%q", e.ID, e.Session, e.Type, e.Timestamp)
-		}
-		if e.Detail == "" && e.Summary == "" {
-			t.Error("history event has empty detail AND summary")
-		}
-
 		t.Errorf("history response missing screen content: %s", raw)
+	}
+
+	// Typed decode to verify value types, not just key presence.
+	var events []models.AgentEvent
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("history response: invalid AgentEvent JSON: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("history response: empty events array")
+	}
+	e := events[0]
+	if e.ID == "" || e.Session == "" || e.Type == "" || e.Timestamp == "" {
+		t.Errorf("history event has empty required field: id=%q session=%q type=%q ts=%q", e.ID, e.Session, e.Type, e.Timestamp)
+	}
+	if e.Detail == "" && e.Summary == "" {
+		t.Error("history event has empty detail AND summary")
 	}
 }
 
