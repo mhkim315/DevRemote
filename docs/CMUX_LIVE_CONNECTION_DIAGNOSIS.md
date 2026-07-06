@@ -376,3 +376,48 @@ fan-out해야 한다.
 성능 캐싱과 polling 최적화는 중요하지만, 현재 단계에서는 먼저 실패를 관측하고
 정확하게 종료·복구할 수 있어야 한다. 위 P0 항목이 완료되기 전에는 cmux 라이브
 접속을 완료 상태로 판단하지 않는다.
+
+## 8. 구현 계획 검토 보완사항
+
+외부 작업 계획 `implementation_plan.md`를 현재 코드와 대조한 결과, 아래 사항을
+반드시 반영해야 한다.
+
+1. `CmuxStream`의 pipe 종료만으로 WebSocket이 닫히지 않는다. 출력 goroutine은
+   종료되지만 메인 goroutine은 `conn.ReadMessage()`에서 계속 대기한다. stream
+   오류를 WebSocket relay까지 전달하고 close code `1011`과 짧은 reason을 보낸
+   뒤 connection을 닫아야 한다.
+2. `RefreshAdapterNow()`는 현재 실제 adapter refresh가 실패해도 `nil`을 반환한다.
+   polling 복구 정책에서 사용하기 전에 refresh 오류를 호출자에게 반환하도록
+   수정해야 한다.
+3. `AdapterSnapshot`에는 이미 `LastSuccessAt`, `LastAttemptAt`, `LastError`가 있다.
+   필드를 중복 추가하지 말고 lock을 지키는 snapshot 조회 API를 제공해야 한다.
+4. Dashboard session JSON의 실제 타입은 `models/events.go`가 아니라
+   `internal/term/telemetry.go`의 `SessionTelemetry`다. `stale`,
+   `lastSuccessAt`, `lastError`는 이 응답 조립 경로에 추가해야 한다.
+5. 최초 `ReadScreen()` 결과를 reader가 없는 `io.PipeWriter`에 동기적으로 쓰면
+   `OpenStream()`이 교착될 수 있다. 초기 frame을 stream 상태에 보관하거나 polling
+   goroutine이 첫 실행에서 전달하도록 구현한다.
+6. 500ms ticker와 명령당 3초 timeout을 함께 사용하면 연속 5회 실패 판정에 최대
+   약 15초가 걸릴 수 있다. 목표 종료 시간을 정하고 timeout 및 실패 횟수를 그에
+   맞춰 설정해야 한다.
+7. HTTP 오류는 WebSocket upgrade 전에만 반환할 수 있다. upgrade 이후 발생한
+   streaming/input 장애는 WebSocket close frame으로 전달한다.
+8. stderr 문자열만으로 surface 소멸 여부를 판별하지 않는다. 공통 cmux runner가
+   실행 경로, exit code, stderr를 보존하는 구조화된 오류를 반환하게 하고 이를
+   기준으로 오류를 분류한다.
+9. 공통 runner는 `tree`, `read-screen`, `send`, `send-key`뿐 아니라
+   `new-surface`, `close-surface`에도 적용한다.
+10. 실제 `cmux` 실행 파일에 의존하지 않는 테스트를 위해 command runner를
+    주입할 수 있게 설계한다. WebSocket 통합 테스트에서는 stream 오류 시 `1011`
+    close frame과 connection 종료를 모두 검증한다.
+
+보정된 구현 순서는 다음과 같다.
+
+```text
+공통 runner와 테스트 주입
+  → HandleWS fallback 제거
+  → stream 오류 전파와 WebSocket 1011 종료
+  → 최초 frame 전달
+  → 입력 오류 처리
+  → snapshot 조회 API와 Dashboard metadata
+```
