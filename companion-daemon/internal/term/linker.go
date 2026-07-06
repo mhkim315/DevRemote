@@ -19,31 +19,23 @@ type SessionLink struct {
 }
 
 // LoadLinks reads links from the LinkStore and validates stale status.
+// Legacy ID migration is handled by LinkStore.Load().
 func LoadLinks(reg *mux.Registry, store LinkStore) error {
 	ctx := context.Background()
 	if err := store.Load(ctx); err != nil {
 		return err
 	}
 
-	// Migrate legacy IDs and detect stale links.
+	// Detect stale links by comparing stored title with current session title.
 	for _, link := range store.List() {
-		updated := false
-		newID := mux.MigrateLegacyID(link.SessionID)
-		if newID != link.SessionID {
-			link.SessionID = newID
-			updated = true
+		if link.Stale {
+			continue
 		}
-		// Verify if the session still matches the expected title.
 		if sess, err := reg.FindSession(ctx, link.SessionID); err == nil {
 			if sess.Title() != link.SessionTitle {
 				link.Stale = true
-				updated = true
-			} else {
-				link.Stale = false
+				_ = store.Put(ctx, link)
 			}
-		}
-		if updated {
-			_ = store.Put(ctx, link)
 		}
 	}
 

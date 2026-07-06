@@ -172,8 +172,8 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	regA.Register(adapterA)
 	regB.Register(adapterB)
 
-	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier(), Events: nilEvents()}
-	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier(), Events: nilEvents()}
+	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier(), Events: term.NewMemoryEventStore()}
+	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier(), Events: term.NewMemoryEventStore()}
 
 	if hA.Registry == hB.Registry {
 		t.Fatal("expected different registries")
@@ -237,7 +237,7 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	var order []string
 
 	cfg := Config{InsecureLocalOnly: true}
-	app, err := NewAppWithDeps(cfg, Dependencies{})
+	app, err := NewAppWithDeps(cfg, testDeps())
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestApp_ShutdownContinuesAfterError(t *testing.T) {
 	watcherCloseErr := errors.New("watcher close failed")
 
 	cfg := Config{InsecureLocalOnly: true}
-	app, err := NewAppWithDeps(cfg, Dependencies{})
+	app, err := NewAppWithDeps(cfg, testDeps())
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestApp_ShutdownContinuesAfterError(t *testing.T) {
 func TestApp_ShutdownRespectsDeadline(t *testing.T) {
 	// A blocking IPC Wait must respect the shutdown deadline.
 	cfg := Config{InsecureLocalOnly: true}
-	app, err := NewAppWithDeps(cfg, Dependencies{})
+	app, err := NewAppWithDeps(cfg, testDeps())
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
@@ -371,13 +371,13 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	socketPath := filepath.Join(dir, "s")
 
 	cfg := Config{InsecureLocalOnly: true}
-	app, err := NewAppWithDeps(cfg, Dependencies{})
+	app, err := NewAppWithDeps(cfg, testDeps())
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
 	app.ipcPath = socketPath
 
-	srv, err := term.StartIPCServer(socketPath, app.registry, nilEvents(), term.NewNopLinkStore())
+	srv, err := term.StartIPCServer(socketPath, app.registry, term.NewMemoryEventStore(), term.NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 
 	// Rebind without manual Remove.
-	srv2, err := term.StartIPCServer(socketPath, app.registry, nilEvents(), term.NewNopLinkStore())
+	srv2, err := term.StartIPCServer(socketPath, app.registry, term.NewMemoryEventStore(), term.NewNopLinkStore())
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
@@ -406,6 +406,9 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 	tunnelStarted := false
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
+		Links:        term.NewNopLinkStore(),
+		Events:       term.NewMemoryEventStore(),
+		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
@@ -439,6 +442,9 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 	tunnelStarted := false
 	cfg := Config{InsecureLocalOnly: false}
 	app, err := NewAppWithDeps(cfg, Dependencies{
+		Links:        term.NewNopLinkStore(),
+		Events:       term.NewMemoryEventStore(),
+		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
@@ -476,6 +482,9 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
+		Links:        term.NewNopLinkStore(),
+		Events:       term.NewMemoryEventStore(),
+		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
@@ -504,6 +513,9 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
+		Links:        term.NewNopLinkStore(),
+		Events:       term.NewMemoryEventStore(),
+		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{}, nil
@@ -545,6 +557,9 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
+		Links:        term.NewNopLinkStore(),
+		Events:       term.NewMemoryEventStore(),
+		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore) (ipcResource, error) {
 			return &fakeIPC{waitErr: shutdownErr}, nil
@@ -589,7 +604,7 @@ func TestApp_TunnelShutdownSignalsAndWaits(t *testing.T) {
 	}
 
 	cfg := Config{InsecureLocalOnly: false}
-	app, err := NewAppWithDeps(cfg, Dependencies{})
+	app, err := NewAppWithDeps(cfg, testDeps())
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
@@ -632,7 +647,7 @@ func TestApp_TunnelAlreadyExitedSkipsSignal(t *testing.T) {
 	close(tun.done) // already exited
 
 	cfg := Config{InsecureLocalOnly: false}
-	app, err := NewAppWithDeps(cfg, Dependencies{})
+	app, err := NewAppWithDeps(cfg, testDeps())
 	if err != nil {
 		t.Fatalf("NewAppWithDeps failed: %v", err)
 	}
@@ -657,9 +672,14 @@ func insecureVerifier() term.TokenVerifier {
 	return term.NewSupabaseVerifier(term.AuthConfig{InsecureLocalOnly: true})
 }
 
-// nilEvents returns a no-op EventStore for tests that don't need events.
-func nilEvents() term.EventStore {
-	return term.NewMemoryEventStore()
+// testDeps returns Dependencies with no-op stores so tests never touch
+// real files or network. Individual fields can be overridden.
+func testDeps() Dependencies {
+	return Dependencies{
+		Links:  term.NewNopLinkStore(),
+		Events: term.NewMemoryEventStore(),
+		Cmds:   term.NewCommandBroker(),
+	}
 }
 
 // ── Helpers ──

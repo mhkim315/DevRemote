@@ -38,7 +38,6 @@ func NewFileLinkStoreAt(path string) (LinkStore, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("linkstore: mkdir %s: %w", dir, err)
 	}
-	// Ensure directory has correct permissions even if it already existed.
 	if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm() != 0700 {
 		_ = os.Chmod(dir, 0700)
 	}
@@ -48,7 +47,6 @@ func NewFileLinkStoreAt(path string) (LinkStore, error) {
 	}, nil
 }
 
-// Path returns the on-disk path (for testing).
 func (s *fileLinkStore) Path() string { return s.path }
 
 type fileLinkStore struct {
@@ -58,6 +56,10 @@ type fileLinkStore struct {
 }
 
 func (s *fileLinkStore) Load(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -74,9 +76,22 @@ func (s *fileLinkStore) Load(ctx context.Context) error {
 		return err
 	}
 
-	s.links = make(map[string]SessionLink, len(links))
+	// Normalise: migrate legacy IDs to canonical and deduplicate.
+	normalised := make(map[string]SessionLink, len(links))
 	for _, l := range links {
-		s.links[l.SessionID] = l
+		canonicalID := mux.MigrateLegacyID(l.SessionID)
+		l.SessionID = canonicalID
+		// Last-write-wins for duplicate canonical IDs.
+		normalised[canonicalID] = l
+	}
+	s.links = normalised
+
+	// If migration changed any IDs, persist the normalised state.
+	for _, l := range links {
+		if mux.MigrateLegacyID(l.SessionID) != l.SessionID {
+			_ = s.saveLocked(s.links)
+			break
+		}
 	}
 	return nil
 }
@@ -100,70 +115,59 @@ func (s *fileLinkStore) List() []SessionLink {
 }
 
 func (s *fileLinkStore) Put(ctx context.Context, link SessionLink) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	link.SessionID = mux.MigrateLegacyID(link.SessionID)
 
 	s.mu.Lock()
-	// Save to disk first; if it fails, memory is not changed.
-	if err := s.saveLocked(link); err != nil {
+	// Clone map, apply change, save; on success replace memory.
+	cloned := cloneMap(s.links)
+	cloned[link.SessionID] = link
+	if err := s.saveLocked(cloned); err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	s.links[link.SessionID] = link
+	s.links = cloned
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *fileLinkStore) Delete(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	sessionID = mux.MigrateLegacyID(sessionID)
 
 	s.mu.Lock()
-	// Save to disk first; if it fails, memory is not changed.
-	if err := s.saveLockedDeleting(sessionID); err != nil {
+	cloned := cloneMap(s.links)
+	delete(cloned, sessionID)
+	if err := s.saveLocked(cloned); err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	delete(s.links, sessionID)
+	s.links = cloned
 	s.mu.Unlock()
 	return nil
 }
 
-// saveLocked writes the current links + the new/updated link to disk atomically.
-// Must be called with s.mu held (write lock).
-func (s *fileLinkStore) saveLocked(newLink SessionLink) error {
-	links := make([]SessionLink, 0, len(s.links)+1)
-	found := false
-	for _, l := range s.links {
-		if l.SessionID == newLink.SessionID {
-			links = append(links, newLink)
-			found = true
-		} else {
-			links = append(links, l)
-		}
+func cloneMap(src map[string]SessionLink) map[string]SessionLink {
+	dst := make(map[string]SessionLink, len(src))
+	for k, v := range src {
+		dst[k] = v
 	}
-	if !found {
-		links = append(links, newLink)
-	}
-
-	// Clean up legacy ID entries.
-	links = deduplicateAndCleanLegacy(links)
-
-	return s.writeAtomically(links)
+	return dst
 }
 
-// saveLockedDeleting writes the current links minus the deleted session to disk.
-// Must be called with s.mu held (write lock).
-func (s *fileLinkStore) saveLockedDeleting(sessionID string) error {
-	var links []SessionLink
-	for _, l := range s.links {
-		if l.SessionID != sessionID {
-			links = append(links, l)
-		}
+func (s *fileLinkStore) saveLocked(links map[string]SessionLink) error {
+	list := make([]SessionLink, 0, len(links))
+	for _, l := range links {
+		list = append(list, l)
 	}
-	return s.writeAtomically(links)
-}
 
-func (s *fileLinkStore) writeAtomically(links []SessionLink) error {
-	data, err := json.MarshalIndent(links, "", "  ")
+	data, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -189,51 +193,24 @@ func (s *fileLinkStore) writeAtomically(links []SessionLink) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	// Ensure final file has correct permissions.
 	_ = os.Chmod(s.path, 0600)
 	return nil
 }
 
-// deduplicateAndCleanLegacy removes entries keyed by legacy IDs when a
-// canonical ID entry exists for the same adapter:session pair.
-func deduplicateAndCleanLegacy(links []SessionLink) []SessionLink {
-	canonical := make(map[string]bool)
-	for _, l := range links {
-		canonical[l.SessionID] = true
-	}
-
-	var out []SessionLink
-	seen := make(map[string]bool)
-	for _, l := range links {
-		// If this is a legacy cmux:NN key and we have cmux:surface:NN, drop it.
-		canonicalID := mux.MigrateLegacyID(l.SessionID)
-		if canonicalID != l.SessionID && canonical[canonicalID] {
-			continue
-		}
-		if !seen[l.SessionID] {
-			seen[l.SessionID] = true
-			out = append(out, l)
-		}
-	}
-	return out
-}
-
-// ── memoryLinkStore (test / nop) ──
+// ── memoryLinkStore ──
 
 type memoryLinkStore struct {
 	mu    sync.RWMutex
 	links map[string]SessionLink
 }
 
-func newMemoryLinkStoreAt() *memoryLinkStore {
+func NewNopLinkStore() LinkStore {
 	return &memoryLinkStore{links: make(map[string]SessionLink)}
 }
 
-func NewNopLinkStore() LinkStore {
-	return newMemoryLinkStoreAt()
+func (s *memoryLinkStore) Load(ctx context.Context) error {
+	return ctx.Err()
 }
-
-func (s *memoryLinkStore) Load(_ context.Context) error { return nil }
 
 func (s *memoryLinkStore) Get(sessionID string) (SessionLink, bool) {
 	sessionID = mux.MigrateLegacyID(sessionID)
@@ -253,7 +230,10 @@ func (s *memoryLinkStore) List() []SessionLink {
 	return res
 }
 
-func (s *memoryLinkStore) Put(_ context.Context, link SessionLink) error {
+func (s *memoryLinkStore) Put(ctx context.Context, link SessionLink) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	link.SessionID = mux.MigrateLegacyID(link.SessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -261,7 +241,10 @@ func (s *memoryLinkStore) Put(_ context.Context, link SessionLink) error {
 	return nil
 }
 
-func (s *memoryLinkStore) Delete(_ context.Context, sessionID string) error {
+func (s *memoryLinkStore) Delete(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sessionID = mux.MigrateLegacyID(sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()

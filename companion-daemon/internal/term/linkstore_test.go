@@ -142,6 +142,76 @@ func TestFileLinkStore_NilSafe(t *testing.T) {
 	s.Delete(ctx, "x")
 }
 
+func TestRegression_FileLinkStore_LoadedLegacyIDIsAccessible(t *testing.T) {
+	// Simulate an existing file containing a legacy cmux ID.
+	// After Load(), Get() with the legacy ID must work via canonical migration.
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	// Write a file with a legacy cmux ID directly (bypass LinkStore).
+	legacyData := `[{"sessionId":"cmux:42","provider":"legacy","externalSessionId":"ext"}]`
+	if err := os.WriteFile(path, []byte(legacyData), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s, _ := NewFileLinkStoreAt(path)
+	if err := s.Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Legacy lookup must succeed (migrated to canonical).
+	l, ok := s.Get("cmux:42")
+	if !ok {
+		t.Fatal("Get(cmux:42) returned false after loading legacy file")
+	}
+	if l.Provider != "legacy" {
+		t.Errorf("Provider = %q, want legacy", l.Provider)
+	}
+
+	// Canonical lookup must also work.
+	l2, ok := s.Get("cmux:surface:42")
+	if !ok {
+		t.Fatal("Get(cmux:surface:42) returned false after legacy migration")
+	}
+	if l2.SessionID != "cmux:surface:42" {
+		t.Errorf("SessionID = %q, want cmux:surface:42", l2.SessionID)
+	}
+
+	// List must not have duplicates.
+	all := s.List()
+	if len(all) != 1 {
+		t.Errorf("List returned %d links after legacy migration, want 1: %+v", len(all), all)
+	}
+}
+
+func TestFileLinkStore_LoadNormalizesToDisk(t *testing.T) {
+	// After loading a legacy file, the normalized state must persist.
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	legacyData := `[{"sessionId":"cmux:42","provider":"legacy","externalSessionId":"ext"}]`
+	os.WriteFile(path, []byte(legacyData), 0600)
+
+	s, _ := NewFileLinkStoreAt(path)
+	s.Load(context.Background())
+
+	// Put another link to trigger a save.
+	s.Put(context.Background(), SessionLink{SessionID: "tmux:x", Provider: "new"})
+
+	// Re-open: must not see legacy key.
+	s2, _ := NewFileLinkStoreAt(path)
+	s2.Load(context.Background())
+	if _, ok := s2.Get("cmux:42"); !ok {
+		t.Fatal("legacy lookup failed after re-open")
+	}
+	all := s2.List()
+	if len(all) != 2 {
+		t.Errorf("List = %d after re-open, want 2", len(all))
+	}
+}
+
 func TestFileLinkStore_DeleteNonExistent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
