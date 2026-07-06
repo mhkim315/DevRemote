@@ -41,17 +41,17 @@ func (r *AntigravityResolver) ResolveLink(ctx context.Context, externalSessionID
 	}
 	// Antigravity saves JSONL transcripts under: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcript.jsonl
 	// OR sometimes directly under brain/<uuid>/transcript.jsonl depending on version. We'll check both.
-	
+
 	path1 := filepath.Join(homeDir, ".gemini", "antigravity", "brain", externalSessionID, ".system_generated", "logs", "transcript.jsonl")
 	path2 := filepath.Join(homeDir, ".gemini", "antigravity", "brain", externalSessionID, "transcript.jsonl")
-	
+
 	if _, err := os.Stat(path1); err == nil {
 		return LogRef{Path: path1, Agent: "gemini", Session: externalSessionID}, nil
 	}
 	if _, err := os.Stat(path2); err == nil {
 		return LogRef{Path: path2, Agent: "gemini", Session: externalSessionID}, nil
 	}
-	
+
 	// Fallback to searching, though explicit links should ideally exist.
 	return LogRef{}, fmt.Errorf("antigravity log not found for uuid %s", externalSessionID)
 }

@@ -36,7 +36,7 @@ func TestVerifyToken_EmptyInsecureMode(t *testing.T) {
 
 	// Insecure mode should allow empty token
 	InsecureLocalOnly = true
-	
+
 	if !VerifyToken("") {
 		t.Error("VerifyToken should pass when token is empty in insecure-local-only mode")
 	}

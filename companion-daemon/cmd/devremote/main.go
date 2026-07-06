@@ -37,7 +37,7 @@ func main() {
 	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
 	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
 	insecureLocalOnly := flag.Bool("insecure-local-only", false, "Disable authentication (DANGEROUS)")
-	
+
 	// If the user specifies "daemon" explicitly, parse flags starting from Args[2]
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -156,7 +156,7 @@ func startWatcher() *watcher.Tailer {
 
 func startTunnel() {
 	cloudflaredPath := "cloudflared" // assume in PATH first
-	
+
 	// Search upwards from executable dir up to 4 levels
 	exePath, err := os.Executable()
 	if err == nil {
@@ -187,7 +187,7 @@ func startTunnel() {
 
 	// Note: URL fetching is removed for now, or you can restore the old logic
 	// if needed, but since it's a named tunnel the URL is handled by cloudflare.
-	
+
 	if err := cmd.Wait(); err != nil {
 		log.Printf("cloudflared tunnel exited: %v", err)
 	}

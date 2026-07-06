@@ -45,10 +45,10 @@ func (r *ClaudeResolver) Resolve(ctx context.Context, p models.ProcessInfo) (Log
 
 	encodedCwd := strings.ReplaceAll(p.CWD, "/", "-")
 	encodedCwd = strings.ReplaceAll(encodedCwd, ".", "-")
-	
+
 	// Clean and strictly join
 	logPath := filepath.Clean(filepath.Join(homeDir, ".claude", "projects", encodedCwd, fmt.Sprintf("%s.jsonl", session.SessionID)))
-	
+
 	// Ensure containment
 	expectedBase := filepath.Clean(filepath.Join(homeDir, ".claude", "projects"))
 	if err := ValidateLogPath(expectedBase, logPath); err != nil {

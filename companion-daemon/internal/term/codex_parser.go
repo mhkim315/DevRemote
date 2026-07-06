@@ -21,7 +21,7 @@ func (p *CodexParser) Parse(record json.RawMessage) ([]models.AgentEvent, error)
 
 	typ, _ := wrapper["type"].(string)
 	tsRaw, _ := wrapper["timestamp"].(string)
-	
+
 	// Normalize timestamp format for UI
 	ts := tsRaw
 	if t, err := time.Parse(time.RFC3339Nano, tsRaw); err == nil {
@@ -60,7 +60,7 @@ func (p *CodexParser) Parse(record json.RawMessage) ([]models.AgentEvent, error)
 						continue
 					}
 					itemType, _ := itemMap["type"].(string)
-					
+
 					if itemType == "output_text" {
 						text, _ := itemMap["text"].(string)
 						events = append(events, models.AgentEvent{
@@ -82,14 +82,14 @@ func (p *CodexParser) Parse(record json.RawMessage) ([]models.AgentEvent, error)
 		// tool 결과: payload.type=function_call_output
 		// reasoning: 별도의 payload.type=reasoning
 	}
-	
+
 	// For other codex payloads
 	pType, _ := payload["type"].(string)
 	if pType == "function_call" {
 		name, _ := payload["name"].(string)
 		args := payload["arguments"]
 		callID, _ := payload["call_id"].(string)
-		
+
 		var b []byte
 		if argsStr, ok := args.(string); ok {
 			var dummy interface{}

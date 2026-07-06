@@ -8,10 +8,10 @@ import (
 type AgentEvent struct {
 	ID         string `json:"id"`
 	Session    string `json:"session"`
-	Agent      string `json:"agent"`       // "codex", "claude", "gemini"
-	Type       string `json:"type"`        // "message", "tool_use", "tool_result", "user"
-	Timestamp  string `json:"timestamp"`   // Original timestamp from the log
-	ToolCallID string `json:"toolCallId"`  // Used to link tool_use and tool_result blocks
+	Agent      string `json:"agent"`      // "codex", "claude", "gemini"
+	Type       string `json:"type"`       // "message", "tool_use", "tool_result", "user"
+	Timestamp  string `json:"timestamp"`  // Original timestamp from the log
+	ToolCallID string `json:"toolCallId"` // Used to link tool_use and tool_result blocks
 	Summary    string `json:"summary"`
 	Detail     string `json:"detail"`
 }
@@ -44,7 +44,7 @@ func EmitEvent(session, eventType, summary, detail string) {
 func AppendEvents(session string, evs []AgentEvent) {
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
-	
+
 	eventsCache[session] = append(eventsCache[session], evs...)
 	if len(eventsCache[session]) > 500 {
 		eventsCache[session] = eventsCache[session][len(eventsCache[session])-500:]
@@ -55,7 +55,7 @@ func AppendEvents(session string, evs []AgentEvent) {
 func GetEvents(session string) []AgentEvent {
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
-	
+
 	if evs, ok := eventsCache[session]; ok {
 		copied := make([]AgentEvent, len(evs))
 		copy(copied, evs)

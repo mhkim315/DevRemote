@@ -14,7 +14,7 @@ func TestCodexParser(t *testing.T) {
 
 	parser := &CodexParser{Session: "test-session"}
 	cursor := &LogCursor{Path: "testdata/codex.jsonl", Offset: 0}
-	
+
 	events, err := ReadNewEvents(cursor, parser, 500)
 	if err != nil && err != io.EOF {
 		t.Fatalf("Failed to read new events: %v", err)
@@ -41,7 +41,7 @@ func TestCodexParser(t *testing.T) {
 func TestClaudeParser(t *testing.T) {
 	parser := &ClaudeParser{Session: "test-session"}
 	cursor := &LogCursor{Path: "testdata/claude.jsonl", Offset: 0}
-	
+
 	events, err := ReadNewEvents(cursor, parser, 500)
 	if err != nil && err != io.EOF {
 		t.Fatalf("Failed to read new events: %v", err)
@@ -68,7 +68,7 @@ func TestClaudeParser(t *testing.T) {
 func TestGeminiParser(t *testing.T) {
 	parser := &GeminiParser{Session: "test-session"}
 	cursor := &LogCursor{Path: "testdata/gemini.jsonl", Offset: 0}
-	
+
 	events, err := ReadNewEvents(cursor, parser, 500)
 	if err != nil && err != io.EOF {
 		t.Fatalf("Failed to read new events: %v", err)
@@ -101,7 +101,7 @@ func TestOversizedRecord(t *testing.T) {
 	defer os.Remove(f.Name())
 
 	f.WriteString("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Line 1\"}}\n")
-	
+
 	// Write a 6MB line (maxRecordSize is 5MB)
 	f.WriteString("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"")
 	largeData := make([]byte, 6*1024*1024)
@@ -110,13 +110,13 @@ func TestOversizedRecord(t *testing.T) {
 	}
 	f.Write(largeData)
 	f.WriteString("\"}}\n")
-	
+
 	f.WriteString("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Line 3\"}}\n")
 	f.Close()
 
 	parser := &CodexParser{Session: "test-session"}
 	cursor := &LogCursor{Path: f.Name(), Offset: 0}
-	
+
 	events, err := ReadNewEvents(cursor, parser, 500)
 	if err != nil && err != io.EOF {
 		t.Fatalf("ReadNewEvents error: %v", err)

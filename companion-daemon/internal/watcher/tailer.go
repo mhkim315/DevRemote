@@ -184,4 +184,3 @@ func ExtractToolUse(ev RawEvent) *ToolUse {
 	}
 	return nil
 }
-

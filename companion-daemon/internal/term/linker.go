@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	
+
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
@@ -114,13 +114,13 @@ func saveLinksLocked() error {
 	if err != nil {
 		return err
 	}
-	
+
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return err
 	}
-	
+
 	if err := f.Sync(); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
@@ -222,7 +222,7 @@ func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid uuid format", http.StatusBadRequest)
 			return
 		}
-		
+
 		if err := LinkSession(link); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -242,6 +242,6 @@ func HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "unlinked"})
 		return
 	}
-	
+
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }

@@ -48,7 +48,7 @@ func handleIPCConnection(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
-	
+
 	cmdStr := ""
 	termEnv := "xterm-256color"
 	var initialW, initialH int
@@ -72,7 +72,7 @@ func handleIPCConnection(conn net.Conn) {
 			conn.Write([]byte(fmt.Sprintf("error decoding json: %v\n", err)))
 			return
 		}
-		
+
 		if req.Operation == "link" {
 			link := SessionLink{
 				SessionID:         req.SessionID,
@@ -106,7 +106,7 @@ func handleIPCConnection(conn net.Conn) {
 			log.Printf("IPC read error: %v", err)
 			return
 		}
-		
+
 		line = strings.TrimSpace(line)
 		if line == "" {
 			break // End of Headers
@@ -181,7 +181,7 @@ func handleIPCConnection(conn net.Conn) {
 		}
 		reader.Discard(reader.Buffered())
 	}
-	
+
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)

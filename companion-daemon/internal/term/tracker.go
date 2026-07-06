@@ -63,7 +63,7 @@ func findAgentProcess(parentPID int) (string, int, error) {
 	}
 
 	lines := strings.Split(string(out), "\n")
-	
+
 	// Map ppid -> []pid
 	// Map pid -> comm
 	children := make(map[int][]int)
@@ -74,12 +74,12 @@ func findAgentProcess(parentPID int) (string, int, error) {
 		if line == "" || strings.HasPrefix(line, "PID") { // skip header
 			continue
 		}
-		
+
 		parts := strings.Fields(line)
 		if len(parts) < 3 {
 			continue
 		}
-		
+
 		pid, err := strconv.Atoi(parts[0])
 		if err != nil {
 			continue
@@ -88,7 +88,7 @@ func findAgentProcess(parentPID int) (string, int, error) {
 		if err != nil {
 			continue
 		}
-		
+
 		commPath := strings.Join(parts[2:], " ")
 		comm := filepath.Base(commPath)
 
@@ -101,7 +101,7 @@ func findAgentProcess(parentPID int) (string, int, error) {
 	search = func(pid int) (string, int) {
 		comm := commands[pid]
 		commLower := strings.ToLower(comm)
-		
+
 		if strings.Contains(commLower, "claude") {
 			return "claude", pid
 		}
@@ -111,7 +111,7 @@ func findAgentProcess(parentPID int) (string, int, error) {
 		if strings.Contains(commLower, "codex") {
 			return "codex", pid
 		}
-		
+
 		for _, childPID := range children[pid] {
 			if t, p := search(childPID); t != "" {
 				return t, p
@@ -135,7 +135,7 @@ func ValidateLogPath(base, target string) error {
 	if err != nil {
 		evalBase = filepath.Clean(base) // fallback if base doesn't exist yet
 	}
-	
+
 	evalTarget, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		// Target might not exist yet, resolve its directory
@@ -155,12 +155,10 @@ func ValidateLogPath(base, target string) error {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path traversal detected: %s", target)
 	}
-	
+
 	if !strings.HasSuffix(target, ".jsonl") && !strings.HasSuffix(target, ".json") {
 		return fmt.Errorf("invalid log file extension: %s", target)
 	}
 
 	return nil
 }
-
-

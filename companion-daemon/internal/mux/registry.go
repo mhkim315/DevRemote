@@ -3,6 +3,7 @@ package mux
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,8 +59,13 @@ func FindSession(id string) (Session, error) {
 		return s, nil
 	}
 
-	// If not found, trigger a refresh to ensure we have the latest
-	GetAllSessionsCached()
+	// If not found, trigger a forced refresh of the relevant adapter
+	parts := strings.SplitN(id, ":", 2)
+	if len(parts) == 2 {
+		RefreshAdapterNow(parts[0])
+	} else {
+		GetAllSessionsCached()
+	}
 
 	// Try one more time
 	if s, err := FindSessionInCache(id); err == nil {
@@ -154,6 +160,29 @@ func GetAllSessionsCached() []Session {
 	}
 
 	return all
+}
+
+// RefreshAdapterNow forces an immediate refresh of a specific adapter, bypassing the 10s throttle.
+func RefreshAdapterNow(adapterName string) error {
+	adaptersMu.RLock()
+	_, exists := adapters[adapterName]
+	adaptersMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("adapter %s not found", adapterName)
+	}
+
+	// Mark it expired so the singleflight execution allows it
+	sessionsCacheMu.Lock()
+	if snap, ok := snapshots[adapterName]; ok {
+		snap.LastAttemptAt = time.Time{}
+		snapshots[adapterName] = snap
+	}
+	sessionsCacheMu.Unlock()
+
+	// Run GetAllSessionsCached which will now refresh this adapter immediately
+	GetAllSessionsCached()
+	return nil
 }
 
 // FindSessionInCache specifically looks for a session in the existing cache

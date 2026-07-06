@@ -30,7 +30,7 @@ func (r *GeminiResolver) Resolve(ctx context.Context, p models.ProcessInfo) (Log
 	}
 
 	sessionID := strings.TrimPrefix(envStr, "POKIT_AGENT_SESSION_ID=")
-	
+
 	// Valid UUID check
 	if !uuidRegex.MatchString(sessionID) {
 		return LogRef{}, fmt.Errorf("invalid gemini session ID format: %s", sessionID)
@@ -43,7 +43,7 @@ func (r *GeminiResolver) Resolve(ctx context.Context, p models.ProcessInfo) (Log
 
 	expectedBase := filepath.Clean(filepath.Join(homeDir, ".gemini", "antigravity", "brain"))
 	logPath := filepath.Clean(filepath.Join(expectedBase, sessionID, ".system_generated", "logs", "transcript.jsonl"))
-	
+
 	if err := ValidateLogPath(expectedBase, logPath); err != nil {
 		return LogRef{}, fmt.Errorf("gemini resolver path validation failed: %w", err)
 	}

@@ -38,7 +38,13 @@ func TestCmuxTreeParserRealFixture(t *testing.T) {
 }
 
 func TestCmuxTreeParserMissingSurfaces(t *testing.T) {
-	// A completely empty tree (no surface lines) is actually valid, it means cmux has 0 surfaces.
+	// Completely empty output with no tree structure should be an error
+	_, err := parseCmuxTree([]byte{})
+	if err == nil {
+		t.Fatalf("expected ErrUnexpectedFormat for completely empty output")
+	}
+
+	// A tree with valid structure but no surface lines is valid (it means cmux has 0 surfaces).
 	// So it should NOT return an error.
 	data := []byte(`
 window window:1 [current] ◀ active

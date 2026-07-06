@@ -42,11 +42,11 @@ func TestMapAgentProcesses(t *testing.T) {
 	}
 
 	mapped, err := mapAgentProcesses(snap)
-	if err == nil {
-		t.Fatalf("expected ambiguity error on surface:5, got nil")
+	if len(mapped.Errors) == 0 {
+		t.Fatalf("expected ambiguity error on surface:5, got none")
 	}
-	if !strings.Contains(err.Error(), "ambiguous agent processes") {
-		t.Fatalf("unexpected error message: %v", err)
+	if !strings.Contains(mapped.Errors["surface:5"].Error(), "ambiguous agent processes") {
+		t.Fatalf("unexpected error message: %v", mapped.Errors["surface:5"])
 	}
 
 	// Remove ambiguous agent to test the rest
@@ -57,19 +57,19 @@ func TestMapAgentProcesses(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if mapped["surface:1"].PID != 100 || mapped["surface:1"].Provider != "" {
-		t.Errorf("expected surface:1 to be shell PID 100, got %v", mapped["surface:1"])
+	if mapped.Processes["surface:1"].PID != 100 || mapped.Processes["surface:1"].Provider != "" {
+		t.Errorf("expected surface:1 to be shell PID 100, got %v", mapped.Processes["surface:1"])
 	}
 
-	if mapped["surface:2"].PID != 201 || mapped["surface:2"].Provider != "claude" {
-		t.Errorf("expected surface:2 to be claude PID 201, got %v", mapped["surface:2"])
+	if mapped.Processes["surface:2"].PID != 201 || mapped.Processes["surface:2"].Provider != "claude" {
+		t.Errorf("expected surface:2 to be claude PID 201, got %v", mapped.Processes["surface:2"])
 	}
 
-	if mapped["surface:3"].PID != 301 || mapped["surface:3"].Provider != "claude" {
-		t.Errorf("expected surface:3 to be claude PID 301, got %v", mapped["surface:3"])
+	if mapped.Processes["surface:3"].PID != 301 || mapped.Processes["surface:3"].Provider != "claude" {
+		t.Errorf("expected surface:3 to be claude PID 301, got %v", mapped.Processes["surface:3"])
 	}
 
-	if mapped["surface:4"].PID != 401 || mapped["surface:4"].Provider != "codex" {
-		t.Errorf("expected surface:4 to be codex PID 401, got %v", mapped["surface:4"])
+	if mapped.Processes["surface:4"].PID != 401 || mapped.Processes["surface:4"].Provider != "codex" {
+		t.Errorf("expected surface:4 to be codex PID 401, got %v", mapped.Processes["surface:4"])
 	}
 }

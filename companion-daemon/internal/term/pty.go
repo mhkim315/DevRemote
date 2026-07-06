@@ -84,7 +84,8 @@ func VerifyToken(tokenString string) bool {
 	}
 
 	token, err := jwt.Parse(tokenString, keyFunc)
-	if err != nil { log.Printf("WS pty start err: %v", err)
+	if err != nil {
+		log.Printf("WS pty start err: %v", err)
 		log.Printf("JWT parse err: %v", err)
 		return false
 	}
@@ -159,7 +160,6 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	// Auth check is handled by middleware
 
-
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req struct {
 			ID          string `json:"id"`
@@ -173,12 +173,12 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ref := mux.ParseSessionID(req.ID)
-		
+
 		adapterName := ref.Adapter
 		if adapterName == "" {
 			adapterName = "tmux" // Fallback
 		}
-		
+
 		adapter, ok := mux.GetAdapter(adapterName)
 		if !ok {
 			http.Error(w, "Adapter not found", http.StatusBadRequest)
@@ -205,7 +205,7 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -220,13 +220,13 @@ func HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			if adapterName == "" {
 				adapterName = "tmux"
 			}
-			
+
 			adapter, ok := mux.GetAdapter(adapterName)
 			if !ok {
 				http.Error(w, "Adapter not found", http.StatusBadRequest)
 				return
 			}
-			
+
 			if terminator, ok := adapter.(mux.SessionTerminator); ok {
 				if err := terminator.TerminateSession(r.Context(), ref.RawID); err != nil {
 					http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
@@ -340,7 +340,6 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware
 
-
 	session := r.URL.Query().Get("session")
 	if session == "" {
 		session = "devremote"
@@ -373,7 +372,8 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil { log.Printf("WS upgrade err: %v", err)
+	if err != nil {
+		log.Printf("WS upgrade err: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -400,7 +400,7 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			break
 		}
-		
+
 		if writer, ok := s.(mux.InputWriter); ok {
 			writer.WriteInput(r.Context(), msg)
 		} else if stream != nil {
@@ -408,7 +408,6 @@ func HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-
 
 func HandleHTML(w http.ResponseWriter, r *http.Request) {
 	// ... we will keep HandleHTML as is, though not heavily used
@@ -446,7 +445,6 @@ func HandleCmd(w http.ResponseWriter, r *http.Request) {
 	cmdMu.Unlock()
 	w.Write([]byte(cmd))
 }
-
 
 func HandleDump(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")

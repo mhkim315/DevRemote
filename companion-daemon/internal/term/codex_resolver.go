@@ -76,7 +76,7 @@ func (r *CodexResolver) Resolve(ctx context.Context, p models.ProcessInfo) (LogR
 		}
 		return nil
 	})
-	
+
 	if err != nil {
 		return LogRef{}, fmt.Errorf("failed to walk codex sessions: %w", err)
 	}
@@ -90,14 +90,14 @@ func (r *CodexResolver) Resolve(ctx context.Context, p models.ProcessInfo) (LogR
 		if err != nil {
 			continue
 		}
-		
+
 		// Create a small buffer for the first line
 		buf := make([]byte, 4096)
 		n, _ := f.Read(buf)
 		f.Close()
 
 		firstLine := strings.Split(string(buf[:n]), "\n")[0]
-		
+
 		var meta codexSessionMeta
 		if err := json.Unmarshal([]byte(firstLine), &meta); err != nil {
 			continue

@@ -47,7 +47,7 @@ func (p *ClaudeParser) Parse(record json.RawMessage) ([]models.AgentEvent, error
 			}
 
 			itemType, _ := itemMap["type"].(string)
-			
+
 			if itemType == "text" {
 				text, _ := itemMap["text"].(string)
 				events = append(events, models.AgentEvent{

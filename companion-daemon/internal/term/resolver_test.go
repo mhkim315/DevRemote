@@ -8,10 +8,10 @@ import (
 
 func TestValidateLogPath(t *testing.T) {
 	dir := t.TempDir()
-	
+
 	base := filepath.Join(dir, "base")
 	os.MkdirAll(base, 0755)
-	
+
 	// Valid target
 	targetValid := filepath.Join(base, "transcript.jsonl")
 	if err := ValidateLogPath(base, targetValid); err != nil {
@@ -34,10 +34,10 @@ func TestValidateLogPath(t *testing.T) {
 	escapeTarget := filepath.Join(dir, "escaped.jsonl")
 	f, _ := os.Create(escapeTarget)
 	f.Close()
-	
+
 	symlinkPath := filepath.Join(base, "symlink.jsonl")
 	os.Symlink(escapeTarget, symlinkPath)
-	
+
 	if err := ValidateLogPath(base, symlinkPath); err == nil {
 		t.Errorf("expected symlink escape to fail")
 	}

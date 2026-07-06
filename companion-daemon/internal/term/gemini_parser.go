@@ -90,13 +90,13 @@ func (p *GeminiParser) Parse(record json.RawMessage) ([]models.AgentEvent, error
 		// Tool results or other events (RUN_COMMAND, VIEW_FILE, etc.)
 		if payload.Content != "" {
 			events = append(events, models.AgentEvent{
-				ID:         fmt.Sprintf("gemini-res-%s", step),
-				Session:    p.Session,
-				Agent:      "gemini",
-				Type:       "tool_result",
-				Summary:    fmt.Sprintf("Result: %s", payload.Type),
-				Detail:     payload.Content,
-				Timestamp:  ts,
+				ID:        fmt.Sprintf("gemini-res-%s", step),
+				Session:   p.Session,
+				Agent:     "gemini",
+				Type:      "tool_result",
+				Summary:   fmt.Sprintf("Result: %s", payload.Type),
+				Detail:    payload.Content,
+				Timestamp: ts,
 				// ToolCallID omitted for Gemini tool results since they are not strongly linked in JSONL
 			})
 		}

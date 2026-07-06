@@ -106,8 +106,8 @@ func (s *session) reset() {
 
 type hub struct {
 	mu       sync.RWMutex
-	sessions map[string]*session  // keyed by persistent key
-	codes    map[string]string    // code -> key
+	sessions map[string]*session // keyed by persistent key
+	codes    map[string]string   // code -> key
 }
 
 func newHub() *hub {

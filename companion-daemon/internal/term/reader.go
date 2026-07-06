@@ -47,19 +47,19 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 
 	reader := bufio.NewReader(file)
 	var events []models.AgentEvent
-	
+
 	// We read line by line. We keep track of how many bytes we've consumed for the current line
 	// so that if we hit EOF without \n, we can just return and let the next poll read from cursor.Offset.
-	
+
 	var currentLine []byte
 	var currentLineLen int64
 
 	for len(events) < maxEvents {
 		chunk, err := reader.ReadSlice('\n')
-		
+
 		// Accumulate bytes for the current line size
 		currentLineLen += int64(len(chunk))
-		
+
 		if !cursor.Discarding {
 			currentLine = append(currentLine, chunk...)
 			if int64(len(currentLine)) > maxRecordSize {
@@ -103,7 +103,7 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 		// Parse the complete line
 		parsedEvents, parseErr := parser.Parse(currentLine)
 		currentLine = nil // Reset for next line
-		
+
 		if parseErr != nil {
 			// Skip malformed lines gracefully
 			continue

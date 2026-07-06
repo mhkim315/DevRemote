@@ -93,6 +93,11 @@ func parseCmuxTree(out []byte) ([]Session, error) {
 		}
 	}
 
+	// If the output is completely empty or doesn't even contain "window" or "workspace", it's an error.
+	if !sawTreeStructure {
+		return nil, fmt.Errorf("unexpected format: output is completely empty or missing window/workspace structure")
+	}
+
 	// We only error out if we explicitly saw a terminal surface line but failed to parse it.
 	// If we only saw [browser] surfaces (or no surfaces at all), we return the empty slice without error.
 	if sawTreeStructure && sawTerminalSurfaceLine && len(sessions) == 0 {
@@ -330,6 +335,11 @@ type AgentProcess struct {
 	Provider string
 }
 
+type ProcessSnapshotResult struct {
+	Processes map[string]AgentProcess
+	Errors    map[string]error
+}
+
 func parseCmuxTop(out []byte) (CmuxTopSnapshot, error) {
 	lines := strings.Split(string(out), "\n")
 	var snap CmuxTopSnapshot
@@ -366,7 +376,7 @@ func parseCmuxTop(out []byte) (CmuxTopSnapshot, error) {
 	return snap, nil
 }
 
-func mapAgentProcesses(snap CmuxTopSnapshot) (map[string]AgentProcess, error) {
+func mapAgentProcesses(snap CmuxTopSnapshot) (ProcessSnapshotResult, error) {
 	agentTags := make(map[string]string)
 	for _, t := range snap.Tags {
 		lowerRef := strings.ToLower(t.Ref)
@@ -387,7 +397,10 @@ func mapAgentProcesses(snap CmuxTopSnapshot) (map[string]AgentProcess, error) {
 		pidNames[p.PID] = p.Name
 	}
 
-	result := make(map[string]AgentProcess)
+	result := ProcessSnapshotResult{
+		Processes: make(map[string]AgentProcess),
+		Errors:    make(map[string]error),
+	}
 	surfaceCandidates := make(map[string][]int) // surfaceID -> PIDs
 
 	for pid, parents := range pidParents {
@@ -417,27 +430,32 @@ func mapAgentProcesses(snap CmuxTopSnapshot) (map[string]AgentProcess, error) {
 		if surfaceID != "" {
 			surfaceCandidates[surfaceID] = append(surfaceCandidates[surfaceID], pid)
 			if provider != "" {
-				if existing, ok := result[surfaceID]; ok {
-					return nil, fmt.Errorf("ambiguous agent processes on surface %s: %v and %v", surfaceID, existing.PID, pid)
-				}
-				result[surfaceID] = AgentProcess{
-					PID:      pid,
-					Provider: provider,
+				if existing, ok := result.Processes[surfaceID]; ok {
+					result.Errors[surfaceID] = fmt.Errorf("ambiguous agent processes on surface %s: %v and %v", surfaceID, existing.PID, pid)
+					delete(result.Processes, surfaceID) // Remove the ambiguous entry
+				} else if _, hasErr := result.Errors[surfaceID]; !hasErr {
+					result.Processes[surfaceID] = AgentProcess{
+						PID:      pid,
+						Provider: provider,
+					}
 				}
 			}
 		}
 	}
 
-	// Fallback to min PID if no agent tag was found
+	// Fallback to min PID if no agent tag was found and no error occurred
 	for surfaceID, pids := range surfaceCandidates {
-		if _, ok := result[surfaceID]; !ok && len(pids) > 0 {
+		if _, hasErr := result.Errors[surfaceID]; hasErr {
+			continue
+		}
+		if _, ok := result.Processes[surfaceID]; !ok && len(pids) > 0 {
 			minPID := pids[0]
 			for _, pid := range pids {
 				if pid < minPID {
 					minPID = pid
 				}
 			}
-			result[surfaceID] = AgentProcess{PID: minPID}
+			result.Processes[surfaceID] = AgentProcess{PID: minPID}
 		}
 	}
 
@@ -461,7 +479,11 @@ func (s *CmuxSession) ProcessInfo(ctx context.Context) (models.ProcessInfo, erro
 		return models.ProcessInfo{}, err
 	}
 
-	if ap, ok := mapped[s.surfaceID]; ok {
+	if err, ok := mapped.Errors[s.surfaceID]; ok {
+		return models.ProcessInfo{}, err
+	}
+
+	if ap, ok := mapped.Processes[s.surfaceID]; ok {
 		return s.resolveProcessInfo(ap.PID)
 	}
 
@@ -517,7 +539,7 @@ func (a *cmuxAdapter) ProcessSnapshot(ctx context.Context) (map[string]models.Pr
 	}
 
 	result := make(map[string]models.ProcessInfo)
-	for surfaceID, ap := range mapped {
+	for surfaceID, ap := range mapped.Processes {
 		dummy := &CmuxSession{surfaceID: surfaceID}
 		if info, err := dummy.resolveProcessInfo(ap.PID); err == nil {
 			result[surfaceID] = info

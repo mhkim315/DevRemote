@@ -15,12 +15,12 @@ import (
 
 // SessionTelemetry holds the calculated state of a tmux session.
 type SessionTelemetry struct {
-	ID          string       `json:"id"`
-	State       string       `json:"state"` // "idle", "thinking", "working", "waiting"
-	Load        int          `json:"load"`  // 0-100 (animation speed)
-	Runner      string       `json:"runner"`
-	RunnerColor string       `json:"runnerColor"`
-	Adapter     string       `json:"adapter"`
+	ID          string              `json:"id"`
+	State       string              `json:"state"` // "idle", "thinking", "working", "waiting"
+	Load        int                 `json:"load"`  // 0-100 (animation speed)
+	Runner      string              `json:"runner"`
+	RunnerColor string              `json:"runnerColor"`
+	Adapter     string              `json:"adapter"`
 	Events      []models.AgentEvent `json:"events"`
 }
 
@@ -68,16 +68,27 @@ func StartTelemetryLoop(ctx context.Context) {
 				return
 			case <-ticker.C:
 			}
-			var sessions []string
-			for _, s := range mux.GetAllSessionsCached() {
-				// Use the compound key so cache works for multi-adapters
-				sessions = append(sessions, s.AdapterName()+":"+s.ID())
+
+			// 1. Gather sessions and build process snapshots
+			sessions := mux.GetAllSessionsCached()
+			processSnapshots := make(map[string]models.ProcessInfo)
+
+			for _, adapter := range mux.GetAdapters() {
+				name := adapter.Name()
+				if psp, ok := adapter.(mux.ProcessSnapshotProvider); ok {
+					if snap, err := psp.ProcessSnapshot(ctx); err == nil {
+						for sid, info := range snap {
+							processSnapshots[name+":"+sid] = info
+						}
+					}
+				}
 			}
 
 			telemetryMu.Lock()
 			// Clean up old sessions
 			activeSet := make(map[string]bool)
-			for _, s := range sessions {
+			for _, sess := range sessions {
+				s := sess.AdapterName() + ":" + sess.ID()
 				activeSet[s] = true
 				if telemetryCache[s] == nil {
 					telemetryCache[s] = &sessionStateData{
@@ -95,10 +106,11 @@ func StartTelemetryLoop(ctx context.Context) {
 			telemetryMu.Unlock()
 
 			// Check each active session
-			for _, s := range sessions {
+			for _, sess := range sessions {
+				s := sess.AdapterName() + ":" + sess.ID()
 				var logRef LogRef
 				var logErr error = fmt.Errorf("no log")
-				
+
 				// 1. LinkedLogResolver (Explicit Links)
 				if link, ok := GetLink(s); ok && !link.Stale {
 					if link.Provider == "gemini-antigravity" {
@@ -106,21 +118,21 @@ func StartTelemetryLoop(ctx context.Context) {
 						logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
 					}
 				}
-				
-				// 2. ProcessProvider (System Process)
+
+				// 2. ProcessProvider (System Process - Batch or Fallback)
 				if logErr != nil {
-					if sess, err := mux.FindSession(s); err == nil {
-						if pp, ok := sess.(mux.ProcessProvider); ok {
-							if pinfo, err := pp.ProcessInfo(ctx); err == nil {
-								logRef, logErr = ResolveAgentLog(ctx, pinfo)
-							}
+					if info, ok := processSnapshots[s]; ok {
+						logRef, logErr = ResolveAgentLog(ctx, info)
+					} else if pp, ok := sess.(mux.ProcessProvider); ok {
+						if pinfo, err := pp.ProcessInfo(ctx); err == nil {
+							logRef, logErr = ResolveAgentLog(ctx, pinfo)
 						}
 					}
 				}
 
 				var parsedNewEvents bool
 				var lastEvent models.AgentEvent
-				
+
 				if logErr == nil {
 					telemetryMu.Lock()
 					stateData := telemetryCache[s]
@@ -155,12 +167,10 @@ func StartTelemetryLoop(ctx context.Context) {
 
 				// Always fetch capture-pane as fallback for approvals and missing logs
 				var out []byte
-				if sess, err := mux.FindSession(s); err == nil {
-					if sr, ok := sess.(mux.ScreenReader); ok {
-						out, _ = sr.ReadScreen(ctx)
-					}
+				if sr, ok := sess.(mux.ScreenReader); ok {
+					out, _ = sr.ReadScreen(ctx)
 				}
-				
+
 				// POKIT_RUNNER is no longer extracted here directly from tmux,
 				// as it's typically set globally or via the Linker/ProcessResolver.
 				// We'll default to the agent type we found, or the logRef.Agent.
@@ -188,7 +198,7 @@ func StartTelemetryLoop(ctx context.Context) {
 				// Extract the last 5 lines for keyword analysis
 				isWaiting := false
 				lines := strings.Split(string(out), "\n")
-				
+
 				tailLines := lines
 				if len(lines) > 5 {
 					tailLines = lines[len(lines)-5:]
@@ -314,7 +324,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session not found or history unavailable", http.StatusNotFound)
 			return
 		}
-		
+
 		fallbackEvents := []models.AgentEvent{{
 			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Terminal History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
 		}}
@@ -340,8 +350,7 @@ func HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	if res == nil {
 		res = []SessionTelemetry{}
 	}
-	
+
 	jsonBytes, _ := json.Marshal(res)
 	w.Write(jsonBytes)
 }
-
