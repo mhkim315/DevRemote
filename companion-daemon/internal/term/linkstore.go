@@ -41,6 +41,12 @@ func NewFileLinkStoreAt(path string) (LinkStore, error) {
 	if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm() != 0700 {
 		_ = os.Chmod(dir, 0700)
 	}
+	// Correct existing file permissions to 0600.
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0600 {
+		if err := os.Chmod(path, 0600); err != nil {
+			return nil, fmt.Errorf("linkstore: chmod %s: %w", path, err)
+		}
+	}
 	return &fileLinkStore{
 		links: make(map[string]SessionLink),
 		path:  path,
@@ -89,7 +95,9 @@ func (s *fileLinkStore) Load(ctx context.Context) error {
 	// If migration changed any IDs, persist the normalised state.
 	for _, l := range links {
 		if mux.MigrateLegacyID(l.SessionID) != l.SessionID {
-			_ = s.saveLocked(s.links)
+			if err := s.saveLocked(s.links); err != nil {
+				return fmt.Errorf("linkstore: migrate save: %w", err)
+			}
 			break
 		}
 	}

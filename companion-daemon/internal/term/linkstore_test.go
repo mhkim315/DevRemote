@@ -212,6 +212,31 @@ func TestFileLinkStore_LoadNormalizesToDisk(t *testing.T) {
 	}
 }
 
+func TestFileLinkStore_ExistingFilePermissionCorrected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "links.json")
+
+	// Create a file with insecure permissions.
+	if err := os.WriteFile(path, []byte(`[{"sessionId":"x","provider":"p"}]`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Creating the store must correct permissions to 0600.
+	_, err := NewFileLinkStoreAt(path)
+	if err != nil {
+		t.Fatalf("NewFileLinkStoreAt: %v", err)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0600 {
+		t.Errorf("file mode = %o after NewFileLinkStoreAt, want 0600", fi.Mode().Perm())
+	}
+}
+
 func TestFileLinkStore_DeleteNonExistent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
