@@ -25,7 +25,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       .then(data => {
         const normalized = (data || []).map((s: any) =>
           typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
-        );
+        ).sort((a: SessionTelemetry, b: SessionTelemetry) => String(a.id).localeCompare(String(b.id)));
         setSessions(normalized);
         setLoading(false);
       })

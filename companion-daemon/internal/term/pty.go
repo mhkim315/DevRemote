@@ -268,9 +268,120 @@ func (h *Handlers) HandleHTML(w http.ResponseWriter, r *http.Request) {
 	// ... we will keep HandleHTML as is, though not heavily used
 	// Auth check is handled by middleware
 
-	io.WriteString(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/><script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:#000}#t{width:100%;height:100%}#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7);display:none}</style></head><body><div id="t"></div><div id="status" style="display:none"></div><script>var raw='',reconnecting=false;function connect(){if(reconnecting)return;var protocol=location.protocol==='https:'?'wss://':'ws://';var s=document.getElementById('status');if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);window.ws=ws;ws.binaryType='arraybuffer';ws.onopen=function(){reconnecting=false;setTimeout(function(){fitTerminal()},500)};ws.onmessage=function(e){var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);raw+=t;term.write(t)};ws.onclose=function(){if(!reconnecting){reconnecting=true;setTimeout(function(){reconnecting=false;connect()},2000)}};ws.onerror=function(){ws.close()}}var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});term.open(document.getElementById("t"));term.onData(function(d){var w=window.ws;if(w&&w.readyState===1)try{w.send(d)}catch(e){}});setTimeout(function(){term.focus();fitTerminal();},500);
-function fitTerminal(){var h=document.getElementById('t').clientHeight;var w=document.getElementById('t').clientWidth;var rows=Math.floor(h/17);var cols=Math.floor(w/7.8);if(rows>0&&cols>0){var p=new URLSearchParams(location.search);var sess=p.get('session');var tok=p.get('token');var hdrs={};if(tok)hdrs['Authorization']='Bearer '+tok;fetch('/term/size?session='+encodeURIComponent(sess)+'&rows='+rows+'&cols='+cols,{method:'POST',headers:hdrs}).catch(function(){})}};
-window.addEventListener('resize',function(){fitTerminal()});setInterval(function(){var p=new URLSearchParams(location.search);var sess=p.get('session');var tok=p.get('token');var hdrs={};if(tok)hdrs['Authorization']='Bearer '+tok;fetch("/debug/cmd?session="+encodeURIComponent(sess),{headers:hdrs}).then(function(r){return r.text()}).then(function(d){var w=window.ws;if(d&&w&&w.readyState===1)try{w.send(d+"\n")}catch(e){}}).catch(function(){})},2000);connect();</script></body></html>`)
+	io.WriteString(w, `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<style>
+*{margin:0;padding:0}
+html,body{width:100%;height:100%;background:#000}
+#t{width:100%;height:100%}
+#status{position:fixed;top:4px;right:8px;color:#888;font:12px monospace;z-index:9;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.7);display:none}
+</style>
+</head>
+<body>
+<div id="t"></div>
+<div id="status"></div>
+<script>
+var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null;
+var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
+term.open(document.getElementById("t"));
+
+function setStatus(text, terminalText) {
+  var s=document.getElementById('status');
+  s.textContent=text;
+  s.style.display='block';
+  if (terminalText) term.writeln('\r\n' + terminalText);
+}
+
+function stopSession(text) {
+  stopped=true;
+  if (cmdPoll) clearInterval(cmdPoll);
+  if (window.ws) try{window.ws.onclose=null;window.ws.close()}catch(e){}
+  setStatus('session ended', text || 'Session ended');
+}
+
+function connect(){
+  if(reconnecting||stopped)return;
+  var protocol=location.protocol==='https:'?'wss://':'ws://';
+  if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
+  opened=false;
+  var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);
+  window.ws=ws;
+  ws.binaryType='arraybuffer';
+  ws.onopen=function(){
+    opened=true;
+    consecutiveFailures=0;
+    reconnecting=false;
+    document.getElementById('status').style.display='none';
+    setTimeout(function(){fitTerminal()},500);
+  };
+  ws.onmessage=function(e){
+    var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
+    raw+=t;
+    term.write(t);
+  };
+  ws.onclose=function(e){
+    if(stopped)return;
+    if(!opened) consecutiveFailures++;
+    if(e.code===1008||e.code===1011||consecutiveFailures>=3){
+      stopSession('Session ended or unavailable');
+      return;
+    }
+    if(!reconnecting){
+      reconnecting=true;
+      setStatus('reconnecting...');
+      setTimeout(function(){reconnecting=false;connect()},2000);
+    }
+  };
+  ws.onerror=function(){try{ws.close()}catch(e){}};
+}
+
+term.onData(function(d){
+  var w=window.ws;
+  if(w&&w.readyState===1)try{w.send(d)}catch(e){}
+});
+
+function fitTerminal(){
+  var h=document.getElementById('t').clientHeight;
+  var w=document.getElementById('t').clientWidth;
+  var rows=Math.floor(h/17);
+  var cols=Math.floor(w/7.8);
+  if(rows>0&&cols>0){
+    var p=new URLSearchParams(location.search);
+    var sess=p.get('session');
+    var tok=p.get('token');
+    var hdrs={};
+    if(tok)hdrs['Authorization']='Bearer '+tok;
+    fetch('/term/size?session='+encodeURIComponent(sess)+'&rows='+rows+'&cols='+cols,{method:'POST',headers:hdrs}).catch(function(){});
+  }
+}
+
+window.addEventListener('resize',function(){fitTerminal()});
+cmdPoll=setInterval(function(){
+  if(stopped)return;
+  var p=new URLSearchParams(location.search);
+  var sess=p.get('session');
+  var tok=p.get('token');
+  var hdrs={};
+  if(tok)hdrs['Authorization']='Bearer '+tok;
+  fetch("/debug/cmd?session="+encodeURIComponent(sess),{headers:hdrs})
+    .then(function(r){return r.text()})
+    .then(function(d){
+      var w=window.ws;
+      if(d&&w&&w.readyState===1)try{w.send(d+"\n")}catch(e){}
+    })
+    .catch(function(){});
+},2000);
+
+setTimeout(function(){term.focus();fitTerminal();},500);
+connect();
+</script>
+</body>
+</html>`)
 }
 
 func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
