@@ -494,6 +494,12 @@ fix: complete instance-owned mux registry wiring
 > REJECT됐다. 재작업 범위와 acceptance test는
 > [`PHASE2_146EEB3_CORRECTIVE_GUIDE.md`](./PHASE2_146EEB3_CORRECTIVE_GUIDE.md)를
 > 따른다. 해당 조건이 충족되기 전에는 Phase 3을 시작하지 않는다.
+>
+> 후속 구현 `a7e8ad767`은 watcher/IPC/telemetry lifecycle의 핵심 결함을
+> 수정했으나 HTTP serve 오류 유실, tunnel process 회수, App-level IPC cleanup과
+> acceptance test가 남아 다시 REJECT됐다. 최종 보완은
+> [`PHASE2_A7E8AD7_FINAL_FIX_GUIDE.md`](./PHASE2_A7E8AD7_FINAL_FIX_GUIDE.md)를
+> 따른다. auth/approval/cache 전역의 후속 Phase 연기는 승인됐다.
 
 ### 목적
 
