@@ -246,28 +246,40 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 	if len(adapters) == 0 {
 		return nil
 	}
+	// Collect with deadline: a slow adapter does not block healthy ones indefinitely.
+	collectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	type result struct {
 		sessions []Session
 	}
 	results := make(chan result, len(adapters))
 	for _, adapter := range adapters {
 		go func(adapter Adapter) {
-			adapterCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			adapterCtx, cancel := context.WithTimeout(collectCtx, 5*time.Second)
 			defer cancel()
 			snap, _ := r.Refresh(adapterCtx, adapter.Name(), false)
 			results <- result{sessions: snap.Sessions}
 		}(adapter)
 	}
+
 	var all []Session
 	seen := make(map[string]bool)
-	for i := 0; i < len(adapters); i++ {
-		r := <-results
-		for _, s := range r.sessions {
-			key := s.AdapterName() + ":" + s.ID()
-			if !seen[key] {
-				seen[key] = true
-				all = append(all, s)
+	remaining := len(adapters)
+	for remaining > 0 {
+		select {
+		case r := <-results:
+			remaining--
+			for _, s := range r.sessions {
+				key := s.AdapterName() + ":" + s.ID()
+				if !seen[key] {
+					seen[key] = true
+					all = append(all, s)
+				}
 			}
+		case <-collectCtx.Done():
+			// Deadline reached: return what we have from healthy adapters.
+			remaining = 0
 		}
 	}
 	sort.SliceStable(all, func(i, j int) bool {

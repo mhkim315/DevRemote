@@ -18,7 +18,7 @@ func (r *GeminiResolver) Resolve(ctx context.Context, p models.ProcessInfo) (Log
 		return LogRef{}, fmt.Errorf("gemini resolver requires pane ID to query environment variables")
 	}
 
-	// Phase 3 deferred: adapter-specific command execution. Currently hardcoded
+	// Phase 4 deferred: adapter-agnostic resolver. This hardcoded tmux command will be replaced when Phase 4 introduces per-adapter runner injection for resolver/telemetry paths. Currently hardcoded
 	// to tmux; Phase 3 will inject adapter runner for backend-agnostic resolution.
 	cmd := exec.Command("tmux", "show-environment", "-t", p.PaneID, "POKIT_AGENT_SESSION_ID")
 	out, err := cmd.Output()

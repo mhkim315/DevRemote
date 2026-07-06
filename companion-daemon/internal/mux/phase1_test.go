@@ -424,3 +424,46 @@ func TestProbeAdapter_Unavailable(t *testing.T) {
 		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
 	}
 }
+
+func TestRegistry_SlowAdapterDoesNotBlock(t *testing.T) {
+	// A slow adapter must not prevent healthy adapters from returning sessions.
+	fast := &testAdapter{name: "fast", sessions: []Session{&testSession{id: "s1", adapter: "fast"}}}
+	slow := &blockingAdapter{name: "slow"}
+	reg := MustNewRegistry(fast, slow)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := reg.Sessions(ctx)
+	// Must have fast adapter's session even though slow is hanging.
+	found := false
+	for _, s := range sessions {
+		if s.AdapterName() == "fast" && s.ID() == "s1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("fast adapter session not found in results (slow adapter blocked)")
+	}
+}
+
+func TestProbeAdapter_Timeout(t *testing.T) {
+	blocker := &blockingAdapter{name: "test"}
+	err := ProbeAdapter(context.Background(), blocker, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("ProbeAdapter with timeout: got nil, want error")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
+	}
+}
+
+func TestProbeAdapter_Cancel(t *testing.T) {
+	blocker := &blockingAdapter{name: "test"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ProbeAdapter(ctx, blocker, 5*time.Second)
+	if err == nil {
+		t.Fatal("ProbeAdapter with cancelled context: got nil, want error")
+	}
+}
