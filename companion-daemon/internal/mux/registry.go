@@ -168,7 +168,7 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 		return AdapterSnapshot{LastError: err}, err
 	}
 
-	// Phase 3 deferred: singleflight shares first waiter's context across all
+	// Phase 4 deferred: singleflight shares first waiter's context across all
 	// concurrent callers. If the first caller cancels, other waiters get the
 	// cancelled result. Phase 3 lifecycle/concurrency will add per-caller
 	// timeout isolation.
@@ -232,12 +232,27 @@ func (r *Registry) Refresh(ctx context.Context, name string, force bool) (Adapte
 
 // Sessions returns the full set of sessions from all adapters.
 func (r *Registry) Sessions(ctx context.Context) []Session {
+	adapters := r.Adapters()
+	if len(adapters) == 0 {
+		return nil
+	}
+	type result struct {
+		sessions []Session
+	}
+	results := make(chan result, len(adapters))
+	for _, adapter := range adapters {
+		go func(adapter Adapter) {
+			adapterCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			snap, _ := r.Refresh(adapterCtx, adapter.Name(), false)
+			results <- result{sessions: snap.Sessions}
+		}(adapter)
+	}
 	var all []Session
 	seen := make(map[string]bool)
-
-	for _, adapter := range r.Adapters() {
-		snap, _ := r.Refresh(ctx, adapter.Name(), false)
-		for _, s := range snap.Sessions {
+	for i := 0; i < len(adapters); i++ {
+		r := <-results
+		for _, s := range r.sessions {
 			key := s.AdapterName() + ":" + s.ID()
 			if !seen[key] {
 				seen[key] = true

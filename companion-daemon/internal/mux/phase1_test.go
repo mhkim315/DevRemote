@@ -404,3 +404,23 @@ func TestCmuxAdapter_CreateSession_MalformedOutput(t *testing.T) {
 		t.Errorf("CreateSession on parse failure returned id=%q, want empty", id)
 	}
 }
+
+func TestProbeAdapter_Healthy(t *testing.T) {
+	reg := MustNewRegistry(&testAdapter{name: "test"})
+	adapter, _ := reg.Adapter("test")
+	err := ProbeAdapter(context.Background(), adapter, 5*time.Second)
+	if err != nil {
+		t.Errorf("ProbeAdapter on healthy adapter: %v", err)
+	}
+}
+
+func TestProbeAdapter_Unavailable(t *testing.T) {
+	a := &testAdapter{name: "test", failWith: errors.New("down")}
+	err := ProbeAdapter(context.Background(), a, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("ProbeAdapter on failing adapter: got nil, want error")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
+	}
+}
