@@ -116,7 +116,7 @@ func (h *Handlers) HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if h.Telemetry != nil {
-			h.Telemetry.Clear(link.SessionID)
+			h.Telemetry.Clear(mux.MigrateLegacyID(link.SessionID))
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "linked"})
 		return
@@ -131,7 +131,7 @@ func (h *Handlers) HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if h.Telemetry != nil {
-			h.Telemetry.Clear(sessionID)
+			h.Telemetry.Clear(mux.MigrateLegacyID(sessionID))
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "unlinked"})
 		return

@@ -2,9 +2,13 @@ package term
 
 import (
 	"context"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"devremote/companion-daemon/internal/mux"
 )
 
 func TestFileLinkStore_PutGetListDelete(t *testing.T) {
@@ -244,5 +248,36 @@ func TestFileLinkStore_DeleteNonExistent(t *testing.T) {
 	// Deleting a non-existent key should not error.
 	if err := s.Delete(context.Background(), "nonexistent"); err != nil {
 		t.Errorf("Delete non-existent: %v", err)
+	}
+}
+
+func TestHandleLinksAPI_ClearsCanonicalTelemetryForLegacyID(t *testing.T) {
+	// When HandleLinksAPI receives a legacy cmux:42 link/unlink,
+	// it must clear telemetry for the canonical cmux:surface:42 key.
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, _ := NewFileLinkStoreAt(filepath.Join(dir, "links.json"))
+	events := NewMemoryEventStore()
+	reg := mux.NewRegistry()
+	telemetry := NewTelemetryService(reg, events, store, nil)
+
+	// Pre-populate telemetry with state for the canonical key.
+	telemetry.sessions["cmux:surface:42"] = &sessionStateData{State: "working"}
+
+	h := &Handlers{Registry: reg, Links: store, Events: events, Telemetry: telemetry}
+
+	// POST link with legacy ID.
+	body := strings.NewReader(`{"sessionId":"cmux:42","provider":"p","externalSessionId":"ext"}`)
+	req := httptest.NewRequest("POST", "/api/v2/links", body)
+	rec := httptest.NewRecorder()
+	h.HandleLinksAPI(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("POST status = %d", rec.Code)
+	}
+	// Telemetry must be cleared for the canonical key.
+	if telemetry.sessions["cmux:surface:42"] != nil {
+		t.Error("telemetry state was not cleared for canonical link ID after POST")
 	}
 }

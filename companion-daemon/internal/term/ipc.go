@@ -132,7 +132,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 				conn.Write([]byte(fmt.Sprintf("error linking: %v\n", err)))
 			} else {
 				if telemetry != nil {
-					telemetry.Clear(link.SessionID)
+					telemetry.Clear(mux.MigrateLegacyID(link.SessionID))
 				}
 				conn.Write([]byte("linked\n"))
 			}
@@ -141,7 +141,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 				conn.Write([]byte(fmt.Sprintf("error unlinking: %v\n", err)))
 			} else {
 				if telemetry != nil {
-					telemetry.Clear(req.SessionID)
+					telemetry.Clear(mux.MigrateLegacyID(req.SessionID))
 				}
 				conn.Write([]byte("unlinked\n"))
 			}
