@@ -243,15 +243,17 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 		data := stateCopies[compoundID]
 		if data == nil {
 			res = append(res, SessionTelemetry{
-				ID: compoundID, State: "idle", Load: 0,
+				ID: compoundID, DisplayID: sess.ID(), State: "idle", Load: 0,
 				Runner: "cat", RunnerColor: "#58a6ff", Adapter: sess.AdapterName(),
-				Events: events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+				Capabilities: sessionCapabilities(sess),
+				Events:       events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 			})
 		} else {
 			res = append(res, SessionTelemetry{
-				ID: compoundID, State: data.State, Load: data.Load,
+				ID: compoundID, DisplayID: sess.ID(), State: data.State, Load: data.Load,
 				Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: sess.AdapterName(),
-				Events: events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+				Capabilities: sessionCapabilities(sess),
+				Events:       events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 			})
 		}
 	}
