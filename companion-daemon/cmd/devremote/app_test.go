@@ -123,7 +123,7 @@ func newFakeTunnelDone() *fakeTunnel {
 // ── Tests ──
 
 func TestNewApp_CreatesPrivateMux(t *testing.T) {
-	// Not Parallel — NewApp sets term.OnApproval global (Phase 5 deferred).
+	// Not Parallel — shared global state in verifier/auth pending Phase 6+.
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestNewApp_CreatesPrivateMux(t *testing.T) {
 }
 
 func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
-	// Not Parallel — NewApp sets term.OnApproval global (Phase 5 deferred).
+	// Not Parallel — shared global state in verifier/auth pending Phase 6+.
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
@@ -744,6 +744,26 @@ func (f *fakeAuthVerifier) Verify(ctx context.Context, token string) error {
 		return fmt.Errorf("%s", f.reject)
 	}
 	return nil
+}
+
+func TestPushNotifier_TokenRace(t *testing.T) {
+	// Verify that concurrent SetToken and ApprovalRequired don't race.
+	n := &pushNotifier{}
+	n.SetToken("test-token")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			n.SetToken("t")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = n.ApprovalRequired(context.Background(), "", "")
+		}()
+	}
+	wg.Wait()
 }
 
 func listenFreeTCPOnAddr(addr string) (net.Listener, error) {

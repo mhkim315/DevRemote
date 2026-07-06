@@ -54,7 +54,6 @@ func LinkSession(link SessionLink, reg *mux.Registry, store LinkStore, events Ev
 		return err
 	}
 
-	// Telemetry state cleared by TelemetryService.Run on next cycle.link.SessionID)
 	events.Clear(link.SessionID)
 	return nil
 }
@@ -117,6 +116,9 @@ func (h *Handlers) HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if h.Telemetry != nil {
+			h.Telemetry.Clear(link.SessionID)
+		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "linked"})
 		return
 	} else if r.Method == http.MethodDelete {
@@ -128,6 +130,9 @@ func (h *Handlers) HandleLinksAPI(w http.ResponseWriter, r *http.Request) {
 		if err := UnlinkSession(sessionID, reg, h.Links, h.Events); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if h.Telemetry != nil {
+			h.Telemetry.Clear(sessionID)
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "unlinked"})
 		return

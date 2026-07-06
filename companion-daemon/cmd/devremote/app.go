@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -144,18 +145,17 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 
-	var pushToken string
+	notifier := &pushNotifier{}
 	serveMux.HandleFunc("/push/register", h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
 		if token != "" {
-			pushToken = token
+			notifier.SetToken(token)
 			log.Printf("📱 Push token registered: %s", token)
 		}
 		w.WriteHeader(200)
 	}))
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	notifier := &pushNotifier{token: &pushToken}
 	telemetry := term.NewTelemetryService(reg, events, links, notifier)
 	h.Telemetry = telemetry
 
@@ -361,13 +361,23 @@ func runDaemon(cfg Config) {
 // ── Notifier ──
 
 type pushNotifier struct {
-	token *string
+	mu    sync.RWMutex
+	token string
+}
+
+func (n *pushNotifier) SetToken(token string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.token = token
 }
 
 func (n *pushNotifier) ApprovalRequired(_ context.Context, _ string, message string) error {
+	n.mu.RLock()
+	token := n.token
+	n.mu.RUnlock()
 	log.Printf("🚨 APPROVAL DETECTED: %s", message)
-	if *n.token != "" {
-		go sendPushNotification(*n.token, message)
+	if token != "" {
+		go sendPushNotification(token, message)
 	}
 	return nil
 }
