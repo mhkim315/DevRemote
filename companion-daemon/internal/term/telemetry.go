@@ -16,15 +16,35 @@ import (
 // SessionTelemetry holds the calculated state of a session.
 type SessionTelemetry struct {
 	ID            string              `json:"id"`
-	State         string              `json:"state"` // "idle", "thinking", "working", "waiting"
-	Load          int                 `json:"load"`  // 0-100
+	DisplayID     string              `json:"displayId,omitempty"` // local ID without adapter prefix
+	State         string              `json:"state"`
+	Load          int                 `json:"load"`
 	Runner        string              `json:"runner"`
 	RunnerColor   string              `json:"runnerColor"`
 	Adapter       string              `json:"adapter"`
+	Capabilities  []string            `json:"capabilities,omitempty"` // e.g. ["live_stream","screen","history"]
 	Events        []models.AgentEvent `json:"events"`
 	Stale         bool                `json:"stale,omitempty"`
 	LastSuccessAt time.Time           `json:"lastSuccessAt,omitempty"`
 	LastError     string              `json:"lastError,omitempty"`
+}
+
+// sessionCapabilities returns the list of optional capabilities a session supports.
+func sessionCapabilities(s mux.Session) []string {
+	var caps []string
+	if _, ok := s.(mux.StreamOpener); ok {
+		caps = append(caps, "live_stream")
+	}
+	if _, ok := s.(mux.ScreenReader); ok {
+		caps = append(caps, "screen")
+	}
+	if _, ok := s.(mux.HistoryReader); ok {
+		caps = append(caps, "history")
+	}
+	if _, ok := s.(mux.ProcessProvider); ok {
+		caps = append(caps, "process")
+	}
+	return caps
 }
 
 type sessionStateData struct {
@@ -210,9 +230,10 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 		isStale := snap.LastError != nil
 		evts := events.List(compoundID)
 		res = append(res, SessionTelemetry{
-			ID: compoundID, State: "idle", Load: 0,
+			ID: compoundID, DisplayID: s.ID(), State: "idle", Load: 0,
 			Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(),
-			Events: evts, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+			Capabilities: sessionCapabilities(s),
+			Events:       evts, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 		})
 	}
 	sortTelemetry(res)
