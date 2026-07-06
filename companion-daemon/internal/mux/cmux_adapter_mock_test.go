@@ -316,6 +316,29 @@ func TestSerialCommandRunnerPreventsConcurrentSocketWrites(t *testing.T) {
 	}
 }
 
+func TestCmuxAdapter_Contract(t *testing.T) {
+	RunAdapterContract(t, "cmux", func(t *testing.T) Adapter {
+		health := &mockRegistryHealth{}
+		return &cmuxAdapter{
+			runner: &mockCmuxRunner{
+				runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+					if len(args) > 0 && args[0] == "tree" {
+						return []byte(`window window:1 [current]
+├── workspace workspace:1 "DevRemote"
+│   └── pane pane:1
+│       └── surface surface:1 [terminal] "dev" tty=ttys000
+├── workspace workspace:2 "Build"
+│   └── pane pane:2
+│       └── surface surface:2 [terminal] "build" tty=ttys001`), nil
+					}
+					return nil, nil
+				},
+			},
+			invalidate: health,
+		}
+	})
+}
+
 func TestNewCmuxAdapterRejectsNilHealth(t *testing.T) {
 	if _, err := NewCmuxAdapter(nil); err == nil {
 		t.Fatal("expected nil RegistryHealth to be rejected")

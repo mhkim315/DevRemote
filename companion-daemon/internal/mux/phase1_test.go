@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -482,6 +483,7 @@ func TestProbeAdapter_Cancel(t *testing.T) {
 
 // recordingRunner records every Run call for exact-args contract tests.
 type recordingRunner struct {
+	mu      sync.Mutex
 	calls   []runnerCall
 	runFunc func(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error)
 }
@@ -494,7 +496,9 @@ type runnerCall struct {
 func (r *recordingRunner) Run(ctx context.Context, opts CommandOptions, args ...string) ([]byte, error) {
 	argsCopy := make([]string, len(args))
 	copy(argsCopy, args)
+	r.mu.Lock()
 	r.calls = append(r.calls, runnerCall{opts: opts, args: argsCopy})
+	r.mu.Unlock()
 	if r.runFunc != nil {
 		return r.runFunc(ctx, opts, args...)
 	}
