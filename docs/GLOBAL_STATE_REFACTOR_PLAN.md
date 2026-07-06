@@ -1,8 +1,10 @@
 # 전역 상태 제거 및 애플리케이션 구조 개선 계획
 
 - 작성일: 2026-07-06
+- 개정: 2026-07-06 v2 — Phase 1 검증 실패 반영
 - 대상 브랜치: `feature/phase10-multi-adapter`
-- 기준 커밋: `c01d27d`
+- 최초 기준 커밋: `c01d27d`
+- 현재 검토 커밋: `49912f2`
 - 목적: 현재 동작하는 tmux/cmux 모바일 E2E를 보존하면서 mutable package global을
   명시적인 객체 수명과 의존성 주입 구조로 전환한다.
 - 구현 담당: 후속 작업 에이전트
@@ -33,6 +35,34 @@ cmux는 `socketControlMode: allowAll`과 사용자 전용 Unix socket mode `0600
 이 리팩터링의 최우선 조건은 이 동작을 보존하는 것이다. 구조 개선을 이유로
 프로토콜, 세션 ID, polling 주기, adapter 동작 또는 모바일 UX를 동시에 변경하면
 안 된다.
+
+## 1.1 현재 진행 상태와 강제 중단점
+
+Phase 0 커밋 `bb4c052`와 Phase 1 시도 커밋 `49912f2`가 존재한다. `49912f2`는
+`Registry` 타입과 격리 테스트를 추가했지만 Phase 1 완료로 승인되지 않았다.
+
+검증 결과:
+
+```text
+Phase: 1
+Commit: 49912f2
+Scope: FAIL
+Build: PASS
+Unit tests: PASS
+Race tests: PASS
+Acceptance criteria: FAIL
+Decision: REJECT
+```
+
+실행 에이전트는 현재 상태에서 Phase 2, 인증, store 또는 모바일 작업을 시작하면
+안 된다. 먼저 아래 문서의 모든 P0/P1 항목을 해결하는 Phase 1 보완 커밋을
+제출해야 한다.
+
+- `docs/PHASE1_REGISTRY_REVIEW.md`
+
+`49912f2`의 `Registry` 타입 자체는 재사용할 수 있다. 그러나 package-level
+`mux.Default`와 그것을 참조하는 production/test call site는 전부 제거해야 한다.
+`Default`를 “Phase 2에서 제거할 임시 호환 계층”으로 남기는 방식은 허용하지 않는다.
 
 ## 2. 문제 정의
 
@@ -212,6 +242,182 @@ func (r *Registry) Invalidate()
 정확한 이름은 Go 문맥에 맞게 조정할 수 있지만 package global wrapper를 최종 API로
 남기면 안 된다.
 
+### Phase 1 실행 순서 — 반드시 이 순서를 따른다
+
+실행 에이전트는 아래 순서를 건너뛰거나 `Default` wrapper로 우회하지 않는다.
+
+#### 1A. Registry core
+
+`49912f2`에서 추가된 다음 부분은 유지·수정할 수 있다.
+
+- `Registry` 구조체
+- `NewRegistry`
+- receiver 기반 `Register`, `Adapter`, `Adapters`
+- receiver 기반 `Refresh`, `Sessions`, `Snapshot`, `Invalidate`
+- registry별 adapter/snapshot/singleflight state
+- `TestRegistryIsolation`
+
+다음 signature는 context를 받도록 수정한다.
+
+```go
+func (r *Registry) FindSession(
+    ctx context.Context,
+    id string,
+) (Session, error)
+```
+
+method 내부에서 `context.Background()`을 만들지 않는다.
+
+#### 1B. composition root에서 단 하나의 runtime Registry 생성
+
+`main()`에서 다음 형태로 생성한다.
+
+```go
+registry := mux.NewRegistry()
+registry.Register(mux.NewCmuxAdapter(/* registry hook */))
+registry.Register(mux.NewTmuxAdapter(/* registry hook */))
+```
+
+여기서 “단 하나”는 process singleton을 의미하지 않는다. production `main()`이
+하나를 생성한다는 뜻이며 test는 원하는 수만큼 독립 registry를 생성할 수 있어야
+한다.
+
+금지:
+
+```go
+var Default = NewRegistry()
+var GlobalRegistry *Registry
+func GetRegistry() *Registry
+```
+
+#### 1C. runtime call site에 Registry 전달
+
+Phase 1에서는 완성된 `App` 구조체까지 만들 필요가 없지만, 다음 함수에는 registry를
+명시적으로 전달해야 한다.
+
+```go
+StartTelemetryLoop(ctx, registry)
+StartIPCServer(socketPath, registry)
+HandleSessionsAPI(registry, w, r)
+HandleWS(registry, w, r)
+HandleLinksAPI(registry, w, r)
+LoadLinks(registry)
+LinkSession(registry, link)
+GetLink(registry, sessionID)
+```
+
+handler signature가 불편하면 `main()`의 private ServeMux 등록 지점에서 closure를
+사용할 수 있다.
+
+```go
+http.HandleFunc("/api/sessions", auth(func(w http.ResponseWriter, r *http.Request) {
+    term.HandleSessionsAPI(registry, w, r)
+}))
+```
+
+이 closure는 Phase 2의 `Server` 객체로 교체될 임시 wiring이며 mutable global을
+만들지 않는다.
+
+또는 최소 `Handlers` 구조체를 먼저 도입해도 된다.
+
+```go
+type Handlers struct {
+    Registry *mux.Registry
+}
+```
+
+단, Phase 2 범위인 private ServeMux, 전체 App lifecycle, auth 객체화까지 확장하지
+않는다.
+
+#### 1D. adapter cache/health callback 제거 또는 주입
+
+현재 adapter에서 아래 호출은 금지한다.
+
+```go
+Default.Invalidate()
+Default.Refresh(...)
+```
+
+두 가지 허용 설계 중 하나를 선택한다.
+
+권장안 A — Registry가 mutation을 소유:
+
+```go
+func (r *Registry) CreateSession(
+    ctx context.Context,
+    adapterName string,
+    opts CreateOptions,
+) (string, error)
+
+func (r *Registry) TerminateSession(
+    ctx context.Context,
+    adapterName string,
+    id string,
+) error
+```
+
+Registry가 adapter capability를 호출하고 성공 시 자신의 snapshot을 invalidate한다.
+HTTP handler는 adapter의 `CreateSession`을 직접 호출하지 않고 Registry method를
+사용한다.
+
+cmux stream 연속 실패 시 health refresh는 작은 interface를 adapter에 주입한다.
+
+```go
+type RegistryHealth interface {
+    Refresh(context.Context, string, bool) (AdapterSnapshot, error)
+    Invalidate()
+}
+```
+
+```go
+registry := mux.NewRegistry()
+cmuxAdapter := mux.NewCmuxAdapter(registry)
+tmuxAdapter := mux.NewTmuxAdapter(registry)
+registry.Register(cmuxAdapter)
+registry.Register(tmuxAdapter)
+```
+
+adapter는 concrete `*Registry`가 아니라 필요한 최소 interface만 저장한다.
+
+허용안 B — callback 주입:
+
+```go
+type AdapterHooks struct {
+    Invalidate func()
+    MarkUnhealthy func(context.Context, string)
+}
+```
+
+nil callback을 조용히 무시하지 말고 생성자에서 유효성을 검증한다. 테스트에서는
+명시적인 fake hook을 제공한다.
+
+어느 설계를 사용하든 custom Registry에 등록된 adapter가 `mux.Default` 또는 다른
+Registry를 건드리면 실패다.
+
+#### 1E. 테스트 call site 격리
+
+`pty_ws_test.go`가 package global registry에 mock adapter를 등록하면 안 된다.
+
+각 테스트는 다음 형태를 사용한다.
+
+```go
+registry := mux.NewRegistry(mockAdapter)
+handler := newTestHandler(registry)
+server := httptest.NewServer(handler)
+```
+
+테스트 종료 후 global 상태 복원 코드는 없어야 한다.
+
+추가 필수 테스트:
+
+1. 두 registry의 조회 상태가 격리된다.
+2. custom registry에서 tmux create 성공 시 custom registry만 invalidate된다.
+3. custom registry에서 cmux create/terminate 성공 시 custom registry만
+   invalidate된다.
+4. cmux stream 연속 실패 시 소속 registry health만 refresh된다.
+5. `FindSession` cancellation이 adapter refresh까지 전달된다.
+6. WebSocket test 두 개가 서로 adapter state를 공유하지 않는다.
+
 ### 작업
 
 1. `registry.go`의 adapter map, snapshot map, mutex, singleflight를 `Registry` 필드로
@@ -248,14 +454,23 @@ func (r *Registry) Invalidate()
 ### 완료 기준
 
 - `mux` package에 mutable registry global이 없다.
+- `rg -n '\bDefault\b|GlobalRegistry|GetRegistry' companion-daemon/internal/mux`
+  결과에 mutable singleton이 없다.
+- `rg -n 'mux\.Default' companion-daemon` 결과가 0건이다.
 - tmux/cmux adapter에 registration 목적의 `init()`이 없다.
+- tmux/cmux adapter가 package global cache를 invalidate 또는 refresh하지 않는다.
 - registry 테스트가 전역 reset 없이 독립 실행된다.
+- WebSocket/telemetry/IPC/linker가 registry를 인자로 받는다.
+- `FindSession`과 `Sessions`가 호출자 context를 보존한다.
 - REST와 WebSocket에서 기존 session ID를 찾는다.
+- `git diff --check`가 통과한다.
+- 생성 바이너리 `companion-daemon/devremote_bin`이 source refactor diff에 포함되지
+  않는다.
 
 ### 권장 커밋
 
 ```text
-refactor: make mux registry instance-owned
+fix: complete instance-owned mux registry wiring
 ```
 
 ## Phase 2: App composition root와 HTTP Server 도입
@@ -263,6 +478,10 @@ refactor: make mux registry instance-owned
 ### 목적
 
 daemon 전체 의존성을 `main()`에서 명시적으로 조립하고 default HTTP mux를 제거한다.
+
+Phase 2는 Phase 1에서 registry injection이 완료된 후 그 wiring을 `App`과 `Server`
+객체로 정리하는 단계다. Phase 1의 `mux.Default` 제거를 Phase 2 작업으로 미루면
+안 된다.
 
 ### 목표 구조
 
