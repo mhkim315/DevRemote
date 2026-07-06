@@ -149,10 +149,10 @@ func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
 		t.Fatalf("GET /api/sessions?history=tmux:golden (screen fallback): status = %d, want 200", rec.Code)
 	}
 	raw := rec.Body.String()
-	requiredKeys := []string{`"id"`, `"type"`, `"summary"`, `"detail"`}
-	for _, k := range requiredKeys {
+	agentEventKeys := []string{`"id"`, `"session"`, `"type"`, `"summary"`, `"detail"`, `"timestamp"`, `"agent"`, `"toolCallId"`}
+	for _, k := range agentEventKeys {
 		if !strings.Contains(raw, k) {
-			t.Errorf("history response missing key %s", k)
+			t.Errorf("history response missing AgentEvent key %s", k)
 		}
 	}
 	if !strings.Contains(raw, "GOLDEN_SCREEN") {
