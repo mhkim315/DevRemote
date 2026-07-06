@@ -426,16 +426,20 @@ func TestProbeAdapter_Unavailable(t *testing.T) {
 }
 
 func TestRegistry_SlowAdapterDoesNotBlock(t *testing.T) {
-	// A slow adapter must not prevent healthy adapters from returning sessions.
 	fast := &testAdapter{name: "fast", sessions: []Session{&testSession{id: "s1", adapter: "fast"}}}
 	slow := &blockingAdapter{name: "slow"}
 	reg := MustNewRegistry(fast, slow)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	sessions := reg.Sessions(ctx)
-	// Must have fast adapter's session even though slow is hanging.
+	elapsed := time.Since(start)
+	// Fast adapter results must arrive quickly, not wait for slow adapter timeout (3s).
+	if elapsed > 2*time.Second {
+		t.Errorf("Sessions took %v, want <2s (slow adapter should not block fast)", elapsed)
+	}
 	found := false
 	for _, s := range sessions {
 		if s.AdapterName() == "fast" && s.ID() == "s1" {
@@ -465,5 +469,41 @@ func TestProbeAdapter_Cancel(t *testing.T) {
 	err := ProbeAdapter(ctx, blocker, 5*time.Second)
 	if err == nil {
 		t.Fatal("ProbeAdapter with cancelled context: got nil, want error")
+	}
+}
+
+func TestTmuxAdapter_CreateSessionUsesRunner(t *testing.T) {
+	var called bool
+	runner := &mockCmuxRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(runner)
+	_, err := adapter.(SessionCreator).CreateSession(context.Background(), CreateOptions{Name: "test"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !called {
+		t.Error("runner was not called for CreateSession")
+	}
+}
+
+func TestTmuxAdapter_TerminateSessionUsesRunner(t *testing.T) {
+	var called bool
+	runner := &mockCmuxRunner{
+		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			called = true
+			return []byte("dummy_session::POKIT::test"), nil
+		},
+	}
+	adapter := NewTmuxAdapterWithRunner(runner).(*tmuxAdapter)
+	err := adapter.TerminateSession(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("TerminateSession: %v", err)
+	}
+	if !called {
+		t.Error("runner was not called for TerminateSession")
 	}
 }

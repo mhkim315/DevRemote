@@ -246,26 +246,29 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 	if len(adapters) == 0 {
 		return nil
 	}
-	// Collect with deadline: a slow adapter does not block healthy ones indefinitely.
-	collectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
+	// Phase 3: parallel refresh with per-adapter timeout. A slow adapter
+	// does not block healthy ones — results are returned as they arrive,
+	// with a hard deadline from the caller's context.
 	type result struct {
 		sessions []Session
 	}
 	results := make(chan result, len(adapters))
 	for _, adapter := range adapters {
 		go func(adapter Adapter) {
-			adapterCtx, cancel := context.WithTimeout(collectCtx, 5*time.Second)
+			adapterCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			snap, _ := r.Refresh(adapterCtx, adapter.Name(), false)
-			results <- result{sessions: snap.Sessions}
+			select {
+			case results <- result{sessions: snap.Sessions}:
+			case <-ctx.Done():
+			}
 		}(adapter)
 	}
 
 	var all []Session
 	seen := make(map[string]bool)
 	remaining := len(adapters)
+	deadline := time.After(500 * time.Millisecond)
 	for remaining > 0 {
 		select {
 		case r := <-results:
@@ -277,8 +280,9 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 					all = append(all, s)
 				}
 			}
-		case <-collectCtx.Done():
-			// Deadline reached: return what we have from healthy adapters.
+		case <-ctx.Done():
+			remaining = 0
+		case <-deadline:
 			remaining = 0
 		}
 	}
