@@ -41,6 +41,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('activity');
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
+  const [sessionEnded, setSessionEnded] = useState(false);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
@@ -69,6 +70,9 @@ export default function FeedScreen({onBack, session, token}: Props) {
           const sess = data.find((s: any) => (s.id || s) === session);
           if (sess && typeof sess !== 'string') {
             setSessionData(sess);
+            setSessionEnded(false);
+          } else {
+            setSessionEnded(true);
           }
         })
         .catch(err => console.error(err));
@@ -294,17 +298,24 @@ export default function FeedScreen({onBack, session, token}: Props) {
         </View>
 
         <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
-          <WebView
-            ref={wv}
-            source={source}
-            style={styles.webview}
-            javaScriptEnabled
-            domStorageEnabled
-            injectedJavaScript={pinchZoomInjection}
-            originWhitelist={['*']}
-            cacheEnabled={false}
-            onMessage={onMessage}
-          />
+          {sessionEnded ? (
+            <View style={styles.endedContainer}>
+              <Text style={styles.endedTitle}>SESSION ENDED</Text>
+              <Text style={styles.endedText}>This terminal session is no longer available.</Text>
+            </View>
+          ) : (
+            <WebView
+              ref={wv}
+              source={source}
+              style={styles.webview}
+              javaScriptEnabled
+              domStorageEnabled
+              injectedJavaScript={pinchZoomInjection}
+              originWhitelist={['*']}
+              cacheEnabled={false}
+              onMessage={onMessage}
+            />
+          )}
         </View>
 
         <View style={[styles.activityContainer, {display: activeTab === 'activity' ? 'flex' : 'none'}]}>
@@ -421,6 +432,9 @@ const styles = StyleSheet.create({
   },
 
   webview: {flex:1, backgroundColor:'#000'},
+  endedContainer: {flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24},
+  endedTitle: {color: '#f85149', fontSize: 16, fontWeight: '800', letterSpacing: 1.2, marginBottom: 8},
+  endedText: {color: '#8b949e', fontSize: 13, textAlign: 'center', lineHeight: 20},
   macroContainer: { backgroundColor: '#000000', borderTopWidth: 1, borderTopColor: '#0D2D45' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
   macroBtn: { backgroundColor: 'transparent', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 32, marginRight: 5, borderWidth: 1, borderColor: '#1E91B3' },

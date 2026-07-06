@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -209,6 +210,11 @@ func (r *Registry) Sessions(ctx context.Context) []Session {
 			}
 		}
 	}
+	sort.SliceStable(all, func(i, j int) bool {
+		left := all[i].AdapterName() + ":" + all[i].ID()
+		right := all[j].AdapterName() + ":" + all[j].ID()
+		return left < right
+	})
 	return all
 }
 

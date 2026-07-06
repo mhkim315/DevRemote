@@ -207,6 +207,37 @@ func TestStaleCacheOnFailure(t *testing.T) {
 	}
 }
 
+func TestRegistrySessionsStableOrder(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry(
+		&dummyAdapter{
+			name: "tmux",
+			sessions: []Session{
+				&dummySession{id: "zeta", adapter: "tmux"},
+				&dummySession{id: "alpha", adapter: "tmux"},
+			},
+		},
+		&dummyAdapter{
+			name: "cmux",
+			sessions: []Session{
+				&dummySession{id: "surface:9", adapter: "cmux"},
+				&dummySession{id: "surface:1", adapter: "cmux"},
+			},
+		},
+	)
+
+	sessions := registry.Sessions(context.Background())
+	got := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		got = append(got, s.AdapterName()+":"+s.ID())
+	}
+	want := []string{"cmux:surface:1", "cmux:surface:9", "tmux:alpha", "tmux:zeta"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("sessions order = %v, want %v", got, want)
+	}
+}
+
 func TestRegistryIsolation(t *testing.T) {
 	t.Parallel()
 

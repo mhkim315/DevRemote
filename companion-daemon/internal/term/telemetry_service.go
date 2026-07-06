@@ -147,9 +147,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 	}
 
 	var out []byte
-	if !failedAdapters[sess.AdapterName()] {
+	var screenErr error
+	adapterFailed := failedAdapters[sess.AdapterName()]
+	if !adapterFailed {
 		if sr, ok := sess.(mux.ScreenReader); ok {
-			out, _ = sr.ReadScreen(ctx)
+			out, screenErr = sr.ReadScreen(ctx)
 		}
 	}
 
@@ -168,6 +170,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 
 	stateData.Runner = runner
 	stateData.RunnerColor = runnerColor
+
+	if preserveTransientSamplingFailure(stateData, logErr, screenErr, adapterFailed, parsedNewEvents) {
+		s.mu.Unlock()
+		return
+	}
 
 	diffSize := len(out) - len(stateData.LastOutput)
 	if diffSize < 0 {
@@ -248,6 +255,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			})
 		}
 	}
+	sortTelemetry(res)
 	return res
 }
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,6 +194,20 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+
+	if sr, ok := s.(mux.ScreenReader); ok && s.AdapterName() == "tmux" {
+		if initial, snapErr := sr.ReadScreen(r.Context()); snapErr == nil && len(initial) > 0 {
+			payload := "\033[2J\033[H" + string(initial)
+			payload = strings.ReplaceAll(payload, "\n", "\r\n")
+			select {
+			case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: []byte(payload)}:
+			case <-writerDone:
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}
 
 	if stream != nil {
 		go func() {

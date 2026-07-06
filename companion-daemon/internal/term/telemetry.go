@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,14 +28,21 @@ type SessionTelemetry struct {
 }
 
 type sessionStateData struct {
-	LastOutput   []byte
-	LastActivity time.Time
-	State        string
-	Load         int
-	Runner       string
-	RunnerColor  string
-	Cursor       *LogCursor
-	Parser       AgentLogParser
+	LastOutput       []byte
+	LastActivity     time.Time
+	State            string
+	Load             int
+	Runner           string
+	RunnerColor      string
+	Cursor           *LogCursor
+	Parser           AgentLogParser
+	SamplingFailures int
+}
+
+func sortTelemetry(items []SessionTelemetry) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].ID < items[j].ID
+	})
 }
 
 func isApprovalPrompt(line string) bool {
@@ -133,6 +141,19 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 	}
 }
 
+func preserveTransientSamplingFailure(stateData *sessionStateData, logErr error, screenErr error, adapterFailed bool, parsedNewEvents bool) bool {
+	if parsedNewEvents || logErr == nil {
+		stateData.SamplingFailures = 0
+		return false
+	}
+	if screenErr == nil && !adapterFailed {
+		stateData.SamplingFailures = 0
+		return false
+	}
+	stateData.SamplingFailures++
+	return stateData.SamplingFailures <= 2
+}
+
 // HandleSessionsV2 returns rich JSON metadata for all sessions.
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
@@ -194,5 +215,6 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 			Events: evts, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 		})
 	}
+	sortTelemetry(res)
 	return res
 }

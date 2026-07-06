@@ -23,6 +23,9 @@ func (s *tmuxSession) AdapterName() string { return s.adapter.Name() }
 func (s *tmuxSession) Title() string       { return s.id }
 
 func (s *tmuxSession) OpenStream(ctx context.Context) (TerminalStream, error) {
+	if _, err := s.ReadScreen(ctx); err != nil {
+		return nil, fmt.Errorf("tmux session preflight failed: %w", err)
+	}
 	return SpawnPTY(s.id, "xterm-256color", "tmux", "attach", "-t", s.id)
 }
 

@@ -160,19 +160,49 @@ cmux history:   surface:1 → 1 event, actual terminal content returned
 daemon log:     no Broken pipe, no cmux tree failed
 ```
 
-### 7.2 Mobile (검증 에이전트 확인 필요)
+### 7.2 Mobile 실기기 Smoke
 
-실기기 smoke test 항목:
+검증자: 사용자 실기기 수동 확인
 
-- tmux: dashboard/live/input/Enter/Ctrl+C/resize/reconnect
-- cmux: dashboard/initial screen/live update/input/LF·CR·CRLF/arrow/Esc
-- background→foreground 전환
-- daemon restart 후 reconnect
-- session 전환
+PASS:
+
+- cmux desktop ↔ mobile live sync
+- cmux mobile text input
+- cmux mobile Enter execution
+- cmux session monitoring reacts to chat activity
+- cmux history/activity
+- tmux mobile text input
+- tmux Enter
+- tmux Ctrl+C
+- tmux terminal color output
+- tmux activity/history output
+- cmux ↔ tmux session switching
+- short background → foreground reconnect/continuity
+
+NOT TESTED:
+
 - approval Y/N
-- history/activity 표시
+- daemon restart reconnect
+
+발견된 안정성 이슈:
+
+- dead/stale session에서 `can't find session` 계열 메시지가 반복 출력될 수 있음
+- dashboard session card order가 polling refresh마다 뒤바뀔 수 있음
+- session animation이 주기적으로 모두 idle처럼 멈출 수 있음
+- tmux Activity 탭은 정상이나 Terminal 탭 live output이 지연/누락될 수 있음
+- cmux terminal output은 현재 plain-text snapshot 기반이며 ANSI color/style preservation은 지원하지 않음
+
+Smoke-fix 조치:
+
+- `/api/sessions` 응답 순서 안정화를 위해 server-side stable sort 추가
+- telemetry transient sampling failure 1~2회는 이전 state를 보존하도록 완화
+- tmux live stream attach 전 preflight를 수행해 사라진 session의 `can't find session` 출력이 terminal에 직접 흘러가지 않도록 차단
+- tmux WebSocket 연결 직후 initial screen snapshot을 전송해 terminal reconnect/초기 화면 지연을 완화
+- 모바일 FeedScreen이 session list에서 현재 session이 사라진 것을 감지하면 WebView를 unmount하고 `SESSION ENDED` 상태를 표시
 
 ## 8. 후속 작업
 
 - Adapter contract 정리 (별도 follow-up): capability interface 문서화, 공통 contract test
-- Mobile 실기기 smoke test (Section 7.2)
+- daemon restart reconnect smoke test
+- approval Y/N smoke test
+- cmux ANSI/color preservation은 adapter capability로 문서화

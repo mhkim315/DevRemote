@@ -167,6 +167,32 @@ func TestEvaluateState(t *testing.T) {
 	}
 }
 
+func TestPreserveTransientSamplingFailure(t *testing.T) {
+	state := &sessionStateData{State: "working", Load: 100}
+	logErr := errors.New("no log")
+	screenErr := errors.New("read-screen failed")
+
+	if !preserveTransientSamplingFailure(state, logErr, screenErr, false, false) {
+		t.Fatal("first transient sampling failure should preserve the previous state")
+	}
+	if state.State != "working" || state.Load != 100 {
+		t.Fatalf("state changed on first transient failure: state=%s load=%d", state.State, state.Load)
+	}
+	if !preserveTransientSamplingFailure(state, logErr, screenErr, false, false) {
+		t.Fatal("second transient sampling failure should preserve the previous state")
+	}
+	if preserveTransientSamplingFailure(state, logErr, screenErr, false, false) {
+		t.Fatal("third consecutive sampling failure should stop preserving stale state")
+	}
+
+	if preserveTransientSamplingFailure(state, nil, screenErr, false, false) {
+		t.Fatal("successful log resolution should reset transient preservation")
+	}
+	if state.SamplingFailures != 0 {
+		t.Fatalf("sampling failures were not reset: %d", state.SamplingFailures)
+	}
+}
+
 func TestTelemetryService_StopsOnCancel(t *testing.T) {
 	t.Parallel()
 
