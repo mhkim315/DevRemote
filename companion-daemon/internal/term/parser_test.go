@@ -24,16 +24,16 @@ func TestCodexParser(t *testing.T) {
 		t.Fatalf("Expected 4 events, got %d", len(events))
 	}
 
-	if events[0].Type != "user" || events[0].Detail != "Hello Codex" {
+	if events[0].Type != "user_message" || events[0].Detail != "Hello Codex" {
 		t.Errorf("Unexpected user event: %+v", events[0])
 	}
-	if events[1].Type != "message" || events[1].Detail != "Hello User!" {
+	if events[1].Type != "assistant_message" || events[1].Detail != "Hello User!" {
 		t.Errorf("Unexpected message event: %+v", events[1])
 	}
-	if events[2].Type != "tool_use" || events[2].ToolCallID != "call-123" {
+	if events[2].Type != "tool_call_started" || events[2].ToolCallID != "call-123" {
 		t.Errorf("Unexpected tool_use event: %+v", events[2])
 	}
-	if events[3].Type != "tool_result" || events[3].ToolCallID != "call-123" {
+	if events[3].Type != "tool_call_finished" || events[3].ToolCallID != "call-123" {
 		t.Errorf("Unexpected tool_result event: %+v", events[3])
 	}
 }

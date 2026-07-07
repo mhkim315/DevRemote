@@ -35,17 +35,54 @@ func (p *CodexParser) Parse(record json.RawMessage) ([]models.AgentEvent, error)
 
 	var events []models.AgentEvent
 
-	if typ == "event_msg" {
+	if typ == "session_meta" {
+		events = append(events, models.AgentEvent{
+			ID:        fmt.Sprintf("codex-meta-%s", tsRaw),
+			Session:   p.Session,
+			Agent:     "codex",
+			Type:      "agent_started",
+			Summary:   "Codex Session",
+			Timestamp: ts,
+		})
+	} else if typ == "event_msg" {
 		pType, _ := payload["type"].(string)
-		if pType == "user_message" {
+		switch pType {
+		case "user_message":
 			msg, _ := payload["message"].(string)
 			events = append(events, models.AgentEvent{
 				ID:        fmt.Sprintf("codex-usr-%s", tsRaw),
 				Session:   p.Session,
 				Agent:     "codex",
-				Type:      "user",
+				Type:      "user_message",
 				Summary:   "User",
 				Detail:    msg,
+				Timestamp: ts,
+			})
+		case "task_started":
+			events = append(events, models.AgentEvent{
+				ID:        fmt.Sprintf("codex-start-%s", tsRaw),
+				Session:   p.Session,
+				Agent:     "codex",
+				Type:      "agent_started",
+				Summary:   "Codex Started",
+				Timestamp: ts,
+			})
+		case "waiting_for_approval":
+			events = append(events, models.AgentEvent{
+				ID:        fmt.Sprintf("codex-approval-%s", tsRaw),
+				Session:   p.Session,
+				Agent:     "codex",
+				Type:      "approval_requested",
+				Summary:   "Approval Required",
+				Timestamp: ts,
+			})
+		case "approval_resolved":
+			events = append(events, models.AgentEvent{
+				ID:        fmt.Sprintf("codex-resolved-%s", tsRaw),
+				Session:   p.Session,
+				Agent:     "codex",
+				Type:      "approval_resolved",
+				Summary:   "Approval Resolved",
 				Timestamp: ts,
 			})
 		}
@@ -145,6 +182,11 @@ func (p *CodexParser) Parse(record json.RawMessage) ([]models.AgentEvent, error)
 				Timestamp: ts,
 			})
 		}
+	}
+
+	// Normalize to common AgentEvent types before returning.
+	for i := range events {
+		normalizeEventType(&events[i])
 	}
 
 	return events, nil
