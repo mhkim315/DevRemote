@@ -664,6 +664,51 @@ func TestHandleDiagnostic_SessionFields(t *testing.T) {
 	}
 }
 
+
+func TestRedactStr_APIKeys(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"sk-test-fake-key-for-testing-only", "sk-<REDACTED>"},
+		{"ghp_fakegithub0000000000000000000000", "ghp_<REDACTED>"},
+		{"xoxb-fake-slack-token-for-test-only", "xox-<REDACTED>"},
+		{"xoxa-fake-test-token", "xox-<REDACTED>"},
+		{"xoxp-fake-test-token", "xox-<REDACTED>"},
+		{"xoxr-fake-test-token", "xox-<REDACTED>"},
+		{"xoxs-fake-test-token", "xox-<REDACTED>"},
+		{"Authorization: Bearer fake-test-token", "Authorization: <REDACTED>"},
+		{"token=fake-secret-value", "token=<REDACTED>"},
+		{"api_key=fake-api-key-for-test", "api_key=<REDACTED>"},
+		{"secret=test-password-here", "secret=<REDACTED>"},
+		{"KEY=fake-test-key-value", "KEY=<REDACTED>"},
+		{"password=test-password-only", "password=<REDACTED>"},
+		// Case insensitive
+		{"BEARER faketokentestonly1234567890", "Bearer <REDACTED>"},
+		{"Api_Key=sk-test-123", "Api_Key=<REDACTED>"},
+		// Safe strings unchanged
+		{"no secrets here", "no secrets here"},
+	}
+	for _, tc := range tests {
+		got := redactStr(tc.in)
+		if got != tc.want {
+			t.Errorf("redactStr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRedactStr_GenericSecrets(t *testing.T) {
+	tests := []struct{ in, wantContains string }{
+		{"error: api key invalid sk-test-fake-key-for-test", "error: api key invalid sk-<REDACTED>"},
+		{"token ghp_fakegithub0000000000000000000000 expired", "token ghp_<REDACTED> expired"},
+		{"Authorization: Bearer fake-test-token-only", "Authorization: <REDACTED>"},
+		{"failed: token=fake-value at line 5", "failed: token=<REDACTED> at line 5"},
+	}
+	for _, tc := range tests {
+		got := redactStr(tc.in)
+		if got != tc.wantContains {
+			t.Errorf("redactStr(%q) = %q, want %q", tc.in, got, tc.wantContains)
+		}
+	}
+}
+
 func TestRedactStr_HomePath(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"/Users/mhk/project/foo", "<HOME>/project/foo"},

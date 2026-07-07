@@ -122,14 +122,27 @@ func (s *TelemetryService) sessionStateSnapshot(id string) (sessionStateData, bo
 	return *data, true
 }
 
-// redact home path pattern: /Users/<user>/... or /home/<user>/... or C:\Users\<user>\...
-var redactHomeRE = regexp.MustCompile(`(/Users/|/home/|\\Users\\)[^/\\]+`)
+// Redaction patterns for diagnostic output safety.
+var (
+	// Home directory paths: /Users/<user>/... or /home/<user>/... or C:\Users\<user>\...
+	redactHomeRE = regexp.MustCompile(`(?i)(/Users/|/home/|\\Users\\)[^/\\]+`)
+
+	// API key / token patterns.
+	redactSkRE    = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
+	redactGhpRE   = regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`)
+	redactXoxRE   = regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`)
+	redactBearerRE = regexp.MustCompile(`(?i)\b[Bb]earer\s+[A-Za-z0-9._\-+=/]{8,}\b`)
+
+	// Named secret/value patterns: key=value, token=value, etc.
+	redactKeyValRE = regexp.MustCompile(`(?i)\b(token|api_?key|secret|key|password|auth)=\s*[^\s,;)]+`)
+)
 
 // redactStr truncates and strips raw paths, usernames, and sensitive data from diagnostic strings.
 func redactStr(s string) string {
 	if s == "" {
 		return ""
 	}
+
 	// Strip username from home paths: /Users/mhk/project → <HOME>/project
 	s = redactHomeRE.ReplaceAllString(s, "<HOME>")
 
@@ -137,16 +150,17 @@ func redactStr(s string) string {
 	s = strings.ReplaceAll(s, "/Users/", "<HOME>/")
 	s = strings.ReplaceAll(s, "/home/", "<HOME>/")
 
-	// Replace Bearer tokens entirely.
-	if idx := strings.Index(s, "Bearer "); idx >= 0 {
-		rest := s[idx+len("Bearer "):]
-		if end := strings.IndexAny(rest, " \t\n\r"); end > 0 {
-			rest = rest[:end]
-		}
-		if rest != "" {
-			s = strings.ReplaceAll(s, "Bearer "+rest, "Bearer <REDACTED>")
-		}
-	}
+	// Redact API keys and tokens.
+	s = redactSkRE.ReplaceAllString(s, "sk-<REDACTED>")
+	s = redactGhpRE.ReplaceAllString(s, "ghp_<REDACTED>")
+	s = redactXoxRE.ReplaceAllString(s, "xox-<REDACTED>")
+	s = redactBearerRE.ReplaceAllString(s, "Bearer <REDACTED>")
+
+	// Redact Authorization: header values — match full "Authorization: Bearer <token>" or "Authorization: Basic <token>".
+	s = regexp.MustCompile(`(?i)Authorization:\s*\S+(\s+\S+)?`).ReplaceAllString(s, "Authorization: <REDACTED>")
+
+	// Redact key=value secrets.
+	s = redactKeyValRE.ReplaceAllString(s, "${1}=<REDACTED>")
 
 	if len(s) > 200 {
 		s = s[:200] + "..."
