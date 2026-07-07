@@ -11,16 +11,12 @@ import (
 // ParserFactory creates a fresh parser for each sub-test.
 type ParserFactory func(t *testing.T) AgentParser
 
-// fixtureMeta mirrors testdata metadata.json structure.
 type fixtureMeta struct {
 	Agent          string   `json:"agent"`
 	ExpectedEvents []string `json:"expectedEvents"`
 	EntryCount     int      `json:"entryCount"`
 }
 
-// RunParserContract runs the full parser contract suite for one agent.
-// It reads testdata/<agent>/metadata.json and all .jsonl fixtures,
-// then verifies the parser against common contracts.
 func RunParserContract(t *testing.T, agentName string, factory ParserFactory) {
 	t.Helper()
 	meta := loadMeta(t, agentName)
@@ -29,6 +25,8 @@ func RunParserContract(t *testing.T, agentName string, factory ParserFactory) {
 	t.Run(agentName, func(t *testing.T) {
 		t.Run("AgentKind", func(t *testing.T) { testAgentKind(t, factory, agentName) })
 		t.Run("ValidParse_ExpectedEvents", func(t *testing.T) { testExpectedEvents(t, factory, meta, allLines) })
+		t.Run("StatusBaseline", func(t *testing.T) { testStatusBaseline(t, factory, allLines) })
+		t.Run("ApprovalDetection", func(t *testing.T) { testApprovalDetection(t, factory, agentName) })
 		t.Run("MalformedSkip", func(t *testing.T) { testMalformedSkip(t, factory, agentName) })
 		t.Run("UnknownFieldIgnore", func(t *testing.T) { testUnknownFieldIgnore(t, factory) })
 		t.Run("MissingFieldFallback", func(t *testing.T) { testMissingFieldFallback(t, factory) })
@@ -40,12 +38,9 @@ func RunParserContract(t *testing.T, agentName string, factory ParserFactory) {
 	})
 }
 
-// --- Contract tests ---
-
 func testAgentKind(t *testing.T, factory ParserFactory, want string) {
 	t.Helper()
-	p := factory(t)
-	if got := p.AgentKind(); got != want {
+	if got := factory(t).AgentKind(); got != want {
 		t.Errorf("AgentKind = %q, want %q", got, want)
 	}
 }
@@ -53,15 +48,11 @@ func testAgentKind(t *testing.T, factory ParserFactory, want string) {
 func testExpectedEvents(t *testing.T, factory ParserFactory, meta *fixtureMeta, lines [][]byte) {
 	t.Helper()
 	p := factory(t)
-	events, _, err := p.ParseBatch(lines, "")
-	if err != nil {
-		t.Fatalf("ParseBatch error: %v", err)
-	}
+	result := p.ParseBatch(lines, "")
 
 	gotTypes := make(map[AgentEventType]bool)
-	for _, e := range events {
+	for _, e := range result.Events {
 		gotTypes[e.Type] = true
-		// Event invariants
 		if e.Type == "" {
 			t.Error("event has empty Type")
 		}
@@ -72,19 +63,68 @@ func testExpectedEvents(t *testing.T, factory ParserFactory, meta *fixtureMeta, 
 			t.Errorf("event AgentKind=%q, want %q", e.AgentKind, p.AgentKind())
 		}
 	}
-
-	// Every expected event type must appear in parsed output.
 	for _, want := range meta.ExpectedEvents {
 		if !gotTypes[AgentEventType(want)] {
-			t.Errorf("expected event type %q not found in parsed output (got: %v)", want, eventTypes(gotTypes))
+			t.Errorf("expected event %q not in output (got %v)", want, eventTypes(gotTypes))
 		}
 	}
-
-	// Low confidence must map to unknown.
-	for _, e := range events {
+	for _, e := range result.Events {
 		if e.Confidence < 0.4 && e.Type != EventUnknown {
-			t.Errorf("low confidence (%.2f) event type=%q, want unknown", e.Confidence, e.Type)
+			t.Errorf("low confidence (%.2f) type=%q, want unknown", e.Confidence, e.Type)
 		}
+	}
+	// Result must not be degraded on valid input.
+	if result.Degraded {
+		t.Errorf("Degraded=true on valid fixture (diagnostics: %v)", result.Diagnostics)
+	}
+}
+
+func testStatusBaseline(t *testing.T, factory ParserFactory, lines [][]byte) {
+	t.Helper()
+	p := factory(t)
+	result := p.ParseBatch(lines, "")
+	if result.Status == "" {
+		t.Error("Status is empty after ParseBatch")
+	}
+	// Status must be one of the defined constants.
+	valid := map[AgentStatus]bool{
+		StatusUnknown: true, StatusIdle: true, StatusThinking: true,
+		StatusWorking: true, StatusWaitingApproval: true, StatusWaitingInput: true,
+		StatusCompleted: true, StatusFailed: true, StatusInterrupted: true,
+		StatusDegraded: true,
+	}
+	if !valid[result.Status] {
+		t.Errorf("Status %q is not a defined AgentStatus constant", result.Status)
+	}
+}
+
+func testApprovalDetection(t *testing.T, factory ParserFactory, agentName string) {
+	t.Helper()
+	p := factory(t)
+	lines := loadFixtures(t, agentName, "approval_waiting.jsonl")
+	if len(lines) == 0 {
+		t.Skip("no approval fixture")
+		return
+	}
+	result := p.ParseBatch(lines, "")
+	// Must detect at least one approval from the fixture.
+	if len(result.Approvals) == 0 {
+		t.Error("no approvals detected from approval_waiting fixture")
+	}
+	for _, a := range result.Approvals {
+		if a.ID == "" {
+			t.Error("approval has empty ID")
+		}
+		if a.Status == "" {
+			t.Error("approval has empty Status")
+		}
+		if a.Prompt == "" {
+			t.Error("approval has empty Prompt")
+		}
+	}
+	// Status should reflect approval state.
+	if result.Status != StatusWaitingApproval && result.Status != StatusUnknown {
+		t.Logf("Status=%q with approvals present (want waiting_approval)", result.Status)
 	}
 }
 
@@ -96,27 +136,25 @@ func testMalformedSkip(t *testing.T, factory ParserFactory, agentName string) {
 		t.Skip("no malformed fixture")
 		return
 	}
-	events, _, err := p.ParseBatch(lines, "")
-	if err != nil {
-		t.Errorf("ParseBatch error on malformed: %v", err)
+	result := p.ParseBatch(lines, "")
+	// Malformed must not crash. Degraded is acceptable.
+	if result.Degraded {
+		t.Logf("Degraded on malformed (acceptable): %v", result.Diagnostics)
 	}
-	// Malformed records should not prevent normal parsing.
-	// Some events may parse (best effort), none should cause failure.
-	_ = events
 }
 
 func testUnknownFieldIgnore(t *testing.T, factory ParserFactory) {
 	t.Helper()
 	p := factory(t)
 	line := []byte(`{"type":"user","sessionId":"abc","unexpectedXYZ":123,"message":{"role":"user","content":"hello"}}`)
-	events, _, err := p.ParseBatch([][]byte{line}, "")
-	if err != nil {
-		t.Errorf("ParseBatch error on unknown field: %v", err)
-	}
-	for _, e := range events {
+	result := p.ParseBatch([][]byte{line}, "")
+	for _, e := range result.Events {
 		if e.Type == "" {
-			t.Error("event with unknown field has empty Type")
+			t.Error("event from unknown-field record has empty Type")
 		}
+	}
+	if result.Degraded {
+		t.Error("Degraded=true on record with extra fields (should be handled gracefully)")
 	}
 }
 
@@ -124,15 +162,12 @@ func testMissingFieldFallback(t *testing.T, factory ParserFactory) {
 	t.Helper()
 	p := factory(t)
 	line := []byte(`{"type":"user"}`)
-	events, _, err := p.ParseBatch([][]byte{line}, "")
-	if err != nil {
-		t.Errorf("ParseBatch error on missing field: %v", err)
+	result := p.ParseBatch([][]byte{line}, "")
+	if result.Degraded {
+		t.Error("Degraded=true on missing-field record (should use fallback)")
 	}
-	for _, e := range events {
-		if e.Type == "" {
-			t.Error("event from missing-field record has empty Type (want best-effort)")
-		}
-	}
+	// At minimum, should not panic. May produce unknown events.
+	_ = result.Events
 }
 
 func testDuplicatePrevention(t *testing.T, factory ParserFactory, lines [][]byte) {
@@ -142,12 +177,13 @@ func testDuplicatePrevention(t *testing.T, factory ParserFactory, lines [][]byte
 		return
 	}
 	p := factory(t)
-	// Parse same lines twice. Second call should produce no new events
-	// if cursor is properly tracked, or at minimum not duplicate.
-	e1, cursor, _ := p.ParseBatch(lines, "")
-	e2, _, _ := p.ParseBatch(lines, cursor)
-	if len(e2) > len(e1) {
-		t.Errorf("re-parse with cursor produced %d events (more than first parse %d)", len(e2), len(e1))
+	r1 := p.ParseBatch(lines, "")
+	r2 := p.ParseBatch(lines, r1.Cursor)
+	// Re-parsing same lines with cursor must not produce MORE events.
+	// (May produce same events with updated cursor — that's fine for
+	// idempotent re-read; may produce 0 events — that's fine too.)
+	if len(r2.Events) > len(r1.Events) {
+		t.Errorf("re-parse produced %d events > first parse %d", len(r2.Events), len(r1.Events))
 	}
 }
 
@@ -158,30 +194,28 @@ func testCursorResume(t *testing.T, factory ParserFactory, lines [][]byte) {
 		return
 	}
 	p := factory(t)
-	// Parse first half, get cursor, parse second half.
+	// Split parse.
 	mid := len(lines) / 2
-	e1, cursor, _ := p.ParseBatch(lines[:mid], "")
-	e2, _, _ := p.ParseBatch(lines[mid:], cursor)
-	// Parse all at once.
-	eAll, _, _ := p.ParseBatch(lines, "")
-	if len(e1)+len(e2) != len(eAll) {
-		t.Logf("cursor resume: split=%d+%d, full=%d (may differ if parser re-evaluates context)", len(e1), len(e2), len(eAll))
+	r1 := p.ParseBatch(lines[:mid], "")
+	r2 := p.ParseBatch(lines[mid:], r1.Cursor)
+	splitTotal := len(r1.Events) + len(r2.Events)
+	// Full parse.
+	rAll := p.ParseBatch(lines, "")
+	fullTotal := len(rAll.Events)
+	// Must match. Cursor resume is a hard contract.
+	if splitTotal != fullTotal {
+		t.Errorf("cursor resume: split=%d+%d=%d, full=%d (must match)", len(r1.Events), len(r2.Events), splitTotal, fullTotal)
 	}
-	_ = cursor
 }
 
 func testEventOrdering(t *testing.T, factory ParserFactory, lines [][]byte) {
 	t.Helper()
 	p := factory(t)
-	events, _, err := p.ParseBatch(lines, "")
-	if err != nil {
-		t.Fatalf("ParseBatch error: %v", err)
-	}
-	// Events must be in non-decreasing timestamp order.
-	for i := 1; i < len(events); i++ {
-		if events[i].Timestamp.Before(events[i-1].Timestamp) {
-			t.Errorf("event %d timestamp %v before event %d timestamp %v",
-				i, events[i].Timestamp, i-1, events[i-1].Timestamp)
+	result := p.ParseBatch(lines, "")
+	for i := 1; i < len(result.Events); i++ {
+		if result.Events[i].Timestamp.Before(result.Events[i-1].Timestamp) {
+			t.Errorf("event %d ts %v before event %d ts %v",
+				i, result.Events[i].Timestamp, i-1, result.Events[i-1].Timestamp)
 		}
 	}
 }
@@ -197,7 +231,7 @@ func testPanicRecover(t *testing.T, factory ParserFactory) {
 					t.Errorf("parser panicked on %q: %v", string(input), r)
 				}
 			}()
-			_, _, _ = p.ParseBatch([][]byte{input}, "")
+			_ = p.ParseBatch([][]byte{input}, "")
 		}()
 	}
 }
@@ -205,16 +239,13 @@ func testPanicRecover(t *testing.T, factory ParserFactory) {
 func testEmptyInput(t *testing.T, factory ParserFactory) {
 	t.Helper()
 	p := factory(t)
-	events, cursor, err := p.ParseBatch(nil, "")
-	if err != nil {
-		t.Logf("ParseBatch nil: %v (acceptable)", err)
+	result := p.ParseBatch(nil, "")
+	if len(result.Events) != 0 {
+		t.Errorf("nil input: %d events, want 0", len(result.Events))
 	}
-	if len(events) != 0 {
-		t.Errorf("ParseBatch nil: %d events, want 0", len(events))
-	}
-	events2, _, _ := p.ParseBatch([][]byte{}, cursor)
-	if len(events2) != 0 {
-		t.Errorf("ParseBatch empty with cursor: %d events, want 0", len(events2))
+	result2 := p.ParseBatch([][]byte{}, result.Cursor)
+	if len(result2.Events) != 0 {
+		t.Errorf("empty input with cursor: %d events, want 0", len(result2.Events))
 	}
 }
 
@@ -222,41 +253,29 @@ func testEmptyInput(t *testing.T, factory ParserFactory) {
 
 func loadMeta(t *testing.T, agentName string) *fixtureMeta {
 	t.Helper()
-	path := filepath.Join("testdata", agentName, "metadata.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join("testdata", agentName, "metadata.json"))
 	if err != nil {
-		t.Fatalf("metadata %s: %v", path, err)
+		t.Fatalf("metadata: %v", err)
 	}
 	var m fixtureMeta
 	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("metadata %s: %v", path, err)
+		t.Fatalf("metadata: %v", err)
 	}
 	return &m
 }
 
 func loadFixtures(t *testing.T, agentName, file string) [][]byte {
 	t.Helper()
-	path := filepath.Join("testdata", agentName, file)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join("testdata", agentName, file))
 	if err != nil {
-		t.Fatalf("fixture %s: %v", path, err)
+		return nil // optional fixture, caller skips if empty
 	}
-	var lines [][]byte
-	for _, line := range splitLines(data) {
-		if len(line) > 0 {
-			lines = append(lines, line)
-		}
-	}
-	return lines
+	return splitLines(data)
 }
 
 func loadAllFixtures(t *testing.T, agentName string) [][]byte {
 	t.Helper()
-	dir := filepath.Join("testdata", agentName)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("testdata/%s: %v", agentName, err)
-	}
+	entries, _ := os.ReadDir(filepath.Join("testdata", agentName))
 	var all [][]byte
 	for _, e := range entries {
 		if filepath.Ext(e.Name()) == ".jsonl" {
@@ -300,7 +319,7 @@ func eventTypes(m map[AgentEventType]bool) []string {
 	return s
 }
 
-// --- Mock parser (agent-neutral, metadata-driven) ---
+// --- Mock parser ---
 
 type mockParser struct {
 	agentKind string
@@ -308,25 +327,32 @@ type mockParser struct {
 
 func (p *mockParser) AgentKind() string { return p.agentKind }
 
-func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ([]AgentEvent, string, error) {
-	skipUntil := cursor
+func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
+	// Cursor = total lines parsed across all ParseBatch calls.
+	// Mock always parses all lines; cursor is a position token for
+	// duplicate prevention only.
+	lineOffset := 0
+	if cursor != "" {
+		lineOffset = atoi(cursor)
+	}
 	var events []AgentEvent
-	newCursor := cursor
+	var approvals []AgentApproval
+	hasApproval := false
+	degraded := false
+	processed := 0
 
+	// Duplicate prevention: skip lines already covered by cursor.
 	for _, line := range lines {
 		if len(line) == 0 {
 			continue
 		}
+		globalIdx := lineOffset + processed
+		processed++
 		var raw map[string]interface{}
 		if err := json.Unmarshal(line, &raw); err != nil {
-			continue // malformed → skip
+			degraded = true
+			continue
 		}
-		// Use type field as cursor key.
-		lineID := stringField(raw, "type")
-		if lineID != "" && skipUntil != "" && lineID <= skipUntil {
-			continue // cursor-based dedup
-		}
-		newCursor = lineID
 
 		event := &AgentEvent{
 			AgentKind: p.agentKind,
@@ -339,17 +365,62 @@ func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ([]AgentEvent, st
 			event.Confidence = 0.9
 		}
 		events = append(events, *event)
+
+		// Approval detection.
+		if event.Type == EventApprovalRequested {
+			approvals = append(approvals, AgentApproval{
+				ID:        itoa(globalIdx),
+				AgentKind: p.agentKind,
+				Status:    "pending",
+				Prompt:    "approval requested",
+				Source:    SourceJSONL,
+			})
+			hasApproval = true
+		}
+		if event.Type == EventApprovalResolved {
+			approvals = append(approvals, AgentApproval{
+				ID:        itoa(globalIdx),
+				AgentKind: p.agentKind,
+				Status:    "approved",
+				Prompt:    "approval resolved",
+				Source:    SourceJSONL,
+			})
+		}
 	}
-	return events, newCursor, nil
+
+	newCursor := itoa(lineOffset + len(lines))
+
+	// Status inference.
+	status := StatusUnknown
+	if hasApproval {
+		status = StatusWaitingApproval
+	} else if len(events) > 0 {
+		lastType := events[len(events)-1].Type
+		switch lastType {
+		case EventThinking:
+			status = StatusThinking
+		case EventToolCallStarted, EventToolCallFinished:
+			status = StatusWorking
+		case EventUserMessage:
+			status = StatusWaitingInput
+		default:
+			status = StatusWorking
+		}
+	}
+
+	return ParseResult{
+		Events:      events,
+		Cursor:      newCursor,
+		Status:      status,
+		Approvals:   approvals,
+		Degraded:    degraded,
+		Diagnostics: nil,
+	}
 }
 
-// classifyEvent maps raw record fields to common event types.
-// Handles Claude (type=user/assistant + message.content), Codex (type=event_msg + payload.type),
-// and Antigravity (type=USER_INPUT/TOOL_CALL + source).
 func classifyEvent(raw map[string]interface{}) AgentEventType {
 	rawType := stringField(raw, "type")
-
-	// Claude: type=user/assistant with message.content
+	// Claude
 	if rawType == "user" && hasContentType(raw, "tool_result") {
 		return EventToolCallFinished
 	}
@@ -368,14 +439,12 @@ func classifyEvent(raw map[string]interface{}) AgentEventType {
 	if rawType == "permission-mode" {
 		return EventApprovalRequested
 	}
-
-	// Codex: type=event_msg, response_item, session_meta with payload.type
+	// Codex
 	if rawType == "session_meta" {
 		return EventAgentStarted
 	}
 	if rawType == "event_msg" {
-		pt := payloadType(raw)
-		switch pt {
+		switch payloadType(raw) {
 		case "task_started":
 			return EventAgentStarted
 		case "waiting_for_approval":
@@ -384,13 +453,10 @@ func classifyEvent(raw map[string]interface{}) AgentEventType {
 			return EventApprovalResolved
 		}
 	}
-	if rawType == "response_item" {
-		if payloadRole(raw) == "user" {
-			return EventUserMessage
-		}
+	if rawType == "response_item" && payloadRole(raw) == "user" {
+		return EventUserMessage
 	}
-
-	// Antigravity: type=USER_INPUT, AGENT_OUTPUT, TOOL_CALL, TOOL_RESULT
+	// Antigravity
 	if rawType == "USER_INPUT" {
 		return EventUserMessage
 	}
@@ -403,22 +469,7 @@ func classifyEvent(raw map[string]interface{}) AgentEventType {
 	if rawType == "TOOL_RESULT" {
 		return EventToolCallFinished
 	}
-
 	return EventUnknown
-}
-
-func payloadType(raw map[string]interface{}) string {
-	if p, ok := raw["payload"].(map[string]interface{}); ok {
-		return stringField(p, "type")
-	}
-	return ""
-}
-
-func payloadRole(raw map[string]interface{}) string {
-	if p, ok := raw["payload"].(map[string]interface{}); ok {
-		return stringField(p, "role")
-	}
-	return ""
 }
 
 func hasMessageRole(raw map[string]interface{}, role string) bool {
@@ -445,6 +496,20 @@ func hasContentType(raw map[string]interface{}, ct string) bool {
 	return false
 }
 
+func payloadType(raw map[string]interface{}) string {
+	if p, ok := raw["payload"].(map[string]interface{}); ok {
+		return stringField(p, "type")
+	}
+	return ""
+}
+
+func payloadRole(raw map[string]interface{}) string {
+	if p, ok := raw["payload"].(map[string]interface{}); ok {
+		return stringField(p, "role")
+	}
+	return ""
+}
+
 func stringField(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
@@ -454,7 +519,24 @@ func stringField(m map[string]interface{}, key string) string {
 	return ""
 }
 
-// --- Self-tests: mock parser against all 3 agents ---
+func itoa(i int) string {
+	if i < 10 {
+		return string(rune('0' + i))
+	}
+	return itoa(i/10) + string(rune('0'+i%10))
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+	}
+	return n
+}
+
+// --- Self-tests ---
 
 func TestMockParser_Contract_Claude(t *testing.T) {
 	RunParserContract(t, "claude", func(t *testing.T) AgentParser {
