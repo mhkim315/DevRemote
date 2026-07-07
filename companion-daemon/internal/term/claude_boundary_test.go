@@ -3,6 +3,7 @@ package term
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -109,6 +110,56 @@ func TestClaudeDetection_FalsePositive(t *testing.T) {
 		if s.AgentKind != "unknown" && s.AgentConfidence >= 0.5 {
 			t.Errorf("false positive: Kind=%s Confidence=%.2f", s.AgentKind, s.AgentConfidence)
 		}
+	}
+}
+
+func TestClaudeDegraded_MalformedLog(t *testing.T) {
+	// Malformed log: parser degrades but terminal session survives.
+	tmpDir := t.TempDir()
+	logPath := tmpDir + "/malformed.jsonl"
+	os.WriteFile(logPath, []byte(`not valid json
+{"type":"user","message":{"role":"user","content":"ok"},"sessionId":"x"}
+garbage line
+`), 0644)
+
+	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
+	detector := agent.NewTermAgentDetector()
+	events := NewMemoryEventStore()
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector)
+	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
+		return LogRef{Path: logPath, Agent: "claude"}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go svc.Run(ctx)
+	time.Sleep(3 * time.Second)
+	cancel()
+	<-svc.Done()
+
+	h := &Handlers{Registry: reg, Events: events, Telemetry: svc, AgentDetector: detector}
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+
+	// Terminal must survive.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("malformed log: status %d (terminal must survive)", rec.Code)
+	}
+
+	var sessions []SessionTelemetry
+	json.Unmarshal(rec.Body.Bytes(), &sessions)
+	found := false
+	for _, s := range sessions {
+		if s.ID == "tmux:claude-session" {
+			found = true
+			t.Logf("malformed: events=%d, agentKind=%s, state=%s",
+				len(s.Events), s.AgentKind, s.State)
+			// Session must still be listed.
+			// Degraded may show as idle/unknown — that's correct.
+		}
+	}
+	if !found {
+		t.Fatal("session not found after malformed log (degraded must not hide terminal)")
 	}
 }
 
