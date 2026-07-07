@@ -4,16 +4,12 @@
   "source": "jsonl",
   "sourcePath": "~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl",
   "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>", "<IP>", "<EMAIL>"],
-  "format": {
-    "type": "string (session_meta, event_msg, response_item, turn_context)",
-    "timestamp": "ISO 8601 string",
-    "payload": "object with type, content, role fields"
-  },
-  "expectedEvents": ["session_meta", "task_started", "user_message", "waiting_for_approval"],
+  "expectedEvents": ["agent_started", "user_message", "approval_requested", "approval_resolved", "unknown"],
+  "observedSourceTypes": ["session_meta", "event_msg", "response_item", "unknown_msg_type"],
   "scenarios": {
-    "session_task.jsonl": "session_meta, task_started, user prompt",
-    "approval_waiting.jsonl": "waiting_for_approval, user message, approval_resolved",
-    "malformed.jsonl": "unknown type, missing fields"
+    "session_task.jsonl": "session_meta (agent_started), task_started (agent_started), user prompt (user_message)",
+    "approval_waiting.jsonl": "waiting_for_approval (approval_requested), user message, approval_resolved (approval_resolved)",
+    "malformed.jsonl": "unknown_msg_type (unknown), missing timestamp (unknown), empty payload"
   },
   "entryCount": 9,
   "date": "2026-07-07"

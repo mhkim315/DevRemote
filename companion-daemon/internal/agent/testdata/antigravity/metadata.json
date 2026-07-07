@@ -4,20 +4,13 @@
   "source": "jsonl",
   "sourcePath": "~/.gemini/antigravity/brain/<UUID>/.system_generated/logs/transcript.jsonl",
   "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>"],
-  "format": {
-    "step_index": "int",
-    "source": "USER_EXPLICIT or AGENT_OUTPUT",
-    "type": "USER_INPUT or AGENT_OUTPUT or TOOL_CALL or TOOL_RESULT",
-    "status": "DONE or FAILED",
-    "created_at": "ISO 8601 string",
-    "content": "string"
-  },
-  "expectedEvents": ["user_message", "agent_output", "tool_call", "tool_result"],
+  "expectedEvents": ["user_message", "assistant_message", "tool_call_started", "tool_call_finished", "unknown"],
+  "observedSourceTypes": ["USER_INPUT", "AGENT_OUTPUT", "TOOL_CALL", "TOOL_RESULT", "UNKNOWN_TYPE"],
   "scenarios": {
-    "user_agent.jsonl": "user input, agent output",
-    "tool_call.jsonl": "tool call, tool result",
-    "malformed.jsonl": "unknown type, missing fields"
+    "user_agent.jsonl": "USER_INPUT (user_message), AGENT_OUTPUT (assistant_message)",
+    "tool_call.jsonl": "TOOL_CALL (tool_call_started), TOOL_RESULT (tool_call_finished)",
+    "malformed.jsonl": "UNKNOWN_TYPE (unknown), missing fields, empty object"
   },
-  "entryCount": 6,
+  "entryCount": 7,
   "date": "2026-07-07"
 }

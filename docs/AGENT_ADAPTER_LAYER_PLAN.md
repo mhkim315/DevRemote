@@ -432,7 +432,7 @@ Agent Adapter는 민감정보를 다룰 가능성이 높다.
 <API_KEY>
 <EMAIL>
 <SECRET>
-<PRIVATE_PATH>
+<PATH>
 ```
 
 ## 7. Phase 계획
