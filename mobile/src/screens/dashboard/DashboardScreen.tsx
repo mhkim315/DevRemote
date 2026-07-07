@@ -144,7 +144,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       ) : (
         <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
           {/* P1a: Needs Attention — always first */}
-          {pendingApprovals.length > 0 && (
+          {needsAttention.length > 0 && (
             <View style={styles.section}>
               {sectionHeader('NEEDS ATTENTION', '⚠', '#f85149')}
               {pendingApprovals.map(({ sessionId, approval }) => (
