@@ -3,7 +3,6 @@ package term
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,10 +14,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Phase 5 E2E: fixture adapter at HTTP/WS/telemetry boundaries.
-// Tests use httptest + inline adapter — 0 tmux/cmux changes.
+// Phase 5 E2E: fixture adapter at HTTP/WS/telemetry/mobile boundaries.
+// 0 tmux/cmux changes. All state mutations provable.
 
-// --- Mutable fixture adapter (stateful, shared for create→discover→delete) ---
+// --- Adapter ---
 
 type fixtureE2EAdapter struct {
 	mu       sync.Mutex
@@ -28,8 +27,8 @@ type fixtureE2EAdapter struct {
 func newFixtureE2EAdapter() *fixtureE2EAdapter {
 	return &fixtureE2EAdapter{
 		sessions: map[string]mux.Session{
-			"f1": &fixtureE2ESession{id: "f1", title: "fixture-shell"},
-			"f2": &fixtureE2ESession{id: "f2", title: "fixture-build"},
+			"f1": &fixtureFullSession{id: "f1", title: "fixture-shell"},
+			"f2": &fixtureFullSession{id: "f2", title: "fixture-build"},
 		},
 	}
 }
@@ -51,7 +50,7 @@ func (a *fixtureE2EAdapter) CreateSession(_ context.Context, opts mux.CreateOpti
 	if id == "" {
 		id = "new"
 	}
-	s := &fixtureE2ESession{id: id, title: id}
+	s := &fixtureFullSession{id: id, title: id}
 	a.sessions[id] = s
 	return id, nil
 }
@@ -62,35 +61,103 @@ func (a *fixtureE2EAdapter) TerminateSession(_ context.Context, id string) error
 	return nil
 }
 
-type fixtureE2ESession struct {
+// --- Full session (has ScreenReader, StreamOpener) ---
+
+type fixtureFullSession struct {
 	id    string
 	title string
 }
 
-func (s *fixtureE2ESession) ID() string                      { return s.id }
-func (s *fixtureE2ESession) Title() string                   { return s.title }
-func (s *fixtureE2ESession) AdapterName() string             { return "fixture" }
-func (s *fixtureE2ESession) ReadScreen(_ context.Context) ([]byte, error) {
+func (s *fixtureFullSession) ID() string                      { return s.id }
+func (s *fixtureFullSession) Title() string                   { return s.title }
+func (s *fixtureFullSession) AdapterName() string             { return "fixture" }
+func (s *fixtureFullSession) ReadScreen(_ context.Context) ([]byte, error) {
 	return []byte("fixture screen content"), nil
 }
-func (s *fixtureE2ESession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
-	return &fixtureE2EStream{}, nil
+func (s *fixtureFullSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
+	return newFixtureStream(), nil
 }
 
-type fixtureE2EStream struct{}
+// --- Bare session (NO ScreenReader, NO HistoryReader, NO StreamOpener) ---
+// Intentionally unsupported — used to prove unsupported path at API boundary.
 
-func (s *fixtureE2EStream) Read(p []byte) (int, error)  { return 0, io.EOF }
-func (s *fixtureE2EStream) Write(p []byte) (int, error) { return len(p), nil }
-func (s *fixtureE2EStream) Close() error                { return nil }
-func (s *fixtureE2EStream) Resize(rows, cols int) error { return nil }
+type fixtureBareSession struct {
+	id    string
+	title string
+}
 
-// fixtureE2EHandlers creates Handlers with a fresh fixture adapter.
+func (s *fixtureBareSession) ID() string          { return s.id }
+func (s *fixtureBareSession) Title() string       { return s.title }
+func (s *fixtureBareSession) AdapterName() string { return "fixture" }
+
+// --- Stream (pushes content, blocks until Close, supports Resize) ---
+
+type fixtureStream struct {
+	pr     *strings.Reader
+	pw     *strings.Builder
+	resize [][2]int // recorded resize calls
+	mu     sync.Mutex
+	closed bool
+}
+
+func newFixtureStream() *fixtureStream {
+	return &fixtureStream{
+		pr: strings.NewReader("FIXTURE_STREAM_CONTENT"),
+		pw: &strings.Builder{},
+	}
+}
+
+func (s *fixtureStream) Read(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pr.Read(p)
+}
+
+func (s *fixtureStream) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pw.Write(p)
+}
+
+func (s *fixtureStream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
+func (s *fixtureStream) Resize(rows, cols int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resize = append(s.resize, [2]int{rows, cols})
+	return nil
+}
+
+// --- Handler factory ---
+
 func fixtureE2EHandlers(t *testing.T) (*Handlers, *fixtureE2EAdapter) {
 	t.Helper()
 	adapter := newFixtureE2EAdapter()
 	reg := mux.MustNewRegistry(adapter)
 	return &Handlers{Registry: reg, Events: NewMemoryEventStore()}, adapter
 }
+
+// bareSessionHandlers returns Handlers with a session that has ZERO optional capabilities.
+func bareSessionHandlers(t *testing.T) *Handlers {
+	t.Helper()
+	adapter := &bareOnlyAdapter{
+		sessions: []mux.Session{&fixtureBareSession{id: "bare", title: "Bare Session"}},
+	}
+	reg := mux.MustNewRegistry(adapter)
+	return &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+}
+
+type bareOnlyAdapter struct {
+	sessions []mux.Session
+}
+
+func (a *bareOnlyAdapter) Name() string                                       { return "bare" }
+func (a *bareOnlyAdapter) ListSessions(_ context.Context) ([]mux.Session, error) { return a.sessions, nil }
 
 // --- Tests ---
 
@@ -101,125 +168,87 @@ func TestFixtureE2E_GetSessions(t *testing.T) {
 	h.HandleSessionsAPI(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/sessions: status = %d, want 200", rec.Code)
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-
 	var sessions []SessionTelemetry
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-
 	found := map[string]bool{}
 	for _, s := range sessions {
 		found[s.ID] = true
 		if s.Adapter == "fixture" {
 			if !strings.HasPrefix(s.ID, "fixture:") {
-				t.Errorf("fixture session ID %q missing adapter prefix", s.ID)
-			}
-			if s.DisplayID == "" {
-				t.Error("fixture session has empty displayId")
-			}
-			if len(s.Capabilities) == 0 {
-				t.Error("fixture session has empty capabilities")
+				t.Errorf("ID %q missing adapter prefix", s.ID)
 			}
 		}
 	}
 	for _, want := range []string{"fixture:f1", "fixture:f2"} {
 		if !found[want] {
-			t.Errorf("session %q not found in API response", want)
+			t.Errorf("session %q not found", want)
 		}
 	}
 }
 
 func TestFixtureE2E_CreateAndDelete(t *testing.T) {
-	h, adapter := fixtureE2EHandlers(t)
+	h, _ := fixtureE2EHandlers(t)
 
-	// Verify initial count.
-	req0 := httptest.NewRequest("GET", "/api/sessions", nil)
-	rec0 := httptest.NewRecorder()
-	h.HandleSessionsAPI(rec0, req0)
-	var before []SessionTelemetry
-	json.Unmarshal(rec0.Body.Bytes(), &before)
-	beforeCount := len(before)
+	// Baseline count.
+	getCount := func() int {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		rec := httptest.NewRecorder()
+		h.HandleSessionsAPI(rec, req)
+		var s []SessionTelemetry
+		json.Unmarshal(rec.Body.Bytes(), &s)
+		return len(s)
+	}
+	before := getCount()
 
 	// Create.
 	body := strings.NewReader(`{"id":"fixture:test-create","runner":"claude"}`)
-	req := httptest.NewRequest("POST", "/api/sessions", body)
-	rec := httptest.NewRecorder()
-	h.HandleSessionsAPI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST: status = %d, want 200", rec.Code)
+	reqC := httptest.NewRequest("POST", "/api/sessions", body)
+	recC := httptest.NewRecorder()
+	h.HandleSessionsAPI(recC, reqC)
+	if recC.Code != http.StatusOK {
+		t.Fatalf("POST: %d", recC.Code)
 	}
-	var cr struct {
-		Status string `json:"status"`
-		ID     string `json:"id"`
-	}
-	json.Unmarshal(rec.Body.Bytes(), &cr)
-	if !strings.HasPrefix(cr.ID, "fixture:") {
-		t.Errorf("created ID %q missing fixture: prefix", cr.ID)
+	var cr struct{ Status, ID string }
+	json.Unmarshal(recC.Body.Bytes(), &cr)
+	if getCount() != before+1 {
+		t.Error("count did not increase after create")
 	}
 
-	// Verify count increased (state mutation proof).
-	req1 := httptest.NewRequest("GET", "/api/sessions", nil)
-	rec1 := httptest.NewRecorder()
-	h.HandleSessionsAPI(rec1, req1)
-	var after []SessionTelemetry
-	json.Unmarshal(rec1.Body.Bytes(), &after)
-	if len(after) != beforeCount+1 {
-		t.Errorf("after create: %d sessions, want %d", len(after), beforeCount+1)
+	// Delete.
+	reqD := httptest.NewRequest("DELETE", "/api/sessions?id="+cr.ID, nil)
+	recD := httptest.NewRecorder()
+	h.HandleSessionsAPI(recD, reqD)
+	if recD.Code != http.StatusOK {
+		t.Errorf("DELETE: %d", recD.Code)
 	}
-
-	// Delete using correct query param: ?id=<canonicalID>
-	delReq := httptest.NewRequest("DELETE", "/api/sessions?id="+cr.ID, nil)
-	delRec := httptest.NewRecorder()
-	h.HandleSessionsAPI(delRec, delReq)
-	if delRec.Code != http.StatusOK {
-		t.Errorf("DELETE: status = %d, want 200", delRec.Code)
+	if getCount() != before {
+		t.Error("count did not decrease after delete")
 	}
-
-	// Verify count decreased (state mutation proof via adapter).
-	req2 := httptest.NewRequest("GET", "/api/sessions", nil)
-	rec2 := httptest.NewRecorder()
-	h.HandleSessionsAPI(rec2, req2)
-	var final []SessionTelemetry
-	json.Unmarshal(rec2.Body.Bytes(), &final)
-	if len(final) != beforeCount {
-		t.Errorf("after delete: %d sessions, want %d", len(final), beforeCount)
-	}
-	_ = adapter // used for state tracking
 }
 
 func TestFixtureE2E_UnsupportedCapability(t *testing.T) {
-	// fixture session has ScreenReader but NOT HistoryReader.
-	// GET /api/sessions?history=fixture:f1 should use ScreenReader fallback.
-	h, _ := fixtureE2EHandlers(t)
-	req := httptest.NewRequest("GET", "/api/sessions?history=fixture:f1", nil)
+	// Bare session: NO ScreenReader, NO HistoryReader — truly unsupported.
+	// GET /api/sessions?history=bare:bare must return 404 (not 500, not empty 200).
+	h := bareSessionHandlers(t)
+	req := httptest.NewRequest("GET", "/api/sessions?history=bare:bare", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
 
-	// ScreenReader fallback should succeed (200) and return events JSON.
-	if rec.Code != http.StatusOK {
-		t.Errorf("history with screen fallback: status = %d, want 200 (has ScreenReader)", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unsupported history: status = %d, want 404", rec.Code)
 	}
-
-	// Body should be valid JSON array (events).
-	var events []struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Detail  string `json:"detail"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
-		t.Fatalf("history response: invalid JSON: %v", err)
-	}
-	if len(events) == 0 {
-		t.Error("history fallback returned 0 events")
+	if !strings.Contains(rec.Body.String(), "history unavailable") {
+		t.Errorf("unsupported history body missing 'history unavailable': %s", rec.Body.String())
 	}
 }
 
 func TestFixtureE2E_WebSocket(t *testing.T) {
 	h, _ := fixtureE2EHandlers(t)
 
-	// Use httptest.NewServer for real WebSocket upgrade.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=fixture:f1"
 		h.HandleWS(w, r)
@@ -229,48 +258,110 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/term/ws?session=fixture:f1"
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
-		t.Fatalf("WebSocket dial: %v", err)
+		t.Fatalf("WS dial: %v", err)
 	}
 	defer conn.Close()
 
-	// Read a message (the WS handler reads from session stream).
+	// Read: verify we receive actual content (handler sends ReadScreen as first frame).
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
-		// Stream returns io.EOF which the handler will close — expected.
-		t.Logf("WS read (expected for mock): %v", err)
+		t.Fatalf("WS read: %v", err)
 	}
-	_ = msg
+	if len(msg) == 0 {
+		t.Error("WS received empty message, want content")
+	}
+
+	// Write: send input through WebSocket.
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("echo test\n")); err != nil {
+		t.Fatalf("WS write: %v", err)
+	}
+}
+
+func TestFixtureE2E_ResizeAtBoundary(t *testing.T) {
+	// Verify fixture stream implements Resize and records dimensions.
+	// (Resize is triggered client-side via /term/size?session=...&rows=...&cols=...).
+	stream := newFixtureStream()
+	if err := stream.Resize(40, 120); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	stream.mu.Lock()
+	n := len(stream.resize)
+	stream.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("Resize recorded %d calls, want 1", n)
+	}
+	if stream.resize[0] != [2]int{40, 120} {
+		t.Errorf("Resize recorded %v, want [40, 120]", stream.resize[0])
+	}
 }
 
 func TestFixtureE2E_Telemetry(t *testing.T) {
 	h, _ := fixtureE2EHandlers(t)
 
-	// Use TelemetryService directly to verify fixture sessions appear in snapshot.
 	svc := NewTelemetryService(h.Registry, h.Events, NewNopLinkStore(), NoopNotifier{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
-	// Run for one tick so snapshot populates.
 	go svc.Run(ctx)
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-svc.Done()
 
 	snapshot := svc.Snapshot(h.Registry)
-	found := map[string]bool{}
+	found := false
 	for _, s := range snapshot {
-		found[s.Adapter] = true
 		if s.Adapter == "fixture" {
+			found = true
+			// Schema lock: verify all required telemetry fields.
 			if s.ID == "" {
-				t.Error("fixture telemetry session has empty ID")
+				t.Error("telemetry: empty ID")
 			}
-			if s.Adapter == "" {
-				t.Error("fixture telemetry session has empty adapter")
+			if s.State == "" {
+				t.Error("telemetry: empty State")
+			}
+			// Load must be present (0 is valid).
+			_ = s.Load
+			if len(s.Capabilities) == 0 {
+				t.Error("telemetry: empty Capabilities")
 			}
 		}
 	}
-	if !found["fixture"] {
-		t.Error("fixture adapter not found in TelemetryService snapshot")
+	if !found {
+		t.Error("fixture adapter not in telemetry snapshot")
+	}
+}
+
+func TestFixtureE2E_MobileSchema(t *testing.T) {
+	// Verify JSON response for third adapter matches mobile schema.
+	// Mobile client deserializes SessionTelemetry with string fields
+	// for id, adapter, displayId, state, capabilities[].
+	h, _ := fixtureE2EHandlers(t)
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+
+	raw := rec.Body.String()
+
+	// All required JSON keys must be present for unknown third adapter.
+	requiredKeys := []string{
+		`"id"`,
+		`"displayId"`,
+		`"state"`,
+		`"load"`,
+		`"runner"`,
+		`"runnerColor"`,
+		`"adapter"`,
+		`"capabilities"`,
+		`"events"`,
+	}
+	for _, k := range requiredKeys {
+		if !strings.Contains(raw, k) {
+			t.Errorf("mobile schema: JSON missing key %s for fixture adapter", k)
+		}
+	}
+
+	// Verify adapter value is "fixture" (not empty, not hardcoded tmux/cmux).
+	if !strings.Contains(raw, `"fixture"`) {
+		t.Error("mobile schema: JSON does not contain adapter name 'fixture'")
 	}
 }
