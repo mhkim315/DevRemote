@@ -45,13 +45,15 @@ interface SessionTelemetry {
 | legacy | `[]` (omitted) | adapter tag만 표시, WS 연결 불가, ACTIVITY 탭 숨김 |
 
 **구현 (FeedScreen.tsx)**:
-- `supportsHistory = !sessionData \|\| sessionData.capabilities?.includes('history') !== false`
-  - `sessionData`가 null이면(초기 상태): true → 기존 동작 유지
-  - `capabilities`에 `'history'`가 있으면: true
-  - `capabilities`가 `undefined`(legacy): true → 하위 호환
-  - `capabilities`에 `'history'`가 없으면: false → 탭 숨김, polling 중단
+- `supportsHistory = !!(sessionData?.capabilities?.includes('history'))`
+  - `sessionData`가 null이면(초기 상태): `false` → ACTIVITY 탭 표시 안 함
+  - `capabilities`에 `'history'`가 있으면: `true`
+  - `capabilities`가 `undefined`(legacy): `false` → 안전하게 숨김 (capability 명시적 광고 전까지)
+  - `capabilities`에 `'history'`가 없으면: `false`
+- `useRef(sessionData)`로 stale closure 방지. Interval이 항상 최신 sessionData 참조
+- `useEffect`: `supportsHistory === false && activeTab === 'activity'` → `setActiveTab('terminal')`
 - ACTIVITY 탭: `{supportsHistory && (<TouchableOpacity>...</TouchableOpacity>)}`
-- History polling: `if (supportsHistory !== false) { fetchHistory(); }`
+- History polling: `if (sessionDataRef.current?.capabilities?.includes('history')) { fetchHistory(); }`
 
 ## 4. API Golden Fixtures
 

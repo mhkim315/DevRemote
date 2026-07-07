@@ -41,8 +41,19 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('activity');
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
-  const supportsHistory = !sessionData || sessionData.capabilities?.includes('history') !== false;
+  // Legacy (capabilities===undefined) is treated as no-history for safety.
+  // Only sessions explicitly advertising 'history' get the ACTIVITY tab.
+  const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
+  const sessionDataRef = useRef(sessionData);
+  sessionDataRef.current = sessionData;
   const [sessionEnded, setSessionEnded] = useState(false);
+
+  // When history is unsupported, force-switch to terminal tab.
+  useEffect(() => {
+    if (!supportsHistory && activeTab === 'activity') {
+      setActiveTab('terminal');
+    }
+  }, [supportsHistory, activeTab]);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
@@ -90,14 +101,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
     };
 
     fetchSession();
-    const supportsHistory = sessionData?.capabilities?.includes('history');
-    if (supportsHistory !== false) {
+    if (sessionDataRef.current?.capabilities?.includes('history')) {
       fetchHistory();
     }
     const interval = setInterval(() => {
       fetchSession();
-      const hist = sessionData?.capabilities?.includes('history');
-      if (hist !== false) {
+      if (sessionDataRef.current?.capabilities?.includes('history')) {
         fetchHistory();
       }
     }, 3000);
