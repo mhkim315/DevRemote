@@ -29,9 +29,9 @@ type SessionTelemetry struct {
 	AgentConfidence float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
 	// Agent events flow through the existing Events field via
 	// TelemetryService.processSession → EventStore → Snapshot.
-	Stale           bool                `json:"stale,omitempty"`
-	LastSuccessAt   time.Time           `json:"lastSuccessAt,omitempty"`
-	LastError       string              `json:"lastError,omitempty"`
+	Stale         bool      `json:"stale,omitempty"`
+	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
+	LastError     string    `json:"lastError,omitempty"`
 }
 
 // sessionCapabilities returns the list of optional capabilities a session supports.

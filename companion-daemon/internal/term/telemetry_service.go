@@ -14,12 +14,13 @@ import (
 // TelemetryService owns the telemetry state machine and background sampling loop.
 // It replaces the telemetryCache package global.
 type TelemetryService struct {
-	reg      *mux.Registry
-	events   EventStore
-	links    LinkStore
-	notifier Notifier
-	detector AgentDetector // Phase A5: optional agent detector (nil if not wired)
-	interval time.Duration
+	reg         *mux.Registry
+	events      EventStore
+	links       LinkStore
+	notifier    Notifier
+	detector    AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
+	logResolver func(models.ProcessInfo) (LogRef, error) // Phase A5b: injectable resolver (nil = production ResolveAgentLog)
+	interval    time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*sessionStateData
@@ -103,11 +104,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 	// 2. ProcessProvider
 	if logErr != nil {
 		if info, ok := processSnapshots[id]; ok {
-			logRef, logErr = ResolveAgentLog(ctx, info)
+			logRef, logErr = s.resolveLog(info)
 		} else if !batchAdapters[sess.AdapterName()] {
 			if pp, ok := sess.(mux.ProcessProvider); ok {
 				if pinfo, err := pp.ProcessInfo(ctx); err == nil {
-					logRef, logErr = ResolveAgentLog(ctx, pinfo)
+					logRef, logErr = s.resolveLog(pinfo)
 				}
 			}
 		}
@@ -214,6 +215,18 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 
 	stateData.LastOutput = out
 	s.mu.Unlock()
+}
+
+func (s *TelemetryService) resolveLog(p models.ProcessInfo) (LogRef, error) {
+	if s.logResolver != nil {
+		return s.logResolver(p)
+	}
+	return ResolveAgentLog(context.Background(), p)
+}
+
+// SetLogResolver overrides the production ResolveAgentLog for testing.
+func (s *TelemetryService) SetLogResolver(fn func(models.ProcessInfo) (LogRef, error)) {
+	s.logResolver = fn
 }
 
 // Done returns a channel that closes when the sampling loop has exited.
