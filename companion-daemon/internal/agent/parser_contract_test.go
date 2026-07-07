@@ -456,18 +456,15 @@ func classifyEvent(raw map[string]interface{}) AgentEventType {
 	if rawType == "response_item" && payloadRole(raw) == "user" {
 		return EventUserMessage
 	}
-	// Antigravity
+	// Antigravity (actual observed CLI types)
 	if rawType == "USER_INPUT" {
 		return EventUserMessage
 	}
-	if rawType == "AGENT_OUTPUT" {
+	if rawType == "PLANNER_RESPONSE" || rawType == "VIEW_FILE" {
 		return EventAssistantMessage
 	}
-	if rawType == "TOOL_CALL" {
+	if rawType == "SEARCH_WEB" || rawType == "LIST_DIRECTORY" {
 		return EventToolCallStarted
-	}
-	if rawType == "TOOL_RESULT" {
-		return EventToolCallFinished
 	}
 	return EventUnknown
 }
