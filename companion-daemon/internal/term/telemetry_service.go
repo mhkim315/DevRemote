@@ -260,14 +260,25 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 		}
 	}
 	sortTelemetry(res)
-	// Phase A5: populate agent fields from detector.
+	// Phase A5: populate agent fields from detector using real process evidence.
 	if s.detector != nil {
 		for i := range res {
 			st := &res[i]
 			ref := mux.ParseSessionID(st.ID)
-			kind, status, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, ProdDetectionEvidence{
-				TermAdapter: ref.Adapter,
-			})
+			evidence := ProdDetectionEvidence{TermAdapter: ref.Adapter}
+			// Extract real process evidence from the session.
+			for _, sess := range sessions {
+				if sess.AdapterName() == ref.Adapter && sess.ID() == ref.LocalID {
+					if pp, ok := sess.(mux.ProcessProvider); ok {
+						if info, err := pp.ProcessInfo(context.Background()); err == nil {
+							evidence.ProcessName = info.Command
+							evidence.CWD = info.CWD
+						}
+					}
+					break
+				}
+			}
+			kind, status, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, evidence)
 			st.AgentKind = kind
 			st.AgentStatus = status
 			st.AgentConfidence = confidence
