@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"errors"
+	"io"
 	"net/url"
 	"sync"
 	"testing"
@@ -92,8 +93,14 @@ func testFactoryCtxCancel(t *testing.T, factory ContractAdapterFactory) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	sessions, err := adapter.ListSessions(ctx)
-	if sessions != nil && err == nil {
-		t.Error("ListSessions with cancelled ctx returned sessions without error")
+	if err == nil {
+		t.Fatal("ListSessions with cancelled ctx: got nil error, want context.Canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("ListSessions error does not wrap Canceled: %v", err)
+	}
+	if sessions != nil {
+		t.Errorf("ListSessions with cancelled ctx returned %d sessions, want nil", len(sessions))
 	}
 }
 
@@ -468,6 +475,10 @@ func RunProcessSnapshotContract(t *testing.T, cfg *ContractConfig, factory Contr
 				t.Errorf("ProcessSnapshot key %q not in discovered sessions", key)
 			}
 		}
+		// ProcessSnapshot keys are a subset of discovered sessions.
+		// Not every session has an agent process; non-agent sessions
+		// (e.g. bare shells without tags) are not required to appear.
+		// The forward check above ensures snapshot keys are valid.
 	})
 }
 
@@ -569,8 +580,14 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 			go func() { n, readErr = stream.Read(buf); close(done) }()
 			select {
 			case <-done:
+				if readErr != nil && readErr != io.EOF {
+					t.Errorf("Read error: %v", readErr)
+				}
 				if n == 0 && readErr == nil {
 					t.Error("Read returned 0 bytes with no error")
+				}
+				if n == 0 && readErr == io.EOF {
+					t.Error("Read returned EOF with 0 bytes — no content received")
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("Read timed out")
@@ -605,6 +622,28 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 			defer stream.Close()
 			if err := stream.Resize(80, 24); err != nil {
 				t.Errorf("Resize failed: %v", err)
+			}
+		})
+		t.Run("Write", func(t *testing.T) {
+			stream, err := opener.OpenStream(context.Background())
+			if err != nil {
+				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "not found") {
+					t.Skipf("OpenStream requires real backend: %v", err)
+				}
+				t.Fatalf("OpenStream: %v", err)
+			}
+			defer stream.Close()
+			n, err := stream.Write([]byte("ls\n"))
+			if err != nil {
+				// Some adapters (cmux) use InputWriter instead of stream.Write.
+				// This is a valid design choice — not an error.
+				if stringsContains(err.Error(), "not implemented") || stringsContains(err.Error(), "InputWriter") {
+					t.Skipf("Write not implemented; adapter uses InputWriter: %v", err)
+				}
+				t.Fatalf("Write failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("Write returned 0 bytes")
 			}
 		})
 		t.Run("WriteInput", func(t *testing.T) {
