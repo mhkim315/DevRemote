@@ -43,15 +43,17 @@ The mapping is NOT a 1:1 field rename. It's a semantic classification:
 - Antigravity `type=TOOL_CALL` → `tool_call_started`
 - Antigravity `type=TOOL_RESULT` → `tool_call_finished`
 
-## Source Detection
+## Source Taxonomy
+
+Matches `AgentEventSource` in models.go per AGENT_ADAPTER_LAYER_PLAN.md §4.5:
 
 | Source | How to detect |
 |--------|--------------|
-| `log` | Event parsed from JSONL/log file |
-| `screen` | Event inferred from terminal screen analysis |
-| `process` | Event inferred from process name/cmdline |
-| `manual` | User manually linked agent to session |
-| `unknown` | Source cannot be determined |
+| `jsonl` | Structured JSONL log (Claude projects, Codex sessions, Antigravity transcript) |
+| `log_file` | Unstructured log file |
+| `screen` | Terminal screen analysis |
+| `process` | Process name/command line |
+| `manual_link` | User manually linked agent to session |
 
 ## Go Types
 
@@ -63,5 +65,7 @@ The mapping is NOT a 1:1 field rename. It's a semantic classification:
 - `AgentEvent` — normalized event struct
 - `AgentApproval` — approval request/resolution struct
 
-No Claude-specific field names. No `type`, `sessionId`, `payload` from raw JSONL.
-All agent-specific evidence isolated to `Metadata map[string]string`.
+Common Go model (internal/agent/models.go) does not expose raw JSONL field names
+such as `type`, `sessionId`, `payload`. Raw field names appear only in fixture
+metadata and this mapping document as reference for parser implementors.
+All agent-specific evidence is isolated to `Metadata map[string]string`.
