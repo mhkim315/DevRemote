@@ -556,6 +556,31 @@ metadata 예:
 }
 ```
 
+Redaction 규칙:
+
+| 대상 | 치환 토큰 | 예시 |
+|------|----------|------|
+| Home directory | `<HOME>` | `/Users/mhk` → `<HOME>` |
+| Username | `<USER>` | `mhk` → `<USER>` |
+| Project/Repo path | `<PROJECT>` | `/Users/mhk/projects/myapp` → `<PROJECT>/myapp` |
+| API key / token | `<TOKEN>` | `sk-ant-abc123...` → `<TOKEN>` |
+| Hostname | `<HOST>` | `mhk-macbook` → `<HOST>` |
+| Prompt text | `<PROMPT>` | 사용자 입력 전문 |
+| Source code | `<CODE>` | 파일 내용 block |
+| Shell command | `<CMD>` | 실행된 명령어 |
+| File path (non-project) | `<PATH>` | `/etc/hosts` → `<PATH>` |
+| UUID / session ID | `<UUID>` | `d1b2d1cf-...` → `<UUID>` |
+| IP address | `<IP>` | `192.168.1.1` → `<IP>` |
+| Email | `<EMAIL>` | `user@example.com` → `<EMAIL>` |
+
+규칙:
+
+- 치환 전 원본 값을 repo에 절대 커밋하지 않는다.
+- fixture 파일명은 redaction을 암시하지 않는다 (예: `approval_request.jsonl`).
+- `metadata.json`에 적용된 `redactions` 목록을 명시한다.
+- 치환 토큰은 `<UPPER_SNAKE>` 형식으로 통일한다.
+- 전체 치환 후에도 JSON 구조가 유효해야 한다 (파서 검증 통과).
+
 합격 기준:
 
 - 최소 2개 agent에서 fixture를 확보한다.
