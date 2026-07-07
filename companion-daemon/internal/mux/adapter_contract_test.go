@@ -100,11 +100,13 @@ func testFactoryCtxCancel(t *testing.T, factory ContractAdapterFactory) {
 func testFactoryCtxTimeout(t *testing.T, factory ContractAdapterFactory) {
 	t.Helper()
 	adapter := factory(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	// Use already-expired context so it fires before any internal
+	// timeout wrapping (e.g. cmux's 3s ListSessions deadline).
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 	_, err := adapter.ListSessions(ctx)
 	if err == nil {
-		t.Log("factory adapter did not reject timeout; may be mock limitation")
+		t.Error("factory adapter must propagate context timeout; mock runner must check ctx.Err()")
 	}
 }
 
@@ -445,9 +447,25 @@ func RunProcessSnapshotContract(t *testing.T, cfg *ContractConfig, factory Contr
 			t.Error("ProcessSnapshot returned nil map")
 			return
 		}
+		if len(snap) == 0 {
+			t.Error("ProcessSnapshot returned empty map")
+			return
+		}
+		// Cross-check snapshot keys against discovered sessions.
+		sessions, listErr := adapter.ListSessions(context.Background())
+		if listErr != nil {
+			t.Fatalf("ListSessions: %v", listErr)
+		}
+		sessionIDs := make(map[string]bool)
+		for _, s := range sessions {
+			sessionIDs[s.ID()] = true
+		}
 		for key := range snap {
 			if key == "" {
 				t.Error("ProcessSnapshot map contains empty key")
+			}
+			if !sessionIDs[key] {
+				t.Errorf("ProcessSnapshot key %q not in discovered sessions", key)
 			}
 		}
 	})
@@ -524,6 +542,9 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 		t.Run("OpenStream", func(t *testing.T) {
 			stream, err := opener.OpenStream(context.Background())
 			if err != nil {
+				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "not found") {
+					t.Skipf("OpenStream requires real backend: %v", err)
+				}
 				t.Fatalf("OpenStream: %v", err)
 			}
 			if stream == nil {
@@ -534,19 +555,35 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 		t.Run("Read", func(t *testing.T) {
 			stream, err := opener.OpenStream(context.Background())
 			if err != nil {
+				// Allow skip for adapters that fail at PTY attach (e.g. tmux mock).
+				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "not found") {
+					t.Skipf("OpenStream requires real backend: %v", err)
+				}
 				t.Fatalf("OpenStream: %v", err)
 			}
 			defer stream.Close()
+			buf := make([]byte, 4096)
 			done := make(chan struct{})
-			go func() { _, _ = stream.Read(make([]byte, 4096)); close(done) }()
+			var n int
+			var readErr error
+			go func() { n, readErr = stream.Read(buf); close(done) }()
 			select {
 			case <-done:
+				if n == 0 && readErr == nil {
+					t.Error("Read returned 0 bytes with no error")
+				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("Read timed out")
 			}
 		})
 		t.Run("Close", func(t *testing.T) {
-			stream, _ := opener.OpenStream(context.Background())
+			stream, err := opener.OpenStream(context.Background())
+			if err != nil {
+				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "not found") {
+					t.Skipf("OpenStream requires real backend: %v", err)
+				}
+				t.Fatalf("OpenStream: %v", err)
+			}
 			stream.Close()
 			stream.Close() // idempotent
 			done := make(chan struct{})
@@ -558,9 +595,17 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 			}
 		})
 		t.Run("Resize", func(t *testing.T) {
-			stream, _ := opener.OpenStream(context.Background())
+			stream, err := opener.OpenStream(context.Background())
+			if err != nil {
+				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") {
+					t.Skipf("OpenStream requires real backend: %v", err)
+				}
+				t.Fatalf("OpenStream: %v", err)
+			}
 			defer stream.Close()
-			stream.Resize(80, 24)
+			if err := stream.Resize(80, 24); err != nil {
+				t.Errorf("Resize failed: %v", err)
+			}
 		})
 		t.Run("WriteInput", func(t *testing.T) {
 			iw, ok := s.(InputWriter)

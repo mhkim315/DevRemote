@@ -72,6 +72,7 @@ func TestTmuxAdapter_Contract(t *testing.T) {
 	cfg := &ContractConfig{
 		ExpectScreenReader:      true,
 		ExpectHistoryReader:     true,
+		ExpectStreamOpener:      true,
 		ExpectProcessProvider:   true,
 		ExpectSessionCreator:    true,
 		ExpectSessionTerminator: true,
@@ -81,4 +82,5 @@ func TestTmuxAdapter_Contract(t *testing.T) {
 	RunScreenHistoryContract(t, cfg, factory)
 	RunProcessInfoContract(t, cfg, factory)
 	RunCreateDiscoverTerminateContract(t, cfg, factory)
+	RunLiveStreamContract(t, cfg, factory)
 }
