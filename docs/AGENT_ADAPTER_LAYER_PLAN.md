@@ -703,33 +703,76 @@ Redaction 규칙:
 - detector contract test가 있다.
 - log resolver가 raw file content를 diagnostic에 노출하지 않는다.
 
-### Phase A5 — Claude Agent Adapter Vertical Slice
+### Phase A5a — Claude Production Detection Bridge
 
 목표:
 
-- 가장 확실한 agent 하나를 end-to-end로 구현한다.
-- 이 Phase의 목적은 Claude 완성도가 아니라 Agent Adapter pipeline의 vertical slice다.
+- 가장 확실한 agent 하나로 production boundary까지 최소 detection bridge를 연결한다.
+- 이 Phase의 목적은 parser/approval/mobile 전체 완성이 아니라, 실제 process evidence가
+  production detector를 거쳐 `/api/sessions` telemetry field로 노출될 수 있음을 증명하는 것이다.
 
 작업:
 
 - Claude detector.
-- Claude log resolver.
-- Claude JSONL/log parser.
-- Claude status inference.
-- Claude tool call event mapping.
+- terminal session `ProcessProvider` evidence 연결.
+- `TelemetryService` → `agent.NewTermAgentDetector()` bridge.
+- `/api/sessions` `agentKind`, `agentStatus`, `agentConfidence` field 노출.
+- Claude true-positive / non-agent false-positive product-boundary test.
+- nil detector backward compatibility 검증.
+
+합격 기준:
+
+- production-like Claude process evidence가 `/api/sessions`에서 `agentKind=claude`로 표시된다.
+- non-agent process evidence는 `unknown` 또는 low confidence로 안전하게 fallback한다.
+- detector가 nil이면 legacy telemetry response가 깨지지 않는다.
+- test-only detector가 evidence를 주입하지 않는다.
+- detector 실패가 terminal session을 숨기지 않는다.
+
+권장 검증:
+
+- API DTO compatibility tests.
+- targeted production bridge tests.
+- `go vet`, `go test ./...`.
+
+상태:
+
+- `c15659568` 기준으로 scoped accept 완료.
+- 검증 문서: `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+
+남은 운영 follow-up:
+
+- request-time `Snapshot()`에서 unbounded `ProcessInfo(context.Background())`를 직접 호출하지 않도록
+  telemetry loop cache 또는 timeout context로 정리한다.
+
+### Phase A5b — Claude Parser/Event/UX Vertical Slice
+
+목표:
+
+- A5a detection bridge 위에 Claude parser/resolver/event/mobile UX를 연결해 원래 A5 vertical slice를 완료한다.
+- 이 Phase의 목적은 Claude 완성도가 아니라 Agent Adapter pipeline의 실제 end-to-end semantics를 증명하는 것이다.
+
+작업:
+
+- Claude log resolver production 연결.
+- Claude JSONL/log parser production 연결.
+- Claude status inference를 `SessionTelemetry`/Activity state에 반영.
+- Claude user/assistant/tool event mapping.
 - Claude approval event mapping.
 - Activity feed 연결.
 - mobile status badge 표시.
 - parser degraded state 표시.
+- parser failure isolation 검증.
+- tmux + Claude와 LocalPTY + Claude semantic parity smoke.
 
 합격 기준:
 
 - Claude session에서 AgentIdentity가 표시된다.
 - Claude user/assistant/tool/approval event가 Common AgentEvent로 표시된다.
-- Claude approval request가 common Approval UX로 표시된다.
+- Claude approval request가 common Approval UX 또는 명시적 fallback UX로 표시된다.
 - incremental parsing이 동작한다.
 - tmux + Claude와 LocalPTY + Claude에서 같은 AgentEvent semantics가 나온다.
 - parser failure 시 terminal은 계속 사용 가능하다.
+- parser degraded state가 product/mobile boundary에서 구분된다.
 - mobile에 Claude 이름 기반 behavior branch가 없다.
 
 권장 검증:
@@ -740,11 +783,17 @@ Redaction 규칙:
 - mobile TypeScript compile.
 - tmux/LocalPTY smoke if available.
 
+주의:
+
+- A5b가 끝나기 전에는 A6로 넘어가지 않는다.
+- A5b에서 mobile/event rendering을 크게 뜯어고쳐야 한다면 A2/A3 model/harness 설계가 부족했다는 신호다.
+
 ### Phase A6 — Codex/GPT Agent Adapter Vertical Slice
 
 목표:
 
 - 두 번째 agent로 Agent Adapter Layer가 Claude 전용이 아님을 증명한다.
+- A5b에서 확정된 common event/status/mobile UX를 재사용한다.
 
 작업:
 
@@ -763,7 +812,7 @@ Redaction 규칙:
 - unknown/new field에도 parser가 안전하게 동작한다.
 - agent-specific UI branch가 생기지 않는다.
 
-이 Phase가 Agent Adapter Layer의 핵심 고비다. Codex/GPT를 붙이기 위해 Claude 코드나
+이 Phase가 Agent Adapter Layer의 두 번째 핵심 고비다. Codex/GPT를 붙이기 위해 Claude 코드나
 mobile event rendering을 많이 고쳐야 한다면 A2/A3 설계가 실패한 것이다.
 
 ### Phase A7 — Antigravity 또는 Third Agent Slice
@@ -893,7 +942,8 @@ A1 Log inventory + fixtures
 A2 Common model
 A3 Parser contract harness
 A4 Detector / resolver base
-A5 Claude vertical slice
+A5a Claude production detection bridge
+A5b Claude parser/event/UX vertical slice
 A6 Codex/GPT vertical slice
 A7 Third agent / Antigravity slice
 A8 Approval UX
@@ -904,7 +954,8 @@ A10 Diagnostics / doctor
 이 순서의 이유:
 
 - 실제 로그 fixture 없이 common model을 확정하면 Claude 또는 특정 agent 상상에 갇힌다.
-- contract harness 없이 Claude vertical slice를 먼저 만들면 Claude parser가 architecture가 된다.
+- contract harness 없이 Claude parser/event/UX vertical slice를 먼저 만들면 Claude parser가 architecture가 된다.
+- detection bridge를 먼저 product boundary에 붙여야 parser/event 작업이 실제 session identity 위에서 동작한다.
 - 두 번째 agent를 빨리 붙여야 Agent Adapter가 Claude 전용 추상화가 아님을 증명할 수 있다.
 - Approval UX는 parser/detection이 안정된 뒤 공통화해야 한다.
 - diagnostics는 마지막이 아니라 각 Phase에서 쌓되, A10에서 제품화 수준으로 정리한다.

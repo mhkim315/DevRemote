@@ -8,7 +8,7 @@ This commit satisfies the narrowed Phase A5 product-boundary bridge acceptance d
 
 > production-like process evidence → production `agent.NewTermAgentDetector()` → `TelemetryService` → `/api/sessions` → `SessionTelemetry` agent fields
 
-It does **not** complete the broader original Phase A5 vertical slice from `docs/AGENT_ADAPTER_LAYER_PLAN.md`, which still includes parser-derived events, approval UX, parser degraded state, mobile status badge work, and tmux/LocalPTY semantic parity. Those items must remain explicit follow-up work unless the master plan is amended.
+It does **not** complete the broader original Phase A5 vertical slice, which included parser-derived events, approval UX, parser degraded state, mobile status badge work, and tmux/LocalPTY semantic parity. Those items are now tracked as follow-up work under Phase A5b in `docs/AGENT_ADAPTER_LAYER_PLAN.md`.
 
 ## Verification performed
 
@@ -100,17 +100,16 @@ This acceptance is intentionally scoped. The following original A5 items are **n
 - tmux + Claude and LocalPTY + Claude semantic parity.
 - Incremental parser output flowing through `/api/sessions` or activity/history UI.
 
-These are not regressions in this commit; they are outside the narrowed `AGENT_PHASE_A5_SCOPE.md` bridge acceptance. However, they are still present in the master `AGENT_ADAPTER_LAYER_PLAN.md` Phase A5 description. The next planning step must reconcile this scope split.
+These are not regressions in this commit; they are outside the narrowed `AGENT_PHASE_A5_SCOPE.md` bridge acceptance. They should be handled in Phase A5b before Phase A6 starts.
 
 ## Follow-up requirements
 
-Before marking the broader Agent Adapter Layer Phase A5 fully complete, do one of the following:
+Before marking the broader Agent Adapter Layer Phase A5 family complete, finish Phase A5b:
 
-1. Amend the master plan to explicitly split A5 into:
-   - A5a: production detection bridge — accepted here;
-   - A5b: parser/events/approval/mobile vertical slice.
-
-2. Or keep the original A5 definition and treat this commit as partial acceptance only.
+- parser/events/approval/mobile vertical slice;
+- parser degraded state and failure isolation;
+- tmux + Claude and LocalPTY + Claude semantic parity;
+- mobile/client schema and rendering verification.
 
 Additional engineering follow-ups:
 

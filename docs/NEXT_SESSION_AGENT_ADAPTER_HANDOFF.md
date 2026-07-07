@@ -11,17 +11,28 @@
 이 문서를 implementation handoff로 사용한다. 사용자가 "검증에이전트"라고 하면 구현하지
 말고 계획 또는 실행 커밋을 검증한다.
 
-현재 사용자의 의도는 **실행에이전트에게 Phase 7 이후 Agent Adapter Layer 작업을 넘기는 것**이다.
+현재 사용자의 의도는 **실행에이전트에게 Agent Adapter Layer의 남은 후속 작업을 넘기는 것**이다.
 
 ## 현재 상태
 
 - 브랜치: `feature/phase10-multi-adapter`
 - Terminal Adapter Layer acceptance: Phase 7 accepted
 - Phase 7 acceptance verifier commit: `b163c1b`
+- Agent Adapter Layer:
+  - Phase A0 accepted
+  - Phase A1 accepted
+  - Phase A2 accepted
+  - Phase A3 accepted
+  - Phase A4 accepted
+  - Phase A5a scoped production detection bridge accepted
+- A5a scoped acceptance reviewed commit: `c15659568`
+- A5a verifier document: `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
 - 핵심 결론:
   - tmux/cmux production adapter를 깨지 않고 LocalPTY까지 붙였다.
   - mobile은 terminal backend 이름 목록이 아니라 capability로 동작한다.
   - Phase 7은 운영/UX/진단 정리까지 ACCEPT됐다.
+  - Claude process evidence가 production detector를 거쳐 `/api/sessions` agent fields로 흐르는 것은 증명됐다.
+  - 원래 A5 full vertical slice 중 parser/event/approval/mobile/degraded parity는 아직 남아 있으며 Phase A5b로 이동했다.
 
 Phase 1~7의 의미:
 
@@ -42,11 +53,12 @@ Common AgentEvent, AgentStatus, AgentIdentity, and AgentApproval models.
 ## 반드시 먼저 읽을 파일
 
 1. `docs/AGENT_ADAPTER_LAYER_PLAN.md`
-2. `docs/ADAPTER_PHASE_7_ACCEPTANCE.md`
-3. `docs/08-phase7-adapter-ops.md`
-4. `docs/09-phase7-mobile-smoke.md`
-5. `docs/ADAPTER_EXPANSION_PLAN.md`
-6. `docs/ARCHITECTURE.md`
+2. `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+3. `docs/ADAPTER_PHASE_7_ACCEPTANCE.md`
+4. `docs/08-phase7-adapter-ops.md`
+5. `docs/09-phase7-mobile-smoke.md`
+6. `docs/ADAPTER_EXPANSION_PLAN.md`
+7. `docs/ARCHITECTURE.md`
 
 코드 확인용:
 
@@ -87,39 +99,47 @@ Agent Adapter 담당:
 
 ## 실행에이전트가 시작할 작업
 
-### 첫 작업: Phase A0 — Scope 검증/확정
+### 다음 작업: Phase A5b — Claude Parser/Event/UX Vertical Slice
 
-구현하지 말고 문서 검토부터 한다.
+A5a는 scoped accept 완료됐다. A6 Codex/GPT로 넘어가지 말고 A5b를 먼저 수행한다.
 
 해야 할 일:
 
-1. `docs/AGENT_ADAPTER_LAYER_PLAN.md`를 읽는다.
-2. Terminal Adapter Phase 7 acceptance와 충돌하는 지점을 찾는다.
-3. Agent Adapter와 Terminal Adapter 경계가 모호한 지점을 보완한다.
-4. Phase A1~A10 acceptance가 실행 가능한지 검토한다.
-5. 필요한 경우 문서만 수정한다.
-6. 커밋하고 푸시한다.
+1. Claude log resolver를 production telemetry/event path에 연결한다.
+2. Claude JSONL/log parser output이 common `AgentEvent`로 저장/노출되게 한다.
+3. Claude user/assistant/tool/approval event가 `/api/sessions` 또는 activity/history boundary에서 확인되게 한다.
+4. Claude status inference를 common `AgentStatus`로 반영한다.
+5. parser degraded state와 parser failure isolation을 product boundary에 표시한다.
+6. mobile status badge/schema/rendering을 업데이트한다.
+7. mobile behavior가 `if agent == "claude"` 같은 이름 기반 분기를 사용하지 않음을 검증한다.
+8. tmux + Claude와 LocalPTY + Claude에서 같은 AgentEvent semantics가 나오는 smoke 또는 fixture 기반 대체 검증을 추가한다.
+9. request-time `Snapshot()`의 unbounded `ProcessInfo(context.Background())` 직접 호출을 timeout/cached evidence 구조로 정리한다.
 
-Phase A0에서 코드 구현은 금지다.
+금지:
+
+- A5b 완료 전 A6 Codex/GPT 구현으로 넘어가지 않는다.
+- test-only parser/detector가 production evidence나 production event를 대신 만들면 안 된다.
+- parser failure를 terminal session failure로 전파하면 안 된다.
+- raw prompt/token/path/code를 API, mobile, push, diagnostic에 노출하면 안 된다.
 
 권장 커밋 메시지:
 
 ```text
-docs: validate agent adapter layer scope
+feat: complete agent phase A5b claude event UX slice
 ```
 
-Phase A0 완료 보고 형식:
+Phase A5b 완료 보고 형식:
 
 ```text
-Phase A0 완료 — <commit>
+Phase A5b 완료 — <commit>
 
 주요 변경:
 - ...
 
 검증 포인트:
-- Terminal Adapter Layer와 Agent Adapter Layer 경계 확인
-- native approval API 초기 제외 확인
-- parser failure terminal isolation 원칙 확인
+- Claude events/status/approval product boundary 확인
+- parser degraded/failure isolation 확인
+- mobile 이름 기반 behavior branch 없음 확인
 ```
 
 ## Phase별 실행 요약
@@ -171,7 +191,19 @@ Antigravity: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcrip
 - wrong positive보다 unknown fallback 선호.
 - detector 실패가 terminal session을 숨기지 않음.
 
-### Phase A5 — Claude Vertical Slice
+### Phase A5a — Claude Production Detection Bridge
+
+- Production process evidence → `agent.NewTermAgentDetector()` → `/api/sessions` bridge.
+- Claude true-positive와 non-agent false-positive product-boundary test.
+- `c15659568` 기준 scoped accept 완료.
+- 검증 문서: `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+
+남은 follow-up:
+
+- request-time `Snapshot()`에서 unbounded `ProcessInfo(context.Background())` 직접 호출을
+  telemetry loop cache 또는 timeout context로 정리한다.
+
+### Phase A5b — Claude Parser/Event/UX Vertical Slice
 
 - Claude detector/resolver/parser.
 - Claude events/status/approval을 Common AgentEvent로 변환.
@@ -180,6 +212,7 @@ Antigravity: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcrip
 
 ### Phase A6 — Codex/GPT Vertical Slice
 
+- A5b 완료 후 진행.
 - Claude parser 수정 없이 Codex/GPT adapter 추가.
 - 같은 mobile Activity UI 사용.
 - 이 Phase가 Agent Adapter Layer의 실제 추상화 검증점이다.
@@ -332,7 +365,8 @@ A0 Scope
 → A2 Common model
 → A3 Contract harness
 → A4 Detector/resolver
-→ A5 Claude
+→ A5a Claude detection bridge
+→ A5b Claude parser/event/UX
 → A6 Codex/GPT
 → A7 Third agent
 → A8 Approval UX
