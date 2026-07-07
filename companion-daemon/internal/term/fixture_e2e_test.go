@@ -317,57 +317,21 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 }
 
 func TestFixtureE2E_Resize(t *testing.T) {
-	// Prove resize reaches the stream through an HTTP boundary.
-	// Production resize is client-side xterm.js calling /term/size;
-	// we simulate the server side of that contract here.
+	// Resize is client-side only in this architecture.
+	// xterm.js handles resize in the browser; there is no server-side
+	// /term/size Go handler (not in app.go, not in pty.go). This is
+	// true for tmux and cmux as well — it's an architectural choice,
+	// not a fixture limitation.
+	//
+	// The TerminalStream interface supports Resize and the fixture
+	// stream honors the contract. We verify that interface-level
+	// contract here. A server-side resize handler is a potential
+	// Phase 6+ enhancement, not a Phase 5 blocker.
 	stream := newFixtureStream()
 	defer stream.Close()
-
-	adapter := &singleSessionAdapter{
-		name: "fixture",
-		sess: &resizeSession{stream: stream},
+	if err := stream.Resize(40, 120); err != nil {
+		t.Fatalf("Resize: %v", err)
 	}
-	reg := mux.MustNewRegistry(adapter)
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/size"):
-			// Simulate /term/size handler: find session stream and resize.
-			sessionID := r.URL.Query().Get("session")
-			s, err := reg.FindSession(r.Context(), sessionID)
-			if err != nil {
-				http.Error(w, "not found", 404)
-				return
-			}
-			if opener, ok := s.(mux.StreamOpener); ok {
-				if st, err := opener.OpenStream(r.Context()); err == nil {
-					defer st.Close()
-					// Parse rows/cols (simplified; production uses query params).
-					_ = r.URL.Query().Get("rows")
-					_ = r.URL.Query().Get("cols")
-					st.Resize(40, 120)
-					w.WriteHeader(200)
-					return
-				}
-			}
-			http.Error(w, "no stream", 404)
-		default:
-			h.HandleSessionsAPI(w, r)
-		}
-	}))
-	defer server.Close()
-
-	// Hit resize endpoint.
-	resp, err := http.Post(server.URL+"/size?session=fixture:resize-test&rows=40&cols=120", "application/json", nil)
-	if err != nil {
-		t.Fatalf("resize POST: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("resize status: %d", resp.StatusCode)
-	}
-
 	stream.mu.Lock()
 	n := len(stream.resize)
 	dims := stream.resize
@@ -378,33 +342,6 @@ func TestFixtureE2E_Resize(t *testing.T) {
 	if dims[0] != [2]int{40, 120} {
 		t.Errorf("Resize recorded %v, want [40, 120]", dims[0])
 	}
-}
-
-// Resize test helpers
-
-type singleSessionAdapter struct {
-	name string
-	sess mux.Session
-}
-
-func (a *singleSessionAdapter) Name() string { return a.name }
-func (a *singleSessionAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
-	return []mux.Session{a.sess}, nil
-}
-func (a *singleSessionAdapter) GetSession(_ string) (mux.Session, error) {
-	return a.sess, nil
-}
-
-type resizeSession struct {
-	stream *fixtureStream
-}
-
-func (s *resizeSession) ID() string                                      { return "resize-test" }
-func (s *resizeSession) Title() string                                   { return "resize-test" }
-func (s *resizeSession) AdapterName() string                             { return "fixture" }
-func (s *resizeSession) ReadScreen(_ context.Context) ([]byte, error)    { return nil, nil }
-func (s *resizeSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
-	return s.stream, nil
 }
 
 func TestFixtureE2E_StreamContent(t *testing.T) {
