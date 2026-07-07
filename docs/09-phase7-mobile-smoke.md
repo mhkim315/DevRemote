@@ -38,11 +38,20 @@ interface SessionTelemetry {
 
 | Backend | Capabilities | Mobile 표시 |
 |---------|-------------|------------|
-| tmux | `[live_stream, screen, history]` | `[tmux]` tag, WS 연결 가능, history 조회 가능 |
-| cmux | `[live_stream, screen, history, process]` | `[cmux]` tag, WS 연결 가능, history 조회 가능 |
-| localpty | `[live_stream]` | `[localpty]` tag, WS 연결 가능, history/screen 없음 (버튼 disabled 또는 숨김) |
-| future | `[live_stream]` | `[future]` tag, WS 연결 가능 |
-| legacy | `[]` (omitted) | adapter tag만 표시, WS 연결 불가, history 없음 |
+| tmux | `[live_stream, screen, history]` | `[tmux]` tag, WS 연결 가능, ACTIVITY 탭 표시, 3초 history polling |
+| cmux | `[live_stream, screen, history, process]` | `[cmux]` tag, WS 연결 가능, ACTIVITY 탭 표시, 3초 history polling |
+| localpty | `[live_stream]` | `[localpty]` tag, WS 연결 가능, ACTIVITY 탭 숨김, history polling 안 함 |
+| future | `[live_stream]` | `[future]` tag, WS 연결 가능, ACTIVITY 탭 숨김 |
+| legacy | `[]` (omitted) | adapter tag만 표시, WS 연결 불가, ACTIVITY 탭 숨김 |
+
+**구현 (FeedScreen.tsx)**:
+- `supportsHistory = !sessionData \|\| sessionData.capabilities?.includes('history') !== false`
+  - `sessionData`가 null이면(초기 상태): true → 기존 동작 유지
+  - `capabilities`에 `'history'`가 있으면: true
+  - `capabilities`가 `undefined`(legacy): true → 하위 호환
+  - `capabilities`에 `'history'`가 없으면: false → 탭 숨김, polling 중단
+- ACTIVITY 탭: `{supportsHistory && (<TouchableOpacity>...</TouchableOpacity>)}`
+- History polling: `if (supportsHistory !== false) { fetchHistory(); }`
 
 ## 4. API Golden Fixtures
 

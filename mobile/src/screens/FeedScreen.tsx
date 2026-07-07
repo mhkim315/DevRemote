@@ -41,6 +41,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('activity');
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
+  const supportsHistory = !sessionData || sessionData.capabilities?.includes('history') !== false;
   const [sessionEnded, setSessionEnded] = useState(false);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
 
@@ -89,10 +90,16 @@ export default function FeedScreen({onBack, session, token}: Props) {
     };
 
     fetchSession();
-    fetchHistory();
+    const supportsHistory = sessionData?.capabilities?.includes('history');
+    if (supportsHistory !== false) {
+      fetchHistory();
+    }
     const interval = setInterval(() => {
       fetchSession();
-      fetchHistory();
+      const hist = sessionData?.capabilities?.includes('history');
+      if (hist !== false) {
+        fetchHistory();
+      }
     }, 3000);
     return () => clearInterval(interval);
   }, [session]);
@@ -289,12 +296,14 @@ export default function FeedScreen({onBack, session, token}: Props) {
           >
             <Text style={[styles.tabText, activeTab === 'terminal' && styles.activeTabText]}>TERMINAL</Text>
           </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.tab, activeTab === 'activity' && styles.activeTab]} 
+          {supportsHistory && (
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'activity' && styles.activeTab]}
             onPress={() => setActiveTab('activity')}
           >
             <Text style={[styles.tabText, activeTab === 'activity' && styles.activeTabText]}>ACTIVITY</Text>
           </TouchableOpacity>
+          )}
         </View>
 
         <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
