@@ -3,34 +3,30 @@
 Date: 2026-07-07
 Baseline: Phase A4 accepted
 
-## Goal
+## Product-Boundary Bridge
 
-Claude agent adapter의 detect → parse → status → approval pipeline을
-agent package와 term boundary에서 검증. Phase A5는 product integration
-infrastructure(telemetry wiring, Activity feed)를 구축하는 단계가 아니라,
-agent adapter가 product boundary로 흘러갈 수 있는 출력을 생산함을 증명.
+`SessionTelemetry` (internal/term/telemetry.go)에 3개 agent field 추가:
+- `AgentKind` (omitempty) — detected agent: claude, codex, unknown
+- `AgentStatus` (omitempty) — agent activity state
+- `AgentConfidence` (omitempty) — detection confidence 0.0-1.0
 
-Product-boundary wiring (telemetry → agent event, Activity feed 연결,
-mobile status badge)은 Phase A8-A9에서 수행한다. Phase A5는 그 wiring이
-연결됐을 때 Claude adapter output이 올바른 형태임을 미리 증명.
+Backward-compatible: agent field가 없는 legacy session은 omitempty로 JSON에서 생략.
 
-## Files
+## Files Changed
 
-| File | Purpose |
-|------|---------|
-| `internal/agent/claude_adapter.go` | Claude detector + log resolver + parser |
-| `internal/agent/claude_adapter_test.go` | Contract tests + agent-level pipeline test |
-| `internal/term/claude_boundary_test.go` | Term-boundary proof: adapter output → SessionTelemetry schema compatibility |
-
-## Design
-
-(ClaudeParser, ClaudeDetector, ClaudeLogResolver — unchanged from previous)
+| File | Change |
+|------|--------|
+| `internal/term/telemetry.go` | +3 agent fields to SessionTelemetry |
+| `internal/agent/claude_adapter.go` | ClaudeParser, ClaudeDetector, ClaudeLogResolver |
+| `internal/agent/claude_adapter_test.go` | Contract tests + E2E pipeline |
+| `internal/term/claude_boundary_test.go` | Product bridge: Claude output → SessionTelemetry JSON |
 
 ## Acceptance
 
-- Claude passes A3 parser contract (12/12)
-- Claude passes A4 detector contract (10/10)
-- Agent-level pipeline: detect → parse → status → approval (E2E)
-- Term-boundary: adapter output compatible with SessionTelemetry JSON schema
-- Hermetic: no host filesystem dependencies in unit tests
+- Claude A1 fixtures pass parser contract (12/12)
+- Claude detector passes detector contract (10/10)
+- E2E pipeline: detect → parse → status → approval (agent package)
+- Product bridge: Claude output populates SessionTelemetry JSON with agent fields
+- Backward compat: agent fields omitted when absent
+- Agent failure isolation: /api/sessions unaffected by missing agent layer
 - go vet, go test, go test -race, gofmt clean

@@ -15,18 +15,21 @@ import (
 
 // SessionTelemetry holds the calculated state of a session.
 type SessionTelemetry struct {
-	ID            string              `json:"id"`
-	DisplayID     string              `json:"displayId,omitempty"` // local ID without adapter prefix
-	State         string              `json:"state"`
-	Load          int                 `json:"load"`
-	Runner        string              `json:"runner"`
-	RunnerColor   string              `json:"runnerColor"`
-	Adapter       string              `json:"adapter"`
-	Capabilities  []string            `json:"capabilities,omitempty"` // e.g. ["live_stream","screen","history"]
-	Events        []models.AgentEvent `json:"events"`
-	Stale         bool                `json:"stale,omitempty"`
-	LastSuccessAt time.Time           `json:"lastSuccessAt,omitempty"`
-	LastError     string              `json:"lastError,omitempty"`
+	ID              string              `json:"id"`
+	DisplayID       string              `json:"displayId,omitempty"` // local ID without adapter prefix
+	State           string              `json:"state"`
+	Load            int                 `json:"load"`
+	Runner          string              `json:"runner"`
+	RunnerColor     string              `json:"runnerColor"`
+	Adapter         string              `json:"adapter"`
+	Capabilities    []string            `json:"capabilities,omitempty"` // e.g. ["live_stream","screen","history"]
+	Events          []models.AgentEvent `json:"events"`
+	AgentKind       string              `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
+	AgentStatus     string              `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
+	AgentConfidence float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
+	Stale           bool                `json:"stale,omitempty"`
+	LastSuccessAt   time.Time           `json:"lastSuccessAt,omitempty"`
+	LastError       string              `json:"lastError,omitempty"`
 }
 
 // sessionCapabilities returns the list of optional capabilities a session supports.

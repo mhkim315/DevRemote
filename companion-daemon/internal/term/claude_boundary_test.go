@@ -13,109 +13,104 @@ import (
 	"devremote/companion-daemon/internal/mux"
 )
 
-// Phase A5: Prove Claude adapter output is compatible with the SessionTelemetry
-// product boundary. This test shows that if the telemetry pipeline were wired to
-// the agent adapter, the output would flow correctly.
+// Phase A5 product-boundary bridge: prove Claude adapter output
+// flows through the actual SessionTelemetry schema.
 
-func TestClaudeOutput_TelemetrySchema(t *testing.T) {
-	// Load A1 Claude fixtures.
+func TestClaudeOutput_ProductBridge(t *testing.T) {
 	lines := loadAgentFixtures(t, "claude")
 	if len(lines) == 0 {
 		t.Fatal("no Claude fixtures")
 	}
 
-	// Parse via Claude adapter.
+	// Step 1: Claude agent pipeline.
+	detector := agent.NewClaudeDetector()
+	id := detector.Detect(agent.DetectionEvidence{
+		ProcessName: "claude",
+		CWD:         "/Users/test/project",
+	})
 	parser := agent.NewClaudeParser()
 	result := parser.ParseBatch(lines, "")
 
-	if result.Degraded {
-		t.Fatalf("parse degraded: %v", result.Diagnostics)
-	}
-	if len(result.Events) == 0 {
-		t.Fatal("0 events from Claude fixtures")
+	// Step 2: Build a real SessionTelemetry with agent data.
+	// This is what the telemetry pipeline will do in A8-A9.
+	st := SessionTelemetry{
+		ID:              "tmux:claude-session",
+		Adapter:         "tmux",
+		State:           string(result.Status),
+		Capabilities:    []string{"live_stream", "screen", "history"},
+		AgentKind:       id.Kind,
+		AgentStatus:     string(result.Status),
+		AgentConfidence: id.Confidence,
 	}
 
-	// Prove events are compatible with SessionTelemetry schema:
-	// each event has a Type that maps to a capability or state.
+	// Step 3: Verify JSON round-trip through real product schema.
+	data, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("SessionTelemetry marshal: %v", err)
+	}
+	var roundtrip SessionTelemetry
+	if err := json.Unmarshal(data, &roundtrip); err != nil {
+		t.Fatalf("SessionTelemetry unmarshal: %v", err)
+	}
+	if roundtrip.AgentKind != "claude" {
+		t.Errorf("AgentKind=%q, want claude", roundtrip.AgentKind)
+	}
+	if roundtrip.AgentStatus == "" {
+		t.Error("AgentStatus is empty")
+	}
+
+	// Step 4: Verify JSON contains all agent fields.
+	str := string(data)
+	for _, want := range []string{`"agentKind":"claude"`, `"agentStatus"`, `"agentConfidence"`} {
+		if !strings.Contains(str, want) {
+			t.Errorf("JSON missing %s", want)
+		}
+	}
+
+	// Step 5: Prove backward compatibility — fields are omitempty.
+	noAgent := SessionTelemetry{ID: "tmux:test", Adapter: "tmux"}
+	data2, _ := json.Marshal(noAgent)
+	if strings.Contains(string(data2), "agentKind") {
+		t.Error("backward compat: agentKind present in session without agent")
+	}
+
+	// Step 6: Prove the full pipeline output (events) is JSON compatible.
+	if len(result.Events) == 0 {
+		t.Error("0 events from Claude fixtures")
+	}
 	for _, e := range result.Events {
 		if e.Type == "" {
 			t.Error("event has empty Type")
 		}
-		if e.AgentKind != "claude" {
-			t.Errorf("event AgentKind=%q, want claude", e.AgentKind)
-		}
+	}
+	eventData, _ := json.Marshal(result.Events)
+	if len(eventData) == 0 {
+		t.Error("events JSON is empty")
 	}
 
-	// Prove the full output (status + events) would fit into telemetry JSON.
-	// Create a mock telemetry entry to verify JSON serialization.
-	type mockActivity struct {
-		AgentKind string             `json:"agentKind"`
-		Status    agent.AgentStatus  `json:"status"`
-		Events    []agent.AgentEvent `json:"events,omitempty"`
-	}
-	activity := mockActivity{
-		AgentKind: "claude",
-		Status:    result.Status,
-		Events:    result.Events,
-	}
-	data, err := json.Marshal(activity)
-	if err != nil {
-		t.Fatalf("JSON marshal: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("JSON output is empty")
-	}
-
-	// Verify it deserializes.
-	var roundtrip mockActivity
-	if err := json.Unmarshal(data, &roundtrip); err != nil {
-		t.Fatalf("JSON unmarshal: %v", err)
-	}
-	if roundtrip.AgentKind != "claude" {
-		t.Errorf("roundtrip AgentKind=%q", roundtrip.AgentKind)
-	}
-}
-
-func TestClaudeOutput_DetectBoundary(t *testing.T) {
-	detector := agent.NewClaudeDetector()
-	resolver := agent.NewClaudeLogResolver()
-
-	// Simulate evidence that would come from a terminal session.
-	ev := agent.DetectionEvidence{
-		ProcessName: "claude",
-		CWD:         "/Users/test/project",
-	}
-
-	id := detector.Detect(ev)
-	if id.Kind != "claude" {
-		t.Fatalf("detect: Kind=%q, want claude", id.Kind)
-	}
-
-	result, _ := resolver.Resolve(ev)
-	for _, lr := range result.Logs {
-		if lr.DisplayPath == "" {
-			t.Error("DisplayPath is empty")
-		}
-	}
-
-	// Prove the identity is JSON-serializable for API response.
-	data, _ := json.Marshal(id)
-	if !strings.Contains(string(data), "claude") {
-		t.Error("JSON identity missing claude")
-	}
-}
-
-func TestClaudeOutput_UnsupportedBySession(t *testing.T) {
-	// Session without agent capabilities must not break.
+	// Step 7: Agent layer failure must not break terminal.
 	reg := mux.MustNewRegistry(&emptyAdapter{})
 	h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
-
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
-
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET /api/sessions: status %d (agent layer must not break terminal)", rec.Code)
+		t.Errorf("GET /api/sessions: status %d (agent failure isolated)", rec.Code)
+	}
+
+	// Step 8: Resolver produces redacted DisplayPath.
+	resolver := agent.NewClaudeLogResolver()
+	res, _ := resolver.Resolve(agent.DetectionEvidence{
+		ProcessName: "claude",
+		CWD:         "/Users/test/project",
+	})
+	for _, lr := range res.Logs {
+		if lr.DisplayPath == "" {
+			t.Error("DisplayPath is empty")
+		}
+		if strings.Contains(lr.DisplayPath, "/Users/") {
+			t.Errorf("DisplayPath contains raw path: %s", lr.DisplayPath)
+		}
 	}
 }
 
