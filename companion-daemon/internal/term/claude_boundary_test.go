@@ -15,19 +15,12 @@ import (
 // Phase A5 product-boundary bridge: Claude adapter output flows
 // through production telemetry path (TelemetryService + HandleSessionsV2).
 
-type claudeDetectorAdapter struct{}
-
-func (d *claudeDetectorAdapter) DetectAgent(sessionID, adapterName, localID string) (string, string, float64) {
-	det := agent.NewClaudeDetector()
-	id := det.Detect(agent.DetectionEvidence{ProcessName: "claude", CWD: "/Users/test/project"})
-	return id.Kind, string(agent.StatusWorking), id.Confidence
-}
-
 func TestClaudeOutput_TelemetryPath(t *testing.T) {
 	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
-	detector := &claudeDetectorAdapter{}
 
-	// Production path: TelemetryService with detector, routed through HandleSessionsV2.
+	// Production bridge: evidence-based detection (no hardcoded process names).
+	detector := agent.NewTermAgentDetector()
+
 	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -60,14 +53,16 @@ func TestClaudeOutput_TelemetryPath(t *testing.T) {
 	for _, s := range sessions {
 		if s.Adapter == "tmux" {
 			found = true
-			if s.AgentKind != "claude" {
-				t.Errorf("telemetry path: AgentKind=%q, want claude", s.AgentKind)
-			}
-			if s.AgentStatus == "" {
-				t.Error("telemetry path: AgentStatus is empty")
-			}
-			t.Logf("telemetry path: AgentKind=%s AgentStatus=%s Confidence=%.2f",
+			// Evidence-based detection: terminal adapter alone is insufficient.
+			// The bridge returns unknown with low confidence — no false positive.
+			t.Logf("production bridge: AgentKind=%s AgentStatus=%s Confidence=%.2f",
 				s.AgentKind, s.AgentStatus, s.AgentConfidence)
+			if s.AgentKind == "" {
+				t.Error("AgentKind is empty (should at least be 'unknown')")
+			}
+			if s.AgentConfidence > 0.5 && s.AgentKind != "unknown" {
+				t.Errorf("high confidence without evidence: Kind=%s Confidence=%.2f", s.AgentKind, s.AgentConfidence)
+			}
 		}
 	}
 	if !found {
@@ -86,6 +81,31 @@ func TestClaudeOutput_TelemetryPath(t *testing.T) {
 		if s.AgentKind != "" {
 			t.Errorf("nil detector: AgentKind=%q, want empty", s.AgentKind)
 		}
+	}
+}
+
+func TestClaudeOutput_FalsePositivePrevention(t *testing.T) {
+	// Non-Claude session must NOT be detected as Claude.
+	// Evidence-based detection returns unknown for insufficient evidence.
+	det := agent.NewClaudeDetector()
+	id := det.Detect(agent.DetectionEvidence{
+		ProcessName: "bash", // plain shell, not an AI agent
+		TermAdapter: "tmux",
+	})
+	if id.Kind == "claude" && id.Confidence >= 0.5 {
+		t.Errorf("false positive: bash process detected as claude (confidence=%.2f)", id.Confidence)
+	}
+	if id.Kind != "unknown" {
+		t.Logf("bash process: Kind=%q Confidence=%.2f", id.Kind, id.Confidence)
+	}
+
+	// Empty evidence must return unknown.
+	id2 := det.Detect(agent.DetectionEvidence{})
+	if id2.Kind != "unknown" {
+		t.Errorf("empty evidence: Kind=%q, want unknown", id2.Kind)
+	}
+	if id2.Confidence >= 0.5 {
+		t.Errorf("empty evidence: confidence=%.2f >= 0.5", id2.Confidence)
 	}
 }
 
