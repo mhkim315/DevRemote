@@ -295,6 +295,30 @@ func TestHandleApprovalAction_OptionalInput_Provided(t *testing.T) {
 	}
 }
 
+
+func TestHandleApprovalAction_InputForOptionWithoutSchema(t *testing.T) {
+	// Input sent for an option that does NOT declare input → 400.
+	s := NewApprovalStore()
+	s.Upsert("s1", []agent.AgentApproval{
+		{
+			ID: "a1", SessionID: "s1", Status: "pending",
+			AgentKind: "claude", Prompt: "Approve?",
+			Options:   []agent.InteractionOption{{ID: "approve", Label: "Approve", Kind: "approve"}},
+			CreatedAt: time.Now(),
+		},
+	})
+	h := &Handlers{Approvals: s, Cmds: NewCommandBroker()}
+	req := httptest.NewRequest("POST", "/api/sessions/s1/approvals/a1", strings.NewReader(`{"action":"approve","input":"extra"}`))
+	req.SetPathValue("id", "s1")
+	req.SetPathValue("approvalId", "a1")
+	rec := httptest.NewRecorder()
+	h.HandleApprovalAction(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("input for no-schema option: status=%d, want 400", rec.Code)
+	}
+}
+
 func TestHandleApprovalAction_WithInput(t *testing.T) {
 	s := NewApprovalStore()
 	s.Upsert("s1", []agent.AgentApproval{

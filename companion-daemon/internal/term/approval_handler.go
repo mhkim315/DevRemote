@@ -48,6 +48,12 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Reject input for options that do not declare an input contract.
+	if req.Input != "" && selected.Input == nil {
+		http.Error(w, "Input not accepted for this action", http.StatusBadRequest)
+		return
+	}
+
 	// Validate required input.
 	if selected.Input != nil && selected.Input.Required && req.Input == "" {
 		http.Error(w, "Input required for this action", http.StatusBadRequest)
@@ -110,11 +116,11 @@ func mapKindToStatus(kind string) string {
 
 // buildPayload constructs the terminal fallback payload from the selected option.
 func buildPayload(opt *agent.InteractionOption, input string) string {
-	// If option has an explicit payload, use it and append user input.
+	// Only use user input when the option declares an input contract.
+	hasInput := opt.Input != nil
+
+	// If option has an explicit payload, use it.
 	if opt.Payload != "" {
-		if input != "" {
-			return opt.Payload + "\n" + input + "\n"
-		}
 		return opt.Payload + "\n"
 	}
 
@@ -127,12 +133,12 @@ func buildPayload(opt *agent.InteractionOption, input string) string {
 	case "open":
 		return ""
 	case "neutral":
-		if input != "" {
+		if hasInput && input != "" {
 			return input + "\n"
 		}
 		return ""
 	default:
-		if input != "" {
+		if hasInput && input != "" {
 			return input + "\n"
 		}
 		return ""

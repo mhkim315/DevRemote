@@ -12,7 +12,11 @@ interface Props {
 export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState('');
+  // Per-option input values keyed by option ID.
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
+  const setOptionInput = (optId: string, value: string) => {
+    setInputValues(prev => ({ ...prev, [optId]: value }));
+  };
 
   const handleAction = async (action: string, input?: string) => {
     setLoading(true);
@@ -69,35 +73,35 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
         <Text style={styles.unavailableText}>No remote actions available</Text>
       ) : (
         <View>
-          {options.some(o => o.input) && (
-            <TextInput
-              style={styles.inputField}
-              placeholder={options.find(o => o.input)?.input?.placeholder || 'Enter text...'}
-              placeholderTextColor="#8b949e"
-              value={inputValue}
-              onChangeText={setInputValue}
-              multiline={options.some(o => o.input?.multiline)}
-              editable={!loading}
-            />
-          )}
-          <View style={styles.buttonRow}>
-            {options.map(opt => {
-              const kindStyle = getKindStyle(opt.kind);
-              const needsInput = opt.input?.required && !inputValue.trim();
-              return (
+          {options.map(opt => {
+            const kindStyle = getKindStyle(opt.kind);
+            const optInput = inputValues[opt.id] || '';
+            const needsInput = opt.input?.required && !optInput.trim();
+            return (
+              <View key={opt.id} style={styles.optionRow}>
+                {opt.input && (
+                  <TextInput
+                    style={[styles.inputField, opt.input.multiline && styles.inputMultiline]}
+                    placeholder={opt.input.placeholder || 'Enter text...'}
+                    placeholderTextColor="#8b949e"
+                    value={optInput}
+                    onChangeText={v => setOptionInput(opt.id, v)}
+                    multiline={opt.input.multiline}
+                    editable={!loading}
+                  />
+                )}
                 <TouchableOpacity
-                  key={opt.id}
                   style={[styles.button, kindStyle.btn, needsInput && styles.buttonDisabled]}
-                  onPress={() => handleAction(opt.id, inputValue.trim() || undefined)}
+                  onPress={() => handleAction(opt.id, optInput.trim() || undefined)}
                   disabled={loading || needsInput}
                 >
                   <Text style={[styles.buttonText, kindStyle.text, needsInput && styles.textDisabled]}>
                     {opt.label}
                   </Text>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
+              </View>
+            );
+          })}
         </View>
       )}
     </View>
@@ -166,15 +170,22 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginBottom: 12,
   },
+  optionRow: {
+    marginBottom: 8,
+  },
   inputField: {
     backgroundColor: '#2C2C2E',
     color: '#ffffff',
     borderRadius: 8,
     padding: 10,
     fontSize: 14,
-    marginBottom: 12,
+    marginBottom: 6,
     borderWidth: 1,
     borderColor: '#0D2D45',
+  },
+  inputMultiline: {
+    minHeight: 60,
+    textAlignVertical: 'top',
   },
   buttonDisabled: {
     opacity: 0.4,
