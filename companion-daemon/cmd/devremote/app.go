@@ -24,6 +24,7 @@ type Config struct {
 	OwnerUUID          string
 	SupabaseProjectRef string
 	InsecureLocalOnly  bool
+	EnableLocalPTY     bool // Phase 6: default-off feature flag
 }
 
 // ── Test seam interfaces ──
@@ -112,6 +113,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	if err := reg.Register(mux.NewTmuxAdapter()); err != nil {
 		return nil, fmt.Errorf("register tmux: %w", err)
+	}
+	if cfg.EnableLocalPTY {
+		if err := reg.Register(mux.NewLocalPTYAdapter()); err != nil {
+			return nil, fmt.Errorf("register localpty: %w", err)
+		}
 	}
 
 	events := deps.Events
