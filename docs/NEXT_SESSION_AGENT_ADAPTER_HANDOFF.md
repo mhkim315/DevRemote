@@ -137,6 +137,17 @@ Phase A0 완료 — <commit>
 - redacted fixture만 commit.
 - 최소 2개 agent, agent별 최소 3개 scenario 확보.
 - tool call 또는 approval fixture 최소 1개.
+
+Phase A0에서 확인된 실제 경로 (2026-07-07):
+
+```text
+Claude:  ~/.claude/history.jsonl (1,099 entries)
+         ~/.claude/projects/*/<uuid>.jsonl
+Codex:   ~/.codex/history.jsonl (231 entries)
+         ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl  ← 실제 경로
+Antigravity: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcript.jsonl
+         (50 sessions, 49 transcripts)
+```
 - malformed/unknown fixture 최소 1개.
 
 중요: 민감정보 redaction이 불충분하면 다음 Phase로 가지 않는다.

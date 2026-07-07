@@ -489,19 +489,27 @@ docs: define agent adapter layer plan
 - fixture naming 규칙과 metadata schema 작성.
 - raw fixture는 repo에 넣지 않고 redacted fixture만 commit한다.
 
-탐색 후보:
+탐색 후보 (2026-07-07 Phase A0에서 실제 Mac 로그 기준 확인):
 
 ```text
-~/.claude/
+# Claude — 확인됨
+~/.claude/history.jsonl                          (1,099 entries)
+~/.claude/projects/*/<uuid>.jsonl                (프로젝트별 세션)
+
+# Codex — 확인됨 (handoff의 ~/.codex/projects/ 패턴과 다름)
+~/.codex/history.jsonl                           (231 entries)
+~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl     (실제 세션 경로)
+
+# Antigravity — 확인됨
+~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcript.jsonl  (50 sessions, 49 transcripts)
+
+# 미확인 후보
 ~/.config/claude/
 ~/.cache/claude/
-~/.codex/
-~/.config/codex/
 ~/.openai/
 ~/Library/Application Support/
 ~/.config/
 ~/.local/share/
-프로젝트 내부 .claude/ 또는 agent-specific 디렉터리
 terminal screen/scrollback evidence
 ```
 

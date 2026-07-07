@@ -47,11 +47,11 @@ handoff 문서에는 `~/.codex/projects/*/` 패턴이 기술되어 있으나 실
 | A3 | Parser Contract Harness | agent별 parser + 공통 suite | 📋 |
 | A4 | Detector/Resolver 기반 | session→agent detection | 📋 |
 | A5 | Claude vertical slice | detect→parse→event→mobile | 📋 |
-| A6 | Codex vertical slice | Claude parser 수정 없이 추가 | 📋 |
-| A7 | Approval UX | common approval model | 📋 |
-| A8 | Redaction + diagnostics | fixture redaction, agent health | 📋 |
-| A9 | Antigravity vertical slice | detect 가능하면 | 📋 |
-| A10 | 운영 문서 + handoff | terminal adapter와 동일 수준 | 📋 |
+| A6 | Codex/GPT vertical slice | Claude parser 수정 없이 추가 | 📋 |
+| A7 | Antigravity / Third Agent Slice | detect 가능하면 | 📋 |
+| A8 | Approval UX 공통화 | common approval model | 📋 |
+| A9 | Agent UX 정리 | agent 상태/표시 통일 | 📋 |
+| A10 | Agent Diagnostics / Doctor | redaction, agent health, 진단 | 📋 |
 
 ## 4. Non-goal 확인
 
