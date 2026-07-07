@@ -1,0 +1,16 @@
+{
+  "agent": "claude",
+  "scenario": "user_assistant_interaction_with_tool_use",
+  "source": "jsonl",
+  "sourcePath": "~/.claude/projects/<project>/<uuid>.jsonl",
+  "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>"],
+  "format": {
+    "type": "string (mode, user, assistant, attachment, permission-mode, file-history-snapshot, last-prompt)",
+    "sessionId": "string (UUID)",
+    "message": "object (role, content array)"
+  },
+  "expectedStatus": "working",
+  "expectedEvents": ["user_message", "assistant_message", "thinking", "tool_call_started"],
+  "entryCount": 3,
+  "date": "2026-07-07"
+}

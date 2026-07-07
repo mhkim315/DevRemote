@@ -1,0 +1,16 @@
+{
+  "agent": "codex",
+  "scenario": "session_meta_and_task_execution",
+  "source": "jsonl",
+  "sourcePath": "~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl",
+  "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>", "<IP>", "<EMAIL>"],
+  "format": {
+    "type": "string (session_meta, event_msg, response_item, turn_context)",
+    "timestamp": "ISO 8601 string",
+    "payload": "object (type, session_id, content, role)"
+  },
+  "expectedStatus": "working",
+  "expectedEvents": ["agent_started", "user_message", "assistant_message", "tool_call_started"],
+  "entryCount": 3,
+  "date": "2026-07-07"
+}
