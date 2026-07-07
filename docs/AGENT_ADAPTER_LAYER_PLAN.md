@@ -771,13 +771,15 @@ Accepted scope:
 
 A5는 Agent Backend Foundation으로 종료한다.
 
-A5가 완료했다고 주장하지 않는 항목:
+A5 완료 시점에 완료로 주장하지 않는 항목:
 
 - degraded diagnostics UX;
 - degraded status visualization;
 - mobile rendering/schema proof.
 
 이 항목들은 `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`의 mandatory release gate로 이관한다.
+A7에서 Agent Agnostic UX/Product Gate와 mobile schema rendering proof는 닫혔고,
+approval UX와 diagnostics/alpha release gate는 A9/A10으로 남긴다.
 
 ### Phase A5b — Historical Claude Parser/Event/UX Vertical Slice
 
@@ -920,122 +922,130 @@ rg -n "agentKind.*===|agentKind.*==|switch.*agentKind|case ['\\\"]claude|case ['
 
 agent 이름 문자열이 모두 금지되는 것은 아니다. 금지되는 것은 common UX behavior가 vendor 이름으로 분기하는 것이다.
 
+상태:
+
+- **accepted**
+- 검증 문서: `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
+- A7 ACCEPT는 Agent Agnostic UX/Product Gate 통과를 의미한다.
+- A7 ACCEPT는 Third Agent 실제 backend 완성, Approval UX 완성, 전체 release-complete를 의미하지 않는다.
+
+A7 이후 불변조건:
+
+- mobile/common UX에 vendor-specific behavior branch를 추가하지 않는다.
+- unknown/future agent/event/status는 graceful fallback한다.
+- `agentKind`/`agentStatus`는 activity path 전체에서 보존한다.
+
 ### Phase A8 — Third Agent Backend Slice
 
 목표:
 
-- A7에서 Agent Agnostic UX gate가 닫힌 뒤, 세 번째 real agent 또는 screen-fallback agent를 붙여 backend 확장성을 재검증한다.
+- Claude/Codex 외에 실제 redacted fixture가 있는 제3 agent를 backend contract에 태운다.
+- A7에서 확정한 Agent Agnostic UX를 깨지 않고 실제 backend 확장성을 재검증한다.
+- 실제 로그가 없으면 구현하지 않고 A8-prep fixture 수집만 진행한다.
 
 선택 기준:
 
 - 실제 redacted fixture가 확보된 agent만 선택한다.
 - 후보: Gemini, Qwen, OpenAI Responses, Antigravity, OpenCode, Aider.
 - fixture 확보가 불충분하면 implementation 대신 inventory/unknown fallback 강화로 제한한다.
+- 가짜 third agent나 상상 기반 parser는 금지한다.
 
 작업:
 
+- actual log inventory와 redaction 검증.
 - third agent log resolver.
 - parser 또는 screen fallback mapper.
 - status/event mapping.
 - contract 등록.
+- production telemetry boundary 연결.
 - 기존 Claude/Codex parser 무수정 확장 증명.
 
 합격 기준:
 
+- 실제 redacted fixture가 존재한다.
 - 세 번째 agent가 기존 Claude/Codex production parser 수정 없이 추가된다.
+- detector/resolver/parser가 backend 내부에 추가된다.
+- vendor-specific literal은 backend parser/detector/resolver 내부와 fixture metadata에 한정된다.
+- output은 common `AgentEvent`/`AgentStatus`/`AgentIdentity` contract로 변환된다.
 - structured log가 없으면 screen/process fallback의 낮은 confidence가 명확히 표시된다.
 - mobile UX는 A7에서 확정한 common status/event 기반을 유지한다.
+- mobile/common UX에 vendor-specific behavior branch가 추가되지 않는다.
 - unknown agent fallback이 실제로 안전하다.
+- A5/A6/A7 regression이 유지된다.
 
 ### Phase A9 — Approval UX 공통화
 
 목표:
 
-- agent별 approval prompt를 공통 CTA로 표시한다.
-- native control 없이도 안전한 terminal input fallback을 제공한다.
+- `approval_requested` / `waiting_approval` 상태를 사용자가 모바일에서 안전하게 이해하고 승인/거절할 수 있게 만든다.
+- agent별 approval prompt를 공통 CTA로 표시하되, vendor-specific UX branch를 추가하지 않는다.
 
 작업:
 
 - Common AgentApproval DTO 확정.
 - approval_requested event와 active approval state 연결.
 - mobile approval CTA 추가.
+- approval card 추가.
+- pending/expired/resolved 상태 표시.
 - action capability별 버튼 노출.
 - `Approve`, `Reject`, `Open Terminal` 기본 동작.
 - terminal input fallback payload 정책.
 - sensitive command summary/redaction.
+- 중복 tap 방지.
+- backend idempotency.
+- 실패 시 recoverable UI.
+- audit log.
 
 합격 기준:
 
 - approval event가 있으면 공통 CTA가 노출된다.
 - agent 이름 기반 approval UI branch가 없다.
 - approval action capability가 없으면 Open Terminal fallback만 표시된다.
+- pending/expired/resolved 상태가 구분된다.
+- approve/reject는 idempotent하거나 중복 tap에 안전하다.
+- 실패가 recoverable UI로 표시된다.
+- audit log가 남는다.
 - push/notification에는 민감한 command 전문이 포함되지 않는다.
 - 승인 action 실패가 terminal session을 죽이지 않는다.
 
-### Phase A10 — Agent UX Polish / Release Completion
+### Phase A10 — Diagnostics / Alpha Release Gate
 
 목표:
 
-- 사용자가 agent 차이를 이해하되 조작 방식은 공통으로 느끼게 한다.
-
-Session Card 예:
-
-```text
-Claude Code
-tmux · working · tool running
-
-[Open Terminal] [Activity]
-```
-
-Unknown 예:
-
-```text
-Unknown Agent
-LocalPTY · terminal active
-
-[Open Terminal]
-```
-
-작업:
-
-- Session card에 terminal backend와 agent identity를 분리 표시.
-- AgentStatus badge 추가.
-- Activity feed event rendering 정리.
-- unsupported/degraded/unknown action 표시.
-- confidence 낮은 감지 UX.
-- agent activity unavailable state.
-
-합격 기준:
-
-- agent 이름은 보이지만 UI behavior는 common status/event/capability 기반이다.
-- unknown agent도 terminal session으로 안전하게 표시된다.
-- agent 감지 실패가 terminal 사용을 막지 않는다.
-- activity unavailable과 no activity가 구분된다.
-- low confidence detection이 사용자에게 과장되어 표시되지 않는다.
-
-### Phase A11 — Agent Diagnostics / Doctor
-
-목표:
-
+- 사용자가 "왜 안 되지?"를 스스로 진단 가능하게 한다.
 - 로그 포맷 변경과 agent 업데이트에 대응 가능한 운영 구조를 만든다.
+- Alpha/release-complete 선언 전 마지막 gate로 사용한다.
 
 작업:
 
 - `pokit doctor agents` 또는 동등한 diagnostics command.
+- daemon health.
+- terminal adapter status.
+- active sessions.
 - agent detector debug output.
 - log resolver debug output.
 - parser version 표시.
+- parser confidence.
 - fixture update guide.
 - failed parse telemetry.
 - adapter health 표시.
 - permission denied / malformed / stale cursor / no log found 구분.
+- last error.
+- mobile connection state.
+- exportable diagnostic bundle.
+- Session card / activity surface의 최종 UX polish를 포함한다.
 
 합격 기준:
 
+- daemon health와 adapter status를 구분해 표시한다.
+- active sessions와 agent detection/parser 상태가 진단 가능하다.
 - 특정 agent parser가 깨져도 다른 agent에 영향이 없다.
 - parser failure가 mobile/diagnostics에 명확히 표시된다.
 - 로그 포맷 변경 시 fixture 추가로 회귀 검증 가능하다.
 - diagnostic이 raw prompt/token/secret을 노출하지 않는다.
+- mobile connection state와 backend/adapter/parser 문제를 구분한다.
+- diagnostic bundle이 export 가능하고 redaction-safe하다.
+- Alpha/release gate checklist가 문서화된다.
 
 ## 8. 추천 순서와 이유
 
@@ -1053,8 +1063,7 @@ A6 Codex backend slice
 A7 Agent Agnostic UX / Product Gate
 A8 Third agent backend slice
 A9 Approval UX
-A10 Agent UX polish / release completion
-A11 Diagnostics / doctor
+A10 Diagnostics / Alpha Release Gate
 ```
 
 이 순서의 이유:
@@ -1064,8 +1073,9 @@ A11 Diagnostics / doctor
 - detection bridge를 먼저 product boundary에 붙여야 parser/event 작업이 실제 session identity 위에서 동작한다.
 - 두 번째 agent를 빨리 붙여야 Agent Adapter가 Claude 전용 추상화가 아님을 증명할 수 있다.
 - 두 번째 agent가 붙은 뒤에는 바로 세 번째 agent를 추가하지 말고, A7에서 unknown/future agent UX를 닫아 vendor-specific branch가 굳어지는 것을 막는다.
+- A7이 닫혔으므로 A8에서는 실제 redacted fixture가 있는 third agent만 backend에 태운다.
 - Approval UX는 parser/detection과 Agent Agnostic UX가 안정된 뒤 공통화해야 한다.
-- diagnostics는 마지막이 아니라 각 Phase에서 쌓되, A11에서 제품화 수준으로 정리한다.
+- diagnostics는 마지막이 아니라 각 Phase에서 쌓되, A10에서 Alpha release gate 수준으로 정리한다.
 
 ## 9. 가장 어려운 고비
 

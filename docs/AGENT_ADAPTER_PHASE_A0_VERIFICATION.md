@@ -37,7 +37,7 @@ handoff 문서에는 `~/.codex/projects/*/` 패턴이 기술되어 있으나 실
 데이터는 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 구조. Phase A1에서
 실제 경로로 inventory를 업데이트해야 함.
 
-## 3. Phase A0-A11 일관성 확인
+## 3. Phase A0-A10 일관성 확인
 
 | Phase | 목표 | Acceptance | 상태 |
 |-------|------|-----------|------|
@@ -48,11 +48,10 @@ handoff 문서에는 `~/.codex/projects/*/` 패턴이 기술되어 있으나 실
 | A4 | Detector/Resolver 기반 | session→agent detection | ✅ |
 | A5 | Agent Backend Foundation | Claude backend core, product boundary | ✅ |
 | A6 | Codex Backend Slice | Claude 수정 없이 Codex backend 추가 | ✅ |
-| A7 | Agent Agnostic UX / Product Gate | unknown kind/status/degraded/schema compatibility | 📋 |
+| A7 | Agent Agnostic UX / Product Gate | unknown kind/status/degraded/schema compatibility | ✅ |
 | A8 | Third Agent Backend Slice | A7 후 실제 third agent 추가 | 📋 |
 | A9 | Approval UX 공통화 | common approval model | 📋 |
-| A10 | Agent UX Polish / Release Completion | agent 상태/표시 통일 | 📋 |
-| A11 | Agent Diagnostics / Doctor | redaction, agent health, 진단 | 📋 |
+| A10 | Diagnostics / Alpha Release Gate | redaction, health, 진단, release gate | 📋 |
 
 ## 4. Non-goal 확인
 

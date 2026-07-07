@@ -1,11 +1,12 @@
 # Agent Adapter UX Release Gate Follow-ups
 
-This document tracks mandatory follow-ups that were intentionally split out of Phase A5 and reaffirmed after Phase A6.
+This document tracks mandatory follow-ups that were intentionally split out of Phase A5 and reaffirmed after Phase A6/A7.
 
 Phase A5 is accepted as Agent Backend Foundation.
 Phase A6 is accepted as Codex Backend Slice.
+Phase A7 is accepted as Agent Agnostic UX/Product Gate.
 
-Neither acceptance means product completion. The items below are blockers for release/product-complete status.
+These acceptances do not mean product completion. The items below are blockers for release/product-complete status.
 
 ## Gate 1 — Degraded diagnostics UX
 
@@ -32,29 +33,34 @@ If the implementation chooses not to use `agentStatus=degraded`, it must documen
 
 ## Gate 2 — Mobile Agent UX rendering/schema proof
 
-Status: **MANDATORY FOLLOW-UP**
+Status: **CLOSED FOR A7 AGNOSTIC RENDERING / KEEP AS REGRESSION**
 
 Current accepted proof:
 
 - mobile TypeScript compile passes;
 - no direct mobile agent-name behavior branch was found in the latest smoke grep.
 
-Still required:
+Required proof:
 
 - mobile rendering/schema proof for:
   - `agentKind`;
   - `agentStatus=waiting_approval`;
-  - `approval_requested`;
+  - passive `approval_requested` event rendering;
   - degraded/unknown states;
 - prove mobile behavior is driven by common status/event/capability data, not agent names;
 - ensure unknown future agents do not crash rendering;
 - ensure optional agent fields are safe when absent.
 
+Closure:
+
+- A7 acceptance is documented in `docs/AGENT_PHASE_A7_ACCEPTANCE.md`.
+- Interactive approval actions remain out of scope for this gate and are tracked by Gate 5 / Phase A9.
+
 ## Gate 3 — Agent Agnostic UX compatibility
 
-Status: **MANDATORY FOR A7**
+Status: **CLOSED FOR A7 ACCEPTANCE / KEEP AS REGRESSION**
 
-A7 must close the product-boundary gap left after A6 Backend Slice acceptance.
+A7 closed the product-boundary gap left after A6 Backend Slice acceptance.
 
 Required proof:
 
@@ -64,6 +70,11 @@ Required proof:
 - schema evolution compatibility;
 - no vendor-specific branching in mobile behavior;
 - backend contract unchanged when future agent kinds appear.
+
+Closure:
+
+- A7 acceptance is documented in `docs/AGENT_PHASE_A7_ACCEPTANCE.md`.
+- Keep these checks as regression requirements for A8 and later.
 
 Required fixture/test cases:
 
@@ -124,8 +135,41 @@ Closure:
 - A6 backend acceptance is documented in `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`.
 - Keep these checks as regression requirements for A7 and later.
 
+## Gate 5 — Approval UX
+
+Status: **MANDATORY FOR A9**
+
+A7 proves the common UI can render `approval_requested` safely. It does not prove that a user can approve or reject safely from mobile.
+
+Required proof:
+
+- common approval card;
+- approve/reject action;
+- pending/expired/resolved state handling;
+- duplicate tap prevention;
+- backend idempotency;
+- recoverable failure UI;
+- audit log;
+- no sensitive command/prompt/token leakage in push, mobile, logs, or diagnostics.
+
+## Gate 6 — Diagnostics / Alpha Release Gate
+
+Status: **MANDATORY FOR A10**
+
+Required proof:
+
+- daemon health;
+- terminal adapter status;
+- active sessions;
+- agent detector/parser confidence;
+- last parser/resolver error;
+- mobile connection state;
+- exportable diagnostic bundle;
+- redaction-safe output;
+- Alpha/release checklist.
+
 ## Release rule
 
-A6 backend acceptance may stand before these gates are fully closed.
+A6/A7 acceptance may stand before approval and diagnostics gates are fully closed.
 
 Product/release-complete status may not be claimed until all mandatory gates are closed or explicitly replaced by an accepted product decision.
