@@ -222,6 +222,29 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
+// normalizeEventType maps legacy parser types to common AgentEventType names.
+func normalizeEventType(t string) string {
+	switch t {
+	case "user":
+		return "user_message"
+	case "tool_use":
+		return "tool_call_started"
+	case "tool_result":
+		return "tool_call_finished"
+	case "message":
+		return "assistant_message"
+	default:
+		return t
+	}
+}
+
+func normalizeEvents(evts []models.AgentEvent) []models.AgentEvent {
+	for i := range evts {
+		evts[i].Type = normalizeEventType(evts[i].Type)
+	}
+	return evts
+}
+
 func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetry {
 	sessions := reg.Sessions(context.Background())
 	res := make([]SessionTelemetry, 0)
@@ -233,7 +256,7 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 			errStr = snap.LastError.Error()
 		}
 		isStale := snap.LastError != nil
-		evts := events.List(compoundID)
+		evts := normalizeEvents(events.List(compoundID))
 		res = append(res, SessionTelemetry{
 			ID: compoundID, DisplayID: s.ID(), State: "idle", Load: 0,
 			Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(),

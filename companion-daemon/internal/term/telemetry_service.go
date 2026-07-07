@@ -253,7 +253,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			errStr = snap.LastError.Error()
 		}
 		isStale := snap.LastError != nil
-		events := s.events.List(compoundID)
+		events := normalizeEvents(s.events.List(compoundID))
 
 		data := stateCopies[compoundID]
 		if data == nil {

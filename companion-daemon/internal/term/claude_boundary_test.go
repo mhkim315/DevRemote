@@ -66,7 +66,7 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 			for _, e := range s.Events {
 				gotTypes[e.Type] = true
 			}
-			for _, want := range []string{"user", "tool_use"} {
+			for _, want := range []string{"user_message", "tool_call_started"} {
 				if !gotTypes[want] {
 					t.Errorf("missing event type %q in %v", want, gotTypes)
 				}
