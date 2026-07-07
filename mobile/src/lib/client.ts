@@ -96,14 +96,17 @@ export async function resolveApproval(
   sessionID: string,
   approvalID: string,
   action: string,
+  input?: string,
   token?: string
 ): Promise<Response> {
+  const body: Record<string, string> = { action };
+  if (input) body.input = input;
   const res = await checkedFetch(
     `${_baseURL}/api/sessions/${encodeURIComponent(sessionID)}/approvals/${encodeURIComponent(approvalID)}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(body),
     }
   );
   return res;

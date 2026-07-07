@@ -10,7 +10,8 @@ import (
 )
 
 // HandleApprovalAction handles POST /api/sessions/<id>/approvals/<approvalId>.
-// Body: {"action":"<option-id>"}. The action must match an option in the approval.
+// Body: {"action":"<option-id>", "input":"<optional user input>"}.
+// Semantics are derived from the selected option's Kind, never from action ID.
 func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -26,9 +27,10 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 
 	var req struct {
 		Action string `json:"action"`
+		Input  string `json:"input,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Action == "" {
-		http.Error(w, "Invalid body: {\"action\":\"...\"} required", http.StatusBadRequest)
+		http.Error(w, "Invalid body: {\"action\":\"...\", \"input\":\"...\"} required", http.StatusBadRequest)
 		return
 	}
 
@@ -39,9 +41,16 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Validate action is in the approval's options.
-	if !optionExists(req.Action, target.Options) {
+	// Find the selected option and validate.
+	selected := findOption(req.Action, target.Options)
+	if selected == nil {
 		http.Error(w, "Action not available for this approval", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required input.
+	if selected.Input != nil && selected.Input.Required && req.Input == "" {
+		http.Error(w, "Input required for this action", http.StatusBadRequest)
 		return
 	}
 
@@ -51,22 +60,23 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Resolve via ApprovalStore.
-	resolved := h.Approvals.Resolve(sessionID, approvalID, mapActionToStatus(req.Action))
+	// Resolve via ApprovalStore. Status derived from option Kind, not action ID.
+	status := mapKindToStatus(selected.Kind)
+	resolved := h.Approvals.Resolve(sessionID, approvalID, status)
 	if !resolved {
 		http.Error(w, "Approval already resolved", http.StatusConflict)
 		return
 	}
 
 	// Execute terminal fallback action.
-	actionPayload := getActionPayload(req.Action, *target)
+	actionPayload := buildPayload(selected, req.Input)
 	if actionPayload != "" {
 		h.Cmds.Put(sessionID, []byte(actionPayload))
 	}
 
-	// Audit log (no raw prompt exposure).
-	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s agent=%s",
-		sessionID, approvalID, req.Action, target.AgentKind)
+	// Audit log (no raw input/prompt exposure).
+	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s agent=%s",
+		sessionID, approvalID, req.Action, selected.Kind, target.AgentKind)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -75,50 +85,56 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// optionExists checks if an action ID exists in the approval options.
-func optionExists(action string, options []agent.InteractionOption) bool {
-	for _, opt := range options {
+// findOption returns the InteractionOption matching the given action ID.
+func findOption(action string, options []agent.InteractionOption) *agent.InteractionOption {
+	for i, opt := range options {
 		if opt.ID == action {
-			return true
+			return &options[i]
 		}
 	}
-	return false
+	return nil
 }
 
-// mapActionToStatus maps an action string to approval status.
-func mapActionToStatus(action string) string {
-	switch action {
-	case "approve", "send_text", "send_key":
+// mapKindToStatus derives resolution status from the option's semantic Kind.
+// Action ID is never used to infer status — Kind is the source of truth.
+func mapKindToStatus(kind string) string {
+	switch kind {
+	case "approve":
 		return "approved"
-	case "reject":
+	case "reject", "cancel":
 		return "rejected"
 	default:
 		return "resolved"
 	}
 }
 
-// getActionPayload returns the terminal input payload for an action.
-func getActionPayload(action string, approval agent.AgentApproval) string {
-	// Use the option's payload if available, otherwise fall back to defaults.
-	for _, opt := range approval.Options {
-		if opt.ID == action && opt.Payload != "" {
-			switch action {
-			case "send_key":
-				return opt.Payload
-			default:
-				return opt.Payload + "\n"
-			}
+// buildPayload constructs the terminal fallback payload from the selected option.
+func buildPayload(opt *agent.InteractionOption, input string) string {
+	// If option has an explicit payload, use it and append user input.
+	if opt.Payload != "" {
+		if input != "" {
+			return opt.Payload + "\n" + input + "\n"
 		}
+		return opt.Payload + "\n"
 	}
-	// Default terminal input fallback for approve/reject.
-	switch action {
+
+	// Default terminal fallback based on option Kind.
+	switch opt.Kind {
 	case "approve":
 		return "y\n"
-	case "reject":
+	case "reject", "cancel":
 		return "n\n"
-	case "open_terminal", "view_only":
+	case "open":
+		return ""
+	case "neutral":
+		if input != "" {
+			return input + "\n"
+		}
 		return ""
 	default:
+		if input != "" {
+			return input + "\n"
+		}
 		return ""
 	}
 }

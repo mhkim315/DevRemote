@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { resolveApproval, AgentApproval, InteractionOption } from '../lib/client';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
 interface Props {
   sessionId: string;
@@ -12,12 +12,13 @@ interface Props {
 export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inputValue, setInputValue] = useState('');
 
-  const handleAction = async (action: string) => {
+  const handleAction = async (action: string, input?: string) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await resolveApproval(sessionId, approval.id, action, token);
+      const res = await resolveApproval(sessionId, approval.id, action, input, token);
       if (!res.ok) {
         if (res.status === 409) {
           setError('Already resolved');
@@ -67,23 +68,36 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
       ) : options.length === 0 ? (
         <Text style={styles.unavailableText}>No remote actions available</Text>
       ) : (
-        <View style={styles.buttonRow}>
-          {options.map(opt => {
-            // Use server-provided kind for styling; never infer from ID.
-            const kindStyle = getKindStyle(opt.kind);
-            return (
-              <TouchableOpacity
-                key={opt.id}
-                style={[styles.button, kindStyle.btn]}
-                onPress={() => handleAction(opt.id)}
-                disabled={loading}
-              >
-                <Text style={[styles.buttonText, kindStyle.text]}>
-                  {opt.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        <View>
+          {options.some(o => o.input) && (
+            <TextInput
+              style={styles.inputField}
+              placeholder={options.find(o => o.input)?.input?.placeholder || 'Enter text...'}
+              placeholderTextColor="#8b949e"
+              value={inputValue}
+              onChangeText={setInputValue}
+              multiline={options.some(o => o.input?.multiline)}
+              editable={!loading}
+            />
+          )}
+          <View style={styles.buttonRow}>
+            {options.map(opt => {
+              const kindStyle = getKindStyle(opt.kind);
+              const needsInput = opt.input?.required && !inputValue.trim();
+              return (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[styles.button, kindStyle.btn, needsInput && styles.buttonDisabled]}
+                  onPress={() => handleAction(opt.id, inputValue.trim() || undefined)}
+                  disabled={loading || needsInput}
+                >
+                  <Text style={[styles.buttonText, kindStyle.text, needsInput && styles.textDisabled]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
       )}
     </View>
@@ -151,6 +165,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontStyle: 'italic',
     marginBottom: 12,
+  },
+  inputField: {
+    backgroundColor: '#2C2C2E',
+    color: '#ffffff',
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#0D2D45',
+  },
+  buttonDisabled: {
+    opacity: 0.4,
+  },
+  textDisabled: {
+    opacity: 0.5,
   },
   errorRow: {
     flexDirection: 'row',
