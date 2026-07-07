@@ -184,6 +184,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
 	serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
+	serveMux.HandleFunc("/debug/diag", h.AuthMiddleware(h.HandleDiagnostic))
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {
