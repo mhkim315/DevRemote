@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -41,10 +42,13 @@ type Handlers struct {
 }
 
 // AgentDetector is the agent adapter layer's detection interface.
-// Defined here to avoid circular imports (agent package imports mux, not term).
 type AgentDetector interface {
-	DetectAgent(sessionID string, adapterName string, localID string) (agentKind string, agentStatus string, agentConfidence float64)
+	DetectAgent(sessionID string, adapterName string, localID string, evidence ProdDetectionEvidence) (agentKind string, agentStatus string, agentConfidence float64)
 }
+
+// ProdDetectionEvidence carries product-boundary signals for agent detection.
+// Re-exported from agent package to avoid circular imports.
+type ProdDetectionEvidence = agent.ProdDetectionEvidence
 
 // AuthMiddleware returns an HTTP middleware that validates JWT tokens using
 // the configured TokenVerifier. If no verifier is set, all requests are rejected.

@@ -265,7 +265,9 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 		for i := range res {
 			st := &res[i]
 			ref := mux.ParseSessionID(st.ID)
-			kind, status, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID)
+			kind, status, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, ProdDetectionEvidence{
+				TermAdapter: ref.Adapter,
+			})
 			st.AgentKind = kind
 			st.AgentStatus = status
 			st.AgentConfidence = confidence

@@ -251,7 +251,9 @@ func buildSimpleSnapshotWithDetector(reg *mux.Registry, events EventStore, detec
 	for i := range result {
 		st := &result[i]
 		ref := mux.ParseSessionID(st.ID)
-		kind, status, confidence := detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID)
+		kind, status, confidence := detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, ProdDetectionEvidence{
+			TermAdapter: ref.Adapter,
+		})
 		st.AgentKind = kind
 		st.AgentStatus = status
 		st.AgentConfidence = confidence

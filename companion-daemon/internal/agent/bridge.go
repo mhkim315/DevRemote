@@ -1,7 +1,14 @@
 package agent
 
-// TermAgentDetector adapts agent-layer detectors to the term.AgentDetector
-// interface. Uses evidence-based detection — no hardcoded agent names.
+// ProdDetectionEvidence carries product-boundary signals for agent detection.
+// Mirrors DetectionEvidence but with only the fields available at the API layer.
+type ProdDetectionEvidence struct {
+	ProcessName string
+	CWD         string
+	TermAdapter string
+}
+
+// TermAgentDetector adapts agent-layer detectors to the term.AgentDetector interface.
 type TermAgentDetector struct {
 	detector *ClaudeDetector
 }
@@ -10,15 +17,11 @@ func NewTermAgentDetector() *TermAgentDetector {
 	return &TermAgentDetector{detector: NewClaudeDetector()}
 }
 
-// DetectAgent implements term.AgentDetector using evidence-based detection.
-// Returns unknown when evidence is insufficient, preventing false positives.
-func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string) (agentKind, agentStatus string, agentConfidence float64) {
-	// Build evidence from available signals. In production, process name
-	// and CWD would come from terminal session metadata (Phase A6+).
-	// For now, use adapter name as weak signal — "tmux" hints at terminal usage,
-	// but does not identify the agent. Result: unknown with low confidence.
+func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, evidence ProdDetectionEvidence) (agentKind, agentStatus string, agentConfidence float64) {
 	ev := DetectionEvidence{
-		TermAdapter: adapterName,
+		ProcessName: evidence.ProcessName,
+		CWD:         evidence.CWD,
+		TermAdapter: evidence.TermAdapter,
 	}
 	id := d.detector.Detect(ev)
 
