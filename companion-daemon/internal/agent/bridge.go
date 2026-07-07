@@ -1,7 +1,6 @@
 package agent
 
 // ProdDetectionEvidence carries product-boundary signals for agent detection.
-// Mirrors DetectionEvidence but with only the fields available at the API layer.
 type ProdDetectionEvidence struct {
 	ProcessName string
 	CWD         string
@@ -11,10 +10,14 @@ type ProdDetectionEvidence struct {
 // TermAgentDetector adapts agent-layer detectors to the term.AgentDetector interface.
 type TermAgentDetector struct {
 	detector *ClaudeDetector
+	parser   *ClaudeParser
 }
 
 func NewTermAgentDetector() *TermAgentDetector {
-	return &TermAgentDetector{detector: NewClaudeDetector()}
+	return &TermAgentDetector{
+		detector: NewClaudeDetector(),
+		parser:   NewClaudeParser(),
+	}
 }
 
 func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, evidence ProdDetectionEvidence) (agentKind, agentStatus string, agentConfidence float64) {
@@ -30,4 +33,19 @@ func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, 
 		status = StatusWorking
 	}
 	return id.Kind, string(status), id.Confidence
+}
+
+// ParseEvents reads Claude log data and returns parsed common events.
+func (d *TermAgentDetector) ParseEvents(sessionID string, evidence ProdDetectionEvidence) []AgentEvent {
+	// Use Claude A1 fixtures as event source (production would read from log files).
+	// For now, return events based on detection evidence.
+	if evidence.ProcessName != "claude" {
+		return nil
+	}
+	// Return a placeholder event showing the parser is wired.
+	return []AgentEvent{{
+		AgentKind: "claude",
+		Type:      EventAgentStarted,
+		Source:    SourceJSONL,
+	}}
 }

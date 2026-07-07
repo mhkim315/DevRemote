@@ -282,6 +282,10 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			st.AgentKind = kind
 			st.AgentStatus = status
 			st.AgentConfidence = confidence
+			// Parse agent events from logs.
+			if events := s.detector.ParseEvents(st.ID, evidence); len(events) > 0 {
+				st.AgentEvents = events
+			}
 		}
 	}
 	return res

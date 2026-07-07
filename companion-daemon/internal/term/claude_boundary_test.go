@@ -45,6 +45,17 @@ func TestClaudeOutput_TruePositive_ProductionBridge(t *testing.T) {
 			if s.AgentConfidence < 0.5 {
 				t.Errorf("Claude process: confidence %.2f < 0.5", s.AgentConfidence)
 			}
+			if s.AgentStatus == "" {
+				t.Error("AgentStatus is empty")
+			}
+			if len(s.AgentEvents) == 0 {
+				t.Error("AgentEvents is empty (parser not wired)")
+			}
+			for _, e := range s.AgentEvents {
+				if e.Type == "" {
+					t.Error("agent event has empty Type")
+				}
+			}
 		}
 	}
 }

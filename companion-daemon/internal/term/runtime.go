@@ -44,7 +44,13 @@ type Handlers struct {
 // AgentDetector is the agent adapter layer's detection interface.
 type AgentDetector interface {
 	DetectAgent(sessionID string, adapterName string, localID string, evidence ProdDetectionEvidence) (agentKind string, agentStatus string, agentConfidence float64)
+	// ParseEvents reads agent log data and returns parsed common events.
+	// Returns nil if no logs are available or parsing is not supported.
+	ParseEvents(sessionID string, evidence ProdDetectionEvidence) []AgentEvent
 }
+
+// AgentEvent is a normalized agent activity event at the product boundary.
+type AgentEvent = agent.AgentEvent
 
 // ProdDetectionEvidence carries product-boundary signals for agent detection.
 // Re-exported from agent package to avoid circular imports.
