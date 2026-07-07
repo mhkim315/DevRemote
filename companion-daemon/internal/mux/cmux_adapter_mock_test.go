@@ -319,11 +319,10 @@ func TestSerialCommandRunnerPreventsConcurrentSocketWrites(t *testing.T) {
 func TestCmuxAdapter_Contract(t *testing.T) {
 	factory := func(t *testing.T) Adapter {
 		health := &mockRegistryHealth{}
-		// Track created surfaces so they appear in subsequent tree listings.
 		var created []string
 		return &cmuxAdapter{
 			runner: &mockCmuxRunner{
-				runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+				runFunc: func(ctx context.Context, _ CommandOptions, args ...string) ([]byte, error) {
 					if len(args) == 0 {
 						return nil, nil
 					}
@@ -333,8 +332,17 @@ func TestCmuxAdapter_Contract(t *testing.T) {
 						created = append(created, newID)
 						return []byte("Created new surface: " + newID + " (workspace: workspace:1)"), nil
 					case "close-surface":
+						for i, id := range created {
+							if len(args) >= 3 && args[2] == id {
+								created = append(created[:i], created[i+1:]...)
+								break
+							}
+						}
 						return nil, nil
 					case "tree":
+						if ctx.Err() != nil {
+							return nil, ctx.Err()
+						}
 						base := `window window:1 [current]
 ├── workspace workspace:1 "DevRemote"
 │   └── pane pane:1
@@ -353,21 +361,34 @@ func TestCmuxAdapter_Contract(t *testing.T) {
 							}
 						}
 						return []byte("screen content"), nil
-					case "top":
-						return []byte(`tag	tag:agent1	workspace:1	claude
-process	12345	surface:1	bash`), nil
-					default:
+					case "send", "send-key":
 						return nil, nil
+					case "top":
+						return []byte("tag\ttag:agent1\tworkspace:1\tclaude\nprocess\t12345\tsurface:1\tbash"), nil
 					}
+					return nil, nil
 				},
 			},
 			invalidate: health,
 		}
 	}
+
+	cfg := &ContractConfig{
+		ExpectScreenReader:      true,
+		ExpectHistoryReader:     true,
+		ExpectStreamOpener:      true,
+		ExpectProcessProvider:   true,
+		ExpectSessionCreator:    true,
+		ExpectSessionTerminator: true,
+		ExpectProcessSnapshot:   true,
+	}
+
 	RunAdapterContract(t, "cmux", factory)
-	RunScreenHistoryContract(t, factory)
-	RunProcessInfoContract(t, factory)
-	RunCreateDiscoverTerminateContract(t, factory)
+	RunScreenHistoryContract(t, cfg, factory)
+	RunProcessInfoContract(t, cfg, factory)
+	RunProcessSnapshotContract(t, cfg, factory)
+	RunCreateDiscoverTerminateContract(t, cfg, factory)
+	RunLiveStreamContract(t, cfg, factory)
 }
 
 func TestNewCmuxAdapterRejectsNilHealth(t *testing.T) {

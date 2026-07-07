@@ -20,22 +20,23 @@ func TestParseTmuxListSessionLine(t *testing.T) {
 
 func TestTmuxAdapter_Contract(t *testing.T) {
 	factory := func(t *testing.T) Adapter {
-		// Track created sessions so they appear in subsequent list-sessions.
 		extra := make(map[string]bool)
 		return NewTmuxAdapterWithRunner(&recordingRunner{
-			runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
+			runFunc: func(ctx context.Context, _ CommandOptions, args ...string) ([]byte, error) {
 				if len(args) < 2 {
 					return nil, nil
 				}
 				switch args[1] {
 				case "list-sessions":
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
 					base := "$0::POKIT::dev\n$1::POKIT::build"
 					for name := range extra {
 						base += "\n$" + name + "::POKIT::" + name
 					}
 					return []byte(base), nil
 				case "new-session":
-					// args: [tmux, new-session, -d, -s, <name>]
 					for i, a := range args {
 						if a == "-s" && i+1 < len(args) {
 							extra[args[i+1]] = true
@@ -43,7 +44,6 @@ func TestTmuxAdapter_Contract(t *testing.T) {
 					}
 					return nil, nil
 				case "kill-session":
-					// Remove from tracked set.
 					for i, a := range args {
 						if a == "-t" && i+1 < len(args) {
 							for name := range extra {
@@ -63,14 +63,22 @@ func TestTmuxAdapter_Contract(t *testing.T) {
 					return []byte("screen content"), nil
 				case "display-message":
 					return []byte("1000000000,12345,/home/user/project"), nil
-				default:
-					return nil, nil
 				}
+				return nil, nil
 			},
 		})
 	}
+
+	cfg := &ContractConfig{
+		ExpectScreenReader:      true,
+		ExpectHistoryReader:     true,
+		ExpectProcessProvider:   true,
+		ExpectSessionCreator:    true,
+		ExpectSessionTerminator: true,
+	}
+
 	RunAdapterContract(t, "tmux", factory)
-	RunScreenHistoryContract(t, factory)
-	RunProcessInfoContract(t, factory)
-	RunCreateDiscoverTerminateContract(t, factory)
+	RunScreenHistoryContract(t, cfg, factory)
+	RunProcessInfoContract(t, cfg, factory)
+	RunCreateDiscoverTerminateContract(t, cfg, factory)
 }
