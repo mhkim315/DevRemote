@@ -250,6 +250,21 @@ test: lock terminal adapter behavior matrix
 - unsupported capability가 예측 가능한 UI/API 결과를 낸다.
 - 이 단계가 통과해야 실제 세 번째 backend 작업을 승인한다.
 
+Phase 5 scope 참고사항 (2026-07-07 검증 과정에서 확정):
+
+- **Resize**: production에는 서버 측 `/term/size` Go handler가 존재하지 않으며,
+  tmux/cmux 모두 xterm.js client-side resize에 의존한다. 이는 fixture adapter의
+  한계가 아니라 아키텍처 선택이다. Phase 5에서는 `TerminalStream.Resize`
+  인터페이스 계약을 mux-level contract test로 검증하며, HTTP boundary를 통한
+  resize 증명은 scope out 한다. 서버 측 resize handler 추가는 Phase 6+에서
+  검토한다.
+
+- **Mobile schema**: mobile 코드에는 `adapter: string` 필드를 사용하므로
+  알려지지 않은 adapter 이름("fixture" 등)이 TypeScript 컴파일을 통과한다.
+  `SessionTelemetry` JSON 응답의 필수 키 검증은 Go backend에서 수행하며,
+  mobile 전용 typed fixture test infrastructure는 존재하지 않으므로
+  `npx tsc --noEmit` 통과로 mobile schema 경계를 충족한 것으로 간주한다.
+
 ### Phase 6 — 실제 세 번째 backend vertical slice
 
 후보 선택 기준:
