@@ -426,8 +426,8 @@ Agent Adapter는 민감정보를 다룰 가능성이 높다.
 권장 redaction token:
 
 ```text
-<USER_HOME>
-<PROJECT_ROOT>
+<HOME>
+<PROJECT>
 <TOKEN>
 <API_KEY>
 <EMAIL>
@@ -462,7 +462,7 @@ Agent Adapter는 민감정보를 다룰 가능성이 높다.
 
 - 구현 변경 없음.
 - `Agent Adapter`와 `Terminal Adapter` 책임 경계가 문서상 명확하다.
-- Phase A1~A9의 acceptance가 구체적으로 정의되어 있다.
+- Phase A1~A10의 acceptance가 구체적으로 정의되어 있다.
 - 실행에이전트가 다음 작업으로 무엇을 해야 하는지 문서만 보고 알 수 있다.
 
 권장 커밋:
@@ -546,7 +546,7 @@ metadata 예:
   "agent": "claude",
   "scenario": "approval_request",
   "source": "jsonl",
-  "redactions": ["<USER_HOME>", "<PROJECT_ROOT>", "<TOKEN>"],
+  "redactions": ["<HOME>", "<PROJECT>", "<TOKEN>"],
   "expectedStatus": "waiting_approval",
   "expectedEvents": [
     "user_message",

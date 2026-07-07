@@ -93,8 +93,8 @@ committing fixtures.
 tokens:
 
 ```text
-<USER_HOME>
-<PROJECT_ROOT>
+<HOME>
+<PROJECT>
 <PRIVATE_PATH>
 ```
 
