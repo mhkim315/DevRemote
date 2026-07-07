@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 )
 
@@ -52,7 +53,7 @@ func sendPushNotification(token, message, sessionID string) {
 		"data": map[string]string{
 			"sessionId": sessionID,
 			"type":      "approval_required",
-			"url":       "pokit://session/" + sessionID,
+			"url":       "pokit://session/" + url.PathEscape(sessionID),
 		},
 	}
 	payloadBytes, _ := json.Marshal(payloadMap)
