@@ -161,6 +161,30 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 			t.Error("unavailable: LastError nil — empty vs unavailable not distinguishable")
 		}
 	})
+	t.Run("known_limitation_zero_sessions", func(t *testing.T) {
+		// When an unavailable adapter has 0 sessions, /api/sessions shows nothing.
+		// This is a known limitation: empty (healthy, 0 sessions) and unavailable
+		// (failed, 0 sessions) produce the same API response. Registry-level
+		// snapshot inspection is required to distinguish them.
+		adapter := &unavailableAdapter{}
+		reg := mux.MustNewRegistry(adapter)
+		h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		rec := httptest.NewRecorder()
+		h.HandleSessionsAPI(rec, req)
+		var sessions []SessionTelemetry
+		json.Unmarshal(rec.Body.Bytes(), &sessions)
+		// unavailable + 0 sessions: API shows no sessions.
+		// Same as empty (healthy + 0 sessions). This is documented.
+		if len(sessions) != 0 {
+			t.Logf("unavailable 0-session adapter: %d sessions in API (expected 0)", len(sessions))
+		}
+		// Registry snapshot has the error — the distinction mechanism.
+		snap, _ := reg.Snapshot("unavail")
+		if snap.LastError == nil {
+			t.Error("known limitation: LastError should be set, but is nil")
+		}
+	})
 }
 
 func TestMobileLegacyCheck_Classification(t *testing.T) {
@@ -192,7 +216,7 @@ func TestMobileLegacyCheck_Classification(t *testing.T) {
 
 type emptyAdapter struct{}
 
-func (a *emptyAdapter) Name() string                                         { return "empty" }
+func (a *emptyAdapter) Name() string                                          { return "empty" }
 func (a *emptyAdapter) ListSessions(_ context.Context) ([]mux.Session, error) { return nil, nil }
 
 type unavailableAdapter struct{ called bool }
@@ -212,7 +236,7 @@ func (a *healthyFixtureAdapter) ListSessions(_ context.Context) ([]mux.Session, 
 
 type endedAdapter struct{ sessions []mux.Session }
 
-func (a *endedAdapter) Name() string                                         { return "test" }
+func (a *endedAdapter) Name() string                                          { return "test" }
 func (a *endedAdapter) ListSessions(_ context.Context) ([]mux.Session, error) { return a.sessions, nil }
 
 type noCapsAdapter struct{}
@@ -251,18 +275,22 @@ func (a *capGoldenAdapter) ListSessions(_ context.Context) ([]mux.Session, error
 
 func hasCap(caps []string, name string) bool {
 	for _, c := range caps {
-		if c == name { return true }
+		if c == name {
+			return true
+		}
 	}
 	return false
 }
 
 type capBareSession struct{ id, adapter string }
+
 func (s *capBareSession) ID() string          { return s.id }
 func (s *capBareSession) Title() string       { return s.id }
 func (s *capBareSession) AdapterName() string { return s.adapter }
 
 // capStreamOnlySession: only StreamOpener (live_stream).
 type capStreamOnlySession struct{ id, adapter string }
+
 func (s *capStreamOnlySession) ID() string          { return s.id }
 func (s *capStreamOnlySession) Title() string       { return s.id }
 func (s *capStreamOnlySession) AdapterName() string { return s.adapter }
@@ -272,25 +300,33 @@ func (s *capStreamOnlySession) OpenStream(_ context.Context) (mux.TerminalStream
 
 // capScreenHistSession: StreamOpener + ScreenReader + HistoryReader.
 type capScreenHistSession struct{ id, adapter string }
+
 func (s *capScreenHistSession) ID() string          { return s.id }
 func (s *capScreenHistSession) Title() string       { return s.id }
 func (s *capScreenHistSession) AdapterName() string { return s.adapter }
 func (s *capScreenHistSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
 	return &stubStream{}, nil
 }
-func (s *capScreenHistSession) ReadScreen(_ context.Context) ([]byte, error)  { return []byte("x"), nil }
-func (s *capScreenHistSession) ReadHistory(_ context.Context, _ int) ([]byte, error) { return []byte("x"), nil }
+func (s *capScreenHistSession) ReadScreen(_ context.Context) ([]byte, error) { return []byte("x"), nil }
+func (s *capScreenHistSession) ReadHistory(_ context.Context, _ int) ([]byte, error) {
+	return []byte("x"), nil
+}
 
 // capScreenHistProcessSession: StreamOpener + ScreenReader + HistoryReader + ProcessProvider.
 type capScreenHistProcessSession struct{ id, adapter string }
+
 func (s *capScreenHistProcessSession) ID() string          { return s.id }
 func (s *capScreenHistProcessSession) Title() string       { return s.id }
 func (s *capScreenHistProcessSession) AdapterName() string { return s.adapter }
 func (s *capScreenHistProcessSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
 	return &stubStream{}, nil
 }
-func (s *capScreenHistProcessSession) ReadScreen(_ context.Context) ([]byte, error)  { return []byte("x"), nil }
-func (s *capScreenHistProcessSession) ReadHistory(_ context.Context, _ int) ([]byte, error) { return []byte("x"), nil }
+func (s *capScreenHistProcessSession) ReadScreen(_ context.Context) ([]byte, error) {
+	return []byte("x"), nil
+}
+func (s *capScreenHistProcessSession) ReadHistory(_ context.Context, _ int) ([]byte, error) {
+	return []byte("x"), nil
+}
 func (s *capScreenHistProcessSession) ProcessInfo(_ context.Context) (models.ProcessInfo, error) {
 	return models.ProcessInfo{PID: 1, CWD: "/"}, nil
 }

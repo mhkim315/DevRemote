@@ -51,23 +51,33 @@ Mobile golden fixture JSON:
 
 ## 4. Session Discovery 해석
 
-| 상황 | Session 목록 | LastError | Stale | 의미 |
-|------|-------------|-----------|-------|------|
+**중요**: `/api/sessions`는 session 목록을 반환하며, adapter 목록을 직접 반환하지 않는다.
+세션이 0개인 adapter는 `/api/sessions` 응답에 adapter 정보가 나타나지 않을 수 있다.
+
+| 상황 | Session 목록 | Snapshot.LastError | Stale | 의미 |
+|------|-------------|-------------------|-------|------|
 | adapter 정상, 세션 있음 | 세션 표시됨 | nil | false | 정상 동작 |
-| adapter 정상, 세션 없음 | 빈 목록 | nil | false | `empty` — adapter 연결됐으나 세션 없음 |
-| adapter 연결 실패 | 마지막 성공 snapshot | non-nil | true | `unavailable` — binary/socket/PATH 문제 |
+| adapter 정상, 세션 없음 | 빈 목록 (해당 adapter 없음) | nil | false | `empty` — adapter는 정상이나 세션 없음. `/api/sessions`만으로는 확인 불가, Registry snapshot 필요 |
+| adapter 연결 실패 | 마지막 성공 snapshot (있을 경우) | non-nil | true | `unavailable` — binary/socket/PATH 문제. 기존 session이 있으면 stale로 표시됨 |
 | adapter 일시적 오류 | 마지막 성공 snapshot | non-nil | true | `degraded` — adapter 살아있으나 일부 갱신 실패 |
-| 세션 종료됨 | `FindSession` → 404 | nil | - | `ended` — session은 종료됨 |
-| 기능 미지원 | WS/history → 501/404 | - | - | `unsupported` — session/adapter가 기능 미제공 |
+| 세션 종료됨 | `FindSession` → 404 | nil | - | `ended` |
+| 기능 미지원 | WS/history → 501/404 | - | - | `unsupported` |
+
+**Known limitation**: adapter에 세션이 0개이고 연결이 실패한 경우(unavailable + zero sessions),
+`/api/sessions` 응답만으로는 `empty`(adapter 정상, session 0개)와 구분할 수 없다.
+이 경우 Registry snapshot(`LastError`)을 확인해야 한다. 향후 adapter-level health
+endpoint가 추가되면 이 한계를 해소할 수 있다.
 
 ## 5. 사용자 진단 가이드
 
 "왜 세션이 안 보이지?" → 확인 순서:
 
-1. `/api/sessions` 확인 → adapter가 목록에 있는가?
-2. adapter가 없으면: 해당 adapter의 binary/socket이 설치/실행 중인가? (위 표 참조)
-3. adapter가 있지만 세션이 0개면: `empty` — adapter는 정상, session을 생성해야 함
-4. adapter의 `stale: true` / `lastError`가 있으면: `unavailable` 또는 `degraded` — adapter 연결 실패
+1. `/api/sessions` 확인 → 예상한 adapter의 session이 있는가?
+2. session이 있고 `stale: true`면: `unavailable` 또는 `degraded` — adapter 연결 실패
+3. session이 아예 없으면:
+   a. `empty` — adapter 정상, 생성된 session 없음 → session 생성 필요
+   b. `unavailable` — adapter 연결 실패 + 기존 session도 없음 → `/api/sessions`만으로 구분 불가, `lastError` 확인 필요
+4. adapter binary/socket 확인 (위 설치 조건 표 참조)
 
 ## 6. Mobile Legacy Display Rule
 
