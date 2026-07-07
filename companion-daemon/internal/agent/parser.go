@@ -1,10 +1,16 @@
 package agent
 
-// AgentParser converts a single raw log line (JSONL) into a normalized
-// common AgentEvent. Parsers must not panic. On unparseable or malformed
-// input, return (nil, nil) — the caller treats this as "skip this record".
-// On unexpected but recoverable input (unknown fields, missing fields),
-// return the best-effort event with lower confidence or EventUnknown.
+// AgentParser converts raw log lines into normalized AgentEvents.
+// Implementations must be safe for concurrent use across different sessions.
 type AgentParser interface {
-	Parse(line []byte) (*AgentEvent, error)
+	// ParseBatch processes raw JSONL lines and returns normalized events.
+	// cursor is an opaque position token from a previous ParseBatch call
+	// (empty string = start from beginning). The returned newCursor must be
+	// safe to pass to the next ParseBatch call for the same log file.
+	// Implementations must not panic. On unrecoverable input, return the
+	// best-effort events and set degraded=true.
+	ParseBatch(lines [][]byte, cursor string) (events []AgentEvent, newCursor string, err error)
+
+	// AgentKind returns the stable agent identifier this parser handles.
+	AgentKind() string
 }
