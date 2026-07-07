@@ -138,6 +138,28 @@ func TestAgnostic_TerminalUnaffectedByAgentLayer(t *testing.T) {
 	}
 }
 
+func TestAgnostic_MissingOptionalFields(t *testing.T) {
+	// Session without agentKind/status/confidence must serialize cleanly.
+	st := SessionTelemetry{ID: "tmux:test", Adapter: "tmux"}
+	data, _ := json.Marshal(st)
+	// Must NOT contain agent fields when not set.
+	for _, field := range []string{"agentKind", "agentStatus", "agentConfidence"} {
+		if strings.Contains(string(data), field) {
+			t.Errorf("missing optional: JSON contains %q when not set", field)
+		}
+	}
+	// Round-trip must survive.
+	var rt SessionTelemetry
+	json.Unmarshal(data, &rt)
+	if rt.ID != "tmux:test" {
+		t.Error("round-trip lost ID")
+	}
+	// Agent fields must be empty string/zero.
+	if rt.AgentKind != "" || rt.AgentStatus != "" || rt.AgentConfidence != 0 {
+		t.Error("agent fields non-zero after empty round-trip")
+	}
+}
+
 // --- helpers ---
 
 type agnosticAdapter struct{}

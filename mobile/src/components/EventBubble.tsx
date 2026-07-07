@@ -21,10 +21,10 @@ export function EventBubble({ event, runnerId, runnerColor, agentKind }: Props) 
   const d = new Date(event.timestamp);
   const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  const isUser = event.type === 'user';
-  const isTool = event.type === 'tool_use' || event.type === 'file_edit' || event.type === 'approval_request';
-  const isResult = event.type === 'tool_result';
-  const isMessage = event.type === 'message';
+  const isUser = event.type === 'user' || event.type === 'user_message';
+  const isTool = event.type === 'tool_use' || event.type === 'tool_call_started' || event.type === 'file_edit' || event.type === 'approval_request' || event.type === 'approval_requested';
+  const isResult = event.type === 'tool_result' || event.type === 'tool_call_finished';
+  const isMessage = event.type === 'message' || event.type === 'assistant_message' || event.type === 'thinking' || event.type === 'agent_started';
 
   if (isUser) {
     return (

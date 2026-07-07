@@ -34,6 +34,19 @@ interface Props {
   onSettings?: () => void;
 }
 
+function formatAgentStatus(status: string): string {
+  switch (status) {
+    case 'waiting_approval': return '⏳ Awaiting Approval';
+    case 'thinking': return '💭 Thinking';
+    case 'working': return '⚙️ Working';
+    case 'waiting_input': return '⌨️ Waiting Input';
+    case 'degraded': return '⚠️ Degraded';
+    case 'unknown': return '❓ Unknown';
+    case 'idle': return '💤 Idle';
+    default: return status;
+  }
+}
+
 function getStatusColor(state: SessionTelemetry['state']) {
   switch (state) {
     case 'working': return '#39d353';
@@ -106,7 +119,21 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
           </View>
         </View>
 
-        <View style={styles.animationContainer}>
+        {(session.agentKind || session.agentStatus) && (
+        <View style={{ flexDirection: 'row', marginTop: 6, gap: 8 }}>
+          {session.agentKind && (
+            <Text style={{ color: session.agentConfidence != null && session.agentConfidence < 0.5 ? '#666' : '#ccc', fontSize: 11 }}>
+              {session.agentKind === 'unknown' ? '🤖 Unknown' : '🤖 ' + session.agentKind}
+            </Text>
+          )}
+          {session.agentStatus && (
+            <Text style={{ color: session.agentStatus === 'degraded' || session.agentStatus === 'unknown' ? '#666' : '#888', fontSize: 11 }}>
+              {formatAgentStatus(session.agentStatus)}
+            </Text>
+          )}
+        </View>
+      )}
+      <View style={styles.animationContainer}>
           <Svg width={60} height={60} viewBox="0 0 388 388">
             <Path d={pathD} fill={session.state === 'waiting' ? '#f85149' : runnerColor} />
           </Svg>
