@@ -109,16 +109,22 @@ func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent 
 	} else if parsedNewEvents {
 		stateData.LastActivity = time.Now()
 		switch lastEvent.Type {
-		case "user":
+		case "user", "user_message":
 			stateData.State = "thinking"
 			stateData.Load = 50
-		case "tool_use":
+		case "tool_use", "tool_call_started":
 			stateData.State = "working"
 			stateData.Load = 100
-		case "tool_result":
+		case "tool_result", "tool_call_finished":
 			stateData.State = "thinking"
 			stateData.Load = 50
-		case "message":
+		case "thinking":
+			stateData.State = "thinking"
+			stateData.Load = 50
+		case "approval_requested":
+			stateData.State = "waiting"
+			stateData.Load = 0
+		case "message", "assistant_message":
 			if strings.Contains(lastEvent.Summary, "Thinking") || strings.Contains(lastEvent.Summary, "Reasoning") {
 				stateData.State = "thinking"
 				stateData.Load = 50
