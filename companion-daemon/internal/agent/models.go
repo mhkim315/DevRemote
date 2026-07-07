@@ -95,6 +95,7 @@ type InputSchema struct {
 	Required    bool   `json:"required"`
 	Placeholder string `json:"placeholder,omitempty"`
 	Multiline   bool   `json:"multiline,omitempty"`
+	Placement   string `json:"placement,omitempty"` // "after_payload" | "as_payload" | "metadata_only"
 }
 
 // InteractionOption represents one choice in an interaction request.

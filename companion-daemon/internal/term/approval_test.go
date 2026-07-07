@@ -438,6 +438,93 @@ func optionInList(options []agent.InteractionOption, id string) bool {
 	return false
 }
 
+// --- buildPayload tests ---
+
+func TestBuildPayload_RejectWithReason_AfterPayload(t *testing.T) {
+	opt := &agent.InteractionOption{
+		ID: "reject_with_reason", Kind: "reject",
+		Input: &agent.InputSchema{Required: true, Placement: "after_payload"},
+	}
+	payload := buildPayload(opt, "Not needed")
+	expected := "n\nNot needed\n"
+	if payload != expected {
+		t.Errorf("reject_with_reason: got %q, want %q", payload, expected)
+	}
+}
+
+func TestBuildPayload_ApproveWithComment_AfterPayload(t *testing.T) {
+	opt := &agent.InteractionOption{
+		ID: "approve_with_comment", Kind: "approve",
+		Input: &agent.InputSchema{Required: false, Placement: "after_payload"},
+	}
+	payload := buildPayload(opt, "LGTM")
+	expected := "y\nLGTM\n"
+	if payload != expected {
+		t.Errorf("approve_with_comment: got %q, want %q", payload, expected)
+	}
+}
+
+func TestBuildPayload_AsPayload(t *testing.T) {
+	opt := &agent.InteractionOption{
+		ID: "custom", Kind: "neutral",
+		Input: &agent.InputSchema{Required: true, Placement: "as_payload"},
+	}
+	payload := buildPayload(opt, "custom command")
+	expected := "custom command\n"
+	if payload != expected {
+		t.Errorf("as_payload: got %q, want %q", payload, expected)
+	}
+}
+
+func TestBuildPayload_PayloadWithInput_AfterPayload(t *testing.T) {
+	opt := &agent.InteractionOption{
+		ID: "reject_with_reason", Kind: "reject", Payload: "N",
+		Input: &agent.InputSchema{Required: true, Placement: "after_payload"},
+	}
+	payload := buildPayload(opt, "Not needed")
+	expected := "N\nNot needed\n"
+	if payload != expected {
+		t.Errorf("payload with input: got %q, want %q", payload, expected)
+	}
+}
+
+func TestBuildPayload_NoInputSchema_DefaultBehavior(t *testing.T) {
+	opt := &agent.InteractionOption{ID: "approve", Kind: "approve"}
+	payload := buildPayload(opt, "should be ignored")
+	// No InputSchema → input rejected at handler level (400).
+	// If it reaches buildPayload, use default only.
+	if payload != "y\n" {
+		t.Errorf("no input schema: got %q, want %q", payload, "y\n")
+	}
+}
+
+func TestBuildPayload_MetadataOnly_NoTerminalInjection(t *testing.T) {
+	opt := &agent.InteractionOption{
+		ID: "comment", Kind: "neutral",
+		Input: &agent.InputSchema{Required: false, Placement: "metadata_only"},
+	}
+	payload := buildPayload(opt, "audit note")
+	// metadata_only → input preserved in audit, NOT sent to terminal.
+	if payload != "" {
+		t.Errorf("metadata_only: got %q, want empty", payload)
+	}
+}
+
+func TestBuildPayload_EmptyPlacement_SafeDefault(t *testing.T) {
+	// Empty/missing placement → safe default: input not sent to terminal.
+	opt := &agent.InteractionOption{
+		ID: "reject_with_reason", Kind: "reject",
+		Input: &agent.InputSchema{Required: true},
+	}
+	payload := buildPayload(opt, "Not needed")
+	// Input is preserved in audit log but NOT injected into terminal.
+	// Only default "n\n" payload goes to terminal.
+	if payload != "n\n" {
+		t.Errorf("empty placement: got %q, want %q (input not sent to terminal)", payload, "n\n")
+	}
+}
+
+
 // --- test sessions for capability derivation ---
 
 type inputTestSession struct{}

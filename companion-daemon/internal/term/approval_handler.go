@@ -81,8 +81,19 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Audit log (no raw input/prompt exposure).
-	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s agent=%s",
-		sessionID, approvalID, req.Action, selected.Kind, target.AgentKind)
+	hasTerminalInput := actionPayload != ""
+	inputPlacement := ""
+	if selected.Input != nil {
+		inputPlacement = selected.Input.Placement
+	}
+	if req.Input != "" && !hasTerminalInput {
+		// Input preserved as audit metadata, not injected into terminal.
+		log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s agent=%s input_placement=%s input_preserved=true",
+			sessionID, approvalID, req.Action, selected.Kind, target.AgentKind, inputPlacement)
+	} else {
+		log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s agent=%s input_placement=%s",
+			sessionID, approvalID, req.Action, selected.Kind, target.AgentKind, inputPlacement)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -116,15 +127,45 @@ func mapKindToStatus(kind string) string {
 
 // buildPayload constructs the terminal fallback payload from the selected option.
 func buildPayload(opt *agent.InteractionOption, input string) string {
-	// Only use user input when the option declares an input contract.
 	hasInput := opt.Input != nil
+	placement := ""
+	if hasInput {
+		placement = opt.Input.Placement
+	}
 
-	// If option has an explicit payload, use it.
+	// Explicit placement: "as_payload" uses input as the terminal payload.
+	if placement == "as_payload" {
+		if input != "" {
+			return input + "\n"
+		}
+		return ""
+	}
+
+	// Explicit placement: "after_payload" appends input after the primary payload.
+	if placement == "after_payload" {
+		base := defaultPayload(opt)
+		if base != "" && input != "" {
+			return base + input + "\n"
+		}
+		if base != "" {
+			return base
+		}
+		if input != "" {
+			return input + "\n"
+		}
+		return ""
+	}
+
+	// "metadata_only" or no placement: input is stored in audit/approval metadata,
+	// not sent to terminal. Use default payload only.
+	return defaultPayload(opt)
+}
+
+// defaultPayload returns the terminal fallback payload for an option based on its Kind.
+func defaultPayload(opt *agent.InteractionOption) string {
 	if opt.Payload != "" {
 		return opt.Payload + "\n"
 	}
-
-	// Default terminal fallback based on option Kind.
 	switch opt.Kind {
 	case "approve":
 		return "y\n"
@@ -132,15 +173,7 @@ func buildPayload(opt *agent.InteractionOption, input string) string {
 		return "n\n"
 	case "open":
 		return ""
-	case "neutral":
-		if hasInput && input != "" {
-			return input + "\n"
-		}
-		return ""
 	default:
-		if hasInput && input != "" {
-			return input + "\n"
-		}
 		return ""
 	}
 }
