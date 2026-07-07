@@ -1,23 +1,23 @@
 {
   "agent": "antigravity",
-  "scenario": "user_input_agent_output",
+  "scenario": "user_agent_tool_malformed",
   "source": "jsonl",
-  "sourcePath": "~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcript.jsonl",
+  "sourcePath": "~/.gemini/antigravity/brain/<UUID>/.system_generated/logs/transcript.jsonl",
   "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>"],
   "format": {
     "step_index": "int",
-    "source": "USER_EXPLICIT |
-    AGENT_OUTPUT",
-    "type": "USER_INPUT |
-    AGENT_OUTPUT |
-    TOOL_CALL",
-    "status": "DONE |
-    FAILED",
+    "source": "USER_EXPLICIT or AGENT_OUTPUT",
+    "type": "USER_INPUT or AGENT_OUTPUT or TOOL_CALL or TOOL_RESULT",
+    "status": "DONE or FAILED",
     "created_at": "ISO 8601 string",
     "content": "string"
   },
-  "expectedStatus": "working",
-  "expectedEvents": ["user_message", "agent_started"],
-  "entryCount": 2,
+  "expectedEvents": ["user_message", "agent_output", "tool_call", "tool_result"],
+  "scenarios": {
+    "user_agent.jsonl": "user input, agent output",
+    "tool_call.jsonl": "tool call, tool result",
+    "malformed.jsonl": "unknown type, missing fields"
+  },
+  "entryCount": 6,
   "date": "2026-07-07"
 }

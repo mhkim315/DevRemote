@@ -1,16 +1,20 @@
 {
   "agent": "codex",
-  "scenario": "session_meta_and_task_execution",
+  "scenario": "session_task_approval_malformed",
   "source": "jsonl",
   "sourcePath": "~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl",
   "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>", "<IP>", "<EMAIL>"],
   "format": {
     "type": "string (session_meta, event_msg, response_item, turn_context)",
     "timestamp": "ISO 8601 string",
-    "payload": "object (type, session_id, content, role)"
+    "payload": "object with type, content, role fields"
   },
-  "expectedStatus": "working",
-  "expectedEvents": ["agent_started", "user_message", "assistant_message", "tool_call_started"],
-  "entryCount": 3,
+  "expectedEvents": ["session_meta", "task_started", "user_message", "waiting_for_approval"],
+  "scenarios": {
+    "session_task.jsonl": "session_meta, task_started, user prompt",
+    "approval_waiting.jsonl": "waiting_for_approval, user message, approval_resolved",
+    "malformed.jsonl": "unknown type, missing fields"
+  },
+  "entryCount": 9,
   "date": "2026-07-07"
 }

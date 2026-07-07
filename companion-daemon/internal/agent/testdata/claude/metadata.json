@@ -1,16 +1,22 @@
 {
   "agent": "claude",
-  "scenario": "user_assistant_interaction_with_tool_use",
+  "scenario": "user_assistant_tool_approval",
   "source": "jsonl",
-  "sourcePath": "~/.claude/projects/<project>/<uuid>.jsonl",
+  "sourcePath": "~/.claude/projects/<PROJECT>/<UUID>.jsonl",
   "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>"],
   "format": {
     "type": "string (mode, user, assistant, attachment, permission-mode, file-history-snapshot, last-prompt)",
     "sessionId": "string (UUID)",
-    "message": "object (role, content array)"
+    "message": "object with role and content array",
+    "message.content[].type": "text, thinking, tool_use, tool_result"
   },
-  "expectedStatus": "working",
-  "expectedEvents": ["user_message", "assistant_message", "thinking", "tool_call_started"],
-  "entryCount": 3,
+  "expectedEvents": ["user_message", "thinking", "tool_use", "tool_result", "approval_requested"],
+  "scenarios": {
+    "user_assistant.jsonl": "user message, assistant thinking, tool_use",
+    "tool_result.jsonl": "tool_result with is_error flag, user follow-up",
+    "approval_waiting.jsonl": "user prompt, permission-mode change, approval request",
+    "malformed.jsonl": "unknown type, missing message field, empty object"
+  },
+  "entryCount": 12,
   "date": "2026-07-07"
 }
