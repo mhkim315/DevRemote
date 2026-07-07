@@ -11,21 +11,82 @@ interface Props {
   agentKind?: string;
 }
 
+// P2: event type → bubble category mapping.
+// Category is determined by event.type, never by agentKind.
+type BubbleCategory = 'message' | 'thinking' | 'tool_start' | 'tool_result' | 'interaction' | 'error' | 'completed' | 'unknown';
+
+function categoryForType(type: string): BubbleCategory {
+  switch (type) {
+    case 'user':
+    case 'user_message':
+    case 'message':
+    case 'assistant_message':
+    case 'agent_started':
+      return 'message';
+    case 'thinking':
+      return 'thinking';
+    case 'tool_use':
+    case 'tool_call_started':
+      return 'tool_start';
+    case 'tool_result':
+    case 'tool_call_finished':
+      return 'tool_result';
+    case 'approval_request':
+    case 'approval_requested':
+    case 'approval_resolved':
+      return 'interaction';
+    case 'error':
+    case 'failed':
+      return 'error';
+    case 'done':
+    case 'completed':
+      return 'completed';
+    default:
+      return 'unknown';
+  }
+}
+
+function categoryEmoji(cat: BubbleCategory): string {
+  switch (cat) {
+    case 'message': return '💬';
+    case 'thinking': return '💭';
+    case 'tool_start': return '⚙';
+    case 'tool_result': return '📋';
+    case 'interaction': return '⚠';
+    case 'error': return '❌';
+    case 'completed': return '✅';
+    case 'unknown': return '❓';
+  }
+}
+
+function categoryColor(cat: BubbleCategory): string {
+  switch (cat) {
+    case 'interaction': return '#f85149';
+    case 'error': return '#f85149';
+    case 'tool_start': return '#58a6ff';
+    case 'completed': return '#39d353';
+    case 'thinking': return '#8b949e';
+    case 'unknown': return '#666';
+    default: return '#58a6ff';
+  }
+}
+
 export function EventBubble({ event, runnerId, runnerColor, agentKind }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const category = categoryForType(event.type);
+  const emoji = categoryEmoji(category);
+  const accentColor = categoryColor(category);
 
   const runnerDef = RUNNERS.find(r => r.id === runnerId) || RUNNERS[0];
-  const color = runnerColor || '#58a6ff';
+  const totemColor = runnerColor || accentColor;
   const pathD = runnerDef.idle;
 
   const d = new Date(event.timestamp);
   const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  const isUser = event.type === 'user' || event.type === 'user_message';
-  const isTool = event.type === 'tool_use' || event.type === 'tool_call_started' || event.type === 'file_edit' || event.type === 'approval_request' || event.type === 'approval_requested';
-  const isResult = event.type === 'tool_result' || event.type === 'tool_call_finished';
-  const isMessage = event.type === 'message' || event.type === 'assistant_message' || event.type === 'thinking' || event.type === 'agent_started';
+  const isUser = category === 'message' && (event.type === 'user' || event.type === 'user_message');
 
+  // ── User message (right-aligned) ──
   if (isUser) {
     return (
       <View style={[styles.container, styles.rightAlign]}>
@@ -39,43 +100,133 @@ export function EventBubble({ event, runnerId, runnerColor, agentKind }: Props) 
     );
   }
 
-  if (isResult && !expanded) {
+  // ── Tool result (collapsed by default) ──
+  if (category === 'tool_result' && !expanded) {
     return (
       <View style={[styles.container, styles.leftAlign]}>
         <View style={styles.totemPlaceholder} />
         <TouchableOpacity style={styles.resultCollapsed} onPress={() => setExpanded(true)}>
-          <Text style={styles.resultCollapsedText} selectable={true}>✅ {event.summary} (Tap to expand)</Text>
+          <Text style={styles.resultCollapsedText} selectable={true}>{emoji} {event.summary}</Text>
           <Text style={styles.time}>{timeStr}</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  return (
-    <View style={[styles.container, styles.leftAlign]}>
-      {isMessage || isTool ? (
+  // ── Interaction (attention signal) ──
+  if (category === 'interaction') {
+    return (
+      <View style={[styles.container, styles.leftAlign]}>
         <View style={styles.totemContainer}>
-          <Svg width={30} height={30} viewBox="0 0 388 388">
-            <Path d={pathD} fill={color} />
-          </Svg>
+          <Text style={{ fontSize: 18 }}>{emoji}</Text>
         </View>
-      ) : (
-        <View style={styles.totemPlaceholder} />
-      )}
-      
-      <View style={[
-        styles.bubble, 
-        isTool ? styles.toolBubble : (isResult ? styles.resultBubble : styles.botBubble),
-        isTool && { borderColor: color, borderWidth: 1 }
-      ]}>
-        <View style={styles.header}>
-          <Text style={[styles.sessionName, isTool && { color: color }]}>
-            {isTool ? '🛠️ ' + event.summary : (isResult ? '✅ ' + event.summary : '🤖 ' + (agentKind || runnerId || 'Agent'))}
+        <View style={[styles.bubble, styles.interactionBubble]}>
+          <View style={styles.header}>
+            <Text style={[styles.sessionName, { color: accentColor }]}>
+              {emoji} Attention Required
+            </Text>
+          </View>
+          <Text style={styles.detail} selectable={true}>
+            {event.summary || event.detail || 'Interaction request'}
           </Text>
         </View>
-        <Text style={[styles.detail, isResult && styles.resultDetail]} selectable={true}>
-          {event.detail || event.summary}
-        </Text>
+        <View style={styles.timeWrapperLeft}>
+          <Text style={styles.time}>{timeStr}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // ── Error ──
+  if (category === 'error') {
+    return (
+      <View style={[styles.container, styles.leftAlign]}>
+        <View style={styles.totemPlaceholder} />
+        <View style={[styles.bubble, styles.errorBubble]}>
+          <View style={styles.header}>
+            <Text style={[styles.sessionName, { color: accentColor }]}>
+              {emoji} Error
+            </Text>
+          </View>
+          <Text style={styles.detail} selectable={true}>
+            {event.summary || event.detail || 'An error occurred'}
+          </Text>
+        </View>
+        <View style={styles.timeWrapperLeft}>
+          <Text style={styles.time}>{timeStr}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // ── Completed ──
+  if (category === 'completed') {
+    return (
+      <View style={[styles.container, styles.leftAlign]}>
+        <View style={styles.totemPlaceholder} />
+        <View style={[styles.bubble, styles.completedBubble]}>
+          <Text style={[styles.sessionName, { color: accentColor }]}>
+            {emoji} {event.summary || 'Completed'}
+          </Text>
+        </View>
+        <View style={styles.timeWrapperLeft}>
+          <Text style={styles.time}>{timeStr}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // ── Unknown (dimmed fallback) ──
+  if (category === 'unknown') {
+    return (
+      <View style={[styles.container, styles.leftAlign]}>
+        <View style={styles.totemPlaceholder} />
+        <View style={[styles.bubble, styles.unknownBubble]}>
+          <Text style={styles.unknownText} selectable={true}>
+            {emoji} {event.type || 'Unknown event'}
+          </Text>
+          <Text style={styles.time}>{timeStr}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // ── Message / Thinking / Tool (agent-side, with totem) ──
+  const isTool = category === 'tool_start';
+  const isThinking = category === 'thinking';
+  const titleText = isTool
+    ? `${emoji} ${event.summary || 'Tool call'}`
+    : isThinking
+    ? `${emoji} Thinking`
+    : `${emoji} ${agentKind || runnerId || 'Agent'}`;
+
+  return (
+    <View style={[styles.container, styles.leftAlign]}>
+      <View style={styles.totemContainer}>
+        <Svg width={30} height={30} viewBox="0 0 388 388">
+          <Path d={pathD} fill={totemColor} />
+        </Svg>
+      </View>
+      <View style={[
+        styles.bubble,
+        isTool ? styles.toolBubble : styles.botBubble,
+        isThinking && styles.thinkingBubble,
+        isTool && { borderColor: accentColor, borderWidth: 1 }
+      ]}>
+        <View style={styles.header}>
+          <Text style={[
+            styles.sessionName,
+            isTool && { color: accentColor },
+            isThinking && { color: '#8b949e', fontStyle: 'italic' }
+          ]}>
+            {titleText}
+          </Text>
+        </View>
+        {(event.detail || isTool) && (
+          <Text style={[styles.detail, isThinking && styles.thinkingDetail]} selectable={true}>
+            {event.detail || event.summary}
+          </Text>
+        )}
       </View>
       <View style={styles.timeWrapperLeft}>
         <Text style={styles.time}>{timeStr}</Text>
@@ -131,11 +282,34 @@ const styles = StyleSheet.create({
     backgroundColor: '#1C1C1E',
     borderBottomLeftRadius: 4,
   },
-  resultBubble: {
-    backgroundColor: '#121214',
+  thinkingBubble: {
+    backgroundColor: '#1C1C1E',
+    opacity: 0.7,
+  },
+  interactionBubble: {
+    backgroundColor: '#1C1C1E',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#f85149',
+  },
+  errorBubble: {
+    backgroundColor: '#2C1414',
     borderBottomLeftRadius: 4,
     borderWidth: 1,
-    borderColor: '#2C2C2E',
+    borderColor: '#f85149',
+  },
+  completedBubble: {
+    backgroundColor: '#1C2C1C',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#39d353',
+  },
+  unknownBubble: {
+    backgroundColor: '#1C1C1E',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#333',
+    borderStyle: 'dashed',
   },
   resultCollapsed: {
     backgroundColor: '#121214',
@@ -193,8 +367,13 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
-  resultDetail: {
+  thinkingDetail: {
     color: '#8b949e',
-    fontSize: 11,
-  }
+    fontStyle: 'italic',
+    fontSize: 12,
+  },
+  unknownText: {
+    color: '#8b949e',
+    fontSize: 12,
+  },
 });
