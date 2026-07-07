@@ -7,13 +7,18 @@ type ProdDetectionEvidence struct {
 	TermAdapter string
 }
 
-// TermAgentDetector bridges agent-layer detectors to the product telemetry path.
+// TermAgentDetector is the composite production agent detector.
+// Holds detectors for all known agents and returns the highest-confidence result.
 type TermAgentDetector struct {
-	detector *ClaudeDetector
+	claude *ClaudeDetector
+	codex  *CodexDetector
 }
 
 func NewTermAgentDetector() *TermAgentDetector {
-	return &TermAgentDetector{detector: NewClaudeDetector()}
+	return &TermAgentDetector{
+		claude: NewClaudeDetector(),
+		codex:  NewCodexDetector(),
+	}
 }
 
 func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, evidence ProdDetectionEvidence) (agentKind, agentStatus string, agentConfidence float64) {
@@ -22,20 +27,22 @@ func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, 
 		CWD:         evidence.CWD,
 		TermAdapter: evidence.TermAdapter,
 	}
-	id := d.detector.Detect(ev)
 
-	// Status inference from detection confidence.
+	// Try all detectors, pick the highest-confidence non-unknown result.
+	best := d.claude.Detect(ev)
+	if id := d.codex.Detect(ev); id.Confidence > best.Confidence {
+		best = id
+	}
+
 	status := StatusUnknown
-	if id.Confidence >= 0.5 && id.Kind != "unknown" {
+	if best.Confidence >= 0.5 && best.Kind != "unknown" {
 		status = StatusWorking
 	}
-	return id.Kind, string(status), id.Confidence
+	return best.Kind, string(status), best.Confidence
 }
 
 // ParseEvents returns nil — agent events flow through the existing
-// production telemetry path (TelemetryService.processSession →
-// ResolveAgentLog → ReadNewEvents → EventStore). The agent-layer
-// ClaudeParser is connected to that path separately.
+// production telemetry path.
 func (d *TermAgentDetector) ParseEvents(sessionID string, evidence ProdDetectionEvidence) []AgentEvent {
 	return nil
 }

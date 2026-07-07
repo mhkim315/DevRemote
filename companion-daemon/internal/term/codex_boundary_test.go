@@ -65,6 +65,12 @@ func TestCodexLog_ProductionEventsPath(t *testing.T) {
 					t.Errorf("missing event type %q", want)
 				}
 			}
+			if s.AgentKind != "codex" {
+				t.Errorf("AgentKind=%q, want codex", s.AgentKind)
+			}
+			if s.AgentStatus != "waiting_approval" {
+				t.Errorf("AgentStatus=%q, want waiting_approval", s.AgentStatus)
+			}
 		}
 	}
 	if !found {
