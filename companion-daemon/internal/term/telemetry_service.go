@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
@@ -19,6 +20,7 @@ type TelemetryService struct {
 	links       LinkStore
 	notifier    Notifier
 	detector    AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
+	approvals   ApprovalStore                            // Phase A9: approval tracking
 	logResolver func(models.ProcessInfo) (LogRef, error) // Phase A5b: injectable resolver (nil = production ResolveAgentLog)
 	interval    time.Duration
 
@@ -28,19 +30,23 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals ApprovalStore) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
+	if approvals == nil {
+		approvals = NewApprovalStore()
+	}
 	return &TelemetryService{
-		reg:      reg,
-		events:   events,
-		links:    links,
-		notifier: notifier,
-		detector: detector,
-		interval: 2 * time.Second,
-		sessions: make(map[string]*sessionStateData),
-		done:     make(chan struct{}),
+		reg:       reg,
+		events:    events,
+		links:     links,
+		notifier:  notifier,
+		detector:  detector,
+		approvals: approvals,
+		interval:  2 * time.Second,
+		sessions:  make(map[string]*sessionStateData),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -144,6 +150,31 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					s.events.Append(id, newEvents)
 					parsedNewEvents = true
 					lastEvent = newEvents[len(newEvents)-1]
+
+					// Phase A9: detect approval events and track in ApprovalStore.
+					var newApprovals []agent.AgentApproval
+					for _, e := range newEvents {
+						if e.Type == "approval_requested" {
+							newApprovals = append(newApprovals, agent.AgentApproval{
+								ID:        fmt.Sprintf("%s-%s", id, e.ID),
+								SessionID: id,
+								AgentKind: logRef.Agent,
+								Status:    "pending",
+								Prompt:    firstNonEmpty(e.Detail, e.Summary, "Approval requested"),
+								Options: []agent.ApprovalOption{
+									{ID: "approve", Label: "Approve"},
+									{ID: "reject", Label: "Reject"},
+									{ID: "open_terminal", Label: "Open Terminal"},
+								},
+								Default:    "reject",
+								Source:     "jsonl",
+								Confidence: 0.9,
+							})
+						}
+					}
+					if len(newApprovals) > 0 {
+						s.approvals.Upsert(id, newApprovals)
+					}
 				}
 			}
 		} else {
@@ -302,6 +333,11 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			}
 		}
 	}
+	// Phase A9: populate approvals from ApprovalStore.
+	for i := range res {
+		st := &res[i]
+		st.Approvals = s.approvals.List(st.ID)
+	}
 	return res
 }
 
@@ -310,4 +346,14 @@ func (s *TelemetryService) Clear(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+}
+
+// firstNonEmpty returns the first non-empty string from the given candidates.
+func firstNonEmpty(candidates ...string) string {
+	for _, c := range candidates {
+		if c != "" {
+			return c
+		}
+	}
+	return ""
 }

@@ -61,6 +61,45 @@ export async function sendDebugCommand(sessionID: string, command: string, token
   return res;
 }
 
+// --- Phase A9: Structured Approval Types and API ---
+
+export interface ApprovalOption {
+  id: string;      // "approve", "reject", "send_text", "send_key", "open_terminal"
+  label: string;
+  payload?: string;
+}
+
+export interface AgentApproval {
+  id: string;
+  sessionId: string;
+  agentKind: string;
+  status: string;  // "pending", "approved", "rejected"
+  prompt: string;
+  options: ApprovalOption[];
+  default: string;
+  source: string;
+  confidence: number;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export async function resolveApproval(
+  sessionID: string,
+  approvalID: string,
+  action: string,
+  token?: string
+): Promise<Response> {
+  const res = await checkedFetch(
+    `${_baseURL}/api/sessions/${encodeURIComponent(sessionID)}/approvals/${encodeURIComponent(approvalID)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+      body: JSON.stringify({ action }),
+    }
+  );
+  return res;
+}
+
 export async function registerPushToken(token: string, pushToken: string) {
   const res = await checkedFetch(
     `${_baseURL}/push/register?token=${encodeURIComponent(pushToken)}`,

@@ -1,48 +1,98 @@
 import React, { useState } from 'react';
-import { sendDebugCommand } from '../lib/client';
+import { resolveApproval, AgentApproval } from '../lib/client';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
 interface Props {
   sessionId: string;
-  promptText: string;
+  approval: AgentApproval;
   token?: string;
   onResolved: () => void;
 }
 
-export function ApprovalCard({ sessionId, promptText, token, onResolved }: Props) {
+export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) {
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleAction = async (approve: boolean) => {
+  const handleAction = async (action: string) => {
     setLoading(true);
+    setError(null);
     try {
-      const res = await sendDebugCommand(sessionId, approve ? "y\n" : "n\n", token);
+      const res = await resolveApproval(sessionId, approval.id, action, token);
       if (!res.ok) {
-        throw new Error('Failed to send command');
+        if (res.status === 409) {
+          setError('Already resolved');
+        } else if (res.status === 410) {
+          setError('Approval expired');
+        } else {
+          setError(`Failed (${res.status})`);
+        }
+      } else {
+        onResolved();
       }
-      onResolved();
     } catch (e) {
-      console.error(e);
+      setError('Network error — tap to retry');
     } finally {
       setLoading(false);
     }
   };
 
+  const options = approval.options || [
+    { id: 'approve', label: 'Approve' },
+    { id: 'reject', label: 'Reject' },
+  ];
+
+  const createdAt = approval.createdAt
+    ? new Date(approval.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+
   return (
     <View style={styles.card}>
-      <Text style={styles.title}>APPROVAL REQUIRED</Text>
-      <Text style={styles.sessionName}>Agent: {sessionId}</Text>
-      <Text style={styles.prompt}>{promptText}</Text>
-      
+      <View style={styles.header}>
+        <Text style={styles.title}>APPROVAL REQUIRED</Text>
+        {createdAt ? <Text style={styles.time}>{createdAt}</Text> : null}
+      </View>
+      <Text style={styles.agentName}>Agent: {approval.agentKind || 'unknown'}</Text>
+      <Text style={styles.prompt}>{approval.prompt}</Text>
+
+      {error ? (
+        <View style={styles.errorRow}>
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity onPress={() => setError(null)}>
+            <Text style={styles.dismissText}>Dismiss</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {loading ? (
         <ActivityIndicator color="#45EBE9" style={{ marginVertical: 16 }} />
       ) : (
         <View style={styles.buttonRow}>
-          <TouchableOpacity style={[styles.button, styles.rejectBtn]} onPress={() => handleAction(false)}>
-            <Text style={styles.rejectText}>REJECT</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.button, styles.approveBtn]} onPress={() => handleAction(true)}>
-            <Text style={styles.approveText}>APPROVE</Text>
-          </TouchableOpacity>
+          {options.map(opt => {
+            const isPrimary = opt.id === 'approve';
+            const isDanger = opt.id === 'reject';
+            return (
+              <TouchableOpacity
+                key={opt.id}
+                style={[
+                  styles.button,
+                  isPrimary && styles.approveBtn,
+                  isDanger && styles.rejectBtn,
+                ]}
+                onPress={() => handleAction(opt.id)}
+                disabled={loading}
+              >
+                <Text
+                  style={[
+                    styles.buttonText,
+                    isPrimary && styles.approveText,
+                    isDanger && styles.rejectText,
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       )}
     </View>
@@ -57,52 +107,85 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#f85149'
+    borderColor: '#f85149',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   title: {
     color: '#f85149',
     fontSize: 14,
     fontWeight: '800',
-    marginBottom: 4,
-    letterSpacing: 1
+    letterSpacing: 1,
   },
-  sessionName: {
+  time: {
+    color: '#8b949e',
+    fontSize: 11,
+  },
+  agentName: {
     color: '#ffffff',
     fontSize: 12,
     marginBottom: 12,
-    opacity: 0.8
+    opacity: 0.8,
   },
   prompt: {
     color: '#ffffff',
     fontSize: 14,
     marginBottom: 16,
-    lineHeight: 20
+    lineHeight: 20,
+  },
+  errorRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#3D1C1C',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  errorText: {
+    color: '#f85149',
+    fontSize: 12,
+    flex: 1,
+  },
+  dismissText: {
+    color: '#8b949e',
+    fontSize: 12,
+    marginLeft: 12,
   },
   buttonRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: 12
+    gap: 12,
   },
   button: {
     paddingVertical: 8,
     paddingHorizontal: 16,
     borderRadius: 8,
-    borderWidth: 1
-  },
-  rejectBtn: {
+    borderWidth: 1,
     borderColor: '#8b949e',
-    backgroundColor: 'transparent'
+    backgroundColor: 'transparent',
   },
-  rejectText: {
+  buttonText: {
     color: '#8b949e',
-    fontWeight: '700'
+    fontWeight: '700',
+    fontSize: 13,
   },
   approveBtn: {
     borderColor: '#39d353',
-    backgroundColor: '#39d353'
+    backgroundColor: '#39d353',
   },
   approveText: {
     color: '#000000',
-    fontWeight: '700'
-  }
+  },
+  rejectBtn: {
+    borderColor: '#f85149',
+    backgroundColor: 'transparent',
+  },
+  rejectText: {
+    color: '#f85149',
+  },
 });

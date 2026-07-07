@@ -143,6 +143,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		log.Printf("Failed to load session links: %v", err)
 	}
 
+	// Phase A9: approval tracking.
+	approvals := term.NewApprovalStore()
+
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).
 	verifier := deps.Verifier
 	if verifier == nil {
@@ -152,10 +155,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			InsecureLocalOnly:  cfg.InsecureLocalOnly,
 		})
 	}
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds}
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
+	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
@@ -175,7 +179,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if cfg.EnableAgentDetection {
 		agentDetector = agent.NewTermAgentDetector()
 	}
-	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector)
+	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals)
 	h.Telemetry = telemetry
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))

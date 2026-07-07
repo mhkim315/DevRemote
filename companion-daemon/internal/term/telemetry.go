@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
@@ -24,9 +25,10 @@ type SessionTelemetry struct {
 	Adapter         string              `json:"adapter"`
 	Capabilities    []string            `json:"capabilities,omitempty"` // e.g. ["live_stream","screen","history"]
 	Events          []models.AgentEvent `json:"events"`
-	AgentKind       string              `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
-	AgentStatus     string              `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
-	AgentConfidence float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
+	AgentKind       string                 `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
+	AgentStatus     string                 `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
+	AgentConfidence float64                `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
+	Approvals       []agent.AgentApproval  `json:"approvals,omitempty"`       // pending/resolved approvals (Phase A9+)
 	// Agent events flow through the existing Events field via
 	// TelemetryService.processSession → EventStore → Snapshot.
 	Stale         bool      `json:"stale,omitempty"`

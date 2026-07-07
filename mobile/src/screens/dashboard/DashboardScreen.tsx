@@ -80,9 +80,11 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
 
   const dataWithAdd = [...sessions, { isAddBtn: true, id: 'add-btn' }];
 
-  const approvalsRequired = sessions.filter(s => 
-    s.state === 'waiting' && 
-    s.events?.slice().reverse().find(e => e.type === 'approval_request')
+  // Phase A9: use structured approvals.
+  const approvalsRequired = sessions.flatMap(s =>
+    (s.approvals || [])
+      .filter(a => a.status === 'pending')
+      .map(a => ({ sessionId: s.id, approval: a }))
   );
 
   return (
@@ -102,18 +104,15 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       </View>
 
       <View style={styles.content}>
-        {approvalsRequired.map(s => {
-          const prompt = s.events?.slice().reverse().find(e => e.type === 'approval_request')?.detail || 'Do you want to proceed?';
-          return (
-            <ApprovalCard 
-              key={`approval-${s.id}`}
-              sessionId={s.id}
-              promptText={prompt}
-              token={token}
-              onResolved={fetchSessions}
-            />
-          );
-        })}
+        {approvalsRequired.map(({ sessionId, approval }) => (
+          <ApprovalCard
+            key={`approval-${approval.id}`}
+            sessionId={sessionId}
+            approval={approval}
+            token={token}
+            onResolved={fetchSessions}
+          />
+        ))}
 
         {loading ? (
           <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />

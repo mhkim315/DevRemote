@@ -260,7 +260,7 @@ func TestHandleLinksAPI_ClearsCanonicalTelemetryForLegacyID(t *testing.T) {
 	store, _ := NewFileLinkStoreAt(filepath.Join(dir, "links.json"))
 	events := NewMemoryEventStore()
 	reg := mux.MustNewRegistry()
-	telemetry := NewTelemetryService(reg, events, store, nil, nil)
+	telemetry := NewTelemetryService(reg, events, store, nil, nil, nil)
 
 	// Pre-populate telemetry with state for the canonical key.
 	telemetry.sessions["cmux:surface:42"] = &sessionStateData{State: "working"}

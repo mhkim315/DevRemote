@@ -39,6 +39,7 @@ type Handlers struct {
 	Cmds          CommandBroker     // pending command storage (never nil in production)
 	Telemetry     *TelemetryService // telemetry state (nil until wired)
 	AgentDetector AgentDetector     // Phase A5: optional agent detector (nil if not wired)
+	Approvals     ApprovalStore     // Phase A9: approval tracking (never nil in production)
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

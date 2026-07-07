@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { RUNNERS } from '../lib/runners';
 import { formatAgentKind, formatAgentStatus, isDegraded } from '../lib/agentDisplay';
+import { AgentApproval } from '../lib/client';
 
 export interface AgentEvent {
   id: string;
@@ -27,6 +28,7 @@ export interface SessionTelemetry {
   agentKind?: string;
   agentStatus?: string;
   agentConfidence?: number;
+  approvals?: AgentApproval[];
 }
 
 interface Props {
@@ -76,7 +78,8 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
     : runnerDef.frames[frameIndex];
 
   const recentEdit = session.events?.slice().reverse().find(e => e.type === 'file_edit');
-  const needsApproval = session.state === 'waiting' && session.events?.slice().reverse().find(e => e.type === 'approval_request');
+  // Phase A9: use structured approvals instead of scanning events.
+  const needsApproval = (session.approvals || []).some(a => a.status === 'pending');
 
   return (
     <View style={styles.cardWrapper}>

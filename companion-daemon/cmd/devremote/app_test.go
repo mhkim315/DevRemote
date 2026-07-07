@@ -257,7 +257,7 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
 	// Telemetry: record cancel timing. Use a minimal service so Done() is already closed.
-	app.telemetry = term.NewTelemetryService(app.registry, app.events, app.links, nil, nil)
+	app.telemetry = term.NewTelemetryService(app.registry, app.events, app.links, nil, nil, nil)
 	app.telemetryCtxCancel = func() {
 		order = append(order, "telemetry:cancel")
 		// Start + immediately cancel so Done() is closed.
