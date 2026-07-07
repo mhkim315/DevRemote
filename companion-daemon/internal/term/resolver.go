@@ -46,10 +46,10 @@ func (r *AntigravityResolver) ResolveLink(ctx context.Context, externalSessionID
 	path2 := filepath.Join(homeDir, ".gemini", "antigravity", "brain", externalSessionID, "transcript.jsonl")
 
 	if _, err := os.Stat(path1); err == nil {
-		return LogRef{Path: path1, Agent: "gemini", Session: externalSessionID}, nil
+		return LogRef{Path: path1, Agent: "antigravity", Session: externalSessionID}, nil
 	}
 	if _, err := os.Stat(path2); err == nil {
-		return LogRef{Path: path2, Agent: "gemini", Session: externalSessionID}, nil
+		return LogRef{Path: path2, Agent: "antigravity", Session: externalSessionID}, nil
 	}
 
 	// Fallback to searching, though explicit links should ideally exist.

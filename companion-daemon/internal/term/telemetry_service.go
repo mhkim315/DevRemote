@@ -130,6 +130,8 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					stateData.Parser = &CodexParser{Session: id}
 				case "gemini":
 					stateData.Parser = &GeminiParser{Session: id}
+				case "antigravity":
+					stateData.Parser = &AntigravityParser{Session: id}
 				}
 			}
 			cursor := stateData.Cursor
