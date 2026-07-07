@@ -345,7 +345,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
               keyExtractor={(item, idx) => item.id || String(idx)}
               contentContainerStyle={styles.activityList}
               renderItem={({ item }) => (
-                <EventBubble event={item} runnerId={sessionData?.runner} runnerColor={sessionData?.runnerColor} />
+                <EventBubble event={item} runnerId={sessionData?.runner} runnerColor={sessionData?.runnerColor} agentKind={sessionData?.agentKind} />
               )}
               ListEmptyComponent={
                 <Text style={styles.emptyActivityText}>No activity recorded yet.</Text>

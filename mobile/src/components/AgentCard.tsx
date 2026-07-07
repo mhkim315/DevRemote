@@ -23,6 +23,9 @@ export interface SessionTelemetry {
   capabilities?: string[];
   isAddBtn?: boolean;
   events?: AgentEvent[];
+  agentKind?: string;
+  agentStatus?: string;
+  agentConfidence?: number;
 }
 
 interface Props {

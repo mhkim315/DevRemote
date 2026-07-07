@@ -8,9 +8,10 @@ interface Props {
   event: AgentEvent;
   runnerId?: string;
   runnerColor?: string;
+  agentKind?: string;
 }
 
-export function EventBubble({ event, runnerId, runnerColor }: Props) {
+export function EventBubble({ event, runnerId, runnerColor, agentKind }: Props) {
   const [expanded, setExpanded] = useState(false);
 
   const runnerDef = RUNNERS.find(r => r.id === runnerId) || RUNNERS[0];
@@ -69,7 +70,7 @@ export function EventBubble({ event, runnerId, runnerColor }: Props) {
       ]}>
         <View style={styles.header}>
           <Text style={[styles.sessionName, isTool && { color: color }]}>
-            {isTool ? '🛠️ ' + event.summary : (isResult ? '✅ ' + event.summary : '🤖 ' + (runnerId || 'Agent'))}
+            {isTool ? '🛠️ ' + event.summary : (isResult ? '✅ ' + event.summary : '🤖 ' + (agentKind || runnerId || 'Agent'))}
           </Text>
         </View>
         <Text style={[styles.detail, isResult && styles.resultDetail]} selectable={true}>
