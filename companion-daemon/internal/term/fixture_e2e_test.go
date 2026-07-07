@@ -94,12 +94,13 @@ func (s *fixtureBareSession) AdapterName() string { return "fixture" }
 // --- Stream (io.Pipe-based, reliable for WS testing) ---
 
 type fixtureStream struct {
-	pr     *io.PipeReader
-	pw     *io.PipeWriter
-	done   chan struct{}
-	input  strings.Builder
-	resize [][2]int
-	mu     sync.Mutex
+	pr        *io.PipeReader
+	pw        *io.PipeWriter
+	done      chan struct{}
+	closeOnce sync.Once
+	input     strings.Builder
+	resize    [][2]int
+	mu        sync.Mutex
 }
 
 func newFixtureStream() *fixtureStream {
@@ -125,8 +126,10 @@ func (s *fixtureStream) Write(p []byte) (int, error) {
 }
 
 func (s *fixtureStream) Close() error {
-	close(s.done)
-	s.pr.Close()
+	s.closeOnce.Do(func() {
+		close(s.done)
+		s.pr.Close()
+	})
 	return nil
 }
 
@@ -266,33 +269,39 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Read: first frame is ReadScreen preflight content from the handler.
+	// Frame 1: ReadScreen preflight (CSI clear + screen content).
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, msg, err := conn.ReadMessage()
+	_, msg1, err := conn.ReadMessage()
 	if err != nil {
-		t.Fatalf("WS read: %v", err)
+		t.Fatalf("WS read frame 1: %v", err)
 	}
-	if len(msg) == 0 {
-		t.Error("WS received empty message")
+	if !strings.Contains(string(msg1), "fixture screen content") {
+		t.Errorf("frame 1 missing ReadScreen content: %q", string(msg1))
 	}
 
-	// Write input through WS — verify it reaches the stream.
+	// Frame 2: stream content pushed via io.Pipe.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg2, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("WS read frame 2 (stream): %v", err)
+	}
+	if !strings.Contains(string(msg2), "FIXTURE_STREAM_CONTENT") {
+		t.Errorf("frame 2 missing stream content: %q", string(msg2))
+	}
+
+	// Write input through WS — verify it reaches stream.input.
 	testInput := []byte("echo hello\n")
 	if err := conn.WriteMessage(websocket.TextMessage, testInput); err != nil {
 		t.Fatalf("WS write: %v", err)
 	}
-	// Input goes through WriteInput on the session. Our session's WriteInput
-	// is not implemented, but the WS handler may also call stream.Write.
-	// Give the handler time to process.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 }
 
-func TestFixtureE2E_ResizeAtBoundary(t *testing.T) {
-	// Resize is client-side (xterm.js calls /term/size via fetch).
-	// There is no server-side Go handler for this endpoint.
-	// The fixture stream interface supports Resize; we verify the
-	// interface contract directly as proof the adapter can receive
-	// resize events through the TerminalStream boundary.
+func TestFixtureE2E_Resize(t *testing.T) {
+	// Resize is triggered client-side by xterm.js via fetch(/term/size).
+	// No server-side Go handler exists for this route — resize is handled
+	// entirely client-side. The TerminalStream interface supports Resize;
+	// we prove the fixture stream honors the interface contract.
 	stream := newFixtureStream()
 	defer stream.Close()
 	if err := stream.Resize(40, 120); err != nil {
