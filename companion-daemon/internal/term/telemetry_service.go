@@ -291,10 +291,13 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 					break
 				}
 			}
-			kind, status, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, evidence)
+			kind, _, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, evidence)
 			st.AgentKind = kind
-			st.AgentStatus = status
 			st.AgentConfidence = confidence
+			// AgentStatus from telemetry state machine (parser-derived).
+			if sd, ok := stateCopies[st.ID]; ok && sd.State != "" {
+				st.AgentStatus = sd.State
+			}
 		}
 	}
 	return res
