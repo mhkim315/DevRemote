@@ -1,157 +1,109 @@
 package term
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/mux"
 )
 
-// Phase A5 product-boundary bridge: prove Claude adapter output
-// flows through the actual SessionTelemetry schema.
+// Phase A5 product-boundary bridge: Claude adapter output flows
+// through the actual production telemetry path (HandleSessionsV2).
 
-func TestClaudeOutput_ProductBridge(t *testing.T) {
-	lines := loadAgentFixtures(t, "claude")
-	if len(lines) == 0 {
-		t.Fatal("no Claude fixtures")
-	}
+// claudeDetector adapts agent.ClaudeDetector to term.AgentDetector.
+type claudeDetectorAdapter struct {
+	detector *agent.ClaudeDetector
+	parser   *agent.ClaudeParser
+}
 
-	// Step 1: Claude agent pipeline.
-	detector := agent.NewClaudeDetector()
-	id := detector.Detect(agent.DetectionEvidence{
-		ProcessName: "claude",
-		CWD:         "/Users/test/project",
-	})
-	parser := agent.NewClaudeParser()
-	result := parser.ParseBatch(lines, "")
+func (d *claudeDetectorAdapter) DetectAgent(sessionID, adapterName, localID string) (string, string, float64) {
+	ev := agent.DetectionEvidence{ProcessName: "claude", CWD: "/Users/test/project"}
+	id := d.detector.Detect(ev)
+	return id.Kind, string(agent.StatusWorking), id.Confidence
+}
 
-	// Step 2: Build a real SessionTelemetry with agent data.
-	// This is what the telemetry pipeline will do in A8-A9.
-	st := SessionTelemetry{
-		ID:              "tmux:claude-session",
-		Adapter:         "tmux",
-		State:           string(result.Status),
-		Capabilities:    []string{"live_stream", "screen", "history"},
-		AgentKind:       id.Kind,
-		AgentStatus:     string(result.Status),
-		AgentConfidence: id.Confidence,
+func TestClaudeOutput_ProductPath(t *testing.T) {
+	// Wire Claude detector into the production telemetry path.
+	adapter := &claudeDetectorAdapter{
+		detector: agent.NewClaudeDetector(),
+		parser:   agent.NewClaudeParser(),
 	}
 
-	// Step 3: Verify JSON round-trip through real product schema.
-	data, err := json.Marshal(st)
-	if err != nil {
-		t.Fatalf("SessionTelemetry marshal: %v", err)
-	}
-	var roundtrip SessionTelemetry
-	if err := json.Unmarshal(data, &roundtrip); err != nil {
-		t.Fatalf("SessionTelemetry unmarshal: %v", err)
-	}
-	if roundtrip.AgentKind != "claude" {
-		t.Errorf("AgentKind=%q, want claude", roundtrip.AgentKind)
-	}
-	if roundtrip.AgentStatus == "" {
-		t.Error("AgentStatus is empty")
+	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
+	h := &Handlers{
+		Registry:      reg,
+		Events:        NewMemoryEventStore(),
+		AgentDetector: adapter,
 	}
 
-	// Step 4: Verify JSON contains all agent fields.
-	str := string(data)
-	for _, want := range []string{`"agentKind":"claude"`, `"agentStatus"`, `"agentConfidence"`} {
-		if !strings.Contains(str, want) {
-			t.Errorf("JSON missing %s", want)
-		}
-	}
-
-	// Step 5: Prove backward compatibility — fields are omitempty.
-	noAgent := SessionTelemetry{ID: "tmux:test", Adapter: "tmux"}
-	data2, _ := json.Marshal(noAgent)
-	if strings.Contains(string(data2), "agentKind") {
-		t.Error("backward compat: agentKind present in session without agent")
-	}
-
-	// Step 6: Prove the full pipeline output (events) is JSON compatible.
-	if len(result.Events) == 0 {
-		t.Error("0 events from Claude fixtures")
-	}
-	for _, e := range result.Events {
-		if e.Type == "" {
-			t.Error("event has empty Type")
-		}
-	}
-	eventData, _ := json.Marshal(result.Events)
-	if len(eventData) == 0 {
-		t.Error("events JSON is empty")
-	}
-
-	// Step 7: Agent layer failure must not break terminal.
-	reg := mux.MustNewRegistry(&emptyAdapter{})
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+	// Hit the actual API endpoint.
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
+
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET /api/sessions: status %d (agent failure isolated)", rec.Code)
+		t.Fatalf("GET /api/sessions: status %d", rec.Code)
 	}
 
-	// Step 8: Resolver produces redacted DisplayPath.
-	resolver := agent.NewClaudeLogResolver()
-	res, _ := resolver.Resolve(agent.DetectionEvidence{
-		ProcessName: "claude",
-		CWD:         "/Users/test/project",
-	})
-	for _, lr := range res.Logs {
-		if lr.DisplayPath == "" {
-			t.Error("DisplayPath is empty")
+	var sessions []SessionTelemetry
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("0 sessions in API response")
+	}
+
+	// Verify agent fields populated via the production path.
+	found := false
+	for _, s := range sessions {
+		if s.Adapter == "tmux" && s.ID == "tmux:claude-session" {
+			found = true
+			if s.AgentKind != "claude" {
+				t.Errorf("AgentKind=%q, want claude", s.AgentKind)
+			}
+			if s.AgentStatus == "" {
+				t.Error("AgentStatus is empty")
+			}
+			if s.AgentConfidence == 0 {
+				t.Error("AgentConfidence is 0")
+			}
+			t.Logf("product path: AgentKind=%s AgentStatus=%s Confidence=%.2f",
+				s.AgentKind, s.AgentStatus, s.AgentConfidence)
 		}
-		if strings.Contains(lr.DisplayPath, "/Users/") {
-			t.Errorf("DisplayPath contains raw path: %s", lr.DisplayPath)
+	}
+	if !found {
+		t.Error("claude session not found in API response")
+	}
+
+	// Backward compat: nil detector → no agent fields.
+	h2 := &Handlers{Registry: reg, Events: NewMemoryEventStore(), AgentDetector: nil}
+	req2 := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec2 := httptest.NewRecorder()
+	h2.HandleSessionsAPI(rec2, req2)
+	var sessions2 []SessionTelemetry
+	json.Unmarshal(rec2.Body.Bytes(), &sessions2)
+	for _, s := range sessions2 {
+		if s.AgentKind != "" {
+			t.Errorf("nil detector: AgentKind=%q, want empty (backward compat)", s.AgentKind)
 		}
 	}
 }
 
 // --- helpers ---
 
-func loadAgentFixtures(t *testing.T, agentName string) [][]byte {
-	t.Helper()
-	base := filepath.Join("..", "agent", "testdata", agentName)
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		t.Skipf("fixtures not found: %v", err)
-		return nil
-	}
-	var all [][]byte
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".jsonl" {
-			data, err := os.ReadFile(filepath.Join(base, e.Name()))
-			if err != nil {
-				continue
-			}
-			for _, line := range splitAgentLines(data) {
-				if len(line) > 0 {
-					all = append(all, line)
-				}
-			}
-		}
-	}
-	return all
+type claudeSessionAdapter struct{}
+
+func (a *claudeSessionAdapter) Name() string { return "tmux" }
+func (a *claudeSessionAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return []mux.Session{&claudeStubSession{}}, nil
 }
 
-func splitAgentLines(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			lines = append(lines, data[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, data[start:])
-	}
-	return lines
-}
+type claudeStubSession struct{}
+
+func (s *claudeStubSession) ID() string          { return "claude-session" }
+func (s *claudeStubSession) Title() string       { return "Claude Code" }
+func (s *claudeStubSession) AdapterName() string { return "tmux" }

@@ -216,7 +216,7 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fallback without telemetry service (e.g. tests).
-	res := buildSimpleSnapshot(reg, h.Events)
+	res := buildSimpleSnapshotWithDetector(reg, h.Events, h.AgentDetector)
 	json.NewEncoder(w).Encode(res)
 }
 
@@ -241,4 +241,20 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 	}
 	sortTelemetry(res)
 	return res
+}
+
+func buildSimpleSnapshotWithDetector(reg *mux.Registry, events EventStore, detector AgentDetector) []SessionTelemetry {
+	result := buildSimpleSnapshot(reg, events)
+	if detector == nil {
+		return result
+	}
+	for i := range result {
+		st := &result[i]
+		ref := mux.ParseSessionID(st.ID)
+		kind, status, confidence := detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID)
+		st.AgentKind = kind
+		st.AgentStatus = status
+		st.AgentConfidence = confidence
+	}
+	return result
 }

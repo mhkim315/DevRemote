@@ -31,12 +31,19 @@ func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
 // Handlers groups HTTP handler dependencies so they are visible as struct fields
 // rather than hidden behind context extraction or package globals.
 type Handlers struct {
-	Registry  *mux.Registry
-	Verifier  TokenVerifier     // may be nil if auth is not configured
-	Events    EventStore        // agent event storage (never nil in production)
-	Links     LinkStore         // session link storage (never nil in production)
-	Cmds      CommandBroker     // pending command storage (never nil in production)
-	Telemetry *TelemetryService // telemetry state (nil until wired)
+	Registry      *mux.Registry
+	Verifier      TokenVerifier     // may be nil if auth is not configured
+	Events        EventStore        // agent event storage (never nil in production)
+	Links         LinkStore         // session link storage (never nil in production)
+	Cmds          CommandBroker     // pending command storage (never nil in production)
+	Telemetry     *TelemetryService // telemetry state (nil until wired)
+	AgentDetector AgentDetector     // Phase A5: optional agent detector (nil if not wired)
+}
+
+// AgentDetector is the agent adapter layer's detection interface.
+// Defined here to avoid circular imports (agent package imports mux, not term).
+type AgentDetector interface {
+	DetectAgent(sessionID string, adapterName string, localID string) (agentKind string, agentStatus string, agentConfidence float64)
 }
 
 // AuthMiddleware returns an HTTP middleware that validates JWT tokens using

@@ -71,9 +71,9 @@ type fixtureFullSession struct {
 	mu        sync.Mutex
 }
 
-func (s *fixtureFullSession) ID() string                      { return s.id }
-func (s *fixtureFullSession) Title() string                   { return s.title }
-func (s *fixtureFullSession) AdapterName() string             { return "fixture" }
+func (s *fixtureFullSession) ID() string          { return s.id }
+func (s *fixtureFullSession) Title() string       { return s.title }
+func (s *fixtureFullSession) AdapterName() string { return "fixture" }
 func (s *fixtureFullSession) ReadScreen(_ context.Context) ([]byte, error) {
 	return []byte("fixture screen content"), nil
 }
@@ -171,8 +171,10 @@ type bareOnlyAdapter struct {
 	sessions []mux.Session
 }
 
-func (a *bareOnlyAdapter) Name() string                                       { return "bare" }
-func (a *bareOnlyAdapter) ListSessions(_ context.Context) ([]mux.Session, error) { return a.sessions, nil }
+func (a *bareOnlyAdapter) Name() string { return "bare" }
+func (a *bareOnlyAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return a.sessions, nil
+}
 
 // --- Tests ---
 
