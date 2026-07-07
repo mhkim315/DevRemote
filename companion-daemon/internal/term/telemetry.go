@@ -27,7 +27,8 @@ type SessionTelemetry struct {
 	AgentKind       string              `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
 	AgentStatus     string              `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
 	AgentConfidence float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
-	AgentEvents     []AgentEvent        `json:"agentEvents,omitempty"`     // parsed agent events (Phase A5b+)
+	// Agent events flow through the existing Events field via
+	// TelemetryService.processSession → EventStore → Snapshot.
 	Stale           bool                `json:"stale,omitempty"`
 	LastSuccessAt   time.Time           `json:"lastSuccessAt,omitempty"`
 	LastError       string              `json:"lastError,omitempty"`
