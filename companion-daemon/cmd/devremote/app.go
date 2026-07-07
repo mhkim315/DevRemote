@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/watcher"
@@ -21,10 +22,11 @@ import (
 
 // Config holds immutable daemon configuration parsed from CLI flags.
 type Config struct {
-	OwnerUUID          string
-	SupabaseProjectRef string
-	InsecureLocalOnly  bool
-	EnableLocalPTY     bool // Phase 6: default-off feature flag
+	OwnerUUID            string
+	SupabaseProjectRef   string
+	InsecureLocalOnly    bool
+	EnableLocalPTY       bool // Phase 6: default-off feature flag
+	EnableAgentDetection bool // Phase A5: default-off agent detection bridge
 }
 
 // ── Test seam interfaces ──
@@ -169,7 +171,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}))
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	telemetry := term.NewTelemetryService(reg, events, links, notifier, nil)
+	var agentDetector term.AgentDetector
+	if cfg.EnableAgentDetection {
+		agentDetector = agent.NewTermAgentDetector()
+	}
+	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector)
 	h.Telemetry = telemetry
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
