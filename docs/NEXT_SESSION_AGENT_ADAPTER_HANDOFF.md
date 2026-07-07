@@ -28,12 +28,16 @@
   - Phase A5 Agent Backend Foundation accepted
   - Phase A6 Codex Backend Slice accepted
   - Phase A7 Agent Agnostic UX / Product Gate accepted
+  - Phase A8-prep Antigravity actual-log fixture collection accepted
 - A5a scoped acceptance reviewed commit: `c15659568`
 - A5a verifier document: `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
 - A6 backend acceptance verifier commit: `1fc12bf`
 - A6 backend acceptance document: `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
 - A7 product gate acceptance verifier commit: `108525a`
 - A7 product gate acceptance document: `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
+- A8-prep executor commit: `de3197dbc`
+- A8-prep scope document: `docs/AGENT_PHASE_A8_PREP_SCOPE.md`
+- A8 executor onboarding document: `docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md`
 - 핵심 결론:
   - tmux/cmux production adapter를 깨지 않고 LocalPTY까지 붙였다.
   - mobile은 terminal backend 이름 목록이 아니라 capability로 동작한다.
@@ -42,7 +46,8 @@
   - Claude backend foundation과 Codex backend slice가 accepted 됐다.
   - A6 ACCEPT는 Backend Slice Acceptance이며 Product Completion을 의미하지 않는다.
   - A7 ACCEPT는 Agent Agnostic UX/Product Gate 통과이며 release-complete를 의미하지 않는다.
-  - 다음 핵심은 실제 redacted fixture가 있는 제3 agent backend slice다.
+  - A8-prep는 Antigravity 실제 로그 fixture 수집으로 ACCEPT됐지만, A8 backend slice 완료는 아니다.
+  - 다음 핵심은 Antigravity production detector/resolver/parser/telemetry backend slice다.
 
 Phase 1~7의 의미:
 
@@ -62,16 +67,18 @@ Common AgentEvent, AgentStatus, AgentIdentity, and AgentApproval models.
 
 ## 반드시 먼저 읽을 파일
 
-1. `docs/AGENT_ADAPTER_LAYER_PLAN.md`
-2. `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
-3. `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
-4. `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
-5. `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
-6. `docs/ADAPTER_PHASE_7_ACCEPTANCE.md`
-7. `docs/08-phase7-adapter-ops.md`
-8. `docs/09-phase7-mobile-smoke.md`
-9. `docs/ADAPTER_EXPANSION_PLAN.md`
-10. `docs/ARCHITECTURE.md`
+1. `docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md`
+2. `docs/AGENT_ADAPTER_LAYER_PLAN.md`
+3. `docs/AGENT_PHASE_A8_PREP_SCOPE.md`
+4. `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+5. `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
+6. `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
+7. `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
+8. `docs/ADAPTER_PHASE_7_ACCEPTANCE.md`
+9. `docs/08-phase7-adapter-ops.md`
+10. `docs/09-phase7-mobile-smoke.md`
+11. `docs/ADAPTER_EXPANSION_PLAN.md`
+12. `docs/ARCHITECTURE.md`
 
 코드 확인용:
 
@@ -491,11 +498,15 @@ node_modules/.bin/tsc --noEmit
 ## 다음 대화에서 실행에이전트에게 줄 요청
 
 ```text
-108525a 이후 docs/AGENT_ADAPTER_LAYER_PLAN.md,
+de3197dbc 이후 docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md,
+docs/AGENT_ADAPTER_LAYER_PLAN.md,
 docs/NEXT_SESSION_AGENT_ADAPTER_HANDOFF.md,
+docs/AGENT_PHASE_A8_PREP_SCOPE.md,
 docs/AGENT_PHASE_A7_ACCEPTANCE.md를 읽고,
-Phase A8 Third Agent Backend Slice를 시작해줘.
-실제 redacted fixture가 없으면 구현하지 말고 A8-prep fixture inventory/redaction만 하고 커밋/푸시해줘.
+Phase A8 Third Agent Backend Slice implementation을 시작해줘.
+Antigravity 실제 redacted fixture는 de3197dbc에서 확보됐으니,
+production detector/resolver/parser/telemetry path를 common Agent contract로 연결해줘.
+구현 중 실제 production blocker가 확인되면 A8 완료로 포장하지 말고 blocker 문서만 커밋/푸시해줘.
 mobile/common vendor-specific behavior branch는 추가하지 마.
 ```
 
