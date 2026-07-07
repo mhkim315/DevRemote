@@ -24,6 +24,7 @@ func RunDetectorContract(t *testing.T, name string, df DetectorFactory, rf Resol
 func testDetectEmpty(t *testing.T, df DetectorFactory) {
 	d := df(t)
 	id := d.Detect(DetectionEvidence{})
+	assertConfidenceInvariant(t, id)
 	if id.Kind == "" {
 		t.Error("empty evidence: Kind is empty")
 	}
@@ -35,11 +36,9 @@ func testDetectEmpty(t *testing.T, df DetectorFactory) {
 func testDetectUnknown(t *testing.T, df DetectorFactory) {
 	d := df(t)
 	id := d.Detect(DetectionEvidence{ProcessName: "unknown_binary_xyz", CWD: "/tmp"})
+	assertConfidenceInvariant(t, id)
 	if id.Kind != "unknown" {
 		t.Errorf("unknown process: Kind=%q, want unknown", id.Kind)
-	}
-	if id.Confidence > 0.5 {
-		t.Errorf("unknown process: confidence %.2f should be <0.5", id.Confidence)
 	}
 }
 
@@ -49,24 +48,19 @@ func testDetectKnown(t *testing.T, df DetectorFactory, agent string) {
 		ProcessName: agent,
 		CWD:         "/Users/test/project",
 	})
+	assertConfidenceInvariant(t, id)
 	if id.Kind == "unknown" {
 		t.Errorf("known process %q: got unknown", agent)
 	}
-	// Known agent must have sufficiently high confidence.
 	if id.Confidence < 0.5 {
 		t.Errorf("known process %q: confidence %.2f < 0.5", agent, id.Confidence)
-	}
-	if id.Confidence < 0.5 && id.Kind != "unknown" {
-		t.Errorf("%q: confidence %.2f < 0.5 but Kind=%q (must be unknown when confidence < 0.5)", agent, id.Confidence, id.Kind)
 	}
 }
 
 func testDetectFalsePositive(t *testing.T, df DetectorFactory) {
 	d := df(t)
-	// Even if detector is tempted to guess "claude", low confidence must result in unknown.
-	id := d.Detect(DetectionEvidence{
-		ProcessName: "node", // node alone is not enough evidence
-	})
+	id := d.Detect(DetectionEvidence{ProcessName: "node"})
+	assertConfidenceInvariant(t, id)
 	if id.Kind != "unknown" {
 		t.Errorf("low-confidence process: Kind=%q, want unknown (false positive prevention)", id.Kind)
 	}
@@ -75,6 +69,7 @@ func testDetectFalsePositive(t *testing.T, df DetectorFactory) {
 func testDetectLowConf(t *testing.T, df DetectorFactory) {
 	d := df(t)
 	id := d.Detect(DetectionEvidence{ProcessName: "node"})
+	assertConfidenceInvariant(t, id)
 	if id.Confidence > 0.7 {
 		t.Errorf("node alone: confidence %.2f should be <0.7", id.Confidence)
 	}
@@ -82,11 +77,11 @@ func testDetectLowConf(t *testing.T, df DetectorFactory) {
 
 func testDetectManual(t *testing.T, df DetectorFactory) {
 	d := df(t)
-	// Manual link must override auto-detection.
 	id := d.Detect(DetectionEvidence{
 		ProcessName: "unknown_process",
 		ManualLink:  &ManualEvidence{AgentKind: "codex"},
 	})
+	assertConfidenceInvariant(t, id)
 	if id.Kind != "codex" {
 		t.Errorf("manual link: Kind=%q, want codex (manual must override)", id.Kind)
 	}
@@ -108,7 +103,6 @@ func testResolverNoLogs(t *testing.T, rf ResolverFactory) {
 
 func testResolverDegraded(t *testing.T, rf ResolverFactory) {
 	r := rf(t)
-	// Simulate a scenario where resolver is degraded (e.g. permission denied).
 	result, err := r.Resolve(DetectionEvidence{
 		CWD:         "/root",
 		ProcessName: "claude",
@@ -116,9 +110,13 @@ func testResolverDegraded(t *testing.T, rf ResolverFactory) {
 	if err != nil {
 		t.Errorf("degraded: unexpected error (should set Degraded, not return error): %v", err)
 	}
-	// Resolver may or may not set Degraded depending on implementation.
-	// The contract is: no error, Degraded flag conveys issues.
-	_ = result.Degraded
+	// Permission denied must set Degraded=true with diagnostics.
+	if !result.Degraded {
+		t.Error("degraded: Degraded=false on permission denied (want true)")
+	}
+	if len(result.Diagnostics) == 0 {
+		t.Error("degraded: Diagnostics is empty (want non-empty)")
+	}
 }
 
 func testDetectWithLogs(t *testing.T, df DetectorFactory, rf ResolverFactory) {
@@ -128,15 +126,43 @@ func testDetectWithLogs(t *testing.T, df DetectorFactory, rf ResolverFactory) {
 		ProcessName: "claude",
 		CWD:         "/Users/test/project",
 	})
+	// DisplayPath must be non-empty and must not contain raw home paths.
+	for _, lr := range result.Logs {
+		if lr.DisplayPath == "" {
+			t.Error("LogRef.DisplayPath is empty")
+		}
+		if stringsContain(lr.DisplayPath, "/Users/") {
+			t.Errorf("LogRef.DisplayPath contains raw home path: %s", lr.DisplayPath)
+		}
+	}
+
 	evidence := DetectionEvidence{
 		ProcessName: "claude",
 		CWD:         "/Users/test/project",
 		LogPaths:    result.Logs,
 	}
 	id := d.Detect(evidence)
+	assertConfidenceInvariant(t, id)
 	if id.Kind == "unknown" && len(result.Logs) > 0 {
 		t.Error("with logs + process name: still unknown")
 	}
+}
+
+// assertConfidenceInvariant enforces: confidence < 0.5 → Kind == "unknown".
+func assertConfidenceInvariant(t *testing.T, id AgentIdentity) {
+	t.Helper()
+	if id.Confidence < 0.5 && id.Kind != "unknown" {
+		t.Errorf("confidence invariant violated: confidence=%.2f < 0.5 but Kind=%q (must be unknown)", id.Confidence, id.Kind)
+	}
+}
+
+func stringsContain(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Mock implementations ---
