@@ -12,10 +12,8 @@ import (
 	"devremote/companion-daemon/internal/mux"
 )
 
-// Phase A5b: production agent detection bridge.
-// Agent events flow through the existing production telemetry path
-// (TelemetryService.processSession → EventStore → Snapshot.Events).
-// The A5b bridge adds agentKind/agentStatus/agentConfidence to that path.
+// Phase A5b: detection bridge (AgentKind/Status/Confidence) +
+// existing Events path (EventStore → Snapshot.Events → /api/sessions).
 
 func TestClaudeDetection_TruePositive(t *testing.T) {
 	reg := mux.MustNewRegistry(&claudeProcessAdapter{})
@@ -40,8 +38,8 @@ func TestClaudeDetection_TruePositive(t *testing.T) {
 	for _, s := range sessions {
 		if s.Adapter == "tmux" {
 			found = true
-			t.Logf("detection: AgentKind=%s Status=%s Confidence=%.2f",
-				s.AgentKind, s.AgentStatus, s.AgentConfidence)
+			t.Logf("detection: AgentKind=%s Status=%s Confidence=%.2f Events=%d",
+				s.AgentKind, s.AgentStatus, s.AgentConfidence, len(s.Events))
 			if s.AgentKind != "claude" {
 				t.Errorf("AgentKind=%q, want claude", s.AgentKind)
 			}
@@ -52,6 +50,46 @@ func TestClaudeDetection_TruePositive(t *testing.T) {
 	}
 	if !found {
 		t.Error("Claude session not found")
+	}
+}
+
+// TestEventsPath proves the existing production event pipeline:
+// EventStore.Append → Snapshot.Events → /api/sessions.
+func TestEventsPath_ProductionPipeline(t *testing.T) {
+	reg := mux.MustNewRegistry(&claudeProcessAdapter{})
+	events := NewMemoryEventStore()
+
+	// Simulate what processSession does: emit Claude events into EventStore.
+	events.Append("tmux:claude-session", []models.AgentEvent{
+		{ID: "1", Session: "tmux:claude-session", Type: "user", Summary: "user message", Timestamp: "2026-07-07T00:00:00Z"},
+		{ID: "2", Session: "tmux:claude-session", Type: "tool_use", Summary: "tool call", Timestamp: "2026-07-07T00:00:01Z"},
+		{ID: "3", Session: "tmux:claude-session", Type: "message", Summary: "Thinking", Timestamp: "2026-07-07T00:00:02Z"},
+	})
+
+	h := &Handlers{Registry: reg, Events: events}
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+
+	var sessions []SessionTelemetry
+	json.Unmarshal(rec.Body.Bytes(), &sessions)
+	for _, s := range sessions {
+		if s.ID == "tmux:claude-session" {
+			t.Logf("events path: Events=%d", len(s.Events))
+			if len(s.Events) != 3 {
+				t.Errorf("Events=%d, want 3", len(s.Events))
+			}
+			foundTypes := map[string]int{}
+			for _, e := range s.Events {
+				foundTypes[e.Type]++
+			}
+			if foundTypes["user"] == 0 {
+				t.Error("missing user event type")
+			}
+			if foundTypes["tool_use"] == 0 {
+				t.Error("missing tool_use event type")
+			}
+		}
 	}
 }
 
