@@ -1,8 +1,11 @@
 # Agent Adapter UX Release Gate Follow-ups
 
-This document tracks mandatory follow-ups that were intentionally split out of Phase A5.
+This document tracks mandatory follow-ups that were intentionally split out of Phase A5 and reaffirmed after Phase A6.
 
-Phase A5 is accepted as Agent Backend Foundation. The items below are not blockers for backend A6 parser expansion, but they are blockers for release/product-complete status.
+Phase A5 is accepted as Agent Backend Foundation.
+Phase A6 is accepted as Codex Backend Slice.
+
+Neither acceptance means product completion. The items below are blockers for release/product-complete status.
 
 ## Gate 1 — Degraded diagnostics UX
 
@@ -47,9 +50,59 @@ Still required:
 - ensure unknown future agents do not crash rendering;
 - ensure optional agent fields are safe when absent.
 
-## Gate 3 — A6 must preserve A5 contracts
+## Gate 3 — Agent Agnostic UX compatibility
 
-Status: **MANDATORY FOR A6**
+Status: **MANDATORY FOR A7**
+
+A7 must close the product-boundary gap left after A6 Backend Slice acceptance.
+
+Required proof:
+
+- unknown `AgentKind` graceful rendering;
+- unknown `AgentStatus` graceful rendering;
+- degraded state visualization;
+- schema evolution compatibility;
+- no vendor-specific branching in mobile behavior;
+- backend contract unchanged when future agent kinds appear.
+
+Required fixture/test cases:
+
+- known agent with known status;
+- unknown/future agent kind, for example `future_agent`;
+- unknown status, for example `blocked_by_future_runtime`;
+- missing optional agent fields:
+  - no `agentKind`;
+  - no `agentStatus`;
+  - no `agentConfidence`;
+  - no `events`;
+- unknown event type;
+- degraded parser/diagnostic state.
+
+Status visualization rule:
+
+```text
+Status UI represents the current state, not the vendor.
+```
+
+Therefore:
+
+- `agentStatus` may influence badge/color/copy;
+- `agentKind` may influence a neutral display label only;
+- `agentKind` must not decide approval CTA, degraded copy, or session availability.
+
+Rejected patterns:
+
+```text
+if agentKind == "claude" { ... }
+if agentKind == "codex" { ... }
+switch agentKind { case "gemini": ... }
+```
+
+Those patterns are only acceptable inside agent-specific parser/detector registration code, not common/mobile UX behavior.
+
+## Gate 4 — A6 must preserve A5 contracts
+
+Status: **CLOSED FOR A6 BACKEND ACCEPTANCE / KEEP AS REGRESSION**
 
 A6 Codex/GPT backend expansion must:
 
@@ -66,8 +119,13 @@ Minimum A6 regression checks:
 - `/api/sessions.Events` exposes common event types for the new agent;
 - no new mobile name branch is introduced.
 
+Closure:
+
+- A6 backend acceptance is documented in `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`.
+- Keep these checks as regression requirements for A7 and later.
+
 ## Release rule
 
-Backend A6 may proceed before these gates are fully closed.
+A6 backend acceptance may stand before these gates are fully closed.
 
 Product/release-complete status may not be claimed until all mandatory gates are closed or explicitly replaced by an accepted product decision.

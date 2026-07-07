@@ -25,14 +25,20 @@
   - Phase A3 accepted
   - Phase A4 accepted
   - Phase A5a scoped production detection bridge accepted
+  - Phase A5 Agent Backend Foundation accepted
+  - Phase A6 Codex Backend Slice accepted
 - A5a scoped acceptance reviewed commit: `c15659568`
 - A5a verifier document: `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+- A6 backend acceptance verifier commit: `1fc12bf`
+- A6 backend acceptance document: `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
 - 핵심 결론:
   - tmux/cmux production adapter를 깨지 않고 LocalPTY까지 붙였다.
   - mobile은 terminal backend 이름 목록이 아니라 capability로 동작한다.
   - Phase 7은 운영/UX/진단 정리까지 ACCEPT됐다.
   - Claude process evidence가 production detector를 거쳐 `/api/sessions` agent fields로 흐르는 것은 증명됐다.
-  - 원래 A5 full vertical slice 중 parser/event/approval/mobile/degraded parity는 아직 남아 있으며 Phase A5b로 이동했다.
+  - Claude backend foundation과 Codex backend slice가 accepted 됐다.
+  - A6 ACCEPT는 Backend Slice Acceptance이며 Product Completion을 의미하지 않는다.
+  - 남은 핵심은 Claude/Codex 추가 구현이 아니라 Agent Agnostic UX/Product Gate다.
 
 Phase 1~7의 의미:
 
@@ -99,15 +105,16 @@ Agent Adapter 담당:
 
 ## 실행에이전트가 시작할 작업
 
-### 다음 작업: Phase A6 — Codex/GPT Backend Expansion
+### 다음 작업: Phase A7 — Agent Agnostic UX / Product Gate
 
-A5는 **Agent Backend Foundation**으로 종료됐다.
+A5는 **Agent Backend Foundation**으로 종료됐고, A6는 **Codex Backend Slice**로 accepted 됐다.
 
 근거:
 
 - `docs/AGENT_PHASE_A5_BACKEND_FOUNDATION_ACCEPTANCE.md`
 - `docs/AGENT_PHASE_A5B_BACKEND_ACCEPTANCE.md`
 - `docs/AGENT_PHASE_A5B_DEGRADED_FOLLOWUP_REVIEW.md`
+- `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
 
 A5 accepted backend contract:
 
@@ -124,61 +131,98 @@ A5 accepted backend contract:
 11. resolver context propagation;
 12. backend regression pass.
 
+A6 accepted backend contract:
+
+1. Codex parser/detector/resolver contract;
+2. Codex production telemetry path;
+3. `/api/sessions.Events` common event boundary;
+4. Codex `AgentKind == "codex"`;
+5. Codex parser-derived `AgentStatus == "waiting_approval"`;
+6. Codex `AgentConfidence >= 0.5`;
+7. composite production detector bridge;
+8. Claude A5 regression preservation;
+9. mobile no-name-branch smoke.
+
+A7 목표:
+
+1. 새 real agent를 추가하지 않는다.
+2. Claude/Codex가 단지 예시일 뿐임을 UX/product boundary에서 증명한다.
+3. unknown `AgentKind`가 등장해도 mobile/backend가 수정 없이 안전하게 동작하게 한다.
+4. unknown `AgentStatus`가 등장해도 conservative fallback으로 표시한다.
+5. degraded parser/diagnostic state가 no session, terminal failure, no activity와 구분되게 한다.
+6. schema evolution compatibility를 검증한다.
+7. mobile에 vendor-specific behavior branch를 추가하지 않는다.
+
 해야 할 일:
 
-1. Codex/GPT 실제 로그 위치와 fixture를 확정한다.
-2. Codex/GPT parser를 common parser contract에 등록한다.
-3. Codex/GPT output을 common `AgentEvent`로 변환한다.
-4. `/api/sessions.Events`에서 Codex/GPT events가 Claude와 같은 common contract로 노출되게 한다.
-5. `agentStatus`는 A5에서 확정된 common `AgentStatus` 경로를 재사용한다.
-6. Claude production parser를 Codex/GPT 때문에 수정하지 않는다. shared contract bug fix만 허용한다.
-7. A5 regression tests를 계속 통과시킨다.
+1. `/api/sessions` 또는 typed fixture에 future agent sample을 추가한다.
+   - 예: `agentKind: "future_agent"` 또는 `"gemini"` 같은 unknown value.
+   - 실제 Gemini/Qwen/OpenAI Responses parser 구현은 하지 않는다.
+2. unknown `agentStatus` fixture를 추가한다.
+3. missing optional fields fixture를 추가한다.
+   - `agentKind` 없음;
+   - `agentStatus` 없음;
+   - `agentConfidence` 없음;
+   - `events` 없음 또는 빈 배열.
+4. unknown event type fixture를 추가한다.
+5. degraded state fixture/test를 추가한다.
+6. mobile renderer가 위 케이스를 crash 없이 표시하도록 정리한다.
+7. status visualization은 agent 종류가 아니라 common status만 기준으로 동작하게 한다.
+8. automated grep/test로 vendor-specific branching 금지를 고정한다.
 
 금지:
 
 - A5 common event/status path를 우회하지 않는다.
-- Codex/GPT를 위해 Claude 전용 parser나 mobile behavior를 깨지 않는다.
 - mobile에 `if agent == "claude"` / `if agent == "codex"` 같은 behavior branch를 추가하지 않는다.
-- test-only parser/detector가 production evidence나 production event를 대신 만들면 안 된다.
+- mobile에 Gemini/Qwen/OpenAI Responses/Antigravity 같은 future vendor branch를 미리 추가하지 않는다.
+- status visualization을 agent 종류와 결합하지 않는다.
+- unknown agent를 fatal/unsupported로 취급해 terminal session을 숨기지 않는다.
 - parser failure를 terminal session failure로 전파하면 안 된다.
 - raw prompt/token/path/code를 API, mobile, push, diagnostic에 노출하면 안 된다.
+- backend contract를 A7에서 변경하지 않는다. 필요하면 먼저 문서화하고 검증 에이전트 판정을 받아야 한다.
 
 권장 커밋 메시지:
 
 ```text
-feat: add agent phase A6 codex backend parser
+feat: agent phase A7 agnostic ux compatibility
 ```
 
-Phase A6 완료 보고 형식:
+Phase A7 완료 보고 형식:
 
 ```text
-Phase A6 완료 — <commit>
+Phase A7 완료 — <commit>
 
 주요 변경:
 - ...
 
 검증 포인트:
-- Codex/GPT parser contract 확인
-- /api/sessions.Events common event boundary 확인
-- Claude A5 backend proof regression 통과
-- mobile 이름 기반 behavior branch 없음 확인
+- Unknown AgentKind graceful rendering
+- Unknown AgentStatus graceful rendering
+- Degraded state visualization
+- Schema evolution compatibility
+- Mobile vendor-specific branching 없음
+- Backend contract 변경 없이 신규 Agent 추가 가능성 확인
 ```
 
 ### Mandatory release-gate follow-ups
 
-A5 종료가 아래 항목의 완료를 의미하지 않는다.
+A5/A6 종료가 아래 항목의 완료를 의미하지 않는다.
 
 반드시 별도 release gate로 추적한다:
 
 - degraded diagnostics UX;
 - degraded status visualization;
 - mobile rendering/schema proof for `waiting_approval`, `approval_requested`, degraded, unknown states.
+- unknown future `AgentKind` graceful rendering;
+- unknown future `AgentStatus` graceful rendering;
+- schema evolution compatibility.
 
 추적 문서:
 
 - `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
 
-Backend A6는 진행 가능하지만, product/release-complete 상태는 위 follow-up이 닫히기 전까지 선언하지 않는다.
+A7의 목적은 위 follow-up 중 Agent Agnostic UX/Product Gate를 닫는 것이다.
+Product/release-complete 상태는 A7 acceptance와 이후 approval/diagnostics gate가 닫히기 전까지 선언하지 않는다.
 
 ## Phase별 실행 요약
 
@@ -275,33 +319,47 @@ Antigravity: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcrip
 - 실제 종료 판정은 `Phase A5 — Agent Backend Foundation`을 따른다.
 - mobile/degraded UX는 A5 blocker가 아니라 mandatory release gate로 이관됐다.
 
-### Phase A6 — Codex/GPT Vertical Slice
+### Phase A6 — Codex Backend Slice
 
-- A5 Backend Foundation 완료 후 진행.
-- Claude parser 수정 없이 Codex/GPT adapter 추가.
-- 같은 mobile Activity UI 사용.
-- 이 Phase가 Agent Adapter Layer의 실제 추상화 검증점이다.
+- 완료.
+- accepted scope는 backend slice다.
+- product/mobile UX completion이 아니다.
+- Claude parser 수정 없이 Codex backend 추가.
+- `/api/sessions`에서 Codex events, `AgentKind`, `AgentStatus`, `AgentConfidence` 검증.
 
-### Phase A7 — Third Agent / Antigravity Slice
+검증 문서:
+
+- `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
+
+### Phase A7 — Agent Agnostic UX / Product Gate
+
+- 다음 작업.
+- 새 real agent 추가 금지.
+- unknown `AgentKind`, unknown `AgentStatus`, degraded state, missing optional fields, unknown event type을 graceful하게 렌더링.
+- status visualization은 agent 종류가 아니라 현재 상태를 표현.
+- mobile vendor-specific branching 추가 금지.
+
+### Phase A8 — Third Agent Backend Slice
 
 - Antigravity fixture가 충분하면 Antigravity.
-- 아니면 Gemini/OpenCode/Aider 등 실제 fixture 확보 가능한 agent.
+- 아니면 Gemini/Qwen/OpenAI Responses/OpenCode/Aider 등 실제 fixture 확보 가능한 agent.
 - structured log가 없으면 screen/process fallback과 low confidence UX 검증.
+- A7 acceptance 이후에만 진행.
 
-### Phase A8 — Approval UX
+### Phase A9 — Approval UX
 
 - Common AgentApproval 기반 CTA.
 - 초기 approve/reject는 terminal input fallback.
 - native approval API 제외.
 - sensitive command 전문 push 금지.
 
-### Phase A9 — Agent UX
+### Phase A10 — Agent UX Polish / Release Completion
 
 - Session card에 terminal backend와 agent identity 분리 표시.
 - Activity unavailable, no activity, unknown agent, degraded parser 구분.
 - behavior는 common status/event/capability 기반.
 
-### Phase A10 — Diagnostics / Doctor
+### Phase A11 — Diagnostics / Doctor
 
 - `pokit doctor agents` 또는 동등한 진단.
 - detector/log resolver/parser version/debug output.
@@ -403,18 +461,21 @@ node_modules/.bin/tsc --noEmit
 ## 다음 대화에서 실행에이전트에게 줄 요청
 
 ```text
-b163c1b 이후 docs/AGENT_ADAPTER_LAYER_PLAN.md와
-docs/NEXT_SESSION_AGENT_ADAPTER_HANDOFF.md를 읽고,
-Phase A0부터 시작해줘. 구현하지 말고 계획/범위 문서 검증과 보완만 하고
-커밋/푸시해줘.
+1fc12bf 이후 docs/AGENT_ADAPTER_LAYER_PLAN.md,
+docs/NEXT_SESSION_AGENT_ADAPTER_HANDOFF.md,
+docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md를 읽고,
+Phase A7 Agent Agnostic UX / Product Gate를 시작해줘.
+새 real agent parser는 추가하지 말고 unknown AgentKind/Status,
+degraded state, schema compatibility, mobile vendor-branch 금지를 검증/구현하고 커밋/푸시해줘.
 ```
 
 검증에이전트에게 줄 요청:
 
 ```text
-<executor-commit> 기준으로 Agent Adapter Phase A0을 검증해줘.
-구현하지 말고 docs/AGENT_ADAPTER_LAYER_PLAN.md와
-docs/NEXT_SESSION_AGENT_ADAPTER_HANDOFF.md의 범위/순서/acceptance만 판정해줘.
+<executor-commit> 기준으로 Agent Adapter Phase A7을 검증해줘.
+구현하지 말고 Agent Agnostic UX / Product Gate acceptance만 엄격히 판정해줘.
+특히 unknown AgentKind/Status graceful rendering, degraded visualization,
+schema compatibility, mobile vendor-specific branching 금지를 확인해줘.
 ```
 
 ## 현재 판단
@@ -432,11 +493,13 @@ A0 Scope
 → A4 Detector/resolver
 → A5a Claude detection bridge
 → A5b Claude parser/event/UX
-→ A6 Codex/GPT
-→ A7 Third agent
-→ A8 Approval UX
-→ A9 Agent UX
-→ A10 Diagnostics
+→ A6 Codex backend slice
+→ A7 Agent Agnostic UX / Product Gate
+→ A8 Third agent backend slice
+→ A9 Approval UX
+→ A10 Agent UX polish / release completion
+→ A11 Diagnostics
 ```
 
-첫 번째 실제 구현 고비는 A1 fixture/redaction이고, 실제 추상화 고비는 A6 두 번째 agent 추가다.
+첫 번째 실제 구현 고비는 A1 fixture/redaction이고, backend 추상화 고비는 A6 두 번째 agent 추가다.
+이후 제품화 고비는 A7 Agent Agnostic UX다. A7에서 vendor-specific branch가 생기면 이후 Gemini/Qwen/OpenAI Responses 추가 때 구조가 다시 굳어진다.
