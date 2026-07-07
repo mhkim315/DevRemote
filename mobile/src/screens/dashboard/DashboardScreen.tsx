@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, FlatList, TouchableOpacity, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, TouchableOpacity, Alert, Platform, ScrollView } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { listSessions, createOrUpdateSession, deleteSession } from '../../lib/client';
 import { useConnection } from '../../lib/connection';
+import { isDegraded } from '../../lib/agentDisplay';
 
 interface Props {
   onSelectAgent: (sessionName: string) => void;
@@ -36,32 +37,26 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   };
 
   useEffect(() => {
-    fetchSessions(); // initial fetch
-
-    // Poll every 1.5 seconds to get real-time state for animations
+    fetchSessions();
     const interval = setInterval(fetchSessions, 1500);
     return () => clearInterval(interval);
   }, []);
 
   const handleSaveProfile = async (id: string, runner: string, color: string) => {
     const isEdit = !!editSession;
-
-    // Optimistic Update
     setSessions(prev => {
       if (isEdit) {
         return prev.map(s => s.id === id ? { ...s, runner, runnerColor: color } : s);
       } else {
-        return [...prev, { id, state: 'idle', load: 0, runner, runnerColor: color }];
+        return [...prev, { id, state: 'idle' as const, load: 0, runner, runnerColor: color }];
       }
     });
     setModalVisible(false);
     setEditSession(null);
-
     try {
       await createOrUpdateSession(id, runner, color, token);
       fetchSessions();
     } catch (e) {
-      // Revert optimism on error would be good, but fetchSessions poll will overwrite it anyway
       Alert.alert('Error', 'Failed to save agent profile');
       fetchSessions();
     }
@@ -78,13 +73,56 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     }
   };
 
-  const dataWithAdd = [...sessions, { isAddBtn: true, id: 'add-btn' }];
-
-  // Phase A9: use structured approvals.
-  const approvalsRequired = sessions.flatMap(s =>
+  // P1a: section grouping.
+  const pendingApprovals = sessions.flatMap(s =>
     (s.approvals || [])
       .filter(a => a.status === 'pending')
       .map(a => ({ sessionId: s.id, approval: a }))
+  );
+
+  const sessionIdsWithPending = new Set(pendingApprovals.map(p => p.sessionId));
+
+  const isObserveOnly = (s: SessionTelemetry): boolean => {
+    // observe-only: no live_stream capability (can't open terminal).
+    return !!(s.capabilities && !s.capabilities.includes('live_stream'));
+  };
+
+  const needsAttention = sessions.filter(s =>
+    sessionIdsWithPending.has(s.id) || s.state === 'waiting'
+  );
+
+  const running = sessions.filter(s =>
+    !sessionIdsWithPending.has(s.id) &&
+    (s.state === 'working' || s.state === 'thinking')
+  );
+
+  const recentlyCompleted = sessions.filter(s =>
+    !sessionIdsWithPending.has(s.id) &&
+    s.state !== 'working' && s.state !== 'thinking' && s.state !== 'waiting' &&
+    !isDegraded(s.agentConfidence, s.agentKind) &&
+    !isObserveOnly(s)
+  );
+
+  const degradedOrViewOnly = sessions.filter(s =>
+    !sessionIdsWithPending.has(s.id) &&
+    s.state !== 'waiting' &&
+    (isDegraded(s.agentConfidence, s.agentKind) || isObserveOnly(s))
+  );
+
+  const cardForSession = (s: SessionTelemetry) => (
+    <AgentCard
+      key={s.id}
+      session={s}
+      onPress={() => onSelectAgent(s.id)}
+      onSettings={() => { setEditSession(s); setModalVisible(true); }}
+    />
+  );
+
+  const sectionHeader = (title: string, emoji: string, color: string) => (
+    <View style={[styles.sectionHeader, { borderLeftColor: color }]}>
+      <Text style={styles.sectionEmoji}>{emoji}</Text>
+      <Text style={[styles.sectionTitle, { color }]}>{title}</Text>
+    </View>
   );
 
   return (
@@ -92,9 +130,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       <View style={styles.header}>
         <Text style={styles.headerTitle}>POKIT AGENTS</Text>
         <View style={{flexDirection:'row', gap:6}}>
-          <TouchableOpacity onPress={async () => {
-            await disconnect();
-          }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
+          <TouchableOpacity onPress={async () => { await disconnect(); }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
             <Text style={[styles.snippetBtnText, {color: '#f85149'}]}>↻ RESCAN</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={onSnippets} style={styles.snippetBtn}>
@@ -103,52 +139,70 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         </View>
       </View>
 
-      <View style={styles.content}>
-        {approvalsRequired.map(({ sessionId, approval }) => (
-          <ApprovalCard
-            key={`approval-${approval.id}`}
-            sessionId={sessionId}
-            approval={approval}
-            token={token}
-            onResolved={fetchSessions}
-          />
-        ))}
-
-        {loading ? (
-          <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
-        ) : (
-          <FlatList
-            data={dataWithAdd}
-            keyExtractor={(item) => item.id}
-            numColumns={2}
-            contentContainerStyle={styles.gridContainer}
-            renderItem={({ item }) => {
-              if ((item as any).isAddBtn) {
-                return (
-                  <View style={{ width: '50%', padding: 6 }}>
-                    <TouchableOpacity 
-                      style={styles.addCard} 
-                      onPress={() => { setEditSession(null); setModalVisible(true); }}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.addCardPlus}>+</Text>
-                      <Text style={styles.addCardText}>NEW AGENT</Text>
-                    </TouchableOpacity>
-                  </View>
-                );
-              }
-              const s = item as SessionTelemetry;
-              return (
-                <AgentCard
-                  session={s}
-                  onPress={() => onSelectAgent(s.id)}
-                  onSettings={() => { setEditSession(s); setModalVisible(true); }}
+      {loading ? (
+        <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
+      ) : (
+        <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
+          {/* P1a: Needs Attention — always first */}
+          {pendingApprovals.length > 0 && (
+            <View style={styles.section}>
+              {sectionHeader('NEEDS ATTENTION', '⚠', '#f85149')}
+              {pendingApprovals.map(({ sessionId, approval }) => (
+                <ApprovalCard
+                  key={`approval-${approval.id}`}
+                  sessionId={sessionId}
+                  approval={approval}
+                  token={token}
+                  onResolved={fetchSessions}
                 />
-              );
-            }}
-          />
-        )}
-      </View>
+              ))}
+              {needsAttention.filter(s => !sessionIdsWithPending.has(s.id)).map(cardForSession)}
+            </View>
+          )}
+
+          {/* Running */}
+          {running.length > 0 && (
+            <View style={styles.section}>
+              {sectionHeader('RUNNING', '🟢', '#39d353')}
+              <View style={styles.cardGrid}>
+                {running.map(cardForSession)}
+              </View>
+            </View>
+          )}
+
+          {/* Recently Completed */}
+          {recentlyCompleted.length > 0 && (
+            <View style={styles.section}>
+              {sectionHeader('RECENTLY COMPLETED', '✅', '#8b949e')}
+              <View style={styles.cardGrid}>
+                {recentlyCompleted.map(cardForSession)}
+              </View>
+            </View>
+          )}
+
+          {/* Degraded / View Only */}
+          {degradedOrViewOnly.length > 0 && (
+            <View style={styles.section}>
+              {sectionHeader('DEGRADED / VIEW ONLY', '⚡', '#666')}
+              <View style={styles.cardGrid}>
+                {degradedOrViewOnly.map(cardForSession)}
+              </View>
+            </View>
+          )}
+
+          {/* Add button — always at bottom */}
+          <View style={styles.section}>
+            <TouchableOpacity
+              style={styles.addCard}
+              onPress={() => { setEditSession(null); setModalVisible(true); }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.addCardPlus}>+</Text>
+              <Text style={styles.addCardText}>NEW AGENT</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      )}
 
       <AgentProfileModal
         visible={modalVisible}
@@ -173,14 +227,26 @@ const styles = StyleSheet.create({
   snippetBtn: { backgroundColor: 'transparent', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 32, borderWidth: 1, borderColor: '#45EBE9' },
   snippetBtnText: { color: '#ffffff', fontSize: 12, fontWeight: '700', letterSpacing: 0.96 },
   content: { flex: 1 },
-  gridContainer: {
-    padding: 12,
+  scrollContent: { paddingBottom: 24 },
+  section: { marginBottom: 4 },
+  sectionHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingVertical: 10,
+    marginTop: 8, marginBottom: 4,
+    borderLeftWidth: 3,
+  },
+  sectionEmoji: { fontSize: 14, marginRight: 8 },
+  sectionTitle: { fontSize: 13, fontWeight: '800', letterSpacing: 1.2 },
+  cardGrid: {
+    flexDirection: 'row', flexWrap: 'wrap',
+    paddingHorizontal: 12,
   },
   addCard: {
+    marginHorizontal: 12, marginTop: 12,
     padding: 16, borderRadius: 16,
     borderWidth: 1.5, borderColor: '#1E91B3', borderStyle: 'dashed',
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    minHeight: 140,
+    alignItems: 'center', justifyContent: 'center',
+    minHeight: 80,
     backgroundColor: 'transparent'
   },
   addCardPlus: { fontSize: 36, color: '#1E91B3', fontWeight: '300' },

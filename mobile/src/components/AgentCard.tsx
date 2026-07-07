@@ -143,9 +143,14 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
           {session.state === 'working' && (
             <Text style={styles.loadText}>{session.load}%</Text>
           )}
-          {/* Phase 2: capability-driven indicator — no backend name branching */}
-          {session.capabilities && session.capabilities.length > 0 && (
-            <Text style={styles.capTag}>{session.capabilities.includes('live_stream') ? '▶' : '■'}</Text>
+          {/* P1a: observe-only indicator — no live_stream capability. */}
+          {session.capabilities && !session.capabilities.includes('live_stream') && (
+            <View style={styles.viewOnlyBadge}>
+              <Text style={styles.viewOnlyText}>VIEW ONLY</Text>
+            </View>
+          )}
+          {session.capabilities && session.capabilities.includes('live_stream') && (
+            <Text style={styles.capTag}>▶</Text>
           )}
         </View>
       </TouchableOpacity>
@@ -175,5 +180,7 @@ const styles = StyleSheet.create({
   approvalBadgeText: { fontSize: 9, color: '#ffffff', fontWeight: 'bold' },
   mirrorBadge: { backgroundColor: '#1f6feb', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, marginRight: 8, borderWidth: 1, borderColor: '#58a6ff' },
     adapterTag: { fontSize: 9, color: '#45EBE9', fontWeight: '600', marginRight: 4 },
-  capTag: { fontSize: 10, color: '#1E91B3', marginLeft: 6 },
+  viewOnlyBadge: { backgroundColor: '#2C2C2E', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#8b949e' },
+	  viewOnlyText: { fontSize: 8, color: '#8b949e', fontWeight: '700', letterSpacing: 0.5 },
+	  capTag: { fontSize: 10, color: '#1E91B3', marginLeft: 6 },
 });
