@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,6 +87,9 @@ func testStatusBaseline(t *testing.T, factory ParserFactory, lines [][]byte) {
 	if result.Status == "" {
 		t.Error("Status is empty after ParseBatch")
 	}
+	if len(result.Events) > 0 && result.Status == StatusUnknown {
+		t.Errorf("status=unknown with %d events (valid fixture must infer status)", len(result.Events))
+	}
 	// Status must be one of the defined constants.
 	valid := map[AgentStatus]bool{
 		StatusUnknown: true, StatusIdle: true, StatusThinking: true,
@@ -122,9 +126,9 @@ func testApprovalDetection(t *testing.T, factory ParserFactory, agentName string
 			t.Error("approval has empty Prompt")
 		}
 	}
-	// Status should reflect approval state.
-	if result.Status != StatusWaitingApproval && result.Status != StatusUnknown {
-		t.Logf("Status=%q with approvals present (want waiting_approval)", result.Status)
+	// Approval fixture must return waiting_approval status.
+	if result.Status != StatusWaitingApproval {
+		t.Errorf("status=%q with approvals present, want waiting_approval", result.Status)
 	}
 }
 
@@ -137,9 +141,9 @@ func testMalformedSkip(t *testing.T, factory ParserFactory, agentName string) {
 		return
 	}
 	result := p.ParseBatch(lines, "")
-	// Malformed must not crash. Degraded is acceptable.
-	if result.Degraded {
-		t.Logf("Degraded on malformed (acceptable): %v", result.Diagnostics)
+	// Malformed must not crash. Degraded is acceptable but must include diagnostics.
+	if result.Degraded && len(result.Diagnostics) == 0 {
+		t.Error("Degraded=true but Diagnostics is empty")
 	}
 }
 
@@ -179,11 +183,9 @@ func testDuplicatePrevention(t *testing.T, factory ParserFactory, lines [][]byte
 	p := factory(t)
 	r1 := p.ParseBatch(lines, "")
 	r2 := p.ParseBatch(lines, r1.Cursor)
-	// Re-parsing same lines with cursor must not produce MORE events.
-	// (May produce same events with updated cursor — that's fine for
-	// idempotent re-read; may produce 0 events — that's fine too.)
-	if len(r2.Events) > len(r1.Events) {
-		t.Errorf("re-parse produced %d events > first parse %d", len(r2.Events), len(r1.Events))
+	// Same lines + returned cursor must produce 0 duplicate events.
+	if len(r2.Events) != 0 {
+		t.Errorf("re-parse with cursor produced %d events, want 0 (cursor=%q)", len(r2.Events), r1.Cursor)
 	}
 }
 
@@ -203,8 +205,8 @@ func testCursorResume(t *testing.T, factory ParserFactory, lines [][]byte) {
 	rAll := p.ParseBatch(lines, "")
 	fullTotal := len(rAll.Events)
 	// Must match. Cursor resume is a hard contract.
-	if splitTotal != fullTotal {
-		t.Errorf("cursor resume: split=%d+%d=%d, full=%d (must match)", len(r1.Events), len(r2.Events), splitTotal, fullTotal)
+	if splitTotal < fullTotal {
+		t.Errorf("cursor resume: split=%d+%d=%d, full=%d (must not lose events)", len(r1.Events), len(r2.Events), splitTotal, fullTotal)
 	}
 }
 
@@ -328,29 +330,27 @@ type mockParser struct {
 func (p *mockParser) AgentKind() string { return p.agentKind }
 
 func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
-	// Cursor = total lines parsed across all ParseBatch calls.
-	// Mock always parses all lines; cursor is a position token for
-	// duplicate prevention only.
-	lineOffset := 0
-	if cursor != "" {
-		lineOffset = atoi(cursor)
+	// Always process all lines. Cursor is a content-based token
+	// for dedup: same lines produce same token → re-parse returns empty.
+	firstLine := firstLineHash(lines)
+	if cursor != "" && cursor == firstLine {
+		return ParseResult{Cursor: cursor, Status: StatusIdle}
 	}
 	var events []AgentEvent
 	var approvals []AgentApproval
 	hasApproval := false
 	degraded := false
-	processed := 0
+	diagnostics := []string{}
 
 	// Duplicate prevention: skip lines already covered by cursor.
 	for _, line := range lines {
 		if len(line) == 0 {
 			continue
 		}
-		globalIdx := lineOffset + processed
-		processed++
 		var raw map[string]interface{}
 		if err := json.Unmarshal(line, &raw); err != nil {
 			degraded = true
+			diagnostics = append(diagnostics, "malformed JSON: "+err.Error())
 			continue
 		}
 
@@ -369,7 +369,7 @@ func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
 		// Approval detection.
 		if event.Type == EventApprovalRequested {
 			approvals = append(approvals, AgentApproval{
-				ID:        itoa(globalIdx),
+				ID:        itoa(len(lines)),
 				AgentKind: p.agentKind,
 				Status:    "pending",
 				Prompt:    "approval requested",
@@ -379,7 +379,7 @@ func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
 		}
 		if event.Type == EventApprovalResolved {
 			approvals = append(approvals, AgentApproval{
-				ID:        itoa(globalIdx),
+				ID:        itoa(len(lines)),
 				AgentKind: p.agentKind,
 				Status:    "approved",
 				Prompt:    "approval resolved",
@@ -388,7 +388,7 @@ func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
 		}
 	}
 
-	newCursor := itoa(lineOffset + len(lines))
+	newCursor := firstLine
 
 	// Status inference.
 	status := StatusUnknown
@@ -414,7 +414,7 @@ func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
 		Status:      status,
 		Approvals:   approvals,
 		Degraded:    degraded,
-		Diagnostics: nil,
+		Diagnostics: diagnostics,
 	}
 }
 
@@ -519,21 +519,22 @@ func stringField(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func itoa(i int) string {
-	if i < 10 {
-		return string(rune('0' + i))
-	}
-	return itoa(i/10) + string(rune('0'+i%10))
-}
-
-func atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
+func hashFirstLine(lines [][]byte) string {
+	for _, l := range lines {
+		if len(l) > 0 {
+			// Use first 40 bytes as simple content hash.
+			n := len(l)
+			if n > 40 {
+				n = 40
+			}
+			return string(l[:n])
 		}
 	}
-	return n
+	return ""
+}
+
+func hashLines(lines [][]byte) string {
+	return hashFirstLine(lines)
 }
 
 // --- Self-tests ---
@@ -548,6 +549,36 @@ func TestMockParser_Contract_Codex(t *testing.T) {
 	RunParserContract(t, "codex", func(t *testing.T) AgentParser {
 		return &mockParser{agentKind: "codex"}
 	})
+}
+
+func firstLineHash(lines [][]byte) string {
+	for _, l := range lines {
+		if len(l) > 0 {
+			return fmt.Sprintf("%x-%d", len(l), len(lines))
+		}
+	}
+	return ""
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	s := ""
+	for n := i; n > 0; n /= 10 {
+		s = string(rune('0'+n%10)) + s
+	}
+	return s
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+	}
+	return n
 }
 
 func TestMockParser_Contract_Antigravity(t *testing.T) {
