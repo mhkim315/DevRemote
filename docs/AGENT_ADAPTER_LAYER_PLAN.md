@@ -744,12 +744,48 @@ Redaction 규칙:
 - request-time `Snapshot()`에서 unbounded `ProcessInfo(context.Background())`를 직접 호출하지 않도록
   telemetry loop cache 또는 timeout context로 정리한다.
 
-### Phase A5b — Claude Parser/Event/UX Vertical Slice
+### Phase A5 — Agent Backend Foundation
+
+상태: **accepted**
+
+검증 문서:
+
+- `docs/AGENT_PHASE_A5_BACKEND_FOUNDATION_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A5B_BACKEND_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A5B_DEGRADED_FOLLOWUP_REVIEW.md`
+
+Accepted scope:
+
+- production detection bridge;
+- production parser path;
+- common `AgentEvent` canonicalization;
+- `/api/sessions.Events` product boundary;
+- `user_message`;
+- `thinking`;
+- `tool_call_started`;
+- `approval_requested`;
+- parser-derived `agentStatus=waiting_approval`;
+- malformed log survival;
+- resolver context propagation;
+- backend regression pass.
+
+A5는 Agent Backend Foundation으로 종료한다.
+
+A5가 완료했다고 주장하지 않는 항목:
+
+- degraded diagnostics UX;
+- degraded status visualization;
+- mobile rendering/schema proof.
+
+이 항목들은 `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`의 mandatory release gate로 이관한다.
+
+### Phase A5b — Historical Claude Parser/Event/UX Vertical Slice
 
 목표:
 
-- A5a detection bridge 위에 Claude parser/resolver/event/mobile UX를 연결해 원래 A5 vertical slice를 완료한다.
-- 이 Phase의 목적은 Claude 완성도가 아니라 Agent Adapter pipeline의 실제 end-to-end semantics를 증명하는 것이다.
+- 이 섹션은 원래 vertical-slice 계획의 historical context다.
+- 최종 A5 종료 범위는 위 `Phase A5 — Agent Backend Foundation`을 따른다.
+- degraded/mobile UX는 mandatory release gate로 이관됐다.
 
 작업:
 
@@ -785,7 +821,8 @@ Redaction 규칙:
 
 주의:
 
-- A5b가 끝나기 전에는 A6로 넘어가지 않는다.
+- A5 Backend Foundation이 accepted 되었으므로 A6 backend expansion으로 넘어갈 수 있다.
+- 단, release gate follow-up을 제거하거나 암묵적으로 완료 처리하지 않는다.
 - A5b에서 mobile/event rendering을 크게 뜯어고쳐야 한다면 A2/A3 model/harness 설계가 부족했다는 신호다.
 
 ### Phase A6 — Codex/GPT Agent Adapter Vertical Slice

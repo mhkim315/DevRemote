@@ -99,25 +99,46 @@ Agent Adapter 담당:
 
 ## 실행에이전트가 시작할 작업
 
-### 다음 작업: Phase A5b — Claude Parser/Event/UX Vertical Slice
+### 다음 작업: Phase A6 — Codex/GPT Backend Expansion
 
-A5a는 scoped accept 완료됐다. A6 Codex/GPT로 넘어가지 말고 A5b를 먼저 수행한다.
+A5는 **Agent Backend Foundation**으로 종료됐다.
+
+근거:
+
+- `docs/AGENT_PHASE_A5_BACKEND_FOUNDATION_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A5B_BACKEND_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A5B_DEGRADED_FOLLOWUP_REVIEW.md`
+
+A5 accepted backend contract:
+
+1. production detection bridge;
+2. production parser path;
+3. common `AgentEvent` canonicalization;
+4. `/api/sessions.Events` product boundary;
+5. `user_message`;
+6. `thinking`;
+7. `tool_call_started`;
+8. `approval_requested`;
+9. parser-derived `agentStatus=waiting_approval`;
+10. malformed log survival;
+11. resolver context propagation;
+12. backend regression pass.
 
 해야 할 일:
 
-1. Claude log resolver를 production telemetry/event path에 연결한다.
-2. Claude JSONL/log parser output이 common `AgentEvent`로 저장/노출되게 한다.
-3. Claude user/assistant/tool/approval event가 `/api/sessions` 또는 activity/history boundary에서 확인되게 한다.
-4. Claude status inference를 common `AgentStatus`로 반영한다.
-5. parser degraded state와 parser failure isolation을 product boundary에 표시한다.
-6. mobile status badge/schema/rendering을 업데이트한다.
-7. mobile behavior가 `if agent == "claude"` 같은 이름 기반 분기를 사용하지 않음을 검증한다.
-8. tmux + Claude와 LocalPTY + Claude에서 같은 AgentEvent semantics가 나오는 smoke 또는 fixture 기반 대체 검증을 추가한다.
-9. request-time `Snapshot()`의 unbounded `ProcessInfo(context.Background())` 직접 호출을 timeout/cached evidence 구조로 정리한다.
+1. Codex/GPT 실제 로그 위치와 fixture를 확정한다.
+2. Codex/GPT parser를 common parser contract에 등록한다.
+3. Codex/GPT output을 common `AgentEvent`로 변환한다.
+4. `/api/sessions.Events`에서 Codex/GPT events가 Claude와 같은 common contract로 노출되게 한다.
+5. `agentStatus`는 A5에서 확정된 common `AgentStatus` 경로를 재사용한다.
+6. Claude production parser를 Codex/GPT 때문에 수정하지 않는다. shared contract bug fix만 허용한다.
+7. A5 regression tests를 계속 통과시킨다.
 
 금지:
 
-- A5b 완료 전 A6 Codex/GPT 구현으로 넘어가지 않는다.
+- A5 common event/status path를 우회하지 않는다.
+- Codex/GPT를 위해 Claude 전용 parser나 mobile behavior를 깨지 않는다.
+- mobile에 `if agent == "claude"` / `if agent == "codex"` 같은 behavior branch를 추가하지 않는다.
 - test-only parser/detector가 production evidence나 production event를 대신 만들면 안 된다.
 - parser failure를 terminal session failure로 전파하면 안 된다.
 - raw prompt/token/path/code를 API, mobile, push, diagnostic에 노출하면 안 된다.
@@ -125,22 +146,39 @@ A5a는 scoped accept 완료됐다. A6 Codex/GPT로 넘어가지 말고 A5b를 �
 권장 커밋 메시지:
 
 ```text
-feat: complete agent phase A5b claude event UX slice
+feat: add agent phase A6 codex backend parser
 ```
 
-Phase A5b 완료 보고 형식:
+Phase A6 완료 보고 형식:
 
 ```text
-Phase A5b 완료 — <commit>
+Phase A6 완료 — <commit>
 
 주요 변경:
 - ...
 
 검증 포인트:
-- Claude events/status/approval product boundary 확인
-- parser degraded/failure isolation 확인
+- Codex/GPT parser contract 확인
+- /api/sessions.Events common event boundary 확인
+- Claude A5 backend proof regression 통과
 - mobile 이름 기반 behavior branch 없음 확인
 ```
+
+### Mandatory release-gate follow-ups
+
+A5 종료가 아래 항목의 완료를 의미하지 않는다.
+
+반드시 별도 release gate로 추적한다:
+
+- degraded diagnostics UX;
+- degraded status visualization;
+- mobile rendering/schema proof for `waiting_approval`, `approval_requested`, degraded, unknown states.
+
+추적 문서:
+
+- `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
+
+Backend A6는 진행 가능하지만, product/release-complete 상태는 위 follow-up이 닫히기 전까지 선언하지 않는다.
 
 ## Phase별 실행 요약
 
@@ -203,16 +241,43 @@ Antigravity: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcrip
 - request-time `Snapshot()`에서 unbounded `ProcessInfo(context.Background())` 직접 호출을
   telemetry loop cache 또는 timeout context로 정리한다.
 
-### Phase A5b — Claude Parser/Event/UX Vertical Slice
+### Phase A5 — Agent Backend Foundation
 
-- Claude detector/resolver/parser.
-- Claude events/status/approval을 Common AgentEvent로 변환.
-- tmux + Claude, LocalPTY + Claude에서 semantics 동일해야 함.
-- mobile에 Claude 이름 기반 behavior branch 금지.
+- 완료.
+- accepted scope는 backend foundation이다.
+- UX/release-complete가 아니다.
+
+검증 문서:
+
+- `docs/AGENT_PHASE_A5_BACKEND_FOUNDATION_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A5B_BACKEND_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A5B_DEGRADED_FOLLOWUP_REVIEW.md`
+
+완료 범위:
+
+- Claude parser/resolver/event/status backend core.
+- malformed log survival guard.
+- `/api/sessions.Events` common product boundary.
+
+이관된 mandatory follow-up:
+
+- degraded diagnostics UX.
+- degraded status visualization.
+- mobile rendering/schema proof.
+
+추적 문서:
+
+- `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
+
+### Phase A5b — Historical Claude Parser/Event/UX Slice
+
+- historical context로 남긴다.
+- 실제 종료 판정은 `Phase A5 — Agent Backend Foundation`을 따른다.
+- mobile/degraded UX는 A5 blocker가 아니라 mandatory release gate로 이관됐다.
 
 ### Phase A6 — Codex/GPT Vertical Slice
 
-- A5b 완료 후 진행.
+- A5 Backend Foundation 완료 후 진행.
 - Claude parser 수정 없이 Codex/GPT adapter 추가.
 - 같은 mobile Activity UI 사용.
 - 이 Phase가 Agent Adapter Layer의 실제 추상화 검증점이다.
