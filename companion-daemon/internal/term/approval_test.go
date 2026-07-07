@@ -109,7 +109,7 @@ func TestHandleApprovalAction_Success(t *testing.T) {
 		{
 			ID: "a1", SessionID: "s1", Status: "pending",
 			AgentKind: "claude", Prompt: "Approve?",
-			Options:   []agent.ApprovalOption{{ID: "approve", Label: "Approve"}, {ID: "reject", Label: "Reject"}},
+			Options:   []agent.InteractionOption{{ID: "approve", Label: "Approve", Kind: "approve"}, {ID: "reject", Label: "Reject", Kind: "reject"}},
 			CreatedAt: time.Now(),
 		},
 	})
@@ -136,7 +136,7 @@ func TestHandleApprovalAction_Duplicate(t *testing.T) {
 	s.Upsert("s1", []agent.AgentApproval{
 		{
 			ID: "a1", SessionID: "s1", Status: "pending",
-			Options:   []agent.ApprovalOption{{ID: "approve", Label: "Approve"}},
+			Options:   []agent.InteractionOption{{ID: "approve", Label: "Approve", Kind: "approve"}},
 			CreatedAt: time.Now(),
 		},
 	})
@@ -159,7 +159,7 @@ func TestHandleApprovalAction_Expired(t *testing.T) {
 	s.Upsert("s1", []agent.AgentApproval{
 		{
 			ID: "a1", SessionID: "s1", Status: "pending",
-			Options:   []agent.ApprovalOption{{ID: "approve", Label: "Approve"}},
+			Options:   []agent.InteractionOption{{ID: "approve", Label: "Approve", Kind: "approve"}},
 			CreatedAt: time.Now().Add(-10 * time.Minute),
 		},
 	})
@@ -180,7 +180,7 @@ func TestHandleApprovalAction_InvalidAction(t *testing.T) {
 	s.Upsert("s1", []agent.AgentApproval{
 		{
 			ID: "a1", SessionID: "s1", Status: "pending",
-			Options:   []agent.ApprovalOption{{ID: "open_terminal", Label: "Open Terminal"}},
+			Options:   []agent.InteractionOption{{ID: "open_terminal", Label: "Open Terminal", Kind: "open"}},
 			CreatedAt: time.Now(),
 		},
 	})
@@ -196,12 +196,12 @@ func TestHandleApprovalAction_InvalidAction(t *testing.T) {
 	}
 }
 
-func TestHandleApprovalAction_ViewOnly(t *testing.T) {
+func TestHandleApprovalAction_EmptyOptions(t *testing.T) {
 	s := NewApprovalStore()
 	s.Upsert("s1", []agent.AgentApproval{
 		{
 			ID: "a1", SessionID: "s1", Status: "pending",
-			Options:   []agent.ApprovalOption{{ID: "view_only", Label: "View Only"}},
+			Options:   []agent.InteractionOption{},
 			CreatedAt: time.Now(),
 		},
 	})
@@ -213,7 +213,7 @@ func TestHandleApprovalAction_ViewOnly(t *testing.T) {
 	h.HandleApprovalAction(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("view_only: status=%d, want 400 (approve not in options)", rec.Code)
+		t.Errorf("empty options: status=%d, want 400 (no options available)", rec.Code)
 	}
 }
 
@@ -222,7 +222,7 @@ func TestHandleApprovalAction_ViewOnly(t *testing.T) {
 func TestCapabilityFilter_InputWritable(t *testing.T) {
 	// Session with InputWriter + StreamOpener gets full action options.
 	sess := &inputTestSession{}
-	opts := buildApprovalOptions(sess)
+	opts := buildInteractionOptions(sess)
 	if !optionInList(opts, "approve") || !optionInList(opts, "reject") {
 		t.Error("input-capable session missing approve/reject")
 	}
@@ -237,7 +237,7 @@ func TestCapabilityFilter_InputWritable(t *testing.T) {
 func TestCapabilityFilter_StreamOnly(t *testing.T) {
 	// Session with StreamOpener but no InputWriter gets open_terminal only.
 	sess := &streamOnlySession{}
-	opts := buildApprovalOptions(sess)
+	opts := buildInteractionOptions(sess)
 	if !optionInList(opts, "open_terminal") {
 		t.Error("stream-only session missing open_terminal")
 	}
@@ -247,23 +247,57 @@ func TestCapabilityFilter_StreamOnly(t *testing.T) {
 }
 
 func TestCapabilityFilter_ObserveOnly(t *testing.T) {
-	// Session with no capabilities gets view_only.
+	// Session with no capabilities gets empty options (no fake actions).
 	sess := &observeOnlySession{}
-	opts := buildApprovalOptions(sess)
-	if optionInList(opts, "approve") || optionInList(opts, "reject") {
-		t.Error("observe-only session should not have approve/reject")
+	opts := buildInteractionOptions(sess)
+	if len(opts) != 0 {
+		t.Errorf("observe-only session should have empty options, got %d", len(opts))
 	}
-	if optionInList(opts, "send_text") || optionInList(opts, "send_key") {
-		t.Error("observe-only session should not have send_text/send_key")
+}
+
+
+func TestInteractionOption_NChoices(t *testing.T) {
+	// N heterogeneous options must preserve semantic kinds end-to-end.
+	s := NewApprovalStore()
+	s.Upsert("s1", []agent.AgentApproval{
+		{
+			ID: "a1", SessionID: "s1", Kind: "interaction", Status: "pending",
+			AgentKind: "cursor", Prompt: "Select mode:",
+			Options: []agent.InteractionOption{
+				{ID: "fast", Label: "Fast", Kind: "neutral"},
+				{ID: "balanced", Label: "Balanced", Kind: "neutral"},
+				{ID: "thorough", Label: "Thorough", Kind: "neutral"},
+				{ID: "cancel", Label: "Cancel", Kind: "cancel"},
+			},
+			CreatedAt: time.Now(),
+		},
+	})
+	h := &Handlers{Approvals: s, Cmds: NewCommandBroker()}
+
+	// Valid: choose an option in the list.
+	req := httptest.NewRequest("POST", "/api/sessions/s1/approvals/a1", strings.NewReader(`{"action":"balanced"}`))
+	req.SetPathValue("id", "s1")
+	req.SetPathValue("approvalId", "a1")
+	rec := httptest.NewRecorder()
+	h.HandleApprovalAction(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("valid N-option: status=%d, want 200", rec.Code)
 	}
-	if !optionInList(opts, "view_only") {
-		t.Error("observe-only session missing view_only fallback")
+
+	// Invalid: choose an option NOT in the list (approve is not in 4 neutral options).
+	req2 := httptest.NewRequest("POST", "/api/sessions/s1/approvals/a1", strings.NewReader(`{"action":"approve"}`))
+	req2.SetPathValue("id", "s1")
+	req2.SetPathValue("approvalId", "a1")
+	rec2 := httptest.NewRecorder()
+	h.HandleApprovalAction(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("invalid N-option: status=%d, want 400", rec2.Code)
 	}
 }
 
 // --- helpers ---
 
-func optionInList(options []agent.ApprovalOption, id string) bool {
+func optionInList(options []agent.InteractionOption, id string) bool {
 	for _, o := range options {
 		if o.ID == id {
 			return true

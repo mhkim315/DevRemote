@@ -156,14 +156,15 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					var newApprovals []agent.AgentApproval
 					for _, e := range newEvents {
 						if e.Type == "approval_requested" {
-							options := buildApprovalOptions(sess)
+							options := buildInteractionOptions(sess)
 
 							newApprovals = append(newApprovals, agent.AgentApproval{
 								ID:        fmt.Sprintf("%s-%s", id, e.ID),
 								SessionID: id,
 								AgentKind: logRef.Agent,
+								Kind:      "approval",
 								Status:    "pending",
-								Prompt:    firstNonEmpty(e.Detail, e.Summary, "Approval requested"),
+								Prompt:    firstNonEmpty(e.Detail, e.Summary, "Interaction requested"),
 								Options:   options,
 								Default:   "reject",
 								Source:    "jsonl",
@@ -347,26 +348,28 @@ func (s *TelemetryService) Clear(sessionID string) {
 	delete(s.sessions, sessionID)
 }
 
-// buildApprovalOptions returns capability-aware approval options for a session.
-func buildApprovalOptions(sess mux.Session) []agent.ApprovalOption {
+// buildInteractionOptions returns capability-aware interaction options for a session.
+// Each option carries a semantic Kind for mobile styling; mobile never infers meaning from ID.
+func buildInteractionOptions(sess mux.Session) []agent.InteractionOption {
 	_, hasInput := sess.(mux.InputWriter)
 	_, hasStream := sess.(mux.StreamOpener)
 
-	var options []agent.ApprovalOption
+	var options []agent.InteractionOption
 	if hasStream {
-		options = append(options, agent.ApprovalOption{ID: "open_terminal", Label: "Open Terminal"})
+		options = append(options, agent.InteractionOption{ID: "open_terminal", Label: "Open Terminal", Kind: "open"})
 	}
 	if hasInput {
 		options = append(options,
-			agent.ApprovalOption{ID: "approve", Label: "Approve"},
-			agent.ApprovalOption{ID: "reject", Label: "Reject"},
-			agent.ApprovalOption{ID: "send_text", Label: "Send Text"},
-			agent.ApprovalOption{ID: "send_key", Label: "Send Key"},
+			agent.InteractionOption{ID: "approve", Label: "Approve", Kind: "approve"},
+			agent.InteractionOption{ID: "reject", Label: "Reject", Kind: "reject"},
+			agent.InteractionOption{ID: "send_text", Label: "Send Text", Kind: "neutral",
+				Input: &agent.InputSchema{Required: true, Placeholder: "Enter text to send"}},
+			agent.InteractionOption{ID: "send_key", Label: "Send Key", Kind: "neutral",
+				Input: &agent.InputSchema{Required: true, Placeholder: "Key sequence"}},
 		)
 	}
-	if len(options) == 0 {
-		options = append(options, agent.ApprovalOption{ID: "view_only", Label: "View Only"})
-	}
+	// Observe-only: return empty options (no view_only fake action).
+	// Mobile renders "No remote actions available" for empty options.
 	return options
 }
 

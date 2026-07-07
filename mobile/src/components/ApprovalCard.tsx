@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { resolveApproval, AgentApproval } from '../lib/client';
+import { resolveApproval, AgentApproval, InteractionOption } from '../lib/client';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
 interface Props {
@@ -69,26 +69,16 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
       ) : (
         <View style={styles.buttonRow}>
           {options.map(opt => {
-            const isPrimary = opt.id === 'approve';
-            const isDanger = opt.id === 'reject';
+            // Use server-provided kind for styling; never infer from ID.
+            const kindStyle = getKindStyle(opt.kind);
             return (
               <TouchableOpacity
                 key={opt.id}
-                style={[
-                  styles.button,
-                  isPrimary && styles.approveBtn,
-                  isDanger && styles.rejectBtn,
-                ]}
+                style={[styles.button, kindStyle.btn]}
                 onPress={() => handleAction(opt.id)}
                 disabled={loading}
               >
-                <Text
-                  style={[
-                    styles.buttonText,
-                    isPrimary && styles.approveText,
-                    isDanger && styles.rejectText,
-                  ]}
-                >
+                <Text style={[styles.buttonText, kindStyle.text]}>
                   {opt.label}
                 </Text>
               </TouchableOpacity>
@@ -98,6 +88,24 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
       )}
     </View>
   );
+}
+
+// getKindStyle returns visual style based on server-provided semantic kind.
+// Never infers meaning from option ID.
+function getKindStyle(kind: string): { btn: any; text: any } {
+  switch (kind) {
+    case 'approve':
+      return { btn: { borderColor: '#39d353', backgroundColor: '#39d353' }, text: { color: '#000000' } };
+    case 'reject':
+      return { btn: { borderColor: '#f85149', backgroundColor: 'transparent' }, text: { color: '#f85149' } };
+    case 'cancel':
+      return { btn: { borderColor: '#8b949e', backgroundColor: 'transparent' }, text: { color: '#8b949e' } };
+    case 'open':
+      return { btn: { borderColor: '#1E91B3', backgroundColor: 'transparent' }, text: { color: '#1E91B3' } };
+    case 'neutral':
+    default:
+      return { btn: { borderColor: '#8b949e', backgroundColor: 'transparent' }, text: { color: '#8b949e' } };
+  }
 }
 
 const styles = StyleSheet.create({

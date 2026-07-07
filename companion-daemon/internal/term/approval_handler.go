@@ -76,7 +76,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 }
 
 // optionExists checks if an action ID exists in the approval options.
-func optionExists(action string, options []agent.ApprovalOption) bool {
+func optionExists(action string, options []agent.InteractionOption) bool {
 	for _, opt := range options {
 		if opt.ID == action {
 			return true

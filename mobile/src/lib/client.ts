@@ -61,21 +61,30 @@ export async function sendDebugCommand(sessionID: string, command: string, token
   return res;
 }
 
-// --- Phase A9: Structured Approval Types and API ---
+// --- Phase A9: Interaction Request Types and API ---
 
-export interface ApprovalOption {
-  id: string;      // "approve", "reject", "send_text", "send_key", "open_terminal"
+export interface InputSchema {
+  required: boolean;
+  placeholder?: string;
+  multiline?: boolean;
+}
+
+export interface InteractionOption {
+  id: string;
   label: string;
+  kind: string;     // semantic: "approve", "reject", "neutral", "open", "cancel"
   payload?: string;
+  input?: InputSchema;
 }
 
 export interface AgentApproval {
   id: string;
   sessionId: string;
   agentKind: string;
-  status: string;  // "pending", "approved", "rejected"
+  kind: string;     // "approval" | "interaction" | "info"
+  status: string;   // "pending", "approved", "rejected"
   prompt: string;
-  options: ApprovalOption[];
+  options: InteractionOption[];
   default: string;
   source: string;
   confidence: number;

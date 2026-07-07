@@ -90,28 +90,39 @@ type AgentEvent struct {
 	Metadata   map[string]string `json:"metadata,omitempty"` // agent-specific, must not drive UX
 }
 
-// ApprovalOption represents one choice presented to the user.
-// The ID is the stable contract key; Label is the display string.
-// Payload carries optional action data (e.g. text to send, key sequence).
-type ApprovalOption struct {
-	ID      string `json:"id"`                // stable key: approve, reject, send_text, send_key, open_terminal
-	Label   string `json:"label"`             // display label: "Approve", "Reject"
-	Payload string `json:"payload,omitempty"` // optional action payload (text to send, key sequence)
+// InputSchema describes the input contract for an interaction option.
+type InputSchema struct {
+	Required    bool   `json:"required"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Multiline   bool   `json:"multiline,omitempty"`
 }
 
-// AgentApproval represents a pending or resolved approval request.
-// Default references a stable ApprovalOption.ID, not a display label.
+// InteractionOption represents one choice in an interaction request.
+// Kind carries semantic meaning (approve/reject/neutral/open/cancel);
+// mobile uses Kind for styling, never infers semantics from ID.
+type InteractionOption struct {
+	ID      string       `json:"id"`              // stable key
+	Label   string       `json:"label"`           // display label
+	Kind    string       `json:"kind"`            // semantic: approve, reject, neutral, open, cancel
+	Payload string       `json:"payload,omitempty"` // terminal fallback payload
+	Input   *InputSchema `json:"input,omitempty"` // input contract
+}
+
+// AgentApproval represents a pending or resolved interaction request.
+// Replaces the old approval-only model; supports N heterogeneous options
+// with semantic kinds and optional input contracts.
 type AgentApproval struct {
-	ID         string            `json:"id"`
-	SessionID  string            `json:"sessionId"`
-	AgentKind  string            `json:"agentKind"`
-	Status     string            `json:"status"`            // pending, approved, rejected
-	Prompt     string            `json:"prompt"`            // what the agent is asking
-	Options    []ApprovalOption  `json:"options"`           // available choices
-	Default    string            `json:"default,omitempty"` // stable ApprovalOption.ID of default choice
-	Source     AgentEventSource  `json:"source"`
-	Confidence float64           `json:"confidence"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	ID         string              `json:"id"`
+	SessionID  string              `json:"sessionId"`
+	AgentKind  string              `json:"agentKind"`
+	Kind       string              `json:"kind"`              // "approval" | "interaction" | "info"
+	Status     string              `json:"status"`            // pending, approved, rejected
+	Prompt     string              `json:"prompt"`            // what the agent is asking
+	Options    []InteractionOption `json:"options"`           // available choices
+	Default    string              `json:"default,omitempty"` // stable InteractionOption.ID of default choice
+	Source     AgentEventSource    `json:"source"`
+	Confidence float64             `json:"confidence"`
+	Metadata   map[string]string   `json:"metadata,omitempty"`
 	CreatedAt  time.Time         `json:"createdAt"`
 	ResolvedAt *time.Time        `json:"resolvedAt,omitempty"`
 }
