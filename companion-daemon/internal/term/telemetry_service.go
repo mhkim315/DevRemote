@@ -104,11 +104,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 	// 2. ProcessProvider
 	if logErr != nil {
 		if info, ok := processSnapshots[id]; ok {
-			logRef, logErr = s.resolveLog(info)
+			logRef, logErr = s.resolveLog(ctx, info)
 		} else if !batchAdapters[sess.AdapterName()] {
 			if pp, ok := sess.(mux.ProcessProvider); ok {
 				if pinfo, err := pp.ProcessInfo(ctx); err == nil {
-					logRef, logErr = s.resolveLog(pinfo)
+					logRef, logErr = s.resolveLog(ctx, pinfo)
 				}
 			}
 		}
@@ -217,11 +217,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 	s.mu.Unlock()
 }
 
-func (s *TelemetryService) resolveLog(p models.ProcessInfo) (LogRef, error) {
+func (s *TelemetryService) resolveLog(ctx context.Context, p models.ProcessInfo) (LogRef, error) {
 	if s.logResolver != nil {
 		return s.logResolver(p)
 	}
-	return ResolveAgentLog(context.Background(), p)
+	return ResolveAgentLog(ctx, p)
 }
 
 // SetLogResolver overrides the production ResolveAgentLog for testing.
@@ -296,7 +296,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			st.AgentConfidence = confidence
 			// AgentStatus from telemetry state machine (parser-derived).
 			if sd, ok := stateCopies[st.ID]; ok && sd.State != "" {
-				st.AgentStatus = sd.State
+				st.AgentStatus = mapLegacyState(sd.State)
 			}
 		}
 	}

@@ -71,6 +71,10 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 					t.Errorf("missing event type %q in %v", want, gotTypes)
 				}
 			}
+			// AgentStatus must reflect approval state from parser.
+			if s.AgentStatus != "waiting_approval" {
+				t.Errorf("AgentStatus=%q, want waiting_approval", s.AgentStatus)
+			}
 			// Detection fields populated.
 			if s.AgentKind != "claude" {
 				t.Errorf("AgentKind=%q, want claude", s.AgentKind)

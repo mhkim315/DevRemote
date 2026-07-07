@@ -258,11 +258,14 @@ func containsAny(s string, substrs ...string) bool {
 	return false
 }
 
-func normalizeEvents(evts []models.AgentEvent) []models.AgentEvent {
-	for i := range evts {
-		normalizeEventType(&evts[i])
+// mapLegacyState converts legacy state machine states to common AgentStatus.
+func mapLegacyState(state string) string {
+	switch state {
+	case "waiting":
+		return "waiting_approval"
+	default:
+		return state
 	}
-	return evts
 }
 
 func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetry {
