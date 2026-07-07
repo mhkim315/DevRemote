@@ -52,6 +52,7 @@ func sendPushNotification(token, message, sessionID string) {
 		"data": map[string]string{
 			"sessionId": sessionID,
 			"type":      "approval_required",
+			"url":       "pokit://session/" + sessionID,
 		},
 	}
 	payloadBytes, _ := json.Marshal(payloadMap)

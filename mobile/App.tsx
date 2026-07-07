@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { Linking } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
@@ -44,6 +45,31 @@ function AppContent() {
     }
     setupPush();
   }, [isConnected, session]);
+
+  // P1b: handle notification tap → navigate to session.
+  useEffect(() => {
+    // Cold start: app opened from notification.
+    Notifications.getLastNotificationResponseAsync().then(response => {
+      if (response) {
+        handleNotificationResponse(response);
+      }
+    });
+
+    // Warm start: notification tapped while app is open.
+    const sub = Notifications.addNotificationResponseReceivedListener(response => {
+      handleNotificationResponse(response);
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  function handleNotificationResponse(response: Notifications.NotificationResponse) {
+    const data = response.notification.request.content.data;
+    const url = data?.['url'] as string | undefined;
+    if (url) {
+      Linking.openURL(url);
+    }
+  }
 
   if (loading) return null;
 
