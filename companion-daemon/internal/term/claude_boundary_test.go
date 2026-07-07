@@ -3,7 +3,10 @@ package term
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,12 +15,23 @@ import (
 	"devremote/companion-daemon/internal/mux"
 )
 
-// Phase A5 product-boundary bridge: production TelemetryService with
-// agent.NewTermAgentDetector(), real session ProcessProvider evidence.
+func TestClaudeOutput_RealLogParsing(t *testing.T) {
+	// Create a temp log file with Claude-format JSONL (based on A1 fixtures).
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "session.jsonl")
+	// Write real Claude-format log entries.
+	claudeLog := `{"type":"mode","mode":"normal","sessionId":"<UUID>"}
+{"type":"user","message":{"role":"user","content":"<PROMPT>"},"sessionId":"<UUID>"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"<REDACTED>"}]},"sessionId":"<UUID>"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"<CMD>"}}]},"sessionId":"<UUID>"}
+{"type":"permission-mode","permissionMode":"ask","sessionId":"<UUID>"}
+`
+	if err := os.WriteFile(logFile, []byte(claudeLog), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
-func TestClaudeOutput_TruePositive_ProductionBridge(t *testing.T) {
-	// Session with Claude process evidence → production bridge detects Claude.
-	reg := mux.MustNewRegistry(&claudeProcessAdapter{})
+	// Session adapter that returns the temp log path via ProcessProvider.
+	reg := mux.MustNewRegistry(&claudeLogSessionAdapter{logPath: logFile})
 	detector := agent.NewTermAgentDetector()
 
 	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector)
@@ -37,51 +51,37 @@ func TestClaudeOutput_TruePositive_ProductionBridge(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &sessions)
 	for _, s := range sessions {
 		if s.Adapter == "tmux" {
-			t.Logf("production: AgentKind=%s Status=%s Confidence=%.2f",
-				s.AgentKind, s.AgentStatus, s.AgentConfidence)
+			t.Logf("temp log: AgentKind=%s Status=%s Confidence=%.2f Events=%d",
+				s.AgentKind, s.AgentStatus, s.AgentConfidence, len(s.AgentEvents))
+
 			if s.AgentKind != "claude" {
-				t.Errorf("Claude process evidence: AgentKind=%q, want claude", s.AgentKind)
+				t.Errorf("AgentKind=%q, want claude", s.AgentKind)
 			}
-			if s.AgentConfidence < 0.5 {
-				t.Errorf("Claude process: confidence %.2f < 0.5", s.AgentConfidence)
+			if s.AgentStatus == "" || s.AgentStatus == "idle" {
+				t.Errorf("AgentStatus=%q, want non-idle", s.AgentStatus)
 			}
-			if s.AgentStatus == "" {
-				t.Error("AgentStatus is empty")
-			}
-			if len(s.AgentEvents) == 0 {
-				t.Error("AgentEvents is empty (parser not wired)")
-			}
-			// Verify specific event types from Claude A1 fixtures.
-			hasUserMsg := false
-			hasThinking := false
+
+			// Verify specific event types from real Claude fixture parsing.
+			foundTypes := map[string]bool{}
 			for _, e := range s.AgentEvents {
-				if e.Type == "" {
-					t.Error("agent event has empty Type")
-				}
-				if string(e.Type) == "user_message" {
-					hasUserMsg = true
-				}
-				if string(e.Type) == "thinking" {
-					hasThinking = true
+				foundTypes[string(e.Type)] = true
+			}
+			for _, want := range []string{"user_message", "thinking", "tool_call_started", "approval_requested"} {
+				if !foundTypes[want] {
+					t.Errorf("missing event type %q in %v", want, foundTypes)
 				}
 			}
-			if !hasUserMsg {
-				t.Error("AgentEvents missing user_message")
-			}
-			if !hasThinking {
-				t.Error("AgentEvents missing thinking")
-			}
-			// Status must be parser-derived (not hardcoded working).
-			if s.AgentStatus != "working" && s.AgentStatus != "waiting_input" && s.AgentStatus != "thinking" {
-				t.Logf("AgentStatus=%s (parser-derived)", s.AgentStatus)
+			// Approval fixture should produce waiting_approval status.
+			if s.AgentStatus != "waiting_approval" {
+				t.Errorf("AgentStatus=%q, want waiting_approval (approval fixture)", s.AgentStatus)
 			}
 		}
 	}
 }
 
-func TestClaudeOutput_FalsePositive_ProductionBridge(t *testing.T) {
-	// Non-Claude session → production bridge returns unknown.
-	reg := mux.MustNewRegistry(&bashProcessAdapter{})
+func TestClaudeOutput_MissingLog(t *testing.T) {
+	// Missing log → no events, no crash, terminal still works.
+	reg := mux.MustNewRegistry(&claudeNoLogAdapter{})
 	detector := agent.NewTermAgentDetector()
 
 	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector)
@@ -97,14 +97,42 @@ func TestClaudeOutput_FalsePositive_ProductionBridge(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/sessions: status %d (terminal must survive)", rec.Code)
+	}
+	var sessions []SessionTelemetry
+	json.Unmarshal(rec.Body.Bytes(), &sessions)
+	for _, s := range sessions {
+		if s.Adapter == "tmux" {
+			if len(s.AgentEvents) > 0 {
+				t.Errorf("missing log: got %d AgentEvents, want 0", len(s.AgentEvents))
+			}
+			t.Logf("missing log: AgentKind=%s Events=%d", s.AgentKind, len(s.AgentEvents))
+		}
+	}
+}
+
+func TestClaudeOutput_FalsePositive_ProductionBridge(t *testing.T) {
+	reg := mux.MustNewRegistry(&bashProcessAdapter{})
+	detector := agent.NewTermAgentDetector()
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go svc.Run(ctx)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-svc.Done()
+	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Telemetry: svc, AgentDetector: detector}
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
 	var sessions []SessionTelemetry
 	json.Unmarshal(rec.Body.Bytes(), &sessions)
 	for _, s := range sessions {
 		if s.Adapter == "tmux" {
 			if s.AgentKind != "unknown" && s.AgentConfidence >= 0.5 {
-				t.Errorf("bash process: false positive Kind=%s Confidence=%.2f", s.AgentKind, s.AgentConfidence)
+				t.Errorf("bash: false positive Kind=%s Confidence=%.2f", s.AgentKind, s.AgentConfidence)
 			}
-			t.Logf("bash: AgentKind=%s Confidence=%.2f", s.AgentKind, s.AgentConfidence)
 		}
 	}
 }
@@ -125,7 +153,40 @@ func TestClaudeOutput_NilDetector_BackwardCompat(t *testing.T) {
 	}
 }
 
-// --- adapters with real ProcessProvider ---
+// --- adapters ---
+
+type claudeLogSessionAdapter struct{ logPath string }
+
+func (a *claudeLogSessionAdapter) Name() string { return "tmux" }
+func (a *claudeLogSessionAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return []mux.Session{&claudeLogSession{logPath: a.logPath}}, nil
+}
+
+type claudeLogSession struct{ logPath string }
+
+func (s *claudeLogSession) ID() string          { return "claude-session" }
+func (s *claudeLogSession) Title() string       { return "Claude Code" }
+func (s *claudeLogSession) AdapterName() string { return "tmux" }
+func (s *claudeLogSession) ProcessInfo(_ context.Context) (models.ProcessInfo, error) {
+	return models.ProcessInfo{Command: "claude", CWD: "/Users/test/project"}, nil
+}
+func (s *claudeLogSession) LogPath() string { return s.logPath }
+
+type claudeNoLogAdapter struct{}
+
+func (a *claudeNoLogAdapter) Name() string { return "tmux" }
+func (a *claudeNoLogAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return []mux.Session{&claudeNoLogSession{}}, nil
+}
+
+type claudeNoLogSession struct{}
+
+func (s *claudeNoLogSession) ID() string          { return "claude-no-log" }
+func (s *claudeNoLogSession) Title() string       { return "Claude Code" }
+func (s *claudeNoLogSession) AdapterName() string { return "tmux" }
+func (s *claudeNoLogSession) ProcessInfo(_ context.Context) (models.ProcessInfo, error) {
+	return models.ProcessInfo{Command: "claude", CWD: "/nonexistent"}, nil
+}
 
 type claudeProcessAdapter struct{}
 

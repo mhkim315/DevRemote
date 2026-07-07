@@ -275,6 +275,9 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 							evidence.CWD = info.CWD
 						}
 					}
+					if lp, ok := sess.(interface{ LogPath() string }); ok {
+						evidence.LogPath = lp.LogPath()
+					}
 					break
 				}
 			}

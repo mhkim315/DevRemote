@@ -10,20 +10,19 @@ type ProdDetectionEvidence struct {
 	ProcessName string
 	CWD         string
 	TermAdapter string
+	LogPath     string // resolved agent log path (production only)
 }
 
 // TermAgentDetector adapts agent-layer detectors to the term.AgentDetector interface.
 type TermAgentDetector struct {
 	detector *ClaudeDetector
 	parser   *ClaudeParser
-	resolver *ClaudeLogResolver
 }
 
 func NewTermAgentDetector() *TermAgentDetector {
 	return &TermAgentDetector{
 		detector: NewClaudeDetector(),
 		parser:   NewClaudeParser(),
-		resolver: NewClaudeLogResolver(),
 	}
 }
 
@@ -35,7 +34,6 @@ func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, 
 	}
 	id := d.detector.Detect(ev)
 
-	// Status derived from parser events, not detector confidence.
 	events := d.ParseEvents(sessionID, evidence)
 	status := inferStatusFromEvents(events)
 	if id.Confidence < 0.5 || id.Kind == "unknown" {
@@ -44,27 +42,22 @@ func (d *TermAgentDetector) DetectAgent(sessionID, adapterName, localID string, 
 	return id.Kind, string(status), id.Confidence
 }
 
-// ParseEvents reads Claude A1 fixtures and returns parsed common events.
-// In production, this would read from resolved log files via LogResolver.
+// ParseEvents reads agent log data from the resolved path and returns parsed events.
+// No fixture fallback — only production log paths are used.
 func (d *TermAgentDetector) ParseEvents(sessionID string, evidence ProdDetectionEvidence) []AgentEvent {
-	// Try to resolve logs and parse them.
-	resolved, _ := d.resolver.Resolve(DetectionEvidence{
-		ProcessName: evidence.ProcessName,
-		CWD:         evidence.CWD,
-	})
-	var allLines [][]byte
-	for _, lr := range resolved.Logs {
-		if data, err := os.ReadFile(lr.Path); err == nil {
-			for _, line := range bridgeSplitLines(data) {
-				if len(line) > 0 {
-					allLines = append(allLines, line)
-				}
-			}
-		}
+	if evidence.LogPath == "" {
+		return nil
 	}
-	// Fallback: use A1 test fixtures when no production logs found.
-	if len(allLines) == 0 && evidence.ProcessName == "claude" {
-		allLines = loadA1Fixtures()
+	data, err := os.ReadFile(evidence.LogPath)
+	if err != nil {
+		// Missing/unreadable log → no events, no fixture fallback.
+		return nil
+	}
+	var allLines [][]byte
+	for _, line := range bridgeSplitLines(data) {
+		if len(line) > 0 {
+			allLines = append(allLines, line)
+		}
 	}
 	if len(allLines) == 0 {
 		return nil
@@ -102,37 +95,6 @@ func inferStatusFromEvents(events []AgentEvent) AgentStatus {
 	}
 }
 
-// loadA1Fixtures reads Claude A1 fixtures as a fallback log source.
-func loadA1Fixtures() [][]byte {
-	// Try multiple paths: from module root, from agent package, from term package.
-	candidates := []string{
-		filepath.Join("internal", "agent", "testdata", "claude"),
-		filepath.Join("testdata", "claude"),
-		filepath.Join("..", "agent", "testdata", "claude"),
-	}
-	var all [][]byte
-	for _, base := range candidates {
-		entries, err := os.ReadDir(base)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if filepath.Ext(e.Name()) == ".jsonl" {
-				data, _ := os.ReadFile(filepath.Join(base, e.Name()))
-				for _, line := range bridgeSplitLines(data) {
-					if len(line) > 0 {
-						all = append(all, line)
-					}
-				}
-			}
-		}
-		if len(all) > 0 {
-			return all
-		}
-	}
-	return all
-}
-
 func bridgeSplitLines(data []byte) [][]byte {
 	var lines [][]byte
 	start := 0
@@ -146,4 +108,26 @@ func bridgeSplitLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+// WriteA1Fixtures writes Claude A1 fixtures to a temp directory for testing.
+// Returns the path to the directory. Caller is responsible for cleanup.
+func WriteA1Fixtures(dir string) error {
+	base := filepath.Join("testdata", "claude")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		// Try from term package perspective.
+		base = filepath.Join("..", "agent", "testdata", "claude")
+		entries, err = os.ReadDir(base)
+		if err != nil {
+			return err
+		}
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".jsonl" {
+			data, _ := os.ReadFile(filepath.Join(base, e.Name()))
+			os.WriteFile(filepath.Join(dir, e.Name()), data, 0644)
+		}
+	}
+	return nil
 }
