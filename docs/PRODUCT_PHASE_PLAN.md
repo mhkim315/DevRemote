@@ -6,7 +6,9 @@
 Status:
 
 - Architecture Phase (A0~A10): COMPLETE
-- Product Phase (P1~): IN PROGRESS
+- Product Phase: IN PROGRESS
+  - P1a Live Dashboard Core: ACCEPTED (3fa4ad3c8)
+  - P2 Core Feed Taxonomy: NEXT
 
 ## Why this document exists
 
@@ -55,219 +57,192 @@ Reviewer and executor retrospectives both converged on the same lessons:
 
 Product Phase must apply these lessons. A product feature is accepted only when the user-facing boundary proves the intended experience.
 
-## Phase ordering rationale
+## MVP Product Path
 
-The Product Phase order is intentionally not "most impressive feature first."
+The MVP path is ordered by dependency, not by impressiveness:
 
-It is ordered by dependency:
-
-1. The user must first see what is happening.
-2. Then the user must understand the activity as a story.
-3. Then the user can inspect health and capability.
-4. Then deterministic summaries can aggregate reliable signals.
-5. Then review surfaces can expose richer work products.
-6. Only after the core experience is clear should distribution polish expand onboarding.
-
-This is why dashboard and feed come before summaries, review, cockpit polish, and install polish.
-
-## P1 — Live Agent Dashboard
-
-Goal:
-
-Within 5 seconds, the user understands:
-
-- what is running;
-- what needs attention;
-- what recently completed;
-- what is degraded, offline, or view-only.
-
-P1 is the first Product Phase because Pokit must immediately answer:
-
-> Are my AI agents working, and do they need me?
-
-### P1a — Live Dashboard Core
-
-P1a is the first implementation target.
-
-Acceptance:
-
-- Needs Attention section appears first.
-- Pending interaction is pinned above routine activity.
-- Running section shows active agents/sessions.
-- Recently Completed section shows completed or recently idle work.
-- Degraded / Offline section is visually distinct.
-- Observe-only sessions are shown as View Only, not actionable.
-- Capability-aware actions are shown only when existing capabilities/options allow them.
-- Unknown agent kind renders gracefully.
-- Unknown agent status renders gracefully.
-- No vendor-specific mobile behavior branch is introduced.
-- No backend contract change is introduced unless explicitly justified and reviewed.
-- Existing A9 interaction card remains compatible.
-
-Out of scope:
-
-- feed redesign;
-- diff viewer;
-- smart summary;
-- multi-project dashboard;
-- new adapters;
-- new parser work;
-- new interaction contract;
-- new backend abstraction;
-- install/distribution work.
-
-### P1b — Attention Routing / Push Polish
-
-P1b follows P1a after the dashboard core is accepted.
-
-Acceptance:
-
-- Pending interaction push routes the user to the relevant session or dashboard state.
-- Notification text does not leak raw prompt, command, token, or secret.
-- Device UX smoke is documented.
-- Failure states are recoverable and clear.
-
-Out of scope:
-
-- changing the A9 interaction contract;
-- adding new push infrastructure beyond what P1b requires;
-- vendor-specific notification behavior.
-
-## P2 — Human-readable Event Feed
-
-Goal:
-
-Transform terminal events into a readable story.
-
-P2 should not expose raw logs as the primary product experience. It should convert existing common events into understandable bubbles.
-
-Core event categories:
-
-- Message
-- Thinking
-- Tool
-- Interaction
-- File
-- Diff
-- Error
-- Completed
-
-Requirements:
-
-- unknown event fallback;
-- bubble taxonomy;
-- better visual hierarchy;
-- no vendor-specific rendering branch;
-- no parser rewrite unless a product-boundary gap proves it necessary.
-
-P2 should answer:
-
-> Can I understand what happened without reading a terminal log?
-
-## P3 — Agent Cockpit
-
-Goal:
-
-Expose operational health without turning Pokit into an IDE or cloud dashboard.
-
-Features:
-
-- Agent health
-- Capability badges
-- Runtime state
-- Diagnostics
-- Connection status
-
-P3 uses the A10 diagnostics backend. It should not create a second diagnostic model unless A10 proves insufficient.
-
-P3 should answer:
-
-> Can I trust that Pokit and my local agents are connected and healthy?
-
-## P4 — Deterministic Summary
-
-Goal:
-
-Provide quick understanding without reading logs.
-
-Examples:
-
-```text
-Today
-12 Tasks
-18 Files Changed
-2 Waiting
-1 Error
+```
+P1a  Live Dashboard Core           ✅ ACCEPTED
+P2   Core Feed Taxonomy             ← NEXT
+P1b  Attention Routing / Push       depends on P2 feed being clear
+P3   Mobile Typecheck / Build Gate  depends on all UI being stable
+P4   Device UX Smoke                depends on P3
+P5   Installer / Onboarding         depends on P4
+P6   Alpha Packaging                depends on P5
 ```
 
-Requirements:
+### Why P2 before P1b
 
-- no LLM summarization in MVP;
-- only deterministic aggregation;
-- summary values must be traceable to existing events, sessions, interactions, or diagnostics;
-- unknown/future events must not break aggregation.
+P1b routes the user to a specific session. The destination must be clear first.
 
-P4 comes after P1/P2/P3 because summaries are only trustworthy when the underlying dashboard, feed, and health signals are already stable.
+If the feed still looks like raw logs, a push notification that says "approval required" leads to a screen where the user asks "so what am I looking at?"
 
-P4 should answer:
+P2 makes the feed readable. P1b routes to a readable feed.
 
-> What is the high-level state of my AI work today?
+### Why P3 before P4
 
-## P5 — Reviewable Work
+Device smoke needs a reproducible build. P3 establishes that the build gate passes. P4 exercises the built artifact on real devices.
 
-Goal:
+## P1a — Live Dashboard Core ✅
 
-Review work instead of reading terminals.
+Status: ACCEPTED (3fa4ad3c8).
 
-Features:
+Accepted:
+- Needs Attention section appears first.
+- Pending interactions pinned above routine activity.
+- Running section shows active agents.
+- Recently Completed section shows idle/complete sessions.
+- Degraded / View Only section visually distinct.
+- Observe-only shown as View Only.
+- No vendor-specific mobile branch.
+- No backend contract change.
 
-- Diff Bubble
-- File Bubble
-- Command Result
-- Test Result
-- Error Summary
+Known gaps:
+- Recently Completed uses idle/non-degraded bucket, not actual completion events.
+- Observe-only detection uses !live_stream; explicit capability model would be stronger.
+- Mobile typecheck not run (node_modules absent).
 
-Parser improvements may be required, but they should be driven by product-boundary proof, not speculative parser expansion.
-
-P5 should answer:
-
-> Can I review useful outputs from my phone without opening the terminal?
-
-## P6 — Distribution & Local-first Polish
+## P2 — Core Feed Taxonomy
 
 Goal:
 
-Zero-friction onboarding.
+When a user opens a session, they understand recent activity as a readable story — not raw logs.
+
+### Scope
+
+Core event categories for bubble rendering:
+
+| Category | Rendered as | Existing event types |
+|----------|------------|---------------------|
+| Message | 💬 bubble | user_message, assistant_message |
+| Thinking | 💭 dimmed bubble | thinking |
+| Tool | ⚙ bubble with tool name | tool_call_started, tool_call_finished |
+| Interaction | ⚠ attention bubble | approval_requested, approval_resolved |
+| Error | ❌ error bubble | failed, error |
+| Completed | ✅ completion bubble | completed |
+| Unknown | ❓ dimmed fallback | unknown, all future types |
+
+### Acceptance
+
+- Each event type maps to a distinct bubble category.
+- Unknown/future event types fall back to a dimmed generic bubble.
+- Interaction events are visually prominent (attention-colored border).
+- Tool events show the tool name.
+- Error events are visually distinct (red).
+- No vendor-specific rendering branch.
+- No backend parser changes. Existing event contract used as-is.
+- Mobile typecheck run if available; otherwise `not-run` explicitly stated.
+- A7 unknown event fallback preserved.
+- A9 interaction card remains compatible.
+
+### Explicitly not in P2
+
+- Diff viewer
+- Deterministic summary
+- New parser / new backend event model
+- LLM summarization
+- Push / deep link routing
+- Installer / distribution work
+- Agent Cockpit
+- Review workflow
+
+## P1b — Attention Routing / Push Deep Link
+
+Goal:
+
+Route user attention to the right session when interaction is required.
+
+Acceptance:
+- Pending interaction push routes to the correct session.
+- Notification text does not leak prompt, command, token, or secret.
+- Deep link from notification opens the FeedScreen for that session.
+- Failure states are recoverable.
+
+Out of scope:
+- Changing A9 interaction contract.
+- New push infrastructure beyond what P1b requires.
+- Vendor-specific notification behavior.
+
+## P3 — Mobile Typecheck / Build Gate
+
+Goal:
+
+Establish reproducible build verification.
+
+Acceptance:
+- `npx tsc --noEmit` passes in CI or documented environment.
+- Build gate is documented and reproducible.
+- Known dependency requirements listed.
+
+Out of scope:
+- Full CI pipeline.
+- Multi-platform build matrix.
+
+## P4 — Device UX Smoke
+
+Goal:
+
+Prove the app works on real devices.
+
+Acceptance:
+- Dashboard sections render correctly.
+- Feed bubbles render correctly.
+- Interaction card works end-to-end.
+- Push notification arrives and routes correctly.
+- Degraded/unknown states render safely.
+
+## P5 — Installer / Onboarding
+
+Goal:
+
+Zero-friction first install.
 
 Features:
-
-- `npm install -g pokit`
 - `brew install pokit`
-- `winget install pokit`
-- QR Pairing
-- Auto Discovery
+- `npm install -g pokit`
+- QR pairing
+- First-run connection flow
 
-P6 is intentionally late because distribution polish should not hide an unclear first-run product experience.
+## P6 — Alpha Packaging
 
-P6 should answer:
+Goal:
 
-> Can a new user install, pair, and trust Pokit without guidance?
+Shippable alpha artifact.
+
+Features:
+- Versioned release
+- Signed binaries
+- Release notes
+- Known issues documented
+
+## Post-MVP Product Enhancements
+
+These are intentionally deferred past MVP. They are valid product directions but not required for the first alpha release.
+
+- **Agent Cockpit**: health, capability badges, runtime state, A10 diagnostics visualization.
+- **Deterministic Summary**: daily/weekly aggregation of tasks, files, errors. No LLM.
+- **Reviewable Work**: diff viewer, file viewer, commit summary, test result viewer. Requires parser work.
 
 ## MVP definition
 
 MVP includes:
 
-- Architecture A5~A10;
-- P1a Live Dashboard Core;
-- P2 core event feed;
-- A9 interaction contract and card.
+- Architecture A5~A10
+- P1a Live Dashboard Core
+- P2 Core Feed Taxonomy
+- P1b Attention Routing
+- P3 Mobile Build Gate
+- P4 Device UX Smoke
+- P5 Installer / Onboarding
+- P6 Alpha Packaging
 
-The first public MVP should allow a user to:
+MVP should allow a user to:
 
 - see active agents;
-- know where interaction is required;
-- understand recent activity;
-- respond safely;
+- know what needs attention;
+- understand recent activity as a story;
+- respond to interactions safely;
+- install and pair without guidance;
 
 within the first 30 seconds.
 
@@ -281,8 +256,11 @@ Not in MVP:
 - Cloud Command Center
 - Multi-Agent Orchestration
 - Project Management
+- Agent Cockpit
+- Deterministic Summary
+- Reviewable Work / Diff Viewer
 
-These may become separate products in the future, but they are intentionally excluded from Pokit's MVP.
+These may become separate products or post-MVP enhancements.
 
 ## Product acceptance model
 

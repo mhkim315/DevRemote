@@ -6,178 +6,138 @@
 ## Current state
 
 Architecture Phase (A0~A10): COMPLETE.
+Product Phase P1a: ACCEPTED (3fa4ad3c8).
 
-Accepted architecture baseline:
+Current baseline:
 
-- A5: Agent Backend Foundation
-- A6: Codex backend slice
-- A7: Agent Agnostic UX gate
-- A8: Third Agent Backend Ingestion / Observe Slice
-- A9: Capability-aware, option-based Interaction Request UX
-- A10: Diagnostics / Alpha Release Gate backend slice
-
-The next phase is Product Phase.
-
-Do not continue as if this is another architecture phase.
+- P1a Live Dashboard Core has four sections: Needs Attention, Running, Recently Completed, Degraded / View Only.
+- A9 interaction card is compatible and rendered within the dashboard.
+- Observe-only sessions show VIEW ONLY badge.
+- No vendor-specific mobile branches exist.
 
 ## Next target
 
-P1a — Live Dashboard Core.
+P2 — Core Feed Taxonomy.
 
-Mission:
+Do not implement P1b, P3, P4, P5, or P6.
 
-Improve first-use experience.
+## Why P2 now
 
-When opening Pokit, within 5 seconds the user should know:
+P1a sorted the dashboard. P2 makes individual sessions readable.
 
-- what is running;
-- what needs attention;
-- what they can interact with;
-- what is view-only, degraded, or offline.
+When a user taps a session, they should see a story, not raw logs.
+
+P1b (push routing) comes after P2 because routing to an unreadable feed is confusing.
 
 ## Mandatory reading
 
 Before implementation, read:
 
-- `docs/PRODUCT_PHASE_PLAN.md`
+- `docs/PRODUCT_PHASE_PLAN.md` (P2 section)
 - `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
-- `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
 - `docs/AGENT_PHASE_A10_ALPHA_CHECKLIST.md`
 
-Keep the A1~A10 retrospective lessons in mind:
+## P2 scope
 
-- fields are not contracts unless they reach the product boundary;
-- tests must prove the production path, not only helper behavior;
-- events do not imply capability;
-- option IDs do not carry semantic meaning;
-- scoped accept must not be presented as full product completion.
+### Goal
 
-## Implementation scope
+Transform the existing event list into a readable activity story using event type → bubble category mapping.
 
-Implement P1a only.
+### Event → Category mapping
 
-Build a dashboard experience using existing data from:
+Implement this taxonomy in EventBubble rendering:
 
-- `/api/sessions`
-- `agentKind`
-- `agentStatus`
-- `agentConfidence`
-- `capabilities`
-- `approvals`
-- `approval.options`
-- existing A9 interaction card behavior
+| Existing event type | Category | Visual |
+|---------------------|----------|--------|
+| user_message | Message | 💬 user-aligned bubble |
+| assistant_message | Message | 💬 agent-aligned bubble |
+| thinking | Thinking | 💭 dimmed, italic |
+| tool_call_started | Tool | ⚙ bubble, show tool name |
+| tool_call_finished | Tool | ⚙ dimmed result (collapsed by default) |
+| approval_requested | Interaction | ⚠ attention border, red |
+| approval_resolved | Interaction | ⚠ dimmed, resolved state |
+| failed | Error | ❌ red bubble |
+| error | Error | ❌ red bubble |
+| completed | Completed | ✅ green bubble |
+| agent_started | Message | 💬 system message |
+| unknown | Unknown | ❓ dimmed fallback |
+| *future types* | Unknown | ❓ dimmed fallback |
 
-Prefer mobile/UI changes over backend changes.
+### Acceptance
 
-Backend changes are allowed only if the existing product boundary is demonstrably insufficient. If backend changes are needed, document the reason in the commit message and tests.
+- Each known event type renders in its correct category.
+- Unknown/future event types fall back to a dimmed generic bubble (never crash).
+- Interaction events (approval_requested) are visually prominent with attention-colored border.
+- Tool events display the tool name.
+- Error events use red styling.
+- Thinking events are visually distinct from regular messages (dimmed).
+- No vendor-specific branch in event rendering (`if agentKind === ...` forbidden).
+- No backend parser changes. Use existing `/api/sessions.Events` data as-is.
+- Existing A9 interaction card in FeedScreen is preserved.
+- Mobile typecheck run if `node_modules` available; otherwise report `not-run`.
 
-## P1a acceptance
-
-P1a is accepted only if:
-
-- Needs Attention appears first.
-- Pending interaction is pinned above routine activity.
-- Running sessions are visible.
-- Recently completed or recently idle sessions are visible.
-- Degraded / Offline states are visually distinct.
-- Observe-only sessions are shown as View Only.
-- Capability-aware actions appear only when server-provided options/capabilities allow them.
-- Unknown agent kind renders safely.
-- Unknown agent status renders safely.
-- No vendor-specific mobile behavior branch is introduced.
-- A9 interaction card remains compatible.
-- Mobile typecheck or equivalent validation is run if dependencies are available.
-
-## Explicitly avoid
+### Explicitly avoid
 
 Do not implement:
 
-- new adapters;
-- new parser support;
-- new interaction contract;
-- new backend abstraction;
-- new diagnostics model;
-- summary feature;
-- diff viewer;
-- review workflow;
-- install/distribution work;
-- multi-project dashboard;
-- cloud dashboard;
-- IDE-like features.
+- diff viewer
+- file viewer
+- commit summary
+- deterministic aggregation / summary
+- new parser or backend event model
+- LLM summarization
+- push notification routing
+- deep link work
+- installer / distribution
+- Agent Cockpit
+- new dashboard sections
 
-Do not introduce mobile logic like:
+Do not introduce:
 
 ```ts
 if (agentKind === 'claude') { ... }
 if (agentKind === 'codex') { ... }
-if (agentKind === 'antigravity') { ... }
+switch (agentKind) { ... }
 ```
 
-Display names, icons, and generic labels are allowed only if they do not change behavior by vendor.
+Bubble category is determined by `event.type`, never by `agentKind`.
 
 ## Non-negotiable invariants
 
-Product work must preserve these architecture invariants:
+- A7: unknown event fallback preserved.
+- A9: interaction events do not imply control capability.
+- A9: interaction card remains compatible.
+- No vendor-specific rendering branch.
+- No backend contract change.
 
-- Mobile must not synthesize actions that the server did not provide.
-- Capability determines executability.
-- Observe-only means no control action.
-- Unknown agent kind/status/event must degrade gracefully.
-- `option.kind` drives interaction styling and status semantics, not `option.id`.
-- Sensitive prompt, command, token, path, and secret data must not leak in notifications, diagnostics, or dashboard surfaces.
-- Product UI must use existing architecture before requesting new backend work.
+## Suggested execution order
+
+1. Read the current `EventBubble.tsx` and `FeedScreen.tsx`.
+2. Identify the current event type → render logic.
+3. Map existing types into the P2 taxonomy.
+4. Add missing categories (Error, Completed, Interaction attention).
+5. Preserve existing A9 interaction card behavior.
+6. Ensure unknown/future types render as dimmed fallback.
+7. Run `go test ./...` in companion-daemon (no backend changes expected).
+8. Run mobile typecheck if available.
+9. Commit as P2 implementation slice.
 
 ## Reviewer checklist
 
 Reviewer will check:
 
-- no vendor-specific behavior branch in mobile;
-- pending interactions are surfaced first;
-- observe-only is view-only;
-- unknown agent/status fallback works;
-- capability-aware action visibility is preserved;
-- no backend contract changes without explicit justification;
-- no A9 interaction regression;
-- no A10 diagnostic/redaction regression;
-- product outcome is visible within the first 5 seconds;
-- implementation does not expand into P2/P3/P4/P5/P6.
-
-## Suggested execution order
-
-1. Inspect current mobile dashboard/session list components.
-2. Identify the smallest UI change that creates the P1a sections.
-3. Preserve existing event feed and interaction card behavior.
-4. Add lightweight helpers for grouping sessions if needed.
-5. Add tests or type-level checks where the project already supports them.
-6. Run available validation commands.
-7. Commit as a P1a implementation slice.
-
-## Suggested validation commands
-
-Run what is available in the local environment:
-
-```sh
-cd companion-daemon
-go test ./...
-go vet ./...
-```
-
-For mobile:
-
-```sh
-cd mobile
-npm test
-npm run typecheck
-```
-
-If mobile dependencies are unavailable, report `not-run` explicitly and include why.
+- each event type renders in the correct category;
+- unknown/future event types don't crash;
+- interaction events are visually prominent;
+- no vendor-specific branch exists;
+- no backend parser change;
+- A9 interaction card preserved;
+- mobile typecheck result reported.
 
 ## Completion statement format
 
-When handing back P1a, report:
-
 ```text
-P1a implementation complete.
+P2 implementation complete.
 
 Commit: <sha>
 
@@ -185,16 +145,18 @@ Changed:
 - ...
 
 Validation:
-- ...
+- go test ./...: ...
+- mobile tsc: ...
+- vendor branch grep: ...
 
 Known gaps:
 - ...
 
 Not done:
-- P1b push polish
-- P2 feed redesign
-- P3 cockpit
-- P4 summary
-- P5 review
-- P6 distribution
+- P1b push routing
+- P3 build gate
+- P4 device smoke
+- P5 installer
+- P6 alpha packaging
+- Post-MVP: cockpit, summary, review
 ```
