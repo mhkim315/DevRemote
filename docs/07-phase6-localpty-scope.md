@@ -68,8 +68,8 @@ if cfg.EnableLocalPTY {
 
 ### Step 2b: LocalPTYAdapter core + mock tests
 
-- `zellij_adapter.go` → `localpty_adapter.go` (신규)
-- `localpty_adapter_test.go` (신규)
+- `localpty_adapter.go` (신규 production file)
+- `localpty_adapter_test.go` (신규 test file)
 - `localptyExecRunner` — production PTY runner
 - Mock runner 기반 contract test
 

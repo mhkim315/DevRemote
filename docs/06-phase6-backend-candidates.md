@@ -96,20 +96,35 @@ machine-readable output 지원.
 **평가**: ★★☆☆☆ "텅 빈 백엔드". session discovery 개념이 없어 adapter abstraction과
 맞지 않음.
 
+### 7. LocalPTY (child process PTY)
+
+- **API/CLI**: `os.StartProcess`, `os/exec`, PTY 직접 제어
+- **Discovery**: 앱이 생성한 세션만 in-memory 관리 (create-only model)
+- **I/O**: PTY master read/write — 완전한 양방향 I/O
+- **Permissions**: user-level, shell/PTY만 필요
+- **macOS**: `posix_openpt` 또는 `grantpt` 기반, 추가 binary 불필요
+- **Mockability**: controlled child process (`echo`, `cat`)로 mock 가능
+
+**평가**: ★★★★★ **Phase 6 최종 선택**. 외부 daemon 불필요, tmux/cmux와 완전히
+다른 session ownership 모델, 실제 PTY live I/O 지원, architecture 검증력 최상.
+
+### 8. zellij (deferred alternative)
+
+- **Website**: https://zellij.dev
+- **Language**: Rust
+- **API/CLI**: `zellij list-sessions`, `zellij attach`, `zellij action`
+- **Discovery**: `zellij list-sessions -s` → machine-readable
+- **I/O**: `zellij action write-chars` + `zellij attach` (PTY)
+- **Mockability**: CLI 정의가 잘 되어 있어 mock runner 테스트 가능
+
+**평가**: ★★★★☆ 우수한 후보. LocalPTYAdapter 이후 Phase 7+에서 검토.
+tmux와 유사한 multiplexer 모델이므로 LocalPTY보다 architecture 검증력은 낮음.
+
 ## Recommendation
 
-**1순위: zellij**
+**Phase 6: LocalPTYAdapter**
 
-- tmux와 가장 유사한 multiplexer 모델
-- 풍부한 CLI, machine-readable output (`zellij list-sessions -s`)
-- Live I/O: `zellij action write-chars` + `zellij attach` (PTY)
-- Rust 기반, Homebrew 설치 가능, 크로스 플랫폼
-- Mock runner로 전체 contract suite 통과 가능
-
-**2순위: wezterm**
-
-- JSON output (`wezterm cli list --format json`) — 파싱이 가장 쉬움
-- 단, PTY attach 미지원으로 live stream 구현이 제한적
-
-**Phase 6 Step 1 결정**: zellij를 세 번째 backend 후보로 선택하고,
-Step 2(discovery + screen/history read-only slice)로 진행한다.
+- 외부 의존성 최소화 (shell + OS PTY)
+- tmux/cmux와 다른 session ownership 모델 — architecture 검증력 최고
+- create-only discovery + live PTY I/O → adapter abstraction 최종 검증
+- 이후 Phase 7+에서 zellij, wezterm 등 실제 multiplexer 검토 가능
