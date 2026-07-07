@@ -33,11 +33,8 @@ func (a *localptyAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 	defer a.mu.Unlock()
 	out := make([]Session, 0, len(a.sessions))
 	for _, s := range a.sessions {
-		// Skip sessions whose process has exited.
-		if s.native != nil && s.native.Cmd != nil && s.native.Cmd.ProcessState != nil {
-			if s.native.Cmd.ProcessState.Exited() {
-				continue
-			}
+		if s.exited {
+			continue
 		}
 		out = append(out, s)
 	}
@@ -81,6 +78,7 @@ func (a *localptyAdapter) TerminateSession(_ context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("%w: localpty session %q not found", ErrSessionNotFound, id)
 	}
+	s.exited = true
 	if err := s.native.Close(); err != nil {
 		return fmt.Errorf("localpty terminate: %w", err)
 	}
@@ -93,6 +91,7 @@ func (a *localptyAdapter) TerminateSession(_ context.Context, id string) error {
 type localptySession struct {
 	id     string
 	title  string
+	exited bool
 	native *NativeSession
 }
 
@@ -101,6 +100,11 @@ func (s *localptySession) Title() string       { return s.title }
 func (s *localptySession) AdapterName() string { return "localpty" }
 
 func (s *localptySession) OpenStream(_ context.Context) (TerminalStream, error) {
-	// NativeSession already implements TerminalStream (Read/Write/Resize/Close).
 	return s.native, nil
+}
+
+// WriteInput sends keystrokes to the PTY stdin.
+func (s *localptySession) WriteInput(_ context.Context, data []byte) error {
+	_, err := s.native.PTY.Write(data)
+	return err
 }

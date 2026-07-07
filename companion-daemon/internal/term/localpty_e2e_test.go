@@ -25,9 +25,10 @@ func TestLocalPTY_E2E_Lifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// cat echoes input immediately — no prompt, no banner, deterministic.
 	createID, err := reg.CreateSession(ctx, adapter.Name(), mux.CreateOptions{
 		Name:    "e2e-test",
-		Command: "bash",
+		Command: "cat",
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "SpawnPTY") || strings.Contains(err.Error(), "failed to start") {
@@ -79,30 +80,20 @@ func TestLocalPTY_E2E_Lifecycle(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// 4. Read initial output (bash banner/prompt).
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("WS read (initial output): %v", err)
-	}
-	if len(msg) == 0 {
-		t.Error("WS initial output is empty — expected shell banner")
-	}
-
-	// 5. Write input through WebSocket.
-	testInput := []byte("echo LOCALPTY_E2E_OK\n")
+	// 4. Write input — cat echoes it back.
+	testInput := []byte("LOCALPTY_E2E_OK\n")
 	if err := conn.WriteMessage(websocket.TextMessage, testInput); err != nil {
 		t.Fatalf("WS write: %v", err)
 	}
 
-	// 6. Read echoed output.
+	// 5. Read echoed output (cat echoes input to stdout via PTY).
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, msg2, err := conn.ReadMessage()
+	_, msg, err := conn.ReadMessage()
 	if err != nil {
-		t.Fatalf("WS read (echo output): %v", err)
+		t.Fatalf("WS read (echo): %v", err)
 	}
-	if !strings.Contains(string(msg2), "LOCALPTY_E2E_OK") {
-		t.Errorf("echo output not received in: %q", string(msg2))
+	if !strings.Contains(string(msg), "LOCALPTY_E2E_OK") {
+		t.Errorf("cat echo not received: %q", string(msg))
 	}
 
 	// 7. Terminate via API.

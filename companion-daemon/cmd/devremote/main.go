@@ -26,6 +26,7 @@ func main() {
 	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
 	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
 	insecureLocalOnly := flag.Bool("insecure-local-only", false, "Disable authentication (DANGEROUS)")
+	enableLocalPTY := flag.Bool("enable-localpty", false, "Enable LocalPTY adapter (experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -37,6 +38,7 @@ func main() {
 		OwnerUUID:          *ownerUUID,
 		SupabaseProjectRef: *supabaseRef,
 		InsecureLocalOnly:  *insecureLocalOnly,
+		EnableLocalPTY:     *enableLocalPTY,
 	})
 }
 
