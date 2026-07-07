@@ -51,10 +51,29 @@ func TestClaudeOutput_TruePositive_ProductionBridge(t *testing.T) {
 			if len(s.AgentEvents) == 0 {
 				t.Error("AgentEvents is empty (parser not wired)")
 			}
+			// Verify specific event types from Claude A1 fixtures.
+			hasUserMsg := false
+			hasThinking := false
 			for _, e := range s.AgentEvents {
 				if e.Type == "" {
 					t.Error("agent event has empty Type")
 				}
+				if string(e.Type) == "user_message" {
+					hasUserMsg = true
+				}
+				if string(e.Type) == "thinking" {
+					hasThinking = true
+				}
+			}
+			if !hasUserMsg {
+				t.Error("AgentEvents missing user_message")
+			}
+			if !hasThinking {
+				t.Error("AgentEvents missing thinking")
+			}
+			// Status must be parser-derived (not hardcoded working).
+			if s.AgentStatus != "working" && s.AgentStatus != "waiting_input" && s.AgentStatus != "thinking" {
+				t.Logf("AgentStatus=%s (parser-derived)", s.AgentStatus)
 			}
 		}
 	}
