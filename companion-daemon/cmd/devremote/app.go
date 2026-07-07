@@ -169,7 +169,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}))
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	telemetry := term.NewTelemetryService(reg, events, links, notifier)
+	telemetry := term.NewTelemetryService(reg, events, links, notifier, nil)
 	h.Telemetry = telemetry
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))

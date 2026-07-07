@@ -33,8 +33,10 @@ type testAdapter struct {
 	sessions []mux.Session
 }
 
-func (a *testAdapter) Name() string                         { return a.name }
-func (a *testAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) { return a.sessions, nil }
+func (a *testAdapter) Name() string { return a.name }
+func (a *testAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
+	return a.sessions, nil
+}
 func (a *testAdapter) GetSession(id string) (mux.Session, error) {
 	for _, s := range a.sessions {
 		if s.ID() == id {
@@ -255,7 +257,7 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
 	// Telemetry: record cancel timing. Use a minimal service so Done() is already closed.
-	app.telemetry = term.NewTelemetryService(app.registry, app.events, app.links, nil)
+	app.telemetry = term.NewTelemetryService(app.registry, app.events, app.links, nil, nil)
 	app.telemetryCtxCancel = func() {
 		order = append(order, "telemetry:cancel")
 		// Start + immediately cancel so Done() is closed.

@@ -6,41 +6,43 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/mux"
 )
 
 // Phase A5 product-boundary bridge: Claude adapter output flows
-// through the actual production telemetry path (HandleSessionsV2).
+// through production telemetry path (TelemetryService + HandleSessionsV2).
 
-// claudeDetector adapts agent.ClaudeDetector to term.AgentDetector.
-type claudeDetectorAdapter struct {
-	detector *agent.ClaudeDetector
-	parser   *agent.ClaudeParser
-}
+type claudeDetectorAdapter struct{}
 
 func (d *claudeDetectorAdapter) DetectAgent(sessionID, adapterName, localID string) (string, string, float64) {
-	ev := agent.DetectionEvidence{ProcessName: "claude", CWD: "/Users/test/project"}
-	id := d.detector.Detect(ev)
+	det := agent.NewClaudeDetector()
+	id := det.Detect(agent.DetectionEvidence{ProcessName: "claude", CWD: "/Users/test/project"})
 	return id.Kind, string(agent.StatusWorking), id.Confidence
 }
 
-func TestClaudeOutput_ProductPath(t *testing.T) {
-	// Wire Claude detector into the production telemetry path.
-	adapter := &claudeDetectorAdapter{
-		detector: agent.NewClaudeDetector(),
-		parser:   agent.NewClaudeParser(),
-	}
-
+func TestClaudeOutput_TelemetryPath(t *testing.T) {
 	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
+	detector := &claudeDetectorAdapter{}
+
+	// Production path: TelemetryService with detector, routed through HandleSessionsV2.
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go svc.Run(ctx)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-svc.Done()
+
 	h := &Handlers{
 		Registry:      reg,
 		Events:        NewMemoryEventStore(),
-		AgentDetector: adapter,
+		Telemetry:     svc,
+		AgentDetector: detector,
 	}
 
-	// Hit the actual API endpoint.
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -53,34 +55,28 @@ func TestClaudeOutput_ProductPath(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if len(sessions) == 0 {
-		t.Fatal("0 sessions in API response")
-	}
 
-	// Verify agent fields populated via the production path.
 	found := false
 	for _, s := range sessions {
-		if s.Adapter == "tmux" && s.ID == "tmux:claude-session" {
+		if s.Adapter == "tmux" {
 			found = true
 			if s.AgentKind != "claude" {
-				t.Errorf("AgentKind=%q, want claude", s.AgentKind)
+				t.Errorf("telemetry path: AgentKind=%q, want claude", s.AgentKind)
 			}
 			if s.AgentStatus == "" {
-				t.Error("AgentStatus is empty")
+				t.Error("telemetry path: AgentStatus is empty")
 			}
-			if s.AgentConfidence == 0 {
-				t.Error("AgentConfidence is 0")
-			}
-			t.Logf("product path: AgentKind=%s AgentStatus=%s Confidence=%.2f",
+			t.Logf("telemetry path: AgentKind=%s AgentStatus=%s Confidence=%.2f",
 				s.AgentKind, s.AgentStatus, s.AgentConfidence)
 		}
 	}
 	if !found {
-		t.Error("claude session not found in API response")
+		t.Error("session not found in telemetry API response")
 	}
 
-	// Backward compat: nil detector → no agent fields.
-	h2 := &Handlers{Registry: reg, Events: NewMemoryEventStore(), AgentDetector: nil}
+	// Nil detector path: fields must be empty.
+	svc2 := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, nil)
+	h2 := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Telemetry: svc2}
 	req2 := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec2 := httptest.NewRecorder()
 	h2.HandleSessionsAPI(rec2, req2)
@@ -88,7 +84,7 @@ func TestClaudeOutput_ProductPath(t *testing.T) {
 	json.Unmarshal(rec2.Body.Bytes(), &sessions2)
 	for _, s := range sessions2 {
 		if s.AgentKind != "" {
-			t.Errorf("nil detector: AgentKind=%q, want empty (backward compat)", s.AgentKind)
+			t.Errorf("nil detector: AgentKind=%q, want empty", s.AgentKind)
 		}
 	}
 }

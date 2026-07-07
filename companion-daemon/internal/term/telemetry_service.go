@@ -18,6 +18,7 @@ type TelemetryService struct {
 	events   EventStore
 	links    LinkStore
 	notifier Notifier
+	detector AgentDetector // Phase A5: optional agent detector (nil if not wired)
 	interval time.Duration
 
 	mu       sync.Mutex
@@ -26,7 +27,7 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
@@ -35,6 +36,7 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, 
 		events:   events,
 		links:    links,
 		notifier: notifier,
+		detector: detector,
 		interval: 2 * time.Second,
 		sessions: make(map[string]*sessionStateData),
 		done:     make(chan struct{}),
@@ -258,6 +260,17 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 		}
 	}
 	sortTelemetry(res)
+	// Phase A5: populate agent fields from detector.
+	if s.detector != nil {
+		for i := range res {
+			st := &res[i]
+			ref := mux.ParseSessionID(st.ID)
+			kind, status, confidence := s.detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID)
+			st.AgentKind = kind
+			st.AgentStatus = status
+			st.AgentConfidence = confidence
+		}
+	}
 	return res
 }
 
