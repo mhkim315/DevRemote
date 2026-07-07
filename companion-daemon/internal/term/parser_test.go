@@ -51,17 +51,17 @@ func TestClaudeParser(t *testing.T) {
 		t.Fatalf("Expected 4 events, got %d", len(events))
 	}
 
-	if events[0].Type != "user" {
-		t.Errorf("Expected user event, got %v", events[0].Type)
+	if events[0].Type != "user_message" {
+		t.Errorf("Expected user_message, got %v", events[0].Type)
 	}
-	if events[1].Type != "message" || events[1].Detail != "Hello User!" {
-		t.Errorf("Expected text message, got %v", events[1])
+	if events[1].Type != "assistant_message" || events[1].Detail != "Hello User!" {
+		t.Errorf("Expected assistant_message, got %v", events[1])
 	}
-	if events[2].Type != "message" || events[2].Detail != "Hmm..." {
-		t.Errorf("Expected thinking message, got %v", events[2])
+	if events[2].Type != "thinking" || events[2].Detail != "Hmm..." {
+		t.Errorf("Expected thinking, got %v", events[2])
 	}
-	if events[3].Type != "tool_use" || events[3].ToolCallID != "call-456" {
-		t.Errorf("Expected tool_use, got %v", events[3])
+	if events[3].Type != "tool_call_started" || events[3].ToolCallID != "call-456" {
+		t.Errorf("Expected tool_call_started, got %v", events[3])
 	}
 }
 
@@ -79,7 +79,7 @@ func TestGeminiParser(t *testing.T) {
 	}
 
 	if events[0].Type != "user" {
-		t.Errorf("Expected user event, got %v", events[0].Type)
+		t.Errorf("Expected user, got %v", events[0].Type)
 	}
 	if events[1].Type != "message" || events[1].Detail != "Hello User!" {
 		t.Errorf("Expected message, got %v", events[1])

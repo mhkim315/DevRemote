@@ -149,6 +149,22 @@ func (p *ClaudeParser) Parse(record json.RawMessage) ([]models.AgentEvent, error
 				}
 			}
 		}
+	} else if typ == "permission-mode" {
+		mode, _ := payload["permissionMode"].(string)
+		if mode == "ask" {
+			events = append(events, models.AgentEvent{
+				Session:   p.Session,
+				Agent:     "claude",
+				Type:      "approval_requested",
+				Summary:   "Approval Required",
+				Timestamp: ts,
+			})
+		}
+	}
+
+	// Normalize to common AgentEvent types before returning.
+	for i := range events {
+		normalizeEventType(&events[i])
 	}
 
 	return events, nil

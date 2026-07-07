@@ -270,7 +270,7 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 			errStr = snap.LastError.Error()
 		}
 		isStale := snap.LastError != nil
-		evts := normalizeEvents(events.List(compoundID))
+		evts := events.List(compoundID)
 		res = append(res, SessionTelemetry{
 			ID: compoundID, DisplayID: s.ID(), State: "idle", Load: 0,
 			Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(),
