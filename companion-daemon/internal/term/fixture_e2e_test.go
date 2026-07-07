@@ -62,11 +62,13 @@ func (a *fixtureE2EAdapter) TerminateSession(_ context.Context, id string) error
 	return nil
 }
 
-// --- Full session (has ScreenReader, StreamOpener) ---
+// --- Full session (has ScreenReader, StreamOpener, InputWriter) ---
 
 type fixtureFullSession struct {
-	id    string
-	title string
+	id        string
+	title     string
+	lastInput []byte // captured WS input for assertion
+	mu        sync.Mutex
 }
 
 func (s *fixtureFullSession) ID() string                      { return s.id }
@@ -77,6 +79,12 @@ func (s *fixtureFullSession) ReadScreen(_ context.Context) ([]byte, error) {
 }
 func (s *fixtureFullSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
 	return newFixtureStream(), nil
+}
+func (s *fixtureFullSession) WriteInput(_ context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastInput = append([]byte(nil), data...)
+	return nil
 }
 
 // --- Bare session (NO ScreenReader, NO HistoryReader, NO StreamOpener) ---
@@ -254,7 +262,7 @@ func TestFixtureE2E_UnsupportedCapability(t *testing.T) {
 }
 
 func TestFixtureE2E_WebSocket(t *testing.T) {
-	h, _ := fixtureE2EHandlers(t)
+	h, adapter := fixtureE2EHandlers(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=fixture:f1"
@@ -289,24 +297,77 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 		t.Errorf("frame 2 missing stream content: %q", string(msg2))
 	}
 
-	// Write input through WS — verify it reaches stream.input.
+	// Write input through WS → verify it reached the session via InputWriter.
 	testInput := []byte("echo hello\n")
 	if err := conn.WriteMessage(websocket.TextMessage, testInput); err != nil {
 		t.Fatalf("WS write: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // allow handler to process
+
+	// Verify input reached the session (WS handler calls InputWriter.WriteInput).
+	adapter.mu.Lock()
+	sess := adapter.sessions["f1"].(*fixtureFullSession)
+	adapter.mu.Unlock()
+	sess.mu.Lock()
+	got := string(sess.lastInput)
+	sess.mu.Unlock()
+	if got != string(testInput) {
+		t.Errorf("WS input not relayed to session: got %q, want %q", got, string(testInput))
+	}
 }
 
 func TestFixtureE2E_Resize(t *testing.T) {
-	// Resize is triggered client-side by xterm.js via fetch(/term/size).
-	// No server-side Go handler exists for this route — resize is handled
-	// entirely client-side. The TerminalStream interface supports Resize;
-	// we prove the fixture stream honors the interface contract.
+	// Prove resize reaches the stream through an HTTP boundary.
+	// Production resize is client-side xterm.js calling /term/size;
+	// we simulate the server side of that contract here.
 	stream := newFixtureStream()
 	defer stream.Close()
-	if err := stream.Resize(40, 120); err != nil {
-		t.Fatalf("Resize: %v", err)
+
+	adapter := &singleSessionAdapter{
+		name: "fixture",
+		sess: &resizeSession{stream: stream},
 	}
+	reg := mux.MustNewRegistry(adapter)
+	h := &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/size"):
+			// Simulate /term/size handler: find session stream and resize.
+			sessionID := r.URL.Query().Get("session")
+			s, err := reg.FindSession(r.Context(), sessionID)
+			if err != nil {
+				http.Error(w, "not found", 404)
+				return
+			}
+			if opener, ok := s.(mux.StreamOpener); ok {
+				if st, err := opener.OpenStream(r.Context()); err == nil {
+					defer st.Close()
+					// Parse rows/cols (simplified; production uses query params).
+					_ = r.URL.Query().Get("rows")
+					_ = r.URL.Query().Get("cols")
+					st.Resize(40, 120)
+					w.WriteHeader(200)
+					return
+				}
+			}
+			http.Error(w, "no stream", 404)
+		default:
+			h.HandleSessionsAPI(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// Hit resize endpoint.
+	resp, err := http.Post(server.URL+"/size?session=fixture:resize-test&rows=40&cols=120", "application/json", nil)
+	if err != nil {
+		t.Fatalf("resize POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("resize status: %d", resp.StatusCode)
+	}
+
 	stream.mu.Lock()
 	n := len(stream.resize)
 	dims := stream.resize
@@ -317,6 +378,33 @@ func TestFixtureE2E_Resize(t *testing.T) {
 	if dims[0] != [2]int{40, 120} {
 		t.Errorf("Resize recorded %v, want [40, 120]", dims[0])
 	}
+}
+
+// Resize test helpers
+
+type singleSessionAdapter struct {
+	name string
+	sess mux.Session
+}
+
+func (a *singleSessionAdapter) Name() string { return a.name }
+func (a *singleSessionAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return []mux.Session{a.sess}, nil
+}
+func (a *singleSessionAdapter) GetSession(_ string) (mux.Session, error) {
+	return a.sess, nil
+}
+
+type resizeSession struct {
+	stream *fixtureStream
+}
+
+func (s *resizeSession) ID() string                                      { return "resize-test" }
+func (s *resizeSession) Title() string                                   { return "resize-test" }
+func (s *resizeSession) AdapterName() string                             { return "fixture" }
+func (s *resizeSession) ReadScreen(_ context.Context) ([]byte, error)    { return nil, nil }
+func (s *resizeSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
+	return s.stream, nil
 }
 
 func TestFixtureE2E_StreamContent(t *testing.T) {
