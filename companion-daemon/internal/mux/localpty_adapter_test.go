@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // --- Mock session (no real PTY needed for contract tests) ---
@@ -115,4 +116,64 @@ func TestLocalPTYAdapter_Contract(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestLocalPTYAdapter_NaturalExit(t *testing.T) {
+	// Short-lived command (true) must disappear from discovery after exit.
+	adapter := NewLocalPTYAdapter()
+	reg := MustNewRegistry(adapter)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	id, err := reg.CreateSession(ctx, adapter.Name(), CreateOptions{
+		Name:    "exit-test",
+		Command: "true",
+	})
+	if err != nil {
+		if stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "failed to start") {
+			t.Skipf("PTY not available: %v", err)
+		}
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Wait for process to exit naturally.
+	time.Sleep(500 * time.Millisecond)
+
+	sessions := reg.Sessions(context.Background())
+	for _, s := range sessions {
+		if s.ID() == id {
+			t.Errorf("naturally exited session %q still in discovery", id)
+		}
+	}
+}
+
+func TestLocalPTYAdapter_TerminateThenList(t *testing.T) {
+	adapter := NewLocalPTYAdapter()
+	reg := MustNewRegistry(adapter)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	id, err := reg.CreateSession(ctx, adapter.Name(), CreateOptions{
+		Name:    "term-test",
+		Command: "cat",
+	})
+	if err != nil {
+		if stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "failed to start") {
+			t.Skipf("PTY not available: %v", err)
+		}
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := reg.TerminateSession(ctx, adapter.Name(), id); err != nil {
+		t.Fatalf("TerminateSession: %v", err)
+	}
+
+	sessions := reg.Sessions(context.Background())
+	for _, s := range sessions {
+		if s.ID() == id {
+			t.Errorf("terminated session %q still in discovery", id)
+		}
+	}
 }

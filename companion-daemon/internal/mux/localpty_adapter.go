@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // localptyAdapter manages child PTY sessions owned by the daemon.
@@ -67,6 +69,25 @@ func (a *localptyAdapter) CreateSession(_ context.Context, opts CreateOptions) (
 		native: native,
 	}
 	a.sessions[id] = s
+
+	// Watch for natural process exit via Signal(0) polling.
+	// Avoids data race from dual cmd.Wait() (SpawnPTY also calls Wait).
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if native.Cmd.Process == nil {
+				break
+			}
+			if err := native.Cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				a.mu.Lock()
+				s.exited = true
+				a.mu.Unlock()
+				return
+			}
+		}
+	}()
+
 	return id, nil
 }
 
