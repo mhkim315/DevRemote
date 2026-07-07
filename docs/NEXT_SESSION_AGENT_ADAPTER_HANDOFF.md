@@ -29,6 +29,7 @@
   - Phase A6 Codex Backend Slice accepted
   - Phase A7 Agent Agnostic UX / Product Gate accepted
   - Phase A8-prep Antigravity actual-log fixture collection accepted
+  - Phase A8 Third Agent Backend Slice accepted
 - A5a scoped acceptance reviewed commit: `c15659568`
 - A5a verifier document: `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
 - A6 backend acceptance verifier commit: `1fc12bf`
@@ -38,6 +39,8 @@
 - A8-prep executor commit: `de3197dbc`
 - A8-prep scope document: `docs/AGENT_PHASE_A8_PREP_SCOPE.md`
 - A8 executor onboarding document: `docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md`
+- A8 implementation commits: `512f984d5`, `8a798f56b`
+- A8 backend acceptance document: `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
 - 핵심 결론:
   - tmux/cmux production adapter를 깨지 않고 LocalPTY까지 붙였다.
   - mobile은 terminal backend 이름 목록이 아니라 capability로 동작한다.
@@ -46,8 +49,8 @@
   - Claude backend foundation과 Codex backend slice가 accepted 됐다.
   - A6 ACCEPT는 Backend Slice Acceptance이며 Product Completion을 의미하지 않는다.
   - A7 ACCEPT는 Agent Agnostic UX/Product Gate 통과이며 release-complete를 의미하지 않는다.
-  - A8-prep는 Antigravity 실제 로그 fixture 수집으로 ACCEPT됐지만, A8 backend slice 완료는 아니다.
-  - 다음 핵심은 Antigravity production detector/resolver/parser/telemetry backend slice다.
+  - A8 ACCEPT는 Antigravity production detector/resolver/parser/telemetry/API backend slice 통과를 의미한다.
+  - 다음 핵심은 Approval UX다.
 
 Phase 1~7의 의미:
 
@@ -63,22 +66,30 @@ without hardcoding backend-specific behavior at the product boundary.
 Agent Adapter Layer:
 Claude / Codex-GPT / Antigravity / unknown agent outputs should normalize into
 Common AgentEvent, AgentStatus, AgentIdentity, and AgentApproval models.
+
+Next product goal:
+Approval UX should make approval_requested / waiting_approval states safe to
+understand and act on from mobile.
 ```
 
 ## 반드시 먼저 읽을 파일
 
-1. `docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md`
-2. `docs/AGENT_ADAPTER_LAYER_PLAN.md`
-3. `docs/AGENT_PHASE_A8_PREP_SCOPE.md`
-4. `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+1. `docs/AGENT_ADAPTER_LAYER_PLAN.md`
+2. `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
+3. `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
+4. `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
 5. `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
-6. `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
-7. `docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md`
+6. `docs/AGENT_PHASE_A5_SCOPED_ACCEPTANCE.md`
+7. `docs/AGENT_PHASE_A8_PREP_SCOPE.md`
 8. `docs/ADAPTER_PHASE_7_ACCEPTANCE.md`
 9. `docs/08-phase7-adapter-ops.md`
 10. `docs/09-phase7-mobile-smoke.md`
 11. `docs/ADAPTER_EXPANSION_PLAN.md`
 12. `docs/ARCHITECTURE.md`
+
+Historical only:
+
+- `docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md`
 
 코드 확인용:
 
@@ -119,10 +130,10 @@ Agent Adapter 담당:
 
 ## 실행에이전트가 시작할 작업
 
-### 다음 작업: Phase A8 — Third Agent Backend Slice
+### 다음 작업: Phase A9 — Approval UX
 
 A5는 **Agent Backend Foundation**으로 종료됐고, A6는 **Codex Backend Slice**로 accepted 됐으며,
-A7은 **Agent Agnostic UX / Product Gate**로 accepted 됐다.
+A7은 **Agent Agnostic UX / Product Gate**로 accepted 됐고, A8은 **Third Agent Backend Slice**로 accepted 됐다.
 
 근거:
 
@@ -131,6 +142,7 @@ A7은 **Agent Agnostic UX / Product Gate**로 accepted 됐다.
 - `docs/AGENT_PHASE_A5B_DEGRADED_FOLLOWUP_REVIEW.md`
 - `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`
 - `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
+- `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
 
 A5 accepted backend contract:
 
@@ -174,25 +186,35 @@ A7 이후 불변조건:
 2. unknown/future agent/event/status는 graceful fallback한다.
 3. `agentKind`/`agentStatus`는 activity path 전체에서 보존한다.
 
-A8 목표:
+A8 accepted backend contract:
 
-1. Claude/Codex 외에 실제 redacted fixture가 있는 제3 agent를 backend contract에 태운다.
-2. parser/detector/resolver 확장이 기존 Claude/Codex production parser 수정 없이 가능한지 재검증한다.
-3. output은 common `AgentEvent`, `AgentStatus`, `AgentIdentity` contract로 변환한다.
-4. mobile은 A7에서 검증한 common status/event/capability UX를 그대로 사용한다.
+1. actual Antigravity redacted fixtures;
+2. Antigravity detector/resolver/parser;
+3. term-layer production `AntigravityParser`;
+4. `TelemetryService.processSession → ReadNewEvents → EventStore.Append`;
+5. `/api/sessions.Events` product boundary;
+6. `agentKind="antigravity"` preservation;
+7. common events including `user_message`, `assistant_message`, `tool_call_started`;
+8. unknown/system Antigravity records do not hide or kill the terminal session;
+9. Claude/Codex/A7 regression preservation.
+
+A9 목표:
+
+1. `approval_requested` / `waiting_approval` 상태를 모바일에서 안전하게 이해할 수 있게 한다.
+2. 사용자가 approve/reject/open terminal 흐름을 혼동하지 않게 한다.
+3. pending/expired/resolved/failed 상태를 구분한다.
+4. duplicate tap과 backend retry가 안전하게 처리되게 한다.
+5. sensitive command/prompt/token이 push/mobile/log/diagnostic에 노출되지 않게 한다.
 
 해야 할 일:
 
-1. 실제 third agent 후보 fixture inventory를 작성한다.
-   - 후보: Gemini, Qwen, OpenAI Responses, Antigravity, OpenCode, Aider.
-   - raw fixture는 커밋하지 않는다.
-   - redacted fixture만 커밋한다.
-2. 실제 redacted fixture가 충분하면 parser/detector/resolver를 추가한다.
-3. 실제 fixture가 불충분하면 A8 implementation을 시작하지 말고 A8-prep fixture inventory/redaction만 커밋한다.
-4. third agent events/status를 common contract로 canonicalize한다.
-5. production telemetry boundary에 연결한다.
-6. A5/A6/A7 regression을 유지한다.
-7. unknown/future agent fallback이 깨지지 않았음을 검증한다.
+1. Common `AgentApproval` product contract를 확인하고 부족한 필드를 문서화한다.
+2. approval card UX를 common status/event/capability 기반으로 추가한다.
+3. approve/reject action path를 구현하거나, action capability가 없으면 명시적 `Open Terminal` fallback으로 제한한다.
+4. pending/expired/resolved/failed 상태와 recoverable error UI를 추가한다.
+5. 중복 tap 방지와 backend idempotency를 보장한다.
+6. audit log 또는 최소한의 action trace를 redaction-safe하게 남긴다.
+7. Claude/Codex/Antigravity/A7 unknown fallback regression을 유지한다.
 
 금지:
 
@@ -204,35 +226,38 @@ A8 목표:
 - unknown agent를 fatal/unsupported로 취급해 terminal session을 숨기지 않는다.
 - parser failure를 terminal session failure로 전파하면 안 된다.
 - raw prompt/token/path/code를 API, mobile, push, diagnostic에 노출하면 안 된다.
-- backend common contract를 A8에서 변경하지 않는다. 필요하면 먼저 문서화하고 검증 에이전트 판정을 받아야 한다.
+- backend common contract를 A9에서 변경할 경우 vendor-agnostic이어야 하며, 먼저 문서화하고 검증 에이전트 판정을 받아야 한다.
 
 권장 커밋 메시지:
 
 ```text
-feat: agent phase A8 third backend slice
+feat: agent phase A9 approval ux
 ```
 
-Phase A8 완료 보고 형식:
+Phase A9 완료 보고 형식:
 
 ```text
-Phase A8 완료 — <commit>
+Phase A9 완료 — <commit>
 
 주요 변경:
 - ...
 
 검증 포인트:
-- 실제 redacted fixture 존재
-- 가짜 third agent / 상상 기반 parser 없음
-- Detector/Resolver/Parser 연결
-- Common AgentEvent/AgentStatus/AgentIdentity contract 변환
-- A5/A6/A7 regression 유지
+- approval card
+- approve/reject/open terminal fallback
+- pending/expired/resolved/failed 상태
+- duplicate tap 방지
+- backend idempotency
+- recoverable failure UI
+- redaction-safe audit/action trace
+- A5/A6/A7/A8 regression 유지
 - Mobile/common vendor-specific behavior branch 없음
 - Unknown/future fallback 유지
 ```
 
 ### Mandatory release-gate follow-ups
 
-A5/A6/A7 종료가 아래 항목의 완료를 의미하지 않는다.
+A5/A6/A7/A8 종료가 아래 항목의 완료를 의미하지 않는다.
 
 반드시 별도 release gate로 추적한다:
 
@@ -368,15 +393,19 @@ Antigravity: ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcrip
 
 ### Phase A8 — Third Agent Backend Slice
 
-- 다음 작업.
-- 실제 redacted fixture가 있는 제3 agent만 진행한다.
-- Antigravity fixture가 충분하면 Antigravity, 아니면 Gemini/Qwen/OpenAI Responses/OpenCode/Aider 등 실제 fixture 확보 가능한 agent.
-- 실제 fixture가 없으면 implementation 대신 A8-prep fixture inventory/redaction만 진행한다.
-- structured log가 없으면 screen/process fallback과 low confidence UX를 명확히 표시한다.
-- A7 불변조건을 유지한다.
+- 완료.
+- accepted scope는 Third Agent Backend Slice다.
+- Antigravity actual-log evidence가 production telemetry/API boundary까지 common Agent contract로 흐른다.
+- Approval UX 완성이나 release-complete를 의미하지 않는다.
+- A7 불변조건을 regression으로 유지한다.
+
+검증 문서:
+
+- `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
 
 ### Phase A9 — Approval UX
 
+- 다음 작업.
 - Common AgentApproval 기반 CTA.
 - approval card.
 - approve/reject action.
@@ -498,26 +527,25 @@ node_modules/.bin/tsc --noEmit
 ## 다음 대화에서 실행에이전트에게 줄 요청
 
 ```text
-de3197dbc 이후 docs/AGENT_PHASE_A8_EXECUTOR_ONBOARDING.md,
+8a798f56b 이후 docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md,
 docs/AGENT_ADAPTER_LAYER_PLAN.md,
 docs/NEXT_SESSION_AGENT_ADAPTER_HANDOFF.md,
-docs/AGENT_PHASE_A8_PREP_SCOPE.md,
-docs/AGENT_PHASE_A7_ACCEPTANCE.md를 읽고,
-Phase A8 Third Agent Backend Slice implementation을 시작해줘.
-Antigravity 실제 redacted fixture는 de3197dbc에서 확보됐으니,
-production detector/resolver/parser/telemetry path를 common Agent contract로 연결해줘.
-구현 중 실제 production blocker가 확인되면 A8 완료로 포장하지 말고 blocker 문서만 커밋/푸시해줘.
+docs/AGENT_UX_RELEASE_GATE_FOLLOWUPS.md를 읽고,
+Phase A9 Approval UX를 시작해줘.
+approval_requested / waiting_approval 상태를 모바일에서 안전하게 이해하고
+approve/reject/open terminal fallback으로 조작할 수 있게 구현해줘.
 mobile/common vendor-specific behavior branch는 추가하지 마.
 ```
 
 검증에이전트에게 줄 요청:
 
 ```text
-<executor-commit> 기준으로 Agent Adapter Phase A8을 검증해줘.
-구현하지 말고 Agent Adapter Phase A8 Third Agent Backend Slice acceptance만 엄격히 판정해줘.
-특히 실제 redacted fixture 존재, 가짜 third agent 금지, parser/detector/resolver 연결,
-common event/status contract 변환, A5/A6/A7 regression 유지,
-mobile/common vendor-specific behavior branch 금지를 확인해줘.
+<executor-commit> 기준으로 Agent Adapter Phase A9을 검증해줘.
+구현하지 말고 Approval UX acceptance만 엄격히 판정해줘.
+특히 approval card, approve/reject/open terminal fallback,
+pending/expired/resolved/failed 상태, duplicate tap 방지,
+backend idempotency, recoverable failure UI, redaction-safe audit/action trace,
+A5/A6/A7/A8 regression, mobile/common vendor-specific behavior branch 금지를 확인해줘.
 ```
 
 ## 현재 판단
@@ -543,5 +571,5 @@ A0 Scope
 ```
 
 첫 번째 실제 구현 고비는 A1 fixture/redaction이고, backend 추상화 고비는 A6 두 번째 agent 추가다.
-이후 제품화 고비는 A7 Agent Agnostic UX였다. A8부터는 실제 fixture 없는 parser 구현을 금지하고,
-A7 불변조건을 regression으로 유지하면서 제3 agent backend slice를 붙인다.
+이후 제품화 고비는 A7 Agent Agnostic UX였고, A8에서 실제 제3 agent backend slice가 닫혔다.
+다음 고비는 A9 Approval UX다. 여기서 사용자가 승인/거절/대기/완료/실패 상태를 안전하게 이해하고 조작할 수 있어야 한다.

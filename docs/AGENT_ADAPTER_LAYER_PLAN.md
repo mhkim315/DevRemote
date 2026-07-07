@@ -973,6 +973,16 @@ A7 이후 불변조건:
 - unknown agent fallback이 실제로 안전하다.
 - A5/A6/A7 regression이 유지된다.
 
+상태:
+
+- **accepted**
+- 실행 커밋:
+  - `512f984d5` — Antigravity parser/detector/resolver
+  - `8a798f56b` — production telemetry path wiring
+- 검증 문서: `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
+- A8 ACCEPT는 실제 제3 agent인 Antigravity가 production telemetry/API boundary까지 common Agent contract로 흐름을 의미한다.
+- A8 ACCEPT는 Approval UX 완성이나 Alpha/release-complete를 의미하지 않는다.
+
 ### Phase A9 — Approval UX 공통화
 
 목표:

@@ -1,10 +1,11 @@
 # Agent Adapter UX Release Gate Follow-ups
 
-This document tracks mandatory follow-ups that were intentionally split out of Phase A5 and reaffirmed after Phase A6/A7.
+This document tracks mandatory follow-ups that were intentionally split out of Phase A5 and reaffirmed after Phase A6/A7/A8.
 
 Phase A5 is accepted as Agent Backend Foundation.
 Phase A6 is accepted as Codex Backend Slice.
 Phase A7 is accepted as Agent Agnostic UX/Product Gate.
+Phase A8 is accepted as Third Agent Backend Slice.
 
 These acceptances do not mean product completion. The items below are blockers for release/product-complete status.
 
@@ -135,6 +136,33 @@ Closure:
 - A6 backend acceptance is documented in `docs/AGENT_PHASE_A6_BACKEND_ACCEPTANCE.md`.
 - Keep these checks as regression requirements for A7 and later.
 
+## Gate 4b — A8 must preserve A7 agnostic UX and backend contract
+
+Status: **CLOSED FOR A8 BACKEND ACCEPTANCE / KEEP AS REGRESSION**
+
+A8 Antigravity backend expansion must:
+
+- use actual redacted Antigravity fixtures;
+- connect detector/resolver/parser to the production telemetry path;
+- expose Antigravity events through `EventStore` and `/api/sessions.Events`;
+- preserve `agentKind="antigravity"` through the activity path;
+- avoid adding mobile/common vendor-specific behavior branches;
+- keep unknown/future agent fallback intact.
+
+Closure:
+
+- A8 backend acceptance is documented in `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`.
+- Keep these checks as regression requirements for A9 and later.
+
+Follow-up:
+
+- The term-layer Antigravity parser currently normalizes `ERROR_MESSAGE` through
+  the legacy `tool_result` path, while the agent-layer parser maps
+  `ERROR_MESSAGE` to `failed`. This did not block A8 because the backend
+  slice proved production flow and terminal survival. A9/A10 should decide the
+  product-level representation for failed/degraded agent events and align the
+  parsers if needed.
+
 ## Gate 5 — Approval UX
 
 Status: **MANDATORY FOR A9**
@@ -170,6 +198,6 @@ Required proof:
 
 ## Release rule
 
-A6/A7 acceptance may stand before approval and diagnostics gates are fully closed.
+A6/A7/A8 acceptance may stand before approval and diagnostics gates are fully closed.
 
 Product/release-complete status may not be claimed until all mandatory gates are closed or explicitly replaced by an accepted product decision.

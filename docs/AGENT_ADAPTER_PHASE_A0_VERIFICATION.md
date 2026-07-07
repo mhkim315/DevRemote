@@ -49,7 +49,7 @@ handoff 문서에는 `~/.codex/projects/*/` 패턴이 기술되어 있으나 실
 | A5 | Agent Backend Foundation | Claude backend core, product boundary | ✅ |
 | A6 | Codex Backend Slice | Claude 수정 없이 Codex backend 추가 | ✅ |
 | A7 | Agent Agnostic UX / Product Gate | unknown kind/status/degraded/schema compatibility | ✅ |
-| A8 | Third Agent Backend Slice | A7 후 실제 third agent 추가 | 📋 |
+| A8 | Third Agent Backend Slice | Antigravity production telemetry/API boundary | ✅ |
 | A9 | Approval UX 공통화 | common approval model | 📋 |
 | A10 | Diagnostics / Alpha Release Gate | redaction, health, 진단, release gate | 📋 |
 

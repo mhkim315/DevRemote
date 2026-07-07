@@ -4,6 +4,13 @@ Date: 2026-07-07
 
 Audience: a fresh **execution agent** with no previous conversation context.
 
+Status: **historical after A8 acceptance**
+
+Current replacement entrypoint:
+
+- `docs/AGENT_PHASE_A8_BACKEND_ACCEPTANCE.md`
+- `docs/NEXT_SESSION_AGENT_ADAPTER_HANDOFF.md`
+
 This document exists because the prior execution agent lost context. Use this as
 the bootstrap instruction set for continuing Agent Adapter Layer work from the
 latest accepted state.

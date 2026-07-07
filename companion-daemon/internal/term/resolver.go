@@ -15,7 +15,7 @@ var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 // LogRef holds the resolved path and agent metadata for parsing
 type LogRef struct {
 	Path    string
-	Agent   string // "codex", "claude", "gemini"
+	Agent   string // "codex", "claude", "gemini", "antigravity"
 	Session string
 }
 
