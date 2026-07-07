@@ -33,6 +33,17 @@ const (
 	StatusDegraded        AgentStatus = "degraded"
 )
 
+// AgentCapability defines what actions are available for an agent session.
+// These gate approval CTA visibility and action execution.
+type AgentCapability string
+
+const (
+	CapObserve AgentCapability = "observe" // session is observable
+	CapControl AgentCapability = "control" // terminal is controllable (open terminal)
+	CapApprove AgentCapability = "approve" // remote approve/reject supported
+	CapInput   AgentCapability = "input"   // send_text/send_key supported
+)
+
 // AgentEventType categorizes the semantic meaning of an event.
 type AgentEventType string
 

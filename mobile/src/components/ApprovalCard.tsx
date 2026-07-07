@@ -36,10 +36,9 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
     }
   };
 
-  const options = approval.options || [
-    { id: 'approve', label: 'Approve' },
-    { id: 'reject', label: 'Reject' },
-  ];
+  // Capability-aware: use server-provided options only.
+  // Never synthesize approve/reject client-side.
+  const options = approval.options || [];
 
   const createdAt = approval.createdAt
     ? new Date(approval.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -65,6 +64,8 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
 
       {loading ? (
         <ActivityIndicator color="#45EBE9" style={{ marginVertical: 16 }} />
+      ) : options.length === 0 ? (
+        <Text style={styles.unavailableText}>No remote actions available</Text>
       ) : (
         <View style={styles.buttonRow}>
           {options.map(opt => {
@@ -136,6 +137,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginBottom: 16,
     lineHeight: 20,
+  },
+  unavailableText: {
+    color: '#8b949e',
+    fontSize: 13,
+    fontStyle: 'italic',
+    marginBottom: 12,
   },
   errorRow: {
     flexDirection: 'row',

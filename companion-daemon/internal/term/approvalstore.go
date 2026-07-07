@@ -20,6 +20,8 @@ type ApprovalStore interface {
 	List(sessionID string) []agent.AgentApproval
 	// Resolve marks an approval as approved or rejected. Returns false if not found or already resolved.
 	Resolve(sessionID, approvalID, status string) bool
+	// Lookup returns an approval by ID even if expired. Returns nil if not found.
+	Lookup(sessionID, approvalID string) *agent.AgentApproval
 }
 
 // NewApprovalStore creates an in-memory ApprovalStore.
@@ -84,10 +86,14 @@ func (s *memoryApprovalStore) List(sessionID string) []agent.AgentApproval {
 	now := time.Now()
 	result := make([]agent.AgentApproval, 0, len(existing))
 	for _, a := range existing {
-		// Keep pending + recently resolved (within expiry window).
-		if a.Status == "pending" || now.Sub(a.CreatedAt) < approvalExpiry {
-			result = append(result, a)
+		// Keep pending within expiry + recently resolved (within expiry window).
+		if a.Status == "pending" && now.Sub(a.CreatedAt) >= approvalExpiry {
+			continue // Expired pending.
 		}
+		if a.Status != "pending" && now.Sub(a.CreatedAt) >= approvalExpiry {
+			continue // Expired resolved.
+		}
+		result = append(result, a)
 	}
 	return result
 }
@@ -102,6 +108,9 @@ func (s *memoryApprovalStore) Resolve(sessionID, approvalID, status string) bool
 			if a.Status != "pending" {
 				return false // Already resolved.
 			}
+			if time.Since(a.CreatedAt) > approvalExpiry {
+				return false // Expired.
+			}
 			now := time.Now()
 			existing[i].Status = status
 			existing[i].ResolvedAt = &now
@@ -109,4 +118,17 @@ func (s *memoryApprovalStore) Resolve(sessionID, approvalID, status string) bool
 		}
 	}
 	return false // Not found.
+}
+
+func (s *memoryApprovalStore) Lookup(sessionID, approvalID string) *agent.AgentApproval {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := s.approvals[sessionID]
+	for i, a := range existing {
+		if a.ID == approvalID {
+			return &existing[i]
+		}
+	}
+	return nil
 }

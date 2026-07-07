@@ -152,22 +152,21 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					lastEvent = newEvents[len(newEvents)-1]
 
 					// Phase A9: detect approval events and track in ApprovalStore.
+					// Phase A9: capability-aware approval options.
 					var newApprovals []agent.AgentApproval
 					for _, e := range newEvents {
 						if e.Type == "approval_requested" {
+							options := buildApprovalOptions(sess)
+
 							newApprovals = append(newApprovals, agent.AgentApproval{
 								ID:        fmt.Sprintf("%s-%s", id, e.ID),
 								SessionID: id,
 								AgentKind: logRef.Agent,
 								Status:    "pending",
 								Prompt:    firstNonEmpty(e.Detail, e.Summary, "Approval requested"),
-								Options: []agent.ApprovalOption{
-									{ID: "approve", Label: "Approve"},
-									{ID: "reject", Label: "Reject"},
-									{ID: "open_terminal", Label: "Open Terminal"},
-								},
-								Default:    "reject",
-								Source:     "jsonl",
+								Options:   options,
+								Default:   "reject",
+								Source:    "jsonl",
 								Confidence: 0.9,
 							})
 						}
@@ -346,6 +345,29 @@ func (s *TelemetryService) Clear(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+}
+
+// buildApprovalOptions returns capability-aware approval options for a session.
+func buildApprovalOptions(sess mux.Session) []agent.ApprovalOption {
+	_, hasInput := sess.(mux.InputWriter)
+	_, hasStream := sess.(mux.StreamOpener)
+
+	var options []agent.ApprovalOption
+	if hasStream {
+		options = append(options, agent.ApprovalOption{ID: "open_terminal", Label: "Open Terminal"})
+	}
+	if hasInput {
+		options = append(options,
+			agent.ApprovalOption{ID: "approve", Label: "Approve"},
+			agent.ApprovalOption{ID: "reject", Label: "Reject"},
+			agent.ApprovalOption{ID: "send_text", Label: "Send Text"},
+			agent.ApprovalOption{ID: "send_key", Label: "Send Key"},
+		)
+	}
+	if len(options) == 0 {
+		options = append(options, agent.ApprovalOption{ID: "view_only", Label: "View Only"})
+	}
+	return options
 }
 
 // firstNonEmpty returns the first non-empty string from the given candidates.
