@@ -1,11 +1,18 @@
 #!/bin/sh
 # P3 Build Gate — reproducible verification script.
-# Run from project root: sh scripts/build-gate.sh
+# Run from project root:
+#   sh scripts/build-gate.sh              # strict: all gates must pass
+#   ALLOW_MOBILE_NOT_RUN=1 sh scripts/build-gate.sh   # backend-only
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON_DIR="$PROJECT_ROOT/companion-daemon"
 MOBILE_DIR="$PROJECT_ROOT/mobile"
+MOBILE_NOT_RUN="${ALLOW_MOBILE_NOT_RUN:-0}"
+MOBILE_SKIPPED=0
+
+gate_pass()  { printf "  %s ... OK\n" "$1"; }
+gate_fail()  { printf "  %s ... FAILED\n" "$1"; exit 1; }
 
 echo "=== POKIT Build Gate ==="
 echo ""
@@ -14,50 +21,41 @@ echo ""
 echo "--- Backend ---"
 cd "$DAEMON_DIR"
 
-echo -n "  go build ... "
-go build ./... && echo "OK" || { echo "FAILED"; exit 1; }
+go build ./...                     && gate_pass "go build"        || gate_fail "go build"
+go vet ./...                       && gate_pass "go vet"          || gate_fail "go vet"
+go test -race ./... -count=1 > /dev/null 2>&1 && gate_pass "go test -race"  || gate_fail "go test -race"
+git diff --check > /dev/null 2>&1  && gate_pass "git diff --check" || gate_fail "git diff --check"
 
-echo -n "  go vet ... "
-go vet ./... && echo "OK" || { echo "FAILED"; exit 1; }
-
-echo -n "  go test -race ... "
-go test -race ./... -count=1 > /dev/null 2>&1 && echo "OK" || { echo "FAILED"; exit 1; }
-
-echo -n "  git diff --check ... "
-git diff --check > /dev/null 2>&1 && echo "OK" || { echo "FAILED"; exit 1; }
-
-# ── Mobile (best-effort) ──
+# ── Mobile ──
 echo "--- Mobile ---"
 if [ -d "$MOBILE_DIR/node_modules" ]; then
     cd "$MOBILE_DIR"
-    echo -n "  npx tsc --noEmit ... "
-    npx tsc --noEmit > /dev/null 2>&1 && echo "OK" || { echo "FAILED"; exit 1; }
+    npm run typecheck > /dev/null 2>&1 && gate_pass "npm run typecheck" || gate_fail "npm run typecheck"
 else
-    echo "  Mobile: not-run (node_modules absent)"
+    MOBILE_SKIPPED=1
+    if [ "$MOBILE_NOT_RUN" = "1" ]; then
+        printf "  Mobile: not-run (node_modules absent)\n"
+    else
+        printf "  FAILED: mobile dependencies missing. Run: cd mobile && npm ci\n"
+        exit 1
+    fi
 fi
 
 # ── Invariants ──
 echo "--- Invariants ---"
 
-echo -n "  vendor branch scan ... "
 if grep -rn "agentKind.*===" "$MOBILE_DIR/src/" 2>/dev/null; then
-    echo "FAILED: vendor branch found"
-    exit 1
+    gate_fail "vendor branch scan"
 fi
-echo "OK"
+gate_pass "vendor branch scan"
 
-echo -n "  ID inference scan ... "
 if grep -rn "opt\.id === 'approve'\|opt\.id === 'reject'" "$MOBILE_DIR/src/" 2>/dev/null; then
-    echo "FAILED: ID inference found"
-    exit 1
+    gate_fail "ID inference scan"
 fi
-echo "OK"
+gate_pass "ID inference scan"
 
 # ── Security ──
 echo "--- Security ---"
-echo -n "  secret scan ... "
-# Exclude: test fixtures (testdata/), redaction patterns (diagnostic.go), redaction tests (approval_test.go),
-# documentation examples, and auth test mocks (auth_test.go).
 SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
     "$DAEMON_DIR/internal/" "$DAEMON_DIR/docs/" "$PROJECT_ROOT/docs/" 2>/dev/null \
     | grep -v "testdata/" \
@@ -72,10 +70,13 @@ SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
     || true)
 if [ -n "$SECRETS" ]; then
     echo "$SECRETS"
-    echo "FAILED: potential secret found"
-    exit 1
+    gate_fail "secret scan"
 fi
-echo "OK"
+gate_pass "secret scan"
 
 echo ""
-echo "=== ALL GATES PASSED ==="
+if [ "$MOBILE_SKIPPED" = "1" ]; then
+    echo "=== BACKEND GATES PASSED; MOBILE NOT RUN ==="
+else
+    echo "=== ALL GATES PASSED ==="
+fi
