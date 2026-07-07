@@ -31,8 +31,9 @@ export function isDegraded(confidence?: number, kind?: string): boolean {
 
 const _fixtures = {
   // Future/unknown agent kinds — must not crash, no vendor branching.
-  future_agent: formatAgentKind('future_backend_v2') === 'Future_backend_v2',
-  blocked_by_future_runtime: formatAgentKind('qwen3-max') === 'Qwen3-max',
+  future_agent: formatAgentKind('future_agent') === 'Future_agent',
+  blocked_by_future_runtime: formatAgentStatus('blocked_by_future_runtime') === 'blocked_by_future_runtime',
+  future_event_type: formatAgentKind('future_event_type') === 'Future_event_type',
   unknown_agent: formatAgentKind('unknown') === 'Agent',
   missing_agent: formatAgentKind(undefined) === 'Agent',
   // Future/unknown status — must pass through.
@@ -40,8 +41,8 @@ const _fixtures = {
   degraded_status: formatAgentStatus('degraded') === 'Degraded',
   // Degraded detection.
   degraded_by_kind: isDegraded(0.9, 'unknown') === true,
-  degraded_by_confidence: isDegraded(0.3, 'future_backend_v2') === true,
-  not_degraded: isDegraded(0.7, 'future_backend_v2') === false,
+  degraded_by_confidence: isDegraded(0.3, 'future_agent') === true,
+  not_degraded: isDegraded(0.7, 'future_agent') === false,
   // Empty AgentEvent type — unknown fallback.
   unknown_event_label: formatAgentKind() === 'Agent',
 };
