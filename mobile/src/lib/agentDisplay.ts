@@ -30,18 +30,18 @@ export function isDegraded(confidence?: number, kind?: string): boolean {
 // These prove the helpers handle unknown/future values without runtime errors.
 
 const _fixtures = {
-  // Future agent kind must not crash.
-  future_agent: formatAgentKind('gemini') === 'Gemini',
-  // Unknown agent → generic label.
+  // Future/unknown agent kinds — must not crash, no vendor branching.
+  future_agent: formatAgentKind('future_backend_v2') === 'Future_backend_v2',
+  blocked_by_future_runtime: formatAgentKind('qwen3-max') === 'Qwen3-max',
   unknown_agent: formatAgentKind('unknown') === 'Agent',
   missing_agent: formatAgentKind(undefined) === 'Agent',
-  // Future status must pass through.
-  future_status: formatAgentStatus('custom_state') === 'custom_state',
+  // Future/unknown status — must pass through.
+  future_status: formatAgentStatus('orchestrator_thought') === 'orchestrator_thought',
   degraded_status: formatAgentStatus('degraded') === 'Degraded',
   // Degraded detection.
   degraded_by_kind: isDegraded(0.9, 'unknown') === true,
-  degraded_by_confidence: isDegraded(0.3, 'claude') === true,
-  not_degraded: isDegraded(0.7, 'claude') === false,
+  degraded_by_confidence: isDegraded(0.3, 'future_backend_v2') === true,
+  not_degraded: isDegraded(0.7, 'future_backend_v2') === false,
   // Empty AgentEvent type — unknown fallback.
   unknown_event_label: formatAgentKind() === 'Agent',
 };

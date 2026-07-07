@@ -35,7 +35,7 @@ export default function GlobalFeedScreen({ token }: Props) {
   }, []);
 
   const allEvents = React.useMemo(() => {
-    const eventsWithRunner: (AgentEvent & { runnerId?: string, runnerColor?: string })[] = [];
+    const eventsWithRunner: (AgentEvent & { runnerId?: string, runnerColor?: string, agentKind?: string })[] = [];
     sessions.forEach(s => {
       if (s.events) {
         s.events.forEach(e => {
@@ -43,6 +43,7 @@ export default function GlobalFeedScreen({ token }: Props) {
             ...e,
             runnerId: s.runner,
             runnerColor: s.runnerColor,
+            agentKind: s.agentKind,
           });
         });
       }
@@ -65,7 +66,7 @@ export default function GlobalFeedScreen({ token }: Props) {
             keyExtractor={(item, idx) => item.id || String(idx)}
             contentContainerStyle={styles.listContainer}
             renderItem={({ item }) => (
-              <EventBubble event={item} runnerId={item.runnerId} runnerColor={item.runnerColor} />
+              <EventBubble event={item} runnerId={item.runnerId} runnerColor={item.runnerColor} agentKind={item.agentKind} />
             )}
             ListEmptyComponent={
               <Text style={styles.emptyText}>No activity yet.</Text>
