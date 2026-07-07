@@ -13,8 +13,8 @@ Baseline: Phase A4 in review
 | File | Purpose |
 |------|---------|
 | `internal/agent/claude_adapter.go` | Claude detector + log resolver + parser |
-| `internal/agent/claude_adapter_test.go` | Contract harness + E2E tests |
-| (no production registration yet — Phase A5 is verification-only) | |
+| `internal/agent/claude_adapter_test.go` | Contract harness tests |
+| `cmd/devremote/app.go` | Production registration (behind feature flag, optional) | |
 
 ## Design
 

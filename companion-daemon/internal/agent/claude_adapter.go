@@ -185,8 +185,8 @@ func (r *ClaudeLogResolver) Resolve(ev DetectionEvidence) (ResolveResult, error)
 	}
 	return ResolveResult{
 		Logs: []LogRef{{
-			Path:        ev.CWD + "/.claude/projects/" + project + "/latest.jsonl",
-			DisplayPath: "<PROJECT>/.claude/projects/<PROJECT>/latest.jsonl",
+			Path:        ev.CWD + "/.claude/projects/" + project + "/*.jsonl",
+			DisplayPath: "<PROJECT>/.claude/projects/<PROJECT>/<UUID>.jsonl",
 			Type:        SourceJSONL,
 			Agent:       "claude",
 		}},
@@ -231,9 +231,21 @@ func claudeHasContentType(raw map[string]interface{}, ct string) bool {
 }
 
 func claudeHashFirstLine(lines [][]byte) string {
-	h := 0
+	// Stable cursor: first-line prefix + total content fingerprint.
+	prefix := ""
 	for _, l := range lines {
-		h += len(l)
+		if len(l) > 0 {
+			n := len(l)
+			if n > 24 {
+				n = 24
+			}
+			prefix = string(l[:n])
+			break
+		}
 	}
-	return fmt.Sprintf("%d-%d", h, len(lines))
+	totalLen := 0
+	for _, l := range lines {
+		totalLen += len(l)
+	}
+	return fmt.Sprintf("%s-%d-%d", prefix, len(lines), totalLen)
 }
