@@ -44,11 +44,15 @@ func main() {
 	})
 }
 
-func sendPushNotification(token, message string) {
-	payloadMap := map[string]string{
+func sendPushNotification(token, message, sessionID string) {
+	payloadMap := map[string]interface{}{
 		"to":    token,
-		"title": "DevRemote",
+		"title": "Pokit",
 		"body":  message,
+		"data": map[string]string{
+			"sessionId": sessionID,
+			"type":      "approval_required",
+		},
 	}
 	payloadBytes, _ := json.Marshal(payloadMap)
 
@@ -58,5 +62,5 @@ func sendPushNotification(token, message string) {
 		return
 	}
 	defer resp.Body.Close()
-	log.Printf("Push sent to %s (Status: %s)", token, resp.Status)
+	log.Printf("Push sent for session=%s (Status: %s)", sessionID, resp.Status)
 }

@@ -750,7 +750,7 @@ func (f *fakeAuthVerifier) Verify(ctx context.Context, token string) error {
 
 func TestPushNotifier_TokenRace(t *testing.T) {
 	// Verify that concurrent SetToken and ApprovalRequired don't race.
-	n := &pushNotifier{send: func(token, msg string) {}} // no-op sender
+	n := &pushNotifier{send: func(token, msg, sessionID string) {}} // no-op sender
 	n.SetToken("test-token")
 
 	var wg sync.WaitGroup

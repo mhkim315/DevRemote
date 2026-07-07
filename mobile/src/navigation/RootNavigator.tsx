@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavigationContainer, DarkTheme } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme, LinkingOptions } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,21 @@ import GlobalFeedScreen from '../screens/GlobalFeedScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
+
+// P1b: deep link config — routes push notifications to the correct session.
+const linking: LinkingOptions<{}> = {
+  prefixes: ['pokit://'],
+  config: {
+    screens: {
+      DashboardStack: {
+        screens: {
+          DashboardMain: 'dashboard',
+          Terminal: 'session/:session',
+        },
+      },
+    },
+  },
+};
 
 function DashboardStackScreen({ route }: any) {
   const token = route.params?.token;
@@ -50,7 +65,7 @@ function DashboardStackScreen({ route }: any) {
 
 export function RootTabs({ token }: { token?: string }) {
   return (
-    <NavigationContainer theme={DarkTheme}>
+    <NavigationContainer theme={DarkTheme} linking={linking}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           headerShown: false,

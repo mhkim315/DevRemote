@@ -384,7 +384,7 @@ func runDaemon(cfg Config) {
 
 // ── Notifier ──
 
-type pushSender func(token, message string)
+type pushSender func(token, message, sessionID string)
 
 type pushNotifier struct {
 	mu    sync.RWMutex
@@ -402,13 +402,15 @@ func (n *pushNotifier) SetToken(token string) {
 	n.token = token
 }
 
-func (n *pushNotifier) ApprovalRequired(_ context.Context, _ string, message string) error {
+func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ string) error {
 	n.mu.RLock()
 	token := n.token
 	n.mu.RUnlock()
-	log.Printf("🚨 APPROVAL DETECTED: %s", message)
+	// P1b: redacted push message — no raw screen content.
+	summary := "Interaction required"
+	log.Printf("PUSH: approval for session=%s", sessionID)
 	if token != "" && n.send != nil {
-		go n.send(token, message)
+		go n.send(token, summary, sessionID)
 	}
 	return nil
 }
