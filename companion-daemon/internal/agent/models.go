@@ -56,11 +56,11 @@ const (
 type AgentEventSource string
 
 const (
-	SourceJSONL   AgentEventSource = "jsonl"       // structured log (JSONL file)
-	SourceLogFile AgentEventSource = "log_file"    // unstructured log file
-	SourceScreen  AgentEventSource = "screen"      // terminal screen analysis
-	SourceProcess AgentEventSource = "process"     // process name/cmdline
-	SourceManual  AgentEventSource = "manual_link" // user manually linked
+	SourceJSONL      AgentEventSource = "jsonl"       // structured log (JSONL file)
+	SourceLogFile    AgentEventSource = "log_file"    // unstructured log file
+	SourceScreen     AgentEventSource = "screen"      // terminal screen analysis
+	SourceProcess    AgentEventSource = "process"     // process name/cmdline
+	SourceManualLink AgentEventSource = "manual_link" // user manually linked
 )
 
 // AgentEvent is a normalized agent activity event.
@@ -80,14 +80,16 @@ type AgentEvent struct {
 }
 
 // ApprovalOption represents one choice presented to the user.
+// The ID is the stable contract key; Label is the display string.
+// Payload carries optional action data (e.g. text to send, key sequence).
 type ApprovalOption struct {
-	Label       string `json:"label"`  // e.g. "Approve", "Reject"
-	Action      string `json:"action"` // e.g. "approve", "reject"
-	IsDefault   bool   `json:"isDefault,omitempty"`
-	IsDangerous bool   `json:"isDangerous,omitempty"`
+	ID      string `json:"id"`                // stable key: approve, reject, send_text, send_key, open_terminal
+	Label   string `json:"label"`             // display label: "Approve", "Reject"
+	Payload string `json:"payload,omitempty"` // optional action payload (text to send, key sequence)
 }
 
 // AgentApproval represents a pending or resolved approval request.
+// Default references a stable ApprovalOption.ID, not a display label.
 type AgentApproval struct {
 	ID         string            `json:"id"`
 	SessionID  string            `json:"sessionId"`
@@ -95,7 +97,7 @@ type AgentApproval struct {
 	Status     string            `json:"status"`            // pending, approved, rejected
 	Prompt     string            `json:"prompt"`            // what the agent is asking
 	Options    []ApprovalOption  `json:"options"`           // available choices
-	Default    string            `json:"default,omitempty"` // default option label
+	Default    string            `json:"default,omitempty"` // stable ApprovalOption.ID of default choice
 	Source     AgentEventSource  `json:"source"`
 	Confidence float64           `json:"confidence"`
 	Metadata   map[string]string `json:"metadata,omitempty"`

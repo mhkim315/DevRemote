@@ -61,9 +61,10 @@ Matches `AgentEventSource` in models.go per AGENT_ADAPTER_LAYER_PLAN.md §4.5:
 - `AgentIdentity` — {Kind, DisplayName, Version, Confidence}
 - `AgentStatus` — 10 string constants (unknown..degraded)
 - `AgentEventType` — 13 string constants (agent_started..unknown)
-- `AgentEventSource` — 5 string constants (log..unknown)
+- `AgentEventSource` — 5 string constants (jsonl, log_file, screen, process, manual_link)
 - `AgentEvent` — normalized event struct
-- `AgentApproval` — approval request/resolution struct
+- `ApprovalOption` — {ID, Label, Payload} per option
+- `AgentApproval` — approval request/resolution with stable option IDs
 
 Common Go model (internal/agent/models.go) does not expose raw JSONL field names
 such as `type`, `sessionId`, `payload`. Raw field names appear only in fixture
