@@ -222,25 +222,39 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
-// normalizeEventType maps legacy parser types to common AgentEventType names.
-func normalizeEventType(t string) string {
-	switch t {
+// normalizeEventType maps legacy parser types + summary hints to common AgentEventType.
+func normalizeEventType(e *models.AgentEvent) {
+	switch e.Type {
 	case "user":
-		return "user_message"
+		e.Type = "user_message"
 	case "tool_use":
-		return "tool_call_started"
+		e.Type = "tool_call_started"
 	case "tool_result":
-		return "tool_call_finished"
+		e.Type = "tool_call_finished"
 	case "message":
-		return "assistant_message"
-	default:
-		return t
+		// Term-layer parser uses Summary to distinguish thinking from message.
+		if containsAny(e.Summary, "Thinking", "Reasoning") {
+			e.Type = "thinking"
+		} else {
+			e.Type = "assistant_message"
+		}
 	}
+}
+
+func containsAny(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		for i := 0; i <= len(s)-len(sub); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalizeEvents(evts []models.AgentEvent) []models.AgentEvent {
 	for i := range evts {
-		evts[i].Type = normalizeEventType(evts[i].Type)
+		normalizeEventType(&evts[i])
 	}
 	return evts
 }
