@@ -13,7 +13,7 @@
 - [x] Approval pipeline: pending → approve/reject → resolved + audit log
 - [x] Capability-aware: observe-only → no fake actions
 - [x] Interaction options preserved with Kind/Input schema/Placement
-- [x] /debug/diag returns redacted, exportable diagnostics
+- [x] /debug/diag returns redacted, exportable diagnostics (tested: TestHandleDiagnostic_*)
 - [x] go test -race ./... passes
 - [x] go vet ./... passes
 - [x] git diff --check clean
@@ -46,7 +46,8 @@
 - [x] Session diagnostics (agent kind/status/confidence, state, parser health)
 - [x] Approval count per session
 - [x] Sampling failures tracked
-- [x] Paths redacted (<HOME>/...)
+- [x] Paths redacted: /Users/<user> → <HOME> (tested: TestRedactStr_HomePath)
+- [x] Bearer tokens redacted (tested: TestRedactStr_HomePath)
 - [x] No raw prompt/token/command/secret in output
 
 ## Known Gaps for Beta/GA

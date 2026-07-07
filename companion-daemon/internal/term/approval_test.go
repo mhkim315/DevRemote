@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -573,6 +574,121 @@ func TestBuildPayload_EmptyPlacement_SafeDefault(t *testing.T) {
 }
 
 
+// --- Diagnostic tests ---
+
+func TestHandleDiagnostic_GetOnly(t *testing.T) {
+	h := &Handlers{}
+	req := httptest.NewRequest("POST", "/debug/diag", nil)
+	rec := httptest.NewRecorder()
+	h.HandleDiagnostic(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /debug/diag: status=%d, want 405", rec.Code)
+	}
+}
+
+func TestHandleDiagnostic_JSONShape(t *testing.T) {
+	reg := mux.MustNewRegistry(&diagTestAdapter{})
+	events := NewMemoryEventStore()
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, nil, NewApprovalStore())
+	h := &Handlers{Registry: reg, Telemetry: svc, Approvals: NewApprovalStore()}
+
+	req := httptest.NewRequest("GET", "/debug/diag", nil)
+	rec := httptest.NewRecorder()
+	h.HandleDiagnostic(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /debug/diag: status=%d, want 200", rec.Code)
+	}
+
+	var snap DiagnosticSnapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if snap.Daemon.GoVersion == "" {
+		t.Error("daemon.goVersion is empty")
+	}
+	if snap.Daemon.AdapterCount < 1 {
+		t.Error("daemon.adapterCount is 0")
+	}
+	if len(snap.Adapters) == 0 {
+		t.Error("adapters is empty")
+	}
+}
+
+func TestHandleDiagnostic_SessionFields(t *testing.T) {
+	reg := mux.MustNewRegistry(&diagTestAdapter{})
+	events := NewMemoryEventStore()
+	approvals := NewApprovalStore()
+	approvals.Upsert("tmux:diag-session", []agent.AgentApproval{
+		{ID: "a1", SessionID: "tmux:diag-session", Status: "pending", CreatedAt: time.Now()},
+	})
+	detector := &alwaysApproveDetector{}
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, approvals)
+
+	// Run telemetry sampling loop to populate agent detection fields.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go svc.Run(ctx)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-svc.Done()
+
+	h := &Handlers{Registry: reg, Telemetry: svc, Approvals: approvals}
+
+	req := httptest.NewRequest("GET", "/debug/diag", nil)
+	rec := httptest.NewRecorder()
+	h.HandleDiagnostic(rec, req)
+
+	var snap DiagnosticSnapshot
+	json.Unmarshal(rec.Body.Bytes(), &snap)
+
+	found := false
+	for _, sd := range snap.Sessions {
+		if sd.ID == "tmux:diag-session" {
+			found = true
+			if sd.AgentKind != "claude" {
+				t.Errorf("AgentKind=%q, want claude", sd.AgentKind)
+			}
+			if sd.AgentConfidence < 0.5 {
+				t.Errorf("AgentConfidence=%.2f, want >=0.5", sd.AgentConfidence)
+			}
+			if sd.PendingApprovals != 1 {
+				t.Errorf("PendingApprovals=%d, want 1", sd.PendingApprovals)
+			}
+			t.Logf("session diag: kind=%s status=%s confidence=%.2f approvals=%d",
+				sd.AgentKind, sd.AgentStatus, sd.AgentConfidence, sd.PendingApprovals)
+		}
+	}
+	if !found {
+		t.Error("session tmux:diag-session not found in diagnostic output")
+	}
+}
+
+func TestRedactStr_HomePath(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"/Users/mhk/project/foo", "<HOME>/project/foo"},
+		{"/home/mhk/project/foo", "<HOME>/project/foo"},
+		{"/Users/otheruser/.claude/logs", "<HOME>/.claude/logs"},
+		{"no path here", "no path here"},
+		{"", ""},
+		{"Bearer secret123", "Bearer <REDACTED>"},
+	}
+	for _, tc := range tests {
+		got := redactStr(tc.in)
+		if got != tc.want {
+			t.Errorf("redactStr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRedactStr_Truncation(t *testing.T) {
+	long := strings.Repeat("x", 250)
+	got := redactStr(long)
+	if len(got) > 203 { // 200 + "..."
+		t.Errorf("redactStr(long) len=%d, want <=203", len(got))
+	}
+}
+
 // --- test sessions for capability derivation ---
 
 type inputTestSession struct{}
@@ -599,3 +715,32 @@ type observeOnlySession struct{}
 func (s *observeOnlySession) ID() string          { return "observe" }
 func (s *observeOnlySession) Title() string       { return "Observe" }
 func (s *observeOnlySession) AdapterName() string { return "tmux" }
+
+// --- diagnostic test adapter ---
+
+type diagTestAdapter struct{}
+
+func (a *diagTestAdapter) Name() string { return "tmux" }
+func (a *diagTestAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return []mux.Session{&diagTestSession{}}, nil
+}
+func (a *diagTestAdapter) ProcessSnapshot(_ context.Context) (map[string]models.ProcessInfo, error) {
+	return map[string]models.ProcessInfo{
+		"diag-session": {Command: "claude", CWD: "/Users/test/project"},
+	}, nil
+}
+
+type diagTestSession struct{}
+
+func (s *diagTestSession) ID() string          { return "diag-session" }
+func (s *diagTestSession) Title() string       { return "Diag" }
+func (s *diagTestSession) AdapterName() string { return "tmux" }
+func (s *diagTestSession) ProcessInfo(_ context.Context) (models.ProcessInfo, error) {
+	return models.ProcessInfo{Command: "claude", CWD: "/Users/test/project"}, nil
+}
+
+type alwaysApproveDetector struct{}
+
+func (d *alwaysApproveDetector) DetectAgent(sessionID, adapterName, localID string, evidence ProdDetectionEvidence) (string, string, float64) {
+	return "claude", "working", 0.9
+}

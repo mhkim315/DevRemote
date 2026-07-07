@@ -3,6 +3,7 @@ package term
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -45,6 +46,11 @@ type SessionDiag struct {
 
 // HandleDiagnostic handles GET /debug/diag and returns a redacted diagnostic snapshot.
 func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	snap := DiagnosticSnapshot{
 		Daemon: DaemonDiag{
 			Uptime:    time.Since(startTime).Round(time.Second).String(),
@@ -68,18 +74,18 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 	if h.Telemetry != nil {
 		for _, st := range h.Telemetry.Snapshot(h.Registry) {
 			sd := SessionDiag{
-				ID:               st.ID,
-				Adapter:          st.Adapter,
-				AgentKind:        st.AgentKind,
-				AgentStatus:      st.AgentStatus,
-				AgentConfidence:  st.AgentConfidence,
-				State:            st.State,
-				ParserHealthy:    true,
-				LastError:        redactStr(st.LastError),
+				ID:              st.ID,
+				Adapter:         st.Adapter,
+				AgentKind:       st.AgentKind,
+				AgentStatus:     st.AgentStatus,
+				AgentConfidence: st.AgentConfidence,
+				State:           st.State,
+				ParserHealthy:   true,
+				LastError:       redactStr(st.LastError),
 			}
 
-			// Parser health from internal state.
-			if ss := h.Telemetry.sessionState(st.ID); ss != nil {
+			// Parser health from internal state (safe copy, not pointer).
+			if ss, ok := h.Telemetry.sessionStateSnapshot(st.ID); ok {
 				sd.SamplingFails = ss.SamplingFailures
 				sd.ParserHealthy = ss.SamplingFailures <= 2
 				if ss.SamplingFailures > 0 {
@@ -104,22 +110,46 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(snap)
 }
 
-// sessionState returns the internal session state for diagnostics.
-func (s *TelemetryService) sessionState(id string) *sessionStateData {
+// sessionStateSnapshot returns a safe copy of internal session state for diagnostics.
+// It does not expose the internal pointer after releasing the lock.
+func (s *TelemetryService) sessionStateSnapshot(id string) (sessionStateData, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[id]
+	data := s.sessions[id]
+	if data == nil {
+		return sessionStateData{}, false
+	}
+	return *data, true
 }
 
-// redactStr truncates and strips raw paths from diagnostic strings.
+// redact home path pattern: /Users/<user>/... or /home/<user>/... or C:\Users\<user>\...
+var redactHomeRE = regexp.MustCompile(`(/Users/|/home/|\\Users\\)[^/\\]+`)
+
+// redactStr truncates and strips raw paths, usernames, and sensitive data from diagnostic strings.
 func redactStr(s string) string {
 	if s == "" {
 		return ""
 	}
+	// Strip username from home paths: /Users/mhk/project → <HOME>/project
+	s = redactHomeRE.ReplaceAllString(s, "<HOME>")
+
+	// Strip any remaining absolute paths.
+	s = strings.ReplaceAll(s, "/Users/", "<HOME>/")
+	s = strings.ReplaceAll(s, "/home/", "<HOME>/")
+
+	// Replace Bearer tokens entirely.
+	if idx := strings.Index(s, "Bearer "); idx >= 0 {
+		rest := s[idx+len("Bearer "):]
+		if end := strings.IndexAny(rest, " \t\n\r"); end > 0 {
+			rest = rest[:end]
+		}
+		if rest != "" {
+			s = strings.ReplaceAll(s, "Bearer "+rest, "Bearer <REDACTED>")
+		}
+	}
+
 	if len(s) > 200 {
 		s = s[:200] + "..."
 	}
-	s = strings.ReplaceAll(s, "/Users/", "<HOME>/")
-	s = strings.ReplaceAll(s, "/home/", "<HOME>/")
 	return s
 }
