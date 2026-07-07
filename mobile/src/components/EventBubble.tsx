@@ -69,7 +69,7 @@ export function EventBubble({ event, runnerId, runnerColor }: Props) {
       ]}>
         <View style={styles.header}>
           <Text style={[styles.sessionName, isTool && { color: color }]}>
-            {isTool ? '🛠️ ' + event.summary : (isResult ? '✅ ' + event.summary : '🤖 Claude')}
+            {isTool ? '🛠️ ' + event.summary : (isResult ? '✅ ' + event.summary : '🤖 ' + (runnerId || 'Agent'))}
           </Text>
         </View>
         <Text style={[styles.detail, isResult && styles.resultDetail]} selectable={true}>
