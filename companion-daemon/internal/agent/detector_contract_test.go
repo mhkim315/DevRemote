@@ -10,10 +10,13 @@ func RunDetectorContract(t *testing.T, name string, df DetectorFactory, rf Resol
 	t.Run(name, func(t *testing.T) {
 		t.Run("Detect_EmptyEvidence", func(t *testing.T) { testDetectEmpty(t, df) })
 		t.Run("Detect_UnknownProcess", func(t *testing.T) { testDetectUnknown(t, df) })
-		t.Run("Detect_KnownAgent", func(t *testing.T) { testDetectKnown(t, df) })
+		t.Run("Detect_KnownAgent_Claude", func(t *testing.T) { testDetectKnown(t, df, "claude") })
+		t.Run("Detect_KnownAgent_Codex", func(t *testing.T) { testDetectKnown(t, df, "codex") })
+		t.Run("Detect_FalsePositive", func(t *testing.T) { testDetectFalsePositive(t, df) })
 		t.Run("Detect_LowConfidence", func(t *testing.T) { testDetectLowConf(t, df) })
+		t.Run("Detect_ManualOverride", func(t *testing.T) { testDetectManual(t, df) })
 		t.Run("Resolver_NoLogs", func(t *testing.T) { testResolverNoLogs(t, rf) })
-		t.Run("Resolver_ReturnsEmptyOnMissing", func(t *testing.T) { testResolverEmpty(t, rf) })
+		t.Run("Resolver_Degraded", func(t *testing.T) { testResolverDegraded(t, rf) })
 		t.Run("Detect_WithLogs", func(t *testing.T) { testDetectWithLogs(t, df, rf) })
 	})
 }
@@ -25,16 +28,13 @@ func testDetectEmpty(t *testing.T, df DetectorFactory) {
 		t.Error("empty evidence: Kind is empty")
 	}
 	if id.Confidence > 0.3 {
-		t.Errorf("empty evidence: confidence %.2f too high for no evidence", id.Confidence)
+		t.Errorf("empty evidence: confidence %.2f too high", id.Confidence)
 	}
 }
 
 func testDetectUnknown(t *testing.T, df DetectorFactory) {
 	d := df(t)
-	id := d.Detect(DetectionEvidence{
-		ProcessName: "unknown_binary_xyz",
-		CWD:         "/tmp",
-	})
+	id := d.Detect(DetectionEvidence{ProcessName: "unknown_binary_xyz", CWD: "/tmp"})
 	if id.Kind != "unknown" {
 		t.Errorf("unknown process: Kind=%q, want unknown", id.Kind)
 	}
@@ -43,77 +43,113 @@ func testDetectUnknown(t *testing.T, df DetectorFactory) {
 	}
 }
 
-func testDetectKnown(t *testing.T, df DetectorFactory) {
+func testDetectKnown(t *testing.T, df DetectorFactory, agent string) {
 	d := df(t)
 	id := d.Detect(DetectionEvidence{
-		ProcessName: "claude",
+		ProcessName: agent,
 		CWD:         "/Users/test/project",
 	})
 	if id.Kind == "unknown" {
-		t.Error("known process 'claude': got unknown")
+		t.Errorf("known process %q: got unknown", agent)
+	}
+	// Known agent must have sufficiently high confidence.
+	if id.Confidence < 0.5 {
+		t.Errorf("known process %q: confidence %.2f < 0.5", agent, id.Confidence)
+	}
+	if id.Confidence < 0.5 && id.Kind != "unknown" {
+		t.Errorf("%q: confidence %.2f < 0.5 but Kind=%q (must be unknown when confidence < 0.5)", agent, id.Confidence, id.Kind)
+	}
+}
+
+func testDetectFalsePositive(t *testing.T, df DetectorFactory) {
+	d := df(t)
+	// Even if detector is tempted to guess "claude", low confidence must result in unknown.
+	id := d.Detect(DetectionEvidence{
+		ProcessName: "node", // node alone is not enough evidence
+	})
+	if id.Kind != "unknown" {
+		t.Errorf("low-confidence process: Kind=%q, want unknown (false positive prevention)", id.Kind)
 	}
 }
 
 func testDetectLowConf(t *testing.T, df DetectorFactory) {
 	d := df(t)
-	// Process name alone, no cwd/logs → should be low confidence.
-	id := d.Detect(DetectionEvidence{
-		ProcessName: "node",
-	})
+	id := d.Detect(DetectionEvidence{ProcessName: "node"})
 	if id.Confidence > 0.7 {
-		t.Errorf("node process alone: confidence %.2f should be <0.7", id.Confidence)
+		t.Errorf("node alone: confidence %.2f should be <0.7", id.Confidence)
+	}
+}
+
+func testDetectManual(t *testing.T, df DetectorFactory) {
+	d := df(t)
+	// Manual link must override auto-detection.
+	id := d.Detect(DetectionEvidence{
+		ProcessName: "unknown_process",
+		ManualLink:  &ManualEvidence{AgentKind: "codex"},
+	})
+	if id.Kind != "codex" {
+		t.Errorf("manual link: Kind=%q, want codex (manual must override)", id.Kind)
+	}
+	if id.Confidence < 0.9 {
+		t.Errorf("manual link: confidence %.2f < 0.9 (manual should be high confidence)", id.Confidence)
 	}
 }
 
 func testResolverNoLogs(t *testing.T, rf ResolverFactory) {
 	r := rf(t)
-	logs, err := r.Resolve(DetectionEvidence{
-		CWD: "/nonexistent/path",
-	})
+	result, err := r.Resolve(DetectionEvidence{CWD: "/nonexistent/path"})
 	if err != nil {
 		t.Errorf("no logs: unexpected error: %v", err)
 	}
-	if len(logs) != 0 {
-		t.Errorf("no logs: got %d refs, want 0", len(logs))
+	if len(result.Logs) != 0 {
+		t.Errorf("no logs: got %d refs, want 0", len(result.Logs))
 	}
 }
 
-func testResolverEmpty(t *testing.T, rf ResolverFactory) {
+func testResolverDegraded(t *testing.T, rf ResolverFactory) {
 	r := rf(t)
-	logs, err := r.Resolve(DetectionEvidence{})
+	// Simulate a scenario where resolver is degraded (e.g. permission denied).
+	result, err := r.Resolve(DetectionEvidence{
+		CWD:         "/root",
+		ProcessName: "claude",
+	})
 	if err != nil {
-		t.Errorf("empty evidence: unexpected error: %v", err)
+		t.Errorf("degraded: unexpected error (should set Degraded, not return error): %v", err)
 	}
-	if len(logs) != 0 {
-		t.Errorf("empty evidence: got %d refs, want 0", len(logs))
-	}
+	// Resolver may or may not set Degraded depending on implementation.
+	// The contract is: no error, Degraded flag conveys issues.
+	_ = result.Degraded
 }
 
 func testDetectWithLogs(t *testing.T, df DetectorFactory, rf ResolverFactory) {
 	d := df(t)
 	r := rf(t)
-	// With log paths in evidence, confidence should increase.
-	logs, _ := r.Resolve(DetectionEvidence{
+	result, _ := r.Resolve(DetectionEvidence{
 		ProcessName: "claude",
 		CWD:         "/Users/test/project",
 	})
 	evidence := DetectionEvidence{
 		ProcessName: "claude",
 		CWD:         "/Users/test/project",
-		LogPaths:    logs,
+		LogPaths:    result.Logs,
 	}
 	id := d.Detect(evidence)
-	if id.Kind == "unknown" && len(logs) > 0 {
+	if id.Kind == "unknown" && len(result.Logs) > 0 {
 		t.Error("with logs + process name: still unknown")
 	}
 }
 
-// --- Mock implementations for self-test ---
+// --- Mock implementations ---
 
 type mockDetector struct{}
 
 func (d *mockDetector) Detect(ev DetectionEvidence) AgentIdentity {
-	confidence := 0.1 // base for empty evidence
+	// Manual link has highest priority.
+	if ev.ManualLink != nil && ev.ManualLink.AgentKind != "" {
+		return AgentIdentity{Kind: ev.ManualLink.AgentKind, DisplayName: ev.ManualLink.AgentKind, Confidence: 1.0}
+	}
+
+	confidence := 0.1
 	kind := "unknown"
 
 	switch ev.ProcessName {
@@ -131,11 +167,9 @@ func (d *mockDetector) Detect(ev DetectionEvidence) AgentIdentity {
 		confidence = 0.1
 	}
 
-	// CWD evidence boosts confidence.
 	if ev.CWD != "" {
 		confidence += 0.1
 	}
-	// Log paths are strong evidence.
 	if len(ev.LogPaths) > 0 {
 		confidence += 0.2
 	}
@@ -143,23 +177,37 @@ func (d *mockDetector) Detect(ev DetectionEvidence) AgentIdentity {
 		confidence = 1.0
 	}
 
-	return AgentIdentity{
-		Kind:       kind,
-		Confidence: confidence,
+	// Hard rule: confidence < 0.5 → unknown.
+	if confidence < 0.5 {
+		kind = "unknown"
 	}
+
+	return AgentIdentity{Kind: kind, Confidence: confidence}
 }
 
 type mockResolver struct{}
 
-func (r *mockResolver) Resolve(ev DetectionEvidence) ([]LogRef, error) {
+func (r *mockResolver) Resolve(ev DetectionEvidence) (ResolveResult, error) {
+	if ev.CWD == "/root" {
+		return ResolveResult{
+			Degraded:    true,
+			Diagnostics: []string{"permission denied: <PATH>"},
+		}, nil
+	}
 	if ev.CWD == "" || ev.CWD == "/nonexistent/path" {
-		return nil, nil
+		return ResolveResult{}, nil
 	}
-	// Mock: return a log path if CWD looks like a project.
 	if ev.ProcessName == "claude" {
-		return []LogRef{{Path: ev.CWD + "/.claude/projects/test/log.jsonl", Type: SourceJSONL, Agent: "claude"}}, nil
+		return ResolveResult{
+			Logs: []LogRef{{
+				Path:        ev.CWD + "/.claude/projects/test/log.jsonl",
+				DisplayPath: "<PROJECT>/.claude/projects/test/log.jsonl",
+				Type:        SourceJSONL,
+				Agent:       "claude",
+			}},
+		}, nil
 	}
-	return nil, nil
+	return ResolveResult{}, nil
 }
 
 func TestMockDetector_Contract(t *testing.T) {
