@@ -1,10 +1,6 @@
 package agent
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestClaudeParser_Contract(t *testing.T) {
 	RunParserContract(t, "claude", func(t *testing.T) AgentParser {
@@ -105,21 +101,15 @@ func TestClaudeAdapter_E2E_Pipeline(t *testing.T) {
 	// 7. Resolver path matches A1 log inventory.
 	foundClaudeLog := false
 	for _, lr := range result.Logs {
-		path := filepath.ToSlash(lr.Path)
-		if contains(path, ".claude/projects") || contains(path, ".claude/history") {
+		if contains(lr.Path, ".claude/projects") || contains(lr.Path, ".claude/history") {
 			foundClaudeLog = true
+		}
+		if contains(lr.DisplayPath, "/Users/") {
+			t.Error("resolver DisplayPath contains raw home directory")
 		}
 	}
 	if !foundClaudeLog {
 		t.Error("resolver did not return any .claude/ log path")
-	}
-
-	// 8. Temp file check: real Claude logs exist on this machine (skip if not).
-	home, _ := os.UserHomeDir()
-	claudeProj := filepath.Join(home, ".claude", "projects")
-	if _, err := os.Stat(claudeProj); err == nil {
-		entries, _ := os.ReadDir(claudeProj)
-		t.Logf("real Claude projects found: %d directories", len(entries))
 	}
 }
 
