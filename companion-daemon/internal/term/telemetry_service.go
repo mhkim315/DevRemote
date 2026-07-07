@@ -363,9 +363,9 @@ func buildInteractionOptions(sess mux.Session) []agent.InteractionOption {
 			agent.InteractionOption{ID: "approve", Label: "Approve", Kind: "approve"},
 			agent.InteractionOption{ID: "reject", Label: "Reject", Kind: "reject"},
 			agent.InteractionOption{ID: "send_text", Label: "Send Text", Kind: "neutral",
-				Input: &agent.InputSchema{Required: true, Placeholder: "Enter text to send"}},
+				Input: &agent.InputSchema{Required: true, Placeholder: "Enter text to send", Placement: "as_payload"}},
 			agent.InteractionOption{ID: "send_key", Label: "Send Key", Kind: "neutral",
-				Input: &agent.InputSchema{Required: true, Placeholder: "Key sequence"}},
+				Input: &agent.InputSchema{Required: true, Placeholder: "Key sequence", Placement: "as_payload"}},
 		)
 	}
 	// Observe-only: return empty options (no view_only fake action).

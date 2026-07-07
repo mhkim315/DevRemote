@@ -498,6 +498,54 @@ func TestBuildPayload_NoInputSchema_DefaultBehavior(t *testing.T) {
 	}
 }
 
+
+func TestBuildPayload_SendText_AsPayload(t *testing.T) {
+	// send_text must declare Placement: "as_payload" so input reaches terminal.
+	opts := buildInteractionOptions(&inputTestSession{})
+	for _, opt := range opts {
+		if opt.ID == "send_text" {
+			if opt.Input == nil || opt.Input.Placement != "as_payload" {
+				t.Error("send_text missing Placement: as_payload")
+			}
+		}
+		if opt.ID == "send_key" {
+			if opt.Input == nil || opt.Input.Placement != "as_payload" {
+				t.Error("send_key missing Placement: as_payload")
+			}
+		}
+	}
+}
+
+func TestBuildPayload_SendText_ReachesCommandBroker(t *testing.T) {
+	s := NewApprovalStore()
+	s.Upsert("s1", []agent.AgentApproval{
+		{
+			ID: "a1", SessionID: "s1", Status: "pending",
+			AgentKind: "claude", Prompt: "Send text?",
+			Options: []agent.InteractionOption{{
+				ID: "send_text", Label: "Send Text", Kind: "neutral",
+				Input: &agent.InputSchema{Required: true, Placement: "as_payload"},
+			}},
+			CreatedAt: time.Now(),
+		},
+	})
+	cmds := NewCommandBroker()
+	h := &Handlers{Approvals: s, Cmds: cmds}
+	req := httptest.NewRequest("POST", "/api/sessions/s1/approvals/a1", strings.NewReader(`{"action":"send_text","input":"hello world"}`))
+	req.SetPathValue("id", "s1")
+	req.SetPathValue("approvalId", "a1")
+	rec := httptest.NewRecorder()
+	h.HandleApprovalAction(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send_text: status=%d, want 200", rec.Code)
+	}
+	payload := cmds.Take("s1")
+	if string(payload) != "hello world\n" {
+		t.Errorf("send_text payload: got %q, want %q", string(payload), "hello world\n")
+	}
+}
+
 func TestBuildPayload_MetadataOnly_NoTerminalInjection(t *testing.T) {
 	opt := &agent.InteractionOption{
 		ID: "comment", Kind: "neutral",
