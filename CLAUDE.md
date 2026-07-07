@@ -29,8 +29,59 @@ go test -race ./internal/agent -count=1
 go test ./internal/mux -run "TestFixtureE2E|TestLocalPTY" -count=20 -v
 
 # Mobile TypeScript check
-cd mobile && npx tsc --noEmit
+cd ../mobile && npx tsc --noEmit
 ```
+
+## Build Gate (P3)
+
+Before claiming a phase as complete, run the full verification gate:
+
+```sh
+# From project root:
+cd companion-daemon
+
+# Backend gate
+echo "=== Backend ==="
+go build ./... || { echo "BUILD FAILED"; exit 1; }
+go vet ./... || { echo "VET FAILED"; exit 1; }
+go test -race ./... -count=1 || { echo "TESTS FAILED"; exit 1; }
+git diff --check || { echo "FORMAT FAILED"; exit 1; }
+echo "Backend: OK"
+
+# Mobile gate
+echo "=== Mobile ==="
+cd ../mobile
+npx tsc --noEmit || { echo "TSC FAILED"; exit 1; }
+
+# Vendor branch scan
+echo "=== Invariants ==="
+grep -rn "agentKind.*===" src/ && echo "VENDOR BRANCH FOUND" && exit 1 || true
+grep -rn "opt\.id === 'approve'\|opt\.id === 'reject'" src/ && echo "ID INFERENCE FOUND" && exit 1 || true
+
+# Secret scan (exclude test fixtures, redaction patterns, test mocks)
+echo "=== Security ==="
+cd ../companion-daemon
+SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" internal/ docs/ | grep -v "testdata/\|diagnostic\.go\|approval_test\.go\|auth_test\.go\|fake\|REDACTED\|redact" || true)
+[ -n "$SECRETS" ] && echo "SECRET FOUND: $SECRETS" && exit 1 || true
+
+echo "=== ALL GATES PASSED ==="
+```
+
+Or run the gate script: `sh scripts/build-gate.sh`
+
+### Environment requirements
+
+Backend:
+- Go 1.26+ (`go version`)
+- macOS or Linux (darwin/linux)
+
+Mobile (for full gate):
+- Node.js 20+ (`node --version`)
+- TypeScript 5.8 (`npx tsc --version`)
+- Expo SDK 56
+- `node_modules/` installed (`cd mobile && npm install`)
+
+If mobile dependencies are unavailable, run the backend gate and report mobile as `not-run` with the reason.
 
 ## Architecture
 
