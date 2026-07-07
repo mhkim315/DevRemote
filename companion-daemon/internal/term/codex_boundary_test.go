@@ -71,6 +71,9 @@ func TestCodexLog_ProductionEventsPath(t *testing.T) {
 			if s.AgentStatus != "waiting_approval" {
 				t.Errorf("AgentStatus=%q, want waiting_approval", s.AgentStatus)
 			}
+			if s.AgentConfidence < 0.5 {
+				t.Errorf("AgentConfidence=%.2f < 0.5", s.AgentConfidence)
+			}
 		}
 	}
 	if !found {
