@@ -354,6 +354,11 @@ func (p *mockParser) ParseBatch(lines [][]byte, cursor string) ParseResult {
 			continue
 		}
 
+		// Antigravity: skip ephemeral messages (no semantic value).
+		if stringField(raw, "type") == "EPHEMERAL_MESSAGE" {
+			continue
+		}
+
 		event := &AgentEvent{
 			AgentKind: p.agentKind,
 			Source:    SourceJSONL,
@@ -465,6 +470,10 @@ func classifyEvent(raw map[string]interface{}) AgentEventType {
 	}
 	if rawType == "SEARCH_WEB" || rawType == "LIST_DIRECTORY" {
 		return EventToolCallStarted
+	}
+	// Antigravity system types
+	if rawType == "ERROR_MESSAGE" {
+		return EventFailed
 	}
 	return EventUnknown
 }

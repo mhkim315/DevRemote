@@ -4,14 +4,15 @@
   "source": "jsonl",
   "sourcePath": "~/.gemini/antigravity/brain/<UUID>/.system_generated/logs/transcript.jsonl",
   "redactions": ["<HOME>", "<USER>", "<PROJECT>", "<TOKEN>", "<PROMPT>", "<UUID>", "<PATH>", "<CMD>"],
-  "expectedEvents": ["user_message", "assistant_message", "tool_call_started", "unknown"],
+  "expectedEvents": ["user_message", "assistant_message", "tool_call_started", "failed", "unknown"],
   "observedSourceTypes": ["USER_INPUT", "PLANNER_RESPONSE", "VIEW_FILE", "SEARCH_WEB", "LIST_DIRECTORY", "CHECKPOINT", "ERROR_MESSAGE", "GENERIC", "UNKNOWN_TYPE"],
   "scenarios": {
     "user_agent.jsonl": "USER_INPUT (user_message), PLANNER_RESPONSE (assistant_message), VIEW_FILE (assistant_message)",
     "tool_call.jsonl": "SEARCH_WEB (tool_call_started), LIST_DIRECTORY (tool_call_started)",
-    "malformed.jsonl": "UNKNOWN_TYPE (unknown), missing fields"
+    "malformed.jsonl": "UNKNOWN_TYPE (unknown), missing fields",
+    "system_types.jsonl": "CHECKPOINT (unknown), ERROR_MESSAGE (failed), GENERIC (unknown), EPHEMERAL_MESSAGE (skipped)"
   },
-  "entryCount": 5,
+  "entryCount": 8,
   "date": "2026-07-07",
   "notes": "Based on actual ~/.gemini/antigravity/brain/ transcript.jsonl observation. Antigravity CLI produces screen-oriented model actions. Full parsing requires screen/process inference beyond JSONL."
 }
