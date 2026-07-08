@@ -392,6 +392,23 @@ cmdPoll=setInterval(function(){
 
 setTimeout(function(){term.focus();fitTerminal();},500);
 connect();
+	// E8: post diagnostic counters to React Native every 5s.
+	setInterval(function(){
+	  try{
+	    if(window.ReactNativeWebView){
+	      window.ReactNativeWebView.postMessage(JSON.stringify({
+	        type:"e8diag",
+	        connectCount: e8diag.connectCount,
+	        closeCount: e8diag.closeCount,
+	        msgCount: e8diag.msgCount,
+	        totalBytes: e8diag.totalBytes,
+	        lastMsgSize: e8diag.lastMsgSize,
+	        rawLen: e8diag.rawLen || raw.length,
+	        wasReconnect: wasReconnect
+	      }));
+	    }
+	  }catch(e){}
+	},5000);
 </script>
 </body>
 </html>`)
