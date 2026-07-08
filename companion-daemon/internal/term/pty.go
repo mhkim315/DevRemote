@@ -333,7 +333,7 @@ function connect(){
   ws.onmessage=function(e){
     var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
     raw+=t;
-	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8_lastMsgTime=Date.now();
+	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
     term.write(t);
   };
   ws.onclose=function(e){
@@ -345,7 +345,7 @@ function connect(){
     }
     if(!reconnecting){
       reconnecting=true;
-		      wasReconnect=true;
+		      e8diag.closeCount++; wasReconnect=true;
       setStatus('reconnecting...');
       setTimeout(function(){reconnecting=false;connect()},2000);
     }
