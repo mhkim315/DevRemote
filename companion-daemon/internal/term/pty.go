@@ -298,36 +298,8 @@ var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=fal
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
-	// E8 candidate fix A: force viewport re-render after scroll ends on mobile.
-	var e8_scrollTimer = null;
-	term.onScroll(function(pos) {
-	  if(e8_scrollTimer) clearTimeout(e8_scrollTimer);
-	  e8_scrollTimer = setTimeout(function(){
-	    try { term.clear(); term.refresh(0, term.rows - 1); } catch(e) {}
-	  }, 300);
-	});
-	// E8: track scroll position to prevent live-append duplication on mobile.
-	var e8_scrolledUp = false;
-	var e8_newOutput = false;
-	term.onScroll(function(pos) {
-	  var vp = term.viewport;
-	  if (!vp) return;
-	  // If scrolled more than 3 rows from bottom, consider "scrolled up".
-	  var fromBottom = vp.scrollHeight - vp.scrollTop - vp.clientHeight;
-	  e8_scrolledUp = fromBottom > 50;
-	  if (!e8_scrolledUp && e8_newOutput) {
-	    e8_newOutput = false;
-	    var badge = document.getElementById("e8_badge");
-	    if (badge) badge.style.display = "none";
-	  }
-	});
-	// Add jump-to-bottom badge.
-	var e8_badge = document.createElement("div");
-	e8_badge.id = "e8_badge";
-	e8_badge.textContent = "\u2193 New output";
-	e8_badge.style.cssText = "position:fixed;bottom:60px;right:12px;background:#1E91B3;color:#fff;padding:6px 12px;border-radius:16px;font:12px monospace;cursor:pointer;display:none;z-index:10";
-	e8_badge.onclick = function(){ term.scrollToBottom(); };
-	document.body.appendChild(e8_badge);
+
+
 
 function setStatus(text, terminalText) {
   var s=document.getElementById('status');
