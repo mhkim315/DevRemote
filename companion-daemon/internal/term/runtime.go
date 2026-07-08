@@ -32,14 +32,15 @@ func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
 // Handlers groups HTTP handler dependencies so they are visible as struct fields
 // rather than hidden behind context extraction or package globals.
 type Handlers struct {
-	Registry      *mux.Registry
-	Verifier      TokenVerifier     // may be nil if auth is not configured
-	Events        EventStore        // agent event storage (never nil in production)
-	Links         LinkStore         // session link storage (never nil in production)
-	Cmds          CommandBroker     // pending command storage (never nil in production)
-	Telemetry     *TelemetryService // telemetry state (nil until wired)
-	AgentDetector AgentDetector     // Phase A5: optional agent detector (nil if not wired)
-	Approvals     ApprovalStore     // Phase A9: approval tracking (never nil in production)
+	Registry          *mux.Registry
+	Verifier          TokenVerifier     // may be nil if auth is not configured
+	Events            EventStore        // agent event storage (never nil in production)
+	Links             LinkStore         // session link storage (never nil in production)
+	Cmds              CommandBroker     // pending command storage (never nil in production)
+	Telemetry         *TelemetryService // telemetry state (nil until wired)
+	AgentDetector     AgentDetector     // Phase A5: optional agent detector (nil if not wired)
+	Approvals         ApprovalStore     // Phase A9: approval tracking (never nil in production)
+	InsecureLocalOnly bool              // E6: accepts dev-token in auth middleware
 }
 
 // AgentDetector is the agent adapter layer's detection interface.
@@ -54,9 +55,19 @@ type AgentDetector interface {
 type ProdDetectionEvidence = agent.ProdDetectionEvidence
 
 // AuthMiddleware returns an HTTP middleware that validates JWT tokens using
-// the configured TokenVerifier. If no verifier is set, all requests are rejected.
+// the configured TokenVerifier. In insecure local-only mode, accepts a dev token
+// for fast local iteration without Supabase auth.
 func (h *Handlers) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// E6: insecure local-only mode accepts dev-token without JWT verification.
+		if h.InsecureLocalOnly {
+			token := ExtractToken(r)
+			if token == "dev-token" {
+				next(w, r)
+				return
+			}
+		}
+
 		if h.Verifier == nil {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return

@@ -155,7 +155,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			InsecureLocalOnly:  cfg.InsecureLocalOnly,
 		})
 	}
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals}
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))

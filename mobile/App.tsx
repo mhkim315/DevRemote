@@ -14,9 +14,22 @@ import { RootTabs } from './src/navigation/RootNavigator';
 
 function AppContent() {
   const [session, setSession] = useState<Session | null>(null);
-  const { isConnected, loading } = useConnection();
+  const { isConnected, loading, baseURL } = useConnection();
 
   useEffect(() => {
+    // E6: skip Supabase auth for localhost — use dev token for fast iteration.
+    if (baseURL && (baseURL.includes('localhost') || baseURL.includes('127.0.0.1'))) {
+      const devSession = {
+        access_token: 'dev-token',
+        refresh_token: 'dev-refresh',
+        expires_in: 999999,
+        token_type: 'bearer',
+        user: { id: 'dev-user', email: 'dev@localhost' },
+      } as any as Session;
+      setSession(devSession);
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
     });
@@ -24,7 +37,7 @@ function AppContent() {
     supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
-  }, []);
+  }, [baseURL]);
 
   useEffect(() => {
     async function setupPush() {
