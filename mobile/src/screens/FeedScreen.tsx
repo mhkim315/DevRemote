@@ -452,6 +452,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
               data={transcriptEvents}
               keyExtractor={(item) => String(item.seq || item.id || '0')}
               contentContainerStyle={styles.activityList}
+              inverted={true}
               renderItem={({ item }) => (
                 item.type === 'terminal_input' ? (
                   <View style={styles.transcriptInputRow}>
