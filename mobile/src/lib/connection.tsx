@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { setBaseURL, probeDaemon, ConnectivityFailure } from './client';
+import { setBaseURL, getBaseURL, probeDaemon, ConnectivityFailure } from './client';
 
 // ── R1a: structured connectivity diagnostics ──
 
@@ -19,6 +19,8 @@ export interface ConnectionState {
   failure: ConnectivityFailure;
   connect: (url: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  /** R1a: re-probe daemon and refresh diagnostics. Call after API failures. */
+  refreshDiagnostics: () => Promise<void>;
 }
 
 const ConnectionContext = createContext<ConnectionState>({
@@ -32,6 +34,7 @@ const ConnectionContext = createContext<ConnectionState>({
   failure: ConnectivityFailure.None,
   connect: async () => {},
   disconnect: async () => {},
+  refreshDiagnostics: async () => {},
 });
 
 export function useConnection() {
@@ -121,6 +124,22 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  // R1a: re-probe daemon to refresh diagnostics after a later API failure.
+  // Dashboard calls this when listSessions fails to avoid stale diagnostic state.
+  const refreshDiagnostics = useCallback(async () => {
+    const url = getBaseURL();
+    if (!url) return;
+    const result = await probeDaemon();
+    setDaemonReachable(result.reachable);
+    setSessionsLoaded(result.sessionsLoaded);
+    setSessionsEmpty(result.sessionsEmpty);
+    setFailure(result.failure);
+    if (result.reachable && result.sessionsLoaded) {
+      setIsConnected(true);
+      setConnectionError('');
+    }
+  }, []);
+
   const disconnect = useCallback(async () => {
     setBaseURLState('');
     setIsConnected(false);
@@ -140,7 +159,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     <ConnectionContext.Provider value={{
       baseURL, isConnected, loading, connectionError,
       daemonReachable, sessionsLoaded, sessionsEmpty, failure,
-      connect, disconnect,
+      connect, disconnect, refreshDiagnostics,
     }}>
       {children}
     </ConnectionContext.Provider>

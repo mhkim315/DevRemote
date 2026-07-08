@@ -68,6 +68,9 @@ export default function FeedScreen({onBack, session, token}: Props) {
   // R1a: activity/transcript endpoint reachability.
   const [activityError, setActivityError] = useState('');
   const [historyError, setHistoryError] = useState('');
+  // R1a: terminal WebView connection failure.
+  const [terminalError, setTerminalError] = useState('');
+  const [terminalErrorDetail, setTerminalErrorDetail] = useState('');
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
@@ -420,7 +423,25 @@ export default function FeedScreen({onBack, session, token}: Props) {
         </View>
 
         <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
-          {sessionEnded ? (
+          {terminalError ? (
+            /* R1a: terminal WebView connection failure — visible diagnostic. */
+            <View style={styles.endedContainer}>
+              <Text style={styles.endedTitle}>TERMINAL CONNECTION FAILED</Text>
+              <Text style={styles.endedText}>
+                Check daemon URL / tunnel / network.{'\n'}
+                The daemon or tunnel may be unreachable.
+              </Text>
+              {terminalErrorDetail ? (
+                <Text style={styles.errorDetail}>{terminalErrorDetail}</Text>
+              ) : null}
+              <TouchableOpacity
+                style={{marginTop: 16, backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}
+                onPress={() => { setTerminalError(''); setTerminalErrorDetail(''); if (wv.current) wv.current.reload(); }}
+              >
+                <Text style={{color: '#fff', fontWeight: '700'}}>RETRY</Text>
+              </TouchableOpacity>
+            </View>
+          ) : sessionEnded ? (
             <View style={styles.endedContainer}>
               <Text style={styles.endedTitle}>SESSION ENDED</Text>
               <Text style={styles.endedText}>This terminal session is no longer available.</Text>
@@ -436,6 +457,17 @@ export default function FeedScreen({onBack, session, token}: Props) {
               originWhitelist={['*']}
               cacheEnabled={false}
               onMessage={onMessage}
+              onError={(e) => {
+                const desc = e?.nativeEvent?.description || '';
+                setTerminalError(desc || 'WebView failed to load terminal.');
+                setTerminalErrorDetail('Error: ' + (desc || 'unknown'));
+              }}
+              onHttpError={(e) => {
+                const status = e?.nativeEvent?.statusCode || 0;
+                const desc = e?.nativeEvent?.description || '';
+                setTerminalError('Terminal HTTP ' + (status || 'error') + '. Check daemon URL.');
+                setTerminalErrorDetail('HTTP ' + status + (desc ? ': ' + desc : ''));
+              }}
             />
           )}
         </View>
@@ -617,6 +649,7 @@ const styles = StyleSheet.create({
   endedContainer: {flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24},
   endedTitle: {color: '#f85149', fontSize: 16, fontWeight: '800', letterSpacing: 1.2, marginBottom: 8},
   endedText: {color: '#8b949e', fontSize: 13, textAlign: 'center', lineHeight: 20},
+  errorDetail: {color: '#666', fontSize: 10, textAlign: 'center', marginTop: 8, fontFamily: 'monospace'},
   macroContainer: { backgroundColor: '#000000', borderTopWidth: 1, borderTopColor: '#0D2D45' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
   macroBtn: { backgroundColor: 'transparent', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 32, marginRight: 5, borderWidth: 1, borderColor: '#1E91B3' },

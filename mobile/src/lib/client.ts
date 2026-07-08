@@ -78,30 +78,9 @@ export interface ReachabilityResult {
  *   - daemon reachable, sessions loaded (reachable + sessionsLoaded)
  */
 export async function probeDaemon(token?: string): Promise<ReachabilityResult> {
-  const h: Record<string, string> = {};
-  if (token) h['Authorization'] = `Bearer ${token}`;
   try {
-    const res = await fetch(`${_baseURL}/api/sessions`, { headers: h });
-    if (res.status === 401 || res.status === 403) {
-      return {
-        reachable: true,
-        sessionsLoaded: false,
-        sessionsEmpty: false,
-        failure: ConnectivityFailure.AuthError,
-        statusCode: res.status,
-        errorMessage: 'Authentication failed. Re-scan the QR code.',
-      };
-    }
-    if (!res.ok) {
-      return {
-        reachable: true,
-        sessionsLoaded: false,
-        sessionsEmpty: false,
-        failure: ConnectivityFailure.APIError,
-        statusCode: res.status,
-        errorMessage: `Sessions API returned ${res.status}`,
-      };
-    }
+    // R1a: use checkedFetch so classification matches all other API calls.
+    const res = await checkedFetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });
     const data = await res.json();
     const sessions = Array.isArray(data) ? data : [];
     return {
@@ -114,6 +93,7 @@ export async function probeDaemon(token?: string): Promise<ReachabilityResult> {
     };
   } catch (e: any) {
     if (e instanceof PokitError) {
+      // checkedFetch already classified: AuthError, APIError, Timeout, NetworkUnreachable.
       return {
         reachable: e.failure !== ConnectivityFailure.NetworkUnreachable && e.failure !== ConnectivityFailure.Timeout,
         sessionsLoaded: false,

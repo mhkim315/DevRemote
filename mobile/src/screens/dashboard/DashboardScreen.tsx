@@ -17,7 +17,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
-  const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure } = useConnection();
+  const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure, refreshDiagnostics } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
@@ -55,6 +55,9 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         } else {
           setFetchError('Cannot reach daemon. Check connection.');
         }
+        // R1a: refresh connection diagnostics so daemonReachable/sessionsEmpty
+        // stay consistent with the current failure, not a stale probe.
+        refreshDiagnostics();
         setLoading(false);
       });
   };
