@@ -116,7 +116,7 @@ func newFixtureStream() *fixtureStream {
 	fs := &fixtureStream{pr: pr, pw: pw, done: make(chan struct{})}
 	go func() {
 		pw.Write([]byte("FIXTURE_STREAM_CONTENT"))
-		<-fs.done // block until Close, keeping pipe alive
+		<-fs.done // block until Close, keeping pipe alive like a real PTY
 		pw.Close()
 	}()
 	return fs

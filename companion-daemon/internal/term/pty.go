@@ -119,21 +119,28 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var stream mux.TerminalStream
-	if opener, ok := s.(mux.StreamOpener); ok {
-		stream, err = opener.OpenStream(r.Context())
+	// E8f2: open stream, start/get recorder, subscribe for output.
+		opener, hasStream := s.(mux.StreamOpener)
+		if !hasStream {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotImplemented)
+			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
+			return
+		}
+		stream, err := opener.OpenStream(r.Context())
 		if err != nil {
 			log.Printf("WS stream open err: %v", err)
 			http.Error(w, "stream failed", 500)
 			return
 		}
-		defer stream.Close()
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
-		return
-	}
+		rec, subCh := StartRecorder(session, stream, h.Activity)
+		defer func() {
+			rec.Unsubscribe(subCh)
+			// Stop recorder only if no subscribers remain and stream is done.
+			if rec.Err() != nil {
+				rec.Stop()
+			}
+		}()
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -215,34 +222,16 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if stream != nil {
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := stream.Read(buf)
-				if err != nil {
-					log.Printf("WS stream read err: %v", err)
+	// E8f2: read from recorder broadcast instead of own PTY stream.
+	go func() {
+		for {
+			select {
+			case payload, ok := <-subCh:
+				if !ok {
+					// Recorder closed — propagate error.
 					triggerClose(fmt.Errorf("stream failed"))
-					break
+					return
 				}
-				// E8f: capture terminal output — skip pure ANSI/control chunks.
-				if h.Activity != nil && n > 0 {
-					text := string(buf[:n])
-					if !isANSIControlOnly(text) && len(text) > 3 {
-						if len(text) > 32768 {
-							text = text[:32768]
-						}
-						h.Activity.Append(ActivityEvent{
-							SessionID: session,
-							Type:      ActivityTerminalOutput,
-							Text:      text,
-							Bytes:     n,
-						})
-					}
-				}
-				// Copy buffer since we're passing it to channel
-				payload := make([]byte, n)
-				copy(payload, buf[:n])
 				select {
 				case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: payload}:
 				case <-writerDone:
@@ -250,9 +239,13 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 				case <-r.Context().Done():
 					return
 				}
+			case <-r.Context().Done():
+				return
+			case <-writerDone:
+				return
 			}
-		}()
-	}
+		}
+	}()
 
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -280,9 +273,9 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Ensure stream closes when client disconnects
-	if stream != nil {
-		stream.Close()
+	// E8f2: recorder owns stream lifecycle. Last subscriber exit may stop recorder.
+	if rec.Err() != nil {
+		rec.Stop()
 	}
 	closeOnce.Do(func() {}) // prevent fatalErr channel block
 	select {
