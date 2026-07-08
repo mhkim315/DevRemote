@@ -53,6 +53,15 @@ export async function getSessionHistory(sessionID: string, token?: string) {
   return res.json();
 }
 
+// E8f: fetch captured terminal activity (transcript).
+export async function getActivityHistory(sessionID: string, token?: string) {
+  const res = await checkedFetch(
+    `${_baseURL}/api/sessions?activity=${encodeURIComponent(sessionID)}`,
+    { headers: authHeaders(token) }
+  );
+  return res.json();
+}
+
 export async function sendDebugCommand(sessionID: string, command: string, token?: string) {
   const res = await checkedFetch(
     `${_baseURL}/debug/cmd?session=${encodeURIComponent(sessionID)}`,

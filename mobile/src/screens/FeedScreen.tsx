@@ -1,5 +1,5 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import { terminalURL, listSessions, getSessionHistory } from '../lib/client';
+import { terminalURL, listSessions, getSessionHistory, getActivityHistory } from '../lib/client';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -39,7 +39,10 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
 
-  const [activeTab, setActiveTab] = useState<'terminal' | 'activity'>('activity');
+  // E8g: three modes — Live Terminal, Activity Feed, Transcript (read-only).
+  const [activeTab, setActiveTab] = useState<'terminal' | 'activity' | 'transcript'>('activity');
+  const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
+  const [newOutputCount, setNewOutputCount] = useState(0);
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   // Only sessions explicitly advertising 'history' get the ACTIVITY tab.
@@ -115,15 +118,32 @@ export default function FeedScreen({onBack, session, token}: Props) {
         .catch(err => console.error(err));
     };
 
+    // E8g: fetch transcript (terminal activity) for Transcript tab.
+    const fetchTranscript = () => {
+      getActivityHistory(session, token)
+        .then(data => {
+          if (Array.isArray(data)) {
+            setTranscriptEvents(data);
+            // Track new output when user is in transcript mode.
+            if (activeTab === 'transcript' && data.length > 0) {
+              setNewOutputCount(c => c + 1);
+            }
+          }
+        })
+        .catch(err => console.error(err));
+    };
+
     fetchSession();
     if (sessionDataRef.current?.capabilities?.includes('history')) {
       fetchHistory();
     }
+    fetchTranscript();
     const interval = setInterval(() => {
       fetchSession();
       if (sessionDataRef.current?.capabilities?.includes('history')) {
         fetchHistory();
       }
+      fetchTranscript();
     }, 3000);
     return () => clearInterval(interval);
   }, [session]);
@@ -358,6 +378,13 @@ export default function FeedScreen({onBack, session, token}: Props) {
             <Text style={[styles.tabText, activeTab === 'activity' && styles.activeTabText]}>ACTIVITY</Text>
           </TouchableOpacity>
           )}
+          {/* E8g: Transcript tab — read-only terminal activity history. */}
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'transcript' && styles.activeTab]}
+            onPress={() => { setActiveTab('transcript'); setNewOutputCount(0); }}
+          >
+            <Text style={[styles.tabText, activeTab === 'transcript' && styles.activeTabText]}>TRANSCRIPT</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={{flex: 1, display: activeTab === 'terminal' ? 'flex' : 'none'}}>
@@ -398,6 +425,38 @@ export default function FeedScreen({onBack, session, token}: Props) {
               inverted={true}
             />
           )}
+        </View>
+
+        {/* E8g: Transcript Mode — read-only terminal activity history. */}
+        <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
+          {newOutputCount > 0 && (
+            <TouchableOpacity style={styles.newOutputBanner} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
+              <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
+            </TouchableOpacity>
+          )}
+          {!transcriptEvents || transcriptEvents.length === 0 ? (
+            <Text style={styles.emptyActivityText}>No transcript yet. Use Terminal to generate output.</Text>
+          ) : (
+            <FlatList
+              data={transcriptEvents}
+              keyExtractor={(item, idx) => item.id || String(idx)}
+              contentContainerStyle={styles.activityList}
+              renderItem={({ item }) => (
+                <View style={styles.transcriptRow}>
+                  <Text style={styles.transcriptSeq}>[{item.seq}]</Text>
+                  <Text style={styles.transcriptType}>
+                    {item.type === 'terminal_input' ? '←' : ' '}
+                  </Text>
+                  <Text style={styles.transcriptText} numberOfLines={3}>
+                    {item.text || (item.type === 'terminal_input' ? '[input sent]' : '')}
+                  </Text>
+                </View>
+              )}
+            />
+          )}
+          <TouchableOpacity style={styles.returnBtn} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
+            <Text style={styles.returnBtnText}>← Return to Live Terminal</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.macroContainer}>
@@ -533,6 +592,57 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 40,
     fontSize: 14,
+  },
+  // E8g: Transcript mode styles.
+  transcriptContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  newOutputBanner: {
+    backgroundColor: '#1E91B3',
+    padding: 10,
+    alignItems: 'center',
+  },
+  newOutputText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  transcriptRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#0D2D45',
+  },
+  transcriptSeq: {
+    color: '#666',
+    fontSize: 10,
+    width: 40,
+    fontFamily: 'monospace',
+  },
+  transcriptType: {
+    color: '#45EBE9',
+    fontSize: 12,
+    width: 20,
+  },
+  transcriptText: {
+    color: '#ccc',
+    fontSize: 12,
+    flex: 1,
+    fontFamily: 'monospace',
+  },
+  returnBtn: {
+    backgroundColor: '#1C1C1E',
+    padding: 12,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#0D2D45',
+  },
+  returnBtnText: {
+    color: '#45EBE9',
+    fontWeight: '700',
+    fontSize: 13,
   },
 
   modalBg: {flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end'},
