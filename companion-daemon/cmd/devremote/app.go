@@ -188,9 +188,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("/debug/e8diag", h.AuthMiddleware(term.HandleE8Diag))
 
 	addr := ":9171"
-	if cfg.InsecureLocalOnly {
-		addr = "127.0.0.1:9171"
-	}
+	// E8: bind all interfaces even in insecure mode for device testing.
+	_ = cfg.InsecureLocalOnly
 
 	return &App{
 		config:    cfg,
