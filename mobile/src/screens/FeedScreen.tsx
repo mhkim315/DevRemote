@@ -225,6 +225,10 @@ export default function FeedScreen({onBack, session, token}: Props) {
           setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
         }
       }
+      // E8: diagnostic instrumentation from terminal.
+      if (data.type === 'e8diag') {
+        console.log('E8DIAG', JSON.stringify(data));
+      }
     } catch (e) {}
   }, []);
 
