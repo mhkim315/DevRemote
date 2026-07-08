@@ -12,15 +12,29 @@ themselves reject E-track implementation, but they must be triaged before alpha.
 
 The terminal view showed the same text repeated multiple times.
 
+Updated observation:
+- Activity tab prints the content once.
+- Terminal tab duplicates output heavily.
+- The duplication appears after the user scrolls up or down in the terminal.
+- The user suspects the terminal reloads or replays a whole data block during
+  scroll, and the replay is appended as duplicate output.
+- This was observed while using terminal input.
+
 Impact:
 - The user cannot tell whether the agent repeated itself, the terminal replayed
   old output, or the mobile UI duplicated frames.
+- The duplication is severe enough that the conversation cannot be followed.
 
 Needs investigation:
 - WebSocket frame replay / reconnect behavior
 - terminal buffer append logic
 - xterm/WebView rendering behavior
 - history + live stream merge behavior
+- terminal scroll handler / viewport resize behavior
+- whether scroll triggers history reload or terminal re-render;
+- whether WebView receives the same terminal payload multiple times;
+- whether terminal input path and terminal output append share a replay buffer;
+- why Activity tab remains single-render while Terminal tab duplicates.
 
 ### M-OBS-002 — Activity appears as one large block instead of state/category bubbles
 
@@ -120,8 +134,16 @@ Before more manual UX polish, add an execution-verifiable diagnostic slice:
 E8 — Runtime Interaction Reliability Diagnostics
 ```
 
+Priority:
+1. Terminal scroll duplication: Activity is single-render, Terminal duplicates
+   severely on scroll.
+2. Input delivery acknowledgement and failed-send state.
+3. Codex event segmentation vs Claude event segmentation.
+
 Suggested E8 scope:
 - instrument terminal output frame IDs or append counts;
+- instrument Terminal WebView scroll/history/live-stream merge behavior;
+- verify scroll does not append already-rendered terminal data;
 - log mobile send attempts with session ID and transport path;
 - add a send acknowledgement model or explicit failed-send state;
 - distinguish local optimistic render, backend delivery, and agent processing;
