@@ -67,7 +67,7 @@ root cause of terminal scroll duplication.
 
 ```sh
 # E8DIAG direct test (WORKS)
-curl -s -X POST "http://localhost:9171/debug/e8diag?connectCount=1&closeCount=0&msgCount=5" -H "Authorization: Bearer dev-token"
+curl -s -X POST "http://localhost:9171/debug/e8diag?connectCount=1&closeCount=0&msgCount=5" -H "Authorization: Bearer <DEV_TOKEN>"
 
 # Daemon start with log capture
 /Users/mhk/.local/bin/devremote daemon --insecure-local-only --enable-localpty --enable-agent-detection > /tmp/daemon.log 2>&1 &
