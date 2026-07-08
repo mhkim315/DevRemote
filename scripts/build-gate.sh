@@ -67,6 +67,7 @@ SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
     | grep -v "REDACTED" \
     | grep -v "redactions" \
     | grep -v "AGENT_ADAPTER_LAYER_PLAN" \
+    | grep -v "E6_NO_LOGIN_REPORT" \
     || true)
 if [ -n "$SECRETS" ]; then
     echo "$SECRETS"

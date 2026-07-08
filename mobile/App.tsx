@@ -12,13 +12,18 @@ import AuthScreen from './src/screens/AuthScreen';
 import ConnectScreen from './src/screens/ConnectScreen';
 import { RootTabs } from './src/navigation/RootNavigator';
 
+// E6: explicit test-build gate — does not depend on stored baseURL.
+// Set EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 for local test builds.
+const NO_LOGIN = typeof process !== 'undefined' &&
+  process.env?.EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST === '1';
+
 function AppContent() {
-  const [session, setSession] = useState<Session | null>(null);
-  const { isConnected, loading, baseURL } = useConnection();
+  const [session, setSession] = useState<Session | null>(NO_LOGIN ? {} as Session : null);
+  const { isConnected, loading } = useConnection();
 
   useEffect(() => {
-    // E6: skip Supabase auth for localhost — use dev token for fast iteration.
-    if (baseURL && (baseURL.includes('localhost') || baseURL.includes('127.0.0.1'))) {
+    // E6: skip Supabase auth entirely when test flag is set.
+    if (NO_LOGIN) {
       const devSession = {
         access_token: 'dev-token',
         refresh_token: 'dev-refresh',
@@ -37,7 +42,7 @@ function AppContent() {
     supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
-  }, [baseURL]);
+  }, []);
 
   useEffect(() => {
     async function setupPush() {
