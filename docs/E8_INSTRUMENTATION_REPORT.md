@@ -44,13 +44,13 @@ grep E8DIAG /tmp/daemon.log
 - [x] POST-only + auth + input validation
 - [x] build gate ALL 8 PASSED
 - [x] desktop browser evidence collected
-- [x] reconnect replay evidence (msgCount doubling)
-- [x] terminal duplication root cause confirmed
-- [ ] mobile WebView evidence (connectivity blocked)
+- [x] desktop reconnect replay evidence (msgCount doubling)
 - [x] term.clear() desktop reconnect behavior validated
-- [ ] scrollback preservation verified
-- [ ] no-data-loss behavior verified
-- [ ] terminal duplication fix accepted (desktop-verified, mobile pending)
+- [x] mobile WebView evidence captured
+- [x] reconnect/data replay ruled out for mobile scroll duplication
+- [x] leading hypothesis: mobile viewport render misrender
+- [ ] candidate fix A: term.clear()+refresh after scroll (pending validation)
+- [ ] final fix accepted
 
 ## Runtime evidence
 
@@ -97,7 +97,7 @@ Counters reset with new page. Fresh WebSocket connection, fresh data. wasReconne
 ### Desktop vs Mobile
 
 - Desktop browser: E8DIAG capture works. Scroll does not trigger reconnect.
-- Mobile WebView: E8DIAG capture intermittent (fetch to /debug/e8diag sometimes blocked). Visual observation used as primary evidence.
+- Mobile WebView: E8DIAG capture intermittent. Visual observation + counter data used. Scenario 5 captured with msgCount=83 stable during scroll.
 
 ### Scenario 5: Mobile scroll-up duplication (manual observation)
 

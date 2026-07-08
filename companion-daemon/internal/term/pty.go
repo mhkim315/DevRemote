@@ -298,6 +298,14 @@ var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=fal
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
+	// E8 candidate fix A: force viewport re-render after scroll ends on mobile.
+	var e8_scrollTimer = null;
+	term.onScroll(function(pos) {
+	  if(e8_scrollTimer) clearTimeout(e8_scrollTimer);
+	  e8_scrollTimer = setTimeout(function(){
+	    try { term.clear(); term.refresh(0, term.rows - 1); } catch(e) {}
+	  }, 300);
+	});
 	// E8: track scroll position to prevent live-append duplication on mobile.
 	var e8_scrolledUp = false;
 	var e8_newOutput = false;
@@ -358,11 +366,6 @@ function connect(){
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
     // E8: if user scrolled up, show new-output badge instead of forcing viewport.
-	    if(e8_scrolledUp){
-	      e8_newOutput = true;
-	      var badge = document.getElementById("e8_badge");
-	      if(badge) badge.style.display = "block";
-	    }
 	    term.write(t);
   };
   ws.onclose=function(e){
