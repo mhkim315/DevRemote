@@ -1,88 +1,56 @@
 # E8f2-pre — Stream / PTY Ownership Audit
 
-Date: 2026-07-08
+Date: 2026-07-09
 
 ## 1. Current HandleWS ownership
 
 ### stream.Read() location
-
-`internal/term/pty.go:218-239` — inside `HandleWS`, per-WebSocket goroutine:
-
-```go
-if stream != nil {
-    go func() {
-        buf := make([]byte, 1024)
-        for {
-            n, err := stream.Read(buf)  // OWNED by this goroutine
-            ...
-            outbound <- ...
-        }
-    }()
-}
-```
-
-### Who owns PTY reading
-
-**Each WebSocket connection owns its own PTY stream.** `OpenStream()` is called per-WebSocket in HandleWS line 124. Two simultaneous WebSocket connections → two independent `stream.Read()` goroutines → two independent read loops → each reads from the same PTY independently.
+`internal/term/pty.go` — inside `HandleWS`, per-WebSocket goroutine.
+Each WebSocket connection opens its own stream and runs its own read loop.
 
 ### Where ActivityBuffer.Append() occurs
-
-`internal/term/pty.go:228-240` — inside the stream.Read() goroutine:
-
-```go
-if h.Activity != nil && n > 0 && !skipCapture {
-    ...
-    h.Activity.Append(ActivityEvent{...})
-}
-```
-
-Append is per-WebSocket-read. Two WebSockets → two goroutines appending → potential duplicate events if both read the same PTY data.
+Inside the stream.Read() goroutine in HandleWS. Per-WebSocket-read append.
 
 ### Current replay path
-
-`internal/term/pty.go:204-216` — initial screen snapshot:
-
-```go
-if sr, ok := s.(mux.ScreenReader); ok {
-    if initial, snapErr := sr.ReadScreen(r.Context()); snapErr == nil && len(initial) > 0 {
-        payload := "\033[2J\033[H" + string(initial)
-        outbound <- ...
-    }
-}
-```
-
-This sends the current screen state (`\033[2J\033[H` = clear+home) as the first message. This IS captured by ActivityBuffer (contains printable text after ANSI codes). The `skipCapture` flag was added to suppress this initial burst.
+`ReadScreen()` → `\033[2J\033[H` + screen content → sent as first WebSocket message.
+This IS captured by ActivityBuffer (contains printable text after ANSI codes).
+`skipCapture` flag suppresses initial burst capture (added in E8h).
 
 ### Current history/snapshot path
-
-`internal/term/telemetry.go:202-219` — `HandleSessionsV2` `?history=` fallback:
-
-```go
-if hr, ok := sess.(mux.HistoryReader); ok {
-    out, err = hr.ReadHistory(r.Context(), 10000)
-} else if sr, ok := sess.(mux.ScreenReader); ok {
-    out, err = sr.ReadScreen(r.Context())
-}
-```
-
-This is one-shot, not streaming. Not captured by ActivityBuffer.
+`HandleSessionsV2 ?history=` → `ReadHistory()` or `ReadScreen()` — one-shot, not streaming.
+Not captured by ActivityBuffer.
 
 ## 2. Adapter capability matrix
 
-| Adapter | StreamOpener | ScreenReader | HistoryReader | InputWriter | Single-reader? |
-|---------|-------------|-------------|---------------|-------------|----------------|
-| localpty | yes | yes | yes | yes | no — each OpenStream creates new PTY reader |
-| tmux | yes | yes | yes | ? | no — each OpenStream connects to tmux pane |
-| cmux | yes | yes | yes | ? | no — each OpenStream connects to cmux session |
+| Adapter | OpenStream | InputWriter | stream-only fallback | 2nd OpenStream behavior | safest recorder point |
+|---------|-----------|-------------|---------------------|------------------------|----------------------|
+| localpty | SpawnPTY (new child per call) | WriteInput ✅ | N/A (has InputWriter) | Creates new PTY child — duplicate reads possible | OpenStream ONCE, then guard |
+| tmux | SpawnPTY (new child per call) | ❌ none | **stream.Write(msg) REQUIRED** | Creates new tmux attach child — duplicate reads + terminal confusion | OpenStream ONCE, MUST preserve stream.Write fallback |
+| cmux | CmuxStream (new stream per call) | WriteInput ✅ | N/A (has InputWriter) | Creates new CmuxStream — duplicate reads possible | OpenStream ONCE, then guard |
 
-**Critical finding**: No adapter guarantees single-reader semantics. `OpenStream()` can be called multiple times concurrently, creating independent readers that each consume the same PTY output. This means:
+**Evidence from source:**
+- `localpty_adapter.go:128`: `func (s *localptySession) WriteInput(...)` — InputWriter implemented
+- `cmux_adapter.go:401`: `func (s *CmuxSession) WriteInput(...)` — InputWriter implemented
+- `cmux_adapter.go:348`: `CmuxStream.Write not implemented, use InputWriter capability directly` — stream-only fallback NOT available for cmux
+- `tmux_adapter.go:43`: `func (s *tmuxSession) OpenStream(...)` — no WriteInput, relies on HandleWS `stream.Write(msg)` fallback
 
-- Two WebSocket viewers → two readers → both appending to ActivityBuffer → **DUPLICATE events**
-- The current ActivityBuffer is already vulnerable to multi-viewer duplication
+**Critical: tmux has NO InputWriter. The `stream.Write(msg)` fallback in HandleWS is essential for tmux sessions. Any recorder must preserve this path or provide equivalent.**
 
-## 3. Ownership proposal
+## 3. Replay / snapshot / history append rule (STRICT)
 
-### Target architecture
+```
+Live PTY bytes from stream.Read()
+→ ActivityBuffer.Append()  ← ONLY THIS PATH
+
+ReadScreen / ReadHistory / bootstrap / replay / reconnect
+→ display only
+→ NEVER append to ActivityBuffer
+```
+
+Current code enforces this via `skipCapture` flag (suppresses initial screen snapshot).
+Recorder must inherit this rule: skip the first ReadScreen burst.
+
+## 4. Ownership proposal
 
 ```
 Session (one)
@@ -94,93 +62,104 @@ ActivityBuffer (append-only, monotonic seq)
 Broadcast channel → N WebSocket subscribers
 ```
 
-### NOT the current architecture
+## 5. Recorder start condition policy
+
+**Problem**: If recorder starts from HandleWS, no-WebSocket capture fails.
+**Solution**: Recorder starts at session creation/link time, not WebSocket time.
+
+| Option | Feasibility | E8f2 target? |
+|--------|-----------|--------------|
+| A: session create/link time | Requires session lifecycle hook. Best fit for product goal. | ✅ Recommended |
+| B: daemon session discovery time | Adapters without per-session hooks can't support this. | Partial |
+| C: first explicit attach action | User-initiated; not automatic. | Fallback |
+| D: first WebSocket connection | Does NOT satisfy "capture without viewer" goal. | ❌ Rejected |
+
+**Recommended**: Option A for localpty (has session lifecycle). Option B fallback for tmux/cmux (poll-based). Document which adapters support which.
+
+## 6. Late subscriber policy
 
 ```
-N WebSocket handlers
-  ↓
-stream.Read() per handler
-  ↓
-ActivityBuffer (vulnerable to duplicate appends)
+Late subscriber (WebSocket connects mid-session):
+→ receives live PTY bytes from attachment point onward
+→ does NOT receive ActivityBuffer replay over WebSocket
+→ reads historical transcript through ?activity=<sessionId>
+→ initial screen snapshot (ReadScreen) sent as first frame for visual bootstrap, NOT appended to ActivityBuffer
 ```
 
-### Proposed insertion point
+## 7. Session recreation policy
 
-The recorder should be created when a session becomes "active" (first WebSocket connection or first API access). It should:
+```
+session deleted/ended:
+→ recorder stops
+→ subscribers closed
+→ ActivityBuffer cleared for that sessionID
 
-1. Call `OpenStream()` exactly ONCE per session
-2. Read from the PTY in a single goroutine
-3. Write to both the broadcast channel (for WebSocket subscribers) AND ActivityBuffer
-4. Stop when the session is terminated
+same sessionID recreated later:
+→ new recorder starts
+→ seq resets to 1
+→ old data already cleared
+```
 
-### WebSocket subscriber model
+## 8. Adapter restart / stream replacement policy
 
-HandleWS should:
-1. Receive from the recorder's broadcast channel instead of `OpenStream()`
-2. NOT own a PTY read loop
-3. NOT append to ActivityBuffer directly
+```
+stream dies (EOF/error):
+→ recorder logs error
+→ recorder exits (does NOT auto-restart)
+→ subscribers receive close signal
+→ next WebSocket connect triggers new recorder via start condition
 
-## 4. Risk analysis
+Recorder does NOT auto-reopen dead streams.
+Stream replacement is a subscriber re-attach concern, not a recorder concern.
+```
 
-### Multiple viewers
-**Risk**: Two WebSocket connections currently create two independent PTY readers → ActivityBuffer duplicate appends.
-**Mitigation**: Session-scoped recorder with single reader.
+## 9. Error propagation policy
 
-### Race conditions
-**Risk**: Multiple goroutines calling `ActivityBuffer.Append()` for the same session.
-**Mitigation**: ActivityBuffer already uses `sync.Mutex`. Single reader eliminates the race at source.
+```
+recorder read error:
+→ recorder exits
+→ subscriber channels close
+→ WebSocket handler detects closed channel
+→ WebSocket sends 1011 close frame
+→ handler exits cleanly
+```
 
-### Replay semantics
-**Risk**: Initial screen snapshot (`ReadScreen()` + `\033[2J\033[H`) captured as terminal_output.
-**Mitigation**: `skipCapture` flag suppresses initial burst. Recorder should also skip the first snapshot.
+## 10. Input ownership policy
 
-### Subscriber backpressure
-**Risk**: Slow WebSocket subscriber could block the broadcast channel.
-**Mitigation**: Buffered channel (size 32 as currently used) + drop-on-full semantics.
+```
+terminal_output:
+→ recorder-owned (single writer to ActivityBuffer)
 
-### ActivityBuffer ownership
-**Risk**: ActivityBuffer currently owned by Handlers struct (one per daemon). Multiple sessions share one buffer.
-**Mitigation**: Acceptable for MVP. Session-scoped buffer is future optimization.
+terminal_input metadata:
+→ WebSocket handler-owned (bytes only, no raw text)
 
-### Session cleanup
-**Risk**: Recorder goroutine leak when session ends.
-**Mitigation**: Context-based cancellation tied to session lifecycle.
+stream-only input fallback (tmux):
+→ recorder MUST preserve stream.Write(msg) path
+→ OR recorder must own the stream.Write interface for input
+```
 
-### Adapter differences
-**Risk**: localpty `OpenStream()` creates a fresh PTY reader each call. tmux/cmux `OpenStream()` connects to existing pane.
-**Mitigation**: Recorder calls `OpenStream()` once. If the stream dies, recorder re-opens once (not per-subscriber).
+## 11. E8f2 test plan
 
-## 5. Boundary definition
+| # | Test | Proves |
+|---|------|--------|
+| 1 | recorder captures output without WebSocket subscriber | no-viewer capture |
+| 2 | two subscribers receive same live output | multi-viewer no-duplicate |
+| 3 | ActivityBuffer has exactly N events for M bytes of PTY output (M ≥ N) | no double append |
+| 4 | late subscriber receives only live bytes from attach point | late-subscriber policy |
+| 5 | ReadScreen/bootstrap does not create ActivityEvent seq | replay-isolation rule |
+| 6 | stream read error closes subscriber channels + WebSocket 1011 | error propagation |
+| 7 | session delete stops recorder + clears subscribers | lifecycle cleanup |
+| 8 | same-ID recreation starts new recorder with reset seq | recreation policy |
+| 9 | terminal_input remains metadata-only | input safety |
+| 10 | tmux stream-only input fallback preserved | adapter compatibility |
 
-### IN SCOPE for E8f2-pre (this audit)
-- ownership clarification ✅
-- recorder insertion point identification ✅
-- reader ownership documented ✅
-- replay ownership documented ✅
-- adapter matrix ✅
+## 12. Implementation recommendation
 
-### IN SCOPE for E8f2 (recorder implementation)
-- single session-owned PTY reader
-- broadcast channel for WebSocket subscribers
-- ActivityBuffer fed by recorder
-- reconnect does not replay into ActivityBuffer
-- session cleanup
+**First slice**: localpty + tmux (covers both InputWriter and stream-only paths)
+**Files**: recorder.go (new), pty.go (HandleWS subscriber model), activity.go (no changes)
+**Fallback for cmux**: identical to localpty path (has InputWriter)
 
-### OUT OF SCOPE
-- transcript UI
-- LTE/remote polish
-- persistence across daemon restart
-- semantic grouping
-- transcript readability
-- session recreation / adapter restart edge cases (documented but not handled)
-- late subscriber attachment resync
-
-## 6. Open questions
-
-1. **Stream replacement**: If `OpenStream()` returns a stream that dies (pipe closed), how does the recorder recover? One-shot re-open? Signal to subscribers?
-
-2. **Late subscriber**: If a WebSocket connects mid-session, how does it get the current terminal state? Current replay path (`ReadScreen` + clear) works but is captured by ActivityBuffer as new output.
-
-3. **Adapter restart**: If tmux/cmux adapter restarts (session list refresh), does the recorder need to re-attach?
-
-4. **Concurrent sessions**: One ActivityBuffer per daemon handles all sessions. Is there a risk of session cross-contamination? (No — events are keyed by sessionID.)
+**Risks**:
+- tmux OpenStream creates new PTY child per call — must guard against multi-open
+- stream.Read() blocking behavior varies by adapter — need context-based cancellation
+- ActivityBuffer memory growth for long-running sessions — capacity already enforced (2000 events)
