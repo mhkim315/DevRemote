@@ -47,7 +47,9 @@ grep E8DIAG /tmp/daemon.log
 - [x] reconnect replay evidence (msgCount doubling)
 - [x] terminal duplication root cause confirmed
 - [ ] mobile WebView evidence (connectivity blocked)
-- [x] term.clear() safety validated (scrollback preserved, no data loss)
+- [x] term.clear() desktop reconnect behavior validated
+- [ ] scrollback preservation verified
+- [ ] no-data-loss behavior verified
 - [ ] terminal duplication fix accepted (desktop-verified, mobile pending)
 
 ## Runtime evidence
@@ -151,11 +153,13 @@ if(wasReconnect){ term.clear(); wasReconnect=false; }
 4. Daemon PTY replay writes fresh data to cleared viewport
 
 ### Safety analysis
-- **Duplication removed**: replayed data goes to cleared display, not stacked on old content. Verified by msgCount doubling (9→18) without visual duplication.
-- **Scrollback preserved**: `term.clear()` clears only the visible viewport. xterm.js scrollback buffer is NOT cleared. User can scroll up to see pre-reconnect content.
-- **No unintended output loss**: Old content is in scrollback. Fresh replayed data replaces the viewport. This is the intended behavior — reconnect = refresh the view.
+- **Duplication removed**: replayed data goes to cleared display, not stacked on old content. Verified by msgCount doubling (9→18) without visual duplication in desktop test.
+- **Scrollback preservation**: NOT YET INDEPENDENTLY VERIFIED. xterm.js docs state `term.clear()` clears viewport, not scrollback, but this has not been confirmed with a manual scroll-up test after reconnect.
+- **No-data-loss**: NOT YET INDEPENDENTLY VERIFIED. Requires confirmation that pre-reconnect content remains accessible in scrollback after term.clear() + replay.
 
 ### Acceptance scope
 - Desktop reconnect/replay root cause: **CONFIRMED**
-- term.clear() fix: **desktop-verified**
+- term.clear() desktop reconnect behavior: **validated**
+- Scrollback preservation: **pending verification**
+- No-data-loss: **pending verification**
 - Mobile WebView duplication: **pending device confirmation**
