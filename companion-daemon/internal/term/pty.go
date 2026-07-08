@@ -306,6 +306,7 @@ html,body{width:100%;height:100%;background:#000}
 <div id="status"></div>
 <script>
 var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
+	var e8_connectCount=0, e8_msgCount=0, e8_totalBytes=0, e8_closeCount=0;
 	var e8_connectCount=0, e8_msgCount=0, e8_totalBytes=0, e8_lastMsgTime=0;
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
@@ -338,7 +339,8 @@ function connect(){
     consecutiveFailures=0;
     reconnecting=false;
 		    // E8: clear terminal on reconnect to prevent scroll duplication.
-		    if(wasReconnect){ term.clear(); wasReconnect=false; }
+		    if(wasReconnect){ term.clear(); wasReconnect=false;
+	var e8_connectCount=0, e8_msgCount=0, e8_totalBytes=0, e8_closeCount=0; }
     document.getElementById('status').style.display='none';
     setTimeout(function(){fitTerminal()},500);
   };
