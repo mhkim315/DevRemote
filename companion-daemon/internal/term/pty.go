@@ -299,7 +299,7 @@ var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=fal
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
 	// E8: track scroll position to prevent live-append duplication on mobile.
-	var e8_scrolledUp = false;
+	var e8_scrolledUp = false; var e8_pending = "";
 	var e8_newOutput = false;
 	term.onScroll(function(pos) {
 	  var vp = term.viewport;
@@ -311,6 +311,8 @@ term.open(document.getElementById("t"));
 	    e8_newOutput = false;
 	    var badge = document.getElementById("e8_badge");
 	    if (badge) badge.style.display = "none";
+	    // Flush buffered output.
+	    if(e8_pending){ term.write(e8_pending); e8_pending = ""; }
 	  }
 	});
 	// Add jump-to-bottom badge.
