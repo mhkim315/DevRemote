@@ -16,7 +16,8 @@ interface Props {
 export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
-  const { disconnect } = useConnection();
+  const [fetchError, setFetchError] = useState('');
+  const { disconnect, connectionError } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
@@ -28,10 +29,12 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
           typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
         ).sort((a: SessionTelemetry, b: SessionTelemetry) => String(a.id).localeCompare(String(b.id)));
         setSessions(normalized);
+        setFetchError('');
         setLoading(false);
       })
       .catch(err => {
         console.error(err);
+        setFetchError('Cannot reach daemon. Check connection.');
         setLoading(false);
       });
   };
@@ -139,7 +142,16 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         </View>
       </View>
 
-      {loading ? (
+      {(fetchError || connectionError) ? (
+        <View style={{padding: 20, alignItems: 'center'}}>
+          <Text style={{color: '#f85149', fontSize: 14, textAlign: 'center', marginBottom: 12}}>
+            {fetchError || connectionError}
+          </Text>
+          <TouchableOpacity onPress={() => { setFetchError(''); fetchSessions(); }} style={{backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
+            <Text style={{color: '#fff', fontWeight: '700'}}>RETRY</Text>
+          </TouchableOpacity>
+        </View>
+      ) : loading ? (
         <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
       ) : (
         <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>

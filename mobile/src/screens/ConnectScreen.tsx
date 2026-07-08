@@ -4,7 +4,7 @@ import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
 
 export default function ConnectScreen() {
-  const { connect } = useConnection();
+  const { connect, connectionError } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
 
@@ -64,6 +64,9 @@ export default function ConnectScreen() {
       
       <View style={styles.manualContainer}>
         <View style={styles.manualBtn}>
+          {connectionError ? (
+            <Text style={styles.error}>{connectionError}</Text>
+          ) : null}
           <Button title="Connect to term.fullcount.kr" onPress={async () => {
             await connect('https://term.fullcount.kr');
           }} color="#45EBE9" />
@@ -88,6 +91,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
+  },
+  error: {
+    color: '#f85149',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 20,
   },
   title: {
     color: '#fff',
