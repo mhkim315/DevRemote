@@ -459,6 +459,40 @@ export default function FeedScreen({onBack, session, token}: Props) {
           </TouchableOpacity>
         </View>
 
+        {/* E8g: Transcript Mode — read-only. */}
+        <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
+          {newOutputCount > 0 && (
+            <TouchableOpacity style={styles.newOutputBanner} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
+              <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
+            </TouchableOpacity>
+          )}
+          {!transcriptEvents || transcriptEvents.length === 0 ? (
+            <Text style={styles.emptyActivityText}>No transcript yet.</Text>
+          ) : (
+            <FlatList
+              data={transcriptEvents}
+              keyExtractor={(item, idx) => item.id || String(idx)}
+              contentContainerStyle={styles.activityList}
+              renderItem={({ item }) => (
+                <View style={styles.transcriptRow}>
+                  <Text style={styles.transcriptSeq}>[{item.seq}]</Text>
+                  <Text style={styles.transcriptType}>
+                    {item.type === 'terminal_input' ? '←' : ' '}
+                  </Text>
+                  <Text style={styles.transcriptText} numberOfLines={3}>
+                    {item.text || (item.type === 'terminal_input' ? '[input sent]' : '')}
+                  </Text>
+                </View>
+              )}
+            />
+          )}
+          <TouchableOpacity style={styles.returnBtn} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
+            <Text style={styles.returnBtnText}>← Return to Live Terminal</Text>
+          </TouchableOpacity>
+        </View>
+
+        {activeTab === 'terminal' && (
+        <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
             {NORMAL_MACROS.map((m, i) => (
@@ -491,6 +525,8 @@ export default function FeedScreen({onBack, session, token}: Props) {
           )}
           <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
         </View>
+        </>
+        )}
       </View>
 
       <Modal
