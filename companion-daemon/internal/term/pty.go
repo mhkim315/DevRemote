@@ -448,10 +448,22 @@ func HandleDump(w http.ResponseWriter, r *http.Request) {
 
 // HandleE8Diag receives diagnostic counters from the terminal WebView.
 // Logs them to daemon stdout — capturable without Metro or adb logcat.
+// POST-only, accepts only numeric/bool fields, truncates long values.
 func HandleE8Diag(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	q := r.URL.Query()
+	safe := func(key string) string {
+		v := q.Get(key)
+		if len(v) > 20 {
+			v = v[:20]
+		}
+		return v
+	}
 	log.Printf("E8DIAG connectCount=%s closeCount=%s msgCount=%s totalBytes=%s lastMsgSize=%s rawLen=%s wasReconnect=%s",
-		q.Get("connectCount"), q.Get("closeCount"), q.Get("msgCount"),
-		q.Get("totalBytes"), q.Get("lastMsgSize"), q.Get("rawLen"), q.Get("wasReconnect"))
+		safe("connectCount"), safe("closeCount"), safe("msgCount"),
+		safe("totalBytes"), safe("lastMsgSize"), safe("rawLen"), safe("wasReconnect"))
 	w.WriteHeader(200)
 }

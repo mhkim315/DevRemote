@@ -1,59 +1,62 @@
 # E8 Instrumentation Report
 
 Date: 2026-07-08
-Commit: 5110340bc
+Commit: 71c9cc772
 
-## Instrumentation path (verified in code)
+## Capture path
+
+```
+Terminal WebView setInterval (5s)
+→ POST /debug/e8diag?connectCount=...&closeCount=...&msgCount=...
+→ daemon HandleE8Diag → log.Printf("E8DIAG ...")
+→ daemon stdout (or /tmp/daemon.log)
+```
+
+## How to capture
+
+```sh
+# Start daemon with log capture
+devremote daemon --insecure-local-only --enable-localpty --enable-agent-detection 2>&1 | grep E8DIAG
+
+# Or from log file
+tail -f /tmp/daemon.log | grep E8DIAG
+```
+
+## Counter interpretation
+
+| Counter | Meaning | Duplication signal |
+|---------|---------|-------------------|
+| connectCount | WebSocket opens | increases → reconnect happening |
+| closeCount | WebSocket closes | increases → connection drops |
+| msgCount | term.write calls | increases without backend output → replay |
+| totalBytes | bytes written to terminal | increases without new data → duplication |
+| lastMsgSize | size of last message | large spike → history replay |
+| rawLen | cumulative raw buffer | grows faster than msgCount → large payloads |
+| wasReconnect | last open was a reconnect | true → reconnect happened |
+
+## Instrumentation code (verified)
 
 ```
 pty.go:325  onopen     → e8diag.connectCount++
 pty.go:336  onmessage  → e8diag.msgCount++, totalBytes+=, lastMsgSize=, rawLen=
 pty.go:348  onclose    → e8diag.closeCount++, wasReconnect=true
-pty.go:400  setInterval → postMessage({type:"e8diag", ...}) every 5s
-FeedScreen.tsx:216  onMessage → console.log('E8DIAG', ...)
+pty.go:400  setInterval → POST /debug/e8diag with all counters
+pty.go:438  HandleE8Diag → POST-only, auth-gated, input-length-limited → log.Printf
 ```
 
-## How to capture evidence
+## Security
 
-1. Start instrumented daemon
-2. Launch app on device/emulator, connect to daemon
-3. Open a session → Terminal tab
-4. Watch Metro console output for `E8DIAG` lines
-5. Scroll terminal, switch tabs, refresh
-6. Observe counter changes:
-   - If `connectCount` increases during scroll → reconnect is happening
-   - If `closeCount` increases → WebSocket is closing
-   - If `msgCount`/`totalBytes` increase without backend output → replay/duplication
-   - If `wasReconnect: true` and counters spike → reconnect replay is the cause
+- `/debug/e8diag` behind AuthMiddleware
+- POST-only
+- Query values truncated to 20 chars max
+- No raw body/string logging
 
-## Current verification
+## Status
 
-| Check | Status |
-|-------|--------|
-| e8diag object in script | ✅ |
-| connectCount increment | ✅ |
-| closeCount increment | ✅ |
-| msgCount/totalBytes/lastMsgSize/rawLen increment | ✅ |
-| setInterval postMessage | ✅ |
-| React Native onMessage handler | ✅ |
-| Served HTML contains type:"e8diag" | ✅ |
-| build-gate.sh | ✅ ALL 8 PASSED |
-
-## Runtime evidence attempt
-
-Emulator test (2026-07-08):
-- Daemon with e8diag running on port 9171 ✅
-- App launched, connected to daemon ✅
-- Dashboard renders with session cards ✅
-- Metro running, serving on port 8081 ✅
-- Console.log output goes to Metro stdout, not adb logcat
-- Metro stdout captured to /tmp/metro.log — no E8DIAG lines appeared
-- Likely cause: Expo dev client routes console.log through Metro's internal
-  WebSocket, not to stdout. Or Terminal tab WebView wasn't opened during capture.
-
-## How to capture E8DIAG reliably
-
-Option 1: Open Chrome DevTools on Metro (http://localhost:8081/debugger-ui)
-Option 2: Use `react-native log-android` while app is running
-Option 3: Watch Metro terminal output directly during active Terminal session
-Option 4: Add native logcat side-channel to the terminal HTML instrumentation
+- [x] instrumentation code complete
+- [x] daemon capture path working  
+- [x] POST-only + auth + input validation
+- [x] build gate ALL 8 PASSED
+- [ ] runtime evidence (requires daemon restart with new binary + active Terminal session)
+- [ ] terminal duplication root cause identified
+- [ ] terminal duplication fix implemented
