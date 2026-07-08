@@ -173,6 +173,67 @@ func (r *Recorder) readLoop() {
 	}
 }
 
+// EnsureRecorder returns or creates a recorder for a session.
+// HandleWS calls this to subscribe — does NOT open its own stream.
+// If no recorder exists and no opener is provided, returns nil.
+func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *ActivityBuffer) (*Recorder, chan []byte) {
+	recorderRegistry.mu.Lock()
+	defer recorderRegistry.mu.Unlock()
+
+	if r, ok := recorderRegistry.recorders[sessionID]; ok {
+		if r.Err() != nil {
+			delete(recorderRegistry.recorders, sessionID)
+		} else {
+			return r, r.Subscribe()
+		}
+	}
+
+	if opener == nil {
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := opener.OpenStream(ctx)
+	if err != nil {
+		cancel()
+		return nil, nil
+	}
+
+	r := &Recorder{
+		sessionID:   sessionID,
+		stream:      stream,
+		activity:    activity,
+		ctx:         ctx,
+		cancel:      cancel,
+		subscribers: nil,
+		done:        make(chan struct{}),
+	}
+	ch := r.Subscribe()
+	recorderRegistry.recorders[sessionID] = r
+	go r.readLoop()
+	log.Printf("RECORDER start session=%s", sessionID)
+	return r, ch
+}
+
+// DeleteRecorder stops and removes the recorder for a session.
+// Called on session delete/end.
+func DeleteRecorder(sessionID string) {
+	recorderRegistry.mu.Lock()
+	r, ok := recorderRegistry.recorders[sessionID]
+	if ok {
+		delete(recorderRegistry.recorders, sessionID)
+	}
+	recorderRegistry.mu.Unlock()
+	if ok {
+		r.Stop()
+	}
+}
+
+// WriteInput sends input to the PTY stream. Used for tmux stream-only input fallback.
+func (r *Recorder) WriteInput(data []byte) (int, error) {
+	return r.stream.Write(data)
+}
+
 // GetRecorder returns the recorder for a session, or nil.
 func GetRecorder(sessionID string) *Recorder {
 	recorderRegistry.mu.Lock()

@@ -87,6 +87,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
 				return
 			}
+			DeleteRecorder(id)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -119,7 +120,7 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// E8f2: open stream, start/get recorder, subscribe for output.
+	// E8f2: subscribe to session recorder. Recorder opens stream ONCE.
 		opener, hasStream := s.(mux.StreamOpener)
 		if !hasStream {
 			w.Header().Set("Content-Type", "application/json")
@@ -127,13 +128,11 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
 			return
 		}
-		stream, err := opener.OpenStream(r.Context())
-		if err != nil {
-			log.Printf("WS stream open err: %v", err)
+		rec, subCh := EnsureRecorder(session, opener, h.Activity)
+		if rec == nil {
 			http.Error(w, "stream failed", 500)
 			return
 		}
-		rec, subCh := StartRecorder(session, stream, h.Activity)
 		defer func() {
 			rec.Unsubscribe(subCh)
 			// Stop recorder only if no subscribers remain and stream is done.
@@ -268,8 +267,8 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 				triggerClose(fmt.Errorf("input failed"))
 				break
 			}
-		} else if stream != nil {
-			stream.Write(msg)
+		} else if rec != nil {
+			rec.WriteInput(msg)
 		}
 	}
 
