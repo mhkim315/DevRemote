@@ -29,6 +29,7 @@ No WebSocket behavior changes.
 
 Read:
 
+- `docs/E8F2_EXECUTOR_ONBOARDING.md`
 - `docs/E8F2_RECORDER_PLAN.md`
 - `docs/E8_EXECUTION_PLAN.md`
 - `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
