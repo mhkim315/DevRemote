@@ -225,18 +225,20 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 					triggerClose(fmt.Errorf("stream failed"))
 					break
 				}
-				// E8f: capture terminal output — full text, capped at 32KB.
-				if h.Activity != nil {
+				// E8f: capture terminal output — skip pure ANSI/control chunks.
+				if h.Activity != nil && n > 0 {
 					text := string(buf[:n])
-					if len(text) > 32768 {
-						text = text[:32768]
+					if !isANSIControlOnly(text) && len(text) > 3 {
+						if len(text) > 32768 {
+							text = text[:32768]
+						}
+						h.Activity.Append(ActivityEvent{
+							SessionID: session,
+							Type:      ActivityTerminalOutput,
+							Text:      text,
+							Bytes:     n,
+						})
 					}
-					h.Activity.Append(ActivityEvent{
-						SessionID: session,
-						Type:      ActivityTerminalOutput,
-						Text:      text,
-						Bytes:     n,
-					})
 				}
 				// Copy buffer since we're passing it to channel
 				payload := make([]byte, n)
@@ -477,6 +479,17 @@ func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 	}
 	cmd := h.Cmds.Take(session)
 	w.Write(cmd)
+}
+
+// isANSIControlOnly returns true if the text is only ANSI escapes or control chars.
+func isANSIControlOnly(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 32 && c != 0x1b {
+			return false // printable char found
+		}
+	}
+	return true // all control/ANSI bytes
 }
 
 func HandleDump(w http.ResponseWriter, r *http.Request) {
