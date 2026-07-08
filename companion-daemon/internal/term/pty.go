@@ -322,6 +322,8 @@ function connect(){
     opened=true;
     consecutiveFailures=0;
     reconnecting=false;
+		    // E8: clear terminal on reconnect to prevent scroll duplication.
+		    if(wasReconnect){ term.clear(); wasReconnect=false; }
     document.getElementById('status').style.display='none';
     setTimeout(function(){fitTerminal()},500);
   };
@@ -339,6 +341,7 @@ function connect(){
     }
     if(!reconnecting){
       reconnecting=true;
+		      wasReconnect=true;
       setStatus('reconnecting...');
       setTimeout(function(){reconnecting=false;connect()},2000);
     }
