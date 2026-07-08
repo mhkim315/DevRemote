@@ -14,23 +14,29 @@ Do not continue patching xterm mobile scrollback.
 Immediate target:
 
 ```text
-E8e — Transcript Read Mode Scope
+E8f2-pre — Stream / PTY Ownership Audit
 ```
 
 ## Mission
 
-Document the architecture pivot:
+Audit current stream ownership before implementing the session-owned recorder.
 
 ```text
-xterm.js remains live interactive terminal.
-Pokit transcript renderer handles mobile historical reading.
+No recorder implementation yet.
+No runtime behavior changes.
+No WebSocket behavior changes.
 ```
 
-Do not implement the full transcript renderer yet.
+Read:
+
+- `docs/E8F2_RECORDER_PLAN.md`
+- `docs/E8_EXECUTION_PLAN.md`
+- `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
+- `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
 ## Why
 
-Validated evidence now shows:
+Validated real-device evidence now shows:
 
 - backend replay is not the mobile idle-scroll cause;
 - WebSocket reconnect is not the mobile idle-scroll cause;
@@ -38,8 +44,71 @@ Validated evidence now shows:
 - desktop xterm behaves correctly;
 - Android WebView + xterm.js duplicates visible rows during upward touch scroll;
 - repeated xterm scrollback patches have diminishing returns.
+- transcript capture currently depends on WebSocket lifetime;
+- output generated while no WebSocket viewer is connected is not captured.
 
-The product should avoid relying on xterm.js as the mobile history reader.
+The product goal requires daemon/session-lifetime recording, not
+viewer-lifetime recording. Before changing PTY read ownership, audit current
+ownership and adapter capabilities.
+
+## E8f2-pre scope
+
+Audit only:
+
+- current `HandleWS` stream ownership;
+- current `stream.Read()` location;
+- current `ActivityBuffer.Append()` ownership;
+- live output vs snapshot/history/replay paths;
+- adapter capability matrix;
+- recorder insertion point recommendation;
+- session lifecycle and cleanup policy;
+- late subscriber behavior;
+- replay append rule;
+- terminal input ownership policy;
+- slow subscriber/backpressure policy.
+
+Avoid:
+
+- recorder implementation;
+- runtime behavior changes;
+- WebSocket behavior changes;
+- transcript UI changes;
+- LTE / remote connectivity changes;
+- daemon restart persistence;
+- semantic grouping;
+- readability polish.
+
+## E8f2-pre completion statement
+
+Use this format:
+
+```text
+E8f2-pre ownership audit complete.
+
+Commit: <sha>
+
+Changed:
+- docs/E8F2_RECORDER_PLAN.md or dedicated audit doc
+
+Audit covers:
+- HandleWS stream ownership: ...
+- adapter matrix: ...
+- recorder insertion point: ...
+- replay append rule: ...
+- subscriber/backpressure policy: ...
+- lifecycle/session cleanup policy: ...
+
+Not included:
+- recorder implementation
+- runtime behavior changes
+- WebSocket behavior changes
+- transcript UI changes
+```
+
+---
+
+Historical E8e/E8f/E8g guidance below remains useful context, but E8f2-pre is
+now the immediate target.
 
 ## E8e scope
 

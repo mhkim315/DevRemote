@@ -27,7 +27,7 @@ Execution and manual validation are intentionally separated:
 ## Next target
 
 ```text
-E8e — Transcript Read Mode Scope
+E8f2-pre — Stream / PTY Ownership Audit
 ```
 
 Primary handoff document:
@@ -40,23 +40,25 @@ Supporting observation log:
 
 - `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
-## Why E8e now
+## Why E8f2-pre now
 
-The immediate priority changed after runtime evidence narrowed the terminal
-duplication issue.
+The immediate priority changed after real-device validation exposed a deeper
+capture-lifecycle problem.
 
-Connection-state correctness and E8 instrumentation are already treated as
-accepted execution evidence. The remaining terminal-scroll problem is not a
-backend replay issue, not a WebSocket reconnect issue in the idle-scroll
-scenario, and not a terminal-data integrity issue.
+E8f/E8g/E8h proved a useful read-mode direction, but current activity capture is
+still tied to WebSocket lifetime:
 
-The current evidence points to Android WebView + xterm.js viewport rendering
-instability during upward touch scroll. Repeated xterm scrollback patches had
-diminishing returns.
+```text
+HandleWS
+→ stream.Read(...)
+→ ActivityBuffer.Append(...)
+```
 
-Therefore the next useful work is to stop treating xterm.js as the mobile
-history reader and document the transcript/read-mode split before
-implementation.
+If no WebSocket viewer is connected, daemon output is not captured. This means
+Transcript currently records viewer lifetime, not session lifetime.
+
+Before changing PTY read ownership, E8f2-pre must audit stream ownership and
+adapter feasibility.
 
 ## Why E8 still matters
 
@@ -86,11 +88,12 @@ Before implementation, read:
 
 ## Revised E8 priority order
 
-1. E8e — Read Mode Architecture.
-2. E8f — Activity Capture Pipeline.
-3. E8g — Mobile Read Mode UI with explicit mode separation.
-4. E8h — Fallback / Compatibility.
-5. Later runtime follow-ups:
+1. E8f2-pre — Stream / PTY Ownership Audit.
+2. E8f2 — Session-owned Activity Recorder.
+3. E8g2 — Transcript Readability Polish.
+4. E8i — Real-device Transcript Validation.
+5. R1 — Remote / LTE polish.
+6. Later runtime follow-ups:
    - input delivery acknowledgement / failed-send state;
    - Activity message boundary and authorship;
    - tmux vs cmux stream/history/screen/event comparison;
@@ -98,25 +101,27 @@ Before implementation, read:
    - tmux first-entry hydration proof;
    - terminal command output vs agent answer classification.
 
-## E8e acceptance
+## E8f2-pre acceptance
 
-E8e can be accepted when the executor documents the transcript/read-mode pivot.
+E8f2-pre can be accepted when the executor produces an ownership audit covering:
 
-Minimum acceptance:
+- current `HandleWS` stream ownership;
+- current `stream.Read()` and `ActivityBuffer.Append()` path;
+- live output vs snapshot/history/replay path separation;
+- adapter capability matrix for localpty, tmux, cmux, and relevant test
+  adapters;
+- single-reader vs multi-reader behavior;
+- whether stream can be opened without WebSocket;
+- recommended recorder insertion point;
+- session recreation policy;
+- late subscriber behavior;
+- replay/snapshot/history append rule;
+- terminal input ownership policy;
+- slow subscriber/backpressure policy;
+- recorder lifecycle and session cleanup policy;
+- required E8f2 tests.
 
-- xterm.js remains live interactive terminal;
-- Pokit transcript renderer handles mobile historical reading;
-- Transcript Mode is a read projection over captured activity events, not a
-  terminal emulator;
-- live xterm remains the source of truth for interactive terminal state;
-- transcript capture/render failure cannot break live terminal interaction;
-- E8g MVP uses explicit Live Terminal Mode and Transcript Mode;
-- E8g MVP does not merge transcript and xterm into one continuous scroll surface;
-- unsupported/degraded terminal semantics are listed;
-- the plan explicitly says not to build a custom VT100/xterm emulator;
-- E8f/E8g/E8h follow-up phases are defined;
-- `sh scripts/build-gate.sh` passes.
-- no implementation of the full transcript renderer is included.
+No runtime behavior changes should be included in E8f2-pre.
 
 ## Explicitly avoid
 
