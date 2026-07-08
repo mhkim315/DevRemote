@@ -41,9 +41,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   // E8g: three modes — Live Terminal, Activity Feed, Transcript (read-only).
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity' | 'transcript'>('activity');
+  const activeTabRef = useRef(activeTab);
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
   const [newOutputCount, setNewOutputCount] = useState(0);
   const lastSeenSeqRef = useRef(0);
+  const transcriptMaxSeqRef = useRef(0);
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   // Only sessions explicitly advertising 'history' get the ACTIVITY tab.
@@ -58,6 +60,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
       setActiveTab('terminal');
     }
   }, [supportsHistory, activeTab]);
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
@@ -119,25 +122,24 @@ export default function FeedScreen({onBack, session, token}: Props) {
         .catch(err => console.error(err));
     };
 
-    // E8g: fetch transcript — seq-based new output detection.
+    // E8g: fetch transcript — ref-based to avoid stale closure on activeTab.
     const fetchTranscript = () => {
       getActivityHistory(session, token)
         .then(data => {
           if (Array.isArray(data)) {
             setTranscriptEvents(data);
             const maxSeq = data.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
-            if (activeTab === 'transcript' && maxSeq > lastSeenSeqRef.current) {
+            transcriptMaxSeqRef.current = maxSeq;
+            if (activeTabRef.current === 'transcript' && maxSeq > lastSeenSeqRef.current) {
               setNewOutputCount(maxSeq - lastSeenSeqRef.current);
+            }
+            if (activeTabRef.current !== 'transcript') {
+              lastSeenSeqRef.current = maxSeq;
             }
           }
         })
         .catch(err => console.error(err));
     };
-
-    if (activeTab !== 'transcript' && transcriptEvents.length > 0) {
-      const maxSeq = transcriptEvents.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
-      lastSeenSeqRef.current = maxSeq;
-    }
 
     fetchSession();
     if (sessionDataRef.current?.capabilities?.includes('history')) {
@@ -145,12 +147,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
     }
     fetchTranscript();
     const interval = setInterval(() => {
-      if (activeTab !== 'transcript' && transcriptEvents.length > 0) {
-      const maxSeq = transcriptEvents.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
-      lastSeenSeqRef.current = maxSeq;
-    }
-
-    fetchSession();
+      fetchSession();
       if (sessionDataRef.current?.capabilities?.includes('history')) {
         fetchHistory();
       }
@@ -392,7 +389,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           {/* E8g: Transcript tab — read-only terminal activity history. */}
           <TouchableOpacity
             style={[styles.tab, activeTab === 'transcript' && styles.activeTab]}
-            onPress={() => { setActiveTab('transcript'); setNewOutputCount(0); }}
+            onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('transcript'); }}
           >
             <Text style={[styles.tabText, activeTab === 'transcript' && styles.activeTabText]}>TRANSCRIPT</Text>
           </TouchableOpacity>
@@ -441,7 +438,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
         {/* E8g: Transcript Mode — read-only. */}
         <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
           {newOutputCount > 0 && (
-            <TouchableOpacity style={styles.newOutputBanner} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
+            <TouchableOpacity style={styles.newOutputBanner} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
               <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
             </TouchableOpacity>
           )}
@@ -465,7 +462,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
               )}
             />
           )}
-          <TouchableOpacity style={styles.returnBtn} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
+          <TouchableOpacity style={styles.returnBtn} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
             <Text style={styles.returnBtnText}>← Return to Live Terminal</Text>
           </TouchableOpacity>
         </View>
