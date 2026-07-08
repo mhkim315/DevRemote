@@ -134,25 +134,35 @@ export default function FeedScreen({onBack, session, token}: Props) {
     }
   }, []);
 
+  // E8: send text via injected JS with postMessage ack back to React Native.
   const doSend = useCallback((text: string) => {
-    if (!text || !wv.current) return;
+    if (!text || !wv.current) {
+      setSendStatus('failed');
+      return;
+    }
     const parsedText = text.replace(/\n/g, '\r');
-    inject('if(window.ws&&window.ws.readyState===1)window.ws.send('+JSON.stringify(parsedText)+')');
+    setSendStatus('sending');
+    inject(
+      '(function(){' +
+      'var w=window.ws;' +
+      'if(!w||w.readyState!==1){' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
+      'return;' +
+      '}' +
+      'try{w.send(' + JSON.stringify(parsedText) + ');' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"sent"}));' +
+      '}catch(e){' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
+      '}' +
+      '})()'
+    );
   }, [inject]);
 
   const send = useCallback(() => {
     if (!cmd.trim()) return;
     const textToSend = cmd;
-    setSendStatus('sending');
-    try {
-      doSend(textToSend + '\r');
-      setCmd('');
-      setSendStatus('sent');
-      // Auto-clear sent status after 1.5s.
-      setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
-    } catch {
-      setSendStatus('failed');
-    }
+    doSend(textToSend + '\r');
+    setCmd('');
 
     setHistoryEvents(prev => {
       const optEvent = {
@@ -167,9 +177,10 @@ export default function FeedScreen({onBack, session, token}: Props) {
     });
   }, [cmd, doSend, session]);
   const sendMacro = useCallback((chars: number[]) => {
-    const jsSend = `window.ws.send(String.fromCharCode.apply(null, [${chars.join(',')}]));`;
-    inject('if(window.ws&&window.ws.readyState===1){'+jsSend+'}');
-  }, [inject]);
+    // E8: macros use same doSend ack path.
+    const macroText = String.fromCharCode.apply(null, chars);
+    doSend(macroText);
+  }, [doSend]);
 
   const handleChangeText = useCallback((text: string) => {
     cmdRef.current = text;
@@ -206,6 +217,13 @@ export default function FeedScreen({onBack, session, token}: Props) {
       if (data.type === 'copy') {
         setCopyText(data.text);
         setCopyModalVisible(true);
+      }
+      // E8: handle real send ack from WebView.
+      if (data.type === 'sendStatus') {
+        setSendStatus(data.status === 'sent' ? 'sent' : 'failed');
+        if (data.status === 'sent') {
+          setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
+        }
       }
     } catch (e) {}
   }, []);

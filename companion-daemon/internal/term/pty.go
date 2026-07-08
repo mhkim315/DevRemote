@@ -292,7 +292,7 @@ html,body{width:100%;height:100%;background:#000}
 <div id="t"></div>
 <div id="status"></div>
 <script>
-var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null;
+var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
 
