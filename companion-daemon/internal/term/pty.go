@@ -412,7 +412,11 @@ connect();
 	  }catch(e){}
 	  // Route 2: to adb logcat via console.log (capturable without Metro).
 	  var qs = Object.keys(diag).map(function(k){return k+'='+encodeURIComponent(diag[k])}).join('&');
-		  fetch('/debug/e8diag?'+qs,{method:'POST'}).catch(function(){});
+		  var p=new URLSearchParams(location.search);
+		  var tok=p.get('token');
+		  var hdrs={};
+		  if(tok)hdrs['Authorization']='Bearer '+tok;
+		  fetch('/debug/e8diag?'+qs,{method:'POST',headers:hdrs}).catch(function(){});
 	},5000);
 </script>
 </body>
@@ -455,15 +459,22 @@ func HandleE8Diag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	safe := func(key string) string {
+	safeNum := func(key string) string {
 		v := q.Get(key)
-		if len(v) > 20 {
-			v = v[:20]
+		for _, c := range v {
+			if c < '0' || c > '9' { return "0" }
 		}
+		if len(v) > 20 { v = v[:20] }
+		if v == "" { v = "0" }
 		return v
 	}
+	safeBool := func(key string) string {
+		v := q.Get(key)
+		if v == "true" || v == "false" { return v }
+		return "false"
+	}
 	log.Printf("E8DIAG connectCount=%s closeCount=%s msgCount=%s totalBytes=%s lastMsgSize=%s rawLen=%s wasReconnect=%s",
-		safe("connectCount"), safe("closeCount"), safe("msgCount"),
-		safe("totalBytes"), safe("lastMsgSize"), safe("rawLen"), safe("wasReconnect"))
+		safeNum("connectCount"), safeNum("closeCount"), safeNum("msgCount"),
+		safeNum("totalBytes"), safeNum("lastMsgSize"), safeNum("rawLen"), safeBool("wasReconnect"))
 	w.WriteHeader(200)
 }
