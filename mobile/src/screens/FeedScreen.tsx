@@ -453,15 +453,17 @@ export default function FeedScreen({onBack, session, token}: Props) {
               keyExtractor={(item, idx) => item.id || String(idx)}
               contentContainerStyle={styles.activityList}
               renderItem={({ item }) => (
-                <View style={styles.transcriptRow}>
-                  <Text style={styles.transcriptSeq}>[{item.seq}]</Text>
-                  <Text style={styles.transcriptType}>
-                    {item.type === 'terminal_input' ? '←' : ' '}
-                  </Text>
-                  <Text style={styles.transcriptText} >
-                    {item.text || (item.type === 'terminal_input' ? '[input sent]' : '')}
-                  </Text>
-                </View>
+                item.type === 'terminal_input' ? (
+                  <View style={styles.transcriptInputRow}>
+                    <Text style={styles.transcriptInputLabel}>[input sent]</Text>
+                  </View>
+                ) : (
+                  <View style={styles.transcriptOutputRow}>
+                    <Text style={styles.transcriptOutputText} selectable={true}>
+                      {item.text}
+                    </Text>
+                  </View>
+                )
               )}
             />
           )}
@@ -625,30 +627,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
-  transcriptRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#0D2D45',
-  },
-  transcriptSeq: {
-    color: '#666',
-    fontSize: 10,
-    width: 40,
-    fontFamily: 'monospace',
-  },
-  transcriptType: {
-    color: '#45EBE9',
-    fontSize: 12,
-    width: 20,
-  },
-  transcriptText: {
-    color: '#ccc',
-    fontSize: 12,
-    flex: 1,
-    fontFamily: 'monospace',
-  },
+  transcriptOutputRow: { paddingHorizontal: 12, paddingVertical: 1 },
+  transcriptOutputText: { color: '#ccc', fontSize: 11, fontFamily: 'monospace', lineHeight: 16 },
+  transcriptInputRow: { paddingHorizontal: 12, paddingVertical: 2, backgroundColor: '#0D2D45' },
+  transcriptInputLabel: { color: '#45EBE9', fontSize: 10, fontFamily: 'monospace' },
   returnBtn: {
     backgroundColor: '#1C1C1E',
     padding: 12,
