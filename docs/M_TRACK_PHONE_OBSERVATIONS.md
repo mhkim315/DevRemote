@@ -131,6 +131,35 @@ Needs investigation:
 - unsent queue or retry affordance;
 - visible failed-send state.
 
+### M-OBS-007 — Mobile layout forces excessive line wrapping
+
+The terminal and Activity views both wrap text too aggressively on mobile.
+
+Observation:
+- Terminal content is forced into the narrow mobile UI width.
+- Activity content also wraps, but it is easier to read than Terminal.
+- Chat-style chrome such as left profile/avatar area and right timestamp area
+  reduces the usable text width.
+- The reduced width causes excessive line breaks.
+
+Impact:
+- Terminal output becomes difficult to read.
+- Code, command output, and long agent responses lose structure.
+- The product feels constrained by chat UI layout rather than optimized for
+  terminal/work review.
+
+Desired direction:
+- Terminal should preserve a desktop-like terminal canvas instead of forcing
+  mobile-width reflow.
+- The user should be able to pan/scroll and pinch-zoom the terminal canvas.
+- Activity can remain a readable mobile-first feed, but should avoid wasting
+  horizontal space with non-essential chrome.
+
+Important dependency:
+- Terminal vertical scrolling currently has severe duplication issues, so
+  terminal pan/scroll/zoom work should happen after or alongside the E8 terminal
+  scroll duplication fix.
+
 ## Triage recommendation
 
 Before more manual UX polish, add an execution-verifiable diagnostic slice:
@@ -144,6 +173,7 @@ Priority:
    severely on scroll.
 2. Input delivery acknowledgement and failed-send state.
 3. Codex event segmentation vs Claude event segmentation.
+4. Terminal/mobile layout reflow and excessive wrapping.
 
 Suggested E8 scope:
 - instrument terminal output frame IDs or append counts;
@@ -159,6 +189,8 @@ Suggested E8 scope:
 - compare Claude vs Codex event segmentation through `/api/sessions.Events`;
 - add a fixture/demo session that renders P2 EventBubble categories without a
   physical daemon.
+- evaluate terminal canvas sizing, pinch-zoom, and pan behavior after terminal
+  duplication is fixed.
 
 Remaining manual validation:
 - reproduce on same Wi-Fi;
