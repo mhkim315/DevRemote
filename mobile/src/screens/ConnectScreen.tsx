@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Button, Dimensions } from 'react-native';
+import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
 
@@ -7,6 +7,7 @@ export default function ConnectScreen() {
   const { connect, connectionError } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
+  const [manualURL, setManualURL] = useState('');
 
   useEffect(() => {
     const getCameraPermissions = async () => {
@@ -67,11 +68,27 @@ export default function ConnectScreen() {
           {connectionError ? (
             <Text style={styles.error}>{connectionError}</Text>
           ) : null}
+          <Text style={styles.inputLabel}>Daemon URL</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="http://localhost:9171"
+            placeholderTextColor="#666"
+            value={manualURL}
+            onChangeText={setManualURL}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TouchableOpacity style={styles.connectBtn} onPress={async () => {
+            await connect(manualURL || 'http://localhost:9171');
+          }}>
+            <Text style={styles.connectBtnText}>CONNECT</Text>
+          </TouchableOpacity>
+          <View style={{height: 12}} />
           <Button title="Connect to term.fullcount.kr" onPress={async () => {
             await connect('https://term.fullcount.kr');
           }} color="#45EBE9" />
         </View>
-        <Text style={styles.manualHint}>Tap above to skip QR. Or scan the terminal QR code.</Text>
+        <Text style={styles.manualHint}>Enter daemon URL or scan the terminal QR code.</Text>
       </View>
 
       {scanned && (
@@ -98,6 +115,34 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 12,
     paddingHorizontal: 20,
+  },
+  inputLabel: {
+    color: '#8b949e',
+    fontSize: 12,
+    marginBottom: 6,
+    fontWeight: '600',
+  },
+  input: {
+    backgroundColor: '#1C1C1E',
+    color: '#fff',
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#0D2D45',
+  },
+  connectBtn: {
+    backgroundColor: '#39d353',
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  connectBtnText: {
+    color: '#000',
+    fontWeight: '800',
+    fontSize: 14,
   },
   title: {
     color: '#fff',

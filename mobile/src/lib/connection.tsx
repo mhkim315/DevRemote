@@ -59,9 +59,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     try {
       await listSessions();
       setIsConnected(true);
-    } catch {
+    } catch (e: any) {
       setIsConnected(false);
-      setConnectionError('Cannot reach daemon. Check the URL and network.');
+      const msg = e?.message || String(e);
+      setConnectionError('Cannot reach daemon: ' + msg);
       return;
     }
     try {

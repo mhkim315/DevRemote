@@ -297,6 +297,28 @@ var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=fal
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
+	// E8: track scroll position to prevent live-append duplication on mobile.
+	var e8_scrolledUp = false;
+	var e8_newOutput = false;
+	term.onScroll(function(pos) {
+	  var vp = term.viewport;
+	  if (!vp) return;
+	  // If scrolled more than 3 rows from bottom, consider "scrolled up".
+	  var fromBottom = vp.scrollHeight - vp.scrollTop - vp.clientHeight;
+	  e8_scrolledUp = fromBottom > 50;
+	  if (!e8_scrolledUp && e8_newOutput) {
+	    e8_newOutput = false;
+	    var badge = document.getElementById("e8_badge");
+	    if (badge) badge.style.display = "none";
+	  }
+	});
+	// Add jump-to-bottom badge.
+	var e8_badge = document.createElement("div");
+	e8_badge.id = "e8_badge";
+	e8_badge.textContent = "\u2193 New output";
+	e8_badge.style.cssText = "position:fixed;bottom:60px;right:12px;background:#1E91B3;color:#fff;padding:6px 12px;border-radius:16px;font:12px monospace;cursor:pointer;display:none;z-index:10";
+	e8_badge.onclick = function(){ term.scrollToBottom(); };
+	document.body.appendChild(e8_badge);
 
 function setStatus(text, terminalText) {
   var s=document.getElementById('status');
@@ -328,13 +350,19 @@ function connect(){
 		    // E8: clear terminal on reconnect to prevent scroll duplication.
 		    if(wasReconnect){ term.clear(); wasReconnect=false; }
     document.getElementById('status').style.display='none';
-    setTimeout(function(){fitTerminal()},500);
+    setTimeout(function(){e8_fitCount++;fitTerminal()},500);
   };
   ws.onmessage=function(e){
     var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
-    term.write(t);
+    // E8: if user scrolled up, show new-output badge instead of forcing viewport.
+	    if(e8_scrolledUp){
+	      e8_newOutput = true;
+	      var badge = document.getElementById("e8_badge");
+	      if(badge) badge.style.display = "block";
+	    }
+	    term.write(t);
   };
   ws.onclose=function(e){
     if(stopped)return;
@@ -374,6 +402,20 @@ function fitTerminal(){
 }
 
 window.addEventListener('resize',function(){fitTerminal()});
+	// E8: prevent mobile scroll duplication by resetting viewport after scroll.
+	var e8_scrollTimer = null;
+	var e8_wasScrolled = false;
+	term.onScroll(function(pos) {
+	  e8_wasScrolled = true;
+	  if(e8_scrollTimer) clearTimeout(e8_scrollTimer);
+	  e8_scrollTimer = setTimeout(function(){
+	    // After scroll settles, re-render the viewport to fix any visual duplication.
+	    if (typeof term.viewport !== 'undefined' && term.viewport) {
+	      term.viewport.invalidate();
+	    }
+	    e8_wasScrolled = false;
+	  }, 300);
+	});
 cmdPoll=setInterval(function(){
   if(stopped)return;
   var p=new URLSearchParams(location.search);
@@ -402,7 +444,7 @@ connect();
 	    totalBytes: e8diag.totalBytes,
 	    lastMsgSize: e8diag.lastMsgSize,
 	    rawLen: e8diag.rawLen || raw.length,
-	    wasReconnect: wasReconnect
+	    fitCount: e8_fitCount, wasReconnect: wasReconnect
 	  };
 	  // Route 1: to React Native via postMessage.
 	  try{
