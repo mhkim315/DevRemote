@@ -39,7 +39,21 @@ FeedScreen.tsx:216  onMessage → console.log('E8DIAG', ...)
 | Served HTML contains type:"e8diag" | ✅ |
 | build-gate.sh | ✅ ALL 8 PASSED |
 
-## Pending: runtime evidence
+## Runtime evidence attempt
 
-Runtime log capture requires Metro console access during active device session.
-Terminal-based emulator testing cannot reliably capture console.log output.
+Emulator test (2026-07-08):
+- Daemon with e8diag running on port 9171 ✅
+- App launched, connected to daemon ✅
+- Dashboard renders with session cards ✅
+- Metro running, serving on port 8081 ✅
+- Console.log output goes to Metro stdout, not adb logcat
+- Metro stdout captured to /tmp/metro.log — no E8DIAG lines appeared
+- Likely cause: Expo dev client routes console.log through Metro's internal
+  WebSocket, not to stdout. Or Terminal tab WebView wasn't opened during capture.
+
+## How to capture E8DIAG reliably
+
+Option 1: Open Chrome DevTools on Metro (http://localhost:8081/debugger-ui)
+Option 2: Use `react-native log-android` while app is running
+Option 3: Watch Metro terminal output directly during active Terminal session
+Option 4: Add native logcat side-channel to the terminal HTML instrumentation
