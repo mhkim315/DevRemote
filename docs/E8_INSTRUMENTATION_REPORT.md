@@ -44,9 +44,10 @@ grep E8DIAG /tmp/daemon.log
 - [x] POST-only + auth + input validation
 - [x] build gate ALL 8 PASSED
 - [x] desktop browser evidence collected
+- [x] reconnect replay evidence (msgCount doubling)
+- [x] terminal duplication root cause confirmed
 - [ ] mobile WebView evidence (connectivity blocked)
-- [ ] terminal duplication root cause confirmed
-- [ ] terminal duplication fix accepted
+- [ ] terminal duplication fix accepted (desktop-verified, mobile pending)
 
 ## Runtime evidence
 
@@ -104,7 +105,38 @@ When the Terminal WebView remounts (tab switch, navigation), it re-fetches the H
 
 xterm.js internal scrolling is confirmed NOT a duplication source (Scenario 2).
 
-## Candidate fix (not yet accepted)
+### Scenario 4: Force WebSocket reconnect (daemon restart)
+
+Source: `/tmp/daemon6.log` → `/tmp/daemon7.log`
+
+Browser terminal open, daemon killed and restarted. Browser auto-reconnects.
+
+Before daemon restart:
+```
+E8DIAG connectCount=1 closeCount=0 msgCount=9 totalBytes=3926 lastMsgSize=147 rawLen=3926 wasReconnect=false
+```
+
+After daemon restart (browser auto-reconnect):
+```
+E8DIAG connectCount=2 closeCount=1 msgCount=18 totalBytes=7852 lastMsgSize=147 rawLen=7852 wasReconnect=false
+```
+
+**Critical evidence:**
+- connectCount: 1→2 (new connection established)
+- closeCount: 0→1 (old connection dropped)
+- msgCount: 9→18 (DOUBLED — all 9 messages replayed)
+- totalBytes: 3926→7852 (DOUBLED — exact data replication)
+- wasReconnect: false (already processed by term.clear() — flag was set then reset)
+
+**Conclusion: WebSocket reconnect triggers exact PTY buffer replay. Without term.clear(), the replayed data stacks on existing terminal content, causing visual duplication.**
+
+term.clear() behavior verified:
+1. onclose → wasReconnect=true
+2. onopen → if(wasReconnect){ term.clear(); wasReconnect=false; }
+3. PTY replay writes fresh data to cleared display
+4. e8diag POST shows wasReconnect=false (flag already consumed)
+
+## Candidate fix (desktop-verified, mobile pending)
 
 `term.clear()` on reconnect (pty.go:326):
 ```javascript
