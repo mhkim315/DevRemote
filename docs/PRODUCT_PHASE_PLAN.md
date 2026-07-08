@@ -8,7 +8,10 @@ Status:
 - Architecture Phase (A0~A10): COMPLETE
 - Product Phase: IN PROGRESS
   - P1a Live Dashboard Core: ACCEPTED (3fa4ad3c8)
-  - P2 Core Feed Taxonomy: NEXT
+  - P2 Core Feed Taxonomy: ACCEPTED (413734a)
+  - P1b Attention Routing Implementation: ACCEPTED as code-verifiable (c162c33)
+  - P3 Mobile Typecheck / Build Gate: ACCEPTED (47bed6c)
+  - E5 Emulator / Simulator Smoke: SCOPED ACCEPT (ccb642f)
 
 ## Why this document exists
 
@@ -57,21 +60,52 @@ Reviewer and executor retrospectives both converged on the same lessons:
 
 Product Phase must apply these lessons. A product feature is accepted only when the user-facing boundary proves the intended experience.
 
+## Product verification model
+
+The original Product path treated "Device UX Smoke" as one executor-owned phase.
+That assumption was only partially true.
+
+Executor agents can verify reproducible builds, emulator/simulator behavior, local
+development builds, direct daemon connectivity, UI rendering, and locally
+reproducible interaction flows.
+
+Executor agents cannot genuinely verify physical-device UX, real push delivery,
+notification tap behavior on a real device, real first-time login, or first-time
+pairing/onboarding quality. Those are manual product validation responsibilities.
+
+Product work is therefore split by ownership and verification boundary:
+
+```text
+E-track  Executor-verifiable implementation and local validation
+M-track  Manual product validation by the product owner
+R-track  Alpha release decision gates
+```
+
+Scoped Accept is mandatory across these tracks. An E-track pass must not be
+reported as M-track or release readiness.
+
 ## MVP Product Path
 
-The MVP path is ordered by dependency, not by impressiveness:
+The MVP path is ordered by verification responsibility, not by the old P-numbering:
 
 ```
-P1a  Live Dashboard Core           ✅ ACCEPTED
-P2   Core Feed Taxonomy             ← NEXT
-P1b  Attention Routing / Push       depends on P2 feed being clear
-P3   Mobile Typecheck / Build Gate  depends on all UI being stable
-P4   Device UX Smoke                depends on P3
-P5   Installer / Onboarding         depends on P4
-P6   Alpha Packaging                depends on P5
+E1  Live Dashboard Core                 ✅ ACCEPTED
+E2  Core Feed Taxonomy                   ✅ ACCEPTED
+E3  Attention Routing Implementation     ✅ ACCEPTED as code-verifiable
+E4  Mobile Typecheck / Build Gate        ✅ ACCEPTED
+E5  Emulator / Simulator Smoke           ✅ SCOPED ACCEPT
+E6  No-login Local Test Branch           ← NEXT
+E7  Installer / Packaging Implementation
+
+M1  Physical Device Smoke                manual product validation
+M2  Real Push + Notification Tap         manual product validation
+M3  First-time Pairing / Onboarding      manual product validation
+M4  Real Interaction UX                  manual product validation
+
+R1  Alpha Candidate Gate                 release decision
 ```
 
-### Why P2 before P1b
+### Historical rationale: why P2 came before P1b
 
 P1b routes the user to a specific session. The destination must be clear first.
 
@@ -79,11 +113,29 @@ If the feed still looks like raw logs, a push notification that says "approval r
 
 P2 makes the feed readable. P1b routes to a readable feed.
 
-### Why P3 before P4
+### Historical rationale: why P3 came before E5
 
-Device smoke needs a reproducible build. P3 establishes that the build gate passes. P4 exercises the built artifact on real devices.
+Emulator/simulator smoke needs a reproducible build. E4 establishes that the
+build gate passes. E5 exercises the built artifact in executor-accessible local
+runtimes. Real-device validation moved to M-track.
 
-## P1a — Live Dashboard Core ✅
+### Why E6 before manual onboarding
+
+The test branch should remove login from the executor path before continuing.
+
+Login, real account setup, first-time onboarding, and first-time pairing quality are
+manual product validation items. They require a product owner using a real device,
+not an executor running scripted local checks.
+
+E6 exists so the executor can continue useful validation without being blocked by
+auth or account state. The test branch should boot directly into the local daemon
+connection path or a deterministic test connection path, then run the verifiable
+dashboard/feed/interaction/build checks.
+
+E6 must not remove login from production scope. It only defines the test-branch
+validation route.
+
+## E1 — Live Dashboard Core ✅
 
 Status: ACCEPTED (3fa4ad3c8).
 
@@ -102,7 +154,7 @@ Known gaps:
 - Observe-only detection uses !live_stream; explicit capability model would be stronger.
 - Mobile typecheck not run (node_modules absent).
 
-## P2 — Core Feed Taxonomy
+## E2 — Core Feed Taxonomy ✅
 
 Goal:
 
@@ -146,7 +198,7 @@ Core event categories for bubble rendering:
 - Agent Cockpit
 - Review workflow
 
-## P1b — Attention Routing / Push Deep Link
+## E3 — Attention Routing / Push Deep Link Implementation ✅
 
 Goal:
 
@@ -162,8 +214,9 @@ Out of scope:
 - Changing A9 interaction contract.
 - New push infrastructure beyond what P1b requires.
 - Vendor-specific notification behavior.
+- Claiming real push delivery or physical-device tap behavior. Those belong to M2.
 
-## P3 — Mobile Typecheck / Build Gate
+## E4 — Mobile Typecheck / Build Gate ✅
 
 Goal:
 
@@ -178,42 +231,151 @@ Out of scope:
 - Full CI pipeline.
 - Multi-platform build matrix.
 
-## P4 — Device UX Smoke
+## E5 — Emulator / Simulator Smoke ✅ Scoped Accept
 
 Goal:
 
-Prove the app works on real devices.
+Prove the app can be built, installed, launched, and locally exercised in
+executor-accessible runtimes.
 
 Acceptance:
 - Dashboard sections render correctly.
 - Feed bubbles render correctly.
-- Interaction card works end-to-end.
-- Push notification arrives and routes correctly.
+- Local daemon connectivity is documented.
+- Android emulator behavior is documented when available.
+- iOS simulator behavior is documented when available.
 - Degraded/unknown states render safely.
+- Build/install/launch commands are documented.
+- Known gaps explicitly distinguish executor limits from product failures.
 
-## P5 — Installer / Onboarding
+Not accepted by E5:
+- physical-device UX;
+- real push notification delivery;
+- notification tap behavior on a real device;
+- real login/account onboarding;
+- first-time pairing quality;
+- real interaction UX on a physical device.
+
+These belong to M-track.
+
+## E6 — No-login Local Test Branch
 
 Goal:
 
-Zero-friction first install.
+Allow the executor to run meaningful product validation without being blocked by
+login, account setup, Expo account ownership, physical device availability, or
+manual pairing.
+
+Scope:
+- test branch only;
+- remove or bypass login from the executor validation path;
+- start from a deterministic local connection screen or preconfigured daemon URL;
+- preserve production login/onboarding scope unless explicitly changed in a later
+  product decision;
+- make dashboard/feed/interaction smoke executable by an agent in emulator,
+  simulator, or local dev runtime;
+- document the exact bypass so reviewers can distinguish test scaffolding from
+  product behavior.
+
+Acceptance:
+- executor can launch the app without completing login;
+- executor can connect to a local daemon or deterministic test endpoint;
+- dashboard renders with real or fixture-backed local session data;
+- feed renders existing event taxonomy;
+- interaction card path can be exercised with controlled local data if available;
+- build gate still passes;
+- no production claim is made about real onboarding or account UX;
+- no vendor-specific mobile behavior branch is introduced.
+
+Out of scope:
+- real account login;
+- production onboarding UX;
+- QR pairing quality;
+- real push notification delivery;
+- physical-device tap behavior;
+- app-store or public release packaging.
+
+## E7 — Installer / Packaging Implementation
+
+Goal:
+
+Prepare repeatable local-first installation and packaging steps that an executor
+can validate mechanically.
 
 Features:
 - `brew install pokit`
 - `npm install -g pokit`
 - QR pairing
-- First-run connection flow
+- install/uninstall scripts
+- version metadata
+- release artifact dry-run
 
-## P6 — Alpha Packaging
+Not accepted by E7:
+- first-time user onboarding quality;
+- real pairing comfort;
+- physical-device installation quality.
+
+## M1 — Physical Device Smoke
+
+Owner: product owner / human.
+
+Acceptance:
+- physical iOS or Android device runs the app;
+- daemon is reachable from the real device;
+- dashboard is visible on a real network;
+- feed opens a real session;
+- degraded/offline states are understandable;
+- app survives basic background/foreground usage.
+
+## M2 — Real Push + Notification Tap
+
+Owner: product owner / human.
+
+Acceptance:
+- Expo push token is acquired on a real device;
+- push notification arrives;
+- notification body is redacted;
+- tap opens the app;
+- cold-start and warm-start notification tap behavior are checked;
+- tap routes to the correct session when data is available.
+
+## M3 — First-time Pairing / Onboarding
+
+Owner: product owner / human.
+
+Acceptance:
+- fresh install;
+- first connection to daemon;
+- QR/manual URL pairing if implemented;
+- login/account flow if present;
+- clear error message when daemon is unavailable;
+- user understands the next action without developer guidance.
+
+## M4 — Real Interaction UX
+
+Owner: product owner / human.
+
+Acceptance:
+- a session with pending interaction exists;
+- mobile shows server-provided options;
+- observe-only sessions do not show control actions;
+- approve/reject/input flow works where capability allows;
+- expired/duplicate interaction behavior is understandable.
+
+## R1 — Alpha Candidate Gate
 
 Goal:
 
-Shippable alpha artifact.
+Decide whether the current product is shippable as an alpha.
 
-Features:
-- Versioned release
-- Signed binaries
-- Release notes
-- Known issues documented
+Acceptance:
+- E1-E7 pass;
+- M1-M3 pass;
+- M4 passes or is explicitly deferred from alpha scope;
+- A10 diagnostics/redaction still pass;
+- known issues are documented;
+- release artifact is reproducible;
+- release notes clearly state limitations.
 
 ## Post-MVP Product Enhancements
 
@@ -228,13 +390,17 @@ These are intentionally deferred past MVP. They are valid product directions but
 MVP includes:
 
 - Architecture A5~A10
-- P1a Live Dashboard Core
-- P2 Core Feed Taxonomy
-- P1b Attention Routing
-- P3 Mobile Build Gate
-- P4 Device UX Smoke
-- P5 Installer / Onboarding
-- P6 Alpha Packaging
+- E1 Live Dashboard Core
+- E2 Core Feed Taxonomy
+- E3 Attention Routing Implementation
+- E4 Mobile Build Gate
+- E5 Emulator / Simulator Smoke
+- E6 No-login Local Test Branch
+- E7 Installer / Packaging Implementation
+- M1 Physical Device Smoke
+- M2 Real Push + Notification Tap
+- M3 First-time Pairing / Onboarding
+- R1 Alpha Candidate Gate
 
 MVP should allow a user to:
 
