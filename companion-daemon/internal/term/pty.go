@@ -410,7 +410,7 @@ connect();
 	      window.ReactNativeWebView.postMessage(JSON.stringify(diag));
 	    }
 	  }catch(e){}
-	  // Route 2: to adb logcat via console.log (capturable without Metro).
+	  // Route 2: to daemon log via authenticated diagnostic POST.
 	  var qs = Object.keys(diag).map(function(k){return k+'='+encodeURIComponent(diag[k])}).join('&');
 		  var p=new URLSearchParams(location.search);
 		  var tok=p.get('token');

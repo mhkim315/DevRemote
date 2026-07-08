@@ -1,7 +1,7 @@
 # E8 Instrumentation Report
 
 Date: 2026-07-08
-Commit: 71c9cc772
+Commit: 3ca91d16f
 
 ## Capture path
 
@@ -48,7 +48,7 @@ pty.go:438  HandleE8Diag → POST-only, auth-gated, input-length-limited → log
 
 - `/debug/e8diag` behind AuthMiddleware
 - POST-only
-- Query values truncated to 20 chars max
+- Digits-only counters (safeNum) + bool-only wasReconnect (safeBool), length-limited to 20 chars
 - No raw body/string logging
 
 ## Status
