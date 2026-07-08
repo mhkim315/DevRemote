@@ -54,7 +54,7 @@ pty.go:438  HandleE8Diag → POST-only, auth-gated, input-length-limited → log
 ## Status
 
 - [x] instrumentation code complete
-- [x] daemon capture path working  
+- [x] daemon capture path working
 - [x] POST-only + auth + input validation
 - [x] build gate ALL 8 PASSED
 - [ ] runtime evidence (requires daemon restart with new binary + active Terminal session)
