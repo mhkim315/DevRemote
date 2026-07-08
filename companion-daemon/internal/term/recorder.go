@@ -168,17 +168,8 @@ func (r *Recorder) readLoop() {
 		payload := make([]byte, n)
 		copy(payload, buf[:n])
 
-		// Broadcast to subscribers.
-		r.mu.Lock()
-		for _, ch := range r.subscribers {
-			select {
-			case ch <- payload:
-			default:
-			}
-		}
-		r.mu.Unlock()
-
-		// Append to ActivityBuffer — recorder is the SINGLE append source.
+		// Append to ActivityBuffer FIRST — recorder is the SINGLE append source.
+		// Subscriber broadcast follows so that receiving data implies capture is done.
 		if r.activity != nil {
 			text := string(payload)
 			if !isANSIControlOnly(text) && len(text) > 3 {
@@ -193,6 +184,17 @@ func (r *Recorder) readLoop() {
 				})
 			}
 		}
+
+		// Broadcast to subscribers after append — eliminates race between
+		// subscriber receive and ActivityBuffer.List.
+		r.mu.Lock()
+		for _, ch := range r.subscribers {
+			select {
+			case ch <- payload:
+			default:
+			}
+		}
+		r.mu.Unlock()
 	}
 }
 
