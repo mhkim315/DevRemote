@@ -12,9 +12,7 @@ Each WebSocket connection opens its own stream and runs its own read loop.
 Inside the stream.Read() goroutine in HandleWS. Per-WebSocket-read append.
 
 ### Current replay path
-`ReadScreen()` → `\033[2J\033[H` + screen content → sent as first WebSocket message.
-This IS captured by ActivityBuffer (contains printable text after ANSI codes).
-`skipCapture` flag suppresses initial burst capture (added in E8h).
+`ReadScreen()` → `\033[2J\033[H` + screen content → sent as first WebSocket message (display/bootstrap only). NOT appended to ActivityBuffer in current code path — ActivityBuffer.Append() occurs only in the stream.Read() goroutine. However, adapter OpenStream implementations may emit initial frames into the live stream. Future recorder must ensure bootstrap/snapshot/replay bytes are never appended as new ActivityEvents.
 
 ### Current history/snapshot path
 `HandleSessionsV2 ?history=` → `ReadHistory()` or `ReadScreen()` — one-shot, not streaming.
