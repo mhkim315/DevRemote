@@ -225,12 +225,16 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 					triggerClose(fmt.Errorf("stream failed"))
 					break
 				}
-				// E8f: capture terminal output as activity.
+				// E8f: capture terminal output — full text, capped at 32KB.
 				if h.Activity != nil {
+					text := string(buf[:n])
+					if len(text) > 32768 {
+						text = text[:32768]
+					}
 					h.Activity.Append(ActivityEvent{
 						SessionID: session,
 						Type:      ActivityTerminalOutput,
-						Text:      TruncateText(string(buf[:n]), 2048),
+						Text:      text,
 						Bytes:     n,
 					})
 				}

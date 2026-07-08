@@ -458,7 +458,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
                   <Text style={styles.transcriptType}>
                     {item.type === 'terminal_input' ? '←' : ' '}
                   </Text>
-                  <Text style={styles.transcriptText} numberOfLines={3}>
+                  <Text style={styles.transcriptText} >
                     {item.text || (item.type === 'terminal_input' ? '[input sent]' : '')}
                   </Text>
                 </View>
