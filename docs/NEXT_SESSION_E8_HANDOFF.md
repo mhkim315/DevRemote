@@ -3,83 +3,98 @@
 Read first:
 
 - `docs/E8_EXECUTION_PLAN.md`
-- `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
 - `docs/E8_INSTRUMENTATION_REPORT.md`
-- `docs/E8_MOBILE_CONNECTIVITY_QUESTION.md`
+- `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
+- `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
 ## Current priority
 
-Do not continue terminal duplication fixing yet.
+Do not continue patching xterm mobile scrollback.
 
 Immediate target:
 
 ```text
-E8a — Connection State Correctness
+E8e — Transcript Read Mode Scope
 ```
 
 ## Mission
 
-Fix the product state ambiguity where a broken daemon connection appears as an
-empty Dashboard with only `NEW AGENT`.
-
-Current bad flow:
+Document the architecture pivot:
 
 ```text
-Stored BASE_URL
-→ isConnected=true
-→ Dashboard
-→ listSessions fails
-→ sessions=[]
-→ user sees NEW AGENT only
+xterm.js remains live interactive terminal.
+Pokit transcript renderer handles mobile historical reading.
 ```
 
-Required result:
+Do not implement the full transcript renderer yet.
 
-```text
-connection failure ≠ no sessions
-```
+## Why
 
-## Implement only E8a
+Validated evidence now shows:
 
-Allowed:
+- backend replay is not the mobile idle-scroll cause;
+- WebSocket reconnect is not the mobile idle-scroll cause;
+- terminal data integrity is preserved;
+- desktop xterm behaves correctly;
+- Android WebView + xterm.js duplicates visible rows during upward touch scroll;
+- repeated xterm scrollback patches have diminishing returns.
 
-- verify restored `BASE_URL` before marking connected;
-- verify manual/QR connect before saving `BASE_URL`;
-- show connection error on ConnectScreen;
-- show Dashboard fetch error instead of empty sessions;
-- add retry/rescan path;
-- add tests or clear runtime evidence.
+The product should avoid relying on xterm.js as the mobile history reader.
+
+## E8e scope
+
+Implement documentation only:
+
+- define transcript read mode;
+- define live terminal vs transcript responsibilities;
+- define unsupported/degraded terminal semantics;
+- define why this is not a custom terminal emulator;
+- define E8f/E8g/E8h follow-up phases.
 
 Avoid:
 
+- full transcript renderer implementation;
+- backend stream rewrite;
+- WebSocket contract changes;
+- new terminal backend;
 - new tunnel manager;
 - new daemon bind flag;
-- changing `--insecure-local-only`;
-- onboarding redesign;
-- terminal duplication fix acceptance;
-- mobile WebView E8DIAG acceptance.
+- new xterm scrollback patch;
+- claiming final terminal duplication fix.
 
-## Expected validation
+## Required architecture statement
 
-Run:
+Use this responsibility split:
 
-```sh
-sh scripts/build-gate.sh
+```text
+xterm.js:
+  live interactive bottom terminal
+  current prompt/input
+  live ANSI/TUI behavior
+
+Pokit transcript renderer:
+  mobile historical reading
+  stable scroll UX
+  read-only transcript
+  future search/copy/summarize/collapse affordances
 ```
 
-Also provide evidence for:
+## Explicitly unsupported in transcript mode
 
-1. unreachable saved URL does not mark app connected;
-2. unreachable manual URL shows connection error;
-3. successful but empty `/api/sessions` remains distinguishable from fetch failure;
-4. successful `/api/sessions` with sessions renders sessions.
+- vim / nano / less / htop / top;
+- alternate screen;
+- cursor movement;
+- scroll region;
+- full-screen TUI;
+- mouse interaction;
+- complex ANSI behavior.
 
 ## Completion statement
 
 Use this format:
 
 ```text
-E8a implementation complete.
+E8e scope update complete.
 
 Commit: <sha>
 
@@ -88,14 +103,13 @@ Changed:
 
 Validation:
 - build gate: ...
-- unreachable saved URL: ...
-- unreachable manual URL: ...
-- empty sessions vs failed fetch: ...
+- docs define live terminal vs transcript responsibilities: ...
+- docs define unsupported/fallback behavior: ...
 
 Not included:
-- Mobile WebView E8DIAG validation
-- terminal duplication final acceptance
-- tunnel manager
-- new daemon bind flag
+- transcript renderer implementation
+- backend/WebSocket contract changes
+- xterm scrollback patch
+- final terminal duplication fix
 ```
 

@@ -1,184 +1,191 @@
-# E8 Execution Plan — Connection Correctness First
+# E8 Execution Plan — Transcript Read Mode Pivot
 
 Date: 2026-07-08
 
-## Current accepted baseline
+## Current accepted evidence
 
-Accepted:
+Accepted / established:
 
-- A5~A10 platform foundation
-- P1a Live Dashboard Core
-- P2 Core Feed Taxonomy
-- E6 no-login local test branch
-- E8 instrumentation package
-- Desktop runtime E8DIAG evidence
-- Desktop reconnect / PTY replay evidence
+- A5~A10 platform foundation.
+- P1a Live Dashboard Core.
+- P2 Core Feed Taxonomy.
+- E6 no-login local test branch.
+- E8 instrumentation package.
+- E8a connection-state correctness direction.
+- Desktop runtime E8DIAG evidence.
+- Desktop reconnect / PTY replay evidence.
+- Mobile WebView evidence showing scroll-up visual duplication while counters
+  remain unchanged.
 
-Not yet accepted:
-
-- Mobile WebView E8DIAG validation
-- Final terminal duplication fix
-- Mobile confirmation of `term.clear()` behavior
-
-## Why the priority changed
-
-Mobile validation is currently ambiguous because connection failures are hidden
-as empty product state.
-
-Observed failure mode:
+Current technical conclusion:
 
 ```text
-Stored BASE_URL
-→ app marks connected
-→ Dashboard opens
-→ listSessions() fails
-→ sessions=[]
-→ only NEW AGENT is shown
+Backend replay: ruled out for mobile idle-scroll duplication.
+WebSocket reconnect: ruled out for mobile idle-scroll duplication.
+Terminal data integrity: preserved.
+Desktop xterm scroll: behaves correctly.
+Mobile Android WebView + xterm.js: visual row duplication occurs during upward touch scrolling.
 ```
 
-This makes a broken connection look like a healthy daemon with no sessions.
-That blocks E8, because missing E8DIAG could mean any of:
+Failed or insufficient patch attempts:
 
-- stale saved BASE_URL;
-- dead Cloudflare tunnel;
-- daemon not reachable;
-- wrong daemon process;
-- auth failure;
-- WebView failure;
-- actual terminal bug.
+- fitTerminal debounce;
+- viewport.invalidate();
+- write buffering;
+- refresh / repaint strategies;
+- CSS / user-scalable experiments.
 
-Before Mobile E8 validation, the app must distinguish connection failure from
-empty session list.
+## Product / architecture pivot
 
-## Revised execution sequence
+Stop patching xterm.js mobile scrollback.
 
-### E8a — Connection State Correctness
+Pokit is an agent cockpit, not a generic remote terminal app. On mobile, the
+history-reading experience should not depend on xterm.js scrollback when the
+evidence points to Android WebView/xterm viewport rendering instability.
+
+New principle:
+
+```text
+Do not build a custom terminal emulator.
+Split responsibilities.
+```
+
+Responsibilities:
+
+```text
+xterm.js
+→ live interactive terminal
+→ current prompt / input / live ANSI behavior
+→ bottom/live portion
+
+Pokit transcript renderer
+→ mobile historical reading
+→ stable scroll/read UX
+→ search/copy/collapse/summarize-ready output model
+```
+
+This is not a full terminal renderer. It is a read mode for past output.
+
+## Revised E8 sequence
+
+### E8e — Transcript Read Mode Scope
 
 Goal:
 
 ```text
-Connection failure must never render as "no sessions".
+Define the mobile-only transcript/read-mode architecture before implementation.
 ```
 
-Required behavior:
+Acceptance:
 
-- Restored `BASE_URL` is verified before `isConnected=true`.
-- Manual/QR connect verifies daemon reachability before saving `BASE_URL`.
-- Dashboard fetch failure displays a connection error, not an empty dashboard.
-- Empty sessions are shown only after a successful `/api/sessions` response.
-- User has a visible retry/rescan path.
+- new architecture documented;
+- live terminal vs transcript responsibilities defined;
+- unsupported/degraded terminal semantics defined;
+- no custom VT100 emulator scope;
+- no backend replay/WebSocket contract change;
+- next implementation phases defined.
 
-Allowed implementation scope:
+Implementation in E8e:
 
-- mobile connection provider health check;
-- dashboard connection error display;
-- connect screen connection error display;
-- retry/rescan affordance;
-- focused tests or documented runtime evidence.
+- documentation only;
+- no full transcript renderer;
+- no backend stream rewrite;
+- no new terminal backend;
+- no further xterm scrollback patching.
 
-Explicitly out of scope:
-
-- onboarding redesign;
-- new tunnel manager;
-- new pairing protocol;
-- new daemon adapter/backend;
-- new `--listen-addr` / bind-all implementation;
-- terminal duplication fix acceptance.
-
-Acceptance evidence:
-
-- build gate passes;
-- unreachable saved URL does not enter Dashboard as connected;
-- unreachable manual/tunnel URL shows a connection error;
-- successful `/api/sessions` with empty array is distinguishable from fetch failure;
-- no secrets are logged or committed.
-
-### E8b — Mobile Connectivity Restore
+### E8f — Terminal Output Capture Model
 
 Goal:
 
 ```text
-Establish one reliable phone-to-daemon route for Mobile E8 validation.
+Define and implement the minimum output model needed for read mode.
 ```
 
-Approved routes:
+Possible model:
 
-1. Emulator / USB Android:
-   - daemon remains `127.0.0.1:9171`;
-   - use `adb reverse tcp:9171 tcp:9171`;
-   - verify `/api/sessions` from the app.
+```ts
+TranscriptLine {
+  id: string
+  sessionId: string
+  timestamp: string
+  text: string
+  kind: "stdout" | "stderr" | "input" | "system"
+  spans?: BasicAnsiSpan[]
+}
+```
 
-2. LTE physical device:
-   - daemon remains `127.0.0.1:9171`;
-   - use a public HTTPS tunnel to `127.0.0.1:9171`;
-   - verify the tunnel URL returns `/api/sessions` before Terminal testing.
+Scope guard:
 
-Do not weaken `--insecure-local-only`. It must remain local-only.
+- line-oriented, read-only output;
+- plain text first;
+- basic ANSI color/style only if cheap;
+- do not emulate cursor movement, alternate screen, or scroll regions.
 
-If LAN binding is needed, it is a future explicit option such as
-`--listen-addr` or `--dev-bind-all-interfaces`, with warning logs and separate
-review. It is not an E8 hotfix.
-
-### E8c — Mobile WebView E8DIAG Capture
+### E8g — Mobile Read Mode UI
 
 Goal:
 
 ```text
-Capture mobile WebView terminal behavior with E8DIAG.
+Provide stable mobile history reading without xterm scrollback.
 ```
 
-Required scenarios:
+Expected behavior:
 
-- initial Terminal tab open;
-- scroll;
-- tab switch away/back;
-- refresh;
-- duplication occurrence if reproducible.
+- xterm remains available for live interaction;
+- scrolling upward enters or reveals transcript/read mode;
+- transcript uses native/mobile list rendering, not xterm scrollback;
+- “Return to Live” affordance exists;
+- live input remains at the bottom or in the live terminal surface;
+- no duplicate visible rows during read-mode scrolling.
 
-Evidence format:
-
-```text
-Before action:
-E8DIAG connectCount=... closeCount=... msgCount=... totalBytes=... rawLen=... wasReconnect=...
-
-After action:
-E8DIAG connectCount=... closeCount=... msgCount=... totalBytes=... rawLen=... wasReconnect=...
-
-Conclusion:
-...
-```
-
-### E8d — Terminal Duplication Fix Acceptance
+### E8h — Fallback / Compatibility
 
 Goal:
 
 ```text
-Accept or reject the terminal duplication fix using objective evidence.
+Handle terminal semantics transcript mode cannot represent.
 ```
 
-Current candidate:
+Unsupported/degraded in transcript mode:
 
-```javascript
-if (wasReconnect) { term.clear(); wasReconnect = false; }
-```
+- vim / nano / less / htop / top;
+- alternate screen;
+- cursor movement;
+- scroll region;
+- full-screen TUI;
+- mouse interaction;
+- complex ANSI behavior;
+- wide-character layout edge cases beyond the chosen renderer contract.
 
-Already supported:
+Fallback behavior:
 
-- desktop reconnect causes exact PTY replay (`msgCount` and `totalBytes`
-  doubled);
-- desktop scroll does not trigger WebSocket/backend replay.
+- keep live xterm terminal available;
+- show “Full Terminal Mode recommended” or equivalent for unsupported output;
+- transcript degradation must not break live terminal;
+- transcript inaccuracies must be isolated from backend/WebSocket/session state.
 
-Still required:
+## Explicit non-goals
 
-- mobile confirmation, or a clearly scoped desktop-only acceptance;
-- scrollback preservation check;
-- no-data-loss check;
-- before/after evidence that duplication is removed.
+Do not:
 
-## Reviewer rule
+- build a custom VT100/xterm emulator;
+- replace xterm.js for live interactive terminal use;
+- change backend replay/WebSocket contracts for E8e;
+- add a new terminal backend;
+- add a new tunnel manager;
+- weaken `--insecure-local-only`;
+- continue patching xterm mobile scrollback as the primary strategy.
 
-Do not accept Mobile E8 validation until connection state is trustworthy.
+## Acceptance rule going forward
 
-Do not reject E8a because physical-device validation remains. E8a is an
-execution-track unblocker and can be accepted with source/build/runtime evidence.
+E8 terminal-scroll acceptance should no longer require xterm.js mobile scrollback
+to become reliable.
+
+Instead, acceptance should require:
+
+- live terminal remains usable for current interaction;
+- historical reading uses transcript/read mode on mobile;
+- unsupported terminal semantics degrade clearly;
+- backend data integrity remains unchanged;
+- no vendor-specific mobile behavior branch is introduced.
 

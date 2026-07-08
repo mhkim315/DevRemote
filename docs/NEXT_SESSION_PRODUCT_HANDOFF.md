@@ -87,11 +87,11 @@ Before implementation, read:
 
 ## Revised E8 priority order
 
-1. E8a — Connection State Correctness.
-2. E8b — Mobile Connectivity Restore.
-3. E8c — Mobile WebView E8DIAG Capture.
-4. E8d — Terminal Duplication Fix Acceptance.
-5. Later E8 follow-ups:
+1. E8e — Transcript Read Mode Scope.
+2. E8f — Terminal Output Capture Model.
+3. E8g — Mobile Read Mode UI.
+4. E8h — Fallback / Compatibility.
+5. Later runtime follow-ups:
    - input delivery acknowledgement / failed-send state;
    - Activity message boundary and authorship;
    - tmux vs cmux stream/history/screen/event comparison;
@@ -99,19 +99,19 @@ Before implementation, read:
    - tmux first-entry hydration proof;
    - terminal command output vs agent answer classification.
 
-## E8a acceptance
+## E8e acceptance
 
-E8a can be accepted when the executor proves connection-state correctness.
+E8e can be accepted when the executor documents the transcript/read-mode pivot.
 
 Minimum acceptance:
 
-- restored `BASE_URL` is verified before `isConnected=true`;
-- failed `/api/sessions` is shown as a connection error, not empty sessions;
-- successful empty `/api/sessions` is distinguishable from failed fetch;
-- ConnectScreen shows failed connection feedback;
-- retry/rescan path exists;
+- xterm.js remains live interactive terminal;
+- Pokit transcript renderer handles mobile historical reading;
+- unsupported/degraded terminal semantics are listed;
+- the plan explicitly says not to build a custom VT100/xterm emulator;
+- E8f/E8g/E8h follow-up phases are defined;
 - `sh scripts/build-gate.sh` passes.
-- tests or runtime evidence prove the changed path.
+- no implementation of the full transcript renderer is included.
 
 ## Explicitly avoid
 
@@ -123,6 +123,8 @@ Do not implement in E8:
 - first-time onboarding redesign;
 - new tunnel manager;
 - new daemon bind flag;
+- new xterm mobile scrollback patch;
+- full custom terminal emulator;
 - physical-device-only validation;
 - real push notification validation;
 - visual polish unrelated to reliability;
@@ -140,12 +142,12 @@ Do not implement in E8:
 
 ## Suggested execution order
 
-1. Implement E8a only.
-2. Verify unreachable saved URL does not enter Dashboard as connected.
-3. Verify unreachable manual/tunnel URL shows connection error.
-4. Verify successful empty sessions are not confused with fetch failure.
+1. Implement E8e documentation only.
+2. Define live terminal vs transcript responsibilities.
+3. Define transcript unsupported/fallback behavior.
+4. Define E8f/E8g/E8h follow-up phases.
 5. Run build gate.
-6. Document remaining E8b/E8c/E8d work.
+6. Do not implement transcript renderer yet.
 
 ## Completion statement format
 
