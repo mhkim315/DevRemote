@@ -11,17 +11,138 @@ export function getBaseURL(): string {
   return _baseURL;
 }
 
+// ── R1a typed connectivity errors ──
+
+export enum ConnectivityFailure {
+  None = '',
+  NetworkUnreachable = 'network_unreachable',
+  APIError = 'api_error',
+  AuthError = 'auth_error',
+  Timeout = 'timeout',
+}
+
+export class PokitError extends Error {
+  failure: ConnectivityFailure;
+  statusCode: number;
+  constructor(message: string, failure: ConnectivityFailure, statusCode: number = 0) {
+    super(message);
+    this.name = 'PokitError';
+    this.failure = failure;
+    this.statusCode = statusCode;
+  }
+}
+
 async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(url, init);
-  if (!res.ok) throw new Error(`API ${res.status}: ${url}`);
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (e: any) {
+    // fetch itself threw — network-level failure (DNS, refused, timeout).
+    const msg = e?.message || String(e);
+    if (msg.includes('timed out') || msg.includes('timeout') || msg.includes('abort')) {
+      throw new PokitError('Daemon unreachable: connection timed out', ConnectivityFailure.Timeout);
+    }
+    throw new PokitError('Daemon unreachable: ' + msg, ConnectivityFailure.NetworkUnreachable);
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new PokitError('Authentication failed. Re-scan the QR code.', ConnectivityFailure.AuthError, res.status);
+  }
+  if (!res.ok) {
+    throw new PokitError(
+      `API error ${res.status}: ${url}`,
+      ConnectivityFailure.APIError,
+      res.status,
+    );
+  }
   return res;
 }
+
+// ── R1a: daemon reachability probe ──
+
+export interface ReachabilityResult {
+  reachable: boolean;
+  sessionsLoaded: boolean;
+  sessionsEmpty: boolean;
+  failure: ConnectivityFailure;
+  statusCode: number;
+  errorMessage: string;
+}
+
+/**
+ * probeDaemon checks whether the daemon is reachable and returns structured
+ * diagnostics. Callers can distinguish:
+ *   - daemon unreachable (NetworkUnreachable / Timeout)
+ *   - auth error (AuthError)
+ *   - sessions API error (APIError)
+ *   - daemon reachable, no sessions (reachable + sessionsEmpty)
+ *   - daemon reachable, sessions loaded (reachable + sessionsLoaded)
+ */
+export async function probeDaemon(token?: string): Promise<ReachabilityResult> {
+  const h: Record<string, string> = {};
+  if (token) h['Authorization'] = `Bearer ${token}`;
+  try {
+    const res = await fetch(`${_baseURL}/api/sessions`, { headers: h });
+    if (res.status === 401 || res.status === 403) {
+      return {
+        reachable: true,
+        sessionsLoaded: false,
+        sessionsEmpty: false,
+        failure: ConnectivityFailure.AuthError,
+        statusCode: res.status,
+        errorMessage: 'Authentication failed. Re-scan the QR code.',
+      };
+    }
+    if (!res.ok) {
+      return {
+        reachable: true,
+        sessionsLoaded: false,
+        sessionsEmpty: false,
+        failure: ConnectivityFailure.APIError,
+        statusCode: res.status,
+        errorMessage: `Sessions API returned ${res.status}`,
+      };
+    }
+    const data = await res.json();
+    const sessions = Array.isArray(data) ? data : [];
+    return {
+      reachable: true,
+      sessionsLoaded: true,
+      sessionsEmpty: sessions.length === 0,
+      failure: ConnectivityFailure.None,
+      statusCode: 200,
+      errorMessage: '',
+    };
+  } catch (e: any) {
+    if (e instanceof PokitError) {
+      return {
+        reachable: e.failure !== ConnectivityFailure.NetworkUnreachable && e.failure !== ConnectivityFailure.Timeout,
+        sessionsLoaded: false,
+        sessionsEmpty: false,
+        failure: e.failure,
+        statusCode: e.statusCode,
+        errorMessage: e.message,
+      };
+    }
+    return {
+      reachable: false,
+      sessionsLoaded: false,
+      sessionsEmpty: false,
+      failure: ConnectivityFailure.NetworkUnreachable,
+      statusCode: 0,
+      errorMessage: e?.message || String(e),
+    };
+  }
+}
+
+// ── Auth helpers ──
 
 function authHeaders(token?: string): Record<string, string> {
   const h: Record<string, string> = {};
   if (token) h['Authorization'] = `Bearer ${token}`;
   return h;
 }
+
+// ── API functions ──
 
 export async function listSessions(token?: string): Promise<any[]> {
   const res = await checkedFetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });

@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, TouchableOpaci
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
-import { listSessions, createOrUpdateSession, deleteSession } from '../../lib/client';
+import { listSessions, createOrUpdateSession, deleteSession, ConnectivityFailure, PokitError } from '../../lib/client';
 import { useConnection } from '../../lib/connection';
 import { isDegraded } from '../../lib/agentDisplay';
 
@@ -17,7 +17,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
-  const { disconnect, connectionError } = useConnection();
+  const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
@@ -34,7 +34,27 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       })
       .catch(err => {
         console.error(err);
-        setFetchError('Cannot reach daemon. Check connection.');
+        // R1a: classify the error for actionable messaging.
+        if (err instanceof PokitError) {
+          switch (err.failure) {
+            case ConnectivityFailure.NetworkUnreachable:
+              setFetchError('Daemon unreachable. Check that the daemon is running.');
+              break;
+            case ConnectivityFailure.Timeout:
+              setFetchError('Connection timed out. Check your network or daemon URL.');
+              break;
+            case ConnectivityFailure.AuthError:
+              setFetchError('Auth failed. Re-scan the QR code or re-enter the daemon URL.');
+              break;
+            case ConnectivityFailure.APIError:
+              setFetchError('Sessions API error (' + err.statusCode + '). Daemon may need restart.');
+              break;
+            default:
+              setFetchError('Cannot reach daemon. Check connection.');
+          }
+        } else {
+          setFetchError('Cannot reach daemon. Check connection.');
+        }
         setLoading(false);
       });
   };
@@ -144,8 +164,21 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
 
       {(fetchError || connectionError) ? (
         <View style={{padding: 20, alignItems: 'center'}}>
-          <Text style={{color: '#f85149', fontSize: 14, textAlign: 'center', marginBottom: 12}}>
+          <Text style={{color: '#f85149', fontSize: 14, textAlign: 'center', marginBottom: 8}}>
             {fetchError || connectionError}
+          </Text>
+          {/* R1a: show connectivity diagnosis */}
+          <Text style={{color: '#8b949e', fontSize: 11, textAlign: 'center', marginBottom: 8}}>
+            {!daemonReachable
+              ? 'Daemon not reachable — check URL and network.'
+              : failure === ConnectivityFailure.AuthError
+              ? 'Auth rejected — re-scan QR code from terminal.'
+              : failure === ConnectivityFailure.APIError
+              ? 'Daemon reachable but API returned error.'
+              : 'Tap Retry to attempt reconnection.'}
+          </Text>
+          <Text style={{color: '#666', fontSize: 10, textAlign: 'center', marginBottom: 12}}>
+            diagnosis: reachable={String(daemonReachable)} sessions_loaded={String(sessionsLoaded)} empty={String(sessionsEmpty)}
           </Text>
           <TouchableOpacity onPress={() => { setFetchError(''); fetchSessions(); }} style={{backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
             <Text style={{color: '#fff', fontWeight: '700'}}>RETRY</Text>
@@ -153,6 +186,27 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         </View>
       ) : loading ? (
         <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
+      ) : sessions.length === 0 ? (
+        /* R1a: daemon reachable but zero sessions — not an error, actionable empty state */
+        <View style={{flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24}}>
+          <Text style={{color: '#45EBE9', fontSize: 18, fontWeight: '800', letterSpacing: 1.2, marginBottom: 12}}>
+            DAEMON CONNECTED
+          </Text>
+          <Text style={{color: '#8b949e', fontSize: 14, textAlign: 'center', marginBottom: 8}}>
+            No sessions found. The daemon is reachable but has no active terminal sessions.
+          </Text>
+          <Text style={{color: '#666', fontSize: 12, textAlign: 'center', marginBottom: 20}}>
+            Start a session in your terminal or tap + to create one.
+          </Text>
+          <View style={{flexDirection: 'row', gap: 12}}>
+            <TouchableOpacity onPress={() => { setFetchError(''); fetchSessions(); }} style={{backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
+              <Text style={{color: '#fff', fontWeight: '700'}}>REFRESH</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { setEditSession(null); setModalVisible(true); }} style={{backgroundColor: '#39d353', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
+              <Text style={{color: '#000', fontWeight: '700'}}>+ NEW AGENT</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       ) : (
         <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
           {/* P1a: Needs Attention — always first */}

@@ -1,5 +1,5 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import { terminalURL, listSessions, getSessionHistory, getActivityHistory } from '../lib/client';
+import { terminalURL, listSessions, getSessionHistory, getActivityHistory, ConnectivityFailure, PokitError } from '../lib/client';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -65,6 +65,10 @@ export default function FeedScreen({onBack, session, token}: Props) {
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
 
+  // R1a: activity/transcript endpoint reachability.
+  const [activityError, setActivityError] = useState('');
+  const [historyError, setHistoryError] = useState('');
+
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
 
@@ -103,6 +107,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
       getSessionHistory(session, token)
         .then(data => {
           if (Array.isArray(data)) {
+            setHistoryError('');
             setHistoryEvents(prev => {
               // E8: merge server events with local synthetics, dedup by ID.
               const seen = new Set<string>();
@@ -119,7 +124,16 @@ export default function FeedScreen({onBack, session, token}: Props) {
             });
           }
         })
-        .catch(err => console.error(err));
+        .catch(err => {
+          console.error(err);
+          if (err instanceof PokitError) {
+            setHistoryError(err.failure === ConnectivityFailure.NetworkUnreachable
+              ? 'Activity endpoint unreachable.'
+              : 'Activity endpoint error (' + err.statusCode + ').');
+          } else {
+            setHistoryError('Activity endpoint unreachable.');
+          }
+        });
     };
 
     // E8g: fetch transcript — ref-based to avoid stale closure on activeTab.
@@ -128,6 +142,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
         .then(data => {
           if (Array.isArray(data)) {
             setTranscriptEvents(data);
+            setActivityError('');
             const maxSeq = data.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
             transcriptMaxSeqRef.current = maxSeq;
             if (activeTabRef.current === 'transcript' && maxSeq > lastSeenSeqRef.current) {
@@ -138,7 +153,16 @@ export default function FeedScreen({onBack, session, token}: Props) {
             }
           }
         })
-        .catch(err => console.error(err));
+        .catch(err => {
+          console.error(err);
+          if (err instanceof PokitError) {
+            setActivityError(err.failure === ConnectivityFailure.NetworkUnreachable
+              ? 'Transcript endpoint unreachable.'
+              : 'Transcript endpoint error (' + err.statusCode + ').');
+          } else {
+            setActivityError('Transcript endpoint unreachable.');
+          }
+        });
     };
 
     fetchSession();
@@ -417,7 +441,13 @@ export default function FeedScreen({onBack, session, token}: Props) {
         </View>
 
         <View style={[styles.activityContainer, {display: activeTab === 'activity' ? 'flex' : 'none'}]}>
-          {!historyEvents || historyEvents.length === 0 ? (
+          {/* R1a: activity endpoint error state */}
+          {historyError ? (
+            <View style={{padding: 20, alignItems: 'center'}}>
+              <Text style={{color: '#f85149', fontSize: 13, textAlign: 'center', marginBottom: 8}}>{historyError}</Text>
+              <Text style={{color: '#8b949e', fontSize: 11, textAlign: 'center'}}>Activity history may still be loading. Pull to refresh.</Text>
+            </View>
+          ) : !historyEvents || historyEvents.length === 0 ? (
             <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
           ) : (
             <FlatList
@@ -445,7 +475,13 @@ export default function FeedScreen({onBack, session, token}: Props) {
               <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
             </TouchableOpacity>
           )}
-          {!transcriptEvents || transcriptEvents.length === 0 ? (
+          {/* R1a: transcript endpoint error state */}
+          {activityError ? (
+            <View style={{padding: 20, alignItems: 'center'}}>
+              <Text style={{color: '#f85149', fontSize: 13, textAlign: 'center', marginBottom: 8}}>{activityError}</Text>
+              <Text style={{color: '#8b949e', fontSize: 11, textAlign: 'center'}}>Transcript may still be loading. Retrying automatically.</Text>
+            </View>
+          ) : !transcriptEvents || transcriptEvents.length === 0 ? (
             <Text style={styles.emptyActivityText}>No transcript yet.</Text>
           ) : (
             <FlatList

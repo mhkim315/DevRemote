@@ -1,12 +1,22 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { setBaseURL, listSessions } from './client';
+import { setBaseURL, probeDaemon, ConnectivityFailure } from './client';
 
-interface ConnectionState {
+// ── R1a: structured connectivity diagnostics ──
+
+export interface ConnectionState {
   baseURL: string;
   isConnected: boolean;
   loading: boolean;
   connectionError: string;
+  /** R1a: was the daemon reachable at all? */
+  daemonReachable: boolean;
+  /** R1a: did sessions load successfully? */
+  sessionsLoaded: boolean;
+  /** R1a: did sessions load but return 0 sessions? */
+  sessionsEmpty: boolean;
+  /** R1a: what kind of failure occurred? */
+  failure: ConnectivityFailure;
   connect: (url: string) => Promise<void>;
   disconnect: () => Promise<void>;
 }
@@ -16,6 +26,10 @@ const ConnectionContext = createContext<ConnectionState>({
   isConnected: false,
   loading: true,
   connectionError: '',
+  daemonReachable: false,
+  sessionsLoaded: false,
+  sessionsEmpty: false,
+  failure: ConnectivityFailure.None,
   connect: async () => {},
   disconnect: async () => {},
 });
@@ -29,6 +43,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState('');
+  const [daemonReachable, setDaemonReachable] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [sessionsEmpty, setSessionsEmpty] = useState(false);
+  const [failure, setFailure] = useState(ConnectivityFailure.None);
 
   // Restore saved URL on mount with health check.
   useEffect(() => {
@@ -36,15 +54,27 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       if (url) {
         setBaseURLState(url);
         setBaseURL(url);
-        // Verify the saved URL actually works.
-        try {
-          await listSessions();
+        const result = await probeDaemon();
+        setDaemonReachable(result.reachable);
+        setSessionsLoaded(result.sessionsLoaded);
+        setSessionsEmpty(result.sessionsEmpty);
+        setFailure(result.failure);
+        if (result.reachable && result.sessionsLoaded) {
           setIsConnected(true);
           setConnectionError('');
-        } catch {
-          // URL saved but unreachable — show ConnectScreen.
+        } else if (!result.reachable) {
           setIsConnected(false);
-          setConnectionError('Saved daemon unreachable. Check connection and retry.');
+          setConnectionError('Daemon unreachable. Check that the daemon is running and the URL is correct.');
+        } else if (result.failure === ConnectivityFailure.AuthError) {
+          setIsConnected(false);
+          setConnectionError('Authentication failed. Re-scan the QR code from your terminal.');
+        } else if (result.failure === ConnectivityFailure.APIError) {
+          setIsConnected(false);
+          setConnectionError('Sessions API error (' + result.statusCode + '). Daemon may need restart.');
+        } else if (result.sessionsEmpty) {
+          // Daemon reachable, API ok, but zero sessions — not an error.
+          setIsConnected(true);
+          setConnectionError('');
         }
       }
       setLoading(false);
@@ -55,16 +85,35 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     setBaseURLState(url);
     setBaseURL(url);
     setConnectionError('');
-    // Verify before claiming connected.
-    try {
-      await listSessions();
+    setFailure(ConnectivityFailure.None);
+    // R1a: use structured probe for diagnostics.
+    const result = await probeDaemon();
+    setDaemonReachable(result.reachable);
+    setSessionsLoaded(result.sessionsLoaded);
+    setSessionsEmpty(result.sessionsEmpty);
+    setFailure(result.failure);
+
+    if (result.reachable && result.sessionsLoaded) {
       setIsConnected(true);
-    } catch (e: any) {
+      setConnectionError('');
+    } else if (!result.reachable) {
       setIsConnected(false);
-      const msg = e?.message || String(e);
-      setConnectionError('Cannot reach daemon: ' + msg);
-      return;
+      setConnectionError('Daemon unreachable. Check that the daemon is running and the URL is correct.');
+    } else if (result.failure === ConnectivityFailure.AuthError) {
+      setIsConnected(false);
+      setConnectionError('Authentication failed. Re-scan the QR code from your terminal.');
+    } else if (result.failure === ConnectivityFailure.APIError) {
+      setIsConnected(false);
+      setConnectionError('Sessions API error (' + result.statusCode + '). Daemon may need restart.');
+    } else if (result.sessionsEmpty) {
+      // Daemon reachable but no sessions yet — still "connected".
+      setIsConnected(true);
+      setConnectionError('');
+    } else {
+      setIsConnected(false);
+      setConnectionError(result.errorMessage || 'Connection failed.');
     }
+
     try {
       await AsyncStorage.setItem('BASE_URL', url);
     } catch (e) {
@@ -76,6 +125,10 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     setBaseURLState('');
     setIsConnected(false);
     setConnectionError('');
+    setDaemonReachable(false);
+    setSessionsLoaded(false);
+    setSessionsEmpty(false);
+    setFailure(ConnectivityFailure.None);
     try {
       await AsyncStorage.removeItem('BASE_URL');
     } catch (e) {
@@ -84,7 +137,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   return (
-    <ConnectionContext.Provider value={{ baseURL, isConnected, loading, connectionError, connect, disconnect }}>
+    <ConnectionContext.Provider value={{
+      baseURL, isConnected, loading, connectionError,
+      daemonReachable, sessionsLoaded, sessionsEmpty, failure,
+      connect, disconnect,
+    }}>
       {children}
     </ConnectionContext.Provider>
   );
