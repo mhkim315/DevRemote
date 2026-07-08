@@ -27,7 +27,7 @@ Execution and manual validation are intentionally separated:
 ## Next target
 
 ```text
-E8a — Connection State Correctness
+E8e — Transcript Read Mode Scope
 ```
 
 Primary handoff document:
@@ -40,24 +40,23 @@ Supporting observation log:
 
 - `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
-## Why E8a now
+## Why E8e now
 
-The immediate priority changed.
+The immediate priority changed after runtime evidence narrowed the terminal
+duplication issue.
 
-Mobile E8 validation is blocked because connection failures are hidden as empty
-product state:
+Connection-state correctness and E8 instrumentation are already treated as
+accepted execution evidence. The remaining terminal-scroll problem is not a
+backend replay issue, not a WebSocket reconnect issue in the idle-scroll
+scenario, and not a terminal-data integrity issue.
 
-```text
-Stored BASE_URL
-→ app marks connected
-→ Dashboard opens
-→ listSessions() fails
-→ empty sessions
-→ user sees only NEW AGENT
-```
+The current evidence points to Android WebView + xterm.js viewport rendering
+instability during upward touch scroll. Repeated xterm scrollback patches had
+diminishing returns.
 
-This must be fixed before Mobile WebView E8DIAG validation. A broken connection
-must not look like a healthy daemon with no sessions.
+Therefore the next useful work is to stop treating xterm.js as the mobile
+history reader and document the transcript/read-mode split before
+implementation.
 
 ## Why E8 still matters
 
@@ -89,7 +88,7 @@ Before implementation, read:
 
 1. E8e — Transcript Read Mode Scope.
 2. E8f — Terminal Output Capture Model.
-3. E8g — Mobile Read Mode UI.
+3. E8g — Mobile Read Mode UI with explicit mode separation.
 4. E8h — Fallback / Compatibility.
 5. Later runtime follow-ups:
    - input delivery acknowledgement / failed-send state;
@@ -107,6 +106,8 @@ Minimum acceptance:
 
 - xterm.js remains live interactive terminal;
 - Pokit transcript renderer handles mobile historical reading;
+- E8g MVP uses explicit Live Terminal Mode and Transcript Mode;
+- E8g MVP does not merge transcript and xterm into one continuous scroll surface;
 - unsupported/degraded terminal semantics are listed;
 - the plan explicitly says not to build a custom VT100/xterm emulator;
 - E8f/E8g/E8h follow-up phases are defined;
@@ -148,6 +149,26 @@ Do not implement in E8:
 4. Define E8f/E8g/E8h follow-up phases.
 5. Run build gate.
 6. Do not implement transcript renderer yet.
+
+## E8g implementation constraint
+
+When E8g implementation starts, use explicit mode separation:
+
+```text
+Live Terminal Mode
+→ xterm.js only
+→ current prompt/input
+→ full terminal behavior
+
+Transcript Mode
+→ read-only history
+→ mobile-native list rendering
+→ explicit Return to Live Terminal action
+```
+
+Do not build a seamless transcript+xterm scroll surface in the MVP. Avoid shared
+scroll containers, boundary-line stitching, off-by-one sync logic, and
+ANSI/cursor/progress state transfer between modes.
 
 ## Completion statement format
 

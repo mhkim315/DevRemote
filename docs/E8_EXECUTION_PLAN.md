@@ -129,14 +129,63 @@ Goal:
 Provide stable mobile history reading without xterm scrollback.
 ```
 
+MVP architecture:
+
+```text
+Do not merge transcript and xterm into one continuous scroll surface.
+Use explicit modes.
+```
+
+Mode responsibilities:
+
+```text
+Live Terminal Mode
+→ xterm.js only
+→ current interaction / current prompt
+→ full terminal behavior
+→ no transcript renderer participation
+
+Transcript Mode
+→ read-only historical output
+→ mobile-optimized list rendering
+→ explicit Return to Live Terminal action
+→ no terminal input or control surface
+```
+
 Expected behavior:
 
 - xterm remains available for live interaction;
-- scrolling upward enters or reveals transcript/read mode;
+- scrolling upward may offer or enter transcript/read mode, but does not stitch
+  transcript rows into xterm scrollback;
 - transcript uses native/mobile list rendering, not xterm scrollback;
 - “Return to Live” affordance exists;
-- live input remains at the bottom or in the live terminal surface;
+- live input remains in Live Terminal Mode;
 - no duplicate visible rows during read-mode scrolling.
+
+Explicit MVP non-goals:
+
+- no seamless transcript/xterm boundary synchronization;
+- no shared scroll container between transcript and xterm;
+- no attempt to align transcript boundary rows with the live xterm viewport;
+- no duplicate/missing boundary-line reconciliation logic;
+- no ANSI state transfer from transcript mode back into xterm;
+- no cursor/progress/spinner continuity across modes.
+
+Reason:
+
+Seamless scroll integration would introduce a new synchronization problem that
+is separate from the original Android WebView/xterm duplication bug:
+
+- duplicate boundary lines;
+- missing boundary lines;
+- off-by-one alignment;
+- ANSI state mismatch;
+- cursor/progress mismatch;
+- live viewport alignment regressions.
+
+For the MVP, these risks are higher than the product value of a seamless scroll
+surface. Pokit should optimize for reliable mobile reading and safe return to
+the live prompt, not terminal-emulator purity.
 
 ### E8h — Fallback / Compatibility
 
@@ -185,7 +234,23 @@ Instead, acceptance should require:
 
 - live terminal remains usable for current interaction;
 - historical reading uses transcript/read mode on mobile;
+- transcript and live terminal are explicit modes in E8g MVP;
+- no seamless scroll-surface or boundary-sync claim is made in E8g MVP;
 - unsupported terminal semantics degrade clearly;
 - backend data integrity remains unchanged;
 - no vendor-specific mobile behavior branch is introduced.
 
+## Long-term architecture note
+
+Seamless transcript/xterm boundary synchronization should not become a default
+product goal. It may be revisited only as a separate research phase after the
+mode-switch MVP is proven, and only if there is strong product evidence that
+users need a unified scroll surface more than they need reliability.
+
+Any future seamless-scroll proposal must prove:
+
+- no duplicate or missing boundary rows;
+- no live prompt/input regression;
+- no ANSI/cursor/progress mismatch that misleads users;
+- no backend/WebSocket contract expansion solely to support presentation;
+- graceful fallback to explicit mode separation.

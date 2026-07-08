@@ -79,6 +79,37 @@ Pokit transcript renderer:
   future search/copy/summarize/collapse affordances
 ```
 
+## E8g MVP constraint
+
+When E8g starts, do not merge transcript and xterm into one continuous scroll
+surface.
+
+Use two explicit modes:
+
+```text
+Live Terminal Mode:
+  xterm.js only
+  current prompt/input
+  full terminal behavior
+
+Transcript Mode:
+  read-only history
+  mobile-native list rendering
+  explicit Return to Live Terminal action
+```
+
+E8g MVP must avoid:
+
+- shared scroll container between transcript and xterm;
+- boundary-line stitching;
+- off-by-one synchronization logic;
+- ANSI/cursor/progress state transfer between modes;
+- claiming that transcript mode is a terminal emulator.
+
+Acceptance for E8g should require reliable mode switching, stable transcript
+scrolling, and safe return to the live prompt. It should not require seamless
+scroll continuity.
+
 ## Explicitly unsupported in transcript mode
 
 - vim / nano / less / htop / top;
@@ -112,4 +143,3 @@ Not included:
 - xterm scrollback patch
 - final terminal duplication fix
 ```
-
