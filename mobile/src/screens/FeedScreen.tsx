@@ -55,6 +55,8 @@ export default function FeedScreen({onBack, session, token}: Props) {
     }
   }, [supportsHistory, activeTab]);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
+  // E8: input delivery status — idle | sending | sent | failed
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
@@ -94,7 +96,20 @@ export default function FeedScreen({onBack, session, token}: Props) {
       getSessionHistory(session, token)
         .then(data => {
           if (Array.isArray(data)) {
-            setHistoryEvents(data);
+            setHistoryEvents(prev => {
+              // E8: merge server events with local synthetics, dedup by ID.
+              const seen = new Set<string>();
+              const merged: any[] = [];
+              // Server events first (source of truth), then keep local-only synthetics.
+              for (const e of [...(data || []), ...prev]) {
+                if (!e.id || seen.has(e.id)) continue;
+                seen.add(e.id);
+                merged.push(e);
+              }
+              // Sort by timestamp ascending.
+              merged.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+              return merged;
+            });
           }
         })
         .catch(err => console.error(err));
@@ -128,9 +143,17 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const send = useCallback(() => {
     if (!cmd.trim()) return;
     const textToSend = cmd;
-    doSend(textToSend + '\r');
-    setCmd('');
-    
+    setSendStatus('sending');
+    try {
+      doSend(textToSend + '\r');
+      setCmd('');
+      setSendStatus('sent');
+      // Auto-clear sent status after 1.5s.
+      setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
+    } catch {
+      setSendStatus('failed');
+    }
+
     setHistoryEvents(prev => {
       const optEvent = {
         id: 'opt-' + Date.now(),
@@ -379,6 +402,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
             multiline={false}
             blurOnSubmit={false}
           />
+          {/* E8: input delivery status indicator */}
+          {sendStatus !== 'idle' && (
+            <Text style={[styles.sendStatus, sendStatus === 'failed' && styles.sendFailed]}>
+              {sendStatus === 'sending' ? '↑' : sendStatus === 'sent' ? '✓' : '✗'}
+            </Text>
+          )}
           <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
         </View>
       </View>
@@ -467,6 +496,8 @@ const styles = StyleSheet.create({
   },
   btn: {marginLeft:8, backgroundColor:'transparent', borderRadius:32, paddingHorizontal:14, paddingVertical:10, borderWidth: 1, borderColor: '#45EBE9'},
   btnT: {color:'#ffffff', fontWeight:'700', fontSize:13, letterSpacing: 1.17},
+  sendStatus: {color:'#45EBE9', fontSize:14, fontWeight:'700', marginHorizontal:4},
+  sendFailed: {color:'#f85149'},
 
   activityContainer: {
     flex: 1,
