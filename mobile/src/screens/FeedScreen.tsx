@@ -450,7 +450,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           ) : (
             <FlatList
               data={transcriptEvents}
-              keyExtractor={(item, idx) => item.id || String(idx)}
+              keyExtractor={(item) => String(item.seq || item.id || '0')}
               contentContainerStyle={styles.activityList}
               renderItem={({ item }) => (
                 item.type === 'terminal_input' ? (
