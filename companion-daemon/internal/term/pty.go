@@ -254,7 +254,16 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		if writer, ok := s.(mux.InputWriter); ok {
+		// E8f: capture terminal input safely.
+			if h.Activity != nil && len(msg) > 0 {
+				h.Activity.Append(ActivityEvent{
+					SessionID: session,
+					Type:      ActivityTerminalInput,
+					Text:      TruncateText(string(msg), 256),
+					Bytes:     len(msg),
+				})
+			}
+			if writer, ok := s.(mux.InputWriter); ok {
 			if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
 				log.Printf("WS input write err: %v", inErr)
 				triggerClose(fmt.Errorf("input failed"))

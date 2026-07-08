@@ -19,9 +19,10 @@ const (
 // Plain text only — no VT100/ANSI emulation, no structured tool/approval events.
 type ActivityEvent struct {
 	ID        string       `json:"id"`
+	Seq       uint64       `json:"seq"`              // monotonic per session
 	SessionID string       `json:"sessionId"`
 	Type      ActivityType `json:"type"`
-	Text      string       `json:"text"`            // redacted-safe plain text
+	Text      string       `json:"text"`            // plain terminal text; read path is auth-gated
 	Bytes     int          `json:"bytes,omitempty"` // original byte count
 	Timestamp time.Time    `json:"timestamp"`
 }
@@ -30,6 +31,7 @@ type ActivityEvent struct {
 type ActivityBuffer struct {
 	mu       sync.Mutex
 	events   map[string][]ActivityEvent // sessionID → events
+	seqs     map[string]uint64          // sessionID → next seq
 	capacity int
 }
 
@@ -40,11 +42,13 @@ func NewActivityBuffer(capacity int) *ActivityBuffer {
 	}
 	return &ActivityBuffer{
 		events:   make(map[string][]ActivityEvent),
+		seqs:     make(map[string]uint64),
 		capacity: capacity,
 	}
 }
 
-// Append adds an activity event for a session. Oldest events are dropped when over capacity.
+// Append adds an activity event for a session with monotonic seq.
+// Oldest events are dropped when over capacity.
 func (b *ActivityBuffer) Append(event ActivityEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -57,6 +61,9 @@ func (b *ActivityBuffer) Append(event ActivityEvent) {
 		event.Timestamp = time.Now()
 	}
 
+	b.seqs[sessionID]++
+	event.Seq = b.seqs[sessionID]
+
 	events := b.events[sessionID]
 	events = append(events, event)
 	if len(events) > b.capacity {
@@ -65,7 +72,7 @@ func (b *ActivityBuffer) Append(event ActivityEvent) {
 	b.events[sessionID] = events
 }
 
-// List returns activity events for a session, newest first.
+// List returns activity events for a session, oldest first (transcript order).
 func (b *ActivityBuffer) List(sessionID string) []ActivityEvent {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -75,11 +82,9 @@ func (b *ActivityBuffer) List(sessionID string) []ActivityEvent {
 		return nil
 	}
 
-	// Return a copy, newest first.
+	// Return a copy.
 	result := make([]ActivityEvent, len(events))
-	for i, e := range events {
-		result[len(events)-1-i] = e
-	}
+	copy(result, events)
 	return result
 }
 
@@ -88,6 +93,7 @@ func (b *ActivityBuffer) Clear(sessionID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.events, sessionID)
+	delete(b.seqs, sessionID)
 }
 
 // TruncateText limits text length for safe storage.
