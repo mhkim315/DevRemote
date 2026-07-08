@@ -190,6 +190,22 @@ func preserveTransientSamplingFailure(stateData *sessionStateData, logErr error,
 // HandleSessionsV2 returns rich JSON metadata for all sessions.
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
+
+	// E8f: minimal read endpoint for captured terminal activity.
+	if activityID := r.URL.Query().Get("activity"); activityID != "" {
+		w.Header().Set("Content-Type", "application/json")
+		if h.Activity != nil {
+			events := h.Activity.List(activityID)
+			if events == nil {
+				events = []ActivityEvent{}
+			}
+			json.NewEncoder(w).Encode(events)
+		} else {
+			json.NewEncoder(w).Encode([]ActivityEvent{})
+		}
+		return
+	}
+
 	if historyID := r.URL.Query().Get("history"); historyID != "" {
 		events := h.Events.List(historyID)
 		w.Header().Set("Content-Type", "application/json")

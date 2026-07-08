@@ -225,6 +225,15 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 					triggerClose(fmt.Errorf("stream failed"))
 					break
 				}
+				// E8f: capture terminal output as activity.
+				if h.Activity != nil {
+					h.Activity.Append(ActivityEvent{
+						SessionID: session,
+						Type:      ActivityTerminalOutput,
+						Text:      TruncateText(string(buf[:n]), 2048),
+						Bytes:     n,
+					})
+				}
 				// Copy buffer since we're passing it to channel
 				payload := make([]byte, n)
 				copy(payload, buf[:n])
