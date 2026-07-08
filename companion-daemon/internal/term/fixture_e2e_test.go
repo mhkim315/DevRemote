@@ -266,6 +266,9 @@ func TestFixtureE2E_UnsupportedCapability(t *testing.T) {
 func TestFixtureE2E_WebSocket(t *testing.T) {
 	h, adapter := fixtureE2EHandlers(t)
 
+	// Clean up recorder to prevent cross-test contamination via global recorderRegistry.
+	defer DeleteRecorder("fixture:f1")
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=fixture:f1"
 		h.HandleWS(w, r)
@@ -390,6 +393,11 @@ func TestFixtureE2E_Telemetry(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-svc.Done()
+
+	// processSession creates recorders via EnsureRecorder. Clean them up
+	// to prevent cross-test contamination via the package-level recorderRegistry.
+	defer DeleteRecorder("fixture:f1")
+	defer DeleteRecorder("fixture:f2")
 
 	snapshot := svc.Snapshot(h.Registry)
 	found := false

@@ -36,11 +36,12 @@ func (s *mockStream) Resize(rows, cols int) error {
 }
 
 type mockSession struct {
+	id     string
 	stream *mockStream
 }
 
-func (s *mockSession) ID() string                                                 { return "test" }
-func (s *mockSession) Title() string                                              { return "test" }
+func (s *mockSession) ID() string                                                 { return s.id }
+func (s *mockSession) Title() string                                              { return s.id }
 func (s *mockSession) AdapterName() string                                        { return "mock" }
 func (s *mockSession) ReadScreen(ctx context.Context) ([]byte, error)             { return nil, nil }
 func (s *mockSession) ReadHistory(ctx context.Context, lines int) ([]byte, error) { return nil, nil }
@@ -69,6 +70,7 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 	reg := mux.MustNewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
+		id:     "test-1011",
 		stream: &mockStream{pr: pr, pw: pw},
 	}
 	adapter := &mockAdapter{session: mockSess}
@@ -76,8 +78,10 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 
 	h := &Handlers{Registry: reg}
 
+	// Unique session ID per test to avoid recorderRegistry collision with parallel tests.
+	sessionID := "mock:test-1011"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.URL.RawQuery = "session=mock:test"
+		r.URL.RawQuery = "session=" + sessionID
 		// Skip auth for test
 		h.HandleWS(w, r)
 	}))
@@ -89,6 +93,9 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 		t.Fatalf("Dial failed: %v", err)
 	}
 	defer conn.Close()
+
+	// Clean up recorder after test to prevent cross-test contamination.
+	defer DeleteRecorder(sessionID)
 
 	// Simulate stream error by closing the pipe writer with an error
 	simulatedErr := fmt.Errorf("stream failed")
@@ -119,6 +126,7 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	reg := mux.MustNewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
+		id:     "test-disconnect",
 		stream: &mockStream{pr: pr, pw: pw},
 	}
 	adapter := &mockAdapter{session: mockSess}
@@ -126,13 +134,18 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 
 	h := &Handlers{Registry: reg}
 
+	// Unique session ID per test to avoid recorderRegistry collision with parallel tests.
+	sessionID := "mock:test-disconnect"
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
-		r.URL.RawQuery = "session=mock:test"
+		r.URL.RawQuery = "session=" + sessionID
 		h.HandleWS(w, r)
 	}))
 	defer server.Close()
+
+	// Clean up recorder after test to prevent cross-test contamination.
+	defer DeleteRecorder(sessionID)
 
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)

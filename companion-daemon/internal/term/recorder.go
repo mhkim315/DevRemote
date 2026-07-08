@@ -37,7 +37,7 @@ func StartRecorder(sessionID string, stream mux.TerminalStream, activity *Activi
 	defer recorderRegistry.mu.Unlock()
 
 	if r, ok := recorderRegistry.recorders[sessionID]; ok {
-		if r.Err() != nil {
+		if !r.IsAlive() || r.Err() != nil {
 			delete(recorderRegistry.recorders, sessionID)
 		} else {
 			return r, r.Subscribe()
@@ -112,9 +112,32 @@ func (r *Recorder) Err() error {
 	return r.readErr
 }
 
+// IsAlive returns true if the recorder's readLoop is still running.
+func (r *Recorder) IsAlive() bool {
+	select {
+	case <-r.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// unregisterSelf removes this recorder from the registry, but only if
+// the registry still points to this exact instance (not a newer replacement).
+func (r *Recorder) unregisterSelf() {
+	recorderRegistry.mu.Lock()
+	defer recorderRegistry.mu.Unlock()
+	if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r {
+		delete(recorderRegistry.recorders, r.sessionID)
+	}
+}
+
 // readLoop reads PTY output, broadcasts to subscribers, appends to ActivityBuffer.
+// On exit (EOF, error, or cancel), the recorder unregisters itself — but only
+// if no newer recorder for the same sessionID has been created.
 func (r *Recorder) readLoop() {
 	defer close(r.done)
+	defer r.unregisterSelf()
 	buf := make([]byte, 1024)
 	for {
 		select {
@@ -181,7 +204,7 @@ func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *Activit
 	defer recorderRegistry.mu.Unlock()
 
 	if r, ok := recorderRegistry.recorders[sessionID]; ok {
-		if r.Err() != nil {
+		if !r.IsAlive() || r.Err() != nil {
 			delete(recorderRegistry.recorders, sessionID)
 		} else {
 			return r, r.Subscribe()

@@ -170,6 +170,7 @@ func TestRecorder_NoWebSocketCapture(t *testing.T) {
 
 func TestRecorder_MultipleSubscribers(t *testing.T) {
 	activity := NewActivityBuffer(100)
+	sessionID := "test:multi-sub-old"
 
 	// Pipe that writes once and keeps pipe alive long enough for both subs.
 	pr, pw := io.Pipe()
@@ -180,7 +181,7 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 
 	// Subscribe ch2 BEFORE starting recorder.
 	rec := &Recorder{
-		sessionID: "test:multi-sub",
+		sessionID: sessionID,
 		stream:    &testStream{pr: pr, pw: pw},
 		activity:  activity,
 		done:      make(chan struct{}),
@@ -189,10 +190,10 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 	ch1 := rec.Subscribe()
 	ch2 := rec.Subscribe()
 	recorderRegistry.mu.Lock()
-	recorderRegistry.recorders["test:multi-sub"] = rec
+	recorderRegistry.recorders[sessionID] = rec
 	recorderRegistry.mu.Unlock()
 	go rec.readLoop()
-	defer DeleteRecorder("test:multi-sub")
+	defer DeleteRecorder(sessionID)
 	defer rec.Unsubscribe(ch2)
 
 	// Drain both channels.
@@ -203,7 +204,7 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 		t.Errorf("subscribers got different data: %q vs %q", got1, got2)
 	}
 
-	events := activity.List("test:multi-sub")
+	events := activity.List(sessionID)
 	// Should have exactly one terminal_output (from merge).
 	outputCount := 0
 	for _, e := range events {
