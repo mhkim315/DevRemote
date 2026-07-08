@@ -52,6 +52,66 @@ Needs investigation:
 - backend write path to the selected session;
 - whether LTE/no-daemon environment caused a false observation.
 
+### M-OBS-004 — Codex activity is not segmented like Claude activity
+
+The user reports this existed before the recent refactor:
+
+- Claude creates separate question/answer bubbles.
+- Codex appears to collect everything into one large bubble.
+
+Impact:
+- The P2 feed taxonomy may be visually implemented but not product-visible for
+  Codex if the Codex event source is not segmented into useful common events.
+
+Needs investigation:
+- compare `/api/sessions.Events` for Claude vs Codex;
+- verify whether Codex produces distinct `user_message`, `assistant_message`,
+  `thinking`, `tool_call_started`, and `tool_call_finished` events;
+- verify whether the issue is parser/event segmentation rather than mobile
+  bubble rendering.
+
+### M-OBS-005 — Message visible on mobile but no assistant response observed
+
+Before the user sent "살아있어?", a prior message was visible in the mobile UI,
+but no assistant response appeared.
+
+Later, the assistant received the combined message as one user message.
+
+Impact:
+- The mobile UI may show a sent message before the backend/agent has confirmed
+  receipt or processing.
+- The user cannot distinguish "sent locally", "delivered to backend", and
+  "agent responded".
+
+Needs investigation:
+- whether Activity tab input has a local optimistic render path;
+- whether backend delivery has an acknowledgement;
+- whether message boundaries are preserved when multiple inputs are sent during
+  unstable connectivity;
+- whether the UI can display pending/sent/failed states.
+
+### M-OBS-006 — Network interruption can silently drop input
+
+The user observed a second failure mode:
+
+- a message was not visible on mobile;
+- sending the next message did not recover it;
+- the whole input appeared to be lost;
+- this happened from both Terminal and Activity usage, so it does not currently
+  look tab-specific.
+
+Impact:
+- Network interruption may cause silent message loss.
+- This is interaction reliability, not visual polish.
+
+Needs investigation:
+- send attempt logging from mobile;
+- backend acknowledgement for each send;
+- WebSocket/API disconnected state at send time;
+- reconnect behavior;
+- unsent queue or retry affordance;
+- visible failed-send state.
+
 ## Triage recommendation
 
 Before more manual UX polish, add an execution-verifiable diagnostic slice:
@@ -63,8 +123,13 @@ E8 — Runtime Interaction Reliability Diagnostics
 Suggested E8 scope:
 - instrument terminal output frame IDs or append counts;
 - log mobile send attempts with session ID and transport path;
+- add a send acknowledgement model or explicit failed-send state;
+- distinguish local optimistic render, backend delivery, and agent processing;
+- preserve message boundaries across reconnects;
+- expose network/WebSocket/API connection state in the session UI;
 - expose last input/send error in debug UI or diagnostic endpoint;
 - add regression test for history + live stream duplication if reproducible;
+- compare Claude vs Codex event segmentation through `/api/sessions.Events`;
 - add a fixture/demo session that renders P2 EventBubble categories without a
   physical daemon.
 
