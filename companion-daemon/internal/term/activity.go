@@ -1,6 +1,9 @@
 package term
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
 	"sync"
 	"time"
 )
@@ -24,6 +27,7 @@ type ActivityEvent struct {
 	Type      ActivityType `json:"type"`
 	Text      string       `json:"text"`            // plain terminal text; read path is auth-gated
 	Bytes     int          `json:"bytes,omitempty"` // original byte count
+	Hash      string       `json:"hash,omitempty"`  // sha256 hex of text
 	Timestamp time.Time    `json:"timestamp"`
 }
 
@@ -60,6 +64,10 @@ func (b *ActivityBuffer) Append(event ActivityEvent) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
+	if event.Hash == "" && event.Text != "" {
+		h := sha256.Sum256([]byte(event.Text))
+		event.Hash = hex.EncodeToString(h[:])[:16]
+	}
 
 	events := b.events[sessionID]
 
@@ -82,6 +90,14 @@ func (b *ActivityBuffer) Append(event ActivityEvent) {
 		events = events[len(events)-b.capacity:]
 	}
 	b.events[sessionID] = events
+
+	// E8 instrumentation: log append for duplication diagnosis.
+	prefix := event.Text
+	if len(prefix) > 40 {
+		prefix = prefix[:40]
+	}
+	log.Printf("ACTIVITY seq=%d type=%s bytes=%d hash=%s text=%q",
+		event.Seq, event.Type, event.Bytes, event.Hash, prefix)
 }
 
 // List returns activity events for a session, oldest first (transcript order).
