@@ -33,6 +33,75 @@ const NORMAL_MACROS: { label: string; chars: number[] }[] = [
 
 
 
+// ── E8g2 Transcript component ──
+// Merges adjacent terminal_output into continuous text blocks,
+// renders input markers as minimal dividers, oldest→newest
+// document-style reading. Full-width, no truncation.
+
+type TranscriptBlock =
+  | { kind: 'output'; text: string; key: string }
+  | { kind: 'input'; key: string };
+type OutputSpan = { text: string; isNewBlock: boolean; key: string };
+
+function E8g2Transcript({ events }: { events: any[] }) {
+  // Merge adjacent terminal_output events into continuous blocks.
+  const blocks: TranscriptBlock[] = useMemo(() => {
+    const result: TranscriptBlock[] = [];
+    for (const e of events) {
+      if (e.type === 'terminal_output' && (e.text || '').length > 0) {
+        const last = result[result.length - 1];
+        if (last && last.kind === 'output') {
+          // Merge adjacent output: join with line break.
+          last.text += '\n' + e.text;
+        } else {
+          result.push({ kind: 'output', text: e.text, key: `o${e.seq}` });
+        }
+      } else if (e.type === 'terminal_input') {
+        result.push({ kind: 'input', key: `i${e.seq}` });
+      }
+      // other types ignored in transcript view
+    }
+    return result;
+  }, [events]);
+
+  // Flatten output blocks into spans for FlatList, with new-block markers.
+  const spans: OutputSpan[] = useMemo(() => {
+    const result: OutputSpan[] = [];
+    for (const b of blocks) {
+      if (b.kind === 'output') {
+        result.push({ text: b.text, isNewBlock: true, key: b.key });
+      } else {
+        result.push({ text: '', isNewBlock: false, key: b.key });
+      }
+    }
+    return result;
+  }, [blocks]);
+
+  if (spans.length === 0) {
+    return <Text style={styles.emptyActivityText}>No transcript yet.</Text>;
+  }
+
+  return (
+    <FlatList
+      data={spans}
+      keyExtractor={(item) => item.key}
+      contentContainerStyle={styles.transcriptList}
+      renderItem={({ item }) =>
+        item.isNewBlock ? (
+          <View style={styles.transcriptOutputBlock}>
+            <Text style={styles.transcriptOutputText} selectable={true}>
+              {item.text}
+            </Text>
+          </View>
+        ) : (
+          /* Minimal input divider — just a thin rule, no label */
+          <View style={styles.transcriptInputDivider} />
+        )
+      }
+    />
+  );
+}
+
 export default function FeedScreen({onBack, session, token}: Props) {
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
@@ -516,25 +585,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           ) : !transcriptEvents || transcriptEvents.length === 0 ? (
             <Text style={styles.emptyActivityText}>No transcript yet.</Text>
           ) : (
-            <FlatList
-              data={transcriptEvents}
-              keyExtractor={(item) => String(item.seq || item.id || '0')}
-              contentContainerStyle={styles.activityList}
-              inverted={true}
-              renderItem={({ item }) => (
-                item.type === 'terminal_input' ? (
-                  <View style={styles.transcriptInputRow}>
-                    <Text style={styles.transcriptInputLabel}>[input sent]</Text>
-                  </View>
-                ) : (
-                  <View style={styles.transcriptOutputRow}>
-                    <Text style={styles.transcriptOutputText} selectable={true}>
-                      {item.text}
-                    </Text>
-                  </View>
-                )
-              )}
-            />
+            <E8g2Transcript events={transcriptEvents} />
           )}
           <TouchableOpacity style={styles.returnBtn} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
             <Text style={styles.returnBtnText}>← Return to Live Terminal</Text>
@@ -680,7 +731,7 @@ const styles = StyleSheet.create({
     marginTop: 40,
     fontSize: 14,
   },
-  // E8g: Transcript mode styles.
+  // E8g2: Transcript mode styles — full-width, readable document layout.
   transcriptInfo: { backgroundColor: '#0D2D45', padding: 8, alignItems: 'center' },
   transcriptInfoText: { color: '#8b949e', fontSize: 10, textAlign: 'center' },
   transcriptContainer: {
@@ -697,10 +748,26 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
-  transcriptOutputRow: { paddingHorizontal: 12, paddingVertical: 1 },
-  transcriptOutputText: { color: '#ccc', fontSize: 11, fontFamily: 'monospace', lineHeight: 16 },
-  transcriptInputRow: { paddingHorizontal: 12, paddingVertical: 2, backgroundColor: '#0D2D45' },
-  transcriptInputLabel: { color: '#45EBE9', fontSize: 10, fontFamily: 'monospace' },
+  transcriptList: {
+    paddingHorizontal: 0,
+    paddingVertical: 8,
+  },
+  transcriptOutputBlock: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  transcriptOutputText: {
+    color: '#ccc',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 20,
+  },
+  transcriptInputDivider: {
+    height: 1,
+    backgroundColor: '#0D2D45',
+    marginHorizontal: 12,
+    marginVertical: 8,
+  },
   returnBtn: {
     backgroundColor: '#1C1C1E',
     padding: 12,
