@@ -294,6 +294,7 @@ html,body{width:100%;height:100%;background:#000}
 <script>
 var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
 	// E8: diagnostic counters — increment-only, never reset.
+	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));

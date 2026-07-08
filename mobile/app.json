@@ -27,22 +27,6 @@
       },
       "package": "com.pokit.mobile",
       "usesCleartextTraffic": true,
-      "networkSecurityConfig": {
-        "domain-config": [
-          {
-            "domain": "localhost",
-            "cleartextTrafficPermitted": true
-          },
-          {
-            "domain": "10.0.2.2",
-            "cleartextTrafficPermitted": true
-          },
-          {
-            "domain": "127.0.0.1",
-            "cleartextTrafficPermitted": true
-          }
-        ]
-      },
       "permissions": [
         "POST_NOTIFICATIONS",
         "INTERNET",
