@@ -435,8 +435,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
           )}
         </View>
 
-        {/* E8g: Transcript Mode — read-only. */}
+        {/* E8h: Transcript Mode — best-effort readable history. Not a terminal emulator. */}
         <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
+          <View style={styles.transcriptInfo}>
+            <Text style={styles.transcriptInfoText}>Read-only history. Live Terminal is source of truth for interactive/TUI.</Text>
+          </View>
           {newOutputCount > 0 && (
             <TouchableOpacity style={styles.newOutputBanner} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
               <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
@@ -606,6 +609,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   // E8g: Transcript mode styles.
+  transcriptInfo: { backgroundColor: '#0D2D45', padding: 8, alignItems: 'center' },
+  transcriptInfoText: { color: '#8b949e', fontSize: 10, textAlign: 'center' },
   transcriptContainer: {
     flex: 1,
     backgroundColor: '#000',
