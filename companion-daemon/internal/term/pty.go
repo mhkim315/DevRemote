@@ -280,19 +280,6 @@ func (h *Handlers) HandleHTML(w http.ResponseWriter, r *http.Request) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
-	// E8: diagnostic instrumentation — posts counters back to React Native.
-	setInterval(function(){
-	  try{
-	    window.ReactNativeWebView.postMessage(JSON.stringify({
-	      type:"e8diag",
-	      connectCount:e8_connectCount,
-	      msgCount:e8_msgCount,
-	      totalBytes:e8_totalBytes,
-	      wasReconnect:wasReconnect,
-	      rawLen:raw.length
-	    }));
-	  }catch(e){}
-	},5000);
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <style>
 *{margin:0;padding:0}
@@ -306,8 +293,8 @@ html,body{width:100%;height:100%;background:#000}
 <div id="status"></div>
 <script>
 var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
-	var e8_connectCount=0, e8_msgCount=0, e8_totalBytes=0, e8_closeCount=0;
-	var e8_connectCount=0, e8_msgCount=0, e8_totalBytes=0, e8_lastMsgTime=0;
+	// E8: diagnostic counters — increment-only, never reset.
+	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
 
@@ -335,19 +322,18 @@ function connect(){
   ws.binaryType='arraybuffer';
   ws.onopen=function(){
     opened=true;
-	    e8_connectCount++;
+	    e8diag.connectCount++;
     consecutiveFailures=0;
     reconnecting=false;
 		    // E8: clear terminal on reconnect to prevent scroll duplication.
-		    if(wasReconnect){ term.clear(); wasReconnect=false;
-	var e8_connectCount=0, e8_msgCount=0, e8_totalBytes=0, e8_closeCount=0; }
+		    if(wasReconnect){ term.clear(); wasReconnect=false; }
     document.getElementById('status').style.display='none';
     setTimeout(function(){fitTerminal()},500);
   };
   ws.onmessage=function(e){
     var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
     raw+=t;
-	    e8_msgCount++; e8_totalBytes+=t.length; e8_lastMsgTime=Date.now();
+	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8_lastMsgTime=Date.now();
     term.write(t);
   };
   ws.onclose=function(e){
