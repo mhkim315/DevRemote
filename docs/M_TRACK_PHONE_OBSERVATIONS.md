@@ -71,23 +71,34 @@ Needs investigation:
 - backend write path to the selected session;
 - whether LTE/no-daemon environment caused a false observation.
 
-### M-OBS-004 — Codex activity is not segmented like Claude activity
+### M-OBS-004 — Agent activity segmentation may collapse after initial input
 
-The user reports this existed before the recent refactor:
+The earlier working hypothesis was:
 
 - Claude creates separate question/answer bubbles.
 - Codex appears to collect everything into one large bubble.
 
+Updated observation:
+- The user is no longer confident this is Claude-vs-Codex specific.
+- Current observation suggests Claude may also collect later content into one
+  bubble.
+- The first input may be the only one that appears clearly separated.
+- This is based on user memory and needs objective verification.
+
 Impact:
-- The P2 feed taxonomy may be visually implemented but not product-visible for
-  Codex if the Codex event source is not segmented into useful common events.
+- The P2 feed taxonomy may be visually implemented but not product-visible if
+  agent activity is not segmented into stable common events.
+- The issue may be event segmentation, Activity renderer grouping, optimistic
+  reconciliation, or server refresh behavior rather than one specific parser.
 
 Needs investigation:
 - compare `/api/sessions.Events` for Claude vs Codex;
-- verify whether Codex produces distinct `user_message`, `assistant_message`,
+- verify whether both agents produce distinct `user_message`, `assistant_message`,
   `thinking`, `tool_call_started`, and `tool_call_finished` events;
-- verify whether the issue is parser/event segmentation rather than mobile
-  bubble rendering.
+- verify whether only the first user input is separated;
+- verify whether later events are grouped into one bubble by the mobile renderer;
+- verify whether this issue is parser/event segmentation, mobile grouping, or
+  optimistic message reconciliation.
 
 ### M-OBS-005 — Message visible on mobile but no assistant response observed
 
@@ -195,7 +206,7 @@ Priority:
 1. Terminal scroll duplication: Activity is single-render, Terminal duplicates
    severely on scroll.
 2. Input delivery acknowledgement and failed-send state.
-3. Codex event segmentation vs Claude event segmentation.
+3. Agent event segmentation and Activity bubble grouping.
 4. Terminal/mobile layout reflow and excessive wrapping.
 5. Activity optimistic user bubble reconciliation.
 
@@ -211,6 +222,7 @@ Suggested E8 scope:
 - expose last input/send error in debug UI or diagnostic endpoint;
 - add regression test for history + live stream duplication if reproducible;
 - compare Claude vs Codex event segmentation through `/api/sessions.Events`;
+- verify whether first input vs later inputs follow different grouping paths;
 - verify Activity message IDs, authorship, and optimistic-to-server
   reconciliation;
 - add a fixture/demo session that renders P2 EventBubble categories without a
