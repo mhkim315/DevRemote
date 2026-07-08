@@ -161,3 +161,4 @@ func TestActivityInput_NoRawText(t *testing.T) {
 		t.Errorf("terminal_output Text=%q, want 'output'", list[1].Text)
 	}
 }
+

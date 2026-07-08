@@ -94,6 +94,12 @@ func (s *TelemetryService) Run(ctx context.Context) {
 
 func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session, processSnapshots map[string]models.ProcessInfo, batchAdapters, failedAdapters map[string]bool) {
 	id := sess.AdapterName() + ":" + sess.ID()
+
+	// E8f2: ensure recorder exists for session (lifecycle-first, not WebSocket-born).
+	if opener, ok := sess.(mux.StreamOpener); ok {
+		EnsureRecorder(id, opener, nil)
+	}
+
 	var logRef LogRef
 	var logErr error = fmt.Errorf("no log")
 

@@ -88,6 +88,9 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			DeleteRecorder(id)
+			if h.Activity != nil {
+				h.Activity.Clear(id)
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
