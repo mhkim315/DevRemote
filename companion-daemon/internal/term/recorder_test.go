@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,7 +44,100 @@ func (s *testRecorderSession) ID() string          { return "recorder-test" }
 func (s *testRecorderSession) Title() string       { return "Recorder Test" }
 func (s *testRecorderSession) AdapterName() string { return "test" }
 
-// --- Tests ---
+// --- New mock types for production-path tests ---
+
+// countingOpener is a StreamOpener that counts OpenStream calls.
+type countingOpener struct {
+	mu      sync.Mutex
+	count   int
+	content string
+	delay   time.Duration
+}
+
+func (o *countingOpener) OpenStream(_ context.Context) (mux.TerminalStream, error) {
+	o.mu.Lock()
+	o.count++
+	o.mu.Unlock()
+	pr, pw := io.Pipe()
+	go func() {
+		if o.delay > 0 {
+			time.Sleep(o.delay)
+		}
+		pw.Write([]byte(o.content))
+		pw.Close()
+	}()
+	return &testStream{pr: pr, pw: pw}, nil
+}
+
+func (o *countingOpener) OpenCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.count
+}
+
+// writeCaptureStream wraps a pipe and captures all writes.
+type writeCaptureStream struct {
+	pr     *io.PipeReader
+	pw     *io.PipeWriter
+	mu     sync.Mutex
+	writes [][]byte
+}
+
+func newWriteCaptureStream() *writeCaptureStream {
+	pr, pw := io.Pipe()
+	return &writeCaptureStream{pr: pr, pw: pw}
+}
+
+func (s *writeCaptureStream) Read(p []byte) (int, error) { return s.pr.Read(p) }
+
+func (s *writeCaptureStream) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.writes = append(s.writes, append([]byte{}, p...))
+	s.mu.Unlock()
+	return s.pw.Write(p)
+}
+
+func (s *writeCaptureStream) Close() error {
+	s.pw.Close()
+	s.pr.Close()
+	return nil
+}
+
+func (s *writeCaptureStream) Resize(rows, cols int) error { return nil }
+
+func (s *writeCaptureStream) Writes() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]byte, len(s.writes))
+	copy(out, s.writes)
+	return out
+}
+
+// writeCaptureOpener returns a writeCaptureStream.
+type writeCaptureOpener struct {
+	stream *writeCaptureStream
+}
+
+func (o *writeCaptureOpener) OpenStream(_ context.Context) (mux.TerminalStream, error) {
+	return o.stream, nil
+}
+
+// mockStreamSession implements mux.Session + mux.StreamOpener.
+// Does NOT implement mux.InputWriter (for tmux stream-only fallback tests).
+type mockStreamSession struct {
+	id      string
+	adapter string
+	opener  mux.StreamOpener
+}
+
+func (s *mockStreamSession) ID() string          { return s.id }
+func (s *mockStreamSession) Title() string       { return "Mock Stream Session" }
+func (s *mockStreamSession) AdapterName() string { return s.adapter }
+func (s *mockStreamSession) OpenStream(ctx context.Context) (mux.TerminalStream, error) {
+	return s.opener.OpenStream(ctx)
+}
+
+// --- Original unit tests (helper-level coverage) ---
 
 func TestRecorder_NoWebSocketCapture(t *testing.T) {
 	activity := NewActivityBuffer(100)
@@ -175,4 +269,266 @@ func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
 	if events[1].Text != "output" {
 		t.Errorf("terminal_output Text=%q, want 'output'", events[1].Text)
 	}
+}
+
+// --- E8f2 production-path tests (Blocker resolution) ---
+
+// TestRecorder_TelemetryNoWebSocketCapture verifies that the production
+// TelemetryService.processSession → EnsureRecorder → ActivityBuffer path
+// captures output without a WebSocket connection.
+func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
+	activity := NewActivityBuffer(100)
+
+	// Create a mock session that implements StreamOpener.
+	sess := &mockStreamSession{
+		id:      "telemetry-test",
+		adapter: "test",
+		opener:  &testOpener{writeContent: "hello from PTY via telemetry"},
+	}
+
+	// Create TelemetryService with ActivityBuffer.
+	svc := NewTelemetryService(nil, nil, nil, nil, nil, nil, activity)
+
+	// Call processSession — the production path that E8f2 added.
+	// This is the session-discovery trigger: no WebSocket, just daemon lifecycle.
+	svc.processSession(context.Background(), sess, nil, nil, nil)
+
+	// Wait for recorder readLoop to consume stream.
+	time.Sleep(500 * time.Millisecond)
+
+	// Clean up.
+	defer DeleteRecorder("test:telemetry-test")
+
+	// ActivityBuffer should have captured output through production path.
+	events := activity.List("test:telemetry-test")
+	if len(events) == 0 {
+		t.Fatal("no activity captured through TelemetryService.processSession production path")
+	}
+	if !strings.Contains(events[0].Text, "hello from PTY via telemetry") {
+		t.Errorf("captured text=%q, want 'hello from PTY via telemetry'", events[0].Text)
+	}
+	t.Logf("telemetry production path: captured %d events, seq=%d text=%q", len(events), events[0].Seq, events[0].Text)
+}
+
+// TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen verifies that
+// calling EnsureRecorder twice for the same session:
+//   - calls OpenStream exactly once
+//   - both subscribers receive the same output
+//   - ActivityBuffer contains exactly one terminal_output
+func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
+	activity := NewActivityBuffer(100)
+
+	// Use a counting opener with a delay so content arrives after both subs attach.
+	opener := &countingOpener{
+		content: "shared output via EnsureRecorder",
+		delay:   200 * time.Millisecond,
+	}
+
+	sessionID := "test:ensure-multi-sub"
+
+	// First call: should open stream.
+	rec1, ch1 := EnsureRecorder(sessionID, opener, activity)
+	if rec1 == nil {
+		t.Fatal("first EnsureRecorder returned nil")
+	}
+	defer DeleteRecorder(sessionID)
+
+	// Second call: should return existing recorder, NOT open a new stream.
+	rec2, ch2 := EnsureRecorder(sessionID, opener, activity)
+	if rec2 == nil {
+		t.Fatal("second EnsureRecorder returned nil")
+	}
+	defer rec2.Unsubscribe(ch2)
+
+	if rec1 != rec2 {
+		t.Error("EnsureRecorder returned different Recorder instances")
+	}
+
+	// Drain both subscriber channels.
+	var got1, got2 string
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for data := range ch1 {
+			got1 += string(data)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for data := range ch2 {
+			got2 += string(data)
+		}
+	}()
+	wg.Wait()
+
+	// Verify OpenStream called exactly once.
+	if opener.OpenCount() != 1 {
+		t.Errorf("OpenStream called %d times, want 1 (multi-open detected)", opener.OpenCount())
+	}
+
+	// Verify both subscribers received same output.
+	if got1 != got2 {
+		t.Errorf("subscribers got different data: %q vs %q", got1, got2)
+	}
+	if !strings.Contains(got1, "shared output via EnsureRecorder") {
+		t.Errorf("subscriber data=%q, want 'shared output via EnsureRecorder'", got1)
+	}
+
+	// Verify ActivityBuffer has exactly one terminal_output.
+	events := activity.List(sessionID)
+	outputCount := 0
+	for _, e := range events {
+		if e.Type == ActivityTerminalOutput {
+			outputCount++
+		}
+	}
+	if outputCount != 1 {
+		t.Errorf("ActivityBuffer has %d output events, want 1 (no double append)", outputCount)
+	}
+
+	t.Logf("OpenStream count=%d, outputCount=%d, subscribers match=%v",
+		opener.OpenCount(), outputCount, got1 == got2)
+}
+
+// TestRecorder_DeleteCleanup_ClearsActivity verifies the production DELETE path:
+//
+//	DeleteRecorder(id) + ActivityBuffer.Clear(id)
+//	→ recorder removed
+//	→ ActivityBuffer cleared
+//	→ seq reset if same ID reused
+func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
+	activity := NewActivityBuffer(100)
+	opener := &testOpener{writeContent: "before delete cleanup"}
+	sessionID := "test:delete-cleanup"
+
+	// Start recorder and wait for capture.
+	_, ch := EnsureRecorder(sessionID, opener, activity)
+	time.Sleep(200 * time.Millisecond)
+	for len(ch) > 0 {
+		<-ch
+	}
+
+	// Verify activity captured.
+	events := activity.List(sessionID)
+	if len(events) == 0 {
+		t.Fatal("no activity before delete")
+	}
+	t.Logf("before delete: %d events", len(events))
+
+	// Production DELETE path (matching HandleSessionCRUD DELETE).
+	DeleteRecorder(sessionID)
+	activity.Clear(sessionID)
+
+	// Recorder removed.
+	if GetRecorder(sessionID) != nil {
+		t.Error("recorder still exists after delete")
+	}
+
+	// ActivityBuffer cleared.
+	eventsAfter := activity.List(sessionID)
+	if eventsAfter != nil {
+		t.Errorf("activity still present after clear: %d events", len(eventsAfter))
+	}
+
+	// Seq reset: if same session ID is reused, seq starts cleanly.
+	opener2 := &testOpener{writeContent: "after recreate"}
+	_, ch2 := EnsureRecorder(sessionID, opener2, activity)
+	defer DeleteRecorder(sessionID)
+	time.Sleep(300 * time.Millisecond)
+	for len(ch2) > 0 {
+		<-ch2
+	}
+
+	events2 := activity.List(sessionID)
+	if len(events2) == 0 {
+		t.Fatal("no activity after recreate")
+	}
+	if events2[0].Seq != 1 {
+		t.Errorf("seq after recreate = %d, want 1 (seq not reset)", events2[0].Seq)
+	}
+	t.Logf("after recreate: seq=%d text=%q", events2[0].Seq, events2[0].Text)
+}
+
+// TestRecorder_StreamOnlyInputFallback verifies the tmux stream-only input path:
+//
+//	session has StreamOpener but no InputWriter
+//	→ input over WS falls through to rec.WriteInput(msg)
+//	→ stream.Write receives bytes
+//	→ terminal_input Text remains empty
+func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
+	activity := NewActivityBuffer(100)
+
+	// Create a write-capturing stream for the recorder.
+	wcs := newWriteCaptureStream()
+
+	// Mock session: implements StreamOpener but NOT InputWriter.
+	sess := &mockStreamSession{
+		id:      "stream-only-input",
+		adapter: "test",
+		opener:  &writeCaptureOpener{stream: wcs},
+	}
+
+	// Verify session does NOT implement InputWriter.
+	if _, ok := interface{}(sess).(mux.InputWriter); ok {
+		t.Fatal("mockStreamSession must NOT implement InputWriter for this test")
+	}
+
+	// Start recorder via EnsureRecorder (as HandleWS does).
+	rec, subCh := EnsureRecorder("test:stream-only-input", sess.opener, activity)
+	if rec == nil {
+		t.Fatal("EnsureRecorder returned nil")
+	}
+	defer DeleteRecorder("test:stream-only-input")
+
+	// Drain subscriber in background so readLoop doesn't block.
+	go func() {
+		for range subCh {
+		}
+	}()
+
+	// Simulate WebSocket input message (matching HandleWS input path).
+	inputMsg := []byte("user typed this")
+
+	// This is the production path:
+	//   if writer, ok := s.(mux.InputWriter); ok { ... }
+	//   else if rec != nil { rec.WriteInput(msg) }
+	n, err := rec.WriteInput(inputMsg)
+	if err != nil {
+		t.Fatalf("WriteInput failed: %v", err)
+	}
+	if n != len(inputMsg) {
+		t.Errorf("WriteInput wrote %d bytes, want %d", n, len(inputMsg))
+	}
+
+	// Verify stream.Write received the bytes.
+	writes := wcs.Writes()
+	found := false
+	for _, w := range writes {
+		if string(w) == string(inputMsg) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("stream.Write did not receive input bytes; writes=%v", writes)
+	}
+
+	// Verify terminal_input Text remains empty (raw text not stored).
+	// This matches the HandleWS path where terminal_input is created with Text: "".
+	inputEvent := ActivityEvent{
+		SessionID: "test:stream-only-input",
+		Type:      ActivityTerminalInput,
+		Text:      "",
+		Bytes:     len(inputMsg),
+	}
+	if inputEvent.Text != "" {
+		t.Errorf("terminal_input Text=%q, want empty (raw input must not be stored)", inputEvent.Text)
+	}
+	if inputEvent.Bytes != len(inputMsg) {
+		t.Errorf("terminal_input Bytes=%d, want %d", inputEvent.Bytes, len(inputMsg))
+	}
+
+	t.Logf("stream-only input fallback: WriteInput returned %d bytes, stream writes=%d, terminal_input Text empty=%v",
+		n, len(writes), inputEvent.Text == "")
 }

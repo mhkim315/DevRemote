@@ -23,14 +23,21 @@ cd "$DAEMON_DIR"
 
 go build ./...                     && gate_pass "go build"        || gate_fail "go build"
 go vet ./...                       && gate_pass "go vet"          || gate_fail "go vet"
-go test -race ./... -count=1 > /dev/null 2>&1 && gate_pass "go test -race"  || gate_fail "go test -race"
+# Capture test output to diagnose failures (Blocker 5 fix).
+TEST_OUTPUT=$(go test -race ./... -count=1 2>&1) && gate_pass "go test -race" || {
+    echo "$TEST_OUTPUT"
+    gate_fail "go test -race"
+}
 git diff --check > /dev/null 2>&1  && gate_pass "git diff --check" || gate_fail "git diff --check"
 
 # ── Mobile ──
 echo "--- Mobile ---"
 if [ -d "$MOBILE_DIR/node_modules" ]; then
     cd "$MOBILE_DIR"
-    npm run typecheck > /dev/null 2>&1 && gate_pass "npm run typecheck" || gate_fail "npm run typecheck"
+    TSC_OUTPUT=$(npm run typecheck 2>&1) && gate_pass "npm run typecheck" || {
+    echo "$TSC_OUTPUT"
+    gate_fail "npm run typecheck"
+}
 else
     MOBILE_SKIPPED=1
     if [ "$MOBILE_NOT_RUN" = "1" ]; then
