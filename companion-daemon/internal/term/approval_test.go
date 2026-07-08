@@ -589,7 +589,7 @@ func TestHandleDiagnostic_GetOnly(t *testing.T) {
 func TestHandleDiagnostic_JSONShape(t *testing.T) {
 	reg := mux.MustNewRegistry(&diagTestAdapter{})
 	events := NewMemoryEventStore()
-	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, nil, NewApprovalStore())
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, nil, NewApprovalStore(), nil)
 	h := &Handlers{Registry: reg, Telemetry: svc, Approvals: NewApprovalStore()}
 
 	req := httptest.NewRequest("GET", "/debug/diag", nil)
@@ -623,7 +623,7 @@ func TestHandleDiagnostic_SessionFields(t *testing.T) {
 		{ID: "a1", SessionID: "tmux:diag-session", Status: "pending", CreatedAt: time.Now()},
 	})
 	detector := &alwaysApproveDetector{}
-	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, approvals)
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, approvals, nil)
 
 	// Run telemetry sampling loop to populate agent detection fields.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

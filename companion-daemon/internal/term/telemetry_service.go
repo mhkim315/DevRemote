@@ -21,6 +21,7 @@ type TelemetryService struct {
 	notifier    Notifier
 	detector    AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
 	approvals   ApprovalStore                            // Phase A9: approval tracking
+	activity    *ActivityBuffer                          // E8f2: activity capture
 	logResolver func(models.ProcessInfo) (LogRef, error) // Phase A5b: injectable resolver (nil = production ResolveAgentLog)
 	interval    time.Duration
 
@@ -30,7 +31,7 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals ApprovalStore) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals ApprovalStore, activity *ActivityBuffer) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
@@ -44,6 +45,7 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, 
 		notifier:  notifier,
 		detector:  detector,
 		approvals: approvals,
+		activity:    activity,
 		interval:  2 * time.Second,
 		sessions:  make(map[string]*sessionStateData),
 		done:      make(chan struct{}),
@@ -97,7 +99,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 
 	// E8f2: ensure recorder exists for session (lifecycle-first, not WebSocket-born).
 	if opener, ok := sess.(mux.StreamOpener); ok {
-		EnsureRecorder(id, opener, nil)
+		EnsureRecorder(id, opener, s.activity)
 	}
 
 	var logRef LogRef

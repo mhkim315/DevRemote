@@ -180,7 +180,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if cfg.EnableAgentDetection {
 		agentDetector = agent.NewTermAgentDetector()
 	}
-	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals)
+	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity)
 	h.Telemetry = telemetry
 
 	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))

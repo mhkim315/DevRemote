@@ -35,7 +35,7 @@ func TestAntigravityTelemetry_ProductionBoundary(t *testing.T) {
 
 	detector := agent.NewTermAgentDetector()
 	events := NewMemoryEventStore()
-	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, nil)
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "antigravity"}, nil
 	})
@@ -117,7 +117,7 @@ func TestAntigravityTelemetry_DegradedSystemTypes(t *testing.T) {
 
 	detector := agent.NewTermAgentDetector()
 	events := NewMemoryEventStore()
-	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, nil)
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "antigravity"}, nil
 	})
@@ -165,7 +165,7 @@ func TestAntigravityTelemetry_DegradedSystemTypes(t *testing.T) {
 func TestAntigravityDetection_FalsePositive(t *testing.T) {
 	reg := mux.MustNewRegistry(&bashSessionAdapter{})
 	detector := agent.NewTermAgentDetector()
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector, nil)
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), NoopNotifier{}, detector, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go svc.Run(ctx)
