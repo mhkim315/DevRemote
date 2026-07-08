@@ -259,7 +259,7 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 				h.Activity.Append(ActivityEvent{
 					SessionID: session,
 					Type:      ActivityTerminalInput,
-					Text:      TruncateText(string(msg), 256),
+					Text:      "",
 					Bytes:     len(msg),
 				})
 			}

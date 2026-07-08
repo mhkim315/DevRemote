@@ -10,7 +10,7 @@ func TestActivityBuffer_SeqIncrements(t *testing.T) {
 	b := NewActivityBuffer(10)
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "a"})
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "b"})
-	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "c"})
+	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "", Bytes: 1})
 
 	list := b.List("s1")
 	if len(list) != 3 {
@@ -22,8 +22,8 @@ func TestActivityBuffer_SeqIncrements(t *testing.T) {
 	if list[1].Seq != 2 || list[1].Text != "b" {
 		t.Errorf("seq1=%d text=%s, want seq=2 text=b", list[1].Seq, list[1].Text)
 	}
-	if list[2].Seq != 3 || list[2].Text != "c" {
-		t.Errorf("seq2=%d text=%s, want seq=3 text=c", list[2].Seq, list[2].Text)
+	if list[2].Seq != 3 || list[2].Text != "" {
+		t.Errorf("seq2=%d text=%q, want seq=3 text=\"\"", list[2].Seq, list[2].Text)
 	}
 }
 
@@ -98,7 +98,7 @@ func TestActivityEndpoint_Empty(t *testing.T) {
 func TestActivityEndpoint_WithData(t *testing.T) {
 	b := NewActivityBuffer(10)
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "hello", Bytes: 5})
-	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "ls", Bytes: 2})
+	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "", Bytes: 2})
 
 	h := &Handlers{Activity: b}
 	req := httptest.NewRequest("GET", "/api/sessions?activity=s1", nil)
@@ -134,5 +134,19 @@ func TestActivityEndpoint_NilBuffer(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &events)
 	if len(events) != 0 {
 		t.Errorf("nil buffer: got %d events, want 0", len(events))
+	}
+}
+
+func TestActivityInput_NoRawText(t *testing.T) {
+	b := NewActivityBuffer(10)
+	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "", Bytes: 5})
+	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "output", Bytes: 6})
+
+	list := b.List("s1")
+	if list[0].Text != "" {
+		t.Errorf("terminal_input Text=%q, want empty (no raw input)", list[0].Text)
+	}
+	if list[1].Text != "output" {
+		t.Errorf("terminal_output Text=%q, want 'output'", list[1].Text)
 	}
 }
