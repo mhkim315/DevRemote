@@ -27,18 +27,39 @@ Execution and manual validation are intentionally separated:
 ## Next target
 
 ```text
-E8 — Runtime Interaction Reliability Diagnostics and Fixes
+E8a — Connection State Correctness
 ```
 
 Primary handoff document:
 
+- `docs/E8_EXECUTION_PLAN.md`
+- `docs/NEXT_SESSION_E8_HANDOFF.md`
 - `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
 
 Supporting observation log:
 
 - `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
-## Why E8 now
+## Why E8a now
+
+The immediate priority changed.
+
+Mobile E8 validation is blocked because connection failures are hidden as empty
+product state:
+
+```text
+Stored BASE_URL
+→ app marks connected
+→ Dashboard opens
+→ listSessions() fails
+→ empty sessions
+→ user sees only NEW AGENT
+```
+
+This must be fixed before Mobile WebView E8DIAG validation. A broken connection
+must not look like a healthy daemon with no sessions.
+
+## Why E8 still matters
 
 Phone testing found reliability problems that block useful product evaluation:
 
@@ -64,36 +85,33 @@ Before implementation, read:
 - `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
 - `docs/AGENT_PHASE_A10_ALPHA_CHECKLIST.md`
 
-## E8 priority order
+## Revised E8 priority order
 
-1. Terminal scroll duplication.
-2. Input delivery acknowledgement / failed-send state.
-3. Activity message boundary and authorship.
-4. tmux vs cmux stream/history/screen/event comparison.
-5. cmux Activity/color degradation handling.
-6. tmux first-entry hydration proof.
-7. Terminal command output vs agent answer classification.
+1. E8a — Connection State Correctness.
+2. E8b — Mobile Connectivity Restore.
+3. E8c — Mobile WebView E8DIAG Capture.
+4. E8d — Terminal Duplication Fix Acceptance.
+5. Later E8 follow-ups:
+   - input delivery acknowledgement / failed-send state;
+   - Activity message boundary and authorship;
+   - tmux vs cmux stream/history/screen/event comparison;
+   - cmux Activity/color degradation handling;
+   - tmux first-entry hydration proof;
+   - terminal command output vs agent answer classification.
 
-## E8 acceptance
+## E8a acceptance
 
-E8 can be accepted when the executor provides objective evidence for the runtime
-paths it changes.
+E8a can be accepted when the executor proves connection-state correctness.
 
 Minimum acceptance:
 
-- Terminal scroll does not append duplicate already-rendered content.
-- Refresh does not create duplicate terminal output.
-- Send failure or pending state is visible or diagnostically provable.
-- Activity user messages remain user-authored after assistant response arrives.
-- tmux vs cmux behavior is compared with raw evidence:
-  - terminal stream;
-  - screen/history;
-  - `/api/sessions.Events`;
-  - ANSI/color preservation.
-- If cmux cannot provide structured/color output, it degrades explicitly rather
-  than pretending shell output is an agent answer.
+- restored `BASE_URL` is verified before `isConnected=true`;
+- failed `/api/sessions` is shown as a connection error, not empty sessions;
+- successful empty `/api/sessions` is distinguishable from failed fetch;
+- ConnectScreen shows failed connection feedback;
+- retry/rescan path exists;
 - `sh scripts/build-gate.sh` passes.
-- Added tests or runtime diagnostics prove the fixed path.
+- tests or runtime evidence prove the changed path.
 
 ## Explicitly avoid
 
@@ -103,6 +121,8 @@ Do not implement in E8:
 - new terminal backend;
 - new agent backend;
 - first-time onboarding redesign;
+- new tunnel manager;
+- new daemon bind flag;
 - physical-device-only validation;
 - real push notification validation;
 - visual polish unrelated to reliability;
@@ -120,14 +140,12 @@ Do not implement in E8:
 
 ## Suggested execution order
 
-1. Reproduce Terminal scroll duplication locally.
-2. Inspect Terminal WebView history/live append behavior.
-3. Add frame/append instrumentation or regression tests.
-4. Fix duplicate append on scroll/refresh/reconnect.
-5. Add send attempt / ack / failed-send diagnostics.
-6. Compare tmux vs cmux raw stream/screen/history/events.
-7. Fix Activity message identity/grouping or prove backend event source issue.
-8. Document what was fixed and what remains M-track.
+1. Implement E8a only.
+2. Verify unreachable saved URL does not enter Dashboard as connected.
+3. Verify unreachable manual/tunnel URL shows connection error.
+4. Verify successful empty sessions are not confused with fetch failure.
+5. Run build gate.
+6. Document remaining E8b/E8c/E8d work.
 
 ## Completion statement format
 
