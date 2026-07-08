@@ -411,7 +411,7 @@ window.addEventListener('resize',function(){fitTerminal()});
 	  e8_scrollTimer = setTimeout(function(){
 	    // After scroll settles, re-render the viewport to fix any visual duplication.
 	    if (typeof term.viewport !== 'undefined' && term.viewport) {
-	      term.viewport.invalidate();
+	      if(term.viewport && typeof term.viewport.invalidate === "function"){ term.viewport.invalidate(); }
 	    }
 	    e8_wasScrolled = false;
 	  }, 300);
