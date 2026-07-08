@@ -57,6 +57,25 @@ pty.go:438  HandleE8Diag → POST-only, auth-gated, input-length-limited → log
 - [x] daemon capture path working
 - [x] POST-only + auth + input validation
 - [x] build gate ALL 8 PASSED
-- [ ] runtime evidence (requires daemon restart with new binary + active Terminal session)
+- [ ] runtime evidence (see capture instructions below)
+- [ ] terminal duplication root cause identified
 - [ ] terminal duplication root cause identified
 - [ ] terminal duplication fix implemented
+
+## How to capture runtime evidence
+
+Stop auto-restart daemon and start with log capture:
+
+    launchctl unload ~/Library/LaunchAgents/com.pokit.daemon.plist
+    kill $(lsof -t -i :9171)
+    devremote daemon --insecure-local-only > /tmp/daemon.log 2>&1 &
+
+Open Terminal tab on device, scroll/refresh, then:
+
+    grep E8DIAG /tmp/daemon.log
+
+Counter interpretation:
+- connectCount increases → reconnect is happening
+- closeCount increases → connection drops/reconnects
+- msgCount increases without backend output → replay/duplication
+- msgCount unchanged but screen duplicates → xterm render issue
