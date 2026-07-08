@@ -8,37 +8,43 @@ import (
 
 func TestActivityBuffer_SeqIncrements(t *testing.T) {
 	b := NewActivityBuffer(10)
+	// Two adjacent terminal_output events merge into one block.
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "a"})
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "b"})
+	// terminal_input breaks the merge.
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "", Bytes: 1})
+	// Another output starts a new block.
+	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "c"})
 
 	list := b.List("s1")
+	// "a"+"b" merged, then input, then "c" = 3 events
 	if len(list) != 3 {
-		t.Fatalf("len=%d, want 3", len(list))
+		t.Fatalf("len=%d, want 3 (output merged)", len(list))
 	}
-	if list[0].Seq != 1 || list[0].Text != "a" {
-		t.Errorf("seq0=%d text=%s, want seq=1 text=a", list[0].Seq, list[0].Text)
+	if list[0].Seq != 1 || list[0].Text != "ab" {
+		t.Errorf("merged output seq=%d text=%q, want seq=1 text=ab", list[0].Seq, list[0].Text)
 	}
-	if list[1].Seq != 2 || list[1].Text != "b" {
-		t.Errorf("seq1=%d text=%s, want seq=2 text=b", list[1].Seq, list[1].Text)
+	if list[1].Seq != 2 || list[1].Text != "" {
+		t.Errorf("input seq=%d text=%q", list[1].Seq, list[1].Text)
 	}
-	if list[2].Seq != 3 || list[2].Text != "" {
-		t.Errorf("seq2=%d text=%q, want seq=3 text=\"\"", list[2].Seq, list[2].Text)
+	if list[2].Seq != 3 || list[2].Text != "c" {
+		t.Errorf("output seq=%d text=%q, want c", list[2].Seq, list[2].Text)
 	}
 }
 
 func TestActivityBuffer_CapacityDrop(t *testing.T) {
 	b := NewActivityBuffer(3)
+	// Merge: all adjacent output events combine into one.
 	for i := 0; i < 5; i++ {
 		b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "x"})
 	}
 	list := b.List("s1")
-	if len(list) != 3 {
-		t.Errorf("len=%d, want 3 (capacity capped)", len(list))
+	// All merged into one block.
+	if len(list) != 1 {
+		t.Errorf("len=%d, want 1 (all merged)", len(list))
 	}
-	// Oldest dropped: seq should be 3,4,5
-	if list[0].Seq != 3 {
-		t.Errorf("oldest seq=%d, want 3", list[0].Seq)
+	if list[0].Text != "xxxxx" {
+		t.Errorf("merged text=%q, want xxxxx", list[0].Text)
 	}
 }
 
@@ -58,11 +64,16 @@ func TestActivityBuffer_SessionIsolation(t *testing.T) {
 func TestActivityBuffer_ListOrder(t *testing.T) {
 	b := NewActivityBuffer(10)
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "first"})
+	// Break merge with input event.
+	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "", Bytes: 1})
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "second"})
 
 	list := b.List("s1")
-	if list[0].Text != "first" || list[1].Text != "second" {
-		t.Error("List order wrong — want oldest first")
+	if len(list) != 3 {
+		t.Fatalf("len=%d, want 3", len(list))
+	}
+	if list[0].Text != "first" || list[2].Text != "second" {
+		t.Errorf("order: got %q / %q, want first / second", list[0].Text, list[2].Text)
 	}
 }
 

@@ -61,10 +61,22 @@ func (b *ActivityBuffer) Append(event ActivityEvent) {
 		event.Timestamp = time.Now()
 	}
 
+	events := b.events[sessionID]
+
+	// Merge adjacent terminal_output events into continuous blocks.
+	if event.Type == ActivityTerminalOutput && len(events) > 0 {
+		last := &events[len(events)-1]
+		if last.Type == ActivityTerminalOutput {
+			last.Text += event.Text
+			last.Bytes += event.Bytes
+			last.Timestamp = event.Timestamp
+			return
+		}
+	}
+
 	b.seqs[sessionID]++
 	event.Seq = b.seqs[sessionID]
 
-	events := b.events[sessionID]
 	events = append(events, event)
 	if len(events) > b.capacity {
 		events = events[len(events)-b.capacity:]
