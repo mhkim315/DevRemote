@@ -159,7 +159,12 @@ Do not implement in E8:
 ## E8f capture model direction
 
 E8f should not be a raw text-line store only. Terminal output can be the first
-payload, but the durable model should be activity-oriented:
+payload, but the durable model should be activity-oriented.
+
+```text
+ActivityEvent is the durable direction.
+It is not the full E8f MVP implementation scope.
+```
 
 ```text
 ActivityEvent
@@ -174,6 +179,20 @@ ActivityEvent
 The transcript UI should render a read projection over these events. It should
 not own live terminal state, terminal cursor state, or byte-level terminal
 mutation semantics.
+
+E8f MVP must stay narrow:
+
+- support `terminal_output`;
+- support `terminal_input` only if safely available;
+- support `system` and `status` / degraded state if needed;
+- use explicit sequence ordering;
+- keep storage/projection read-only and non-authoritative;
+- do not implement mobile Transcript Mode UI;
+- do not implement tool / approval / artifact parsers;
+- do not duplicate Common Event or Interaction Contract semantics;
+- link to existing A7/A9 contract data only by id/ref when already available;
+- do not parse ANSI beyond plain text and optional basic styling;
+- do not emulate VT100 behavior.
 
 ## E8g implementation constraint
 

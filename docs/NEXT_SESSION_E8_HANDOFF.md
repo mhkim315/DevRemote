@@ -89,6 +89,13 @@ capture/render failure must never break live terminal interaction.
 Do not design E8f as raw text lines only. Terminal text is the first payload,
 but the durable model should be activity-oriented.
 
+Important:
+
+```text
+ActivityEvent is the durable direction.
+It is not the full E8f MVP implementation scope.
+```
+
 Preferred shape:
 
 ```ts
@@ -128,9 +135,31 @@ Rules:
 
 - ordered by explicit sequence, not UI scroll position;
 - terminal output may start as plain text;
-- tool / approval / artifact events should link to existing contracts when
-  available;
+- E8f MVP supports only terminal activity subset:
+  - `terminal_output`;
+  - `terminal_input` if safely available;
+  - `system`;
+  - `status` / degraded state if needed;
+- tool / approval / artifact events are future-only unless they can link to
+  existing A7/A9 contract data without new parsing;
+- E8f must not duplicate Common Event or Interaction Contract semantics;
+- E8f may reference existing events by id/ref, but must not redefine their
+  meaning;
+- do not parse ANSI beyond plain text and optional basic styling;
 - do not emulate cursor movement, alternate screen, or scroll regions.
+
+E8f MVP acceptance should require:
+
+- minimal ActivityEvent-compatible schema;
+- sequence ordering;
+- terminal output capture;
+- terminal input capture only if safely available;
+- degraded/system/status event when capture fails;
+- read-only, non-authoritative storage/projection contract;
+- no mobile Transcript Mode UI implementation;
+- no tool / approval / artifact parser implementation;
+- no VT100 emulation;
+- no backend/WebSocket behavior regression.
 
 ## E8g MVP constraint
 

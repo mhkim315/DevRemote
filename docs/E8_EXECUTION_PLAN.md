@@ -110,6 +110,13 @@ The capture model should evolve toward structured activity events rather than
 raw text lines only. Raw text is allowed as payload, but the contract should not
 force the product into a terminal-output-only model.
 
+Important scope constraint:
+
+```text
+ActivityEvent is the durable direction.
+It is not the full E8f MVP implementation scope.
+```
+
 Possible model:
 
 ```ts
@@ -150,11 +157,34 @@ Scope guard:
 - activity-oriented, read-only projection;
 - plain text terminal output is the first supported event payload;
 - stdout / stderr / input / system events are minimum terminal sources;
+- E8f MVP supports only terminal activity subset:
+  - `terminal_output`;
+  - `terminal_input` if safely available;
+  - `system`;
+  - `status` / degraded state if needed;
 - tool / approval / artifact events may be linked when already available from
   agent contracts;
+- tool / approval / artifact support must stay future-only unless it can reuse
+  existing A7/A9 contract data without new parsing;
+- E8f must not duplicate Common Event or Interaction Contract semantics;
+- E8f may reference existing events by id/ref, but must not redefine their
+  meaning;
 - ordered by explicit sequence, not UI scroll position;
-- basic ANSI color/style only if cheap;
+- plain text first; optional basic ANSI color/style only if cheap;
+- do not parse ANSI beyond plain text and optional basic styling;
 - do not emulate cursor movement, alternate screen, or scroll regions.
+
+E8f MVP acceptance:
+
+- minimal ActivityEvent-compatible schema exists;
+- terminal output can be captured as ordered read events;
+- terminal input can be captured only if already safely available;
+- capture failures can surface as degraded/system/status events;
+- transcript storage/projection remains read-only and non-authoritative;
+- no mobile Transcript Mode UI implementation;
+- no tool / approval / artifact parser implementation;
+- no VT100 emulation;
+- no backend/WebSocket behavior regression.
 
 ### E8g — Mobile Read Mode UI
 
