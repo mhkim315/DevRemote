@@ -411,7 +411,8 @@ connect();
 	    }
 	  }catch(e){}
 	  // Route 2: to adb logcat via console.log (capturable without Metro).
-	  console.log('E8DIAG ' + JSON.stringify(diag));
+	  var qs = Object.keys(diag).map(function(k){return k+'='+encodeURIComponent(diag[k])}).join('&');
+		  fetch('/debug/e8diag?'+qs,{method:'POST'}).catch(function(){});
 	},5000);
 </script>
 </body>
@@ -443,4 +444,14 @@ func HandleDump(w http.ResponseWriter, r *http.Request) {
 	if len(body) > 0 {
 		log.Printf("PHONE [%s]: %s", session, string(body))
 	}
+}
+
+// HandleE8Diag receives diagnostic counters from the terminal WebView.
+// Logs them to daemon stdout — capturable without Metro or adb logcat.
+func HandleE8Diag(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	log.Printf("E8DIAG connectCount=%s closeCount=%s msgCount=%s totalBytes=%s lastMsgSize=%s rawLen=%s wasReconnect=%s",
+		q.Get("connectCount"), q.Get("closeCount"), q.Get("msgCount"),
+		q.Get("totalBytes"), q.Get("lastMsgSize"), q.Get("rawLen"), q.Get("wasReconnect"))
+	w.WriteHeader(200)
 }
