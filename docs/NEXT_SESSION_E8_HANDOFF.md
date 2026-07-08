@@ -14,17 +14,18 @@ Do not continue patching xterm mobile scrollback.
 Immediate target:
 
 ```text
-E8f2-pre — Stream / PTY Ownership Audit
+R1a — Connectivity Baseline for LTE validation
 ```
 
 ## Mission
 
-Audit current stream ownership before implementing the session-owned recorder.
+Restore enough reliable remote/LTE connectivity to continue real-device
+validation outside the local network.
 
 ```text
-No recorder implementation yet.
-No runtime behavior changes.
-No WebSocket behavior changes.
+Do not reopen xterm mobile scrollback patching.
+Do not expand into final onboarding/pairing/push polish.
+Do not change recorder ownership unless R1a evidence proves a recorder bug.
 ```
 
 Read:
@@ -37,7 +38,7 @@ Read:
 
 ## Why
 
-Validated real-device evidence now shows:
+Validated real-device evidence showed:
 
 - backend replay is not the mobile idle-scroll cause;
 - WebSocket reconnect is not the mobile idle-scroll cause;
@@ -45,14 +46,91 @@ Validated real-device evidence now shows:
 - desktop xterm behaves correctly;
 - Android WebView + xterm.js duplicates visible rows during upward touch scroll;
 - repeated xterm scrollback patches have diminishing returns.
-- transcript capture currently depends on WebSocket lifetime;
-- output generated while no WebSocket viewer is connected is not captured.
+- transcript capture depended on WebSocket lifetime before E8f2;
+- output generated while no WebSocket viewer was connected was not captured.
 
-The product goal requires daemon/session-lifetime recording, not
-viewer-lifetime recording. Before changing PTY read ownership, audit current
-ownership and adapter capabilities.
+E8f2 is now accepted. The product goal now requires validating recorder-backed
+history from a real phone when the phone is outside the local network.
 
-## E8f2-pre scope
+## Accepted E8f2 record
+
+E8f2 accepted commit: `ee1daf0`.
+
+Verified:
+
+- `go test -race ./internal/term -run TestRecorder_MultipleSubscribers -count=50`
+- `go test -race ./internal/term -count=5`
+- `go test -race ./... -count=1`
+- `sh scripts/build-gate.sh`
+
+Accepted invariants:
+
+- one session has one recorder;
+- recorder owns the PTY read loop;
+- WebSocket viewers subscribe to recorder output;
+- ActivityBuffer terminal output append is recorder-owned;
+- recorder appends before broadcasting to subscribers;
+- stale/dead recorders are removed before reuse;
+- terminal input stores metadata only, not raw text.
+
+## R1a scope
+
+R1a is a connectivity baseline for validation, not final product polish.
+
+In scope:
+
+- verify stored `BASE_URL` before connected state;
+- distinguish daemon unreachable from zero sessions;
+- distinguish session API failure from empty session list;
+- expose terminal WebSocket connection failure;
+- expose transcript/activity read failure;
+- support an LTE-capable route through a tunnel URL or equivalent manual URL;
+- provide enough diagnostics to classify failure as auth, daemon reachability,
+  sessions API, WebSocket, or transcript read path.
+
+Avoid:
+
+- new recorder architecture;
+- xterm mobile scrollback patches;
+- transcript readability polish;
+- final pairing UX;
+- push notification delivery;
+- installer/package work;
+- login redesign;
+- production-grade tunnel automation;
+- daemon restart persistence;
+- semantic transcript grouping.
+
+## R1a completion statement
+
+Use this format:
+
+```text
+R1a connectivity baseline complete.
+
+Commit: <sha>
+
+Verified:
+- BASE_URL reachability check: ...
+- daemon unreachable vs empty sessions: ...
+- sessions API failure handling: ...
+- WebSocket failure handling: ...
+- transcript/activity failure handling: ...
+- LTE/tunnel/manual remote URL route: ...
+
+Not included:
+- final onboarding/pairing polish
+- push delivery
+- transcript readability polish
+- installer/package changes
+```
+
+---
+
+Historical E8f2-pre guidance below remains useful context but is no longer the
+immediate target.
+
+## E8f2-pre historical scope
 
 Audit only:
 
@@ -74,7 +152,6 @@ Avoid:
 - runtime behavior changes;
 - WebSocket behavior changes;
 - transcript UI changes;
-- LTE / remote connectivity changes;
 - daemon restart persistence;
 - semantic grouping;
 - readability polish.
@@ -108,8 +185,8 @@ Not included:
 
 ---
 
-Historical E8e/E8f/E8g guidance below remains useful context, but E8f2-pre is
-now the immediate target.
+Historical E8e/E8f/E8g guidance below remains useful context. The immediate
+target is now R1a Connectivity Baseline.
 
 ## E8e scope
 

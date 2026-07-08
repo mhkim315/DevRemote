@@ -281,6 +281,69 @@ Fallback behavior:
 - transcript capture/render failure must not block live input or live terminal
   rendering.
 
+### E8f2 — Session-owned Activity Recorder ✅
+
+Status: ACCEPTED at `ee1daf0`.
+
+E8f2 corrected the transcript capture lifetime issue discovered during
+real-device validation. Activity capture is no longer owned by an individual
+WebSocket viewer.
+
+Accepted architecture:
+
+```text
+Session
+→ one recorder
+→ one PTY reader
+→ ActivityBuffer append once
+→ N WebSocket subscribers
+```
+
+Verified:
+
+- `go test -race ./internal/term -run TestRecorder_MultipleSubscribers -count=50`
+- `go test -race ./internal/term -count=5`
+- `go test -race ./... -count=1`
+- `sh scripts/build-gate.sh`
+
+### R1a — Connectivity Baseline for LTE validation
+
+R1a is the next phase after E8f2.
+
+Goal:
+
+```text
+Make real-device validation possible when the phone is outside the local network.
+```
+
+In scope:
+
+- validate stored `BASE_URL` before connected state;
+- distinguish daemon unreachable from empty sessions;
+- distinguish sessions API failure from zero sessions;
+- expose terminal WebSocket connection failure;
+- expose transcript/activity read failure;
+- support a known LTE-capable validation route such as a tunnel or manual remote
+  URL.
+
+Out of scope:
+
+- final onboarding/pairing UX;
+- push delivery;
+- production-grade tunnel automation;
+- installer/package changes;
+- transcript readability polish.
+
+Revised order:
+
+```text
+E8f2 ✅
+→ R1a Connectivity Baseline
+→ E8g2 Transcript Readability Polish
+→ E8i Real-device Transcript Validation
+→ R1b Connectivity Product Polish
+```
+
 ## Explicit non-goals
 
 Do not:

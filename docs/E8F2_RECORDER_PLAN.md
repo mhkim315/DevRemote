@@ -4,25 +4,40 @@ Date: 2026-07-08
 
 ## Status
 
-Current phase:
+Accepted:
 
 ```text
 E8f2-pre — Stream / PTY Ownership Audit
+E8f2 — Session-owned Activity Recorder
 ```
 
-This phase is audit-only.
+E8f2 accepted at commit `ee1daf0`.
 
-Do not implement the recorder yet.
+Verified:
 
-## Current limitation
+- `go test -race ./internal/term -run TestRecorder_MultipleSubscribers -count=50`
+- `go test -race ./internal/term -count=5`
+- `go test -race ./... -count=1`
+- `sh scripts/build-gate.sh`
 
-ActivityBuffer captures PTY output only through HandleWS → stream.Read().
-This is tied to WebSocket lifetime:
+Current next phase:
+
+```text
+R1a — Connectivity Baseline for LTE validation
+```
+
+## Historical limitation fixed by E8f2
+
+Before E8f2, ActivityBuffer captured PTY output only through
+HandleWS → stream.Read(). That was tied to WebSocket lifetime:
+
 - WebSocket connected → capture works
 - WebSocket disconnected → no capture
 - Multiple WebSocket viewers → each reads independently (potential duplication)
 
-## Target architecture
+E8f2 replaced this with a session-owned recorder.
+
+## Accepted architecture
 
 ```
 Session PTY
@@ -41,10 +56,13 @@ not owners of the read loop.
 
 ```text
 E8f2-pre
-→ Stream / PTY Ownership Audit
+→ Stream / PTY Ownership Audit ✅ ACCEPTED
 
 E8f2
-→ Session-owned Activity Recorder
+→ Session-owned Activity Recorder ✅ ACCEPTED
+
+R1a
+→ Connectivity Baseline for LTE validation
 
 E8g2
 → Transcript Readability Polish
@@ -52,11 +70,41 @@ E8g2
 E8i
 → Real-device Transcript Validation
 
-R1
-→ Remote / LTE polish
+R1b
+→ Connectivity Product Polish
 ```
 
-E8f2-pre must complete before recorder implementation starts.
+R1a intentionally comes before E8g2 because real-device validation will happen
+outside the local network. Transcript readability polish should happen after
+recorder correctness and basic LTE reachability are both available.
+
+## R1a connectivity baseline
+
+R1a is not final remote connectivity product polish. It is the minimum
+connectivity work needed to keep real-device validation productive while the
+phone is on LTE or otherwise outside the daemon's local network.
+
+In scope:
+
+- validate stored `BASE_URL` before marking the app connected;
+- distinguish daemon unreachable from an empty session list;
+- distinguish sessions API failure from zero sessions;
+- show terminal WebSocket connection failure clearly;
+- show transcript/activity read failure clearly;
+- support an LTE-capable validation route such as a tunnel URL or equivalent
+  manual remote URL;
+- keep diagnostics sufficient to classify failure as auth, daemon reachability,
+  sessions API, WebSocket, or transcript read path.
+
+Out of scope:
+
+- final pairing/onboarding UX;
+- push notification delivery;
+- installer/package changes;
+- production-grade tunnel automation;
+- login flow redesign;
+- transcript readability polish;
+- recorder ownership rewrites unless R1a evidence proves an E8f2 regression.
 
 ## E8f2-pre scope
 

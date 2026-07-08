@@ -12,6 +12,7 @@ Status:
   - P1b Attention Routing Implementation: ACCEPTED as code-verifiable (c162c33)
   - P3 Mobile Typecheck / Build Gate: ACCEPTED (47bed6c)
   - E5 Emulator / Simulator Smoke: SCOPED ACCEPT (ccb642f)
+  - E8f2 Session-owned Activity Recorder: ACCEPTED (ee1daf0)
 
 ## Why this document exists
 
@@ -94,15 +95,20 @@ E2  Core Feed Taxonomy                   ✅ ACCEPTED
 E3  Attention Routing Implementation     ✅ ACCEPTED as code-verifiable
 E4  Mobile Typecheck / Build Gate        ✅ ACCEPTED
 E5  Emulator / Simulator Smoke           ✅ SCOPED ACCEPT
-E6  No-login Local Test Branch           ← NEXT
-E7  Installer / Packaging Implementation
+E6  No-login Local Test Branch           ✅ ACCEPTED
+E7  Installer / Packaging Implementation ✅ ACCEPTED
+E8f2 Session-owned Activity Recorder     ✅ ACCEPTED
+R1a Connectivity Baseline                ← NEXT
+E8g2 Transcript Readability Polish
+E8i Real-device Transcript Validation
 
 M1  Physical Device Smoke                manual product validation
 M2  Real Push + Notification Tap         manual product validation
 M3  First-time Pairing / Onboarding      manual product validation
 M4  Real Interaction UX                  manual product validation
 
-R1  Alpha Candidate Gate                 release decision
+R1b Connectivity Product Polish           release-track follow-up
+R2  Alpha Candidate Gate                 release decision
 ```
 
 ### Historical rationale: why P2 came before P1b
@@ -128,9 +134,29 @@ manual product validation items. They require a product owner using a real devic
 not an executor running scripted local checks.
 
 E6 exists so the executor can continue useful validation without being blocked by
-auth or account state. The test branch should boot directly into the local daemon
-connection path or a deterministic test connection path, then run the verifiable
-dashboard/feed/interaction/build checks.
+manual account or onboarding state.
+
+### Why R1a comes before E8g2
+
+Real-device testing showed that transcript correctness cannot be evaluated only
+from local emulator or USB conditions.
+
+E8f2 made activity capture session-owned rather than WebSocket-owned. The next
+practical blocker is validating that recorder-backed history remains accessible
+from a phone outside the local network. R1a therefore comes before transcript
+readability polish.
+
+R1a is intentionally narrow:
+
+- prove daemon reachability or clear daemon-unreachable state;
+- distinguish empty sessions from sessions API failure;
+- verify terminal WebSocket reachability;
+- verify transcript/activity endpoint reachability;
+- support a known LTE-capable validation route such as a tunnel/manual remote
+  URL.
+
+R1a must not expand into final onboarding, push delivery, installer work, or
+production-grade tunnel automation. Those belong to R1b/R2 release work.
 
 E6 must not remove login from production scope. It only defines the test-branch
 validation route.
@@ -362,14 +388,29 @@ Acceptance:
 - approve/reject/input flow works where capability allows;
 - expired/duplicate interaction behavior is understandable.
 
-## R1 — Alpha Candidate Gate
+## R1b — Connectivity Product Polish
+
+Goal:
+
+Turn the R1a validation route into a product-ready connectivity experience.
+
+Acceptance:
+- user can understand how to connect outside the local network;
+- connection failure states are actionable;
+- remote URL / tunnel / pairing guidance is clear;
+- behavior is documented for alpha limitations;
+- no regression to local-first operation.
+
+## R2 — Alpha Candidate Gate
 
 Goal:
 
 Decide whether the current product is shippable as an alpha.
 
 Acceptance:
-- E1-E7 pass;
+- E1-E8f2 pass;
+- R1a pass;
+- E8g2 and E8i pass or are explicitly scoped out of alpha;
 - M1-M3 pass;
 - M4 passes or is explicitly deferred from alpha scope;
 - A10 diagnostics/redaction still pass;
@@ -397,10 +438,14 @@ MVP includes:
 - E5 Emulator / Simulator Smoke
 - E6 No-login Local Test Branch
 - E7 Installer / Packaging Implementation
+- E8f2 Session-owned Activity Recorder
+- R1a Connectivity Baseline
+- E8g2 Transcript Readability Polish, if included in alpha scope
+- E8i Real-device Transcript Validation, if included in alpha scope
 - M1 Physical Device Smoke
 - M2 Real Push + Notification Tap
 - M3 First-time Pairing / Onboarding
-- R1 Alpha Candidate Gate
+- R2 Alpha Candidate Gate
 
 MVP should allow a user to:
 

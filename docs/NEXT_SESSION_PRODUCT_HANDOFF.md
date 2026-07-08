@@ -16,6 +16,7 @@ Accepted executor-verifiable baseline:
 - E5 Emulator / Simulator Smoke: SCOPED ACCEPT (ccb642f)
 - E6 No-login Local Test Branch: ACCEPTED (555e215)
 - E7 Local Installer / Packaging Implementation: ACCEPTED (27b5aac)
+- E8f2 Session-owned Activity Recorder: ACCEPTED (ee1daf0)
 
 Execution and manual validation are intentionally separated:
 
@@ -27,7 +28,7 @@ Execution and manual validation are intentionally separated:
 ## Next target
 
 ```text
-E8f2-pre — Stream / PTY Ownership Audit
+R1a — Connectivity Baseline for LTE validation
 ```
 
 Primary handoff document:
@@ -35,18 +36,18 @@ Primary handoff document:
 - `docs/E8_EXECUTION_PLAN.md`
 - `docs/NEXT_SESSION_E8_HANDOFF.md`
 - `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
+- `docs/E8F2_RECORDER_PLAN.md`
 
 Supporting observation log:
 
 - `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
-## Why E8f2-pre now
+## Why R1a now
 
-The immediate priority changed after real-device validation exposed a deeper
-capture-lifecycle problem.
+E8f2 fixed the deeper capture-lifecycle problem found during real-device
+validation.
 
-E8f/E8g/E8h proved a useful read-mode direction, but current activity capture is
-still tied to WebSocket lifetime:
+Before E8f2, activity capture was tied to WebSocket lifetime:
 
 ```text
 HandleWS
@@ -54,11 +55,20 @@ HandleWS
 → ActivityBuffer.Append(...)
 ```
 
-If no WebSocket viewer is connected, daemon output is not captured. This means
-Transcript currently records viewer lifetime, not session lifetime.
+E8f2 moved output capture to a session-owned recorder:
 
-Before changing PTY read ownership, E8f2-pre must audit stream ownership and
-adapter feasibility.
+```text
+Session
+→ one recorder
+→ one PTY reader
+→ ActivityBuffer append once
+→ N WebSocket subscribers
+```
+
+The next blocker is no longer recorder ownership. The next blocker is practical
+real-device validation while outside the local network. R1a exists to restore a
+minimal, reliable LTE path for testing daemon reachability, sessions, terminal,
+and transcript read paths.
 
 ## Why E8 still matters
 
@@ -88,12 +98,13 @@ Before implementation, read:
 
 ## Revised E8 priority order
 
-1. E8f2-pre — Stream / PTY Ownership Audit.
-2. E8f2 — Session-owned Activity Recorder.
-3. E8g2 — Transcript Readability Polish.
-4. E8i — Real-device Transcript Validation.
-5. R1 — Remote / LTE polish.
-6. Later runtime follow-ups:
+1. E8f2-pre — Stream / PTY Ownership Audit. ✅ ACCEPTED
+2. E8f2 — Session-owned Activity Recorder. ✅ ACCEPTED
+3. R1a — Connectivity Baseline for LTE validation. ← NEXT
+4. E8g2 — Transcript Readability Polish.
+5. E8i — Real-device Transcript Validation.
+6. R1b — Connectivity Product Polish.
+7. Later runtime follow-ups:
    - input delivery acknowledgement / failed-send state;
    - Activity message boundary and authorship;
    - tmux vs cmux stream/history/screen/event comparison;
@@ -101,7 +112,54 @@ Before implementation, read:
    - tmux first-entry hydration proof;
    - terminal command output vs agent answer classification.
 
-## E8f2-pre acceptance
+## R1a scope
+
+R1a is a validation-enabling connectivity baseline, not final onboarding or
+release-grade pairing.
+
+In scope:
+
+- verify stored `BASE_URL` before marking the app connected;
+- distinguish daemon unreachable from empty sessions;
+- distinguish sessions load failure from zero sessions;
+- expose terminal WebSocket connection failure clearly;
+- expose transcript/activity read failure clearly;
+- support a known LTE-capable route such as a tunnel URL or equivalent manual
+  remote URL;
+- keep enough diagnostics to tell whether failure is auth, daemon reachability,
+  sessions API, WebSocket, or transcript read path.
+
+Out of scope:
+
+- polished onboarding;
+- final pairing UX;
+- push notification delivery;
+- installer packaging;
+- production-grade tunnel automation;
+- login flow redesign;
+- transcript readability polish.
+
+## E8f2 acceptance record
+
+E8f2 is accepted at `ee1daf0`.
+
+Verified:
+
+- `go test -race ./internal/term -run TestRecorder_MultipleSubscribers -count=50`
+- `go test -race ./internal/term -count=5`
+- `go test -race ./... -count=1`
+- `sh scripts/build-gate.sh`
+
+Accepted behavior:
+
+- session discovery can start recorder-backed capture without WebSocket;
+- one recorder owns the PTY read loop per session;
+- multiple WebSocket viewers subscribe without duplicate `OpenStream()` reads;
+- recorder appends terminal output before subscriber broadcast;
+- stale/dead recorders are removed before reuse;
+- terminal input metadata stores byte count only, not raw input text.
+
+## Historical E8f2-pre acceptance
 
 E8f2-pre can be accepted when the executor produces an ownership audit covering:
 
