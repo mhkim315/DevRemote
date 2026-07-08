@@ -43,6 +43,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity' | 'transcript'>('activity');
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
   const [newOutputCount, setNewOutputCount] = useState(0);
+  const lastSeenSeqRef = useRef(0);
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   // Only sessions explicitly advertising 'history' get the ACTIVITY tab.
@@ -118,20 +119,25 @@ export default function FeedScreen({onBack, session, token}: Props) {
         .catch(err => console.error(err));
     };
 
-    // E8g: fetch transcript (terminal activity) for Transcript tab.
+    // E8g: fetch transcript — seq-based new output detection.
     const fetchTranscript = () => {
       getActivityHistory(session, token)
         .then(data => {
           if (Array.isArray(data)) {
             setTranscriptEvents(data);
-            // Track new output when user is in transcript mode.
-            if (activeTab === 'transcript' && data.length > 0) {
-              setNewOutputCount(c => c + 1);
+            const maxSeq = data.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
+            if (activeTab === 'transcript' && maxSeq > lastSeenSeqRef.current) {
+              setNewOutputCount(maxSeq - lastSeenSeqRef.current);
             }
           }
         })
         .catch(err => console.error(err));
     };
+
+    if (activeTab !== 'transcript' && transcriptEvents.length > 0) {
+      const maxSeq = transcriptEvents.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
+      lastSeenSeqRef.current = maxSeq;
+    }
 
     fetchSession();
     if (sessionDataRef.current?.capabilities?.includes('history')) {
@@ -139,7 +145,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
     }
     fetchTranscript();
     const interval = setInterval(() => {
-      fetchSession();
+      if (activeTab !== 'transcript' && transcriptEvents.length > 0) {
+      const maxSeq = transcriptEvents.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
+      lastSeenSeqRef.current = maxSeq;
+    }
+
+    fetchSession();
       if (sessionDataRef.current?.capabilities?.includes('history')) {
         fetchHistory();
       }
@@ -425,38 +436,6 @@ export default function FeedScreen({onBack, session, token}: Props) {
               inverted={true}
             />
           )}
-        </View>
-
-        {/* E8g: Transcript Mode — read-only terminal activity history. */}
-        <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
-          {newOutputCount > 0 && (
-            <TouchableOpacity style={styles.newOutputBanner} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
-              <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
-            </TouchableOpacity>
-          )}
-          {!transcriptEvents || transcriptEvents.length === 0 ? (
-            <Text style={styles.emptyActivityText}>No transcript yet. Use Terminal to generate output.</Text>
-          ) : (
-            <FlatList
-              data={transcriptEvents}
-              keyExtractor={(item, idx) => item.id || String(idx)}
-              contentContainerStyle={styles.activityList}
-              renderItem={({ item }) => (
-                <View style={styles.transcriptRow}>
-                  <Text style={styles.transcriptSeq}>[{item.seq}]</Text>
-                  <Text style={styles.transcriptType}>
-                    {item.type === 'terminal_input' ? '←' : ' '}
-                  </Text>
-                  <Text style={styles.transcriptText} numberOfLines={3}>
-                    {item.text || (item.type === 'terminal_input' ? '[input sent]' : '')}
-                  </Text>
-                </View>
-              )}
-            />
-          )}
-          <TouchableOpacity style={styles.returnBtn} onPress={() => { setActiveTab('terminal'); setNewOutputCount(0); }}>
-            <Text style={styles.returnBtnText}>← Return to Live Terminal</Text>
-          </TouchableOpacity>
         </View>
 
         {/* E8g: Transcript Mode — read-only. */}
