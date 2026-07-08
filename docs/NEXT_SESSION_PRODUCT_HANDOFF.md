@@ -86,8 +86,8 @@ Before implementation, read:
 
 ## Revised E8 priority order
 
-1. E8e — Transcript Read Mode Scope.
-2. E8f — Terminal Output Capture Model.
+1. E8e — Read Mode Architecture.
+2. E8f — Activity Capture Pipeline.
 3. E8g — Mobile Read Mode UI with explicit mode separation.
 4. E8h — Fallback / Compatibility.
 5. Later runtime follow-ups:
@@ -106,6 +106,10 @@ Minimum acceptance:
 
 - xterm.js remains live interactive terminal;
 - Pokit transcript renderer handles mobile historical reading;
+- Transcript Mode is a read projection over captured activity events, not a
+  terminal emulator;
+- live xterm remains the source of truth for interactive terminal state;
+- transcript capture/render failure cannot break live terminal interaction;
 - E8g MVP uses explicit Live Terminal Mode and Transcript Mode;
 - E8g MVP does not merge transcript and xterm into one continuous scroll surface;
 - unsupported/degraded terminal semantics are listed;
@@ -145,10 +149,31 @@ Do not implement in E8:
 
 1. Implement E8e documentation only.
 2. Define live terminal vs transcript responsibilities.
-3. Define transcript unsupported/fallback behavior.
-4. Define E8f/E8g/E8h follow-up phases.
-5. Run build gate.
-6. Do not implement transcript renderer yet.
+3. Define transcript as an activity-event read projection.
+4. Define transcript unsupported/fallback behavior.
+5. Define source-of-truth and failure-isolation invariants.
+6. Define E8f/E8g/E8h follow-up phases.
+7. Run build gate.
+8. Do not implement transcript renderer yet.
+
+## E8f capture model direction
+
+E8f should not be a raw text-line store only. Terminal output can be the first
+payload, but the durable model should be activity-oriented:
+
+```text
+ActivityEvent
+→ terminal_output / terminal_input
+→ agent_message
+→ tool_call
+→ approval_request
+→ artifact
+→ error / status
+```
+
+The transcript UI should render a read projection over these events. It should
+not own live terminal state, terminal cursor state, or byte-level terminal
+mutation semantics.
 
 ## E8g implementation constraint
 
@@ -164,6 +189,7 @@ Transcript Mode
 → read-only history
 → mobile-native list rendering
 → explicit Return to Live Terminal action
+→ read projection over captured activity events
 ```
 
 Do not build a seamless transcript+xterm scroll surface in the MVP. Avoid shared

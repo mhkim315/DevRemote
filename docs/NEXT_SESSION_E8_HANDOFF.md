@@ -71,13 +71,66 @@ xterm.js:
   live interactive bottom terminal
   current prompt/input
   live ANSI/TUI behavior
+  source of truth for interactive terminal state
 
 Pokit transcript renderer:
   mobile historical reading
   stable scroll UX
   read-only transcript
   future search/copy/summarize/collapse affordances
+  read projection over captured activity events
 ```
+
+Transcript Mode is not a terminal emulator. It is a read projection. Transcript
+capture/render failure must never break live terminal interaction.
+
+## E8f capture model direction
+
+Do not design E8f as raw text lines only. Terminal text is the first payload,
+but the durable model should be activity-oriented.
+
+Preferred shape:
+
+```ts
+ActivityEvent {
+  id: string
+  sessionId: string
+  seq: number
+  timestamp: string
+  source: "terminal" | "agent" | "system"
+  type:
+    | "terminal_output"
+    | "terminal_input"
+    | "agent_message"
+    | "tool_call"
+    | "approval_request"
+    | "artifact"
+    | "error"
+    | "status"
+  body: {
+    text?: string
+    stream?: "stdout" | "stderr"
+    command?: string
+    toolName?: string
+    approvalId?: string
+    artifactRef?: string
+  }
+  presentation?: {
+    severity?: "info" | "warning" | "error"
+    collapsed?: boolean
+    degraded?: boolean
+  }
+  rawRef?: string
+}
+```
+
+Rules:
+
+- ordered by explicit sequence, not UI scroll position;
+- terminal output may start as plain text;
+- tool / approval / artifact events should link to existing contracts when
+  available;
+- do not emulate cursor movement, alternate screen, or scroll regions.
 
 ## E8g MVP constraint
 
@@ -105,6 +158,7 @@ E8g MVP must avoid:
 - off-by-one synchronization logic;
 - ANSI/cursor/progress state transfer between modes;
 - claiming that transcript mode is a terminal emulator.
+- treating transcript mode as the source of truth for live terminal state.
 
 Acceptance for E8g should require reliable mode switching, stable transcript
 scrolling, and safe return to the live prompt. It should not require seamless

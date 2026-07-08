@@ -57,18 +57,22 @@ xterm.js
 → live interactive terminal
 → current prompt / input / live ANSI behavior
 → bottom/live portion
+→ source of truth for interactive terminal state
 
 Pokit transcript renderer
 → mobile historical reading
 → stable scroll/read UX
 → search/copy/collapse/summarize-ready output model
+→ read projection over captured activity events
 ```
 
-This is not a full terminal renderer. It is a read mode for past output.
+This is not a full terminal renderer. It is a read projection over captured
+activity. The transcript must not become the source of truth for live terminal
+state.
 
 ## Revised E8 sequence
 
-### E8e — Transcript Read Mode Scope
+### E8e — Read Mode Architecture
 
 Goal:
 
@@ -80,6 +84,7 @@ Acceptance:
 
 - new architecture documented;
 - live terminal vs transcript responsibilities defined;
+- transcript defined as a read projection, not a terminal emulator;
 - unsupported/degraded terminal semantics defined;
 - no custom VT100 emulator scope;
 - no backend replay/WebSocket contract change;
@@ -93,31 +98,61 @@ Implementation in E8e:
 - no new terminal backend;
 - no further xterm scrollback patching.
 
-### E8f — Terminal Output Capture Model
+### E8f — Activity Capture Pipeline
 
 Goal:
 
 ```text
-Define and implement the minimum output model needed for read mode.
+Define and implement the minimum activity model needed for read mode.
 ```
+
+The capture model should evolve toward structured activity events rather than
+raw text lines only. Raw text is allowed as payload, but the contract should not
+force the product into a terminal-output-only model.
 
 Possible model:
 
 ```ts
-TranscriptLine {
+ActivityEvent {
   id: string
   sessionId: string
+  seq: number
   timestamp: string
-  text: string
-  kind: "stdout" | "stderr" | "input" | "system"
-  spans?: BasicAnsiSpan[]
+  source: "terminal" | "agent" | "system"
+  type:
+    | "terminal_output"
+    | "terminal_input"
+    | "agent_message"
+    | "tool_call"
+    | "approval_request"
+    | "artifact"
+    | "error"
+    | "status"
+  body: {
+    text?: string
+    stream?: "stdout" | "stderr"
+    command?: string
+    toolName?: string
+    approvalId?: string
+    artifactRef?: string
+  }
+  presentation?: {
+    severity?: "info" | "warning" | "error"
+    collapsed?: boolean
+    degraded?: boolean
+  }
+  rawRef?: string
 }
 ```
 
 Scope guard:
 
-- line-oriented, read-only output;
-- plain text first;
+- activity-oriented, read-only projection;
+- plain text terminal output is the first supported event payload;
+- stdout / stderr / input / system events are minimum terminal sources;
+- tool / approval / artifact events may be linked when already available from
+  agent contracts;
+- ordered by explicit sequence, not UI scroll position;
 - basic ANSI color/style only if cheap;
 - do not emulate cursor movement, alternate screen, or scroll regions.
 
@@ -150,6 +185,7 @@ Transcript Mode
 → mobile-optimized list rendering
 → explicit Return to Live Terminal action
 → no terminal input or control surface
+→ not a source of truth for live terminal state
 ```
 
 Expected behavior:
@@ -212,6 +248,8 @@ Fallback behavior:
 - show “Full Terminal Mode recommended” or equivalent for unsupported output;
 - transcript degradation must not break live terminal;
 - transcript inaccuracies must be isolated from backend/WebSocket/session state.
+- transcript capture/render failure must not block live input or live terminal
+  rendering.
 
 ## Explicit non-goals
 
@@ -219,6 +257,8 @@ Do not:
 
 - build a custom VT100/xterm emulator;
 - replace xterm.js for live interactive terminal use;
+- make Transcript Mode a source of truth for live terminal state;
+- require Transcript Mode to represent every byte-level terminal mutation;
 - change backend replay/WebSocket contracts for E8e;
 - add a new terminal backend;
 - add a new tunnel manager;
@@ -234,6 +274,9 @@ Instead, acceptance should require:
 
 - live terminal remains usable for current interaction;
 - historical reading uses transcript/read mode on mobile;
+- transcript/read mode is a projection over captured activity events;
+- live xterm remains the source of truth for interactive terminal state;
+- transcript failure does not break live terminal interaction;
 - transcript and live terminal are explicit modes in E8g MVP;
 - no seamless scroll-surface or boundary-sync claim is made in E8g MVP;
 - unsupported terminal semantics degrade clearly;
