@@ -17,6 +17,8 @@ Updated observation:
 - Terminal tab duplicates output heavily.
 - The duplication appears after the user scrolls up or down in the terminal.
 - Pressing refresh returns the terminal viewport to the bottom.
+- Earlier, the duplication was severe enough that scrolling could not return the
+  user to the latest message because duplicate terminal content kept expanding.
 - The user suspects the terminal reloads or replays a whole data block during
   scroll, and the replay is appended as duplicate output.
 - This was observed while using terminal input.
@@ -25,6 +27,7 @@ Impact:
 - The user cannot tell whether the agent repeated itself, the terminal replayed
   old output, or the mobile UI duplicated frames.
 - The duplication is severe enough that the conversation cannot be followed.
+- In the severe case, the user cannot recover normal position by scrolling.
 
 Needs investigation:
 - WebSocket frame replay / reconnect behavior
