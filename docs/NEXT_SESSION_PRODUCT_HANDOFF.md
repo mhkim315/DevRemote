@@ -6,11 +6,6 @@
 ## Current state
 
 Architecture Phase (A0~A10): COMPLETE.
-Product Phase is now split by verification responsibility:
-
-- E-track: executor-verifiable implementation and local validation
-- M-track: manual product validation by the product owner
-- R-track: alpha release decision gates
 
 Accepted executor-verifiable baseline:
 
@@ -19,168 +14,142 @@ Accepted executor-verifiable baseline:
 - E3 / P1b Attention Routing Implementation: ACCEPTED as code-verifiable
 - E4 / P3 Mobile Typecheck / Build Gate: ACCEPTED (47bed6c)
 - E5 Emulator / Simulator Smoke: SCOPED ACCEPT (ccb642f)
+- E6 No-login Local Test Branch: ACCEPTED (555e215)
+- E7 Local Installer / Packaging Implementation: ACCEPTED (27b5aac)
 
-Current baseline:
+Execution and manual validation are intentionally separated:
 
-- P1a Live Dashboard Core has four sections: Needs Attention, Running, Recently Completed, Degraded / View Only.
-- A9 interaction card is compatible and rendered within the dashboard.
-- Observe-only sessions show VIEW ONLY badge.
-- No vendor-specific mobile branches exist.
+- E-track: source/test/build/runtime/documented evidence.
+- M-track: physical-device UX, onboarding quality, first-time pairing, real push,
+  discoverability, visual polish.
+- R-track: release decision combining E evidence and M evidence.
 
 ## Next target
 
-E6 — No-login Local Test Branch.
+```text
+E8 — Runtime Interaction Reliability Diagnostics and Fixes
+```
 
-Do not implement manual product validation, production onboarding redesign, real
-push delivery proof, physical-device UX proof, installer packaging, or alpha
-release packaging in this slice.
+Primary handoff document:
 
-## Why E6 now
+- `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
 
-The previous P4 attempt proved that an executor can validate emulator/simulator
-behavior but cannot genuinely validate physical-device UX, real push delivery,
-notification tap behavior on a real device, real login, or first-time onboarding.
+Supporting observation log:
 
-Those are M-track manual product validation responsibilities.
+- `docs/M_TRACK_PHONE_OBSERVATIONS.md`
 
-Before continuing, the test branch should remove login from the executor path so
-the executor can run useful local tests first.
+## Why E8 now
 
-E6 is not a production-login decision. It is a test-branch validation route.
+Phone testing found reliability problems that block useful product evaluation:
 
-## Orchestrator comment
+- Terminal duplicates output severely on scroll.
+- Terminal refresh jumps to bottom.
+- Input can appear sent but not produce assistant response.
+- Input can be silently lost during unstable connectivity.
+- Activity may merge user input into assistant bubbles.
+- cmux behaves differently from tmux: cmux Activity is one large block and cmux
+  Terminal appears monochrome.
+- tmux has a first-entry initial screen/hydration gap.
+- Terminal command output such as `ls` can appear as an agent answer.
 
-Do not spend the next executor cycle trying to prove login, account setup,
-physical-device push, or first-time pairing.
-
-Those are manual product validation gates.
-
-For E6, remove login from the executor's test path on the test branch and make
-the locally verifiable product checks run first. The desired outcome is not
-"login is unnecessary." The desired outcome is "the executor can repeatedly test
-dashboard, feed, interaction, daemon connectivity, and build gates without being
-blocked by human-only product validation."
+These are not subjective polish issues. They are runtime trust issues.
 
 ## Mandatory reading
 
 Before implementation, read:
 
-- `docs/PRODUCT_PHASE_PLAN.md` (Product verification model and E6 section)
+- `docs/E8_RUNTIME_RELIABILITY_BUG_REPORT.md`
+- `docs/M_TRACK_PHONE_OBSERVATIONS.md`
+- `docs/PRODUCT_PHASE_PLAN.md`
 - `docs/AGENT_PHASE_A7_ACCEPTANCE.md`
 - `docs/AGENT_PHASE_A10_ALPHA_CHECKLIST.md`
-- `docs/P4_DEVICE_SMOKE_REPORT.md`
 
-## E6 scope
+## E8 priority order
 
-### Goal
+1. Terminal scroll duplication.
+2. Input delivery acknowledgement / failed-send state.
+3. Activity message boundary and authorship.
+4. tmux vs cmux stream/history/screen/event comparison.
+5. cmux Activity/color degradation handling.
+6. tmux first-entry hydration proof.
+7. Terminal command output vs agent answer classification.
 
-Create an executor-verifiable local product test path that does not require login,
-account state, Expo account ownership, physical devices, or manual pairing.
+## E8 acceptance
 
-### Acceptance
+E8 can be accepted when the executor provides objective evidence for the runtime
+paths it changes.
 
-- App can launch in the test branch without completing login.
-- Executor can connect to a local daemon or deterministic test endpoint.
-- Dashboard renders with real or controlled local session data.
-- Feed renders the accepted E2 event taxonomy.
-- Interaction card path can be exercised with controlled local data if available.
-- Build gate still passes.
-- The login bypass is clearly marked as test-branch-only.
-- No production claim is made about real onboarding, account UX, physical device UX, or real push delivery.
-- No vendor-specific mobile behavior branch is introduced.
+Minimum acceptance:
 
-### Explicitly avoid
+- Terminal scroll does not append duplicate already-rendered content.
+- Refresh does not create duplicate terminal output.
+- Send failure or pending state is visible or diagnostically provable.
+- Activity user messages remain user-authored after assistant response arrives.
+- tmux vs cmux behavior is compared with raw evidence:
+  - terminal stream;
+  - screen/history;
+  - `/api/sessions.Events`;
+  - ANSI/color preservation.
+- If cmux cannot provide structured/color output, it degrades explicitly rather
+  than pretending shell output is an agent answer.
+- `sh scripts/build-gate.sh` passes.
+- Added tests or runtime diagnostics prove the fixed path.
 
-Do not implement:
+## Explicitly avoid
 
-- production login removal;
-- production onboarding redesign;
-- real account login;
-- QR pairing quality;
-- physical-device validation;
-- real push delivery validation;
-- notification tap proof on a real device;
-- installer / distribution;
-- alpha packaging;
-- new adapters;
-- new parser or backend event model;
-- LLM summarization;
-- Agent Cockpit;
-- deterministic summary;
-- review/diff workflow.
+Do not implement in E8:
 
-Do not introduce:
-
-```ts
-if (agentKind === 'claude') { ... }
-if (agentKind === 'codex') { ... }
-switch (agentKind) { ... }
-```
-
-The local test path may use fixtures or controlled local data, but product behavior
-must still be agent-agnostic. UI behavior must not branch by vendor.
+- E9 terminal discovery / agent attach flow;
+- new terminal backend;
+- new agent backend;
+- first-time onboarding redesign;
+- physical-device-only validation;
+- real push notification validation;
+- visual polish unrelated to reliability;
+- installer/package changes unless required by tests.
 
 ## Non-negotiable invariants
 
-- A7: unknown agent/status/event fallback preserved.
-- A9: interaction events do not imply control capability.
-- A9: interaction card remains compatible.
-- E3: notification/deep link implementation remains redacted and sessionId-based.
-- E4: strict build gate remains reproducible.
-- E5: emulator/simulator smoke remains scoped and must not be presented as physical-device proof.
-- No vendor-specific rendering branch.
-- No backend contract change unless the existing product boundary is demonstrably insufficient and documented.
+- No vendor-specific mobile behavior branch.
+- Capability determines executability.
+- Observe-only means no control action.
+- Unknown agent/status/event degrades gracefully.
+- Mobile must not synthesize actions not provided by the server.
+- Sensitive prompt, command, token, path, and secret data must not leak.
+- E-track acceptance must not claim M-track validation.
 
 ## Suggested execution order
 
-1. Read `docs/PRODUCT_PHASE_PLAN.md` E6 section.
-2. Identify where login/account state blocks local executor validation.
-3. Add a test-branch-only bypass or deterministic local route.
-4. Clearly label the bypass so it cannot be mistaken for production onboarding.
-5. Preserve existing dashboard, feed, interaction, notification, and build-gate behavior.
-6. Run the strict build gate.
-7. Run emulator/simulator smoke where available.
-8. Update the smoke report with what was actually verified.
-9. Commit as an E6 implementation slice.
-
-## Reviewer checklist
-
-Reviewer will check:
-
-- login/account state is not required for executor local validation;
-- bypass is test-branch-only and clearly documented;
-- production login/onboarding is not silently removed;
-- dashboard/feed/interaction behavior still works;
-- no vendor-specific mobile behavior branch exists;
-- no A9 capability-aware interaction regression;
-- no A10 redaction regression;
-- strict build gate passes;
-- emulator/simulator scope is clearly distinguished from physical-device validation.
+1. Reproduce Terminal scroll duplication locally.
+2. Inspect Terminal WebView history/live append behavior.
+3. Add frame/append instrumentation or regression tests.
+4. Fix duplicate append on scroll/refresh/reconnect.
+5. Add send attempt / ack / failed-send diagnostics.
+6. Compare tmux vs cmux raw stream/screen/history/events.
+7. Fix Activity message identity/grouping or prove backend event source issue.
+8. Document what was fixed and what remains M-track.
 
 ## Completion statement format
 
 ```text
-E6 implementation complete.
+E8 implementation complete.
 
 Commit: <sha>
 
-Changed:
+Fixed:
 - ...
 
 Validation:
-- strict build gate: ...
-- emulator/simulator smoke: ...
-- login bypass scope: test-branch-only / production-safe
-- vendor branch grep: ...
+- build gate: ...
+- targeted tests: ...
+- runtime evidence: ...
 
 Known gaps:
 - ...
 
-Not done:
-- M1 physical-device smoke
-- M2 real push + notification tap
-- M3 first-time pairing / onboarding
-- M4 real interaction UX
-- E7 installer / packaging
-- R1 alpha candidate gate
+Remaining M-track:
+- physical-device UX
+- onboarding quality
+- real push/tap behavior
+- visual polish
 ```
