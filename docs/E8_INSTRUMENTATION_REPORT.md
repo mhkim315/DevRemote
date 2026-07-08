@@ -97,6 +97,38 @@ Counters reset with new page. Fresh WebSocket connection, fresh data. wasReconne
 ### Desktop vs Mobile
 
 - Desktop browser: E8DIAG capture works. Scroll does not trigger reconnect.
+- Mobile WebView: E8DIAG capture intermittent (fetch to /debug/e8diag sometimes blocked). Visual observation used as primary evidence.
+
+### Scenario 5: Mobile scroll-up duplication (manual observation)
+
+Source: Mobile WebView (cmux:surface:2), 2026-07-08 ~19:20 KST
+Method: User scrolled up while viewing Codex output, then scrolled back down.
+
+Before scroll (stable):
+```
+E8DIAG connectCount=1 closeCount=0 msgCount=83 totalBytes=42417 lastMsgSize=256 rawLen=42417 wasReconnect=false
+```
+
+After scroll-up (duplication observed):
+```
+E8DIAG connectCount=1 closeCount=0 msgCount=83 totalBytes=42417 lastMsgSize=256 rawLen=42417 wasReconnect=false
+```
+
+**Observation**: All counters unchanged during scroll. User reported duplicate rows appearing during scroll-up gesture. Scroll-down did not add more duplicates.
+
+**Conclusion**: Duplication is NOT caused by reconnect, data replay, or new writes. It is a visual viewport rendering issue occurring during the scroll-up gesture on mobile WebView.
+
+### Failed approaches
+
+| Approach | Result |
+|----------|--------|
+| fitTerminal debounce | Duplication still occurs during scroll-up |
+| viewport.invalidate() after scroll | Duplication still occurs during scroll-up |
+| Write buffering during scroll | Duplication occurs before new writes arrive |
+
+### Leading hypothesis
+
+xterm.js mobile WebView touch scroll causes viewport row misrender during the scroll gesture itself. The underlying data (raw buffer, msgCount) is correct — only the visual display duplicates. Next step: `term.clear()` + `term.refresh()` force re-render after scroll settles.
 - Mobile WebView: E8DIAG capture NOT confirmed (emulator connectivity blocked).
 - Desktop browser does NOT reproduce duplication during scroll — this does not rule out mobile-specific duplication from WebView remount on tab switch.
 
