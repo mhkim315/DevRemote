@@ -57,10 +57,10 @@ pty.go:438  HandleE8Diag → POST-only, auth-gated, input-length-limited → log
 - [x] daemon capture path working
 - [x] POST-only + auth + input validation
 - [x] build gate ALL 8 PASSED
-- [ ] runtime evidence (see capture instructions below)
-- [ ] terminal duplication root cause identified
-- [ ] terminal duplication root cause identified
-- [ ] terminal duplication fix implemented
+- [x] runtime evidence captured (2026-07-08, desktop browser)
+- [x] terminal duplication root cause identified
+- [x] terminal duplication root cause identified
+- [ ] terminal duplication fix implemented (term.clear() on reconnect, pty.go:326)
 
 ## How to capture runtime evidence
 
