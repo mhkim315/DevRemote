@@ -194,6 +194,26 @@ Needs investigation:
 - whether assistant response arrival triggers a full feed refresh that reorders
   or regroups bubbles incorrectly.
 
+### M-OBS-009 — Terminal command output is labeled as agent answer
+
+When the user enters a terminal command such as `ls`, Activity shows the result
+as an agent answer.
+
+Impact:
+- Terminal command output and agent response are semantically different.
+- Labeling shell output as an agent answer makes Activity misleading.
+- The user cannot tell whether the content came from an AI agent, the shell, or
+  terminal stdout.
+
+Needs investigation:
+- whether Activity events include a source field distinguishing agent output,
+  user input, terminal command, and terminal stdout;
+- whether terminal stdout is being mapped to `assistant_message`;
+- whether command results need a separate event category such as `command_output`
+  or `terminal_output`;
+- whether P2's bubble taxonomy needs to distinguish Agent Message from Terminal
+  Output without adding vendor-specific branches.
+
 ## Triage recommendation
 
 Before more manual UX polish, add an execution-verifiable diagnostic slice:
@@ -209,6 +229,7 @@ Priority:
 3. Agent event segmentation and Activity bubble grouping.
 4. Terminal/mobile layout reflow and excessive wrapping.
 5. Activity optimistic user bubble reconciliation.
+6. Terminal command output vs agent answer classification.
 
 Suggested E8 scope:
 - instrument terminal output frame IDs or append counts;
@@ -225,6 +246,8 @@ Suggested E8 scope:
 - verify whether first input vs later inputs follow different grouping paths;
 - verify Activity message IDs, authorship, and optimistic-to-server
   reconciliation;
+- verify Activity can distinguish agent output from terminal command/stdout
+  output;
 - add a fixture/demo session that renders P2 EventBubble categories without a
   physical daemon.
 - evaluate terminal canvas sizing, pinch-zoom, and pan behavior after terminal
