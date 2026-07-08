@@ -16,6 +16,7 @@ Updated observation:
 - Activity tab prints the content once.
 - Terminal tab duplicates output heavily.
 - The duplication appears after the user scrolls up or down in the terminal.
+- Pressing refresh returns the terminal viewport to the bottom.
 - The user suspects the terminal reloads or replays a whole data block during
   scroll, and the replay is appended as duplicate output.
 - This was observed while using terminal input.
@@ -31,6 +32,7 @@ Needs investigation:
 - xterm/WebView rendering behavior
 - history + live stream merge behavior
 - terminal scroll handler / viewport resize behavior
+- terminal refresh behavior and scroll position reset;
 - whether scroll triggers history reload or terminal re-render;
 - whether WebView receives the same terminal payload multiple times;
 - whether terminal input path and terminal output append share a replay buffer;
