@@ -24,9 +24,10 @@ Not captured by ActivityBuffer.
 
 | Adapter | OpenStream | InputWriter | stream-only fallback | 2nd OpenStream behavior | safest recorder point |
 |---------|-----------|-------------|---------------------|------------------------|----------------------|
-| localpty | SpawnPTY (new child per call) | WriteInput ✅ | N/A (has InputWriter) | Creates new PTY child — duplicate reads possible | OpenStream ONCE, then guard |
+| localpty | Returns existing NativeSession (same PTY) | WriteInput ✅ | N/A (has InputWriter) | Multiple readers share same PTY stream — read contention risk | OpenStream ONCE, guard against multi-reader contention |
 | tmux | SpawnPTY (new child per call) | ❌ none | **stream.Write(msg) REQUIRED** | Creates new tmux attach child — duplicate reads + terminal confusion | OpenStream ONCE, MUST preserve stream.Write fallback |
 | cmux | CmuxStream (new stream per call) | WriteInput ✅ | N/A (has InputWriter) | Creates new CmuxStream — duplicate reads possible | OpenStream ONCE, then guard |
+| fixture (test) | io.Pipe pair (new pair per call) | WriteInput ✅ | N/A | newFixtureStream creates pipe, writes initial content, blocks until Close. Read blocks until data or Close | Tests must model: recorder opens one stream, subscribers receive from broadcast, Close unblocks Read |
 
 **Evidence from source:**
 - `localpty_adapter.go:128`: `func (s *localptySession) WriteInput(...)` — InputWriter implemented
@@ -47,8 +48,7 @@ ReadScreen / ReadHistory / bootstrap / replay / reconnect
 → NEVER append to ActivityBuffer
 ```
 
-Current code enforces this via `skipCapture` flag (suppresses initial screen snapshot).
-Recorder must inherit this rule: skip the first ReadScreen burst.
+Future recorder MUST enforce: bootstrap/snapshot/replay bytes are never appended as new ActivityEvents. Only live PTY stream.Read() bytes qualify.
 
 ## 4. Ownership proposal
 
@@ -74,7 +74,7 @@ Broadcast channel → N WebSocket subscribers
 | C: first explicit attach action | User-initiated; not automatic. | Fallback |
 | D: first WebSocket connection | Does NOT satisfy "capture without viewer" goal. | ❌ Rejected |
 
-**Recommended**: Option A for localpty (has session lifecycle). Option B fallback for tmux/cmux (poll-based). Document which adapters support which.
+**Recommended**: Option A for localpty (has session lifecycle). tmux/cmux start at session discovery time is a CANDIDATE only — needs validation. PTY stream remains preferred capture source. Poll-based SCREEN capture is out of scope per E8f2 non-goals.
 
 ## 6. Late subscriber policy
 
