@@ -160,6 +160,29 @@ Important dependency:
   terminal pan/scroll/zoom work should happen after or alongside the E8 terminal
   scroll duplication fix.
 
+### M-OBS-008 — Activity user bubble is absorbed into assistant bubble
+
+When the user types in Activity:
+
+- the message first appears as the user's right-aligned bubble;
+- when the assistant response arrives, the user's question moves into or appears
+  inside the assistant bubble.
+
+Impact:
+- Message authorship becomes incorrect.
+- The user cannot trust whether a bubble is their input or the assistant output.
+- This suggests message identity, event boundary, optimistic rendering, or
+  reconciliation is wrong.
+
+Needs investigation:
+- whether optimistic local user messages have stable IDs;
+- whether server events later replace the optimistic message instead of merging
+  with it incorrectly;
+- whether the Activity renderer groups events by timestamp/session too broadly;
+- whether Codex event segmentation emits combined user+assistant content;
+- whether assistant response arrival triggers a full feed refresh that reorders
+  or regroups bubbles incorrectly.
+
 ## Triage recommendation
 
 Before more manual UX polish, add an execution-verifiable diagnostic slice:
@@ -174,6 +197,7 @@ Priority:
 2. Input delivery acknowledgement and failed-send state.
 3. Codex event segmentation vs Claude event segmentation.
 4. Terminal/mobile layout reflow and excessive wrapping.
+5. Activity optimistic user bubble reconciliation.
 
 Suggested E8 scope:
 - instrument terminal output frame IDs or append counts;
@@ -187,6 +211,8 @@ Suggested E8 scope:
 - expose last input/send error in debug UI or diagnostic endpoint;
 - add regression test for history + live stream duplication if reproducible;
 - compare Claude vs Codex event segmentation through `/api/sessions.Events`;
+- verify Activity message IDs, authorship, and optimistic-to-server
+  reconciliation;
 - add a fixture/demo session that renders P2 EventBubble categories without a
   physical daemon.
 - evaluate terminal canvas sizing, pinch-zoom, and pan behavior after terminal
