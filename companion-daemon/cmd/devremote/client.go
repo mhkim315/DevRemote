@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,9 +39,38 @@ func runClient(args []string) {
 		daemonURL = "http://localhost:9171"
 	}
 
-	body := fmt.Sprintf(`{"id":"controlled_pty:run","runner":"%s","runnerColor":"#45EBE9","command":"%s","cwd":"%s"}`,
-		command, command, cwd)
-	resp, err := http.Post(daemonURL+"/api/sessions", "application/json", strings.NewReader(body))
+	// Safe JSON encoding — no fmt.Sprintf for JSON bodies.
+	payload := struct {
+		ID          string `json:"id,omitempty"`
+		Runner      string `json:"runner"`
+		RunnerColor string `json:"runnerColor"`
+		Command     string `json:"command"`
+		CWD         string `json:"cwd,omitempty"`
+	}{
+		ID:          "", // backend generates ID for controlled_pty
+		Runner:      command,
+		RunnerColor: "#45EBE9",
+		Command:     command,
+		CWD:         cwd,
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
+		log.Fatalf("Failed to encode request: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", daemonURL+"/api/sessions", &buf)
+	if err != nil {
+		log.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// E10: optional auth token.
+	if token := os.Getenv("POKIT_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatalf("Failed to reach daemon at %s: %v\nIs the daemon running? Try: pokit daemon --insecure-local-only", daemonURL, err)
 	}

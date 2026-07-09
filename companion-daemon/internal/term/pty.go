@@ -38,8 +38,8 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID string `json:"workspaceId"`
 			Runner      string `json:"runner"`
 			RunnerColor string `json:"runnerColor"`
-				Command     string `json:"command"`
-				CWD         string `json:"cwd"`
+			Command     string `json:"command"`
+			CWD         string `json:"cwd"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
