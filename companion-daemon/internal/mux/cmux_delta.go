@@ -290,7 +290,8 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 func (s *screenTracker) isCommitted(line string) bool {
 	// Never block semantic markers — these are always new events.
 	if strings.HasPrefix(line, "›") || strings.HasPrefix(line, "•") ||
-		strings.HasPrefix(line, "⎿") {
+		strings.HasPrefix(line, "⎿") ||
+		strings.HasPrefix(line, "❯") || strings.HasPrefix(line, "⏺") {
 		return false
 	}
 	// Small window dedup: only check last 20 committed lines.
@@ -322,6 +323,8 @@ func isVolatileLine(line string) bool {
 	}
 	// Model/version banners.
 	if strings.Contains(line, "Claude Code") || strings.Contains(line, "Opus") ||
+		strings.Contains(line, "Brewed") || strings.Contains(line, "Churned") ||
+		strings.Contains(line, "Sautéed") || strings.Contains(line, "Thought for") ||
 		strings.Contains(line, "gpt-") || strings.Contains(line, "API Usage") {
 		return true
 	}
@@ -338,6 +341,10 @@ func isVolatileLine(line string) bool {
 
 // isTimerLine detects volatile timer/progress indicators.
 func isTimerLine(line string) bool {
+	// Claude Code thinking indicators
+	if strings.HasPrefix(strings.TrimSpace(line), "✻") {
+		return true
+	}
 	return strings.Contains(line, "s •") ||
 		strings.Contains(line, ") •") ||
 		strings.Contains(line, "• esc") ||
@@ -361,7 +368,8 @@ func isStatusPanelLine(line string) bool {
 		return true
 	}
 	// Usage/billing lines
-	if strings.Contains(line, "API Usage") || strings.Contains(line, "Billing") {
+	if strings.Contains(line, "API Usage") || strings.Contains(line, "Billing") ||
+		strings.Contains(line, "for shortcuts") || strings.Contains(line, "← for agents") {
 		return true
 	}
 	return false
@@ -380,6 +388,8 @@ func normalizeTranscript(text string) string {
 	text = ensureNewlineBefore(text, "› ")
 	text = ensureNewlineBefore(text, "• ")
 	text = ensureNewlineBefore(text, "⎿ ")
+	text = ensureNewlineBefore(text, "❯ ")
+	text = ensureNewlineBefore(text, "⏺ ")
 
 	// Step 2: Clean up each line.
 	lines := strings.Split(text, "\n")
