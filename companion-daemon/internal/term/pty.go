@@ -536,12 +536,9 @@ func stripANSI(s string) string {
 				i = j
 				continue
 			default:
-				// Other ESC sequences: ESC ( char, ESC ) char, etc.
-				// Typically 3 bytes: ESC type byte
+				// Other ESC sequences: ESC7, ESC8, ESC=, ESC>, ESC(, etc.
+				// These are 2 bytes: ESC + command byte.
 				i += 2
-				if i < len(s) {
-					i++ // consume the parameter byte
-				}
 				continue
 			}
 		}

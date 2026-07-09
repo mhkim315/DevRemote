@@ -80,7 +80,7 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	}
 	a.sessions[id] = s
 
-	// Watch for natural process exit via Signal(0) polling.
+	// Watch for natural process exit.
 	go func() {
 		ticker := time.NewTicker(200 * time.Millisecond)
 		defer ticker.Stop()

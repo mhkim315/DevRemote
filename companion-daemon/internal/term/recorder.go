@@ -27,9 +27,10 @@ type Recorder struct {
 
 // recorderRegistry tracks active recorders.
 var recorderRegistry = struct {
-	mu       sync.Mutex
-	recorders map[string]*Recorder
-}{recorders: make(map[string]*Recorder)}
+	mu         sync.Mutex
+	recorders  map[string]*Recorder
+	terminated map[string]bool // sessions whose PTY process exited
+}{recorders: make(map[string]*Recorder), terminated: make(map[string]bool)}
 
 // StartRecorder creates a recorder for a session. Returns existing if alive.
 // Caller must provide an active stream — recorder takes ownership of the read loop.
@@ -37,6 +38,10 @@ var recorderRegistry = struct {
 func StartRecorder(sessionID string, stream mux.TerminalStream, activity *ActivityBuffer) (*Recorder, chan []byte) {
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
+
+	if recorderRegistry.terminated[sessionID] {
+		return nil, nil
+	}
 
 	if r, ok := recorderRegistry.recorders[sessionID]; ok {
 		if !r.IsAlive() || r.Err() != nil {
@@ -155,6 +160,10 @@ func (r *Recorder) readLoop() {
 			r.readErr = err
 			r.mu.Unlock()
 			log.Printf("RECORDER read err session=%s: %v", r.sessionID, err)
+			// Mark session terminated so telemetry does not restart recorder.
+			recorderRegistry.mu.Lock()
+			recorderRegistry.terminated[r.sessionID] = true
+			recorderRegistry.mu.Unlock()
 			// Close all subscribers so WebSocket handlers detect EOF.
 			r.mu.Lock()
 			for _, ch := range r.subscribers {
@@ -344,6 +353,11 @@ func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *Activit
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
 
+	// E10: do not restart recorder for sessions whose PTY process exited.
+	if recorderRegistry.terminated[sessionID] {
+		return nil, nil
+	}
+
 	if r, ok := recorderRegistry.recorders[sessionID]; ok {
 		if !r.IsAlive() || r.Err() != nil {
 			delete(recorderRegistry.recorders, sessionID)
@@ -388,6 +402,7 @@ func DeleteRecorder(sessionID string) {
 	if ok {
 		delete(recorderRegistry.recorders, sessionID)
 	}
+	delete(recorderRegistry.terminated, sessionID)
 	recorderRegistry.mu.Unlock()
 	if ok {
 		r.Stop()
