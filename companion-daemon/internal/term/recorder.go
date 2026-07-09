@@ -497,6 +497,12 @@ func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)
 }
 
+// Resize resizes the underlying PTY stream. Used by local terminal attach
+// to match the host terminal size. Safe to call while the read loop runs.
+func (r *Recorder) Resize(rows, cols int) error {
+	return r.stream.Resize(rows, cols)
+}
+
 // isClearScreenSnapshot reports whether payload starts with the cmux
 // full-screen redraw header (ESC[2J ESC[H). Normal PTY output may contain
 // ESC[H (cursor home) alone, which must NOT trigger snapshot drain.

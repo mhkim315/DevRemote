@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -167,7 +168,19 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 	if err == nil {
 		firstLine = strings.TrimSpace(firstLine)
 		if strings.HasPrefix(firstLine, "sub:") {
-			handleIPCSubscriber(conn, strings.TrimPrefix(firstLine, "sub:"), activity)
+			// Format: "sub:<sessionID> [<cols> <rows>]". The session ID has no
+			// spaces, so the optional local terminal size follows as fields.
+			fields := strings.Fields(strings.TrimPrefix(firstLine, "sub:"))
+			subID := ""
+			var cols, rows int
+			if len(fields) > 0 {
+				subID = fields[0]
+			}
+			if len(fields) >= 3 {
+				cols, _ = strconv.Atoi(fields[1])
+				rows, _ = strconv.Atoi(fields[2])
+			}
+			handleIPCSubscriber(conn, subID, cols, rows, activity)
 			return
 		}
 		// Not sub: — process as first legacy header line.
@@ -282,11 +295,20 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 // handleIPCSubscriber bridges a local terminal to an existing recorder.
 // The terminal is a subscriber — reads from recorder broadcast, writes
 // via WriteInput. No second PTY reader is created.
-func handleIPCSubscriber(conn net.Conn, sessionID string, activity *ActivityBuffer) {
+func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, activity *ActivityBuffer) {
 	rec := GetRecorder(sessionID)
 	if rec == nil {
 		conn.Write([]byte("session not found or recorder not started\n"))
 		return
+	}
+
+	// Resize the PTY to the local terminal size before streaming so TUIs
+	// (claude/codex) render at the attaching terminal's width, not the
+	// 80x24 spawn default.
+	if cols > 0 && rows > 0 {
+		if err := rec.Resize(rows, cols); err != nil {
+			log.Printf("IPC subscriber resize err session=%s: %v", sessionID, err)
+		}
 	}
 
 	// E10b: atomic subscribe+bootstrap — no gap, no duplicate.
@@ -296,13 +318,16 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, activity *ActivityBuff
 	}
 	defer rec.Unsubscribe(subCh)
 
-	// Recorder broadcast → local stdout.
+	// Recorder broadcast → local stdout. When subCh closes (session ended)
+	// or a write fails, close conn so the read loop below unblocks and the
+	// local client sees EOF — otherwise both sides deadlock on exit.
 	go func() {
 		for data := range subCh {
 			if _, err := conn.Write(data); err != nil {
-				return
+				break
 			}
 		}
+		conn.Close()
 	}()
 
 	// Local stdin → recorder WriteInput.

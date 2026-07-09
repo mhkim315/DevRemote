@@ -11,11 +11,53 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/term"
 )
+
+// terminalResetSeq sanitizes the host terminal after a controlled_pty
+// session ends. TUIs like claude/codex enable a range of private modes and
+// (kitty) keyboard/mouse/focus reporting. If we don't disable them on exit,
+// the host shell inherits a broken terminal and stray query responses
+// (e.g. cursor-position reports ESC[?<r>;<c>R) leak into the shell as input.
+// All sequences are ignored by terminals that don't support them.
+const terminalResetSeq = "" +
+	"\x1b[?1049l" + // leave alternate screen buffer
+	"\x1b[?2004l" + // bracketed paste off
+	"\x1b[?1004l" + // focus reporting off
+	"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l" + // all mouse tracking off
+	"\x1b[<u" + // pop kitty keyboard protocol flags
+	"\x1b[>4;0m" + // reset modifyOtherKeys (xterm)
+	"\x1b[?1l" + // cursor keys: normal (DECCKM off)
+	"\x1b>" + // keypad: numeric/normal (DECKPNM)
+	"\x1b[?25h" + // show cursor
+	"\x1b[0m" + // reset SGR attributes
+	"\r" // return to column 0
+
+// drainStdin reads and discards any pending stdin bytes for up to d. It is
+// called during teardown (still in raw mode) to absorb in-flight terminal
+// query responses the host emits as the TUI tears down, so they never reach
+// the parent shell. Discarding is safe here — the session has already ended.
+func drainStdin(d time.Duration) {
+	deadline := time.After(d)
+	buf := make([]byte, 256)
+	for {
+		read := make(chan struct{}, 1)
+		go func() {
+			os.Stdin.Read(buf)
+			read <- struct{}{}
+		}()
+		select {
+		case <-read:
+			// discard and keep draining until the window elapses
+		case <-deadline:
+			return
+		}
+	}
+}
 
 // buildRunPayload constructs the JSON body for a POST /api/sessions request.
 // Returns the encoded bytes and the generated session ID.
@@ -141,8 +183,14 @@ func attachLocalTerminal(sessionID string) {
 	}
 	defer conn.Close()
 
-	// Send subscriber protocol header.
-	fmt.Fprintf(conn, "sub:%s\n", sessionID)
+	// Send subscriber protocol header. If stdout is a TTY, advertise the
+	// local terminal size so the daemon resizes the PTY to match — TUIs like
+	// claude assume a wider terminal than the 80x24 spawn default.
+	if w, h, sErr := term.GetSize(int(os.Stdout.Fd())); sErr == nil && w > 0 && h > 0 {
+		fmt.Fprintf(conn, "sub:%s %d %d\n", sessionID, w, h)
+	} else {
+		fmt.Fprintf(conn, "sub:%s\n", sessionID)
+	}
 
 	// Put terminal in raw mode.
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
@@ -154,31 +202,32 @@ func attachLocalTerminal(sessionID string) {
 		io.Copy(io.Discard, conn)
 		return
 	}
-	defer func() {
-		term.Restore(int(os.Stdin.Fd()), oldState)
-		os.Stdout.Write([]byte("[>4;0m[?1l"))
-	}()
+
+	// restore sanitizes the host terminal and restores cooked mode exactly
+	// once, on whichever exit path fires first (EOF, error, Ctrl+C). The full
+	// mode-reset lives in terminalResetSeq.
+	var restoreOnce sync.Once
+	restore := func() {
+		restoreOnce.Do(func() {
+			os.Stdout.WriteString(terminalResetSeq)
+			term.Restore(int(os.Stdin.Fd()), oldState)
+		})
+	}
+	defer restore()
 
 	// Handle Ctrl+C gracefully.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		term.Restore(int(os.Stdin.Fd()), oldState)
-		os.Stdout.Write([]byte("[>4;0m[?1l"))
-		conn.Close()
-		os.Exit(0)
-	}()
 
-	// Relay: recorder broadcast → local stdout.
-	// When conn closes (session ended), exit cleanly.
+	// Relay: recorder broadcast → local stdout. When conn closes (session
+	// ended), stdoutDone fires.
 	stdoutDone := make(chan struct{})
 	go func() {
 		io.Copy(os.Stdout, conn)
 		close(stdoutDone)
 	}()
 
-	// Relay: local stdin → recorder WriteInput (background, killed by os.Exit).
+	// Relay: local stdin → recorder WriteInput.
 	go func() {
 		io.Copy(conn, os.Stdin)
 	}()
@@ -188,9 +237,12 @@ func attachLocalTerminal(sessionID string) {
 	case <-stdoutDone:
 	case <-sigCh:
 	}
+	// Session ended. Close the socket, then drain any in-flight host-terminal
+	// query responses (e.g. cursor-position reports emitted as the TUI tears
+	// down) so they don't leak into the parent shell as input.
 	conn.Close()
-	term.Restore(int(os.Stdin.Fd()), oldState)
-	os.Stdout.Write([]byte("\x1b[>4;0m\x1b[?1l"))
+	drainStdin(150 * time.Millisecond)
+	restore()
 	os.Exit(0)
 }
 
