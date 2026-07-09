@@ -561,9 +561,17 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
         {/* E8h: Transcript Mode — best-effort readable history. Not a terminal emulator. */}
         <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
+          {/* E8g6: show observe/degraded state for best-effort transcript (cmux). */}
+          {isBestEffortTranscript && (
+            <View style={[styles.transcriptInfo, {backgroundColor: '#1a1a0a'}]}>
+              <Text style={styles.transcriptInfoText}>Best-effort transcript — screen snapshot based. May show duplicates.</Text>
+            </View>
+          )}
+          {!isBestEffortTranscript && (
           <View style={styles.transcriptInfo}>
             <Text style={styles.transcriptInfoText}>Read-only history. Live Terminal is source of truth for interactive/TUI.</Text>
           </View>
+          )}
           {newOutputCount > 0 && (
             <TouchableOpacity style={styles.newOutputBanner} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
               <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
