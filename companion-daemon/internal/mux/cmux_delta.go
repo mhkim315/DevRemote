@@ -190,9 +190,29 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		return ""
 	}
 
-	// First poll: just record, don't commit.
+	// First poll: bootstrap from the existing screen content.
+	// Filter out volatile lines, keep the rest as initial transcript.
 	if s.prevLines == nil {
 		s.prevLines = currLines
+		var initial []string
+		const maxBootstrap = 200
+		start := 0
+		if len(currLines) > maxBootstrap {
+			start = len(currLines) - maxBootstrap
+		}
+		for _, line := range currLines[start:] {
+			line = strings.TrimSpace(line)
+			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
+				continue
+			}
+			if !s.isCommitted(line) {
+				initial = append(initial, line)
+				s.committed = append(s.committed, line)
+			}
+		}
+		if len(initial) > 0 {
+			return normalizeTranscript(strings.Join(initial, "\n"))
+		}
 		return ""
 	}
 
@@ -205,15 +225,20 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		prefixLen = i + 1
 	}
 
-	// Lines from prev that are NOT in curr.
-	// If they were above the mutable tail boundary → commit them.
-	// If they were in the mutable tail → dropped (replaced).
+	// Track screen stability.
+	if prefixLen == len(s.prevLines) && prefixLen == len(currLines) {
+		s.stableCount++
+	} else {
+		s.stableCount = 0
+	}
+
 	var toCommit []string
+
+	// Lines that scrolled out of the stable prefix → commit.
 	if prefixLen < len(s.prevLines) {
-		scrolledLines := s.prevLines[prefixLen:]
-		for _, line := range scrolledLines {
+		for _, line := range s.prevLines[prefixLen:] {
 			line = strings.TrimSpace(line)
-			if line == "" || isTimerLine(line) || isVolatileLine(line) {
+			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
 				continue
 			}
 			if !s.isCommitted(line) {
@@ -223,21 +248,14 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		}
 	}
 
-	// Stable prefix unchanged → count stability.
-	if prefixLen == len(s.prevLines) && prefixLen == len(currLines) {
-		// Screen completely unchanged.
-		s.stableCount++
-	} else {
+	// Force-flush: screen completely idle for 10 polls (~5s) →
+	// commit ALL non-volatile lines from the current screen.
+	const forceFlushPolls = 10
+	if s.stableCount >= forceFlushPolls {
 		s.stableCount = 0
-	}
-
-	// If the stable prefix has been stable for threshold polls,
-	// commit any new lines at the boundary that appeared.
-	if s.stableCount >= s.commitThreshold && prefixLen > 0 && prefixLen < len(currLines) {
-		newStable := currLines[prefixLen:]
-		for _, line := range newStable {
+		for _, line := range currLines {
 			line = strings.TrimSpace(line)
-			if line == "" || isTimerLine(line) || isVolatileLine(line) {
+			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
 				continue
 			}
 			if !s.isCommitted(line) {
@@ -249,17 +267,19 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 
 	s.prevLines = currLines
 
-	// Trim committed buffer to prevent unbounded growth.
-	if len(s.committed) > 500 {
-		s.committed = s.committed[len(s.committed)-500:]
+	// Trim committed buffer.
+	if len(s.committed) > 1000 {
+		s.committed = s.committed[len(s.committed)-1000:]
 	}
 
 	if len(toCommit) > 0 {
-		return strings.Join(toCommit, "\n")
+		text := normalizeTranscript(strings.Join(toCommit, "\n"))
+		if strings.TrimSpace(text) != "" {
+			return text
+		}
 	}
 	return ""
 }
-
 func (s *screenTracker) isCommitted(line string) bool {
 	for _, c := range s.committed {
 		if c == line {
