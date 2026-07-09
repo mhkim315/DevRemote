@@ -170,7 +170,13 @@ func (r *Recorder) readLoop() {
 
 		// Append to ActivityBuffer FIRST — recorder is the SINGLE append source.
 		// Subscriber broadcast follows so that receiving data implies capture is done.
-		if r.activity != nil {
+		//
+		// E8i: skip full-screen snapshots (cmux adapter polls screen every 500ms).
+		// Snapshots start with clear-screen + cursor-home and contain cumulative
+		// content, not deltas. They are broadcast to live terminal subscribers
+		// but must not be stored as terminal_output in ActivityBuffer.
+		isScreenSnapshot := isClearScreenSnapshot(payload)
+		if r.activity != nil && !isScreenSnapshot {
 			text := string(payload)
 			if !isANSIControlOnly(text) && len(text) > 3 {
 				if len(text) > 32768 {
@@ -187,6 +193,7 @@ func (r *Recorder) readLoop() {
 
 		// Broadcast to subscribers after append — eliminates race between
 		// subscriber receive and ActivityBuffer.List.
+		// Screen snapshots ARE broadcast (live terminal needs them).
 		r.mu.Lock()
 		for _, ch := range r.subscribers {
 			select {
@@ -257,6 +264,20 @@ func DeleteRecorder(sessionID string) {
 // WriteInput sends input to the PTY stream. Used for tmux stream-only input fallback.
 func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)
+}
+
+// isClearScreenSnapshot reports whether payload starts with a clear-screen
+// escape sequence (ESC[2J or ESC[H), indicating a full-screen redraw rather
+// than incremental terminal output. Used to filter cmux screen polls from
+// ActivityBuffer while still broadcasting them to live terminal subscribers.
+func isClearScreenSnapshot(payload []byte) bool {
+	if len(payload) < 4 {
+		return false
+	}
+	// ESC [ 2 J (clear screen) or ESC [ H (cursor home)
+	return (payload[0] == 0x1b && payload[1] == '[' &&
+		payload[2] == '2' && payload[3] == 'J') ||
+		(payload[0] == 0x1b && payload[1] == '[' && payload[2] == 'H')
 }
 
 // GetRecorder returns the recorder for a session, or nil.
