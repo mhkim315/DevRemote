@@ -123,7 +123,20 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// E8f2: subscribe to session recorder. Recorder opens stream ONCE.
+	// E8g4: cmux uses screen snapshots, not PTY byte stream.
+		// Live terminal rendering accumulates xterm scrollback via ESC[2J.
+		// Disable live terminal for screen_snapshot_delta adapters (P0 fix).
+		if adapter, ok := reg.Adapter(s.AdapterName()); ok {
+			if cp, ok := adapter.(mux.TranscriptCaptureProvider); ok &&
+				cp.TranscriptCaptureMode() == mux.CaptureModeScreenSnapshotDelta {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotImplemented)
+				w.Write([]byte(`{"error":"unsupported","detail":"cmux uses screen snapshots. Live terminal is disabled for this adapter. Use Transcript tab for captured output."}`))
+				return
+			}
+		}
+
+		// E8f2: subscribe to session recorder. Recorder opens stream ONCE.
 		opener, hasStream := s.(mux.StreamOpener)
 		if !hasStream {
 			w.Header().Set("Content-Type", "application/json")
