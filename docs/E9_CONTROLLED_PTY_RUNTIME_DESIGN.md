@@ -158,6 +158,23 @@ Capabilities: observe, control, input, liveTerminal, reliableTranscript
 9. **Reconnect**: disconnect and reconnect WebSocket, verify history accessible.
 10. **Race detector**: `go test -race ./... -count=1`.
 
+## E9 vs E10 boundary
+
+The `pokit run ...` examples in the launch surface section describe the future
+E10 launch UX. E9 MVP implements only the runtime/adapter foundation needed to
+support such launch flows later.
+
+E9 MVP:
+- Backend Controlled PTY adapter/runtime.
+- Programmatic/session API creation.
+- Tests proving PTY capture/input/lifecycle.
+
+E10:
+- `pokit run` CLI.
+- Agent launch UX.
+- Saved commands.
+- User-facing launch flow.
+
 ## Out of MVP Scope
 
 - Attaching to existing Terminal.app/iTerm2/Ghostty/Warp sessions.
@@ -165,4 +182,5 @@ Capabilities: observe, control, input, liveTerminal, reliableTranscript
 - Multi-daemon / remote PTY.
 - Terminal-specific plugins.
 - Agent profile UI.
+- `pokit run` CLI (E10).
 - `pokit run` CLI.
