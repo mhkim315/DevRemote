@@ -297,13 +297,8 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const handleChangeText = useCallback((text: string) => {
     cmdRef.current = text;
-    if (text.endsWith('\n')) {
-      doSend(text.replace(/\n/g, '') + '\r');
-      setCmd('');
-    } else {
-      setCmd(text);
-    }
-  }, [doSend]);
+    setCmd(text);
+  }, []);
 
   const handleCopyRequest = useCallback(async () => {
     // Get terminal text and copy directly
