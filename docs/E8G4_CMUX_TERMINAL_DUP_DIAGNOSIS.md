@@ -44,20 +44,40 @@ xterm.js scrollback. Over time, scrollback fills with duplicate copies.
 
 ### Transcript Duplication
 
-**Mechanism**: Terminal scrollback growth feeds into Transcript.
+**Status**: NOT YET ROOT-CAUSED. Must be validated independently from Terminal.
 
-Because the Terminal accumulates scrollback (via ESC[2J), the cmux screen
-itself grows over time. The screenTracker processes the growing screen and
-commits new lines. Some of these are the duplicated scrollback entries
-from the Terminal.
+Terminal duplication and Transcript duplication are likely **sibling symptoms**
+of treating cmux snapshots as stream-like output. However, mobile xterm
+scrollback does NOT feed back into ActivityBuffer. The causal chain
+"Terminal scrollback → Transcript duplication" is incorrect.
 
-This is a secondary effect — the primary issue is the Terminal duplication.
+Transcript duplication must be validated independently at the daemon
+capture/delta level:
 
-### Not the cause
+```
+cmux snapshot
+  → screenTracker.processScreen()
+  → delta marker (ESC[9998m)
+  → Recorder → ActivityBuffer
+  → /api/sessions?activity=...
+  → mobile Transcript UI
+```
+
+**Open questions** (need evidence):
+1. Does the cmux source snapshot itself contain duplicated content?
+2. Does screenTracker commit the same lines multiple times?
+3. Are delta marker events duplicated in ActivityBuffer?
+4. Is the duplication visible in raw API output, or only in mobile UI?
+
+### Not the cause (for Terminal)
 
 - ✗ Recorder broadcast duplication (each chunk broadcast once)
 - ✗ Subscriber fanout (one subscriber per WebSocket)
 - ✗ drainSnapshot chunking (chunks delivered sequentially, no overlap)
+
+### Not the cause (for Transcript)
+
+- ✗ Mobile xterm scrollback feeding back into daemon (impossible — client-side state)
 - ✗ force-flush overcommit (proven fixed in 21770d6d2)
 
 ## Structural Issue
@@ -72,19 +92,76 @@ cmux is a **screen snapshot adapter**, not a PTY byte stream adapter.
 | Transcript | Natural delta | Must extract from snapshots |
 | Live rendering | xterm byte stream | Should be screen-replace |
 
-Treating cmux as xterm live stream causes snapshot frames to accumulate
-as scrollback. This is the root cause of both Terminal and Transcript
-duplication.
+Treating cmux as xterm live stream causes Terminal snapshot frames to
+accumulate as scrollback. Transcript duplication is a separate symptom
+that shares the same structural cause but requires independent validation.
+
+## Two Independent Paths
+
+### Path 1: Terminal Live Rendering Duplication
+
+```
+cmux snapshot
+  → terminal live broadcast (ESC[2J ESC[H + content)
+  → mobile xterm write/render
+  → xterm scrollback accumulation
+  → P0: infinite duplication, cannot scroll to bottom
+```
+
+**Diagnosis items**:
+- [x] cmux snapshot sent as full-screen frame with ESC[2J prefix
+- [ ] xterm scrollback grows on each snapshot (likely — ESC[2J saves to scrollback)
+- [ ] subscriber/reconnect fanout
+- [ ] chunk boundary breaking clear/home sequence
+
+**Fix candidates**:
+A. Disable cmux Terminal live view (degraded/static snapshot)
+B. Call `term.reset()` before each snapshot write (clear scrollback too)
+C. Replace append-style xterm with screen-replace renderer for cmux
+
+### Path 2: Transcript Capture/Delta Duplication
+
+```
+cmux snapshot
+  → screenTracker.processScreen()
+  → delta marker (ESC[9998m)
+  → Recorder readLoop
+  → ActivityBuffer.Append()
+  → /api/sessions?activity=...
+  → mobile Transcript UI
+```
+
+**Diagnosis items** (ALL NEED EVIDENCE):
+- [ ] cmux source snapshot contains duplicate content
+- [ ] screenTracker commits same lines across multiple processScreen calls
+- [ ] delta marker events are duplicated in ActivityBuffer (raw API check)
+- [ ] duplication visible in raw `/api/sessions?activity=` output
+- [ ] duplication only in mobile UI rendering
+
+**Required evidence before patching**:
+```sh
+# Check raw API for seq growth and duplicate text
+curl -s "http://localhost:9171/api/sessions?activity=cmux:surface:2" | python3 -c "
+import json, sys
+events = json.load(sys.stdin)
+print(f'Total events: {len(events)}')
+for e in events:
+    lines = [l.strip() for l in e.get('text','').split('\n') if l.strip()]
+    unique = len(set(lines))
+    print(f'seq={e[\"seq\"]} lines={len(lines)} unique={unique} dup={len(lines)-unique}')
+"
+```
 
 ## Recommendation
 
 **NEEDS DESIGN CHANGE** — cmux Terminal should not use xterm live stream.
 
-Short-term options:
+Short-term Terminal options:
 A. Disable cmux Terminal live view (show static snapshot or "unsupported")
-B. Replace ESC[2J with ESC[H + ESC[J (clear from cursor, no scrollback save)
-C. Call term.reset() on mobile before each snapshot write
-D. Use a separate "snapshot renderer" component instead of xterm for cmux
+B. Call term.reset() on mobile before each snapshot write
+C. Use separate "snapshot renderer" component instead of xterm for cmux
+
+Transcript: collect raw API evidence before patching.
 
 Long-term design:
 ```
@@ -96,15 +173,6 @@ cmux         → snapshot renderer (replace, not append)
 ## Verification Commands
 
 ```sh
-# Check snapshot content for ESC[2J prefix
-curl -s "http://localhost:9171/api/sessions?activity=cmux:surface:2" | python3 -c "
-import json, sys
-events = json.load(sys.stdin)
-for e in events:
-    t = e.get('text','')
-    print(f'has_ESC2J: {repr(chr(0x1b)+\"[2J\") in t}')
-"
-
 # Run regression tests
 go test ./internal/mux -run TestForceFlush_Overcommit -count=1 -v
 go test ./internal/mux ./internal/term -count=1
