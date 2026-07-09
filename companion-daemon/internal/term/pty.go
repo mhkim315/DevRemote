@@ -487,6 +487,55 @@ func isANSIControlOnly(s string) bool {
 	return true // all control/ANSI bytes
 }
 
+// stripANSI removes ANSI escape sequences from text so Transcript renders
+// readable output instead of raw terminal control codes.
+// Handles CSI (ESC[ ... letter), OSC (ESC] ... BEL/ST), and other ESC-based sequences.
+func stripANSI(s string) string {
+	var out []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) {
+			switch s[i+1] {
+			case '[': // CSI: ESC[ ... 0x40-0x7E
+				j := i + 2
+				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+					j++
+				}
+				if j < len(s) {
+					j++ // consume the terminating byte
+				}
+				i = j
+				continue
+			case ']': // OSC: ESC] ... BEL(0x07) or ST(ESC\)
+				j := i + 2
+				for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
+					j++
+				}
+				if j < len(s) {
+					if s[j] == 0x07 {
+						j++
+					} else {
+						j += 2 // ESC \
+					}
+				}
+				i = j
+				continue
+			default:
+				// Other ESC sequences: ESC ( char, ESC ) char, etc.
+				// Typically 3 bytes: ESC type byte
+				i += 2
+				if i < len(s) {
+					i++ // consume the parameter byte
+				}
+				continue
+			}
+		}
+		out = append(out, s[i])
+		i++
+	}
+	return string(out)
+}
+
 func HandleDump(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {

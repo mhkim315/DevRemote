@@ -183,7 +183,7 @@ func (r *Recorder) readLoop() {
 		// Append to ActivityBuffer FIRST — recorder is the SINGLE append source.
 		// Subscriber broadcast follows so that receiving data implies capture is done.
 		if r.activity != nil {
-			text := string(payload)
+			text := stripANSI(string(payload))
 			if !isANSIControlOnly(text) && len(text) > 3 {
 				if len(text) > 32768 {
 					text = text[:32768]
