@@ -101,16 +101,21 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const transcriptMaxSeqRef = useRef(0);
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
-  // Only sessions explicitly advertising 'history' get the ACTIVITY tab.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
+  // E8g5: adapter-level capability. cmux lacks liveTerminal.
+  const supportsLiveTerminal = !!(sessionData?.adapterCapabilities?.includes('liveTerminal'));
+  const isBestEffortTranscript = !!(sessionData?.adapterCapabilities?.includes('bestEffortTranscript'));
   const sessionDataRef = useRef(sessionData);
   sessionDataRef.current = sessionData;
   const [sessionEnded, setSessionEnded] = useState(false);
 
-  // When history is unsupported, force-switch to terminal tab.
+  // When live terminal is unsupported (cmux), force-switch away.
   useEffect(() => {
+    if (!supportsLiveTerminal && activeTab === 'terminal') {
+      setActiveTab(isBestEffortTranscript ? 'transcript' : 'activity');
+    }
     if (!supportsHistory && activeTab === 'activity') {
-      setActiveTab('terminal');
+      setActiveTab(supportsLiveTerminal ? 'terminal' : 'transcript');
     }
   }, [supportsHistory, activeTab]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
@@ -452,12 +457,16 @@ export default function FeedScreen({onBack, session, token}: Props) {
         </View>
 
         <View style={styles.tabBar}>
-          <TouchableOpacity 
-            style={[styles.tab, activeTab === 'terminal' && styles.activeTab]} 
+          {/* E8g5: Terminal tab only for liveTerminal-capable adapters (tmux/localpty).
+              Legacy sessions without adapterCapabilities default to showing Terminal. */}
+          {(supportsLiveTerminal || !sessionData?.adapterCapabilities) && (
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'terminal' && styles.activeTab]}
             onPress={() => setActiveTab('terminal')}
           >
             <Text style={[styles.tabText, activeTab === 'terminal' && styles.activeTabText]}>TERMINAL</Text>
           </TouchableOpacity>
+          )}
           {supportsHistory && (
           <TouchableOpacity
             style={[styles.tab, activeTab === 'activity' && styles.activeTab]}

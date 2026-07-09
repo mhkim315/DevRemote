@@ -23,6 +23,7 @@ export interface SessionTelemetry {
   runnerColor?: string;
   adapter?: string;
   capabilities?: string[];
+  adapterCapabilities?: string[];
   isAddBtn?: boolean;
   events?: AgentEvent[];
   agentKind?: string;

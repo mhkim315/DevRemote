@@ -301,15 +301,17 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			res = append(res, SessionTelemetry{
 				ID: compoundID, DisplayID: sess.ID(), State: "idle", Load: 0,
 				Runner: "cat", RunnerColor: "#58a6ff", Adapter: sess.AdapterName(),
-				Capabilities: sessionCapabilities(sess),
-				Events:       events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+				Capabilities:        sessionCapabilities(sess),
+				AdapterCapabilities: adapterCapabilityStrings(reg, sess.AdapterName()),
+				Events:              events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 			})
 		} else {
 			res = append(res, SessionTelemetry{
 				ID: compoundID, DisplayID: sess.ID(), State: data.State, Load: data.Load,
 				Runner: data.Runner, RunnerColor: data.RunnerColor, Adapter: sess.AdapterName(),
-				Capabilities: sessionCapabilities(sess),
-				Events:       events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+				Capabilities:        sessionCapabilities(sess),
+				AdapterCapabilities: adapterCapabilityStrings(reg, sess.AdapterName()),
+				Events:              events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 			})
 		}
 	}

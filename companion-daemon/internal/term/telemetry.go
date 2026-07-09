@@ -23,7 +23,8 @@ type SessionTelemetry struct {
 	Runner          string              `json:"runner"`
 	RunnerColor     string              `json:"runnerColor"`
 	Adapter         string              `json:"adapter"`
-	Capabilities    []string            `json:"capabilities,omitempty"` // e.g. ["live_stream","screen","history"]
+	Capabilities        []string            `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
+	AdapterCapabilities []string            `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
 	Events          []models.AgentEvent `json:"events"`
 	AgentKind       string                 `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
 	AgentStatus     string                 `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
@@ -34,6 +35,23 @@ type SessionTelemetry struct {
 	Stale         bool      `json:"stale,omitempty"`
 	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
 	LastError     string    `json:"lastError,omitempty"`
+}
+
+// adapterCapabilityStrings returns the adapter-level capabilities as JSON-safe strings.
+func adapterCapabilityStrings(reg *mux.Registry, adapterName string) []string {
+	if reg == nil {
+		return nil
+	}
+	adapter, ok := reg.Adapter(adapterName)
+	if !ok {
+		return nil
+	}
+	caps := mux.AdapterCapabilities(adapter)
+	out := make([]string, len(caps))
+	for i, c := range caps {
+		out[i] = string(c)
+	}
+	return out
 }
 
 // sessionCapabilities returns the list of optional capabilities a session supports.
