@@ -275,3 +275,94 @@ func normalizeVolatilePattern(line string) string {
 	}
 	return result
 }
+
+// ── Pending-to-Committed Transcript Model ──
+//
+// Deltas are not immediately committed to ActivityBuffer. Instead they
+// enter a pending state. Only when the output stabilizes (no new delta
+// for N consecutive polls) is it committed. Volatile repaint (timers,
+// spinners, status bars) never reaches committed transcript.
+//
+// Two layers:
+//  1. Committed: stable semantic text → delta marker → ActivityBuffer
+//  2. Pending: transient text, held in memory, replaced on each poll
+
+type transcriptManager struct {
+	pending         string // accumulated pending output
+	stableCount     int    // consecutive polls with no new semantic delta
+	stableThreshold int    // polls before commit (e.g., 2 = 1 second at 500ms)
+}
+
+func newTranscriptManager() *transcriptManager {
+	return &transcriptManager{stableThreshold: 2}
+}
+
+// processDelta decides whether to commit accumulated pending output.
+// delta is the new text extracted from the latest screen comparison.
+// Returns the text to commit (for ActivityBuffer), or "" if nothing
+// should be committed yet.
+func (m *transcriptManager) processDelta(delta string) (commitText string) {
+	// Filter volatile patterns from the delta.
+	semantic := removeVolatileLines(delta)
+
+	if semantic != "" {
+		// New semantic output — append to pending, reset stability.
+		if m.pending != "" {
+			m.pending += "\n" + semantic
+		} else {
+			m.pending = semantic
+		}
+		m.stableCount = 0
+		return ""
+	}
+
+	// No new semantic output. If we have pending content, count
+	// stability. Commit when the screen has been stable long enough.
+	if m.pending != "" {
+		m.stableCount++
+		if m.stableCount >= m.stableThreshold {
+			commitText = m.pending
+			m.pending = ""
+			m.stableCount = 0
+		}
+	}
+	return ""
+}
+
+// removeVolatileLines strips volatile UI patterns from delta text.
+// Returns only lines that appear to be semantic content (messages,
+// tool output, logs) rather than transient repaint artifacts
+// (timers, spinners, status bars).
+func removeVolatileLines(delta string) string {
+	lines := splitLines(delta)
+	var semantic []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Single character = spinner fragment.
+		if len(line) == 1 {
+			continue
+		}
+		// Timer pattern: contains "s •" or ") •" (e.g. "Working (3s • esc...)").
+		if isTimerLine(line) {
+			continue
+		}
+		semantic = append(semantic, line)
+	}
+	if len(semantic) == 0 {
+		return ""
+	}
+	return strings.Join(semantic, "\n")
+}
+
+// isTimerLine detects volatile timer/progress indicators.
+// Patterns: "Working (Ns • ...)", "Building... Ns", etc.
+// Generic: line containing "(digit+s" or "digit+s •" or "digit+s remaining".
+func isTimerLine(line string) bool {
+	return strings.Contains(line, "s •") ||
+		strings.Contains(line, ") •") ||
+		strings.Contains(line, "• esc") ||
+		strings.Contains(line, "esc to interrupt")
+}

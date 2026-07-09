@@ -279,7 +279,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 
 	var lastContent string
 	var lastCleanContent string          // ANSI-stripped, for delta extraction
-	volatile := newVolatileFilter()       // suppresses repeated UI repaint
+	tm := newTranscriptManager()           // pending-to-committed model
 	consecutiveErrs := 0
 	maxErrs := 3
 
@@ -317,17 +317,24 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 			// E8g4: write delta AFTER full screen so drainSnapshot
 			// consumes snapshot before Recorder reads the delta.
 			cleanCurr := stripMuxANSI(currentContent)
-			if delta := extractDelta(lastCleanContent, cleanCurr); delta != "" {
-				// Suppress volatile UI repaint (timers, spinners, status bars).
-				if filtered := volatile.filter(delta); filtered != "" {
-					d := "\033[9998m" + filtered
-					d = strings.ReplaceAll(d, "\n", "\r\n")
-					s.pw.Write([]byte(d))
-				}
+			// E8g4: pending-to-committed transcript model.
+			// Delta enters pending state. Committed only when stable.
+			delta := extractDelta(lastCleanContent, cleanCurr)
+			if commitText := tm.processDelta(delta); commitText != "" {
+				d := "\033[9998m" + commitText
+				d = strings.ReplaceAll(d, "\n", "\r\n")
+				s.pw.Write([]byte(d))
 			}
 
 			lastContent = currentContent
 			lastCleanContent = cleanCurr
+		}
+
+		// Poll stability: commit pending output when screen is idle.
+		if commitText := tm.processDelta(""); commitText != "" {
+			d := "\033[9998m" + commitText
+			d = strings.ReplaceAll(d, "\n", "\r\n")
+			s.pw.Write([]byte(d))
 		}
 		return nil
 	}
