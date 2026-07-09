@@ -72,9 +72,6 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	if err != nil {
 		return "", fmt.Errorf("controlled_pty SpawnPTY: %w", err)
 	}
-	if opts.CWD != "" {
-		native.Cmd.Dir = opts.CWD
-	}
 
 	s := &controlledPTYSession{
 		id:     id,
