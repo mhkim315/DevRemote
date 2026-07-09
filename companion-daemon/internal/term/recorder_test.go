@@ -533,3 +533,87 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 	t.Logf("stream-only input fallback: WriteInput returned %d bytes, stream writes=%d, terminal_input Text empty=%v",
 		n, len(writes), inputEvent.Text == "")
 }
+
+// --- E8i: screen snapshot filtering ---
+
+func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
+	activity := NewActivityBuffer(100)
+
+	pr, pw := io.Pipe()
+	rec := &Recorder{
+		sessionID: "test:snapshot-filter",
+		stream:    &testStream{pr: pr, pw: pw},
+		activity:  activity,
+		done:      make(chan struct{}),
+	}
+	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	ch := rec.Subscribe()
+	recorderRegistry.mu.Lock()
+	recorderRegistry.recorders["test:snapshot-filter"] = rec
+	recorderRegistry.mu.Unlock()
+	go rec.readLoop()
+	defer DeleteRecorder("test:snapshot-filter")
+
+	// Write a screen snapshot (ESC[2J ESC[H + screen content).
+	pw.Write([]byte("\033[2J\033[Hfull screen content here\r\n"))
+	// Write a real delta (normal PTY output).
+	pw.Write([]byte("real delta output\r\n"))
+	pw.Close()
+
+	// Drain subscriber — both frames should be broadcast.
+	var received []string
+	for data := range ch {
+		received = append(received, string(data))
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify both frames were broadcast to subscriber.
+	if len(received) < 2 {
+		t.Fatalf("subscriber received %d frames, want at least 2", len(received))
+	}
+
+	// ActivityBuffer must NOT contain the snapshot.
+	events := activity.List("test:snapshot-filter")
+	snapshotFound := false
+	deltaFound := false
+	for _, e := range events {
+		if strings.Contains(e.Text, "full screen content") {
+			snapshotFound = true
+		}
+		if strings.Contains(e.Text, "real delta") {
+			deltaFound = true
+		}
+	}
+	if snapshotFound {
+		t.Errorf("screen snapshot was appended to ActivityBuffer — should be filtered")
+	}
+	if !deltaFound {
+		t.Errorf("real delta was NOT appended to ActivityBuffer — should be stored")
+	}
+	t.Logf("snapshot filtered=%v delta stored=%v event_count=%d", !snapshotFound, deltaFound, len(events))
+}
+
+func TestIsClearScreenSnapshot(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  []byte
+		expected bool
+	}{
+		{"ESC[2J", []byte("\033[2Jrest"), true},
+		{"ESC[H", []byte("\033[Hrest"), true},
+		{"ESC[2J+content", []byte("\033[2J\033[Hhello"), true},
+		{"plain text", []byte("hello world"), false},
+		{"ANSI but no clear", []byte("\033[31mred text\033[0m"), false},
+		{"too short", []byte("\033["), false},
+		{"empty", []byte{}, false},
+		{"ESC only", []byte("\033xxxx"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isClearScreenSnapshot(tt.payload)
+			if got != tt.expected {
+				t.Errorf("isClearScreenSnapshot(%q) = %v, want %v", tt.payload, got, tt.expected)
+			}
+		})
+	}
+}
