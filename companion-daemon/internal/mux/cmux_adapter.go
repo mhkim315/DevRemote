@@ -284,7 +284,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 	// Send initial frame immediately if valid
 	if len(initialFrame) > 0 {
 		currentContent := string(initialFrame)
-		payload := "\033[2J\033[H" + currentContent
+		payload := "\033[2J\033[H" + currentContent + "\033[9999m"
 		payload = strings.ReplaceAll(payload, "\n", "\r\n")
 		if _, err := s.pw.Write([]byte(payload)); err != nil {
 			return
@@ -305,7 +305,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 		currentContent := string(out)
 		if currentContent != lastContent {
 			// Clear screen and redraw for xterm.js
-			payload := "\033[2J\033[H" + currentContent
+			payload := "\033[2J\033[H" + currentContent + "\033[9999m"
 			// Ensure CRLF for xterm.js line breaks
 			payload = strings.ReplaceAll(payload, "\n", "\r\n")
 

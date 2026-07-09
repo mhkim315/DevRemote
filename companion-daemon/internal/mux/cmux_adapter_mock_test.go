@@ -124,7 +124,7 @@ func TestPollScreenFailures(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("Expected first frame read to succeed, got err: %v", readErr)
 	}
-	if string(buf[:n]) != "\033[2J\033[Htest frame" {
+	if string(buf[:n]) != "\033[2J\033[Htest frame\033[9999m" {
 		t.Fatalf("Unexpected first frame content: %q", string(buf[:n]))
 	}
 

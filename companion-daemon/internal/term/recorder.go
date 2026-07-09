@@ -168,15 +168,20 @@ func (r *Recorder) readLoop() {
 		payload := make([]byte, n)
 		copy(payload, buf[:n])
 
+		// E8i: detect cmux screen snapshots. These are full-screen redraws
+		// (ESC[2J ESC[H + screen content) sent as one pipe Write(). The pipe
+		// delivers them in chunks; only the first chunk starts with ESC[2J.
+		// We must drain ALL chunks from the same Write() without appending
+		// any to ActivityBuffer. Live terminal subscribers still receive them.
+		if isClearScreenSnapshot(payload) {
+			r.broadcast(payload)
+			r.drainSnapshot(buf)
+			continue
+		}
+
 		// Append to ActivityBuffer FIRST — recorder is the SINGLE append source.
 		// Subscriber broadcast follows so that receiving data implies capture is done.
-		//
-		// E8i: skip full-screen snapshots (cmux adapter polls screen every 500ms).
-		// Snapshots start with clear-screen + cursor-home and contain cumulative
-		// content, not deltas. They are broadcast to live terminal subscribers
-		// but must not be stored as terminal_output in ActivityBuffer.
-		isScreenSnapshot := isClearScreenSnapshot(payload)
-		if r.activity != nil && !isScreenSnapshot {
+		if r.activity != nil {
 			text := string(payload)
 			if !isANSIControlOnly(text) && len(text) > 3 {
 				if len(text) > 32768 {
@@ -193,16 +198,70 @@ func (r *Recorder) readLoop() {
 
 		// Broadcast to subscribers after append — eliminates race between
 		// subscriber receive and ActivityBuffer.List.
-		// Screen snapshots ARE broadcast (live terminal needs them).
-		r.mu.Lock()
-		for _, ch := range r.subscribers {
-			select {
-			case ch <- payload:
-			default:
+		r.broadcast(payload)
+	}
+}
+
+// broadcast sends payload to all subscriber channels (non-blocking).
+func (r *Recorder) broadcast(payload []byte) {
+	r.mu.Lock()
+	for _, ch := range r.subscribers {
+		select {
+		case ch <- payload:
+		default:
+		}
+	}
+	r.mu.Unlock()
+}
+
+// snapshotEndMarker is a sentinel appended by cmux adapter after each
+// full-screen snapshot. It is an invalid SGR sequence that no real
+// terminal output would contain. xterm.js ignores unknown SGR codes.
+var snapshotEndMarker = []byte("[9999m")
+
+// drainSnapshot reads chunks until snapshotEndMarker is found, then strips
+// it. All chunks (including the marker portion) are broadcast to live
+// terminal subscribers but never appended to ActivityBuffer.
+func (r *Recorder) drainSnapshot(buf []byte) {
+	for {
+		n, err := r.stream.Read(buf)
+		if err != nil || n == 0 {
+			return
+		}
+		chunk := make([]byte, n)
+		copy(chunk, buf[:n])
+
+		// Strip the end marker if present in this chunk.
+		if idx := indexOf(chunk, snapshotEndMarker); idx >= 0 {
+			// Broadcast everything before the marker.
+			if idx > 0 {
+				r.broadcast(chunk[:idx])
+			}
+			return
+		}
+		// Entire chunk is snapshot content — broadcast but don't append.
+		r.broadcast(chunk)
+	}
+}
+
+// indexOf returns the index of needle in haystack, or -1 if not found.
+func indexOf(haystack, needle []byte) int {
+	if len(needle) == 0 {
+		return 0
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		match := true
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
 			}
 		}
-		r.mu.Unlock()
+		if match {
+			return i
+		}
 	}
+	return -1
 }
 
 // EnsureRecorder returns or creates a recorder for a session.
