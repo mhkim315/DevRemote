@@ -327,3 +327,72 @@ func isStatusPanelLine(line string) bool {
 	}
 	return false
 }
+
+// normalizeTranscript applies boundary formatting to committed text.
+// Ensures user prompts (›), assistant responses (•), and tool output (⎿)
+// each start on their own line. Collapses excessive blank lines.
+func normalizeTranscript(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	// Step 1: Ensure message markers start on new lines.
+	// › = user prompt, • = assistant bullet, ⎿ = terminal continuation
+	text = ensureNewlineBefore(text, "› ")
+	text = ensureNewlineBefore(text, "• ")
+	text = ensureNewlineBefore(text, "⎿ ")
+
+	// Step 2: Clean up each line.
+	lines := strings.Split(text, "\n")
+	var out []string
+	prevBlank := false
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+
+		// Skip volatile footer/banner lines that may have leaked through.
+		if isVolatileLine(trimmed) || isTimerLine(trimmed) || isStatusPanelLine(trimmed) {
+			continue
+		}
+
+		// Collapse multiple blank lines into one.
+		if trimmed == "" {
+			if !prevBlank && len(out) > 0 {
+				out = append(out, "")
+				prevBlank = true
+			}
+			continue
+		}
+		prevBlank = false
+		out = append(out, trimmed)
+	}
+
+	// Step 3: Remove trailing blank lines.
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+
+	return strings.Join(out, "\n")
+}
+
+// ensureNewlineBefore ensures marker starts on a new line.
+// If marker appears mid-line, insert a newline before it.
+func ensureNewlineBefore(text, marker string) string {
+	var result []byte
+	for i := 0; i < len(text); {
+		// Check for marker at this position.
+		if i+len(marker) <= len(text) && text[i:i+len(marker)] == marker {
+			// If not at start of line (preceded by non-newline char),
+			// insert a newline before the marker.
+			if i > 0 && text[i-1] != '\n' {
+				result = append(result, '\n')
+			}
+			result = append(result, marker...)
+			i += len(marker)
+			continue
+		}
+		result = append(result, text[i])
+		i++
+	}
+	return string(result)
+}
