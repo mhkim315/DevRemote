@@ -252,7 +252,7 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 
 	// Force-flush: screen completely idle for 10 polls (~5s) →
 	// commit ALL non-volatile lines from the current screen.
-	const forceFlushPolls = 10
+	const forceFlushPolls = 6
 	if s.stableCount >= forceFlushPolls {
 		s.stableCount = 0
 		for _, line := range currLines {
@@ -287,11 +287,36 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 // polling sequence. Does NOT use global text matching — identical
 // messages across different interactions are NOT deduplicated.
 // Only suppresses repeated renders from the same screen snapshot.
+// looksLikeSemanticContent returns true if the line appears to be
+// natural language content rather than UI/status/decoration.
+func looksLikeSemanticContent(line string) bool {
+	// Korean Unicode range
+	for _, r := range line {
+		if r >= 0xAC00 && r <= 0xD7AF {
+			return true
+		}
+	}
+	// English sentence: starts with capital letter, has spaces, reasonable length
+	if len(line) > 10 {
+		hasSpace := strings.Contains(line, " ")
+		firstChar := rune(line[0])
+		if hasSpace && firstChar >= 'A' && firstChar <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *screenTracker) isCommitted(line string) bool {
 	// Never block semantic markers — these are always new events.
 	if strings.HasPrefix(line, "›") || strings.HasPrefix(line, "•") ||
 		strings.HasPrefix(line, "⎿") ||
 		strings.HasPrefix(line, "❯") || strings.HasPrefix(line, "⏺") {
+		return false
+	}
+	// Allow lines that look like natural language (Korean/English sentences).
+	// These are continuation lines without explicit markers.
+	if looksLikeSemanticContent(line) {
 		return false
 	}
 	// Small window dedup: only check last 20 committed lines.
