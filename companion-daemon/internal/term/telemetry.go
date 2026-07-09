@@ -16,20 +16,20 @@ import (
 
 // SessionTelemetry holds the calculated state of a session.
 type SessionTelemetry struct {
-	ID              string              `json:"id"`
-	DisplayID       string              `json:"displayId,omitempty"` // local ID without adapter prefix
-	State           string              `json:"state"`
-	Load            int                 `json:"load"`
-	Runner          string              `json:"runner"`
-	RunnerColor     string              `json:"runnerColor"`
-	Adapter         string              `json:"adapter"`
-	Capabilities        []string            `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
-	AdapterCapabilities []string            `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
-	Events          []models.AgentEvent `json:"events"`
-	AgentKind       string                 `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
-	AgentStatus     string                 `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
-	AgentConfidence float64                `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
-	Approvals       []agent.AgentApproval  `json:"approvals,omitempty"`       // pending/resolved approvals (Phase A9+)
+	ID                  string                `json:"id"`
+	DisplayID           string                `json:"displayId,omitempty"` // local ID without adapter prefix
+	State               string                `json:"state"`
+	Load                int                   `json:"load"`
+	Runner              string                `json:"runner"`
+	RunnerColor         string                `json:"runnerColor"`
+	Adapter             string                `json:"adapter"`
+	Capabilities        []string              `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
+	AdapterCapabilities []string              `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
+	Events              []models.AgentEvent   `json:"events"`
+	AgentKind           string                `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
+	AgentStatus         string                `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
+	AgentConfidence     float64               `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
+	Approvals           []agent.AgentApproval `json:"approvals,omitempty"`       // pending/resolved approvals (Phase A9+)
 	// Agent events flow through the existing Events field via
 	// TelemetryService.processSession → EventStore → Snapshot.
 	Stale         bool      `json:"stale,omitempty"`

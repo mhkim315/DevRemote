@@ -36,45 +36,25 @@ const (
 // AdapterCapabilities returns the capability set for an adapter.
 // Uses TranscriptCaptureMode + known adapter semantics.
 func AdapterCapabilities(adapter Adapter) []AdapterCapability {
-	name := adapter.Name()
 	caps := []AdapterCapability{CapObserve}
-
-	// Determine control capability.
-	_, hasCreator := adapter.(SessionCreator)
-	_, hasTerminator := adapter.(SessionTerminator)
-	if hasCreator || hasTerminator {
-		caps = append(caps, CapControl)
-	}
 
 	// Determine transcript + live terminal from declared capture mode.
 	if cp, ok := adapter.(TranscriptCaptureProvider); ok {
 		switch cp.TranscriptCaptureMode() {
 		case CaptureModeByteStream:
-			caps = append(caps, CapLiveTerminal, CapReliableTranscript, CapInput)
+			caps = append(caps, CapLiveTerminal, CapReliableTranscript, CapInput, CapControl)
 		case CaptureModeScreenSnapshotDelta:
 			caps = append(caps, CapBestEffortTranscript)
-			// No CapLiveTerminal, no CapReliableTranscript.
+			// No CapLiveTerminal, no CapReliableTranscript, no CapControl, no CapInput.
 		case CaptureModeUnsupported:
 			// observe only.
 		}
-	} else {
-		// Legacy: no mode declared → assume byte_stream (tmux/localpty path).
-		caps = append(caps, CapLiveTerminal, CapReliableTranscript, CapInput)
+		return caps
 	}
 
-	// Specific adapters may have additional capabilities.
-	switch name {
-	case "tmux", "localpty":
-		// Already covered by CaptureModeByteStream branch above.
-		// Ensure CapControl is explicitly present.
-		if !hasCap(caps, CapControl) {
-			caps = append(caps, CapControl)
-		}
-	case "cmux":
-		// cmux does not support live terminal or reliable transcript.
-		// Already excluded by CaptureModeScreenSnapshotDelta branch.
-	}
-
+	// No TranscriptCaptureProvider declared → observe only.
+	// Future adapters must explicitly declare their mode.
+	// Legacy tmux/localpty already declare CaptureModeByteStream.
 	return caps
 }
 
