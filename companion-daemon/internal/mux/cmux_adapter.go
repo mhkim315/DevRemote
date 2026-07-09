@@ -285,7 +285,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 	defer ticker.Stop()
 
 	var lastContent string
-	st := newScreenTracker()                  // stable prefix + mutable tail
+	st := newScreenTracker() // stable prefix + mutable tail
 	consecutiveErrs := 0
 	maxErrs := 3
 
@@ -333,7 +333,6 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 		}
 		return nil
 	}
-
 
 	// First iteration logic is removed since initial frame is handled above
 
