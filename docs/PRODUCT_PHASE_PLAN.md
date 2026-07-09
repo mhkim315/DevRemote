@@ -13,6 +13,10 @@ Status:
   - P3 Mobile Typecheck / Build Gate: ACCEPTED (47bed6c)
   - E5 Emulator / Simulator Smoke: SCOPED ACCEPT (ccb642f)
   - E8f2 Session-owned Activity Recorder: ACCEPTED (ee1daf0)
+  - R1a Connectivity Baseline: ACCEPTED
+  - E8g2 Transcript Readability Polish: ACCEPTED
+  - E8g4 cmux Reality Boundary: ACCEPTED as evidence / mitigation, not final cmux reliability
+  - E8g5 Adapter Capability Reclassification: NEXT
 
 ## Why this document exists
 
@@ -98,9 +102,16 @@ E5  Emulator / Simulator Smoke           ✅ SCOPED ACCEPT
 E6  No-login Local Test Branch           ✅ ACCEPTED
 E7  Installer / Packaging Implementation ✅ ACCEPTED
 E8f2 Session-owned Activity Recorder     ✅ ACCEPTED
-R1a Connectivity Baseline                ← NEXT
-E8g2 Transcript Readability Polish
+R1a Connectivity Baseline                ✅ ACCEPTED
+E8g2 Transcript Readability Polish        ✅ ACCEPTED
+E8g4 cmux Reality Boundary                ✅ ACCEPTED as evidence / mitigation
 E8i Real-device Transcript Validation
+E8g5 Adapter Capability Reclassification  ← NEXT
+E8g6 cmux Observe Mode Stabilization
+E9-pre Controlled PTY Runtime Design
+E9 Controlled PTY Runtime MVP
+E10 Agent Launch UX
+E11 Optional Terminal App Integrations
 
 M1  Physical Device Smoke                manual product validation
 M2  Real Push + Notification Tap         manual product validation
@@ -160,6 +171,42 @@ production-grade tunnel automation. Those belong to R1b/R2 release work.
 
 E6 must not remove login from production scope. It only defines the test-branch
 validation route.
+
+### Why E8g5/E8g6 now precede further cmux transcript work
+
+Real-device validation showed that adapter source semantics differ materially.
+
+tmux/localpty provide a PTY byte stream and fit the session-owned Recorder /
+ActivityBuffer / Transcript model.
+
+cmux currently provides viewport-dependent screen snapshots. PC-side scrolling
+changes the snapshot source, and Transcript can change without new agent output.
+cmux must therefore be treated as an observe/snapshot adapter rather than a
+tmux-equivalent control adapter.
+
+The roadmap now requires an explicit capability boundary:
+
+```text
+Control Adapter
+  reliable byte stream
+  live terminal
+  reliable transcript
+  input/control capable
+
+Observe Adapter
+  screen/log/app-state observation
+  limited/no live terminal
+  best-effort/degraded transcript
+  limited/no input/control
+```
+
+Detailed plan:
+
+- `docs/ADAPTER_CLASSIFICATION_AND_PTY_RUNTIME_PLAN.md`
+- `docs/NEXT_SESSION_CONTROL_OBSERVE_HANDOFF.md`
+
+cmux Transcript should not receive more reliability heuristics until the product
+surface honestly represents it as best-effort observation.
 
 ## E1 — Live Dashboard Core ✅
 
