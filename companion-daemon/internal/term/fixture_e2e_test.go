@@ -35,7 +35,9 @@ func newFixtureE2EAdapter() *fixtureE2EAdapter {
 }
 
 func (a *fixtureE2EAdapter) Name() string { return "fixture" }
-func (a *fixtureE2EAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode { return mux.CaptureModeByteStream }
+func (a *fixtureE2EAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
+	return mux.CaptureModeByteStream
+}
 func (a *fixtureE2EAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
