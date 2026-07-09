@@ -567,21 +567,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
               <Text style={{color: '#8b949e', fontSize: 11, textAlign: 'center'}}>Transcript may still be loading. Retrying automatically.</Text>
             </View>
           ) : !transcriptEvents || transcriptEvents.length === 0 ? (
-            <View style={{padding: 20, alignItems: 'center'}}>
-              {session.startsWith('cmux:') ? (
-                <>
-                  <Text style={{color: '#8b949e', fontSize: 14, textAlign: 'center', marginBottom: 8}}>
-                    Transcript not available
-                  </Text>
-                  <Text style={{color: '#666', fontSize: 12, textAlign: 'center', lineHeight: 18}}>
-                    cmux sessions use screen polling.{'\n'}
-                    Transcript requires real PTY output (tmux, localpty).
-                  </Text>
-                </>
-              ) : (
-                <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
-              )}
-            </View>
+            <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
           ) : (
             <E8g2Transcript events={transcriptEvents} />
           )}
