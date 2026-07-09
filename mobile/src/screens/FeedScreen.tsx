@@ -43,9 +43,13 @@ const NORMAL_MACROS: { label: string; chars: number[] }[] = [
 type OutputSpan = { text: string; isInput: boolean; key: string };
 
 function E8g2Transcript({ events }: { events: any[] }) {
+  // Process events newest-first so inverted FlatList anchors at latest output.
+  // Activity tab uses the same pattern: reversed array + inverted.
   const spans: OutputSpan[] = useMemo(() => {
     const result: OutputSpan[] = [];
-    for (const e of events) {
+    // Walk newest→oldest so index 0 = newest (inverted FlatList shows index 0 at bottom).
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
       if (e.type === 'terminal_output' && (e.text || '').length > 0) {
         result.push({ text: e.text, isInput: false, key: `o${e.seq}` });
       } else if (e.type === 'terminal_input') {
@@ -70,9 +74,11 @@ function E8g2Transcript({ events }: { events: any[] }) {
           <View style={styles.transcriptInputDivider} />
         ) : (
           <View style={styles.transcriptOutputBlock}>
-            <Text style={styles.transcriptOutputText} selectable={true}>
-              {item.text}
-            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.transcriptOutputScroll}>
+              <Text style={styles.transcriptOutputText} selectable={true}>
+                {item.text}
+              </Text>
+            </ScrollView>
           </View>
         )
       }
@@ -734,11 +740,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
+  transcriptOutputScroll: {
+    // no width constraint — content determines width
+  },
   transcriptOutputText: {
     color: '#ccc',
     fontSize: 13,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     lineHeight: 20,
+    // E8i: preserve terminal-width formatting; allow horizontal scroll
+    // instead of forcing phone-width wrap that breaks code/agent output.
   },
   transcriptInputDivider: {
     height: 1,
