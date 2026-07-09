@@ -491,3 +491,29 @@ func ensureNewlineBefore(text, marker string) string {
 	}
 	return string(result)
 }
+
+// ── cmux Snapshot Viewport Normalization ──
+//
+// cmux screens include full terminal scrollback, which accumulates
+// duplicate lines from repeated screen repaints. normalizeCmuxSnapshot
+// limits the screen to a bounded viewport window (tail of the screen),
+// discarding scrollback-like duplicate content from older areas.
+//
+// This is NOT content-level dedup: identical lines at different
+// positions in the viewport are preserved. Only the scrollback
+// (prefix of the screen beyond the window) is discarded.
+//
+// The window is large enough to include the current visible viewport
+// plus a margin to avoid truncating long agent responses.
+
+const defaultViewportLines = 200
+
+func normalizeCmuxSnapshot(screen string) string {
+	lines := splitLines(screen)
+	if len(lines) <= defaultViewportLines {
+		return screen
+	}
+	// Keep only the tail (most recent) lines — discard scrollback prefix.
+	bounded := lines[len(lines)-defaultViewportLines:]
+	return strings.Join(bounded, "\n")
+}

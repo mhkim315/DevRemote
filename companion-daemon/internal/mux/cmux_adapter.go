@@ -324,6 +324,8 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 		// E8g4: stable prefix + mutable tail model.
 		// Process screen once per poll (even when unchanged).
 		cleanCurr := stripMuxANSI(currentContent)
+		// Normalize to viewport window: discard scrollback prefix.
+		cleanCurr = normalizeCmuxSnapshot(cleanCurr)
 		if commitText := st.processScreen(cleanCurr); strings.TrimSpace(commitText) != "" {
 			d := "\033[9998m" + commitText
 			d = strings.ReplaceAll(d, "\n", "\r\n")

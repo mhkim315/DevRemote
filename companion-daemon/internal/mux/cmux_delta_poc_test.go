@@ -313,3 +313,73 @@ func TestLocalptyAdapter_DeclaresByteStream(t *testing.T) {
 		t.Errorf("localpty adapter mode = %v, want CaptureModeByteStream", mode)
 	}
 }
+
+// --- E8g4: cmux viewport normalization ---
+
+func TestNormalizeCmuxSnapshot_BoundsLargeScreen(t *testing.T) {
+	// Build a 500-line screen with duplicates.
+	var lines []string
+	for i := 0; i < 500; i++ {
+		lines = append(lines, "line "+string(rune('0'+i%10)))
+	}
+	screen := strings.Join(lines, "\n")
+	result := normalizeCmuxSnapshot(screen)
+	resultLines := splitLines(result)
+	if len(resultLines) > defaultViewportLines {
+		t.Errorf("viewport normalization: got %d lines, want <= %d", len(resultLines), defaultViewportLines)
+	}
+	// Last line must be preserved.
+	if resultLines[len(resultLines)-1] != lines[len(lines)-1] {
+		t.Error("last line was truncated")
+	}
+	// First line of result should be from the tail of original.
+	if resultLines[0] != lines[len(lines)-defaultViewportLines] {
+		t.Errorf("first line of result = %q, want %q", resultLines[0], lines[len(lines)-defaultViewportLines])
+	}
+}
+
+func TestNormalizeCmuxSnapshot_SmallScreenPassesThrough(t *testing.T) {
+	screen := "line1\nline2\nline3"
+	result := normalizeCmuxSnapshot(screen)
+	if result != screen {
+		t.Errorf("small screen modified: got %q, want %q", result, screen)
+	}
+}
+
+func TestNormalizeCmuxSnapshot_PreservesRepeatedLines(t *testing.T) {
+	// Legitimate repeated lines within viewport must be preserved.
+	// Build screen where viewport has "hi" appearing twice at positions 195 and 198.
+	var lines []string
+	for i := 0; i < 400; i++ {
+		lines = append(lines, "scrollback line")
+	}
+	// Viewport area (last 200 lines): positions 200-399.
+	// Put "hi" at positions 395 and 398 (within viewport).
+	lines[395] = "› hi"
+	lines[398] = "› hi"
+	screen := strings.Join(lines, "\n")
+	result := normalizeCmuxSnapshot(screen)
+	hiCount := 0
+	for _, l := range splitLines(result) {
+		if l == "› hi" {
+			hiCount++
+		}
+	}
+	if hiCount != 2 {
+		t.Errorf("legitimate repeated '› hi': got %d occurrences, want 2 (content-level dedup must not remove them)", hiCount)
+	}
+}
+
+func TestNormalizeCmuxSnapshot_SentinelAtEndPreserved(t *testing.T) {
+	// Last line (most recent output) must never be truncated.
+	var lines []string
+	for i := 0; i < 500; i++ {
+		lines = append(lines, "old line")
+	}
+	lines = append(lines, "SENTINEL_LAST_LINE")
+	screen := strings.Join(lines, "\n")
+	result := normalizeCmuxSnapshot(screen)
+	if !strings.HasSuffix(strings.TrimSpace(result), "SENTINEL_LAST_LINE") {
+		t.Error("sentinel last line was lost")
+	}
+}
