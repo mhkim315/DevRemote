@@ -124,38 +124,38 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// E8g4: cmux uses screen snapshots, not PTY byte stream.
-		// Live terminal rendering accumulates xterm scrollback via ESC[2J.
-		// Disable live terminal for screen_snapshot_delta adapters (P0 fix).
-		if adapter, ok := reg.Adapter(s.AdapterName()); ok {
-			if cp, ok := adapter.(mux.TranscriptCaptureProvider); ok &&
-				cp.TranscriptCaptureMode() == mux.CaptureModeScreenSnapshotDelta {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotImplemented)
-				w.Write([]byte(`{"error":"unsupported","detail":"cmux uses screen snapshots. Live terminal is disabled for this adapter. Use Transcript tab for captured output."}`))
-				return
-			}
-		}
-
-		// E8f2: subscribe to session recorder. Recorder opens stream ONCE.
-		opener, hasStream := s.(mux.StreamOpener)
-		if !hasStream {
+	// Live terminal rendering accumulates xterm scrollback via ESC[2J.
+	// Disable live terminal for screen_snapshot_delta adapters (P0 fix).
+	if adapter, ok := reg.Adapter(s.AdapterName()); ok {
+		if cp, ok := adapter.(mux.TranscriptCaptureProvider); ok &&
+			cp.TranscriptCaptureMode() == mux.CaptureModeScreenSnapshotDelta {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotImplemented)
-			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
+			w.Write([]byte(`{"error":"unsupported","detail":"cmux uses screen snapshots. Live terminal is disabled for this adapter. Use Transcript tab for captured output."}`))
 			return
 		}
-		rec, subCh := EnsureRecorder(session, opener, h.Activity)
-		if rec == nil {
-			http.Error(w, "stream failed", 500)
-			return
+	}
+
+	// E8f2: subscribe to session recorder. Recorder opens stream ONCE.
+	opener, hasStream := s.(mux.StreamOpener)
+	if !hasStream {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotImplemented)
+		w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
+		return
+	}
+	rec, subCh := EnsureRecorder(session, opener, h.Activity)
+	if rec == nil {
+		http.Error(w, "stream failed", 500)
+		return
+	}
+	defer func() {
+		rec.Unsubscribe(subCh)
+		// Stop recorder only if no subscribers remain and stream is done.
+		if rec.Err() != nil {
+			rec.Stop()
 		}
-		defer func() {
-			rec.Unsubscribe(subCh)
-			// Stop recorder only if no subscribers remain and stream is done.
-			if rec.Err() != nil {
-				rec.Stop()
-			}
-		}()
+	}()
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

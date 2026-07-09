@@ -181,3 +181,87 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 		t.Fatal("output producer remained blocked after disconnect")
 	}
 }
+
+// --- E8g4: cmux Terminal disabled (P0 mitigation) ---
+
+func TestHandleWS_ScreenSnapshotDeltaReturns501(t *testing.T) {
+	// Register an adapter whose session declares screen_snapshot_delta.
+	reg := mux.MustNewRegistry(&cmuxSnapshotAdapter{})
+	h := &Handlers{Registry: reg}
+
+	req := httptest.NewRequest("GET", "/term/ws?session=cmux:test", nil)
+	rec := httptest.NewRecorder()
+	h.HandleWS(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("screen_snapshot_delta adapter: status=%d, want 501", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Live terminal is disabled") {
+		t.Errorf("response body missing expected message: %s", body)
+	}
+}
+
+func TestHandleWS_CmuxSnapshotModeDoesNotStartRecorder(t *testing.T) {
+	reg := mux.MustNewRegistry(&cmuxSnapshotAdapter{})
+	h := &Handlers{Registry: reg}
+
+	req := httptest.NewRequest("GET", "/term/ws?session=cmux:test", nil)
+	rec := httptest.NewRecorder()
+	h.HandleWS(rec, req)
+
+	// Recorder must not exist for this session.
+	if GetRecorder("cmux:test") != nil {
+		t.Error("recorder was started for screen_snapshot_delta adapter — should be blocked")
+	}
+}
+
+func TestHandleWS_ByteStreamStillWorks(t *testing.T) {
+	// tmux is byte_stream — terminal must still work.
+	pr, pw := io.Pipe()
+	mockSess := &mockSession{id: "test-bs", stream: &mockStream{pr: pr, pw: pw}}
+	adapter := &mockAdapter{session: mockSess}
+	reg := mux.MustNewRegistry(adapter)
+	h := &Handlers{Registry: reg}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.RawQuery = "session=mock:test-bs"
+		h.HandleWS(w, r)
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("byte_stream adapter: WS dial failed: %v", err)
+	}
+	conn.Close()
+	pw.Close()
+}
+
+// cmuxSnapshotAdapter is a minimal adapter whose session implements
+// StreamOpener and whose adapter declares CaptureModeScreenSnapshotDelta.
+type cmuxSnapshotAdapter struct {
+	mux.Adapter
+}
+
+func (a *cmuxSnapshotAdapter) Name() string { return "cmux" }
+
+func (a *cmuxSnapshotAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return []mux.Session{&cmuxSnapshotSession{}}, nil
+}
+
+func (a *cmuxSnapshotAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
+	return mux.CaptureModeScreenSnapshotDelta
+}
+
+type cmuxSnapshotSession struct{}
+
+func (s *cmuxSnapshotSession) ID() string          { return "test" }
+func (s *cmuxSnapshotSession) Title() string       { return "cmux test" }
+func (s *cmuxSnapshotSession) AdapterName() string { return "cmux" }
+func (s *cmuxSnapshotSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
+	pr, pw := io.Pipe()
+	go func() { pw.Write([]byte("data")); pw.Close() }()
+	return &testStream{pr: pr, pw: pw}, nil
+}
