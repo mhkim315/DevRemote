@@ -247,6 +247,22 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+
+		// E10b: replay ActivityBuffer for late-attaching subscribers.
+		if h.Activity != nil {
+			for _, e := range h.Activity.List(session) {
+				if e.Type == ActivityTerminalOutput && e.Text != "" {
+					payload := strings.ReplaceAll(e.Text, "\n", "\r\n")
+					select {
+					case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: []byte(payload)}:
+					case <-writerDone:
+						return
+					case <-r.Context().Done():
+						return
+					}
+				}
+			}
+		}
 	// E8f2: read from recorder broadcast instead of own PTY stream.
 	go func() {
 		for {
