@@ -26,11 +26,12 @@ type IPCServer struct {
 	events    EventStore
 	links     LinkStore
 	telemetry *TelemetryService
+	activity  *ActivityBuffer
 }
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer) (*IPCServer, error) {
 	// Clean up old socket if it exists
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
@@ -58,6 +59,7 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 		events:    events,
 		links:     links,
 		telemetry: telemetry,
+		activity:  activity,
 	}
 
 	go srv.serve()
@@ -76,7 +78,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry)
+		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity)
 	}
 }
 
@@ -99,7 +101,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -161,15 +163,26 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 	}
 
 	// E10b: subscriber protocol — first line may be "sub:<sessionID>".
-	if line, err := reader.ReadString('\n'); err == nil {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "sub:") {
-			handleIPCSubscriber(conn, strings.TrimPrefix(line, "sub:"))
+	firstLine, err := reader.ReadString('\n')
+	if err == nil {
+		firstLine = strings.TrimSpace(firstLine)
+		if strings.HasPrefix(firstLine, "sub:") {
+			handleIPCSubscriber(conn, strings.TrimPrefix(firstLine, "sub:"), activity)
 			return
+		}
+		// Not sub: — process as first legacy header line.
+		if firstLine != "" {
+			if strings.HasPrefix(firstLine, "cmd:") {
+				cmdStr = strings.TrimPrefix(firstLine, "cmd:")
+			} else if strings.HasPrefix(firstLine, "term:") {
+				termEnv = strings.TrimPrefix(firstLine, "term:")
+			} else if strings.HasPrefix(firstLine, "size:") {
+				fmt.Sscanf(firstLine, "size:%dx%d", &initialW, &initialH)
+			}
 		}
 	}
 
-	// Fallback to legacy plain-text protocol
+	// Fallback to legacy plain-text protocol (remaining headers)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -269,11 +282,20 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 // handleIPCSubscriber bridges a local terminal to an existing recorder.
 // The terminal is a subscriber — reads from recorder broadcast, writes
 // via WriteInput. No second PTY reader is created.
-func handleIPCSubscriber(conn net.Conn, sessionID string) {
+func handleIPCSubscriber(conn net.Conn, sessionID string, activity *ActivityBuffer) {
 	rec := GetRecorder(sessionID)
 	if rec == nil {
 		conn.Write([]byte("session not found or recorder not started\n"))
 		return
+	}
+
+	// E10b: replay captured ActivityBuffer output before live stream.
+	if activity != nil {
+		for _, e := range activity.List(sessionID) {
+			if e.Type == ActivityTerminalOutput && e.Text != "" {
+				conn.Write([]byte(e.Text))
+			}
+		}
 	}
 
 	subCh := rec.Subscribe()

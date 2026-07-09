@@ -89,6 +89,7 @@ type App struct {
 	// Background resources owned by App for lifecycle control.
 	telemetry          *term.TelemetryService // telemetry sampling (owns state machine)
 	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
+	activity          *term.ActivityBuffer     // E10b: IPC replay
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -351,7 +352,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity)
 }
 
 func (a *App) startTunnel() tunnelResource {
