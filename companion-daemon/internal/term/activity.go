@@ -78,6 +78,8 @@ func (b *ActivityBuffer) Append(event ActivityEvent) {
 			last.Text += event.Text
 			last.Bytes += event.Bytes
 			last.Timestamp = event.Timestamp
+			// Re-strip merged text to catch CSI sequences split across chunks.
+			last.Text = stripANSI(last.Text)
 			return
 		}
 	}
