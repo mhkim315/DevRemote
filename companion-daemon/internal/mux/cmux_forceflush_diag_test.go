@@ -1,70 +1,63 @@
 package mux
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// TestForceFlush_Overcommit reproduces the observed 95% duplication bug.
-// Consecutive identical snapshots cause force-flush to recommit the entire
-// non-volatile screen content repeatedly.
+// TestForceFlush_Overcommit reproduces the 95% duplication bug:
+// committed trim window (50 lines) is smaller than screen line count,
+// so old lines fall out of the window and get recommitted by each
+// force-flush cycle.
 func TestForceFlush_Overcommit(t *testing.T) {
 	st := newScreenTracker()
 
-	// Distinct semantic lines + volatile footer.
-	lines := []string{
-		"semantic line 01",
-		"semantic line 02",
-		"semantic line 03",
-		"semantic line 04",
-		"semantic line 05",
-		"volatile footer gpt-5.5 medium",
+	// 200 distinct semantic lines — exceeds committed trim window (50).
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("semantic line %03d", i))
 	}
+	// Add volatile footer that is always filtered.
+	lines = append(lines, "volatile footer gpt-5.5 medium")
 	snapshot := strings.Join(lines, "\n")
 
-	// Bootstrap — may commit initial content.
+	// Step 1: Bootstrap commits.
 	r1 := st.processScreen(snapshot)
-	t.Logf("bootstrap: %q", r1[:minInt(len(r1), 80)])
+	firstLines := len(splitLines(r1))
+	t.Logf("bootstrap: %d lines", firstLines)
 
-	// Repeated identical polls. Force-flush fires after 6 polls.
-	// After the first force-flush, subsequent identical polls must
-	// NOT produce additional commits.
+	// Step 2: Run 30 identical polls. This gives force-flush multiple
+	// opportunities to fire (every 6 polls). Without the forceFlushed
+	// guard, each force-flush would recommit old lines that fell out
+	// of the committed window — producing hundreds of duplicate lines.
 	var commitCount int
-	var allLines []string
+	totalLines := 0
 	for i := 0; i < 30; i++ {
 		r := st.processScreen(snapshot)
 		if r != "" {
 			commitCount++
-			for _, l := range splitLines(r) {
-				allLines = append(allLines, l)
-			}
+			totalLines += len(splitLines(r))
 		}
 	}
 
-	// After 30 identical polls, force-flush should fire at most ONCE
-	// (the first time stableCount reaches forceFlushPolls).
-	// Bootstrap may also commit once. Total commits <= 2.
+	// Without the guard, commits would pile up (>10) because each
+	// force-flush cycle recommits lines outside the committed window.
+	// With the guard, force-flush fires at most once per stable screen.
+	// Bootstrap may commit once. Total commits must be <= 2.
 	if commitCount > 2 {
-		t.Errorf("force-flush overcommit: %d commits after 30 identical polls (want <= 2)", commitCount)
+		t.Errorf("force-flush overcommit: %d commits after 30 identical polls (want <= 2). "+
+			"Without forceFlushed guard, old lines outside committed window get recommitted repeatedly.",
+			commitCount)
 	}
 
-	// The same semantic line must not appear more than twice.
-	counts := make(map[string]int)
-	for _, l := range allLines {
-		counts[l]++
-	}
-	for l, c := range counts {
-		if c > 2 {
-			t.Errorf("line committed %d times: %q", c, l[:minInt(len(l), 60)])
-		}
+	// If total committed lines exceed the screen's distinct line count
+	// by a large margin, lines are being recommitted.
+	screenDistinct := 200
+	if totalLines > screenDistinct*2 {
+		t.Errorf("force-flush overcommit: %d total lines for %d distinct screen lines (want <= %d)",
+			totalLines, screenDistinct, screenDistinct*2)
 	}
 
-	t.Logf("commits=%d total_lines=%d unique=%d", commitCount, len(allLines), len(counts))
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	t.Logf("commits=%d total_lines=%d (screen has %d distinct)", commitCount, totalLines, screenDistinct)
 }
