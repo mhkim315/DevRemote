@@ -35,6 +35,7 @@ func newFixtureE2EAdapter() *fixtureE2EAdapter {
 }
 
 func (a *fixtureE2EAdapter) Name() string { return "fixture" }
+func (a *fixtureE2EAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode { return mux.CaptureModeByteStream }
 func (a *fixtureE2EAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -455,5 +456,87 @@ func TestFixtureE2E_MobileSchema(t *testing.T) {
 	// Verify adapter value is "fixture" (not empty, not hardcoded tmux/cmux).
 	if !strings.Contains(raw, `"fixture"`) {
 		t.Error("mobile schema: JSON does not contain adapter name 'fixture'")
+	}
+}
+
+// --- E8g5: adapterCapabilities API boundary test ---
+
+func TestFixtureE2E_AdapterCapabilitiesInAPI(t *testing.T) {
+	// Fixture adapter is byte_stream → should have liveTerminal, reliableTranscript.
+	h, _ := fixtureE2EHandlers(t)
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var sessions []SessionTelemetry
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, s := range sessions {
+		if len(s.AdapterCapabilities) == 0 {
+			t.Errorf("session %s: adapterCapabilities is empty", s.ID)
+		}
+		has := func(cap string) bool {
+			for _, c := range s.AdapterCapabilities {
+				if c == cap {
+					return true
+				}
+			}
+			return false
+		}
+		if s.Adapter == "fixture" {
+			// Fixture adapter is byte_stream-like.
+			if !has("liveTerminal") {
+				t.Errorf("fixture session %s: missing liveTerminal in adapterCapabilities", s.ID)
+			}
+		}
+	}
+}
+
+// cmuxE2EAdapter returns a minimal cmux adapter for API testing.
+func cmuxE2EHandlers(t *testing.T) *Handlers {
+	t.Helper()
+	adapter := &cmuxSnapshotAdapter{}
+	reg := mux.MustNewRegistry(adapter)
+	return &Handlers{Registry: reg, Events: NewMemoryEventStore()}
+}
+
+func TestCmuxE2E_AdapterCapabilitiesExcludesLiveTerminal(t *testing.T) {
+	h := cmuxE2EHandlers(t)
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var sessions []SessionTelemetry
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("no sessions returned")
+	}
+	for _, s := range sessions {
+		has := func(cap string) bool {
+			for _, c := range s.AdapterCapabilities {
+				if c == cap {
+					return true
+				}
+			}
+			return false
+		}
+		if has("liveTerminal") {
+			t.Errorf("cmux session %s: must NOT have liveTerminal", s.ID)
+		}
+		if has("reliableTranscript") {
+			t.Errorf("cmux session %s: must NOT have reliableTranscript", s.ID)
+		}
+		if !has("bestEffortTranscript") {
+			t.Errorf("cmux session %s: missing bestEffortTranscript", s.ID)
+		}
 	}
 }

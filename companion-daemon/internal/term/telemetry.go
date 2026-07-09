@@ -319,8 +319,9 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 		res = append(res, SessionTelemetry{
 			ID: compoundID, DisplayID: s.ID(), State: "idle", Load: 0,
 			Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(),
-			Capabilities: sessionCapabilities(s),
-			Events:       evts, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+			Capabilities:        sessionCapabilities(s),
+			AdapterCapabilities: adapterCapabilityStrings(reg, s.AdapterName()),
+			Events:              evts, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 		})
 	}
 	sortTelemetry(res)
