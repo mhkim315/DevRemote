@@ -573,8 +573,14 @@ export default function FeedScreen({onBack, session, token}: Props) {
           </View>
           )}
           {newOutputCount > 0 && (
-            <TouchableOpacity style={styles.newOutputBanner} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
-              <Text style={styles.newOutputText}>↓ New output — Return to Live Terminal</Text>
+            <TouchableOpacity style={styles.newOutputBanner} onPress={() => {
+              lastSeenSeqRef.current = transcriptMaxSeqRef.current;
+              setNewOutputCount(0);
+              if (supportsLiveTerminal) { setActiveTab('terminal'); }
+            }}>
+              <Text style={styles.newOutputText}>
+                {supportsLiveTerminal ? '↓ New output — Return to Live Terminal' : '↓ New output'}
+              </Text>
             </TouchableOpacity>
           )}
           {/* R1a: transcript endpoint error state */}
@@ -588,9 +594,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
           ) : (
             <E8g2Transcript events={transcriptEvents} />
           )}
+          {supportsLiveTerminal && (
           <TouchableOpacity style={styles.returnBtn} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
             <Text style={styles.returnBtnText}>← Return to Live Terminal</Text>
           </TouchableOpacity>
+          )}
         </View>
 
         {activeTab === 'terminal' && (
