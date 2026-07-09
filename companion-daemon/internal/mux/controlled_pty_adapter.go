@@ -47,7 +47,7 @@ func (a *controlledPTYAdapter) ListSessions(ctx context.Context) ([]Session, err
 	return out, nil
 }
 
-func (a *controlledPTYAdapter) CreateSession(_ context.Context, opts CreateOptions) (string, error) {
+func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOptions) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -66,14 +66,16 @@ func (a *controlledPTYAdapter) CreateSession(_ context.Context, opts CreateOptio
 	}
 
 	// Support cwd if provided.
-	if opts.CWD != "" {
-		command = fmt.Sprintf("cd %s && exec %s", opts.CWD, command)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
 	}
-
 	native, err := SpawnPTY(id, "xterm-256color", "bash", "-c", command)
 	if err != nil {
 		return "", fmt.Errorf("controlled_pty SpawnPTY: %w", err)
 	}
+		if opts.CWD != "" {
+			native.Cmd.Dir = opts.CWD
+		}
 
 	s := &controlledPTYSession{
 		id:     id,
