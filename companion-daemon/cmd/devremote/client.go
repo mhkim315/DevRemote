@@ -154,7 +154,10 @@ func attachLocalTerminal(sessionID string) {
 		io.Copy(io.Discard, conn)
 		return
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	defer func() {
+		term.Restore(int(os.Stdin.Fd()), oldState)
+		os.Stdout.Write([]byte("[>4;0m[?1l"))
+	}()
 
 	// Handle Ctrl+C gracefully.
 	sigCh := make(chan os.Signal, 1)
@@ -162,6 +165,7 @@ func attachLocalTerminal(sessionID string) {
 	go func() {
 		<-sigCh
 		term.Restore(int(os.Stdin.Fd()), oldState)
+		os.Stdout.Write([]byte("[>4;0m[?1l"))
 		conn.Close()
 		os.Exit(0)
 	}()
@@ -170,6 +174,7 @@ func attachLocalTerminal(sessionID string) {
 	go func() {
 		io.Copy(os.Stdout, conn)
 		term.Restore(int(os.Stdin.Fd()), oldState)
+		os.Stdout.Write([]byte("[>4;0m[?1l"))
 		os.Exit(0)
 	}()
 
