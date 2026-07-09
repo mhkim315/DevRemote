@@ -58,8 +58,8 @@ func SpawnPTYWithDir(id string, termEnv string, cwd string, command string, args
 		return nil, fmt.Errorf("failed to start pty: %w", err)
 	}
 
-		// Default terminal size so TUI apps render correctly on launch.
-		_ = pty.Setsize(ptm, &pty.Winsize{Rows: 24, Cols: 80})
+	// Default terminal size so TUI apps render correctly on launch.
+	_ = pty.Setsize(ptm, &pty.Winsize{Rows: 24, Cols: 80})
 
 	s := &NativeSession{
 		id:  id,

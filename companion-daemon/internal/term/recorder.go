@@ -23,6 +23,12 @@ type Recorder struct {
 	done        chan struct{}
 	readErr     error
 	captureMode mux.TranscriptCaptureMode // source of truth for capture behavior
+
+	// Terminal bootstrap: ring buffer of recent raw PTY bytes.
+	// Late-attaching subscribers receive this before live stream.
+	bootstrapBuf  []byte
+	bootstrapPos  int
+	bootstrapFull bool
 }
 
 // recorderRegistry tracks active recorders.
@@ -242,6 +248,8 @@ func (r *Recorder) readLoop() {
 // broadcast sends payload to all subscriber channels (non-blocking).
 func (r *Recorder) broadcast(payload []byte) {
 	r.mu.Lock()
+	// Write to terminal bootstrap ring buffer.
+	r.writeBootstrapLocked(payload)
 	for _, ch := range r.subscribers {
 		select {
 		case ch <- payload:
@@ -249,6 +257,42 @@ func (r *Recorder) broadcast(payload []byte) {
 		}
 	}
 	r.mu.Unlock()
+}
+
+// writeBootstrapLocked appends payload to the terminal bootstrap ring buffer.
+// Must be called with r.mu held.
+func (r *Recorder) writeBootstrapLocked(payload []byte) {
+	if r.bootstrapBuf == nil {
+		r.bootstrapBuf = make([]byte, 65536) // 64KB ring buffer
+	}
+	for _, b := range payload {
+		r.bootstrapBuf[r.bootstrapPos] = b
+		r.bootstrapPos++
+		if r.bootstrapPos >= len(r.bootstrapBuf) {
+			r.bootstrapPos = 0
+			r.bootstrapFull = true
+		}
+	}
+}
+
+// Bootstrap returns a copy of the terminal bootstrap buffer content
+// (most recent raw PTY bytes) for late-attaching subscribers.
+func (r *Recorder) Bootstrap() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bootstrapBuf == nil || (!r.bootstrapFull && r.bootstrapPos == 0) {
+		return nil
+	}
+	if !r.bootstrapFull {
+		out := make([]byte, r.bootstrapPos)
+		copy(out, r.bootstrapBuf[:r.bootstrapPos])
+		return out
+	}
+	// Ring buffer full — return from write pos to end, then start to write pos.
+	out := make([]byte, len(r.bootstrapBuf))
+	n := copy(out, r.bootstrapBuf[r.bootstrapPos:])
+	copy(out[n:], r.bootstrapBuf[:r.bootstrapPos])
+	return out
 }
 
 // snapshotEndMarker is a sentinel appended by cmux adapter after each

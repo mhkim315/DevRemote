@@ -289,13 +289,9 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, activity *ActivityBuff
 		return
 	}
 
-	// E10b: replay captured ActivityBuffer output before live stream.
-	if activity != nil {
-		for _, e := range activity.List(sessionID) {
-			if e.Type == ActivityTerminalOutput && e.Text != "" {
-				conn.Write([]byte(e.Text))
-			}
-		}
+	// E10b: terminal bootstrap — replay recent raw PTY bytes.
+	if bootstrap := rec.Bootstrap(); len(bootstrap) > 0 {
+		conn.Write(bootstrap)
 	}
 
 	subCh := rec.Subscribe()
