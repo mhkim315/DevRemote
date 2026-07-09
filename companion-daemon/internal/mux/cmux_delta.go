@@ -155,3 +155,123 @@ func stripMuxANSI(s string) string {
 	}
 	return string(out)
 }
+
+// ── Volatile UI Suppression ──
+//
+// Agent terminals repaint volatile UI elements (timers, spinners,
+// status bars, model banners) on every screen refresh. These are not
+// semantic output — they are transient repaint artifacts.
+//
+// suppressVolatileLines removes lines that appear to be volatile UI:
+//   - lines that repeat across consecutive deltas (within a window)
+//   - lines that differ only by an incrementing number (timer)
+//   - lines that are single characters (spinner artifacts)
+//
+// Returns the filtered delta, or "" if all lines are volatile.
+
+type volatileFilter struct {
+	recentLines map[string]int // line → times seen in recent window
+	maxRecent   int
+}
+
+func newVolatileFilter() *volatileFilter {
+	return &volatileFilter{
+		recentLines: make(map[string]int),
+		maxRecent:   3,
+	}
+}
+
+// filter removes volatile lines from delta. Returns "" if no semantic
+// content remains after filtering.
+func (f *volatileFilter) filter(delta string) string {
+	lines := splitLines(delta)
+	if len(lines) == 0 {
+		return ""
+	}
+
+	var semantic []string
+	volatileCount := 0
+	for _, line := range lines {
+		if f.isVolatile(line) {
+			volatileCount++
+			continue
+		}
+		semantic = append(semantic, line)
+	}
+
+	// Update recent lines with new semantic content.
+	for _, line := range semantic {
+		f.recentLines[line]++
+	}
+	// Decay old entries.
+	for line, count := range f.recentLines {
+		if count > 1 {
+			f.recentLines[line] = count - 1
+		} else {
+			delete(f.recentLines, line)
+		}
+	}
+
+	// If all lines were volatile, suppress the entire delta.
+	if len(semantic) == 0 {
+		return ""
+	}
+	return strings.Join(semantic, "\n")
+}
+
+// isVolatile returns true if a line appears to be volatile UI rather
+// than semantic agent output.
+func (f *volatileFilter) isVolatile(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return true // blank lines are not meaningful
+	}
+
+	// Single character (spinner artifact): "/", "-", "\", "|"
+	if len(line) == 1 {
+		return true
+	}
+
+	// Lines that repeat across deltas (seen ≥ maxRecent times).
+	if f.recentLines[line] >= f.maxRecent {
+		return true
+	}
+
+	// Timer pattern: "Working (Ns • esc to interrupt)"
+	// Normalize by stripping incrementing numbers, then check for repeats.
+	normalized := normalizeVolatilePattern(line)
+	if normalized != line && f.recentLines[normalized] >= f.maxRecent {
+		return true
+	}
+	// Also store the normalized form for future detection.
+	if normalized != line {
+		f.recentLines[normalized]++
+	}
+
+	return false
+}
+
+// normalizeVolatilePattern replaces incrementing numeric patterns with
+// a placeholder so that "Working (1s...)", "Working (2s...)" all map
+// to the same normalized form.
+func normalizeVolatilePattern(line string) string {
+	// Replace isolated numbers and timers: "1s", "2s", "3s", "1m", etc.
+	// Pattern: digit(s) followed by 's' or 'm' in a timer context.
+	result := line
+	// Simple: replace runs of digits followed by 's' with "Ns"
+	for i := 0; i < len(result); i++ {
+		if result[i] >= '0' && result[i] <= '9' {
+			j := i
+			for j < len(result) && result[j] >= '0' && result[j] <= '9' {
+				j++
+			}
+			if j < len(result) && (result[j] == 's' || result[j] == 'm') {
+				result = result[:i] + "N" + result[j:]
+				i = i + 1 // skip past "Ns" or "Nm"
+			} else {
+				i = j
+			}
+		}
+	}
+	return result
+}

@@ -278,7 +278,8 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 	defer ticker.Stop()
 
 	var lastContent string
-	var lastCleanContent string // ANSI-stripped, for delta extraction
+	var lastCleanContent string          // ANSI-stripped, for delta extraction
+	volatile := newVolatileFilter()       // suppresses repeated UI repaint
 	consecutiveErrs := 0
 	maxErrs := 3
 
@@ -317,11 +318,12 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 			// consumes snapshot before Recorder reads the delta.
 			cleanCurr := stripMuxANSI(currentContent)
 			if delta := extractDelta(lastCleanContent, cleanCurr); delta != "" {
-				// Prefix with delta marker so Recorder distinguishes
-				// delta from full-screen snapshots.
-				d := "\033[9998m" + delta
-				d = strings.ReplaceAll(d, "\n", "\r\n")
-				s.pw.Write([]byte(d))
+				// Suppress volatile UI repaint (timers, spinners, status bars).
+				if filtered := volatile.filter(delta); filtered != "" {
+					d := "\033[9998m" + filtered
+					d = strings.ReplaceAll(d, "\n", "\r\n")
+					s.pw.Write([]byte(d))
+				}
 			}
 
 			lastContent = currentContent
