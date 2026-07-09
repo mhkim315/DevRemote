@@ -295,8 +295,19 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   const handleChangeText = useCallback((text: string) => {
     cmdRef.current = text;
-    setCmd(text);
-  }, []);
+    // Soft keyboard Enter may insert \n without firing onSubmitEditing.
+    // Detect trailing \n, strip it, and send the command.
+    if (text.endsWith('\n')) {
+      const cmd = text.replace(/\n$/, '');
+      setCmd('');
+      cmdRef.current = '';
+      if (cmd.trim()) {
+        doSend(cmd + '\r');
+      }
+    } else {
+      setCmd(text);
+    }
+  }, [doSend]);
 
   const handleCopyRequest = useCallback(async () => {
     // Get terminal text and copy directly

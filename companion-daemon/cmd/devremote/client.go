@@ -171,15 +171,27 @@ func attachLocalTerminal(sessionID string) {
 	}()
 
 	// Relay: recorder broadcast → local stdout.
+	// When conn closes (session ended), exit cleanly.
+	stdoutDone := make(chan struct{})
 	go func() {
 		io.Copy(os.Stdout, conn)
-		term.Restore(int(os.Stdin.Fd()), oldState)
-		os.Stdout.Write([]byte("[>4;0m[?1l"))
-		os.Exit(0)
+		close(stdoutDone)
 	}()
 
-	// Relay: local stdin → recorder WriteInput.
-	io.Copy(conn, os.Stdin)
+	// Relay: local stdin → recorder WriteInput (background, killed by os.Exit).
+	go func() {
+		io.Copy(conn, os.Stdin)
+	}()
+
+	// Wait for session end (stdout EOF) or Ctrl+C.
+	select {
+	case <-stdoutDone:
+	case <-sigCh:
+	}
+	conn.Close()
+	term.Restore(int(os.Stdin.Fd()), oldState)
+	os.Stdout.Write([]byte("\x1b[>4;0m\x1b[?1l"))
+	os.Exit(0)
 }
 
 func runLinkerClient(cmd string, args []string) {
