@@ -247,10 +247,11 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// E10b: terminal bootstrap — replay recent raw PTY bytes so
-	// late-attaching subscribers see current terminal state.
-	// Uses recorder ring buffer, not ActivityBuffer transcript.
-	if bootstrap := rec.Bootstrap(); len(bootstrap) > 0 {
+	// E10b: atomic subscribe+bootstrap prevents gap/duplicate.
+	// Replace subCh from EnsureRecorder with atomic handoff.
+	rec.Unsubscribe(subCh)
+	bootstrap, subCh := rec.SubscribeWithBootstrap()
+	if len(bootstrap) > 0 {
 		select {
 		case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: bootstrap}:
 		case <-writerDone:

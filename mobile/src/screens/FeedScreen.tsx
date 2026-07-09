@@ -596,7 +596,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
           )}
         </View>
 
-        {activeTab === 'terminal' && (
+        {activeTab === 'terminal' && !sessionEnded && (
         <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>

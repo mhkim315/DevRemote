@@ -289,12 +289,11 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, activity *ActivityBuff
 		return
 	}
 
-	// E10b: terminal bootstrap — replay recent raw PTY bytes.
-	if bootstrap := rec.Bootstrap(); len(bootstrap) > 0 {
+	// E10b: atomic subscribe+bootstrap — no gap, no duplicate.
+	bootstrap, subCh := rec.SubscribeWithBootstrap()
+	if len(bootstrap) > 0 {
 		conn.Write(bootstrap)
 	}
-
-	subCh := rec.Subscribe()
 	defer rec.Unsubscribe(subCh)
 
 	// Recorder broadcast → local stdout.

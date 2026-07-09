@@ -87,6 +87,40 @@ func (r *Recorder) Subscribe() chan []byte {
 	return ch
 }
 
+// SubscribeWithBootstrap atomically registers a subscriber and snapshots
+// the terminal bootstrap buffer. The returned bootstrap bytes are a
+// point-in-time snapshot taken while the subscriber is registered.
+// No output between bootstrap and the first subscriber read is lost.
+func (r *Recorder) SubscribeWithBootstrap() (bootstrap []byte, subCh chan []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Snapshot bootstrap buffer under lock.
+	bootstrap = r.bootstrapLocked()
+
+	// Register subscriber under same lock — no gap.
+	subCh = make(chan []byte, 64)
+	r.subscribers = append(r.subscribers, subCh)
+	return bootstrap, subCh
+}
+
+// bootstrapLocked returns a copy of the bootstrap buffer.
+// Must be called with r.mu held.
+func (r *Recorder) bootstrapLocked() []byte {
+	if r.bootstrapBuf == nil || (!r.bootstrapFull && r.bootstrapPos == 0) {
+		return nil
+	}
+	if !r.bootstrapFull {
+		out := make([]byte, r.bootstrapPos)
+		copy(out, r.bootstrapBuf[:r.bootstrapPos])
+		return out
+	}
+	out := make([]byte, len(r.bootstrapBuf))
+	n := copy(out, r.bootstrapBuf[r.bootstrapPos:])
+	copy(out[n:], r.bootstrapBuf[:r.bootstrapPos])
+	return out
+}
+
 // Unsubscribe removes a subscriber.
 func (r *Recorder) Unsubscribe(ch chan []byte) {
 	r.mu.Lock()
