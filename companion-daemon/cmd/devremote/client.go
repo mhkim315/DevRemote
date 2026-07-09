@@ -9,8 +9,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // buildRunPayload constructs the JSON body for a POST /api/sessions request.
@@ -52,11 +56,24 @@ func buildRunRequest(daemonURL, token string, body []byte) (*http.Request, error
 
 func runClient(args []string) {
 	cwd := ""
+	detach := false
 	commandArgs := args
 
-	if len(args) >= 2 && args[0] == "--cwd" {
-		cwd = args[1]
-		commandArgs = args[2:]
+	// Parse flags.
+	for len(commandArgs) > 0 && strings.HasPrefix(commandArgs[0], "--") {
+		switch commandArgs[0] {
+		case "--cwd":
+			if len(commandArgs) < 2 {
+				log.Fatal("--cwd requires a value")
+			}
+			cwd = commandArgs[1]
+			commandArgs = commandArgs[2:]
+		case "--detach":
+			detach = true
+			commandArgs = commandArgs[1:]
+		default:
+			log.Fatalf("unknown flag: %s", commandArgs[0])
+		}
 	}
 
 	if len(commandArgs) == 0 {
@@ -95,12 +112,69 @@ func runClient(args []string) {
 	var result struct{ ID string }
 	json.NewDecoder(resp.Body).Decode(&result)
 
-	if result.ID != "" {
-		fmt.Printf("Session created: %s\n", result.ID)
-		fmt.Printf("Terminal: %s/term/?session=%s\n", daemonURL, result.ID)
-	} else {
+	if result.ID == "" {
 		fmt.Println("Session created (check daemon for details)")
+		return
 	}
+
+	fmt.Printf("Session created: %s\n", result.ID)
+	fmt.Printf("Terminal: %s/term/?session=%s\n", daemonURL, result.ID)
+
+	if detach {
+		return
+	}
+
+	// E10b: attach local terminal as subscriber via Unix socket.
+	attachLocalTerminal(result.ID)
+}
+
+// attachLocalTerminal connects to the daemon Unix socket and bridges
+// local stdin/stdout to the recorder broadcast. Local terminal is a
+// subscriber — no second PTY reader is created.
+func attachLocalTerminal(sessionID string) {
+	socketPath := "/tmp/pokit.sock"
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		log.Printf("Cannot attach terminal (daemon socket not available): %v", err)
+		log.Printf("Use mobile/web to interact with session %s", sessionID)
+		return
+	}
+	defer conn.Close()
+
+	// Send subscriber protocol header.
+	fmt.Fprintf(conn, "sub:%s\n", sessionID)
+
+	// Put terminal in raw mode.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		log.Printf("Not a TTY — output only mode: %v", err)
+		// Still relay stdout.
+		go io.Copy(os.Stdout, conn)
+		// Wait for connection to close.
+		io.Copy(io.Discard, conn)
+		return
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+	// Handle Ctrl+C gracefully.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		term.Restore(int(os.Stdin.Fd()), oldState)
+		conn.Close()
+		os.Exit(0)
+	}()
+
+	// Relay: recorder broadcast → local stdout.
+	go func() {
+		io.Copy(os.Stdout, conn)
+		term.Restore(int(os.Stdin.Fd()), oldState)
+		os.Exit(0)
+	}()
+
+	// Relay: local stdin → recorder WriteInput.
+	io.Copy(conn, os.Stdin)
 }
 
 func runLinkerClient(cmd string, args []string) {

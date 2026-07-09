@@ -256,3 +256,38 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 		}
 	}
 }
+
+// handleIPCSubscriber bridges a local terminal to an existing recorder.
+// The terminal is a subscriber — reads from recorder broadcast, writes
+// via WriteInput. No second PTY reader is created.
+func handleIPCSubscriber(conn net.Conn, sessionID string) {
+	rec := GetRecorder(sessionID)
+	if rec == nil {
+		conn.Write([]byte("session not found or recorder not started\n"))
+		return
+	}
+
+	subCh := rec.Subscribe()
+	defer rec.Unsubscribe(subCh)
+
+	// Recorder broadcast → local stdout.
+	go func() {
+		for data := range subCh {
+			if _, err := conn.Write(data); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Local stdin → recorder WriteInput.
+	buf := make([]byte, 1024)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		if n > 0 {
+			rec.WriteInput(buf[:n])
+		}
+	}
+}
