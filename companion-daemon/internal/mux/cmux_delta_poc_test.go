@@ -16,115 +16,12 @@ import (
 
 // extractDelta computes the new content in `curr` that was not in `prev`.
 // Returns "" if no reliable delta can be determined.
-func extractDelta(prev, curr string) string {
-	if prev == "" {
-		return curr // first snapshot — emit everything
-	}
-	if curr == prev {
-		return "" // no change
-	}
-
-	// Strategy A: common-prefix suffix (append-only output).
-	// AI agents primarily append to the bottom of the terminal.
-	prefixLen := commonPrefixLen(prev, curr)
-	if prefixLen > 0 {
-		suffix := curr[prefixLen:]
-		// Accept suffix only if it's incremental (< 80% of total).
-		// Reject full-screen rewrites where suffix ≈ whole screen.
-		if len(suffix) > 0 && len(suffix) < (len(curr)*4/5) {
-			return suffix
-		}
-	}
-
-	// Strategy B: line-based diff.
-	prevLines := splitLines(prev)
-	currLines := splitLines(curr)
-
-	prevSet := make(map[string]bool, len(prevLines))
-	for _, l := range prevLines {
-		prevSet[l] = true
-	}
-
-	var newLines []string
-	for _, l := range currLines {
-		if l == "" {
-			continue
-		}
-		if !prevSet[l] {
-			newLines = append(newLines, l)
-		}
-	}
-
-	if len(newLines) > 0 {
-		// Screen clear: most lines are new but total is small —
-		// this is valid agent output after a clear.
-		if len(newLines) <= 5 {
-			return strings.Join(newLines, "\n")
-		}
-		// Incremental: reasonable fraction of lines are new.
-		if len(newLines) <= len(currLines)/2 {
-			return strings.Join(newLines, "\n")
-		}
-		// Many new lines but small total — likely a clear+repaint
-		// of a short screen (e.g. after command completes).
-		if len(currLines) <= 15 && len(newLines) <= len(currLines)*3/4 {
-			return strings.Join(newLines, "\n")
-		}
-	}
-
-	// Strategy C: common suffix (scrolled output).
-	suffixLen := commonSuffixLen(prev, curr)
-	if suffixLen > 0 {
-		prefix := curr[:len(curr)-suffixLen]
-		if len(prefix) > 0 && len(prefix) < (len(curr)*4/5) {
-			return prefix
-		}
-	}
-
-	return "" // no reliable delta
-}
 
 // commonPrefixLen returns the length of the longest common prefix.
-func commonPrefixLen(a, b string) int {
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-	for i := 0; i < minLen; i++ {
-		if a[i] != b[i] {
-			return i
-		}
-	}
-	return minLen
-}
 
 // commonSuffixLen returns the length of the longest common suffix.
-func commonSuffixLen(a, b string) int {
-	i, j := len(a)-1, len(b)-1
-	count := 0
-	for i >= 0 && j >= 0 {
-		if a[i] != b[j] {
-			break
-		}
-		i--
-		j--
-		count++
-	}
-	return count
-}
 
 // splitLines splits text into non-empty lines, preserving order.
-func splitLines(s string) []string {
-	raw := strings.Split(s, "\n")
-	var out []string
-	for _, l := range raw {
-		l = strings.TrimRight(l, "\r")
-		if l != "" {
-			out = append(out, l)
-		}
-	}
-	return out
-}
 
 // ── Tests ──
 

@@ -278,6 +278,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 	defer ticker.Stop()
 
 	var lastContent string
+	var lastCleanContent string // ANSI-stripped, for delta extraction
 	consecutiveErrs := 0
 	maxErrs := 3
 
@@ -290,6 +291,7 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 			return
 		}
 		lastContent = currentContent
+		lastCleanContent = stripMuxANSI(currentContent)
 	}
 
 	// Helper to run one poll iteration
@@ -304,7 +306,14 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 
 		currentContent := string(out)
 		if currentContent != lastContent {
-			// Clear screen and redraw for xterm.js
+			// E8g4: extract delta for Transcript.
+			cleanCurr := stripMuxANSI(currentContent)
+			if delta := extractDelta(lastCleanContent, cleanCurr); delta != "" {
+				d := strings.ReplaceAll(delta, "\n", "\r\n")
+				s.pw.Write([]byte(d))
+			}
+
+			// Write full screen snapshot for live terminal.
 			payload := "\033[2J\033[H" + currentContent + "\033[9999m"
 			// Ensure CRLF for xterm.js line breaks
 			payload = strings.ReplaceAll(payload, "\n", "\r\n")
@@ -313,6 +322,8 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 				return err
 			}
 			lastContent = currentContent
+			lastCleanContent = cleanCurr
+		lastCleanContent = stripMuxANSI(currentContent)
 		}
 		return nil
 	}
