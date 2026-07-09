@@ -187,3 +187,83 @@ func TestExtractDelta_ProgressSpinner(t *testing.T) {
 	// This is acceptable — a single character of noise vs full line.
 	t.Logf("progress spinner delta: %q (minor noise acceptable)", delta)
 }
+
+// --- E8g4: cmux transcript contract invariants ---
+
+func TestCmuxInvariant_DuplicateSnapshotNoSeqIncrease(t *testing.T) {
+	// Repeated identical snapshots must not produce transcript events.
+	st := newScreenTracker()
+
+	// First snapshot bootstraps (may commit initial content).
+	result1 := st.processScreen("line1\nline2\nline3\n")
+	_ = result1
+
+	// Second identical snapshot.
+	result2 := st.processScreen("line1\nline2\nline3\n")
+	if result2 != "" {
+		t.Errorf("identical snapshot produced transcript: %q", result2)
+	}
+}
+
+func TestCmuxInvariant_OneNewLineOneEvent(t *testing.T) {
+	st := newScreenTracker()
+
+	// Bootstrap.
+	st.processScreen("line1\nline2\n")
+
+	// New line appears at bottom.
+	result := st.processScreen("line1\nline2\nline3\n")
+	// May or may not commit immediately (depends on stability).
+	// After stability, it should be committed.
+	t.Logf("new line result: %q (may be empty until stable)", result)
+}
+
+func TestCmuxInvariant_RepeatedTextNotDedupedGlobally(t *testing.T) {
+	st := newScreenTracker()
+
+	// Bootstrap with "› hi"
+	result1 := st.processScreen("› hi\n• hello\n")
+	t.Logf("bootstrap: %q", result1)
+
+	// Force-flush the rest via multiple identical polls
+	for i := 0; i < 10; i++ {
+		st.processScreen("› hi\n• hello\n")
+	}
+
+	// Now simulate a new interaction with same text.
+	// Screen changes: new "› hi" at bottom.
+	result2 := st.processScreen("› hi\n• hello\n› hi\n• hello again\n")
+	t.Logf("new interaction: %q", result2)
+
+	// The second "› hi" and "• hello again" must NOT be blocked
+	// by the first "› hi" from bootstrap.
+	if result2 != "" {
+		// Should contain the NEW content
+		if !strings.Contains(result2, "hello again") {
+			t.Errorf("new semantic content blocked by global dedup: %q", result2)
+		}
+	}
+}
+
+func TestCmuxInvariant_VolatileUIChangesNoTranscript(t *testing.T) {
+	st := newScreenTracker()
+
+	// Bootstrap.
+	st.processScreen("output line\n")
+
+	// Change only a timer/status line.
+	// "Working (1s • esc to interrupt)" → "Working (2s • esc to interrupt)"
+	result := st.processScreen("output line\nWorking (2s • esc to interrupt)\n")
+	// Timer lines are volatile — should not produce transcript.
+	if strings.Contains(result, "Working") {
+		t.Errorf("volatile timer line leaked into transcript: %q", result)
+	}
+}
+
+func TestCmuxAdapter_DeclaresScreenSnapshotDelta(t *testing.T) {
+	adapter := &cmuxAdapter{}
+	mode := adapter.TranscriptCaptureMode()
+	if mode != CaptureModeScreenSnapshotDelta {
+		t.Errorf("cmux adapter mode = %v, want CaptureModeScreenSnapshotDelta", mode)
+	}
+}

@@ -145,6 +145,13 @@ func NewCmuxAdapter(invalidate InvalidationSender) (Adapter, error) {
 	}, nil
 }
 
+// TranscriptCaptureMode returns CaptureModeScreenSnapshotDelta.
+// cmux uses screen polling — transcript is best-effort delta extraction
+// from consecutive snapshots, not equivalent to PTY byte_stream.
+func (a *cmuxAdapter) TranscriptCaptureMode() TranscriptCaptureMode {
+	return CaptureModeScreenSnapshotDelta
+}
+
 func (a *cmuxAdapter) Name() string {
 	return "cmux"
 }

@@ -307,6 +307,20 @@ func looksLikeSemanticContent(line string) bool {
 	return false
 }
 
+
+// joinNonVolatile filters and joins lines, skipping volatile ones.
+func joinNonVolatile(lines []string) string {
+	var kept []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 func (s *screenTracker) isCommitted(line string) bool {
 	// Never block semantic markers — these are always new events.
 	if strings.HasPrefix(line, "›") || strings.HasPrefix(line, "•") ||
