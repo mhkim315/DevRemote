@@ -648,7 +648,7 @@ func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 		received = append(received, string(data))
 	}
 
-	// Delta must be appended to ActivityBuffer (marker stripped).
+	// Delta must be appended to ActivityBuffer but NOT broadcast to subscribers.
 	events := activity.List("test:delta-marker")
 	if len(events) == 0 {
 		t.Fatal("delta frame was NOT appended to ActivityBuffer")
@@ -659,13 +659,16 @@ func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 	if !strings.Contains(events[0].Text, "agent output") {
 		t.Errorf("delta content not found: %q", events[0].Text)
 	}
-	// Subscriber must NOT see the marker.
+	// Subscriber must NOT see the marker or the delta content.
 	for _, r := range received {
 		if strings.Contains(r, "9998") {
 			t.Errorf("delta marker leaked to subscriber: %q", r)
 		}
+		if strings.Contains(r, "agent output") {
+			t.Errorf("delta content leaked to subscriber: %q", r)
+		}
 	}
-	t.Logf("delta appended=%v", len(events) > 0)
+	t.Logf("delta appended=%v subscriber_clean=%v", len(events) > 0, len(received) == 0)
 }
 
 func TestRecorder_DeltaMarkerNotVisible(t *testing.T) {

@@ -170,13 +170,28 @@ func (r *Recorder) readLoop() {
 		copy(payload, buf[:n])
 
 		// E8g4: detect cmux delta frames (prefixed with ESC[9998m).
-		// Strip the marker, then append + broadcast as normal output.
+		// Strip marker. Append to ActivityBuffer (Transcript)
+		// but do NOT broadcast to live terminal subscribers.
 		if isDeltaMarker(payload) {
 			payload = payload[len(deltaMarker):]
 			if len(payload) == 0 {
 				continue
 			}
-			// Fall through to normal append + broadcast below.
+			if r.activity != nil {
+				text := stripANSI(string(payload))
+				if !isANSIControlOnly(text) && len(text) > 3 {
+					if len(text) > 32768 {
+						text = text[:32768]
+					}
+					r.activity.Append(ActivityEvent{
+						SessionID: r.sessionID,
+						Type:      ActivityTerminalOutput,
+						Text:      text,
+						Bytes:     len(payload),
+					})
+				}
+			}
+			continue // do NOT broadcast delta to subscribers
 		}
 
 		// E8i: detect cmux screen snapshots. These are full-screen redraws
