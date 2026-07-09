@@ -617,3 +617,126 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 		})
 	}
 }
+
+// --- E8g4: cmux delta frame tagging ---
+
+func TestRecorder_DeltaMarkerAppended(t *testing.T) {
+	activity := NewActivityBuffer(100)
+
+	pr, pw := io.Pipe()
+	rec := &Recorder{
+		sessionID: "test:delta-marker",
+		stream:    &testStream{pr: pr, pw: pw},
+		activity:  activity,
+		done:      make(chan struct{}),
+	}
+	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	ch := rec.Subscribe()
+	recorderRegistry.mu.Lock()
+	recorderRegistry.recorders["test:delta-marker"] = rec
+	recorderRegistry.mu.Unlock()
+	go rec.readLoop()
+	defer DeleteRecorder("test:delta-marker")
+
+	// Write a delta frame with ESC[9998m prefix.
+	pw.Write([]byte("\033[9998m" + "agent output line\r\n"))
+	pw.Close()
+
+	// Drain subscriber.
+	var received []string
+	for data := range ch {
+		received = append(received, string(data))
+	}
+
+	// Delta must be appended to ActivityBuffer (marker stripped).
+	events := activity.List("test:delta-marker")
+	if len(events) == 0 {
+		t.Fatal("delta frame was NOT appended to ActivityBuffer")
+	}
+	if strings.Contains(events[0].Text, "9998") || strings.Contains(events[0].Text, "\x1b") {
+		t.Errorf("delta marker leaked into ActivityBuffer: %q", events[0].Text)
+	}
+	if !strings.Contains(events[0].Text, "agent output") {
+		t.Errorf("delta content not found: %q", events[0].Text)
+	}
+	// Subscriber must NOT see the marker.
+	for _, r := range received {
+		if strings.Contains(r, "9998") {
+			t.Errorf("delta marker leaked to subscriber: %q", r)
+		}
+	}
+	t.Logf("delta appended=%v", len(events) > 0)
+}
+
+func TestRecorder_DeltaMarkerNotVisible(t *testing.T) {
+	payload := []byte("\033[9998mhello")
+	if !isDeltaMarker(payload) {
+		t.Fatal("isDeltaMarker failed")
+	}
+	clean := stripANSI(string(payload[len(deltaMarker):]))
+	if clean != "hello" {
+		t.Errorf("stripANSI after marker removal: got %q, want 'hello'", clean)
+	}
+}
+
+func TestRecorder_NormalANSINotDelta(t *testing.T) {
+	normal := []byte("\033[31mred text\033[0m\r\n")
+	if isDeltaMarker(normal) {
+		t.Error("normal ANSI color mistaken for delta marker")
+	}
+	if isClearScreenSnapshot(normal) {
+		t.Error("normal ANSI color mistaken for snapshot")
+	}
+}
+
+func TestRecorder_DeltaThenSnapshot(t *testing.T) {
+	activity := NewActivityBuffer(100)
+
+	pr, pw := io.Pipe()
+	rec := &Recorder{
+		sessionID: "test:delta-then-snap",
+		stream:    &testStream{pr: pr, pw: pw},
+		activity:  activity,
+		done:      make(chan struct{}),
+	}
+	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	ch := rec.Subscribe()
+	recorderRegistry.mu.Lock()
+	recorderRegistry.recorders["test:delta-then-snap"] = rec
+	recorderRegistry.mu.Unlock()
+	go rec.readLoop()
+	defer DeleteRecorder("test:delta-then-snap")
+
+	// First: delta frame with marker
+	pw.Write([]byte("\033[9998mnew output\r\n"))
+	time.Sleep(50 * time.Millisecond)
+	// Then: full screen snapshot
+	pw.Write([]byte("\033[2J\033[Hscreen content\r\n\033[9999m"))
+	pw.Close()
+
+	// Drain subscriber
+	var received []string
+	for data := range ch {
+		received = append(received, string(data))
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	events := activity.List("test:delta-then-snap")
+	deltaFound := false
+	snapshotFound := false
+	for _, e := range events {
+		if strings.Contains(e.Text, "new output") {
+			deltaFound = true
+		}
+		if strings.Contains(e.Text, "screen content") {
+			snapshotFound = true
+		}
+	}
+	if !deltaFound {
+		t.Error("delta not found in ActivityBuffer after delta+snapshot sequence")
+	}
+	if snapshotFound {
+		t.Error("snapshot leaked into ActivityBuffer after delta+snapshot sequence")
+	}
+	t.Logf("delta=%v snapshot_leaked=%v chunks=%d", deltaFound, snapshotFound, len(received))
+}

@@ -169,6 +169,16 @@ func (r *Recorder) readLoop() {
 		payload := make([]byte, n)
 		copy(payload, buf[:n])
 
+		// E8g4: detect cmux delta frames (prefixed with ESC[9998m).
+		// Strip the marker, then append + broadcast as normal output.
+		if isDeltaMarker(payload) {
+			payload = payload[len(deltaMarker):]
+			if len(payload) == 0 {
+				continue
+			}
+			// Fall through to normal append + broadcast below.
+		}
+
 		// E8i: detect cmux screen snapshots. These are full-screen redraws
 		// (ESC[2J ESC[H + screen content) sent as one pipe Write(). The pipe
 		// delivers them in chunks; only the first chunk starts with ESC[2J.
@@ -218,7 +228,24 @@ func (r *Recorder) broadcast(payload []byte) {
 // snapshotEndMarker is a sentinel appended by cmux adapter after each
 // full-screen snapshot. It is an invalid SGR sequence that no real
 // terminal output would contain. xterm.js ignores unknown SGR codes.
-var snapshotEndMarker = []byte("[9999m")
+var snapshotEndMarker = []byte("\x1b[9999m")
+
+// deltaMarker prefixes cmux delta frames. ESC[9998m is an invalid SGR
+// code — xterm.js ignores it. Recorder strips it before ActivityBuffer.
+var deltaMarker = []byte("\x1b[9998m")
+
+// isDeltaMarker reports whether payload starts with the delta prefix.
+func isDeltaMarker(payload []byte) bool {
+	if len(payload) < len(deltaMarker) {
+		return false
+	}
+	for i := 0; i < len(deltaMarker); i++ {
+		if payload[i] != deltaMarker[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // drainSnapshot reads chunks until snapshotEndMarker is found, then strips
 // it. All chunks (including the marker portion) are broadcast to live

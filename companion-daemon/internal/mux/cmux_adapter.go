@@ -306,27 +306,30 @@ func (s *CmuxStream) pollScreen(initialFrame []byte) {
 
 		currentContent := string(out)
 		if currentContent != lastContent {
-			// E8g4: extract delta for Transcript.
-			cleanCurr := stripMuxANSI(currentContent)
-			if delta := extractDelta(lastCleanContent, cleanCurr); delta != "" {
-				d := strings.ReplaceAll(delta, "\n", "\r\n")
-				s.pw.Write([]byte(d))
-			}
-
-			// Write full screen snapshot for live terminal.
+			// Write full screen snapshot for live terminal FIRST.
 			payload := "\033[2J\033[H" + currentContent + "\033[9999m"
-			// Ensure CRLF for xterm.js line breaks
 			payload = strings.ReplaceAll(payload, "\n", "\r\n")
-
 			if _, err := s.pw.Write([]byte(payload)); err != nil {
 				return err
 			}
+
+			// E8g4: write delta AFTER full screen so drainSnapshot
+			// consumes snapshot before Recorder reads the delta.
+			cleanCurr := stripMuxANSI(currentContent)
+			if delta := extractDelta(lastCleanContent, cleanCurr); delta != "" {
+				// Prefix with delta marker so Recorder distinguishes
+				// delta from full-screen snapshots.
+				d := "\033[9998m" + delta
+				d = strings.ReplaceAll(d, "\n", "\r\n")
+				s.pw.Write([]byte(d))
+			}
+
 			lastContent = currentContent
 			lastCleanContent = cleanCurr
-		lastCleanContent = stripMuxANSI(currentContent)
 		}
 		return nil
 	}
+
 
 	// First iteration logic is removed since initial frame is handled above
 
