@@ -164,22 +164,45 @@ for e in events:
 "
 ```
 
-## Recommendation
+## Final Conclusion (2026-07-09)
 
-**NEEDS DESIGN CHANGE** — cmux Terminal should not use xterm live stream.
+**cmux Transcript is NOT reliable with current screen snapshot delta extraction.**
 
-Short-term Terminal options:
-A. Disable cmux Terminal live view (show static snapshot or "unsupported")
-B. Call term.reset() on mobile before each snapshot write
-C. Use separate "snapshot renderer" component instead of xterm for cmux
+Critical evidence:
+1. PC-side terminal scroll changes cmux source snapshot → Transcript mutates.
+2. Input echo creates one-character-at-a-time duplicates that later merge.
+3. cmux snapshot source is viewport-state-dependent, not a stable append-only history.
 
-Transcript: collect raw API evidence before patching.
+cmux should be considered `screen_snapshot_observe`, not `screen_snapshot_delta`.
 
-Long-term design:
+### What was done (E8g4)
+
+| Fix | Status |
+|-----|--------|
+| force-flush overcommit | ✅ ACCEPTED |
+| cmux Terminal P0 (xterm scrollback) | ✅ DISABLED (HTTP 501) |
+| viewport normalization (200-line window) | ✅ IMPROVES but doesn't fully fix |
+| TranscriptCaptureMode contract | ✅ ACCEPTED |
+
+### What cannot be fixed with current heuristics
+
+- Viewport scroll detection
+- Input echo vs. stable output distinction
+- Mutable tail commit timing
+
+### Path forward
+
+1. **Short-term**: cmux Transcript = degraded/experimental. Not authoritative.
+2. **Investigation**: Does cmux expose a stable output history/log API independent of viewport scroll?
+3. **If no stable history exists**: cmux remains observe/snapshot-only, not transcript-reliable.
+4. **If stable history API exists**: use that as transcript source instead of screen snapshots.
+
+### Architecture
+
 ```
-tmux/localpty → xterm byte stream renderer
-cmux         → snapshot renderer (replace, not append)
-             → transcript delta renderer
+tmux/localpty → PTY byte stream → reliable Transcript
+cmux         → screen snapshot  → best-effort Transcript (degraded)
+             → live observe     → disabled (P0 mitigated)
 ```
 
 ## Verification Commands

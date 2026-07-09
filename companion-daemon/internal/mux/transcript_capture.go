@@ -7,9 +7,21 @@ package mux
 //
 // screen_snapshot_delta: Screen polling. The adapter captures full
 // terminal screens at intervals and extracts new output by comparing
-// consecutive snapshots. Best-effort — not equivalent to byte_stream.
-// Used by cmux. Volatile UI (timers, spinners, status bars) may be
-// filtered. Identical snapshots produce no transcript events.
+// consecutive snapshots.
+//
+// IMPORTANT LIMITATIONS (cmux):
+//   - Source is viewport-state-dependent: PC-side scrolling changes the
+//     snapshot and therefore the transcript. Transcript is NOT a stable
+//     output history.
+//   - Input echo creates transient duplicates that may appear before
+//     stabilizing.
+//   - Volatile UI (timers, spinners, status bars) is best-effort filtered
+//     but not guaranteed.
+//   - This mode is EXPERIMENTAL / DEGRADED. Do not present cmux Transcript
+//     as authoritative history equivalent to byte_stream (tmux/localpty).
+//
+// Identical snapshots produce no transcript events.
+// Used by cmux.
 //
 // unsupported: No transcript capture. ActivityBuffer receives nothing.
 // Transcript tab shows "not available" or equivalent.
