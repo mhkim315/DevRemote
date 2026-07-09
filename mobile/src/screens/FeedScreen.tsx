@@ -74,11 +74,9 @@ function E8g2Transcript({ events }: { events: any[] }) {
           <View style={styles.transcriptInputDivider} />
         ) : (
           <View style={styles.transcriptOutputBlock}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.transcriptOutputScroll}>
-              <Text style={styles.transcriptOutputText} selectable={true}>
-                {item.text}
-              </Text>
-            </ScrollView>
+            <Text style={styles.transcriptOutputText} selectable={true}>
+              {item.text.replace(/\r/g, '')}
+            </Text>
           </View>
         )
       }
