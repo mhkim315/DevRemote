@@ -13,11 +13,34 @@ import (
 	"time"
 )
 
+// buildRunPayload constructs the JSON body for a POST /api/sessions request.
+// Returns the encoded bytes and the generated session ID.
+func buildRunPayload(command, cwd string) ([]byte, string) {
+	sessionID := fmt.Sprintf("controlled_pty:run-%d", time.Now().UnixNano())
+	payload := struct {
+		ID          string `json:"id"`
+		Runner      string `json:"runner"`
+		RunnerColor string `json:"runnerColor"`
+		Command     string `json:"command"`
+		CWD         string `json:"cwd,omitempty"`
+	}{
+		ID:          sessionID,
+		Runner:      command,
+		RunnerColor: "#45EBE9",
+		Command:     command,
+		CWD:         cwd,
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
+		log.Fatalf("Failed to encode request: %v", err)
+	}
+	return buf.Bytes(), sessionID
+}
+
 func runClient(args []string) {
 	cwd := ""
 	commandArgs := args
 
-	// Parse --cwd flag if present.
 	if len(args) >= 2 && args[0] == "--cwd" {
 		cwd = args[1]
 		commandArgs = args[2:]
@@ -33,40 +56,19 @@ func runClient(args []string) {
 	}
 
 	command := strings.Join(commandArgs, " ")
+	payloadBytes, _ := buildRunPayload(command, cwd)
 
-	// E10: use HTTP API to create controlled_pty session.
 	daemonURL := os.Getenv("POKIT_URL")
 	if daemonURL == "" {
 		daemonURL = "http://localhost:9171"
 	}
 
-	// Safe JSON encoding — no fmt.Sprintf for JSON bodies.
-	payload := struct {
-		ID          string `json:"id"`
-		Runner      string `json:"runner"`
-		RunnerColor string `json:"runnerColor"`
-		Command     string `json:"command"`
-		CWD         string `json:"cwd,omitempty"`
-	}{
-		ID:          fmt.Sprintf("controlled_pty:run-%d", time.Now().UnixMilli()),
-		Runner:      command,
-		RunnerColor: "#45EBE9",
-		Command:     command,
-		CWD:         cwd,
-	}
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
-		log.Fatalf("Failed to encode request: %v", err)
-	}
-
-	req, err := http.NewRequest("POST", daemonURL+"/api/sessions", &buf)
+	req, err := http.NewRequest("POST", daemonURL+"/api/sessions", bytes.NewReader(payloadBytes))
 	if err != nil {
 		log.Fatalf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// E10: optional auth token.
 	if token := os.Getenv("POKIT_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -134,7 +136,6 @@ func runLinkerClient(cmd string, args []string) {
 	conn.Write(importJSON)
 	conn.Write([]byte("\n"))
 
-	// Read response
 	buf := make([]byte, 4096)
 	n, _ := conn.Read(buf)
 	fmt.Print(string(buf[:n]))
