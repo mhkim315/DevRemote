@@ -11,47 +11,60 @@ import (
 func TestForceFlush_Overcommit(t *testing.T) {
 	st := newScreenTracker()
 
-	// Simulate a screen with semantic + volatile content.
-	// This matches the real cmux screen structure.
-	stable := strings.Repeat("semantic line\n", 5)
-	volatile := "timer Working (1s • esc to interrupt)\nfooter gpt-5.5 medium\n"
-	snapshot := stable + volatile
+	// Distinct semantic lines + volatile footer.
+	lines := []string{
+		"semantic line 01",
+		"semantic line 02",
+		"semantic line 03",
+		"semantic line 04",
+		"semantic line 05",
+		"volatile footer gpt-5.5 medium",
+	}
+	snapshot := strings.Join(lines, "\n")
 
-	// Step 1: Bootstrap — commits initial semantic content.
+	// Bootstrap — may commit initial content.
 	r1 := st.processScreen(snapshot)
-	t.Logf("bootstrap: committed=%d chars", len(r1))
-	initialCommitCount := len(splitLines(r1))
+	t.Logf("bootstrap: %q", r1[:minInt(len(r1), 80)])
 
-	// Step 2: Repeated identical snapshots (screen is idle).
-	// Force-flush triggers after 6 polls and may overcommit.
-	var totalLines int
+	// Repeated identical polls. Force-flush fires after 6 polls.
+	// After the first force-flush, subsequent identical polls must
+	// NOT produce additional commits.
+	var commitCount int
 	var allLines []string
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 30; i++ {
 		r := st.processScreen(snapshot)
 		if r != "" {
-			lines := splitLines(r)
-			totalLines += len(lines)
-			allLines = append(allLines, lines...)
+			commitCount++
+			for _, l := range splitLines(r) {
+				allLines = append(allLines, l)
+			}
 		}
 	}
 
-	unique := make(map[string]bool)
+	// After 30 identical polls, force-flush should fire at most ONCE
+	// (the first time stableCount reaches forceFlushPolls).
+	// Bootstrap may also commit once. Total commits <= 2.
+	if commitCount > 2 {
+		t.Errorf("force-flush overcommit: %d commits after 30 identical polls (want <= 2)", commitCount)
+	}
+
+	// The same semantic line must not appear more than twice.
+	counts := make(map[string]int)
 	for _, l := range allLines {
-		unique[l] = true
+		counts[l]++
 	}
-	dupPct := float64(totalLines-len(unique)) / float64(max(totalLines, 1)) * 100
-
-	t.Logf("After 20 identical polls:")
-	t.Logf("  initial commit: %d lines", initialCommitCount)
-	t.Logf("  total committed: %d lines", totalLines)
-	t.Logf("  unique lines: %d", len(unique))
-	t.Logf("  duplication: %.1f%%", dupPct)
-
-	// ACCEPTANCE: duplication must be under 50%.
-	// >50% means the same lines are being recommitted.
-	if dupPct > 50 {
-		t.Errorf("force-flush overcommit: %.1f%% duplication (want < 50%%)", dupPct)
+	for l, c := range counts {
+		if c > 2 {
+			t.Errorf("line committed %d times: %q", c, l[:minInt(len(l), 60)])
+		}
 	}
+
+	t.Logf("commits=%d total_lines=%d unique=%d", commitCount, len(allLines), len(counts))
 }
 
-func max(a, b int) int { if a > b { return a }; return b }
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

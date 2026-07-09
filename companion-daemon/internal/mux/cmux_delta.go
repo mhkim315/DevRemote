@@ -254,8 +254,9 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 	// Force-flush: screen completely idle for 10 polls (~5s) →
 	// commit ALL non-volatile lines from the current screen.
 	const forceFlushPolls = 6
-	if s.stableCount >= forceFlushPolls {
-		s.stableCount = 0
+		if s.stableCount >= forceFlushPolls && !s.forceFlushed {
+			s.forceFlushed = true
+			s.stableCount = 0
 		for _, line := range currLines {
 			line = strings.TrimSpace(line)
 			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
@@ -268,6 +269,11 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 			}
 		}
 	}
+
+		// Reset forceFlushed when screen content changes.
+		if prefixLen < len(s.prevLines) || prefixLen < len(currLines) {
+			s.forceFlushed = false
+		}
 
 	s.prevLines = currLines
 
