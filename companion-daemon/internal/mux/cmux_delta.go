@@ -172,11 +172,11 @@ func stripMuxANSI(s string) string {
 // This prevents timer/status/spinner spam in Transcript.
 
 type screenTracker struct {
-	prevLines    []string // previous poll's screen lines
-	committed    []string // recent lines (small dedup window)
-	stableCount  int      // consecutive polls with identical stable prefix
-	forceFlushed bool     // force-flush already ran for current screen
-	commitThreshold int   // polls before committing stable prefix edges
+	prevLines       []string // previous poll's screen lines
+	committed       []string // recent lines (small dedup window)
+	stableCount     int      // consecutive polls with identical stable prefix
+	forceFlushed    bool     // force-flush already ran for current screen
+	commitThreshold int      // polls before committing stable prefix edges
 }
 
 func newScreenTracker() *screenTracker {
@@ -254,9 +254,9 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 	// Force-flush: screen completely idle for 10 polls (~5s) →
 	// commit ALL non-volatile lines from the current screen.
 	const forceFlushPolls = 6
-		if s.stableCount >= forceFlushPolls && !s.forceFlushed {
-			s.forceFlushed = true
-			s.stableCount = 0
+	if s.stableCount >= forceFlushPolls && !s.forceFlushed {
+		s.forceFlushed = true
+		s.stableCount = 0
 		for _, line := range currLines {
 			line = strings.TrimSpace(line)
 			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
@@ -270,10 +270,10 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		}
 	}
 
-		// Reset forceFlushed when screen content changes.
-		if prefixLen < len(s.prevLines) || prefixLen < len(currLines) {
-			s.forceFlushed = false
-		}
+	// Reset forceFlushed when screen content changes.
+	if prefixLen < len(s.prevLines) || prefixLen < len(currLines) {
+		s.forceFlushed = false
+	}
 
 	s.prevLines = currLines
 
@@ -290,6 +290,7 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 	}
 	return ""
 }
+
 // isCommitted prevents duplicate commits within the same snapshot
 // polling sequence. Does NOT use global text matching — identical
 // messages across different interactions are NOT deduplicated.
@@ -313,7 +314,6 @@ func looksLikeSemanticContent(line string) bool {
 	}
 	return false
 }
-
 
 // joinNonVolatile filters and joins lines, skipping volatile ones.
 func joinNonVolatile(lines []string) string {
