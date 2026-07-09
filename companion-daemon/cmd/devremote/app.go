@@ -121,6 +121,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			return nil, fmt.Errorf("register localpty: %w", err)
 		}
 	}
+	// E9: Controlled PTY Runtime — first-class Control Adapter, always available.
+	if err := reg.Register(mux.NewControlledPTYAdapter()); err != nil {
+		return nil, fmt.Errorf("register controlled_pty: %w", err)
+	}
 
 	events := deps.Events
 	if events == nil {
