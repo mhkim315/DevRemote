@@ -34,48 +34,26 @@ const NORMAL_MACROS: { label: string; chars: number[] }[] = [
 
 
 // ── E8g2 Transcript component ──
-// Merges adjacent terminal_output into continuous text blocks,
-// renders input markers as minimal dividers, oldest→newest
-// document-style reading. Full-width, no truncation.
+// Renders recorder-backed terminal_output as readable full-width text.
+// terminal_input becomes a minimal divider. Newest-first (inverted) so
+// current output is immediately visible — scroll UP for history.
+// No client-side text merge: backend ActivityBuffer already combines
+// adjacent output. Duplication-prevention: FlatList keyed on unique seq.
 
-type TranscriptBlock =
-  | { kind: 'output'; text: string; key: string }
-  | { kind: 'input'; key: string };
-type OutputSpan = { text: string; isNewBlock: boolean; key: string };
+type OutputSpan = { text: string; isInput: boolean; key: string };
 
 function E8g2Transcript({ events }: { events: any[] }) {
-  // Merge adjacent terminal_output events into continuous blocks.
-  const blocks: TranscriptBlock[] = useMemo(() => {
-    const result: TranscriptBlock[] = [];
+  const spans: OutputSpan[] = useMemo(() => {
+    const result: OutputSpan[] = [];
     for (const e of events) {
       if (e.type === 'terminal_output' && (e.text || '').length > 0) {
-        const last = result[result.length - 1];
-        if (last && last.kind === 'output') {
-          // Merge adjacent output: join with line break.
-          last.text += '\n' + e.text;
-        } else {
-          result.push({ kind: 'output', text: e.text, key: `o${e.seq}` });
-        }
+        result.push({ text: e.text, isInput: false, key: `o${e.seq}` });
       } else if (e.type === 'terminal_input') {
-        result.push({ kind: 'input', key: `i${e.seq}` });
+        result.push({ text: '', isInput: true, key: `i${e.seq}` });
       }
-      // other types ignored in transcript view
     }
     return result;
   }, [events]);
-
-  // Flatten output blocks into spans for FlatList, with new-block markers.
-  const spans: OutputSpan[] = useMemo(() => {
-    const result: OutputSpan[] = [];
-    for (const b of blocks) {
-      if (b.kind === 'output') {
-        result.push({ text: b.text, isNewBlock: true, key: b.key });
-      } else {
-        result.push({ text: '', isNewBlock: false, key: b.key });
-      }
-    }
-    return result;
-  }, [blocks]);
 
   if (spans.length === 0) {
     return <Text style={styles.emptyActivityText}>No transcript yet.</Text>;
@@ -86,16 +64,16 @@ function E8g2Transcript({ events }: { events: any[] }) {
       data={spans}
       keyExtractor={(item) => item.key}
       contentContainerStyle={styles.transcriptList}
+      inverted
       renderItem={({ item }) =>
-        item.isNewBlock ? (
+        item.isInput ? (
+          <View style={styles.transcriptInputDivider} />
+        ) : (
           <View style={styles.transcriptOutputBlock}>
             <Text style={styles.transcriptOutputText} selectable={true}>
               {item.text}
             </Text>
           </View>
-        ) : (
-          /* Minimal input divider — just a thin rule, no label */
-          <View style={styles.transcriptInputDivider} />
         )
       }
     />
