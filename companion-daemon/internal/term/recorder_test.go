@@ -599,14 +599,14 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 		payload  []byte
 		expected bool
 	}{
-		{"ESC[2J", []byte("\033[2Jrest"), true},
-		{"ESC[H", []byte("\033[Hrest"), true},
-		{"ESC[2J+content", []byte("\033[2J\033[Hhello"), true},
+		{"ESC[2J+ESC[H (cmux header)", []byte("\033[2J\033[Hhello"), true},
+		{"ESC[2J alone (no ESC[H)", []byte("\033[2Jrest"), false},
+		{"ESC[H alone (no ESC[2J)", []byte("\033[Hrest"), false},
 		{"plain text", []byte("hello world"), false},
 		{"ANSI but no clear", []byte("\033[31mred text\033[0m"), false},
 		{"too short", []byte("\033["), false},
 		{"empty", []byte{}, false},
-		{"ESC only", []byte("\033xxxx"), false},
+		{"6 bytes (too short)", []byte("\033[2J\033["), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 
 	"devremote/companion-daemon/internal/mux"
 )
@@ -222,25 +223,46 @@ var snapshotEndMarker = []byte("[9999m")
 // drainSnapshot reads chunks until snapshotEndMarker is found, then strips
 // it. All chunks (including the marker portion) are broadcast to live
 // terminal subscribers but never appended to ActivityBuffer.
+//
+// A 1-second safety timeout prevents false-positive drain from consuming
+// normal PTY output forever (e.g., if isClearScreenSnapshot incorrectly
+// matched a non-snapshot escape sequence).
 func (r *Recorder) drainSnapshot(buf []byte) {
+	const safetyTimeout = 1 * time.Second
+	deadline := time.After(safetyTimeout)
 	for {
-		n, err := r.stream.Read(buf)
-		if err != nil || n == 0 {
-			return
+		type readResult struct {
+			n   int
+			err error
 		}
-		chunk := make([]byte, n)
-		copy(chunk, buf[:n])
-
-		// Strip the end marker if present in this chunk.
-		if idx := indexOf(chunk, snapshotEndMarker); idx >= 0 {
-			// Broadcast everything before the marker.
-			if idx > 0 {
-				r.broadcast(chunk[:idx])
+		ch := make(chan readResult, 1)
+		go func() {
+			n, err := r.stream.Read(buf)
+			ch <- readResult{n, err}
+		}()
+		select {
+		case res := <-ch:
+			if res.err != nil || res.n == 0 {
+				return
 			}
+			chunk := make([]byte, res.n)
+			copy(chunk, buf[:res.n])
+
+			if idx := indexOf(chunk, snapshotEndMarker); idx >= 0 {
+				if idx > 0 {
+					r.broadcast(chunk[:idx])
+				}
+				return
+			}
+			r.broadcast(chunk)
+		case <-deadline:
+			// Safety: no marker found within timeout — not a real
+			// cmux snapshot. Resume normal append behavior.
+			log.Printf("RECORDER drainSnapshot timeout session=%s", r.sessionID)
+			return
+		case <-r.ctx.Done():
 			return
 		}
-		// Entire chunk is snapshot content — broadcast but don't append.
-		r.broadcast(chunk)
 	}
 }
 
@@ -325,18 +347,20 @@ func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)
 }
 
-// isClearScreenSnapshot reports whether payload starts with a clear-screen
-// escape sequence (ESC[2J or ESC[H), indicating a full-screen redraw rather
-// than incremental terminal output. Used to filter cmux screen polls from
-// ActivityBuffer while still broadcasting them to live terminal subscribers.
+// isClearScreenSnapshot reports whether payload starts with the cmux
+// full-screen redraw header (ESC[2J ESC[H). Normal PTY output may contain
+// ESC[H (cursor home) alone, which must NOT trigger snapshot drain.
+// ESC[2J (clear screen) immediately followed by ESC[H (cursor home) is
+// the distinctive cmux screen poll signature.
 func isClearScreenSnapshot(payload []byte) bool {
-	if len(payload) < 4 {
+	// cmux header: ESC [ 2 J ESC [ H = 7 bytes
+	if len(payload) < 7 {
 		return false
 	}
-	// ESC [ 2 J (clear screen) or ESC [ H (cursor home)
-	return (payload[0] == 0x1b && payload[1] == '[' &&
-		payload[2] == '2' && payload[3] == 'J') ||
-		(payload[0] == 0x1b && payload[1] == '[' && payload[2] == 'H')
+	return payload[0] == 0x1b && payload[1] == '[' &&
+		payload[2] == '2' && payload[3] == 'J' &&
+		payload[4] == 0x1b && payload[5] == '[' &&
+		payload[6] == 'H'
 }
 
 // GetRecorder returns the recorder for a session, or nil.
