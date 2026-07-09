@@ -173,8 +173,9 @@ func stripMuxANSI(s string) string {
 
 type screenTracker struct {
 	prevLines    []string // previous poll's screen lines
-	committed    []string // lines already committed (prevent duplicates)
+	committed    []string // recent lines (small dedup window)
 	stableCount  int      // consecutive polls with identical stable prefix
+	forceFlushed bool     // force-flush already ran for current screen
 	commitThreshold int   // polls before committing stable prefix edges
 }
 
