@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 func runClient(args []string) {
@@ -41,13 +42,13 @@ func runClient(args []string) {
 
 	// Safe JSON encoding — no fmt.Sprintf for JSON bodies.
 	payload := struct {
-		ID          string `json:"id,omitempty"`
+		ID          string `json:"id"`
 		Runner      string `json:"runner"`
 		RunnerColor string `json:"runnerColor"`
 		Command     string `json:"command"`
 		CWD         string `json:"cwd,omitempty"`
 	}{
-		ID:          "", // backend generates ID for controlled_pty
+		ID:          fmt.Sprintf("controlled_pty:run-%d", time.Now().UnixMilli()),
 		Runner:      command,
 		RunnerColor: "#45EBE9",
 		Command:     command,
