@@ -203,6 +203,7 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		for _, line := range currLines[start:] {
 			line = strings.TrimSpace(line)
 			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
+
 				continue
 			}
 			if !s.isCommitted(line) {
@@ -239,6 +240,7 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		for _, line := range s.prevLines[prefixLen:] {
 			line = strings.TrimSpace(line)
 			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
+
 				continue
 			}
 			if !s.isCommitted(line) {
@@ -256,6 +258,7 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 		for _, line := range currLines {
 			line = strings.TrimSpace(line)
 			if line == "" || isTimerLine(line) || isVolatileLine(line) || isStatusPanelLine(line) {
+
 				continue
 			}
 			if !s.isCommitted(line) {
@@ -268,8 +271,8 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 	s.prevLines = currLines
 
 	// Trim committed buffer.
-	if len(s.committed) > 1000 {
-		s.committed = s.committed[len(s.committed)-1000:]
+	if len(s.committed) > 100 {
+		s.committed = s.committed[len(s.committed)-50:]
 	}
 
 	if len(toCommit) > 0 {
@@ -280,8 +283,24 @@ func (s *screenTracker) processScreen(currentContent string) (commitText string)
 	}
 	return ""
 }
+// isCommitted prevents duplicate commits within the same snapshot
+// polling sequence. Does NOT use global text matching — identical
+// messages across different interactions are NOT deduplicated.
+// Only suppresses repeated renders from the same screen snapshot.
 func (s *screenTracker) isCommitted(line string) bool {
-	for _, c := range s.committed {
+	// Never block semantic markers — these are always new events.
+	if strings.HasPrefix(line, "›") || strings.HasPrefix(line, "•") ||
+		strings.HasPrefix(line, "⎿") {
+		return false
+	}
+	// Small window dedup: only check last 20 committed lines.
+	// This catches timer/status repaint within a single polling sequence
+	// without blocking identical messages across interactions.
+	recentStart := len(s.committed) - 20
+	if recentStart < 0 {
+		recentStart = 0
+	}
+	for _, c := range s.committed[recentStart:] {
 		if c == line {
 			return true
 		}
