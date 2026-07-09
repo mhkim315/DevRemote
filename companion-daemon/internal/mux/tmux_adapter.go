@@ -166,3 +166,7 @@ func resolveTmuxTarget(ctx context.Context, runner CommandRunner, name string) (
 	}
 	return "", fmt.Errorf("tmux session %q not found", name)
 }
+
+func (a *tmuxAdapter) TranscriptCaptureMode() TranscriptCaptureMode {
+	return CaptureModeByteStream
+}

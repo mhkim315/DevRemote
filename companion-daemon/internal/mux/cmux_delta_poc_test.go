@@ -295,3 +295,21 @@ func TestCmuxAdapter_DeclaresScreenSnapshotDelta(t *testing.T) {
 		t.Errorf("cmux adapter mode = %v, want CaptureModeScreenSnapshotDelta", mode)
 	}
 }
+
+// --- TranscriptCaptureMode contract tests ---
+
+func TestTmuxAdapter_DeclaresByteStream(t *testing.T) {
+	adapter := &tmuxAdapter{}
+	mode := adapter.TranscriptCaptureMode()
+	if mode != CaptureModeByteStream {
+		t.Errorf("tmux adapter mode = %v, want CaptureModeByteStream", mode)
+	}
+}
+
+func TestLocalptyAdapter_DeclaresByteStream(t *testing.T) {
+	adapter := &localptyAdapter{}
+	mode := adapter.TranscriptCaptureMode()
+	if mode != CaptureModeByteStream {
+		t.Errorf("localpty adapter mode = %v, want CaptureModeByteStream", mode)
+	}
+}

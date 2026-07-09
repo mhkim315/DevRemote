@@ -251,12 +251,10 @@ var snapshotEndMarker = []byte("\x1b[9999m")
 // code — xterm.js ignores it. Recorder strips it before ActivityBuffer.
 var deltaMarker = []byte("\x1b[9998m")
 
-// resolveCaptureMode determines the capture mode for a session.
-// Checks the adapter via the recorderRegistry. Defaults to
-// CaptureModeByteStream for adapters that don't declare a mode.
+// resolveCaptureMode is a future hook for per-adapter capture behavior.
+// Currently returns CaptureModeByteStream (legacy default).
+// Actual cmux behavior is enforced by sentinel detection in readLoop.
 func resolveCaptureMode(sessionID string) mux.TranscriptCaptureMode {
-	// For now, mode is resolved by sentinel detection in readLoop.
-	// Adapter-level contract is verified by TranscriptCaptureProvider tests.
 	return mux.CaptureModeByteStream
 }
 
