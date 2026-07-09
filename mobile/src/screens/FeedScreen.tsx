@@ -270,10 +270,11 @@ export default function FeedScreen({onBack, session, token}: Props) {
   }, [inject]);
 
   const send = useCallback(() => {
-    if (!cmd.trim()) return;
-    const textToSend = cmd;
-    doSend(textToSend + '\r');
+    const currentCmd = cmdRef.current || cmd;
+    if (!currentCmd.trim()) return;
+    doSend(currentCmd + '\r');
     setCmd('');
+    cmdRef.current = '';
 
     setHistoryEvents(prev => {
       const optEvent = {
@@ -281,12 +282,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
         session: session,
         type: 'user',
         summary: 'User',
-        detail: textToSend,
+        detail: currentCmd,
         timestamp: new Date().toISOString()
       };
       return [...prev, optEvent];
     });
-  }, [cmd, doSend, session]);
+  }, [doSend, session]);
   const sendMacro = useCallback((chars: number[]) => {
     // E8: macros use same doSend ack path.
     const macroText = String.fromCharCode.apply(null, chars);

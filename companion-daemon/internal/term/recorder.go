@@ -3,6 +3,7 @@ package term
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -230,6 +231,8 @@ func (r *Recorder) readLoop() {
 			}
 			if r.activity != nil {
 				text := stripANSI(string(payload))
+				// Replace CR with LF so TUI status repaints don't merge.
+				text = strings.ReplaceAll(text, "\r", "\n")
 				if !isANSIControlOnly(text) && len(text) > 3 {
 					if len(text) > 32768 {
 						text = text[:32768]
@@ -260,6 +263,8 @@ func (r *Recorder) readLoop() {
 		// Subscriber broadcast follows so that receiving data implies capture is done.
 		if r.activity != nil {
 			text := stripANSI(string(payload))
+			// Replace CR with LF so TUI status repaints don't merge.
+			text = strings.ReplaceAll(text, "\r", "\n")
 			if !isANSIControlOnly(text) && len(text) > 3 {
 				if len(text) > 32768 {
 					text = text[:32768]
