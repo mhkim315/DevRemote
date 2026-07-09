@@ -65,17 +65,16 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 		}
 	}
 
-	// Support cwd if provided.
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	native, err := SpawnPTY(id, "xterm-256color", "bash", "-c", command)
+	native, err := SpawnPTYWithDir(id, "xterm-256color", opts.CWD, "bash", "-c", command)
 	if err != nil {
 		return "", fmt.Errorf("controlled_pty SpawnPTY: %w", err)
 	}
-		if opts.CWD != "" {
-			native.Cmd.Dir = opts.CWD
-		}
+	if opts.CWD != "" {
+		native.Cmd.Dir = opts.CWD
+	}
 
 	s := &controlledPTYSession{
 		id:     id,

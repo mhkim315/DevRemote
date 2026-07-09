@@ -19,7 +19,16 @@ type NativeSession struct {
 // SpawnPTY starts a new process in a PTY and returns it as a NativeSession.
 // It does NOT keep track of it in a global map.
 func SpawnPTY(id string, termEnv string, command string, args ...string) (*NativeSession, error) {
+	return SpawnPTYWithDir(id, termEnv, "", command, args...)
+}
+
+// SpawnPTYWithDir starts a new process with an optional working directory.
+// cmd.Dir is set before pty.Start so the child process inherits the cwd.
+func SpawnPTYWithDir(id string, termEnv string, cwd string, command string, args ...string) (*NativeSession, error) {
 	cmd := exec.Command(command, args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 
 	// Inherit shell environment (API keys, PATH, etc.)
 	env := os.Environ()

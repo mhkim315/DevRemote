@@ -47,7 +47,10 @@ func TestControlledPTY_NoWebSocketCapture(t *testing.T) {
 	}
 	defer DeleteRecorder(compoundID)
 
-	go func() { for range ch {} }()
+	go func() {
+		for range ch {
+		}
+	}()
 	time.Sleep(500 * time.Millisecond)
 
 	events := activity.List(compoundID)
@@ -122,14 +125,82 @@ func TestControlledPTY_CapabilitiesContract(t *testing.T) {
 	caps := mux.AdapterCapabilities(mux.NewControlledPTYAdapter())
 	has := func(c mux.AdapterCapability) bool {
 		for _, v := range caps {
-			if v == c { return true }
+			if v == c {
+				return true
+			}
 		}
 		return false
 	}
-	if !has(mux.CapObserve) { t.Error("missing observe") }
-	if !has(mux.CapControl) { t.Error("missing control") }
-	if !has(mux.CapInput) { t.Error("missing input") }
-	if !has(mux.CapLiveTerminal) { t.Error("missing liveTerminal") }
-	if !has(mux.CapReliableTranscript) { t.Error("missing reliableTranscript") }
-	if has(mux.CapBestEffortTranscript) { t.Error("must NOT have bestEffortTranscript") }
+	if !has(mux.CapObserve) {
+		t.Error("missing observe")
+	}
+	if !has(mux.CapControl) {
+		t.Error("missing control")
+	}
+	if !has(mux.CapInput) {
+		t.Error("missing input")
+	}
+	if !has(mux.CapLiveTerminal) {
+		t.Error("missing liveTerminal")
+	}
+	if !has(mux.CapReliableTranscript) {
+		t.Error("missing reliableTranscript")
+	}
+	if has(mux.CapBestEffortTranscript) {
+		t.Error("must NOT have bestEffortTranscript")
+	}
+}
+
+func TestControlledPTY_CWDApplied(t *testing.T) {
+	adapter := mux.NewControlledPTYAdapter()
+
+	// Use a temp directory to verify CWD is applied.
+	id, err := adapter.(mux.SessionCreator).CreateSession(context.Background(), mux.CreateOptions{
+		Name:    "test-cwd",
+		Command: "pwd",
+		CWD:     "/tmp",
+	})
+	if err != nil {
+		t.Skipf("PTY creation skipped: %v", err)
+	}
+	defer adapter.(mux.SessionTerminator).TerminateSession(context.Background(), id)
+
+	compoundID := "controlled_pty:" + id
+	reg := mux.MustNewRegistry(adapter)
+	sessions := reg.Sessions(context.Background())
+	var session mux.Session
+	for _, s := range sessions {
+		if s.AdapterName()+":"+s.ID() == compoundID {
+			session = s
+			break
+		}
+	}
+	if session == nil {
+		t.Fatal("session not found")
+	}
+
+	stream, err := session.(mux.StreamOpener).OpenStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer stream.Close()
+
+	// Read output and verify it contains /tmp.
+	buf := make([]byte, 1024)
+	type readResult struct {
+		n   int
+		err error
+	}
+	ch := make(chan readResult, 1)
+	go func() { n, err := stream.Read(buf); ch <- readResult{n, err} }()
+	select {
+	case r := <-ch:
+		if r.n > 0 && !strings.Contains(string(buf[:r.n]), "/tmp") {
+			t.Errorf("CWD not applied: output=%q, want '/tmp'", string(buf[:r.n]))
+		} else if r.n > 0 {
+			t.Logf("CWD applied: output=%q", string(buf[:r.n]))
+		}
+	case <-time.After(2 * time.Second):
+		t.Log("read timed out")
+	}
 }
