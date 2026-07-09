@@ -160,6 +160,15 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 		return
 	}
 
+	// E10b: subscriber protocol — first line may be "sub:<sessionID>".
+	if line, err := reader.ReadString('\n'); err == nil {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "sub:") {
+			handleIPCSubscriber(conn, strings.TrimPrefix(line, "sub:"))
+			return
+		}
+	}
+
 	// Fallback to legacy plain-text protocol
 	for {
 		line, err := reader.ReadString('\n')

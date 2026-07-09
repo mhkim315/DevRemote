@@ -64,6 +64,14 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			canonicalID := mux.SessionRef{Adapter: adapterName, LocalID: createdID}.Canonical()
+			// E10b: start recorder immediately so local attach can subscribe.
+			if h.Activity != nil {
+				if sess, err := reg.FindSession(r.Context(), canonicalID); err == nil {
+					if opener, ok := sess.(mux.StreamOpener); ok {
+						EnsureRecorder(canonicalID, opener, h.Activity)
+					}
+				}
+			}
 			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
 			return
 		}
