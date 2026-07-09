@@ -27,6 +27,10 @@ func NewLocalPTYAdapter() Adapter {
 
 func (a *localptyAdapter) Name() string { return "localpty" }
 
+func (a *localptyAdapter) TranscriptCaptureMode() TranscriptCaptureMode {
+	return CaptureModeByteStream
+}
+
 func (a *localptyAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

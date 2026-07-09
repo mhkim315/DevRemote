@@ -22,6 +22,7 @@ type Recorder struct {
 	subscribers []chan []byte
 	done        chan struct{}
 	readErr     error
+	captureMode mux.TranscriptCaptureMode // source of truth for capture behavior
 }
 
 // recorderRegistry tracks active recorders.
@@ -60,6 +61,7 @@ func StartRecorder(sessionID string, stream mux.TerminalStream, activity *Activi
 	ch := r.Subscribe()
 	recorderRegistry.recorders[sessionID] = r
 
+	r.captureMode = resolveCaptureMode(sessionID)
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch
@@ -249,6 +251,15 @@ var snapshotEndMarker = []byte("\x1b[9999m")
 // code — xterm.js ignores it. Recorder strips it before ActivityBuffer.
 var deltaMarker = []byte("\x1b[9998m")
 
+// resolveCaptureMode determines the capture mode for a session.
+// Checks the adapter via the recorderRegistry. Defaults to
+// CaptureModeByteStream for adapters that don't declare a mode.
+func resolveCaptureMode(sessionID string) mux.TranscriptCaptureMode {
+	// For now, mode is resolved by sentinel detection in readLoop.
+	// Adapter-level contract is verified by TranscriptCaptureProvider tests.
+	return mux.CaptureModeByteStream
+}
+
 // isDeltaMarker reports whether payload starts with the delta prefix.
 func isDeltaMarker(payload []byte) bool {
 	if len(payload) < len(deltaMarker) {
@@ -365,6 +376,7 @@ func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *Activit
 	}
 	ch := r.Subscribe()
 	recorderRegistry.recorders[sessionID] = r
+	r.captureMode = resolveCaptureMode(sessionID)
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch

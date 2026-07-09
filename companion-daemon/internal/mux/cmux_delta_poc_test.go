@@ -213,35 +213,63 @@ func TestCmuxInvariant_OneNewLineOneEvent(t *testing.T) {
 
 	// New line appears at bottom.
 	result := st.processScreen("line1\nline2\nline3\n")
-	// May or may not commit immediately (depends on stability).
-	// After stability, it should be committed.
-	t.Logf("new line result: %q (may be empty until stable)", result)
+
+	// After stability (6 identical polls), the new line must be committed.
+	for i := 0; i < 10; i++ {
+		r := st.processScreen("line1\nline2\nline3\n")
+		if r != "" {
+			result = r
+		}
+	}
+	if result == "" {
+		t.Fatal("new line was never committed even after stability window")
+	}
+	if !strings.Contains(result, "line3") && !strings.Contains(result, "line1") {
+		t.Errorf("committed text does not contain expected content: %q", result)
+	}
+	// Must not produce duplicate commits for the same content.
+	dup := st.processScreen("line1\nline2\nline3\n")
+	if dup != "" {
+		t.Errorf("duplicate commit after stability: %q", dup)
+	}
 }
 
 func TestCmuxInvariant_RepeatedTextNotDedupedGlobally(t *testing.T) {
 	st := newScreenTracker()
 
-	// Bootstrap with "› hi"
-	result1 := st.processScreen("› hi\n• hello\n")
-	t.Logf("bootstrap: %q", result1)
+	// Bootstrap with first interaction.
+	st.processScreen("› hi\n• hello\n")
 
-	// Force-flush the rest via multiple identical polls
+	// Force-flush via stability.
 	for i := 0; i < 10; i++ {
 		st.processScreen("› hi\n• hello\n")
 	}
 
-	// Now simulate a new interaction with same text.
-	// Screen changes: new "› hi" at bottom.
-	result2 := st.processScreen("› hi\n• hello\n› hi\n• hello again\n")
-	t.Logf("new interaction: %q", result2)
+	// New interaction: same prompt "› hi" appears again in a different screen.
+	// The screen is now longer: old conversation + new interaction.
+	st.processScreen("› hi\n• hello\n› hi\n• hello again\n")
 
-	// The second "› hi" and "• hello again" must NOT be blocked
-	// by the first "› hi" from bootstrap.
-	if result2 != "" {
-		// Should contain the NEW content
-		if !strings.Contains(result2, "hello again") {
-			t.Errorf("new semantic content blocked by global dedup: %q", result2)
+	// Force-flush again.
+	var result2 string
+	for i := 0; i < 10; i++ {
+		r := st.processScreen("› hi\n• hello\n› hi\n• hello again\n")
+		if r != "" {
+			result2 += r
 		}
+	}
+
+	// The new interaction content must appear. Must NOT be empty.
+	if result2 == "" {
+		t.Fatal("second identical prompt produced no transcript — global dedup blocked it")
+	}
+	// Must contain the NEW content (second interaction).
+	if !strings.Contains(result2, "hello again") {
+		t.Errorf("new interaction text not found in transcript: %q", result2)
+	}
+	// Must NOT suppress the second "› hi" just because the first one exists.
+	hiCount := strings.Count(result2, "› hi")
+	if hiCount < 1 {
+		t.Errorf("second › hi was blocked by global dedup: found %d occurrences", hiCount)
 	}
 }
 
