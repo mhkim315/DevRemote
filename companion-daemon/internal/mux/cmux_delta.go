@@ -156,213 +156,174 @@ func stripMuxANSI(s string) string {
 	return string(out)
 }
 
-// ── Volatile UI Suppression ──
+// ── Stable Prefix + Mutable Tail Transcript Model ──
 //
-// Agent terminals repaint volatile UI elements (timers, spinners,
-// status bars, model banners) on every screen refresh. These are not
-// semantic output — they are transient repaint artifacts.
+// cmux screens are polled as full snapshots. Rather than committing
+// every diff, we track the screen at line level:
 //
-// suppressVolatileLines removes lines that appear to be volatile UI:
-//   - lines that repeat across consecutive deltas (within a window)
-//   - lines that differ only by an incrementing number (timer)
-//   - lines that are single characters (spinner artifacts)
+//   Stable Prefix  — top lines unchanged across polls (committed when they scroll out)
+//   Mutable Tail   — bottom lines that change each poll (projected, not committed)
 //
-// Returns the filtered delta, or "" if all lines are volatile.
+// Lines are committed to ActivityBuffer only when they:
+//   1. Scroll out of the current screen (no longer visible), OR
+//   2. Remain in the stable prefix for N consecutive polls
+//
+// Mutable tail lines update in place and are never committed directly.
+// This prevents timer/status/spinner spam in Transcript.
 
-type volatileFilter struct {
-	recentLines map[string]int // line → times seen in recent window
-	maxRecent   int
+type screenTracker struct {
+	prevLines    []string // previous poll's screen lines
+	committed    []string // lines already committed (prevent duplicates)
+	stableCount  int      // consecutive polls with identical stable prefix
+	commitThreshold int   // polls before committing stable prefix edges
 }
 
-func newVolatileFilter() *volatileFilter {
-	return &volatileFilter{
-		recentLines: make(map[string]int),
-		maxRecent:   3,
-	}
+func newScreenTracker() *screenTracker {
+	return &screenTracker{commitThreshold: 3} // ~1.5 seconds at 500ms poll
 }
 
-// filter removes volatile lines from delta. Returns "" if no semantic
-// content remains after filtering.
-func (f *volatileFilter) filter(delta string) string {
-	lines := splitLines(delta)
-	if len(lines) == 0 {
+// processScreen compares the current screen against the previous one.
+// Returns lines to commit to ActivityBuffer (via delta marker).
+func (s *screenTracker) processScreen(currentContent string) (commitText string) {
+	currLines := splitLines(currentContent)
+	if len(currLines) == 0 {
 		return ""
 	}
 
-	var semantic []string
-	volatileCount := 0
-	for _, line := range lines {
-		if f.isVolatile(line) {
-			volatileCount++
-			continue
-		}
-		semantic = append(semantic, line)
-	}
-
-	// Update recent lines with new semantic content.
-	for _, line := range semantic {
-		f.recentLines[line]++
-	}
-	// Decay old entries.
-	for line, count := range f.recentLines {
-		if count > 1 {
-			f.recentLines[line] = count - 1
-		} else {
-			delete(f.recentLines, line)
-		}
-	}
-
-	// If all lines were volatile, suppress the entire delta.
-	if len(semantic) == 0 {
+	// First poll: just record, don't commit.
+	if s.prevLines == nil {
+		s.prevLines = currLines
 		return ""
 	}
-	return strings.Join(semantic, "\n")
-}
 
-// isVolatile returns true if a line appears to be volatile UI rather
-// than semantic agent output.
-func (f *volatileFilter) isVolatile(line string) bool {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return true // blank lines are not meaningful
+	// Find common prefix: lines at the TOP that are identical.
+	prefixLen := 0
+	for i := 0; i < len(s.prevLines) && i < len(currLines); i++ {
+		if s.prevLines[i] != currLines[i] {
+			break
+		}
+		prefixLen = i + 1
 	}
 
-	// Single character (spinner artifact): "/", "-", "\", "|"
-	if len(line) == 1 {
-		return true
-	}
-
-	// Lines that repeat across deltas (seen ≥ maxRecent times).
-	if f.recentLines[line] >= f.maxRecent {
-		return true
-	}
-
-	// Timer pattern: "Working (Ns • esc to interrupt)"
-	// Normalize by stripping incrementing numbers, then check for repeats.
-	normalized := normalizeVolatilePattern(line)
-	if normalized != line && f.recentLines[normalized] >= f.maxRecent {
-		return true
-	}
-	// Also store the normalized form for future detection.
-	if normalized != line {
-		f.recentLines[normalized]++
-	}
-
-	return false
-}
-
-// normalizeVolatilePattern replaces incrementing numeric patterns with
-// a placeholder so that "Working (1s...)", "Working (2s...)" all map
-// to the same normalized form.
-func normalizeVolatilePattern(line string) string {
-	// Replace isolated numbers and timers: "1s", "2s", "3s", "1m", etc.
-	// Pattern: digit(s) followed by 's' or 'm' in a timer context.
-	result := line
-	// Simple: replace runs of digits followed by 's' with "Ns"
-	for i := 0; i < len(result); i++ {
-		if result[i] >= '0' && result[i] <= '9' {
-			j := i
-			for j < len(result) && result[j] >= '0' && result[j] <= '9' {
-				j++
+	// Lines from prev that are NOT in curr.
+	// If they were above the mutable tail boundary → commit them.
+	// If they were in the mutable tail → dropped (replaced).
+	var toCommit []string
+	if prefixLen < len(s.prevLines) {
+		scrolledLines := s.prevLines[prefixLen:]
+		for _, line := range scrolledLines {
+			line = strings.TrimSpace(line)
+			if line == "" || isTimerLine(line) || isVolatileLine(line) {
+				continue
 			}
-			if j < len(result) && (result[j] == 's' || result[j] == 'm') {
-				result = result[:i] + "N" + result[j:]
-				i = i + 1 // skip past "Ns" or "Nm"
-			} else {
-				i = j
+			if !s.isCommitted(line) {
+				toCommit = append(toCommit, line)
+				s.committed = append(s.committed, line)
 			}
 		}
 	}
-	return result
-}
 
-// ── Pending-to-Committed Transcript Model ──
-//
-// Deltas are not immediately committed to ActivityBuffer. Instead they
-// enter a pending state. Only when the output stabilizes (no new delta
-// for N consecutive polls) is it committed. Volatile repaint (timers,
-// spinners, status bars) never reaches committed transcript.
-//
-// Two layers:
-//  1. Committed: stable semantic text → delta marker → ActivityBuffer
-//  2. Pending: transient text, held in memory, replaced on each poll
-
-type transcriptManager struct {
-	pending         string // accumulated pending output
-	stableCount     int    // consecutive polls with no new semantic delta
-	stableThreshold int    // polls before commit (e.g., 2 = 1 second at 500ms)
-}
-
-func newTranscriptManager() *transcriptManager {
-	return &transcriptManager{stableThreshold: 2}
-}
-
-// processDelta decides whether to commit accumulated pending output.
-// delta is the new text extracted from the latest screen comparison.
-// Returns the text to commit (for ActivityBuffer), or "" if nothing
-// should be committed yet.
-func (m *transcriptManager) processDelta(delta string) (commitText string) {
-	// Filter volatile patterns from the delta.
-	semantic := removeVolatileLines(delta)
-
-	if semantic != "" {
-		// New semantic output — append to pending, reset stability.
-		if m.pending != "" {
-			m.pending += "\n" + semantic
-		} else {
-			m.pending = semantic
-		}
-		m.stableCount = 0
-		return ""
+	// Stable prefix unchanged → count stability.
+	if prefixLen == len(s.prevLines) && prefixLen == len(currLines) {
+		// Screen completely unchanged.
+		s.stableCount++
+	} else {
+		s.stableCount = 0
 	}
 
-	// No new semantic output. If we have pending content, count
-	// stability. Commit when the screen has been stable long enough.
-	if m.pending != "" {
-		m.stableCount++
-		if m.stableCount >= m.stableThreshold {
-			commitText = m.pending
-			m.pending = ""
-			m.stableCount = 0
+	// If the stable prefix has been stable for threshold polls,
+	// commit any new lines at the boundary that appeared.
+	if s.stableCount >= s.commitThreshold && prefixLen > 0 && prefixLen < len(currLines) {
+		newStable := currLines[prefixLen:]
+		for _, line := range newStable {
+			line = strings.TrimSpace(line)
+			if line == "" || isTimerLine(line) || isVolatileLine(line) {
+				continue
+			}
+			if !s.isCommitted(line) {
+				toCommit = append(toCommit, line)
+				s.committed = append(s.committed, line)
+			}
 		}
+	}
+
+	s.prevLines = currLines
+
+	// Trim committed buffer to prevent unbounded growth.
+	if len(s.committed) > 500 {
+		s.committed = s.committed[len(s.committed)-500:]
+	}
+
+	if len(toCommit) > 0 {
+		return strings.Join(toCommit, "\n")
 	}
 	return ""
 }
 
-// removeVolatileLines strips volatile UI patterns from delta text.
-// Returns only lines that appear to be semantic content (messages,
-// tool output, logs) rather than transient repaint artifacts
-// (timers, spinners, status bars).
-func removeVolatileLines(delta string) string {
-	lines := splitLines(delta)
-	var semantic []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+func (s *screenTracker) isCommitted(line string) bool {
+	for _, c := range s.committed {
+		if c == line {
+			return true
 		}
-		// Single character = spinner fragment.
-		if len(line) == 1 {
-			continue
-		}
-		// Timer pattern: contains "s •" or ") •" (e.g. "Working (3s • esc...)").
-		if isTimerLine(line) {
-			continue
-		}
-		semantic = append(semantic, line)
 	}
-	if len(semantic) == 0 {
-		return ""
+	return false
+}
+
+// isVolatileLine returns true if the line is a transient UI element
+// (banner, model indicator, status bar hint) — not semantic output.
+func isVolatileLine(line string) bool {
+	// Lines that are purely decorative separators.
+	if strings.Count(line, "─") > 10 || strings.Count(line, "━") > 10 ||
+		strings.Count(line, "▔") > 10 || strings.Count(line, "▀") > 10 {
+		return true
 	}
-	return strings.Join(semantic, "\n")
+	// Status bar with key hints: "? for shortcuts · ← for agents"
+	if strings.Contains(line, "? for shortcuts") || strings.Contains(line, "← for agents") {
+		return true
+	}
+	// Model/version banners.
+	if strings.Contains(line, "Claude Code") || strings.Contains(line, "Opus") ||
+		strings.Contains(line, "gpt-") || strings.Contains(line, "API Usage") {
+		return true
+	}
+	// Prompt indicators.
+	if strings.Contains(line, "esc to interrupt") || strings.Contains(line, "Use /skills") {
+		return true
+	}
+	// Status panels with box-drawing and usage stats.
+	if isStatusPanelLine(line) {
+		return true
+	}
+	return false
 }
 
 // isTimerLine detects volatile timer/progress indicators.
-// Patterns: "Working (Ns • ...)", "Building... Ns", etc.
-// Generic: line containing "(digit+s" or "digit+s •" or "digit+s remaining".
 func isTimerLine(line string) bool {
 	return strings.Contains(line, "s •") ||
 		strings.Contains(line, ") •") ||
 		strings.Contains(line, "• esc") ||
 		strings.Contains(line, "esc to interrupt")
+}
+
+// isStatusPanelLine detects box-drawing status panels common across agents.
+func isStatusPanelLine(line string) bool {
+	// Box-drawing panel rows: lines containing │ at both ends or
+	// bordered by ╭╮╰╯. These are UI panels, not semantic output.
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "│") || strings.HasSuffix(trimmed, "│") {
+		return true
+	}
+	// Panel borders: ╭ ╮ ╰ ╯
+	if strings.HasPrefix(trimmed, "╭") || strings.HasPrefix(trimmed, "╰") {
+		return true
+	}
+	// Progress bars
+	if strings.Count(line, "█") > 5 || strings.Count(line, "░") > 5 {
+		return true
+	}
+	// Usage/billing lines
+	if strings.Contains(line, "API Usage") || strings.Contains(line, "Billing") {
+		return true
+	}
+	return false
 }
