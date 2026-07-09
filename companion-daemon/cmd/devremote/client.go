@@ -37,6 +37,19 @@ func buildRunPayload(command, cwd string) ([]byte, string) {
 	return buf.Bytes(), sessionID
 }
 
+// buildRunRequest creates an HTTP request for the pokit run command.
+func buildRunRequest(daemonURL, token string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequest("POST", daemonURL+"/api/sessions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
 func runClient(args []string) {
 	cwd := ""
 	commandArgs := args
@@ -63,14 +76,9 @@ func runClient(args []string) {
 		daemonURL = "http://localhost:9171"
 	}
 
-	req, err := http.NewRequest("POST", daemonURL+"/api/sessions", bytes.NewReader(payloadBytes))
+	req, err := buildRunRequest(daemonURL, os.Getenv("POKIT_TOKEN"), payloadBytes)
 	if err != nil {
 		log.Fatalf("Failed to create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	if token := os.Getenv("POKIT_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

@@ -75,3 +75,28 @@ func TestBuildRunPayload_CWDEmptyOmitted(t *testing.T) {
 		t.Error("empty cwd should be omitted from JSON")
 	}
 }
+
+func TestBuildRunRequest_AuthHeader(t *testing.T) {
+	body, _ := buildRunPayload("echo hi", "")
+	req, err := buildRunRequest("http://localhost:9171", "test-token-123", body)
+	if err != nil {
+		t.Fatalf("buildRunRequest: %v", err)
+	}
+	if req.Header.Get("Authorization") != "Bearer test-token-123" {
+		t.Errorf("Authorization: %q", req.Header.Get("Authorization"))
+	}
+	if req.Header.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type: %q", req.Header.Get("Content-Type"))
+	}
+}
+
+func TestBuildRunRequest_NoAuthHeader(t *testing.T) {
+	body, _ := buildRunPayload("echo hi", "")
+	req, err := buildRunRequest("http://localhost:9171", "", body)
+	if err != nil {
+		t.Fatalf("buildRunRequest: %v", err)
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Error("Authorization header must be absent when token is empty")
+	}
+}
