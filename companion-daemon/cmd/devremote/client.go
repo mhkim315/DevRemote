@@ -6,83 +6,60 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
-
-	"golang.org/x/term"
 )
 
 func runClient(args []string) {
-	if len(args) == 0 {
-		fmt.Println("Usage: pokit run <command>")
+	cwd := ""
+	commandArgs := args
+
+	// Parse --cwd flag if present.
+	if len(args) >= 2 && args[0] == "--cwd" {
+		cwd = args[1]
+		commandArgs = args[2:]
+	}
+
+	if len(commandArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: pokit run [--cwd <dir>] <command>\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  pokit run claude\n")
+		fmt.Fprintf(os.Stderr, "  pokit run --cwd ~/project codex\n")
+		fmt.Fprintf(os.Stderr, "  pokit run bash\n")
 		os.Exit(1)
 	}
 
-	command := strings.Join(args, " ")
+	command := strings.Join(commandArgs, " ")
 
-	// Connect to local daemon via Unix Socket
-	socketPath := "/tmp/pokit.sock"
-	conn, err := net.Dial("unix", socketPath)
+	// E10: use HTTP API to create controlled_pty session.
+	daemonURL := os.Getenv("POKIT_URL")
+	if daemonURL == "" {
+		daemonURL = "http://localhost:9171"
+	}
+
+	body := fmt.Sprintf(`{"id":"controlled_pty:run","runner":"%s","runnerColor":"#45EBE9","command":"%s","cwd":"%s"}`,
+		command, command, cwd)
+	resp, err := http.Post(daemonURL+"/api/sessions", "application/json", strings.NewReader(body))
 	if err != nil {
-		log.Fatalf("Failed to connect to POKIT daemon (is it running?): %v", err)
+		log.Fatalf("Failed to reach daemon at %s: %v\nIs the daemon running? Try: pokit daemon --insecure-local-only", daemonURL, err)
 	}
-	defer conn.Close()
+	defer resp.Body.Close()
 
-	// Send the command and terminal environment as headers
-	fmt.Fprintf(conn, "cmd:%s\n", command)
-	termEnv := os.Getenv("TERM")
-	if termEnv == "" {
-		termEnv = "xterm-256color"
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Fatalf("Daemon returned %d: %s", resp.StatusCode, string(respBody))
 	}
-	fmt.Fprintf(conn, "term:%s\n", termEnv)
 
-	// Put local terminal into raw mode
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	isRaw := err == nil
-	if err != nil {
-		log.Printf("WARN: Not a TTY, output may be garbled: %v", err)
+	var result struct{ ID string }
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if result.ID != "" {
+		fmt.Printf("Session created: %s\n", result.ID)
+		fmt.Printf("Terminal: %s/term/?session=%s\n", daemonURL, result.ID)
+	} else {
+		fmt.Println("Session created (check daemon for details)")
 	}
-	defer func() {
-		if isRaw {
-			term.Restore(int(os.Stdin.Fd()), oldState)
-		}
-	}()
-
-	// Send current terminal size to daemon and EOH
-	if isRaw {
-		w, h, err := term.GetSize(int(os.Stdin.Fd()))
-		if err == nil && w > 0 && h > 0 {
-			fmt.Fprintf(conn, "size:%dx%d\n", w, h)
-		}
-	}
-	// End of Headers
-	fmt.Fprintf(conn, "\n")
-
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		if isRaw {
-			term.Restore(int(os.Stdin.Fd()), oldState)
-		}
-		conn.Close()
-		os.Exit(0)
-	}()
-
-	// Read from Socket, write to local Stdout
-	go func() {
-		io.Copy(os.Stdout, conn)
-		if isRaw {
-			term.Restore(int(os.Stdin.Fd()), oldState)
-		}
-		os.Exit(0)
-	}()
-
-	// Read from local Stdin, write to Socket
-	io.Copy(conn, os.Stdin)
 }
 
 func runLinkerClient(cmd string, args []string) {

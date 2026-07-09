@@ -38,6 +38,8 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID string `json:"workspaceId"`
 			Runner      string `json:"runner"`
 			RunnerColor string `json:"runnerColor"`
+				Command     string `json:"command"`
+				CWD         string `json:"cwd"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -53,7 +55,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		adapterName := ref.Adapter
 
 		if r.Method == http.MethodPost {
-			opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID}
+			opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID, Command: req.Command, CWD: req.CWD}
 			createdID, err := reg.CreateSession(r.Context(), adapterName, opts)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
