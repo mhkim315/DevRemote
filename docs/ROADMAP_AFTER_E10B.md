@@ -116,9 +116,9 @@ Real-device validation now confirms:
 
 ```text
 R0  Finish E10b polish                         ACCEPTED
-M0  Mobile Session Lifecycle Contract          IMPLEMENTED / FIX REQUIRED
-M1  Safe Session Creation and Profiles         REJECT e4e2704d0
-M1.5 Session Ownership / Access Contract       AFTER M0/M1 FIX
+M0  Mobile Session Lifecycle Contract          ACCEPT a99070015
+M1  Safe Session Creation and Profiles         ACCEPT a99070015
+M1.5 Session Ownership / Access Contract       NEXT
 M2  Stop / Kill / Delete Lifecycle
 M3  Mobile Lifecycle UX and Real-device Gate
 T0  Transcript Contract Reset
@@ -202,29 +202,32 @@ the same cleanup path.
 
 ### M0/M1 review status
 
-Commit `e4e2704d0` is rejected at the product boundary. Its profile/argv model,
-canonical ID generation, CWD validation, lifecycle types, and CLI compatibility
-are useful foundations, and the targeted race suite passes. The blockers are:
+Initial commit `e4e2704d0` was rejected at the product boundary. Corrective
+commit `a99070015` is accepted. It closes all three blockers:
 
-1. HTTP custom execution is gated by `InsecureLocalOnly`, but a Cloudflare
-   tunnel reaches the same localhost daemon. Request origin is therefore not
-   proven local. The legacy HTTP payload also bypasses the custom-profile denial
-   by omitting `profileId` and sending a command string.
-2. Recorder startup/lookup failures are silently ignored and the create API
-   still returns `state=running`.
-3. Invalid legacy `command` JSON is ignored and can create a default shell
-   instead of rejecting the request.
+1. HTTP creation is preset-only; custom and controlled_pty legacy command shapes
+   are denied. Arbitrary `pokit run` creation moved to the privileged `0600`
+   Unix socket.
+2. `running` is returned only after Recorder readiness. Startup failure cleans
+   the created runtime and returns failed/non-success.
+3. malformed/missing/non-string local legacy commands are rejected and create
+   no session.
 
-Correction instructions:
+Verification:
 
-- `docs/NEXT_SESSION_M0_M1_FIX_HANDOFF.md`
-- `docs/M0_M1_E4E2704_REVIEW.md`
+```text
+go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
+PASS
 
-M2 must not start until the corrected M0/M1 boundary is accepted.
+scripts/build-gate.sh
+ALL GATES PASSED
+```
+
+Acceptance record: `docs/M0_M1_A990700_ACCEPTANCE.md`.
 
 ## M1.5 — Session Ownership and Local Host Contract
 
-M1.5 is documentation/contract work after the M0/M1 correction and before M2.
+M1.5 is a narrow capability/contract phase before M2.
 It separates two axes that were previously mixed:
 
 ```text

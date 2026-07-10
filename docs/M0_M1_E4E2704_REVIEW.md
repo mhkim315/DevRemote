@@ -1,6 +1,6 @@
 # M0/M1 Product Review — e4e2704d0
 
-Verdict: REJECT
+Verdict: HISTORICAL REJECT — resolved by `a99070015`
 
 Scope: lifecycle contract and safe controlled PTY creation
 Reviewed commit: `e4e2704d0`
@@ -126,3 +126,12 @@ Re-review the corrected commit only when:
 - targeted race tests and existing tmux/cmux/controlled PTY regressions pass.
 
 After acceptance, proceed to M1.5 contract documentation, then M2.
+
+## Resolution
+
+Corrective commit `a99070015` was re-reviewed and accepted. It moved privileged
+arbitrary launch to the `0600` Unix socket, made HTTP controlled_pty creation
+preset-only, made Recorder readiness observable with cleanup, removed the
+phantom starter subscriber, and strictly rejects malformed local command data.
+
+The final acceptance is recorded in `docs/M0_M1_A990700_ACCEPTANCE.md`.

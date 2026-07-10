@@ -215,12 +215,13 @@ Acceptance tests:
 - creation response exposes canonical ID and lifecycle state;
 - Recorder single-reader and no-WebSocket capture regressions pass.
 
-Review note: candidate commit `e4e2704d0` is rejected until the correction
-requirements in `docs/M0_M1_E4E2704_REVIEW.md` are satisfied.
+Acceptance: corrective commit `a99070015` closes the `e4e2704d0` blockers and
+passes the targeted race suite plus the complete build gate. See
+`docs/M0_M1_A990700_ACCEPTANCE.md`.
 
 ### M1.5 — Session Ownership and Access Contract
 
-This is a contract/documentation gate, not a new terminal implementation.
+This is a narrow capability/contract gate, not a new terminal implementation.
 
 - distinguish Pokit-managed sessions from externally owned sessions;
 - define `managedLifecycle` independently from input/control capability;
