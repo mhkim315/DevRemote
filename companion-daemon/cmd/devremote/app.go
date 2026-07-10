@@ -195,13 +195,31 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// REST routes use device bearer auth with permission enforcement. In
 	// insecure-local-only mode, the legacy AuthMiddleware (Supabase/dev-token)
 	// is used. One listener, one credential type — no opportunistic mixing.
-	if cfg.InsecureLocalOnly || sessionMgr == nil {
+	if cfg.InsecureLocalOnly {
 		serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
+		serveMux.HandleFunc("POST /api/sessions/{id}/stop", h.AuthMiddleware(h.HandleSessionStop))
+		serveMux.HandleFunc("POST /api/sessions/{id}/kill", h.AuthMiddleware(h.HandleSessionKill))
+		serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
 	} else {
-		serveMux.HandleFunc("/api/sessions", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionsAPI, devicetrust.PermSessionsRead))
-		serveMux.HandleFunc("POST /api/sessions/{id}/stop", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionStop, devicetrust.PermSessionsStop))
-		serveMux.HandleFunc("POST /api/sessions/{id}/kill", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionKill, devicetrust.PermSessionsKill))
-		serveMux.HandleFunc("DELETE /api/sessions/{id}", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
+		// Remote device-auth mode: fail closed if no session manager.
+		if sessionMgr == nil {
+			log.Fatalf("device session manager required in remote mode")
+		}
+		// Method-level permissions: GET→read, POST create→create, DELETE→history:delete.
+		// PUT (legacy no-op) is disabled in remote mode.
+		serveMux.HandleFunc("GET /api/sessions",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionsV2, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("POST /api/sessions",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionCRUD, devicetrust.PermSessionsCreate))
+		serveMux.HandleFunc("DELETE /api/sessions",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionCRUD, devicetrust.PermHistoryDelete))
+		serveMux.HandleFunc("POST /api/sessions/{id}/stop",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionStop, devicetrust.PermSessionsStop))
+		serveMux.HandleFunc("POST /api/sessions/{id}/kill",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionKill, devicetrust.PermSessionsKill))
+		// Path-based session delete (M2 canonical form).
+		serveMux.HandleFunc("DELETE /api/sessions/{id}",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
 	}
 
 	// M2.5-3: device challenge-auth endpoints (ungated — fail gracefully
@@ -222,7 +240,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 	// M2: managed-session lifecycle (registered above in mode-dependent block)
 	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
-	if cfg.InsecureLocalOnly || h.WSTickets == nil {
+	if cfg.InsecureLocalOnly {
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 	} else {
 		// Remote mode: WS ticket is the only credential.
