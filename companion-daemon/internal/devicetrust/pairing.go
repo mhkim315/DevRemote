@@ -14,45 +14,78 @@ import (
 	"time"
 )
 
-// ── Pairing state machine ──
+// ── State machine ──
 
+// pairState is internal state; PairingState is the public API view.
 type pairState string
 
 const (
-	pairStateReady     pairState = ""
-	pairStatePending   pairState = "pending"           // session active, waiting for candidate
-	pairStateAwaiting  pairState = "awaiting_approval" // candidate received, awaiting user approval
-	pairStateApproved  pairState = "approved"          // user approved → device registered
-	pairStateRejected  pairState = "rejected"          // user rejected the candidate
-	pairStateCancelled pairState = "cancelled"         // user cancelled the session
-	pairStateConsumed  pairState = "consumed"          // secret already used (second candidate)
+	pairStatePending               pairState = "pending"
+	pairStateChallenged            pairState = "challenged"
+	pairStateProofVerified         pairState = "proof_verified"
+	pairStateAwaitingLocalApproval pairState = "awaiting_local_approval"
+	pairStateApproved              pairState = "approved"
+	pairStateRejected              pairState = "rejected"
+	pairStateExpired               pairState = "expired"
 )
 
-// PairingSession is the public payload for the QR. The one-time secret is
-// internal (never JSON-serialised) so it can be consumed atomically.
-type PairingSession struct {
-	SessionID   string    `json:"sessionId"`
-	HostID      string    `json:"hostId"`
-	Fingerprint string    `json:"fingerprint"`
-	Endpoint    string    `json:"endpoint"`
-	secret      string    // internal: one-time pairing secret (never in JSON)
-	ExpiresAt   time.Time `json:"expiresAt"`
+// PairingState is the client-facing lifecycle enum.
+type PairingState string
+
+const (
+	PairingStatePending          PairingState = "pending"
+	PairingStateAwaitingApproval PairingState = "awaiting_approval"
+	PairingStateApproved         PairingState = "approved"
+	PairingStateRejected         PairingState = "rejected"
+	PairingStateExpired          PairingState = "expired"
+)
+
+func stateForClient(s pairState) PairingState {
+	switch s {
+	case pairStatePending, pairStateChallenged:
+		return PairingStatePending
+	case pairStateProofVerified, pairStateAwaitingLocalApproval:
+		return PairingStateAwaitingApproval
+	case pairStateApproved:
+		return PairingStateApproved
+	case pairStateRejected:
+		return PairingStateRejected
+	default:
+		return PairingStateExpired
+	}
 }
 
-// Secret returns the one-time pairing secret. Use with caution — it is
-// consumed atomically by the pairing state machine.
-func (ps *PairingSession) Secret() string { return ps.secret }
+// ── Public types ──
+
+type PairingSession struct {
+	SessionID     string    `json:"sessionId"`
+	HostID        string    `json:"hostId"`
+	Fingerprint   string    `json:"fingerprint"`
+	HostPubKeyB64 string    `json:"hostPubKey"`
+	Endpoint      string    `json:"endpoint"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+}
 
 type PairingRequest struct {
 	PublicKeyDER []byte `json:"publicKey"`
 	DisplayName  string `json:"displayName"`
-	Secret       string `json:"secret"`
-	PhoneNonce   []byte `json:"phoneNonce,omitempty"` // set only in challenge
+	PhoneNonce   []byte `json:"phoneNonce"`
+}
+
+type ChallengeResponse struct {
+	HostNonce       []byte `json:"hostNonce"`
+	HostPublicDER   []byte `json:"hostPublicKey"`
+	HostFingerprint string `json:"hostFingerprint"`
+	ExpiresAt       string `json:"expiresAt"`
+}
+
+type Confirmation struct {
+	PhoneSignature []byte `json:"phoneSignature"` // ECDSA ASN.1 over pairing transcript
 }
 
 type PairingConfig struct {
 	Listen          string
-	LANAddr         string // actual LAN IP:port (not 0.0.0.0) for the QR endpoint
+	LANAddr         string
 	SessionLifetime time.Duration
 	Identity        IdentityProvider
 	Registry        *DeviceRegistry
@@ -60,103 +93,102 @@ type PairingConfig struct {
 
 type IdentityProvider interface {
 	Public() PublicHostIdentity
-	Sign(msg []byte) ([]byte, error)
 }
 
-// ── Candidate + challenge ──
-
-// pendingCandidate holds the phone submission before user approval.
-type pendingCandidate struct {
-	PublicKeyDER []byte
-	DisplayName  string
-	PhoneNonce   []byte
-	HostNonce    []byte
+type Candidate struct {
+	PubDER      []byte
+	DisplayName string
+	Fingerprint string
+	PhoneNonce  []byte
+	HostNonce   []byte
 }
 
-// PairingHost is the daemon-owned pairing session.
+// ── PairingHost (daemon-owned, fully serialized) ──
+
 type PairingHost struct {
 	Session *PairingSession
-	addr    string
+	addr    string // listener address (ip:port)
 	ln      net.Listener
 	srv     *http.Server
 	reg     *DeviceRegistry
 	cfg     PairingConfig
 
-	mu    sync.Mutex
-	state pairState
+	mu           sync.Mutex
+	state        pairState
+	candidate    pendingCandidate
+	pairedDevice Device
 
-	resultCh    chan pairResult    // cap 2: one for WaitForCandidate, one for Wait
-	candidateCh chan pairCandidate // buffered 1, for candidates arriving while awaiting
-
-	// consumedCh is closed exactly once when the secret is consumed, stopping
-	// further candidate submissions.
-	consumedCh   chan struct{}
-	consumedOnce sync.Once
-
-	candidate pendingCandidate // protected by mu
+	// Events: one-shot channels closed on transitions.
+	candidateCh chan struct{} // closed when candidate arrives
+	approveCh   chan struct{} // CLI sends approve (close = approve, write = reject)
+	doneCh      chan struct{} // closed when session completes
+	expiryTimer *time.Timer
 }
 
-type pairResult struct {
-	Device  Device
-	State   pairState
-	Message string
+type pendingCandidate struct {
+	PublicKeyDER []byte
+	DisplayName  string
+	PhoneNonce   []byte
+	HostNonce    []byte
+	ProofHash    []byte // HMAC-SHA256(secret, hostNonce || phoneNonce || publicKeyDER)
 }
 
-type pairCandidate struct {
-	PubDER      []byte
-	DisplayName string
-	PhoneNonce  []byte
-	HostNonce   []byte
-}
-
-// StartPairing creates the daemon-owned pairing session and starts the LAN
-// listener. The caller immediately receives the session (for QR display) and
-// then calls WaitForCandidate / Approve / Reject / Cancel.
+// StartPairing creates the pairing session and starts the LAN listener.
+// Caller receives session immediately for QR display.
 func StartPairing(cfg PairingConfig) (*PairingHost, error) {
+	// If not explicitly set, auto-detect the private LAN address. 127.0.0.1
+	// is accepted for tests and the fallback single-machine case.
+	if cfg.LANAddr == "" {
+		cfg.LANAddr = lanIP()
+		if cfg.LANAddr == "" {
+			cfg.LANAddr = "127.0.0.1"
+		}
+	}
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pairing listen: %w", err)
 	}
-	addr := ln.Addr().String()
+	// Derive the local address for test/local connections. The QR endpoint
+	// advertises the LAN IP; the listener addr is for same-machine callers.
+	listenAddr := ln.Addr().String()
+	_, port, _ := net.SplitHostPort(listenAddr)
 
 	secretBytes := make([]byte, 32)
 	if _, err := rand.Read(secretBytes); err != nil {
 		ln.Close()
 		return nil, err
 	}
-	secret := hex.EncodeToString(secretBytes)
 	sessionID := hex.EncodeToString(secretBytes[:16])
 
 	hostPub := cfg.Identity.Public()
-	// Derive the actual endpoint from the bound listener's address (port is
-	// known after net.Listen) + the LAN IP.
-	_, port, _ := net.SplitHostPort(addr)
-	lanEndpoint := "http://" + cfg.LANAddr + ":" + port + "/pair"
 	session := &PairingSession{
-		SessionID:   sessionID,
-		HostID:      hostPub.HostID,
-		Fingerprint: hostPub.Fingerprint,
-		Endpoint:    lanEndpoint,
-		secret:      secret,
-		ExpiresAt:   time.Now().UTC().Add(cfg.SessionLifetime),
+		SessionID:     sessionID,
+		HostID:        hostPub.HostID,
+		Fingerprint:   hostPub.Fingerprint,
+		HostPubKeyB64: hex.EncodeToString(hostPub.PublicKeyDER),
+		// QR endpoint: LAN IP for the phone; same-machine tests use ph.addr.
+		Endpoint:  "http://" + cfg.LANAddr + ":" + port + "/pair",
+		ExpiresAt: time.Now().UTC().Add(cfg.SessionLifetime),
 	}
 
 	ph := &PairingHost{
 		Session:     session,
-		addr:        addr,
+		addr:        "127.0.0.1:" + port, // localhost for same-machine callers
 		ln:          ln,
 		reg:         cfg.Registry,
 		cfg:         cfg,
 		state:       pairStatePending,
-		resultCh:    make(chan pairResult, 2),
-		candidateCh: make(chan pairCandidate, 1),
-		consumedCh:  make(chan struct{}),
+		candidateCh: make(chan struct{}),
+		approveCh:   make(chan struct{}),
+		doneCh:      make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/pair", ph.handlePair)
+	mux.HandleFunc("/pair", ph.handleCandidate)       // phase 1
+	mux.HandleFunc("/pair/confirm", ph.handleConfirm) // phase 2
 	ph.srv = &http.Server{
-		Addr:              addr,
+		Addr:              ":" + port,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -165,21 +197,17 @@ func StartPairing(cfg PairingConfig) (*PairingHost, error) {
 	}
 	go ph.srv.Serve(ln)
 
-	// Expiry timer — auto-close the session.
-	go func() {
-		select {
-		case <-time.After(cfg.SessionLifetime + 2*time.Second):
-		case <-ph.consumedCh:
-		}
-		ph.consume()
-		ph.finish(pairResult{State: pairStateRejected, Message: "pairing session ended"})
-	}()
-
+	// Store the timer under the mutex so expire() can safely read/stop it.
+	ph.mu.Lock()
+	ph.expiryTimer = time.AfterFunc(cfg.SessionLifetime, ph.expire)
+	ph.mu.Unlock()
 	return ph, nil
 }
 
-// handlePair is the LAN POST /pair handler.
-func (ph *PairingHost) handlePair(w http.ResponseWriter, r *http.Request) {
+// ── LAN endpoints (2-phase) ──
+
+// Phase 1: phone submits candidate → host returns challenge + host proof.
+func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -187,200 +215,196 @@ func (ph *PairingHost) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 	var req PairingRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 	if _, err := ParseP256PublicKey(req.PublicKeyDER); err != nil {
 		http.Error(w, "invalid public key", http.StatusBadRequest)
 		return
 	}
-
-	ph.mu.Lock()
-	st := ph.state
-	ph.mu.Unlock()
-
-	if st != pairStatePending {
-		http.Error(w, "pairing session not accepting candidates", http.StatusGone)
+	if len(req.PhoneNonce) < 8 || len(req.PhoneNonce) > 256 {
+		http.Error(w, "invalid phone nonce", http.StatusBadRequest)
 		return
 	}
+
+	ph.mu.Lock()
+	// Check expiry first — the timer goroutine may race.
 	if time.Now().UTC().After(ph.Session.ExpiresAt) {
-		ph.mu.Lock()
-		ph.state = pairStateRejected
+		ph.state = pairStateExpired
 		ph.mu.Unlock()
-		http.Error(w, "pairing session expired", http.StatusGone)
+		http.Error(w, "session expired", http.StatusGone)
 		return
 	}
-
-	// Secret must match. On the first valid candidate, consume the secret so no
-	// second candidate can pass.
-	if req.Secret != ph.Session.Secret() {
-		http.Error(w, "incorrect pairing secret", http.StatusUnauthorized)
-		return
-	}
-	// Atomic state transition: pending → awaiting_approval.
-	ph.mu.Lock()
 	if ph.state != pairStatePending {
 		ph.mu.Unlock()
 		http.Error(w, "candidate already received", http.StatusGone)
 		return
 	}
-	ph.state = pairStateAwaiting
-	// Generate host nonce for the challenge.
+	ph.state = pairStateChallenged
+
 	hostNonce := make([]byte, 32)
-	rand.Read(hostNonce)
+	if _, err := rand.Read(hostNonce); err != nil {
+		ph.mu.Unlock()
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	hostPub := ph.cfg.Identity.Public()
 	ph.candidate = pendingCandidate{
 		PublicKeyDER: append([]byte(nil), req.PublicKeyDER...),
 		DisplayName:  req.DisplayName,
 		PhoneNonce:   append([]byte(nil), req.PhoneNonce...),
-		HostNonce:    hostNonce,
+		HostNonce:    append([]byte(nil), hostNonce...),
 	}
 	ph.mu.Unlock()
 
-	// Deliver the candidate to the main goroutine.
-	select {
-	case ph.candidateCh <- pairCandidate{
-		PubDER:      req.PublicKeyDER,
-		DisplayName: req.DisplayName,
-		PhoneNonce:  req.PhoneNonce,
-		HostNonce:   hostNonce,
-	}:
-	default:
-	}
+	close(ph.candidateCh)
 
+	resp := ChallengeResponse{
+		HostNonce:       hostNonce,
+		HostPublicDER:   hostPub.PublicKeyDER,
+		HostFingerprint: hostPub.Fingerprint,
+		ExpiresAt:       ph.Session.ExpiresAt.Format(time.RFC3339),
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "pending_approval",
-		"hostNonce": hex.EncodeToString(hostNonce),
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
-// Wait blocks for a pairing result: waits for a candidate, auto-approves (no
-// signature in test/compat mode), and returns the registered device.
-func (ph *PairingHost) Wait(d time.Duration) (Device, bool) {
-	if _, ok := ph.WaitForCandidate(); !ok {
-		return Device{}, false
+// Phase 2: phone signs the transcript → verify → awaiting local approval.
+func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-	if err := ph.Approve(nil); err != nil {
-		return Device{}, false
+	var req Confirmation
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
 	}
-	r := <-ph.resultCh
-	return r.Device, r.State == pairStateApproved
-}
+	if len(req.PhoneSignature) == 0 {
+		http.Error(w, "phone signature required", http.StatusBadRequest)
+		return
+	}
 
-// WaitForCandidate blocks until a phone submits a candidate or the session
-// expires. Returns the candidate for fingerprint display, or false if the
-// session ended without one. Does NOT consume resultCh — the caller must
-// read the final result (Approve/Reject) from the result channel.
-func (ph *PairingHost) WaitForCandidate() (candidate pairCandidate, ok bool) {
-	// SessionLifetime may have expired; resultCh is written by the expiry
-	// goroutine. Poll both channels so we don't block forever.
-	timer := time.NewTimer(ph.Session.ExpiresAt.Sub(time.Now().UTC()) + 2*time.Second)
-	defer timer.Stop()
-	select {
-	case c := <-ph.candidateCh:
-		ph.consume()
-		ph.ln.Close()
-		return c, true
-	case <-timer.C:
-		return pairCandidate{}, false
-	case <-ph.consumedCh:
-		return pairCandidate{}, false
-	}
-}
-
-// Approve verifies the phone's signature and registers the device. The phone
-// must have already submitted a candidate and signed the pairing transcript.
-func (ph *PairingHost) Approve(phoneSignature []byte) error {
 	ph.mu.Lock()
-	if ph.state != pairStateAwaiting {
+	if ph.state != pairStateChallenged {
 		ph.mu.Unlock()
-		return fmt.Errorf("no candidate awaiting approval (state=%s)", ph.state)
+		http.Error(w, "no challenge in progress", http.StatusGone)
+		return
 	}
 	cand := ph.candidate
+
+	// Verify phone key-possession: phone must sign the pairing transcript
+	// (phoneNonce || hostNonce || hostPubKey || sessionId).
+	transcript := buildPairingTranscript(cand.PhoneNonce, cand.HostNonce,
+		ph.cfg.Identity.Public().PublicKeyDER, ph.Session.SessionID)
+	pub, err := ParseP256PublicKey(cand.PublicKeyDER)
+	if err != nil {
+		ph.mu.Unlock()
+		http.Error(w, "invalid candidate key", http.StatusBadRequest)
+		return
+	}
+	digest := sha256.Sum256(transcript)
+	if !ecdsa.VerifyASN1(pub, digest[:], req.PhoneSignature) {
+		ph.mu.Unlock()
+		http.Error(w, "signature verification failed", http.StatusUnauthorized)
+		return
+	}
+	ph.state = pairStateProofVerified
 	ph.mu.Unlock()
 
-	// Verify the phone owns the private key: it must sign the pairing transcript
-	// (phoneNonce || hostNonce || hostPublicKey || sessionID). nil phoneSig skips
-	// verification (test compat / local approval without challenge).
-	if len(phoneSignature) > 0 {
-		transcript := buildPairingTranscript(cand.PhoneNonce, cand.HostNonce,
-			ph.cfg.Identity.Public().PublicKeyDER, ph.Session.SessionID)
-		pub, err := ParseP256PublicKey(cand.PublicKeyDER)
-		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(transcript)
-		if !ecdsa.VerifyASN1(pub, digest[:], phoneSignature) {
-			return fmt.Errorf("phone signature verification failed")
-		}
-	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "proof_verified"})
+}
 
-	// Register the device.
-	dev, regErr := ph.reg.Add(cand.PublicKeyDER, cand.DisplayName)
-	if regErr != nil {
-		return fmt.Errorf("device registration failed: %w", regErr)
-	}
+// ── State transitions (called by IPC handler) ──
 
-	ph.state = pairStateApproved
-	res := pairResult{Device: dev, State: pairStateApproved, Message: "paired"}
-	// Write directly — expiry goroutine may have already read resultCh once.
+// WaitForCandidate blocks until a candidate arrives or the session expires.
+// Returns the candidate for fingerprint display.
+func (ph *PairingHost) WaitForCandidate() (Candidate, bool) {
 	select {
-	case ph.resultCh <- res:
-	default:
+	case <-ph.candidateCh:
+		ph.mu.Lock()
+		c := Candidate{
+			PubDER:      ph.candidate.PublicKeyDER,
+			DisplayName: ph.candidate.DisplayName,
+			Fingerprint: Fingerprint(ph.candidate.PublicKeyDER),
+			PhoneNonce:  ph.candidate.PhoneNonce,
+			HostNonce:   ph.candidate.HostNonce,
+		}
+		ph.mu.Unlock()
+		return c, true
+	case <-ph.doneCh:
+		return Candidate{}, false
 	}
-	log.Printf("pairing: device %s approved and registered (fingerprint %s)", dev.DeviceID, dev.Fingerprint)
+}
+
+// Approve transitions to approved and registers the device. Must only be
+// called after state = proof_verified (or in test compat mode).
+func (ph *PairingHost) Approve() error {
+	ph.mu.Lock()
+	defer ph.mu.Unlock()
+
+	if ph.state != pairStateProofVerified {
+		if ph.state == pairStateChallenged {
+			// Phone submitted candidate but hasn't confirmed yet.
+			return fmt.Errorf("phone has not completed key-possession proof")
+		}
+		return fmt.Errorf("session is not in a state that allows approval")
+	}
+
+	dev, err := ph.reg.Add(ph.candidate.PublicKeyDER, ph.candidate.DisplayName)
+	if err != nil {
+		return fmt.Errorf("device registration failed: %w", err)
+	}
+	ph.state = pairStateApproved
+	ph.pairedDevice = dev
+
+	log.Printf("pairing: device %s approved and registered (fingerprint %s)",
+		dev.DeviceID, dev.Fingerprint)
+
+	go ph.Close()
 	return nil
 }
 
 // Reject declines the candidate.
 func (ph *PairingHost) Reject() {
 	ph.mu.Lock()
-	if ph.state == pairStateAwaiting {
+	if ph.state != pairStateApproved && ph.state != pairStateRejected {
 		ph.state = pairStateRejected
 	}
 	ph.mu.Unlock()
-	ph.finish(pairResult{State: pairStateRejected, Message: "rejected by user"})
+	go ph.Close()
 }
 
-// Cancel ends the pairing session without a pairing.
-func (ph *PairingHost) Cancel() {
+func (ph *PairingHost) expire() {
 	ph.mu.Lock()
-	if ph.state == pairStatePending || ph.state == pairStateAwaiting {
-		ph.state = pairStateCancelled
+	if ph.state == pairStatePending || ph.state == pairStateChallenged ||
+		ph.state == pairStateProofVerified || ph.state == pairStateAwaitingLocalApproval {
+		ph.state = pairStateExpired
 	}
 	ph.mu.Unlock()
-	ph.consume()
-	ph.finish(pairResult{State: pairStateCancelled, Message: "cancelled"})
+	close(ph.doneCh)
+	go ph.Close()
 }
 
-// Close stops the listener and destroys the secret.
+// Close stops the listener and server. Idempotent.
 func (ph *PairingHost) Close() {
-	ph.consume()
+	ph.ln.Close()
 	ph.srv.Close()
-	if ph.ln != nil {
-		ph.ln.Close()
-	}
 }
 
-// consume destroys the one-time secret exactly once.
-func (ph *PairingHost) consume() {
-	ph.consumedOnce.Do(func() {
-		ph.Session.secret = ""
-		close(ph.consumedCh)
-	})
+// Result returns the final pairing outcome.
+func (ph *PairingHost) Result() (Device, PairingState) {
+	ph.mu.Lock()
+	defer ph.mu.Unlock()
+	return ph.pairedDevice, stateForClient(ph.state)
 }
 
-func (ph *PairingHost) finish(r pairResult) {
-	select {
-	case ph.resultCh <- r:
-	default:
-	}
-}
+// ── helpers ──
 
-// buildPairingTranscript is the domain-separated message the phone must sign.
 func buildPairingTranscript(phoneNonce, hostNonce, hostPubDER []byte, sessionID string) []byte {
-	// Domain separator for pairing. Prevents replay across protocols.
-	const prefix = "pokit-pair-v1:"
+	prefix := []byte("pokit-pair-v1:")
 	b := make([]byte, 0, len(prefix)+len(phoneNonce)+len(hostNonce)+len(hostPubDER)+len(sessionID))
 	b = append(b, prefix...)
 	b = append(b, phoneNonce...)
@@ -390,10 +414,14 @@ func buildPairingTranscript(phoneNonce, hostNonce, hostPubDER []byte, sessionID 
 	return b
 }
 
-// ── Convenience (used by the daemon's IPC create op; NOT a standalone CLI) ──
-
-// RunPairing is a convenience helper used by the daemon's privileged IPC
-// handler for pokit pair start. The CLI never loads the registry directly.
-func RunPairing(cfg PairingConfig) (*PairingHost, error) {
-	return StartPairing(cfg)
+func lanIP() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			if ipnet.IP.IsPrivate() {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return ""
 }

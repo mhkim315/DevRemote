@@ -26,115 +26,103 @@ func runPairClient(args []string) {
 
 	conn, err := net.Dial("unix", "/tmp/pokit.sock")
 	if err != nil {
-		log.Fatalf("Daemon socket unavailable: %v\nIs the daemon running? Try: pokit daemon --insecure-local-only", err)
+		log.Fatalf("Daemon socket unavailable: %v\nIs the daemon running?", err)
 	}
 	defer conn.Close()
 
-	// 1) Start pairing session.
+	// 1) Send pair-start (version + operation + duration).
 	start, _ := json.Marshal(map[string]interface{}{
 		"version":   1,
 		"operation": "pair-start",
 		"duration":  int(duration.Seconds()),
 	})
 	conn.Write(append(start, '\n'))
+	conn.SetReadDeadline(time.Now().Add(duration + 30*time.Second))
+
 	buf := make([]byte, 16384)
 	n, _ := conn.Read(buf)
-	var startResp struct {
+	var sess struct {
+		OK          bool   `json:"ok"`
 		SessionID   string `json:"sessionId"`
 		HostID      string `json:"hostId"`
 		Fingerprint string `json:"fingerprint"`
+		HostPubKey  string `json:"hostPubKey"`
 		Endpoint    string `json:"endpoint"`
-		Secret      string `json:"secret"`
 		ExpiresAt   string `json:"expiresAt"`
 		Error       string `json:"error"`
 	}
-	if err := json.Unmarshal(buf[:n], &startResp); err != nil {
-		log.Fatalf("Daemon response error: %v", err)
-	}
-	if startResp.Error != "" {
-		log.Fatalf("Pairing start failed: %s", startResp.Error)
+	if err := json.Unmarshal(buf[:n], &sess); err != nil || sess.Error != "" || !sess.OK {
+		log.Fatalf("Pairing start failed: %s", sess.Error)
 	}
 
-	fmt.Printf("\nPokit Pairing\n")
-	fmt.Printf("Host: %s\nFingerprint: %s\n\n", startResp.HostID, startResp.Fingerprint)
-	fmt.Printf("Session: %s (expires %s)\n", startResp.SessionID, startResp.ExpiresAt)
-	fmt.Printf("Endpoint: %s\n\n", startResp.Endpoint)
+	fmt.Printf("\nPokit Pairing\nHost ID: %s\nFingerprint: %s\n", sess.HostID, sess.Fingerprint)
+	fmt.Printf("Endpoint: %s\nExpires: %s\n", sess.Endpoint, sess.ExpiresAt)
 
-	// Show the payload for the phone to scan (including the one-time secret).
-	payload, _ := json.Marshal(map[string]string{
-		"sessionId":   startResp.SessionID,
-		"hostId":      startResp.HostID,
-		"fingerprint": startResp.Fingerprint,
-		"endpoint":    startResp.Endpoint,
-		"secret":      startResp.Secret,
+	// QR payload (JSON, for the phone to scan).
+	qr, _ := json.Marshal(map[string]string{
+		"sessionId":   sess.SessionID,
+		"hostId":      sess.HostID,
+		"fingerprint": sess.Fingerprint,
+		"hostPubKey":  sess.HostPubKey,
+		"endpoint":    sess.Endpoint,
+		"expiresAt":   sess.ExpiresAt,
 	})
-	fmt.Printf("%s\n", payload)
-	fmt.Printf("\n\x1b[41;97m  Scan this pairing data from the phone  \x1b[0m\n\n")
+	fmt.Printf("\n\x1b[44;97m QR Payload (scan from phone): %s \x1b[0m\n\n", string(qr))
 
-	// 2) Wait for a candidate or timeout.
 	fmt.Println("Waiting for device to pair...")
-	conn.SetReadDeadline(time.Now().Add(duration + 10*time.Second))
+
+	// 2) Read the candidate.
 	n, _ = conn.Read(buf)
-	var candidateResp struct {
+	var candMsg struct {
 		Candidate struct {
 			Fingerprint string `json:"fingerprint"`
 			DisplayName string `json:"displayName"`
-			PhoneNonce  []byte `json:"phoneNonce"`
-			HostNonce   []byte `json:"hostNonce"`
+			PhoneNonce  string `json:"phoneNonce"`
+			HostNonce   string `json:"hostNonce"`
+			HostPubKey  string `json:"hostPubKey"`
 		} `json:"candidate"`
-		Error        string `json:"error"`
-		SessionEnded bool   `json:"sessionEnded"`
-		Timeout      bool   `json:"timeout"`
+		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(buf[:n], &candidateResp); err != nil || candidateResp.Error != "" {
-		if candidateResp.Timeout || candidateResp.SessionEnded {
-			fmt.Println("No device paired (timeout).")
-		} else {
-			fmt.Printf("Pairing failed: %s\n", candidateResp.Error)
-		}
-		os.Exit(1)
+	if err := json.Unmarshal(buf[:n], &candMsg); err != nil || candMsg.Candidate.Fingerprint == "" {
+		log.Fatalf("No candidate received: %s", candMsg.Error)
 	}
-	if candidateResp.Error == "" && candidateResp.Candidate.Fingerprint == "" {
-		fmt.Println("No device paired (timeout).")
-		os.Exit(1)
-	}
-
-	cand := candidateResp.Candidate
-	fmt.Printf("\n📱 Device candidate:\n")
-	fmt.Printf("   Fingerprint: %s\n", cand.Fingerprint)
-	fmt.Printf("   Name: %s\n", cand.DisplayName)
+	c := candMsg.Candidate
+	fmt.Printf("\n📱 Device candidate:\n   Fingerprint: %s\n   Name: %s\n",
+		c.Fingerprint, c.DisplayName)
 	fmt.Printf("\nApprove this device? (y/N): ")
 
 	var answer string
 	fmt.Scanln(&answer)
 	if strings.ToLower(strings.TrimSpace(answer)) != "y" {
-		// 3) Reject.
-		reject, _ := json.Marshal(map[string]interface{}{"version": 1, "operation": "pair-reject"})
+		reject, _ := json.Marshal(map[string]interface{}{"action": "reject", "version": 1})
 		conn.Write(append(reject, '\n'))
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, _ = conn.Read(buf)
 		fmt.Println("Pairing rejected.")
+		var done map[string]interface{}
+		json.Unmarshal(buf[:n], &done)
 		os.Exit(1)
 	}
 
-	// 4) Approve: the phone must have signed the transcript. For now we skip
-	//    the signature check (challenge-response depth lands in M2.5-3).
-	approve, _ := json.Marshal(map[string]interface{}{"version": 1, "operation": "pair-approve"})
-	conn.Write(append(approve, '\n'))
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// 3) Approve.
+	approveReq, _ := json.Marshal(map[string]interface{}{"action": "approve", "version": 1})
+	conn.Write(append(approveReq, '\n'))
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, _ = conn.Read(buf)
-	var doneResp struct {
+	var done struct {
 		Status string `json:"status"`
+		Error  string `json:"error"`
 		Device struct {
 			DeviceID    string `json:"deviceId"`
 			Fingerprint string `json:"fingerprint"`
 			Role        string `json:"role"`
 		} `json:"device"`
-		Error string `json:"error"`
+		State string `json:"state"`
 	}
-	json.Unmarshal(buf[:n], &doneResp)
-	if doneResp.Error != "" {
-		log.Fatalf("Approval failed: %s", doneResp.Error)
+	json.Unmarshal(buf[:n], &done)
+	if done.Error != "" || done.Status != "paired" {
+		log.Fatalf("Approval failed: %s (state=%s)", done.Error, done.State)
 	}
-	fmt.Printf("\n✔ Paired: %s\n", doneResp.Device.DeviceID)
-	fmt.Printf("  Fingerprint: %s\n", doneResp.Device.Fingerprint)
-	fmt.Printf("  Role: %s\n", doneResp.Device.Role)
+	fmt.Printf("\n✔ Paired: %s\n  Fingerprint: %s\n  Role: %s\n",
+		done.Device.DeviceID, done.Device.Fingerprint, done.Device.Role)
 }
