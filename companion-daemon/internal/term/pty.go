@@ -33,52 +33,50 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 
 	if r.Method == "POST" || r.Method == "PUT" {
-		var req struct {
-			ID          string `json:"id"`
-			WorkspaceID string `json:"workspaceId"`
-			Runner      string `json:"runner"`
-			RunnerColor string `json:"runnerColor"`
-			Command     string `json:"command"`
-			CWD         string `json:"cwd"`
-		}
+		var req createSessionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
 
+		// PUT keeps the legacy no-op acknowledgement.
+		if r.Method == http.MethodPut {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+
+		// M1 safe create: profileId present -> daemon-owned launch. The daemon
+		// generates the canonical ID and resolves the executable by policy.
+		if req.ProfileID != "" {
+			h.createFromProfile(w, r, req)
+			return
+		}
+
+		// Legacy create (CLI `pokit run`): client-supplied canonical ID + a
+		// shell command string, run under bash -c for compatibility.
 		ref := mux.ParseSessionID(req.ID)
 		if err := ref.Validate(); err != nil {
 			http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
 			return
 		}
-
-		adapterName := ref.Adapter
-
-		if r.Method == http.MethodPost {
-			opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID, Command: req.Command, CWD: req.CWD}
-			createdID, err := reg.CreateSession(r.Context(), adapterName, opts)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(200)
-			canonicalID := mux.SessionRef{Adapter: adapterName, LocalID: createdID}.Canonical()
-			// E10b: start recorder immediately so local attach can subscribe.
-			if h.Activity != nil {
-				if sess, err := reg.FindSession(r.Context(), canonicalID); err == nil {
-					if opener, ok := sess.(mux.StreamOpener); ok {
-						EnsureRecorder(canonicalID, opener, h.Activity)
-					}
-				}
-			}
-			w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
+		var cmdStr string
+		if len(req.Command) > 0 {
+			_ = json.Unmarshal(req.Command, &cmdStr) // legacy command is a JSON string
+		}
+		opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID, Command: cmdStr, CWD: req.CWD}
+		createdID, err := reg.CreateSession(r.Context(), ref.Adapter, opts)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
 			return
 		}
-
+		canonicalID := mux.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
+		// E10b: start recorder immediately so local attach can subscribe.
+		h.startRecorderForSession(r.Context(), canonicalID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"status":"ok"}`))
+		w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
 		return
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -309,7 +310,7 @@ func TestRegistryCreateSessionInvalidation(t *testing.T) {
 			if after.LastAttemptAt.IsZero() != tt.wantInvalidated {
 				t.Fatalf("LastAttemptAt zero = %v, want %v", after.LastAttemptAt.IsZero(), tt.wantInvalidated)
 			}
-			if adapter.createCalls != 1 || adapter.lastCreateOpts != opts {
+			if adapter.createCalls != 1 || !reflect.DeepEqual(adapter.lastCreateOpts, opts) {
 				t.Fatalf("unexpected create call: count=%d opts=%+v", adapter.createCalls, adapter.lastCreateOpts)
 			}
 		})

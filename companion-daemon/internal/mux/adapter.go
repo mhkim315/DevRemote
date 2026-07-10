@@ -87,7 +87,14 @@ type CreateOptions struct {
 	Name        string
 	WorkspaceID string
 	CWD         string
-	Command     string
+	// Command is the legacy path: adapters that support it run it under a shell
+	// (`bash -c <Command>`). Used by the CLI `pokit run` for compatibility.
+	Command string
+	// Executable + Args are the M1 safe path: the adapter execs the binary
+	// directly with argv, NO shell interpretation. When Executable is set it
+	// takes precedence over Command. Prevents shell-string injection.
+	Executable string
+	Args       []string
 }
 
 // InvalidationSender is a one-way signal that an adapter's session list has changed.

@@ -68,7 +68,17 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	native, err := SpawnPTYWithDir(id, "xterm-256color", opts.CWD, "bash", "-c", command)
+
+	var native *NativeSession
+	var err error
+	if opts.Executable != "" {
+		// M1 safe path: exec the resolved binary directly with argv, no shell
+		// interpretation — prevents shell-string injection.
+		native, err = SpawnPTYWithDir(id, "xterm-256color", opts.CWD, opts.Executable, opts.Args...)
+	} else {
+		// Legacy path (CLI `pokit run`): run the command under bash -c.
+		native, err = SpawnPTYWithDir(id, "xterm-256color", opts.CWD, "bash", "-c", command)
+	}
 	if err != nil {
 		return "", fmt.Errorf("controlled_pty SpawnPTY: %w", err)
 	}
