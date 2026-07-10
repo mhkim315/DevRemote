@@ -230,6 +230,9 @@ func (a *App) Run(ctx context.Context) error {
 	// No auth/pairing yet — this only bootstraps the trust root. The App owns
 	// the single instances so later phases have one source of truth.
 	a.hostIdentity, a.deviceRegistry = initDeviceTrust()
+	if a.hostIdentity != nil && a.deviceRegistry != nil {
+		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
+	}
 
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())

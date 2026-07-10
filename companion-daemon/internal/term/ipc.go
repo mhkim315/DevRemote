@@ -143,6 +143,9 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			ProfileID  string          `json:"profileId"`
 			Executable string          `json:"executable"`
 			Args       []string        `json:"args"`
+			// pair-start / pair-approve / pair-reject (M2.5-2)
+			Duration       int    `json:"duration"`
+			PhoneSignature []byte `json:"phoneSignature,omitempty"`
 		}
 		if err := json.NewDecoder(reader).Decode(&req); err != nil {
 			conn.Write([]byte(fmt.Sprintf("error decoding json: %v\n", err)))
@@ -193,6 +196,15 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			} else {
 				json.NewEncoder(conn).Encode(map[string]string{"id": id, "state": string(state)})
 			}
+		} else if req.Operation == "pair-start" {
+			handlePairOp(conn, req.Operation, req.Duration, nil)
+			return
+		} else if req.Operation == "pair-approve" {
+			handlePairOp(conn, req.Operation, 0, req.PhoneSignature)
+			return
+		} else if req.Operation == "pair-reject" {
+			handlePairOp(conn, req.Operation, 0, nil)
+			return
 		} else {
 			conn.Write([]byte("unknown operation\n"))
 		}
