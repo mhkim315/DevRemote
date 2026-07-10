@@ -1,6 +1,7 @@
 package devicetrust
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -127,6 +128,15 @@ func LoadOrCreateHostIdentity(store KeyStore) (*HostIdentity, error) {
 	ec, ok := priv.(*ecdsa.PrivateKey)
 	if !ok || ec.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("%w: private key not P-256", ErrCorruptStore)
+	}
+	// Fail closed on inconsistency: the stored public key must be derived from
+	// the stored private key (same keypair), and the metadata must be valid.
+	derivedPub, derr := x509.MarshalPKIXPublicKey(&ec.PublicKey)
+	if derr != nil || !bytes.Equal(derivedPub, data.PublicKeyDER) {
+		return nil, fmt.Errorf("%w: public/private key mismatch", ErrCorruptStore)
+	}
+	if data.HostID == "" || data.KeyVersion < 1 || data.CreatedAt.IsZero() {
+		return nil, fmt.Errorf("%w: invalid identity metadata", ErrCorruptStore)
 	}
 	return &HostIdentity{HostID: data.HostID, KeyVersion: data.KeyVersion, CreatedAt: data.CreatedAt, priv: ec}, nil
 }

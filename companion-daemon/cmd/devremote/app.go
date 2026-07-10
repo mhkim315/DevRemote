@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/watcher"
@@ -91,6 +92,8 @@ type App struct {
 	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
 	activity           *term.ActivityBuffer   // E10b: IPC replay
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
+	hostIdentity       *devicetrust.HostIdentity
+	deviceRegistry     *devicetrust.DeviceRegistry
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -224,8 +227,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 // Blocks until ctx is cancelled, then shuts down gracefully.
 func (a *App) Run(ctx context.Context) error {
 	// M2.5-1: ensure the persistent host identity + device registry exist.
-	// No auth/pairing yet — this only bootstraps the trust root.
-	initDeviceTrust()
+	// No auth/pairing yet — this only bootstraps the trust root. The App owns
+	// the single instances so later phases have one source of truth.
+	a.hostIdentity, a.deviceRegistry = initDeviceTrust()
 
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())

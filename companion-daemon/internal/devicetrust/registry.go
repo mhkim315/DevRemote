@@ -48,6 +48,11 @@ type PublicDevice struct {
 
 // Public returns the API/UI-safe device view.
 func (d Device) Public() PublicDevice {
+	var rev *time.Time
+	if d.RevokedAt != nil {
+		t := *d.RevokedAt
+		rev = &t
+	}
 	return PublicDevice{
 		DeviceID:    d.DeviceID,
 		Fingerprint: d.Fingerprint,
@@ -55,7 +60,7 @@ func (d Device) Public() PublicDevice {
 		Role:        d.Role,
 		CreatedAt:   d.CreatedAt,
 		LastSeenAt:  d.LastSeenAt,
-		RevokedAt:   d.RevokedAt,
+		RevokedAt:   rev,
 	}
 }
 
@@ -75,8 +80,51 @@ type DeviceRegistry struct {
 	order   []string
 }
 
-// NewDeviceRegistry loads the persisted registry. A corrupt/insecure store
-// fails closed (error) rather than resetting trust to empty.
+// cloneDevice returns a deep copy so callers and the store never share the
+// registry's internal mutable slice/pointer fields (PublicKeyDER, RevokedAt).
+func cloneDevice(d Device) Device {
+	c := d
+	if d.PublicKeyDER != nil {
+		c.PublicKeyDER = append([]byte(nil), d.PublicKeyDER...)
+	}
+	if d.RevokedAt != nil {
+		t := *d.RevokedAt
+		c.RevokedAt = &t
+	}
+	return c
+}
+
+// validateDeviceRecord fails closed on any inconsistency in a persisted record.
+func validateDeviceRecord(d Device) error {
+	if d.Version != deviceRecordVersion {
+		return fmt.Errorf("%w: unsupported device record version %d", ErrCorruptStore, d.Version)
+	}
+	if _, err := ParseP256PublicKey(d.PublicKeyDER); err != nil {
+		return fmt.Errorf("%w: device %s has a non-P-256 key", ErrCorruptStore, d.DeviceID)
+	}
+	fp := Fingerprint(d.PublicKeyDER)
+	if d.Fingerprint != fp {
+		return fmt.Errorf("%w: device %s fingerprint mismatch", ErrCorruptStore, d.DeviceID)
+	}
+	if d.DeviceID != fp {
+		return fmt.Errorf("%w: device id %s does not match key fingerprint", ErrCorruptStore, d.DeviceID)
+	}
+	if d.Role != RoleOwner && d.Role != RoleMember {
+		return fmt.Errorf("%w: device %s has invalid role %q", ErrCorruptStore, d.DeviceID, d.Role)
+	}
+	if d.CreatedAt.IsZero() || d.LastSeenAt.IsZero() {
+		return fmt.Errorf("%w: device %s has invalid timestamps", ErrCorruptStore, d.DeviceID)
+	}
+	if d.RevokedAt != nil && d.RevokedAt.IsZero() {
+		return fmt.Errorf("%w: device %s has invalid revokedAt", ErrCorruptStore, d.DeviceID)
+	}
+	return nil
+}
+
+// NewDeviceRegistry loads the persisted registry. Every record is validated for
+// internal consistency (key↔fingerprint↔deviceId, role, timestamps, no
+// duplicates); a corrupt/insecure store fails closed (error) rather than
+// resetting trust to empty or silently dropping records.
 func NewDeviceRegistry(store DeviceStore) (*DeviceRegistry, error) {
 	recs, err := store.Load()
 	if err != nil {
@@ -85,11 +133,15 @@ func NewDeviceRegistry(store DeviceStore) (*DeviceRegistry, error) {
 	r := &DeviceRegistry{store: store, devices: make(map[string]*Device)}
 	for i := range recs {
 		d := recs[i]
-		if _, exists := r.devices[d.DeviceID]; exists {
-			continue
+		if verr := validateDeviceRecord(d); verr != nil {
+			return nil, verr
 		}
-		r.devices[d.DeviceID] = &d
-		r.order = append(r.order, d.DeviceID)
+		if _, dup := r.devices[d.DeviceID]; dup {
+			return nil, fmt.Errorf("%w: duplicate device id %s", ErrCorruptStore, d.DeviceID)
+		}
+		cd := cloneDevice(d)
+		r.devices[cd.DeviceID] = &cd
+		r.order = append(r.order, cd.DeviceID)
 	}
 	return r, nil
 }
@@ -110,9 +162,9 @@ func (r *DeviceRegistry) Add(pubDER []byte, displayName string) (Device, error) 
 
 	if existing, ok := r.devices[id]; ok {
 		if existing.Revoked() {
-			return *existing, ErrDeviceRevoked
+			return cloneDevice(*existing), ErrDeviceRevoked
 		}
-		return *existing, nil
+		return cloneDevice(*existing), nil
 	}
 
 	role := RoleMember
@@ -137,7 +189,7 @@ func (r *DeviceRegistry) Add(pubDER []byte, displayName string) (Device, error) 
 		r.order = r.order[:len(r.order)-1]
 		return Device{}, err
 	}
-	return *d, nil
+	return cloneDevice(*d), nil
 }
 
 // GetActive returns a non-revoked device by ID.
@@ -148,7 +200,7 @@ func (r *DeviceRegistry) GetActive(deviceID string) (Device, bool) {
 	if !ok || d.Revoked() {
 		return Device{}, false
 	}
-	return *d, true
+	return cloneDevice(*d), true
 }
 
 // GetActiveByFingerprint returns a non-revoked device by public-key fingerprint
@@ -163,7 +215,7 @@ func (r *DeviceRegistry) List() []Device {
 	defer r.mu.Unlock()
 	out := make([]Device, 0, len(r.order))
 	for _, id := range r.order {
-		out = append(out, *r.devices[id])
+		out = append(out, cloneDevice(*r.devices[id]))
 	}
 	return out
 }
@@ -218,7 +270,7 @@ func (r *DeviceRegistry) countActiveLocked() int {
 func (r *DeviceRegistry) saveLocked() error {
 	out := make([]Device, 0, len(r.order))
 	for _, id := range r.order {
-		out = append(out, *r.devices[id])
+		out = append(out, cloneDevice(*r.devices[id]))
 	}
 	return r.store.Save(out)
 }

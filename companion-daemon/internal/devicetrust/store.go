@@ -36,6 +36,11 @@ func writeOwnerOnly(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// MkdirAll does not tighten an already-existing directory; enforce 0700 so
+	// the trust directory is never group/other accessible.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(dir, ".pokit-tmp-*")
 	if err != nil {
 		return err
