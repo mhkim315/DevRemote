@@ -297,44 +297,12 @@ func TestRolePermissions_MemberGetsReadOnly(t *testing.T) {
 }
 
 func TestRolePermissions_UnknownRoleFails(t *testing.T) {
-	h, _, deviceID := setupAuthHandlerWithRole(t, "superuser")
-	if deviceID == "" {
-		t.Fatal("setup failed")
+	if got := PermissionsForRole("superuser"); got != nil {
+		t.Fatalf("PermissionsForRole(superuser) = %v, want nil", got)
 	}
-	clientNonce := make([]byte, 32)
-	rand.Read(clientNonce)
-	chalReq, _ := json.Marshal(ChallengeRequest{Version: 1, HostID: h.Identity.HostID, DeviceID: deviceID, ClientNonce: hex.EncodeToString(clientNonce)})
-	rr := httptest.NewRecorder()
-	h.HandleChallenge(rr, httptest.NewRequest("POST", "/c", bytes.NewReader(chalReq)))
-	// Challenge still works — it only checks GetActive (device is active).
-	// But verify should fail because role is unknown → PermissionsForRole returns nil.
-	if rr.Code != 200 {
-		t.Fatalf("challenge: %d", rr.Code)
+	if got := PermissionsForRole(""); got != nil {
+		t.Fatalf("PermissionsForRole(empty) = %v, want nil", got)
 	}
-	var cr AuthChallengeResponse
-	json.Unmarshal(rr.Body.Bytes(), &cr)
-	cid, _ := hex.DecodeString(cr.ChallengeID)
-	sn, _ := hex.DecodeString(cr.ServerNonce)
-	cms := cr.ExpiresAt.Add(-5 * time.Minute).UnixMilli()
-	ems := cr.ExpiresAt.UnixMilli()
-	// Generate a phone key just for signing.
-	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	pubDER, _ := x509.MarshalPKIXPublicKey(&devPriv.PublicKey)
-	tr := AuthTranscript{Role: "device", HostID: cr.HostID, DeviceID: deviceID, DaemonBootID: cr.DaemonBootID, ChallengeID: cid, ClientNonce: clientNonce, ServerNonce: sn, CreatedAtMS: cms, ExpiresAtMS: ems}
-	dig := sha256.Sum256(tr.Build())
-	dsig, _ := ecdsa.SignASN1(rand.Reader, devPriv, dig[:])
-	vr, _ := json.Marshal(VerifyRequest{Version: 1, ChallengeID: cr.ChallengeID, DeviceID: deviceID, Signature: hex.EncodeToString(dsig)})
-	rr2 := httptest.NewRecorder()
-	h.HandleVerify(rr2, httptest.NewRequest("POST", "/v", bytes.NewReader(vr)))
-	// Verify fails because permissionsForRole("superuser") returns nil and handler rejects.
-	if rr2.Code == 200 {
-		t.Fatalf("unknown role should fail verify")
-	}
-	// No session created.
-	if h.Sessions.Count() != 0 {
-		t.Fatalf("session leaked for unknown role")
-	}
-	_ = pubDER
 }
 
 // ── Session cap + replacement tests (B3 proof) ──

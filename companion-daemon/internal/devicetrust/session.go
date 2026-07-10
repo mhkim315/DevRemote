@@ -332,4 +332,11 @@ func (m *DeviceSessionManager) checkInvariant() {
 	if len(m.byDevice) > len(m.sessions) {
 		panic("orphan byDevice entries")
 	}
+	// Every session must have a byDevice entry pointing to it.
+	for digest, s := range m.sessions {
+		d2, ok := m.byDevice[s.DeviceID]
+		if !ok || d2 != digest {
+			panic("session " + digest + " missing byDevice entry")
+		}
+	}
 }

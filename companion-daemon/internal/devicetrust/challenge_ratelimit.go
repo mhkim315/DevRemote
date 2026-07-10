@@ -32,22 +32,29 @@ func NewChallengeRateLimiter(cfg RateLimiterConfig) *challengeRateLimiter {
 	if cfg.MaxAge <= 0 {
 		cfg.MaxAge = 5 * time.Minute
 	}
-	return &challengeRateLimiter{buckets: make(map[string]*tokenBucket), burst: cfg.Burst, ratePerMin: cfg.RatePerMin, maxAge: cfg.MaxAge}
+	return &challengeRateLimiter{
+		buckets:    make(map[string]*tokenBucket),
+		burst:      cfg.Burst,
+		ratePerMin: cfg.RatePerMin,
+		maxAge:     cfg.MaxAge,
+	}
 }
+
+// Allow reports whether a challenge may be issued for deviceID. At most ONE
+// stale entry is pruned per call so the map scan is bounded. Full purge is
+// available via Purge().
 func (l *challengeRateLimiter) Allow(now time.Time, deviceID string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// Opportunistic bounded purge of stale entries.
-	if len(l.buckets) > 0 {
-		for k, b := range l.buckets {
-			if now.Sub(b.lastFill) > l.maxAge {
-				delete(l.buckets, k)
-				if len(l.buckets) == 0 {
-					break
-				}
-			}
+
+	// Bounded opportunistic purge: remove at most one stale entry.
+	for k, b := range l.buckets {
+		if now.Sub(b.lastFill) > l.maxAge {
+			delete(l.buckets, k)
+			break
 		}
 	}
+
 	b, ok := l.buckets[deviceID]
 	if !ok {
 		b = &tokenBucket{tokens: float64(l.burst) - 1, lastFill: now}
@@ -66,6 +73,7 @@ func (l *challengeRateLimiter) Allow(now time.Time, deviceID string) bool {
 	b.tokens--
 	return true
 }
+
 func (l *challengeRateLimiter) Purge(now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -75,5 +83,9 @@ func (l *challengeRateLimiter) Purge(now time.Time) {
 		}
 	}
 }
-func (l *challengeRateLimiter) Count() int { l.mu.Lock(); defer l.mu.Unlock(); return len(l.buckets) }
+func (l *challengeRateLimiter) Count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.buckets)
+}
 func (l *challengeRateLimiter) Burst() int { return l.burst }
