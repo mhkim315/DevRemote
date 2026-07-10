@@ -347,7 +347,7 @@ html,body{width:100%;height:100%;background:#000}
 <div id="t"></div>
 <div id="status"></div>
 <script>
-var raw='', reconnecting=false, opened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
+var raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
 	// E8: diagnostic counters — increment-only, never reset.
 	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
@@ -380,6 +380,7 @@ function connect(){
   ws.binaryType='arraybuffer';
   ws.onopen=function(){
     opened=true;
+    everOpened=true;
 	    e8diag.connectCount++;
     consecutiveFailures=0;
     reconnecting=false;
@@ -398,15 +399,25 @@ function connect(){
   ws.onclose=function(e){
     if(stopped)return;
     if(!opened) consecutiveFailures++;
-    if(e.code===1008||e.code===1011||consecutiveFailures>=3){
+    // Explicit end from the daemon (session gone / auth) — do not retry.
+    if(e.code===1008||e.code===1011){
       stopSession('Session ended or unavailable');
+      return;
+    }
+    // Give up only if we have NEVER connected (bad session/URL or a long
+    // initial outage): bounded retry, then surface failure. Once we've
+    // connected at least once, a later close is a transient network drop —
+    // keep retrying indefinitely with backoff until the network returns.
+    if(!everOpened && consecutiveFailures>=6){
+      stopSession('Cannot connect');
       return;
     }
     if(!reconnecting){
       reconnecting=true;
 		      e8diag.closeCount++; wasReconnect=true;
       setStatus('reconnecting...');
-      setTimeout(function(){reconnecting=false;connect()},2000);
+      var delay=Math.min(1500*Math.pow(1.6,Math.min(consecutiveFailures,6)),15000);
+      setTimeout(function(){reconnecting=false;connect()},delay);
     }
   };
   ws.onerror=function(){try{ws.close()}catch(e){}};

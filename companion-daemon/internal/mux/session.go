@@ -58,10 +58,11 @@ func SpawnPTYWithDir(id string, termEnv string, cwd string, command string, args
 		return nil, fmt.Errorf("failed to start pty: %w", err)
 	}
 
-	// Default terminal size so TUI apps render correctly on launch. Wider
-	// than the classic 80x24 because TUIs like claude assume a wide terminal;
-	// local attach resizes this to the host terminal's actual size.
-	_ = pty.Setsize(ptm, &pty.Winsize{Rows: 30, Cols: 120})
+	// Default terminal size so TUI apps render correctly on launch. ~100 cols
+	// is the MVP default: wide enough that claude/codex don't break like at 80,
+	// narrow enough to avoid empty space on mobile. Local attach resizes this
+	// to the host terminal's actual size.
+	_ = pty.Setsize(ptm, &pty.Winsize{Rows: 30, Cols: 100})
 
 	s := &NativeSession{
 		id:  id,

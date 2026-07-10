@@ -269,10 +269,22 @@ export default function FeedScreen({onBack, session, token}: Props) {
     );
   }, [inject]);
 
+  // submitLine sends the text and Enter as TWO separate messages. Codex treats
+  // a trailing \r bundled with the text as a literal newline (paste heuristic),
+  // so combined "text\r" inserts a newline instead of submitting; a standalone
+  // \r submits — which is why the custom Enter macro ([13]) worked but Send did
+  // not. Splitting makes Send equivalent to "type text, then press Enter". The
+  // small delay keeps the \r in a separate PTY read so Codex sees a discrete
+  // Enter keypress. Text goes out once, \r once — no accumulated-buffer bug.
+  const submitLine = useCallback((text: string) => {
+    if (text) doSend(text);
+    setTimeout(() => doSend('\r'), 40);
+  }, [doSend]);
+
   const send = useCallback(() => {
     const currentCmd = cmdRef.current || cmd;
     if (!currentCmd.trim()) return;
-    doSend(currentCmd + '\r');
+    submitLine(currentCmd);
     setCmd('');
     cmdRef.current = '';
 
@@ -287,7 +299,7 @@ export default function FeedScreen({onBack, session, token}: Props) {
       };
       return [...prev, optEvent];
     });
-  }, [doSend, session]);
+  }, [submitLine, session]);
   const sendMacro = useCallback((chars: number[]) => {
     // E8: macros use same doSend ack path.
     const macroText = String.fromCharCode.apply(null, chars);
@@ -303,12 +315,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
       setCmd('');
       cmdRef.current = '';
       if (cmd.trim()) {
-        doSend(cmd + '\r');
+        submitLine(cmd);
       }
     } else {
       setCmd(text);
     }
-  }, [doSend]);
+  }, [submitLine]);
 
   const handleCopyRequest = useCallback(async () => {
     // Get terminal text and copy directly
@@ -356,7 +368,12 @@ export default function FeedScreen({onBack, session, token}: Props) {
       let initialFontSize = null;
 
       const style = document.createElement('style');
-      style.innerHTML = '.xterm-viewport { } .xterm-screen { user-select: text; -webkit-user-select: text; }';
+      // Allow the terminal to be wider than the phone viewport and scroll/swipe
+      // horizontally, instead of reflowing to a narrow width (see fitTerminal).
+      style.innerHTML =
+        '.xterm-screen { user-select: text; -webkit-user-select: text; }' +
+        '#t { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }' +
+        '.xterm { width: max-content !important; min-width: 100% !important; }';
       document.head.appendChild(style);
 
       // Override fitTerminal to be accurate and actually call term.resize()
@@ -376,15 +393,17 @@ export default function FeedScreen({onBack, session, token}: Props) {
         document.body.removeChild(span);
 
         var rows = Math.floor(h / ch);
-        var cols = Math.floor(w / cw);
+        // MVP width policy: never render below MIN_COLS. On a phone floor(w/cw)
+        // is ~50, which would force claude/codex to reflow to phone width and
+        // break the TUI. We keep xterm at >=100 cols and let the container
+        // scroll horizontally (injected CSS above). We deliberately do NOT POST
+        // /term/size: the mobile viewer must not shrink the shared PTY — its
+        // width is owned by the spawn default (100) or the local terminal on
+        // attach. (/term/size was a no-op route anyway.)
+        var MIN_COLS = 100;
+        var cols = Math.max(Math.floor(w / cw), MIN_COLS);
         if (rows > 0 && cols > 0) {
           window.term.resize(cols, rows);
-          var p = new URLSearchParams(location.search);
-          var sess = p.get('session');
-          var tok = p.get('token');
-          var hdrs = {};
-          if(tok) hdrs['Authorization']='Bearer '+tok;
-          fetch('/term/size?session='+encodeURIComponent(sess)+'&rows='+rows+'&cols='+cols, {method:'POST',headers:hdrs}).catch(function(){});
         }
       };
 
