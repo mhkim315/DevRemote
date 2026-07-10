@@ -72,7 +72,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		Executable:  exe,
 		Args:        args,
 	}
-	canonicalID, err := createControlledSession(r.Context(), h.Registry, h.Activity, opts)
+	canonicalID, rec, err := createControlledSession(r.Context(), h.Registry, h.Activity, opts)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")
@@ -80,9 +80,10 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-	// M2: catalog the managed session + start its exit watcher.
+	// M2: catalog the managed session + start its exit watcher on the exact
+	// Recorder we just started.
 	if h.Lifecycle != nil {
-		h.Lifecycle.Register(canonicalID, adapter, req.ProfileID, req.Name)
+		h.Lifecycle.Register(canonicalID, adapter, req.ProfileID, req.Name, rec)
 	}
 	writeLifecycle(w, SessionLifecycle{
 		ID:        canonicalID,
@@ -162,12 +163,12 @@ func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *Act
 	if err != nil {
 		return "", LifecycleFailed, err
 	}
-	canonicalID, err := createControlledSession(ctx, reg, activity, opts)
+	canonicalID, rec, err := createControlledSession(ctx, reg, activity, opts)
 	if err != nil {
 		return "", LifecycleFailed, err
 	}
 	if lifecycle != nil {
-		lifecycle.Register(canonicalID, "controlled_pty", spec.ProfileID, spec.Name)
+		lifecycle.Register(canonicalID, "controlled_pty", spec.ProfileID, spec.Name, rec)
 	}
 	return canonicalID, LifecycleRunning, nil
 }
@@ -175,44 +176,47 @@ func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *Act
 // createControlledSession creates a controlled_pty session and proves its
 // Recorder is ready before the session may be exposed as running. On readiness
 // failure it terminates the just-created runtime so no unrecorded live process
-// is left behind.
-func createControlledSession(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, opts mux.CreateOptions) (string, error) {
+// is left behind. Returns the exact Recorder so the lifecycle watcher observes
+// the real one (avoids a fast-exit race where GetRecorder is already nil).
+func createControlledSession(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, opts mux.CreateOptions) (string, *Recorder, error) {
 	createdID, err := reg.CreateSession(ctx, "controlled_pty", opts)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	canonicalID := mux.SessionRef{Adapter: "controlled_pty", LocalID: createdID}.Canonical()
-	if rerr := startRecorder(ctx, reg, activity, canonicalID); rerr != nil {
+	rec, rerr := startRecorder(ctx, reg, activity, canonicalID)
+	if rerr != nil {
 		_ = reg.TerminateSession(ctx, "controlled_pty", createdID)
 		DeleteRecorder(canonicalID)
-		return "", fmt.Errorf("recorder not ready: %w", rerr)
+		return "", nil, fmt.Errorf("recorder not ready: %w", rerr)
 	}
-	return canonicalID, nil
+	return canonicalID, rec, nil
 }
 
 // startRecorder starts the single Recorder for a freshly created session and
 // proves it is ready (session found, stream openable, recorder alive). It
 // unsubscribes the starter subscriber that EnsureRecorder returns so a
-// create-without-viewer leaves no retained phantom subscription.
-func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, canonicalID string) error {
+// create-without-viewer leaves no retained phantom subscription, and returns
+// the Recorder for the lifecycle watcher.
+func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, canonicalID string) (*Recorder, error) {
 	if activity == nil {
-		return fmt.Errorf("activity storage not configured")
+		return nil, fmt.Errorf("activity storage not configured")
 	}
 	sess, err := reg.FindSession(ctx, canonicalID)
 	if err != nil {
-		return fmt.Errorf("session not found after create: %w", err)
+		return nil, fmt.Errorf("session not found after create: %w", err)
 	}
 	opener, ok := sess.(mux.StreamOpener)
 	if !ok {
-		return fmt.Errorf("session does not support live streaming")
+		return nil, fmt.Errorf("session does not support live streaming")
 	}
 	rec, subCh := EnsureRecorder(canonicalID, opener, activity)
 	if rec == nil {
-		return fmt.Errorf("recorder failed to start (stream unavailable)")
+		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
 	}
 	// No viewer yet — do not retain the starter subscription.
 	rec.Unsubscribe(subCh)
-	return nil
+	return rec, nil
 }
 
 // genLocalID generates a unique daemon-owned local session id. Clients never

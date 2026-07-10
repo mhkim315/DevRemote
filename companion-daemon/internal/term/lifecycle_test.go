@@ -103,7 +103,7 @@ func TestLifecycle_CapabilityGate(t *testing.T) {
 			a := newLCAdapter(tc.adapterName, tc.managed)
 			id := a.add("s1")
 			svc := lcService(t, a)
-			svc.Register(id, tc.adapterName, "", "n")
+			svc.Register(id, tc.adapterName, "", "n", nil)
 
 			for _, action := range []string{"stop", "kill"} {
 				var err error
@@ -114,7 +114,7 @@ func TestLifecycle_CapabilityGate(t *testing.T) {
 					a2 := newLCAdapter(tc.adapterName, tc.managed)
 					id2 := a2.add("s2")
 					svc2 := lcService(t, a2)
-					svc2.Register(id2, tc.adapterName, "", "n")
+					svc2.Register(id2, tc.adapterName, "", "n", nil)
 					_, err = svc2.Kill(context.Background(), id2)
 				}
 				if tc.wantErr == nil && err != nil {
@@ -155,7 +155,7 @@ func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 	ext := newLCAdapter("tmux", false)
 	extID := ext.add("e1")
 	svcE := lcService(t, ext)
-	svcE.Register(extID, "tmux", "", "n")
+	svcE.Register(extID, "tmux", "", "n", nil)
 	hE := &Handlers{Registry: svcE.reg, Lifecycle: svcE}
 	for _, action := range []string{"stop", "kill", ""} {
 		method := http.MethodPost
@@ -180,7 +180,7 @@ func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 
 	// Managed stop → 200 with structured result.
 	sid := man.add("m1")
-	svcM.Register(sid, "controlled_pty", "", "n")
+	svcM.Register(sid, "controlled_pty", "", "n", nil)
 	rr := lcRequest(t, hM, http.MethodPost, sid, "stop")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("managed stop status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
@@ -198,7 +198,7 @@ func TestLifecycle_StopIdempotentThenDelete(t *testing.T) {
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("m1")
 	svc := lcService(t, a)
-	svc.Register(id, "controlled_pty", "", "n")
+	svc.Register(id, "controlled_pty", "", "n", nil)
 
 	r1, err := svc.Stop(context.Background(), id)
 	if err != nil || r1.State != LifecycleExited {
@@ -227,8 +227,8 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 	idA := a.add("a")
 	idB := a.add("b")
 	svc := lcService(t, a)
-	svc.Register(idA, "controlled_pty", "", "a")
-	svc.Register(idB, "controlled_pty", "", "b")
+	svc.Register(idA, "controlled_pty", "", "a", nil)
+	svc.Register(idB, "controlled_pty", "", "b", nil)
 
 	// Running session cannot be silently deleted → 409-equivalent error.
 	if _, err := svc.Delete(context.Background(), idA); err != ErrLifecycleNotTerminal {
@@ -253,11 +253,11 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
 	t.Helper()
 	opts := mux.CreateOptions{Name: genLocalID("lc"), Executable: "/bin/sh", Args: []string{"-c", shellCmd}}
-	id, err := createControlledSession(context.Background(), svc.reg, svc.activity, opts)
+	id, rec, err := createControlledSession(context.Background(), svc.reg, svc.activity, opts)
 	if err != nil {
 		t.Fatalf("create real session: %v", err)
 	}
-	svc.Register(id, "controlled_pty", "", "test")
+	svc.Register(id, "controlled_pty", "", "test", rec)
 	t.Cleanup(func() {
 		DeleteRecorder(id)
 		_ = svc.reg.TerminateSession(context.Background(), "controlled_pty", mux.ParseSessionID(id).LocalID)

@@ -37,10 +37,13 @@ func (a *controlledPTYAdapter) TranscriptCaptureMode() TranscriptCaptureMode {
 // even though they accept input/control.
 func (a *controlledPTYAdapter) ManagedLifecycle() bool { return true }
 
-// TerminateGroup signals the session's whole process group. pty.Start set
-// Setsid, so the child is a session/process-group leader (pgid == child pid);
-// signalling the negative pid reaches the child and everything it spawned
-// (e.g. claude inside the controlled bash), leaving no descendant.
+// TerminateGroup signals the session's process group. pty.Start set Setsid, so
+// the child is a session/process-group leader (pgid == child pid); signalling
+// the negative pid reaches every member of THAT process group (the child and
+// processes it starts within the same group, e.g. claude inside the controlled
+// bash). A descendant that creates its own session/process group (setsid) is
+// not covered — MVP Stop terminates the daemon-owned group, not arbitrary
+// re-parented trees.
 func (s *controlledPTYSession) TerminateGroup(force bool) error {
 	if s.native == nil || s.native.Cmd == nil || s.native.Cmd.Process == nil {
 		return fmt.Errorf("controlled_pty: no process to signal")
@@ -140,10 +143,13 @@ func (a *controlledPTYAdapter) TerminateSession(_ context.Context, id string) er
 		return fmt.Errorf("%w: controlled_pty session %q not found", ErrSessionNotFound, id)
 	}
 	s.exited = true
+	// Remove from the session map regardless of Close() outcome: a second
+	// Close on an already-dead process/PTY returns an error, and we must not
+	// leak the session in the adapter map because of it.
+	delete(a.sessions, id)
 	if err := s.native.Close(); err != nil {
 		return fmt.Errorf("controlled_pty terminate: %w", err)
 	}
-	delete(a.sessions, id)
 	return nil
 }
 

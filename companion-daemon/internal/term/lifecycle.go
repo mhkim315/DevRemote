@@ -11,12 +11,13 @@ package term
 //
 //	controlled_pty children are spawned via creack/pty's pty.Start, which sets
 //	SysProcAttr.Setsid = true. The child therefore becomes a session leader and
-//	its own process-group leader (pgid == child pid). Any process the child
-//	spawns (e.g. `claude` launched inside the controlled bash) inherits that
-//	process group. So a future Stop can terminate the whole daemon-owned
-//	controlled PTY tree with a single signal to the negative pgid
-//	(syscall.Kill(-pid, SIGTERM), then SIGKILL) — it does not need to walk
-//	descendants. MVP Stop terminates the whole group, not a nested agent alone.
+//	its own process-group leader (pgid == child pid). Processes the child starts
+//	within that group (e.g. `claude` launched inside the controlled bash) share
+//	the pgid. So Stop can terminate the daemon-owned process group with a signal
+//	to the negative pgid (syscall.Kill(-pid, SIGTERM), then SIGKILL). This
+//	covers the process GROUP only: a descendant that calls setsid to create its
+//	own session/process group is out of scope for MVP Stop. MVP Stop terminates
+//	the whole group, not a nested agent alone.
 
 // LifecycleState is the public session lifecycle. Clients must be able to
 // represent every terminal/lifecycle action without overloading DELETE or

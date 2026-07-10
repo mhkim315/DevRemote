@@ -86,7 +86,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		canonicalID := mux.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
 		// Best-effort recorder start for external/streamable adapters; also
 		// drops the starter subscriber so no phantom viewer is retained.
-		_ = startRecorder(r.Context(), reg, h.Activity, canonicalID)
+		_, _ = startRecorder(r.Context(), reg, h.Activity, canonicalID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
@@ -102,6 +102,17 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Managed sessions must go through the M2 lifecycle contract
+			// (managedLifecycle gate, terminal-state rule, history retention);
+			// the legacy query DELETE must not bypass it to kill a running
+			// process or clear history.
+			if h.Lifecycle != nil && h.Lifecycle.IsManaged(r.Context(), id) {
+				res, lerr := h.Lifecycle.Delete(r.Context(), id)
+				writeLifecycleResult(w, res, lerr)
+				return
+			}
+
+			// External adapters keep the legacy compatibility behavior.
 			adapterName := ref.Adapter
 
 			if err := reg.TerminateSession(r.Context(), adapterName, ref.LocalID); err != nil {
