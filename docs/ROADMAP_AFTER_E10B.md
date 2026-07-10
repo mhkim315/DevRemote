@@ -124,7 +124,7 @@ M2.5-0 Device Trust Security Contract          COMPLETE (docs)
 M2.5-1 Host Identity / Device Registry         ACCEPT b937cbe0f
 M2.5-2 LAN QR Pairing                          ACCEPT 637dcdf21
 M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
-M2.5-4 Unified REST / WSS Authentication       COMPLETE (see acceptance doc)
+M2.5-4 Unified REST / WSS Authentication       IMPLEMENTED d2dfcf9; final production-path evidence pending
 M2.5-5 Revoke / Minimal Audit
 M3  Mobile Lifecycle UX and Real-device Gate       READY (plan only)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
@@ -138,6 +138,10 @@ N1  Notifications
 O1  Orchestrator
 P1  Play Store / Distribution readiness
 ```
+
+Current executor handoff for the M2.5-4 acceptance evidence gaps:
+
+- `docs/NEXT_SESSION_M2_5_4_FINAL_ACCEPTANCE_HANDOFF.md`
 
 The immediate execution order is deliberately lifecycle-first:
 
