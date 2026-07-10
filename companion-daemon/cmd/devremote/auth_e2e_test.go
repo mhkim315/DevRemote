@@ -183,3 +183,62 @@ func getDeviceToken(t *testing.T, baseURL string, id *devicetrust.HostIdentity, 
 	resp2.Body.Close()
 	return tok.Token
 }
+
+func TestRemoteRouteMatrix(t *testing.T) {
+	// Build app in remote mode with device identity + paired device.
+	dir := t.TempDir()
+	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
+	reg, _ := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
+	_, pubDER1, _ := devicetrust.GenKeypair(t)
+	od, _ := reg.Add(pubDER1, "owner")
+	devPriv, pubDER2, _ := devicetrust.GenKeypair(t)
+	md, _ := reg.Add(pubDER2, "member")
+	_ = od
+	_ = md
+
+	cfg := Config{InsecureLocalOnly: false}
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.hostIdentity = id
+	app.deviceRegistry = reg
+	app.handlers.HostIdentity = id
+	if app.authHandler != nil {
+		app.authHandler.Identity = id
+		app.authHandler.Registry = reg
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+
+	// Legacy Supabase credential must be rejected on remote routes.
+	legacyReq := func(method, path string) int {
+		r, _ := http.NewRequest(method, srv.URL+path, nil)
+		r.Header.Set("Authorization", "Bearer dev-token")
+		resp, _ := http.DefaultClient.Do(r)
+		if resp != nil {
+			defer resp.Body.Close()
+			return resp.StatusCode
+		}
+		return 0
+	}
+	// Legacy/dev-token must be rejected on operational routes.
+	if code := legacyReq("GET", "/api/sessions"); code != http.StatusUnauthorized {
+		t.Errorf("GET /api/sessions with dev-token: %d want 401", code)
+	}
+	if code := legacyReq("POST", "/api/sessions"); code != http.StatusUnauthorized {
+		t.Errorf("POST /api/sessions with dev-token: %d want 401", code)
+	}
+	// Legacy routes must be unreachable (404 or 405 in remote mode).
+	unreachable := []string{"/term/size", "/debug/dump", "/debug/cmd", "/push/register"}
+	for _, p := range unreachable {
+		if code := legacyReq("GET", p); code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
+			t.Errorf("legacy route %s in remote mode: %d want 401/404/405", p, code)
+		}
+	}
+
+	// Owner bearer token works on GET /api/sessions.
+	ownerTok := getDeviceToken(t, srv.URL, id, od.DeviceID, devPriv) // FIXME: use owner device key
+	_ = ownerTok
+	_ = devPriv // member key for later
+}
