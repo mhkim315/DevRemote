@@ -83,8 +83,16 @@ func (s *WSTicketStore) purgeExpiredLocked(now time.Time) {
 
 // Consume atomically validates and consumes a ticket, returning its
 // Principal. Only the first caller gets the Principal; subsequent callers
-// see it as consumed/expired/invalid.
+// see it as consumed/expired/invalid. Session/host binding is NOT checked —
+// prefer ConsumeBound for production paths.
 func (s *WSTicketStore) Consume(rawTicket string) *Principal {
+	return s.ConsumeBound(rawTicket, "", "")
+}
+
+// ConsumeBound validates the ticket AND its session/host bindings. A ticket
+// issued for a different session or host is consumed (one-shot policy) but
+// returns nil. The caller cannot redirect a ticket to another target.
+func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionID string) *Principal {
 	b, err := hex.DecodeString(rawTicket)
 	if err != nil || len(b) != 32 {
 		return nil
@@ -99,6 +107,18 @@ func (s *WSTicketStore) Consume(rawTicket string) *Principal {
 		return nil
 	}
 	if time.Now().UTC().After(t.ExpiresAt) {
+		delete(s.tickets, digest)
+		return nil
+	}
+	// Validate bindings. A mismatch consumes the ticket (one-shot) but
+	// returns nil — the caller cannot retry with a different session.
+	if expectedHostID != "" && t.HostID != expectedHostID {
+		t.Consumed = true
+		delete(s.tickets, digest)
+		return nil
+	}
+	if expectedSessionID != "" && t.SessionID != expectedSessionID {
+		t.Consumed = true
 		delete(s.tickets, digest)
 		return nil
 	}

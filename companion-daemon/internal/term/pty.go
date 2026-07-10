@@ -153,19 +153,29 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	var ticketPrincipal *devicetrust.Principal
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" && h.WSTickets != nil {
-		ticketPrincipal = h.WSTickets.Consume(ticket)
+		sess := r.URL.Query().Get("session")
+		if sess == "" {
+			sess = "devremote"
+		}
+		// Optional ticket auth: session binding verified.
+		ticketPrincipal = h.WSTickets.ConsumeBound(ticket, "", sess)
 	}
 	h.handleWSWithPrincipal(w, r, ticketPrincipal)
 }
 
-// HandleWSTicketAuth is the ticket-only WS endpoint: requires a valid ticket.
-// Missing/invalid/expired tickets are rejected 401 BEFORE upgrade.
+// HandleWSTicketAuth is the ticket-only WS endpoint: requires a valid ticket
+// bound to the requested session. Missing/invalid/wrong-session tickets are
+// rejected 401 BEFORE upgrade.
 func (h *Handlers) HandleWSTicketAuth(w http.ResponseWriter, r *http.Request) {
 	if h.WSTickets == nil {
 		http.Error(w, "ws ticket auth not configured", http.StatusServiceUnavailable)
 		return
 	}
-	p := h.WSTickets.Consume(r.URL.Query().Get("ticket"))
+	sess := r.URL.Query().Get("session")
+	if sess == "" {
+		sess = "devremote"
+	}
+	p := h.WSTickets.ConsumeBound(r.URL.Query().Get("ticket"), "", sess)
 	if p == nil {
 		http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
 		return

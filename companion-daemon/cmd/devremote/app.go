@@ -191,7 +191,22 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr}
 
 	serveMux := http.NewServeMux()
+	// Legacy route (Supabase/dev-token).
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
+
+	// M2.5-4: device-authenticated REST routes. Each endpoint declares its
+	// required permission via RequirePrincipal. The existing AuthMiddleware
+	// path remains for insecure/local development.
+	if sessionMgr != nil {
+		serveMux.HandleFunc("GET /api/d/sessions",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionsV2, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("POST /api/d/sessions/{id}/stop",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionStop, devicetrust.PermSessionsStop))
+		serveMux.HandleFunc("POST /api/d/sessions/{id}/kill",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionKill, devicetrust.PermSessionsKill))
+		serveMux.HandleFunc("DELETE /api/d/sessions/{id}",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
+	}
 
 	// M2.5-3: device challenge-auth endpoints (ungated — fail gracefully
 	// when no host identity / device registry is configured).
