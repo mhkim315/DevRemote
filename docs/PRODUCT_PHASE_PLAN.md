@@ -7,6 +7,13 @@ Status:
 
 - Architecture Phase (A0~A10): COMPLETE
 - Product Phase: IN PROGRESS
+- Current roadmap after E10b is now maintained in:
+  - `docs/ROADMAP_AFTER_E10B.md`
+  - `docs/NEXT_SESSION_R0_HANDOFF.md`
+
+Note: this historical Product Phase Plan is retained for context. The active
+near-term plan is R0 → T1 → S1 → A1 → N1 → O1 → P1.
+
   - P1a Live Dashboard Core: ACCEPTED (3fa4ad3c8)
   - P2 Core Feed Taxonomy: ACCEPTED (413734a)
   - P1b Attention Routing Implementation: ACCEPTED as code-verifiable (c162c33)
