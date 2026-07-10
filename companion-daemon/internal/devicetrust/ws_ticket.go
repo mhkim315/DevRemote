@@ -62,12 +62,15 @@ func (s *WSTicketStore) Issue(p *Principal, hostID, sessionID string) (rawTicket
 		s.mu.Unlock()
 		return "", fmt.Errorf("too many pending tickets")
 	}
+	// Defensive copy: the ticket stores an immutable permission snapshot.
+	pp := *p
+	pp.Permissions = clonePerms(p.Permissions)
 	s.tickets[digest] = &wsTicket{
 		Digest:    digest,
 		DeviceID:  p.DeviceID,
 		HostID:    hostID,
 		SessionID: sessionID,
-		Principal: p,
+		Principal: &pp,
 		ExpiresAt: time.Now().UTC().Add(30 * time.Second),
 	}
 	s.mu.Unlock()

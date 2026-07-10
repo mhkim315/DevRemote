@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,4 +116,70 @@ func TestAuthProductionPath_ChallengeAndVerify(t *testing.T) {
 	if tokResp.Token == "" || tokResp.TokenType != "Bearer" {
 		t.Fatalf("token: %+v", tokResp)
 	}
+}
+
+func TestRemoteMode_MemberCannotCreate(t *testing.T) {
+	dir := t.TempDir()
+	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
+	reg, _ := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
+	_, pubDER1, _ := devicetrust.GenKeypair(t)
+	reg.Add(pubDER1, "owner") // first = owner
+	devPriv, pubDER2, _ := devicetrust.GenKeypair(t)
+	md, _ := reg.Add(pubDER2, "member")
+	if md.Role != devicetrust.RoleMember {
+		t.Fatal("expected member")
+	}
+
+	cfg := Config{InsecureLocalOnly: false}
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.hostIdentity = id
+	app.deviceRegistry = reg
+	if app.authHandler != nil {
+		app.authHandler.Identity = id
+		app.authHandler.Registry = reg
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+
+	// Get a member bearer token.
+	tok := getDeviceToken(t, srv.URL, id, md.DeviceID, devPriv)
+	// POST /api/sessions (create) must fail for member.
+	body := `{"profileId":"shell","name":"x","cwd":"/tmp"}`
+	req, _ := http.NewRequest("POST", srv.URL+"/api/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member POST /api/sessions: %d want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func getDeviceToken(t *testing.T, baseURL string, id *devicetrust.HostIdentity, deviceID string, devPriv *ecdsa.PrivateKey) string {
+	t.Helper()
+	cn := make([]byte, 32)
+	rand.Read(cn)
+	chalReq, _ := json.Marshal(map[string]interface{}{
+		"version": 1, "hostId": id.HostID, "deviceId": deviceID, "clientNonce": hex.EncodeToString(cn),
+	})
+	resp, _ := http.Post(baseURL+"/api/device-auth/challenge", "application/json", bytes.NewReader(chalReq))
+	var cr devicetrust.AuthChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&cr)
+	resp.Body.Close()
+	cid, _ := hex.DecodeString(cr.ChallengeID)
+	sn, _ := hex.DecodeString(cr.ServerNonce)
+	cms := cr.ExpiresAt.Add(-5 * time.Minute).UnixMilli()
+	ems := cr.ExpiresAt.UnixMilli()
+	tr := devicetrust.AuthTranscript{Role: "device", HostID: cr.HostID, DeviceID: deviceID, DaemonBootID: cr.DaemonBootID, ChallengeID: cid, ClientNonce: cn, ServerNonce: sn, CreatedAtMS: cms, ExpiresAtMS: ems}
+	dig := sha256.Sum256(tr.Build())
+	dsig, _ := ecdsa.SignASN1(rand.Reader, devPriv, dig[:])
+	vr, _ := json.Marshal(map[string]interface{}{"version": 1, "challengeId": cr.ChallengeID, "deviceId": deviceID, "signature": hex.EncodeToString(dsig)})
+	resp2, _ := http.Post(baseURL+"/api/device-auth/verify", "application/json", bytes.NewReader(vr))
+	var tok devicetrust.VerifyResponse
+	json.NewDecoder(resp2.Body).Decode(&tok)
+	resp2.Body.Close()
+	return tok.Token
 }
