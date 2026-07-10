@@ -9,12 +9,15 @@ const (
 	// CapObserve: the adapter can list and view sessions.
 	CapObserve AdapterCapability = "observe"
 
-	// CapControl: the adapter can send input/control the session.
-	// tmux/localpty have this. cmux does not.
+	// CapControl: the adapter can send input / drive the session. This is
+	// interactive control (keystrokes, session driving) — it is NOT
+	// process-lifecycle ownership. An externally owned runtime (tmux) can
+	// accept control while its process lifecycle is owned elsewhere. Lifecycle
+	// ownership is CapManagedLifecycle, a separate dimension.
 	CapControl AdapterCapability = "control"
 
 	// CapInput: the adapter supports WriteInput / keystroke delivery.
-	// Distinct from CapControl: control = session lifecycle, input = keystrokes.
+	// Distinct from CapControl: control = session driving, input = keystrokes.
 	CapInput AdapterCapability = "input"
 
 	// CapLiveTerminal: the adapter supports live xterm WebSocket stream.
@@ -31,7 +34,23 @@ const (
 	// Best-effort, not authoritative. cmux has this.
 	// Viewport-dependent source. May include duplicates.
 	CapBestEffortTranscript AdapterCapability = "bestEffortTranscript"
+
+	// CapManagedLifecycle: Pokit owns the session's process / process group and
+	// its Stop/Kill/cleanup lifecycle. Only adapters that CREATE and own the
+	// runtime (controlled_pty) declare this. input=true / control=true do NOT
+	// imply managedLifecycle=true — external attachable (tmux) or observer
+	// (cmux) adapters are never managed. M2 lifecycle actions gate on this.
+	CapManagedLifecycle AdapterCapability = "managedLifecycle"
 )
+
+// ManagedLifecycleProvider is an optional adapter capability. Adapters whose
+// session lifecycle (process, process group, Stop/Kill cleanup) is Pokit-owned
+// return true. Adapters that do not implement it default to false — external
+// or observer adapters must NOT be treated as managed merely because they
+// accept input/control.
+type ManagedLifecycleProvider interface {
+	ManagedLifecycle() bool
+}
 
 // AdapterCapabilities returns the capability set for an adapter.
 // Uses TranscriptCaptureMode + known adapter semantics.
@@ -49,12 +68,16 @@ func AdapterCapabilities(adapter Adapter) []AdapterCapability {
 		case CaptureModeUnsupported:
 			// observe only.
 		}
-		return caps
 	}
+	// No TranscriptCaptureProvider declared → observe only (plus lifecycle
+	// below, which no observe-only adapter opts into).
 
-	// No TranscriptCaptureProvider declared → observe only.
-	// Future adapters must explicitly declare their mode.
-	// Legacy tmux/localpty already declare CaptureModeByteStream.
+	// Lifecycle ownership is orthogonal to input/control. Appended last so the
+	// existing capability order stays backward-compatible; only adapters that
+	// own the runtime opt in (safe false default for everyone else).
+	if mp, ok := adapter.(ManagedLifecycleProvider); ok && mp.ManagedLifecycle() {
+		caps = append(caps, CapManagedLifecycle)
+	}
 	return caps
 }
 
