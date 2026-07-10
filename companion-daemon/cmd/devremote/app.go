@@ -181,10 +181,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	wsTickets := devicetrust.NewWSTicketStore()
 	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
 	// Wire session replacement → connection invalidation.
-	sessionMgr.SetOnReplace(func(deviceID string) {
+	cb := func(deviceID string) {
 		connRegistry.CloseDevice(deviceID)
 		wsTickets.RevokeForDevice(deviceID)
-	})
+	}
+	sessionMgr.SetOnReplace(cb)
+	sessionMgr.SetOnRevoke(cb)
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle,

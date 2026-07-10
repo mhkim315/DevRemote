@@ -175,7 +175,7 @@ func (h *Handlers) HandleWSTicketAuth(w http.ResponseWriter, r *http.Request) {
 	if sess == "" {
 		sess = "devremote"
 	}
-	p := h.WSTickets.ConsumeBound(r.URL.Query().Get("ticket"), "", sess)
+	p := h.WSTickets.ConsumeBound(r.URL.Query().Get("ticket"), h.SessionMgr.BootID(), sess)
 	if p == nil {
 		http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
 		return

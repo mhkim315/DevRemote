@@ -95,6 +95,7 @@ type DeviceSessionManager struct {
 	bootID        string
 	lifetime      time.Duration
 	onReplace     OnReplaceFunc // called when a device session is replaced
+	onRevoke      OnReplaceFunc // called when a device is revoked
 	maxSessions   int
 	purgeStop     chan struct{}
 	purgeDone     chan struct{}
@@ -288,8 +289,12 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 
 func (m *DeviceSessionManager) RevokeDevice(deviceID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.revokeDeviceLocked(deviceID)
+	cb := m.onRevoke
+	m.mu.Unlock()
+	if cb != nil {
+		cb(deviceID)
+	}
 }
 
 func (m *DeviceSessionManager) revokeDeviceLocked(deviceID string) {
@@ -333,6 +338,7 @@ type OnReplaceFunc func(deviceID string)
 
 // SetOnReplace registers a callback invoked after a session is replaced.
 func (m *DeviceSessionManager) SetOnReplace(fn OnReplaceFunc) { m.onReplace = fn }
+func (m *DeviceSessionManager) SetOnRevoke(fn OnReplaceFunc)  { m.onRevoke = fn }
 
 func (m *DeviceSessionManager) checkInvariant() {
 	for devID, digest := range m.byDevice {
