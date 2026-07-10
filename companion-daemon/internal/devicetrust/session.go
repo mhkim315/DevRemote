@@ -66,11 +66,14 @@ func clonePerms(in []string) []string {
 // ── Principal (handler-independent) ──
 
 type Principal struct {
-	DeviceID    string
-	Permissions []string // defensive copy, never shared
-	SessionID   string
-	HostID      string
-	AuthTime    time.Time
+	DeviceID        string
+	Permissions     []string // defensive copy, never shared
+	SessionID       string   // internal correlation id
+	BearerSessionID string   // stable id of the authorizing bearer session
+	BearerExpires   time.Time
+	HostID          string
+	DeviceBootID    string // daemon boot ID at auth time
+	AuthTime        time.Time
 }
 
 // ── DeviceSession ──
@@ -183,6 +186,25 @@ func (m *DeviceSessionManager) SetPurgeInterval(d time.Duration) {
 
 func (m *DeviceSessionManager) BootID() string { return m.bootID }
 
+// isActiveBearer reports whether a bearer session ID is still the current
+// active session for the device (not replaced/revoked/expired).
+func (m *DeviceSessionManager) isActiveBearer(deviceID, bearerSessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	digest, ok := m.byDevice[deviceID]
+	if !ok {
+		return false
+	}
+	sess, ok := m.sessions[digest]
+	if !ok {
+		return false
+	}
+	if time.Now().UTC().After(sess.ExpiresAt) {
+		return false
+	}
+	return sess.SessionID == bearerSessionID
+}
+
 // ── Token issuance (atomic: device-index update + cap check + insertion) ──
 
 // CreateAfterVerifiedChallenge issues a new 32-byte bearer token. The
@@ -277,11 +299,14 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 		return nil
 	}
 	return &Principal{
-		DeviceID:    sess.DeviceID,
-		Permissions: clonePerms(sess.Permissions),
-		SessionID:   sess.SessionID,
-		HostID:      sess.HostID,
-		AuthTime:    sess.IssuedAt,
+		DeviceID:        sess.DeviceID,
+		Permissions:     clonePerms(sess.Permissions),
+		SessionID:       sess.SessionID,
+		BearerSessionID: sess.SessionID,
+		BearerExpires:   sess.ExpiresAt,
+		HostID:          sess.HostID,
+		DeviceBootID:    sess.BootID,
+		AuthTime:        sess.IssuedAt,
 	}
 }
 

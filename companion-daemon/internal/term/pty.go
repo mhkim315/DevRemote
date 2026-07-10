@@ -158,7 +158,7 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 			sess = "devremote"
 		}
 		// Optional ticket auth: session binding verified.
-		ticketPrincipal = h.WSTickets.ConsumeBound(ticket, "", sess)
+		ticketPrincipal = h.WSTickets.ConsumeBound(ticket, "", sess, h.SessionMgr)
 	}
 	h.handleWSWithPrincipal(w, r, ticketPrincipal)
 }
@@ -175,7 +175,7 @@ func (h *Handlers) HandleWSTicketAuth(w http.ResponseWriter, r *http.Request) {
 	if sess == "" {
 		sess = "devremote"
 	}
-	p := h.WSTickets.ConsumeBound(r.URL.Query().Get("ticket"), h.SessionMgr.BootID(), sess)
+	p := h.WSTickets.ConsumeBound(r.URL.Query().Get("ticket"), "", sess, h.SessionMgr)
 	if p == nil {
 		http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
 		return

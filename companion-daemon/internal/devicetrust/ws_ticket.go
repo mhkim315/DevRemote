@@ -89,13 +89,14 @@ func (s *WSTicketStore) purgeExpiredLocked(now time.Time) {
 // see it as consumed/expired/invalid. Session/host binding is NOT checked —
 // prefer ConsumeBound for production paths.
 func (s *WSTicketStore) Consume(rawTicket string) *Principal {
-	return s.ConsumeBound(rawTicket, "", "")
+	return s.ConsumeBound(rawTicket, "", "", nil)
 }
 
-// ConsumeBound validates the ticket AND its session/host bindings. A ticket
-// issued for a different session or host is consumed (one-shot policy) but
-// returns nil. The caller cannot redirect a ticket to another target.
-func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionID string) *Principal {
+// ConsumeBound validates the ticket AND its session/host bindings AND that
+// the authorizing bearer session is still active (not replaced/revoked/expired).
+// A mismatch consumes the ticket (one-shot) but returns nil — the caller
+// cannot retry with a different session or after the bearer has changed.
+func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionID string, mgr *DeviceSessionManager) *Principal {
 	b, err := hex.DecodeString(rawTicket)
 	if err != nil || len(b) != 32 {
 		return nil
@@ -125,9 +126,27 @@ func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionI
 		delete(s.tickets, digest)
 		return nil
 	}
+	// Bearer-session revalidation: the authorizing bearer must still be
+	// the active session for this device. If the bearer was replaced or
+	// revoked after ticket issuance, the ticket is invalid.
+	if mgr != nil {
+		current := mgr.AuthenticateBearer("") // can't auth without token — need a lookup by device.
+		_ = current
+		// We check via the Principal's BearerSessionID against the
+		// active session. Use a package-private lookup.
+		if !mgr.isActiveBearer(t.DeviceID, t.Principal.BearerSessionID) {
+			t.Consumed = true
+			delete(s.tickets, digest)
+			return nil
+		}
+	}
+
 	t.Consumed = true
 	delete(s.tickets, digest)
-	return t.Principal
+	// Return a fresh copy — no shared pointers.
+	pp := *t.Principal
+	pp.Permissions = clonePerms(t.Principal.Permissions)
+	return &pp
 }
 
 // PurgeExpired removes expired tickets. Safe to call periodically.
