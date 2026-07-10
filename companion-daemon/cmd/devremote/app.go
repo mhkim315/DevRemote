@@ -94,8 +94,10 @@ type App struct {
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
-	authHandler        *devicetrust.AuthHandler          // M2.5-3
-	sessionMgr         *devicetrust.DeviceSessionManager // M2.5-3
+	authHandler        *devicetrust.AuthHandler               // M2.5-3
+	sessionMgr         *devicetrust.DeviceSessionManager      // M2.5-3
+	wsTickets          *devicetrust.WSTicketStore             // M2.5-4
+	connRegistry       *devicetrust.AuthenticatedConnRegistry // M2.5-4
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -176,6 +178,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		return nil, fmt.Errorf("boot id: %w", err)
 	}
 	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 20*time.Minute)
+	wsTickets := devicetrust.NewWSTicketStore()
+	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle}
@@ -194,6 +198,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// Endpoints check for nil and return 503 if not configured.
 	serveMux.HandleFunc("POST /api/device-auth/challenge", authH.HandleChallenge)
 	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
+	// WS ticket: authenticated endpoint (bearer token required).
+	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
+		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets), devicetrust.PermSessionsRead))
 	serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 	// M2: managed-session lifecycle (gated on managedLifecycle capability).
@@ -234,18 +241,20 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	return &App{
-		config:      cfg,
-		deps:        deps,
-		registry:    reg,
-		server:      &http.Server{Addr: addr, Handler: serveMux},
-		events:      events,
-		links:       links,
-		telemetry:   telemetry,
-		activity:    activity,
-		lifecycle:   lifecycle,
-		authHandler: authH,
-		sessionMgr:  sessionMgr,
-		ipcPath:     "/tmp/pokit.sock",
+		config:       cfg,
+		deps:         deps,
+		registry:     reg,
+		server:       &http.Server{Addr: addr, Handler: serveMux},
+		events:       events,
+		links:        links,
+		telemetry:    telemetry,
+		activity:     activity,
+		lifecycle:    lifecycle,
+		authHandler:  authH,
+		sessionMgr:   sessionMgr,
+		wsTickets:    wsTickets,
+		connRegistry: connRegistry,
+		ipcPath:      "/tmp/pokit.sock",
 	}, nil
 }
 
