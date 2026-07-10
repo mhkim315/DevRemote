@@ -481,19 +481,100 @@ func setupAuthHandlerForMember(t *testing.T) (*AuthHandler, *ecdsa.PrivateKey, s
 	return &AuthHandler{Identity: id, Registry: reg, Challenges: NewChallengeStore(), Sessions: NewDeviceSessionManager(bootID, 20*time.Minute), RateLimiter: NewChallengeRateLimiter(RateLimiterConfig{Burst: 100, RatePerMin: 1000})}, devPriv, d.DeviceID
 }
 
-func setupAuthHandlerWithRole(t *testing.T, role string) (*AuthHandler, *ecdsa.PrivateKey, string) {
+func TestRateLimiter_HandleChallengeIntegration(t *testing.T) {
+	h, _, deviceID := setupAuthHandler(t)
+	lim := NewChallengeRateLimiter(RateLimiterConfig{Burst: 2, RatePerMin: 0.001, MaxAge: 10 * time.Minute})
+	h.RateLimiter = lim
+	for i := 0; i < 2; i++ {
+		cn := make([]byte, 32)
+		rand.Read(cn)
+		req, _ := json.Marshal(ChallengeRequest{Version: 1, HostID: h.Identity.HostID, DeviceID: deviceID, ClientNonce: hex.EncodeToString(cn)})
+		rr := httptest.NewRecorder()
+		h.HandleChallenge(rr, httptest.NewRequest("POST", "/c", bytes.NewReader(req)))
+		if rr.Code != 200 {
+			t.Fatalf("challenge %d: status=%d", i+1, rr.Code)
+		}
+	}
+	cn := make([]byte, 32)
+	rand.Read(cn)
+	req, _ := json.Marshal(ChallengeRequest{Version: 1, HostID: h.Identity.HostID, DeviceID: deviceID, ClientNonce: hex.EncodeToString(cn)})
+	rr := httptest.NewRecorder()
+	h.HandleChallenge(rr, httptest.NewRequest("POST", "/c", bytes.NewReader(req)))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("3rd challenge: status=%d want 429", rr.Code)
+	}
+}
+
+func TestSessionCap_ConcurrentReplacementTwoChallenges(t *testing.T) {
+	h, devPriv, deviceID := setupAuthHandler(t)
+	cn1 := make([]byte, 32)
+	rand.Read(cn1)
+	cn2 := make([]byte, 32)
+	rand.Read(cn2)
+	cr1 := issueChallenge(t, h, deviceID, cn1)
+	cr2 := issueChallenge(t, h, deviceID, cn2)
+	buildVerify := func(cr AuthChallengeResponse, cn []byte) []byte {
+		cid, _ := hex.DecodeString(cr.ChallengeID)
+		sn, _ := hex.DecodeString(cr.ServerNonce)
+		cms := cr.ExpiresAt.Add(-5 * time.Minute).UnixMilli()
+		ems := cr.ExpiresAt.UnixMilli()
+		tr := AuthTranscript{Role: "device", HostID: cr.HostID, DeviceID: deviceID, DaemonBootID: cr.DaemonBootID, ChallengeID: cid, ClientNonce: cn, ServerNonce: sn, CreatedAtMS: cms, ExpiresAtMS: ems}
+		dig := sha256.Sum256(tr.Build())
+		dsig, _ := ecdsa.SignASN1(rand.Reader, devPriv, dig[:])
+		vr, _ := json.Marshal(VerifyRequest{Version: 1, ChallengeID: cr.ChallengeID, DeviceID: deviceID, Signature: hex.EncodeToString(dsig)})
+		return vr
+	}
+	vr1 := buildVerify(cr1, cn1)
+	vr2 := buildVerify(cr2, cn2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var tok1, tok2 string
+	go func() {
+		defer wg.Done()
+		rr := httptest.NewRecorder()
+		h.HandleVerify(rr, httptest.NewRequest("POST", "/v", bytes.NewReader(vr1)))
+		if rr.Code == 200 {
+			var r VerifyResponse
+			json.Unmarshal(rr.Body.Bytes(), &r)
+			tok1 = r.Token
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		rr := httptest.NewRecorder()
+		h.HandleVerify(rr, httptest.NewRequest("POST", "/v", bytes.NewReader(vr2)))
+		if rr.Code == 200 {
+			var r VerifyResponse
+			json.Unmarshal(rr.Body.Bytes(), &r)
+			tok2 = r.Token
+		}
+	}()
+	wg.Wait()
+	if h.Sessions.Count() != 1 {
+		t.Fatalf("sessions=%d want 1", h.Sessions.Count())
+	}
+	valid := 0
+	if h.Sessions.AuthenticateBearer(tok1) != nil {
+		valid++
+	}
+	if h.Sessions.AuthenticateBearer(tok2) != nil {
+		valid++
+	}
+	if valid != 1 {
+		t.Fatalf("valid tokens=%d want 1", valid)
+	}
+	h.Sessions.checkInvariant()
+}
+
+func issueChallenge(t *testing.T, h *AuthHandler, deviceID string, clientNonce []byte) AuthChallengeResponse {
 	t.Helper()
-	id, _ := LoadOrCreateHostIdentity(&FileKeyStore{Path: t.TempDir() + "/host.json"})
-	reg, _ := newReg(t)
-	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	pubDER, _ := x509.MarshalPKIXPublicKey(&devPriv.PublicKey)
-	d, _ := reg.Add(pubDER, "device")
-	// Hack the role — this simulates a corrupt registry entry (test only).
-	// We need a device with an unexpected role for the unknown-role test.
-	_ = role
-	_ = d // role test uses existing device via PermissionsForRole mock?
-	// Actually, the unknown role test needs a device with role we don't know.
-	// We construct that by not going through PermissionsForRole.
-	bootID, _ := NewBootID()
-	return &AuthHandler{Identity: id, Registry: reg, Challenges: NewChallengeStore(), Sessions: NewDeviceSessionManager(bootID, 20*time.Minute), RateLimiter: NewChallengeRateLimiter(RateLimiterConfig{Burst: 100, RatePerMin: 1000})}, devPriv, d.DeviceID
+	req, _ := json.Marshal(ChallengeRequest{Version: 1, HostID: h.Identity.HostID, DeviceID: deviceID, ClientNonce: hex.EncodeToString(clientNonce)})
+	rr := httptest.NewRecorder()
+	h.HandleChallenge(rr, httptest.NewRequest("POST", "/c", bytes.NewReader(req)))
+	if rr.Code != 200 {
+		t.Fatalf("challenge: %d", rr.Code)
+	}
+	var cr AuthChallengeResponse
+	json.Unmarshal(rr.Body.Bytes(), &cr)
+	return cr
 }
