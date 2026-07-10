@@ -1,11 +1,13 @@
 /** @type {import('jest').Config} */
 module.exports = {
-  preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: ['**/__tests__/**/*.test.ts'],
-  // The tested modules (src/lib/client.ts, src/lib/lifecycle.ts) are pure TS
-  // with no React Native imports, so no RN/Expo jest preset is needed.
+  // Tested modules are pure TS. @noble/* ships ESM, so it must be transformed
+  // (not ignored) and compiled to CJS for the jest runtime.
   transform: {
-    '^.+\\.ts$': ['ts-jest', { tsconfig: { strict: true, esModuleInterop: true, skipLibCheck: true } }],
+    '^.+\\.(ts|js)$': ['ts-jest', {
+      tsconfig: { strict: true, esModuleInterop: true, skipLibCheck: true, allowJs: true },
+    }],
   },
+  transformIgnorePatterns: ['node_modules/(?!(@noble)/)'],
 };

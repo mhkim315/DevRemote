@@ -47,7 +47,8 @@
           "cameraPermission": "Allow POKIT to scan the terminal QR code to connect."
         }
       ],
-      "expo-status-bar"
+      "expo-status-bar",
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {
