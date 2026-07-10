@@ -22,7 +22,7 @@ const (
 // Plain text only — no VT100/ANSI emulation, no structured tool/approval events.
 type ActivityEvent struct {
 	ID        string       `json:"id"`
-	Seq       uint64       `json:"seq"`              // monotonic per session
+	Seq       uint64       `json:"seq"` // monotonic per session
 	SessionID string       `json:"sessionId"`
 	Type      ActivityType `json:"type"`
 	Text      string       `json:"text"`            // plain terminal text; read path is auth-gated

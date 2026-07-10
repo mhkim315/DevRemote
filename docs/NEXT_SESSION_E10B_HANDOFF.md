@@ -1,7 +1,7 @@
 # Next Session Handoff — E10b Controlled PTY Runtime
 
 Date: 2026-07-10
-Last commit: a551b79e4 (possibly more after this doc)
+Last commit: c19823f0c (Codex Send + width + reconnect). Prior: 4c2127b08 (exit/reset/width), f395afae4 (this doc), a551b79e4.
 Branch: feature/phase10-multi-adapter
 
 ## What We're Building
@@ -36,6 +36,36 @@ Recorder (single PTY reader)
 | localpty | byte_stream | Live xterm | Reliable |
 | controlled_pty | byte_stream | Live xterm | Reliable |
 | cmux | screen_snapshot_delta | Disabled (501) | Best-effort/degraded |
+
+---
+
+## Recent Progress (2026-07-10)
+
+Two commits after this doc was first written:
+- **4c2127b08** — terminal mode hygiene on local attach exit + PTY width
+- **c19823f0c** — Codex Send split, mobile ~100-col width policy, reconnect backoff
+
+### Fixed & verified — backend (daemon redeployed)
+- **P0 local-attach exit deadlock** — `handleIPCSubscriber` now `conn.Close()`s when the recorder's subCh closes (session ended), so the local client's `io.Copy` sees EOF and the host shell prompt returns. Verified by a unix-socket smoke test (immediate EOF; was a 5s hang). Files: `internal/term/ipc.go`, `internal/term/recorder.go`.
+- **P0 control-sequence leak into shell** — `attachLocalTerminal` teardown emits a full terminal mode reset (alt-screen, bracketed paste, focus reporting, all mouse tracking, kitty keyboard pop, modifyOtherKeys, cursor/keypad normal, cursor show, SGR) via one `sync.Once` on **every** exit path (EOF / error / Ctrl+C / normal), plus a 150ms stdin drain to absorb in-flight query responses. Fixes `^[[?14;3R` / `14;3R` leaking into bash after `claude`/`codex`. File: `cmd/devremote/client.go`.
+- **Width** — controlled_pty spawn default is ~100 cols (`internal/mux/session.go`); local attach advertises the host terminal size (`sub:<id> <cols> <rows>`) and the recorder resizes the PTY to match (`Recorder.Resize`).
+- **Reconnect** — served terminal HTML uses an `everOpened` flag: explicit end (WS close 1008 auth / 1011 stream-ended) stops with SESSION ENDED; a drop **after** a good connection retries indefinitely with capped backoff (1.5s→15s); never-connected failures are bounded (6) then surfaced. Old socket is closed before reconnect, so no duplicate recorder subscribers. File: `internal/term/pty.go` (served HTML onopen/onclose).
+
+### Fixed & verified — mobile (in the release APK)
+- **Codex Send** — new `submitLine()` sends the typed text, then `\r` as a **separate** message 40ms later, so Codex sees a discrete Enter keypress. Codex (unlike claude/bash) treated a trailing `\r` bundled with the text as a literal newline — why the Enter macro worked but combined Send didn't. Send button + soft-keyboard Enter both use it. No accumulated-buffer regression. File: `mobile/src/screens/FeedScreen.tsx`.
+- **Mobile width** — injected `fitTerminal` clamps xterm to `MIN_COLS=100` (never phone-narrow), adds horizontal-scroll CSS (`#t{overflow-x:auto}`, `.xterm{width:max-content}`), and no longer POSTs `/term/size` (a no-op route that would otherwise shrink the shared PTY).
+
+### ⚠️ Build/verify gotcha — read before "the APK is stale!"
+The release APK's `assets/index.android.bundle` is **Hermes bytecode**, and Hermes stores many string literals as **UTF-16LE**. So `grep -a 'overflow-x' bundle` returns 0 even when the change IS present (a plain `type a command` happens to be ASCII and greps fine, which is misleading). This cost a long false "stale bundle" hunt on 2026-07-10. **Verify a fresh mobile bundle via**:
+- UTF-16LE byte search: `python3 -c "print(open('b','rb').read().count('overflow-x'.encode('utf-16-le')))"`
+- Metro source map `android/app/build/generated/sourcemaps/react/release/index.android.bundle.map` (`sourcesContent`)
+- bundle md5 change
+
+Normal `EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 ./android/gradlew -p android :app:assembleRelease` already produces a fresh bundle — Metro cache invalidation works; no `--reset-cache` / fresh-TMPDIR tricks needed.
+
+### Still open (do NOT change runtime to fix these)
+- **P2 Transcript** — Claude/Codex TUI output still flattens/duplicates into long horizontal lines in Transcript. Deferred by product decision. Fix the **projection policy** only; do not alter the live terminal stream, recorder ownership, or cmux heuristics.
+- **Mobile h-scroll** — the horizontal-scroll CSS is best-effort; needs on-device visual confirmation. `MIN_COLS=100` clamp is certain.
 
 ---
 
