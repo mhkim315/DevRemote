@@ -58,18 +58,20 @@ func stateForClient(s pairState) PairingState {
 // ── Public types ──
 
 type PairingSession struct {
-	SessionID     string    `json:"sessionId"`
-	HostID        string    `json:"hostId"`
-	Fingerprint   string    `json:"fingerprint"`
-	HostPubKeyB64 string    `json:"hostPubKey"`
-	Endpoint      string    `json:"endpoint"`
-	ExpiresAt     time.Time `json:"expiresAt"`
+	SessionID      string    `json:"sessionId"`
+	HostID         string    `json:"hostId"`
+	Fingerprint    string    `json:"fingerprint"`
+	HostPubKeyB64  string    `json:"hostPubKey"`
+	BootstrapToken string    `json:"bootstrapToken"`
+	Endpoint       string    `json:"endpoint"`
+	ExpiresAt      time.Time `json:"expiresAt"`
 }
 
 type PairingRequest struct {
-	PublicKeyDER []byte `json:"publicKey"`
-	DisplayName  string `json:"displayName"`
-	PhoneNonce   []byte `json:"phoneNonce"`
+	PublicKeyDER   []byte `json:"publicKey"`
+	DisplayName    string `json:"displayName"`
+	PhoneNonce     []byte `json:"phoneNonce"`
+	BootstrapToken string `json:"bootstrapToken"` // QR secret — gates Phase 1
 }
 
 type ChallengeResponse struct {
@@ -88,6 +90,7 @@ type PairingConfig struct {
 	LANAddr         string
 	SessionLifetime time.Duration
 	Identity        IdentityProvider
+	Signer          HostSigner // mandatory: signs host proof for phone verification
 	Registry        *DeviceRegistry
 }
 
@@ -141,6 +144,9 @@ type pendingCandidate struct {
 // StartPairing creates the pairing session and starts the LAN listener.
 // Caller receives session immediately for QR display.
 func StartPairing(cfg PairingConfig) (*PairingHost, error) {
+	if cfg.Signer == nil {
+		return nil, fmt.Errorf("host signer is required (host key-possession proof)")
+	}
 	// If not explicitly set, auto-detect the private LAN address. 127.0.0.1
 	// is accepted for tests and the fallback single-machine case.
 	if cfg.LANAddr == "" {
@@ -165,13 +171,17 @@ func StartPairing(cfg PairingConfig) (*PairingHost, error) {
 		return nil, err
 	}
 	sessionID := hex.EncodeToString(secretBytes[:16])
+	// bootstrapToken gates Phase 1 — only the QR scanner knows it. Without it
+	// an attacker on the LAN could preempt the session with their own candidate.
+	bootstrapToken := hex.EncodeToString(secretBytes[16:])
 
 	hostPub := cfg.Identity.Public()
 	session := &PairingSession{
-		SessionID:     sessionID,
-		HostID:        hostPub.HostID,
-		Fingerprint:   hostPub.Fingerprint,
-		HostPubKeyB64: hex.EncodeToString(hostPub.PublicKeyDER),
+		SessionID:      sessionID,
+		HostID:         hostPub.HostID,
+		Fingerprint:    hostPub.Fingerprint,
+		HostPubKeyB64:  hex.EncodeToString(hostPub.PublicKeyDER),
+		BootstrapToken: bootstrapToken,
 		// QR endpoint: LAN IP for the phone; same-machine tests use ph.addr.
 		Endpoint:  "http://" + cfg.LANAddr + ":" + port + "/pair",
 		ExpiresAt: time.Now().UTC().Add(cfg.SessionLifetime),
@@ -228,6 +238,12 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.PhoneNonce) < 8 || len(req.PhoneNonce) > 256 {
 		http.Error(w, "invalid phone nonce", http.StatusBadRequest)
+		return
+	}
+	// QR bootstrap: only the QR scanner knows the bootstrap token, so an
+	// attacker on the LAN cannot preempt the session.
+	if req.BootstrapToken != ph.Session.BootstrapToken {
+		http.Error(w, "invalid bootstrap token", http.StatusUnauthorized)
 		return
 	}
 
@@ -320,10 +336,13 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	close(ph.proofVerifiedCh)
 
 	// Host identity proof: sign the same transcript so the phone can verify
-	// the host key matches the QR fingerprint (host pinning).
-	var hostProofDER []byte
-	if signer, ok := ph.cfg.Identity.(HostSigner); ok {
-		hostProofDER, _ = signer.Sign(transcript)
+	// the host key matches the QR fingerprint (host pinning). Fail closed —
+	// a signing error does NOT transition to proof_verified.
+	hostProofDER, signErr := ph.cfg.Signer.Sign(transcript)
+	if signErr != nil {
+		ph.mu.Unlock()
+		http.Error(w, "host signing failed", http.StatusInternalServerError)
+		return
 	}
 	ph.mu.Unlock()
 

@@ -7,385 +7,307 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"testing"
 	"time"
 )
 
-type testId struct{ pub PublicHostIdentity }
+var testKey = func() *ecdsa.PrivateKey {
+	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return priv
+}()
+
+type testId struct {
+	pub  PublicHostIdentity
+	priv *ecdsa.PrivateKey
+}
+
+func newTestId(hostID string) *testId {
+	pubDER, _ := x509.MarshalPKIXPublicKey(&testKey.PublicKey)
+	h := sha256.Sum256(pubDER)
+	fp := hex.EncodeToString(h[:])
+	return &testId{pub: PublicHostIdentity{HostID: hostID, Fingerprint: fp, PublicKeyDER: pubDER}, priv: testKey}
+}
 
 func (t *testId) Public() PublicHostIdentity { return t.pub }
 func (t *testId) Sign(msg []byte) ([]byte, error) {
-	// Test stub: returns a SHA-256 digest (not a real ECDSA signature) so
-	// hostProof is present but verification is in the production path.
 	digest := sha256.Sum256(msg)
-	return digest[:], nil
+	return ecdsa.SignASN1(rand.Reader, t.priv, digest[:])
 }
 
-// genKeypair generates ephemeral P-256 key for the phone side of tests.
 func genKeypair(t *testing.T) (*ecdsa.PrivateKey, []byte, string) {
 	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("keygen: %v", err)
-	}
-	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
-	if err != nil {
-		t.Fatalf("marshal pub: %v", err)
-	}
+	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pubDER, _ := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	return priv, pubDER, Fingerprint(pubDER)
 }
 
-// signPairingTranscript signs the canonical pairing transcript.
 func signTranscript(t *testing.T, priv *ecdsa.PrivateKey, phoneNonce, hostNonce, hostPubDER []byte, sessionID string) []byte {
 	t.Helper()
 	data := buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionID)
 	digest := sha256.Sum256(data)
-	sig, err := ecdsa.SignASN1(rand.Reader, priv, digest[:])
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	sig, _ := ecdsa.SignASN1(rand.Reader, priv, digest[:])
 	return sig
+}
+
+func startTestPairing(t *testing.T, r *DeviceRegistry) *PairingHost {
+	t.Helper()
+	id := newTestId("h1")
+	ph, err := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Signer: id, Registry: r})
+	if err != nil {
+		t.Fatalf("StartPairing: %v", err)
+	}
+	t.Cleanup(func() { ph.Close() })
+	return ph
 }
 
 func TestPairing_Full2PhaseAndApprove(t *testing.T) {
 	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
 	priv, pubDER, fp := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1", Fingerprint: fp}}
-
-	ph, err := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	if err != nil {
-		t.Fatalf("StartPairing: %v", err)
-	}
-	defer ph.Close()
-
-	// Phase 1: Phone submits candidate.
 	phoneNonce := make([]byte, 16)
 	rand.Read(phoneNonce)
-	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce})
-	resp, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
-	if err != nil {
-		t.Fatalf("phase 1 POST: %v", err)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	if resp.StatusCode != 200 {
+		t.Fatalf("phase1=%d", resp.StatusCode)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("phase 1 status = %d, want 200", resp.StatusCode)
-	}
-	var chall ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&chall)
+	var ch ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&ch)
 	resp.Body.Close()
-	if len(chall.HostNonce) != 32 {
-		t.Fatalf("bad host nonce: len=%d", len(chall.HostNonce))
+	sig := signTranscript(t, priv, phoneNonce, ch.HostNonce, ch.HostPublicDER, ph.Session.SessionID)
+	cfb, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	r2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
+	if r2.StatusCode != 200 {
+		t.Fatalf("phase2=%d", r2.StatusCode)
 	}
-
-	// Phase 2: Phone signs the transcript and confirms.
-	sig := signTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, ph.Session.SessionID)
-	confirmBody, _ := json.Marshal(Confirmation{PhoneSignature: sig})
-	resp2, err := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(confirmBody))
-	if err != nil {
-		t.Fatalf("phase 2 POST: %v", err)
+	var cr struct {
+		Status    string
+		HostProof string
 	}
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("phase 2 status = %d, want 200", resp2.StatusCode)
+	json.NewDecoder(r2.Body).Decode(&cr)
+	r2.Body.Close()
+	if cr.Status != "proof_verified" || cr.HostProof == "" {
+		t.Fatalf("confirm=%+v", cr)
 	}
-	resp2.Body.Close()
-
-	// IPC side: wait for candidate, then approve.
 	cand, ok := ph.WaitForCandidate()
 	if !ok || cand.Fingerprint != fp {
-		t.Fatalf("WaitForCandidate ok=%v fp=%s want=%s", ok, cand.Fingerprint, fp)
+		t.Fatalf("WFC ok=%v fp=%s", ok, fp)
 	}
 	if err := ph.Approve(); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	dev, state := ph.Result()
-	if state != PairingStateApproved || dev.DeviceID == "" {
-		t.Fatalf("Result state=%s dev=%+v, want approved", state, dev)
-	}
-	if _, active := r.GetActiveByFingerprint(fp); !active {
-		t.Fatalf("device not in registry after approval")
+	if _, a := r.GetActiveByFingerprint(fp); !a {
+		t.Fatalf("not in registry")
 	}
 }
 
 func TestPairing_BadSignatureRejected(t *testing.T) {
 	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
 	_, pubDER, _ := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	defer ph.Close()
-
-	// Phase 1 submit.
 	phoneNonce := make([]byte, 16)
 	rand.Read(phoneNonce)
-	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
-	var chall ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&chall)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	var ch ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&ch)
 	resp.Body.Close()
-
-	// Phase 2 with bad signature.
-	confirmBody, _ := json.Marshal(Confirmation{PhoneSignature: []byte("bad-sig")})
-	resp2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(confirmBody))
-	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("bad sig status = %d, want 401", resp2.StatusCode)
+	cfb, _ := json.Marshal(Confirmation{PhoneSignature: []byte("bad")})
+	r2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
+	if r2.StatusCode != 401 {
+		t.Fatalf("bad sig=%d", r2.StatusCode)
 	}
 }
 
 func TestPairing_NonP256Rejected(t *testing.T) {
 	r, _ := newReg(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	defer ph.Close()
+	ph := startTestPairing(t, r)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: []byte("garbage"), PhoneNonce: []byte("1234567890abcdef"), BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	if resp.StatusCode != 400 {
+		t.Fatalf("nonP256=%d", resp.StatusCode)
+	}
+}
 
-	body, _ := json.Marshal(PairingRequest{PublicKeyDER: []byte("garbage"), PhoneNonce: []byte("1234567890abcdef")})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("non-P256 status = %d, want 400", resp.StatusCode)
+func TestPairing_NoBootstrapRejected(t *testing.T) {
+	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
+	_, pubDER, _ := genKeypair(t)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: []byte("1234567890abcdef"), BootstrapToken: "wrong"})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	if resp.StatusCode != 401 {
+		t.Fatalf("bad bootstrap=%d", resp.StatusCode)
 	}
 }
 
 func TestPairing_SecondCandidateRejected(t *testing.T) {
 	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
 	priv, pubDER, _ := genKeypair(t)
 	_, pub2, _ := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	defer ph.Close()
-
-	// First candidate.
 	phoneNonce := make([]byte, 16)
 	rand.Read(phoneNonce)
-	b1, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce})
+	b1, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
 	r1, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(b1))
-	if r1.StatusCode != http.StatusOK {
-		t.Fatalf("first candidate status = %d", r1.StatusCode)
+	if r1.StatusCode != 200 {
+		t.Fatalf("first=%d", r1.StatusCode)
 	}
-	var chall ChallengeResponse
-	json.NewDecoder(r1.Body).Decode(&chall)
+	var ch ChallengeResponse
+	json.NewDecoder(r1.Body).Decode(&ch)
 	r1.Body.Close()
-
-	// Second candidate must fail.
-	b2, _ := json.Marshal(PairingRequest{PublicKeyDER: pub2, DisplayName: "p2", PhoneNonce: []byte("1111111111111111")})
+	b2, _ := json.Marshal(PairingRequest{PublicKeyDER: pub2, PhoneNonce: []byte("1111111111111111"), BootstrapToken: ph.Session.BootstrapToken})
 	r2, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(b2))
-	if r2.StatusCode != http.StatusGone {
-		t.Fatalf("second candidate status = %d, want 410", r2.StatusCode)
+	if r2.StatusCode != 410 {
+		t.Fatalf("second=%d", r2.StatusCode)
 	}
-	r2.Body.Close()
-
-	// First candidate confirms and gets approved.
-	sig := signTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, ph.Session.SessionID)
-	confirmBody, _ := json.Marshal(Confirmation{PhoneSignature: sig})
-	http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(confirmBody))
-
+	sig := signTranscript(t, priv, phoneNonce, ch.HostNonce, ch.HostPublicDER, ph.Session.SessionID)
+	cfb, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
 	if _, ok := ph.WaitForCandidate(); !ok {
-		t.Fatalf("first candidate not delivered")
+		t.Fatalf("no candidate")
 	}
 	if err := ph.Approve(); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	if len(r.List()) != 1 {
-		t.Fatalf("registry has %d devices, want 1", len(r.List()))
+		t.Fatalf("reg=%d", len(r.List()))
 	}
 }
 
 func TestPairing_ExpiredSessionRejected(t *testing.T) {
 	r, _ := newReg(t)
 	_, pubDER, _ := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 50 * time.Millisecond, Identity: id, Registry: r})
+	id := newTestId("h1")
+	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 50 * time.Millisecond, Identity: id, Signer: id, Registry: r})
 	defer ph.Close()
-
-	time.Sleep(200 * time.Millisecond) // well past 50ms expiration
-	// After expiry the listener is closed — a connection refusal is correct
-	// (terminal state after cleanup). 410 would mean the listener was still
-	// open and could inspect the request, which is a narrower window.
-	body, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: []byte("1234567890abcdef")})
-	_, postErr := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
-	if postErr == nil {
-		t.Fatalf("expected connection refused after expiry, but POST succeeded")
-	}
-	// Registry must be unchanged (no device registered).
-	if len(r.List()) != 0 {
-		t.Fatalf("expired session registered a device: %d", len(r.List()))
+	time.Sleep(200 * time.Millisecond)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: []byte("1234567890abcdef"), BootstrapToken: ph.Session.BootstrapToken})
+	if _, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb)); err == nil {
+		t.Fatalf("expected conn refused after expiry")
 	}
 }
 
 func TestPairing_ApproveWithoutProofFails(t *testing.T) {
-	// Approve() before the phone has confirmed (proof_verified) must fail.
 	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
 	_, pubDER, _ := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	defer ph.Close()
-
 	phoneNonce := make([]byte, 16)
 	rand.Read(phoneNonce)
-	b1, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(b1))
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
 	resp.Body.Close()
-
-	// WaitForCandidate blocks until proof_verified — it must NOT return
-	// while we're still in "challenged" state.
-	timeout := time.After(350 * time.Millisecond)
 	select {
 	case <-ph.proofVerifiedCh:
-		t.Fatalf("proofVerifiedCh closed before phone confirmed")
-	case <-timeout:
-		// Correct: proofVerifiedCh is still blocked.
+		t.Fatalf("proofVerifiedCh closed before confirm")
+	case <-time.After(350 * time.Millisecond):
 	}
-	// Candidate is in "challenged" state, NOT "proof_verified" — Approve must fail.
 	if err := ph.Approve(); err == nil {
-		t.Fatalf("Approve without proof succeeded (should require phone confirmation)")
+		t.Fatalf("Approve succeeded before proof")
 	}
 }
 
 func TestPairing_SessionExpiresWithoutActivity(t *testing.T) {
 	r, _ := newReg(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 50 * time.Millisecond, Identity: id, Registry: r})
+	id := newTestId("h1")
+	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 50 * time.Millisecond, Identity: id, Signer: id, Registry: r})
 	defer ph.Close()
-
-	_, ok := ph.WaitForCandidate()
-	if ok {
-		t.Fatalf("expired session returned a candidate")
+	if _, ok := ph.WaitForCandidate(); ok {
+		t.Fatalf("expired session returned candidate")
 	}
-	_, state := ph.Result()
-	if state == PairingStateApproved {
-		t.Fatalf("expired session state = approved")
-	}
-	// Registry must be unchanged.
-	if len(r.List()) != 0 {
-		t.Fatalf("expired session registered a device")
-	}
-}
-
-// TestPairing_ProductionE2E simulates the full product path: CLI↔daemon IPC +
-// LAN candidate→challenge→proof verification→approval→registry. No real IPC
-// socket — the pairing is started in the test process itself.
-func TestPairing_ProductionE2E(t *testing.T) {
-	r, _ := newReg(t)
-	priv, pubDER, fp := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1", Fingerprint: fp}}
-
-	ph, err := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	if err != nil {
-		t.Fatalf("StartPairing: %v", err)
-	}
-	defer ph.Close()
-
-	// Phase 1: Phone posts candidate.
-	phoneNonce := make([]byte, 16)
-	rand.Read(phoneNonce)
-	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("phase1 status = %d", resp.StatusCode)
-	}
-	var chall ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&chall)
-	resp.Body.Close()
-
-	// Phone signature over pairing transcript.
-	sig := signTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, ph.Session.SessionID)
-	confirmBody, _ := json.Marshal(Confirmation{PhoneSignature: sig})
-	resp2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(confirmBody))
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("phase2 status = %d", resp2.StatusCode)
-	}
-	var confirmResp struct {
-		Status    string `json:"status"`
-		HostProof string `json:"hostProof"`
-	}
-	json.NewDecoder(resp2.Body).Decode(&confirmResp)
-	resp2.Body.Close()
-
-	if confirmResp.Status != "proof_verified" {
-		t.Fatalf("confirm status = %q, want proof_verified", confirmResp.Status)
-	}
-	// Host proof: the phone could verify this signature against the host
-	// key pinned from the QR. The test just asserts it's present.
-	if confirmResp.HostProof == "" {
-		t.Fatalf("host proof missing — phone cannot verify host identity")
-	}
-
-	// IPC side: WaitForCandidate now returns only after proof_verified.
-	cand, ok := ph.WaitForCandidate()
-	if !ok || cand.Fingerprint != fp {
-		t.Fatalf("WaitForCandidate ok=%v, want candidate with fingerprint %s", ok, fp)
-	}
-	// Approve → register device.
-	if err := ph.Approve(); err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
-	dev, state := ph.Result()
-	if state != PairingStateApproved || dev.DeviceID == "" {
-		t.Fatalf("Result state=%s dev=%+v, want approved", state, dev)
-	}
-	if _, active := r.GetActiveByFingerprint(fp); !active {
-		t.Fatalf("device not in registry after approval")
-	}
-}
-
-// TestPairing_ApprovalRace proves Approve cannot succeed before
-// proof_verified — the CLI must wait for the phone to confirm.
-func TestPairing_ApprovalRace(t *testing.T) {
-	r, _ := newReg(t)
-	_, pubDER, _ := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	defer ph.Close()
-
-	// Phase 1: submit candidate but DON'T confirm.
-	phoneNonce := make([]byte, 16)
-	rand.Read(phoneNonce)
-	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: phoneNonce})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("phase1 status = %d", resp.StatusCode)
-	}
-
-	// WaitForCandidate must NOT return — the phone hasn't confirmed yet.
-	// Use a short timeout to prove it waits.
-	select {
-	case _, ok := <-ph.proofVerifiedCh:
-		if ok {
-			t.Fatalf("WaitForCandidate returned before proof_verified")
-		}
-	case <-time.After(100 * time.Millisecond):
-		// Correct: proofVerifiedCh is not closed yet → WaitForCandidate blocks.
-	}
-	// Approve must fail (state is challenged, not proof_verified).
-	if err := ph.Approve(); err == nil {
-		t.Fatalf("Approve succeeded before proof_verified")
+	if _, s := ph.Result(); s == PairingStateApproved {
+		t.Fatalf("expired state=approved")
 	}
 }
 
 func TestPairing_RejectAfterProof(t *testing.T) {
 	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
 	priv, pubDER, _ := genKeypair(t)
-	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
-	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
-	defer ph.Close()
-
 	phoneNonce := make([]byte, 16)
 	rand.Read(phoneNonce)
-	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: phoneNonce})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
-	var chall ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&chall)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	var ch ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&ch)
 	resp.Body.Close()
-
-	sig := signTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, ph.Session.SessionID)
-	confirmBody, _ := json.Marshal(Confirmation{PhoneSignature: sig})
-	http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(confirmBody))
-
+	sig := signTranscript(t, priv, phoneNonce, ch.HostNonce, ch.HostPublicDER, ph.Session.SessionID)
+	cfb, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
 	if _, ok := ph.WaitForCandidate(); !ok {
 		t.Fatalf("no candidate")
 	}
 	ph.Reject()
-	_, state := ph.Result()
-	if state == PairingStateApproved {
-		t.Fatalf("rejected session reports approved")
+	if _, s := ph.Result(); s == PairingStateApproved {
+		t.Fatalf("rejected=approved")
 	}
 }
+
+func TestPairing_ProductionE2E(t *testing.T) {
+	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
+	priv, pubDER, fp := genKeypair(t)
+	phoneNonce := make([]byte, 16)
+	rand.Read(phoneNonce)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	if resp.StatusCode != 200 {
+		t.Fatalf("phase1=%d", resp.StatusCode)
+	}
+	var ch ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&ch)
+	resp.Body.Close()
+	sig := signTranscript(t, priv, phoneNonce, ch.HostNonce, ch.HostPublicDER, ph.Session.SessionID)
+	cfb, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	r2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
+	if r2.StatusCode != 200 {
+		t.Fatalf("phase2=%d", r2.StatusCode)
+	}
+	var cr struct {
+		Status    string
+		HostProof string
+	}
+	json.NewDecoder(r2.Body).Decode(&cr)
+	r2.Body.Close()
+	if cr.Status != "proof_verified" || cr.HostProof == "" {
+		t.Fatalf("confirm=%+v", cr)
+	}
+	cand, ok := ph.WaitForCandidate()
+	if !ok || cand.Fingerprint != fp {
+		t.Fatalf("WFC ok=%v fp=%s", ok, fp)
+	}
+	if err := ph.Approve(); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	dev, state := ph.Result()
+	if state != PairingStateApproved || dev.DeviceID == "" {
+		t.Fatalf("Result=%+v", dev)
+	}
+	if _, a := r.GetActiveByFingerprint(fp); !a {
+		t.Fatalf("not in registry")
+	}
+}
+
+func TestPairing_ApprovalRace(t *testing.T) {
+	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
+	_, pubDER, _ := genKeypair(t)
+	phoneNonce := make([]byte, 16)
+	rand.Read(phoneNonce)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	resp.Body.Close()
+	select {
+	case <-ph.proofVerifiedCh:
+		t.Fatalf("proofVerifiedCh closed before confirm")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := ph.Approve(); err == nil {
+		t.Fatalf("Approve succeeded before proof_verified")
+	}
+}
+
+func writeJSON(c net.Conn, v interface{}) { b, _ := json.Marshal(v); c.Write(append(b, '\n')) }

@@ -52,6 +52,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		LANAddr:         "", // auto-detect
 		SessionLifetime: d,
 		Identity:        id,
+		Signer:          id, // HostIdentity implements HostSigner (Sign method)
 		Registry:        reg,
 	})
 	if err != nil {
@@ -63,13 +64,14 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 	// 1) Send session payload immediately (QR data).
 	sess := ph.Session
 	writeIPC(conn, map[string]interface{}{
-		"ok":          true,
-		"sessionId":   sess.SessionID,
-		"hostId":      sess.HostID,
-		"fingerprint": sess.Fingerprint,
-		"hostPubKey":  sess.HostPubKeyB64,
-		"endpoint":    sess.Endpoint,
-		"expiresAt":   sess.ExpiresAt.Format(time.RFC3339),
+		"ok":             true,
+		"sessionId":      sess.SessionID,
+		"hostId":         sess.HostID,
+		"fingerprint":    sess.Fingerprint,
+		"hostPubKey":     sess.HostPubKeyB64,
+		"bootstrapToken": sess.BootstrapToken,
+		"endpoint":       sess.Endpoint,
+		"expiresAt":      sess.ExpiresAt.Format(time.RFC3339),
 	})
 
 	// 2) Wait for candidate.

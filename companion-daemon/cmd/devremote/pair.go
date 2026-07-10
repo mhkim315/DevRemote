@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"rsc.io/qr"
 )
 
 func runPairClient(args []string) {
@@ -42,14 +44,15 @@ func runPairClient(args []string) {
 
 	// 1) Decode session payload (immediately after pair-start).
 	var sess struct {
-		OK          bool   `json:"ok"`
-		SessionID   string `json:"sessionId"`
-		HostID      string `json:"hostId"`
-		Fingerprint string `json:"fingerprint"`
-		HostPubKey  string `json:"hostPubKey"`
-		Endpoint    string `json:"endpoint"`
-		ExpiresAt   string `json:"expiresAt"`
-		Error       string `json:"error"`
+		OK             bool   `json:"ok"`
+		SessionID      string `json:"sessionId"`
+		HostID         string `json:"hostId"`
+		Fingerprint    string `json:"fingerprint"`
+		HostPubKey     string `json:"hostPubKey"`
+		BootstrapToken string `json:"bootstrapToken"`
+		Endpoint       string `json:"endpoint"`
+		ExpiresAt      string `json:"expiresAt"`
+		Error          string `json:"error"`
 	}
 	if err := dec.Decode(&sess); err != nil || sess.Error != "" || !sess.OK {
 		log.Fatalf("Pairing start failed: %s (err=%v)", sess.Error, err)
@@ -58,18 +61,22 @@ func runPairClient(args []string) {
 	fmt.Printf("\nPokit Pairing\nHost ID: %s\nFingerprint: %s\n", sess.HostID, sess.Fingerprint)
 	fmt.Printf("Endpoint: %s\nExpires: %s\n", sess.Endpoint, sess.ExpiresAt)
 
-	// QR payload (JSON, for the phone to scan).
-	qr, _ := json.Marshal(map[string]string{
-		"sessionId":   sess.SessionID,
-		"hostId":      sess.HostID,
-		"fingerprint": sess.Fingerprint,
-		"hostPubKey":  sess.HostPubKey,
-		"endpoint":    sess.Endpoint,
-		"expiresAt":   sess.ExpiresAt,
+	// Build the QR payload.
+	qrPayload, _ := json.Marshal(map[string]string{
+		"sessionId":      sess.SessionID,
+		"hostId":         sess.HostID,
+		"fingerprint":    sess.Fingerprint,
+		"hostPubKey":     sess.HostPubKey,
+		"bootstrapToken": sess.BootstrapToken,
+		"endpoint":       sess.Endpoint,
+		"expiresAt":      sess.ExpiresAt,
 	})
-	fmt.Printf("\n\x1b[44;97m QR Payload (scan from phone): %s \x1b[0m\n\n", string(qr))
-
-	fmt.Println("Waiting for device to pair...")
+	// Render an actual scannable QR.
+	fmt.Println()
+	renderQR(string(qrPayload))
+	// Debug fallback (no secrets — the bootstrap token is already in the QR).
+	fmt.Printf("\nQR payload: %s\n", string(qrPayload))
+	fmt.Println()
 
 	// 2) Decode candidate (arrives after proof_verified).
 	var candMsg struct {
@@ -117,9 +124,30 @@ func runPairClient(args []string) {
 		} `json:"device"`
 		State string `json:"state"`
 	}
-	if err := dec.Decode(&done); err != nil || (done.Error != "" && done.Status != "paired") {
+	if err := dec.Decode(&done); err != nil || done.Error != "" || done.Status != "paired" {
 		log.Fatalf("Approval failed: %s (err=%v)", done.Error, err)
 	}
 	fmt.Printf("\n✔ Paired: %s\n  Fingerprint: %s\n  Role: %s\n",
 		done.Device.DeviceID, done.Device.Fingerprint, done.Device.Role)
+}
+
+// renderQR prints a scannable QR code to the terminal using ANSI blocks.
+func renderQR(data string) {
+	code, err := qr.Encode(data, qr.M)
+	if err != nil {
+		fmt.Println("(QR error)")
+		return
+	}
+	// White-on-black QR blocks.
+	for y := 0; y < code.Size; y++ {
+		fmt.Print("  ")
+		for x := 0; x < code.Size; x++ {
+			if code.Black(x, y) {
+				fmt.Print("\033[47m  \033[0m")
+			} else {
+				fmt.Print("\033[40m  \033[0m")
+			}
+		}
+		fmt.Println()
+	}
 }
