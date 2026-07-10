@@ -128,7 +128,7 @@ M2.5-4 Unified REST / WSS Authentication
 M2.5-5 Revoke / Minimal Audit
 M3  Mobile Lifecycle UX and Real-device Gate
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
-T0  Transcript Contract Reset
+T0  Transcript Contract Reset                 READY (plan/audit only)
 T1  Byte-stream Transcript Foundation
 T2  Codex / Claude TUI Safe Degradation
 T3  Semantic Transcript Enrichment
@@ -168,6 +168,11 @@ uninstalled products are documented-source findings, not runtime proof. See:
 
 - `docs/R1_RUNTIME_SIGNAL_MATRIX.md`
 - `docs/R1_RUNTIME_SIGNAL_EVIDENCE_MANIFEST.md`
+
+T0 is separately specified in `docs/T0_TRANSCRIPT_CONTRACT_RESET_PLAN.md`.
+It is an audit/contract phase, not permission to add more legacy
+Recorder/ActivityBuffer cleanup heuristics. Its execution handoff is
+`docs/NEXT_SESSION_T0_TRANSCRIPT_HANDOFF.md`.
 
 ## R0 — Finish E10b polish
 
