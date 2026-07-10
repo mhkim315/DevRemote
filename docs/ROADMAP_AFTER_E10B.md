@@ -1,8 +1,8 @@
 # Pokit Roadmap After E10b
 
-Status: draft execution roadmap  
-Branch: `feature/phase10-multi-adapter`  
-Baseline commit: `6b40b32` — E10b Claude mobile width / PTY geometry mirror
+Status: active product roadmap
+Branch: `feature/phase10-multi-adapter`
+Validated runtime baseline: `6b40b32` — E10b Claude mobile width / PTY geometry mirror
 
 ## Product definition
 
@@ -90,7 +90,7 @@ Outcome:
 
 ### E10b — Local/Mobile Attach Stabilization
 
-Status: mostly accepted; R0 polish remains.
+Status: accepted for the controlled PTY runtime/product boundary.
 
 Outcome:
 
@@ -102,22 +102,50 @@ Outcome:
 - mobile reconnect behavior has been improved.
 - mobile terminal now mirrors PTY geometry rather than forcing a phone-width or fixed 100-col terminal.
 
+Real-device validation now confirms:
+
+- `pokit run bash` works;
+- local and mobile share the same controlled PTY;
+- bidirectional input/output works;
+- Terminal.app and VS Code Integrated Terminal work;
+- Codex and Claude mobile terminal rendering/horizontal scrolling work;
+- background/foreground reconnect works;
+- process exit restores the local terminal.
+
 ## Roadmap
 
 ```text
-R0  Finish E10b polish
-T1  Transcript Projection Contract
-S1  Runtime Status Model
+R0  Finish E10b polish                         ACCEPTED
+M0  Mobile Session Lifecycle Contract          NEXT
+M1  Safe Session Creation and Profiles
+M2  Stop / Kill / Delete Lifecycle
+M3  Mobile Lifecycle UX and Real-device Gate
+T0  Transcript Contract Reset
+T1  Byte-stream Transcript Foundation
+T2  Codex / Claude TUI Safe Degradation
+T3  Semantic Transcript Enrichment
+S1  Rich Agent Runtime Status Model
 A1  Mobile-first Approval System
 N1  Notifications
 O1  Orchestrator
 P1  Play Store / Distribution readiness
 ```
 
-The next phases should move faster than E8/E9/E10. Most remaining work is
-product behavior, not core runtime architecture.
+The immediate execution order is deliberately lifecycle-first:
+
+```text
+Mobile lifecycle MVP
+→ Transcript projection foundation
+→ Transcript semantic enrichment
+```
+
+Transcript data-model work is not a prerequisite for mobile lifecycle. The two
+projects share stable session identity and timestamps, but lifecycle state must
+not be derived from Transcript events.
 
 ## R0 — Finish E10b polish
+
+Status: accepted.
 
 Goal: close remaining terminal usability issues without changing runtime architecture.
 
@@ -135,18 +163,46 @@ Do not:
 - add new runtime abstractions.
 - fix Transcript by altering raw Live Terminal behavior.
 
-R0 acceptance should be product-level:
+Validated product boundary:
 
 - `pokit run bash` behaves like a normal local CLI and exits cleanly.
 - `pokit run codex` local attach and mobile Send work.
 - `pokit run claude` renders acceptably on mobile with horizontal/both-axis scroll.
 - mobile reconnect after foreground/network recovery works.
 - ended sessions do not expose misleading input controls.
-- `+ new session` no longer fails with agent profile save error, or the failure is clearly diagnosed and scoped.
+- the remaining `+ new session` failure is not an E10b runtime failure; it is
+  replaced by the M0-M3 mobile lifecycle contract below.
 
-## T1 — Transcript Projection Contract
+## M0-M3 — Mobile Session Lifecycle MVP
 
-Goal: make Transcript useful without corrupting TUI output.
+Goal: allow mobile to safely create, detach from, stop, force-kill, and later
+delete daemon-owned controlled PTY sessions without overloading one ambiguous
+"close" operation.
+
+The detailed plan, API contract, state machine, security policy, tests, and
+rollback points are defined in:
+
+- `docs/MOBILE_SESSION_LIFECYCLE_AND_TRANSCRIPT_PLAN.md`
+- `docs/NEXT_SESSION_M0_M1_HANDOFF.md`
+
+Required distinction:
+
+```text
+detach viewer       WebSocket/subscriber disconnect only
+stop session        graceful process-group termination, timeout, then SIGKILL
+natural process exit
+force kill          explicit destructive fallback
+delete history      terminal-state catalog/history deletion only
+```
+
+Stopping a session must not delete Transcript or Activity history. Recorder
+must stop exactly once, and natural exit and requested stop must converge on
+the same cleanup path.
+
+## T0-T3 — Transcript Projection Refactor
+
+Goal: replace the current Recorder/ActivityBuffer text-cleanup side effect with
+an independent, bounded, asynchronous read projection.
 
 Current guidance: it may be better to restart Transcript projection from a simpler
 contract rather than continue layering heuristics from cmux tuning.
@@ -181,6 +237,15 @@ Rules:
 - controlled_pty/tmux/localpty transcript should use a simpler byte_stream line-oriented path.
 - T1 must not change the live terminal stream to make Transcript prettier.
 
+The staged implementation is:
+
+```text
+T0  audit/reset the current Transcript boundary and collect redacted fixtures
+T1  byte-stream projector validated with bash: pwd, ls, echo hello
+T2  Codex/Claude TUI safe degradation
+T3  optional semantic enrichment from agent-native events/logs
+```
+
 T1 acceptance should prove:
 
 - byte_stream transcript does not produce giant merged TUI repaint lines.
@@ -188,6 +253,9 @@ T1 acceptance should prove:
 - `terminal_input` raw text remains unstored.
 - cmux remains best-effort and visibly degraded.
 - Transcript failure does not break Live Terminal.
+
+Do not implement perfect command/tool/agent semantics in T1. Complex TUI output
+may safely collapse to a bounded marker directing the user to Live Terminal.
 
 ## S1 — Runtime Status Model
 
@@ -316,4 +384,3 @@ Use when:
 
 Avoid forcing architecture churn unless product correctness or core contracts are
 at risk.
-
