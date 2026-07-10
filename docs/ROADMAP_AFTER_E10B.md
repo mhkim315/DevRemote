@@ -116,8 +116,9 @@ Real-device validation now confirms:
 
 ```text
 R0  Finish E10b polish                         ACCEPTED
-M0  Mobile Session Lifecycle Contract          NEXT
-M1  Safe Session Creation and Profiles
+M0  Mobile Session Lifecycle Contract          IMPLEMENTED / FIX REQUIRED
+M1  Safe Session Creation and Profiles         REJECT e4e2704d0
+M1.5 Session Ownership / Access Contract       AFTER M0/M1 FIX
 M2  Stop / Kill / Delete Lifecycle
 M3  Mobile Lifecycle UX and Real-device Gate
 T0  Transcript Contract Reset
@@ -198,6 +199,50 @@ delete history      terminal-state catalog/history deletion only
 Stopping a session must not delete Transcript or Activity history. Recorder
 must stop exactly once, and natural exit and requested stop must converge on
 the same cleanup path.
+
+### M0/M1 review status
+
+Commit `e4e2704d0` is rejected at the product boundary. Its profile/argv model,
+canonical ID generation, CWD validation, lifecycle types, and CLI compatibility
+are useful foundations, and the targeted race suite passes. The blockers are:
+
+1. HTTP custom execution is gated by `InsecureLocalOnly`, but a Cloudflare
+   tunnel reaches the same localhost daemon. Request origin is therefore not
+   proven local. The legacy HTTP payload also bypasses the custom-profile denial
+   by omitting `profileId` and sending a command string.
+2. Recorder startup/lookup failures are silently ignored and the create API
+   still returns `state=running`.
+3. Invalid legacy `command` JSON is ignored and can create a default shell
+   instead of rejecting the request.
+
+Correction instructions:
+
+- `docs/NEXT_SESSION_M0_M1_FIX_HANDOFF.md`
+- `docs/M0_M1_E4E2704_REVIEW.md`
+
+M2 must not start until the corrected M0/M1 boundary is accepted.
+
+## M1.5 — Session Ownership and Local Host Contract
+
+M1.5 is documentation/contract work after the M0/M1 correction and before M2.
+It separates two axes that were previously mixed:
+
+```text
+Session/runtime source:
+  controlled_pty = Pokit-managed lifecycle
+  tmux           = externally owned, attachable byte stream
+  cmux           = externally owned, best-effort observer
+
+Local terminal host:
+  Terminal.app / VS Code / iTerm2 / Ghostty / Warp
+  = UI hosting `pokit run`, not runtime adapters
+```
+
+Detailed contract:
+
+- `docs/SESSION_OWNERSHIP_AND_LOCAL_HOST_CONTRACT.md`
+
+M2 Stop/Kill/Delete applies only to sessions advertising managed lifecycle.
 
 ## T0-T3 — Transcript Projection Refactor
 

@@ -11,6 +11,7 @@ Execution order:
 ```text
 M0  Lifecycle contract
 M1  Safe session creation and daemon-owned profiles
+M1.5 Session ownership, access, and local terminal host contract
 M2  Stop / kill / delete lifecycle
 M3  Mobile UX and real-device gate
 T0  Transcript contract reset
@@ -213,6 +214,25 @@ Acceptance tests:
 - remote custom execution is denied by default;
 - creation response exposes canonical ID and lifecycle state;
 - Recorder single-reader and no-WebSocket capture regressions pass.
+
+Review note: candidate commit `e4e2704d0` is rejected until the correction
+requirements in `docs/M0_M1_E4E2704_REVIEW.md` are satisfied.
+
+### M1.5 — Session Ownership and Access Contract
+
+This is a contract/documentation gate, not a new terminal implementation.
+
+- distinguish Pokit-managed sessions from externally owned sessions;
+- define `managedLifecycle` independently from input/control capability;
+- position tmux as external attachable and cmux as external observer;
+- define Terminal.app/VS Code and future terminal applications as local hosts,
+  not adapters;
+- define geometry ownership, detach behavior, and multi-writer limitation;
+- update M2/M3 acceptance so lifecycle actions are capability/ownership driven.
+
+Acceptance: adding a new POSIX terminal host must require compatibility evidence,
+not a new runtime adapter, and external sessions must never inherit managed Stop
+or Kill merely because they support input.
 
 ### M2 — Stop / Kill / Delete
 
