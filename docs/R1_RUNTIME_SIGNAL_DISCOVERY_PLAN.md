@@ -1,11 +1,15 @@
 # R1 — Runtime Signal Discovery Plan
 
-Status: planned research gate
+Status: SCOPED ACCEPT — evidence baseline complete; provider implementation deferred
 Placement: after M3, before T0 Transcript Contract Reset
 Duration: two working days hard cap; finish earlier when decisions are complete
 
 This R1 is the post-M3 runtime-signal research phase. It is distinct from the
 historical and already accepted `R1a Connectivity Baseline`.
+
+This evidence pass ran early by explicit authorization. Only locally available
+Claude Code and Codex have observed runtime fixtures; all other integrations
+are documented-source findings marked `unavailable` for runtime evidence.
 
 ## Decision to validate
 

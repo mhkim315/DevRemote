@@ -1,20 +1,24 @@
 # Next Session Handoff — R1 Runtime Signal Discovery
 
-Status: future research handoff; do not start before M3 acceptance unless the
-orchestrator explicitly authorizes independent research
+Status: superseded by scoped R1 evidence completion; retain as the reproducible
+research checklist if a later provider/version needs revalidation
 
 Read first:
 
 - `docs/R1_RUNTIME_SIGNAL_DISCOVERY_PLAN.md`
 - `docs/MOBILE_SESSION_LIFECYCLE_AND_TRANSCRIPT_PLAN.md`
 - `docs/ROADMAP_AFTER_E10B.md`
+- `docs/R1_RUNTIME_SIGNAL_MATRIX.md`
+- `docs/R1_RUNTIME_SIGNAL_EVIDENCE_MANIFEST.md`
 
 ## Mission
 
-Complete the two-day-hard-cap R1 evidence phase. Determine which Claude Code,
-Codex, OpenCode, Orca, Omnara, Cline, Aider, Goose, Continue, Warp, and generic
-PTY signals can safely inform Runtime Status, Notifications, or Transcript
-without changing production behavior.
+Do not repeat R1 wholesale. Read the scoped evidence first, then rerun only an
+affected target when a future provider integration/version needs revalidation.
+The original mission was to determine which Claude Code, Codex, OpenCode, Orca,
+Omnara, Cline, Aider, Goose, Continue, Warp, and generic PTY signals can safely
+inform Runtime Status, Notifications, or Transcript without changing production
+behavior.
 
 ## Execution rules
 

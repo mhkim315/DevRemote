@@ -1,0 +1,13 @@
+{
+  "capture": "synthetic isolated PTY",
+  "bytes": [
+    "ESC[?1049h",
+    "TUI_FRAME",
+    "ESC[2K",
+    "CR",
+    "PROGRESS 50%",
+    "ESC[?1049l",
+    "LF"
+  ],
+  "conclusion": "PTY structural classifier only; no logical agent state inferred"
+}

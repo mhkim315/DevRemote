@@ -127,7 +127,7 @@ M2.5-3 Challenge Auth / Short Session
 M2.5-4 Unified REST / WSS Authentication
 M2.5-5 Revoke / Minimal Audit
 M3  Mobile Lifecycle UX and Real-device Gate
-R1  Runtime Signal Discovery (research only)
+R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Transcript Contract Reset
 T1  Byte-stream Transcript Foundation
 T2  Codex / Claude TUI Safe Degradation
@@ -161,6 +161,13 @@ is not a documentation-summary exercise. It does not replace the generic
 byte-stream Transcript fallback and does not add production integration code.
 This post-M3 R1 is distinct from the already accepted historical `R1a
 Connectivity Baseline`.
+
+Independent R1 evidence was completed early by explicit authorization. The
+result is scoped because only Claude Code and Codex were locally executable;
+uninstalled products are documented-source findings, not runtime proof. See:
+
+- `docs/R1_RUNTIME_SIGNAL_MATRIX.md`
+- `docs/R1_RUNTIME_SIGNAL_EVIDENCE_MANIFEST.md`
 
 ## R0 — Finish E10b polish
 

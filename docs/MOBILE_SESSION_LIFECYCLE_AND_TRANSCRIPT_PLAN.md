@@ -302,6 +302,8 @@ Detailed scope and execution handoff:
 
 - `docs/R1_RUNTIME_SIGNAL_DISCOVERY_PLAN.md`
 - `docs/NEXT_SESSION_R1_RUNTIME_SIGNAL_HANDOFF.md`
+- `docs/R1_RUNTIME_SIGNAL_MATRIX.md`
+- `docs/R1_RUNTIME_SIGNAL_EVIDENCE_MANIFEST.md`
 
 ## M rollback points
 

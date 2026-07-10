@@ -1,0 +1,23 @@
+{
+  "version": "0.144.1",
+  "generatedSchema": {
+    "serverRequests": [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/tool/requestUserInput",
+      "item/permissions/requestApproval"
+    ],
+    "serverNotifications": [
+      "thread/started",
+      "item/started",
+      "turn/completed"
+    ]
+  },
+  "initialize": {
+    "transport": "stdio JSON-RPC",
+    "codexHome": "<redacted>",
+    "platformFamily": "unix",
+    "platformOs": "macos",
+    "remoteControl": "disabled"
+  }
+}

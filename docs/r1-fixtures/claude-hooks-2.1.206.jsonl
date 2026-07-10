@@ -1,0 +1,3 @@
+{"type":"system","subtype":"hook_started","hook_name":"UserPromptSubmit","hook_event":"UserPromptSubmit","hook_id":"<redacted>","session_id":"<redacted>"}
+{"type":"system","subtype":"hook_response","hook_name":"UserPromptSubmit","hook_event":"UserPromptSubmit","exit_code":0,"outcome":"success","session_id":"<redacted>"}
+{"type":"result","is_error":true,"terminal_reason":"api_error","result":"Not logged in · Please run /login","session_id":"<redacted>"}
