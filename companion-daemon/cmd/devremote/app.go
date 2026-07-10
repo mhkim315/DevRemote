@@ -168,6 +168,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
+	serveMux.HandleFunc("GET /term/size", h.AuthMiddleware(term.HandleTermSize))
 	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 
 	notifier := newPushNotifier()

@@ -395,16 +395,27 @@ export default function FeedScreen({onBack, session, token}: Props) {
       // horizontally, instead of reflowing to a narrow width (see fitTerminal).
       style.innerHTML =
         '.xterm-screen { user-select: text; -webkit-user-select: text; }' +
-        '#t { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }' +
+        '#t { overflow: auto !important; -webkit-overflow-scrolling: touch; }' +
         '.xterm { width: max-content !important; min-width: 100% !important; }';
       document.head.appendChild(style);
 
-      // Override fitTerminal to be accurate and actually call term.resize()
+      // Override fitTerminal: mirror the PTY's real geometry so full-width
+      // TUIs render without wrapping (Claude draws to the alternate screen at
+      // the PTY width; a fixed 100-col xterm made its wide output re-wrap on
+      // the phone). We fetch the live PTY size and resize xterm to match; the
+      // container scrolls for overflow (see CSS). The mobile viewer never
+      // resizes the shared PTY — it only matches it. Falls back to a >=100-col
+      // viewport fit if the size can't be fetched.
       window.fitTerminal = function() {
         if (!window.term) return;
+        var apply = function(cols, rows) {
+          if (cols > 0 && rows > 0 &&
+              (window.term.cols !== cols || window.term.rows !== rows)) {
+            window.term.resize(cols, rows);
+          }
+        };
         var h = document.getElementById('t').clientHeight;
         var w = document.getElementById('t').clientWidth;
-        
         var span = document.createElement('span');
         span.textContent = 'W';
         span.style.fontFamily = window.term.options.fontFamily;
@@ -414,20 +425,21 @@ export default function FeedScreen({onBack, session, token}: Props) {
         var cw = span.getBoundingClientRect().width;
         var ch = span.getBoundingClientRect().height;
         document.body.removeChild(span);
+        var fbCols = Math.max(Math.floor(w / cw), 100);
+        var fbRows = Math.floor(h / ch);
 
-        var rows = Math.floor(h / ch);
-        // MVP width policy: never render below MIN_COLS. On a phone floor(w/cw)
-        // is ~50, which would force claude/codex to reflow to phone width and
-        // break the TUI. We keep xterm at >=100 cols and let the container
-        // scroll horizontally (injected CSS above). We deliberately do NOT POST
-        // /term/size: the mobile viewer must not shrink the shared PTY — its
-        // width is owned by the spawn default (100) or the local terminal on
-        // attach. (/term/size was a no-op route anyway.)
-        var MIN_COLS = 100;
-        var cols = Math.max(Math.floor(w / cw), MIN_COLS);
-        if (rows > 0 && cols > 0) {
-          window.term.resize(cols, rows);
-        }
+        var p = new URLSearchParams(location.search);
+        var sess = p.get('session');
+        var tok = p.get('token');
+        var hdrs = {};
+        if (tok) hdrs['Authorization'] = 'Bearer ' + tok;
+        fetch('/term/size?session=' + encodeURIComponent(sess), { headers: hdrs })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(sz) {
+            if (sz && sz.cols > 0 && sz.rows > 0) apply(sz.cols, sz.rows);
+            else apply(fbCols, fbRows);
+          })
+          .catch(function() { apply(fbCols, fbRows); });
       };
 
       window.addEventListener('resize', function() {
@@ -479,6 +491,13 @@ export default function FeedScreen({onBack, session, token}: Props) {
       setTimeout(function() {
         if (window.fitTerminal) window.fitTerminal();
       }, 500);
+
+      // Poll the PTY size so the mobile view tracks host-terminal resizes
+      // (e.g. the user widens Terminal.app while attached). Re-applies only on
+      // an actual change (fitTerminal guards term.resize).
+      setInterval(function() {
+        if (window.fitTerminal) window.fitTerminal();
+      }, 3000);
       
       true;
     })();

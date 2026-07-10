@@ -503,6 +503,20 @@ func (r *Recorder) Resize(rows, cols int) error {
 	return r.stream.Resize(rows, cols)
 }
 
+// GetSize returns the underlying PTY's current geometry, if the stream
+// supports it (native PTY sessions do; tmux/cmux streams do not). ok is false
+// when the size is unavailable.
+func (r *Recorder) GetSize() (rows, cols int, ok bool) {
+	if s, isSizer := r.stream.(interface {
+		GetSize() (int, int, error)
+	}); isSizer {
+		if rr, cc, err := s.GetSize(); err == nil && rr > 0 && cc > 0 {
+			return rr, cc, true
+		}
+	}
+	return 0, 0, false
+}
+
 // isClearScreenSnapshot reports whether payload starts with the cmux
 // full-screen redraw header (ESC[2J ESC[H). Normal PTY output may contain
 // ESC[H (cursor home) alone, which must NOT trigger snapshot drain.

@@ -591,6 +591,29 @@ func HandleDump(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleTermSize (GET) returns the PTY's current geometry for a session as
+// JSON {"rows":R,"cols":C}. Mobile viewers mirror this so full-width TUIs
+// (e.g. claude drawing to the alternate screen at the PTY width) render
+// without re-wrapping to the phone width.
+func HandleTermSize(w http.ResponseWriter, r *http.Request) {
+	session := r.URL.Query().Get("session")
+	if session == "" {
+		session = "devremote"
+	}
+	rec := GetRecorder(session)
+	if rec == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	rows, cols, ok := rec.GetSize()
+	if !ok {
+		http.Error(w, "size unavailable", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"rows":%d,"cols":%d}`, rows, cols)
+}
+
 // HandleE8Diag receives diagnostic counters from the terminal WebView.
 // Logs them to daemon stdout — capturable without Metro or adb logcat.
 // POST-only, accepts only numeric/bool fields, truncates long values.

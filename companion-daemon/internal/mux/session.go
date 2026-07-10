@@ -113,6 +113,12 @@ func (s *NativeSession) Resize(rows, cols int) error {
 	})
 }
 
+// GetSize returns the PTY's current winsize (rows, cols). Viewers use this to
+// mirror the terminal geometry so full-width TUIs render without re-wrapping.
+func (s *NativeSession) GetSize() (rows, cols int, err error) {
+	return pty.Getsize(s.PTY)
+}
+
 func (s *NativeSession) Close() error {
 	if s.Cmd.Process != nil {
 		s.Cmd.Process.Kill()
