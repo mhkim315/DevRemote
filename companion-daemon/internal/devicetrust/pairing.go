@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -242,7 +243,7 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	// QR bootstrap: only the QR scanner knows the bootstrap token, so an
 	// attacker on the LAN cannot preempt the session.
-	if req.BootstrapToken != ph.Session.BootstrapToken {
+	if subtle.ConstantTimeCompare([]byte(req.BootstrapToken), []byte(ph.Session.BootstrapToken)) != 1 {
 		http.Error(w, "invalid bootstrap token", http.StatusUnauthorized)
 		return
 	}
@@ -331,19 +332,30 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "signature verification failed", http.StatusUnauthorized)
 		return
 	}
-	// Phone key-possession proven → notify the CLI.
-	ph.state = pairStateProofVerified
-	close(ph.proofVerifiedCh)
 
 	// Host identity proof: sign the same transcript so the phone can verify
-	// the host key matches the QR fingerprint (host pinning). Fail closed —
-	// a signing error does NOT transition to proof_verified.
+	// the host key matches the QR fingerprint (host pinning). This MUST run
+	// BEFORE the state transition — a signing failure leaves the session in
+	// "challenged" and the proofVerifiedCh closed, so the CLI never sees a
+	// candidate and cannot approve.
 	hostProofDER, signErr := ph.cfg.Signer.Sign(transcript)
 	if signErr != nil {
 		ph.mu.Unlock()
 		http.Error(w, "host signing failed", http.StatusInternalServerError)
 		return
 	}
+	// Self-verify: the host proof must validate against the Identity's public
+	// key (the same key pinned in the QR). This catches a mismatch between
+	// the Identity and Signer fields in PairingConfig.
+	if !VerifySignature(ph.cfg.Identity.Public().PublicKeyDER, transcript, hostProofDER) {
+		ph.mu.Unlock()
+		http.Error(w, "host proof verification failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Only now — phone key-possession + host key-possession both proven.
+	ph.state = pairStateProofVerified
+	close(ph.proofVerifiedCh)
 	ph.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -430,6 +442,9 @@ func (ph *PairingHost) Close() {
 	ph.ln.Close()
 	ph.srv.Close()
 }
+
+// Addr returns the localhost address for same-machine tests.
+func (ph *PairingHost) Addr() string { return ph.addr }
 
 // Result returns the final pairing outcome.
 func (ph *PairingHost) Result() (Device, PairingState) {
