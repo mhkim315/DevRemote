@@ -11,6 +11,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "pair" {
+		runPairClient(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "run" {
 		runClient(os.Args[2:])
 		return
