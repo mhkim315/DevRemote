@@ -1,0 +1,159 @@
+# M2.5-5 Revoke and Minimal Audit — Acceptance
+
+Status: implementation complete
+
+Scope: local operator surface (IPC + CLI) for device list/revoke, end-to-end
+revocation enforcement through the production callback (bearer invalidation,
+WS ticket purge, live connection close), and a structurally redacted
+append-only local audit trail.
+
+## Product contract
+
+Paired-device management is a **local-only** privileged operation over the
+`0600` Unix socket (`/tmp/pokit.sock`). There is no remote/tunnel
+device-management route this phase; `devices:manage` is deferred to M3+.
+
+### `pokit devices`
+
+Lists every paired device (including revoked ones) from the device registry
+using the UI-safe `PublicDevice` view — device ID, fingerprint, display name,
+role, last-seen, and `revokedAt` (if applicable). Raw public-key DER material is
+never exposed.
+
+### `pokit devices revoke <deviceId>`
+
+Revokes a device through the production wiring:
+
+1. `DeviceRegistry.Revoke(id)` — marks the device revoked and persists it.
+   An unknown device returns an error; an already-revoked device is
+   idempotent (reports `"revoked"`).
+2. `DeviceSessionManager.RevokeDevice(id)` — immediately invalidates the
+   active bearer session (no re-authentication), purges all pending WS
+   tickets via the wired `WSTicketStore.RevokeForDevice`, and closes every
+   live WebSocket via the wired `AuthenticatedConnRegistry.CloseDevice`.
+3. A redacted `device.revoke / ok` audit event is recorded.
+
+A revoked key cannot re-authenticate (`DeviceRegistry.GetActive` / `Add`
+return `ErrDeviceRevoked`), cannot issue new tickets (the bearer is gone),
+and any existing WebSocket connections are severed before the CLI reports
+success.
+
+### `pokit audit [--limit N]`
+
+Reads up to `N` most-recent structurally redacted audit events from the
+append-only local trail (default limit: 100).
+
+## Audit redaction contract
+
+The audit record is an `AuditEvent` with exactly six fields:
+
+| Field | Purpose |
+|---|---|
+| `timestamp` | UTC time of the event |
+| `deviceId` | authenticated device, or "" if not known |
+| `action` | closed set: `auth.verify`, `device.revoke`, `session.stop`, `session.kill`, `ws.ticket.deny` |
+| `sessionId` | affected terminal session, or "" (e.g. for auth-only events) |
+| `result` | `granted` / `denied` / `ok` / `error` |
+| `correlationId` | bearer session ID, or "" (e.g. for deny events with no session) |
+
+**Structural redaction**: there is no field capable of holding terminal
+content, input, transcript, private keys, tokens, pairing secrets,
+signatures, or push tokens. If something cannot be expressed by these six
+fields, it is not audited.
+
+## Storage
+
+- Path: `~/.pokit/audit.jsonl` (owner-only `0600` file, `0700` parent dir —
+  the same permission convention as `host_identity.json` and `devices.json`).
+- Format: append-only JSONL, one JSON object per line, mutex-guarded.
+- Rotation: single-generation (`audit.jsonl` → `audit.jsonl.1`) at 1 MiB
+  threshold. Insecure permissions on either file cause `List()` to return
+  no events (fail-closed).
+- Writes are **best-effort**: an audit I/O failure never blocks or fails the
+  security action that produced the event.
+
+## Emit points
+
+| Event | When |
+|---|---|
+| `auth.verify / granted` | Successful challenge-verify — deviceId + new bearer session ID |
+| `auth.verify / denied` | Device not active, or signature verification failed — deviceId only, no secret details |
+| `ws.ticket.deny` | Ticket issuance capacity (429), expired authorization, or invalid grant — denials only |
+| `session.stop` | POST stop handler — result ok/error |
+| `session.kill` | POST kill handler — result ok/error |
+| `device.revoke` | IPC devices-revoke — ok |
+
+Grants (ws-ticket, session stop/kill) are not audited to bound noise in the
+common case; denials and revocations are.
+
+## Wire path
+
+```
+pokit devices revoke <id>
+  → 0600 Unix socket → JSON IPC (devices-revoke)
+  → handleDevicesRevoke
+    → DeviceRegistry.Revoke(id)           — persists revokedAt
+    → DeviceSessionManager.RevokeDevice(id) — fires onRevoke callback
+      → connRegistry.CloseDevice(id)       — closes live WS
+      → wsTickets.RevokeForDevice(id)      — purges pending tickets
+    → audit.Record(device.revoke)
+  ← {"status":"revoked","deviceId":…}
+```
+
+This uses the proven production wiring from M2.5-4 (the same callbacks
+validated by `TestProofDeviceRevokeClosesLiveControlledPTYWS`). No new
+close path is introduced.
+
+## Implicit invariants preserved
+
+- Recorder remains the single PTY reader.
+- Auth middleware, route mode separation, permission vocabulary, bearer
+  session manager, ticket model and store, connection registry, and
+  controlled-PTY runtime are untouched.
+- The `devices-manage` permission is not yet exposed to the remote HTTP
+  product group — the device-admin surface is strictly local.
+
+## Evidence
+
+Automated coverage:
+
+- `internal/devicetrust/audit_test.go`: round-trip, structural redaction
+  (exact JSON key set), empty-action drop, rotation, 0600 perms, fail-closed
+  List on insecure perms, concurrent Record under `-race`.
+- `internal/devicetrust/audit_emit_test.go`: verify grant (deviceId +
+  correlationId), bad-signature deny (device present, no secret details),
+  ws-ticket deny (only the denial is audited).
+- `internal/term/devices_ipc_test.go`: IPC dispatch over `net.Pipe` for list
+  (roles ordered, no raw public-key material leaked), revoke (registry
+  revoked, bearer session gone, onRevoke fires, audit recorded), and
+  unknown-device error.
+- `cmd/devremote/devices_admin_test.go`: real IPC socket → real
+  controlled-PTY WS → revoke over the socket → WS closes, connection
+  registry cleared, bearer invalid, audit recorded.
+- Additionally reuse the existing full end-to-end M2.5-4 acceptance test
+  suites (`TestProofReplacementClosesLiveControlledPTYWS`,
+  `TestProofDeviceRevokeClosesLiveControlledPTYWS`,
+  `TestProofInvalidTicketsRejectedBeforeUpgrade`,
+  `TestProofGlobalTicketCapConcurrentProductionIssuance`, and the new
+  `TestProofDeviceRevokeViaLocalIPCClosesLiveWS`) — all pass under
+  `go test -race -count=10`.
+
+`scripts/build-gate.sh` passes backend build/vet/race tests, mobile typecheck,
+architecture invariants, and secret scanning (audit JSON and tests contain no
+token/prefix/key literals).
+
+## Explicit follow-ups
+
+- **Narrow test hook**: `Recorder.SubscriberCount()` — a read-only production API
+  extension for test observability. Candidate for package-private cleanup.
+- **npm moderate**: 10 moderate vulnerability advisories in `npm audit`;
+  none were introduced this phase.
+- **Per-device capability/adapter list** and **device display-name editing** are
+  not yet specified; the device list is a `PublicDevice` view ready for that
+  enrichment.
+
+## Commit history (this branch)
+
+- `8cc3a85b4` — audit log core (`AuditLog`, `FileAuditLog`, structural redaction)
+- `0694c4302` — emit audit at boundaries (nil-safe hooks)
+- `241917961` — revoke integration + local IPC/CLI surface
