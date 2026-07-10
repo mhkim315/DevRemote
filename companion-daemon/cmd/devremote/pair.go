@@ -38,9 +38,9 @@ func runPairClient(args []string) {
 	})
 	conn.Write(append(start, '\n'))
 	conn.SetReadDeadline(time.Now().Add(duration + 30*time.Second))
+	dec := json.NewDecoder(conn)
 
-	buf := make([]byte, 16384)
-	n, _ := conn.Read(buf)
+	// 1) Decode session payload (immediately after pair-start).
 	var sess struct {
 		OK          bool   `json:"ok"`
 		SessionID   string `json:"sessionId"`
@@ -51,8 +51,8 @@ func runPairClient(args []string) {
 		ExpiresAt   string `json:"expiresAt"`
 		Error       string `json:"error"`
 	}
-	if err := json.Unmarshal(buf[:n], &sess); err != nil || sess.Error != "" || !sess.OK {
-		log.Fatalf("Pairing start failed: %s", sess.Error)
+	if err := dec.Decode(&sess); err != nil || sess.Error != "" || !sess.OK {
+		log.Fatalf("Pairing start failed: %s (err=%v)", sess.Error, err)
 	}
 
 	fmt.Printf("\nPokit Pairing\nHost ID: %s\nFingerprint: %s\n", sess.HostID, sess.Fingerprint)
@@ -71,8 +71,7 @@ func runPairClient(args []string) {
 
 	fmt.Println("Waiting for device to pair...")
 
-	// 2) Read the candidate.
-	n, _ = conn.Read(buf)
+	// 2) Decode candidate (arrives after proof_verified).
 	var candMsg struct {
 		Candidate struct {
 			Fingerprint string `json:"fingerprint"`
@@ -83,8 +82,8 @@ func runPairClient(args []string) {
 		} `json:"candidate"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(buf[:n], &candMsg); err != nil || candMsg.Candidate.Fingerprint == "" {
-		log.Fatalf("No candidate received: %s", candMsg.Error)
+	if err := dec.Decode(&candMsg); err != nil || candMsg.Candidate.Fingerprint == "" {
+		log.Fatalf("No candidate received: %s (err=%v)", candMsg.Error, err)
 	}
 	c := candMsg.Candidate
 	fmt.Printf("\n📱 Device candidate:\n   Fingerprint: %s\n   Name: %s\n",
@@ -96,19 +95,18 @@ func runPairClient(args []string) {
 	if strings.ToLower(strings.TrimSpace(answer)) != "y" {
 		reject, _ := json.Marshal(map[string]interface{}{"action": "reject", "version": 1})
 		conn.Write(append(reject, '\n'))
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		n, _ = conn.Read(buf)
+		var done struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		}
+		dec.Decode(&done)
 		fmt.Println("Pairing rejected.")
-		var done map[string]interface{}
-		json.Unmarshal(buf[:n], &done)
 		os.Exit(1)
 	}
 
-	// 3) Approve.
+	// 3) Approve → decode final result.
 	approveReq, _ := json.Marshal(map[string]interface{}{"action": "approve", "version": 1})
 	conn.Write(append(approveReq, '\n'))
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	n, _ = conn.Read(buf)
 	var done struct {
 		Status string `json:"status"`
 		Error  string `json:"error"`
@@ -119,9 +117,8 @@ func runPairClient(args []string) {
 		} `json:"device"`
 		State string `json:"state"`
 	}
-	json.Unmarshal(buf[:n], &done)
-	if done.Error != "" || done.Status != "paired" {
-		log.Fatalf("Approval failed: %s (state=%s)", done.Error, done.State)
+	if err := dec.Decode(&done); err != nil || (done.Error != "" && done.Status != "paired") {
+		log.Fatalf("Approval failed: %s (err=%v)", done.Error, err)
 	}
 	fmt.Printf("\n✔ Paired: %s\n  Fingerprint: %s\n  Role: %s\n",
 		done.Device.DeviceID, done.Device.Fingerprint, done.Device.Role)

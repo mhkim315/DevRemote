@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -96,7 +95,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		Action  string `json:"action"` // "approve" or "reject"
 		Version int    `json:"version"`
 	}
-	dec2 := json.NewDecoder(io.LimitReader(conn, 4096))
+	dec2 := json.NewDecoder(conn)
 	if err := dec2.Decode(&decision); err != nil {
 		ph.Reject()
 		writeIPC(conn, map[string]string{"error": "invalid decision: " + err.Error()})

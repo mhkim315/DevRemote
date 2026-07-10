@@ -16,6 +16,12 @@ import (
 type testId struct{ pub PublicHostIdentity }
 
 func (t *testId) Public() PublicHostIdentity { return t.pub }
+func (t *testId) Sign(msg []byte) ([]byte, error) {
+	// Test stub: returns a SHA-256 digest (not a real ECDSA signature) so
+	// hostProof is present but verification is in the production path.
+	digest := sha256.Sum256(msg)
+	return digest[:], nil
+}
 
 // genKeypair generates ephemeral P-256 key for the phone side of tests.
 func genKeypair(t *testing.T) (*ecdsa.PrivateKey, []byte, string) {
@@ -218,8 +224,14 @@ func TestPairing_ApproveWithoutProofFails(t *testing.T) {
 	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(b1))
 	resp.Body.Close()
 
-	if _, ok := ph.WaitForCandidate(); !ok {
-		t.Fatalf("no candidate")
+	// WaitForCandidate blocks until proof_verified — it must NOT return
+	// while we're still in "challenged" state.
+	timeout := time.After(350 * time.Millisecond)
+	select {
+	case <-ph.proofVerifiedCh:
+		t.Fatalf("proofVerifiedCh closed before phone confirmed")
+	case <-timeout:
+		// Correct: proofVerifiedCh is still blocked.
 	}
 	// Candidate is in "challenged" state, NOT "proof_verified" — Approve must fail.
 	if err := ph.Approve(); err == nil {
@@ -244,6 +256,108 @@ func TestPairing_SessionExpiresWithoutActivity(t *testing.T) {
 	// Registry must be unchanged.
 	if len(r.List()) != 0 {
 		t.Fatalf("expired session registered a device")
+	}
+}
+
+// TestPairing_ProductionE2E simulates the full product path: CLI↔daemon IPC +
+// LAN candidate→challenge→proof verification→approval→registry. No real IPC
+// socket — the pairing is started in the test process itself.
+func TestPairing_ProductionE2E(t *testing.T) {
+	r, _ := newReg(t)
+	priv, pubDER, fp := genKeypair(t)
+	id := &testId{pub: PublicHostIdentity{HostID: "h1", Fingerprint: fp}}
+
+	ph, err := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
+	if err != nil {
+		t.Fatalf("StartPairing: %v", err)
+	}
+	defer ph.Close()
+
+	// Phase 1: Phone posts candidate.
+	phoneNonce := make([]byte, 16)
+	rand.Read(phoneNonce)
+	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("phase1 status = %d", resp.StatusCode)
+	}
+	var chall ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&chall)
+	resp.Body.Close()
+
+	// Phone signature over pairing transcript.
+	sig := signTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, ph.Session.SessionID)
+	confirmBody, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	resp2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(confirmBody))
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("phase2 status = %d", resp2.StatusCode)
+	}
+	var confirmResp struct {
+		Status    string `json:"status"`
+		HostProof string `json:"hostProof"`
+	}
+	json.NewDecoder(resp2.Body).Decode(&confirmResp)
+	resp2.Body.Close()
+
+	if confirmResp.Status != "proof_verified" {
+		t.Fatalf("confirm status = %q, want proof_verified", confirmResp.Status)
+	}
+	// Host proof: the phone could verify this signature against the host
+	// key pinned from the QR. The test just asserts it's present.
+	if confirmResp.HostProof == "" {
+		t.Fatalf("host proof missing — phone cannot verify host identity")
+	}
+
+	// IPC side: WaitForCandidate now returns only after proof_verified.
+	cand, ok := ph.WaitForCandidate()
+	if !ok || cand.Fingerprint != fp {
+		t.Fatalf("WaitForCandidate ok=%v, want candidate with fingerprint %s", ok, fp)
+	}
+	// Approve → register device.
+	if err := ph.Approve(); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	dev, state := ph.Result()
+	if state != PairingStateApproved || dev.DeviceID == "" {
+		t.Fatalf("Result state=%s dev=%+v, want approved", state, dev)
+	}
+	if _, active := r.GetActiveByFingerprint(fp); !active {
+		t.Fatalf("device not in registry after approval")
+	}
+}
+
+// TestPairing_ApprovalRace proves Approve cannot succeed before
+// proof_verified — the CLI must wait for the phone to confirm.
+func TestPairing_ApprovalRace(t *testing.T) {
+	r, _ := newReg(t)
+	_, pubDER, _ := genKeypair(t)
+	id := &testId{pub: PublicHostIdentity{HostID: "h1"}}
+	ph, _ := StartPairing(PairingConfig{Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second, Identity: id, Registry: r})
+	defer ph.Close()
+
+	// Phase 1: submit candidate but DON'T confirm.
+	phoneNonce := make([]byte, 16)
+	rand.Read(phoneNonce)
+	candBody, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, PhoneNonce: phoneNonce})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(candBody))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("phase1 status = %d", resp.StatusCode)
+	}
+
+	// WaitForCandidate must NOT return — the phone hasn't confirmed yet.
+	// Use a short timeout to prove it waits.
+	select {
+	case _, ok := <-ph.proofVerifiedCh:
+		if ok {
+			t.Fatalf("WaitForCandidate returned before proof_verified")
+		}
+	case <-time.After(100 * time.Millisecond):
+		// Correct: proofVerifiedCh is not closed yet → WaitForCandidate blocks.
+	}
+	// Approve must fail (state is challenged, not proof_verified).
+	if err := ph.Approve(); err == nil {
+		t.Fatalf("Approve succeeded before proof_verified")
 	}
 }
 

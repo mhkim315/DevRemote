@@ -95,6 +95,13 @@ type IdentityProvider interface {
 	Public() PublicHostIdentity
 }
 
+// HostSigner is an IdentityProvider that can also sign data with the host's
+// private key (host key-possession proof for phone verification).
+type HostSigner interface {
+	IdentityProvider
+	Sign(msg []byte) ([]byte, error)
+}
+
 type Candidate struct {
 	PubDER      []byte
 	DisplayName string
@@ -119,10 +126,9 @@ type PairingHost struct {
 	pairedDevice Device
 
 	// Events: one-shot channels closed on transitions.
-	candidateCh chan struct{} // closed when candidate arrives
-	approveCh   chan struct{} // CLI sends approve (close = approve, write = reject)
-	doneCh      chan struct{} // closed when session completes
-	expiryTimer *time.Timer
+	proofVerifiedCh chan struct{} // closed when phone key-possession is proven
+	doneCh          chan struct{} // closed when session completes
+	expiryTimer     *time.Timer
 }
 
 type pendingCandidate struct {
@@ -130,7 +136,6 @@ type pendingCandidate struct {
 	DisplayName  string
 	PhoneNonce   []byte
 	HostNonce    []byte
-	ProofHash    []byte // HMAC-SHA256(secret, hostNonce || phoneNonce || publicKeyDER)
 }
 
 // StartPairing creates the pairing session and starts the LAN listener.
@@ -173,15 +178,14 @@ func StartPairing(cfg PairingConfig) (*PairingHost, error) {
 	}
 
 	ph := &PairingHost{
-		Session:     session,
-		addr:        "127.0.0.1:" + port, // localhost for same-machine callers
-		ln:          ln,
-		reg:         cfg.Registry,
-		cfg:         cfg,
-		state:       pairStatePending,
-		candidateCh: make(chan struct{}),
-		approveCh:   make(chan struct{}),
-		doneCh:      make(chan struct{}),
+		Session:         session,
+		addr:            "127.0.0.1:" + port, // localhost for same-machine callers
+		ln:              ln,
+		reg:             cfg.Registry,
+		cfg:             cfg,
+		state:           pairStatePending,
+		proofVerifiedCh: make(chan struct{}),
+		doneCh:          make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -257,7 +261,8 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	ph.mu.Unlock()
 
-	close(ph.candidateCh)
+	// Do NOT notify the CLI yet — candidate is only submitted, not proven.
+	// Notification happens in handleConfirm after proof_verified.
 
 	resp := ChallengeResponse{
 		HostNonce:       hostNonce,
@@ -310,20 +315,33 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "signature verification failed", http.StatusUnauthorized)
 		return
 	}
+	// Phone key-possession proven → notify the CLI.
 	ph.state = pairStateProofVerified
+	close(ph.proofVerifiedCh)
+
+	// Host identity proof: sign the same transcript so the phone can verify
+	// the host key matches the QR fingerprint (host pinning).
+	var hostProofDER []byte
+	if signer, ok := ph.cfg.Identity.(HostSigner); ok {
+		hostProofDER, _ = signer.Sign(transcript)
+	}
 	ph.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "proof_verified"})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "proof_verified",
+		"hostProof": hex.EncodeToString(hostProofDER),
+	})
 }
 
 // ── State transitions (called by IPC handler) ──
 
-// WaitForCandidate blocks until a candidate arrives or the session expires.
-// Returns the candidate for fingerprint display.
+// WaitForCandidate blocks until the phone has proven key-possession
+// (proof_verified) or the session expires. The candidate is returned only
+// after the proof — the CLI shows the fingerprint at approval time.
 func (ph *PairingHost) WaitForCandidate() (Candidate, bool) {
 	select {
-	case <-ph.candidateCh:
+	case <-ph.proofVerifiedCh:
 		ph.mu.Lock()
 		c := Candidate{
 			PubDER:      ph.candidate.PublicKeyDER,
