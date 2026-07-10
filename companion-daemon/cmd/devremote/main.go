@@ -23,6 +23,14 @@ func main() {
 		runLinkerClient(os.Args[1], os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "devices" {
+		runDevicesClient(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "audit" {
+		runAuditClient(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "hook" {
 		printShellHook()
 		return

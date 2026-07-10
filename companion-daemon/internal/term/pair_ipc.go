@@ -11,10 +11,13 @@ import (
 	"devremote/companion-daemon/internal/devicetrust"
 )
 
-// pairingContext holds the daemon-owned trust instances for IPC pair ops.
+// pairingContext holds the daemon-owned trust instances for IPC pair ops and
+// the local device-admin ops (list/revoke/audit).
 var (
 	pairingIdentity *devicetrust.HostIdentity
 	pairingRegistry *devicetrust.DeviceRegistry
+	pairingSessions *devicetrust.DeviceSessionManager // M2.5-5: revoke → session invalidation
+	pairingAudit    devicetrust.AuditLog              // M2.5-5: local audit (nil ⇒ none)
 	pairingMu       sync.Mutex
 )
 
@@ -24,6 +27,16 @@ func SetPairingContext(id *devicetrust.HostIdentity, reg *devicetrust.DeviceRegi
 	defer pairingMu.Unlock()
 	pairingIdentity = id
 	pairingRegistry = reg
+}
+
+// SetDeviceAdminContext stores the session manager and audit log used by the
+// local device-admin IPC operations. Separate from SetPairingContext so the
+// pairing flow and its tests need no session manager.
+func SetDeviceAdminContext(sessions *devicetrust.DeviceSessionManager, audit devicetrust.AuditLog) {
+	pairingMu.Lock()
+	defer pairingMu.Unlock()
+	pairingSessions = sessions
+	pairingAudit = audit
 }
 
 // handlePairSessionStart owns the IPC connection for the full pairing

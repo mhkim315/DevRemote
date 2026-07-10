@@ -58,6 +58,7 @@ type Dependencies struct {
 	Cmds                term.CommandBroker // if nil, NewCommandBroker used
 	DeviceSessionConfig *devicetrust.DeviceSessionManagerConfig
 	WSTicketConfig      *devicetrust.WSTicketStoreConfig
+	Audit               devicetrust.AuditLog // M2.5-5: nil ⇒ NopAuditLog in NewAppWithDeps
 	StartWatcher        func() (watcherResource, error)
 	StartIPC            func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error)
 	StartTunnel         func() tunnelResource
@@ -100,6 +101,7 @@ type App struct {
 	sessionMgr         *devicetrust.DeviceSessionManager      // M2.5-3
 	wsTickets          *devicetrust.WSTicketStore             // M2.5-4
 	connRegistry       *devicetrust.AuthenticatedConnRegistry // M2.5-4
+	audit              devicetrust.AuditLog                   // M2.5-5: local audit log
 	handlers           *term.Handlers                         // set after construction for late wiring
 	ipc                ipcResource
 	watcher            watcherResource
@@ -108,7 +110,12 @@ type App struct {
 
 // NewApp creates the App with production defaults.
 func NewApp(cfg Config) (*App, error) {
-	return NewAppWithDeps(cfg, Dependencies{})
+	deps := Dependencies{}
+	// M2.5-5: production audit trail lives beside the device-trust store.
+	if home, err := os.UserHomeDir(); err == nil {
+		deps.Audit = devicetrust.NewFileAuditLog(filepath.Join(home, ".pokit", "audit.jsonl"))
+	}
+	return NewAppWithDeps(cfg, deps)
 }
 
 // NewAppWithDeps creates an App with injectable dependencies for testing.
@@ -192,6 +199,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	wsTickets := devicetrust.NewWSTicketStoreWithConfig(ticketCfg)
 	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
+	// M2.5-5: resolve the audit log (nil ⇒ no-op) so every emit point is safe.
+	audit := deps.Audit
+	if audit == nil {
+		audit = devicetrust.NopAuditLog{}
+	}
 	// Wire session replacement → connection invalidation.
 	cb := func(deviceID string) {
 		connRegistry.CloseDevice(deviceID)
@@ -202,7 +214,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle,
-		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil}
+		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit}
 
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()
@@ -220,11 +232,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		Challenges:  challengeStore,
 		Sessions:    sessionMgr,
 		RateLimiter: devicetrust.NewChallengeRateLimiter(devicetrust.RateLimiterConfig{}),
+		Audit:       audit,
 	}
 	serveMux.HandleFunc("POST /api/device-auth/challenge", authH.HandleChallenge)
 	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
 	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
-		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, nil), devicetrust.PermSessionsRead))
+		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, audit), devicetrust.PermSessionsRead))
 
 	// M2.5-4: explicit auth mode. In remote (production) mode, operational
 	// REST routes use device bearer auth with permission enforcement. In
@@ -314,6 +327,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		sessionMgr:   sessionMgr,
 		wsTickets:    wsTickets,
 		connRegistry: connRegistry,
+		audit:        audit,
 		handlers:     h,
 		ipcPath:      "/tmp/pokit.sock",
 	}, nil
@@ -329,6 +343,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.hostIdentity != nil && a.deviceRegistry != nil {
 		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
 	}
+	// M2.5-5: wire the local device-admin surface (list/revoke/audit) so the
+	// 0600 socket can revoke a device and read the redacted audit trail.
+	term.SetDeviceAdminContext(a.sessionMgr, a.audit)
 	// Late wiring: HostIdentity is needed by ticket binding in HandleWS paths.
 	if a.handlers != nil {
 		a.handlers.HostIdentity = a.hostIdentity

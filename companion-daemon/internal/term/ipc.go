@@ -146,6 +146,9 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			// pair-start / pair-approve / pair-reject (M2.5-2)
 			Duration       int    `json:"duration"`
 			PhoneSignature []byte `json:"phoneSignature,omitempty"`
+			// device admin (M2.5-5, local 0600 socket only)
+			DeviceID string `json:"deviceId"`
+			Limit    int    `json:"limit"`
 		}
 		if err := json.NewDecoder(reader).Decode(&req); err != nil {
 			conn.Write([]byte(fmt.Sprintf("error decoding json: %v\n", err)))
@@ -204,6 +207,15 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			return
 		} else if req.Operation == "pair-reject" {
 			handlePairOp(conn, req.Operation, 0, nil)
+			return
+		} else if req.Operation == "devices-list" {
+			handleDevicesList(conn)
+			return
+		} else if req.Operation == "devices-revoke" {
+			handleDevicesRevoke(conn, req.DeviceID)
+			return
+		} else if req.Operation == "audit-list" {
+			handleAuditList(conn, req.Limit)
 			return
 		} else {
 			conn.Write([]byte("unknown operation\n"))
