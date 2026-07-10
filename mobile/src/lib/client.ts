@@ -129,6 +129,54 @@ export async function listSessions(token?: string): Promise<any[]> {
   return res.json();
 }
 
+// ── M3a: daemon-owned session lifecycle (typed) ──
+
+// SessionProfile is the UI-safe launch profile. Executable paths are resolved
+// server-side and never returned; the client only ever sends a profile id.
+export interface SessionProfile {
+  id: string;
+  label: string;
+  available: boolean;
+}
+
+// SessionLifecycle mirrors the daemon SessionLifecycle DTO
+// (companion-daemon/internal/term/lifecycle.go). State is the authoritative
+// server lifecycle: starting | running | stopping | exited | killed | failed.
+export interface SessionLifecycle {
+  id: string;
+  adapter: string;
+  profileId?: string;
+  name?: string;
+  state: string;
+}
+
+// listSessionProfiles returns the daemon-owned launch profiles. Availability
+// reflects whether the executable is installed on the Mac.
+export async function listSessionProfiles(token?: string): Promise<SessionProfile[]> {
+  const res = await checkedFetch(`${_baseURL}/api/session-profiles`, { headers: authHeaders(token) });
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+// createSession launches a daemon-owned controlled_pty session from a profile.
+// The client sends ONLY {profileId, name, cwd} — never a canonical id, runner,
+// executable, or shell command. The daemon generates the canonical id and only
+// reports `running` once the Recorder is ready.
+export async function createSession(
+  input: { profileId: string; name?: string; cwd?: string },
+  token?: string,
+): Promise<SessionLifecycle> {
+  const res = await checkedFetch(`${_baseURL}/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+    body: JSON.stringify({ profileId: input.profileId, name: input.name ?? '', cwd: input.cwd ?? '' }),
+  });
+  return res.json();
+}
+
+// createOrUpdateSession is the LEGACY create path. M3a's New Session flow no
+// longer calls it; it remains only for the edit/color presentation path until
+// M3b replaces the edit-modal lifecycle actions.
 export async function createOrUpdateSession(id: string, runner: string, color: string, token?: string) {
   const res = await checkedFetch(`${_baseURL}/api/sessions`, {
     method: 'POST',

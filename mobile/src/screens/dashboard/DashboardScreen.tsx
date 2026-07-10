@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, TouchableOpacity, Alert, Platform, ScrollView } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
+import { NewSessionModal } from '../../components/NewSessionModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { listSessions, createOrUpdateSession, deleteSession, ConnectivityFailure, PokitError } from '../../lib/client';
 import { useConnection } from '../../lib/connection';
@@ -20,6 +21,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure, refreshDiagnostics } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
+  const [newSessionVisible, setNewSessionVisible] = useState(false);
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
@@ -69,14 +71,14 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   }, []);
 
   const handleSaveProfile = async (id: string, runner: string, color: string) => {
-    const isEdit = !!editSession;
-    setSessions(prev => {
-      if (isEdit) {
-        return prev.map(s => s.id === id ? { ...s, runner, runnerColor: color } : s);
-      } else {
-        return [...prev, { id, state: 'idle' as const, load: 0, runner, runnerColor: color }];
-      }
-    });
+    // M3a: the New path has moved to <NewSessionModal>; this handler is now
+    // edit-only (color/runner presentation). Guard so a stray call without an
+    // editSession does not insert a phantom card.
+    if (!editSession) {
+      Alert.alert('Error', 'No session to edit.');
+      return;
+    }
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, runner, runnerColor: color } : s));
     setModalVisible(false);
     setEditSession(null);
     try {
@@ -97,6 +99,14 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     } catch (e) {
       Alert.alert('Error', 'Failed to terminate agent');
     }
+  };
+
+  // M3a: a session exists only after the server returns it. Open the returned
+  // canonical controlled_pty session directly; refresh removes any staleness.
+  const handleSessionCreated = (canonicalId: string) => {
+    setNewSessionVisible(false);
+    fetchSessions();
+    onSelectAgent(canonicalId);
   };
 
   // P1a: section grouping.
@@ -205,8 +215,8 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
             <TouchableOpacity onPress={() => { setFetchError(''); fetchSessions(); }} style={{backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
               <Text style={{color: '#fff', fontWeight: '700'}}>REFRESH</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => { setEditSession(null); setModalVisible(true); }} style={{backgroundColor: '#39d353', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
-              <Text style={{color: '#000', fontWeight: '700'}}>+ NEW AGENT</Text>
+            <TouchableOpacity onPress={() => setNewSessionVisible(true)} style={{backgroundColor: '#39d353', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8}}>
+              <Text style={{color: '#000', fontWeight: '700'}}>+ NEW SESSION</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -263,11 +273,11 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
           <View style={styles.section}>
             <TouchableOpacity
               style={styles.addCard}
-              onPress={() => { setEditSession(null); setModalVisible(true); }}
+              onPress={() => setNewSessionVisible(true)}
               activeOpacity={0.7}
             >
               <Text style={styles.addCardPlus}>+</Text>
-              <Text style={styles.addCardText}>NEW AGENT</Text>
+              <Text style={styles.addCardText}>NEW SESSION</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -281,6 +291,12 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         initialId={editSession?.id}
         initialRunner={editSession?.runner}
         initialColor={editSession?.runnerColor}
+      />
+      <NewSessionModal
+        visible={newSessionVisible}
+        onClose={() => setNewSessionVisible(false)}
+        onCreated={handleSessionCreated}
+        token={token}
       />
     </SafeAreaView>
   );
