@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"devremote/companion-daemon/internal/mux"
 )
@@ -33,10 +34,18 @@ type IPCServer struct {
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
 func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer) (*IPCServer, error) {
-	// Clean up old socket if it exists
+	// If a socket file already exists, only remove it when it is stale. If a
+	// live daemon is still listening on it, refuse: otherwise a duplicate
+	// daemon start would delete the running daemon's socket and then fail on
+	// the TCP bind, leaving the running daemon alive with no socket file.
 	if _, err := os.Stat(socketPath); err == nil {
+		if conn, derr := net.DialTimeout("unix", socketPath, 500*time.Millisecond); derr == nil {
+			conn.Close()
+			return nil, fmt.Errorf("IPC socket %s already in use by another daemon", socketPath)
+		}
+		// No listener answered — the socket is stale, safe to remove.
 		if err := os.Remove(socketPath); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("remove stale socket %s: %w", socketPath, err)
 		}
 	}
 

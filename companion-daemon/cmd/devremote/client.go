@@ -128,6 +128,23 @@ func runClient(args []string) {
 	}
 
 	command := strings.Join(commandArgs, " ")
+
+	// Preflight: for an attached run, the daemon IPC socket must exist. The
+	// HTTP API can be alive while the IPC listener is not (e.g. a duplicate
+	// daemon start deleted the socket), and without this check we would
+	// create a controlled_pty session that this terminal cannot attach to —
+	// the user's later keystrokes would then run in the HOST shell instead.
+	if !detach {
+		if _, statErr := os.Stat("/tmp/pokit.sock"); statErr != nil {
+			fmt.Fprintf(os.Stderr, "\nERROR: daemon IPC socket /tmp/pokit.sock is missing — local attach unavailable.\n")
+			fmt.Fprintf(os.Stderr, "The daemon HTTP API may be alive but its IPC listener is not. Restart the daemon:\n")
+			fmt.Fprintf(os.Stderr, "  pkill -f pokit-daemon; sleep 1; /tmp/pokit-daemon --insecure-local-only &\n")
+			fmt.Fprintf(os.Stderr, "Then verify:  ls -l /tmp/pokit.sock   (expect srw-------)\n")
+			fmt.Fprintf(os.Stderr, "Or re-run with --detach to create a session for mobile/web only.\n\n")
+			os.Exit(1)
+		}
+	}
+
 	payloadBytes, _ := buildRunPayload(command, cwd)
 
 	daemonURL := os.Getenv("POKIT_URL")
@@ -177,9 +194,10 @@ func attachLocalTerminal(sessionID string) {
 	socketPath := "/tmp/pokit.sock"
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		log.Printf("Cannot attach terminal (daemon socket not available): %v", err)
-		log.Printf("Use mobile/web to interact with session %s", sessionID)
-		return
+		fmt.Fprintf(os.Stderr, "\nERROR: could not attach local terminal — daemon IPC socket unavailable: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Session %s was created but is NOT attached to this terminal.\n", sessionID)
+		fmt.Fprintf(os.Stderr, "Restart the daemon (see above) and retry, or use mobile/web to interact.\n\n")
+		os.Exit(1)
 	}
 	defer conn.Close()
 

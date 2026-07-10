@@ -89,7 +89,7 @@ type App struct {
 	// Background resources owned by App for lifecycle control.
 	telemetry          *term.TelemetryService // telemetry sampling (owns state machine)
 	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
-	activity          *term.ActivityBuffer     // E10b: IPC replay
+	activity           *term.ActivityBuffer   // E10b: IPC replay
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -222,9 +222,10 @@ func (a *App) Run(ctx context.Context) error {
 
 	ipc, err := a.startIPC()
 	if err != nil {
-		log.Printf("Failed to start IPC server: %v", err)
+		log.Printf("WARNING: IPC server NOT started — local `pokit run` attach unavailable (%s): %v", a.ipcPath, err)
+	} else {
+		a.ipc = ipc
 	}
-	a.ipc = ipc
 
 	if !a.config.InsecureLocalOnly {
 		a.tunnel = a.startTunnel()
