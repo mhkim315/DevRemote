@@ -151,22 +151,29 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
-	reg := h.Registry
-
 	var ticketPrincipal *devicetrust.Principal
-	// M2.5-4: authenticate via one-time WS ticket (preferred). The ticket
-	// is consumed before upgrade; it never appears in logs or errors.
-	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
-		if h.WSTickets == nil {
-			http.Error(w, "ws ticket auth not configured", http.StatusServiceUnavailable)
-			return
-		}
+	if ticket := r.URL.Query().Get("ticket"); ticket != "" && h.WSTickets != nil {
 		ticketPrincipal = h.WSTickets.Consume(ticket)
-		if ticketPrincipal == nil {
-			http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
-			return
-		}
 	}
+	h.handleWSWithPrincipal(w, r, ticketPrincipal)
+}
+
+// HandleWSTicketAuth is the ticket-only WS endpoint: requires a valid ticket.
+// Missing/invalid/expired tickets are rejected 401 BEFORE upgrade.
+func (h *Handlers) HandleWSTicketAuth(w http.ResponseWriter, r *http.Request) {
+	if h.WSTickets == nil {
+		http.Error(w, "ws ticket auth not configured", http.StatusServiceUnavailable)
+		return
+	}
+	p := h.WSTickets.Consume(r.URL.Query().Get("ticket"))
+	if p == nil {
+		http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
+		return
+	}
+	h.handleWSWithPrincipal(w, r, p)
+}
+func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request, ticketPrincipal *devicetrust.Principal) {
+	reg := h.Registry
 
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware
@@ -348,6 +355,12 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
+		// M2.5-4: device-auth input permission gate. Rejected input must not
+		// reach WriteInput OR modify Activity.
+		if ticketPrincipal != nil && !hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {
+			continue
+		}
+
 		// E8f: capture terminal input safely.
 		if h.Activity != nil && len(msg) > 0 {
 			h.Activity.Append(ActivityEvent{
@@ -357,18 +370,14 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 				Bytes:     len(msg),
 			})
 		}
-		// M2.5-4: device-auth input permission gate. Member devices without
-		// terminal:input may read output but cannot send input.
-		if ticketPrincipal == nil || hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {
-			if writer, ok := s.(mux.InputWriter); ok {
-				if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
-					log.Printf("WS input write err: %v", inErr)
-					triggerClose(fmt.Errorf("input failed"))
-					break
-				}
-			} else if rec != nil {
-				rec.WriteInput(msg)
+		if writer, ok := s.(mux.InputWriter); ok {
+			if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
+				log.Printf("WS input write err: %v", inErr)
+				triggerClose(fmt.Errorf("input failed"))
+				break
 			}
+		} else if rec != nil {
+			rec.WriteInput(msg)
 		}
 	}
 

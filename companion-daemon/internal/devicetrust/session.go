@@ -221,7 +221,6 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Purge expired inline so capacity reflects live sessions.
 	m.purgeExpiredLocked(now)
@@ -231,6 +230,7 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 
 	// Global cap: a NEW device must leave room; replacement is always allowed.
 	if !isReplacement && len(m.sessions) >= m.maxSessions {
+		m.mu.Unlock()
 		return "", "", time.Time{}, fmt.Errorf("too many active sessions")
 	}
 
@@ -239,12 +239,14 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	if prevDigest, exists := m.byDevice[deviceID]; exists {
 		delete(m.sessions, prevDigest)
 	}
-	// M2.5-4: notify conn registry that this device's old session is replaced.
-	if isReplacement && m.onReplace != nil {
-		m.onReplace(deviceID)
-	}
 	m.sessions[digest] = sess
 	m.byDevice[deviceID] = digest
+	cb := m.onReplace
+	m.mu.Unlock()
+	// M2.5-4: callback outside the lock — network I/O must not block the store.
+	if isReplacement && cb != nil {
+		cb(deviceID)
+	}
 	return raw, sessID, exp, nil
 }
 
