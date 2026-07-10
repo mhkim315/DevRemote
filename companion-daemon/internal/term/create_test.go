@@ -181,6 +181,25 @@ func TestCreate_ProfileShell_RunningRecorderReadyNoPhantom(t *testing.T) {
 	}
 }
 
+// M3a: an empty display name is accepted and the daemon derives a non-empty
+// default from the profile label, returning a running controlled_pty session.
+func TestCreate_ProfileShell_EmptyName_DefaultsToLabel(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	rr := postSessions(h, `{"profileId":"shell","name":""}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	var lc SessionLifecycle
+	json.Unmarshal(rr.Body.Bytes(), &lc)
+	if lc.Name != "Shell" {
+		t.Fatalf("name = %q, want server-derived default %q", lc.Name, "Shell")
+	}
+	if lc.Adapter != "controlled_pty" || lc.State != LifecycleRunning || lc.ID == "" {
+		t.Fatalf("lifecycle = %+v, want running controlled_pty with id", lc)
+	}
+	t.Cleanup(func() { DeleteRecorder(lc.ID) })
+}
+
 // BLOCKER 2: OpenStream failure must never report running and must clean up.
 func TestCreate_OpenStreamFailure_NotRunningCleansUp(t *testing.T) {
 	h, fa := newTestHandlers(t)
@@ -242,7 +261,6 @@ func TestCreate_InvalidCWDAndName_Rejected(t *testing.T) {
 	cases := []string{
 		`{"profileId":"shell","name":"x","cwd":"relative/dir"}`,
 		`{"profileId":"shell","name":"x","cwd":"/no/such/dir/xyz123"}`,
-		`{"profileId":"shell","name":""}`,
 		`{"profileId":"shell","name":"bad/name"}`,
 	}
 	for _, body := range cases {

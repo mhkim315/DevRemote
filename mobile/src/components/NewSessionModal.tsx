@@ -3,8 +3,8 @@ import {
   View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView,
   Platform, KeyboardAvoidingView, ActivityIndicator,
 } from 'react-native';
-import { listSessionProfiles, createSession, SessionProfile, PokitError } from '../lib/client';
-import { canCreateProfile, validateName, validateCwd } from '../lib/lifecycle';
+import { listSessionProfiles, createSession, SessionProfile, SessionLifecycle, PokitError } from '../lib/client';
+import { canCreateProfile, validateName, validateCwd, isRunnable } from '../lib/lifecycle';
 
 interface Props {
   visible: boolean;
@@ -72,7 +72,14 @@ export function NewSessionModal({ visible, onClose, onCreated, token }: Props) {
         { profileId: selectedProfileId, name: name.trim() || undefined, cwd: cwd.trim() || undefined },
         token,
       );
-      onCreated(created.id);
+      // The server must report a Recorder-ready running controlled_pty session
+      // with a canonical id before we navigate. Any other 2xx shape is an API
+      // contract error and the form stays open.
+      if (!isRunnable(created)) {
+        setCreateError('Server returned an unexpected response. The session may not be ready yet. Try again.');
+      } else {
+        onCreated(created.id);
+      }
     } catch (e: any) {
       setCreateError(e instanceof PokitError ? e.message : 'Failed to create session.');
     } finally {

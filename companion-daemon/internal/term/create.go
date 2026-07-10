@@ -47,6 +47,12 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		http.Error(w, "custom commands are only available via the local pokit CLI", http.StatusForbidden)
 		return
 	}
+	// M3a: empty name is acceptable — the daemon derives a default from the
+	// profile label (e.g. "Shell"), so the mobile New Session surface can treat
+	// the display name as optional while the daemon contract always returns one.
+	if req.Name == "" {
+		req.Name = ProfileLabel(req.ProfileID)
+	}
 	if err := validateSessionName(req.Name); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

@@ -81,6 +81,18 @@ func ResolveProfile(id string) (executable string, args []string, available, ok 
 	return "", nil, false, false
 }
 
+// ProfileLabel returns the display label for a known profile id, or "" if the
+// id is unknown. Used to derive a default display name when the client omits
+// one (the New Session name field is optional; the daemon supplies a default).
+func ProfileLabel(id string) string {
+	for _, p := range builtinProfiles() {
+		if p.id == id {
+			return p.label
+		}
+	}
+	return ""
+}
+
 // HandleSessionProfiles (GET) returns the daemon-owned launch presets. Auth is
 // applied by the router middleware. Executable paths are not exposed.
 func HandleSessionProfiles(w http.ResponseWriter, r *http.Request) {

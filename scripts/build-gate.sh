@@ -38,6 +38,10 @@ if [ -d "$MOBILE_DIR/node_modules" ]; then
     echo "$TSC_OUTPUT"
     gate_fail "npm run typecheck"
 }
+    TEST_OUTPUT=$(npm test -- --ci 2>&1) && gate_pass "npm test" || {
+    echo "$TEST_OUTPUT"
+    gate_fail "npm test"
+}
 else
     MOBILE_SKIPPED=1
     if [ "$MOBILE_NOT_RUN" = "1" ]; then

@@ -1,12 +1,23 @@
 // Pure, typed helpers for the mobile session-lifecycle UX (M3a+).
 // Kept free of React/JSX so the branching logic is testable and reusable.
 
-import type { SessionProfile } from './client';
+import type { SessionProfile, SessionLifecycle } from './client';
 
 // canCreateProfile reports whether a launch profile can be selected. A profile
 // whose executable is not installed on the Mac is shown but not selectable.
 export function canCreateProfile(p: SessionProfile): boolean {
   return !!p && p.available === true;
+}
+
+// isRunnable gates navigation to Live Terminal: the create response must be a
+// Recorder-ready RUNNING controlled_pty session with a canonical id. Any other
+// 2xx shape (missing id, wrong adapter, non-running state) is an API contract
+// error — the caller must stay in the form, not open a broken session.
+export function isRunnable(created: Partial<SessionLifecycle> | null | undefined): created is SessionLifecycle {
+  return !!created
+    && typeof created.id === 'string' && created.id.length > 0
+    && created.adapter === 'controlled_pty'
+    && created.state === 'running';
 }
 
 // validateName performs friendly client-side validation of an optional display

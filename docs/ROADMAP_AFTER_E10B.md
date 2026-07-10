@@ -126,7 +126,8 @@ M2.5-2 LAN QR Pairing                          ACCEPT 637dcdf21
 M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
 M2.5-4 Unified REST / WSS Authentication       ACCEPT d6a5733cd (production-boundary proofs complete)
 M2.5-5 Revoke / Minimal Audit                  ACCEPT df7a3bd9a (see acceptance doc)
-M3  Mobile Lifecycle UX and Real-device Gate       READY (plan only)
+M3-auth Mobile Device-Auth Client                PLANNED (prerequisite before M3a+)
+M3  Mobile Lifecycle UX and Real-device Gate       M3a FIRST-PASS (UI foundation); re-verify after M3-auth
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Transcript Contract Reset                 READY (plan/audit only)
 T1  Byte-stream Transcript Foundation
