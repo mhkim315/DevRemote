@@ -701,7 +701,7 @@ func TestApp_InjectedVerifierUsedByRoutes(t *testing.T) {
 	// Verify that a fake verifier injected via Dependencies.Verifier
 	// is actually called when hitting app routes.
 	cfg := Config{
-		InsecureLocalOnly:  false,
+		InsecureLocalOnly: true,
 		OwnerUUID:          "owner",
 		SupabaseProjectRef: "test",
 	}

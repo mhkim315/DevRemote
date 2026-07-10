@@ -191,21 +191,17 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr}
 
 	serveMux := http.NewServeMux()
-	// Legacy route (Supabase/dev-token).
-	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
-
-	// M2.5-4: device-authenticated REST routes. Each endpoint declares its
-	// required permission via RequirePrincipal. The existing AuthMiddleware
-	// path remains for insecure/local development.
-	if sessionMgr != nil {
-		serveMux.HandleFunc("GET /api/d/sessions",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionsV2, devicetrust.PermSessionsRead))
-		serveMux.HandleFunc("POST /api/d/sessions/{id}/stop",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionStop, devicetrust.PermSessionsStop))
-		serveMux.HandleFunc("POST /api/d/sessions/{id}/kill",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionKill, devicetrust.PermSessionsKill))
-		serveMux.HandleFunc("DELETE /api/d/sessions/{id}",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
+	// M2.5-4: explicit auth mode. In remote (production) mode, operational
+	// REST routes use device bearer auth with permission enforcement. In
+	// insecure-local-only mode, the legacy AuthMiddleware (Supabase/dev-token)
+	// is used. One listener, one credential type — no opportunistic mixing.
+	if cfg.InsecureLocalOnly || sessionMgr == nil {
+		serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
+	} else {
+		serveMux.HandleFunc("/api/sessions", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionsAPI, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("POST /api/sessions/{id}/stop", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionStop, devicetrust.PermSessionsStop))
+		serveMux.HandleFunc("POST /api/sessions/{id}/kill", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionKill, devicetrust.PermSessionsKill))
+		serveMux.HandleFunc("DELETE /api/sessions/{id}", devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
 	}
 
 	// M2.5-3: device challenge-auth endpoints (ungated — fail gracefully
@@ -224,15 +220,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets), devicetrust.PermSessionsRead))
 	serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
-	// M2: managed-session lifecycle (gated on managedLifecycle capability).
-	serveMux.HandleFunc("POST /api/sessions/{id}/stop", h.AuthMiddleware(h.HandleSessionStop))
-	serveMux.HandleFunc("POST /api/sessions/{id}/kill", h.AuthMiddleware(h.HandleSessionKill))
-	serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
+	// M2: managed-session lifecycle (registered above in mode-dependent block)
 	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
-	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
-	// M2.5-4: ticket-only WS endpoint (no legacy auth — ticket is consumed
-	// inside HandleWS before upgrade).
-	serveMux.HandleFunc("GET /term/ws-ticket", h.HandleWSTicketAuth)
+	if cfg.InsecureLocalOnly || h.WSTickets == nil {
+		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
+	} else {
+		// Remote mode: WS ticket is the only credential.
+		serveMux.HandleFunc("GET /term/ws", h.HandleWSTicketAuth)
+	}
 	serveMux.HandleFunc("GET /term/size", h.AuthMiddleware(term.HandleTermSize))
 	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 
