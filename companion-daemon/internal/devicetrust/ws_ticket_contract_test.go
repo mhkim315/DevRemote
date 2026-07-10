@@ -65,7 +65,7 @@ func TestHandleWSTicket_ReturnsStoredEffectiveExpiry(t *testing.T) {
 		DeviceID: "device", HostID: "host", BearerSessionID: "bearer",
 		BearerExpires: expiresAt, Permissions: []string{PermSessionsRead},
 	}
-	h := HandleWSTicket(s)
+	h := HandleWSTicket(s, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/device-auth/ws-ticket?session=session", nil)
 	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, p))
 	rr := httptest.NewRecorder()

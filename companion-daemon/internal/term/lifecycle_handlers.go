@@ -4,7 +4,27 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
+
+// auditLifecycle records a redacted stop/kill audit event using the request's
+// authenticated principal (if any). No-op when no audit log is configured.
+func (h *Handlers) auditLifecycle(r *http.Request, action, id string, err error) {
+	if h.Audit == nil {
+		return
+	}
+	result := devicetrust.ResultOK
+	if err != nil {
+		result = devicetrust.ResultError
+	}
+	ev := devicetrust.AuditEvent{Action: action, SessionID: id, Result: result}
+	if p := devicetrust.PrincipalFromContext(r.Context()); p != nil {
+		ev.DeviceID = p.DeviceID
+		ev.CorrelationID = p.BearerSessionID
+	}
+	h.Audit.Record(ev)
+}
 
 // HandleSessionStop handles POST /api/sessions/{id}/stop.
 func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
@@ -12,7 +32,9 @@ func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	res, err := h.Lifecycle.Stop(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	res, err := h.Lifecycle.Stop(r.Context(), id)
+	h.auditLifecycle(r, devicetrust.ActionSessionStop, id, err)
 	writeLifecycleResult(w, res, err)
 }
 
@@ -22,7 +44,9 @@ func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	res, err := h.Lifecycle.Kill(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	res, err := h.Lifecycle.Kill(r.Context(), id)
+	h.auditLifecycle(r, devicetrust.ActionSessionKill, id, err)
 	writeLifecycleResult(w, res, err)
 }
 

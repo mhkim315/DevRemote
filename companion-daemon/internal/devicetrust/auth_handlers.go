@@ -20,6 +20,14 @@ type AuthHandler struct {
 	Challenges  *ChallengeStore       // single-use challenge store
 	Sessions    *DeviceSessionManager // session token store
 	RateLimiter *challengeRateLimiter // per-device challenge rate limiter
+	Audit       AuditLog              // optional; nil ⇒ no audit
+}
+
+// audit records a redacted event if an audit log is configured.
+func (h *AuthHandler) audit(ev AuditEvent) {
+	if h.Audit != nil {
+		h.Audit.Record(ev)
+	}
 }
 
 // ── POST /api/device-auth/challenge ──
@@ -191,6 +199,7 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 	// attempt-threshold contract is honoured.
 	dev, devOK := h.Registry.GetActive(req.DeviceID)
 	if !devOK {
+		h.audit(AuditEvent{DeviceID: req.DeviceID, Action: ActionAuthVerify, Result: ResultDenied})
 		http.Error(w, "device not active", http.StatusUnauthorized)
 		return
 	}
@@ -214,6 +223,7 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 	digest := sha256.Sum256(transcript.Build())
 	if !ecdsa.VerifyASN1(pub, digest[:], signature) {
 		h.Challenges.RecordFailure(challengeID)
+		h.audit(AuditEvent{DeviceID: dev.DeviceID, Action: ActionAuthVerify, Result: ResultDenied})
 		http.Error(w, "signature verification failed", http.StatusUnauthorized)
 		return
 	}
@@ -234,13 +244,17 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 
 	// Issue a session token. The session manager enforces a per-device cap
 	// (one active session per device; new auth revokes the previous).
-	rawToken, _, expiresAt, tokErr := h.Sessions.CreateAfterVerifiedChallenge(
+	rawToken, sessionID, expiresAt, tokErr := h.Sessions.CreateAfterVerifiedChallenge(
 		dev.DeviceID, ch.HostID, ch.DaemonBootID, perms,
 	)
 	if tokErr != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	h.audit(AuditEvent{
+		DeviceID: dev.DeviceID, Action: ActionAuthVerify,
+		Result: ResultGranted, CorrelationID: sessionID,
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(VerifyResponse{

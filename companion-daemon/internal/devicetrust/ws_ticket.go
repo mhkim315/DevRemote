@@ -203,8 +203,9 @@ func (s *WSTicketStore) Count() int {
 // ── POST /api/device-auth/ws-ticket handler ──
 
 // HandleWSTicket issues a WebSocket upgrade ticket to an already-
-// authenticated Principal. The caller must have PermSessionsRead.
-func HandleWSTicket(store *WSTicketStore) http.HandlerFunc {
+// authenticated Principal. The caller must have PermSessionsRead. Denials are
+// audited (grants are not, to avoid high-volume noise) when audit is non-nil.
+func HandleWSTicket(store *WSTicketStore, audit AuditLog) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -228,6 +229,12 @@ func HandleWSTicket(store *WSTicketStore) http.HandlerFunc {
 				status = http.StatusUnauthorized
 			} else if errors.Is(err, ErrWSTicketInvalidGrant) {
 				status = http.StatusBadRequest
+			}
+			if audit != nil {
+				audit.Record(AuditEvent{
+					DeviceID: p.DeviceID, Action: ActionWSTicketDeny,
+					SessionID: sessionID, Result: ResultDenied, CorrelationID: p.BearerSessionID,
+				})
 			}
 			http.Error(w, "unable to issue websocket ticket", status)
 			return

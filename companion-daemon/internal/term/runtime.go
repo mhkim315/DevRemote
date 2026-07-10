@@ -49,6 +49,7 @@ type Handlers struct {
 	ConnRegistry *devicetrust.AuthenticatedConnRegistry
 	SessionMgr   *devicetrust.DeviceSessionManager
 	HostIdentity *devicetrust.HostIdentity // M2.5-4: for ticket host binding
+	Audit        devicetrust.AuditLog      // M2.5-5: minimal local audit (nil ⇒ no audit)
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

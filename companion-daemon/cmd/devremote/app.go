@@ -224,7 +224,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("POST /api/device-auth/challenge", authH.HandleChallenge)
 	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
 	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
-		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets), devicetrust.PermSessionsRead))
+		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, nil), devicetrust.PermSessionsRead))
 
 	// M2.5-4: explicit auth mode. In remote (production) mode, operational
 	// REST routes use device bearer auth with permission enforcement. In
