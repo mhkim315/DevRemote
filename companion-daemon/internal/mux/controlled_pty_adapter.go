@@ -37,6 +37,21 @@ func (a *controlledPTYAdapter) TranscriptCaptureMode() TranscriptCaptureMode {
 // even though they accept input/control.
 func (a *controlledPTYAdapter) ManagedLifecycle() bool { return true }
 
+// TerminateGroup signals the session's whole process group. pty.Start set
+// Setsid, so the child is a session/process-group leader (pgid == child pid);
+// signalling the negative pid reaches the child and everything it spawned
+// (e.g. claude inside the controlled bash), leaving no descendant.
+func (s *controlledPTYSession) TerminateGroup(force bool) error {
+	if s.native == nil || s.native.Cmd == nil || s.native.Cmd.Process == nil {
+		return fmt.Errorf("controlled_pty: no process to signal")
+	}
+	sig := syscall.SIGTERM
+	if force {
+		sig = syscall.SIGKILL
+	}
+	return syscall.Kill(-s.native.Cmd.Process.Pid, sig)
+}
+
 func (a *controlledPTYAdapter) ListSessions(ctx context.Context) ([]Session, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

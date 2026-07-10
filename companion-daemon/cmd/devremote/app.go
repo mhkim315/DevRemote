@@ -90,6 +90,7 @@ type App struct {
 	telemetry          *term.TelemetryService // telemetry sampling (owns state machine)
 	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
 	activity           *term.ActivityBuffer   // E10b: IPC replay
+	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -161,12 +162,17 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		})
 	}
 	activity := term.NewActivityBuffer(2000)
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity}
+	lifecycle := term.NewLifecycleService(reg, activity)
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
 	serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
+	// M2: managed-session lifecycle (gated on managedLifecycle capability).
+	serveMux.HandleFunc("POST /api/sessions/{id}/stop", h.AuthMiddleware(h.HandleSessionStop))
+	serveMux.HandleFunc("POST /api/sessions/{id}/kill", h.AuthMiddleware(h.HandleSessionKill))
+	serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
 	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 	serveMux.HandleFunc("GET /term/size", h.AuthMiddleware(term.HandleTermSize))
@@ -209,6 +215,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		links:     links,
 		telemetry: telemetry,
 		activity:  activity,
+		lifecycle: lifecycle,
 		ipcPath:   "/tmp/pokit.sock",
 	}, nil
 }
@@ -356,7 +363,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity, a.lifecycle)
 }
 
 func (a *App) startTunnel() tunnelResource {

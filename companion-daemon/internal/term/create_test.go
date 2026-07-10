@@ -257,7 +257,7 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
 	activity := NewActivityBuffer(10)
-	id, state, err := createLocalControlled(context.Background(), reg, activity, localCreateSpec{Command: json.RawMessage(`"bash"`)})
+	id, state, err := createLocalControlled(context.Background(), reg, activity, nil, localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
-	id, _, err := createLocalControlled(context.Background(), reg, NewActivityBuffer(10),
+	id, _, err := createLocalControlled(context.Background(), reg, NewActivityBuffer(10), nil,
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
 		t.Fatalf("custom argv err: %v", err)
@@ -299,7 +299,7 @@ func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 		json.RawMessage(`""`),                    // empty string
 	}
 	for _, cmd := range malformed {
-		id, state, err := createLocalControlled(context.Background(), reg, activity, localCreateSpec{Command: cmd})
+		id, state, err := createLocalControlled(context.Background(), reg, activity, nil, localCreateSpec{Command: cmd})
 		if err == nil {
 			DeleteRecorder(id)
 			t.Fatalf("command %q accepted, want rejection", string(cmd))

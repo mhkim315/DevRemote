@@ -83,6 +83,17 @@ type SessionTerminator interface {
 	TerminateSession(ctx context.Context, id string) error
 }
 
+// ManagedProcess is implemented by sessions whose OS process group Pokit owns.
+// The M2 lifecycle service uses it to Stop/Kill the whole daemon-owned process
+// group. Only managed runtimes (controlled_pty) implement it — external
+// attachable (tmux) or observer (cmux) sessions do not, so lifecycle actions
+// gate on this together with the managedLifecycle capability.
+type ManagedProcess interface {
+	// TerminateGroup signals the session's process group: SIGTERM when
+	// force=false (graceful Stop), SIGKILL when force=true (Kill).
+	TerminateGroup(force bool) error
+}
+
 type CreateOptions struct {
 	Name        string
 	WorkspaceID string

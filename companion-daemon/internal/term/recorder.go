@@ -171,6 +171,11 @@ func (r *Recorder) IsAlive() bool {
 	}
 }
 
+// Done returns a channel closed when the recorder's readLoop has ended (PTY
+// EOF/error). The M2 lifecycle service waits on this to observe process exit —
+// natural exit and Stop/Kill all end here, converging on one cleanup path.
+func (r *Recorder) Done() <-chan struct{} { return r.done }
+
 // unregisterSelf removes this recorder from the registry, but only if
 // the registry still points to this exact instance (not a newer replacement).
 func (r *Recorder) unregisterSelf() {

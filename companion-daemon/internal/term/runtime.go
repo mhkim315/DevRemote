@@ -42,6 +42,7 @@ type Handlers struct {
 	Approvals         ApprovalStore     // Phase A9: approval tracking (never nil in production)
 	InsecureLocalOnly bool              // E6: accepts dev-token in auth middleware
 	Activity          *ActivityBuffer   // E8f: terminal activity capture
+	Lifecycle         *LifecycleService // M2: Stop/Kill/Delete for managed sessions
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

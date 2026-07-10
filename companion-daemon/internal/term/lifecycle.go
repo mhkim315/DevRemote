@@ -30,8 +30,10 @@ const (
 	LifecycleRunning LifecycleState = "running"
 	// LifecycleStopping: graceful termination requested (M2), not yet exited.
 	LifecycleStopping LifecycleState = "stopping"
-	// LifecycleExited: process ended (natural exit or completed Stop/Kill).
+	// LifecycleExited: process ended (natural exit or completed Stop).
 	LifecycleExited LifecycleState = "exited"
+	// LifecycleKilled: process force-terminated by an explicit Kill.
+	LifecycleKilled LifecycleState = "killed"
 	// LifecycleFailed: spawn or startup failed.
 	LifecycleFailed LifecycleState = "failed"
 )
@@ -39,7 +41,17 @@ const (
 // Valid reports whether s is a known public lifecycle state.
 func (s LifecycleState) Valid() bool {
 	switch s {
-	case LifecycleStarting, LifecycleRunning, LifecycleStopping, LifecycleExited, LifecycleFailed:
+	case LifecycleStarting, LifecycleRunning, LifecycleStopping, LifecycleExited, LifecycleKilled, LifecycleFailed:
+		return true
+	}
+	return false
+}
+
+// Terminal reports whether s is an end state (no further lifecycle action
+// except Delete). exited/killed/failed are terminal.
+func (s LifecycleState) Terminal() bool {
+	switch s {
+	case LifecycleExited, LifecycleKilled, LifecycleFailed:
 		return true
 	}
 	return false

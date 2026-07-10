@@ -80,6 +80,10 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
+	// M2: catalog the managed session + start its exit watcher.
+	if h.Lifecycle != nil {
+		h.Lifecycle.Register(canonicalID, adapter, req.ProfileID, req.Name)
+	}
 	writeLifecycle(w, SessionLifecycle{
 		ID:        canonicalID,
 		Adapter:   adapter,
@@ -153,7 +157,7 @@ func (spec localCreateSpec) toOptions() (mux.CreateOptions, error) {
 
 // createLocalControlled runs a privileged local create and returns the
 // canonical ID and lifecycle state. Called from the 0600 socket handler.
-func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, spec localCreateSpec) (string, LifecycleState, error) {
+func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, lifecycle *LifecycleService, spec localCreateSpec) (string, LifecycleState, error) {
 	opts, err := spec.toOptions()
 	if err != nil {
 		return "", LifecycleFailed, err
@@ -161,6 +165,9 @@ func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *Act
 	canonicalID, err := createControlledSession(ctx, reg, activity, opts)
 	if err != nil {
 		return "", LifecycleFailed, err
+	}
+	if lifecycle != nil {
+		lifecycle.Register(canonicalID, "controlled_pty", spec.ProfileID, spec.Name)
 	}
 	return canonicalID, LifecycleRunning, nil
 }

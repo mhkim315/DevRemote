@@ -29,11 +29,12 @@ type IPCServer struct {
 	links     LinkStore
 	telemetry *TelemetryService
 	activity  *ActivityBuffer
+	lifecycle *LifecycleService
 }
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService) (*IPCServer, error) {
 	// If a socket file already exists, only remove it when it is stale. If a
 	// live daemon is still listening on it, refuse: otherwise a duplicate
 	// daemon start would delete the running daemon's socket and then fail on
@@ -70,6 +71,7 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 		links:     links,
 		telemetry: telemetry,
 		activity:  activity,
+		lifecycle: lifecycle,
 	}
 
 	go srv.serve()
@@ -88,7 +90,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity)
+		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity, s.lifecycle)
 	}
 }
 
@@ -111,7 +113,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -178,7 +180,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			// local processes and is NOT forwarded through the tunnel, so this
 			// path may run the legacy command string or custom argv that HTTP
 			// refuses.
-			id, state, cerr := createLocalControlled(context.Background(), reg, activity, localCreateSpec{
+			id, state, cerr := createLocalControlled(context.Background(), reg, activity, lifecycle, localCreateSpec{
 				ProfileID:  req.ProfileID,
 				Name:       req.Name,
 				CWD:        req.CWD,
