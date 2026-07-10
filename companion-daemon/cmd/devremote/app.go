@@ -94,6 +94,7 @@ type App struct {
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
+	authHandler        *devicetrust.AuthHandler // M2.5-3
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -166,10 +167,28 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	activity := term.NewActivityBuffer(2000)
 	lifecycle := term.NewLifecycleService(reg, activity)
+
+	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
+	// configured yet (first run without pairing) the endpoints return an error.
+	bootID := devicetrust.NewBootID()
+	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 20*time.Minute)
+	challengeStore := devicetrust.NewChallengeStore()
+
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))
+
+	// M2.5-3: device challenge-auth endpoints (ungated — fail gracefully
+	// when no host identity / device registry is configured).
+	authH := &devicetrust.AuthHandler{
+		Challenges: challengeStore,
+		Sessions:   sessionMgr,
+	}
+	// Identity and Registry are nil here and wired in Run() after initDeviceTrust.
+	// Endpoints check for nil and return 503 if not configured.
+	serveMux.HandleFunc("POST /api/device-auth/challenge", authH.HandleChallenge)
+	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
 	serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 	serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 	// M2: managed-session lifecycle (gated on managedLifecycle capability).
@@ -232,6 +251,11 @@ func (a *App) Run(ctx context.Context) error {
 	a.hostIdentity, a.deviceRegistry = initDeviceTrust()
 	if a.hostIdentity != nil && a.deviceRegistry != nil {
 		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
+	}
+	// Wire the host identity + device registry into the auth handler.
+	if a.authHandler != nil {
+		a.authHandler.Identity = a.hostIdentity
+		a.authHandler.Registry = a.deviceRegistry
 	}
 
 	// 3. Start background resources.
