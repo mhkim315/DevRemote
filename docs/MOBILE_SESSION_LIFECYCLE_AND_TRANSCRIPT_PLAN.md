@@ -15,6 +15,7 @@ M1.5 Session ownership, access, and local terminal host contract
 M2  Stop / kill / delete lifecycle
 M2.5 Minimum device-trust security foundation
 M3  Mobile UX and real-device gate
+R1  Runtime signal discovery (research only)
 T0  Transcript contract reset
 T1  Byte-stream projector foundation
 T2  Codex / Claude TUI safe degradation
@@ -284,6 +285,21 @@ Detailed phases, gates, and deferred security work are defined in
 
 Execution acceptance uses source, API tests, typecheck, build, and emulator.
 Physical-device/LTE usability remains a manual validation track.
+
+# Project R1 — Runtime Signal Discovery
+
+R1 runs after M3 and before T0. It is limited to one or two working days and
+produces evidence and architecture decisions, not production integration code.
+
+Its purpose is to determine whether official Claude Code hooks, Codex
+app-server/JSON events, native logs, process lifecycle, or PTY structural
+signals can provide authoritative runtime state. Transcript still requires a
+generic readable projection for shell output and unknown agents.
+
+Detailed scope and execution handoff:
+
+- `docs/R1_RUNTIME_SIGNAL_DISCOVERY_PLAN.md`
+- `docs/NEXT_SESSION_R1_RUNTIME_SIGNAL_HANDOFF.md`
 
 ## M rollback points
 

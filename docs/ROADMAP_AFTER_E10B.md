@@ -121,12 +121,13 @@ M1  Safe Session Creation and Profiles         ACCEPT a99070015
 M1.5 Session Ownership / Access Contract       ACCEPT 57718aa39
 M2  Stop / Kill / Delete Lifecycle             ACCEPT eae1e96c9
 M2.5-0 Device Trust Security Contract          COMPLETE (docs)
-M2.5-1 Host Identity / Device Registry         NEXT
-M2.5-2 LAN QR Pairing
+M2.5-1 Host Identity / Device Registry         ACCEPT b937cbe0f
+M2.5-2 LAN QR Pairing                          REWORK after 740d56716
 M2.5-3 Challenge Auth / Short Session
 M2.5-4 Unified REST / WSS Authentication
 M2.5-5 Revoke / Minimal Audit
 M3  Mobile Lifecycle UX and Real-device Gate
+R1  Runtime Signal Discovery (research only)
 T0  Transcript Contract Reset
 T1  Byte-stream Transcript Foundation
 T2  Codex / Claude TUI Safe Degradation
@@ -143,6 +144,7 @@ The immediate execution order is deliberately lifecycle-first:
 ```text
 Mobile lifecycle MVP
 → minimum device-trust security
+→ runtime signal discovery
 → Transcript projection foundation
 → Transcript semantic enrichment
 ```
@@ -150,6 +152,13 @@ Mobile lifecycle MVP
 Transcript data-model work is not a prerequisite for mobile lifecycle. The two
 projects share stable session identity and timestamps, but lifecycle state must
 not be derived from Transcript events.
+
+R1 is a time-boxed research gate after M3 and before T0. It investigates
+official hooks/protocols, native logs, and generic PTY structural signals so T0
+does not commit to text heuristics where stronger evidence already exists. R1
+does not replace the generic byte-stream Transcript fallback and does not add
+production integration code. This post-M3 R1 is distinct from the already
+accepted historical `R1a Connectivity Baseline`.
 
 ## R0 — Finish E10b polish
 
