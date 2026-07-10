@@ -94,7 +94,8 @@ type App struct {
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
-	authHandler        *devicetrust.AuthHandler // M2.5-3
+	authHandler        *devicetrust.AuthHandler          // M2.5-3
+	sessionMgr         *devicetrust.DeviceSessionManager // M2.5-3
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -170,7 +171,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
 	// configured yet (first run without pairing) the endpoints return an error.
-	bootID := devicetrust.NewBootID()
+	bootID, err := devicetrust.NewBootID()
+	if err != nil {
+		return nil, fmt.Errorf("boot id: %w", err)
+	}
 	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 20*time.Minute)
 	challengeStore := devicetrust.NewChallengeStore()
 
@@ -229,16 +233,18 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	return &App{
-		config:    cfg,
-		deps:      deps,
-		registry:  reg,
-		server:    &http.Server{Addr: addr, Handler: serveMux},
-		events:    events,
-		links:     links,
-		telemetry: telemetry,
-		activity:  activity,
-		lifecycle: lifecycle,
-		ipcPath:   "/tmp/pokit.sock",
+		config:      cfg,
+		deps:        deps,
+		registry:    reg,
+		server:      &http.Server{Addr: addr, Handler: serveMux},
+		events:      events,
+		links:       links,
+		telemetry:   telemetry,
+		activity:    activity,
+		lifecycle:   lifecycle,
+		authHandler: authH,
+		sessionMgr:  sessionMgr,
+		ipcPath:     "/tmp/pokit.sock",
 	}, nil
 }
 
@@ -264,6 +270,11 @@ func (a *App) Run(ctx context.Context) error {
 	go a.telemetry.Run(telemetryCtx)
 
 	a.watcher = a.startWatcher()
+
+	// M2.5-3: start periodic session purge.
+	if a.sessionMgr != nil {
+		a.sessionMgr.StartPurgeLoop()
+	}
 
 	ipc, err := a.startIPC()
 	if err != nil {
@@ -317,6 +328,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if err := a.server.Shutdown(ctx); err != nil {
 		log.Printf("HTTP shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("http: %w", err))
+	}
+
+	// M2.5-3: stop session purge before telemetry.
+	if a.sessionMgr != nil {
+		a.sessionMgr.StopPurgeLoop()
 	}
 
 	// 2. Stop telemetry.

@@ -6,9 +6,34 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 )
+
+// ── Permission vocabulary (M2.5-4 will enforce these) ──
+
+// Permissions are string constants so no handler scatters raw literals. The
+// paired owner device receives the PermOwner set; future member/guest roles
+// receive narrower sets.
+const (
+	PermSessionsRead  = "sessions:read"
+	PermTerminalInput = "terminal:input"
+	PermSessionCreate = "session:create"
+	PermSessionStop   = "session:stop"
+	PermSessionKill   = "session:kill"
+	PermSessionDelete = "session:delete"
+)
+
+// PermOwner is the permission set issued to the first paired (owner) device.
+var PermOwner = []string{
+	PermSessionsRead,
+	PermTerminalInput,
+	PermSessionCreate,
+	PermSessionStop,
+	PermSessionKill,
+	PermSessionDelete,
+}
 
 // Principal is the device identity extracted from a valid session token.
 // It is handler-independent — M2.5-4 middleware reads this to authorize
@@ -35,12 +60,17 @@ type DeviceSession struct {
 }
 
 // DeviceSessionManager owns all active device sessions. It is in-memory
-// only — daemon restart invalidates every session (new boot ID).
+// only — daemon restart invalidates every session (new boot ID). A
+// background goroutine periodically purges expired sessions; the interval
+// is injectable for tests, with a safe production default.
 type DeviceSessionManager struct {
-	mu       sync.Mutex
-	sessions map[string]*DeviceSession // keyed by token digest
-	bootID   string
-	lifetime time.Duration
+	mu            sync.Mutex
+	sessions      map[string]*DeviceSession
+	bootID        string
+	lifetime      time.Duration
+	purgeStop     chan struct{}
+	purgeDone     chan struct{}
+	purgeInterval time.Duration
 }
 
 // NewDeviceSessionManager creates an empty session store. bootID ensures
@@ -50,10 +80,58 @@ func NewDeviceSessionManager(bootID string, lifetime time.Duration) *DeviceSessi
 		lifetime = 20 * time.Minute
 	}
 	return &DeviceSessionManager{
-		sessions: make(map[string]*DeviceSession),
-		bootID:   bootID,
-		lifetime: lifetime,
+		sessions:      make(map[string]*DeviceSession),
+		bootID:        bootID,
+		lifetime:      lifetime,
+		purgeInterval: 5 * time.Minute,
 	}
+}
+
+// StartPurgeLoop begins a background goroutine that periodically removes
+// expired sessions. Call StopPurgeLoop during shutdown.
+func (m *DeviceSessionManager) StartPurgeLoop() {
+	m.mu.Lock()
+	if m.purgeStop != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.purgeStop = make(chan struct{})
+	m.purgeDone = make(chan struct{})
+	interval := m.purgeInterval
+	m.mu.Unlock()
+	go func() {
+		defer close(m.purgeDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.PurgeExpired(time.Now().UTC())
+			case <-m.purgeStop:
+				return
+			}
+		}
+	}()
+}
+
+// StopPurgeLoop stops the background purge goroutine and waits for it.
+func (m *DeviceSessionManager) StopPurgeLoop() {
+	m.mu.Lock()
+	if m.purgeStop == nil {
+		m.mu.Unlock()
+		return
+	}
+	close(m.purgeStop)
+	done := m.purgeDone
+	m.mu.Unlock()
+	<-done
+}
+
+// SetPurgeInterval configures the background purge interval (test hook).
+func (m *DeviceSessionManager) SetPurgeInterval(d time.Duration) {
+	m.mu.Lock()
+	m.purgeInterval = d
+	m.mu.Unlock()
 }
 
 // BootID returns the daemon boot ID (sessions are bound to it).
@@ -70,8 +148,8 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 		return "", "", time.Time{}, fmt.Errorf("boot ID mismatch")
 	}
 	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return "", "", time.Time{}, err
+	if _, err := io.ReadFull(rand.Reader, tokenBytes); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("session token: %w", err)
 	}
 	raw := hex.EncodeToString(tokenBytes)
 	digestBytes := sha256.Sum256(tokenBytes)

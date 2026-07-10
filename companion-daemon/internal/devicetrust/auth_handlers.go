@@ -169,17 +169,23 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Atomic consume: exactly one caller gets to verify this challenge.
-	ch, cherr := h.Challenges.Consume(challengeID, []byte(req.DeviceID))
-	if cherr != nil {
-		http.Error(w, "invalid or expired challenge", http.StatusUnauthorized)
-		return
-	}
-
-	// Verify the device signature (role="device").
+	// Verify the device signature FIRST (before consuming the challenge) so
+	// a single bad signature does not delete the challenge and the
+	// attempt-threshold contract is honoured.
 	dev, devOK := h.Registry.GetActive(req.DeviceID)
 	if !devOK {
 		http.Error(w, "device not active", http.StatusUnauthorized)
+		return
+	}
+	pub, pubErr := ParseP256PublicKey(dev.PublicKeyDER)
+	if pubErr != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// Look up the challenge data without consuming it yet.
+	ch, cherr := h.Challenges.Find(challengeID)
+	if cherr != nil {
+		http.Error(w, "invalid or expired challenge", http.StatusUnauthorized)
 		return
 	}
 	transcript := AuthTranscript{
@@ -188,21 +194,24 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 		ChallengeID:  challengeID, ClientNonce: ch.ClientNonce, ServerNonce: ch.ServerNonce,
 		CreatedAtMS: ch.IssuedAt.UnixMilli(), ExpiresAtMS: ch.ExpiresAt.UnixMilli(),
 	}
-	pub, pubErr := ParseP256PublicKey(dev.PublicKeyDER)
-	if pubErr != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
 	digest := sha256.Sum256(transcript.Build())
 	if !ecdsa.VerifyASN1(pub, digest[:], signature) {
+		h.Challenges.RecordFailure(challengeID)
 		http.Error(w, "signature verification failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Signature verified — now atomically consume the challenge.
+	ch, cherr = h.Challenges.Consume(challengeID, []byte(req.DeviceID))
+	if cherr != nil {
+		http.Error(w, "invalid or expired challenge", http.StatusUnauthorized)
 		return
 	}
 
 	// Issue a session token.
 	rawToken, _, expiresAt, tokErr := h.Sessions.CreateAfterVerifiedChallenge(
 		dev.DeviceID, ch.HostID, ch.DaemonBootID,
-		[]string{"sessions:read", "terminal:input"},
+		PermOwner,
 	)
 	if tokErr != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -215,6 +224,6 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 		TokenType:   "Bearer",
 		ExpiresAt:   expiresAt,
 		DeviceID:    dev.DeviceID,
-		Permissions: []string{"sessions:read", "terminal:input"},
+		Permissions: PermOwner,
 	})
 }

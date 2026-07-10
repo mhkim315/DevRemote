@@ -96,12 +96,17 @@ func TestChallengeStore_WrongDeviceFails(t *testing.T) {
 		IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
 	}
 	cid, _ := cs.Insert(ch)
+	// Consume with wrong deviceId fails (constant-time compare).
 	if _, err := cs.Consume(cid, []byte("wrong-device")); err == nil {
 		t.Fatalf("consume with wrong device should fail")
 	}
-	// The challenge must still exist (failedAttempts=1, not yet deleted).
+	// The challenge must still exist (Consume doesn't count device mismatch).
+	if _, err := cs.Find(cid); err != nil {
+		t.Fatalf("challenge should still be findable after wrong device: %v", err)
+	}
+	// Correct device can consume.
 	if _, err := cs.Consume(cid, []byte("d1")); err != nil {
-		t.Fatalf("correct device after one wrong attempt: %v", err)
+		t.Fatalf("correct device: %v", err)
 	}
 }
 
@@ -127,10 +132,12 @@ func TestChallengeStore_AttemptThresholdDeletes(t *testing.T) {
 		IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
 	}
 	cid, _ := cs.Insert(ch)
+	// RecordFailure increments the attempt counter (Consume no longer counts
+	// deviceId mismatches as failures).
 	for i := 0; i < 5; i++ {
-		cs.Consume(cid, []byte("wrong"))
+		cs.RecordFailure(cid)
 	}
-	if _, err := cs.Consume(cid, []byte("d1")); err == nil {
+	if _, err := cs.Find(cid); err == nil {
 		t.Fatalf("challenge should be deleted after 5 failed attempts")
 	}
 }
