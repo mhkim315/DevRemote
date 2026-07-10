@@ -208,6 +208,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		events:    events,
 		links:     links,
 		telemetry: telemetry,
+		activity:  activity,
 		ipcPath:   "/tmp/pokit.sock",
 	}, nil
 }

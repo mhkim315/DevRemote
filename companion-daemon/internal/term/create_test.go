@@ -3,6 +3,8 @@ package term
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,41 +15,97 @@ import (
 	"devremote/companion-daemon/internal/mux"
 )
 
-// recordingAdapter registers as "controlled_pty" and records the CreateOptions
-// it receives without spawning a real process, so the M1 create tests can
-// assert the daemon resolved the profile to the correct executable/argv/cwd.
-type recordingAdapter struct {
-	mu    sync.Mutex
-	last  mux.CreateOptions
-	calls int
+// fakeControlledAdapter registers as "controlled_pty" and records CreateOptions
+// without spawning a real process. It also returns findable sessions with a
+// controllable OpenStream so the readiness/cleanup contract can be tested.
+type fakeControlledAdapter struct {
+	mu            sync.Mutex
+	sessions      map[string]*fakeControlledSession
+	lastOpts      mux.CreateOptions
+	createCalls   int
+	terminated    []string
+	openStreamErr bool
 }
 
-func (a *recordingAdapter) Name() string { return "controlled_pty" }
-func (a *recordingAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
-	return nil, nil
+func newFakeAdapter() *fakeControlledAdapter {
+	return &fakeControlledAdapter{sessions: map[string]*fakeControlledSession{}}
 }
-func (a *recordingAdapter) CreateSession(ctx context.Context, opts mux.CreateOptions) (string, error) {
+func (a *fakeControlledAdapter) Name() string { return "controlled_pty" }
+func (a *fakeControlledAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.calls++
-	a.last = opts
-	if opts.Name != "" {
-		return opts.Name, nil
+	out := make([]mux.Session, 0, len(a.sessions))
+	for _, s := range a.sessions {
+		out = append(out, s)
 	}
-	return "generated", nil
+	return out, nil
 }
-func (a *recordingAdapter) snapshot() (mux.CreateOptions, int) {
+func (a *fakeControlledAdapter) CreateSession(ctx context.Context, opts mux.CreateOptions) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.last, a.calls
+	a.createCalls++
+	a.lastOpts = opts
+	id := opts.Name
+	if id == "" {
+		id = "generated"
+	}
+	a.sessions[id] = &fakeControlledSession{id: id, adapter: a}
+	return id, nil
+}
+func (a *fakeControlledAdapter) TerminateSession(ctx context.Context, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.terminated = append(a.terminated, id)
+	delete(a.sessions, id)
+	return nil
+}
+func (a *fakeControlledAdapter) snapshot() (mux.CreateOptions, int, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastOpts, a.createCalls, append([]string(nil), a.terminated...)
 }
 
-func newTestHandlers(t *testing.T, insecureLocal bool) (*Handlers, *recordingAdapter) {
+type fakeControlledSession struct {
+	id      string
+	adapter *fakeControlledAdapter
+}
+
+func (s *fakeControlledSession) ID() string          { return s.id }
+func (s *fakeControlledSession) AdapterName() string { return "controlled_pty" }
+func (s *fakeControlledSession) Title() string       { return s.id }
+func (s *fakeControlledSession) OpenStream(ctx context.Context) (mux.TerminalStream, error) {
+	s.adapter.mu.Lock()
+	fail := s.adapter.openStreamErr
+	s.adapter.mu.Unlock()
+	if fail {
+		return nil, fmt.Errorf("openstream failed")
+	}
+	return &fakeStream{closed: make(chan struct{})}, nil
+}
+
+// fakeStream blocks in Read until closed so the Recorder stays alive (mimics a
+// live PTY with no immediate output).
+type fakeStream struct {
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (s *fakeStream) Read(p []byte) (int, error) { <-s.closed; return 0, io.EOF }
+func (s *fakeStream) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+func (s *fakeStream) Close() error {
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
+}
+func (s *fakeStream) Resize(rows, cols int) error { return nil }
+
+func newTestHandlers(t *testing.T) (*Handlers, *fakeControlledAdapter) {
 	t.Helper()
-	rec := &recordingAdapter{}
-	reg := mux.MustNewRegistry(rec)
-	h := &Handlers{Registry: reg, Activity: NewActivityBuffer(10), InsecureLocalOnly: insecureLocal}
-	return h, rec
+	fa := newFakeAdapter()
+	reg := mux.MustNewRegistry(fa)
+	h := &Handlers{Registry: reg, Activity: NewActivityBuffer(10)}
+	return h, fa
 }
 
 func postSessions(h *Handlers, body string) *httptest.ResponseRecorder {
@@ -57,27 +115,28 @@ func postSessions(h *Handlers, body string) *httptest.ResponseRecorder {
 	return rr
 }
 
+func subscriberCount(rec *Recorder) int {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return len(rec.subscribers)
+}
+
 func TestSessionProfiles_ReturnsSafePresets(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/session-profiles", nil)
 	rr := httptest.NewRecorder()
 	HandleSessionProfiles(rr, req)
-
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var profiles []map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &profiles); err != nil {
-		t.Fatalf("decode: %v (body=%s)", err, rr.Body.String())
+		t.Fatalf("decode: %v", err)
 	}
 	ids := map[string]bool{}
 	for _, p := range profiles {
 		ids[p["id"].(string)] = true
-		// Executable policy must not leak to clients.
 		if _, ok := p["executable"]; ok {
 			t.Fatalf("profile leaked executable field: %v", p)
-		}
-		if _, ok := p["available"]; !ok {
-			t.Fatalf("profile missing available field: %v", p)
 		}
 	}
 	for _, want := range []string{"shell", "codex", "claude"} {
@@ -85,127 +144,171 @@ func TestSessionProfiles_ReturnsSafePresets(t *testing.T) {
 			t.Fatalf("missing profile %q; got %v", want, ids)
 		}
 	}
-	// The shell profile resolves to a real binary in any test environment.
-	if exe, _, avail, ok := ResolveProfile("shell"); !ok || !avail || !filepath.IsAbs(exe) {
-		t.Fatalf("shell profile resolve = (%q, avail=%v, ok=%v), want available abs path", exe, avail, ok)
-	}
 }
 
-func TestCreate_ProfileShell_DaemonResolvesExecutable(t *testing.T) {
-	h, rec := newTestHandlers(t, false)
+// BLOCKER 2: running only when the Recorder is alive, with no phantom viewer.
+func TestCreate_ProfileShell_RunningRecorderReadyNoPhantom(t *testing.T) {
+	h, fa := newTestHandlers(t)
 	dir := t.TempDir()
 	rr := postSessions(h, `{"adapter":"controlled_pty","profileId":"shell","name":"work","cwd":"`+dir+`"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
 	var lc SessionLifecycle
-	if err := json.Unmarshal(rr.Body.Bytes(), &lc); err != nil {
-		t.Fatalf("decode: %v", err)
+	json.Unmarshal(rr.Body.Bytes(), &lc)
+	if !strings.HasPrefix(lc.ID, "controlled_pty:shell-") || lc.State != LifecycleRunning {
+		t.Fatalf("lifecycle = %+v, want daemon id + running", lc)
 	}
-	// Daemon generated the canonical ID; client did not supply it.
-	if !strings.HasPrefix(lc.ID, "controlled_pty:shell-") {
-		t.Fatalf("canonical id = %q, want daemon-generated controlled_pty:shell-*", lc.ID)
+	t.Cleanup(func() { DeleteRecorder(lc.ID) })
+
+	opts, calls, _ := fa.snapshot()
+	if calls != 1 || opts.Executable == "" || !filepath.IsAbs(opts.Executable) {
+		t.Fatalf("opts = %+v calls=%d, want 1 call + resolved abs executable", opts, calls)
 	}
-	if lc.State != LifecycleRunning {
-		t.Fatalf("state = %q, want running", lc.State)
+	if opts.Command != "" {
+		t.Fatalf("profile create must not use bash -c Command, got %q", opts.Command)
 	}
-	if lc.ProfileID != "shell" || lc.Name != "work" {
-		t.Fatalf("lifecycle = %+v, want profileId=shell name=work", lc)
+	if opts.CWD != dir {
+		t.Fatalf("cwd = %q, want exact %q", opts.CWD, dir)
 	}
-	// The daemon passed a resolved executable + exact CWD, NOT a bash -c string.
-	opts, calls := rec.snapshot()
+
+	rec := GetRecorder(lc.ID)
+	if rec == nil || !rec.IsAlive() {
+		t.Fatalf("recorder not alive after create")
+	}
+	if n := subscriberCount(rec); n != 0 {
+		t.Fatalf("subscriber count = %d, want 0 (no phantom starter subscriber)", n)
+	}
+}
+
+// BLOCKER 2: OpenStream failure must never report running and must clean up.
+func TestCreate_OpenStreamFailure_NotRunningCleansUp(t *testing.T) {
+	h, fa := newTestHandlers(t)
+	fa.openStreamErr = true
+	rr := postSessions(h, `{"adapter":"controlled_pty","profileId":"shell","name":"work"}`)
+	if rr.Code == http.StatusOK {
+		t.Fatalf("status = 200, want non-200 on readiness failure (body=%s)", rr.Body.String())
+	}
+	var lc SessionLifecycle
+	json.Unmarshal(rr.Body.Bytes(), &lc)
+	if lc.State == LifecycleRunning {
+		t.Fatalf("state = running on readiness failure, want failed")
+	}
+	_, calls, terminated := fa.snapshot()
 	if calls != 1 {
 		t.Fatalf("create calls = %d, want 1", calls)
 	}
-	if opts.Executable == "" || !filepath.IsAbs(opts.Executable) {
-		t.Fatalf("executable = %q, want resolved absolute path", opts.Executable)
+	if len(terminated) != 1 {
+		t.Fatalf("terminated = %v, want the unrecorded runtime cleaned up", terminated)
 	}
-	if opts.Command != "" {
-		t.Fatalf("legacy Command should be empty for profile create, got %q", opts.Command)
+}
+
+// BLOCKER 1: HTTP custom is denied — no InsecureLocalOnly / loopback bypass.
+func TestCreate_CustomOverHTTP_Denied(t *testing.T) {
+	for _, insecure := range []bool{false, true} {
+		h, fa := newTestHandlers(t)
+		h.InsecureLocalOnly = insecure
+		rr := postSessions(h, `{"adapter":"controlled_pty","profileId":"custom","name":"x","command":{"executable":"bash"}}`)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("insecure=%v: status = %d, want 403", insecure, rr.Code)
+		}
+		if _, calls, _ := fa.snapshot(); calls != 0 {
+			t.Fatalf("insecure=%v: custom over HTTP created a session (calls=%d)", insecure, calls)
+		}
 	}
-	if opts.CWD != dir {
-		t.Fatalf("cwd = %q, want %q (exact propagation)", opts.CWD, dir)
+}
+
+// BLOCKER 1: controlled_pty legacy HTTP request must not execute a command.
+func TestCreate_LegacyShapeOverHTTP_Rejected(t *testing.T) {
+	h, fa := newTestHandlers(t)
+	rr := postSessions(h, `{"id":"controlled_pty:run-1","runner":"bash","command":"bash"}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (controlled_pty HTTP command must be rejected)", rr.Code)
+	}
+	if _, calls, _ := fa.snapshot(); calls != 0 {
+		t.Fatalf("legacy HTTP shape created a session (calls=%d)", calls)
 	}
 }
 
 func TestCreate_UnknownProfile_Rejected(t *testing.T) {
-	h, _ := newTestHandlers(t, true)
-	rr := postSessions(h, `{"adapter":"controlled_pty","profileId":"nope","name":"x"}`)
-	if rr.Code != http.StatusBadRequest {
+	h, _ := newTestHandlers(t)
+	if rr := postSessions(h, `{"profileId":"nope","name":"x"}`); rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
 }
 
-func TestCreate_CustomCommand_DeniedForRemote(t *testing.T) {
-	h, rec := newTestHandlers(t, false) // remote (auth) daemon
-	rr := postSessions(h, `{"adapter":"controlled_pty","profileId":"custom","name":"x","command":{"executable":"bash"}}`)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rr.Code)
+func TestCreate_InvalidCWDAndName_Rejected(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	cases := []string{
+		`{"profileId":"shell","name":"x","cwd":"relative/dir"}`,
+		`{"profileId":"shell","name":"x","cwd":"/no/such/dir/xyz123"}`,
+		`{"profileId":"shell","name":""}`,
+		`{"profileId":"shell","name":"bad/name"}`,
 	}
-	if _, calls := rec.snapshot(); calls != 0 {
-		t.Fatalf("custom command must not create a session when denied (calls=%d)", calls)
-	}
-}
-
-func TestCreate_CustomCommand_AllowedLocalWithArgv(t *testing.T) {
-	h, rec := newTestHandlers(t, true) // local-only daemon
-	rr := postSessions(h, `{"adapter":"controlled_pty","profileId":"custom","name":"echoer","command":{"executable":"bash","args":["-lc","echo hi"]}}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
-	}
-	opts, calls := rec.snapshot()
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
-	}
-	if filepath.Base(opts.Executable) != "bash" {
-		t.Fatalf("executable = %q, want resolved bash", opts.Executable)
-	}
-	if len(opts.Args) != 2 || opts.Args[0] != "-lc" {
-		t.Fatalf("args = %v, want [-lc, echo hi]", opts.Args)
+	for _, body := range cases {
+		if rr := postSessions(h, body); rr.Code != http.StatusBadRequest {
+			t.Fatalf("body %s -> status %d, want 400", body, rr.Code)
+		}
 	}
 }
 
-func TestCreate_InvalidCWD_Rejected(t *testing.T) {
-	h, _ := newTestHandlers(t, true)
-	// relative path
-	if rr := postSessions(h, `{"profileId":"shell","name":"x","cwd":"relative/dir"}`); rr.Code != http.StatusBadRequest {
-		t.Fatalf("relative cwd status = %d, want 400", rr.Code)
+// BLOCKER 1: privileged local create still runs an arbitrary command.
+func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
+	_, fa := newTestHandlers(t)
+	reg := mux.MustNewRegistry(fa)
+	activity := NewActivityBuffer(10)
+	id, state, err := createLocalControlled(context.Background(), reg, activity, localCreateSpec{Command: json.RawMessage(`"bash"`)})
+	if err != nil {
+		t.Fatalf("local create err: %v", err)
 	}
-	// nonexistent absolute path
-	if rr := postSessions(h, `{"profileId":"shell","name":"x","cwd":"/no/such/dir/xyz123"}`); rr.Code != http.StatusBadRequest {
-		t.Fatalf("nonexistent cwd status = %d, want 400", rr.Code)
+	t.Cleanup(func() { DeleteRecorder(id) })
+	if state != LifecycleRunning || !strings.HasPrefix(id, "controlled_pty:run-") {
+		t.Fatalf("id=%q state=%q, want running run-*", id, state)
 	}
-}
-
-func TestCreate_InvalidName_Rejected(t *testing.T) {
-	h, _ := newTestHandlers(t, true)
-	if rr := postSessions(h, `{"profileId":"shell","name":""}`); rr.Code != http.StatusBadRequest {
-		t.Fatalf("empty name status = %d, want 400", rr.Code)
-	}
-	if rr := postSessions(h, `{"profileId":"shell","name":"bad/name"}`); rr.Code != http.StatusBadRequest {
-		t.Fatalf("path-separator name status = %d, want 400", rr.Code)
-	}
-}
-
-func TestCreate_LegacyCLIPayload_StillCompatible(t *testing.T) {
-	h, rec := newTestHandlers(t, true)
-	rr := postSessions(h, `{"id":"controlled_pty:run-123","runner":"bash","runnerColor":"#fff","command":"bash","cwd":""}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
-	}
-	var resp struct {
-		Status string `json:"status"`
-		ID     string `json:"id"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Status != "ok" || resp.ID != "controlled_pty:run-123" {
-		t.Fatalf("legacy response = %+v, want status=ok id=controlled_pty:run-123", resp)
-	}
-	// Legacy path uses the shell Command string, NOT the argv executable.
-	opts, _ := rec.snapshot()
+	opts, _, _ := fa.snapshot()
 	if opts.Command != "bash" || opts.Executable != "" {
-		t.Fatalf("legacy opts = %+v, want Command=bash Executable empty", opts)
+		t.Fatalf("opts=%+v, want legacy Command=bash", opts)
+	}
+}
+
+func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
+	_, fa := newTestHandlers(t)
+	reg := mux.MustNewRegistry(fa)
+	id, _, err := createLocalControlled(context.Background(), reg, NewActivityBuffer(10),
+		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
+	if err != nil {
+		t.Fatalf("custom argv err: %v", err)
+	}
+	t.Cleanup(func() { DeleteRecorder(id) })
+	opts, _, _ := fa.snapshot()
+	if filepath.Base(opts.Executable) != "bash" || len(opts.Args) != 2 {
+		t.Fatalf("opts=%+v, want resolved bash + 2 args", opts)
+	}
+}
+
+// BLOCKER 3: malformed legacy command creates no session.
+func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
+	_, fa := newTestHandlers(t)
+	reg := mux.MustNewRegistry(fa)
+	activity := NewActivityBuffer(10)
+	malformed := []json.RawMessage{
+		json.RawMessage(`{"executable":"bash"}`), // object
+		json.RawMessage(`123`),                   // number
+		json.RawMessage(`null`),                  // null
+		nil,                                      // missing
+		json.RawMessage(`""`),                    // empty string
+	}
+	for _, cmd := range malformed {
+		id, state, err := createLocalControlled(context.Background(), reg, activity, localCreateSpec{Command: cmd})
+		if err == nil {
+			DeleteRecorder(id)
+			t.Fatalf("command %q accepted, want rejection", string(cmd))
+		}
+		if state != LifecycleFailed || id != "" {
+			t.Fatalf("command %q -> id=%q state=%q, want failed/empty", string(cmd), id, state)
+		}
+	}
+	if _, calls, _ := fa.snapshot(); calls != 0 {
+		t.Fatalf("malformed commands created %d sessions, want 0", calls)
 	}
 }

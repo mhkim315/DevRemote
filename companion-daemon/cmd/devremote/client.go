@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -59,41 +57,46 @@ func drainStdin(d time.Duration) {
 	}
 }
 
-// buildRunPayload constructs the JSON body for a POST /api/sessions request.
-// Returns the encoded bytes and the generated session ID.
-func buildRunPayload(command, cwd string) ([]byte, string) {
-	sessionID := fmt.Sprintf("controlled_pty:run-%d", time.Now().UnixNano())
-	payload := struct {
-		ID          string `json:"id"`
-		Runner      string `json:"runner"`
-		RunnerColor string `json:"runnerColor"`
-		Command     string `json:"command"`
-		CWD         string `json:"cwd,omitempty"`
-	}{
-		ID:          sessionID,
-		Runner:      command,
-		RunnerColor: "#45EBE9",
-		Command:     command,
-		CWD:         cwd,
-	}
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
-		log.Fatalf("Failed to encode request: %v", err)
-	}
-	return buf.Bytes(), sessionID
+// createViaSocket creates a controlled_pty session over the daemon's 0600 Unix
+// socket — the privileged local channel. Arbitrary command execution is only
+// available here, never over the tunnel-reachable HTTP API. Returns the
+// daemon-generated canonical session ID.
+func createViaSocket(command, cwd string) (string, error) {
+	return createViaSocketAt("/tmp/pokit.sock", command, cwd)
 }
 
-// buildRunRequest creates an HTTP request for the pokit run command.
-func buildRunRequest(daemonURL, token string, body []byte) (*http.Request, error) {
-	req, err := http.NewRequest("POST", daemonURL+"/api/sessions", bytes.NewReader(body))
+func createViaSocketAt(socketPath, command, cwd string) (string, error) {
+	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	defer conn.Close()
+	body, _ := json.Marshal(map[string]interface{}{
+		"version":   1,
+		"operation": "create",
+		"command":   command,
+		"cwd":       cwd,
+	})
+	if _, err := conn.Write(append(body, '\n')); err != nil {
+		return "", err
 	}
-	return req, nil
+	buf := make([]byte, 8192)
+	n, _ := conn.Read(buf)
+	var resp struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return "", fmt.Errorf("unexpected daemon response: %s", strings.TrimSpace(string(buf[:n])))
+	}
+	if resp.Error != "" {
+		return "", fmt.Errorf("%s", resp.Error)
+	}
+	if resp.ID == "" {
+		return "", fmt.Errorf("daemon did not return a session id")
+	}
+	return resp.ID, nil
 }
 
 func runClient(args []string) {
@@ -145,46 +148,27 @@ func runClient(args []string) {
 		}
 	}
 
-	payloadBytes, _ := buildRunPayload(command, cwd)
-
 	daemonURL := os.Getenv("POKIT_URL")
 	if daemonURL == "" {
 		daemonURL = "http://localhost:9171"
 	}
 
-	req, err := buildRunRequest(daemonURL, os.Getenv("POKIT_TOKEN"), payloadBytes)
+	// Create over the privileged 0600 Unix socket (not HTTP): the daemon runs
+	// arbitrary commands only through this local channel.
+	sessionID, err := createViaSocket(command, cwd)
 	if err != nil {
-		log.Fatalf("Failed to create request: %v", err)
+		log.Fatalf("Failed to create session via local socket: %v\nIs the daemon running? Try: pokit daemon --insecure-local-only", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatalf("Failed to reach daemon at %s: %v\nIs the daemon running? Try: pokit daemon --insecure-local-only", daemonURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		log.Fatalf("Daemon returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result struct{ ID string }
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	if result.ID == "" {
-		fmt.Println("Session created (check daemon for details)")
-		return
-	}
-
-	fmt.Printf("Session created: %s\n", result.ID)
-	fmt.Printf("Terminal: %s/term/?session=%s\n", daemonURL, result.ID)
+	fmt.Printf("Session created: %s\n", sessionID)
+	fmt.Printf("Terminal: %s/term/?session=%s\n", daemonURL, sessionID)
 
 	if detach {
 		return
 	}
 
 	// E10b: attach local terminal as subscriber via Unix socket.
-	attachLocalTerminal(result.ID)
+	attachLocalTerminal(sessionID)
 }
 
 // attachLocalTerminal connects to the daemon Unix socket and bridges

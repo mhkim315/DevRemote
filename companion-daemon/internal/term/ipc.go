@@ -134,6 +134,13 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			SessionID         string `json:"sessionId"`
 			Provider          string `json:"provider"`
 			ExternalSessionID string `json:"externalSessionId"`
+			// create (privileged local launch — 0600 socket only)
+			Command    json.RawMessage `json:"command"`
+			CWD        string          `json:"cwd"`
+			Name       string          `json:"name"`
+			ProfileID  string          `json:"profileId"`
+			Executable string          `json:"executable"`
+			Args       []string        `json:"args"`
 		}
 		if err := json.NewDecoder(reader).Decode(&req); err != nil {
 			conn.Write([]byte(fmt.Sprintf("error decoding json: %v\n", err)))
@@ -166,6 +173,24 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 		} else if req.Operation == "links" {
 			allLinks := GetAllLinks(links)
 			json.NewEncoder(conn).Encode(allLinks)
+		} else if req.Operation == "create" {
+			// Privileged local launch. The 0600 socket is reachable only by
+			// local processes and is NOT forwarded through the tunnel, so this
+			// path may run the legacy command string or custom argv that HTTP
+			// refuses.
+			id, state, cerr := createLocalControlled(context.Background(), reg, activity, localCreateSpec{
+				ProfileID:  req.ProfileID,
+				Name:       req.Name,
+				CWD:        req.CWD,
+				Executable: req.Executable,
+				Args:       req.Args,
+				Command:    req.Command,
+			})
+			if cerr != nil {
+				json.NewEncoder(conn).Encode(map[string]string{"error": cerr.Error()})
+			} else {
+				json.NewEncoder(conn).Encode(map[string]string{"id": id, "state": string(state)})
+			}
 		} else {
 			conn.Write([]byte("unknown operation\n"))
 		}

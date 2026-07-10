@@ -54,16 +54,28 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Legacy create (CLI `pokit run`): client-supplied canonical ID + a
-		// shell command string, run under bash -c for compatibility.
+		// Legacy shape (client-supplied id + optional command). controlled_pty
+		// command execution runs an arbitrary `bash -c` and is a privileged
+		// LOCAL operation over the 0600 socket — never over the tunnel-reachable
+		// HTTP listener. Other adapters (tmux/cmux) keep their existing create
+		// behavior; they do not run an arbitrary shell for the caller.
 		ref := mux.ParseSessionID(req.ID)
 		if err := ref.Validate(); err != nil {
 			http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
 			return
 		}
+		if ref.Adapter == "controlled_pty" {
+			http.Error(w, "controlled_pty command execution is only available via the local pokit CLI; create over HTTP with a profileId", http.StatusForbidden)
+			return
+		}
+		// Strict decode: a present command must be a JSON string. Never coerce
+		// malformed input into a default shell.
 		var cmdStr string
 		if len(req.Command) > 0 {
-			_ = json.Unmarshal(req.Command, &cmdStr) // legacy command is a JSON string
+			if err := json.Unmarshal(req.Command, &cmdStr); err != nil {
+				http.Error(w, "command must be a string", http.StatusBadRequest)
+				return
+			}
 		}
 		opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID, Command: cmdStr, CWD: req.CWD}
 		createdID, err := reg.CreateSession(r.Context(), ref.Adapter, opts)
@@ -72,8 +84,9 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		canonicalID := mux.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
-		// E10b: start recorder immediately so local attach can subscribe.
-		h.startRecorderForSession(r.Context(), canonicalID)
+		// Best-effort recorder start for external/streamable adapters; also
+		// drops the starter subscriber so no phantom viewer is retained.
+		_ = startRecorder(r.Context(), reg, h.Activity, canonicalID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))

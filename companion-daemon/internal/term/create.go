@@ -6,46 +6,45 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
 )
 
-// createSessionRequest is the union of the legacy CLI payload and the M1 safe
-// create payload. `command` is a RawMessage so it can be a legacy shell string
-// ("bash") or an M1 custom command object ({"executable":...,"args":[...]}).
+// createSessionRequest is the HTTP POST /api/sessions body. HTTP creation is
+// preset-only: `command` (legacy shell string) and custom argv are NOT executed
+// over HTTP — those are privileged local operations (see the 0600 socket create
+// op). `command` is kept only so a legacy CLI-shaped HTTP request can be
+// detected and rejected rather than silently misinterpreted.
 type createSessionRequest struct {
-	// Legacy CLI (`pokit run`) fields.
 	ID          string          `json:"id"`
 	WorkspaceID string          `json:"workspaceId"`
 	Runner      string          `json:"runner"`
 	RunnerColor string          `json:"runnerColor"`
 	Command     json.RawMessage `json:"command"`
 	CWD         string          `json:"cwd"`
-	// M1 safe-create fields.
-	Adapter   string `json:"adapter"`
-	ProfileID string `json:"profileId"`
-	Name      string `json:"name"`
+	Adapter     string          `json:"adapter"`
+	ProfileID   string          `json:"profileId"`
+	Name        string          `json:"name"`
 }
 
-// customCommand is the argv form of a custom launch. There is intentionally no
-// shell string — the executable is exec'd directly with args.
-type customCommand struct {
-	Executable string   `json:"executable"`
-	Args       []string `json:"args"`
-}
-
-// createFromProfile implements the M1 safe-create path: the daemon owns the
-// executable policy and generates the canonical ID. The client only chooses a
-// profile (or, locally, a custom argv), a display name, and a CWD.
+// createFromProfile is the HTTP safe-create path. It is PRESET-ONLY: the
+// tunnel-reachable HTTP listener must never execute arbitrary commands. Custom
+// argv and legacy command strings are rejected here and are only available on
+// the privileged local socket. InsecureLocalOnly/RemoteAddr are NOT used as
+// locality proof — HTTP simply cannot select an arbitrary executable.
 func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req createSessionRequest) {
-	// MVP scope: only controlled_pty sessions are created via this contract.
 	adapter := req.Adapter
 	if adapter == "" {
 		adapter = "controlled_pty"
 	}
 	if adapter != "controlled_pty" {
 		http.Error(w, "only controlled_pty sessions can be created via profile", http.StatusBadRequest)
+		return
+	}
+	if req.ProfileID == "custom" {
+		http.Error(w, "custom commands are only available via the local pokit CLI", http.StatusForbidden)
 		return
 	}
 	if err := validateSessionName(req.Name); err != nil {
@@ -56,62 +55,31 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	var executable string
-	var args []string
-	if req.ProfileID == "custom" {
-		// Custom argv execution is disabled for remote callers by default; only
-		// a local (--insecure-local-only) daemon accepts it.
-		if !h.InsecureLocalOnly {
-			http.Error(w, "custom commands are not permitted for remote callers", http.StatusForbidden)
-			return
-		}
-		cmd, err := parseCustomCommand(req.Command)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		resolved, lerr := exec.LookPath(cmd.Executable)
-		if lerr != nil {
-			http.Error(w, "executable not found", http.StatusBadRequest)
-			return
-		}
-		executable = resolved
-		args = cmd.Args
-	} else {
-		exe, a, available, ok := ResolveProfile(req.ProfileID)
-		if !ok {
-			http.Error(w, "unknown profile", http.StatusBadRequest)
-			return
-		}
-		if !available {
-			http.Error(w, "profile executable not installed", http.StatusBadRequest)
-			return
-		}
-		executable = exe
-		args = a
-	}
-
-	// Daemon-generated canonical ID — the client never constructs it.
-	localID := fmt.Sprintf("%s-%d", req.ProfileID, time.Now().UnixNano())
-	opts := mux.CreateOptions{
-		Name:        localID,
-		WorkspaceID: req.WorkspaceID,
-		CWD:         req.CWD,
-		Executable:  executable,
-		Args:        args,
-	}
-	createdID, err := h.Registry.CreateSession(r.Context(), adapter, opts)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
+	exe, args, available, ok := ResolveProfile(req.ProfileID)
+	if !ok {
+		http.Error(w, "unknown profile", http.StatusBadRequest)
 		return
 	}
-	canonicalID := mux.SessionRef{Adapter: adapter, LocalID: createdID}.Canonical()
+	if !available {
+		http.Error(w, "profile executable not installed", http.StatusBadRequest)
+		return
+	}
 
-	// Initialize the Recorder before the session is considered running, so the
-	// single-reader capture path is ready when viewers subscribe.
-	h.startRecorderForSession(r.Context(), canonicalID)
-
+	opts := mux.CreateOptions{
+		Name:        genLocalID(req.ProfileID),
+		WorkspaceID: req.WorkspaceID,
+		CWD:         req.CWD,
+		Executable:  exe,
+		Args:        args,
+	}
+	canonicalID, err := createControlledSession(r.Context(), h.Registry, h.Activity, opts)
+	if err != nil {
+		// Never expose running on startup failure; the runtime was cleaned up.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
+		return
+	}
 	writeLifecycle(w, SessionLifecycle{
 		ID:        canonicalID,
 		Adapter:   adapter,
@@ -121,33 +89,140 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 	})
 }
 
-// parseCustomCommand decodes and validates a custom argv command.
-func parseCustomCommand(raw json.RawMessage) (customCommand, error) {
-	var cmd customCommand
-	if len(raw) == 0 {
-		return cmd, fmt.Errorf("custom command requires an executable")
-	}
-	if err := json.Unmarshal(raw, &cmd); err != nil {
-		return cmd, fmt.Errorf("invalid custom command: %v", err)
-	}
-	if cmd.Executable == "" {
-		return cmd, fmt.Errorf("custom command requires an executable")
-	}
-	return cmd, nil
+// localCreateSpec is a privileged create request accepted only over the 0600
+// Unix socket (used by `pokit run`). It supports presets, custom argv, and the
+// legacy shell command string — all safe here because the socket is local-only
+// and not forwarded through the tunnel.
+type localCreateSpec struct {
+	ProfileID  string
+	Name       string
+	CWD        string
+	Executable string
+	Args       []string
+	Command    json.RawMessage // strict: a JSON string, or absent
 }
 
-// startRecorderForSession starts the single Recorder for a freshly created
-// session so viewers can subscribe. No-op if activity storage is disabled or
-// the session does not support streaming.
-func (h *Handlers) startRecorderForSession(ctx context.Context, canonicalID string) {
-	if h.Activity == nil {
-		return
+// toOptions validates the spec and resolves it to CreateOptions. Malformed
+// input (e.g. a non-string command) is rejected — it is never coerced into a
+// default shell.
+func (spec localCreateSpec) toOptions() (mux.CreateOptions, error) {
+	if err := validateCWD(spec.CWD); err != nil {
+		return mux.CreateOptions{}, err
 	}
-	if sess, err := h.Registry.FindSession(ctx, canonicalID); err == nil {
-		if opener, ok := sess.(mux.StreamOpener); ok {
-			EnsureRecorder(canonicalID, opener, h.Activity)
+	prefix := spec.ProfileID
+	if prefix == "" || prefix == "custom" {
+		prefix = "run"
+	}
+	opts := mux.CreateOptions{Name: genLocalID(prefix), CWD: spec.CWD}
+
+	switch {
+	case spec.ProfileID != "" && spec.ProfileID != "custom":
+		exe, args, available, ok := ResolveProfile(spec.ProfileID)
+		if !ok {
+			return opts, fmt.Errorf("unknown profile")
 		}
+		if !available {
+			return opts, fmt.Errorf("profile executable not installed")
+		}
+		opts.Executable = exe
+		opts.Args = args
+	case spec.Executable != "":
+		resolved, err := exec.LookPath(spec.Executable)
+		if err != nil {
+			return opts, fmt.Errorf("executable not found")
+		}
+		opts.Executable = resolved
+		opts.Args = spec.Args
+	default:
+		// Legacy shell command string. Decode strictly: reject missing,
+		// non-string, or empty values rather than falling back to a shell.
+		if len(spec.Command) == 0 {
+			return opts, fmt.Errorf("command is required")
+		}
+		var cmdStr string
+		if err := json.Unmarshal(spec.Command, &cmdStr); err != nil {
+			return opts, fmt.Errorf("command must be a string")
+		}
+		if strings.TrimSpace(cmdStr) == "" {
+			return opts, fmt.Errorf("command must not be empty")
+		}
+		opts.Command = cmdStr
 	}
+	return opts, nil
+}
+
+// createLocalControlled runs a privileged local create and returns the
+// canonical ID and lifecycle state. Called from the 0600 socket handler.
+func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, spec localCreateSpec) (string, LifecycleState, error) {
+	opts, err := spec.toOptions()
+	if err != nil {
+		return "", LifecycleFailed, err
+	}
+	canonicalID, err := createControlledSession(ctx, reg, activity, opts)
+	if err != nil {
+		return "", LifecycleFailed, err
+	}
+	return canonicalID, LifecycleRunning, nil
+}
+
+// createControlledSession creates a controlled_pty session and proves its
+// Recorder is ready before the session may be exposed as running. On readiness
+// failure it terminates the just-created runtime so no unrecorded live process
+// is left behind.
+func createControlledSession(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, opts mux.CreateOptions) (string, error) {
+	createdID, err := reg.CreateSession(ctx, "controlled_pty", opts)
+	if err != nil {
+		return "", err
+	}
+	canonicalID := mux.SessionRef{Adapter: "controlled_pty", LocalID: createdID}.Canonical()
+	if rerr := startRecorder(ctx, reg, activity, canonicalID); rerr != nil {
+		_ = reg.TerminateSession(ctx, "controlled_pty", createdID)
+		DeleteRecorder(canonicalID)
+		return "", fmt.Errorf("recorder not ready: %w", rerr)
+	}
+	return canonicalID, nil
+}
+
+// startRecorder starts the single Recorder for a freshly created session and
+// proves it is ready (session found, stream openable, recorder alive). It
+// unsubscribes the starter subscriber that EnsureRecorder returns so a
+// create-without-viewer leaves no retained phantom subscription.
+func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, canonicalID string) error {
+	if activity == nil {
+		return fmt.Errorf("activity storage not configured")
+	}
+	sess, err := reg.FindSession(ctx, canonicalID)
+	if err != nil {
+		return fmt.Errorf("session not found after create: %w", err)
+	}
+	opener, ok := sess.(mux.StreamOpener)
+	if !ok {
+		return fmt.Errorf("session does not support live streaming")
+	}
+	rec, subCh := EnsureRecorder(canonicalID, opener, activity)
+	if rec == nil {
+		return fmt.Errorf("recorder failed to start (stream unavailable)")
+	}
+	// No viewer yet — do not retain the starter subscription.
+	rec.Unsubscribe(subCh)
+	return nil
+}
+
+// genLocalID generates a unique daemon-owned local session id. Clients never
+// construct canonical IDs.
+func genLocalID(prefix string) string {
+	p := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, prefix)
+	if p == "" {
+		p = "run"
+	}
+	return fmt.Sprintf("%s-%d", p, time.Now().UnixNano())
 }
 
 // writeLifecycle writes a SessionLifecycle DTO as the JSON response.
