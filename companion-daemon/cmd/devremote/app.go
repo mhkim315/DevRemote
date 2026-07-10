@@ -98,6 +98,7 @@ type App struct {
 	sessionMgr         *devicetrust.DeviceSessionManager      // M2.5-3
 	wsTickets          *devicetrust.WSTicketStore             // M2.5-4
 	connRegistry       *devicetrust.AuthenticatedConnRegistry // M2.5-4
+	handlers           *term.Handlers                         // set after construction for late wiring
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
@@ -190,7 +191,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle,
-		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr}
+		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil}
 
 	serveMux := http.NewServeMux()
 	// M2.5-4: explicit auth mode. In remote (production) mode, operational
@@ -293,6 +294,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		sessionMgr:   sessionMgr,
 		wsTickets:    wsTickets,
 		connRegistry: connRegistry,
+		handlers:     h,
 		ipcPath:      "/tmp/pokit.sock",
 	}, nil
 }
@@ -306,6 +308,10 @@ func (a *App) Run(ctx context.Context) error {
 	a.hostIdentity, a.deviceRegistry = initDeviceTrust()
 	if a.hostIdentity != nil && a.deviceRegistry != nil {
 		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
+	}
+	// Late wiring: HostIdentity is needed by ticket binding in HandleWS paths.
+	if a.handlers != nil {
+		a.handlers.HostIdentity = a.hostIdentity
 	}
 	// Wire the host identity + device registry into the auth handler.
 	if a.authHandler != nil {

@@ -48,6 +48,7 @@ type Handlers struct {
 	WSTickets    *devicetrust.WSTicketStore
 	ConnRegistry *devicetrust.AuthenticatedConnRegistry
 	SessionMgr   *devicetrust.DeviceSessionManager
+	HostIdentity *devicetrust.HostIdentity // M2.5-4: for ticket host binding
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

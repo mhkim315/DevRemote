@@ -71,7 +71,7 @@ func (s *WSTicketStore) Issue(p *Principal, hostID, sessionID string) (rawTicket
 		HostID:    hostID,
 		SessionID: sessionID,
 		Principal: &pp,
-		ExpiresAt: time.Now().UTC().Add(30 * time.Second),
+		ExpiresAt: effectiveTicketExpiry(time.Now().UTC(), p.BearerExpires),
 	}
 	s.mu.Unlock()
 	return raw, nil
@@ -215,4 +215,14 @@ func (s *WSTicketStore) RevokeForDevice(deviceID string) {
 			delete(s.tickets, k)
 		}
 	}
+}
+func effectiveTicketExpiry(now, bearerExpires time.Time) time.Time {
+	candidate := now.Add(30 * time.Second)
+	if bearerExpires.IsZero() {
+		return candidate
+	}
+	if bearerExpires.Before(candidate) {
+		return bearerExpires
+	}
+	return candidate
 }
