@@ -188,3 +188,57 @@ func TestAuditAppendsAfterSecurityValidation(t *testing.T) {
 		t.Fatalf("mode drifted from 0600: %o", fi.Mode().Perm())
 	}
 }
+
+// TestAuditRotationSecuresGeneration proves a pre-existing insecure (0644)
+// current file is corrected to 0600 BEFORE rotation, so the rotated generation
+// (<path>.1) is never left group/other-readable.
+// TestAuditSessionIDRejectsUnicodeWhitespaceAndFormat proves the session-ID
+// validator rejects Unicode whitespace and format-control code points, not just
+// ASCII controls, so no invisible/zero-width characters can enter the trail.
+func TestAuditSessionIDRejectsUnicodeWhitespaceAndFormat(t *testing.T) {
+	for _, bad := range []string{
+		"controlled_pty:a\u00a0b", // NO-BREAK SPACE (Zs)
+		"controlled_pty:a\u2028b", // LINE SEPARATOR (Zl)
+		"controlled_pty:a\u200bb", // ZERO WIDTH SPACE (Cf)
+		"controlled_pty:a\ufeffb", // ZERO WIDTH NO-BREAK SPACE / BOM (Cf)
+	} {
+		if validSessionID(bad) {
+			t.Fatalf("session id with hidden character accepted: %q", bad)
+		}
+	}
+	if !validSessionID("controlled_pty:shell-1783690564296039000") {
+		t.Fatal("canonical ASCII session id wrongly rejected")
+	}
+}
+
+func TestAuditRotationSecuresGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	// Seed an over-threshold, world-readable current file.
+	seed := []byte(strings.Repeat("x", 600) + "\n")
+	if err := os.WriteFile(path, seed, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a := NewFileAuditLogWithMax(path, 512) // any append now forces rotation
+	a.Record(AuditEvent{DeviceID: "aa", Action: ActionAuthVerify, Result: ResultGranted})
+
+	// Rotation must have occurred and the rotated generation must be owner-only.
+	rfi, err := os.Lstat(path + ".1")
+	if err != nil {
+		t.Fatalf("expected rotated generation: %v", err)
+	}
+	if !rfi.Mode().IsRegular() {
+		t.Fatalf("rotated generation is not a regular file: %v", rfi.Mode())
+	}
+	if perm := rfi.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("rotated generation mode %o is group/other accessible", perm)
+	}
+	// The fresh current file is also 0600, and the new event is present.
+	cfi, err := os.Stat(path)
+	if err != nil || cfi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("current file after rotation not owner-only: %v perm=%o", err, cfi.Mode().Perm())
+	}
+	if got := a.List(0); len(got) == 0 || got[len(got)-1].Action != ActionAuthVerify {
+		t.Fatalf("append after secure rotation missing: %+v", got)
+	}
+}

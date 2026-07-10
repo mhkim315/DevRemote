@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // ── Minimal local audit (M2.5-5) ──
@@ -136,7 +137,7 @@ func validSessionID(s string) bool {
 		}
 	}
 	for _, r := range s[i+1:] {
-		if r < 0x20 || r == 0x7f || r == ' ' {
+		if r < 0x20 || r == 0x7f || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
 			return false
 		}
 	}
@@ -192,8 +193,15 @@ func (l *FileAuditLog) Record(ev AuditEvent) {
 	if err := l.ensureDirLocked(); err != nil {
 		return
 	}
-	l.rotateIfNeededLocked(int64(len(line) + 1))
+	// Secure the CURRENT file BEFORE any rotation, so a file that gets renamed
+	// to <path>.1 is already owner-only (a rotated generation must never inherit
+	// broader permissions). Rejects symlinks / non-regular files up front.
 	if !l.secureExistingLocked() {
+		return
+	}
+	// Rotate the (now-secured) file if needed; fail closed if rotation cannot
+	// complete safely rather than appending past the size cap.
+	if !l.rotateIfNeededLocked(int64(len(line) + 1)) {
 		return
 	}
 	// O_NOFOLLOW closes the Lstat→open TOCTOU window: if the final path
@@ -261,16 +269,40 @@ func (l *FileAuditLog) ensureDirLocked() error {
 }
 
 // rotateIfNeededLocked renames the current file to <path>.1 (single generation)
-// when appending would exceed maxBytes.
-func (l *FileAuditLog) rotateIfNeededLocked(incoming int64) {
+// when appending would exceed maxBytes. The caller must have already secured
+// the current file (owner-only regular file), so the rename produces an
+// owner-only <path>.1. Returns false when rotation was required but could not
+// complete safely, so the caller fails closed instead of appending. Overwriting
+// rename replaces any pre-existing (possibly insecure) <path>.1.
+func (l *FileAuditLog) rotateIfNeededLocked(incoming int64) bool {
 	fi, err := os.Stat(l.path)
 	if err != nil {
-		return // no file yet
+		return true // no current file — nothing to rotate
 	}
 	if fi.Size()+incoming <= l.maxBytes {
-		return
+		return true // under threshold
 	}
-	_ = os.Rename(l.path, l.path+".1")
+	rotated := l.path + ".1"
+	if err := os.Rename(l.path, rotated); err != nil {
+		return false
+	}
+	// Verify the rotated generation is a regular, owner-only file. (rename does
+	// not follow symlinks, so a swapped-in symlink is renamed as-is and caught
+	// here.) Correct broadened bits defensively; fail closed if it cannot be
+	// made a secure regular file.
+	rfi, err := os.Lstat(rotated)
+	if err != nil || rfi.Mode()&os.ModeSymlink != 0 || !rfi.Mode().IsRegular() {
+		return false
+	}
+	if rfi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(rotated, 0o600); err != nil {
+			return false
+		}
+		if again, err := os.Lstat(rotated); err != nil || again.Mode().Perm()&0o077 != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // readAuditFile parses one JSONL audit file, failing closed (empty) on missing
