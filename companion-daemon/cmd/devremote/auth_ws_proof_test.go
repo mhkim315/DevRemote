@@ -164,22 +164,29 @@ func (f *remoteFixture) wsURL(session, ticket string) string {
 		url.QueryEscape(session) + "&ticket=" + url.QueryEscape(ticket)
 }
 
-// getWSStatus presents a ticket to the real /term/ws endpoint with a plain GET
-// (no upgrade headers). A rejected ticket returns its HTTP status and the
-// upgrade never completes.
+// getWSStatus presents a ticket to the real /term/ws endpoint using a real
+// WebSocket client (websocket.DefaultDialer). A rejected ticket fails the
+// handshake BEFORE the protocol switch: Dial returns ErrBadHandshake carrying
+// the HTTP status (401) and a nil connection — the upgrade never completes and
+// no *websocket.Conn is produced. A ticket that unexpectedly upgrades is closed
+// and reported as 101 so the caller's assertion fails.
 func (f *remoteFixture) getWSStatus(t *testing.T, session, ticket string) int {
 	t.Helper()
-	u := f.srv.URL + "/term/ws?session=" + url.QueryEscape(session)
-	if ticket != "" {
-		u += "&ticket=" + url.QueryEscape(ticket)
+	conn, resp, err := websocket.DefaultDialer.Dial(f.wsURL(session, ticket), nil)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
 	}
-	resp, err := http.Get(u)
-	if err != nil {
-		t.Fatalf("GET /term/ws: %v", err)
+	if err == nil {
+		// Upgrade unexpectedly completed — not a rejection.
+		_ = conn.Close()
+		return http.StatusSwitchingProtocols
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusSwitchingProtocols || resp.Header.Get("Upgrade") != "" {
-		t.Fatalf("ticket unexpectedly upgraded (status=%d upgrade=%q)", resp.StatusCode, resp.Header.Get("Upgrade"))
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatalf("rejected ws dial returned a live connection")
+	}
+	if resp == nil {
+		t.Fatalf("ws dial failed without an HTTP response: %v", err)
 	}
 	return resp.StatusCode
 }

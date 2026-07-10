@@ -180,7 +180,7 @@ production implementation bug:
 4. Global ticket capacity is structurally mutex-atomic but lacks a concurrent
    cross-device production-contract proof.
 
-Secret scanning detects realistic JWT bearer, `sk-`, and `ghp_` patterns. Broad
+Secret scanning detects realistic JWT bearer, API-key-prefix, and PAT-prefix patterns. Broad
 line/file exclusions are future hardening, not this task.
 
 ## 6. Your immediate role
