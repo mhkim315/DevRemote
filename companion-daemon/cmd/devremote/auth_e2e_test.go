@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
+	"github.com/gorilla/websocket"
 )
 
 func TestAuthProductionPath_UnavailableBeforePairing(t *testing.T) {
@@ -185,19 +188,15 @@ func getDeviceToken(t *testing.T, baseURL string, id *devicetrust.HostIdentity, 
 }
 
 func TestRemoteRouteMatrix(t *testing.T) {
-	// Build app in remote mode with device identity + paired device.
 	dir := t.TempDir()
 	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
 	reg, _ := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
-	_, pubDER1, _ := devicetrust.GenKeypair(t)
+	ownerPriv, pubDER1, _ := devicetrust.GenKeypair(t)
 	od, _ := reg.Add(pubDER1, "owner")
-	devPriv, pubDER2, _ := devicetrust.GenKeypair(t)
+	memberPriv, pubDER2, _ := devicetrust.GenKeypair(t)
 	md, _ := reg.Add(pubDER2, "member")
-	_ = od
-	_ = md
 
-	cfg := Config{InsecureLocalOnly: false}
-	app, err := NewApp(cfg)
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, testDeps())
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
@@ -210,35 +209,375 @@ func TestRemoteRouteMatrix(t *testing.T) {
 	}
 	srv := httptest.NewServer(app.server.Handler)
 	defer srv.Close()
+	ownerTok := getDeviceToken(t, srv.URL, id, od.DeviceID, ownerPriv)
+	memberTok := getDeviceToken(t, srv.URL, id, md.DeviceID, memberPriv)
 
-	// Legacy Supabase credential must be rejected on remote routes.
-	legacyReq := func(method, path string) int {
-		r, _ := http.NewRequest(method, srv.URL+path, nil)
-		r.Header.Set("Authorization", "Bearer dev-token")
-		resp, _ := http.DefaultClient.Do(r)
-		if resp != nil {
-			defer resp.Body.Close()
-			return resp.StatusCode
-		}
-		return 0
-	}
-	// Legacy/dev-token must be rejected on operational routes.
-	if code := legacyReq("GET", "/api/sessions"); code != http.StatusUnauthorized {
-		t.Errorf("GET /api/sessions with dev-token: %d want 401", code)
-	}
-	if code := legacyReq("POST", "/api/sessions"); code != http.StatusUnauthorized {
-		t.Errorf("POST /api/sessions with dev-token: %d want 401", code)
-	}
-	// Legacy routes must be unreachable (404 or 405 in remote mode).
-	unreachable := []string{"/term/size", "/debug/dump", "/debug/cmd", "/push/register"}
-	for _, p := range unreachable {
-		if code := legacyReq("GET", p); code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
-			t.Errorf("legacy route %s in remote mode: %d want 401/404/405", p, code)
+	// Static development credentials never authorize the remote route group.
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/sessions"},
+		{http.MethodPost, "/api/sessions"},
+		{http.MethodGet, "/api/session-profiles"},
+		{http.MethodGet, "/term/size?session=missing"},
+		{http.MethodGet, "/push/register?token=x"},
+		{http.MethodPost, "/debug/cmd?session=missing"},
+	} {
+		if code := authRequestStatus(t, srv.URL, tc.method, tc.path, "dev-token", nil); code != http.StatusUnauthorized {
+			t.Errorf("legacy credential %s %s: %d want 401", tc.method, tc.path, code)
 		}
 	}
 
-	// Owner bearer token works on GET /api/sessions.
-	ownerTok := getDeviceToken(t, srv.URL, id, od.DeviceID, devPriv) // FIXME: use owner device key
-	_ = ownerTok
-	_ = devPriv // member key for later
+	// Read-only member can observe product state.
+	for _, path := range []string{"/api/sessions", "/api/session-profiles", "/api/v2/links"} {
+		if code := authRequestStatus(t, srv.URL, http.MethodGet, path, memberTok, nil); code != http.StatusOK {
+			t.Errorf("member GET %s: %d want 200", path, code)
+		}
+	}
+
+	// Read-only member cannot reach any mutating handler.
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/sessions", `{}`},
+		{http.MethodDelete, "/api/sessions?id=controlled_pty:nope", ""},
+		{http.MethodPost, "/api/sessions/controlled_pty:nope/stop", ""},
+		{http.MethodPost, "/api/sessions/controlled_pty:nope/kill", ""},
+		{http.MethodDelete, "/api/sessions/controlled_pty:nope", ""},
+		{http.MethodPost, "/api/sessions/s/approvals/a", `{}`},
+		{http.MethodPost, "/api/v2/links", `{}`},
+		{http.MethodPost, "/debug/cmd?session=missing", "x"},
+	} {
+		if code := authRequestStatus(t, srv.URL, tc.method, tc.path, memberTok, strings.NewReader(tc.body)); code != http.StatusForbidden {
+			t.Errorf("member %s %s: %d want 403", tc.method, tc.path, code)
+		}
+	}
+
+	// Owner credentials reach the real handlers (their domain validation may
+	// return 4xx, but authentication/authorization must not).
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/sessions", ""},
+		{http.MethodPost, "/api/sessions", `{}`},
+		{http.MethodPost, "/api/sessions/controlled_pty:nope/stop", ""},
+		{http.MethodPost, "/api/sessions/controlled_pty:nope/kill", ""},
+		{http.MethodDelete, "/api/sessions/controlled_pty:nope", ""},
+		{http.MethodPost, "/api/sessions/s/approvals/a", `{}`},
+		{http.MethodPost, "/api/v2/links", `{}`},
+		{http.MethodGet, "/term/size?session=missing", ""},
+		{http.MethodGet, "/term/?session=missing", ""},
+		{http.MethodGet, "/push/register?token=x", ""},
+		{http.MethodGet, "/debug/diag", ""},
+	} {
+		code := authRequestStatus(t, srv.URL, tc.method, tc.path, ownerTok, strings.NewReader(tc.body))
+		if code == http.StatusUnauthorized || code == http.StatusForbidden || code == http.StatusNotFound && tc.path == "/term/?session=missing" {
+			t.Errorf("owner %s %s did not reach handler: %d", tc.method, tc.path, code)
+		}
+	}
+
+	// Raw diagnostics are not registered on the remote listener.
+	for _, path := range []string{"/debug/dump", "/debug/e8diag"} {
+		if code := authRequestStatus(t, srv.URL, http.MethodGet, path, ownerTok, nil); code != http.StatusNotFound {
+			t.Errorf("remote-only disabled route %s: %d want 404", path, code)
+		}
+	}
+}
+
+func TestLocalOnlyRouteMatrixPreserved(t *testing.T) {
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, testDeps())
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/api/session-profiles", http.StatusOK},
+		{http.MethodGet, "/api/v2/links", http.StatusOK},
+		{http.MethodGet, "/term/size?session=missing", http.StatusNotFound},
+		{http.MethodGet, "/term/?session=missing", http.StatusOK},
+		{http.MethodGet, "/push/register?token=x", http.StatusOK},
+		{http.MethodPost, "/debug/dump", http.StatusOK},
+		{http.MethodGet, "/debug/diag", http.StatusOK},
+	} {
+		code := authRequestStatus(t, srv.URL, tc.method, tc.path, "dev-token", nil)
+		if code != tc.want {
+			t.Errorf("local route %s %s: %d want %d", tc.method, tc.path, code, tc.want)
+		}
+	}
+}
+
+func authRequestStatus(t *testing.T, baseURL, method, path, token string, body *strings.Reader) int {
+	t.Helper()
+	var requestBody *strings.Reader
+	if body == nil {
+		requestBody = strings.NewReader("")
+	} else {
+		requestBody = body
+	}
+	req, err := http.NewRequest(method, baseURL+path, requestBody)
+	if err != nil {
+		t.Fatalf("request %s %s: %v", method, path, err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request %s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestRemoteWSTicketUpgradeAndBearerExpiry(t *testing.T) {
+	dir := t.TempDir()
+	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
+	reg, _ := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
+	ownerPriv, ownerPub, _ := devicetrust.GenKeypair(t)
+	owner, _ := reg.Add(ownerPub, "owner")
+
+	deps := testDeps()
+	deps.DeviceSessionConfig = &devicetrust.DeviceSessionManagerConfig{
+		Lifetime: 1200 * time.Millisecond, MaxSessions: 4, PurgeInterval: 50 * time.Millisecond,
+	}
+	deps.WSTicketConfig = &devicetrust.WSTicketStoreConfig{
+		TTL: 5 * time.Second, MaxPerDevice: 2, MaxTotal: 4,
+	}
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.hostIdentity = id
+	app.deviceRegistry = reg
+	app.handlers.HostIdentity = id
+	app.authHandler.Identity = id
+	app.authHandler.Registry = reg
+	app.sessionMgr.StartPurgeLoop()
+	defer app.sessionMgr.StopPurgeLoop()
+
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+	token := getDeviceToken(t, srv.URL, id, owner.DeviceID, ownerPriv)
+
+	createBody := strings.NewReader(`{"profileId":"shell","name":"ws-expiry","cwd":"` + t.TempDir() + `"}`)
+	createReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/sessions", createBody)
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil || createResp.StatusCode != http.StatusOK {
+		t.Fatalf("create session: err=%v status=%d", err, createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	createResp.Body.Close()
+	if created.ID == "" {
+		t.Fatal("create response missing session id")
+	}
+	defer func() { _, _ = app.lifecycle.Kill(t.Context(), created.ID) }()
+
+	ticketReq, _ := http.NewRequest(http.MethodPost,
+		srv.URL+"/api/device-auth/ws-ticket?session="+url.QueryEscape(created.ID), nil)
+	ticketReq.Header.Set("Authorization", "Bearer "+token)
+	ticketResp, err := http.DefaultClient.Do(ticketReq)
+	if err != nil || ticketResp.StatusCode != http.StatusOK {
+		t.Fatalf("ticket: err=%v status=%d", err, ticketResp.StatusCode)
+	}
+	var ticket struct {
+		Ticket    string    `json:"ticket"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	_ = json.NewDecoder(ticketResp.Body).Decode(&ticket)
+	ticketResp.Body.Close()
+	if ticket.Ticket == "" || ticket.ExpiresAt.IsZero() {
+		t.Fatalf("invalid ticket response: %+v", ticket)
+	}
+	principal := app.sessionMgr.AuthenticateBearer(token)
+	if principal == nil || !ticket.ExpiresAt.Equal(principal.BearerExpires) {
+		t.Fatalf("ticket expiry=%s want bearer expiry=%v", ticket.ExpiresAt, principal)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/term/ws?session=" +
+		url.QueryEscape(created.ID) + "&ticket=" + url.QueryEscape(ticket.Ticket)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ticket websocket upgrade: %v", err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	_ = conn.SetReadDeadline(deadline)
+	for {
+		_, _, readErr := conn.ReadMessage()
+		if readErr != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("websocket remained active beyond bearer expiry")
+		}
+	}
+	unregisterDeadline := time.Now().Add(time.Second)
+	for app.connRegistry.Count(owner.DeviceID) != 0 && time.Now().Before(unregisterDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := app.connRegistry.Count(owner.DeviceID); got != 0 {
+		t.Fatalf("expired websocket still registered: %d", got)
+	}
+}
+
+func TestRemoteWSTicketCapacityThroughProductionHandler(t *testing.T) {
+	dir := t.TempDir()
+	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
+	reg, _ := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
+	ownerPriv, ownerPub, _ := devicetrust.GenKeypair(t)
+	owner, _ := reg.Add(ownerPub, "owner")
+	deps := testDeps()
+	deps.WSTicketConfig = &devicetrust.WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 1, MaxTotal: 1}
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.hostIdentity = id
+	app.deviceRegistry = reg
+	app.handlers.HostIdentity = id
+	app.authHandler.Identity = id
+	app.authHandler.Registry = reg
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+	token := getDeviceToken(t, srv.URL, id, owner.DeviceID, ownerPriv)
+	issue := func(session string) (int, string) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/device-auth/ws-ticket?session="+url.QueryEscape(session), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("issue ticket: %v", err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			Ticket string `json:"ticket"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, body.Ticket
+	}
+	status, raw := issue("one")
+	if status != http.StatusOK || raw == "" {
+		t.Fatalf("first ticket status=%d ticket=%q", status, raw)
+	}
+	if status, _ := issue("two"); status != http.StatusTooManyRequests {
+		t.Fatalf("capacity status=%d want 429", status)
+	}
+	// A wrong-session use consumes the one-shot ticket and immediately releases
+	// capacity; no successful WebSocket upgrade is required for cleanup.
+	badURL := srv.URL + "/term/ws?session=wrong&ticket=" + url.QueryEscape(raw)
+	if resp, err := http.Get(badURL); err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong-session consume: err=%v status=%d", err, resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if status, _ := issue("two"); status != http.StatusOK {
+		t.Fatalf("capacity not released after consume: %d", status)
+	}
+}
+
+func TestRemoteWSTicketFailsClosedWithoutHostIdentity(t *testing.T) {
+	deps := testDeps()
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	p, _ := func() (*devicetrust.Principal, string) {
+		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
+			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+		)
+		if createErr != nil {
+			t.Fatalf("create bearer: %v", createErr)
+		}
+		return app.sessionMgr.AuthenticateBearer(raw), raw
+	}()
+	rawTicket, _, err := app.wsTickets.Issue(p, "host", "session")
+	if err != nil {
+		t.Fatalf("issue ticket: %v", err)
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/term/ws?session=session&ticket=" + url.QueryEscape(rawTicket))
+	if err != nil {
+		t.Fatalf("ticket request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("missing host identity status=%d want 503", resp.StatusCode)
+	}
+	if app.wsTickets.Count() != 1 {
+		t.Fatalf("fail-closed host check consumed ticket: count=%d", app.wsTickets.Count())
+	}
+}
+
+type authTestCloser struct {
+	once sync.Once
+	done chan struct{}
+}
+
+func (c *authTestCloser) Close() error {
+	c.once.Do(func() { close(c.done) })
+	return nil
+}
+
+func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T) {
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, testDeps())
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	issueGrant := func() (*devicetrust.Principal, string) {
+		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
+			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+		)
+		if createErr != nil {
+			t.Fatalf("create bearer: %v", createErr)
+		}
+		p := app.sessionMgr.AuthenticateBearer(raw)
+		ticket, _, issueErr := app.wsTickets.Issue(p, "host", "session")
+		if issueErr != nil {
+			t.Fatalf("issue ticket: %v", issueErr)
+		}
+		return p, ticket
+	}
+
+	p1, ticket1 := issueGrant()
+	closer1 := &authTestCloser{done: make(chan struct{})}
+	app.connRegistry.Register(p1.DeviceID, closer1)
+	_, _, _, err = app.sessionMgr.CreateAfterVerifiedChallenge(
+		p1.DeviceID, p1.HostID, app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+	)
+	if err != nil {
+		t.Fatalf("replace bearer: %v", err)
+	}
+	select {
+	case <-closer1.done:
+	case <-time.After(time.Second):
+		t.Fatal("replacement did not close active connection")
+	}
+	if app.wsTickets.Count() != 0 || app.wsTickets.ConsumeBound(ticket1, "host", "session", app.sessionMgr) != nil {
+		t.Fatal("replacement did not revoke pending ticket")
+	}
+
+	p2 := app.sessionMgr.AuthenticateBearer(func() string {
+		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
+			"other", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+		)
+		if createErr != nil {
+			t.Fatalf("create second bearer: %v", createErr)
+		}
+		return raw
+	}())
+	ticket2, _, _ := app.wsTickets.Issue(p2, "host", "session")
+	closer2 := &authTestCloser{done: make(chan struct{})}
+	app.connRegistry.Register(p2.DeviceID, closer2)
+	app.sessionMgr.RevokeDevice(p2.DeviceID)
+	select {
+	case <-closer2.done:
+	case <-time.After(time.Second):
+		t.Fatal("revoke did not close active connection")
+	}
+	if app.wsTickets.Count() != 0 || app.wsTickets.ConsumeBound(ticket2, "host", "session", app.sessionMgr) != nil {
+		t.Fatal("revoke did not invalidate pending ticket")
+	}
 }

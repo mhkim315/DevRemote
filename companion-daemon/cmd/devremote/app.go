@@ -52,13 +52,15 @@ type tunnelResource interface {
 // Dependencies holds injectable resource factories for testing.
 // A nil field means "use the production default".
 type Dependencies struct {
-	Verifier     term.TokenVerifier // if nil, created from Config in NewAppWithDeps
-	Events       term.EventStore    // if nil, NewMemoryEventStore used
-	Links        term.LinkStore     // if nil, NewFileLinkStore used
-	Cmds         term.CommandBroker // if nil, NewCommandBroker used
-	StartWatcher func() (watcherResource, error)
-	StartIPC     func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error)
-	StartTunnel  func() tunnelResource
+	Verifier            term.TokenVerifier // if nil, created from Config in NewAppWithDeps
+	Events              term.EventStore    // if nil, NewMemoryEventStore used
+	Links               term.LinkStore     // if nil, NewFileLinkStore used
+	Cmds                term.CommandBroker // if nil, NewCommandBroker used
+	DeviceSessionConfig *devicetrust.DeviceSessionManagerConfig
+	WSTicketConfig      *devicetrust.WSTicketStoreConfig
+	StartWatcher        func() (watcherResource, error)
+	StartIPC            func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error)
+	StartTunnel         func() tunnelResource
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -178,8 +180,17 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("boot id: %w", err)
 	}
-	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 20*time.Minute)
-	wsTickets := devicetrust.NewWSTicketStore()
+	sessionCfg := devicetrust.DeviceSessionManagerConfig{BootID: bootID, Lifetime: 20 * time.Minute}
+	if deps.DeviceSessionConfig != nil {
+		sessionCfg = *deps.DeviceSessionConfig
+		sessionCfg.BootID = bootID
+	}
+	sessionMgr := devicetrust.NewDeviceSessionManagerWithConfig(sessionCfg)
+	ticketCfg := devicetrust.WSTicketStoreConfig{}
+	if deps.WSTicketConfig != nil {
+		ticketCfg = *deps.WSTicketConfig
+	}
+	wsTickets := devicetrust.NewWSTicketStoreWithConfig(ticketCfg)
 	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
 	// Wire session replacement → connection invalidation.
 	cb := func(deviceID string) {
@@ -194,6 +205,27 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil}
 
 	serveMux := http.NewServeMux()
+	notifier := newPushNotifier()
+	registerPush := func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token != "" {
+			notifier.SetToken(token)
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+
+	// Device bootstrap is public by design. Ticket issuance itself always
+	// requires an authenticated device bearer.
+	authH := &devicetrust.AuthHandler{
+		Challenges:  challengeStore,
+		Sessions:    sessionMgr,
+		RateLimiter: devicetrust.NewChallengeRateLimiter(devicetrust.RateLimiterConfig{}),
+	}
+	serveMux.HandleFunc("POST /api/device-auth/challenge", authH.HandleChallenge)
+	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
+	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
+		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets), devicetrust.PermSessionsRead))
+
 	// M2.5-4: explicit auth mode. In remote (production) mode, operational
 	// REST routes use device bearer auth with permission enforcement. In
 	// insecure-local-only mode, the legacy AuthMiddleware (Supabase/dev-token)
@@ -203,11 +235,18 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("POST /api/sessions/{id}/stop", h.AuthMiddleware(h.HandleSessionStop))
 		serveMux.HandleFunc("POST /api/sessions/{id}/kill", h.AuthMiddleware(h.HandleSessionKill))
 		serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
+		serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
+		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
+		serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
+		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
+		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
+		serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
+		serveMux.HandleFunc("/push/register", h.AuthMiddleware(registerPush))
+		serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
+		serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
+		serveMux.HandleFunc("/debug/diag", h.AuthMiddleware(h.HandleDiagnostic))
+		serveMux.HandleFunc("/debug/e8diag", h.AuthMiddleware(term.HandleE8Diag))
 	} else {
-		// Remote device-auth mode: fail closed if no session manager.
-		if sessionMgr == nil {
-			log.Fatalf("device session manager required in remote mode")
-		}
 		// Method-level permissions: GET→read, POST create→create, DELETE→history:delete.
 		// PUT (legacy no-op) is disabled in remote mode.
 		serveMux.HandleFunc("GET /api/sessions",
@@ -223,46 +262,30 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		// Path-based session delete (M2 canonical form).
 		serveMux.HandleFunc("DELETE /api/sessions/{id}",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
-	}
-
-	// M2.5-3: device challenge-auth endpoints (ungated — fail gracefully
-	// when no host identity / device registry is configured).
-	authH := &devicetrust.AuthHandler{
-		Challenges:  challengeStore,
-		Sessions:    sessionMgr,
-		RateLimiter: devicetrust.NewChallengeRateLimiter(devicetrust.RateLimiterConfig{}),
-	}
-	// Identity and Registry are nil here and wired in Run() after initDeviceTrust.
-	// Endpoints check for nil and return 503 if not configured.
-	serveMux.HandleFunc("POST /api/device-auth/challenge", authH.HandleChallenge)
-	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
-	// WS ticket: authenticated endpoint (bearer token required).
-	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
-		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets), devicetrust.PermSessionsRead))
-	// M2: managed-session lifecycle (registered above in mode-dependent block)
-	if cfg.InsecureLocalOnly {
-		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
-	} else {
-		if cfg.InsecureLocalOnly {
-			serveMux.HandleFunc("GET /term/size", h.AuthMiddleware(term.HandleTermSize))
-			serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
-			serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
-			serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
-			serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
-		}
-		// Remote mode: WS ticket is the only credential.
+		serveMux.HandleFunc("GET /api/session-profiles",
+			devicetrust.RequirePrincipal(sessionMgr, term.HandleSessionProfiles, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleApprovalAction, devicetrust.PermTerminalInput))
+		serveMux.HandleFunc("GET /api/v2/links",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("POST /api/v2/links",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsCreate))
+		serveMux.HandleFunc("DELETE /api/v2/links",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermHistoryDelete))
 		serveMux.HandleFunc("GET /term/ws", h.HandleWSTicketAuth)
+		serveMux.HandleFunc("/term/size",
+			devicetrust.RequirePrincipal(sessionMgr, term.HandleTermSize, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("/term/",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleHTML, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("/push/register",
+			devicetrust.RequirePrincipal(sessionMgr, registerPush, devicetrust.PermSessionsRead))
+		// Only product-used diagnostics remain remotely reachable. Raw dump and
+		// E8 instrumentation are deliberately local-only.
+		serveMux.HandleFunc("/debug/cmd",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleCmd, devicetrust.PermTerminalInput))
+		serveMux.HandleFunc("GET /debug/diag",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleDiagnostic, devicetrust.PermSessionsRead))
 	}
-
-	notifier := newPushNotifier()
-	serveMux.HandleFunc("/push/register", h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		token := r.URL.Query().Get("token")
-		if token != "" {
-			notifier.SetToken(token)
-			log.Printf("📱 Push token registered: %s", token)
-		}
-		w.WriteHeader(200)
-	}))
 
 	// 3. Telemetry service owns the state machine and approval detection.
 	var agentDetector term.AgentDetector
@@ -271,11 +294,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity)
 	h.Telemetry = telemetry
-
-	serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
-	serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
-	serveMux.HandleFunc("/debug/diag", h.AuthMiddleware(h.HandleDiagnostic))
-	serveMux.HandleFunc("/debug/e8diag", h.AuthMiddleware(term.HandleE8Diag))
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {

@@ -167,7 +167,7 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 // bound to the requested session. Missing/invalid/wrong-session tickets are
 // rejected 401 BEFORE upgrade.
 func (h *Handlers) HandleWSTicketAuth(w http.ResponseWriter, r *http.Request) {
-	if h.WSTickets == nil {
+	if h.WSTickets == nil || h.SessionMgr == nil || h.HostIdentity == nil || h.HostIdentity.HostID == "" {
 		http.Error(w, "ws ticket auth not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -246,6 +246,17 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	if h.ConnRegistry != nil && ticketPrincipal != nil {
 		h.ConnRegistry.Register(ticketPrincipal.DeviceID, conn)
 		defer h.ConnRegistry.Unregister(ticketPrincipal.DeviceID, conn)
+	}
+	// A successful upgrade must not extend the authorizing bearer lifetime.
+	// Replacement/revoke close through ConnRegistry; this timer closes the
+	// connection at the exact bearer expiry even between purge ticks.
+	if ticketPrincipal != nil && !ticketPrincipal.BearerExpires.IsZero() {
+		remaining := time.Until(ticketPrincipal.BearerExpires)
+		if remaining <= 0 {
+			return
+		}
+		expiryTimer := time.AfterFunc(remaining, func() { _ = conn.Close() })
+		defer expiryTimer.Stop()
 	}
 
 	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)

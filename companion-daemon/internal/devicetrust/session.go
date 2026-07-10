@@ -205,6 +205,23 @@ func (m *DeviceSessionManager) isActiveBearer(deviceID, bearerSessionID string) 
 	return sess.SessionID == bearerSessionID
 }
 
+func notifyInvalidated(cb OnReplaceFunc, deviceIDs []string) {
+	if cb == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(deviceIDs))
+	for _, deviceID := range deviceIDs {
+		if deviceID == "" {
+			continue
+		}
+		if _, ok := seen[deviceID]; ok {
+			continue
+		}
+		seen[deviceID] = struct{}{}
+		cb(deviceID)
+	}
+}
+
 // ── Token issuance (atomic: device-index update + cap check + insertion) ──
 
 // CreateAfterVerifiedChallenge issues a new 32-byte bearer token. The
@@ -245,15 +262,19 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 
 	m.mu.Lock()
 
-	// Purge expired inline so capacity reflects live sessions.
-	_ = m.purgeExpiredLocked(now) // expired callbacks fire via PurgeExpired
+	// Purge expired inline so capacity reflects live sessions. The invalidation
+	// callback must still run: once an entry is removed here, the periodic purge
+	// can no longer discover it.
+	expiredDeviceIDs := m.purgeExpiredLocked(now)
 
 	// Determine replacement state BEFORE mutation.
 	_, isReplacement := m.byDevice[deviceID]
 
 	// Global cap: a NEW device must leave room; replacement is always allowed.
 	if !isReplacement && len(m.sessions) >= m.maxSessions {
+		invalidateCB := m.onRevoke
 		m.mu.Unlock()
+		notifyInvalidated(invalidateCB, expiredDeviceIDs)
 		return "", "", time.Time{}, fmt.Errorf("too many active sessions")
 	}
 
@@ -264,11 +285,13 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	}
 	m.sessions[digest] = sess
 	m.byDevice[deviceID] = digest
-	cb := m.onReplace
+	replaceCB := m.onReplace
+	invalidateCB := m.onRevoke
 	m.mu.Unlock()
+	notifyInvalidated(invalidateCB, expiredDeviceIDs)
 	// M2.5-4: callback outside the lock — network I/O must not block the store.
-	if isReplacement && cb != nil {
-		cb(deviceID)
+	if isReplacement && replaceCB != nil {
+		replaceCB(deviceID)
 	}
 	return raw, sessID, exp, nil
 }
@@ -287,18 +310,22 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 	digest := hex.EncodeToString(digestBytes[:])
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	sess, ok := m.sessions[digest]
 	if !ok {
+		m.mu.Unlock()
 		return nil
 	}
 	now := time.Now().UTC()
 	if now.After(sess.ExpiresAt) {
 		delete(m.sessions, digest)
 		delete(m.byDevice, sess.DeviceID)
+		deviceID := sess.DeviceID
+		cb := m.onRevoke
+		m.mu.Unlock()
+		notifyInvalidated(cb, []string{deviceID})
 		return nil
 	}
-	return &Principal{
+	p := &Principal{
 		DeviceID:        sess.DeviceID,
 		Permissions:     clonePerms(sess.Permissions),
 		SessionID:       sess.SessionID,
@@ -308,6 +335,8 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 		DeviceBootID:    sess.BootID,
 		AuthTime:        sess.IssuedAt,
 	}
+	m.mu.Unlock()
+	return p
 }
 
 // ── Revoke / purge ──
@@ -340,11 +369,7 @@ func (m *DeviceSessionManager) PurgeExpired(now time.Time) {
 	expired := m.purgeExpiredLocked(now)
 	cb := m.onRevoke
 	m.mu.Unlock()
-	for _, deviceID := range expired {
-		if cb != nil {
-			cb(deviceID)
-		}
-	}
+	notifyInvalidated(cb, expired)
 }
 
 func (m *DeviceSessionManager) purgeExpiredLocked(now time.Time) (expiredDeviceIDs []string) {

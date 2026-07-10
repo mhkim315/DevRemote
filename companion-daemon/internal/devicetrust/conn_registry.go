@@ -31,10 +31,23 @@ func (r *AuthenticatedConnRegistry) Unregister(deviceID string, closer io.Closer
 	list := r.conns[deviceID]
 	for i, c := range list {
 		if c == closer {
-			r.conns[deviceID] = append(list[:i], list[i+1:]...)
+			list = append(list[:i], list[i+1:]...)
+			if len(list) == 0 {
+				delete(r.conns, deviceID)
+			} else {
+				r.conns[deviceID] = list
+			}
 			return
 		}
 	}
+}
+
+// Count returns the number of active authenticated connections for a device.
+// It is used by lifecycle diagnostics and production-boundary tests.
+func (r *AuthenticatedConnRegistry) Count(deviceID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.conns[deviceID])
 }
 
 // CloseDevice closes every connection for a device.

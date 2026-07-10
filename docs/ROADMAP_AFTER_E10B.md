@@ -122,9 +122,9 @@ M1.5 Session Ownership / Access Contract       ACCEPT 57718aa39
 M2  Stop / Kill / Delete Lifecycle             ACCEPT eae1e96c9
 M2.5-0 Device Trust Security Contract          COMPLETE (docs)
 M2.5-1 Host Identity / Device Registry         ACCEPT b937cbe0f
-M2.5-2 LAN QR Pairing                          REWORK after 740d56716
-M2.5-3 Challenge Auth / Short Session            READY (plan only)
-M2.5-4 Unified REST / WSS Authentication
+M2.5-2 LAN QR Pairing                          ACCEPT 637dcdf21
+M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
+M2.5-4 Unified REST / WSS Authentication       COMPLETE (see acceptance doc)
 M2.5-5 Revoke / Minimal Audit
 M3  Mobile Lifecycle UX and Real-device Gate       READY (plan only)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)

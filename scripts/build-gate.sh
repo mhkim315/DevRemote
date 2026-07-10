@@ -63,7 +63,11 @@ gate_pass "ID inference scan"
 
 # ── Security ──
 echo "--- Security ---"
-SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
+# Require a credential-like bearer value length. The previous one-character
+# pattern matched identifiers such as "isActiveBearer reports" and harmless
+# unit-test values ("Bearer xyz"), producing false failures as auth coverage
+# grew. Real bearer/JWT values are substantially longer.
+SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9._~-]\{20,\}" \
     "$DAEMON_DIR/internal/" "$DAEMON_DIR/docs/" "$PROJECT_ROOT/docs/" 2>/dev/null \
     | grep -v "testdata/" \
     | grep -v "diagnostic\.go" \

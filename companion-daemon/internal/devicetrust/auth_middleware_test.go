@@ -130,12 +130,18 @@ func TestBearerToken_Extraction(t *testing.T) {
 
 func TestWSTicketStore_Consume(t *testing.T) {
 	s := NewWSTicketStore()
-	p := &Principal{DeviceID: "d1", Permissions: []string{PermSessionsRead}}
-	raw, _ := s.Issue(p, "h1", "s1")
-	if got := s.Consume(raw); got == nil || got.DeviceID != "d1" {
+	m := NewDeviceSessionManager("b1", 20*time.Minute)
+	rawBearer, sid, exp, _ := m.CreateAfterVerifiedChallenge("d1", "h1", "b1", []string{PermSessionsRead})
+	p := m.AuthenticateBearer(rawBearer)
+	if p == nil || p.BearerSessionID != sid {
+		t.Fatal("bearer setup failed")
+	}
+	p.BearerExpires = exp
+	raw, _, _ := s.Issue(p, "h1", "s1")
+	if got := s.ConsumeBound(raw, "h1", "s1", m); got == nil || got.DeviceID != "d1" {
 		t.Fatalf("consume: %+v", got)
 	}
-	if s.Consume(raw) != nil {
+	if s.ConsumeBound(raw, "h1", "s1", m) != nil {
 		t.Fatal("replay succeeded")
 	}
 }
