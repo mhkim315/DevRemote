@@ -231,9 +231,11 @@ func HandleWSTicket(store *WSTicketStore, audit AuditLog) http.HandlerFunc {
 				status = http.StatusBadRequest
 			}
 			if audit != nil {
+				// sessionID is an untrusted URL query value — omit it.
+				// deviceId and correlationId are server-derived hex identifiers.
 				audit.Record(AuditEvent{
 					DeviceID: p.DeviceID, Action: ActionWSTicketDeny,
-					SessionID: sessionID, Result: ResultDenied, CorrelationID: p.BearerSessionID,
+					Result: ResultDenied, CorrelationID: p.BearerSessionID,
 				})
 			}
 			http.Error(w, "unable to issue websocket ticket", status)

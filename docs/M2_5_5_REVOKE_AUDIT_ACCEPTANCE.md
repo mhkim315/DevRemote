@@ -16,9 +16,10 @@ device-management route this phase; `devices:manage` is deferred to M3+.
 ### `pokit devices`
 
 Lists every paired device (including revoked ones) from the device registry
-using the UI-safe `PublicDevice` view — device ID, fingerprint, display name,
-role, last-seen, and `revokedAt` (if applicable). Raw public-key DER material is
-never exposed.
+using the UI-safe `PublicDevice` view — the **full canonical device ID**
+(printed verbatim on its own line, directly copy-pasteable into
+`pokit devices revoke <id>`), plus fingerprint, display name, role, last-seen,
+and `revokedAt` (if applicable). Raw public-key DER material is never exposed.
 
 ### `pokit devices revoke <deviceId>`
 
@@ -61,6 +62,23 @@ content, input, transcript, private keys, tokens, pairing secrets,
 signatures, or push tokens. If something cannot be expressed by these six
 fields, it is not audited.
 
+**Closed-vocabulary + syntactic validation** (the sink accepts only supported
+shapes — invalid events are dropped in full, never sanitized):
+
+- `action` and `result` must be in their private closed sets.
+- `deviceId` and `correlationId` must be hex (device fingerprints / bearer
+  session IDs are always hex) and ≤ 256 bytes — a JWT, bearer token, or
+  free-form text is rejected.
+- `sessionId` must be "" or a canonical `<adapter>:<local-id>` (adapter `[a-z_]+`,
+  local-id ≤ 256 bytes, no whitespace or control characters) — a shell command,
+  escape sequence, or token shape is rejected.
+
+**Server-derived only**: emit sites never echo untrusted request input. Lifecycle
+stop/kill records the canonical `LifecycleResult.SessionID` (validated by a real
+session lookup), not the URL path value; `ws.ticket.deny` omits the untrusted
+`?session=` query entirely; `deviceId`/`correlationId` come from the
+authenticated principal / freshly issued bearer.
+
 ## Storage
 
 - Path: `~/.pokit/audit.jsonl` (owner-only `0600` file, `0700` parent dir —
@@ -71,6 +89,19 @@ fields, it is not audited.
   no events (fail-closed).
 - Writes are **best-effort**: an audit I/O failure never blocks or fails the
   security action that produced the event.
+
+**Secure write path** (before every append):
+
+- `Lstat` the path; refuse to write through a symlink or any non-regular file
+  (directory, FIFO, socket).
+- A pre-existing user-owned regular file with broader-than-`0600` permissions
+  is corrected to `0600` and re-verified; if it cannot be secured, the write
+  fails closed.
+- A new file is created atomically at `0600` (no window of broader visibility;
+  `0600` has no group/other bits for the umask to leave set).
+- The open uses `O_NOFOLLOW` (darwin/linux) to close the `Lstat`→`open` TOCTOU
+  window: if the final path component is or becomes a symlink, the open fails
+  rather than following it.
 
 ## Emit points
 
@@ -120,13 +151,22 @@ Automated coverage:
 - `internal/devicetrust/audit_test.go`: round-trip, structural redaction
   (exact JSON key set), empty-action drop, rotation, 0600 perms, fail-closed
   List on insecure perms, concurrent Record under `-race`.
+- `internal/devicetrust/audit_security_test.go`: forged action/result dropped;
+  malicious identifier fields (newline/CR/NUL, escape sequences, oversized,
+  non-hex tokens, bearer/JWT/terminal-text shapes) dropped in full with no
+  sentinel byte reaching disk, valid canonical events still writable; filesystem
+  security (new file 0600, pre-existing 0644 corrected, symlink rejected,
+  directory/FIFO/non-regular rejected, append still works).
 - `internal/devicetrust/audit_emit_test.go`: verify grant (deviceId +
   correlationId), bad-signature deny (device present, no secret details),
-  ws-ticket deny (only the denial is audited).
+  ws-ticket deny (only the denial is audited; untrusted session query omitted).
 - `internal/term/devices_ipc_test.go`: IPC dispatch over `net.Pipe` for list
   (roles ordered, no raw public-key material leaked), revoke (registry
   revoked, bearer session gone, onRevoke fires, audit recorded), and
   unknown-device error.
+- `cmd/devremote/devices_cli_test.go`: the list line prints the full device ID
+  verbatim, and the exact listed ID passed unchanged into revoke actually
+  revokes the device (command-layer round-trip).
 - `cmd/devremote/devices_admin_test.go`: real IPC socket → real
   controlled-PTY WS → revoke over the socket → WS closes, connection
   registry cleared, bearer invalid, audit recorded.
@@ -144,16 +184,24 @@ token/prefix/key literals).
 
 ## Explicit follow-ups
 
+Non-blocking (no test currently exposes a defect):
+
+- **Final-owner revoke policy**: revoking the last owner device is currently
+  permitted; whether to guard it (and re-pair recovery) is unspecified.
+- **Synchronous I/O wording**: "never block" refers to never failing the caller's
+  security action; the file append is synchronous under the audit mutex.
 - **Narrow test hook**: `Recorder.SubscriberCount()` — a read-only production API
   extension for test observability. Candidate for package-private cleanup.
-- **npm moderate**: 10 moderate vulnerability advisories in `npm audit`;
-  none were introduced this phase.
+- **npm moderate**: 10 moderate advisories in `npm audit`; none introduced here.
 - **Per-device capability/adapter list** and **device display-name editing** are
-  not yet specified; the device list is a `PublicDevice` view ready for that
-  enrichment.
+  not yet specified; the `PublicDevice` view is ready for that enrichment.
 
 ## Commit history (this branch)
 
 - `8cc3a85b4` — audit log core (`AuditLog`, `FileAuditLog`, structural redaction)
 - `0694c4302` — emit audit at boundaries (nil-safe hooks)
 - `241917961` — revoke integration + local IPC/CLI surface
+- remediation — full CLI device ID, closed-vocabulary + syntactic audit
+  validation (server-derived identifiers only), secure `O_NOFOLLOW` write path
+  with symlink/non-regular rejection and 0600 correction, and the injection /
+  filesystem / CLI-round-trip regression suites

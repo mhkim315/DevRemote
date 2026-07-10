@@ -52,19 +52,22 @@ func listDevices() {
 		fmt.Println("No paired devices.")
 		return
 	}
-	fmt.Printf("%-20s  %-8s  %-8s  %-20s  %s\n", "DEVICE ID", "ROLE", "STATE", "LAST SEEN", "NAME")
+	// Print the FULL canonical device ID — it is the exact value
+	// `pokit devices revoke <id>` requires (the registry matches it exactly).
 	for _, d := range resp.Devices {
 		state := "active"
 		if d.RevokedAt != nil {
 			state = "revoked"
 		}
-		id := d.DeviceID
-		if len(id) > 20 {
-			id = id[:20]
-		}
-		fmt.Printf("%-20s  %-8s  %-8s  %-20s  %s\n",
-			id, d.Role, state, d.LastSeenAt.Local().Format("2006-01-02 15:04"), d.DisplayName)
+		fmt.Println(deviceListLine(d.DeviceID, d.Role, state, d.LastSeenAt.Local().Format("2006-01-02 15:04"), d.DisplayName))
 	}
+}
+
+// deviceListLine renders one `pokit devices` row. The full device ID is printed
+// verbatim on its own line so it can be copied directly into
+// `pokit devices revoke <id>`; the human-friendly fields follow, indented.
+func deviceListLine(id, role, state, lastSeen, name string) string {
+	return fmt.Sprintf("%s\n  role=%s  state=%s  last-seen=%s  name=%q", id, role, state, lastSeen, name)
 }
 
 func revokeDevice(deviceID string) {

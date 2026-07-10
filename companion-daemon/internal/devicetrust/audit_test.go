@@ -13,9 +13,9 @@ import (
 func TestAuditRecordListRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	a := NewFileAuditLog(path)
-	a.Record(AuditEvent{DeviceID: "dev-1", Action: ActionAuthVerify, Result: ResultGranted, CorrelationID: "sess-abc"})
-	a.Record(AuditEvent{DeviceID: "dev-1", Action: ActionSessionKill, SessionID: "controlled_pty:x", Result: ResultOK})
-	a.Record(AuditEvent{DeviceID: "dev-2", Action: ActionDeviceRevoke, Result: ResultOK})
+	a.Record(AuditEvent{DeviceID: "ab01", Action: ActionAuthVerify, Result: ResultGranted, CorrelationID: "beef01"})
+	a.Record(AuditEvent{DeviceID: "ab01", Action: ActionSessionKill, SessionID: "controlled_pty:x", Result: ResultOK})
+	a.Record(AuditEvent{DeviceID: "ab02", Action: ActionDeviceRevoke, Result: ResultOK})
 
 	got := a.List(0)
 	if len(got) != 3 {
@@ -40,8 +40,8 @@ func TestAuditRedactionSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	a := NewFileAuditLog(path)
 	a.Record(AuditEvent{
-		Timestamp: time.Now().UTC(), DeviceID: "d", Action: ActionAuthVerify,
-		SessionID: "s", Result: ResultGranted, CorrelationID: "c",
+		Timestamp: time.Now().UTC(), DeviceID: "aa", Action: ActionAuthVerify,
+		SessionID: "controlled_pty:s", Result: ResultGranted, CorrelationID: "cc",
 	})
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestAuditRedactionSchema(t *testing.T) {
 func TestAuditIgnoresEmptyAction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	a := NewFileAuditLog(path)
-	a.Record(AuditEvent{DeviceID: "d", Result: ResultOK}) // no action → dropped
+	a.Record(AuditEvent{DeviceID: "aa", Result: ResultOK}) // no action → dropped
 	if got := a.List(0); len(got) != 0 {
 		t.Fatalf("empty-action event was recorded: %+v", got)
 	}
@@ -76,7 +76,7 @@ func TestAuditRotation(t *testing.T) {
 	a := NewFileAuditLogWithMax(path, 512) // tiny threshold
 	const n = 200
 	for i := 0; i < n; i++ {
-		a.Record(AuditEvent{DeviceID: "dev", Action: ActionAuthVerify, Result: ResultGranted, CorrelationID: fmt.Sprintf("c%03d", i)})
+		a.Record(AuditEvent{DeviceID: "abcd", Action: ActionAuthVerify, Result: ResultGranted, CorrelationID: fmt.Sprintf("%06x", i)})
 	}
 	if _, err := os.Stat(path + ".1"); err != nil {
 		t.Fatalf("rotation did not create %s.1: %v", path, err)
@@ -90,10 +90,10 @@ func TestAuditRotation(t *testing.T) {
 	if len(got) == 0 || len(got) >= n {
 		t.Fatalf("expected a bounded recent subset, got %d of %d", len(got), n)
 	}
-	if got[len(got)-1].CorrelationID != "c199" {
+	if got[len(got)-1].CorrelationID != fmt.Sprintf("%06x", n-1) {
 		t.Fatalf("most recent event lost: last=%q", got[len(got)-1].CorrelationID)
 	}
-	if got[0].CorrelationID == "c000" {
+	if got[0].CorrelationID == fmt.Sprintf("%06x", 0) {
 		t.Fatal("expected oldest events to be rotated out")
 	}
 }
@@ -102,7 +102,7 @@ func TestAuditFilePerms(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "audit.jsonl")
 	a := NewFileAuditLog(path)
-	a.Record(AuditEvent{DeviceID: "d", Action: ActionAuthVerify, Result: ResultGranted})
+	a.Record(AuditEvent{DeviceID: "aa", Action: ActionAuthVerify, Result: ResultGranted})
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
@@ -123,7 +123,7 @@ func TestAuditFilePerms(t *testing.T) {
 func TestAuditListFailsClosedOnInsecurePerms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	a := NewFileAuditLog(path)
-	a.Record(AuditEvent{DeviceID: "d", Action: ActionAuthVerify, Result: ResultGranted})
+	a.Record(AuditEvent{DeviceID: "aa", Action: ActionAuthVerify, Result: ResultGranted})
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestAuditConcurrentRecord(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < per; i++ {
-				a.Record(AuditEvent{DeviceID: "dev", Action: ActionAuthVerify, Result: ResultGranted})
+				a.Record(AuditEvent{DeviceID: "abcd", Action: ActionAuthVerify, Result: ResultGranted})
 			}
 		}()
 	}

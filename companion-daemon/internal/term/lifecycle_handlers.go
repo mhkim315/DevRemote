@@ -8,9 +8,11 @@ import (
 	"devremote/companion-daemon/internal/devicetrust"
 )
 
-// auditLifecycle records a redacted stop/kill audit event using the request's
-// authenticated principal (if any). No-op when no audit log is configured.
-func (h *Handlers) auditLifecycle(r *http.Request, action, id string, err error) {
+// auditLifecycle records a redacted stop/kill audit event. It records ONLY the
+// canonical server-derived session ID from the lifecycle result (validated by a
+// real session lookup); the untrusted URL path value is never echoed. When the
+// operation failed and no canonical ID is available, sessionId is omitted.
+func (h *Handlers) auditLifecycle(r *http.Request, action string, res LifecycleResult, err error) {
 	if h.Audit == nil {
 		return
 	}
@@ -18,7 +20,7 @@ func (h *Handlers) auditLifecycle(r *http.Request, action, id string, err error)
 	if err != nil {
 		result = devicetrust.ResultError
 	}
-	ev := devicetrust.AuditEvent{Action: action, SessionID: id, Result: result}
+	ev := devicetrust.AuditEvent{Action: action, SessionID: res.SessionID, Result: result}
 	if p := devicetrust.PrincipalFromContext(r.Context()); p != nil {
 		ev.DeviceID = p.DeviceID
 		ev.CorrelationID = p.BearerSessionID
@@ -32,9 +34,8 @@ func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	id := r.PathValue("id")
-	res, err := h.Lifecycle.Stop(r.Context(), id)
-	h.auditLifecycle(r, devicetrust.ActionSessionStop, id, err)
+	res, err := h.Lifecycle.Stop(r.Context(), r.PathValue("id"))
+	h.auditLifecycle(r, devicetrust.ActionSessionStop, res, err)
 	writeLifecycleResult(w, res, err)
 }
 
@@ -44,9 +45,8 @@ func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	id := r.PathValue("id")
-	res, err := h.Lifecycle.Kill(r.Context(), id)
-	h.auditLifecycle(r, devicetrust.ActionSessionKill, id, err)
+	res, err := h.Lifecycle.Kill(r.Context(), r.PathValue("id"))
+	h.auditLifecycle(r, devicetrust.ActionSessionKill, res, err)
 	writeLifecycleResult(w, res, err)
 }
 

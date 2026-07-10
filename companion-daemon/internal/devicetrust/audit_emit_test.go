@@ -116,8 +116,11 @@ func TestAuditEmit_WSTicketDenyOnly(t *testing.T) {
 	if ev == nil {
 		t.Fatal("no ws.ticket.deny event recorded")
 	}
-	if ev.DeviceID != "device" || ev.SessionID != "s" || ev.CorrelationID != "bearer" {
+	if ev.DeviceID != "device" || ev.CorrelationID != "bearer" {
 		t.Fatalf("ws.ticket.deny event fields: %+v", *ev)
+	}
+	if ev.SessionID != "" {
+		t.Fatal("ws.ticket.deny must not record the untrusted URL session query")
 	}
 	if len(cap.events) != 1 {
 		t.Fatalf("expected exactly one audit event (deny only), got %d", len(cap.events))
