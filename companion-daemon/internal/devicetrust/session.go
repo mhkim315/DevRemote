@@ -94,6 +94,7 @@ type DeviceSessionManager struct {
 	byDevice      map[string]string         // deviceId → token digest (one active per device)
 	bootID        string
 	lifetime      time.Duration
+	onReplace     OnReplaceFunc // called when a device session is replaced
 	maxSessions   int
 	purgeStop     chan struct{}
 	purgeDone     chan struct{}
@@ -238,6 +239,10 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	if prevDigest, exists := m.byDevice[deviceID]; exists {
 		delete(m.sessions, prevDigest)
 	}
+	// M2.5-4: notify conn registry that this device's old session is replaced.
+	if isReplacement && m.onReplace != nil {
+		m.onReplace(deviceID)
+	}
 	m.sessions[digest] = sess
 	m.byDevice[deviceID] = digest
 	return raw, sessID, exp, nil
@@ -319,6 +324,14 @@ func (m *DeviceSessionManager) Count() int {
 	defer m.mu.Unlock()
 	return len(m.sessions)
 }
+
+// OnReplaceFunc is called when a device session is replaced. The conn registry
+// uses this to close active WebSocket connections for the old session.
+type OnReplaceFunc func(deviceID string)
+
+// SetOnReplace registers a callback invoked after a session is replaced.
+func (m *DeviceSessionManager) SetOnReplace(fn OnReplaceFunc) { m.onReplace = fn }
+
 func (m *DeviceSessionManager) checkInvariant() {
 	for devID, digest := range m.byDevice {
 		s, ok := m.sessions[digest]

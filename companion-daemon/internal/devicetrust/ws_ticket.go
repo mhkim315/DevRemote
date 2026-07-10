@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -14,10 +15,12 @@ import (
 
 // wsTicket is a single-use, short-lived opaque token that grants one
 // WebSocket upgrade. The raw ticket is returned exactly once; only its
-// SHA-256 digest is stored.
+// SHA-256 digest is stored. Bound to a specific session, device, and host.
 type wsTicket struct {
 	Digest    string
 	DeviceID  string
+	HostID    string
+	SessionID string
 	Principal *Principal
 	ExpiresAt time.Time
 	Consumed  bool
@@ -35,8 +38,9 @@ func NewWSTicketStore() *WSTicketStore {
 	return &WSTicketStore{tickets: make(map[string]*wsTicket)}
 }
 
-// Issue creates a 32-byte opaque ticket bound to a Principal.
-func (s *WSTicketStore) Issue(p *Principal) (rawTicket string, err error) {
+// Issue creates a 32-byte opaque ticket bound to a Principal, host, and
+// target session. The phone must use this ticket ONLY for that session.
+func (s *WSTicketStore) Issue(p *Principal, hostID, sessionID string) (rawTicket string, err error) {
 	b := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		return "", err
@@ -46,14 +50,35 @@ func (s *WSTicketStore) Issue(p *Principal) (rawTicket string, err error) {
 	digest := hex.EncodeToString(digestBytes[:])
 
 	s.mu.Lock()
+	// Per-device cap: max 3 pending tickets. Auto-purge expired.
+	s.purgeExpiredLocked(time.Now().UTC())
+	devCount := 0
+	for _, t := range s.tickets {
+		if t.DeviceID == p.DeviceID {
+			devCount++
+		}
+	}
+	if devCount >= 3 {
+		s.mu.Unlock()
+		return "", fmt.Errorf("too many pending tickets")
+	}
 	s.tickets[digest] = &wsTicket{
 		Digest:    digest,
 		DeviceID:  p.DeviceID,
+		HostID:    hostID,
+		SessionID: sessionID,
 		Principal: p,
 		ExpiresAt: time.Now().UTC().Add(30 * time.Second),
 	}
 	s.mu.Unlock()
 	return raw, nil
+}
+func (s *WSTicketStore) purgeExpiredLocked(now time.Time) {
+	for k, t := range s.tickets {
+		if now.After(t.ExpiresAt) {
+			delete(s.tickets, k)
+		}
+	}
 }
 
 // Consume atomically validates and consumes a ticket, returning its
@@ -108,7 +133,11 @@ func HandleWSTicket(store *WSTicketStore) http.HandlerFunc {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
-		raw, err := store.Issue(p)
+		sessionID := r.URL.Query().Get("session")
+		if sessionID == "" {
+			sessionID = "devremote"
+		}
+		raw, err := store.Issue(p, p.HostID, sessionID)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

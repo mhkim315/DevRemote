@@ -131,7 +131,7 @@ func TestBearerToken_Extraction(t *testing.T) {
 func TestWSTicketStore_Consume(t *testing.T) {
 	s := NewWSTicketStore()
 	p := &Principal{DeviceID: "d1", Permissions: []string{PermSessionsRead}}
-	raw, _ := s.Issue(p)
+	raw, _ := s.Issue(p, "h1", "s1")
 	if got := s.Consume(raw); got == nil || got.DeviceID != "d1" {
 		t.Fatalf("consume: %+v", got)
 	}

@@ -180,6 +180,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 20*time.Minute)
 	wsTickets := devicetrust.NewWSTicketStore()
 	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
+	// Wire session replacement → connection invalidation.
+	sessionMgr.SetOnReplace(func(deviceID string) { connRegistry.CloseDevice(deviceID) })
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle,
@@ -210,6 +212,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
 	serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 	serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
+	// M2.5-4: ticket-only WS endpoint (no legacy auth — ticket is consumed
+	// inside HandleWS before upgrade).
+	serveMux.HandleFunc("GET /term/ws-ticket", h.HandleWS)
 	serveMux.HandleFunc("GET /term/size", h.AuthMiddleware(term.HandleTermSize))
 	serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 

@@ -10,9 +10,24 @@ import (
 	"sync"
 	"time"
 
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
 	"github.com/gorilla/websocket"
 )
+
+// hasTicketPerm reports whether a device-authenticated principal has a given
+// permission. Returns true if principal is nil (legacy / non-device-auth path).
+func hasTicketPerm(p *devicetrust.Principal, need string) bool {
+	if p == nil {
+		return true
+	}
+	for _, perm := range p.Permissions {
+		if perm == need {
+			return true
+		}
+	}
+	return false
+}
 
 func (h *Handlers) HandleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
@@ -138,6 +153,7 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 
+	var ticketPrincipal *devicetrust.Principal
 	// M2.5-4: authenticate via one-time WS ticket (preferred). The ticket
 	// is consumed before upgrade; it never appears in logs or errors.
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
@@ -145,16 +161,11 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "ws ticket auth not configured", http.StatusServiceUnavailable)
 			return
 		}
-		p := h.WSTickets.Consume(ticket)
-		if p == nil {
+		ticketPrincipal = h.WSTickets.Consume(ticket)
+		if ticketPrincipal == nil {
 			http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
 			return
 		}
-		// Register the connection so revoke/replacement closes it.
-		// The conn isn't upgraded yet — we register a defer-after-upgrade
-		// via the HTTP response controller. For MVP, we track at the
-		// websocket.Conn level after upgrade (see conn registration below).
-		_ = p // Principal available for permission checks (future).
 	}
 
 	// Extract JWT from Authorization header (preferred) or ?token= query param
@@ -215,9 +226,9 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	if h.ConnRegistry != nil {
-		h.ConnRegistry.Register("device", conn)
-		defer h.ConnRegistry.Unregister("device", conn)
+	if h.ConnRegistry != nil && ticketPrincipal != nil {
+		h.ConnRegistry.Register(ticketPrincipal.DeviceID, conn)
+		defer h.ConnRegistry.Unregister(ticketPrincipal.DeviceID, conn)
 	}
 
 	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)
@@ -346,14 +357,18 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 				Bytes:     len(msg),
 			})
 		}
-		if writer, ok := s.(mux.InputWriter); ok {
-			if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
-				log.Printf("WS input write err: %v", inErr)
-				triggerClose(fmt.Errorf("input failed"))
-				break
+		// M2.5-4: device-auth input permission gate. Member devices without
+		// terminal:input may read output but cannot send input.
+		if ticketPrincipal == nil || hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {
+			if writer, ok := s.(mux.InputWriter); ok {
+				if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
+					log.Printf("WS input write err: %v", inErr)
+					triggerClose(fmt.Errorf("input failed"))
+					break
+				}
+			} else if rec != nil {
+				rec.WriteInput(msg)
 			}
-		} else if rec != nil {
-			rec.WriteInput(msg)
 		}
 	}
 
