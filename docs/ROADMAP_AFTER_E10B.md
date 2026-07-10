@@ -125,7 +125,7 @@ M2.5-1 Host Identity / Device Registry         ACCEPT b937cbe0f
 M2.5-2 LAN QR Pairing                          ACCEPT 637dcdf21
 M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
 M2.5-4 Unified REST / WSS Authentication       ACCEPT d6a5733cd (production-boundary proofs complete)
-M2.5-5 Revoke / Minimal Audit                  ACCEPT 241917961 (see acceptance doc)
+M2.5-5 Revoke / Minimal Audit                  ACCEPT df7a3bd9a (see acceptance doc)
 M3  Mobile Lifecycle UX and Real-device Gate       READY (plan only)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Transcript Contract Reset                 READY (plan/audit only)
