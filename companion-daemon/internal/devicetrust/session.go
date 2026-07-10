@@ -23,31 +23,34 @@ const (
 )
 
 // PermOwner is the full set granted to the first paired (owner) device.
-var PermOwner = clonePerms([]string{
+// permission templates are private so no caller can mutate them.
+var permOwnerTemplate = []string{
 	PermSessionsRead,
 	PermSessionsCreate,
 	PermSessionsStop,
 	PermSessionsKill,
 	PermHistoryDelete,
 	PermTerminalInput,
-})
-
-// PermMember is the restricted set for subsequently paired devices.
-var PermMember = clonePerms([]string{
+}
+var permMemberTemplate = []string{
 	PermSessionsRead,
-})
+}
 
-// PermissionsForRole returns the permission set for a device role. Unknown
-// or empty roles return nil (fail closed — no token issued).
+// PermissionsForRole returns a FRESH COPY of the permission set for a device
+// role. Unknown or empty roles return nil (fail closed — no token issued).
 func PermissionsForRole(role string) []string {
+	var src []string
 	switch role {
 	case RoleOwner:
-		return clonePerms(PermOwner)
+		src = permOwnerTemplate
 	case RoleMember:
-		return clonePerms(PermMember)
+		src = permMemberTemplate
 	default:
 		return nil
 	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
 }
 
 // clonePerms returns a defensive copy so no caller can mutate the templates.
@@ -222,18 +225,19 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	// Purge expired inline so capacity reflects live sessions.
 	m.purgeExpiredLocked(now)
 
-	// Per-device replacement: revoke the device's prior session. This does
-	// NOT count against the global cap.
-	if prevDigest, exists := m.byDevice[deviceID]; exists {
-		delete(m.sessions, prevDigest)
-		delete(m.byDevice, deviceID)
-	}
+	// Determine replacement state BEFORE mutation.
+	_, isReplacement := m.byDevice[deviceID]
 
-	// Global cap: a new device (not yet in byDevice) must leave room.
-	if _, isReplacement := m.byDevice[deviceID]; !isReplacement && len(m.sessions) >= m.maxSessions {
+	// Global cap: a NEW device must leave room; replacement is always allowed.
+	if !isReplacement && len(m.sessions) >= m.maxSessions {
 		return "", "", time.Time{}, fmt.Errorf("too many active sessions")
 	}
 
+	// Atomic install: remove the previous session (if any) only as part of
+	// the successful commit.
+	if prevDigest, exists := m.byDevice[deviceID]; exists {
+		delete(m.sessions, prevDigest)
+	}
 	m.sessions[digest] = sess
 	m.byDevice[deviceID] = digest
 	return raw, sessID, exp, nil
@@ -314,4 +318,18 @@ func (m *DeviceSessionManager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.sessions)
+}
+func (m *DeviceSessionManager) checkInvariant() {
+	for devID, digest := range m.byDevice {
+		s, ok := m.sessions[digest]
+		if !ok {
+			panic("byDevice " + devID + " → missing session " + digest)
+		}
+		if s.DeviceID != devID {
+			panic("byDevice " + devID + " → session for " + s.DeviceID)
+		}
+	}
+	if len(m.byDevice) > len(m.sessions) {
+		panic("orphan byDevice entries")
+	}
 }

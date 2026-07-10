@@ -77,7 +77,7 @@ func (h *AuthHandler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit — bounded per-device, burst=3, rate=10/min.
-	if h.RateLimiter != nil && !h.RateLimiter.Allow(time.Now().UTC(), dev.DeviceID, 3, 10) {
+	if h.RateLimiter != nil && !h.RateLimiter.Allow(time.Now().UTC(), dev.DeviceID) {
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
 	}
