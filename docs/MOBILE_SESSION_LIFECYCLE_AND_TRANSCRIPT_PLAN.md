@@ -13,6 +13,7 @@ M0  Lifecycle contract
 M1  Safe session creation and daemon-owned profiles
 M1.5 Session ownership, access, and local terminal host contract
 M2  Stop / kill / delete lifecycle
+M2.5 Minimum device-trust security foundation
 M3  Mobile UX and real-device gate
 T0  Transcript contract reset
 T1  Byte-stream projector foundation
@@ -252,6 +253,25 @@ Acceptance tests:
 - Stop retains Transcript/Activity;
 - Delete removes only the intended ended session/history;
 - cross-session isolation.
+
+Acceptance: corrective commit `eae1e96c9` passes targeted race tests and the
+complete build gate. See `docs/M2_EAE1E96_ACCEPTANCE.md`.
+
+### M2.5 — Minimum Device Trust Security
+
+M2.5 runs before M3 because remote lifecycle buttons must not ship on the
+static `dev-token` boundary. It is intentionally smaller than public-release
+security:
+
+- record the Cloudflare confidentiality trust assumption;
+- establish host identity and paired-device registry;
+- implement LAN-only QR pairing with local approval;
+- authenticate a device-key challenge and issue a short-lived in-memory session;
+- route REST and WebSocket authentication through common boundaries;
+- support revoke and a minimal content-free audit log.
+
+Detailed phases, gates, and deferred security work are defined in
+`docs/M2_5_DEVICE_TRUST_SECURITY_PLAN.md`.
 
 ### M3 — Mobile Lifecycle UX
 

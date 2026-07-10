@@ -118,8 +118,14 @@ Real-device validation now confirms:
 R0  Finish E10b polish                         ACCEPTED
 M0  Mobile Session Lifecycle Contract          ACCEPT a99070015
 M1  Safe Session Creation and Profiles         ACCEPT a99070015
-M1.5 Session Ownership / Access Contract       NEXT
-M2  Stop / Kill / Delete Lifecycle
+M1.5 Session Ownership / Access Contract       ACCEPT 57718aa39
+M2  Stop / Kill / Delete Lifecycle             ACCEPT eae1e96c9
+M2.5-0 Device Trust Security Contract          COMPLETE (docs)
+M2.5-1 Host Identity / Device Registry         NEXT
+M2.5-2 LAN QR Pairing
+M2.5-3 Challenge Auth / Short Session
+M2.5-4 Unified REST / WSS Authentication
+M2.5-5 Revoke / Minimal Audit
 M3  Mobile Lifecycle UX and Real-device Gate
 T0  Transcript Contract Reset
 T1  Byte-stream Transcript Foundation
@@ -136,6 +142,7 @@ The immediate execution order is deliberately lifecycle-first:
 
 ```text
 Mobile lifecycle MVP
+→ minimum device-trust security
 → Transcript projection foundation
 → Transcript semantic enrichment
 ```
@@ -246,6 +253,47 @@ Detailed contract:
 - `docs/SESSION_OWNERSHIP_AND_LOCAL_HOST_CONTRACT.md`
 
 M2 Stop/Kill/Delete applies only to sessions advertising managed lifecycle.
+
+## M2 acceptance
+
+Corrective commit `eae1e96c9` is accepted. It closes the legacy query-DELETE
+bypass, requires confirmed Recorder EOF before terminal finalize, reconciles
+fast natural exit using the exact Recorder, serializes Delete with lifecycle
+operations, and removes ended controlled PTY sessions from the adapter.
+
+Acceptance record: `docs/M2_EAE1E96_ACCEPTANCE.md`.
+
+## M2.5 — Minimum Device Trust Security
+
+M3 must not expose remote Create/Stop/Kill/Delete over the current static
+`dev-token`. Before M3, Pokit builds only the security skeleton that later
+features would otherwise have to retrofit:
+
+```text
+host/device identity
+→ LAN-only pairing
+→ device challenge authentication
+→ short-lived in-memory session token
+→ common REST/WSS authentication
+→ revoke and minimal audit
+```
+
+Security trust statement for personal MVP / initial closed beta:
+
+> Cloudflare is trusted as the HTTPS/WSS transport confidentiality processor
+> and may technically observe terminal traffic. Pokit daemon remains the final
+> device authentication and authorization authority. End-to-end encryption
+> against Cloudflare is not provided in this phase.
+
+Detailed scope and deferred hardening:
+
+- `docs/M2_5_DEVICE_TRUST_SECURITY_PLAN.md`
+- `docs/NEXT_SESSION_M2_5_1_HANDOFF.md`
+
+E2EE/Noise, frame encryption, hardware attestation, advanced multi-device roles,
+host-key recovery/rotation, discovery, and Push are explicitly deferred. The
+authentication/client boundaries introduced now must allow those additions
+without rewriting product screens or lifecycle handlers.
 
 ## T0-T3 — Transcript Projection Refactor
 
