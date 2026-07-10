@@ -2,7 +2,7 @@
 
 Status: planned research gate
 Placement: after M3, before T0 Transcript Contract Reset
-Duration: one to two working days maximum
+Duration: two working days hard cap; finish earlier when decisions are complete
 
 This R1 is the post-M3 runtime-signal research phase. It is distinct from the
 historical and already accepted `R1a Connectivity Baseline`.
@@ -28,6 +28,12 @@ those sources before T0 fixes the Transcript and Runtime Status contracts.
 R1 does not assume those sources are available for every agent. Recorder and
 the generic byte-stream path remain the universal fallback.
 
+R1 is evidence-based, not documentation-only. Official documentation and public
+source establish the claimed contract; redacted runtime capture establishes
+what the installed product actually emits. When runtime capture is impractical,
+the matrix must say `not observed` and record the concrete access, platform,
+license, installation, or correlation blocker.
+
 ## Product boundary
 
 R1 separates two problems:
@@ -42,6 +48,50 @@ Runtime semantic state
 
 Stronger native signals may simplify semantic state and enrich Transcript, but
 they do not remove the need for a readable shell/unknown-agent projection.
+
+## Required integration inventory
+
+R1 covers these named products independently:
+
+```text
+Claude Code
+Codex CLI
+OpenCode
+Orca
+Omnara
+Cline
+Aider
+Goose
+Continue
+Warp
+```
+
+The researcher must first resolve the exact product, publisher, repository,
+runtime surface, and tested version. Names that are ambiguous (especially
+`Orca`) must not be guessed: record candidate products and classify the target
+as unavailable until the intended integration is established.
+
+For every resolved target inspect:
+
+- official documentation;
+- publicly available first-party source code where available;
+- exact event producer and consumer path;
+- hook, plugin, app-server, OSC, JSONL, wrapper, PTY, or other transport;
+- whether the signal exists in interactive mode, headless mode, IDE mode, or
+  only a separate product surface;
+- practical runtime output using an isolated test configuration where access
+  and licensing permit;
+- correlation to a Pokit `controlled_pty` session;
+- version stability, failure behavior, and generic fallback.
+
+Each matrix claim is labeled exactly one of:
+
+```text
+documented  official contract/source proves it
+observed    a redacted runtime fixture proves it
+heuristic   inferred from PTY/text/behavior only
+unavailable exact product, source, runtime, or correlation could not be proven
+```
 
 ## Signal confidence model
 
@@ -117,7 +167,43 @@ Official sources:
 - <https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md>
 - <https://github.com/openai/codex/blob/main/codex-rs/exec/src/lib.rs>
 
-## R1.3 — Generic PTY discovery
+## R1.3 — Additional integration discovery
+
+Apply the common inventory and evidence contract to:
+
+- OpenCode;
+- Orca;
+- Omnara;
+- Cline;
+- Aider;
+- Goose;
+- Continue;
+- Warp.
+
+Do not reduce these to feature-list summaries. Identify the exact notification
+or runtime-event emission site in official documentation/source and trace its
+transport to a possible Pokit consumer. Where practical, launch the installed
+agent under an isolated `controlled_pty` or its documented server/plugin mode
+and capture at least session start, one activity, and completion/attention
+events. IDE-only and terminal-host products must be classified accurately and
+must not inherit PTY-control capability merely because they can display a
+terminal.
+
+For each integration recommend one strategy:
+
+```text
+native signal adapter
+managed hook/plugin
+app-server or local protocol adapter
+native JSONL/log enricher
+controlled wrapper
+PTY-only fallback
+observe-only integration
+defer
+reject
+```
+
+## R1.4 — Generic PTY discovery
 
 Record what a Pokit-owned PTY can observe without agent cooperation:
 
@@ -136,7 +222,7 @@ blocked waiting on stdin, nor why it is quiet. Terminal modes and repaint
 patterns may classify line output versus TUI output, but cannot authoritatively
 mean `thinking`, `waiting_for_input`, approval, or logical completion.
 
-## R1.4 — Instruction-emitted marker experiment
+## R1.5 — Instruction-emitted marker experiment
 
 Evaluate `AGENTS.md` / `CLAUDE.md` instructions that ask an agent to emit a
 `POKIT_EVENT` line or OSC sequence. The expected default decision is advisory
@@ -175,31 +261,56 @@ expected product state
 false-positive / false-negative observation
 ```
 
-Only minimal redacted fixtures and manifests may be committed. Apply the
-existing fixture redaction contract to paths, usernames, repositories, prompts,
-commands, source, tokens, and identifiers.
+Every observed fixture manifest also records:
+
+```text
+product and publisher
+binary/plugin version
+OS and launch surface
+exact redacted invocation or setup ID
+source URL plus commit/path/line or documentation section
+capture timestamp
+controlled_pty session correlation key and result
+fixture SHA-256
+redaction performed
+```
+
+Only minimal redacted fixtures, manifests, and reproducible research-only probes
+may be committed. Probes must live outside production packages and cannot be
+called by daemon/mobile runtime. Apply the existing fixture redaction contract
+to paths, usernames, repositories, prompts, commands, source, tokens, and
+identifiers.
 
 ## Required deliverables
 
-R1 completes with documents, not runtime code:
+R1 completes with evidence and decisions, not product features:
 
-1. `R1_RUNTIME_SIGNAL_MATRIX.md` containing each signal's provider, event,
-   official/observed/heuristic status, stability, correlation key, confidence,
-   failure behavior, and proposed consumer.
-2. A redacted evidence/fixture manifest identifying what was captured and what
-   was intentionally not committed.
-3. An architecture decision record classifying each source as adopt, optional
-   enrichment, defer, or reject.
-4. T0/S1 impact notes defining provenance, precedence, deduplication, version
-   negotiation, and fallback requirements.
-5. A bounded list of unknowns; absence of perfect semantics does not extend R1.
+1. `R1_RUNTIME_SIGNAL_MATRIX.md` with a per-agent row and per-signal details.
+2. Stable official documentation/source references, preferably commit-pinned
+   source path/line references rather than search-result URLs.
+3. Redacted observed fixtures plus a manifest identifying captures, hashes,
+   correlation results, and material intentionally not committed.
+4. Session-correlation feasibility for every integration.
+5. Recommended adapter strategy for every integration.
+6. A confidence/provenance and precedence model for Runtime Event Merger.
+7. An adopt, defer, or reject decision for every integration.
+8. Updated T0-T3, Runtime Event Merger, S1 Status, and N1 Notification roadmap
+   based on the evidence.
+9. A bounded list of unknowns; absence of perfect semantics does not extend R1.
 
 ## Acceptance criteria
 
 - no production runtime, Recorder, mobile, or authentication behavior changes;
-- no persistent modification of the user's real Claude/Codex configuration;
-- every conclusion is labeled documented, directly observed, or inferred;
-- Claude and Codex have independent signal matrices;
+- no persistent modification of any real agent/IDE/terminal configuration;
+- every conclusion is labeled `documented`, `observed`, `heuristic`, or
+  `unavailable` using the definitions above;
+- all ten named integrations have independent matrix entries;
+- every target has an exact product/publisher/repository decision or an
+  explicit ambiguity/unavailable result;
+- official documentation and public source are cited where available;
+- real runtime events are captured where practical; missing captures include a
+  concrete reason and are never presented as observed;
+- fixtures are redacted, hashed, reproducible, and correlated where possible;
 - generic PTY capabilities and impossibilities are stated explicitly;
 - provider event/session correlation is proven or marked unavailable;
 - version/experimental stability and failure isolation are recorded;
@@ -219,7 +330,8 @@ R1 completes with documents, not runtime code:
 - parsing every ANSI/TUI state;
 - treating model-emitted text as a security or lifecycle authority;
 - researching arbitrary undocumented process memory/private APIs;
-- expanding into every available agent.
+- expanding beyond the ten named integrations;
+- production parsing of any researched provider event.
 
 ## Roadmap effect
 
@@ -229,8 +341,9 @@ After R1:
 T0  uses the provenance/source decisions when resetting the event contract
 T1  still builds the minimal generic byte-stream Transcript fallback
 T2  uses PTY structural evidence for safe TUI degradation
-T3  adds only accepted native semantic enrichers
+T3  adds only accepted native semantic enrichers and adapter strategies
 S1  derives status from authoritative lifecycle/native signals first
+N1  uses merged attention/completion events rather than Transcript text alone
 ```
 
 If no strong provider signal correlates with the interactive session, R1 still
@@ -238,7 +351,8 @@ succeeds: Pokit proceeds with T0/T1 and records native integration as deferred.
 
 ## Rollback
 
-R1 is documentation and redacted research evidence only. Rejecting a candidate
-signal requires no product rollback. Provider-specific experiments must use a
-temporary HOME/config or reversible isolated setup and leave the user's normal
-agent configuration unchanged.
+R1 changes no production behavior. Rejecting a candidate signal requires no
+product rollback. Provider-specific experiments must use a temporary
+HOME/config or reversible isolated setup and leave the user's normal agent
+configuration unchanged. Research-only probes and fixtures can be removed as a
+single isolated commit if their retention is not justified.

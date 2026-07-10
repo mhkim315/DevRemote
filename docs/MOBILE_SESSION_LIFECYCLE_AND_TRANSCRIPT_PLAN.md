@@ -293,8 +293,10 @@ produces evidence and architecture decisions, not production integration code.
 
 Its purpose is to determine whether official Claude Code hooks, Codex
 app-server/JSON events, native logs, process lifecycle, or PTY structural
-signals can provide authoritative runtime state. Transcript still requires a
-generic readable projection for shell output and unknown agents.
+signals can provide authoritative runtime state. It covers Claude Code, Codex,
+OpenCode, Orca, Omnara, Cline, Aider, Goose, Continue, and Warp using official
+references plus practical redacted runtime evidence. Transcript still requires
+a generic readable projection for shell output and unknown agents.
 
 Detailed scope and execution handoff:
 

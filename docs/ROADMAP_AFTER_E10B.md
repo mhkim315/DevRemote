@@ -156,9 +156,11 @@ not be derived from Transcript events.
 R1 is a time-boxed research gate after M3 and before T0. It investigates
 official hooks/protocols, native logs, and generic PTY structural signals so T0
 does not commit to text heuristics where stronger evidence already exists. R1
-does not replace the generic byte-stream Transcript fallback and does not add
-production integration code. This post-M3 R1 is distinct from the already
-accepted historical `R1a Connectivity Baseline`.
+requires official source references and practical redacted runtime captures; it
+is not a documentation-summary exercise. It does not replace the generic
+byte-stream Transcript fallback and does not add production integration code.
+This post-M3 R1 is distinct from the already accepted historical `R1a
+Connectivity Baseline`.
 
 ## R0 — Finish E10b polish
 
