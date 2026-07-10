@@ -185,6 +185,12 @@ Challenges are single-use, short-lived, rate-limited, and deleted after success,
 failure threshold, or expiry. Token issuance itself requires the paired device
 signature; possession of the tunnel URL is insufficient.
 
+Detailed canonical transcript, host-proof, session-manager, replay, and
+negative-test contract:
+
+- `docs/M2_5_3_DEVICE_CHALLENGE_AUTH_PLAN.md`
+- `docs/NEXT_SESSION_M2_5_3_HANDOFF.md`
+
 ### M2.5-4 — Unified REST and WebSocket authentication
 
 REST:
