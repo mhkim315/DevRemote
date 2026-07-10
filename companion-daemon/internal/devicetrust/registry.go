@@ -1,0 +1,258 @@
+package devicetrust
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+)
+
+const deviceRecordVersion = 1
+
+// Role values. First paired device gets owner; further devices are members.
+// Full role/permission UI is future work; the field exists now.
+const (
+	RoleOwner  = "owner"
+	RoleMember = "member"
+)
+
+// Device is a paired-device record. Public keys only — never a phone private
+// key. DisplayName is untrusted presentation metadata.
+type Device struct {
+	Version      int        `json:"version"`
+	DeviceID     string     `json:"deviceId"`
+	PublicKeyDER []byte     `json:"publicKey"`
+	Fingerprint  string     `json:"fingerprint"`
+	DisplayName  string     `json:"displayName"`
+	Role         string     `json:"role"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	LastSeenAt   time.Time  `json:"lastSeenAt"`
+	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
+}
+
+// Revoked reports whether the device has been revoked.
+func (d Device) Revoked() bool { return d.RevokedAt != nil }
+
+// PublicDevice is the safe view for API/UI: identity + presentation, no raw key
+// material beyond the (public) fingerprint.
+type PublicDevice struct {
+	DeviceID    string     `json:"deviceId"`
+	Fingerprint string     `json:"fingerprint"`
+	DisplayName string     `json:"displayName"`
+	Role        string     `json:"role"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastSeenAt  time.Time  `json:"lastSeenAt"`
+	RevokedAt   *time.Time `json:"revokedAt,omitempty"`
+}
+
+// Public returns the API/UI-safe device view.
+func (d Device) Public() PublicDevice {
+	return PublicDevice{
+		DeviceID:    d.DeviceID,
+		Fingerprint: d.Fingerprint,
+		DisplayName: d.DisplayName,
+		Role:        d.Role,
+		CreatedAt:   d.CreatedAt,
+		LastSeenAt:  d.LastSeenAt,
+		RevokedAt:   d.RevokedAt,
+	}
+}
+
+// DeviceStore persists the device registry. FileDeviceStore is the MVP.
+type DeviceStore interface {
+	// Load returns the persisted devices, or an empty slice if none exist. A
+	// corrupt store returns an error (fail closed) rather than an empty set.
+	Load() ([]Device, error)
+	Save([]Device) error
+}
+
+// DeviceRegistry manages paired devices with atomic owner-only persistence.
+type DeviceRegistry struct {
+	mu      sync.Mutex
+	store   DeviceStore
+	devices map[string]*Device
+	order   []string
+}
+
+// NewDeviceRegistry loads the persisted registry. A corrupt/insecure store
+// fails closed (error) rather than resetting trust to empty.
+func NewDeviceRegistry(store DeviceStore) (*DeviceRegistry, error) {
+	recs, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	r := &DeviceRegistry{store: store, devices: make(map[string]*Device)}
+	for i := range recs {
+		d := recs[i]
+		if _, exists := r.devices[d.DeviceID]; exists {
+			continue
+		}
+		r.devices[d.DeviceID] = &d
+		r.order = append(r.order, d.DeviceID)
+	}
+	return r, nil
+}
+
+// Add registers a device by its canonical P-256 public key. The device ID is
+// derived from the fingerprint, so adding the same key twice is deterministic:
+// an active duplicate returns the existing record; a revoked key is not
+// resurrected (ErrDeviceRevoked). The first device paired becomes the owner.
+func (r *DeviceRegistry) Add(pubDER []byte, displayName string) (Device, error) {
+	if _, err := ParseP256PublicKey(pubDER); err != nil {
+		return Device{}, err
+	}
+	fp := Fingerprint(pubDER)
+	id := fp
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if existing, ok := r.devices[id]; ok {
+		if existing.Revoked() {
+			return *existing, ErrDeviceRevoked
+		}
+		return *existing, nil
+	}
+
+	role := RoleMember
+	if r.countActiveLocked() == 0 {
+		role = RoleOwner
+	}
+	now := time.Now().UTC()
+	d := &Device{
+		Version:      deviceRecordVersion,
+		DeviceID:     id,
+		PublicKeyDER: append([]byte(nil), pubDER...),
+		Fingerprint:  fp,
+		DisplayName:  displayName,
+		Role:         role,
+		CreatedAt:    now,
+		LastSeenAt:   now,
+	}
+	r.devices[id] = d
+	r.order = append(r.order, id)
+	if err := r.saveLocked(); err != nil {
+		delete(r.devices, id)
+		r.order = r.order[:len(r.order)-1]
+		return Device{}, err
+	}
+	return *d, nil
+}
+
+// GetActive returns a non-revoked device by ID.
+func (r *DeviceRegistry) GetActive(deviceID string) (Device, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[deviceID]
+	if !ok || d.Revoked() {
+		return Device{}, false
+	}
+	return *d, true
+}
+
+// GetActiveByFingerprint returns a non-revoked device by public-key fingerprint
+// (the authentication lookup used by later phases). Revoked keys never match.
+func (r *DeviceRegistry) GetActiveByFingerprint(fp string) (Device, bool) {
+	return r.GetActive(fp)
+}
+
+// List returns all devices (including revoked), in insertion order.
+func (r *DeviceRegistry) List() []Device {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Device, 0, len(r.order))
+	for _, id := range r.order {
+		out = append(out, *r.devices[id])
+	}
+	return out
+}
+
+// Revoke marks a device revoked and persists it. Idempotent. Unknown → error.
+func (r *DeviceRegistry) Revoke(deviceID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return ErrDeviceNotFound
+	}
+	if d.Revoked() {
+		return nil
+	}
+	now := time.Now().UTC()
+	d.RevokedAt = &now
+	if err := r.saveLocked(); err != nil {
+		d.RevokedAt = nil // roll back so memory matches persisted state
+		return err
+	}
+	return nil
+}
+
+// TouchLastSeen updates lastSeenAt for an active device and persists it.
+func (r *DeviceRegistry) TouchLastSeen(deviceID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[deviceID]
+	if !ok || d.Revoked() {
+		return ErrDeviceNotFound
+	}
+	prev := d.LastSeenAt
+	d.LastSeenAt = time.Now().UTC()
+	if err := r.saveLocked(); err != nil {
+		d.LastSeenAt = prev
+		return err
+	}
+	return nil
+}
+
+func (r *DeviceRegistry) countActiveLocked() int {
+	n := 0
+	for _, d := range r.devices {
+		if !d.Revoked() {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *DeviceRegistry) saveLocked() error {
+	out := make([]Device, 0, len(r.order))
+	for _, id := range r.order {
+		out = append(out, *r.devices[id])
+	}
+	return r.store.Save(out)
+}
+
+// FileDeviceStore is the MVP owner-only file DeviceStore.
+type FileDeviceStore struct{ Path string }
+
+func (f *FileDeviceStore) Load() ([]Device, error) {
+	raw, err := readOwnerOnly(f.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // no devices paired yet
+		}
+		return nil, err // insecure permissions → fail closed
+	}
+	var recs []Device
+	if err := json.Unmarshal(raw, &recs); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCorruptStore, err)
+	}
+	for i := range recs {
+		if recs[i].Version != deviceRecordVersion {
+			return nil, fmt.Errorf("%w: unsupported device record version %d", ErrCorruptStore, recs[i].Version)
+		}
+		if _, err := ParseP256PublicKey(recs[i].PublicKeyDER); err != nil {
+			return nil, fmt.Errorf("%w: device %s has a non-P-256 key", ErrCorruptStore, recs[i].DeviceID)
+		}
+	}
+	return recs, nil
+}
+
+func (f *FileDeviceStore) Save(recs []Device) error {
+	raw, err := json.MarshalIndent(recs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeOwnerOnly(f.Path, raw)
+}

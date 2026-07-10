@@ -223,6 +223,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 // Run starts all background resources and the HTTP server.
 // Blocks until ctx is cancelled, then shuts down gracefully.
 func (a *App) Run(ctx context.Context) error {
+	// M2.5-1: ensure the persistent host identity + device registry exist.
+	// No auth/pairing yet — this only bootstraps the trust root.
+	initDeviceTrust()
+
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
 	a.telemetryCtxCancel = cancelTelemetry
