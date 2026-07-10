@@ -182,7 +182,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
 	challengeStore := devicetrust.NewChallengeStore()
 
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle}
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle,
+		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr}
 
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/api/sessions", h.AuthMiddleware(h.HandleSessionsAPI))

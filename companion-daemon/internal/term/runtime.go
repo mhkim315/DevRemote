@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -43,6 +44,10 @@ type Handlers struct {
 	InsecureLocalOnly bool              // E6: accepts dev-token in auth middleware
 	Activity          *ActivityBuffer   // E8f: terminal activity capture
 	Lifecycle         *LifecycleService // M2: Stop/Kill/Delete for managed sessions
+	// M2.5-4: device authentication (concrete types from devicetrust)
+	WSTickets    *devicetrust.WSTicketStore
+	ConnRegistry *devicetrust.AuthenticatedConnRegistry
+	SessionMgr   *devicetrust.DeviceSessionManager
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

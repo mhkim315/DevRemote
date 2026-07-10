@@ -138,6 +138,25 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 
+	// M2.5-4: authenticate via one-time WS ticket (preferred). The ticket
+	// is consumed before upgrade; it never appears in logs or errors.
+	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
+		if h.WSTickets == nil {
+			http.Error(w, "ws ticket auth not configured", http.StatusServiceUnavailable)
+			return
+		}
+		p := h.WSTickets.Consume(ticket)
+		if p == nil {
+			http.Error(w, "invalid or expired ws ticket", http.StatusUnauthorized)
+			return
+		}
+		// Register the connection so revoke/replacement closes it.
+		// The conn isn't upgraded yet — we register a defer-after-upgrade
+		// via the HTTP response controller. For MVP, we track at the
+		// websocket.Conn level after upgrade (see conn registration below).
+		_ = p // Principal available for permission checks (future).
+	}
+
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware
 
@@ -195,6 +214,11 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	if h.ConnRegistry != nil {
+		h.ConnRegistry.Register("device", conn)
+		defer h.ConnRegistry.Unregister("device", conn)
+	}
 
 	log.Printf("WS [%s]: %s connected", session, r.RemoteAddr)
 
