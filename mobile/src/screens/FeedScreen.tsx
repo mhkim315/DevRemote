@@ -1,6 +1,6 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import { terminalURL, listSessions, getSessionHistory, getActivityHistory, ConnectivityFailure, PokitError } from '../lib/client';
-import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator} from 'react-native';
+import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
@@ -244,6 +244,29 @@ export default function FeedScreen({onBack, session, token}: Props) {
       wv.current.injectJavaScript(js + ';true;');
     }
   }, []);
+
+  // Foreground reconnect: while the app is backgrounded (e.g. switching to
+  // AnyDesk) the OS suspends the WebView's WebSocket and its reconnect timers,
+  // so the terminal can return to a dead/stale socket. On return to 'active',
+  // force a reconnect when the socket isn't open. connect() closes the old ws
+  // first, so no duplicate recorder subscribers. Reuses the served HTML's own
+  // globals (stopped / reconnecting / consecutiveFailures / connect).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      inject(
+        '(function(){try{' +
+        'if(typeof stopped!=="undefined"&&stopped)return;' +
+        'var w=window.ws;' +
+        'if(w&&w.readyState===1)return;' +
+        'if(typeof reconnecting!=="undefined")reconnecting=false;' +
+        'if(typeof consecutiveFailures!=="undefined")consecutiveFailures=0;' +
+        'if(typeof connect==="function")connect();' +
+        '}catch(e){}})()'
+      );
+    });
+    return () => sub.remove();
+  }, [inject]);
 
   // E8: send text via injected JS with postMessage ack back to React Native.
   const doSend = useCallback((text: string) => {
