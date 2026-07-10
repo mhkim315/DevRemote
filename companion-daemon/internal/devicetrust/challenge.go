@@ -96,15 +96,20 @@ func NewChallengeStoreWithConfig(cfg ChallengeStoreConfig) *ChallengeStore {
 	}
 }
 
-// Insert stores a new challenge. Returns the 32-byte challenge ID (sent to
-// the client). Auto-purges expired challenges. Rejects if the device has
-// too many pending challenges or the total limit is hit.
+// Insert stores a new challenge. If ch.ChallengeID is already set (caller
+// generated it before signing), it is used as-is; otherwise a fresh ID is
+// generated. Returns the 32-byte challenge ID. Auto-purges expired
+// challenges. Rejects if the device has too many pending challenges or the
+// total limit is hit.
 func (cs *ChallengeStore) Insert(ch *PendingChallenge) ([]byte, error) {
-	id := make([]byte, 32)
-	if _, err := io.ReadFull(cs.randReader, id); err != nil {
-		return nil, fmt.Errorf("challenge insert: %w", err)
+	id := ch.ChallengeID
+	if len(id) == 0 {
+		id = make([]byte, 32)
+		if _, err := io.ReadFull(cs.randReader, id); err != nil {
+			return nil, fmt.Errorf("challenge insert: %w", err)
+		}
+		ch.ChallengeID = id
 	}
-	ch.ChallengeID = id
 	key := challengeDigest(id)
 
 	cs.mu.Lock()

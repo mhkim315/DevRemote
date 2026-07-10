@@ -186,8 +186,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// M2.5-3: device challenge-auth endpoints (ungated — fail gracefully
 	// when no host identity / device registry is configured).
 	authH := &devicetrust.AuthHandler{
-		Challenges: challengeStore,
-		Sessions:   sessionMgr,
+		Challenges:  challengeStore,
+		Sessions:    sessionMgr,
+		RateLimiter: devicetrust.NewChallengeRateLimiter(devicetrust.RateLimiterConfig{}),
 	}
 	// Identity and Registry are nil here and wired in Run() after initDeviceTrust.
 	// Endpoints check for nil and return 503 if not configured.

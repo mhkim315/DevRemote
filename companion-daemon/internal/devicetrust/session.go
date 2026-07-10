@@ -11,46 +11,70 @@ import (
 	"time"
 )
 
-// ── Permission vocabulary (M2.5-4 will enforce these) ──
+// ── Canonical permission vocabulary (M2.5-4 enforcement boundary) ──
 
-// Permissions are string constants so no handler scatters raw literals. The
-// paired owner device receives the PermOwner set; future member/guest roles
-// receive narrower sets.
 const (
-	PermSessionsRead  = "sessions:read"
-	PermTerminalInput = "terminal:input"
-	PermSessionCreate = "session:create"
-	PermSessionStop   = "session:stop"
-	PermSessionKill   = "session:kill"
-	PermSessionDelete = "session:delete"
+	PermSessionsRead   = "sessions:read"
+	PermSessionsCreate = "sessions:create"
+	PermSessionsStop   = "sessions:stop"
+	PermSessionsKill   = "sessions:kill"
+	PermHistoryDelete  = "history:delete"
+	PermTerminalInput  = "terminal:input"
 )
 
-// PermOwner is the permission set issued to the first paired (owner) device.
-var PermOwner = []string{
+// PermOwner is the full set granted to the first paired (owner) device.
+var PermOwner = clonePerms([]string{
 	PermSessionsRead,
+	PermSessionsCreate,
+	PermSessionsStop,
+	PermSessionsKill,
+	PermHistoryDelete,
 	PermTerminalInput,
-	PermSessionCreate,
-	PermSessionStop,
-	PermSessionKill,
-	PermSessionDelete,
+})
+
+// PermMember is the restricted set for subsequently paired devices.
+var PermMember = clonePerms([]string{
+	PermSessionsRead,
+})
+
+// PermissionsForRole returns the permission set for a device role. Unknown
+// or empty roles return nil (fail closed — no token issued).
+func PermissionsForRole(role string) []string {
+	switch role {
+	case RoleOwner:
+		return clonePerms(PermOwner)
+	case RoleMember:
+		return clonePerms(PermMember)
+	default:
+		return nil
+	}
 }
 
-// Principal is the device identity extracted from a valid session token.
-// It is handler-independent — M2.5-4 middleware reads this to authorize
-// REST and WebSocket requests. No raw token is exposed here.
+// clonePerms returns a defensive copy so no caller can mutate the templates.
+func clonePerms(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+// ── Principal (handler-independent) ──
+
 type Principal struct {
 	DeviceID    string
-	Permissions []string
+	Permissions []string // defensive copy, never shared
 	SessionID   string
 	HostID      string
 	AuthTime    time.Time
 }
 
-// DeviceSession is the daemon-side record for an issued bearer token.
-// The raw token is returned exactly once; only its SHA-256 digest is stored.
+// ── DeviceSession ──
+
 type DeviceSession struct {
-	TokenDigest string    `json:"-"` // SHA-256 hex of the raw 32-byte token
-	SessionID   string    `json:"-"` // internal correlation id
+	TokenDigest string    `json:"-"`
+	SessionID   string    `json:"-"`
 	DeviceID    string    `json:"-"`
 	HostID      string    `json:"-"`
 	BootID      string    `json:"-"`
@@ -59,36 +83,56 @@ type DeviceSession struct {
 	ExpiresAt   time.Time `json:"-"`
 }
 
-// DeviceSessionManager owns all active device sessions. It is in-memory
-// only — daemon restart invalidates every session (new boot ID). A
-// background goroutine periodically purges expired sessions; the interval
-// is injectable for tests, with a safe production default.
+// ── DeviceSessionManager ──
+
 type DeviceSessionManager struct {
 	mu            sync.Mutex
-	sessions      map[string]*DeviceSession
+	sessions      map[string]*DeviceSession // token digest → session
+	byDevice      map[string]string         // deviceId → token digest (one active per device)
 	bootID        string
 	lifetime      time.Duration
+	maxSessions   int
 	purgeStop     chan struct{}
 	purgeDone     chan struct{}
 	purgeInterval time.Duration
 }
 
-// NewDeviceSessionManager creates an empty session store. bootID ensures
-// a restart invalidates all prior sessions. lifetime is the token TTL.
+// DeviceSessionManagerConfig holds injectable parameters.
+type DeviceSessionManagerConfig struct {
+	BootID        string
+	Lifetime      time.Duration
+	MaxSessions   int
+	PurgeInterval time.Duration
+}
+
 func NewDeviceSessionManager(bootID string, lifetime time.Duration) *DeviceSessionManager {
-	if lifetime <= 0 {
-		lifetime = 20 * time.Minute
+	return NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{
+		BootID: bootID, Lifetime: lifetime,
+	})
+}
+
+func NewDeviceSessionManagerWithConfig(cfg DeviceSessionManagerConfig) *DeviceSessionManager {
+	if cfg.Lifetime <= 0 {
+		cfg.Lifetime = 20 * time.Minute
+	}
+	if cfg.MaxSessions <= 0 {
+		cfg.MaxSessions = 64
+	}
+	if cfg.PurgeInterval <= 0 {
+		cfg.PurgeInterval = 5 * time.Minute
 	}
 	return &DeviceSessionManager{
 		sessions:      make(map[string]*DeviceSession),
-		bootID:        bootID,
-		lifetime:      lifetime,
-		purgeInterval: 5 * time.Minute,
+		byDevice:      make(map[string]string),
+		bootID:        cfg.BootID,
+		lifetime:      cfg.Lifetime,
+		maxSessions:   cfg.MaxSessions,
+		purgeInterval: cfg.PurgeInterval,
 	}
 }
 
-// StartPurgeLoop begins a background goroutine that periodically removes
-// expired sessions. Call StopPurgeLoop during shutdown.
+// ── Lifecycle ──
+
 func (m *DeviceSessionManager) StartPurgeLoop() {
 	m.mu.Lock()
 	if m.purgeStop != nil {
@@ -114,7 +158,6 @@ func (m *DeviceSessionManager) StartPurgeLoop() {
 	}()
 }
 
-// StopPurgeLoop stops the background purge goroutine and waits for it.
 func (m *DeviceSessionManager) StopPurgeLoop() {
 	m.mu.Lock()
 	if m.purgeStop == nil {
@@ -127,20 +170,24 @@ func (m *DeviceSessionManager) StopPurgeLoop() {
 	<-done
 }
 
-// SetPurgeInterval configures the background purge interval (test hook).
 func (m *DeviceSessionManager) SetPurgeInterval(d time.Duration) {
 	m.mu.Lock()
 	m.purgeInterval = d
 	m.mu.Unlock()
 }
 
-// BootID returns the daemon boot ID (sessions are bound to it).
 func (m *DeviceSessionManager) BootID() string { return m.bootID }
 
-// CreateAfterVerifiedChallenge issues a new opaque 32-byte bearer token
-// after a challenge has been consumed and the device signature verified.
-// The raw token is returned exactly once; only its SHA-256 digest is stored.
-// Callers must never log the raw token.
+// ── Token issuance (atomic: device-index update + cap check + insertion) ──
+
+// CreateAfterVerifiedChallenge issues a new 32-byte bearer token. The
+// per-device index is updated atomically so the previous session for the
+// same device is immediately invalidated and the new token is the only
+// valid one. The raw token is returned exactly once and never stored.
+//
+// Global cap: replacement within the same device is allowed even at the
+// cap; a NEW device is rejected if the cap is full. Expired sessions are
+// purged inline so capacity is immediately reusable.
 func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	deviceID, hostID, bootID string, permissions []string,
 ) (rawToken string, sessionID string, expiresAt time.Time, err error) {
@@ -164,20 +211,36 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 		DeviceID:    deviceID,
 		HostID:      hostID,
 		BootID:      bootID,
-		Permissions: append([]string{}, permissions...),
+		Permissions: clonePerms(permissions),
 		IssuedAt:    now,
 		ExpiresAt:   exp,
 	}
+
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Purge expired inline so capacity reflects live sessions.
+	m.purgeExpiredLocked(now)
+
+	// Per-device replacement: revoke the device's prior session. This does
+	// NOT count against the global cap.
+	if prevDigest, exists := m.byDevice[deviceID]; exists {
+		delete(m.sessions, prevDigest)
+		delete(m.byDevice, deviceID)
+	}
+
+	// Global cap: a new device (not yet in byDevice) must leave room.
+	if _, isReplacement := m.byDevice[deviceID]; !isReplacement && len(m.sessions) >= m.maxSessions {
+		return "", "", time.Time{}, fmt.Errorf("too many active sessions")
+	}
+
 	m.sessions[digest] = sess
-	m.mu.Unlock()
+	m.byDevice[deviceID] = digest
 	return raw, sessID, exp, nil
 }
 
-// AuthenticateBearer validates a raw bearer token and returns a Principal.
-// The raw token is compared by SHA-256 digest — no raw token is stored or
-// exposed. Returns nil if the token is invalid, expired or the device was
-// revoked.
+// ── Authentication ──
+
 func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 	if rawToken == "" {
 		return nil
@@ -198,21 +261,32 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 	now := time.Now().UTC()
 	if now.After(sess.ExpiresAt) {
 		delete(m.sessions, digest)
+		delete(m.byDevice, sess.DeviceID)
 		return nil
 	}
 	return &Principal{
 		DeviceID:    sess.DeviceID,
-		Permissions: append([]string{}, sess.Permissions...),
+		Permissions: clonePerms(sess.Permissions),
 		SessionID:   sess.SessionID,
 		HostID:      sess.HostID,
 		AuthTime:    sess.IssuedAt,
 	}
 }
 
-// RevokeDevice immediately invalidates every session for a device.
+// ── Revoke / purge ──
+
 func (m *DeviceSessionManager) RevokeDevice(deviceID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.revokeDeviceLocked(deviceID)
+}
+
+func (m *DeviceSessionManager) revokeDeviceLocked(deviceID string) {
+	if digest, ok := m.byDevice[deviceID]; ok {
+		delete(m.sessions, digest)
+		delete(m.byDevice, deviceID)
+	}
+	// Also walk all sessions for this device (belt-and-suspenders).
 	for k, s := range m.sessions {
 		if subtle.ConstantTimeCompare([]byte(s.DeviceID), []byte(deviceID)) == 1 {
 			delete(m.sessions, k)
@@ -220,18 +294,22 @@ func (m *DeviceSessionManager) RevokeDevice(deviceID string) {
 	}
 }
 
-// PurgeExpired removes expired sessions.
 func (m *DeviceSessionManager) PurgeExpired(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.purgeExpiredLocked(now)
+}
+
+func (m *DeviceSessionManager) purgeExpiredLocked(now time.Time) {
 	for k, s := range m.sessions {
 		if now.After(s.ExpiresAt) {
 			delete(m.sessions, k)
+			delete(m.byDevice, s.DeviceID)
 		}
 	}
 }
 
-// Count returns the number of active sessions (for diagnostics).
+// Count returns active session count (package-private, tests).
 func (m *DeviceSessionManager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

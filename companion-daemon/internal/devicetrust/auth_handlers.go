@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 )
@@ -14,10 +15,11 @@ import (
 // endpoints. It is handler-independent — M2.5-4 middleware will use the
 // same DeviceSessionManager + DeviceRegistry.
 type AuthHandler struct {
-	Identity   *HostIdentity         // host key for signing challenges
-	Registry   *DeviceRegistry       // paired-device registry
-	Challenges *ChallengeStore       // single-use challenge store
-	Sessions   *DeviceSessionManager // session token store
+	Identity    *HostIdentity         // host key for signing challenges
+	Registry    *DeviceRegistry       // paired-device registry
+	Challenges  *ChallengeStore       // single-use challenge store
+	Sessions    *DeviceSessionManager // session token store
+	RateLimiter *challengeRateLimiter // per-device challenge rate limiter
 }
 
 // ── POST /api/device-auth/challenge ──
@@ -74,27 +76,30 @@ func (h *AuthHandler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	serverNonce := make([]byte, 32)
-	rand.Read(serverNonce)
-	now := time.Now().UTC()
-	expiresAt := now.Add(5 * time.Minute)
-
-	ch := &PendingChallenge{
-		DeviceID:     dev.DeviceID,
-		ClientNonce:  clientNonce,
-		ServerNonce:  serverNonce,
-		HostID:       h.Identity.HostID,
-		DaemonBootID: h.Sessions.BootID(),
-		IssuedAt:     now,
-		ExpiresAt:    expiresAt,
+	// Rate limit — bounded per-device, burst=3, rate=10/min.
+	if h.RateLimiter != nil && !h.RateLimiter.Allow(time.Now().UTC(), dev.DeviceID, 3, 10) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
 	}
-	challengeID, err := h.Challenges.Insert(ch)
-	if err != nil {
+
+	// Generate all random values BEFORE inserting anything. On failure we
+	// never consume pending-challenge capacity.
+	serverNonce := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, serverNonce); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	challengeID := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, challengeID); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	// Host signs the challenge transcript (role="host").
+	now := time.Now().UTC()
+	expiresAt := now.Add(5 * time.Minute)
+
+	// Build and sign the transcript BEFORE inserting the challenge so a
+	// host-signing failure doesn't leak an unusable challenge.
 	transcript := AuthTranscript{
 		Role: "host", HostID: h.Identity.HostID, DeviceID: dev.DeviceID,
 		DaemonBootID: h.Sessions.BootID(),
@@ -103,6 +108,18 @@ func (h *AuthHandler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	hostSig, sigErr := h.Identity.Sign(transcript.Build())
 	if sigErr != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Atomic insert: all pre-conditions are satisfied.
+	ch := &PendingChallenge{
+		ChallengeID: challengeID,
+		DeviceID:    dev.DeviceID, ClientNonce: clientNonce, ServerNonce: serverNonce,
+		HostID: h.Identity.HostID, DaemonBootID: h.Sessions.BootID(),
+		IssuedAt: now, ExpiresAt: expiresAt,
+	}
+	if _, insErr := h.Challenges.Insert(ch); insErr != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -208,10 +225,17 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue a session token.
+	// Role-based authorization: owner gets full, member gets restricted.
+	perms := PermissionsForRole(dev.Role)
+	if perms == nil {
+		http.Error(w, "unknown device role", http.StatusInternalServerError)
+		return
+	}
+
+	// Issue a session token. The session manager enforces a per-device cap
+	// (one active session per device; new auth revokes the previous).
 	rawToken, _, expiresAt, tokErr := h.Sessions.CreateAfterVerifiedChallenge(
-		dev.DeviceID, ch.HostID, ch.DaemonBootID,
-		PermOwner,
+		dev.DeviceID, ch.HostID, ch.DaemonBootID, perms,
 	)
 	if tokErr != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -224,6 +248,6 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 		TokenType:   "Bearer",
 		ExpiresAt:   expiresAt,
 		DeviceID:    dev.DeviceID,
-		Permissions: PermOwner,
+		Permissions: perms,
 	})
 }

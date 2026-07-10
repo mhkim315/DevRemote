@@ -26,8 +26,9 @@ func setupAuthHandler(t *testing.T) (*AuthHandler, *ecdsa.PrivateKey, string) {
 	bootID, _ := NewBootID()
 	return &AuthHandler{
 		Identity: id, Registry: reg,
-		Challenges: NewChallengeStore(),
-		Sessions:   NewDeviceSessionManager(bootID, 20*time.Minute),
+		Challenges:  NewChallengeStore(),
+		Sessions:    NewDeviceSessionManager(bootID, 20*time.Minute),
+		RateLimiter: NewChallengeRateLimiter(RateLimiterConfig{Burst: 100, RatePerMin: 1000}),
 	}, devPriv, d.DeviceID
 }
 
