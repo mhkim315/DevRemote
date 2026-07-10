@@ -126,7 +126,7 @@ M2.5-2 LAN QR Pairing                          REWORK after 740d56716
 M2.5-3 Challenge Auth / Short Session            READY (plan only)
 M2.5-4 Unified REST / WSS Authentication
 M2.5-5 Revoke / Minimal Audit
-M3  Mobile Lifecycle UX and Real-device Gate
+M3  Mobile Lifecycle UX and Real-device Gate       READY (plan only)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Transcript Contract Reset                 READY (plan/audit only)
 T1  Byte-stream Transcript Foundation
@@ -229,6 +229,11 @@ delete history      terminal-state catalog/history deletion only
 Stopping a session must not delete Transcript or Activity history. Recorder
 must stop exactly once, and natural exit and requested stop must converge on
 the same cleanup path.
+
+Detailed mobile product contract and staged execution handoff:
+
+- `docs/M3_MOBILE_SESSION_LIFECYCLE_UX_PLAN.md`
+- `docs/NEXT_SESSION_M3_MOBILE_LIFECYCLE_HANDOFF.md`
 
 ### M0/M1 review status
 
