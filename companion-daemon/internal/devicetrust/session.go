@@ -246,7 +246,7 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	m.mu.Lock()
 
 	// Purge expired inline so capacity reflects live sessions.
-	m.purgeExpiredLocked(now)
+	_ = m.purgeExpiredLocked(now) // expired callbacks fire via PurgeExpired
 
 	// Determine replacement state BEFORE mutation.
 	_, isReplacement := m.byDevice[deviceID]
@@ -337,17 +337,25 @@ func (m *DeviceSessionManager) revokeDeviceLocked(deviceID string) {
 
 func (m *DeviceSessionManager) PurgeExpired(now time.Time) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.purgeExpiredLocked(now)
+	expired := m.purgeExpiredLocked(now)
+	cb := m.onRevoke
+	m.mu.Unlock()
+	for _, deviceID := range expired {
+		if cb != nil {
+			cb(deviceID)
+		}
+	}
 }
 
-func (m *DeviceSessionManager) purgeExpiredLocked(now time.Time) {
+func (m *DeviceSessionManager) purgeExpiredLocked(now time.Time) (expiredDeviceIDs []string) {
 	for k, s := range m.sessions {
 		if now.After(s.ExpiresAt) {
 			delete(m.sessions, k)
 			delete(m.byDevice, s.DeviceID)
+			expiredDeviceIDs = append(expiredDeviceIDs, s.DeviceID)
 		}
 	}
+	return
 }
 
 // Count returns active session count (package-private, tests).
