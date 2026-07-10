@@ -161,6 +161,16 @@ func (r *Recorder) Err() error {
 	return r.readErr
 }
 
+// SubscriberCount returns the number of active subscriber channels. Read-only
+// test hook used by the M2.5-4 production-boundary tests to prove that a
+// disconnected viewer's recorder subscription is released while the
+// session-owned recorder itself persists (E8f2 single-reader invariant).
+func (r *Recorder) SubscriberCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.subscribers)
+}
+
 // IsAlive returns true if the recorder's readLoop is still running.
 func (r *Recorder) IsAlive() bool {
 	select {

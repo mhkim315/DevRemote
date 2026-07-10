@@ -2,6 +2,9 @@
 companion-daemon/devremote
 cloudflared
 
+# Go test binaries (go test -c)
+*.test
+
 # MacOS
 .DS_Store
 
