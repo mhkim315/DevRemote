@@ -21,8 +21,10 @@ dist/
 .env
 .env.*
 
-# Android
+# Android (keep Kotlin/Java source; generated build artifacts are rebuilt)
 android/
+!android/app/src/main/java/
+android/app/build/
 *.apk
 *.aab
 
@@ -32,4 +34,3 @@ ios/
 
 # Bundle
 *.jsbundle
-android/
