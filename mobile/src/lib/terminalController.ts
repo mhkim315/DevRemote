@@ -75,13 +75,14 @@ export class TerminalController {
       if(!ticketConsumed){ ticketConsumed=true; rawWS=new _origWS(wsURL(ticketA),protocols); }
       else if(window._nextTicket){ var tk=window._nextTicket; window._nextTicket=null; rawWS=new _origWS(wsURL(tk),protocols); }
       else { rawWS=new _origWS(url,protocols); }
-      // Intercept onmessage to handle geometry events sent by the daemon.
-      // Format: {"type":"geometry","rows":N,"cols":M}
-      var origOnMessage=rawWS.onmessage;
-      rawWS.onmessage=function(e){
-        if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data); if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){ try{term.resize(ctrl.cols,ctrl.rows)}catch(ge){} } }catch(x){} }
-        if(origOnMessage) origOnMessage.call(this,e);
-      };
+      // M3-auth-4A: addEventListener so the page's onmessage assignment does NOT
+      // overwrite us. Demultiplex: binary frames → PTY (handled by page),
+      // text geometry frames → term.resize (server-authoritative mirror).
+      rawWS.addEventListener('message',function(e){
+        if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data); if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){ try{ if(window.term) window.term.resize(ctrl.cols,ctrl.rows); }catch(ge){} } }catch(x){} }
+      });
+      // Poll geometry once connected (the daemon sends a text response frame).
+      rawWS.addEventListener('open',function(){ try{ rawWS.send('{"type":"geometry-poll"}'); }catch(e){} });
       return rawWS;
     }
     return new _origWS(url,protocols);

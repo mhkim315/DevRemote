@@ -16,6 +16,18 @@ export interface AuthContext {
   legacyToken?: string; // only used in explicit_local_dev
 }
 
+// canonicalOrigin validates a base URL for production use: HTTPS, no userinfo,
+// query, fragment, or non-root path. Returns the canonical origin (scheme://host)
+// or an error string. Shared by pairAndSave (save-time) and App (load-time).
+export function canonicalOrigin(baseURL: string): { origin?: string; error?: string } {
+  let u: URL;
+  try { u = new URL(baseURL); } catch { return { error: 'invalid base URL' }; }
+  if (u.protocol !== 'https:') return { error: 'production base URL must be HTTPS' };
+  if (u.username || u.password || u.search || u.hash) return { error: 'base URL must not contain credentials, query, or fragment' };
+  if (u.pathname !== '/' && u.pathname !== '') return { error: 'base URL must not contain a path' };
+  return { origin: u.origin };
+}
+
 // deriveTerminalAuth is the ONE authoritative production decision for which
 // terminal auth path to use. Exported from here (no RN deps) so jest imports
 // it directly without needing React Native mocks.

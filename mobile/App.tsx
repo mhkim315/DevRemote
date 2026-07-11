@@ -15,7 +15,7 @@ import { TokenManager } from './src/lib/authClient';
 import { loadPairing } from './src/lib/pairingStore';
 import { createPokitDeviceKey } from './modules/pokit-device-key';
 import { getBaseURL } from './src/lib/client';
-import type { AuthContext } from './src/lib/authMode';
+import { canonicalOrigin, type AuthContext } from './src/lib/authMode';
 
 // E6: explicit test-build gate — does not depend on stored baseURL.
 // Set EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 for local test builds.
@@ -41,15 +41,8 @@ function AppContent() {
         if (!base) { setAuthCtx({ mode: 'pairing_required' }); return; }
         // BLOCKER 1: origin binding — the current base URL must match the
         // canonical origin stored in the pairing record (scheme+host+port).
-        let bu: URL;
-        try { bu = new URL(base); } catch { setAuthCtx({ mode: 'failed' }); return; }
-        if (bu.protocol !== 'https:') { setAuthCtx({ mode: 'failed' }); return; }
-        if (bu.username || bu.password || bu.search || bu.hash || (bu.pathname !== '/' && bu.pathname !== '')) {
-          setAuthCtx({ mode: 'failed' }); return;
-        }
-        const currentOrigin = bu.origin;
-        // BLOCKER 2: if a stored origin exists, the current base URL MUST match.
-        // Missing origin (legacy record) → fail closed: require re-pairing.
+        const { origin: currentOrigin, error: originErr } = canonicalOrigin(base);
+        if (originErr || !currentOrigin) { setAuthCtx({ mode: 'failed' }); return; }
         if (!p.origin) { setAuthCtx({ mode: 'failed' }); return; }
         if (currentOrigin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
         let dk;

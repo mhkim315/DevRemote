@@ -20,11 +20,34 @@ export default function ConnectScreen() {
 
   const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
-    
-    // Accept any HTTPS URL
+
+    // Detect pairing QR payload: JSON with sessionId.
+    try {
+      const payload = JSON.parse(data);
+      if (payload && typeof payload === 'object' && payload.sessionId && payload.hostPubKey) {
+        setScanned(true);
+        // Import pairAndSave lazily so ConnectScreen doesn't bundle it eagerly.
+        const { pairAndSave } = await import('../lib/pairAndSave');
+        const { createPokitDeviceKey } = await import('../../modules/pokit-device-key');
+        const dk = createPokitDeviceKey();
+        // Operational base URL is the currently set daemon URL (tunnel/remote).
+        const { getBaseURL } = await import('../lib/client');
+        const base = getBaseURL();
+        if (!base) { alert('Set the daemon URL first'); setScanned(false); return; }
+        const result = await pairAndSave(data, dk, base);
+        if (result.status === 'approved') {
+          await connect(base);
+        } else {
+          alert('Pairing failed: ' + (result.errorDetail || result.status));
+          setScanned(false);
+        }
+        return;
+      }
+    } catch {}
+
+    // Accept any HTTPS URL (legacy or manual connect).
     if (data.startsWith('https://')) {
       setScanned(true);
-      
       await connect(data);
     }
   };

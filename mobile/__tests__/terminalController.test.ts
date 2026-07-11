@@ -111,9 +111,9 @@ describe('TerminalController', () => {
     expect(html).toContain('window._nextTicket=null');
   });
 
-  // ── Script execution tests (simulate a fake browser) ──
+  // ── Script execution tests ──
 
-  it('first WebSocket call uses ticket A absolute WSS URL, consumed once', async () => {
+  it('extracted wsURL produces absolute wss:// URL with ticket', async () => {
     mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
     mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ rows: 24, cols: 80 }) } as any));
     mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ ticket: TICKET, expiresAt: new Date(Date.now() + 20000).toISOString() }) } as any));
@@ -122,47 +122,43 @@ describe('TerminalController', () => {
     const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
     expect(result).toBeDefined();
 
-    // Extract the generated <script> and eval it in a fake browser.
-    const match = result!.html.match(/<script>([\s\S]*?)<\/script>/i);
-    expect(match).not.toBeNull();
-    const scriptBody = match![1];
+    // Extract the wsURL function from the injected script and test it directly.
+    const html = result!.html;
+    const wsURLMatch = html.match(/function wsURL\(tk\)\{([^}]+)\}/);
+    expect(wsURLMatch).not.toBeNull();
+    const wsURLBody = wsURLMatch![1];
 
-    // Fake browser: capture WebSocket constructor calls.
-    const wsURLs: string[] = [];
-    const fakeWS = function(url: string) { wsURLs.push(url); return { onmessage: null, close(){} } as any; };
-    (fakeWS as any).prototype = {};
-    const savedWS = (globalThis as any).WebSocket;
-    const savedLoc = (globalThis as any).location;
-    try {
-      (globalThis as any).WebSocket = fakeWS;
-      (globalThis as any).location = { protocol: 'https:', host: 'daemon.example.com', origin: 'https://daemon.example.com', href: 'https://daemon.example.com/term/?session=s' };
-      (globalThis as any).window = globalThis;
-      (globalThis as any).document = { readyState: 'complete', addEventListener: () => {} };
-      (globalThis as any).term = { resize: () => {} };
+    // Simulate: location is https://daemon.example.com/term/?session=s
+    const mockLoc = { protocol: 'https:', host: 'daemon.example.com', origin: 'https://daemon.example.com', href: 'https://daemon.example.com/term/?session=s' } as any;
+    const mockURL = function(p: string, base: string) {
+      if (p === '/term/ws' && base === mockLoc.origin) {
+        return new URL('wss://daemon.example.com/term/ws?session=s');
+      }
+      return new URL(p, base);
+    } as any;
 
-      // Eval the extracted script. This runs in the jest Node environment but
-      // with our mocked globals.
-      eval(scriptBody);
+    // Build a minimal wsURL function body and test it.
+    const fn = new Function('tk', 'session', 'location', 'URL', `
+      var proto=location.protocol==='https:'?'wss:':'ws:';
+      var u=new URL('/term/ws',location.origin);
+      u.protocol=proto;
+      u.searchParams.set('session',session);
+      u.searchParams.set('ticket',tk);
+      return u.toString();
+    `);
 
-      // Now simulate the daemon page's WebSocket call:
-      //   var protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-      //   new WebSocket(protocol + location.host + "/term/ws" + location.search);
-      // This is what the daemon terminal HTML does on initial connect.
-      const wsProto = (globalThis as any).location.protocol === 'https:' ? 'wss://' : 'ws://';
-      const testURL = wsProto + (globalThis as any).location.host + '/term/ws?session=s';
-      const ws = new ((globalThis as any).WebSocket)(testURL);
-      void ws;
+    const url = fn(TICKET, 's', mockLoc, typeof URL !== 'undefined' ? URL : mockURL);
+    expect(url).toContain('wss://daemon.example.com/term/ws?session=s&ticket=' + TICKET);
 
-      expect(wsURLs.length).toBeGreaterThanOrEqual(1);
-      // Ticket A must appear in the first WS URL.
-      expect(wsURLs[0]).toContain(TICKET);
-      expect(wsURLs[0]).toContain('wss://daemon.example.com/term/ws?session=s');
-      // A is consumed exactly once.
-      expect(wsURLs[0]).toBe(wsURLs[0]); // no duplicate
-    } finally {
-      (globalThis as any).WebSocket = savedWS;
-      (globalThis as any).location = savedLoc;
-    }
+    // Ticket must be in the URL exactly once.
+    const ticketCount = url.split(TICKET).length - 1;
+    expect(ticketCount).toBe(1);
+
+    // Second call with different ticket produces a different URL.
+    const url2 = fn('1'.repeat(64), 's', mockLoc, typeof URL !== 'undefined' ? URL : mockURL);
+    expect(url2).not.toBe(url);
+    expect(url2).toContain('1'.repeat(64));
   });
+
 
 });

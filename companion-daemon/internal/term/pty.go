@@ -376,6 +376,24 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			break
 		}
 
+		// M3-auth-4A: geometry-poll control frame (text, separate from binary PTY).
+		// {"type":"geometry-poll"} → response {"type":"geometry","rows":N,"cols":M}.
+		if len(msg) > 0 && msg[0] == '{' {
+			var ctrl struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(msg, &ctrl); err == nil && ctrl.Type == "geometry-poll" {
+				if rec != nil {
+					rows, cols, ok := rec.GetSize()
+					if ok {
+						geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
+						outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}
+					}
+				}
+				continue
+			}
+		}
+
 		// M2.5-4: device-auth input permission gate. Rejected input must not
 		// reach WriteInput OR modify Activity.
 		if ticketPrincipal != nil && !hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {

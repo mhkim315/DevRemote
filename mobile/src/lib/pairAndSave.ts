@@ -5,6 +5,7 @@
 import type { PokitDeviceKey } from '../../modules/pokit-device-key';
 import { conductPairing, type PairingResult } from './pairingClient';
 import { savePairing, type StoredPairing } from './pairingStore';
+import { canonicalOrigin } from './authMode';
 
 // pairAndSave runs the full pairing protocol and persists the result on
 // success. The operational origin comes from setBaseURL (the user-configured
@@ -15,15 +16,9 @@ export async function pairAndSave(
   const result = await conductPairing(qrRaw, deviceKey);
   if (result.status !== 'approved') return result;
 
-  // Canonicalise the operational origin from the base URL (not the LAN endpoint).
-  let origin = '';
-  try {
-    const u = new URL(operationalBaseURL);
-    if (u.protocol !== 'https:') return { status: 'network_error', errorDetail: 'production base URL must be HTTPS' };
-    origin = u.origin;
-  } catch {
-    return { status: 'network_error', errorDetail: 'invalid operational base URL' };
-  }
+  // Canonicalise the operational origin (shared validator).
+  const { origin, error } = canonicalOrigin(operationalBaseURL);
+  if (error || !origin) return { status: 'network_error', errorDetail: error || 'invalid operational base URL' };
 
   try {
     await savePairing({
