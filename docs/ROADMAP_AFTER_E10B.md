@@ -126,8 +126,13 @@ M2.5-2 LAN QR Pairing                          ACCEPT 637dcdf21
 M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
 M2.5-4 Unified REST / WSS Authentication       ACCEPT d6a5733cd (production-boundary proofs complete)
 M2.5-5 Revoke / Minimal Audit                  ACCEPT df7a3bd9a (see acceptance doc)
-M3-auth Mobile Device-Auth Client                PLANNED (prerequisite before M3a+)
-M3  Mobile Lifecycle UX and Real-device Gate       M3a FIRST-PASS (UI foundation); re-verify after M3-auth
+M3-auth-1C Cross-platform DeviceKey contract       NEXT (local Expo module; unsupported platforms fail closed)
+M3-auth-1A Android Keystore identity                PLANNED (Android release blocker)
+M3-auth-2A Android pairing + host pinning            BLOCKED on 1A
+M3-auth-3A Android bearer lifecycle                  BLOCKED on 2A
+M3-auth-4A Android WS-ticket transport               BLOCKED on 3A
+M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A
+M3-auth-1B iOS Secure Enclave identity               REQUIRED before iOS beta
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Transcript Contract Reset                 READY (plan/audit only)
 T1  Byte-stream Transcript Foundation

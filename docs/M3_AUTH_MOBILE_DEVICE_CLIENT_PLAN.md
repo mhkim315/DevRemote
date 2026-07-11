@@ -1,6 +1,16 @@
 # M3-auth — Mobile Device Authentication Client
 
-Status: M3-auth-1 implemented; M3-auth-2/3 planned.
+Status: superseded for execution by `docs/M3_AUTH_CROSS_PLATFORM_DEVICE_KEY_PLAN.md`.
+
+`e55d835f5` preserved the strict codecs and protocol vectors but its direct
+Android application patch is not an accepted production native module. The
+next phase is M3-auth-1C (common local Expo module + fail-closed providers),
+followed by M3-auth-1A (Android Keystore) and M3-auth-1B (iOS Secure Enclave).
+
+This document remains useful as the pairing/auth byte-contract reference. It
+must not be read as approval for a JavaScript software key or an Android-only
+TypeScript authentication architecture.
+
 Prerequisite for: remote/LTE M3a use, and M3b.
 
 ## Why
@@ -11,9 +21,10 @@ rejects (401). M3-auth builds the mobile side of the M2.5 device-trust protocol
 so the app authenticates as a paired device over the authenticated REST +
 WS-ticket boundary.
 
-Decisions: software P-256 via `@noble/curves` + key in `expo-secure-store` (no
-native module; M2.5 defers hardware attestation and the daemon does not verify
-it). Staged delivery 1 → 2 → 3, each its own commit + gate.
+Decision correction: production device signing uses a non-exportable native
+provider. Android uses Android Keystore; iOS uses Secure Enclave. Hardware
+attestation remains deferred, but software private-key fallback is forbidden.
+`@noble/curves` may be used for public verification and protocol fixtures only.
 
 ## The byte-exact contract (must match the Go daemon)
 
@@ -48,7 +59,12 @@ From `companion-daemon/internal/devicetrust`:
   `createdAtMS = expiresAtMS − 300000`. (Optional daemon follow-up: expose
   `issuedAt` to remove the implicit coupling.)
 
-## M3-auth-1 (DONE)
+## Historical M3-auth-1 prototype (REJECTED as production identity)
+
+The protocol vectors and strict public-data codecs are reusable. The software
+private-key design described in the original prototype is not an accepted
+product implementation and must not be restored. See the cross-platform plan
+for the replacement phases.
 
 - `mobile/src/lib/crypto.ts`: `generatePrivateKey`, `publicKeyUncompressed`,
   `spkiDer`, `deviceFingerprint`, `signDer`/`verifyDer` (prehash), pure
@@ -84,6 +100,13 @@ From `companion-daemon/internal/devicetrust`:
 - WS ticket: `POST /api/device-auth/ws-ticket` → connect
   `/term/ws?session=&ticket=`.
 
-## Sequence
-M3-auth-1 ✅ → M3-auth-2 → M3-auth-3 → authenticated M3a re-verify → M3b.
+## Superseding sequence
+
+```text
+M3-auth-1C → M3-auth-1A → M3-auth-2A → M3-auth-3A → M3-auth-4A
+→ authenticated M3a re-verification → M3b
+```
+
+M3-auth-1B is required before an iOS beta and plugs into the same common
+pairing/session/transport client without a software fallback.
 Dev-token / Supabase remain build-time local-test only.
