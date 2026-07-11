@@ -3,7 +3,7 @@ import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
 
-export default function ConnectScreen() {
+export default function ConnectScreen({ onPaired }: { onPaired?: () => void } = {}) {
   const { connect, connectionError } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
@@ -36,6 +36,7 @@ export default function ConnectScreen() {
         if (!base) { alert('Set the daemon URL first'); setScanned(false); return; }
         const result = await pairAndSave(data, dk, base);
         if (result.status === 'approved') {
+          onPaired?.();
           await connect(base);
         } else {
           alert('Pairing failed: ' + (result.errorDetail || result.status));

@@ -124,12 +124,22 @@ function AppContent() {
 
   // BLOCKER 3: pairing_required / failed must NOT enter RootTabs.
   if (authCtx.mode === 'pairing_required') {
+    // Show ConnectScreen with an onPaired callback: on successful pairing,
+    // reload the stored pairing and transition to paired_device.
     return (
       <SafeAreaProvider><StatusBar style="light" />
-        <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <Text style={{ color: '#45EBE9', fontSize: 18, fontWeight: '800', marginBottom: 12 }}>PAIRING REQUIRED</Text>
-          <Text style={{ color: '#8b949e', fontSize: 14, textAlign: 'center' }}>Scan the QR code from your terminal to pair this device.</Text>
-        </View>
+        <ConnectScreen onPaired={() => {
+          loadPairing().then(p => {
+            if (!p || !getBaseURL()) { setAuthCtx({ mode: 'pairing_required' }); return; }
+            const { origin, error } = canonicalOrigin(getBaseURL());
+            if (error || !origin) { setAuthCtx({ mode: 'failed' }); return; }
+            if (p.origin && origin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
+            try {
+              const dk = createPokitDeviceKey();
+              setAuthCtx({ mode: 'paired_device', tokenMgr: new TokenManager(p, dk, getBaseURL()), baseURL: getBaseURL() });
+            } catch { setAuthCtx({ mode: 'failed' }); }
+          }).catch(() => setAuthCtx({ mode: 'failed' }));
+        }} />
       </SafeAreaProvider>
     );
   }

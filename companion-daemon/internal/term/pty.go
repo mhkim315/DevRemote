@@ -371,14 +371,13 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}()
 
 	for {
-		_, msg, err := conn.ReadMessage()
+		mt, msg, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
 
-		// M3-auth-4A: geometry-poll control frame (text, separate from binary PTY).
-		// {"type":"geometry-poll"} → response {"type":"geometry","rows":N,"cols":M}.
-		if len(msg) > 0 && msg[0] == '{' {
+		// M3-auth-4A: geometry-poll is a TEXT control frame only (binary = PTY).
+		if mt == websocket.TextMessage && len(msg) > 0 && msg[0] == '{' {
 			var ctrl struct {
 				Type string `json:"type"`
 			}
@@ -387,7 +386,11 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 					rows, cols, ok := rec.GetSize()
 					if ok {
 						geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
-						outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}
+						select {
+				case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}:
+				case <-writerDone:
+				case <-r.Context().Done():
+				}
 					}
 				}
 				continue

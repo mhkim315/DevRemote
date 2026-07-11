@@ -82,7 +82,9 @@ export class TerminalController {
         if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data); if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){ try{ if(window.term) window.term.resize(ctrl.cols,ctrl.rows); }catch(ge){} } }catch(x){} }
       });
       // Poll geometry once connected (the daemon sends a text response frame).
-      rawWS.addEventListener('open',function(){ try{ rawWS.send('{"type":"geometry-poll"}'); }catch(e){} });
+      // Periodic geometry polling while the socket is alive.
+      var pollTimer=setInterval(function(){ try{ rawWS.send('{"type":"geometry-poll"}'); }catch(e){} },3000);
+      rawWS.addEventListener('close',function(){ clearInterval(pollTimer); });
       return rawWS;
     }
     return new _origWS(url,protocols);
