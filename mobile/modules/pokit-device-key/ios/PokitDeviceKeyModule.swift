@@ -21,8 +21,8 @@ public class PokitDeviceKeyModule: Module {
         self.store.getSupport()
       }
 
-      AsyncFunction("hasKey") { () -> Bool in
-        self.store.hasKey()
+      AsyncFunction("hasKey") { (promise: Promise) in
+        self.resolveCoded(promise) { try self.store.hasKey() }
       }
 
       AsyncFunction("ensureKey") { (promise: Promise) in

@@ -67,8 +67,17 @@ final class PokitDeviceKeyStore {
     return SecureEnclave.isAvailable ? "supported" : DeviceKeyCodes.hardwareUnavailable
   }
 
-  func hasKey() -> Bool {
-    return (try? loadPrivateKey()) != nil
+  // hasKey reports ONLY existence: a missing key is false; an inaccessible /
+  // invalidated / native failure propagates as a typed error (never hidden as
+  // false), matching the Android/shared contract so the JS wrapper fails closed.
+  func hasKey() throws -> Bool {
+    do {
+      _ = try loadPrivateKey()
+      return true
+    } catch let e as DeviceKeyError where e.code == DeviceKeyCodes.keyMissing {
+      return false
+    }
+    // Any other DeviceKeyError (key_inaccessible / key_invalidated) propagates.
   }
 
   // ensureKey is atomic (whole body under lock). Creation ownership is explicit:
@@ -78,7 +87,18 @@ final class PokitDeviceKeyStore {
   func ensureKey() throws -> [String: Any] {
     lock.lock()
     defer { lock.unlock() }
-    let createdByThisCall = (try? loadPrivateKey()) == nil
+    // ONLY an exact key_missing grants this call creation ownership. An
+    // inaccessible/invalidated existing identity must NOT be mistaken for
+    // "absent" — otherwise a locked device could regenerate the identity or, on
+    // rollback, delete a real paired key. Any non-missing error propagates
+    // WITHOUT entering the creation path.
+    let createdByThisCall: Bool
+    do {
+      _ = try loadPrivateKey()
+      createdByThisCall = false
+    } catch let e as DeviceKeyError where e.code == DeviceKeyCodes.keyMissing {
+      createdByThisCall = true
+    }
     if createdByThisCall {
       try generateKey()
     }
@@ -86,7 +106,7 @@ final class PokitDeviceKeyStore {
       return try validate().info
     } catch let e as DeviceKeyError {
       if createdByThisCall {
-        // Roll back only the key this call created; preserve the typed error.
+        // Roll back ONLY a key this call just created; never an existing one.
         SecItemDelete(baseQuery() as CFDictionary)
       }
       // Existing key: fail closed WITHOUT deleting/replacing it.
@@ -213,6 +233,11 @@ final class PokitDeviceKeyStore {
   }
 
   private func generateKey() throws {
+    // A truly absent enclave (Simulator / unsupported device) fails closed here
+    // rather than being conflated with a device-locked or access error below.
+    guard SecureEnclave.isAvailable else {
+      throw DeviceKeyError(DeviceKeyCodes.hardwareUnavailable, "hardware-backed key unavailable")
+    }
     var acError: Unmanaged<CFError>?
     guard let access = SecAccessControlCreateWithFlags(
       kCFAllocatorDefault,
@@ -234,8 +259,29 @@ final class PokitDeviceKeyStore {
     ]
     var genError: Unmanaged<CFError>?
     guard SecKeyCreateRandomKey(attributes as CFDictionary, &genError) != nil else {
-      // No enclave (simulator) or generation refused → fail closed.
-      throw DeviceKeyError(DeviceKeyCodes.hardwareUnavailable, "hardware-backed key generation failed")
+      throw mapGenerationError(genError)
+    }
+  }
+
+  // mapGenerationError converts a SecKeyCreateRandomKey CFError to a SAFE typed
+  // code without leaking raw provider detail or key metadata. Device-locked /
+  // access errors are not "hardware unavailable" — the identity is intact but
+  // temporarily inaccessible, so recovery policy must differ:
+  //   - locked / auth failure     -> key_inaccessible
+  //   - enclave unavailable        -> hardware_unavailable
+  //   - anything else (contract)   -> native_operation_failed
+  private func mapGenerationError(_ error: Unmanaged<CFError>?) -> DeviceKeyError {
+    guard let cf = error?.takeRetainedValue() else {
+      return DeviceKeyError(DeviceKeyCodes.nativeOperationFailed, "key generation failed")
+    }
+    let status = OSStatus(truncatingIfNeeded: CFErrorGetCode(cf))
+    switch status {
+    case errSecInteractionNotAllowed, errSecAuthFailed:
+      return DeviceKeyError(DeviceKeyCodes.keyInaccessible, "device key is inaccessible")
+    case errSecUnimplemented, errSecNotAvailable:
+      return DeviceKeyError(DeviceKeyCodes.hardwareUnavailable, "hardware-backed key unavailable")
+    default:
+      return DeviceKeyError(DeviceKeyCodes.nativeOperationFailed, "key generation failed")
     }
   }
 

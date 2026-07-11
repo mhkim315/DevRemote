@@ -44,9 +44,9 @@ final class PokitDeviceKeyStoreTests: XCTestCase {
 
   func testHasKeyBeforeAndAfterCreate() throws {
     try requireEnclave()
-    XCTAssertFalse(store.hasKey())
+    XCTAssertFalse(try store.hasKey())
     _ = try store.ensureKey()
-    XCTAssertTrue(store.hasKey())
+    XCTAssertTrue(try store.hasKey())
   }
 
   func testEnsureKeyIsIdempotent() throws {
@@ -153,9 +153,9 @@ final class PokitDeviceKeyStoreTests: XCTestCase {
   func testDeleteRemovesIdentityAndSignFails() throws {
     try requireEnclave()
     _ = try store.ensureKey()
-    XCTAssertTrue(store.hasKey())
+    XCTAssertTrue(try store.hasKey())
     try store.deleteKey()
-    XCTAssertFalse(store.hasKey())
+    XCTAssertFalse(try store.hasKey())
     XCTAssertThrowsError(try store.sign(hexOf(Data("x".utf8)))) { err in
       XCTAssertEqual((err as? DeviceKeyError)?.code, "key_missing")
     }
@@ -168,6 +168,65 @@ final class PokitDeviceKeyStoreTests: XCTestCase {
     XCTAssertThrowsError(try store.ensureKey()) { err in
       XCTAssertEqual((err as? DeviceKeyError)?.code, "hardware_unavailable")
     }
+  }
+
+  // ── identity preservation (BLOCKER regressions) ──
+  //
+  // These do not require a Secure Enclave: a pre-existing NON-enclave key stands
+  // in for an "existing but unusable/inaccessible" identity. They prove ensureKey
+  // never takes creation ownership of an existing key, never deletes it on
+  // rejection, and hasKey never hides a present-but-unusable key as "absent".
+
+  func testExistingIncompatibleKeyIsPreservedOnRejection() throws {
+    try XCTSkipUnless(installNonEnclaveKey(), "keychain unavailable in this test host")
+    defer { deleteNonEnclaveKey() }
+
+    // validate() rejects a non-enclave key as hardware_unavailable ...
+    for op in [{ _ = try self.store.getKeyInfo() },
+               { _ = try self.store.getPublicKeySpki() },
+               { _ = try self.store.sign(self.hexOf(Data("m".utf8))) },
+               { _ = try self.store.ensureKey() }] as [() throws -> Void] {
+      XCTAssertThrowsError(try op()) { err in
+        XCTAssertEqual((err as? DeviceKeyError)?.code, "hardware_unavailable")
+      }
+      // ... and the pre-existing key MUST survive every rejection (never
+      // regenerated, never deleted by ensureKey's rollback).
+      XCTAssertTrue(try store.hasKey(), "existing key must survive a rejection")
+    }
+  }
+
+  func testHasKeyReportsPresentIncompatibleKeyAsTrue() throws {
+    try XCTSkipUnless(installNonEnclaveKey(), "keychain unavailable in this test host")
+    defer { deleteNonEnclaveKey() }
+    // hasKey reports EXISTENCE. A present-but-unusable key is true, not false —
+    // it must never be swallowed into a re-provisioning path.
+    XCTAssertTrue(try store.hasKey())
+  }
+
+  // installNonEnclaveKey writes a plain (software) P-256 key at the store's tag,
+  // simulating an existing-but-unusable identity without a Secure Enclave.
+  // Returns false when the test host cannot persist a keychain key.
+  private func installNonEnclaveKey() -> Bool {
+    deleteNonEnclaveKey()
+    let tagData = testTag.data(using: .utf8)!
+    let attrs: [CFString: Any] = [
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrKeySizeInBits: 256,
+      kSecPrivateKeyAttrs: [
+        kSecAttrIsPermanent: true,
+        kSecAttrApplicationTag: tagData,
+      ] as [CFString: Any],
+    ]
+    return SecKeyCreateRandomKey(attrs as CFDictionary, nil) != nil
+  }
+
+  private func deleteNonEnclaveKey() {
+    let tagData = testTag.data(using: .utf8)!
+    SecItemDelete([
+      kSecClass: kSecClassKey,
+      kSecAttrApplicationTag: tagData,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+    ] as CFDictionary)
   }
 
   // ── iOS → Go interoperability fixture export ──
