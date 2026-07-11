@@ -1,8 +1,14 @@
-# T0 — Transcript Contract Reset Plan
+# Historical Transcript Contract Reset Plan — Rescoped into T3
 
-Status: ready after M3; planning/audit only
+Status: **HISTORICAL INPUT — not the active T0 execution plan**
 Depends on: stable Recorder single-reader invariant, R1 evidence baseline
 Does not depend on: provider-specific Claude/Codex integration
+
+Roadmap correction: active T0 now defines the common AgentEvent and stable
+adapter contract; T1 implements Codex, T2 implements Claude, D1 provides
+user-approved Adapter Doctor/Repair, and T3 performs Transcript integration.
+The byte-stream/Recorder safety content below remains authoritative input for T3
+but must not be executed under the old T0/T1/T2 phase names.
 
 ## Decision
 

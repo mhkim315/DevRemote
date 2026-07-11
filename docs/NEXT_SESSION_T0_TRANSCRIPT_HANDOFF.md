@@ -1,7 +1,11 @@
-# Next Session Handoff — T0 Transcript Contract Reset
+# Historical Handoff — Former T0 Transcript Contract Reset
 
-Status: ready only after M3 and verifier acceptance of its runtime/security
-dependencies
+Status: **SUPERSEDED — do not execute as the active T0 handoff**
+
+The active sequence is T0 common AgentEvent contract → T1 Codex adapter → T2
+Claude adapter → D1 Adapter Doctor/Repair → T3 Transcript integration. This
+document is retained only as T3 audit/fixture input. A new active T0 handoff must
+be written after M3b acceptance.
 
 Read first:
 

@@ -15,11 +15,12 @@ M1.5 Session ownership, access, and local terminal host contract
 M2  Stop / kill / delete lifecycle
 M2.5 Minimum device-trust security foundation
 M3  Mobile UX and real-device gate
-R1  Runtime signal discovery (research only)
-T0  Transcript contract reset
-T1  Byte-stream projector foundation
-T2  Codex / Claude TUI safe degradation
-T3  Semantic enrichment
+R1  Runtime signal discovery (research only; already scoped-accepted)
+T0  Common AgentEvent contract
+T1  Codex adapter
+T2  Claude adapter
+D1  Adapter Doctor/Repair
+T3  Transcript integration
 ```
 
 The projects are not implemented together. Lifecycle state is authoritative in
@@ -391,52 +392,49 @@ When safe conversion is impossible:
 Raw Transcript attachments are out of MVP scope because they expand sensitive
 data retention.
 
-## T phases and gates
+## T/D phases and gates
 
-### T0 — Contract Reset
+### T0 — Common AgentEvent Contract
 
-- audit current Recorder ANSI/CR/cmux logic and ActivityBuffer merge logic;
-- classify old heuristics as remove/retain/snapshot-only;
-- capture redacted bash, Codex, and Claude fixtures;
-- define v1/v2 API compatibility and shadow comparison.
+- freeze a provider-neutral AgentEvent schema and provenance/confidence rules;
+- freeze `detect`, `discoverSessions`, `readEvents`, `normalizeEvent`,
+  `detectApproval`, and `getStatus`;
+- define unknown/degraded behavior and approval false-positive constraints;
+- create the fixed contract harness that provider adapters and repairs cannot edit.
 
-### T1 — Byte-stream Foundation
+### T1 — Codex Adapter
 
-First scenario only:
+- implement Codex detection/session discovery/event reads behind the T0 contract;
+- normalize Codex version-native records without leaking fields into common DTOs;
+- retain redacted fixtures for every accepted Codex version;
+- fail safely on unknown paths, fields, and event types.
 
-```text
-pokit run bash
-pwd
-ls
-echo hello
-```
+### T2 — Claude Adapter
 
-Acceptance:
+- implement Claude detection/session discovery/event reads behind the same T0 contract;
+- resolve supported hooks/JSONL without changing Claude configuration;
+- retain redacted fixtures for every accepted Claude version;
+- prove approval positives and adversarial near-miss negatives.
 
-- readable, correctly ordered text and newlines;
-- chunk boundaries do not change output;
-- split ANSI sequences are handled;
-- CR progress keeps a stable final value;
-- Transcript storage is bounded;
-- raw input remains unstored;
-- slow/failed/overflowing projection cannot block Recorder;
-- Live Terminal bytes are identical with projector enabled/disabled;
-- cmux path is unchanged.
+### D1 — Adapter Doctor/Repair
 
-### T2 — Codex / Claude Safe Degradation
+- detect when an installed Codex/Claude version no longer matches its adapter;
+- give a sandboxed local coding agent only redacted evidence and the selected
+  version-specific adapter;
+- generate a narrow patch and run Pokit-owned fixed compatibility/regression tests;
+- preserve older fixtures and safe unknown behavior;
+- show the diff and complete results, then require explicit user approval before activation.
 
-- detect alternate screen, complex cursor motion, and repaint bursts;
-- emit bounded omission markers instead of giant flattened text;
-- preserve useful ordinary output around TUI regions.
+Detailed scope: `docs/ADAPTER_DOCTOR_REPAIR_PLAN.md`.
 
-Scoped acceptance does not require perfect agent-message extraction.
+### T3 — Transcript Integration
 
-### T3 — Semantic Enrichment
-
-- map existing Common Event/Interaction contracts explicitly;
-- attach tool/approval/agent-message semantics only when evidence exists;
-- handle duplicate PTY/native-log representations;
-- keep native logs optional.
+- integrate accepted common AgentEvents with the bounded Transcript projection;
+- retain a generic byte-stream fallback for shell/unknown agents;
+- keep raw PTY Live Terminal bytes unchanged and Recorder as sole reader;
+- safely omit complex TUI repaint regions rather than flattening them;
+- reconcile duplicate PTY/native representations using explicit provenance;
+- keep provider-native evidence optional and fail degraded, never fabricated.
 
 ## T migration and rollback
 

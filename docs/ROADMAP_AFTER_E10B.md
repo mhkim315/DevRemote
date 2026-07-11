@@ -135,15 +135,17 @@ M3-auth-R1 Authenticated Android M3a E2E reverify    ACCEPT a834955c1 (host-boun
 M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A
 M3-auth-1B iOS Secure Enclave identity               ACCEPT a173fcf (hardware-backed provider + runnable physical-device gate; execution = M-track)
 M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      CODE COMPLETE (iOS integration re-verified: SE key → pair → bearer → ticket → terminal; production ConnectScreen pairing evidence; jest+gate PASS); physical iOS smoke + native gate = M-track; next = M3b
+M3b Mobile lifecycle action UX                        NEXT
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
-T0  Transcript Contract Reset                 READY (plan/audit only)
-T1  Byte-stream Transcript Foundation
-T2  Codex / Claude TUI Safe Degradation
-T3  Semantic Transcript Enrichment
+T0  Common AgentEvent Contract
+T1  Codex Adapter
+T2  Claude Adapter
+D1  Adapter Doctor/Repair                     PLANNED (AI-assisted, user-approved activation only)
+T3  Transcript Integration
 S1  Rich Agent Runtime Status Model
 A1  Mobile-first Approval System
-N1  Notifications
 O1  Orchestrator
+N1  Notifications                             PLANNED outside the revised critical path
 P1  Play Store / Distribution readiness
 ```
 
@@ -151,15 +153,27 @@ Current executor handoff for the M2.5-4 acceptance evidence gaps:
 
 - `docs/NEXT_SESSION_M2_5_4_FINAL_ACCEPTANCE_HANDOFF.md`
 
-The immediate execution order is deliberately lifecycle-first:
+The revised critical execution order is:
 
 ```text
-Mobile lifecycle MVP
-→ minimum device-trust security
-→ runtime signal discovery
-→ Transcript projection foundation
-→ Transcript semantic enrichment
+M3-auth-1B
+→ M3-auth-2B
+→ M3b lifecycle UX
+→ T0 common AgentEvent contract
+→ T1 Codex adapter
+→ T2 Claude adapter
+→ D1 Adapter Doctor/Repair
+→ T3 Transcript integration
+→ S1 status
+→ A1 approval
+→ O1 orchestrator
 ```
+
+M3-auth-1B/M3-auth-2B positions and iOS/auth scope are unchanged by this
+sequencing update; their existing status text above remains authoritative. R1
+evidence is already scoped-accepted and informs T0.
+Notifications and distribution remain planned, but are not inserted into the
+critical sequence above.
 
 Transcript data-model work is not a prerequisite for mobile lifecycle. The two
 projects share stable session identity and timestamps, but lifecycle state must
@@ -181,10 +195,10 @@ uninstalled products are documented-source findings, not runtime proof. See:
 - `docs/R1_RUNTIME_SIGNAL_MATRIX.md`
 - `docs/R1_RUNTIME_SIGNAL_EVIDENCE_MANIFEST.md`
 
-T0 is separately specified in `docs/T0_TRANSCRIPT_CONTRACT_RESET_PLAN.md`.
-It is an audit/contract phase, not permission to add more legacy
-Recorder/ActivityBuffer cleanup heuristics. Its execution handoff is
-`docs/NEXT_SESSION_T0_TRANSCRIPT_HANDOFF.md`.
+The former Transcript-specific T0 plan is retained as historical input for T3,
+not as the next T0 execution contract. T0 now freezes the common AgentEvent and
+six-operation adapter boundary before either provider adapter. D1 is specified
+in `docs/ADAPTER_DOCTOR_REPAIR_PLAN.md` and is planning-only.
 
 ## R0 — Finish E10b polish
 
@@ -335,10 +349,11 @@ host-key recovery/rotation, discovery, and Push are explicitly deferred. The
 authentication/client boundaries introduced now must allow those additions
 without rewriting product screens or lifecycle handlers.
 
-## T0-T3 — Transcript Projection Refactor
+## T0-D1-T3 — Agent Adapters, Repair, and Transcript Integration
 
-Goal: replace the current Recorder/ActivityBuffer text-cleanup side effect with
-an independent, bounded, asynchronous read projection.
+Goal: establish a stable agent-event contract, implement Codex and Claude behind
+version-specific adapters, add a constrained repair stage for ordinary version
+drift, and only then integrate those events with Transcript projection.
 
 Current guidance: it may be better to restart Transcript projection from a simpler
 contract rather than continue layering heuristics from cmux tuning.
@@ -376,13 +391,31 @@ Rules:
 The staged implementation is:
 
 ```text
-T0  audit/reset the current Transcript boundary and collect redacted fixtures
-T1  byte-stream projector validated with bash: pwd, ls, echo hello
-T2  Codex/Claude TUI safe degradation
-T3  optional semantic enrichment from agent-native events/logs
+T0  freeze the common AgentEvent model and six-operation adapter contract
+T1  implement and accept the Codex version-specific adapter
+T2  implement and accept the Claude version-specific adapter
+D1  detect version drift and propose a constrained, tested, user-approved repair
+T3  integrate common agent events with bounded Transcript projection/fallback
 ```
 
-T1 acceptance should prove:
+T0 owns the stable operations:
+
+```text
+detect
+discoverSessions
+readEvents
+normalizeEvent
+detectApproval
+getStatus
+```
+
+T1/T2 may modify provider-specific implementations but must not change this
+contract. D1 may patch only the version-specific adapter, must preserve older
+fixtures, prevent approval false positives, show diff/test evidence, and require
+explicit user activation. It cannot repair data that was removed, encrypted, or
+made inaccessible. See `docs/ADAPTER_DOCTOR_REPAIR_PLAN.md`.
+
+T3 acceptance should preserve the earlier Transcript safety requirements:
 
 - byte_stream transcript does not produce giant merged TUI repaint lines.
 - simple shell output remains readable.
@@ -390,7 +423,7 @@ T1 acceptance should prove:
 - cmux remains best-effort and visibly degraded.
 - Transcript failure does not break Live Terminal.
 
-Do not implement perfect command/tool/agent semantics in T1. Complex TUI output
+Do not implement perfect command/tool/agent semantics from raw PTY text. Complex TUI output
 may safely collapse to a bounded marker directing the user to Live Terminal.
 
 ## S1 — Runtime Status Model

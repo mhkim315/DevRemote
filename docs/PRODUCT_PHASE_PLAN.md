@@ -12,7 +12,10 @@ Status:
   - `docs/NEXT_SESSION_R0_HANDOFF.md`
 
 Note: this historical Product Phase Plan is retained for context. The active
-near-term plan is R0 → T1 → S1 → A1 → N1 → O1 → P1.
+critical sequence is maintained in `docs/ROADMAP_AFTER_E10B.md`:
+M3b → T0 common AgentEvent contract → T1 Codex adapter → T2 Claude adapter →
+D1 Adapter Doctor/Repair → T3 Transcript integration → S1 → A1 → O1.
+Notifications and distribution remain planned outside that critical sequence.
 
   - P1a Live Dashboard Core: ACCEPTED (3fa4ad3c8)
   - P2 Core Feed Taxonomy: ACCEPTED (413734a)

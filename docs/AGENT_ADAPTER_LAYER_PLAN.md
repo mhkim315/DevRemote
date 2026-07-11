@@ -170,6 +170,38 @@ Agent Adapter failure는 terminal 기능을 죽이면 안 된다.
 - parser panic → recover 후 adapter degraded
 - log resolver 실패 → terminal만 표시
 
+### 3.6 Stable Adapter Contract와 version drift repair 경계
+
+POKIT core가 소유하는 안정 계약은 다음 여섯 operation이다.
+
+```text
+detect
+discoverSessions
+readEvents
+normalizeEvent
+detectApproval
+getStatus
+```
+
+Codex/Claude 버전별 adapter는 이 계약 뒤에 위치한다. JSONL path, field, hook,
+event schema가 바뀌어도 mobile, approval, status, Transcript contract를 바꾸지
+않는다.
+
+T1 Codex와 T2 Claude가 수용된 뒤 D1 `Adapter Doctor/Repair`를 둔다. D1의 local
+coding agent는 선택된 version-specific adapter와 새 redacted fixture만 수정할 수
+있다. common model, stable contract, fixed tests, approval semantics, Recorder/PTY,
+auth/lifecycle은 수정할 수 없다.
+
+모든 repair는 fixed regression suite, older-version fixture 보존, unknown event
+safe fallback, approval false-positive negative test를 통과해야 한다. diff와 test
+결과를 사용자에게 먼저 보여주며 명시적 승인 전에는 활성화하지 않는다.
+
+이 기능은 changed JSONL paths, renamed fields, moved hooks, modified event schemas
+같은 일반 version drift를 대상으로 한다. 필요한 data가 제거·암호화·접근 불가가
+되면 복구를 보장하지 않으며 adapter는 degraded/unsupported로 남는다.
+
+상세 계획: `docs/ADAPTER_DOCTOR_REPAIR_PLAN.md`.
+
 ## 4. 공통 모델 초안
 
 이 모델은 Phase A2에서 fixture 기반으로 확정한다. 여기서는 의미를 고정하고 이름은 조정
