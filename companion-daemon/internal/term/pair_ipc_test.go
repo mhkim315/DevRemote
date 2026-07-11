@@ -93,6 +93,20 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 	}
 	<-handlerDone
 
+	// Phone polling after IPC delivery: /pair/result must still be reachable
+	// (grace period is active; no immediate Close from defer ph.Close()).
+	resp3, err := http.Get(sess.Endpoint + "/result?session=" + sess.SessionID)
+	if err != nil {
+		t.Errorf("pair/result after CLI approve: request err=%v", err)
+	} else {
+		defer resp3.Body.Close()
+		var ar map[string]string
+		json.NewDecoder(resp3.Body).Decode(&ar)
+		if ar["status"] != "approved" {
+			t.Errorf("result after CLI approve: %s", ar["status"])
+		}
+	}
+
 	// Registry must have the device.
 	if devs := reg.List(); len(devs) == 0 {
 		t.Fatalf("registry empty after pairing")

@@ -72,7 +72,8 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		writeIPC(conn, map[string]string{"error": "pairing start failed: " + err.Error()})
 		return
 	}
-	defer ph.Close()
+	// NO deferred Close() — the grace period in Approve()/Reject() owns the
+	// close after a terminal result. Early exits below close immediately.
 
 	// 1) Send session payload immediately (QR data).
 	sess := ph.Session
@@ -91,6 +92,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 	cand, gotCand := ph.WaitForCandidate()
 	if !gotCand {
 		writeIPC(conn, map[string]string{"error": "session ended without a candidate"})
+		ph.Close()
 		return
 	}
 
@@ -114,7 +116,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 	if err := dec2.Decode(&decision); err != nil {
 		ph.Reject()
 		writeIPC(conn, map[string]string{"error": "invalid decision: " + err.Error()})
-		return
+		return // Reject() schedules a 10s grace period; the timer will close
 	}
 
 	if decision.Action != "approve" {
@@ -126,6 +128,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 	// 5) Approve → register device.
 	if err := ph.Approve(); err != nil {
 		writeIPC(conn, map[string]string{"error": "approval failed: " + err.Error()})
+		ph.Close() // Approve failed — no grace period; close immediately
 		return
 	}
 
