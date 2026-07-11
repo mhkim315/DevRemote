@@ -126,8 +126,8 @@ M2.5-2 LAN QR Pairing                          ACCEPT 637dcdf21
 M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
 M2.5-4 Unified REST / WSS Authentication       ACCEPT d6a5733cd (production-boundary proofs complete)
 M2.5-5 Revoke / Minimal Audit                  ACCEPT df7a3bd9a (see acceptance doc)
-M3-auth-1C Cross-platform DeviceKey contract       NEXT (local Expo module; unsupported platforms fail closed)
-M3-auth-1A Android Keystore identity                PLANNED (Android release blocker)
+M3-auth-1C Cross-platform DeviceKey contract       ACCEPT 219631e75 (local Expo module; fail-closed providers; native compile gated)
+M3-auth-1A Android Keystore identity                NEXT (Android release blocker)
 M3-auth-2A Android pairing + host pinning            BLOCKED on 1A
 M3-auth-3A Android bearer lifecycle                  BLOCKED on 2A
 M3-auth-4A Android WS-ticket transport               BLOCKED on 3A
