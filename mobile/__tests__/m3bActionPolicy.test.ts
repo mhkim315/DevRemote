@@ -114,12 +114,14 @@ describe('stateFromActionResult — never fabricates a terminal state', () => {
   });
 });
 
-describe('parseLifecycleResult — strict response validation (BLOCKER 5)', () => {
+describe('parseLifecycleResult — strict per-action validation (BLOCKER 5 + per-action)', () => {
   const ID = 'controlled_pty:s1';
 
-  it('accepts an exact sessionId + action + in-vocab state', () => {
-    expect(parseLifecycleResult(ID, 'stop', { sessionId: ID, action: 'stop', state: 'exited' }))
-      .toEqual({ sessionId: ID, action: 'stop', state: 'exited' });
+  it('accepts states valid for each action', () => {
+    expect(parseLifecycleResult(ID, 'stop', { sessionId: ID, action: 'stop', state: 'exited' }).state).toBe('exited');
+    expect(parseLifecycleResult(ID, 'stop', { sessionId: ID, action: 'stop', state: 'stopping' }).state).toBe('stopping');
+    expect(parseLifecycleResult(ID, 'kill', { sessionId: ID, action: 'kill', state: 'killed' }).state).toBe('killed');
+    expect(parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete', state: 'exited' }).state).toBe('exited');
   });
 
   it('rejects a wrong sessionId', () => {
@@ -132,14 +134,21 @@ describe('parseLifecycleResult — strict response validation (BLOCKER 5)', () =
       .toThrow(LifecycleResultError);
   });
 
-  it('rejects an out-of-vocabulary or missing state', () => {
-    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete', state: 'idle' }))
+  it('rejects a state that is invalid FOR THE ACTION (not just out of global vocab)', () => {
+    // Delete only ever returns exited — running/stopping/killed are wrong-combination.
+    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete', state: 'running' }))
       .toThrow(LifecycleResultError);
-    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete' }))
+    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete', state: 'stopping' }))
+      .toThrow(LifecycleResultError);
+    // Stop/Kill never return starting/running.
+    expect(() => parseLifecycleResult(ID, 'stop', { sessionId: ID, action: 'stop', state: 'running' }))
+      .toThrow(LifecycleResultError);
+    expect(() => parseLifecycleResult(ID, 'kill', { sessionId: ID, action: 'kill', state: 'starting' }))
       .toThrow(LifecycleResultError);
   });
 
-  it('rejects a malformed (non-object) 2xx body', () => {
+  it('rejects a missing/non-string or malformed body', () => {
+    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete' })).toThrow(LifecycleResultError);
     expect(() => parseLifecycleResult(ID, 'stop', null)).toThrow(LifecycleResultError);
     expect(() => parseLifecycleResult(ID, 'stop', 'ok')).toThrow(LifecycleResultError);
   });

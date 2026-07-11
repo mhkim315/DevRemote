@@ -100,6 +100,56 @@ describe('SessionLifecycleController — guards', () => {
     expect(fns.kill).not.toHaveBeenCalled();
     expect(fns.del).not.toHaveBeenCalled();
   });
+
+  it('dispose() before a LATE success fires no callback (unmount race)', async () => {
+    const d = deferred<any>();
+    const del = jest.fn(() => d.promise);
+    const { ctrl, cbs } = makeController({ del });
+    const p = ctrl.deleteHistory();          // in flight, epoch 0
+    ctrl.dispose();                          // unmount → epoch bumped, invalidated
+    d.resolve({ sessionId: SID, action: 'delete', state: 'exited' }); // late success
+    await p;
+    expect(cbs.onDeleted).not.toHaveBeenCalled(); // no duplicate onBack
+    expect(cbs.onState).not.toHaveBeenCalled();
+    expect(cbs.onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('dispose() before a LATE error fires no callback', async () => {
+    const d = deferred<any>();
+    const stop = jest.fn(() => d.promise);
+    const { ctrl, cbs } = makeController({ stop });
+    const p = ctrl.stop();                   // epoch 0
+    ctrl.dispose();                          // epoch bumped
+    d.reject(new PokitError('boom', ConnectivityFailure.APIError, 500));
+    await p;
+    expect(cbs.onRefresh).not.toHaveBeenCalled();
+    expect(cbs.onState).not.toHaveBeenCalled();
+  });
+
+  it('overlapping session A/B: a stale A response never clears B ownership', async () => {
+    const dA = deferred<any>();
+    const dB = deferred<any>();
+    const queued = [dA.promise, dB.promise];
+    let i = 0;
+    const stop = jest.fn(() => queued[i++]);
+    const { ctrl, cbs } = makeController({ stop });
+
+    ctrl.stop();                             // session A, epoch 0
+    ctrl.setSession('controlled_pty:B', 'TOK'); // epoch 1, pending cleared
+    const pB = ctrl.stop();                  // session B, epoch 1
+    expect(stop).toHaveBeenCalledTimes(2);
+
+    dA.resolve({ sessionId: SID, action: 'stop', state: 'exited' }); // A completes late
+    await Promise.resolve(); await Promise.resolve();
+    // A is stale: no callbacks, and B still owns the pending guard.
+    expect(cbs.onState).not.toHaveBeenCalled();
+    expect(ctrl.pendingAction).toBe('stop');
+
+    dB.resolve({ sessionId: 'controlled_pty:B', action: 'stop', state: 'exited' });
+    await pB;
+    expect(cbs.onState).toHaveBeenCalledWith('exited'); // only B applied
+    expect(ctrl.pendingAction).toBeNull();
+  });
 });
 
 describe('SessionLifecycleController — failures keep server authoritative', () => {

@@ -64,6 +64,12 @@ export class SessionLifecycleController {
   private pending: PendingAction = null;
   private sessionId: string;
   private token?: string;
+  // Monotonic epoch: every setSession()/dispose() invalidates all in-flight
+  // requests. A request captures the epoch at start and compares it before ANY
+  // callback and before touching shared pending state, so a late response after
+  // unmount or a session switch fires nothing and cannot clear a newer request's
+  // ownership.
+  private epoch = 0;
 
   constructor(
     sessionId: string,
@@ -75,9 +81,10 @@ export class SessionLifecycleController {
     this.token = token;
   }
 
-  // setSession rebinds the controller when the viewed session changes. Any
-  // in-flight action for the previous session is dropped by the stale guard.
+  // setSession rebinds the controller when the viewed session changes and
+  // invalidates any in-flight action for the previous session (epoch bump).
   setSession(sessionId: string, token?: string): void {
+    this.epoch++;
     this.sessionId = sessionId;
     this.token = token;
     this.pending = null;
@@ -99,9 +106,11 @@ export class SessionLifecycleController {
     return this.run('delete', this.fns.del, true);
   }
 
-  // dispose is invoked on Back / unmount. It clears local state and issues NO
-  // lifecycle request — a viewer detach never Stops/Kills/Deletes the process.
+  // dispose is invoked on Back / unmount. It issues NO lifecycle request AND
+  // invalidates any in-flight action (epoch bump) so a late success/error after
+  // unmount fires no callback (no onState/onRefresh/onDeleted, no duplicate onBack).
   dispose(): void {
+    this.epoch++;
     this.pending = null;
   }
 
@@ -111,28 +120,30 @@ export class SessionLifecycleController {
     isDelete: boolean,
   ): Promise<void> {
     if (this.pending) return; // duplicate-tap / concurrent action guard
+    const myEpoch = this.epoch;
     const forId = this.sessionId;
     this.pending = action;
     this.cbs.onPending(action);
     this.cbs.onError('');
     try {
       const result = await fn(forId, this.token);
-      if (this.sessionId !== forId) return; // stale: session switched mid-flight
+      if (this.epoch !== myEpoch) return; // invalidated by dispose()/setSession()
       this.cbs.onState(stateFromActionResult(result));
       this.cbs.onRefresh();
       if (isDelete) this.cbs.onDeleted();
     } catch (e) {
-      if (this.sessionId !== forId) return; // stale
+      if (this.epoch !== myEpoch) return; // invalidated
       this.cbs.onError(classifyLifecycleError(e, action));
       // Re-sync from the authoritative list (409, failed Stop, etc.). Never a
       // blind retry, and never a client-invented state change on failure.
       this.cbs.onRefresh();
     } finally {
-      if (this.sessionId === forId) {
+      // Only the request that still owns the current epoch may release pending.
+      // A stale request (unmount/switch bumped the epoch) must NOT clear a newer
+      // request's ownership.
+      if (this.epoch === myEpoch) {
         this.pending = null;
         this.cbs.onPending(null);
-      } else {
-        this.pending = null;
       }
     }
   }

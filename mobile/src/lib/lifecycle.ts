@@ -137,18 +137,26 @@ function managedStatusLabel(state: ManagedLifecycleState): string {
 
 // ── M3b: strict lifecycle action-response validation (BLOCKER 5) ──
 
-// Closed vocabulary of daemon action-result states. `unknown` is NOT a valid
-// server response value — it is only the client's pre-signal placeholder.
-const ACTION_RESULT_STATES: ReadonlySet<string> = new Set([
-  'starting', 'running', 'stopping', 'exited', 'killed', 'failed',
-]);
-
 export type LifecycleActionKind = 'stop' | 'kill' | 'delete';
 
+// Per-action CLOSED set of states the daemon may legitimately return, matching
+// the accepted M2 lifecycle contract (internal/term/lifecycle_service.go):
+//   - Delete always returns exited (record removal of a terminal session);
+//   - Stop/Kill return a stopping (in-progress/partial) or a terminal state,
+//     NEVER starting/running.
+// A response outside its action's set is rejected so a wrong-combination 2xx
+// (e.g. delete+running) can never be committed as a success.
+const ACTION_ALLOWED_STATES: Record<LifecycleActionKind, ReadonlySet<string>> = {
+  stop: new Set(['stopping', 'exited', 'killed', 'failed']),
+  kill: new Set(['stopping', 'exited', 'killed', 'failed']),
+  delete: new Set(['exited']),
+};
+
 // LifecycleResultError marks a daemon action response that must NOT be committed
-// as a success (malformed, wrong session, wrong action, or out-of-vocabulary
-// state). Defined here (no client import) so validation stays cycle-free and
-// purely testable; callers treat it as an action failure, not a state change.
+// as a success (malformed, wrong session, wrong action, or a state not valid for
+// the requested action). Defined here (no client import) so validation stays
+// cycle-free and purely testable; callers treat it as an action failure, not a
+// state change.
 export class LifecycleResultError extends Error {
   constructor(message: string) {
     super(message);
@@ -157,9 +165,10 @@ export class LifecycleResultError extends Error {
 }
 
 // parseLifecycleResult strictly validates a Stop/Kill/Delete 2xx body against the
-// EXACT requested session id and operation and the closed state vocabulary. A
-// malformed or wrong-session/wrong-action/unknown-state 2xx throws — it is never
-// silently accepted (so e.g. a bogus Delete 2xx cannot trigger navigation).
+// EXACT requested session id, the EXACT operation, and the per-action closed
+// state set. A malformed/wrong-session/wrong-action/wrong-state 2xx throws — it is
+// never silently accepted (so e.g. a `delete` that returns `running` cannot
+// trigger navigation).
 export function parseLifecycleResult(
   expectedId: string, expectedAction: LifecycleActionKind, raw: unknown,
 ): { sessionId: string; action: string; state: string } {
@@ -173,8 +182,8 @@ export function parseLifecycleResult(
   if (r.action !== expectedAction) {
     throw new LifecycleResultError('lifecycle response action mismatch');
   }
-  if (typeof r.state !== 'string' || !ACTION_RESULT_STATES.has(r.state)) {
-    throw new LifecycleResultError('lifecycle response state outside vocabulary');
+  if (typeof r.state !== 'string' || !ACTION_ALLOWED_STATES[expectedAction].has(r.state)) {
+    throw new LifecycleResultError(`lifecycle response state ${String(r.state)} invalid for action ${expectedAction}`);
   }
   return { sessionId: r.sessionId as string, action: r.action as string, state: r.state };
 }

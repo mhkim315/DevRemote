@@ -9,6 +9,30 @@ Required baseline (accepted M3-auth-2B lineage / doctor-repair docs):
 `git merge-base --is-ancestor 46e45fe8966ed28666a38324bff60161b8e102f3 HEAD`
 exits 0.
 
+## 0b. Remediation of the second REJECT (2 controller blockers)
+
+A second independent verification confirmed §0 but found two race/validation
+defects in the production controller. Both fixed on top of `9baee5d5e`:
+
+- **B1 — late response after unmount / overlapping sessions.** The controller
+  now carries a monotonic `epoch`; `run()` captures it at start and re-checks it
+  before EVERY callback and before releasing `pending`. `dispose()` and
+  `setSession()` bump the epoch, so a Stop/Delete response that lands after Back/
+  unmount fires no callback (no `onState`/`onRefresh`/`onDeleted`, no duplicate
+  `onBack`), and a stale session-A response can no longer clear session-B's
+  pending ownership. FeedScreen now calls `dispose()` in an unmount cleanup.
+  Tests: deferred late-success/late-error after `dispose()` fire nothing; an
+  overlapping A/B sequence keeps B's ownership intact.
+- **B2 — per-action state validation.** `parseLifecycleResult` now validates the
+  response `state` against a per-action closed set (`delete → {exited}`,
+  `stop`/`kill → {stopping,exited,killed,failed}`) instead of the global
+  vocabulary, so a `delete` that returns `running`/`stopping` (or a `stop`/`kill`
+  that returns `running`/`starting`) is rejected and never committed as success
+  (`onDeleted` is not called). Tests at the pure and client levels.
+
+Full gate green after this remediation: `go test -race ./...`, mobile tsc, jest
+**21 suites / 289 tests**, invariants, secret scan.
+
 ## 0. Remediation of the independent REJECT (6 blockers)
 
 The first M3b commit (`dfa319645`) was correctly REJECTED: the daemon did not

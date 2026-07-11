@@ -135,7 +135,7 @@ M3-auth-R1 Authenticated Android M3a E2E reverify    ACCEPT a834955c1 (host-boun
 M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A
 M3-auth-1B iOS Secure Enclave identity               ACCEPT a173fcf (hardware-backed provider + runnable physical-device gate; execution = M-track)
 M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      CODE COMPLETE (iOS integration re-verified: SE key → pair → bearer → ticket → terminal; production ConnectScreen pairing evidence; jest+gate PASS); physical iOS smoke + native gate = M-track; next = M3b
-M3b Mobile lifecycle action UX                        CODE COMPLETE (remediated after independent REJECT: additive daemon lifecycleState + retained terminal Catalog rows in /api/sessions; Force-Kill reachable via authoritative stopping; strict action-DTO validation; extracted SessionLifecycleController; capability-enforced input; jest 287 + go test -race + full build-gate PASS; physical-device/LTE smoke = M-track); see docs/M3B_IMPLEMENTATION_REPORT.md
+M3b Mobile lifecycle action UX                        CODE COMPLETE (remediated after 2 independent REJECTs: additive daemon lifecycleState + retained terminal Catalog rows; Force-Kill reachable via authoritative stopping; controller epoch invalidates stale/unmount responses; per-action strict DTO validation; capability-enforced input; jest 289 + go test -race + full build-gate PASS; physical-device/LTE smoke = M-track); see docs/M3B_IMPLEMENTATION_REPORT.md
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Common AgentEvent Contract
 T1  Codex Adapter

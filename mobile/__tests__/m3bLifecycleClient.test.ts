@@ -172,7 +172,7 @@ describe('M3b lifecycle actions — exact route + host-bound device transport', 
     }
   });
 
-  it('rejects a malformed / wrong-session / wrong-action 2xx (BLOCKER 5: no false success)', async () => {
+  it('rejects a malformed / wrong-session / wrong-action / wrong-per-action-state 2xx (no false success)', async () => {
     setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
     setBaseURL(HOST_A);
 
@@ -184,9 +184,16 @@ describe('M3b lifecycle actions — exact route + host-bound device transport', 
     mockFetch({ status: 200, body: { sessionId: SID, action: 'kill', state: 'killed' } });
     await expect(stopSession(SID)).rejects.toBeInstanceOf(LifecycleResultError);
 
-    // out-of-vocabulary state
-    mockFetch({ status: 200, body: { sessionId: SID, action: 'delete', state: 'idle' } });
+    // BLOCKER 2: delete that returns a non-terminal state must NOT commit as a
+    // success — Delete only ever returns exited.
+    mockFetch({ status: 200, body: { sessionId: SID, action: 'delete', state: 'running' } });
     await expect(deleteSessionHistory(SID)).rejects.toBeInstanceOf(LifecycleResultError);
+    mockFetch({ status: 200, body: { sessionId: SID, action: 'delete', state: 'stopping' } });
+    await expect(deleteSessionHistory(SID)).rejects.toBeInstanceOf(LifecycleResultError);
+
+    // stop/kill never return running/starting
+    mockFetch({ status: 200, body: { sessionId: SID, action: 'stop', state: 'running' } });
+    await expect(stopSession(SID)).rejects.toBeInstanceOf(LifecycleResultError);
 
     // malformed body
     mockFetch({ status: 200, body: null });
