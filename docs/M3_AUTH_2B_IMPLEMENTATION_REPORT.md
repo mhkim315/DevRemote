@@ -76,11 +76,40 @@ suites that run identically on iOS (green in the gate).
 | no bearer/credential/key/signature in URLs/state/logs | New: "Terminal bootstrap injects ONLY the ticket — never the bearer, device SPKI, or host key" |
 | daemon replay/wrong-session/replacement/revoke/expiry stay green | Go `internal/devicetrust` suites (ws-ticket contract, registry, revoke/expiry) — run under `go test -race` in the gate |
 
+## 4a. Remediation after independent REJECT (bbfa963ab)
+
+Three production cold-start / recovery blockers were found and fixed (mobile
+auth/UI only; no daemon, Android-logic, or wire change):
+
+- **BLOCKER 1 — cold start now binds to the actual key.** `completePairing`
+  (`authMode.ts`) calls `deviceKey.getKeyInfo()` and enters `paired_device` ONLY
+  when the live key's `deviceId` equals the persisted pairing's `deviceId`. A
+  deleted/wiped/backup-restored/different key (`key_missing` or identity
+  mismatch) routes to `pairing_required` (re-pairable); an inaccessible /
+  invalidated / incompatible key routes to `failed`. `App.tsx` cold start now
+  uses this same `completePairing` path (previously it created a TokenManager
+  without verifying the key). Proofs: `authPairing.test.ts` (key_missing /
+  mismatch → pairing_required, inaccessible → failed) and the iOS integration
+  suite ("cold-start binds to the actual SE key …").
+- **BLOCKER 2 — re-pair installs new trusted auth.** `pairFromScannedQR` now
+  requires an `onPaired` installer and **fails closed** without it, so a re-scan
+  from `device_connect` can never connect on top of a stale TokenManager.
+  `App.tsx` also passes the same atomic `completeAndInstall` callback to the
+  `device_connect` ConnectScreen. Proof: "a remote pairing without an onPaired
+  installer fails closed (no connect, no pairing)".
+- **BLOCKER 3 — ConnectScreen scan boundary.** The lazy module load + pairing
+  transition now run inside one recovery boundary (`runScan`), so ANY dynamic
+  import / setup / transition failure resets the scanner exactly once and shows
+  an error — never sticks at `scanned=true`. Proof: "runScan resets the scanner
+  on a module-load failure — never sticks" and "runScan runs the real transition
+  … and connects a plain HTTPS URL".
+
 ## 5. Verification
 
 Ran here (all green):
 - `npx tsc --noEmit`: PASS
-- `npx jest`: PASS (18 suites, **229** tests; +14 new iOS integration)
+- `npx jest`: PASS (18 suites, **236** tests; +18 iOS integration + 3 new
+  `completePairing` key-binding cases)
 - `sh scripts/build-gate.sh`: **ALL GATES PASSED** (backend `go test -race`,
   mobile typecheck + jest, Android Kotlin compile, invariants, security scan)
 - `sh -n scripts/ios-native-gate.sh`: PASS (syntax)

@@ -78,6 +78,20 @@ export async function completePairing(deps: PairingCompletionDeps): Promise<Auth
   if (!p.origin || origin !== p.origin) return { mode: 'failed' };
   let dk: PokitDeviceKey;
   try { dk = deps.createDeviceKey(); } catch { return { mode: 'failed' }; }
+  // M3-auth-2B: bind the stored pairing to the ACTUAL hardware key present on
+  // THIS device before trusting it. A key that is missing or a different
+  // identity (deleted/wiped/backup-restored/other key) is re-pairable
+  // (pairing_required); an inaccessible/invalidated/incompatible key is an
+  // explicit security failure (failed). Never enter paired_device on a key that
+  // does not match the persisted deviceId.
+  let info;
+  try {
+    info = await dk.getKeyInfo();
+  } catch (e: any) {
+    if (e && e.code === 'key_missing') return { mode: 'pairing_required' };
+    return { mode: 'failed' };
+  }
+  if (!info || info.deviceId !== p.deviceId) return { mode: 'pairing_required' };
   let tokenMgr: TokenManager;
   try { tokenMgr = deps.makeTokenManager(p, dk, base); } catch { return { mode: 'failed' }; }
   return { mode: 'paired_device', tokenMgr, baseURL: base };

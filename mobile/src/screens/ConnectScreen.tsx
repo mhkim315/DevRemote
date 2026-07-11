@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
+import { isPairingQR, pairFromScannedQR, runScan } from '../lib/connectPairing';
 
 export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<boolean> } = {}) {
   const { connect, connectionError } = useConnection();
@@ -20,37 +21,25 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
 
   const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
-
-    // Detect pairing QR payload: JSON with sessionId + hostPubKey.
-    const { isPairingQR, pairFromScannedQR } = await import('../lib/connectPairing');
-    if (isPairingQR(data)) {
-      setScanned(true);
-      // The production pairing transition (Secure Enclave sign → persist origin →
-      // install trusted auth BEFORE connect) lives in connectPairing so it is
-      // testable end-to-end. onReject re-enables the scanner exactly once on any
-      // failure; no partial paired state and no legacy fallback.
-      const { pairAndSave } = await import('../lib/pairAndSave');
-      const { createPokitDeviceKey } = await import('../../modules/pokit-device-key');
-      const { getBaseURL } = await import('../lib/client');
-      await pairFromScannedQR({
-        data,
-        createDeviceKey: createPokitDeviceKey,
-        getBaseURL,
-        pairAndSave,
-        connect: (base) => connect(base),
-        onPaired,
-        onReject: () => setScanned(false),
-        onError: (msg) => alert(msg),
-        onNeedBaseURL: () => alert('Set the daemon URL first'),
-      });
-      return;
-    }
-
-    // Accept any HTTPS URL (legacy or manual connect).
-    if (data.startsWith('https://')) {
-      setScanned(true);
-      await connect(data);
-    }
+    // The ENTIRE handling (lazy module load + pairing transition) runs inside
+    // runScan's single recovery boundary, so any dynamic-import or setup failure
+    // resets the scanner exactly once instead of sticking at scanned=true.
+    await runScan({
+      data,
+      isPairing: isPairingQR,
+      loadModules: async () => {
+        const [{ pairAndSave }, { createPokitDeviceKey }, { getBaseURL }] = await Promise.all([
+          import('../lib/pairAndSave'),
+          import('../../modules/pokit-device-key'),
+          import('../lib/client'),
+        ]);
+        return { pairFromScannedQR, pairAndSave, createDeviceKey: createPokitDeviceKey, getBaseURL };
+      },
+      connect: (url) => connect(url),
+      onPaired,
+      setScanned,
+      notifyError: (msg) => alert(msg),
+    });
   };
 
   if (hasPermission === null) {

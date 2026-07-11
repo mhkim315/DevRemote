@@ -37,6 +37,16 @@ export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
   const base = deps.getBaseURL();
   if (!base) { deps.onNeedBaseURL(); deps.onReject(); return; }
 
+  // A remote pairing MUST install trusted auth state (onPaired) before any
+  // connection. Without an installer we fail closed rather than connect on top
+  // of a stale/previous TokenManager — this closes the re-pair-from-device_connect
+  // hole where pairThenConnect would otherwise treat a missing callback as success.
+  if (!deps.onPaired) {
+    deps.onError('Pairing unavailable: no trusted-state installer');
+    deps.onReject();
+    return;
+  }
+
   let result: PairingResult;
   try {
     const dk = deps.createDeviceKey();
@@ -56,5 +66,63 @@ export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
   } else {
     deps.onError('Pairing failed: ' + (result.errorDetail || result.status));
     deps.onReject();
+  }
+}
+
+// ── ConnectScreen scan boundary (BLOCKER 3 recovery) ──
+//
+// The FULL scan handling — including the lazy module load — must live inside one
+// recovery boundary so that ANY failure (module import, dependency setup, or the
+// pairing transition) resets the scanner exactly once and surfaces an error.
+// Extracted so the real handler path is unit-tested without a React render.
+
+export interface ScanModules {
+  pairFromScannedQR: (deps: PairFromScanDeps) => Promise<void>;
+  pairAndSave: PairFromScanDeps['pairAndSave'];
+  createDeviceKey: () => PokitDeviceKey;
+  getBaseURL: () => string;
+}
+
+export interface RunScanDeps {
+  data: string;
+  isPairing: (data: string) => boolean;    // = isPairingQR
+  loadModules: () => Promise<ScanModules>;  // the lazy import bundle
+  connect: (url: string) => Promise<void>;
+  onPaired?: () => Promise<boolean>;
+  setScanned: (v: boolean) => void;         // scanner lock
+  notifyError: (msg: string) => void;       // e.g. alert
+}
+
+// runScan is the production QR handler body. A pairing QR sets the scanner lock
+// and runs the lazy-load + transition inside a single try/catch: on ANY failure
+// the scanner is reset exactly once and an error is shown, so a failed dynamic
+// import can never leave the scanner stuck. A plain HTTPS URL connects directly.
+export async function runScan(deps: RunScanDeps): Promise<void> {
+  if (deps.isPairing(deps.data)) {
+    deps.setScanned(true);
+    try {
+      const m = await deps.loadModules();
+      await m.pairFromScannedQR({
+        data: deps.data,
+        createDeviceKey: m.createDeviceKey,
+        getBaseURL: m.getBaseURL,
+        pairAndSave: m.pairAndSave,
+        connect: deps.connect,
+        onPaired: deps.onPaired,
+        onReject: () => deps.setScanned(false),
+        onError: (msg) => deps.notifyError(msg),
+        onNeedBaseURL: () => deps.notifyError('Set the daemon URL first'),
+      });
+    } catch (e: any) {
+      // Module load / setup / transition failure: reset the scanner ONCE.
+      deps.notifyError('Pairing error: ' + (e?.message || String(e)));
+      deps.setScanned(false);
+    }
+    return;
+  }
+  // Legacy/manual: accept a plain HTTPS URL.
+  if (deps.data.startsWith('https://')) {
+    deps.setScanned(true);
+    await deps.connect(deps.data);
   }
 }

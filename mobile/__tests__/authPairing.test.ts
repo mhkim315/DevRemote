@@ -18,7 +18,9 @@ function pairing(origin?: string): StoredPairing {
     origin, pairedAt: '2026-07-11T00:00:00Z', role: 'owner',
   };
 }
-const fakeDeviceKey = {} as PokitDeviceKey;
+// M3-auth-2B: completePairing now binds the stored pairing to the actual device
+// key identity (getKeyInfo().deviceId === stored deviceId) before paired_device.
+const fakeDeviceKey = { getKeyInfo: async () => ({ deviceId: 'd' }) } as unknown as PokitDeviceKey;
 const fakeTokenMgr = { __brand: 'tm' } as unknown as TokenManager;
 
 function deps(over: Partial<Parameters<typeof completePairing>[0]> = {}) {
@@ -37,6 +39,30 @@ describe('completePairing', () => {
     expect(ctx.mode).toBe('paired_device');
     expect(ctx.tokenMgr).toBe(fakeTokenMgr);
     expect(ctx.baseURL).toBe(BASE);
+  });
+
+  // M3-auth-2B: cold-start / restore binds the stored identity to the actual key.
+  it('key deleted on this device (key_missing) → pairing_required (re-pairable)', async () => {
+    const ctx = await completePairing(deps({
+      createDeviceKey: () => ({ getKeyInfo: async () => { throw Object.assign(new Error('x'), { code: 'key_missing' }); } } as any),
+    }));
+    expect(ctx.mode).toBe('pairing_required');
+    expect(ctx.tokenMgr).toBeUndefined();
+  });
+
+  it('stored deviceId ≠ actual key identity → pairing_required (never paired_device)', async () => {
+    const ctx = await completePairing(deps({
+      createDeviceKey: () => ({ getKeyInfo: async () => ({ deviceId: 'someone-elses-key' }) } as any),
+    }));
+    expect(ctx.mode).toBe('pairing_required');
+  });
+
+  it('inaccessible/invalidated key → failed (explicit security failure)', async () => {
+    const ctx = await completePairing(deps({
+      createDeviceKey: () => ({ getKeyInfo: async () => { throw Object.assign(new Error('x'), { code: 'key_inaccessible' }); } } as any),
+    }));
+    expect(ctx.mode).toBe('failed');
+    expect(ctx.tokenMgr).toBeUndefined();
   });
 
   it('no saved pairing → pairing_required (scanner stays)', async () => {

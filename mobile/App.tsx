@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Linking, View, Text } from 'react-native';
@@ -32,29 +32,36 @@ function AppContent() {
     return { mode: 'initializing' };
   });
 
+  // M3-auth-2B: ONE authoritative completion path shared by cold start and
+  // post-pair. completePairing binds the persisted pairing to the actual
+  // hardware key on THIS device (identity match) BEFORE creating the TokenManager
+  // and entering paired_device. It also installs the host-bound device bearer so
+  // the subsequent connect() probe authenticates only against the paired origin.
+  const completeAndInstall = useCallback(async (): Promise<AuthContext> => {
+    const ctx = await completePairing({
+      loadPairing,
+      getBaseURL,
+      createDeviceKey: createPokitDeviceKey,
+      makeTokenManager: (p, dk, base) => new TokenManager(p, dk, base),
+    });
+    if (ctx.mode === 'paired_device' && ctx.tokenMgr && ctx.baseURL) {
+      const { origin } = canonicalOrigin(ctx.baseURL);
+      if (origin) setDeviceAuth({ tokenManager: ctx.tokenMgr, origin });
+    } else {
+      // Any non-paired result must not leave a stale bearer installed.
+      setDeviceAuth(null);
+    }
+    setAuthCtx(ctx);
+    return ctx;
+  }, []);
+
   useEffect(() => {
     if (NO_LOGIN) return;
-    loadPairing()
-      .then(p => {
-        if (!p) { setAuthCtx({ mode: 'pairing_required' }); return; }
-        const base = getBaseURL();
-        if (!base) { setAuthCtx({ mode: 'pairing_required' }); return; }
-        // BLOCKER 1: origin binding — the current base URL must match the
-        // canonical origin stored in the pairing record (scheme+host+port).
-        const { origin: currentOrigin, error: originErr } = canonicalOrigin(base);
-        if (originErr || !currentOrigin) { setAuthCtx({ mode: 'failed' }); return; }
-        if (!p.origin) { setAuthCtx({ mode: 'failed' }); return; }
-        if (currentOrigin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
-        let dk;
-        try { dk = createPokitDeviceKey(); } catch { setAuthCtx({ mode: 'failed' }); return; }
-        // M3-auth-4A: install the host-bound device bearer BEFORE probing so the
-        // restored paired session connects with an authenticated REST probe —
-        // and only ever sends the bearer to this paired origin.
-        const mgr = new TokenManager(p, dk, base);
-        setDeviceAuth({ tokenManager: mgr, origin: currentOrigin });
-        setAuthCtx({ mode: 'paired_device', tokenMgr: mgr, baseURL: base });
-        connect(base).catch(() => {});
-      })
+    // Restored paired identity is trusted only after key-identity verification;
+    // a missing/mismatched key routes to pairing_required, an inaccessible one
+    // to failed — never a stuck paired_device on the wrong key.
+    completeAndInstall()
+      .then(ctx => { if (ctx.mode === 'paired_device' && ctx.baseURL) connect(ctx.baseURL).catch(() => {}); })
       .catch(() => setAuthCtx({ mode: 'failed' }));
   }, []);
 
@@ -142,23 +149,7 @@ function AppContent() {
     // connection state can never race ahead of trusted auth state.
     return (
       <SafeAreaProvider><StatusBar style="light" />
-        <ConnectScreen onPaired={async () => {
-          const ctx = await completePairing({
-            loadPairing,
-            getBaseURL,
-            createDeviceKey: createPokitDeviceKey,
-            makeTokenManager: (p, dk, base) => new TokenManager(p, dk, base),
-          });
-          // Install the host-bound device bearer so the subsequent connect()
-          // probe (run by ConnectScreen after this resolves) authenticates as
-          // the paired device — and only ever targets this paired origin.
-          if (ctx.mode === 'paired_device' && ctx.tokenMgr && ctx.baseURL) {
-            const { origin } = canonicalOrigin(ctx.baseURL);
-            if (origin) setDeviceAuth({ tokenManager: ctx.tokenMgr, origin });
-          }
-          setAuthCtx(ctx);
-          return ctx.mode === 'paired_device';
-        }} />
+        <ConnectScreen onPaired={async () => (await completeAndInstall()).mode === 'paired_device'} />
       </SafeAreaProvider>
     );
   }
@@ -181,8 +172,11 @@ function AppContent() {
       ) : route === 'product' ? (
         <RootTabs token={session?.access_token} authCtx={authCtx} />
       ) : (
-        // device_connect (paired, authenticated probe pending) | legacy_connect
-        <ConnectScreen />
+        // device_connect (paired, authenticated probe pending) | legacy_connect.
+        // Pass the SAME atomic completion callback so a re-scan here installs a
+        // fresh DeviceKey-verified TokenManager + bearer before connecting —
+        // never connecting on top of a stale/invalid auth context.
+        <ConnectScreen onPaired={async () => (await completeAndInstall()).mode === 'paired_device'} />
       )}
     </SafeAreaProvider>
   );

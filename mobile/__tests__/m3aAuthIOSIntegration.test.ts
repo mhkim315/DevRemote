@@ -33,7 +33,7 @@ import { TokenManager } from '../src/lib/authClient';
 import { getWSTicket, WS_TICKET_MAX_TTL_MS } from '../src/lib/wsTicket';
 import { completePairing, deriveTerminalAuth } from '../src/lib/authMode';
 import { conductPairing, buildPairingTranscript } from '../src/lib/pairingClient';
-import { pairFromScannedQR, isPairingQR } from '../src/lib/connectPairing';
+import { pairFromScannedQR, isPairingQR, runScan } from '../src/lib/connectPairing';
 import { TerminalController } from '../src/lib/terminalController';
 import { _createWithNative } from '../modules/pokit-device-key/src';
 import type { NativePokitDeviceKey } from '../modules/pokit-device-key/src';
@@ -91,6 +91,17 @@ function iosNative(): NativePokitDeviceKey {
   };
 }
 function iosDeviceKey() { return _createWithNative(iosNative()); }
+
+// A wrapped iOS DeviceKey whose native getKeyInfo/ensureKey fail with a coded
+// error — used to exercise cold-start identity binding (key deleted / inaccessible).
+function iosThrowingKey(code: string) {
+  const boom = async () => { throw Object.assign(new Error('native'), { code }); };
+  return _createWithNative({
+    getSupport: async () => 'supported', hasKey: async () => true,
+    ensureKey: boom, getKeyInfo: boom, getPublicKeySpki: boom,
+    sign: boom, deleteKey: async () => {},
+  } as NativePokitDeviceKey);
+}
 
 // ── host-signed fake daemon: challenge/verify (bearer), mirroring authClient.test.ts ──
 interface Session { cn: Uint8Array; createdAtMS: number; expiresAtMS: number; bootId: string; cid: Uint8Array; sn: Uint8Array; }
@@ -227,7 +238,7 @@ describe('M3-auth-2B iOS integration', () => {
     const a: string[] = [];
     await pairFromScannedQR({
       data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, getBaseURL: () => BASE,
-      pairAndSave: async () => { throw new Error('boom'); },
+      pairAndSave: async () => { throw new Error('boom'); }, onPaired: async () => true,
       connect: async () => { a.push('connect'); }, onReject: () => a.push('reject'),
       onError: () => a.push('error'), onNeedBaseURL: () => a.push('needBase'),
     });
@@ -237,12 +248,27 @@ describe('M3-auth-2B iOS integration', () => {
     let pairCalled = false;
     await pairFromScannedQR({
       data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, getBaseURL: () => '',
-      pairAndSave: async () => { pairCalled = true; return { status: 'approved' } as any; },
+      pairAndSave: async () => { pairCalled = true; return { status: 'approved' } as any; }, onPaired: async () => true,
       connect: async () => { b.push('connect'); }, onReject: () => b.push('reject'),
       onError: () => b.push('error'), onNeedBaseURL: () => b.push('needBase'),
     });
     expect(b).toEqual(['needBase', 'reject']);
     expect(pairCalled).toBe(false); // never attempt pairing without an operational origin
+  });
+
+  it('a remote pairing without an onPaired installer fails closed (no connect, no pairing)', async () => {
+    const a: string[] = [];
+    let pairCalled = false;
+    await pairFromScannedQR({
+      data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, getBaseURL: () => BASE,
+      pairAndSave: async () => { pairCalled = true; return { status: 'approved' } as any; },
+      connect: async () => { a.push('connect'); }, onReject: () => a.push('reject'),
+      onError: () => a.push('error'), onNeedBaseURL: () => a.push('needBase'),
+      // onPaired intentionally omitted — a re-pair with no trusted-state installer
+      // must NOT connect on top of a stale TokenManager.
+    });
+    expect(a).toEqual(['error', 'reject']);
+    expect(pairCalled).toBe(false);
   });
 
   // ── Cold-start restore / paired_device guard ──
@@ -271,6 +297,63 @@ describe('M3-auth-2B iOS integration', () => {
       makeTokenManager: (p, dk, base) => new TokenManager(p as any, dk as any, base),
     });
     expect(missing.mode).toBe('pairing_required');
+  });
+
+  it('cold-start binds to the actual SE key: missing/mismatch → pairing_required, inaccessible → failed', async () => {
+    const run = (createDeviceKey: () => any, p: any = pairing) => completePairing({
+      loadPairing: async () => p, getBaseURL: () => BASE, createDeviceKey,
+      makeTokenManager: (pp, dk, base) => new TokenManager(pp as any, dk as any, base),
+    });
+    // key deleted/wiped on this device → re-pairable
+    expect((await run(() => iosThrowingKey('key_missing'))).mode).toBe('pairing_required');
+    // a DIFFERENT Secure Enclave key exists → stored deviceId ≠ actual → re-pairable
+    expect((await run(() => iosDeviceKey(), { ...pairing, deviceId: 'ff'.repeat(32) })).mode).toBe('pairing_required');
+    // key present but inaccessible/invalidated → explicit security failure
+    expect((await run(() => iosThrowingKey('key_inaccessible'))).mode).toBe('failed');
+    // valid, matching identity → paired_device
+    expect((await run(() => iosDeviceKey())).mode).toBe('paired_device');
+  });
+
+  // ── ConnectScreen scan boundary (runScan) ──
+
+  it('runScan resets the scanner on a module-load failure — never sticks', async () => {
+    const ev: string[] = [];
+    await runScan({
+      data: makePairingQR(), isPairing: isPairingQR,
+      loadModules: async () => { throw new Error('import failed'); },
+      connect: async () => { ev.push('connect'); },
+      onPaired: async () => true,
+      setScanned: (v) => ev.push('scanned=' + v),
+      notifyError: () => ev.push('error'),
+    });
+    expect(ev).toEqual(['scanned=true', 'error', 'scanned=false']); // lock, then reset exactly once
+    expect(ev).not.toContain('connect');
+  });
+
+  it('runScan runs the real transition on a pairing QR, and connects a plain HTTPS URL', async () => {
+    const ev: string[] = [];
+    await runScan({
+      data: makePairingQR(), isPairing: isPairingQR,
+      loadModules: async () => ({
+        pairFromScannedQR,
+        pairAndSave: async () => ({ status: 'approved' } as any),
+        createDeviceKey: () => iosDeviceKey() as any,
+        getBaseURL: () => BASE,
+      }),
+      connect: async () => { ev.push('connect'); },
+      onPaired: async () => { ev.push('onPaired'); return true; },
+      setScanned: () => {}, notifyError: () => ev.push('error'),
+    });
+    expect(ev).toEqual(['onPaired', 'connect']); // trusted state installed before connect
+
+    const ev2: string[] = [];
+    await runScan({
+      data: 'https://host-a.example.com', isPairing: isPairingQR,
+      loadModules: async () => { throw new Error('must not load for a plain URL'); },
+      connect: async () => { ev2.push('connect'); },
+      setScanned: () => {}, notifyError: () => ev2.push('error'),
+    });
+    expect(ev2).toEqual(['connect']);
   });
 
   // ── Bearer + ticket ──
