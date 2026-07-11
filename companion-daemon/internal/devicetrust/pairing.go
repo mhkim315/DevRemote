@@ -202,6 +202,7 @@ func StartPairing(cfg PairingConfig) (*PairingHost, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/pair", ph.handleCandidate)       // phase 1
 	mux.HandleFunc("/pair/confirm", ph.handleConfirm) // phase 2
+	mux.HandleFunc("/pair/result", ph.handleResult)   // poll for CLI approval
 	ph.srv = &http.Server{
 		Addr:              ":" + port,
 		Handler:           mux,
@@ -363,6 +364,38 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		"status":    "proof_verified",
 		"hostProof": hex.EncodeToString(hostProofDER),
 	})
+}
+
+// handleResult is a polling endpoint the phone calls after confirm to learn the
+// operator's approval decision. Does not consume the session.
+func (ph *PairingHost) handleResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ph.mu.Lock()
+	dev := ph.pairedDevice
+	state := stateForClient(ph.state)
+	ph.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	switch state {
+	case PairingStatePending, PairingStateAwaitingApproval:
+		json.NewEncoder(w).Encode(map[string]string{"status": "pending"})
+	case PairingStateApproved:
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":      "approved",
+			"deviceId":    dev.DeviceID,
+			"fingerprint": dev.Fingerprint,
+			"role":        dev.Role,
+		})
+	case PairingStateRejected:
+		json.NewEncoder(w).Encode(map[string]string{"status": "rejected"})
+	case PairingStateExpired:
+		json.NewEncoder(w).Encode(map[string]string{"status": "expired"})
+	default:
+		json.NewEncoder(w).Encode(map[string]string{"status": "error"})
+	}
 }
 
 // ── State transitions (called by IPC handler) ──
