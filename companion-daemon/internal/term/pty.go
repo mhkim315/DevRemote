@@ -376,23 +376,6 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			break
 		}
 
-		// M3-auth-4A: resize control frame over the authenticated WebSocket.
-		// Format: {"type":"resize","rows":N,"cols":M}. The WS is ticket-
-		// authenticated; no separate /term/size HTTP bearer is needed.
-		if len(msg) > 0 && msg[0] == '{' {
-			var ctrl struct {
-				Type string `json:"type"`
-				Rows int    `json:"rows"`
-				Cols int    `json:"cols"`
-			}
-			if err := json.Unmarshal(msg, &ctrl); err == nil && ctrl.Type == "resize" && ctrl.Rows > 0 && ctrl.Cols > 0 {
-				if rec != nil {
-					rec.Resize(ctrl.Rows, ctrl.Cols)
-				}
-				continue
-			}
-		}
-
 		// M2.5-4: device-auth input permission gate. Rejected input must not
 		// reach WriteInput OR modify Activity.
 		if ticketPrincipal != nil && !hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {

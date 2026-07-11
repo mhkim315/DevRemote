@@ -39,6 +39,17 @@ export class TerminalController {
     if (!htmlRes.ok) throw new Error(`bootstrap failed: ${htmlRes.status}`);
     let html = await htmlRes.text();
 
+    // Get authoritative PTY size from the daemon so the mobile xterm mirrors
+    // the host geometry (mobile does NOT resize the shared PTY).
+    let ptySize = '';
+    try {
+      const szRes = await authenticatedFetch(`${baseURL}/term/size?session=${encodeURIComponent(sessionId)}`, undefined, tokenMgr);
+      if (szRes.ok) {
+        const sz = await szRes.json();
+        ptySize = `window.__pokitPTYSize={rows:${sz.rows||24},cols:${sz.cols||80}};`;
+      }
+    } catch {}
+
     const t = await getWSTicket(sessionId, tokenMgr, baseURL);
     if (attemptId !== this.gen) return { attemptId };
 
@@ -46,12 +57,12 @@ export class TerminalController {
     // is fully loaded (DOMContentLoaded or fallback setTimeout) so the
     // daemon's real connect() is defined before we wrap it.
     const connId = this.connId;
-    const ticketScript = `<script>
+    const ticketScript = `<script>${ptySize}
 (function(){
   var ticketA=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId}, connId=${connId};
   var pendingReconnect=false, realConnectFn=null;
   // Build a WS URL with a ticket (ephemeral — ticket never enters history).
-  function wsURL(tk){ var u=new URL(location.href); u.searchParams.set('session',session); u.searchParams.set('ticket',tk); return '/term/ws'+u.search; }
+  function wsURL(tk){ var proto=location.protocol==='https:'?'wss:':'ws:'; var u=new URL('/term/ws',location.origin); u.protocol=proto; u.searchParams.set('session',session); u.searchParams.set('ticket',tk); return u.toString(); }
   // ── Phase 1: IMMEDIATE WebSocket constructor interception (before any page JS runs) ──
   // The daemon page builds the WS as:
   //   new WebSocket(protocol+location.host+"/term/ws"+location.search)

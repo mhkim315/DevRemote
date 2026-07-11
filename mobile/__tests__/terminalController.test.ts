@@ -24,8 +24,13 @@ function mockTicketResp() {
 describe('TerminalController', () => {
   beforeEach(() => mockFetch.mockReset());
 
+  function mockPTYSize() {
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ rows: 24, cols: 80 }) } as any));
+  }
+
   it('bootstrap returns {result} with injected ticket', async () => {
     mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
+    mockPTYSize();
     mockTicketResp();
     const ctrl = new TerminalController();
     const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
@@ -77,6 +82,7 @@ describe('TerminalController', () => {
   // ── Injected script tests ──
   it('injected script intercepts WebSocket with ticket A on first call', async () => {
     mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
+    mockPTYSize();
     mockTicketResp();
     const ctrl = new TerminalController();
     const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
@@ -96,6 +102,7 @@ describe('TerminalController', () => {
 
   it('injected script clears ticket A after first use', async () => {
     mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
+    mockPTYSize();
     mockTicketResp();
     const ctrl = new TerminalController();
     const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
