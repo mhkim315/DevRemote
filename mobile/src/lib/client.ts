@@ -290,3 +290,11 @@ export function terminalWebSocketURL(sessionID: string, token?: string): string 
   if (token) params.set('token', token);
   return `${wsBase}/term/ws?${params.toString()}`;
 }
+
+// terminalWebSocketTicketURL constructs a WebSocket URL that authenticates via a
+// one-time ticket (device-auth remote mode). The ticket is acquired by the
+// authenticated transport layer (authTransport.getWSTicket).
+export function terminalWebSocketTicketURL(sessionID: string, ticket: string): string {
+  const wsBase = _baseURL.replace(/^https?/, 'ws');
+  return `${wsBase}/term/ws?session=${encodeURIComponent(sessionID)}&ticket=${encodeURIComponent(ticket)}`;
+}
