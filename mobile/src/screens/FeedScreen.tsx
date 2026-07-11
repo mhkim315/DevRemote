@@ -137,21 +137,24 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
   const [copyText, setCopyText] = useState('');
 
   // M3-auth-4A: TerminalController owns the bootstrap + ticket lifecycle.
-  // The legacy token path remains for local dev mode.
+  // The legacy token path is ONLY for local dev mode; remote mode never falls
+  // back to it.
   const [termSource, setTermSource] = useState<{ html: string; baseUrl: string } | { uri: string } | null>(null);
   const [termError, setTermError] = useState<string>('');
   const ctrlRef = useRef<TerminalController | null>(null);
+  const currentAttemptIdRef = useRef<number>(0);
 
-  const bootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string, gen: number) => {
+  const doBootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string) => {
+    const ctrl = new TerminalController();
+    ctrlRef.current?.cancel();
+    ctrlRef.current = ctrl;
     try {
-      const ctrl = new TerminalController();
-      ctrlRef.current = ctrl;
-      const result = await ctrl.bootstrap(sess, mgr, base);
-      if (!ctrl.isCurrent(gen)) return; // stale
+      const { attemptId, result } = await ctrl.bootstrap(sess, mgr, base);
+      if (!result) return; // stale (attemptId mismatch from later cancel)
+      currentAttemptIdRef.current = attemptId;
       setTermSource({ html: result.html, baseUrl: result.baseUrl });
       setTermError('');
     } catch (e: any) {
-      if (e?.message === 'aborted' || e?.message === 'stale bootstrap attempt') return;
       setTermError(e instanceof Error ? e.message : 'connection failed');
     }
   }, []);
@@ -159,23 +162,23 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
   useEffect(() => {
     if (tokenMgr && baseURL) {
       setTermSource(null); setTermError('');
-      const gen = Date.now();
-      bootstrap(session, tokenMgr, baseURL, gen);
+      doBootstrap(session, tokenMgr, baseURL);
     } else {
       ctrlRef.current?.cancel();
       ctrlRef.current = null;
+      // Legacy local-dev path (NO_LOGIN or dev-token).
       setTermSource({ uri: terminalURL(session, token) });
       setTermError('');
     }
-    return () => { ctrlRef.current?.cancel(); };
-  }, [session, token, tokenMgr, baseURL, bootstrap]);
+    return () => { ctrlRef.current?.cancel(); ctrlRef.current = null; };
+  }, [session, token, tokenMgr, baseURL, doBootstrap]);
 
   const doRetry = useCallback(() => {
     if (tokenMgr && baseURL) {
       setTermSource(null); setTermError('');
-      bootstrap(session, tokenMgr, baseURL, Date.now());
+      doBootstrap(session, tokenMgr, baseURL);
     }
-  }, [session, tokenMgr, baseURL, bootstrap]);
+  }, [session, tokenMgr, baseURL, doBootstrap]);
 
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (e) => {
@@ -407,6 +410,19 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
 
 
 
+  // Reconnect bridge: WebView messages {type:'pokit-reconnect-request'} are
+  // received here. The controller issues a fresh ticket and posts it back.
+  const handleReconnect = useCallback(async (data: any) => {
+    if (data?.type === 'pokit-reconnect-request' && tokenMgr && baseURL) {
+      if (data.session !== session) return;
+      const ctrl = ctrlRef.current;
+      if (!ctrl) return;
+      const { ticket } = await ctrl.reconnectTicket(session, tokenMgr, baseURL);
+      if (!ticket || ctrl !== ctrlRef.current) return;
+      wv.current?.postMessage(JSON.stringify({ type: 'pokit-ticket', ticket }));
+    }
+  }, [session, tokenMgr, baseURL]);
+
   const onMessage = useCallback((event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -414,19 +430,21 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
         setCopyText(data.text);
         setCopyModalVisible(true);
       }
-      // E8: handle real send ack from WebView.
       if (data.type === 'sendStatus') {
         setSendStatus(data.status === 'sent' ? 'sent' : 'failed');
         if (data.status === 'sent') {
           setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
         }
       }
-      // E8: diagnostic instrumentation from terminal.
       if (data.type === 'e8diag') {
         console.log('E8DIAG', JSON.stringify(data));
       }
+      // M3-auth-4A reconnect bridge.
+      if (data?.type === 'pokit-reconnect-request') {
+        handleReconnect(data);
+      }
     } catch (e) {}
-  }, []);
+  }, [handleReconnect]);
 
   const pinchZoomInjection = `
     (function() {

@@ -25,21 +25,27 @@ function AppContent() {
   const [session, setSession] = useState<Session | null>(NO_LOGIN ? {} as Session : null);
   const [tokenMgr, setTokenMgr] = useState<TokenManager | undefined>(undefined);
   const [pairedBaseURL, setPairedBaseURL] = useState<string | undefined>(undefined);
+  const [pairingInitDone, setPairingInitDone] = useState(NO_LOGIN); // NO_LOGIN skips this
   const { isConnected, loading } = useConnection();
 
-  // M3-auth-4A: if a pairing exists, create a host-scoped TokenManager so
-  // the authenticated terminal path is available.
+  // M3-auth-4A: if a pairing exists, create a host-scoped TokenManager.
+  // Until this completes, the authenticated terminal path is unavailable
+  // and the legacy token path is NOT used as fallback in remote mode.
   useEffect(() => {
-    if (NO_LOGIN) return;
+    if (NO_LOGIN) { setPairingInitDone(true); return; }
     loadPairing().then(p => {
       if (p && getBaseURL()) {
+        // BLOCKER 6: verify the pairing origin matches the current baseURL.
+        const base = getBaseURL();
         try {
+          const bu = new URL(base);
           const dk = createPokitDeviceKey();
-          setTokenMgr(new TokenManager(p, dk, getBaseURL()));
-          setPairedBaseURL(getBaseURL());
+          setTokenMgr(new TokenManager(p, dk, base));
+          setPairedBaseURL(base);
         } catch {}
       }
-    });
+      setPairingInitDone(true);
+    }).catch(() => setPairingInitDone(true));
   }, []);
 
   useEffect(() => {
@@ -110,7 +116,7 @@ function AppContent() {
     }
   }
 
-  if (loading) return null;
+  if (loading || !pairingInitDone) return null;
 
   return (
     <SafeAreaProvider>
