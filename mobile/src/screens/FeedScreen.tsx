@@ -13,9 +13,8 @@ import { SessionTelemetry } from '../components/AgentCard';
 interface Props {
   onBack: () => void;
   session: string;
-  token?: string;          // legacy: dev-token / Supabase JWT (local dev mode)
-  tokenMgr?: TokenManager;  // M3-auth-4A: device bearer → WS ticket (remote mode)
-  baseURL?: string;         // paired host base URL (required with tokenMgr)
+  token?: string;            // legacy: dev-token / Supabase JWT (explicit_local_dev only)
+  authCtx?: import('../lib/authMode').AuthContext; // M3-auth-4A
 }
 
 function jsSend(chars: number[]): string {
@@ -89,7 +88,10 @@ function E8g2Transcript({ events }: { events: any[] }) {
   );
 }
 
-export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: Props) {
+export default function FeedScreen({onBack, session, token, authCtx}: Props) {
+  const tokenMgr = authCtx?.mode === 'paired_device' ? authCtx.tokenMgr : undefined;
+  const baseURL = authCtx?.mode === 'paired_device' ? authCtx.baseURL : undefined;
+  const allowLegacy = authCtx?.mode === 'explicit_local_dev';
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');

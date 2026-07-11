@@ -15,6 +15,7 @@ import { TokenManager } from './src/lib/authClient';
 import { loadPairing } from './src/lib/pairingStore';
 import { createPokitDeviceKey } from './modules/pokit-device-key';
 import { getBaseURL } from './src/lib/client';
+import type { AuthContext } from './src/lib/authMode';
 
 // E6: explicit test-build gate — does not depend on stored baseURL.
 // Set EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 for local test builds.
@@ -23,29 +24,29 @@ const NO_LOGIN = typeof process !== 'undefined' &&
 
 function AppContent() {
   const [session, setSession] = useState<Session | null>(NO_LOGIN ? {} as Session : null);
-  const [tokenMgr, setTokenMgr] = useState<TokenManager | undefined>(undefined);
-  const [pairedBaseURL, setPairedBaseURL] = useState<string | undefined>(undefined);
-  const [pairingInitDone, setPairingInitDone] = useState(NO_LOGIN); // NO_LOGIN skips this
   const { isConnected, loading } = useConnection();
 
-  // M3-auth-4A: if a pairing exists, create a host-scoped TokenManager.
-  // Until this completes, the authenticated terminal path is unavailable
-  // and the legacy token path is NOT used as fallback in remote mode.
+  // M3-auth-4A: explicit auth mode — no inference from optional props.
+  const [authCtx, setAuthCtx] = useState<AuthContext>(() => {
+    if (NO_LOGIN) return { mode: 'explicit_local_dev', legacyToken: 'dev-token' };
+    return { mode: 'initializing' };
+  });
+
   useEffect(() => {
-    if (NO_LOGIN) { setPairingInitDone(true); return; }
-    loadPairing().then(p => {
-      if (p && getBaseURL()) {
-        // BLOCKER 6: verify the pairing origin matches the current baseURL.
+    if (NO_LOGIN) return;
+    loadPairing()
+      .then(p => {
+        if (!p) { setAuthCtx({ mode: 'pairing_required' }); return; }
         const base = getBaseURL();
-        try {
-          const bu = new URL(base);
-          const dk = createPokitDeviceKey();
-          setTokenMgr(new TokenManager(p, dk, base));
-          setPairedBaseURL(base);
-        } catch {}
-      }
-      setPairingInitDone(true);
-    }).catch(() => setPairingInitDone(true));
+        if (!base) { setAuthCtx({ mode: 'pairing_required' }); return; }
+        // BLOCKER 6: validate the base URL is a coherent origin.
+        let bu: URL;
+        try { bu = new URL(base); } catch { setAuthCtx({ mode: 'failed' }); return; }
+        let dk;
+        try { dk = createPokitDeviceKey(); } catch { setAuthCtx({ mode: 'failed' }); return; }
+        setAuthCtx({ mode: 'paired_device', tokenMgr: new TokenManager(p, dk, base), baseURL: base });
+      })
+      .catch(() => setAuthCtx({ mode: 'failed' }));
   }, []);
 
   useEffect(() => {
@@ -116,7 +117,9 @@ function AppContent() {
     }
   }
 
-  if (loading || !pairingInitDone) return null;
+  if (loading || authCtx.mode === 'initializing') return null;
+  // pairing_required and failed modes still show the UI — they surface a
+  // connect/pairing screen, not a silent legacy fallback.
 
   return (
     <SafeAreaProvider>
@@ -126,7 +129,7 @@ function AppContent() {
       ) : !isConnected ? (
         <ConnectScreen />
       ) : (
-        <RootTabs token={session.access_token} tokenMgr={tokenMgr} baseURL={pairedBaseURL} />
+        <RootTabs token={session.access_token} authCtx={authCtx} />
       )}
     </SafeAreaProvider>
   );

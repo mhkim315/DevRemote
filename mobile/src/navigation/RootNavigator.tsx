@@ -29,8 +29,7 @@ const linking: LinkingOptions<{}> = {
 
 function DashboardStackScreen({ route }: any) {
   const token = route.params?.token;
-  const tokenMgr = route.params?.tokenMgr;
-  const baseURL = route.params?.baseURL;
+  const authCtx = route.params?.authCtx;
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="DashboardMain">
@@ -38,8 +37,7 @@ function DashboardStackScreen({ route }: any) {
           <DashboardScreen
             {...props}
             token={token}
-            tokenMgr={tokenMgr}
-            baseURL={baseURL}
+            authCtx={authCtx}
             onSelectAgent={(session) => props.navigation.navigate('Terminal', { session })}
             onSnippets={() => props.navigation.navigate('Snippets')}
           />
@@ -51,8 +49,7 @@ function DashboardStackScreen({ route }: any) {
             {...props}
             session={props.route.params.session}
             token={token}
-            tokenMgr={tokenMgr}
-            baseURL={baseURL}
+            authCtx={authCtx}
             onBack={() => props.navigation.goBack()}
           />
         )}
@@ -69,7 +66,7 @@ function DashboardStackScreen({ route }: any) {
   );
 }
 
-export function RootTabs({ token, tokenMgr, baseURL }: { token?: string; tokenMgr?: any; baseURL?: string }) {
+export function RootTabs({ token, authCtx }: { token?: string; authCtx?: any }) {
   return (
     <NavigationContainer theme={DarkTheme} linking={linking}>
       <Tab.Navigator
@@ -98,7 +95,7 @@ export function RootTabs({ token, tokenMgr, baseURL }: { token?: string; tokenMg
         <Tab.Screen 
           name="DashboardStack" 
           component={DashboardStackScreen}
-          initialParams={{ token, tokenMgr, baseURL }}
+          initialParams={{ token, authCtx }}
           options={{ title: 'Dashboard' }} 
         />
         <Tab.Screen 
