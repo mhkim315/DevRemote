@@ -23,10 +23,14 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
     if (scanned) return;
 
     // Detect pairing QR payload: JSON with sessionId.
-    try {
-      const payload = JSON.parse(data);
-      if (payload && typeof payload === 'object' && payload.sessionId && payload.hostPubKey) {
-        setScanned(true);
+    let payload: any = null;
+    try { payload = JSON.parse(data); } catch { payload = null; }
+
+    if (payload && typeof payload === 'object' && payload.sessionId && payload.hostPubKey) {
+      setScanned(true);
+      // B4: any failure in pairing install or connection must re-enable the
+      // scanner exactly once — never swallow it into a stuck scanned=true state.
+      try {
         // Import pairAndSave lazily so ConnectScreen doesn't bundle it eagerly.
         const { pairAndSave } = await import('../lib/pairAndSave');
         const { createPokitDeviceKey } = await import('../../modules/pokit-device-key');
@@ -38,7 +42,8 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
         const result = await pairAndSave(data, dk, base);
         if (result.status === 'approved') {
           // Blocker C: install trusted auth state (onPaired) FIRST, then connect
-          // ONLY if it succeeded. Never connect on a partially paired state.
+          // ONLY if it succeeded. pairThenConnect calls onReject exactly once on
+          // any failure so the scanner is usable again.
           await pairThenConnect({
             onPaired,
             connect: () => connect(base),
@@ -48,9 +53,12 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
           alert('Pairing failed: ' + (result.errorDetail || result.status));
           setScanned(false);
         }
-        return;
+      } catch (e: any) {
+        alert('Pairing error: ' + (e?.message || String(e)));
+        setScanned(false);
       }
-    } catch {}
+      return;
+    }
 
     // Accept any HTTPS URL (legacy or manual connect).
     if (data.startsWith('https://')) {

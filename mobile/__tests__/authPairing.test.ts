@@ -6,7 +6,7 @@
 //   - pairThenConnect opens a connection ONLY after, and ONLY if, the trusted
 //     state install succeeds.
 
-import { completePairing, pairThenConnect } from '../src/lib/authMode';
+import { completePairing, pairThenConnect, selectAppRoute } from '../src/lib/authMode';
 import type { StoredPairing } from '../src/lib/pairingStore';
 import type { TokenManager } from '../src/lib/authClient';
 import type { PokitDeviceKey } from '../modules/pokit-device-key';
@@ -122,5 +122,61 @@ describe('pairThenConnect ordering', () => {
       onReject: () => order.push('reject'),
     });
     expect(order).toEqual(['connect']);
+  });
+
+  // B4: exceptions must call onReject exactly once and never connect.
+  it('onPaired throwing → onReject once, no connect (scanner re-enabled)', async () => {
+    const order: string[] = [];
+    let rejects = 0;
+    await pairThenConnect({
+      onPaired: async () => { throw new Error('install failed'); },
+      connect: async () => { order.push('connect'); },
+      onReject: () => { rejects++; order.push('reject'); },
+    });
+    expect(order).toEqual(['reject']);
+    expect(rejects).toBe(1);
+  });
+
+  it('connect rejecting after a successful install → onReject once', async () => {
+    const order: string[] = [];
+    let rejects = 0;
+    await pairThenConnect({
+      onPaired: async () => { order.push('onPaired'); return true; },
+      connect: async () => { order.push('connect'); throw new Error('probe failed'); },
+      onReject: () => { rejects++; order.push('reject'); },
+    });
+    expect(order).toEqual(['onPaired', 'connect', 'reject']);
+    expect(rejects).toBe(1);
+  });
+});
+
+describe('selectAppRoute — B2: paired device needs no Supabase session', () => {
+  const paired = { mode: 'paired_device', tokenMgr: {} as any, baseURL: 'https://h' } as const;
+
+  it('paired_device + connected → product WITHOUT a Supabase session', () => {
+    expect(selectAppRoute(paired, { loading: false, session: false, isConnected: true })).toBe('product');
+  });
+
+  it('paired_device + not yet connected → device_connect (never supabase_auth)', () => {
+    const r = selectAppRoute(paired, { loading: false, session: false, isConnected: false });
+    expect(r).toBe('device_connect');
+    expect(r).not.toBe('supabase_auth');
+  });
+
+  it('initializing / loading → loading', () => {
+    expect(selectAppRoute({ mode: 'initializing' }, { loading: false, session: false, isConnected: false })).toBe('loading');
+    expect(selectAppRoute(paired, { loading: true, session: true, isConnected: true })).toBe('loading');
+  });
+
+  it('pairing_required and failed pass through', () => {
+    expect(selectAppRoute({ mode: 'pairing_required' }, { loading: false, session: false, isConnected: false })).toBe('pairing_required');
+    expect(selectAppRoute({ mode: 'failed' }, { loading: false, session: true, isConnected: true })).toBe('failed');
+  });
+
+  it('legacy/explicit_local_dev still requires a Supabase session', () => {
+    const local = { mode: 'explicit_local_dev', legacyToken: 'dev-token' } as const;
+    expect(selectAppRoute(local, { loading: false, session: false, isConnected: false })).toBe('supabase_auth');
+    expect(selectAppRoute(local, { loading: false, session: true, isConnected: false })).toBe('legacy_connect');
+    expect(selectAppRoute(local, { loading: false, session: true, isConnected: true })).toBe('product');
   });
 });

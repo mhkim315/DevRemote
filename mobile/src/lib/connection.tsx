@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { setBaseURL, getBaseURL, probeDaemon, ConnectivityFailure } from './client';
+import { setBaseURL, getBaseURL, probeDaemon, setDeviceAuth, ConnectivityFailure } from './client';
 
 // ── R1a: structured connectivity diagnostics ──
 
@@ -148,6 +148,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     setSessionsLoaded(false);
     setSessionsEmpty(false);
     setFailure(ConnectivityFailure.None);
+    // Drop the device bearer so a later legacy/local connection can't reuse it.
+    setDeviceAuth(null);
     try {
       await AsyncStorage.removeItem('BASE_URL');
     } catch (e) {

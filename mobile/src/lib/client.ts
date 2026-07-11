@@ -1,6 +1,9 @@
 // PokitClient centralises all API calls to the DevRemote daemon.
 // Replaces scattered fetch(`${config.BASE_URL}/...`) calls.
 
+import { authenticatedFetch } from './authTransport';
+import type { TokenManager } from './authClient';
+
 let _baseURL = '';
 
 export function setBaseURL(url: string) {
@@ -9,6 +12,48 @@ export function setBaseURL(url: string) {
 
 export function getBaseURL(): string {
   return _baseURL;
+}
+
+// ── M3-auth-4A: central device-bearer transport ──
+//
+// When a paired device is active, remote REST reads must authenticate with the
+// device bearer (with 401 refresh) via the accepted authenticated transport —
+// NOT a legacy/Supabase token and NOT an unauthenticated request. Installing a
+// TokenManager here routes GET /api/sessions (probe + list) and the read
+// history/activity endpoints through that transport. explicit_local_dev leaves
+// it unset and keeps the legacy path.
+let _deviceAuth: TokenManager | null = null;
+
+export function setDeviceAuth(mgr: TokenManager | null) {
+  _deviceAuth = mgr;
+}
+
+export function hasDeviceAuth(): boolean {
+  return _deviceAuth !== null;
+}
+
+// apiGet centralises read authentication: the device bearer when a paired
+// device is active, otherwise the legacy token. Errors are normalised to
+// PokitError so callers keep the same connectivity classification.
+async function apiGet(path: string, legacyToken?: string): Promise<Response> {
+  const url = `${_baseURL}${path}`;
+  if (_deviceAuth) {
+    let res: Response;
+    try {
+      res = await authenticatedFetch(url, undefined, _deviceAuth);
+    } catch (e: any) {
+      if (e && e.code === 'network_error') {
+        throw new PokitError('Daemon unreachable: ' + (e.message || 'request failed'), ConnectivityFailure.NetworkUnreachable);
+      }
+      // AuthError (host_pin_fail) or any other rejection → auth failure.
+      throw new PokitError('Authentication failed. Re-scan the QR code.', ConnectivityFailure.AuthError, (e && e.statusCode) || 401);
+    }
+    if (!res.ok) {
+      throw new PokitError(`API error ${res.status}: ${url}`, ConnectivityFailure.APIError, res.status);
+    }
+    return res;
+  }
+  return checkedFetch(url, { headers: authHeaders(legacyToken) });
 }
 
 // ── R1a typed connectivity errors ──
@@ -79,8 +124,8 @@ export interface ReachabilityResult {
  */
 export async function probeDaemon(token?: string): Promise<ReachabilityResult> {
   try {
-    // R1a: use checkedFetch so classification matches all other API calls.
-    const res = await checkedFetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });
+    // Device-auth aware: paired devices probe with the device bearer.
+    const res = await apiGet('/api/sessions', token);
     const data = await res.json();
     const sessions = Array.isArray(data) ? data : [];
     return {
@@ -125,7 +170,7 @@ function authHeaders(token?: string): Record<string, string> {
 // ── API functions ──
 
 export async function listSessions(token?: string): Promise<any[]> {
-  const res = await checkedFetch(`${_baseURL}/api/sessions`, { headers: authHeaders(token) });
+  const res = await apiGet('/api/sessions', token);
   return res.json();
 }
 
@@ -195,19 +240,13 @@ export async function deleteSession(id: string, token?: string) {
 }
 
 export async function getSessionHistory(sessionID: string, token?: string) {
-  const res = await checkedFetch(
-    `${_baseURL}/api/sessions?history=${encodeURIComponent(sessionID)}`,
-    { headers: authHeaders(token) }
-  );
+  const res = await apiGet(`/api/sessions?history=${encodeURIComponent(sessionID)}`, token);
   return res.json();
 }
 
 // E8f: fetch captured terminal activity (transcript).
 export async function getActivityHistory(sessionID: string, token?: string) {
-  const res = await checkedFetch(
-    `${_baseURL}/api/sessions?activity=${encodeURIComponent(sessionID)}`,
-    { headers: authHeaders(token) }
-  );
+  const res = await apiGet(`/api/sessions?activity=${encodeURIComponent(sessionID)}`, token);
   return res.json();
 }
 

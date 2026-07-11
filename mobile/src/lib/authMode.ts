@@ -85,17 +85,60 @@ export async function completePairing(deps: PairingCompletionDeps): Promise<Auth
 
 // pairThenConnect enforces the Blocker C ordering at the scan site: the trusted
 // state install (onPaired) MUST resolve before any connection is opened, and a
-// connection is opened ONLY when onPaired reports success. On failure onReject
-// keeps the scanner visible without entering a partially paired state.
+// connection is opened ONLY when onPaired reports success. On failure — a false
+// result OR a thrown/rejected onPaired/connect — onReject runs exactly once so
+// the scanner never sticks in a scanned state and no partial paired state is
+// entered.
 export async function pairThenConnect(args: {
   onPaired?: () => Promise<boolean>;
   connect: () => Promise<void>;
   onReject: () => void;
 }): Promise<void> {
-  const ok = args.onPaired ? await args.onPaired() : true;
-  if (ok) {
+  let ok: boolean;
+  try {
+    ok = args.onPaired ? await args.onPaired() : true;
+  } catch {
+    args.onReject();
+    return;
+  }
+  if (!ok) {
+    args.onReject();
+    return;
+  }
+  try {
     await args.connect();
-  } else {
+  } catch {
     args.onReject();
   }
+}
+
+// ── M3-auth-4A: app-entry routing ──
+//
+// Device pairing is the remote authentication root. A valid paired_device must
+// reach the product WITHOUT a Supabase session; Supabase is only the gate for
+// the legacy/explicit_local_dev path.
+export type AppRoute =
+  | 'loading'
+  | 'pairing_required'
+  | 'failed'
+  | 'device_connect' // paired but the authenticated probe hasn't connected yet
+  | 'supabase_auth'  // legacy path: no Supabase session
+  | 'legacy_connect' // legacy path: has session, not connected
+  | 'product';
+
+export function selectAppRoute(
+  authCtx: AuthContext | undefined,
+  opts: { loading: boolean; session: boolean; isConnected: boolean },
+): AppRoute {
+  if (opts.loading || !authCtx || authCtx.mode === 'initializing') return 'loading';
+  if (authCtx.mode === 'pairing_required') return 'pairing_required';
+  if (authCtx.mode === 'failed') return 'failed';
+  if (authCtx.mode === 'paired_device') {
+    // No Supabase session required — the device bearer is the auth root.
+    return opts.isConnected ? 'product' : 'device_connect';
+  }
+  // explicit_local_dev / legacy: existing Supabase-gated flow.
+  if (!opts.session) return 'supabase_auth';
+  if (!opts.isConnected) return 'legacy_connect';
+  return 'product';
 }
