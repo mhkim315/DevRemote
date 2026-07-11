@@ -29,8 +29,8 @@ export type DeviceKeySupport =
 export interface DeviceKeyInfo {
   provider: DeviceKeyProvider;
   keyVersion: 1;
-  deviceId: string; // hex(sha256(spki))
-  publicKeySpki: Uint8Array; // 91-byte P-256 SPKI DER
+  deviceId: string;
+  publicKeySpki: Uint8Array;
   hardwareBacked: true;
   nonExportable: true;
 }
@@ -45,24 +45,28 @@ export interface PokitDeviceKey {
 }
 
 const SPKI_EXPECTED_LEN = 91;
-const P256_SPKI_PREFIX_HEX = '3059301306072a8648ce3d020106082a8648ce3d030107034200';
+const P256_SPKI_ALG_OID = '06082a8648ce3d030107';
 
-// ── Native surface (keys must match the Kotlin/Swift ModuleDefinition Name) ──
+// ── Native surface ──
 
-interface NativePokitDeviceKey {
+export interface NativePokitDeviceKey {
   getSupport(): Promise<string>;
   hasKey(): Promise<boolean>;
   ensureKey(): Promise<Record<string, unknown>>;
-  getKeyInfo(): Promise<Record<string, unknown>>;
   getPublicKeySpki(): Promise<string>;
   sign(messageHex: string): Promise<string>;
   deleteKey(): Promise<void>;
 }
 
-// ── Provider factory ──
+// ── Factory (test seam: inject a fake native via _createWithNative) ──
 
 export function createPokitDeviceKey(): PokitDeviceKey {
   const native = requireOptionalNativeModule<NativePokitDeviceKey>('PokitDeviceKey');
+  return _createWithNative(native);
+}
+
+// Exported for jest to inject configurable fakes through the public wrapper path.
+export function _createWithNative(native: NativePokitDeviceKey | null): PokitDeviceKey {
   if (!native) return missingModuleProvider();
   return validatedProvider(native);
 }
@@ -72,13 +76,21 @@ export function createPokitDeviceKey(): PokitDeviceKey {
 function missingModuleProvider(): PokitDeviceKey {
   const op = async () => { throw new Error('PokitDeviceKey: native module not found'); };
   return {
-    getSupport: async () => 'not_implemented',
-    hasKey: async () => false,
+    getSupport: async () => 'not_implemented' as DeviceKeySupport,
+    hasKey: async () => { throw new Error('PokitDeviceKey: native module not found'); },
     ensureKey: op,
     getPublicKeySpki: op,
     sign: op,
     deleteKey: op,
   };
+}
+
+// ── platform helpers ──
+
+function expectedProvider(): DeviceKeyProvider | null {
+  if (Platform.OS === 'android') return 'android_keystore';
+  if (Platform.OS === 'ios') return 'ios_secure_enclave';
+  return null; // Web / unknown → unsupported
 }
 
 // ── validated provider ──
@@ -87,12 +99,14 @@ function validatedProvider(native: NativePokitDeviceKey): PokitDeviceKey {
   return {
     getSupport: () => validateSupport(native),
     hasKey: async () => {
-      try { return await native.hasKey(); } catch { return false; }
+      // BLOCKER 4 fix: do not silence native hasKey errors.
+      // Only boolean false means key absent. Every other result fails closed.
+      return native.hasKey();
     },
-    ensureKey: async () => validateKeyInfo(native, await native.ensureKey()),
+    ensureKey: async () => validateKeyInfo(await native.ensureKey()),
     getPublicKeySpki: async () => {
       const hex = await native.getPublicKeySpki();
-      return fromHex(hex, SPKI_EXPECTED_LEN);
+      return validateAndDecodeSPKI(hex);
     },
     sign: async (message) => {
       const sigHex = await native.sign(toHex(message));
@@ -102,49 +116,39 @@ function validatedProvider(native: NativePokitDeviceKey): PokitDeviceKey {
   };
 }
 
-// ── response validators ──
+// ── response validators (BLOCKER 4: one shared parser for DeviceKeyInfo) ──
 
 async function validateSupport(native: NativePokitDeviceKey): Promise<DeviceKeySupport> {
   let raw: string;
   try { raw = await native.getSupport(); } catch { return 'not_implemented'; }
-  if (!SUPPORT_VALUES.has(raw)) {
-    // Unknown support string — treat as not_implemented but don't log the raw value.
+  if (typeof raw !== 'string' || !SUPPORT_VALUES.has(raw)) {
     return 'not_implemented';
   }
   return raw as DeviceKeySupport;
 }
 
-function expectedProvider(): DeviceKeyProvider {
-  if (Platform.OS === 'android') return 'android_keystore';
-  return 'ios_secure_enclave';
-}
-
-function validateKeyInfo(native: NativePokitDeviceKey, raw: Record<string, unknown>): DeviceKeyInfo {
+function validateKeyInfo(raw: Record<string, unknown>): DeviceKeyInfo {
   // provider
   const provider = raw.provider;
   if (typeof provider !== 'string') throw keyInfoErr('provider must be a string');
-  const expected = expectedProvider();
-  if (provider !== expected) throw keyInfoErr(`provider must be ${expected}`);
+  const exp = expectedProvider();
+  if (!exp) throw keyInfoErr('unsupported platform — no device key provider');
+  if (provider !== exp) throw keyInfoErr(`provider must be ${exp}`);
 
-  // keyVersion
+  // keyVersion — must be a finite integer exactly 1 (1.0 is fine in JS)
   const kv = raw.keyVersion;
-  if (kv !== 1) throw keyInfoErr('keyVersion must be 1');
+  if (typeof kv !== 'number' || !Number.isFinite(kv) || !Number.isInteger(kv) || kv !== 1) {
+    throw keyInfoErr('keyVersion must be exactly 1');
+  }
 
-  // hardwareBacked + nonExportable — native must claim BOTH exactly.
-  const hw = raw.hardwareBacked;
-  if (hw !== true) throw keyInfoErr('hardwareBacked must be true');
-  const ne = raw.nonExportable;
-  if (ne !== true) throw keyInfoErr('nonExportable must be true');
+  // hardwareBacked + nonExportable — native must claim BOTH explicitly.
+  if (raw.hardwareBacked !== true) throw keyInfoErr('hardwareBacked must be true');
+  if (raw.nonExportable !== true) throw keyInfoErr('nonExportable must be true');
 
   // SPKI
   const spkiHex = raw.publicKeySpkiHex;
-  if (typeof spkiHex !== 'string' || spkiHex.length !== SPKI_EXPECTED_LEN * 2) {
-    throw keyInfoErr('publicKeySpkiHex must be a ' + (SPKI_EXPECTED_LEN * 2) + '-char hex string');
-  }
-  if (!spkiHex.toLowerCase().startsWith(P256_SPKI_PREFIX_HEX)) {
-    throw keyInfoErr('publicKeySpkiHex must have canonical P-256 SPKI prefix');
-  }
-  const spki = fromHex(spkiHex, SPKI_EXPECTED_LEN);
+  if (typeof spkiHex !== 'string') throw keyInfoErr('publicKeySpkiHex must be a string');
+  const spki = validateAndDecodeSPKI(spkiHex);
 
   // deviceId — trust nothing, recompute.
   const nativeDeviceId = raw.deviceId;
@@ -160,6 +164,33 @@ function validateKeyInfo(native: NativePokitDeviceKey, raw: Record<string, unkno
     hardwareBacked: true,
     nonExportable: true,
   };
+}
+
+// validateAndDecodeSPKI checks the canonical P-256 SPKI structure. Shared by
+// getPublicKeySpki and the DeviceKeyInfo parser.
+function validateAndDecodeSPKI(hex: string): Uint8Array {
+  if (typeof hex !== 'string' || hex.length !== SPKI_EXPECTED_LEN * 2) {
+    throw keyInfoErr('SPKI must be a ' + (SPKI_EXPECTED_LEN * 2) + '-char hex string');
+  }
+  // Must start with canonical P-256 SPKI prefix (SEQUENCE + OID + BIT STRING header).
+  if (!hex.toLowerCase().startsWith('3059301306072a8648ce3d020106082a8648ce3d030107034200')) {
+    throw keyInfoErr('SPKI missing canonical P-256 structure');
+  }
+  // Verify the named-curve OID is present within the AlgorithmIdentifier.
+  if (!hex.toLowerCase().includes(P256_SPKI_ALG_OID)) {
+    throw keyInfoErr('SPKI missing P-256 curve OID');
+  }
+  const spki = fromHex(hex, SPKI_EXPECTED_LEN);
+  // Uncompressed point starts at byte 26 (SPKI prefix ends). Must be 0x04.
+  if (spki[26] !== 0x04) {
+    throw keyInfoErr('SPKI point must be uncompressed (0x04)');
+  }
+  // Bytes 27-58 are X, 59-90 are Y. Reject all-zero or all-FF (non-point).
+  const x = spki.subarray(27, 59);
+  if (x.every(b => b === 0)) throw keyInfoErr('SPKI X coordinate is all-zero');
+  const y = spki.subarray(59, 91);
+  if (y.every(b => b === 0)) throw keyInfoErr('SPKI Y coordinate is all-zero');
+  return spki;
 }
 
 function keyInfoErr(msg: string): Error {

@@ -21,15 +21,15 @@ dist/
 .env
 .env.*
 
-# Android (keep Kotlin/Java source; generated build artifacts are rebuilt)
-android/
-!android/app/src/main/java/
-android/app/build/
+# Android — only the root generated android/ project; native module sources
+# (modules/*/android/) are tracked.
+/android/
 *.apk
 *.aab
 
-# iOS
-ios/
+# iOS — only the root generated ios/ project; native module sources
+# (modules/*/ios/) are tracked.
+/ios/
 *.ipa
 
 # Bundle

@@ -1,7 +1,6 @@
 // M3-auth-1C: cross-platform device identity backed by the local Expo module
 // pokit-device-key. The private scalar lives inside the platform provider
-// (Android Keystore / iOS Secure Enclave) and NEVER enters JavaScript memory.
-// Unsupported platforms fail closed — no software-key fallback.
+// and NEVER enters JavaScript memory. Unsupported platforms fail closed.
 
 import * as SecureStore from 'expo-secure-store';
 import { createPokitDeviceKey } from '../../modules/pokit-device-key';
@@ -28,7 +27,7 @@ export async function getDeviceKeySupport() {
 }
 
 export async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
-  await migrateLegacySoftwareIdentity();
+  await ensureLegacyKeyRemoved();
   const info = await deviceKey().ensureKey();
   await markKeyAlias();
   return { spkiDer: info.publicKeySpki, deviceId: info.deviceId };
@@ -42,19 +41,29 @@ export async function signWithDeviceKey(message: Uint8Array): Promise<Uint8Array
   return deviceKey().sign(message);
 }
 
-// ── legacy migration ──
+// ── legacy migration (BLOCKER 5: fail-closed) ──
 
-// migrateLegacySoftwareIdentity removes the old JS software private key from
-// SecureStore. It never imports a software key into a native provider. Safe to
-// call multiple times (idempotent — does not fail if the key is absent).
-export async function migrateLegacySoftwareIdentity(): Promise<void> {
+// ensureLegacyKeyRemoved deletes the old JavaScript software private key.
+// - no legacy key present → success
+// - legacy key present + successfully deleted → success (re-pair may be needed)
+// - legacy key present + deletion fails → throw (provisioning stops)
+export async function ensureLegacyKeyRemoved(): Promise<void> {
+  let legacy: string | null;
   try {
-    const legacy = await SecureStore.getItemAsync(LEGACY_PRIVKEY_KEY);
-    if (legacy !== null) {
-      await SecureStore.deleteItemAsync(LEGACY_PRIVKEY_KEY);
-    }
+    legacy = await SecureStore.getItemAsync(LEGACY_PRIVKEY_KEY);
   } catch {
-    // SecureStore may be unavailable (Web, certain emulators) — not a blocker.
+    // SecureStore unavailable (Web, certain emulators) — not a blocker.
+    return;
+  }
+  if (legacy === null) return; // no legacy key
+
+  try {
+    await SecureStore.deleteItemAsync(LEGACY_PRIVKEY_KEY);
+  } catch (e: any) {
+    throw new Error(
+      'PokitDeviceKey: failed to delete legacy software private key. ' +
+      'Re-pairing is required but the old key could not be removed.'
+    );
   }
 }
 
