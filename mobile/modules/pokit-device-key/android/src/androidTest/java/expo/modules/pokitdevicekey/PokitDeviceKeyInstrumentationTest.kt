@@ -210,7 +210,7 @@ class PokitDeviceKeyInstrumentationTest {
       s.getKeyInfo()
       fail("P-384 key must be rejected")
     } catch (e: DeviceKeyException) {
-      assertEquals("key_invalidated", e.code)
+      assertEquals("key_incompatible", e.code)
     }
   }
 
@@ -230,7 +230,69 @@ class PokitDeviceKeyInstrumentationTest {
       s.getKeyInfo()
       fail("key without SHA-256 authorization must be rejected")
     } catch (e: DeviceKeyException) {
-      assertEquals("key_invalidated", e.code)
+      assertEquals("key_incompatible", e.code)
+    }
+  }
+
+  // ── validate()/rejection never deletes an existing alias ──
+
+  @Test
+  fun rejectedExistingKeyAliasSurvives() {
+    // A pre-existing software key under production policy is rejected by
+    // sign/getKeyInfo/ensureKey — but the alias must NOT be deleted (only a
+    // freshly-generated unusable key is cleaned up, by ensureKey).
+    genEc("pokit.test.soft", "secp256r1", KeyProperties.DIGEST_SHA256)
+    PokitDeviceKeyStore.allowSoftwareKeystoreForTest = false
+    try {
+      val s = PokitDeviceKeyStore("pokit.test.soft")
+      for (op in listOf<() -> Any?>(
+        { s.getKeyInfo() },
+        { s.getPublicKeySpki() },
+        { s.sign(hexOf("m".toByteArray())) },
+        { s.ensureKey() },
+      )) {
+        try { op(); fail("expected hardware_unavailable") } catch (e: DeviceKeyException) {
+          assertEquals("hardware_unavailable", e.code)
+        }
+        assertTrue("alias must survive a rejection", keystoreContains("pokit.test.soft"))
+      }
+      // Explicit deletion still removes the preserved identity.
+      PokitDeviceKeyStore("pokit.test.soft").deleteKey()
+      assertFalse(keystoreContains("pokit.test.soft"))
+    } finally {
+      PokitDeviceKeyStore.allowSoftwareKeystoreForTest = true
+    }
+  }
+
+  @Test
+  fun incompatibleExistingAliasesSurviveRejection() {
+    // P-384 and SHA-512-only keys are key_incompatible; getKeyInfo must reject
+    // WITHOUT deleting the alias (validation is side-effect free).
+    genEc("pokit.test.p384", "secp384r1", KeyProperties.DIGEST_SHA256)
+    genEc("pokit.test.sha512", "secp256r1", KeyProperties.DIGEST_SHA512)
+    for (a in listOf("pokit.test.p384", "pokit.test.sha512")) {
+      try { PokitDeviceKeyStore(a).getKeyInfo(); fail("expected key_incompatible for $a") } catch (e: DeviceKeyException) {
+        assertEquals("key_incompatible", e.code)
+      }
+      assertTrue("incompatible alias $a must survive rejection", keystoreContains(a))
+    }
+  }
+
+  @Test
+  fun ensureKeyCleansUpOnlyFreshUnusableKey() {
+    // With production policy on an emulator (software Keystore), ensureKey
+    // generates a new key, finds it unusable, and removes it (no prior identity
+    // existed). The alias must not persist a software key.
+    PokitDeviceKeyStore.allowSoftwareKeystoreForTest = false
+    try {
+      val s = PokitDeviceKeyStore(alias)
+      assertFalse(keystoreContains(alias))
+      try { s.ensureKey(); /* real HW device: succeeds */ } catch (e: DeviceKeyException) {
+        assertEquals("hardware_unavailable", e.code)
+        assertFalse("freshly-generated unusable key must be cleaned up", keystoreContains(alias))
+      }
+    } finally {
+      PokitDeviceKeyStore.allowSoftwareKeystoreForTest = true
     }
   }
 
@@ -337,6 +399,9 @@ class PokitDeviceKeyInstrumentationTest {
       KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(a)
     } catch (_: Exception) {}
   }
+
+  private fun keystoreContains(a: String): Boolean =
+    KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias(a)
 
   private fun hex(s: String): ByteArray {
     val out = ByteArray(s.length / 2)
