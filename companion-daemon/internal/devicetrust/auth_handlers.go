@@ -46,6 +46,7 @@ type AuthChallengeResponse struct {
 	HostKeyFingerprint string    `json:"hostKeyFingerprint"`
 	DaemonBootID       string    `json:"daemonBootId"`
 	ServerNonce        string    `json:"serverNonce"` // hex
+	IssuedAt           time.Time `json:"issuedAt"`
 	ExpiresAt          time.Time `json:"expiresAt"`
 	HostSignature      string    `json:"hostSignature"` // hex of DER ECDSA
 }
@@ -140,6 +141,7 @@ func (h *AuthHandler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 		HostKeyFingerprint: h.Identity.Fingerprint(),
 		DaemonBootID:       h.Sessions.BootID(),
 		ServerNonce:        hex.EncodeToString(serverNonce),
+		IssuedAt:           now,
 		ExpiresAt:          expiresAt,
 		HostSignature:      hex.EncodeToString(hostSig),
 	})

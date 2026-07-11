@@ -1,32 +1,22 @@
 // M3-auth-3A: centralized, authenticated REST transport.
 //
-// Wraps the existing client.fetch pattern: every request adds
-// Authorization: Bearer <token> sourced from authClient.getValidToken().
-// On 401, attempts a single refresh-and-retry; only idempotent requests
-// (GET) are retried. Non-idempotent 401s fail immediately. Callers
-// provide a typed device token provider instead of raw token strings.
+// Uses TokenManager directly: every request pulls a valid token; on 401 the
+// manager is invalidated and the request retried once (idempotent only).
 
-import { AuthError, type BearerState } from './authClient';
-
-export type TokenProvider = () => Promise<string>;
-
-// authenticatedFetch sends a request with a device bearer. On 401 it
-// refreshes and retries exactly once for idempotent methods; non-idempotent
-// 401s fail immediately. The caller provides a typed tokenSource function
-// (typically authClient.getValidToken).
+import { AuthError, TokenManager } from './authClient';
 
 export async function authenticatedFetch(
-  url: string, init: RequestInit | undefined, tokenSource: TokenProvider,
+  url: string, init: RequestInit | undefined, tokenMgr: TokenManager,
 ): Promise<Response> {
   const isIdempotent = !init?.method || init.method === 'GET';
-  return doFetch(url, init, tokenSource, isIdempotent);
+  return doFetch(url, init, tokenMgr, isIdempotent);
 }
 
 async function doFetch(
-  url: string, init: RequestInit | undefined, tokenSource: TokenProvider,
+  url: string, init: RequestInit | undefined, tokenMgr: TokenManager,
   mayRetry: boolean,
 ): Promise<Response> {
-  const token = await tokenSource();
+  const token = await tokenMgr.getValidToken();
   let res: Response;
   try {
     res = await fetch(url, {
@@ -37,8 +27,10 @@ async function doFetch(
     throw new AuthError('network_error', 'request failed');
   }
   if (res.status === 401 && mayRetry) {
-    // Force a fresh auth, then retry once.
-    const fresh = await tokenSource();
+    // Force a fresh challenge — the current bearer may have been revoked
+    // or replaced. Then retry exactly once with the new token.
+    tokenMgr.invalidate();
+    const fresh = await tokenMgr.getValidToken(true);
     try {
       return await fetch(url, {
         ...init,
