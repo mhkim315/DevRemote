@@ -48,25 +48,44 @@ export class TerminalController {
     const connId = this.connId;
     const ticketScript = `<script>
 (function(){
-  var ticket=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId}, connId=${connId};
-  var pending=false, realConnect=null;
-  // Ticket is ephemeral: set it only for the new WebSocket() call, then strip
-  // from history so it never appears in navigation state or reconnect URLs.
+  var ticketA=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId}, connId=${connId};
+  var pendingReconnect=false, realConnectFn=null;
+  // Build a WS URL with a ticket (ephemeral — ticket never enters history).
   function wsURL(tk){ var u=new URL(location.href); u.searchParams.set('session',session); u.searchParams.set('ticket',tk); return '/term/ws'+u.search; }
+  // ── Phase 1: IMMEDIATE WebSocket constructor interception (before any page JS runs) ──
+  // The daemon page builds the WS as:
+  //   new WebSocket(protocol+location.host+"/term/ws"+location.search)
+  // We intercept that to inject ticket A for the FIRST connection, then clear it.
+  var ticketConsumed=false;
+  var _origWS=window.WebSocket;
+  window.WebSocket=function(url,protocols){
+    if(typeof url==='string'&&url.indexOf('/term/ws')!==-1){
+      if(!ticketConsumed){ ticketConsumed=true; url=wsURL(ticketA); }
+      else if(window._nextTicket){ var tk=window._nextTicket; window._nextTicket=null; url=wsURL(tk); }
+    }
+    return new _origWS(url,protocols);
+  };
+  window.WebSocket.prototype=_origWS.prototype;
+  // ── Phase 2: reconnect wrapper (deferred until daemon's connect() is defined) ──
   function sendReconnect(){ try{window.ReactNativeWebView.postMessage(JSON.stringify({type:'pokit-reconnect-request',session:session,attemptId:attemptId,connId:connId}))}catch{} }
-  function install(){
+  function installReconnect(){
     if(window.__pokitBridgeInstalled) return; window.__pokitBridgeInstalled=true;
-    realConnect=window.connect; window.connect=function(){ if(pending) return; pending=true; sendReconnect(); };
-    // Replace the page's WS URL construction so it uses the ephemeral ticket.
-    // The original code does: new WebSocket(protocol+host+"/term/ws"+location.search)
-    // Override: the page will call our connect which triggers native → ticket → connect.
-    window.addEventListener('message',function(e){ try{ var d=JSON.parse(e.data); if(d&&d.type==='pokit-ticket'&&typeof d.ticket==='string'&&/^[0-9a-f]{64}$/.test(d.ticket)){ pending=false; if(realConnect){ var orig=window._realWSUrl; window._realWSUrl=wsURL(d.ticket); realConnect(); window._realWSUrl=null; } } }catch{} });
-    // Also intercept the raw WS URL construction. The daemon page builds the WS URL as:
-    // "ws://"+location.host+"/term/ws"+location.search
-    // We override it to use the ephemeral ticket URL.
-    var _origWS=window.WebSocket; window.WebSocket=function(url,protocols){ if(typeof url==='string'&&url.indexOf('/term/ws')!==-1&&window._realWSUrl){ url=window._realWSUrl; } return new _origWS(url,protocols); }; window.WebSocket.prototype=_origWS.prototype;
+    realConnectFn=window.connect;
+    window.connect=function(){ if(pendingReconnect) return; pendingReconnect=true; sendReconnect(); };
+    window.addEventListener('message',function(e){
+      try{
+        var d=JSON.parse(e.data);
+        if(d&&d.type==='pokit-ticket'&&typeof d.ticket==='string'&&/^[0-9a-f]{64}$/.test(d.ticket)){
+          window._nextTicket=d.ticket;
+          pendingReconnect=false;
+          if(realConnectFn) realConnectFn();
+          window._nextTicket=null;
+        }
+      }catch(ex){}
+    });
   }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',install); else setTimeout(install,0);
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',installReconnect);
+  else setTimeout(installReconnect,0);
 })();
 </script>`;
     html = html.replace(/<head[^>]*>/i, (m: string) => m + ticketScript);

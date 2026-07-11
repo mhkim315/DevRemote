@@ -44,6 +44,9 @@ function AppContent() {
         let bu: URL;
         try { bu = new URL(base); } catch { setAuthCtx({ mode: 'failed' }); return; }
         if (bu.protocol !== 'https:') { setAuthCtx({ mode: 'failed' }); return; }
+        if (bu.username || bu.password || bu.search || bu.hash || (bu.pathname !== '/' && bu.pathname !== '')) {
+          setAuthCtx({ mode: 'failed' }); return;
+        }
         const currentOrigin = bu.origin;
         if (p.origin && currentOrigin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
         let dk;

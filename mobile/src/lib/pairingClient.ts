@@ -16,7 +16,7 @@ export interface PairingResult {
   status: PairingStatus;
   hostId?: string; hostPubKeyB64?: string;
   deviceId?: string; fingerprint?: string; role?: string;
-  baseURL?: string; errorDetail?: string;
+  baseURL?: string; origin?: string; errorDetail?: string;
 }
 
 // buildPairingTranscript matches the daemon's buildPairingTranscript byte-exact.
@@ -139,8 +139,6 @@ export async function conductPairing(
     } catch { await delay(2000); continue; }
     switch (poll.status) {
       case 'approved': {
-        // Strict: daemon must return the exact deviceId + fingerprint for
-        // the key we proved. Missing/wrong/different → protocol error.
         if (poll.deviceId !== identity.deviceId) {
           return { status: 'network_error', errorDetail: 'approved deviceId does not match the presented identity' };
         }
@@ -150,11 +148,19 @@ export async function conductPairing(
         if (poll.role !== 'owner' && poll.role !== 'member') {
           return { status: 'network_error', errorDetail: `unknown role: ${poll.role}` };
         }
+        // Canonicalize the operational origin from the QR endpoint (LAN pairing
+        // endpoint). The caller (savePairing) maps this to the actual tunnel URL.
+        let origin = '';
+        try {
+          const qu = new URL(qr.endpoint);
+          origin = `${qu.protocol}//${qu.host}`;
+        } catch {}
         return {
           status: 'approved',
           hostId: qr.hostId, hostPubKeyB64: qr.hostPubKeyB64,
           deviceId: poll.deviceId, fingerprint: poll.fingerprint, role: poll.role,
-          baseURL: qr.endpoint, // caller replaces with actual tunnel URL
+          baseURL: qr.endpoint,
+          origin,
         };
       }
       case 'rejected': return { status: 'operator_rejected' };

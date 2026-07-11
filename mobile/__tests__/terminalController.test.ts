@@ -73,4 +73,36 @@ describe('TerminalController', () => {
     expect(b.attemptId).toBeGreaterThan(a.attemptId);
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
+
+  // ── Injected script tests ──
+  it('injected script intercepts WebSocket with ticket A on first call', async () => {
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
+    mockTicketResp();
+    const ctrl = new TerminalController();
+    const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
+    expect(result).toBeDefined();
+    const html = result!.html;
+    // Verify: immediate WebSocket constructor interception (Phase 1)
+    expect(html).toContain('window.WebSocket=function(url,protocols)');
+    expect(html).toContain('ticketConsumed');
+    // Verify: the first WS call gets ticket A via wsURL(ticketA)
+    expect(html).toContain('wsURL(ticketA)');
+    // Verify: reconnect wrapper deferred (Phase 2, DOMContentLoaded)
+    expect(html).toContain('installReconnect');
+    expect(html).toContain('DOMContentLoaded');
+    // Verify: ticket variable is serialized with JSON.stringify
+    expect(html).toContain(JSON.stringify(TICKET));
+  });
+
+  it('injected script clears ticket A after first use', async () => {
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
+    mockTicketResp();
+    const ctrl = new TerminalController();
+    const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
+    const html = result!.html;
+    // ticketConsumed is set to true after first WS call; _nextTicket is
+    // cleared (set to null) after use.
+    expect(html).toContain('ticketConsumed=true');
+    expect(html).toContain('window._nextTicket=null');
+  });
 });
