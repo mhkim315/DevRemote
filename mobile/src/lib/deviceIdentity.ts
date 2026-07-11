@@ -1,67 +1,58 @@
-// M3-auth-1: Android Keystore non-exportable ECDSA device identity.
-//
-// The private scalar lives inside the AndroidKeyStore and NEVER enters
-// JavaScript memory. expo-secure-store holds only the key alias reference +
-// host pairing metadata (not the key material). Software-key fallback is
-// deliberately absent — the M2.5 contract requires a Keystore key.
+// M3-auth-1C: cross-platform device identity backed by the local Expo module
+// pokit-device-key. The private scalar lives inside the platform provider
+// (Android Keystore / iOS Secure Enclave) and NEVER enters JavaScript memory.
+// Unsupported platforms fail closed — no software-key fallback.
 
 import * as SecureStore from 'expo-secure-store';
-import { NativeModules, Platform } from 'react-native';
-import { deviceFingerprint, toHex, fromHex } from './crypto';
+import { createPokitDeviceKey } from '../../modules/pokit-device-key/src';
+import type { DeviceKeyInfo } from '../../modules/pokit-device-key/src';
+import { deviceFingerprint } from './crypto';
 import type { DeviceIdentity } from './crypto';
 
 export type { DeviceIdentity } from './crypto';
 
 const KEY_ALIAS_STORE = 'pokit.device.keyAlias';
-const KEY_ALIAS = 'pokit_device_identity'; // matches Kotlin KEY_ALIAS
+const KEY_ALIAS = 'pokit.device.identity.v1'; // matches native alias
 
-function native(): { hasKey(): Promise<boolean>; generateKey(): Promise<string>; getPublicKey(): Promise<string | null>; sign(messageHex: string): Promise<string>; deleteKey(): Promise<void> } {
-  if (Platform.OS !== 'android' || !NativeModules.PokitDeviceKey) {
-    throw new Error('PokitDeviceKey native module is only available on Android');
-  }
-  return NativeModules.PokitDeviceKey;
+let _deviceKey: ReturnType<typeof createPokitDeviceKey> | null = null;
+
+function deviceKey() {
+  if (!_deviceKey) _deviceKey = createPokitDeviceKey();
+  return _deviceKey;
 }
 
-// loadOrCreateDeviceIdentity returns the persistent Keystore-backed identity,
-// creating a new key on first run. The private key is never exposed to JS; the
-// native module returns the SPKI DER hex as the identity root.
+// ── public API ──
+
+// getDeviceKeySupport returns the platform support status.
+export async function getDeviceKeySupport() {
+  return deviceKey().getSupport();
+}
+
+// loadOrCreateDeviceIdentity returns the persistent native identity, creating a
+// new key on first run. The private key is never exposed to JS.
+// Throws on unsupported platforms or provisioning failures.
 export async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
-  if (await native().hasKey()) {
-    return identityFromNative();
-  }
-  const spkiHex = await native().generateKey();
-  // Record the alias so we know a key was provisioned.
-  await SecureStore.setItemAsync(KEY_ALIAS_STORE, KEY_ALIAS, {
-    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
-  return identityFromSPKI(spkiHex);
+  const info = await deviceKey().ensureKey();
+  return identityFromKeyInfo(info);
 }
 
-// hasDeviceIdentity reports whether a Keystore key has been provisioned.
+// hasDeviceIdentity reports whether a native key has been provisioned.
 export async function hasDeviceIdentity(): Promise<boolean> {
-  return native().hasKey();
+  return deviceKey().hasKey();
 }
 
-// signWithDeviceKey signs a raw message using the Keystore key (SHA256withECDSA,
-// matching Go's single-hash semantics). The JS side only hex-encodes the
-// message and hex-decodes the returned DER signature — no crypto.
+// signWithDeviceKey signs a raw message using the native key.
 export async function signWithDeviceKey(message: Uint8Array): Promise<Uint8Array> {
-  const sigHex = await native().sign(toHex(message));
-  return fromHex(sigHex);
+  return deviceKey().sign(message);
 }
 
-// identityFromSPKI computes the DeviceIdentity from the Keystore public SPKI DER hex.
-export function identityFromSPKI(spkiHex: string): DeviceIdentity {
-  const spkiDer = fromHex(spkiHex);
-  return {
-    publicKeyUncompressed: new Uint8Array(0), // not available from Keystore (only SPKI)
-    spkiDer,
-    deviceId: deviceFingerprint(spkiDer),
-  } as DeviceIdentity;
-}
+// ── helpers ──
 
-async function identityFromNative(): Promise<DeviceIdentity> {
-  const spkiHex = await native().getPublicKey();
-  if (!spkiHex) throw new Error('Keystore key not found');
-  return identityFromSPKI(spkiHex);
+function identityFromKeyInfo(info: DeviceKeyInfo): DeviceIdentity {
+  // SPKI bytes are validated by the native wrapper (91 bytes).
+  // Record the alias so we know a key was provisioned.
+  SecureStore.setItemAsync(KEY_ALIAS_STORE, KEY_ALIAS, {
+    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+  }).catch(() => {}); // best-effort — the native key is the real identity anchor
+  return { spkiDer: info.publicKeySpki, deviceId: info.deviceId };
 }
