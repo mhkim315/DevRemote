@@ -107,7 +107,12 @@ final class PokitDeviceKeyStore {
     } catch let e as DeviceKeyError {
       if createdByThisCall {
         // Roll back ONLY a key this call just created; never an existing one.
-        SecItemDelete(baseQuery() as CFDictionary)
+        // If cleanup itself fails, an unusable alias could remain — surface that
+        // as a native failure rather than the (now-misleading) validation error.
+        let del = SecItemDelete(baseQuery() as CFDictionary)
+        if del != errSecSuccess && del != errSecItemNotFound {
+          throw DeviceKeyError(DeviceKeyCodes.nativeOperationFailed, "cleanup of failed new key failed")
+        }
       }
       // Existing key: fail closed WITHOUT deleting/replacing it.
       throw e

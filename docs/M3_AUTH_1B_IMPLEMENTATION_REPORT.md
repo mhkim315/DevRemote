@@ -106,6 +106,32 @@ the daemon protocol are unchanged):
 
 Standalone `xcrun swiftc -typecheck PokitDeviceKeyStore.swift` PASS after the fix.
 
+## 3b. Remediation after the second REJECT (native gate + hardening)
+
+The security-logic fixes above were accepted; the second REJECT was that the
+XCTest was not actually installable/runnable, because CocoaPods does **not**
+install a `test_spec` unless the Podfile opts in with `:testspecs`. Fixed:
+
+- **Native gate now creates the test target.** `scripts/ios-native-gate.sh`
+  injects `pod 'PokitDeviceKey', :path => '../modules/pokit-device-key/ios',
+  :testspecs => ['Tests']` into the generated Podfile (after `expo prebuild`,
+  before `pod install`, idempotently), so the `PokitDeviceKey-Unit-Tests` scheme
+  is actually generated. The podspec keeps the `test_spec 'Tests'` declaration.
+- **The gate proves execution, not just presence.** It fails if the scheme is
+  missing, if `Executed 0 tests`, or if the required enclave test
+  (`testSignatureVerifiesWrongKeyAndTamperFail`) did not run+pass — so a run
+  where the enclave tests merely skip (Simulator / no device) can never be
+  reported as a hardware PASS. Runs on `-destination "id=<UDID>"`.
+- **Rollback-cleanup hardening** (recommended alongside): if `ensureKey`'s
+  rollback `SecItemDelete` of a freshly-created key fails, that is promoted to
+  `native_operation_failed` (an unusable alias must not be masked by the original
+  validation error), matching the Android contract.
+
+Verified here: `sh -n scripts/ios-native-gate.sh` PASS (syntax);
+`xcrun swiftc -typecheck PokitDeviceKeyStore.swift` PASS; full `build-gate.sh`
+PASSED. The gate's actual device execution remains M-track (requires a Mac with
+Xcode + a connected iPhone; not available in this environment).
+
 ## 4. Verification
 
 Ran in this environment (all green):

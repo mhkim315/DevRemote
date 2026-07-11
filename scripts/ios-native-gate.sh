@@ -1,25 +1,26 @@
 #!/bin/sh
 # M3-auth-1B MANDATORY native gate — runs the real iOS Secure Enclave XCTest on a
-# connected physical device.
+# connected physical device, reproducibly.
 #
 # SEPARATE from scripts/build-gate.sh (which does not compile or run any iOS
 # Swift). The Secure Enclave is UNAVAILABLE on the Simulator, so a build-only or
-# Simulator run can NOT satisfy this gate: it selects a physical device by UDID
-# and fails loudly when none is present. A generic/build-only destination is
-# never accepted as a hardware PASS.
+# Simulator run can NOT satisfy this gate. It:
+#   - requires a PHYSICAL device (selected by UDID; fails if none)
+#   - opts the PokitDeviceKey pod test_spec INTO the generated Podfile, because
+#     CocoaPods does not install test specs by default (they must be requested
+#     with :testspecs) — without this the -Unit-Tests scheme is never created
+#   - runs the XCTest on the device and PROVES the enclave sign/verify test
+#     actually executed and passed (a run where it skips is not the hardware gate)
 #
 # Usage:
 #   sh scripts/ios-native-gate.sh
-#
-# Steps:
-#   1. require xcodebuild + a physical iOS device (by UDID)
-#   2. clean Expo prebuild (reproducible generated iOS project) + pod install
-#   3. verify the test scheme exists, then run it on the device (id=<UDID>)
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MOBILE_DIR="$PROJECT_ROOT/mobile"
 TEST_SCHEME="${IOS_TEST_SCHEME:-PokitDeviceKey-Unit-Tests}"
+# The enclave-backed test that MUST run+pass on hardware (never merely skip).
+REQUIRED_TEST="${IOS_REQUIRED_TEST:-testSignatureVerifiesWrongKeyAndTamperFail}"
 
 echo "=== M3-auth-1B iOS native gate ==="
 
@@ -28,9 +29,9 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
-# Select a PHYSICAL iOS device UDID: take the entries before the Simulators
-# section, keep only lines carrying an iOS version "(X.Y)" (excludes the Mac and
-# section headers), and extract the trailing parenthesised UDID.
+# Select a PHYSICAL iOS device UDID: entries before the Simulators section that
+# carry an iOS version "(X.Y)" (excludes the Mac and headers); take the trailing
+# parenthesised UDID.
 UDID="$(xcrun xctrace list devices 2>/dev/null \
   | awk '/== Simulators ==/{exit} /\([0-9]+\.[0-9]+(\.[0-9]+)?\) \(/{print}' \
   | sed -E 's/.*\(([0-9A-Fa-f-]+)\)[[:space:]]*$/\1/' \
@@ -47,6 +48,28 @@ cd "$MOBILE_DIR"
 echo "--- clean prebuild (ios) ---"
 npx expo prebuild --clean --platform ios --no-install
 
+# Opt the local pod's test_spec into the generated Podfile. CocoaPods does NOT
+# install test specs unless requested with :testspecs, so without this the
+# test target/scheme is never generated. Inserted right after use_expo_modules!
+# and made idempotent.
+PODFILE="$MOBILE_DIR/ios/Podfile"
+if [ ! -f "$PODFILE" ]; then
+  echo "FAILED: generated Podfile not found at $PODFILE." >&2
+  exit 1
+fi
+if ! grep -q "PokitDeviceKey.*:testspecs" "$PODFILE"; then
+  echo "--- opt PokitDeviceKey test_spec into the Podfile ---"
+  POD_LINE="  pod 'PokitDeviceKey', :path => '../modules/pokit-device-key/ios', :testspecs => ['Tests']"
+  awk -v line="$POD_LINE" '
+    { print }
+    /use_expo_modules!/ && !done { print line; done=1 }
+  ' "$PODFILE" > "$PODFILE.tmp" && mv "$PODFILE.tmp" "$PODFILE"
+  grep -q "PokitDeviceKey.*:testspecs" "$PODFILE" || {
+    echo "FAILED: could not inject the test_spec opt-in (no use_expo_modules! anchor?)." >&2
+    exit 1
+  }
+fi
+
 cd "$MOBILE_DIR/ios"
 echo "--- pod install ---"
 pod install
@@ -58,24 +81,43 @@ if [ -z "$WORKSPACE" ]; then
 fi
 echo "Workspace: $WORKSPACE"
 
-# Verify the test scheme actually exists — a missing scheme must fail the gate,
-# not silently run nothing.
+# The test_spec opt-in must have produced the test scheme — a missing scheme is a
+# gate failure, not a silent no-op.
 if ! xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null | grep -qw "$TEST_SCHEME"; then
-  echo "FAILED: test scheme '$TEST_SCHEME' not found. Available schemes:" >&2
+  echo "FAILED: test scheme '$TEST_SCHEME' not found after pod install. Schemes:" >&2
   xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null | sed -n '/Schemes:/,$p' >&2
-  echo "Set IOS_TEST_SCHEME to the correct scheme and re-run." >&2
   exit 1
 fi
 
 echo "--- xcodebuild test (scheme $TEST_SCHEME) on device $UDID ---"
-# Real device destination (id=<UDID>). Never a generic/build-only destination:
-# the enclave sign/verify tests must actually execute on hardware.
+LOG="$(mktemp)"
+# Real device destination (id=<UDID>) — never a generic/build-only destination.
+set +e
 xcodebuild test \
   -workspace "$WORKSPACE" \
   -scheme "$TEST_SCHEME" \
-  -destination "id=$UDID"
+  -destination "id=$UDID" 2>&1 | tee "$LOG"
+XC_STATUS=$?
+set -e
 
-echo "=== iOS NATIVE GATE PASSED (device $UDID) ==="
+if [ "$XC_STATUS" -ne 0 ]; then
+  echo "FAILED: xcodebuild test exited $XC_STATUS." >&2
+  exit 1
+fi
+if grep -q "Executed 0 tests" "$LOG"; then
+  echo "FAILED: 0 tests executed." >&2
+  exit 1
+fi
+# The enclave sign/verify test MUST have run+passed on the device. If it merely
+# skipped (no enclave), this is not the hardware gate.
+if ! grep -Eq "Test Case .*${REQUIRED_TEST}.* passed" "$LOG"; then
+  echo "FAILED: required enclave test '${REQUIRED_TEST}' did not run+pass" >&2
+  echo "        (skipped or failed). A run where the Secure Enclave tests skip" >&2
+  echo "        is NOT the hardware gate." >&2
+  exit 1
+fi
+
+echo "=== iOS NATIVE GATE PASSED (device $UDID, enclave test ran+passed) ==="
 echo "To capture the Go interop fixture, copy the app container's"
 echo "  Documents/ios_signature_fixture.json into"
 echo "  $PROJECT_ROOT/companion-daemon/internal/devicetrust/testdata/ios_signature_fixture.json"
