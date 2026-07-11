@@ -42,6 +42,19 @@ if [ -d "$MOBILE_DIR/node_modules" ]; then
     echo "$TEST_OUTPUT"
     gate_fail "npm test"
 }
+    # Native gate: compile the local Expo device-key module's Kotlin as part of
+    # the real Android dependency graph. Catches invalid module Gradle metadata
+    # and Kotlin errors that JS-only gates miss. Skippable when the generated
+    # android/ project or an Android SDK is absent (SKIP_NATIVE_GATE=1).
+    if [ "${SKIP_NATIVE_GATE:-0}" != "1" ] && [ -d "$MOBILE_DIR/android" ]; then
+        NATIVE_OUTPUT=$(cd "$MOBILE_DIR/android" && ./gradlew :pokit-device-key:compileReleaseKotlin --console=plain 2>&1) \
+            && gate_pass "android module kotlin compile" || {
+            echo "$NATIVE_OUTPUT" | tail -20
+            gate_fail "android module kotlin compile"
+        }
+    else
+        printf "  android module kotlin compile ... SKIPPED (no android/ or SKIP_NATIVE_GATE=1)\n"
+    fi
 else
     MOBILE_SKIPPED=1
     if [ "$MOBILE_NOT_RUN" = "1" ]; then

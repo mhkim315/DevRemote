@@ -9,6 +9,7 @@
 
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { Platform } from 'react-native';
+import { p256 } from '@noble/curves/nist.js';
 import { fromHex, toHex, deviceFingerprint } from '../../../src/lib/crypto';
 
 // ── Common contract ──
@@ -185,11 +186,15 @@ function validateAndDecodeSPKI(hex: string): Uint8Array {
   if (spki[26] !== 0x04) {
     throw keyInfoErr('SPKI point must be uncompressed (0x04)');
   }
-  // Bytes 27-58 are X, 59-90 are Y. Reject all-zero or all-FF (non-point).
-  const x = spki.subarray(27, 59);
-  if (x.every(b => b === 0)) throw keyInfoErr('SPKI X coordinate is all-zero');
-  const y = spki.subarray(59, 91);
-  if (y.every(b => b === 0)) throw keyInfoErr('SPKI Y coordinate is all-zero');
+  // Validate the 65-byte uncompressed point is actually ON the P-256 curve
+  // (X,Y in field, satisfies the curve equation, not infinity). @noble's
+  // Point.fromBytes throws for off-curve, out-of-field, and malformed points.
+  const point = spki.subarray(26, 91); // 0x04 || X(32) || Y(32)
+  try {
+    p256.Point.fromBytes(point);
+  } catch {
+    throw keyInfoErr('SPKI point is not a valid P-256 curve point');
+  }
   return spki;
 }
 

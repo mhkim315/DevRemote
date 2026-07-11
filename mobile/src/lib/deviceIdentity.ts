@@ -44,25 +44,30 @@ export async function signWithDeviceKey(message: Uint8Array): Promise<Uint8Array
 // ── legacy migration (BLOCKER 5: fail-closed) ──
 
 // ensureLegacyKeyRemoved deletes the old JavaScript software private key.
-// - no legacy key present → success
-// - legacy key present + successfully deleted → success (re-pair may be needed)
-// - legacy key present + deletion fails → throw (provisioning stops)
+// - read succeeds, no legacy key → success (provisioning continues)
+// - read succeeds, legacy key present + deleted → success (re-pair may be needed)
+// - read FAILS → typed error, provisioning stops (we cannot confirm the software
+//   key is gone, so we must not proceed to create a native identity)
+// - delete FAILS → typed error, provisioning stops
+// Raw storage errors and stored values are never logged.
 export async function ensureLegacyKeyRemoved(): Promise<void> {
   let legacy: string | null;
   try {
     legacy = await SecureStore.getItemAsync(LEGACY_PRIVKEY_KEY);
   } catch {
-    // SecureStore unavailable (Web, certain emulators) — not a blocker.
-    return;
+    throw new Error(
+      'PokitDeviceKey: could not determine whether a legacy software key exists; ' +
+      'provisioning stopped (fail closed).'
+    );
   }
-  if (legacy === null) return; // no legacy key
+  if (legacy === null) return; // no legacy key — safe to continue
 
   try {
     await SecureStore.deleteItemAsync(LEGACY_PRIVKEY_KEY);
-  } catch (e: any) {
+  } catch {
     throw new Error(
-      'PokitDeviceKey: failed to delete legacy software private key. ' +
-      'Re-pairing is required but the old key could not be removed.'
+      'PokitDeviceKey: failed to delete the legacy software private key; ' +
+      're-pairing is required but the old key could not be removed (fail closed).'
     );
   }
 }

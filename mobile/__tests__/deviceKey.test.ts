@@ -3,10 +3,18 @@
 
 jest.mock('expo-secure-store', () => {
   const store = new Map<string, string>();
+  const control = { failRead: false, failDelete: false };
   return {
-    getItemAsync: async (k: string) => store.get(k) ?? null,
+    __control: control,
+    getItemAsync: async (k: string) => {
+      if (control.failRead) throw new Error('secure store read error');
+      return store.get(k) ?? null;
+    },
     setItemAsync: async (k: string, v: string) => { store.set(k, v); },
-    deleteItemAsync: async (k: string) => { store.delete(k); },
+    deleteItemAsync: async (k: string) => {
+      if (control.failDelete) throw new Error('secure store delete error');
+      store.delete(k);
+    },
     WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'when_unlocked_this_device_only',
   };
 }, { virtual: true });
@@ -229,6 +237,34 @@ describe('SPKI validation', () => {
     const k = _createWithNative(fakeNative({ getPublicKeySpki: async () => 'ff' }));
     await expect(k.getPublicKeySpki()).rejects.toThrow('SPKI');
   });
+  it('rejects an off-curve point (valid prefix/length, wrong Y)', async () => {
+    const bytes = fromHexStr(P256_SPKI_HEX);
+    bytes[90] ^= 0x01; // flip last byte of Y — point no longer on curve
+    const offCurve = toHexStr(bytes);
+    const k = _createWithNative(fakeNative({
+      getSupport: async () => 'supported',
+      ensureKey: async () => ({ provider: 'android_keystore', keyVersion: 1, deviceId: FINGERPRINT, publicKeySpkiHex: offCurve, hardwareBacked: true, nonExportable: true }),
+    }));
+    await expect(k.ensureKey()).rejects.toThrow('valid P-256 curve point');
+  });
+  it('rejects coordinates outside the field (X = all 0xFF)', async () => {
+    const bytes = fromHexStr(P256_SPKI_HEX);
+    for (let i = 27; i < 59; i++) bytes[i] = 0xff; // X > field prime
+    const badField = toHexStr(bytes);
+    const k = _createWithNative(fakeNative({ getPublicKeySpki: async () => badField }));
+    await expect(k.getPublicKeySpki()).rejects.toThrow('valid P-256 curve point');
+  });
+  it('off-curve rejected through getPublicKeySpki too (same validator)', async () => {
+    const bytes = fromHexStr(P256_SPKI_HEX);
+    bytes[58] ^= 0x02; // flip an X byte
+    const k = _createWithNative(fakeNative({ getPublicKeySpki: async () => toHexStr(bytes) }));
+    await expect(k.getPublicKeySpki()).rejects.toThrow('valid P-256 curve point');
+  });
+  it('accepts the valid protocol-vector SPKI', async () => {
+    const k = _createWithNative(fakeNative({ getPublicKeySpki: async () => P256_SPKI_HEX }));
+    const spki = await k.getPublicKeySpki();
+    expect(spki.length).toBe(91);
+  });
 });
 
 // ── Device ID mismatch ──
@@ -275,22 +311,37 @@ describe('native operation failure propagation', () => {
 
 describe('legacy migration', () => {
   const LEGACY = 'pokit.device.privkey';
-  beforeEach(async () => { try { await SecureStore.deleteItemAsync(LEGACY); } catch {} });
+  const control = (SecureStore as any).__control as { failRead: boolean; failDelete: boolean };
 
-  it('no legacy key → success (no-op)', async () => {
+  beforeEach(async () => {
+    control.failRead = false;
+    control.failDelete = false;
+    try { await SecureStore.deleteItemAsync(LEGACY); } catch {}
+  });
+
+  it('no legacy value → success (no-op)', async () => {
     await expect(ensureLegacyKeyRemoved()).resolves.toBeUndefined();
   });
-  it('legacy key present + deletion succeeds → success', async () => {
+  it('legacy value + successful deletion → success', async () => {
     await SecureStore.setItemAsync(LEGACY, 'deadbeef', {} as any);
     await expect(ensureLegacyKeyRemoved()).resolves.toBeUndefined();
     expect(await SecureStore.getItemAsync(LEGACY)).toBeNull();
   });
-  it('legacy key present → both getItem and deleteItem are exercised (mock succeeds)', async () => {
+  it('read failure → typed error, provisioning stops (fail closed)', async () => {
+    control.failRead = true;
+    await expect(ensureLegacyKeyRemoved()).rejects.toThrow('could not determine whether a legacy software key exists');
+  });
+  it('delete failure → typed error, provisioning stops (fail closed)', async () => {
     await SecureStore.setItemAsync(LEGACY, 'deadbeef', {} as any);
+    control.failDelete = true;
+    await expect(ensureLegacyKeyRemoved()).rejects.toThrow('failed to delete the legacy software private key');
+  });
+  it('malformed legacy value is deleted without decoding', async () => {
+    await SecureStore.setItemAsync(LEGACY, 'not-hex-@@@', {} as any);
     await expect(ensureLegacyKeyRemoved()).resolves.toBeUndefined();
     expect(await SecureStore.getItemAsync(LEGACY)).toBeNull();
   });
-  it('migration is idempotent → repeated calls safe', async () => {
+  it('repeated migration is idempotent', async () => {
     await ensureLegacyKeyRemoved();
     await ensureLegacyKeyRemoved();
   });
