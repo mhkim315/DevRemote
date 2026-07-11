@@ -48,9 +48,15 @@ Remote (production, non-`InsecureLocalOnly`) route → permission map,
   path `DELETE`), `lifecycle_test.go`, `lifecycle_blocker_test.go` (idempotent
   Stop, Kill-while-stopping, delete-only-terminal, cross-session isolation).
 
-**Backend conclusion: no daemon change required for M3b.** Routes, permissions,
-capability gate, terminal-state gate, and DTOs are all already accepted. The
-confirmed gaps are entirely on the mobile client + UI.
+**Backend conclusion (REVISED after independent REJECT).** Routes, permissions,
+capability gate, terminal-state gate, and action DTOs were already accepted — but
+`/api/sessions` did NOT express an authoritative lifecycle state (its `state` is
+agent-activity) and dropped terminal sessions when the runtime left the Registry.
+So M3b required one **additive** daemon change: a `lifecycleState` field sourced
+from the Session Catalog and retention/merge of terminal Catalog rows in the
+session list (`internal/term/telemetry.go` `mergeLifecycleState`,
+`catalog.go` `List()`). No auth / M2-service / Recorder / Terminal redesign. See
+`docs/M3B_IMPLEMENTATION_REPORT.md` §0 for the full 6-blocker remediation.
 
 ---
 

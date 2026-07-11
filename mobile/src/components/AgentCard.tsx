@@ -18,6 +18,9 @@ export interface SessionTelemetry {
   id: string;
   displayId?: string;
   state: 'idle' | 'thinking' | 'working' | 'waiting';
+  // M3b: daemon-authoritative managed lifecycle state (Session Catalog), separate
+  // from `state` (agent activity). Empty/absent for non-managed sessions.
+  lifecycleState?: string;
   load: number;
   runner?: string;
   runnerColor?: string;

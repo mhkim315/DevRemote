@@ -20,6 +20,7 @@ import {
   stopSession, killSession, deleteSessionHistory,
   ConnectivityFailure, PokitError,
 } from '../src/lib/client';
+import { LifecycleResultError } from '../src/lib/lifecycle';
 import type { TokenManager } from '../src/lib/authClient';
 
 const HOST_A = 'https://host-a.example.com';
@@ -169,6 +170,27 @@ describe('M3b lifecycle actions — exact route + host-bound device transport', 
       expect(e).toBeInstanceOf(PokitError);
       expect(String(e.message)).not.toContain('SECRET_BEARER_XYZ');
     }
+  });
+
+  it('rejects a malformed / wrong-session / wrong-action 2xx (BLOCKER 5: no false success)', async () => {
+    setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
+    setBaseURL(HOST_A);
+
+    // wrong sessionId
+    mockFetch({ status: 200, body: { sessionId: 'controlled_pty:OTHER', action: 'stop', state: 'exited' } });
+    await expect(stopSession(SID)).rejects.toBeInstanceOf(LifecycleResultError);
+
+    // wrong action
+    mockFetch({ status: 200, body: { sessionId: SID, action: 'kill', state: 'killed' } });
+    await expect(stopSession(SID)).rejects.toBeInstanceOf(LifecycleResultError);
+
+    // out-of-vocabulary state
+    mockFetch({ status: 200, body: { sessionId: SID, action: 'delete', state: 'idle' } });
+    await expect(deleteSessionHistory(SID)).rejects.toBeInstanceOf(LifecycleResultError);
+
+    // malformed body
+    mockFetch({ status: 200, body: null });
+    await expect(deleteSessionHistory(SID)).rejects.toBeInstanceOf(LifecycleResultError);
   });
 });
 

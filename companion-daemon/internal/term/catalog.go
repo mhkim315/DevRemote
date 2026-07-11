@@ -60,6 +60,20 @@ func (c *SessionCatalog) Get(id string) (CatalogEntry, bool) {
 	return *e, true
 }
 
+// List returns a copy of every catalog row, including retained terminal rows
+// whose runtime has left the Registry. Used to merge authoritative lifecycle
+// state (and retained exited/killed/failed sessions) into the /api/sessions
+// snapshot so mobile reads state instead of inferring it from list presence.
+func (c *SessionCatalog) List() []CatalogEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]CatalogEntry, 0, len(c.entries))
+	for _, e := range c.entries {
+		out = append(out, *e)
+	}
+	return out
+}
+
 // beginStop transitions running/starting → stopping. proceed is true only for
 // the caller that performed the transition (so exactly one caller drives
 // termination). found is false for an unknown session.

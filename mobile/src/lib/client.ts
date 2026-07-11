@@ -3,6 +3,7 @@
 
 import { authenticatedFetch } from './authTransport';
 import { canonicalOrigin } from './authMode';
+import { parseLifecycleResult } from './lifecycle';
 import type { TokenManager } from './authClient';
 
 let _baseURL = '';
@@ -324,7 +325,7 @@ export interface LifecycleActionResult {
 // state is returned; a repeated Stop is idempotent (returns current state).
 export async function stopSession(id: string, token?: string): Promise<LifecycleActionResult> {
   const res = await apiWrite('POST', `/api/sessions/${encodeURIComponent(id)}/stop`, undefined, token);
-  return res.json();
+  return parseLifecycleResult(id, 'stop', await res.json());
 }
 
 // killSession force-terminates a managed session's process group (daemon
@@ -333,7 +334,7 @@ export async function stopSession(id: string, token?: string): Promise<Lifecycle
 // host-bound transport and no-replay contract as stopSession.
 export async function killSession(id: string, token?: string): Promise<LifecycleActionResult> {
   const res = await apiWrite('POST', `/api/sessions/${encodeURIComponent(id)}/kill`, undefined, token);
-  return res.json();
+  return parseLifecycleResult(id, 'kill', await res.json());
 }
 
 // deleteSessionHistory removes a TERMINAL managed session's retained catalog row
@@ -344,7 +345,7 @@ export async function killSession(id: string, token?: string): Promise<Lifecycle
 // record deletion, not a process lifecycle action.
 export async function deleteSessionHistory(id: string, token?: string): Promise<LifecycleActionResult> {
   const res = await apiWrite('DELETE', `/api/sessions/${encodeURIComponent(id)}`, undefined, token);
-  return res.json();
+  return parseLifecycleResult(id, 'delete', await res.json());
 }
 
 // createOrUpdateSession is the LEGACY create path. M3a's New Session flow no

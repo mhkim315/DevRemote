@@ -5,7 +5,8 @@
 
 import {
   readCapabilities, computeActionPolicy, reconcileState, stateFromActionResult,
-  isTerminalState, type ManagedLifecycleState,
+  isTerminalState, parseLifecycleResult, LifecycleResultError,
+  type ManagedLifecycleState,
 } from '../src/lib/lifecycle';
 
 const MANAGED = { adapterCapabilities: ['observe', 'liveTerminal', 'reliableTranscript', 'input', 'control', 'managedLifecycle'] };
@@ -110,5 +111,36 @@ describe('stateFromActionResult — never fabricates a terminal state', () => {
     expect(stateFromActionResult({})).toBe('unknown');
     expect(stateFromActionResult(null)).toBe('unknown');
     expect(isTerminalState(stateFromActionResult(null))).toBe(false);
+  });
+});
+
+describe('parseLifecycleResult — strict response validation (BLOCKER 5)', () => {
+  const ID = 'controlled_pty:s1';
+
+  it('accepts an exact sessionId + action + in-vocab state', () => {
+    expect(parseLifecycleResult(ID, 'stop', { sessionId: ID, action: 'stop', state: 'exited' }))
+      .toEqual({ sessionId: ID, action: 'stop', state: 'exited' });
+  });
+
+  it('rejects a wrong sessionId', () => {
+    expect(() => parseLifecycleResult(ID, 'stop', { sessionId: 'other', action: 'stop', state: 'exited' }))
+      .toThrow(LifecycleResultError);
+  });
+
+  it('rejects a wrong action (e.g. a kill response to a stop request)', () => {
+    expect(() => parseLifecycleResult(ID, 'stop', { sessionId: ID, action: 'kill', state: 'killed' }))
+      .toThrow(LifecycleResultError);
+  });
+
+  it('rejects an out-of-vocabulary or missing state', () => {
+    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete', state: 'idle' }))
+      .toThrow(LifecycleResultError);
+    expect(() => parseLifecycleResult(ID, 'delete', { sessionId: ID, action: 'delete' }))
+      .toThrow(LifecycleResultError);
+  });
+
+  it('rejects a malformed (non-object) 2xx body', () => {
+    expect(() => parseLifecycleResult(ID, 'stop', null)).toThrow(LifecycleResultError);
+    expect(() => parseLifecycleResult(ID, 'stop', 'ok')).toThrow(LifecycleResultError);
   });
 });

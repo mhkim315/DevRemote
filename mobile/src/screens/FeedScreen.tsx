@@ -5,9 +5,10 @@ import type { TokenManager } from '../lib/authClient';
 import { TerminalController, shouldIssueReconnect } from '../lib/terminalController';
 import { deriveTerminalAuth } from '../lib/authMode';
 import {
-  readCapabilities, computeActionPolicy, reconcileState, stateFromActionResult,
+  readCapabilities, computeActionPolicy, reconcileState, isTerminalState,
   type ManagedLifecycleState, type PendingAction,
 } from '../lib/lifecycle';
+import { SessionLifecycleController } from '../lib/sessionLifecycleController';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState, Alert} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -118,77 +119,44 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   const [sessionEnded, setSessionEnded] = useState(false);
 
   // ── M3b: authoritative managed-lifecycle state + action policy ──
-  // State is authoritative from (1) a lifecycle action RESPONSE and (2) the next
-  // session-list refresh. WS/EOF and network loss are display hints only — they
-  // never fabricate a terminal state. `unknown` until a signal arrives.
+  // State is authoritative from the DAEMON only: the session-list `lifecycleState`
+  // (Session Catalog, including retained terminal rows) and each Stop/Kill/Delete
+  // response. The client never infers state from list presence/absence and never
+  // fabricates a terminal state; WS/EOF and network loss are display hints only.
   const [lifecycleState, setLifecycleState] = useState<ManagedLifecycleState>('unknown');
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
-  const pendingActionRef = useRef<PendingAction>(null);
   const [actionError, setActionError] = useState('');
-  // Guard so a stale response after a session switch/unmount never mutates
-  // another session's UI (mirrors terminalController's attempt guard).
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
-  const sawManagedRef = useRef(false);
   const fetchSessionRef = useRef<(() => void) | null>(null);
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
 
   const { managed, inputCapable } = readCapabilities(sessionData);
-  if (managed) sawManagedRef.current = true;
   const actionPolicy = computeActionPolicy({ managed, inputCapable, state: lifecycleState, pending: pendingAction });
 
-  // Reset lifecycle tracking when the viewed session changes (same component
-  // instance, new session prop). Never carry one session's state to another.
+  // One controller instance per FeedScreen (rebound on session change). FeedScreen
+  // drives it directly — there is no parallel copy of the action logic.
+  const lifecycleCtrlRef = useRef<SessionLifecycleController | null>(null);
+  if (lifecycleCtrlRef.current === null) {
+    lifecycleCtrlRef.current = new SessionLifecycleController(
+      session, token,
+      { stop: stopSession, kill: killSession, del: deleteSessionHistory },
+      {
+        onState: (next) => setLifecycleState(prev => reconcileState(prev, next)),
+        onPending: setPendingAction,
+        onError: setActionError,
+        onRefresh: () => fetchSessionRef.current?.(),
+        onDeleted: () => onBackRef.current(),
+      },
+    );
+  }
+
+  // Reset lifecycle tracking when the viewed session changes.
   useEffect(() => {
     setLifecycleState('unknown');
     setPendingAction(null);
-    pendingActionRef.current = null;
     setActionError('');
-    sawManagedRef.current = false;
-  }, [session]);
-
-  // runLifecycleAction is the single funnel for Stop/Kill/Delete. It blocks
-  // duplicate taps, sends exactly one request over the accepted transport, applies
-  // the daemon's AUTHORITATIVE returned state (never an invented one), refreshes
-  // the list, and — on failure — keeps the server's state while surfacing a
-  // recoverable, credential-free error (network failure shown separately from a
-  // lifecycle rejection; 409 tells the user to Stop first; 403 is a permission
-  // message distinct from a 401 re-auth).
-  const runLifecycleAction = useCallback(async (
-    action: Exclude<PendingAction, null>,
-    fn: (id: string, token?: string) => Promise<{ state: string }>,
-    onSuccess?: () => void,
-  ) => {
-    if (pendingActionRef.current) return; // duplicate-tap / concurrent guard
-    const forId = sessionRef.current;
-    pendingActionRef.current = action;
-    setPendingAction(action);
-    setActionError('');
-    try {
-      const result = await fn(forId, token);
-      if (sessionRef.current !== forId) return; // stale: session switched
-      setLifecycleState(prev => reconcileState(prev, stateFromActionResult(result)));
-      fetchSessionRef.current?.();
-      onSuccess?.();
-    } catch (e: any) {
-      if (sessionRef.current !== forId) return; // stale
-      // Keep the authoritative server state; only report a recoverable error.
-      if (e instanceof PokitError && e.statusCode === 409) {
-        setActionError('Stop the session first, then delete its history.');
-        fetchSessionRef.current?.(); // refresh, do NOT retry
-      } else if (e instanceof PokitError && e.statusCode === 403) {
-        setActionError('You do not have permission for this action.');
-      } else if (e instanceof PokitError && (e.failure === ConnectivityFailure.NetworkUnreachable || e.failure === ConnectivityFailure.Timeout)) {
-        setActionError('Network error — the session was not changed. Check your connection and refresh.');
-      } else if (e instanceof PokitError && e.failure === ConnectivityFailure.AuthError) {
-        setActionError('Authentication failed. Re-scan the QR code.');
-      } else {
-        setActionError('Action failed — the session state is unchanged.');
-      }
-    } finally {
-      pendingActionRef.current = null;
-      if (sessionRef.current === forId) setPendingAction(null);
-    }
-  }, [token]);
+    lifecycleCtrlRef.current?.setSession(session, token);
+  }, [session, token]);
 
   const confirmStop = useCallback(() => {
     if (!actionPolicy.canStop) return;
@@ -197,10 +165,10 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
       'Stop the entire Pokit-managed terminal process group for this session. Activity and Transcript history are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Stop', style: 'destructive', onPress: () => runLifecycleAction('stop', stopSession) },
+        { text: 'Stop', style: 'destructive', onPress: () => lifecycleCtrlRef.current?.stop() },
       ],
     );
-  }, [actionPolicy.canStop, runLifecycleAction]);
+  }, [actionPolicy.canStop]);
 
   const confirmForceKill = useCallback(() => {
     if (!actionPolicy.canForceKill) return;
@@ -209,10 +177,10 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
       'Force-kill the managed process group now. This is a last resort after a graceful Stop did not complete.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Force Kill', style: 'destructive', onPress: () => runLifecycleAction('kill', killSession) },
+        { text: 'Force Kill', style: 'destructive', onPress: () => lifecycleCtrlRef.current?.forceKill() },
       ],
     );
-  }, [actionPolicy.canForceKill, runLifecycleAction]);
+  }, [actionPolicy.canForceKill]);
 
   const confirmDeleteHistory = useCallback(() => {
     if (!actionPolicy.canDelete) return;
@@ -221,10 +189,10 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
       'Permanently remove this ended session’s record and its captured Activity/Transcript history. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => runLifecycleAction('delete', deleteSessionHistory, onBack) },
+        { text: 'Delete', style: 'destructive', onPress: () => lifecycleCtrlRef.current?.deleteHistory() },
       ],
     );
-  }, [actionPolicy.canDelete, runLifecycleAction, onBack]);
+  }, [actionPolicy.canDelete]);
 
   // When live terminal is unsupported (cmux), force-switch away.
   useEffect(() => {
@@ -322,23 +290,23 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
           const sess = data.find((s: any) => (s.id || s) === session);
           if (sess && typeof sess !== 'string') {
             setSessionData(sess);
-            setSessionEnded(false);
-            // A managed session present in a successful list is live (running).
-            // reconcileState keeps a stopping/terminal overlay from a recent action
-            // response — a stale "still live" snapshot never regresses it.
-            const caps = Array.isArray(sess.adapterCapabilities) ? sess.adapterCapabilities : [];
-            if (caps.includes('managedLifecycle')) {
-              sawManagedRef.current = true;
-              setLifecycleState(prev => reconcileState(prev, 'running'));
+            // BLOCKER 1: use the daemon-AUTHORITATIVE lifecycleState from the list
+            // (Session Catalog). No presence/absence inference. reconcileState keeps
+            // it monotonic so a stale snapshot cannot regress a stopping/terminal
+            // session. Empty lifecycleState (non-managed) leaves state 'unknown'.
+            const ls = typeof sess.lifecycleState === 'string' ? sess.lifecycleState : '';
+            if (ls) {
+              setLifecycleState(prev => reconcileState(prev, ls as ManagedLifecycleState));
+              setSessionEnded(isTerminalState(ls as ManagedLifecycleState));
+            } else {
+              setSessionEnded(false);
             }
           } else {
+            // Absent from a successful list. With the daemon now RETAINING terminal
+            // rows, a managed session that truly disappears was deleted/never
+            // existed — surface "unavailable" WITHOUT fabricating a terminal
+            // lifecycle state (Delete stays gated on an authoritative terminal row).
             setSessionEnded(true);
-            // Absent from a SUCCESSFUL list (not a network error — that is caught
-            // below and does not reach here) means a managed session we were
-            // viewing has terminated. This is an authoritative terminal signal.
-            if (sawManagedRef.current) {
-              setLifecycleState(prev => reconcileState(prev, 'exited'));
-            }
           }
         })
         .catch(err => console.error(err));
@@ -927,7 +895,11 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
         {/* M3b: input (keystrokes + macros) is hidden when a MANAGED session is
             not in a state that accepts input (starting/stopping/terminal, or no
             input capability). Non-managed sessions keep their existing behavior. */}
-        {activeTab === 'terminal' && !sessionEnded && (managed ? actionPolicy.inputEnabled : true) && (
+        {/* M3b (BLOCKER 4): input (keystrokes + macros) is gated by the policy for
+            EVERY session — never a non-managed bypass. External adapters that
+            declare `input` (tmux) keep input; observe-only/unknown/view-only
+            (cmux, missing/unknown capabilities) never show input or macros. */}
+        {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && (
         <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>

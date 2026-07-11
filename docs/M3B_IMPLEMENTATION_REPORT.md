@@ -1,6 +1,6 @@
 # M3b Implementation Report — Mobile Session Lifecycle Action UX
 
-Status: **READY FOR INDEPENDENT VERIFICATION**
+Status: **READY FOR INDEPENDENT RE-VERIFICATION (remediation applied)**
 
 Branch: `feature/phase10-multi-adapter`
 
@@ -8,6 +8,45 @@ Required baseline (accepted M3-auth-2B lineage / doctor-repair docs):
 `46e45fe8966ed28666a38324bff60161b8e102f3` —
 `git merge-base --is-ancestor 46e45fe8966ed28666a38324bff60161b8e102f3 HEAD`
 exits 0.
+
+## 0. Remediation of the independent REJECT (6 blockers)
+
+The first M3b commit (`dfa319645`) was correctly REJECTED: the daemon did not
+expose an authoritative lifecycle state or retain terminal rows, so mobile
+inferred state from list presence and Force Kill / Delete History were
+unreachable in the real flow. This revision fixes all six blockers with an
+**additive** daemon change (no auth / Terminal transport / Recorder / accepted
+M2-service redesign):
+
+1. **Authoritative `lifecycleState` on `/api/sessions`.** Added a `LifecycleState`
+   field to `SessionTelemetry`, **separate** from `state`/`agentStatus` (agent
+   activity). `mergeLifecycleState` (`internal/term/telemetry.go`) sources it from
+   the Session Catalog for managed sessions; non-managed sessions carry none.
+   Mobile reads it and **removed all presence/absence inference**.
+2. **Retained terminal rows + merge/dedup.** `mergeLifecycleState` unions live
+   Registry rows with retained exited/killed/failed Catalog rows, deduped by
+   canonical ID (live wins), exposing `lifecycleState` + `history` +
+   `adapterCapabilities` on retained rows (`SessionCatalog.List()` added). Delete
+   removes the retained row only after success.
+3. **Force Kill reachable, one clear policy.** `stopping` is now an observable
+   authoritative state (Catalog → list). Policy: **Force Kill is shown iff
+   `lifecycleState === 'stopping'`.** After a failed graceful Stop the controller
+   refreshes (not retries), the list re-surfaces `stopping`, and Force Kill issues
+   a real `/kill` — proven end-to-end in `m3bLifecycleController.test.ts`.
+4. **Capability enforcement in rendering.** The input/macros gate is now
+   `actionPolicy.inputEnabled` for **every** session (removed the non-managed
+   bypass); observe-only/unknown never show input, external `input` adapters keep it.
+5. **Strict response validation.** `parseLifecycleResult` (pure) validates exact
+   `sessionId`, exact `action`, and the closed state vocabulary; the client
+   stop/kill/delete reject a malformed/wrong-session 2xx, so a bogus Delete 2xx
+   never navigates.
+6. **Production controller + tests.** The flow is extracted into
+   `SessionLifecycleController` (used directly by FeedScreen — no parallel copy),
+   tested for confirmations→mapping, duplicate taps, stale/session-switch, dispose
+   (Back/unmount) no-request, 409 refresh, Stop-failure→Force-Kill, Delete→onDeleted.
+
+Full gate green after remediation: `go test -race ./...`, mobile tsc, jest **21
+suites / 287 tests**, invariants, secret scan.
 
 Task: connect the mobile **Stop**, **Force Kill**, and **Delete History** UX to
 the real production lifecycle routes, gated by the authoritative

@@ -135,6 +135,50 @@ function managedStatusLabel(state: ManagedLifecycleState): string {
   }
 }
 
+// ── M3b: strict lifecycle action-response validation (BLOCKER 5) ──
+
+// Closed vocabulary of daemon action-result states. `unknown` is NOT a valid
+// server response value — it is only the client's pre-signal placeholder.
+const ACTION_RESULT_STATES: ReadonlySet<string> = new Set([
+  'starting', 'running', 'stopping', 'exited', 'killed', 'failed',
+]);
+
+export type LifecycleActionKind = 'stop' | 'kill' | 'delete';
+
+// LifecycleResultError marks a daemon action response that must NOT be committed
+// as a success (malformed, wrong session, wrong action, or out-of-vocabulary
+// state). Defined here (no client import) so validation stays cycle-free and
+// purely testable; callers treat it as an action failure, not a state change.
+export class LifecycleResultError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LifecycleResultError';
+  }
+}
+
+// parseLifecycleResult strictly validates a Stop/Kill/Delete 2xx body against the
+// EXACT requested session id and operation and the closed state vocabulary. A
+// malformed or wrong-session/wrong-action/unknown-state 2xx throws — it is never
+// silently accepted (so e.g. a bogus Delete 2xx cannot trigger navigation).
+export function parseLifecycleResult(
+  expectedId: string, expectedAction: LifecycleActionKind, raw: unknown,
+): { sessionId: string; action: string; state: string } {
+  if (!raw || typeof raw !== 'object') {
+    throw new LifecycleResultError('malformed lifecycle response (not an object)');
+  }
+  const r = raw as Record<string, unknown>;
+  if (r.sessionId !== expectedId) {
+    throw new LifecycleResultError('lifecycle response session mismatch');
+  }
+  if (r.action !== expectedAction) {
+    throw new LifecycleResultError('lifecycle response action mismatch');
+  }
+  if (typeof r.state !== 'string' || !ACTION_RESULT_STATES.has(r.state)) {
+    throw new LifecycleResultError('lifecycle response state outside vocabulary');
+  }
+  return { sessionId: r.sessionId as string, action: r.action as string, state: r.state };
+}
+
 // ── M3a: New Session create/profile helpers ──
 
 // canCreateProfile reports whether a launch profile can be selected. A profile

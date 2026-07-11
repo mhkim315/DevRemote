@@ -19,6 +19,13 @@ type SessionTelemetry struct {
 	ID                  string                `json:"id"`
 	DisplayID           string                `json:"displayId,omitempty"` // local ID without adapter prefix
 	State               string                `json:"state"`
+	// LifecycleState is the daemon-AUTHORITATIVE managed-session lifecycle sourced
+	// from the Session Catalog: starting|running|stopping|exited|killed|failed.
+	// It is SEPARATE from `state`/`agentStatus` (agent activity: idle/thinking/
+	// working/waiting). Empty for sessions that are not Pokit-managed (external
+	// tmux/cmux/observe-only) — those have no managed lifecycle. Mobile gates
+	// Stop/Kill/Delete on this field, never on list presence/absence.
+	LifecycleState      string                `json:"lifecycleState,omitempty"`
 	Load                int                   `json:"load"`
 	Runner              string                `json:"runner"`
 	RunnerColor         string                `json:"runnerColor"`
@@ -35,6 +42,56 @@ type SessionTelemetry struct {
 	Stale         bool      `json:"stale,omitempty"`
 	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
 	LastError     string    `json:"lastError,omitempty"`
+}
+
+// mergeLifecycleState makes /api/sessions authoritative for managed-session
+// lifecycle. It (1) annotates each LIVE row that has a catalog entry with the
+// Catalog's authoritative LifecycleState, and (2) appends RETAINED terminal
+// catalog rows (exited/killed/failed) whose runtime has already left the
+// Registry, so an ended managed session stays listable for Activity/Transcript
+// review and Delete History until it is explicitly deleted. Dedup is by canonical
+// ID (a live row always wins over a catalog row for the same id). Non-managed
+// sessions (no catalog entry) are untouched and carry no lifecycleState.
+func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleService, reg *mux.Registry) []SessionTelemetry {
+	if lifecycle == nil {
+		return snapshot
+	}
+	catalog := lifecycle.Catalog()
+	live := make(map[string]int, len(snapshot))
+	for i := range snapshot {
+		live[snapshot[i].ID] = i
+	}
+	// (1) authoritative state for live managed rows.
+	for i := range snapshot {
+		if e, ok := catalog.Get(snapshot[i].ID); ok {
+			snapshot[i].LifecycleState = string(e.State)
+		}
+	}
+	// (2) retained terminal rows not represented live.
+	for _, e := range catalog.List() {
+		if _, ok := live[e.ID]; ok {
+			continue // live row already present and annotated
+		}
+		if !e.State.Terminal() {
+			// A managed row absent from the live Registry but not yet terminal is a
+			// transient finalize race; skip rather than surface a phantom session.
+			continue
+		}
+		snapshot = append(snapshot, SessionTelemetry{
+			ID:                  e.ID,
+			DisplayID:           mux.ParseSessionID(e.ID).LocalID,
+			State:               "idle", // agent-activity neutral; lifecycle is below
+			LifecycleState:      string(e.State),
+			Runner:              e.Name,
+			Adapter:             e.Adapter,
+			// History/Activity is retained until Delete, so keep the read affordance.
+			Capabilities:        []string{"history"},
+			AdapterCapabilities: adapterCapabilityStrings(reg, e.Adapter),
+			Events:              []models.AgentEvent{},
+		})
+	}
+	sortTelemetry(snapshot)
+	return snapshot
 }
 
 // adapterCapabilityStrings returns the adapter-level capabilities as JSON-safe strings.
@@ -256,11 +313,12 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if h.Telemetry != nil {
-		json.NewEncoder(w).Encode(h.Telemetry.Snapshot(reg))
+		snapshot := mergeLifecycleState(h.Telemetry.Snapshot(reg), h.Lifecycle, reg)
+		json.NewEncoder(w).Encode(snapshot)
 		return
 	}
 	// Fallback without telemetry service (e.g. tests).
-	res := buildSimpleSnapshotWithDetector(reg, h.Events, h.AgentDetector)
+	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.Events, h.AgentDetector), h.Lifecycle, reg)
 	json.NewEncoder(w).Encode(res)
 }
 
