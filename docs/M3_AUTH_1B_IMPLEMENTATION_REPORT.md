@@ -132,6 +132,18 @@ Verified here: `sh -n scripts/ios-native-gate.sh` PASS (syntax);
 PASSED. The gate's actual device execution remains M-track (requires a Mac with
 Xcode + a connected iPhone; not available in this environment).
 
+## 3c. Remediation after the third REJECT (gate exit-code capture)
+
+The third REJECT was a false-PASS risk: `xcodebuild test ... 2>&1 | tee "$LOG";
+XC_STATUS=$?` in POSIX `/bin/sh` (no `pipefail`) captures **tee's** exit (0), not
+xcodebuild's — so a failing XCTest could be masked as a PASS as long as the
+required-test string appeared in the log. Fixed: the gate now redirects to the
+log (`>"$LOG" 2>&1`), captures xcodebuild's real exit code, then prints the log;
+a `trap` removes the temp log on exit.
+
+Independently reproduced (POSIX `/bin/sh`): `(exit 42) | tee log` → `$?` = `0`
+(the bug); `(exit 42) >log 2>&1` → `$?` = `42` (the fix). `sh -n` PASS.
+
 ## 4. Verification
 
 Ran in this environment (all green):

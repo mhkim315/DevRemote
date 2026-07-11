@@ -91,14 +91,19 @@ fi
 
 echo "--- xcodebuild test (scheme $TEST_SCHEME) on device $UDID ---"
 LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
 # Real device destination (id=<UDID>) — never a generic/build-only destination.
+# Redirect to the log (do NOT pipe to tee): this is POSIX /bin/sh with no
+# pipefail, where `xcodebuild ... | tee` would make $? report tee's 0 and mask
+# an xcodebuild failure. Capture xcodebuild's real exit, then print the log.
 set +e
 xcodebuild test \
   -workspace "$WORKSPACE" \
   -scheme "$TEST_SCHEME" \
-  -destination "id=$UDID" 2>&1 | tee "$LOG"
+  -destination "id=$UDID" >"$LOG" 2>&1
 XC_STATUS=$?
 set -e
+cat "$LOG"
 
 if [ "$XC_STATUS" -ne 0 ]; then
   echo "FAILED: xcodebuild test exited $XC_STATUS." >&2
