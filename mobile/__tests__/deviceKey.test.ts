@@ -453,6 +453,91 @@ describe('getKeyInfo + securityLevel', () => {
   });
 });
 
+// ── iOS Secure Enclave provider (M3-auth-1B) ──
+//
+// The shared JS parser is platform-bound via expectedProvider(): on iOS a valid
+// key must report provider `ios_secure_enclave` and (this phase) securityLevel
+// `secure_enclave`. Platform.OS is set for the whole block so the awaited
+// validations see iOS (withPlatform() only holds across a sync body).
+
+describe('iOS Secure Enclave provider', () => {
+  let origOS: string;
+  beforeAll(() => {
+    origOS = (require('react-native') as any).Platform.OS;
+    (require('react-native') as any).Platform.OS = 'ios';
+  });
+  afterAll(() => { (require('react-native') as any).Platform.OS = origOS; });
+
+  const IOS_KEY_INFO = {
+    provider: 'ios_secure_enclave',
+    keyVersion: 1,
+    deviceId: FINGERPRINT,
+    publicKeySpkiHex: P256_SPKI_HEX,
+    hardwareBacked: true,
+    nonExportable: true,
+    securityLevel: 'secure_enclave',
+  };
+
+  function iosNative(overrides: Partial<NativePokitDeviceKey> = {}): NativePokitDeviceKey {
+    return fakeNative({
+      getSupport: async () => 'supported',
+      hasKey: async () => true,
+      ensureKey: async () => ({ ...IOS_KEY_INFO }),
+      getKeyInfo: async () => ({ ...IOS_KEY_INFO }),
+      getPublicKeySpki: async () => P256_SPKI_HEX,
+      deleteKey: async () => {},
+      ...overrides,
+    });
+  }
+
+  it('validates a Secure Enclave key: provider + secure_enclave level + recomputed deviceId', async () => {
+    const k = _createWithNative(iosNative());
+    const info = await k.getKeyInfo();
+    expect(info.provider).toBe('ios_secure_enclave');
+    expect(info.securityLevel).toBe('secure_enclave');
+    expect(info.deviceId).toBe(FINGERPRINT);
+    expect(info.publicKeySpki.length).toBe(91);
+    expect(info.hardwareBacked).toBe(true);
+    expect(info.nonExportable).toBe(true);
+    // ensureKey runs through the same shared parser.
+    expect((await k.ensureKey()).provider).toBe('ios_secure_enclave');
+  });
+
+  it('rejects the android_keystore provider on iOS (platform-bound)', async () => {
+    const k = _createWithNative(iosNative({
+      ensureKey: async () => ({ ...IOS_KEY_INFO, provider: 'android_keystore' }),
+    }));
+    await expect(k.ensureKey()).rejects.toThrow('provider must be ios_secure_enclave');
+  });
+
+  it('accepts secure_enclave and unknown levels, rejects an unknown string', async () => {
+    for (const level of ['secure_enclave', 'unknown']) {
+      const k = _createWithNative(iosNative({ getKeyInfo: async () => ({ ...IOS_KEY_INFO, securityLevel: level }) }));
+      expect((await k.getKeyInfo()).securityLevel).toBe(level);
+    }
+    const bad = _createWithNative(iosNative({ getKeyInfo: async () => ({ ...IOS_KEY_INFO, securityLevel: 't2_chip' }) }));
+    await expect(bad.getKeyInfo()).rejects.toThrow('securityLevel');
+  });
+
+  it('fails closed on a deviceId mismatch (key_incompatible)', async () => {
+    const k = _createWithNative(iosNative({ ensureKey: async () => ({ ...IOS_KEY_INFO, deviceId: 'deadbeef'.repeat(8) }) }));
+    await expect(k.ensureKey()).rejects.toMatchObject({ name: 'DeviceKeyError', code: 'key_incompatible' });
+  });
+
+  it('propagates coded native errors (hardware_unavailable) from the enclave', async () => {
+    const k = _createWithNative(iosNative({ ensureKey: async () => { throw Object.assign(new Error('x'), { code: 'hardware_unavailable' }); } }));
+    await expect(k.ensureKey()).rejects.toMatchObject({ code: 'hardware_unavailable' });
+  });
+
+  it('sign passes the enclave DER signature through the wrapper', async () => {
+    const sigHex = '3044022001a7c80dc4afea65966c4e138bf1038a9bf21ee38ffdc09604533a12f6ecaf78022035097449d58db7da4d8c95a8e86424273820699df463920dd60e9a7361c74bdd';
+    const k = _createWithNative(iosNative({ sign: async () => sigHex }));
+    const sig = await k.sign(new Uint8Array([1, 2, 3]));
+    expect(sig).toBeInstanceOf(Uint8Array);
+    expect(sig.length).toBeGreaterThan(64);
+  });
+});
+
 // ── codec helpers ──
 
 function fromHexStr(h: string): Uint8Array {

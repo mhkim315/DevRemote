@@ -27,10 +27,10 @@ export type DeviceKeySupport =
   | 'key_missing'
   | 'key_invalidated';
 
-export type DeviceKeySecurityLevel = 'strongbox' | 'tee' | 'os_keystore' | 'unknown';
+export type DeviceKeySecurityLevel = 'strongbox' | 'tee' | 'os_keystore' | 'secure_enclave' | 'unknown';
 
 const SECURITY_LEVELS: ReadonlySet<string> = new Set([
-  'strongbox', 'tee', 'os_keystore', 'unknown',
+  'strongbox', 'tee', 'os_keystore', 'secure_enclave', 'unknown',
 ]);
 
 export interface DeviceKeyInfo {
@@ -221,7 +221,7 @@ function validateKeyInfo(raw: Record<string, unknown>): DeviceKeyInfo {
   // securityLevel — allowlisted; must be hardware-backed to reach here.
   const level = raw.securityLevel;
   if (typeof level !== 'string' || !SECURITY_LEVELS.has(level)) {
-    throw keyInfoErr('securityLevel must be strongbox/tee/os_keystore/unknown');
+    throw keyInfoErr('securityLevel must be strongbox/tee/os_keystore/secure_enclave/unknown');
   }
 
   return {

@@ -1,45 +1,62 @@
 import ExpoModulesCore
 
-// M3-auth-1C iOS stub — returns not_implemented for every operation.
-// The Secure Enclave provider arrives in M3-auth-1B.
+// M3-auth-1B iOS Secure Enclave provider — thin Expo wrapper over
+// PokitDeviceKeyStore (Security framework), mirroring the Android
+// PokitDeviceKeyModule.kt. All real logic lives in the Expo-free store so
+// XCTest can exercise it directly.
+//
+// Error mapping (mirror of Android `coded { }`): a typed DeviceKeyError is
+// rejected with its stable `code` preserved, so the JS wrapper's
+// normalizeNativeError sees `error.code`. Any other error fails closed as
+// native_operation_failed.
 
 public class PokitDeviceKeyModule: Module {
+  private let store = PokitDeviceKeyStore()
+
   public func definition() -> ModuleDefinition {
     ModuleDefinition {
       Name("PokitDeviceKey")
 
       AsyncFunction("getSupport") { () -> String in
-        "not_implemented"
+        self.store.getSupport()
       }
 
       AsyncFunction("hasKey") { () -> Bool in
-        false
+        self.store.hasKey()
       }
 
-      AsyncFunction("ensureKey") { () throws -> Any in
-        throw NSError(domain: "PokitDeviceKey", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "PokitDeviceKey is not implemented on this platform"])
+      AsyncFunction("ensureKey") { (promise: Promise) in
+        self.resolveCoded(promise) { try self.store.ensureKey() }
       }
 
-      AsyncFunction("getKeyInfo") { () throws -> Any in
-        throw NSError(domain: "PokitDeviceKey", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "PokitDeviceKey is not implemented on this platform"])
+      AsyncFunction("getKeyInfo") { (promise: Promise) in
+        self.resolveCoded(promise) { try self.store.getKeyInfo() }
       }
 
-      AsyncFunction("getPublicKeySpki") { () throws -> String in
-        throw NSError(domain: "PokitDeviceKey", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "PokitDeviceKey is not implemented on this platform"])
+      AsyncFunction("getPublicKeySpki") { (promise: Promise) in
+        self.resolveCoded(promise) { try self.store.getPublicKeySpki() }
       }
 
-      AsyncFunction("sign") { (messageHex: String) throws -> String in
-        throw NSError(domain: "PokitDeviceKey", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "PokitDeviceKey is not implemented on this platform"])
+      AsyncFunction("sign") { (messageHex: String, promise: Promise) in
+        self.resolveCoded(promise) { try self.store.sign(messageHex) }
       }
 
-      AsyncFunction("deleteKey") { () throws in
-        throw NSError(domain: "PokitDeviceKey", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "PokitDeviceKey is not implemented on this platform"])
+      AsyncFunction("deleteKey") { (promise: Promise) in
+        self.resolveCoded(promise) { try self.store.deleteKey(); return nil }
       }
+    }
+  }
+
+  // resolveCoded runs a throwing store op and maps a typed DeviceKeyError to a
+  // coded promise rejection (JS receives error.code). This is the iOS analogue
+  // of the Android `coded { }` boundary that re-throws as a CodedException.
+  private func resolveCoded(_ promise: Promise, _ block: () throws -> Any?) {
+    do {
+      promise.resolve(try block())
+    } catch let e as DeviceKeyError {
+      promise.reject(e.code, e.message)
+    } catch {
+      promise.reject(DeviceKeyCodes.nativeOperationFailed, "device key operation failed")
     }
   }
 }

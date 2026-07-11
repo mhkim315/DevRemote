@@ -131,9 +131,10 @@ func TestNativeSignatureInterop(t *testing.T) {
 // proves the daemon accepts the device-produced signature and rejects tampering.
 //
 // Producing the fixture (M-track / emulator):
-//   ./gradlew :pokit-device-key:connectedAndroidTest
-//   adb pull /data/data/<app>/files/android_signature_fixture.json \
-//     internal/devicetrust/testdata/android_signature_fixture.json
+//
+//	./gradlew :pokit-device-key:connectedAndroidTest
+//	adb pull /data/data/<app>/files/android_signature_fixture.json \
+//	  internal/devicetrust/testdata/android_signature_fixture.json
 func TestAndroidFixture(t *testing.T) {
 	path := filepath.Join("testdata", "android_signature_fixture.json")
 	raw, err := os.ReadFile(path)
@@ -189,5 +190,75 @@ func TestAndroidFixture(t *testing.T) {
 	m[len(m)-1] ^= 0x01
 	if ecdsa.VerifyASN1(pub, digest[:], m) {
 		t.Fatal("mutated Android signature verified")
+	}
+}
+
+// TestIOSFixture verifies a REAL iOS Secure Enclave signature captured by the
+// XCTest (PokitDeviceKeyStoreTests.testExportGoInteropFixture). It skips when
+// the fixture is absent (no iOS device run available), and otherwise proves the
+// daemon accepts the device-produced signature and rejects tampering. The iOS
+// provider is byte-compatible with Android, so this exercises the same
+// verification contract on the enclave-produced wire format.
+//
+// Producing the fixture (M-track / real iOS device):
+//
+//	sh scripts/ios-native-gate.sh   (runs :Tests testExportGoInteropFixture)
+//	copy Documents/ios_signature_fixture.json into
+//	  internal/devicetrust/testdata/ios_signature_fixture.json
+func TestIOSFixture(t *testing.T) {
+	path := filepath.Join("testdata", "ios_signature_fixture.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Skip("no iOS fixture; run scripts/ios-native-gate.sh and pull it into testdata/")
+	}
+	var fx struct {
+		Version          int    `json:"version"`
+		MessageHex       string `json:"messageHex"`
+		PublicKeySpkiHex string `json:"publicKeySpkiHex"`
+		SignatureHex     string `json:"signatureHex"`
+		DeviceID         string `json:"deviceId"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if fx.Version != 1 {
+		t.Fatalf("unexpected fixture version %d", fx.Version)
+	}
+
+	spki, err := hex.DecodeString(fx.PublicKeySpkiHex)
+	if err != nil {
+		t.Fatalf("decode spki: %v", err)
+	}
+	pub, err := ParseP256PublicKey(spki)
+	if err != nil {
+		t.Fatalf("ParseP256PublicKey rejected the iOS SPKI: %v", err)
+	}
+	if got := Fingerprint(spki); got != fx.DeviceID {
+		t.Fatalf("deviceId %s != sha256(SPKI) %s", fx.DeviceID, got)
+	}
+	msg, _ := hex.DecodeString(fx.MessageHex)
+	sig, err := hex.DecodeString(fx.SignatureHex)
+	if err != nil {
+		t.Fatalf("decode sig: %v", err)
+	}
+	digest := sha256.Sum256(msg)
+	if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+		t.Fatal("daemon rejected the real iOS signature")
+	}
+	// Reject a modified message.
+	bad := sha256.Sum256(append(msg, 'x'))
+	if ecdsa.VerifyASN1(pub, bad[:], sig) {
+		t.Fatal("iOS signature verified against a modified message")
+	}
+	// Reject a different key.
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if ecdsa.VerifyASN1(&other.PublicKey, digest[:], sig) {
+		t.Fatal("iOS signature verified against a different key")
+	}
+	// Reject a mutated signature.
+	m := append([]byte(nil), sig...)
+	m[len(m)-1] ^= 0x01
+	if ecdsa.VerifyASN1(pub, digest[:], m) {
+		t.Fatal("mutated iOS signature verified")
 	}
 }
