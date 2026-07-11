@@ -1,7 +1,8 @@
 // M3-auth-3A: centralized, authenticated REST transport.
 //
-// Uses TokenManager directly: every request pulls a valid token; on 401 the
-// manager is invalidated and the request retried once (idempotent only).
+// On 401, conditionally invalidates (only if the 401 token is STILL the
+// current bearer), forces a fresh challenge, and retries exactly once for
+// idempotent methods. Non-idempotent 401s fail immediately.
 
 import { AuthError, TokenManager } from './authClient';
 
@@ -9,39 +10,31 @@ export async function authenticatedFetch(
   url: string, init: RequestInit | undefined, tokenMgr: TokenManager,
 ): Promise<Response> {
   const isIdempotent = !init?.method || init.method === 'GET';
-  return doFetch(url, init, tokenMgr, isIdempotent);
+  const token = await tokenMgr.getValidToken();
+  const res = await doRequest(url, init, token);
+  if (res.status === 401 && isIdempotent) {
+    tokenMgr.invalidateIfCurrent(token);
+    const fresh = await tokenMgr.getValidToken(true);
+    const retry = await doRequest(url, init, fresh);
+    // Retry must also be checked — a second 401/403 is a typed failure.
+    if (retry.status === 401 || retry.status === 403) {
+      throw new AuthError('host_pin_fail', `auth rejected on retry: ${retry.status}`, retry.status);
+    }
+    return retry;
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new AuthError('host_pin_fail', `auth rejected: ${res.status}`, res.status);
+  }
+  return res;
 }
 
-async function doFetch(
-  url: string, init: RequestInit | undefined, tokenMgr: TokenManager,
-  mayRetry: boolean,
-): Promise<Response> {
-  const token = await tokenMgr.getValidToken();
-  let res: Response;
+async function doRequest(url: string, init: RequestInit | undefined, token: string): Promise<Response> {
   try {
-    res = await fetch(url, {
+    return await fetch(url, {
       ...init,
       headers: { ...(init?.headers as Record<string, string> || {}), Authorization: `Bearer ${token}` },
     });
   } catch {
     throw new AuthError('network_error', 'request failed');
   }
-  if (res.status === 401 && mayRetry) {
-    // Force a fresh challenge — the current bearer may have been revoked
-    // or replaced. Then retry exactly once with the new token.
-    tokenMgr.invalidate();
-    const fresh = await tokenMgr.getValidToken(true);
-    try {
-      return await fetch(url, {
-        ...init,
-        headers: { ...(init?.headers as Record<string, string> || {}), Authorization: `Bearer ${fresh}` },
-      });
-    } catch {
-      throw new AuthError('network_error', 'retry request failed');
-    }
-  }
-  if (res.status === 401 || res.status === 403) {
-    throw new AuthError('host_pin_fail', `auth rejected: ${res.status}`, res.status);
-  }
-  return res;
 }

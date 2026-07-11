@@ -45,9 +45,12 @@ export class TokenManager {
     this.pairing = pairing; this.deviceKey = deviceKey; this.baseURL = baseURL;
   }
 
-  // invalidate forces the next getValidToken() to re-authenticate even if the
-  // current token is still within the TTL window (used on 401).
-  invalidate(): void { this.state = null; }
+  // invalidateIfCurrent clears state ONLY if the given token matches the
+  // currently held bearer. A stale 401 from a request that used an already-
+  // replaced token must not invalidate the latest bearer.
+  invalidateIfCurrent(token: string): void {
+    if (this.state && this.state.token === token) this.state = null;
+  }
 
   // getValidToken returns a fresh bearer. Callers get one shared in-flight
   // promise; a 401 caller invalidates first, then calls with forceRefresh.
@@ -76,9 +79,12 @@ export class TokenManager {
     const clientNonce = await Crypto.getRandomBytesAsync(32);
     const chalResp = await authPost(this.baseURL + '/api/device-auth/challenge', { version: 1, hostId: this.pairing.hostId, deviceId, clientNonce: toHex(clientNonce) });
     validateChallengeResponse(chalResp, this.pairing.hostId);
-    const challengeId = fromHex(chalResp.challengeId, 32);
-    const serverNonce = fromHex(chalResp.serverNonce, 32);
-    const hostSig = fromHex(chalResp.hostSignature);
+    let challengeId: Uint8Array, serverNonce: Uint8Array, hostSig: Uint8Array;
+    try {
+      challengeId = fromHex(chalResp.challengeId, 32);
+      serverNonce = fromHex(chalResp.serverNonce, 32);
+      hostSig = fromHex(chalResp.hostSignature);
+    } catch { throw new AuthError('challenge_rejected', 'malformed challenge field'); }
     const bootId = chalResp.daemonBootId;
     if (typeof bootId !== 'string' || bootId.length > 128) throw new AuthError('challenge_rejected', 'invalid boot id');
     const issuedAt = new Date(chalResp.issuedAt);
@@ -117,7 +123,7 @@ function validateChallengeResponse(r: any, expectedHostId: string) {
 }
 
 function validateVerifyResponse(r: any, expectedDeviceId: string): BearerState {
-  if (typeof r.token !== 'string' || r.token.length < 32 || r.token.length > 512) throw new AuthError('verify_rejected', 'invalid token');
+  if (typeof r.token !== 'string' || !/^[0-9a-f]{64}$/.test(r.token)) throw new AuthError('verify_rejected', 'invalid token');
   if (r.tokenType !== 'Bearer') throw new AuthError('verify_rejected', 'invalid tokenType');
   if (typeof r.expiresAt !== 'string') throw new AuthError('verify_rejected', 'missing expiresAt');
   const expiresAt = new Date(r.expiresAt);
