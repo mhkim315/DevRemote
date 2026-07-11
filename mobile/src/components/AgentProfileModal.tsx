@@ -34,7 +34,11 @@ export function AgentProfileModal({ visible, onClose, onSave, onDelete, initialI
     onSave(id.trim(), runner, color);
   };
 
-  const isEditMode = !!onDelete;
+  // Edit vs new is determined by whether an existing session id was supplied,
+  // NOT by the presence of a delete handler. M3b removed the legacy query-DELETE
+  // "terminate" action from this presentation-only modal; destructive lifecycle
+  // now lives in the session viewer gated by managedLifecycle capability + state.
+  const isEditMode = !!initialId;
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true}>

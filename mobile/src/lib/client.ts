@@ -74,15 +74,21 @@ async function apiGet(path: string, legacyToken?: string): Promise<Response> {
   return checkedFetch(`${_baseURL}${path}`, { headers: authHeaders(legacyToken) });
 }
 
-// apiPost centralises WRITE authentication with the SAME host-bound fail-closed
-// contract as apiGet. It is used by the M3a non-idempotent create.
+// apiWrite centralises non-idempotent WRITE authentication (POST/DELETE) with
+// the SAME host-bound fail-closed contract as apiGet. It backs the M3a create
+// and the M3b Stop/Kill/Delete-History lifecycle actions. A body is sent only
+// when one is provided (create); lifecycle actions send none.
 //
 // Non-idempotent safety (handoff §6): authenticatedFetch proactively refreshes
-// via getValidToken() BEFORE the request but never re-issues a POST after a 401
-// — a rejected create surfaces a recoverable AuthError WITHOUT a duplicate
-// session. Exactly one POST is ever sent.
-async function apiPost(path: string, body: unknown, legacyToken?: string): Promise<Response> {
-  const payload = JSON.stringify(body);
+// via getValidToken() BEFORE the request but never re-issues a POST/DELETE after
+// a 401 — a rejected write surfaces a recoverable AuthError WITHOUT replaying the
+// action. Exactly one request is ever sent. A non-2xx (404/409/422/500) becomes
+// an APIError carrying the status so the caller can branch (e.g. 409 → "Stop the
+// session first"); a 401/403 becomes an AuthError carrying the status so the
+// caller can distinguish an invalid bearer (401) from missing permission (403).
+async function apiWrite(method: 'POST' | 'DELETE', path: string, body?: unknown, legacyToken?: string): Promise<Response> {
+  const hasBody = body !== undefined;
+  const payload = hasBody ? JSON.stringify(body) : undefined;
   if (_deviceAuth) {
     // Host-bound fail-closed: never send the device bearer (or the request) to
     // a non-paired origin or any URL variant.
@@ -95,20 +101,21 @@ async function apiPost(path: string, body: unknown, legacyToken?: string): Promi
       );
     }
     const url = `${_baseURL}${path}`;
+    const init: RequestInit = { method };
+    if (hasBody) {
+      init.headers = { 'Content-Type': 'application/json' };
+      init.body = payload;
+    }
     let res: Response;
     try {
-      res = await authenticatedFetch(
-        url,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload },
-        _deviceAuth.tokenManager,
-      );
+      res = await authenticatedFetch(url, init, _deviceAuth.tokenManager);
     } catch (e: any) {
       if (e && e.code === 'network_error') {
         throw new PokitError('Daemon unreachable: ' + (e.message || 'request failed'), ConnectivityFailure.NetworkUnreachable);
       }
-      // host_pin_fail (401/403, incl. a member/read-only create) is NOT retried
-      // for this non-idempotent POST: surface a recoverable auth error, no
-      // duplicate session.
+      // host_pin_fail (401/403, incl. a member/read-only caller) is NOT retried
+      // for this non-idempotent write: surface a recoverable auth error, no
+      // duplicate action. statusCode preserves the 401 vs 403 distinction.
       throw new PokitError('Authentication failed. Re-scan the QR code.', ConnectivityFailure.AuthError, (e && e.statusCode) || 401);
     }
     if (!res.ok) {
@@ -116,11 +123,18 @@ async function apiPost(path: string, body: unknown, legacyToken?: string): Promi
     }
     return res;
   }
-  return checkedFetch(`${_baseURL}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders(legacyToken) },
-    body: payload,
-  });
+  const init: RequestInit = { method, headers: authHeaders(legacyToken) };
+  if (hasBody) {
+    init.headers = { 'Content-Type': 'application/json', ...authHeaders(legacyToken) };
+    init.body = payload;
+  }
+  return checkedFetch(`${_baseURL}${path}`, init);
+}
+
+// apiPost is the POST specialisation of apiWrite (a body is always sent). Kept
+// as a thin wrapper so the accepted M3a create path and its tests are unchanged.
+async function apiPost(path: string, body: unknown, legacyToken?: string): Promise<Response> {
+  return apiWrite('POST', path, body, legacyToken);
 }
 
 // ── R1a typed connectivity errors ──
@@ -290,9 +304,51 @@ export async function createSession(
   return res.json();
 }
 
+// ── M3b: daemon-owned session lifecycle actions (typed) ──
+
+// LifecycleActionResult mirrors the daemon LifecycleResult DTO
+// (companion-daemon/internal/term/lifecycle_service.go). `state` is the
+// AUTHORITATIVE server lifecycle after the action: running | stopping | exited |
+// killed | failed. The client never invents this value.
+export interface LifecycleActionResult {
+  sessionId: string;
+  action: string; // "stop" | "kill" | "delete"
+  state: string;
+}
+
+// stopSession gracefully stops a managed running session's whole process group
+// (daemon SIGTERM→SIGKILL escalation). It is NOT a terminal keystroke, Ctrl-C,
+// `exit` string, or WebSocket close — it is the dedicated lifecycle endpoint.
+// History/Activity/Transcript are retained. Paired devices ride the host-bound
+// device transport; a rejected stop is never replayed. The daemon's authoritative
+// state is returned; a repeated Stop is idempotent (returns current state).
+export async function stopSession(id: string, token?: string): Promise<LifecycleActionResult> {
+  const res = await apiWrite('POST', `/api/sessions/${encodeURIComponent(id)}/stop`, undefined, token);
+  return res.json();
+}
+
+// killSession force-terminates a managed session's process group (daemon
+// SIGKILL). It is the explicit destructive fallback surfaced only after a Stop
+// is in progress / has failed, behind a destructive confirmation. Same
+// host-bound transport and no-replay contract as stopSession.
+export async function killSession(id: string, token?: string): Promise<LifecycleActionResult> {
+  const res = await apiWrite('POST', `/api/sessions/${encodeURIComponent(id)}/kill`, undefined, token);
+  return res.json();
+}
+
+// deleteSessionHistory removes a TERMINAL managed session's retained catalog row
+// and Activity/Transcript history via the canonical PATH form
+// `DELETE /api/sessions/{id}` — never the legacy query form. The daemon rejects a
+// running/stopping session with 409 (surfaced as PokitError statusCode 409 so the
+// UI can say "Stop the session first" and refresh instead of retrying). This is a
+// record deletion, not a process lifecycle action.
+export async function deleteSessionHistory(id: string, token?: string): Promise<LifecycleActionResult> {
+  const res = await apiWrite('DELETE', `/api/sessions/${encodeURIComponent(id)}`, undefined, token);
+  return res.json();
+}
+
 // createOrUpdateSession is the LEGACY create path. M3a's New Session flow no
-// longer calls it; it remains only for the edit/color presentation path until
-// M3b replaces the edit-modal lifecycle actions.
+// longer calls it; it remains only for the edit/color presentation path.
 export async function createOrUpdateSession(id: string, runner: string, color: string, token?: string) {
   const res = await checkedFetch(`${_baseURL}/api/sessions`, {
     method: 'POST',
@@ -302,6 +358,9 @@ export async function createOrUpdateSession(id: string, runner: string, color: s
   return res.json();
 }
 
+// deleteSession is the LEGACY query-form DELETE (`/api/sessions?id=...`). It must
+// NOT be used for mobile lifecycle actions — use deleteSessionHistory (path form,
+// device transport, terminal-state gated). Retained only for compatibility.
 export async function deleteSession(id: string, token?: string) {
   const res = await checkedFetch(`${_baseURL}/api/sessions?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',

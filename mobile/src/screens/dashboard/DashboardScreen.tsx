@@ -4,7 +4,7 @@ import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { NewSessionModal } from '../../components/NewSessionModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
-import { listSessions, createOrUpdateSession, deleteSession, ConnectivityFailure, PokitError } from '../../lib/client';
+import { listSessions, createOrUpdateSession, ConnectivityFailure, PokitError } from '../../lib/client';
 import { useConnection } from '../../lib/connection';
 import { isDegraded } from '../../lib/agentDisplay';
 
@@ -91,16 +91,11 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     }
   };
 
-  const handleDeleteProfile = async (id: string) => {
-    try {
-      await deleteSession(id, token);
-      fetchSessions();
-      setModalVisible(false);
-      setEditSession(null);
-    } catch (e) {
-      Alert.alert('Error', 'Failed to terminate agent');
-    }
-  };
+  // M3b: destructive session lifecycle (Stop/Force Kill/Delete History) lives in
+  // the session viewer (FeedScreen), gated by managedLifecycle capability and
+  // authoritative state over the paired-device transport. The edit modal is
+  // presentation-only (color/runner) and must NOT delete via the legacy query
+  // DELETE, so no delete handler is wired here.
 
   // M3a: a session exists only after the server returns it. Open the returned
   // canonical controlled_pty session directly; refresh removes any staleness.
@@ -288,7 +283,6 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         visible={modalVisible}
         onClose={() => { setModalVisible(false); setEditSession(null); }}
         onSave={handleSaveProfile}
-        onDelete={editSession ? handleDeleteProfile : undefined}
         initialId={editSession?.id}
         initialRunner={editSession?.runner}
         initialColor={editSession?.runnerColor}

@@ -1,10 +1,14 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import { terminalURL, listSessions, getSessionHistory, getActivityHistory, ConnectivityFailure, PokitError } from '../lib/client';
+import { terminalURL, listSessions, getSessionHistory, getActivityHistory, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
 import type { TokenManager } from '../lib/authClient';
 import { TerminalController, shouldIssueReconnect } from '../lib/terminalController';
 import { deriveTerminalAuth } from '../lib/authMode';
-import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState} from 'react-native';
+import {
+  readCapabilities, computeActionPolicy, reconcileState, stateFromActionResult,
+  type ManagedLifecycleState, type PendingAction,
+} from '../lib/lifecycle';
+import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState, Alert} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
@@ -113,6 +117,115 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   sessionDataRef.current = sessionData;
   const [sessionEnded, setSessionEnded] = useState(false);
 
+  // ── M3b: authoritative managed-lifecycle state + action policy ──
+  // State is authoritative from (1) a lifecycle action RESPONSE and (2) the next
+  // session-list refresh. WS/EOF and network loss are display hints only — they
+  // never fabricate a terminal state. `unknown` until a signal arrives.
+  const [lifecycleState, setLifecycleState] = useState<ManagedLifecycleState>('unknown');
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const pendingActionRef = useRef<PendingAction>(null);
+  const [actionError, setActionError] = useState('');
+  // Guard so a stale response after a session switch/unmount never mutates
+  // another session's UI (mirrors terminalController's attempt guard).
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const sawManagedRef = useRef(false);
+  const fetchSessionRef = useRef<(() => void) | null>(null);
+
+  const { managed, inputCapable } = readCapabilities(sessionData);
+  if (managed) sawManagedRef.current = true;
+  const actionPolicy = computeActionPolicy({ managed, inputCapable, state: lifecycleState, pending: pendingAction });
+
+  // Reset lifecycle tracking when the viewed session changes (same component
+  // instance, new session prop). Never carry one session's state to another.
+  useEffect(() => {
+    setLifecycleState('unknown');
+    setPendingAction(null);
+    pendingActionRef.current = null;
+    setActionError('');
+    sawManagedRef.current = false;
+  }, [session]);
+
+  // runLifecycleAction is the single funnel for Stop/Kill/Delete. It blocks
+  // duplicate taps, sends exactly one request over the accepted transport, applies
+  // the daemon's AUTHORITATIVE returned state (never an invented one), refreshes
+  // the list, and — on failure — keeps the server's state while surfacing a
+  // recoverable, credential-free error (network failure shown separately from a
+  // lifecycle rejection; 409 tells the user to Stop first; 403 is a permission
+  // message distinct from a 401 re-auth).
+  const runLifecycleAction = useCallback(async (
+    action: Exclude<PendingAction, null>,
+    fn: (id: string, token?: string) => Promise<{ state: string }>,
+    onSuccess?: () => void,
+  ) => {
+    if (pendingActionRef.current) return; // duplicate-tap / concurrent guard
+    const forId = sessionRef.current;
+    pendingActionRef.current = action;
+    setPendingAction(action);
+    setActionError('');
+    try {
+      const result = await fn(forId, token);
+      if (sessionRef.current !== forId) return; // stale: session switched
+      setLifecycleState(prev => reconcileState(prev, stateFromActionResult(result)));
+      fetchSessionRef.current?.();
+      onSuccess?.();
+    } catch (e: any) {
+      if (sessionRef.current !== forId) return; // stale
+      // Keep the authoritative server state; only report a recoverable error.
+      if (e instanceof PokitError && e.statusCode === 409) {
+        setActionError('Stop the session first, then delete its history.');
+        fetchSessionRef.current?.(); // refresh, do NOT retry
+      } else if (e instanceof PokitError && e.statusCode === 403) {
+        setActionError('You do not have permission for this action.');
+      } else if (e instanceof PokitError && (e.failure === ConnectivityFailure.NetworkUnreachable || e.failure === ConnectivityFailure.Timeout)) {
+        setActionError('Network error — the session was not changed. Check your connection and refresh.');
+      } else if (e instanceof PokitError && e.failure === ConnectivityFailure.AuthError) {
+        setActionError('Authentication failed. Re-scan the QR code.');
+      } else {
+        setActionError('Action failed — the session state is unchanged.');
+      }
+    } finally {
+      pendingActionRef.current = null;
+      if (sessionRef.current === forId) setPendingAction(null);
+    }
+  }, [token]);
+
+  const confirmStop = useCallback(() => {
+    if (!actionPolicy.canStop) return;
+    Alert.alert(
+      'Stop session',
+      'Stop the entire Pokit-managed terminal process group for this session. Activity and Transcript history are kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Stop', style: 'destructive', onPress: () => runLifecycleAction('stop', stopSession) },
+      ],
+    );
+  }, [actionPolicy.canStop, runLifecycleAction]);
+
+  const confirmForceKill = useCallback(() => {
+    if (!actionPolicy.canForceKill) return;
+    Alert.alert(
+      'Force kill',
+      'Force-kill the managed process group now. This is a last resort after a graceful Stop did not complete.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Force Kill', style: 'destructive', onPress: () => runLifecycleAction('kill', killSession) },
+      ],
+    );
+  }, [actionPolicy.canForceKill, runLifecycleAction]);
+
+  const confirmDeleteHistory = useCallback(() => {
+    if (!actionPolicy.canDelete) return;
+    Alert.alert(
+      'Delete history',
+      'Permanently remove this ended session’s record and its captured Activity/Transcript history. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => runLifecycleAction('delete', deleteSessionHistory, onBack) },
+      ],
+    );
+  }, [actionPolicy.canDelete, runLifecycleAction, onBack]);
+
   // When live terminal is unsupported (cmux), force-switch away.
   useEffect(() => {
     if (!supportsLiveTerminal && activeTab === 'terminal') {
@@ -210,12 +323,27 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
           if (sess && typeof sess !== 'string') {
             setSessionData(sess);
             setSessionEnded(false);
+            // A managed session present in a successful list is live (running).
+            // reconcileState keeps a stopping/terminal overlay from a recent action
+            // response — a stale "still live" snapshot never regresses it.
+            const caps = Array.isArray(sess.adapterCapabilities) ? sess.adapterCapabilities : [];
+            if (caps.includes('managedLifecycle')) {
+              sawManagedRef.current = true;
+              setLifecycleState(prev => reconcileState(prev, 'running'));
+            }
           } else {
             setSessionEnded(true);
+            // Absent from a SUCCESSFUL list (not a network error — that is caught
+            // below and does not reach here) means a managed session we were
+            // viewing has terminated. This is an authoritative terminal signal.
+            if (sawManagedRef.current) {
+              setLifecycleState(prev => reconcileState(prev, 'exited'));
+            }
           }
         })
         .catch(err => console.error(err));
     };
+    fetchSessionRef.current = fetchSession;
     
     const fetchHistory = () => {
       getSessionHistory(session, token)
@@ -612,6 +740,45 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
           </View>
         </View>
 
+        {/* M3b: managed session lifecycle actions. Rendered ONLY for sessions the
+            daemon reports as managedLifecycle; capability/state drive visibility.
+            Back (←) above is a viewer detach only and never calls these. */}
+        {managed && (
+          <View style={styles.lifecycleBar}>
+            <Text style={styles.lifecycleStatus}>{actionPolicy.statusLabel}</Text>
+            <View style={styles.lifecycleActions}>
+              {actionPolicy.canStop && (
+                <TouchableOpacity
+                  style={[styles.lifecycleBtn, styles.lifecycleStopBtn]}
+                  disabled={pendingAction !== null}
+                  onPress={confirmStop}
+                >
+                  <Text style={styles.lifecycleStopText}>{pendingAction === 'stop' ? 'STOPPING…' : 'STOP'}</Text>
+                </TouchableOpacity>
+              )}
+              {lifecycleState === 'stopping' && (
+                <TouchableOpacity
+                  style={[styles.lifecycleBtn, styles.lifecycleKillBtn]}
+                  disabled={pendingAction !== null || !actionPolicy.canForceKill}
+                  onPress={confirmForceKill}
+                >
+                  <Text style={styles.lifecycleKillText}>{pendingAction === 'kill' ? 'KILLING…' : 'FORCE KILL'}</Text>
+                </TouchableOpacity>
+              )}
+              {actionPolicy.canDelete && (
+                <TouchableOpacity
+                  style={[styles.lifecycleBtn, styles.lifecycleDeleteBtn]}
+                  disabled={pendingAction !== null}
+                  onPress={confirmDeleteHistory}
+                >
+                  <Text style={styles.lifecycleDeleteText}>{pendingAction === 'delete' ? 'DELETING…' : 'DELETE HISTORY'}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            {actionError ? <Text style={styles.lifecycleError}>{actionError}</Text> : null}
+          </View>
+        )}
+
         <View style={styles.tabBar}>
           {/* E8g5: Terminal tab only for liveTerminal-capable adapters (tmux/localpty).
               Legacy sessions without adapterCapabilities default to showing Terminal. */}
@@ -757,7 +924,10 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
           )}
         </View>
 
-        {activeTab === 'terminal' && !sessionEnded && (
+        {/* M3b: input (keystrokes + macros) is hidden when a MANAGED session is
+            not in a state that accepts input (starting/stopping/terminal, or no
+            input capability). Non-managed sessions keep their existing behavior. */}
+        {activeTab === 'terminal' && !sessionEnded && (managed ? actionPolicy.inputEnabled : true) && (
         <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
@@ -868,6 +1038,18 @@ const styles = StyleSheet.create({
   errorDetail: {color: '#666', fontSize: 10, textAlign: 'center', marginTop: 8, fontFamily: 'monospace'},
   macroContainer: { backgroundColor: '#000000', borderTopWidth: 1, borderTopColor: '#0D2D45' },
   macroScroll: { paddingHorizontal: 6, paddingVertical: 6, alignItems: 'center' },
+  // M3b lifecycle action bar.
+  lifecycleBar: { backgroundColor: '#000000', borderBottomWidth: 1, borderBottomColor: '#0D2D45', paddingHorizontal: 12, paddingVertical: 8 },
+  lifecycleStatus: { color: '#8b949e', fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 6 },
+  lifecycleActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  lifecycleBtn: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 32, borderWidth: 1 },
+  lifecycleStopBtn: { borderColor: '#d29922' },
+  lifecycleStopText: { color: '#d29922', fontSize: 12, fontWeight: '800', letterSpacing: 0.96 },
+  lifecycleKillBtn: { borderColor: '#f85149' },
+  lifecycleKillText: { color: '#f85149', fontSize: 12, fontWeight: '800', letterSpacing: 0.96 },
+  lifecycleDeleteBtn: { borderColor: '#f85149' },
+  lifecycleDeleteText: { color: '#f85149', fontSize: 12, fontWeight: '800', letterSpacing: 0.96 },
+  lifecycleError: { color: '#f85149', fontSize: 11, marginTop: 6 },
   macroBtn: { backgroundColor: 'transparent', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 32, marginRight: 5, borderWidth: 1, borderColor: '#1E91B3' },
   macroText: { color: '#1E91B3', fontSize: 12, fontWeight: '700', letterSpacing: 0.96 },
   inputContainer: {
