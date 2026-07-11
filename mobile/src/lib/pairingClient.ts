@@ -116,7 +116,9 @@ export async function conductPairing(
   if (p2.hostProof) {
     try {
       const hostProofDER = fromHex(p2.hostProof);
-      if (!verifyDer(hostProofDER, transcript, hostPubKeyFromPhase1)) {
+      // verifyDer needs the 65-byte uncompressed point (drop 26B SPKI prefix).
+      const hostPubPoint = hostPubKeyFromPhase1.length === 91 ? hostPubKeyFromPhase1.subarray(26) : hostPubKeyFromPhase1;
+      if (!verifyDer(hostProofDER, transcript, hostPubPoint)) {
         return { status: 'host_proof_invalid' };
       }
     } catch { return { status: 'host_proof_invalid', errorDetail: 'host proof decode failed' }; }
@@ -136,14 +138,25 @@ export async function conductPairing(
       poll = await res.json();
     } catch { await delay(2000); continue; }
     switch (poll.status) {
-      case 'approved':
+      case 'approved': {
+        // Strict: daemon must return the exact deviceId + fingerprint for
+        // the key we proved. Missing/wrong/different → protocol error.
+        if (poll.deviceId !== identity.deviceId) {
+          return { status: 'network_error', errorDetail: 'approved deviceId does not match the presented identity' };
+        }
+        if (poll.fingerprint !== identity.deviceId) {
+          return { status: 'network_error', errorDetail: 'approved fingerprint does not match' };
+        }
+        if (poll.role !== 'owner' && poll.role !== 'member') {
+          return { status: 'network_error', errorDetail: `unknown role: ${poll.role}` };
+        }
         return {
           status: 'approved',
           hostId: qr.hostId, hostPubKeyB64: qr.hostPubKeyB64,
-          deviceId: poll.deviceId || identity.deviceId,
-          fingerprint: poll.fingerprint, role: poll.role,
+          deviceId: poll.deviceId, fingerprint: poll.fingerprint, role: poll.role,
           baseURL: qr.endpoint, // caller replaces with actual tunnel URL
         };
+      }
       case 'rejected': return { status: 'operator_rejected' };
       case 'expired': return { status: 'pairing_expired' };
     }

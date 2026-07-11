@@ -463,7 +463,8 @@ func (ph *PairingHost) Reject() {
 		ph.state = pairStateRejected
 	}
 	ph.mu.Unlock()
-	go ph.Close()
+	// Same grace period as approve so the phone can poll /pair/result.
+	go func() { time.AfterFunc(10*time.Second, ph.Close) }()
 }
 
 func (ph *PairingHost) expire() {

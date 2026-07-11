@@ -219,6 +219,46 @@ func TestMobilePairingIntegration(t *testing.T) {
 	t.Fatal("result never reached approved")
 }
 
+// TestMobilePairingRejectLifecycle proves /pair/result returns "rejected"
+// within the grace period.
+func TestMobilePairingRejectLifecycle(t *testing.T) {
+	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
+
+	// Drive Phase 1 + Phase 2 to proof_verified.
+	priv, pubDER, _ := genKeypair(t)
+	phoneNonce := make([]byte, 32)
+	rand.Read(phoneNonce)
+	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
+	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	var ch ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&ch)
+	resp.Body.Close()
+	sig := signTranscript(t, priv, phoneNonce, ch.HostNonce, ch.HostPublicDER, ph.Session.SessionID)
+	cfb, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
+	if _, ok := ph.WaitForCandidate(); !ok {
+		t.Fatal("no candidate")
+	}
+
+	resultURL := "http://" + ph.addr + "/pair/result?session=" + ph.Session.SessionID
+
+	// Reject the candidate (operator declines).
+	ph.Reject()
+
+	for i := 0; i < 10; i++ {
+		time.Sleep(500 * time.Millisecond)
+		r3, _ := http.Get(resultURL)
+		var ar map[string]string
+		json.NewDecoder(r3.Body).Decode(&ar)
+		r3.Body.Close()
+		if ar["status"] == "rejected" {
+			return
+		}
+	}
+	t.Fatal("result never reached rejected")
+}
+
 func TestPairing_ResultSessionMismatch(t *testing.T) {
 	r, _ := newReg(t)
 	ph := startTestPairing(t, r)
