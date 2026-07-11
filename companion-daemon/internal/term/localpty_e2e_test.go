@@ -81,8 +81,9 @@ func TestLocalPTY_E2E_Lifecycle(t *testing.T) {
 	defer conn.Close()
 
 	// 4. Write input — cat echoes it back.
+	// M3-auth-4A framing contract: raw terminal input is a BINARY frame.
 	testInput := []byte("LOCALPTY_E2E_OK\n")
-	if err := conn.WriteMessage(websocket.TextMessage, testInput); err != nil {
+	if err := conn.WriteMessage(websocket.BinaryMessage, testInput); err != nil {
 		t.Fatalf("WS write: %v", err)
 	}
 

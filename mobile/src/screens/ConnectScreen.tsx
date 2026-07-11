@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
+import { pairThenConnect } from '../lib/authMode';
 
-export default function ConnectScreen({ onPaired }: { onPaired?: () => void } = {}) {
+export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<boolean> } = {}) {
   const { connect, connectionError } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
@@ -36,8 +37,13 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => void } = 
         if (!base) { alert('Set the daemon URL first'); setScanned(false); return; }
         const result = await pairAndSave(data, dk, base);
         if (result.status === 'approved') {
-          onPaired?.();
-          await connect(base);
+          // Blocker C: install trusted auth state (onPaired) FIRST, then connect
+          // ONLY if it succeeded. Never connect on a partially paired state.
+          await pairThenConnect({
+            onPaired,
+            connect: () => connect(base),
+            onReject: () => setScanned(false),
+          });
         } else {
           alert('Pairing failed: ' + (result.errorDetail || result.status));
           setScanned(false);

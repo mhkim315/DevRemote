@@ -306,8 +306,9 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 	}
 
 	// Write input through WS → verify it reached the session via InputWriter.
+	// M3-auth-4A framing contract: raw terminal input is a BINARY frame.
 	testInput := []byte("echo hello\n")
-	if err := conn.WriteMessage(websocket.TextMessage, testInput); err != nil {
+	if err := conn.WriteMessage(websocket.BinaryMessage, testInput); err != nil {
 		t.Fatalf("WS write: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond) // allow handler to process

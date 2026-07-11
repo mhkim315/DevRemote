@@ -15,7 +15,7 @@ import { TokenManager } from './src/lib/authClient';
 import { loadPairing } from './src/lib/pairingStore';
 import { createPokitDeviceKey } from './modules/pokit-device-key';
 import { getBaseURL } from './src/lib/client';
-import { canonicalOrigin, type AuthContext } from './src/lib/authMode';
+import { canonicalOrigin, completePairing, type AuthContext } from './src/lib/authMode';
 
 // E6: explicit test-build gate — does not depend on stored baseURL.
 // Set EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 for local test builds.
@@ -124,21 +124,22 @@ function AppContent() {
 
   // BLOCKER 3: pairing_required / failed must NOT enter RootTabs.
   if (authCtx.mode === 'pairing_required') {
-    // Show ConnectScreen with an onPaired callback: on successful pairing,
-    // reload the stored pairing and transition to paired_device.
+    // Show ConnectScreen with an AWAITABLE onPaired callback (Blocker C): on a
+    // saved pairing, install trusted auth state atomically (reload pairing →
+    // validate origin → DeviceKey/TokenManager → enter paired_device) and
+    // report success. ConnectScreen connects ONLY after this resolves true, so
+    // connection state can never race ahead of trusted auth state.
     return (
       <SafeAreaProvider><StatusBar style="light" />
-        <ConnectScreen onPaired={() => {
-          loadPairing().then(p => {
-            if (!p || !getBaseURL()) { setAuthCtx({ mode: 'pairing_required' }); return; }
-            const { origin, error } = canonicalOrigin(getBaseURL());
-            if (error || !origin) { setAuthCtx({ mode: 'failed' }); return; }
-            if (p.origin && origin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
-            try {
-              const dk = createPokitDeviceKey();
-              setAuthCtx({ mode: 'paired_device', tokenMgr: new TokenManager(p, dk, getBaseURL()), baseURL: getBaseURL() });
-            } catch { setAuthCtx({ mode: 'failed' }); }
-          }).catch(() => setAuthCtx({ mode: 'failed' }));
+        <ConnectScreen onPaired={async () => {
+          const ctx = await completePairing({
+            loadPairing,
+            getBaseURL,
+            createDeviceKey: createPokitDeviceKey,
+            makeTokenManager: (p, dk, base) => new TokenManager(p, dk, base),
+          });
+          setAuthCtx(ctx);
+          return ctx.mode === 'paired_device';
         }} />
       </SafeAreaProvider>
     );

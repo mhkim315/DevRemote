@@ -2,7 +2,7 @@ import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import { terminalURL, listSessions, getSessionHistory, getActivityHistory, ConnectivityFailure, PokitError } from '../lib/client';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
 import type { TokenManager } from '../lib/authClient';
-import { TerminalController } from '../lib/terminalController';
+import { TerminalController, shouldIssueReconnect } from '../lib/terminalController';
 import { deriveTerminalAuth } from '../lib/authMode';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState} from 'react-native';
 import {WebView} from 'react-native-webview';
@@ -338,7 +338,12 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
       'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
       'return;' +
       '}' +
-      'try{w.send(' + JSON.stringify(parsedText) + ');' +
+      'try{' +
+      // M3-auth-4A framing contract: raw input goes out as a BINARY frame via
+      // the page's single sender. Fall back to an inline binary encode if the
+      // page helper is not yet defined (still binary — never a text frame).
+      'if(window.pokitSendInput){window.pokitSendInput(' + JSON.stringify(parsedText) + ');}' +
+      'else{w.send(new TextEncoder().encode(' + JSON.stringify(parsedText) + '));}' +
       'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"sent"}));' +
       '}catch(e){' +
       'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
@@ -423,10 +428,13 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   // received here. The controller issues a fresh ticket and posts it back.
   const connIdRef = useRef<number>(0);
   const handleReconnect = useCallback(async (data: any) => {
-    if (data?.type !== 'pokit-reconnect-request' || !tokenMgr || !baseURL) return;
-    if (data.session !== session) return;
-    if (data.connId !== connIdRef.current) return;   // different controller instance
-    if (data.attemptId !== currentAttemptIdRef.current) return; // stale bootstrap
+    if (!tokenMgr || !baseURL) return;
+    // Stale session/connId/attemptId requests issue no ticket (see predicate).
+    if (!shouldIssueReconnect(data, {
+      session,
+      connId: connIdRef.current,
+      attemptId: currentAttemptIdRef.current,
+    })) return;
     const ctrl = ctrlRef.current;
     if (!ctrl) return;
     const { ticket } = await ctrl.reconnectTicket(session, tokenMgr, baseURL);

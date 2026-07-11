@@ -376,26 +376,39 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			break
 		}
 
-		// M3-auth-4A: geometry-poll is a TEXT control frame only (binary = PTY).
-		if mt == websocket.TextMessage && len(msg) > 0 && msg[0] == '{' {
-			var ctrl struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(msg, &ctrl); err == nil && ctrl.Type == "geometry-poll" {
-				if rec != nil {
-					rows, cols, ok := rec.GetSize()
-					if ok {
-						geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
-						select {
-				case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}:
-				case <-writerDone:
-				case <-r.Context().Done():
+		// M3-auth-4A WebSocket framing contract (client → server):
+		//   TEXT   = closed control-frame vocabulary — NEVER written to the PTY.
+		//   BINARY = raw terminal input, delivered byte-for-byte to the PTY.
+		//
+		// A TextMessage is never treated as input, even when it is not a
+		// recognized control frame (fail closed). This is what lets a viewer
+		// type the exact bytes {"type":"geometry-poll"} into the terminal:
+		// they are sent as a BINARY frame and reach the PTY unchanged.
+		if mt == websocket.TextMessage {
+			// geometry-poll is the only client→server control frame today.
+			// Reading geometry is always permitted (even for input-denied,
+			// read-only viewers) and never reaches WriteInput or Activity.
+			if len(msg) > 0 && msg[0] == '{' {
+				var ctrl struct {
+					Type string `json:"type"`
 				}
+				if err := json.Unmarshal(msg, &ctrl); err == nil && ctrl.Type == "geometry-poll" && rec != nil {
+					if rows, cols, ok := rec.GetSize(); ok {
+						geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
+						// Response send exits on writer/request cancellation.
+						select {
+						case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}:
+						case <-writerDone:
+						case <-r.Context().Done():
+						}
 					}
 				}
-				continue
 			}
+			// Unknown/malformed text control frames fail closed: ignored.
+			continue
 		}
+
+		// From here mt is a BinaryMessage: raw terminal input.
 
 		// M2.5-4: device-auth input permission gate. Rejected input must not
 		// reach WriteInput OR modify Activity.
@@ -466,6 +479,18 @@ var raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailu
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
 
+// M3-auth-4A framing contract — THE single client→server sender.
+// Raw terminal input is sent as a BINARY frame; the daemon writes binary
+// frames byte-for-byte to the PTY. Control frames (e.g. geometry-poll) are
+// the ONLY text frames and are sent elsewhere. Exposed on window so the
+// mobile host (FeedScreen Send/macros) uses the exact same contract.
+var _pokitEnc=new TextEncoder();
+function pokitSendInput(s){
+  var w=window.ws;
+  if(w&&w.readyState===1){ try{ w.send(_pokitEnc.encode(s)); }catch(e){} }
+}
+window.pokitSendInput=pokitSendInput;
+
 
 
 function setStatus(text, terminalText) {
@@ -502,7 +527,16 @@ function connect(){
     setTimeout(function(){e8_fitCount++;fitTerminal()},500);
   };
   ws.onmessage=function(e){
-    var t=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
+    // M3-auth-4A page-level demultiplexer (server → client):
+    //   BINARY = raw PTY output → term.write (byte-for-byte).
+    //   TEXT   = control frame (e.g. geometry) — NEVER written to the terminal.
+    // Text control frames are handled by a dedicated listener installed on the
+    // socket (see the injected reconnect/ticket bridge) which cannot be
+    // overwritten by this onmessage assignment. Returning here on text ensures
+    // unknown/malformed control frames fail closed and are never rendered as
+    // PTY output.
+    if(typeof e.data==='string') return;
+    var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
     // E8: if user scrolled up, show new-output badge instead of forcing viewport.
@@ -536,8 +570,10 @@ function connect(){
 }
 
 term.onData(function(d){
-  var w=window.ws;
-  if(w&&w.readyState===1)try{w.send(d)}catch(e){}
+  // Raw keyboard input → BINARY frame (framing contract). This is why typing
+  // the literal text {"type":"geometry-poll"} reaches the PTY instead of being
+  // swallowed as a control frame.
+  pokitSendInput(d);
 });
 
 function fitTerminal(){
@@ -580,8 +616,8 @@ cmdPoll=setInterval(function(){
   fetch("/debug/cmd?session="+encodeURIComponent(sess),{headers:hdrs})
     .then(function(r){return r.text()})
     .then(function(d){
-      var w=window.ws;
-      if(d&&w&&w.readyState===1)try{w.send(d+"\n")}catch(e){}
+      // Debug command injection also uses the raw-input BINARY contract.
+      if(d)pokitSendInput(d+"\n");
     })
     .catch(function(){});
 },2000);

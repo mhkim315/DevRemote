@@ -81,10 +81,22 @@ export class TerminalController {
       rawWS.addEventListener('message',function(e){
         if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data); if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){ try{ if(window.term) window.term.resize(ctrl.cols,ctrl.rows); }catch(ge){} } }catch(x){} }
       });
-      // Poll geometry once connected (the daemon sends a text response frame).
-      // Periodic geometry polling while the socket is alive.
-      var pollTimer=setInterval(function(){ try{ rawWS.send('{"type":"geometry-poll"}'); }catch(e){} },3000);
-      rawWS.addEventListener('close',function(){ clearInterval(pollTimer); });
+      // M3-auth-4A geometry poll lifecycle (Blocker D):
+      //  - send an immediate poll on 'open' (not at construction);
+      //  - start exactly ONE bounded interval, only after open;
+      //  - clear it on close/error (and on WebView unmount / session switch,
+      //    which destroys this JS context and every timer in it);
+      //  - each reconnect socket owns its own timer (this wrapper runs per
+      //    socket), so no timer survives its socket.
+      // The daemon replies with a text geometry frame; the message listener
+      // above resizes the local xterm. The mobile viewer only READS geometry
+      // and never resizes the shared PTY.
+      var pollTimer=null;
+      function stopPoll(){ if(pollTimer!==null){ clearInterval(pollTimer); pollTimer=null; } }
+      function poll(){ if(rawWS.readyState===1){ try{ rawWS.send('{"type":"geometry-poll"}'); }catch(e){} } else { stopPoll(); } }
+      rawWS.addEventListener('open',function(){ stopPoll(); poll(); pollTimer=setInterval(poll,3000); });
+      rawWS.addEventListener('close',stopPoll);
+      rawWS.addEventListener('error',stopPoll);
       return rawWS;
     }
     return new _origWS(url,protocols);
@@ -143,4 +155,22 @@ export class TerminalController {
   }
 
   cancel(): void { this.gen++; this.reconnectFlight = null; }
+}
+
+// shouldIssueReconnect is the authoritative guard for a WebView reconnect
+// request: a fresh ticket is issued ONLY when the request matches the current
+// controller instance (connId) and its current bootstrap generation
+// (attemptId) for this exact session. Stale session/connId/attemptId signals
+// (from an old controller, a previous session, or a superseded bootstrap)
+// cause no issuance. Extracted so the stale-rejection contract is unit-tested
+// without a full React render.
+export function shouldIssueReconnect(
+  data: any,
+  ctx: { session: string; connId: number; attemptId: number },
+): boolean {
+  return !!data
+    && data.type === 'pokit-reconnect-request'
+    && data.session === ctx.session
+    && data.connId === ctx.connId
+    && data.attemptId === ctx.attemptId;
 }
