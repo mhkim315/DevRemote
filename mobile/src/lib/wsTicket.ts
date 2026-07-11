@@ -42,7 +42,8 @@ export async function getWSTicket(
 export const WS_TICKET_MAX_TTL_MS = 30_000; // daemon default TTL
 
 function validateTicketResponse(d: any): WSTicket {
-  if (typeof d.ticket !== 'string' || d.ticket.length === 0 || !/^[0-9a-fA-F]+$/.test(d.ticket)) {
+  // Daemon contract: 32 random bytes as lowercase hex → exactly 64 chars.
+  if (typeof d.ticket !== 'string' || !/^[0-9a-f]{64}$/.test(d.ticket)) {
     throw new AuthError('network_error', 'invalid ticket in response');
   }
   if (typeof d.expiresAt !== 'string') throw new AuthError('network_error', 'missing expiresAt');
@@ -59,9 +60,14 @@ function validateTicketResponse(d: any): WSTicket {
   return { ticket: d.ticket, expiresAt };
 }
 
-// wsTicketURL returns a safe WebSocket URL carrying the ticket.
-// No bearer, userinfo, fragment, or other query params are included.
-export function wsTicketURL(ticket: string, sessionId: string, baseURL: string): string {
-  const wsBase = baseURL.replace(/^https/, 'wss').replace(/^http:/, 'ws:');
-  return `${wsBase}/term/ws?session=${encodeURIComponent(sessionId)}&ticket=${encodeURIComponent(ticket)}`;
+// wsTicketURL returns a safe WebSocket URL from a trusted base URL + ticket.
+// The base URL is validated on first use; userinfo/search/hash/path are rejected.
+export function wsTicketURL(baseURL: string, ticket: string, sessionId: string): string {
+  let parsed: URL;
+  try { parsed = new URL(baseURL); } catch { throw new AuthError('network_error', 'invalid base URL'); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new AuthError('network_error', 'unsupported base URL scheme');
+  if (parsed.username || parsed.password) throw new AuthError('network_error', 'base URL must not contain credentials');
+  if (parsed.search || parsed.hash) throw new AuthError('network_error', 'base URL must not contain query or fragment');
+  const scheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
+  return `${scheme}://${parsed.host}/term/ws?session=${encodeURIComponent(sessionId)}&ticket=${encodeURIComponent(ticket)}`;
 }

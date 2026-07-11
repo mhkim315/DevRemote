@@ -8,7 +8,7 @@ import { TokenManager } from '../src/lib/authClient';
 const fixedToken = '0'.repeat(64);
 const fakeTokenMgr = { getValidToken: async () => fixedToken } as TokenManager;
 
-const VALID_TICKET = 'a1b2c3d4e5f6';
+const VALID_TICKET = '0'.repeat(64);
 const FUTURE = new Date(Date.now() + 20_000).toISOString(); // within 30s TTL
 
 describe('getWSTicket', () => {
@@ -101,12 +101,20 @@ describe('getWSTicket', () => {
 
 describe('wsTicketURL', () => {
   it('produces a safe ws:// URL from an http base', () => {
-    const url = wsTicketURL('abc123', 'controlled_pty:x', 'http://192.168.1.10:9171');
-    expect(url).toBe('ws://192.168.1.10:9171/term/ws?session=controlled_pty%3Ax&ticket=abc123');
+    const url = wsTicketURL('http://192.168.1.10:9171', 'c'.repeat(64), 'controlled_pty:x');
+    expect(url).toBe('ws://192.168.1.10:9171/term/ws?session=controlled_pty%3Ax&ticket=' + 'c'.repeat(64));
   });
 
-  it('upgrades https → wss', () => {
-    const url = wsTicketURL('abc123', 's', 'https://daemon.example.com');
-    expect(url.startsWith('wss://')).toBe(true);
+  it('https → wss', () => {
+    const url = wsTicketURL('https://daemon.example.com', 'c'.repeat(64), 's');
+    expect(url).toContain('wss://daemon.example.com/term/ws?session=s&ticket=');
+  });
+
+  it('rejects base URL with userinfo', () => {
+    expect(() => wsTicketURL('http://user:pass@host:9171', 'c'.repeat(64), 's')).toThrow('credentials');
+  });
+
+  it('rejects base URL with query string', () => {
+    expect(() => wsTicketURL('http://host:9171?x=1', 'c'.repeat(64), 's')).toThrow('query');
   });
 });

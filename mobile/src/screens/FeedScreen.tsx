@@ -1,5 +1,7 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import { terminalURL, listSessions, getSessionHistory, getActivityHistory, ConnectivityFailure, PokitError } from '../lib/client';
+import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
+import type { TokenManager } from '../lib/authClient';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -10,7 +12,9 @@ import { SessionTelemetry } from '../components/AgentCard';
 interface Props {
   onBack: () => void;
   session: string;
-  token?: string;
+  token?: string;          // legacy: dev-token / Supabase JWT (local dev mode)
+  tokenMgr?: TokenManager;  // M3-auth-4A: device bearer → WS ticket (remote mode)
+  baseURL?: string;         // paired host base URL (required with tokenMgr)
 }
 
 function jsSend(chars: number[]): string {
@@ -84,7 +88,7 @@ function E8g2Transcript({ events }: { events: any[] }) {
   );
 }
 
-export default function FeedScreen({onBack, session, token}: Props) {
+export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: Props) {
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
@@ -131,8 +135,23 @@ export default function FeedScreen({onBack, session, token}: Props) {
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
 
-  const termUrl = useMemo(() => terminalURL(session, token), [session, token]);
-  const source = useMemo(() => ({uri: termUrl}), [termUrl]);
+  // M3-auth-4A: in device-auth mode, fetch one-time WS ticket before opening
+  // the WebView. Legacy token path remains for local dev mode.
+  const [termUrl, setTermUrl] = useState<string>('');
+  const [termUrlError, setTermUrlError] = useState<string>('');
+  useEffect(() => {
+    if (tokenMgr && baseURL) {
+      setTermUrl('');
+      setTermUrlError('');
+      getWSTicket(session, tokenMgr, baseURL)
+        .then(t => { setTermUrl(wsTicketURL(baseURL, t.ticket, session)); })
+        .catch(e => { setTermUrlError(e instanceof Error ? e.message : 'ticket request failed'); });
+    } else {
+      setTermUrl(terminalURL(session, token));
+      setTermUrlError('');
+    }
+  }, [session, token, tokenMgr, baseURL]);
+  const source = useMemo(() => (termUrl ? { uri: termUrl } : { uri: 'about:blank' }), [termUrl]);
 
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (e) => {
@@ -505,6 +524,16 @@ export default function FeedScreen({onBack, session, token}: Props) {
 
   return (
     <SafeAreaView style={styles.container}>
+      {termUrlError ? (
+        <View style={{ padding: 20, alignItems: 'center' }}>
+          <Text style={{ color: '#f85149', fontSize: 14, textAlign: 'center', marginBottom: 8 }}>
+            Could not connect to terminal: {termUrlError}
+          </Text>
+          <TouchableOpacity onPress={() => { setTermUrlError(''); }} style={{ backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}>
+            <Text style={{ color: '#fff', fontWeight: '700' }}>RETRY</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <View style={styles.flex}>
         <View style={styles.header}>
           <TouchableOpacity onPress={onBack}><Text style={styles.backBtn}>←</Text></TouchableOpacity>
