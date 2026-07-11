@@ -14,35 +14,49 @@ import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 
-// Typed device-key failure. `code` mirrors the DeviceKeySupport / error vocabulary
-// so callers (and the JS wrapper) can distinguish missing vs invalidated vs
-// hardware-unavailable. Messages never contain key material or aliases.
+// Typed device-key failure. `code` is a stable machine-readable identifier from
+// the shared vocabulary; the message is safe (no key material, alias, path, or
+// provider internals). The Expo module maps this to a CodedException so JS
+// receives the code independently of the message.
 class DeviceKeyException(val code: String, message: String) : Exception(message)
 
+// Stable error-code vocabulary (mirrored in the TS wrapper).
+object DeviceKeyCodes {
+  const val KEY_MISSING = "key_missing"
+  const val KEY_INVALIDATED = "key_invalidated"
+  const val KEY_INACCESSIBLE = "key_inaccessible"
+  const val HARDWARE_UNAVAILABLE = "hardware_unavailable"
+  const val KEY_EXPORTABLE = "key_exportable"
+  const val KEY_INCOMPATIBLE = "key_incompatible"
+  const val NATIVE_OPERATION_FAILED = "native_operation_failed"
+  const val DELETE_FAILED = "delete_failed"
+}
+
 // PokitDeviceKeyStore holds the Android Keystore logic, free of any Expo/React
-// dependency so it can be exercised directly by instrumentation tests. The
+// dependency so instrumentation exercises the real Keystore directly. The
 // private scalar is created inside AndroidKeyStore and never leaves it.
-//
-// Signing uses SHA256withECDSA (the Keystore performs the SHA-256 digest — no
-// JS hashing), producing ASN.1 DER signatures the Go daemon verifies. The
-// public key is returned as canonical 91-byte SPKI DER; deviceId is lowercase
-// hex sha256(SPKI).
 class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
 
   companion object {
-    // Fixed native-owned production alias. Never selected from JS/QR/network.
     const val DEFAULT_ALIAS = "pokit.device.identity.v1"
     private const val KEYSTORE = "AndroidKeyStore"
     private val LOCK = Any()
 
     // Test-only override. Production leaves this false so a software-only
-    // Keystore (e.g. an emulator) fails closed. Instrumentation sets it true to
-    // exercise the success path. Internal — unreachable from JS or release code.
+    // Keystore fails closed. Internal — unreachable from JS or a release path.
     @JvmStatic
     internal var allowSoftwareKeystoreForTest: Boolean = false
   }
 
-  private fun keyStore(): KeyStore = KeyStore.getInstance(KEYSTORE).also { it.load(null) }
+  // Validated bundle: the private-key handle plus the public identity metadata.
+  // Private material is never exposed beyond the in-process signing call.
+  private class Validated(val entry: KeyStore.PrivateKeyEntry, val info: Map<String, Any?>)
+
+  private fun keyStore(): KeyStore = try {
+    KeyStore.getInstance(KEYSTORE).also { it.load(null) }
+  } catch (e: Exception) {
+    throw DeviceKeyException(DeviceKeyCodes.KEY_INACCESSIBLE, "keystore unavailable")
+  }
 
   fun getSupport(): String = try {
     keyStore()
@@ -57,35 +71,117 @@ class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
   // alias is validated and returned (never replaced on a race).
   fun ensureKey(): Map<String, Any?> = synchronized(LOCK) {
     val ks = keyStore()
-    if (ks.containsAlias(alias)) {
-      return@synchronized readKeyInfoOrThrow()
+    if (!ks.containsAlias(alias)) {
+      generateKey()
     }
-    generateKey()
-    readKeyInfoOrThrow()
+    validate().info
   }
 
-  fun getKeyInfo(): Map<String, Any?> = readKeyInfoOrThrow()
+  fun getKeyInfo(): Map<String, Any?> = validate().info
 
-  fun getPublicKeySpki(): String = readKeyInfoOrThrow()["publicKeySpkiHex"] as String
+  fun getPublicKeySpki(): String = validate().info["publicKeySpkiHex"] as String
 
+  // sign passes the SAME full policy validation as ensureKey/getKeyInfo before
+  // producing any signature — a software/P-384/wrong-digest/non-EC alias can
+  // never sign, even if it already exists at the alias.
   fun sign(messageHex: String): String {
     val message = hexToBytes(messageHex)
-    val entry = keyStore().getEntry(alias, null)
-      ?: throw DeviceKeyException("key_missing", "device key is missing")
-    if (entry !is KeyStore.PrivateKeyEntry) {
-      throw DeviceKeyException("key_invalidated", "device key entry is not a private-key entry")
+    val v = validate() // full key policy — throws before any signing
+    return try {
+      val sig = Signature.getInstance("SHA256withECDSA")
+      sig.initSign(v.entry.privateKey)
+      sig.update(message)
+      bytesToHex(sig.sign()) // ASN.1 DER
+    } catch (e: DeviceKeyException) {
+      throw e
+    } catch (e: Exception) {
+      throw DeviceKeyException(DeviceKeyCodes.NATIVE_OPERATION_FAILED, "signing failed")
     }
-    val sig = Signature.getInstance("SHA256withECDSA")
-    sig.initSign(entry.privateKey)
-    sig.update(message)
-    return bytesToHex(sig.sign()) // ASN.1 DER
   }
 
   fun deleteKey() {
-    keyStore().deleteEntry(alias)
+    try {
+      keyStore().deleteEntry(alias)
+    } catch (e: DeviceKeyException) {
+      throw e
+    } catch (e: Exception) {
+      throw DeviceKeyException(DeviceKeyCodes.DELETE_FAILED, "could not delete device key")
+    }
   }
 
-  // ── internal ──
+  // ── single authoritative validation path ──
+
+  private fun validate(): Validated {
+    val ks = keyStore()
+    if (!ks.containsAlias(alias)) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_MISSING, "device key is missing")
+    }
+    val entry = try {
+      ks.getEntry(alias, null)
+    } catch (e: DeviceKeyException) {
+      throw e
+    } catch (e: Exception) {
+      // UnrecoverableKeyException / KeyStoreException / KeyPermanentlyInvalidated
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INACCESSIBLE, "device key is inaccessible")
+    }
+    if (entry !is KeyStore.PrivateKeyEntry) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "not a private-key entry")
+    }
+    // Android Keystore private keys do NOT implement ECPrivateKey — validate via
+    // algorithm + KeyInfo + the certificate public params, never by casting.
+    val priv: PrivateKey = entry.privateKey
+    if (priv.algorithm != KeyProperties.KEY_ALGORITHM_EC) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "device key is not EC")
+    }
+    if (priv.encoded != null) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_EXPORTABLE, "device key is unexpectedly exportable")
+    }
+
+    val keyInfo = keyInfoOf(priv)
+      ?: throw DeviceKeyException(DeviceKeyCodes.KEY_INACCESSIBLE, "cannot read key info")
+    if ((keyInfo.purposes and KeyProperties.PURPOSE_SIGN) == 0) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "device key does not permit signing")
+    }
+    if (keyInfo.digests.none { it == KeyProperties.DIGEST_SHA256 }) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "device key does not permit SHA-256")
+    }
+
+    val level = securityLevelString(keyInfo)
+    val hardwareBacked = level == "strongbox" || level == "tee"
+    if (!hardwareBacked && !allowSoftwareKeystoreForTest) {
+      // Only remove an unusable NEWLY-generated software key; never touch a key
+      // that fails another contract check (handled above by throwing first).
+      try { ks.deleteEntry(alias) } catch (_: Exception) {}
+      throw DeviceKeyException(DeviceKeyCodes.HARDWARE_UNAVAILABLE, "hardware-backed key unavailable")
+    }
+
+    val cert = entry.certificate
+      ?: throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "no public certificate")
+    val pub = cert.publicKey
+    if (pub !is ECPublicKey) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "public key is not EC")
+    }
+    val params = pub.params
+    if (params.curve.field.fieldSize != 256 || params.order.bitLength() != 256) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "public key is not P-256")
+    }
+    val spki = pub.encoded
+    if (spki == null || spki.size != 91) {
+      throw DeviceKeyException(DeviceKeyCodes.KEY_INCOMPATIBLE, "unexpected public key encoding")
+    }
+    val spkiHex = bytesToHex(spki)
+    val deviceId = bytesToHex(MessageDigest.getInstance("SHA-256").digest(spki))
+
+    return Validated(entry, mapOf(
+      "provider" to "android_keystore",
+      "keyVersion" to 1,
+      "deviceId" to deviceId,
+      "publicKeySpkiHex" to spkiHex,
+      "hardwareBacked" to hardwareBacked,
+      "nonExportable" to true,
+      "securityLevel" to level
+    ))
+  }
 
   private fun generateKey() {
     val build: (Boolean) -> KeyGenParameterSpec = { strongBox ->
@@ -97,81 +193,18 @@ class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
       }
       b.build()
     }
-    val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
     try {
-      kpg.initialize(build(true))
-      kpg.generateKeyPair()
-    } catch (e: StrongBoxUnavailableException) {
-      kpg.initialize(build(false))
-      kpg.generateKeyPair()
+      val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
+      try {
+        kpg.initialize(build(true))
+        kpg.generateKeyPair()
+      } catch (e: StrongBoxUnavailableException) {
+        kpg.initialize(build(false))
+        kpg.generateKeyPair()
+      }
+    } catch (e: Exception) {
+      throw DeviceKeyException(DeviceKeyCodes.NATIVE_OPERATION_FAILED, "key generation failed")
     }
-  }
-
-  private fun readKeyInfoOrThrow(): Map<String, Any?> {
-    val ks = keyStore()
-    if (!ks.containsAlias(alias)) {
-      throw DeviceKeyException("key_missing", "device key is missing")
-    }
-    val entry = ks.getEntry(alias, null)
-    if (entry !is KeyStore.PrivateKeyEntry) {
-      throw DeviceKeyException("key_invalidated", "device key entry is not a private-key entry")
-    }
-    // Android Keystore private keys do NOT implement ECPrivateKey — they are
-    // opaque, non-exportable key objects. Validate via algorithm + KeyInfo +
-    // the certificate's public parameters, never by casting the private key.
-    val priv: PrivateKey = entry.privateKey
-    if (priv.algorithm != KeyProperties.KEY_ALGORITHM_EC) {
-      throw DeviceKeyException("key_invalidated", "device key is not an EC key")
-    }
-    // Non-exportable: an opaque Keystore key exposes no encoding.
-    if (priv.encoded != null) {
-      throw DeviceKeyException("key_exportable", "device key is unexpectedly exportable")
-    }
-
-    val keyInfo = keyInfoOf(priv)
-      ?: throw DeviceKeyException("key_invalidated", "cannot read key info")
-    // Authorization contract: must permit SIGN and the SHA-256 digest.
-    if ((keyInfo.purposes and KeyProperties.PURPOSE_SIGN) == 0) {
-      throw DeviceKeyException("key_invalidated", "device key does not permit signing")
-    }
-    if (keyInfo.digests.none { it == KeyProperties.DIGEST_SHA256 }) {
-      throw DeviceKeyException("key_invalidated", "device key does not permit SHA-256")
-    }
-
-    val level = securityLevelString(keyInfo)
-    val hardwareBacked = level == "strongbox" || level == "tee"
-    if (!hardwareBacked && !allowSoftwareKeystoreForTest) {
-      try { ks.deleteEntry(alias) } catch (_: Exception) {}
-      throw DeviceKeyException("hardware_unavailable", "hardware-backed key unavailable on this device")
-    }
-
-    val cert = entry.certificate
-      ?: throw DeviceKeyException("key_invalidated", "no public certificate")
-    // The public key IS a standard ECPublicKey — verify P-256 curve parameters.
-    val pub = cert.publicKey
-    if (pub !is ECPublicKey) {
-      throw DeviceKeyException("key_invalidated", "public key is not EC")
-    }
-    val params = pub.params
-    if (params.curve.field.fieldSize != 256 || params.order.bitLength() != 256) {
-      throw DeviceKeyException("key_invalidated", "public key is not P-256")
-    }
-    val spki = pub.encoded // X.509 SubjectPublicKeyInfo DER
-    if (spki == null || spki.size != 91) {
-      throw DeviceKeyException("spki_invalid", "unexpected public key encoding")
-    }
-    val spkiHex = bytesToHex(spki)
-    val deviceId = bytesToHex(MessageDigest.getInstance("SHA-256").digest(spki))
-
-    return mapOf(
-      "provider" to "android_keystore",
-      "keyVersion" to 1,
-      "deviceId" to deviceId,
-      "publicKeySpkiHex" to spkiHex,
-      "hardwareBacked" to hardwareBacked,
-      "nonExportable" to true,
-      "securityLevel" to level
-    )
   }
 
   private fun keyInfoOf(priv: PrivateKey): KeyInfo? = try {
@@ -194,13 +227,13 @@ class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
   }
 
   private fun hexToBytes(s: String): ByteArray {
-    if (s.length % 2 != 0) throw DeviceKeyException("bad_hex", "hex length must be even")
+    if (s.length % 2 != 0) throw DeviceKeyException(DeviceKeyCodes.NATIVE_OPERATION_FAILED, "bad input")
     val out = ByteArray(s.length / 2)
     var i = 0
     while (i < s.length) {
       val hi = Character.digit(s[i], 16)
       val lo = Character.digit(s[i + 1], 16)
-      if (hi < 0 || lo < 0) throw DeviceKeyException("bad_hex", "invalid hex")
+      if (hi < 0 || lo < 0) throw DeviceKeyException(DeviceKeyCodes.NATIVE_OPERATION_FAILED, "bad input")
       out[i / 2] = ((hi shl 4) or lo).toByte()
       i += 2
     }

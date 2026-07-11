@@ -40,18 +40,18 @@ class PokitDeviceKeyInstrumentationTest {
   fun setUp() {
     PokitDeviceKeyStore.allowSoftwareKeystoreForTest = true
     store = PokitDeviceKeyStore(alias)
-    deleteAlias(alias)
-    deleteAlias("pokit.test.p384")
-    deleteAlias("pokit.test.sha512")
+    testAliases().forEach { deleteAlias(it) }
   }
 
   @After
   fun tearDown() {
-    deleteAlias(alias)
-    deleteAlias("pokit.test.p384")
-    deleteAlias("pokit.test.sha512")
+    testAliases().forEach { deleteAlias(it) }
     PokitDeviceKeyStore.allowSoftwareKeystoreForTest = false
   }
+
+  private fun testAliases() = listOf(
+    alias, "pokit.test.p384", "pokit.test.sha512", "pokit.test.rsa", "pokit.test.soft",
+  )
 
   @Test
   fun supportDetected() {
@@ -232,6 +232,68 @@ class PokitDeviceKeyInstrumentationTest {
     } catch (e: DeviceKeyException) {
       assertEquals("key_invalidated", e.code)
     }
+  }
+
+  // ── direct sign() policy enforcement (must reject BEFORE producing a sig) ──
+
+  @Test
+  fun directSignRejectsP384() {
+    genEc("pokit.test.p384", "secp384r1", KeyProperties.DIGEST_SHA256)
+    assertDirectSignRejected("pokit.test.p384", "key_incompatible")
+  }
+
+  @Test
+  fun directSignRejectsSha512Only() {
+    genEc("pokit.test.sha512", "secp256r1", KeyProperties.DIGEST_SHA512)
+    assertDirectSignRejected("pokit.test.sha512", "key_incompatible")
+  }
+
+  @Test
+  fun directSignRejectsNonEcKey() {
+    // An RSA key at the alias must be rejected by the EC contract check.
+    java.security.KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore").apply {
+      initialize(
+        KeyGenParameterSpec.Builder("pokit.test.rsa", KeyProperties.PURPOSE_SIGN)
+          .setDigests(KeyProperties.DIGEST_SHA256)
+          .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+          .build()
+      )
+    }.generateKeyPair()
+    assertDirectSignRejected("pokit.test.rsa", "key_incompatible")
+  }
+
+  @Test
+  fun directSignRejectsSoftwareKeyUnderProductionPolicy() {
+    // Pre-existing software key + production policy (override off) → sign must
+    // fail hardware_unavailable, never emit a signature.
+    genEc("pokit.test.soft", "secp256r1", KeyProperties.DIGEST_SHA256)
+    PokitDeviceKeyStore.allowSoftwareKeystoreForTest = false
+    try {
+      assertDirectSignRejected("pokit.test.soft", "hardware_unavailable")
+    } finally {
+      PokitDeviceKeyStore.allowSoftwareKeystoreForTest = true
+    }
+  }
+
+  private fun assertDirectSignRejected(a: String, expectedCode: String) {
+    val s = PokitDeviceKeyStore(a)
+    try {
+      s.sign(hexOf("must-not-sign".toByteArray()))
+      fail("direct sign() must be rejected for an incompatible key at $a")
+    } catch (e: DeviceKeyException) {
+      assertEquals(expectedCode, e.code)
+    }
+  }
+
+  private fun genEc(a: String, curve: String, digest: String) {
+    java.security.KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
+      initialize(
+        KeyGenParameterSpec.Builder(a, KeyProperties.PURPOSE_SIGN)
+          .setAlgorithmParameterSpec(ECGenParameterSpec(curve))
+          .setDigests(digest)
+          .build()
+      )
+    }.generateKeyPair()
   }
 
   // ── Android→Go interoperability fixture export ──

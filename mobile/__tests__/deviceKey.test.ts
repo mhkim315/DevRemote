@@ -85,7 +85,7 @@ describe('native stub (not_implemented)', () => {
     const k = _createWithNative(fakeNative({ getSupport: async () => 'not_implemented', hasKey: async () => false }));
     expect(await k.getSupport()).toBe('not_implemented');
     expect(await k.hasKey()).toBe(false);
-    await expect(k.ensureKey()).rejects.toThrow('not implemented');
+    await expect(k.ensureKey()).rejects.toMatchObject({ code: 'native_operation_failed' });
     await expect(k.sign(new Uint8Array(1))).rejects.toThrow();
   });
   it('ios stub reports not_implemented', async () => {
@@ -291,24 +291,59 @@ describe('device ID', () => {
   });
 });
 
-// ── Native operation failure propagation (BLOCKER 4: hasKey does not silence errors) ──
+// ── Native operation failure propagation + typed coded errors ──
+
+// A coded native rejection, as delivered over the Expo bridge (error carries a
+// stable `code`).
+function codedErr(code: string): Error {
+  return Object.assign(new Error('native detail (not for logic)'), { code });
+}
 
 describe('native operation failure propagation', () => {
-  it('hasKey native exception → throws (not false)', async () => {
-    const k = _createWithNative(fakeNative({ hasKey: async () => { throw new Error('key_invalidated'); } }));
-    await expect(k.hasKey()).rejects.toThrow('key_invalidated');
+  it('hasKey native exception → throws typed (never false)', async () => {
+    const k = _createWithNative(fakeNative({ hasKey: async () => { throw codedErr('key_invalidated'); } }));
+    await expect(k.hasKey()).rejects.toMatchObject({ name: 'DeviceKeyError', code: 'key_invalidated' });
   });
   it('hasKey false means key absent (successful native response)', async () => {
     const k = _createWithNative(fakeNative({ getSupport: async () => 'key_missing', hasKey: async () => false }));
     expect(await k.hasKey()).toBe(false);
   });
-  it('ensureKey, getPublicKeySpki, sign, deleteKey native exceptions propagate', async () => {
-    const boom = async () => { throw new Error('native crash'); };
+  it('ensureKey/getPublicKeySpki/sign/deleteKey coded errors propagate the code', async () => {
+    const boom = async () => { throw codedErr('key_inaccessible'); };
     const k = _createWithNative(fakeNative({ ensureKey: boom, getPublicKeySpki: boom, sign: boom, deleteKey: boom }));
-    await expect(k.ensureKey()).rejects.toThrow('native crash');
-    await expect(k.getPublicKeySpki()).rejects.toThrow();
-    await expect(k.sign(new Uint8Array(1))).rejects.toThrow();
-    await expect(k.deleteKey()).rejects.toThrow();
+    for (const p of [k.ensureKey(), k.getPublicKeySpki(), k.sign(new Uint8Array(1)), k.deleteKey()]) {
+      await expect(p).rejects.toMatchObject({ code: 'key_inaccessible' });
+    }
+  });
+});
+
+// ── typed error model (Expo bridge code → DeviceKeyError) ──
+
+describe('typed coded-error mapping', () => {
+  const codes = ['key_missing', 'key_invalidated', 'key_inaccessible', 'hardware_unavailable', 'key_exportable', 'key_incompatible', 'native_operation_failed', 'delete_failed'];
+  it('preserves each recognized native code', async () => {
+    for (const code of codes) {
+      const k = _createWithNative(fakeNative({ getKeyInfo: async () => { throw codedErr(code); } }));
+      await expect(k.getKeyInfo()).rejects.toMatchObject({ name: 'DeviceKeyError', code });
+    }
+  });
+  it('unknown native code → native_operation_failed (fail closed)', async () => {
+    const k = _createWithNative(fakeNative({ ensureKey: async () => { throw codedErr('totally_made_up'); } }));
+    await expect(k.ensureKey()).rejects.toMatchObject({ code: 'native_operation_failed' });
+  });
+  it('native error with no code → native_operation_failed', async () => {
+    const k = _createWithNative(fakeNative({ sign: async () => { throw new Error('raw android detail'); } }));
+    await expect(k.sign(new Uint8Array(1))).rejects.toMatchObject({ code: 'native_operation_failed' });
+  });
+  it('a bad native key-info response fails closed as key_incompatible', async () => {
+    const k = _createWithNative(fakeNative({
+      getSupport: async () => 'supported',
+      ensureKey: async () => ({ ...VALID_KEY_INFO, deviceId: 'wrongwrongwrong' }),
+    }));
+    await expect(k.ensureKey()).rejects.toMatchObject({ name: 'DeviceKeyError', code: 'key_incompatible' });
+  });
+  it('missing module → unsupported code', async () => {
+    await expect(_createWithNative(null).ensureKey()).rejects.toMatchObject({ code: 'unsupported' });
   });
 });
 
@@ -409,9 +444,9 @@ describe('getKeyInfo + securityLevel', () => {
     }));
     await expect(k.getKeyInfo()).rejects.toThrow('securityLevel');
   });
-  it('getKeyInfo native exception propagates', async () => {
-    const k = _createWithNative(fakeNative({ getKeyInfo: async () => { throw new Error('key_invalidated'); } }));
-    await expect(k.getKeyInfo()).rejects.toThrow('key_invalidated');
+  it('getKeyInfo native coded exception propagates the code', async () => {
+    const k = _createWithNative(fakeNative({ getKeyInfo: async () => { throw Object.assign(new Error('x'), { code: 'key_invalidated' }); } }));
+    await expect(k.getKeyInfo()).rejects.toMatchObject({ code: 'key_invalidated' });
   });
   it('missing module → getKeyInfo throws', async () => {
     await expect(_createWithNative(null).getKeyInfo()).rejects.toThrow('native module not found');

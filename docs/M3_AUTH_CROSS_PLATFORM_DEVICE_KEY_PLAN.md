@@ -241,6 +241,18 @@ a thin Expo wrapper.
   StrongBox/TEE is never implied unless reported; attestation deferred.
 - `sign` = `SHA256withECDSA` over raw bytes (no JS hashing), ASN.1 DER, off the
   UI/JS thread; no logging of message/signature/alias/exception internals.
+  **`sign()` runs the same single `validate()` policy function** as
+  `ensureKey`/`getKeyInfo` before producing any signature — a software / P-384 /
+  wrong-digest / non-EC alias can never sign even if it already exists.
+- **Coded errors**: the store throws a typed `DeviceKeyException(code)`; the Expo
+  module's single `coded{}` boundary maps it to an Expo `CodedException` so JS
+  receives a stable `error.code` independent of the message (unknown throwables
+  → `native_operation_failed`, no raw provider details). Vocabulary:
+  `key_missing`, `key_invalidated`, `key_inaccessible`, `hardware_unavailable`,
+  `key_exportable`, `key_incompatible`, `native_operation_failed`, `delete_failed`
+  (+ JS-side `not_implemented`/`unsupported`). The TS wrapper converts codes to a
+  typed `DeviceKeyError`; an unrecognized/malformed code fails closed as
+  `native_operation_failed`.
 - Existing-key validation (the reviewer's runtime failure): the opaque Keystore
   private key is **never cast to `ECPrivateKey`**. Validated via
   `PrivateKey.algorithm == "EC"`, `KeyInfo.purposes` (SIGN) + `KeyInfo.digests`
@@ -248,16 +260,22 @@ a thin Expo wrapper.
   non-exportability (`encoded == null`), and canonical 91-byte SPKI.
 - Missing vs invalidated distinguished by typed errors; incompatible/invalidated
   keys are never silently recreated. Delete or app-data wipe → re-pair required.
-- E-track: `:pokit-device-key:compileReleaseKotlin` (gated), clean prebuild
-  durability, Go non-deterministic interop (`TestNativeSignatureInterop`), JS
-  `getKeyInfo`/`securityLevel` validation, all M3-auth-1C fail-closed tests, and
-  the **emulator instrumentation gate** `scripts/android-native-gate.sh`
-  (`connectedAndroidTest` — 14 tests incl. new-instance persistence, wrong-key
-  rejection, P-384 / SHA-512 existing-key rejection, and the Go interop fixture
-  export `TestAndroidFixture`).
+- E-track: `:pokit-device-key:compileReleaseKotlin` + `compileDebugAndroidTestKotlin`
+  (gated), clean prebuild durability, Go non-deterministic interop
+  (`TestNativeSignatureInterop`), JS `getKeyInfo`/`securityLevel` validation +
+  typed coded-error mapping (jest), all M3-auth-1C fail-closed tests, and the
+  **emulator instrumentation gate** `scripts/android-native-gate.sh`
+  (`connectedAndroidTest`: atomic/concurrent ensureKey, new-store-instance
+  persistence, canonical SPKI/deviceId, signature verify + wrong-key/tamper
+  reject, delete lifecycle, software fail-closed, P-384/SHA-512/non-EC existing-
+  key rejection, and **direct `sign()` policy rejection** for each incompatible
+  alias).
 - M-track (physical device only): TEE/StrongBox confirmation, real-device
-  security level, persistence across a physical restart, UI responsiveness —
-  the Samsung smoke.
+  security level, persistence across a physical restart, UI responsiveness
+  (Samsung smoke). Also: a full JS-visible-over-the-bridge coded-error E2E and
+  the Android→Go fixture auto-extraction are documented follow-ups requiring the
+  emulator/device (the CodedException mapping + JS `DeviceKeyError` mapping are
+  proven on each side).
 - iOS and Web remain `not_implemented` / fail-closed until M3-auth-1B.
 
 ## 6. M3-auth-1B — iOS Secure Enclave provider

@@ -68,6 +68,38 @@ export interface NativePokitDeviceKey {
   deleteKey(): Promise<void>;
 }
 
+// ── typed error model ──
+
+// Stable code vocabulary shared with the native providers. JS logic branches on
+// the code, never on message text.
+export const DEVICE_KEY_CODES: ReadonlySet<string> = new Set([
+  'not_implemented', 'unsupported', 'key_missing', 'key_invalidated',
+  'key_inaccessible', 'hardware_unavailable', 'key_exportable',
+  'key_incompatible', 'native_operation_failed', 'delete_failed',
+]);
+
+export class DeviceKeyError extends Error {
+  code: string;
+  constructor(code: string, message?: string) {
+    super(message ?? code);
+    this.name = 'DeviceKeyError';
+    this.code = code;
+  }
+}
+
+// normalizeNativeError converts a coded native rejection into a typed
+// DeviceKeyError. A recognized native `code` is preserved; anything else
+// (missing/unknown/malformed) fails closed as native_operation_failed. Raw
+// native message text is never trusted for logic.
+function normalizeNativeError(e: unknown): DeviceKeyError {
+  if (e instanceof DeviceKeyError) return e;
+  const code = (e as { code?: unknown })?.code;
+  if (typeof code === 'string' && DEVICE_KEY_CODES.has(code)) {
+    return new DeviceKeyError(code);
+  }
+  return new DeviceKeyError('native_operation_failed');
+}
+
 // ── Factory (test seam: inject a fake native via _createWithNative) ──
 
 export function createPokitDeviceKey(): PokitDeviceKey {
@@ -84,10 +116,14 @@ export function _createWithNative(native: NativePokitDeviceKey | null): PokitDev
 // ── fail-closed: native module not found ──
 
 function missingModuleProvider(): PokitDeviceKey {
-  const op = async () => { throw new Error('PokitDeviceKey: native module not found'); };
+  // No native provider on this platform/build → unsupported. Message retains the
+  // "native module not found" text for humans; code is the machine contract.
+  const op = async (): Promise<never> => {
+    throw new DeviceKeyError('unsupported', 'PokitDeviceKey: native module not found');
+  };
   return {
     getSupport: async () => 'not_implemented' as DeviceKeySupport,
-    hasKey: async () => { throw new Error('PokitDeviceKey: native module not found'); },
+    hasKey: op,
     ensureKey: op,
     getKeyInfo: op,
     getPublicKeySpki: op,
@@ -110,22 +146,36 @@ function validatedProvider(native: NativePokitDeviceKey): PokitDeviceKey {
   return {
     getSupport: () => validateSupport(native),
     hasKey: async () => {
-      // BLOCKER 4 fix: do not silence native hasKey errors.
-      // Only boolean false means key absent. Every other result fails closed.
-      return native.hasKey();
+      // Only a successful boolean means "key absent/present". Any native error
+      // is a typed failure — never silenced to false.
+      try {
+        return await native.hasKey();
+      } catch (e) {
+        throw normalizeNativeError(e);
+      }
     },
-    ensureKey: async () => validateKeyInfo(await native.ensureKey()),
-    getKeyInfo: async () => validateKeyInfo(await native.getKeyInfo()),
+    ensureKey: async () => validateKeyInfo(await callNative(() => native.ensureKey())),
+    getKeyInfo: async () => validateKeyInfo(await callNative(() => native.getKeyInfo())),
     getPublicKeySpki: async () => {
-      const hex = await native.getPublicKeySpki();
+      const hex = await callNative(() => native.getPublicKeySpki());
       return validateAndDecodeSPKI(hex);
     },
     sign: async (message) => {
-      const sigHex = await native.sign(toHex(message));
+      const sigHex = await callNative(() => native.sign(toHex(message)));
       return fromHex(sigHex);
     },
-    deleteKey: () => native.deleteKey(),
+    deleteKey: () => callNative(() => native.deleteKey()),
   };
+}
+
+// callNative runs a native op and normalizes any rejection to a typed
+// DeviceKeyError (preserving a recognized native code, else fail closed).
+async function callNative<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    throw normalizeNativeError(e);
+  }
 }
 
 // ── response validators (BLOCKER 4: one shared parser for DeviceKeyInfo) ──
@@ -216,6 +266,8 @@ function validateAndDecodeSPKI(hex: string): Uint8Array {
   return spki;
 }
 
-function keyInfoErr(msg: string): Error {
-  return new Error(`PokitDeviceKey: invalid native key info: ${msg}`);
+// keyInfoErr: a native response that fails our contract is an incompatible key.
+// Typed so callers branch on the code, not the message.
+function keyInfoErr(msg: string): DeviceKeyError {
+  return new DeviceKeyError('key_incompatible', `PokitDeviceKey: invalid native key info: ${msg}`);
 }
