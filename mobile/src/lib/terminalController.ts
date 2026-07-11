@@ -71,8 +71,18 @@ export class TerminalController {
   var _origWS=window.WebSocket;
   window.WebSocket=function(url,protocols){
     if(typeof url==='string'&&url.indexOf('/term/ws')!==-1){
-      if(!ticketConsumed){ ticketConsumed=true; url=wsURL(ticketA); }
-      else if(window._nextTicket){ var tk=window._nextTicket; window._nextTicket=null; url=wsURL(tk); }
+      var rawWS;
+      if(!ticketConsumed){ ticketConsumed=true; rawWS=new _origWS(wsURL(ticketA),protocols); }
+      else if(window._nextTicket){ var tk=window._nextTicket; window._nextTicket=null; rawWS=new _origWS(wsURL(tk),protocols); }
+      else { rawWS=new _origWS(url,protocols); }
+      // Intercept onmessage to handle geometry events sent by the daemon.
+      // Format: {"type":"geometry","rows":N,"cols":M}
+      var origOnMessage=rawWS.onmessage;
+      rawWS.onmessage=function(e){
+        if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data); if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){ try{term.resize(ctrl.cols,ctrl.rows)}catch(ge){} } }catch(x){} }
+        if(origOnMessage) origOnMessage.call(this,e);
+      };
+      return rawWS;
     }
     return new _origWS(url,protocols);
   };

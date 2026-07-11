@@ -2,6 +2,7 @@ package term
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -512,10 +513,17 @@ func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)
 }
 
-// Resize resizes the underlying PTY stream. Used by local terminal attach
-// to match the host terminal size. Safe to call while the read loop runs.
+// Resize resizes the underlying PTY stream and broadcasts the new geometry
+// to all subscribers so mobile/WebSocket viewers can mirror the host size.
+// Safe to call while the read loop runs.
 func (r *Recorder) Resize(rows, cols int) error {
-	return r.stream.Resize(rows, cols)
+	if err := r.stream.Resize(rows, cols); err != nil {
+		return err
+	}
+	// Broadcast a geometry event to all subscribers (JSON control frame).
+	geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
+	r.broadcast([]byte(geo))
+	return nil
 }
 
 // GetSize returns the underlying PTY's current geometry, if the stream

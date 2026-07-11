@@ -48,7 +48,10 @@ function AppContent() {
           setAuthCtx({ mode: 'failed' }); return;
         }
         const currentOrigin = bu.origin;
-        if (p.origin && currentOrigin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
+        // BLOCKER 2: if a stored origin exists, the current base URL MUST match.
+        // Missing origin (legacy record) → fail closed: require re-pairing.
+        if (!p.origin) { setAuthCtx({ mode: 'failed' }); return; }
+        if (currentOrigin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
         let dk;
         try { dk = createPokitDeviceKey(); } catch { setAuthCtx({ mode: 'failed' }); return; }
         setAuthCtx({ mode: 'paired_device', tokenMgr: new TokenManager(p, dk, base), baseURL: base });
