@@ -133,7 +133,8 @@ M3-auth-3A Android bearer lifecycle                  ACCEPT e7e9cf754 (singlefli
 M3-auth-4A Android WS-ticket transport               ACCEPT b34c335 (host-bound REST + ticket Terminal + framing/reconnect proofs)
 M3-auth-R1 Authenticated Android M3a E2E reverify    ACCEPT a834955c1 (host-bound profile/create; Jest 209; Android product smoke = M-track)
 M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A
-M3-auth-1B iOS Secure Enclave identity               CODE COMPLETE (SE provider byte-compatible w/ Android; jest+gate PASS); iOS native/physical gate = M-track
+M3-auth-1B iOS Secure Enclave identity               ACCEPT a173fcf (hardware-backed provider + runnable physical-device gate; execution = M-track)
+M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      NEXT (see NEXT_SESSION_M3_AUTH_2B_HANDOFF.md)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Transcript Contract Reset                 READY (plan/audit only)
 T1  Byte-stream Transcript Foundation
