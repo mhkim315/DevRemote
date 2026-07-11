@@ -134,10 +134,10 @@ M3-auth-4A Android WS-ticket transport               ACCEPT b34c335 (host-bound 
 M3-auth-R1 Authenticated Android M3a E2E reverify    ACCEPT a834955c1 (host-bound profile/create; Jest 209; Android product smoke = M-track)
 M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A
 M3-auth-1B iOS Secure Enclave identity               ACCEPT a173fcf (hardware-backed provider + runnable physical-device gate; execution = M-track)
-M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      CODE COMPLETE (iOS integration re-verified: SE key → pair → bearer → ticket → terminal; production ConnectScreen pairing evidence; jest+gate PASS); physical iOS smoke + native gate = M-track; next = M3b
-M3b Mobile lifecycle action UX                        CODE COMPLETE (remediated after 2 independent REJECTs: additive daemon lifecycleState + retained terminal Catalog rows; Force-Kill reachable via authoritative stopping; controller epoch invalidates stale/unmount responses; per-action strict DTO validation; capability-enforced input; jest 289 + go test -race + full build-gate PASS; physical-device/LTE smoke = M-track); see docs/M3B_IMPLEMENTATION_REPORT.md
+M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      ACCEPT 0755853a2 (SE key provisioning is in the production scan path; identity-bound save/cold-start restore; Jest 237; physical iOS smoke + native gate = M-track)
+M3b Mobile lifecycle action UX                        ACCEPT 9cdf2f290 (authoritative lifecycleState + retained Catalog rows; reachable Force Kill/Delete; epoch-safe controller; per-action DTO validation; capability-enforced input; Jest 289 + clean-prebuild full gate PASS; physical-device/LTE smoke = M-track)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
-T0  Common AgentEvent Contract
+T0  Common AgentEvent Contract                  NEXT (use docs/NEXT_SESSION_T0_COMMON_AGENT_EVENT_HANDOFF.md)
 T1  Codex Adapter
 T2  Claude Adapter
 D1  Adapter Doctor/Repair                     PLANNED (AI-assisted, user-approved activation only)
