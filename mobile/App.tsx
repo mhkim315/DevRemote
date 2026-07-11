@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { Linking } from 'react-native';
+import { Linking, View, Text } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
@@ -118,8 +118,28 @@ function AppContent() {
   }
 
   if (loading || authCtx.mode === 'initializing') return null;
-  // pairing_required and failed modes still show the UI — they surface a
-  // connect/pairing screen, not a silent legacy fallback.
+
+  // BLOCKER 3: pairing_required / failed must NOT enter RootTabs.
+  if (authCtx.mode === 'pairing_required') {
+    return (
+      <SafeAreaProvider><StatusBar style="light" />
+        <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: '#45EBE9', fontSize: 18, fontWeight: '800', marginBottom: 12 }}>PAIRING REQUIRED</Text>
+          <Text style={{ color: '#8b949e', fontSize: 14, textAlign: 'center' }}>Scan the QR code from your terminal to pair this device.</Text>
+        </View>
+      </SafeAreaProvider>
+    );
+  }
+  if (authCtx.mode === 'failed') {
+    return (
+      <SafeAreaProvider><StatusBar style="light" />
+        <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: '#f85149', fontSize: 18, fontWeight: '800', marginBottom: 12 }}>DEVICE KEY FAILED</Text>
+          <Text style={{ color: '#8b949e', fontSize: 14, textAlign: 'center' }}>The device identity could not be initialized. Restart the app to try again.</Text>
+        </View>
+      </SafeAreaProvider>
+    );
+  }
 
   return (
     <SafeAreaProvider>

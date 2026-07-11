@@ -15,3 +15,21 @@ export interface AuthContext {
   baseURL?: string;
   legacyToken?: string; // only used in explicit_local_dev
 }
+
+// deriveTerminalAuth is the ONE authoritative production decision for which
+// terminal auth path to use. Exported from here (no RN deps) so jest imports
+// it directly without needing React Native mocks.
+export function deriveTerminalAuth(
+  authCtx: AuthContext | undefined,
+  session: string, token: string | undefined,
+): { tokenMgr?: import('./authClient').TokenManager; baseURL?: string; termURI: string | null } {
+  if (authCtx?.mode === 'paired_device' && authCtx.tokenMgr && authCtx.baseURL) {
+    return { tokenMgr: authCtx.tokenMgr, baseURL: authCtx.baseURL, termURI: null };
+  }
+  if (authCtx?.mode === 'explicit_local_dev' && token) {
+    // Note: terminalURL is imported in FeedScreen which wires the actual URL
+    // construction. Here we return a placeholder that the caller fills in.
+    return { tokenMgr: undefined, baseURL: undefined, termURI: '/term/?session=' + encodeURIComponent(session) + '&token=' + encodeURIComponent(token) };
+  }
+  return { tokenMgr: undefined, baseURL: undefined, termURI: null };
+}

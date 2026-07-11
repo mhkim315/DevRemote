@@ -3,6 +3,7 @@ import { terminalURL, listSessions, getSessionHistory, getActivityHistory, Conne
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
 import type { TokenManager } from '../lib/authClient';
 import { TerminalController } from '../lib/terminalController';
+import { deriveTerminalAuth } from '../lib/authMode';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -89,9 +90,7 @@ function E8g2Transcript({ events }: { events: any[] }) {
 }
 
 export default function FeedScreen({onBack, session, token, authCtx}: Props) {
-  const tokenMgr = authCtx?.mode === 'paired_device' ? authCtx.tokenMgr : undefined;
-  const baseURL = authCtx?.mode === 'paired_device' ? authCtx.baseURL : undefined;
-  const allowLegacy = authCtx?.mode === 'explicit_local_dev';
+  const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session, token);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
@@ -163,17 +162,24 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
 
   useEffect(() => {
     if (tokenMgr && baseURL) {
+      // paired_device: async ticket bootstrap.
       setTermSource(null); setTermError('');
       doBootstrap(session, tokenMgr, baseURL);
-    } else {
+    } else if (termURI) {
+      // explicit_local_dev: direct legacy URL.
       ctrlRef.current?.cancel();
       ctrlRef.current = null;
-      // Legacy local-dev path (NO_LOGIN or dev-token).
-      setTermSource({ uri: terminalURL(session, token) });
+      setTermSource({ uri: termURI });
+      setTermError('');
+    } else {
+      // initializing / pairing_required / failed: no WebView source.
+      ctrlRef.current?.cancel();
+      ctrlRef.current = null;
+      setTermSource(null);
       setTermError('');
     }
     return () => { ctrlRef.current?.cancel(); ctrlRef.current = null; };
-  }, [session, token, tokenMgr, baseURL, doBootstrap]);
+  }, [session, token, tokenMgr, baseURL, termURI, doBootstrap]);
 
   const doRetry = useCallback(() => {
     if (tokenMgr && baseURL) {

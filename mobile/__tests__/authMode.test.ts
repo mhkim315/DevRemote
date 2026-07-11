@@ -1,73 +1,56 @@
-// AuthMode enforcement — prove that remote-mode/legacy boundary is structural.
-// These tests validate the exported AuthContext contract and the FeedScreen
-// token-path derivation, not HTML script injection (which requires a WebView).
+// AuthMode enforcement — tests the REAL production deriveTerminalAuth from
+// FeedScreen.tsx, not a copied helper. Proves the switch is authoritative.
 
-import type { AuthContext } from '../src/lib/authMode';
+import { deriveTerminalAuth } from '../src/lib/authMode';
 
-describe('AuthMode contract', () => {
-  it('paired_device exposes tokenMgr + baseURL', () => {
-    const ctx: AuthContext = { mode: 'paired_device', tokenMgr: {} as any, baseURL: 'https://host' };
-    expect(ctx.mode).toBe('paired_device');
-    expect(ctx.tokenMgr).toBeDefined();
-    expect(ctx.baseURL).toBeDefined();
-  });
-
-  it('explicit_local_dev exposes legacyToken, no tokenMgr', () => {
-    const ctx: AuthContext = { mode: 'explicit_local_dev', legacyToken: 'dev-token' };
-    expect(ctx.mode).toBe('explicit_local_dev');
-    expect(ctx.tokenMgr).toBeUndefined();
-    expect(ctx.legacyToken).toBe('dev-token');
+describe('deriveTerminalAuth (production function)', () => {
+  it('paired_device → tokenMgr+baseURL, termURI=null (async ticket path)', () => {
+    const r = deriveTerminalAuth({ mode: 'paired_device', tokenMgr: {} as any, baseURL: 'https://h' }, 's', undefined);
+    expect(r.tokenMgr).toBeDefined();
+    expect(r.baseURL).toBeDefined();
+    expect(r.termURI).toBeNull();
   });
 
-  it('initializing has no credentials', () => {
-    const ctx: AuthContext = { mode: 'initializing' };
-    expect(ctx.tokenMgr).toBeUndefined();
-    expect(ctx.baseURL).toBeUndefined();
-    expect(ctx.legacyToken).toBeUndefined();
+  it('explicit_local_dev → termURI non-null (legacy path)', () => {
+    const r = deriveTerminalAuth({ mode: 'explicit_local_dev', legacyToken: 'dev-token' }, 's', 'dev-token');
+    expect(r.tokenMgr).toBeUndefined();
+    expect(r.baseURL).toBeUndefined();
+    expect(r.termURI).toContain('/term/?session=s&token=dev-token');
   });
 
-  it('pairing_required has no credentials (no fallback)', () => {
-    const ctx: AuthContext = { mode: 'pairing_required' };
-    expect(ctx.tokenMgr).toBeUndefined();
-    expect(ctx.baseURL).toBeUndefined();
-    // MUST NOT expose a legacyToken — that would be a fallback.
-    expect(ctx.legacyToken).toBeUndefined();
+  it('initializing → null termURI, no credentials (fail-closed)', () => {
+    const r = deriveTerminalAuth({ mode: 'initializing' }, 's', undefined);
+    expect(r.termURI).toBeNull();
+    expect(r.tokenMgr).toBeUndefined();
+    expect(r.baseURL).toBeUndefined();
   });
 
-  it('failed has no credentials', () => {
-    const ctx: AuthContext = { mode: 'failed' };
-    expect(ctx.tokenMgr).toBeUndefined();
-    expect(ctx.baseURL).toBeUndefined();
-    expect(ctx.legacyToken).toBeUndefined();
+  it('pairing_required → null termURI (no fallback to legacy)', () => {
+    const r = deriveTerminalAuth({ mode: 'pairing_required' }, 's', 'dev-token');
+    expect(r.termURI).toBeNull();
   });
-});
 
-// FeedScreen token-path derivation: only paired_device gets ticket-based;
-// only explicit_local_dev gets the legacy terminalURL. All other modes
-// produce neither (WebView doesn't open until resolved).
-function deriveTerminalPath(authCtx: AuthContext, token: string | undefined): 'ticket' | 'legacy' | 'none' {
-  if (authCtx.mode === 'paired_device' && authCtx.tokenMgr && authCtx.baseURL) return 'ticket';
-  if (authCtx.mode === 'explicit_local_dev' && authCtx.legacyToken) return 'legacy';
-  return 'none';
-}
+  it('failed → null termURI', () => {
+    const r = deriveTerminalAuth({ mode: 'failed' }, 's', undefined);
+    expect(r.termURI).toBeNull();
+  });
 
-describe('FeedScreen terminal-path derivation', () => {
-  it('paired_device → ticket', () => {
-    expect(deriveTerminalPath({ mode: 'paired_device', tokenMgr: {} as any, baseURL: 'https://h' }, undefined)).toBe('ticket');
+  it('undefined authCtx → null termURI', () => {
+    const r = deriveTerminalAuth(undefined, 's', 'dev-token');
+    expect(r.termURI).toBeNull();
   });
-  it('explicit_local_dev → legacy', () => {
-    expect(deriveTerminalPath({ mode: 'explicit_local_dev', legacyToken: 'dev-token' }, 'dev-token')).toBe('legacy');
+
+  it('paired_device with missing tokenMgr → null termURI (fail-closed)', () => {
+    const r = deriveTerminalAuth({ mode: 'paired_device' } as any, 's', undefined);
+    expect(r.termURI).toBeNull();
   });
-  it('initializing → none (no WebView)', () => {
-    expect(deriveTerminalPath({ mode: 'initializing' }, undefined)).toBe('none');
+
+  it('explicit_local_dev with no token → null termURI', () => {
+    const r = deriveTerminalAuth({ mode: 'explicit_local_dev', legacyToken: 'dev-token' }, 's', undefined);
+    expect(r.termURI).toBeNull();
   });
-  it('pairing_required → none (no fallback)', () => {
-    expect(deriveTerminalPath({ mode: 'pairing_required' }, undefined)).toBe('none');
-  });
-  it('failed → none', () => {
-    expect(deriveTerminalPath({ mode: 'failed' }, undefined)).toBe('none');
-  });
-  it('paired_device with missing tokenMgr → none (fail-closed)', () => {
-    expect(deriveTerminalPath({ mode: 'paired_device' }, undefined)).toBe('none');
-  });
+
+  // Origin binding: paired_device with a non-HTTPS baseURL is still
+  // structurally accepted by deriveTerminalAuth (the TM constructor in App
+  // validates the URL). This is tested at the App boot level.
 });
