@@ -2,6 +2,7 @@
 // Replaces scattered fetch(`${config.BASE_URL}/...`) calls.
 
 import { authenticatedFetch } from './authTransport';
+import { canonicalOrigin } from './authMode';
 import type { TokenManager } from './authClient';
 
 let _baseURL = '';
@@ -14,33 +15,50 @@ export function getBaseURL(): string {
   return _baseURL;
 }
 
-// ── M3-auth-4A: central device-bearer transport ──
+// ── M3-auth-4A: central, HOST-BOUND device-bearer transport ──
 //
-// When a paired device is active, remote REST reads must authenticate with the
-// device bearer (with 401 refresh) via the accepted authenticated transport —
-// NOT a legacy/Supabase token and NOT an unauthenticated request. Installing a
-// TokenManager here routes GET /api/sessions (probe + list) and the read
-// history/activity endpoints through that transport. explicit_local_dev leaves
-// it unset and keeps the legacy path.
-let _deviceAuth: TokenManager | null = null;
+// When a paired device is active, remote REST reads authenticate with the
+// device bearer (with 401 refresh) via the accepted authenticated transport.
+// The bearer is bound to the canonical origin of the paired host: apiGet sends
+// it ONLY when the current base URL canonicalises to that exact origin, and
+// fails closed (no network request) otherwise. This prevents a Host A bearer
+// from ever reaching a Host B endpoint the user typed or scanned after pairing.
+export interface DeviceAuth {
+  tokenManager: TokenManager;
+  origin: string; // canonical scheme://host[:port] of the paired host
+}
 
-export function setDeviceAuth(mgr: TokenManager | null) {
-  _deviceAuth = mgr;
+let _deviceAuth: DeviceAuth | null = null;
+
+export function setDeviceAuth(auth: DeviceAuth | null) {
+  _deviceAuth = auth;
 }
 
 export function hasDeviceAuth(): boolean {
   return _deviceAuth !== null;
 }
 
-// apiGet centralises read authentication: the device bearer when a paired
-// device is active, otherwise the legacy token. Errors are normalised to
-// PokitError so callers keep the same connectivity classification.
+// apiGet centralises read authentication: the host-bound device bearer when a
+// paired device is active (and only for the paired origin), otherwise the
+// legacy token. Errors are normalised to PokitError so callers keep the same
+// connectivity classification.
 async function apiGet(path: string, legacyToken?: string): Promise<Response> {
-  const url = `${_baseURL}${path}`;
   if (_deviceAuth) {
+    // Host-bound fail-closed: the device bearer is transmitted ONLY to the
+    // exact paired origin. A userinfo/query/fragment/path variant or a
+    // different host canonicalises to a mismatch and sends nothing.
+    const { origin, error } = canonicalOrigin(_baseURL);
+    if (error || !origin || origin !== _deviceAuth.origin) {
+      throw new PokitError(
+        'Refusing to send the device credential to a non-paired host',
+        ConnectivityFailure.AuthError,
+        0,
+      );
+    }
+    const url = `${_baseURL}${path}`;
     let res: Response;
     try {
-      res = await authenticatedFetch(url, undefined, _deviceAuth);
+      res = await authenticatedFetch(url, undefined, _deviceAuth.tokenManager);
     } catch (e: any) {
       if (e && e.code === 'network_error') {
         throw new PokitError('Daemon unreachable: ' + (e.message || 'request failed'), ConnectivityFailure.NetworkUnreachable);
@@ -53,7 +71,7 @@ async function apiGet(path: string, legacyToken?: string): Promise<Response> {
     }
     return res;
   }
-  return checkedFetch(url, { headers: authHeaders(legacyToken) });
+  return checkedFetch(`${_baseURL}${path}`, { headers: authHeaders(legacyToken) });
 }
 
 // ── R1a typed connectivity errors ──

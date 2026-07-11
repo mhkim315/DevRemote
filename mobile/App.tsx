@@ -47,11 +47,11 @@ function AppContent() {
         if (currentOrigin !== p.origin) { setAuthCtx({ mode: 'failed' }); return; }
         let dk;
         try { dk = createPokitDeviceKey(); } catch { setAuthCtx({ mode: 'failed' }); return; }
-        // M3-auth-4A: install the device bearer BEFORE probing so the restored
-        // paired session connects with an authenticated REST probe (not the
-        // unauthenticated legacy probe).
+        // M3-auth-4A: install the host-bound device bearer BEFORE probing so the
+        // restored paired session connects with an authenticated REST probe —
+        // and only ever sends the bearer to this paired origin.
         const mgr = new TokenManager(p, dk, base);
-        setDeviceAuth(mgr);
+        setDeviceAuth({ tokenManager: mgr, origin: currentOrigin });
         setAuthCtx({ mode: 'paired_device', tokenMgr: mgr, baseURL: base });
         connect(base).catch(() => {});
       })
@@ -149,9 +149,13 @@ function AppContent() {
             createDeviceKey: createPokitDeviceKey,
             makeTokenManager: (p, dk, base) => new TokenManager(p, dk, base),
           });
-          // Install the device bearer so the subsequent connect() probe (run by
-          // ConnectScreen after this resolves) authenticates as the paired device.
-          if (ctx.mode === 'paired_device') setDeviceAuth(ctx.tokenMgr ?? null);
+          // Install the host-bound device bearer so the subsequent connect()
+          // probe (run by ConnectScreen after this resolves) authenticates as
+          // the paired device — and only ever targets this paired origin.
+          if (ctx.mode === 'paired_device' && ctx.tokenMgr && ctx.baseURL) {
+            const { origin } = canonicalOrigin(ctx.baseURL);
+            if (origin) setDeviceAuth({ tokenManager: ctx.tokenMgr, origin });
+          }
           setAuthCtx(ctx);
           return ctx.mode === 'paired_device';
         }} />
