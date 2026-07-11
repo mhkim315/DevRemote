@@ -21,15 +21,13 @@ export interface AuthContext {
 // it directly without needing React Native mocks.
 export function deriveTerminalAuth(
   authCtx: AuthContext | undefined,
-  session: string, token: string | undefined,
+  session: string,
 ): { tokenMgr?: import('./authClient').TokenManager; baseURL?: string; termURI: string | null } {
   if (authCtx?.mode === 'paired_device' && authCtx.tokenMgr && authCtx.baseURL) {
     return { tokenMgr: authCtx.tokenMgr, baseURL: authCtx.baseURL, termURI: null };
   }
-  if (authCtx?.mode === 'explicit_local_dev' && token) {
-    // Note: terminalURL is imported in FeedScreen which wires the actual URL
-    // construction. Here we return a placeholder that the caller fills in.
-    return { tokenMgr: undefined, baseURL: undefined, termURI: '/term/?session=' + encodeURIComponent(session) + '&token=' + encodeURIComponent(token) };
+  if (authCtx?.mode === 'explicit_local_dev' && authCtx.legacyToken) {
+    return { tokenMgr: undefined, baseURL: undefined, termURI: '/term/?session=' + encodeURIComponent(session) + '&token=' + encodeURIComponent(authCtx.legacyToken) };
   }
   return { tokenMgr: undefined, baseURL: undefined, termURI: null };
 }

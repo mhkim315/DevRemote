@@ -1,12 +1,10 @@
 // M3-auth-4A: Terminal bootstrap + WebSocket ticket lifecycle controller.
 //
-// Owns one terminal connection attempt: fetches /term/ HTML (bearer), obtains
-// a one-time WS ticket, injects it into the bootstrap URL so the page's JS
-// passes it to /term/ws, and provides a reconnect bridge for ticket rotation.
-// Generation model: a single monotonically-increasing integer `gen`.
-// cancel() invalidates the current gen; bootstrap/reconnect each create a new
-// gen atomically and return the attempt ID. Only the caller holding the
-// matching ID may commit results.
+// Owns one terminal connection attempt. The reconnect hook installs after the
+// DOM is fully loaded (so the daemon's connect() is defined), overrides
+// connect() to request a fresh ticket from native, clears pending state on
+// receipt, and calls the real connect() exactly once with the new ticket.
+// Reconnect singleflight: simultaneous reconnect requests share one promise.
 
 import { TokenManager } from './authClient';
 import { authenticatedFetch } from './authTransport';
@@ -19,51 +17,42 @@ export interface TerminalBootstrap {
   sessionId: string;
 }
 
-// TerminalController owns the lifecycle of ONE terminal connection attempt.
 export class TerminalController {
-  private gen = 0;
+  gen = 0;
+  private reconnectFlight: Promise<{ attemptId: number; ticket?: string }> | null = null;
 
-  // bootstrap fetches the /term/ HTML, obtains a WS ticket, injects it, and
-  // returns an {attemptId, result} pair. The caller must verify attemptId
-  // matches before applying the result (stale attempts are discarded).
   async bootstrap(
     sessionId: string, tokenMgr: TokenManager, baseURL: string,
   ): Promise<{ attemptId: number; result?: TerminalBootstrap }> {
-    // Atomically: cancel prior work, start a new generation.
     this.cancel();
     const attemptId = ++this.gen;
 
-    // 1. Fetch /term/ HTML with device bearer.
     const htmlRes = await authenticatedFetch(
-      `${baseURL}/term/?session=${encodeURIComponent(sessionId)}`, { signal: this.abortSignal() }, tokenMgr,
+      `${baseURL}/term/?session=${encodeURIComponent(sessionId)}`, undefined, tokenMgr,
     );
     if (attemptId !== this.gen) return { attemptId };
-    if (!htmlRes.ok) throw new Error(`terminal bootstrap failed: ${htmlRes.status}`);
+    if (!htmlRes.ok) throw new Error(`bootstrap failed: ${htmlRes.status}`);
     let html = await htmlRes.text();
 
-    // 2. Obtain a one-time WS ticket.
     const t = await getWSTicket(sessionId, tokenMgr, baseURL);
     if (attemptId !== this.gen) return { attemptId };
 
-    // 3. Inject ticket into the HTML so the page's JS passes it to /term/ws.
-    //    The page builds the WS URL from location.search, so we set
-    //    ?session=X&ticket=YYY via history.replaceState before the page's
-    //    connect() call. Also install a reconnect bridge that receives ticket
-    //    updates from the native layer via postMessage.
+    // Inject ticket + reconnect bridge. The bridge installs AFTER the DOM
+    // is fully loaded (DOMContentLoaded or fallback setTimeout) so the
+    // daemon's real connect() is defined before we wrap it.
     const ticketScript = `<script>
 (function(){
-  var u=new URL(location.href);
-  u.searchParams.set('session','${sessionId}');
-  u.searchParams.set('ticket','${t.ticket}');
-  window.history.replaceState({},'',u.toString());
-  // Reconnect bridge: native layer posts {type:'pokit-ticket',ticket:64hex}.
-  window.__pokitSetTicket=function(tk){ var p=new URL(location.href);p.searchParams.set('ticket',tk);window.history.replaceState({},'',p.toString()); };
-  window.addEventListener('message',function(e){ try{ var d=typeof e.data==='string'?JSON.parse(e.data):e.data; if(d&&d.type==='pokit-ticket'&&typeof d.ticket==='string'){ window.__pokitSetTicket(d.ticket); } }catch{} });
-  window.__pokitHandshakeUrl='/term/ws'+u.search;
-  // Notify native when reconnect is needed (WebSocket closed).
-  window.__pokitNotifyReconnect=function(){ try{window.ReactNativeWebView.postMessage(JSON.stringify({type:'pokit-reconnect-request',session:'${sessionId}',attemptId:${attemptId}}));}catch{} };
-  // Override the page's auto-reconnect: call native for a fresh ticket first.
-  var _origConnect=window.connect;window.connect=function(){ if(window.__pokitReconnectPending){ return; } window.__pokitReconnectPending=true; window.__pokitNotifyReconnect(); };
+  var ticket=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId};
+  var u=new URL(location.href); u.searchParams.set('session',session); u.searchParams.set('ticket',ticket); window.history.replaceState({},'',u.toString());
+  var pending=false, realConnect=null;
+  function sendReconnect(){ try{window.ReactNativeWebView.postMessage(JSON.stringify({type:'pokit-reconnect-request',session:session,attemptId:attemptId}))}catch{} }
+  function install(){
+    if(window.__pokitBridgeInstalled) return; window.__pokitBridgeInstalled=true;
+    realConnect=window.connect; window.connect=function(){ if(pending) return; pending=true; sendReconnect(); };
+    // Listen for fresh ticket from native, validate it, then connect.
+    window.addEventListener('message',function(e){ try{ var d=JSON.parse(e.data); if(d&&d.type==='pokit-ticket'&&typeof d.ticket==='string'&&/^[0-9a-f]{64}$/.test(d.ticket)){ u.searchParams.set('ticket',d.ticket); window.history.replaceState({},'',u.toString()); pending=false; if(realConnect) realConnect(); } }catch{} });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',install); else setTimeout(install,0);
 })();
 </script>`;
     html = html.replace(/<head[^>]*>/i, (m: string) => m + ticketScript);
@@ -71,25 +60,27 @@ export class TerminalController {
     return { attemptId, result: { html, baseUrl: baseURL, ticket: t.ticket, sessionId } };
   }
 
-  // reconnectTicket fetches a fresh ticket for a reconnect rotation (A→B→C).
-  // The caller owns delivering it to the WebView via postMessage.
+  // reconnectTicket with singleflight. Simultaneous calls for the same
+  // attempt share one in-flight promise.
   async reconnectTicket(
     sessionId: string, tokenMgr: TokenManager, baseURL: string,
   ): Promise<{ attemptId: number; ticket?: string }> {
-    // Atomically: cancel prior, start new generation.
     this.cancel();
     const attemptId = ++this.gen;
-    const t = await getWSTicket(sessionId, tokenMgr, baseURL);
-    if (attemptId !== this.gen) return { attemptId };
-    return { attemptId, ticket: t.ticket };
+    if (this.reconnectFlight) {
+      const prev = await this.reconnectFlight;
+      if (prev.attemptId === attemptId) return prev;
+    }
+    const flight = (async () => {
+      const t = await getWSTicket(sessionId, tokenMgr, baseURL);
+      if (attemptId !== this.gen) return { attemptId };
+      return { attemptId, ticket: t.ticket };
+    })();
+    this.reconnectFlight = flight;
+    const result = await flight;
+    this.reconnectFlight = null;
+    return result;
   }
 
-  // cancel invalidates the current generation so any in-flight or pending
-  // attempt will see a stale gen and self-discard.
-  cancel(): void { this.gen++; }
-
-  // abortSignal returns an AbortSignal bound to the current generation.
-  // (AuthenticatedFetch doesn't use AbortController natively, so this is
-  // a best-effort signal for callers that accept one.)
-  private abortSignal(): AbortSignal | undefined { return undefined; }
+  cancel(): void { this.gen++; this.reconnectFlight = null; }
 }

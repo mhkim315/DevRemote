@@ -21,7 +21,7 @@ describe('TerminalController', () => {
     const { attemptId, result } = await ctrl.bootstrap('controlled_pty:x', fakeMgr, 'http://daemon');
     expect(attemptId).toBeGreaterThan(0);
     expect(result).toBeDefined();
-    expect(result!.html).toContain('pokitSetTicket');
+    expect(result!.html).toContain('pokit-ticket'); // bridge message type
     expect(result!.html).toContain(TICKET_HEX);
     expect(result!.ticket).toBe(TICKET_HEX);
   });

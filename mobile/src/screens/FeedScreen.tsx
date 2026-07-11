@@ -90,7 +90,7 @@ function E8g2Transcript({ events }: { events: any[] }) {
 }
 
 export default function FeedScreen({onBack, session, token, authCtx}: Props) {
-  const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session, token);
+  const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
   const [cmd, setCmd] = useState('');
