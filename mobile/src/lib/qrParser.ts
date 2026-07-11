@@ -4,7 +4,7 @@
 // schema. Throws are caught by the public entry point and returned as
 // {error} — never thrown to callers.
 
-import { fromBase64 } from './crypto';
+import { fromHex, toBase64 } from './crypto';
 
 export interface PairingQRPayload {
   sessionId: string;
@@ -55,10 +55,12 @@ function _parse(raw: unknown): PairingQRPayload {
   const fingerprint = strField(o, 'fingerprint', FINGERPRINT_LEN, FINGERPRINT_LEN);
   if (!/^[0-9a-f]{64}$/.test(fingerprint)) err('host fingerprint must be 64-char lowercase hex');
 
-  const hostPubKeyB64 = o.hostPubKey as string;
+  const hostPubKeyHex = o.hostPubKey as string;
+  if (!/^[0-9a-fA-F]{182}$/.test(hostPubKeyHex)) err('hostPubKey must be 182-char hex (91-byte P-256 SPKI)');
   let hostPubKeyDer: Uint8Array;
-  try { hostPubKeyDer = fromBase64(hostPubKeyB64); } catch { err('host public key is not valid canonical base64'); }
-  if (hostPubKeyDer.length !== 91) err('host public key must be 91 bytes (canonical P-256 SPKI)');
+  try { hostPubKeyDer = fromHex(hostPubKeyHex, 91); } catch { err('host public key is not valid canonical hex SPKI'); }
+  // Re-encode to base64 for storage (wire is hex, persisted is b64 for pairingStore SPKI checks).
+  const hostPubKeyB64 = toBase64(hostPubKeyDer);
 
   const bootstrapToken = strField(o, 'bootstrapToken', 1, BOOTSTRAP_MAX);
   const endpoint = strField(o, 'endpoint', 1, ENDPOINT_MAX);

@@ -1,12 +1,22 @@
 import { parsePairingQR } from '../src/lib/qrParser';
-import { toBase64 } from '../src/lib/crypto';
+import { toHex } from '../src/lib/crypto';
 
-const CANONICAL_HOST_SPKI = Uint8Array.from([
-  0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
-  0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
-  ...Array.from({ length: 65 }, (_, i) => i + 1),
-]);
-const HOST_PUB_B64 = toBase64(CANONICAL_HOST_SPKI);
+// A valid P-256 SPKI: the canonical 26-byte prefix + 65 bytes of uncompressed
+// point. Doesn't need to be on curve for the parser (SPKI structure + length
+// only here; the curve-point validator runs later in the pairing client).
+const CANONICAL_SPKI = new Uint8Array(91);
+CANONICAL_SPKI[0] = 0x30; CANONICAL_SPKI[1] = 0x59; // SEQUENCE header
+// Fill in the prefix bytes (the actual DER prefix for P-256).
+const PREFIX_HEX = '3059301306072a8648ce3d020106082a8648ce3d030107034200';
+for (let i = 0; i < PREFIX_HEX.length >> 1; i++) {
+  CANONICAL_SPKI[i] = parseInt(PREFIX_HEX.substr(i * 2, 2), 16);
+}
+// Fill uncompressed point with non-zero data (not a real curve point, but
+// parser doesn't check that — pairing client does).
+for (let i = 26; i < 91; i++) CANONICAL_SPKI[i] = (i - 25) % 256 || 1;
+CANONICAL_SPKI[26] = 0x04; // uncompressed point
+
+const HOST_PUB_HEX = toHex(CANONICAL_SPKI);
 const FUTURE = new Date(Date.now() + 300_000).toISOString();
 
 function validPayload(overrides: Record<string, unknown> = {}): string {
@@ -14,9 +24,9 @@ function validPayload(overrides: Record<string, unknown> = {}): string {
     sessionId: 'sess-abc',
     hostId: 'host-001',
     fingerprint: '0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff',
-    hostPubKey: HOST_PUB_B64,
+    hostPubKey: HOST_PUB_HEX,
     bootstrapToken: 'tok-123',
-    endpoint: 'http://192.168.1.10:8765',
+    endpoint: 'http://192.168.1.10:8765/pair',
     expiresAt: FUTURE,
     ...overrides,
   });
@@ -44,11 +54,11 @@ describe('qrParser — reject', () => {
   it('rejects wrong fingerprint length', () => {
     expect(parsePairingQR(validPayload({ fingerprint: 'abcd' }))).toMatchObject({ error: expect.stringContaining('64') });
   });
-  it('rejects bad base64 host key', () => {
-    expect(parsePairingQR(validPayload({ hostPubKey: '!!!!' }))).toMatchObject({ error: expect.stringContaining('base64') });
+  it('rejects non-hex host key', () => {
+    expect(parsePairingQR(validPayload({ hostPubKey: 'zzzzzz' }))).toMatchObject({ error: expect.stringContaining('hex') });
   });
-  it('rejects wrong-length SPKI', () => {
-    expect(parsePairingQR(validPayload({ hostPubKey: toBase64(new Uint8Array(90)) }))).toMatchObject({ error: expect.stringContaining('91') });
+  it('rejects wrong-length SPKI hex', () => {
+    expect(parsePairingQR(validPayload({ hostPubKey: 'ab'.repeat(90) }))).toMatchObject({ error: expect.stringContaining('182') });
   });
   it('rejects unsafe endpoint scheme (https)', () => {
     expect(parsePairingQR(validPayload({ endpoint: 'https://192.168.1.10:8765' }))).toMatchObject({ error: expect.stringContaining('http') });

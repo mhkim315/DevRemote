@@ -373,6 +373,12 @@ func (ph *PairingHost) handleResult(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Basic session binding: the caller must know the session ID (obtained from
+	// the QR). A third party on the same LAN without the QR cannot poll.
+	if r.URL.Query().Get("session") != ph.Session.SessionID {
+		http.Error(w, "session mismatch", http.StatusForbidden)
+		return
+	}
 	ph.mu.Lock()
 	dev := ph.pairedDevice
 	state := stateForClient(ph.state)
@@ -445,7 +451,8 @@ func (ph *PairingHost) Approve() error {
 	log.Printf("pairing: device %s approved and registered (fingerprint %s)",
 		dev.DeviceID, dev.Fingerprint)
 
-	go ph.Close()
+	// Keep the listener alive briefly so the phone can poll /pair/result.
+	go func() { time.AfterFunc(10*time.Second, ph.Close) }()
 	return nil
 }
 

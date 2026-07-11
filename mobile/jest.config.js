@@ -13,5 +13,6 @@ module.exports = {
   moduleNameMapper: {
     '^expo-modules-core$': '<rootDir>/__tests__/__mocks__/expo-modules-core.js',
     '^react-native$': '<rootDir>/__tests__/__mocks__/react-native.js',
+    '^expo-crypto$': '<rootDir>/__tests__/__mocks__/expo-crypto.js',
   },
 };

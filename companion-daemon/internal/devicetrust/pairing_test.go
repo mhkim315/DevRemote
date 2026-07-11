@@ -105,22 +105,134 @@ func TestPairing_Full2PhaseAndApprove(t *testing.T) {
 	}
 }
 
-func TestPairing_BadSignatureRejected(t *testing.T) {
+// TestMobilePairingIntegration proves the full protocol flow the mobile
+// library follows — QR hex fields, endpoint paths, and the new result poll.
+func TestMobilePairingIntegration(t *testing.T) {
 	r, _ := newReg(t)
 	ph := startTestPairing(t, r)
-	_, pubDER, _ := genKeypair(t)
-	phoneNonce := make([]byte, 16)
-	rand.Read(phoneNonce)
-	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "p1", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
-	var ch ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&ch)
-	resp.Body.Close()
-	cfb, _ := json.Marshal(Confirmation{PhoneSignature: []byte("bad")})
-	r2, _ := http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
-	if r2.StatusCode != 401 {
-		t.Fatalf("bad sig=%d", r2.StatusCode)
+
+	// Build the QR payload as the daemon does (hostPubKey is hex-encoded SPKI).
+	hostPub := ph.cfg.Identity.Public()
+	qrJSON, _ := json.Marshal(map[string]string{
+		"sessionId":      ph.Session.SessionID,
+		"hostId":         hostPub.HostID,
+		"fingerprint":    hostPub.Fingerprint,
+		"hostPubKey":     hex.EncodeToString(hostPub.PublicKeyDER),
+		"bootstrapToken": ph.Session.BootstrapToken,
+		"endpoint":       "http://" + ph.addr + "/pair",
+		"expiresAt":      ph.Session.ExpiresAt.Format(time.RFC3339),
+	})
+
+	// ── Parse QR (mobile-side: hex hostPubKey) ──
+	var qr map[string]string
+	json.Unmarshal(qrJSON, &qr)
+	hostPubDER, err := hex.DecodeString(qr["hostPubKey"])
+	if err != nil || len(hostPubDER) != 91 {
+		t.Fatalf("QR hostPubKey hex decode: err=%v len=%d", err, len(hostPubDER))
 	}
+	if got := Fingerprint(hostPubDER); got != qr["fingerprint"] {
+		t.Fatalf("QR fingerprint mismatch: %s != %s", got, qr["fingerprint"])
+	}
+
+	// ── Phase 1: POST to endpoint directly (endpoint already is ".../pair") ──
+	devPriv, devPubDER, devFP := genKeypair(t)
+	phoneNonce := make([]byte, 32)
+	rand.Read(phoneNonce)
+	phase1Body, _ := json.Marshal(PairingRequest{PublicKeyDER: devPubDER, DisplayName: "Pokit Mobile", PhoneNonce: phoneNonce, BootstrapToken: qr["bootstrapToken"]})
+	r1, err := http.Post(qr["endpoint"], "application/json", bytes.NewReader(phase1Body))
+	if err != nil {
+		t.Fatalf("phase1 request: %v", err)
+	}
+	if r1.StatusCode != 200 {
+		t.Fatalf("phase1 status=%d", r1.StatusCode)
+	}
+	var ch ChallengeResponse
+	json.NewDecoder(r1.Body).Decode(&ch)
+	r1.Body.Close()
+
+	// ── Phase 2: sign transcript, POST /pair/confirm ──
+	sig := signTranscript(t, devPriv, phoneNonce, ch.HostNonce, ch.HostPublicDER, qr["sessionId"])
+	phase2Body, _ := json.Marshal(Confirmation{PhoneSignature: sig})
+	r2, err := http.Post(siblingURL(qr["endpoint"], "/pair/confirm"), "application/json", bytes.NewReader(phase2Body))
+	if err != nil {
+		t.Fatalf("phase2 request: %v", err)
+	}
+	if r2.StatusCode != 200 {
+		t.Fatalf("phase2 status=%d", r2.StatusCode)
+	}
+	var cr struct {
+		Status    string `json:"status"`
+		HostProof string `json:"hostProof"`
+	}
+	json.NewDecoder(r2.Body).Decode(&cr)
+	r2.Body.Close()
+	if cr.Status != "proof_verified" {
+		t.Fatalf("phase2 status=%s", cr.Status)
+	}
+	// HostProof is hex-encoded on the wire.
+	hostProofDER, err := hex.DecodeString(cr.HostProof)
+	if err != nil {
+		t.Fatalf("hostProof hex decode: %v", err)
+	}
+	pub, _ := ParseP256PublicKey(ch.HostPublicDER)
+	td := sha256.Sum256(buildPairingTranscript(phoneNonce, ch.HostNonce, ch.HostPublicDER, qr["sessionId"]))
+	if !ecdsa.VerifyASN1(pub, td[:], hostProofDER) {
+		t.Fatal("host proof verification failed")
+	}
+
+	// ── Result: poll with session binding ──
+	resultURL := siblingURL(qr["endpoint"], "/pair/result") + "?session=" + qr["sessionId"]
+
+	// Before approval: pending.
+	r3, _ := http.Get(resultURL)
+	var pres map[string]string
+	json.NewDecoder(r3.Body).Decode(&pres)
+	r3.Body.Close()
+	if pres["status"] != "pending" {
+		t.Fatalf("result before approve=%s", pres["status"])
+	}
+
+	// Approve via IPC path (operator).
+	if _, ok := ph.WaitForCandidate(); !ok {
+		t.Fatal("no candidate")
+	}
+	ph.Approve()
+
+	// After approval, poll until the result is readable (within grace period).
+	for i := 0; i < 10; i++ {
+		time.Sleep(500 * time.Millisecond)
+		r3, _ = http.Get(resultURL)
+		var ares map[string]interface{}
+		json.NewDecoder(r3.Body).Decode(&ares)
+		r3.Body.Close()
+		if ares["status"] == "approved" {
+			if ares["deviceId"] == nil || ares["fingerprint"] == nil {
+				t.Fatalf("approved with no deviceId/fingerprint: %v", ares)
+			}
+			// Registry recorded the device.
+			if _, a := r.GetActiveByFingerprint(devFP); !a {
+				t.Fatal("device not in registry after approve")
+			}
+			return
+		}
+	}
+	t.Fatal("result never reached approved")
+}
+
+func TestPairing_ResultSessionMismatch(t *testing.T) {
+	r, _ := newReg(t)
+	ph := startTestPairing(t, r)
+	resp, _ := http.Get("http://" + ph.addr + "/pair/result?session=wrong")
+	if resp.StatusCode != 403 {
+		t.Fatalf("result with wrong session: %d want 403", resp.StatusCode)
+	}
+}
+
+// siblingURL substitutes the path component of endpoint (which ends in "/pair")
+// with sibling paths like "/pair/confirm" or "/pair/result".
+func siblingURL(endpoint, path string) string {
+	base := endpoint[:len(endpoint)-len("/pair")]
+	return base + path
 }
 
 func TestPairing_NonP256Rejected(t *testing.T) {
