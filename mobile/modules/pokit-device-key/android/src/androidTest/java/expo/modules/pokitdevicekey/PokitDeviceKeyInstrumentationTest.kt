@@ -1,17 +1,24 @@
 package expo.modules.pokitdevicekey
 
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
+import java.security.KeyPairGenerator
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.Signature
+import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import java.security.KeyFactory
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -20,28 +27,29 @@ import org.junit.runner.RunWith
 
 // M3-auth-1A instrumentation tests for the real Android Keystore provider.
 //
-// M-track: requires a connected device/emulator (`./gradlew :pokit-device-key:
-// connectedAndroidTest` or app connectedAndroidTest). On an emulator the
-// software-Keystore success path is exercised via the internal test override;
-// hardware-backed evidence (TEE/StrongBox) requires a real device and is
-// recorded separately in the Samsung smoke evidence.
+// M-track for a *physical* device (TEE/StrongBox proof), but E-track on an
+// emulator via the internal test override, which exercises the full functional
+// contract against the real AndroidKeyStore.
+//   ./gradlew :pokit-device-key:connectedAndroidTest
 @RunWith(AndroidJUnit4::class)
 class PokitDeviceKeyInstrumentationTest {
-  // Isolated test alias so runs never touch the production identity.
   private val alias = "pokit.device.identity.test"
   private lateinit var store: PokitDeviceKeyStore
 
   @Before
   fun setUp() {
-    // Allow software Keystore so the success path runs on an emulator.
     PokitDeviceKeyStore.allowSoftwareKeystoreForTest = true
     store = PokitDeviceKeyStore(alias)
-    try { store.deleteKey() } catch (_: Exception) {}
+    deleteAlias(alias)
+    deleteAlias("pokit.test.p384")
+    deleteAlias("pokit.test.sha512")
   }
 
   @After
   fun tearDown() {
-    try { store.deleteKey() } catch (_: Exception) {}
+    deleteAlias(alias)
+    deleteAlias("pokit.test.p384")
+    deleteAlias("pokit.test.sha512")
     PokitDeviceKeyStore.allowSoftwareKeystoreForTest = false
   }
 
@@ -65,21 +73,43 @@ class PokitDeviceKeyInstrumentationTest {
     assertEquals(a["deviceId"], b["deviceId"])
     assertEquals(a["keyVersion"], b["keyVersion"])
     assertEquals(a["provider"], b["provider"])
+    assertEquals(a["securityLevel"], b["securityLevel"])
   }
 
   @Test
   fun concurrentEnsureKeyResolvesToOneIdentity() {
     val pool = Executors.newFixedThreadPool(8)
-    val results = java.util.Collections.synchronizedList(mutableListOf<String>())
+    val spkis = java.util.Collections.synchronizedList(mutableListOf<String>())
+    val ids = java.util.Collections.synchronizedList(mutableListOf<String>())
     val tasks = (0 until 16).map {
-      pool.submit { results.add(store.ensureKey()["publicKeySpkiHex"] as String) }
+      pool.submit {
+        val info = store.ensureKey()
+        spkis.add(info["publicKeySpkiHex"] as String)
+        ids.add(info["deviceId"] as String)
+      }
     }
     tasks.forEach { it.get() }
     pool.shutdown()
-    pool.awaitTermination(10, TimeUnit.SECONDS)
-    assertEquals(16, results.size)
-    val distinct = results.toSet()
-    assertEquals("all callers must resolve to one identity", 1, distinct.size)
+    pool.awaitTermination(15, TimeUnit.SECONDS)
+    assertEquals(16, spkis.size)
+    assertEquals("one SPKI for all callers", 1, spkis.toSet().size)
+    assertEquals("one deviceId for all callers", 1, ids.toSet().size)
+  }
+
+  @Test
+  fun newStoreInstancePersistsIdentity() {
+    val created = store.ensureKey()
+    val spki = created["publicKeySpkiHex"] as String
+    val id = created["deviceId"] as String
+
+    // A brand-new store object (module reconstruction) reading the same alias.
+    val restored = PokitDeviceKeyStore(alias)
+    val info = restored.getKeyInfo()
+    assertEquals(spki, info["publicKeySpkiHex"])
+    assertEquals(id, info["deviceId"])
+    // And it can sign with the restored identity.
+    val sig = restored.sign(hexOf("persist-check".toByteArray()))
+    assertTrue(verify(spki, "persist-check".toByteArray(), hex(sig)))
   }
 
   @Test
@@ -93,25 +123,27 @@ class PokitDeviceKeyInstrumentationTest {
   }
 
   @Test
-  fun signatureVerifiesAndTamperFails() {
+  fun signatureVerifiesWrongKeyAndTamperFail() {
     val info = store.ensureKey()
-    val spki = hex(info["publicKeySpkiHex"] as String)
-    val pub = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(spki))
-
+    val spki = info["publicKeySpkiHex"] as String
     val message = "pokit native instrumentation challenge".toByteArray()
-    val sigHex = store.sign(hexOf(message))
-    val sig = hex(sigHex)
+    val sig = hex(store.sign(hexOf(message)))
 
-    val verifier = Signature.getInstance("SHA256withECDSA")
-    verifier.initVerify(pub)
-    verifier.update(message)
-    assertTrue("valid signature must verify", verifier.verify(sig))
-
-    // Wrong message fails.
-    val v2 = Signature.getInstance("SHA256withECDSA")
-    v2.initVerify(pub)
-    v2.update("tampered".toByteArray())
-    assertFalse(v2.verify(sig))
+    // Correct production public key verifies.
+    assertTrue(verify(spki, message, sig))
+    // Wrong (unrelated) key fails.
+    val wrong = KeyPairGenerator.getInstance("EC").apply {
+      initialize(ECGenParameterSpec("secp256r1"))
+    }.generateKeyPair()
+    val v = Signature.getInstance("SHA256withECDSA")
+    v.initVerify(wrong.public)
+    v.update(message)
+    assertFalse(v.verify(sig))
+    // Modified message fails.
+    assertFalse(verify(spki, "tampered".toByteArray(), sig))
+    // Modified signature fails.
+    val mutated = sig.copyOf(); mutated[mutated.size - 1] = (mutated[mutated.size - 1].toInt() xor 0x01).toByte()
+    assertFalse(verify(spki, message, mutated))
   }
 
   @Test
@@ -132,7 +164,6 @@ class PokitDeviceKeyInstrumentationTest {
   fun privateKeyIsNonExportable() {
     val info = store.ensureKey()
     assertEquals(true, info["nonExportable"])
-    // Re-reading getKeyInfo also enforces PrivateKey.encoded == null internally.
     assertNotNull(store.getKeyInfo()["publicKeySpkiHex"])
   }
 
@@ -148,13 +179,12 @@ class PokitDeviceKeyInstrumentationTest {
 
   @Test
   fun hardwarePolicyFailsClosedWithoutOverride() {
-    // With the override off, a software-only emulator key must be rejected.
     PokitDeviceKeyStore.allowSoftwareKeystoreForTest = false
-    try { store.deleteKey() } catch (_: Exception) {}
+    deleteAlias(alias)
     try {
       store.ensureKey()
-      // On a real hardware-backed device this succeeds; on a software-only
-      // emulator it must throw hardware_unavailable.
+      // Succeeds on a real hardware-backed device; on a software-only emulator
+      // it must throw hardware_unavailable.
     } catch (e: DeviceKeyException) {
       assertEquals("hardware_unavailable", e.code)
     } finally {
@@ -162,7 +192,89 @@ class PokitDeviceKeyInstrumentationTest {
     }
   }
 
+  // ── existing-key contract rejection (build incompatible aliases directly) ──
+
+  @Test
+  fun rejectsNonP256ExistingKey() {
+    // Create a P-384 key under a test alias, then point the store at it.
+    KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
+      initialize(
+        KeyGenParameterSpec.Builder("pokit.test.p384", KeyProperties.PURPOSE_SIGN)
+          .setAlgorithmParameterSpec(ECGenParameterSpec("secp384r1"))
+          .setDigests(KeyProperties.DIGEST_SHA256)
+          .build()
+      )
+    }.generateKeyPair()
+    val s = PokitDeviceKeyStore("pokit.test.p384")
+    try {
+      s.getKeyInfo()
+      fail("P-384 key must be rejected")
+    } catch (e: DeviceKeyException) {
+      assertEquals("key_invalidated", e.code)
+    }
+  }
+
+  @Test
+  fun rejectsKeyWithoutSha256Authorization() {
+    // A P-256 key authorized only for SHA-512 must be rejected.
+    KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
+      initialize(
+        KeyGenParameterSpec.Builder("pokit.test.sha512", KeyProperties.PURPOSE_SIGN)
+          .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+          .setDigests(KeyProperties.DIGEST_SHA512)
+          .build()
+      )
+    }.generateKeyPair()
+    val s = PokitDeviceKeyStore("pokit.test.sha512")
+    try {
+      s.getKeyInfo()
+      fail("key without SHA-256 authorization must be rejected")
+    } catch (e: DeviceKeyException) {
+      assertEquals("key_invalidated", e.code)
+    }
+  }
+
+  // ── Android→Go interoperability fixture export ──
+
+  @Test
+  fun exportGoInteropFixture() {
+    val info = store.ensureKey()
+    val spkiHex = info["publicKeySpkiHex"] as String
+    val deviceId = info["deviceId"] as String
+    val message = "pokit-android-go-interop-v1".toByteArray()
+    val sigHex = store.sign(hexOf(message))
+
+    // Sanity: verifies locally with SHA256withECDSA (same as Go sha256+VerifyASN1).
+    assertTrue(verify(spkiHex, message, hex(sigHex)))
+
+    val json = JSONObject()
+      .put("version", 1)
+      .put("messageHex", hexOf(message))
+      .put("publicKeySpkiHex", spkiHex)
+      .put("signatureHex", sigHex)
+      .put("deviceId", deviceId)
+      .toString()
+    // Written to the app files dir; pull with `adb pull` and place in
+    // companion-daemon/internal/devicetrust/testdata/ for the Go fixture test.
+    val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+    File(ctx.filesDir, "android_signature_fixture.json").writeText(json)
+  }
+
   // ── helpers ──
+
+  private fun verify(spkiHex: String, message: ByteArray, sig: ByteArray): Boolean {
+    val pub = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(hex(spkiHex)))
+    val v = Signature.getInstance("SHA256withECDSA")
+    v.initVerify(pub)
+    v.update(message)
+    return v.verify(sig)
+  }
+
+  private fun deleteAlias(a: String) {
+    try {
+      KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(a)
+    } catch (_: Exception) {}
+  }
 
   private fun hex(s: String): ByteArray {
     val out = ByteArray(s.length / 2)

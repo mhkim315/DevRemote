@@ -9,8 +9,9 @@ import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.PrivateKey
 import java.security.Signature
-import java.security.interfaces.ECPrivateKey
+import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 
 // Typed device-key failure. `code` mirrors the DeviceKeySupport / error vocabulary
@@ -115,16 +116,28 @@ class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
     if (entry !is KeyStore.PrivateKeyEntry) {
       throw DeviceKeyException("key_invalidated", "device key entry is not a private-key entry")
     }
-    val priv = entry.privateKey
-    if (priv !is ECPrivateKey) {
+    // Android Keystore private keys do NOT implement ECPrivateKey — they are
+    // opaque, non-exportable key objects. Validate via algorithm + KeyInfo +
+    // the certificate's public parameters, never by casting the private key.
+    val priv: PrivateKey = entry.privateKey
+    if (priv.algorithm != KeyProperties.KEY_ALGORITHM_EC) {
       throw DeviceKeyException("key_invalidated", "device key is not an EC key")
     }
+    // Non-exportable: an opaque Keystore key exposes no encoding.
     if (priv.encoded != null) {
       throw DeviceKeyException("key_exportable", "device key is unexpectedly exportable")
     }
 
     val keyInfo = keyInfoOf(priv)
       ?: throw DeviceKeyException("key_invalidated", "cannot read key info")
+    // Authorization contract: must permit SIGN and the SHA-256 digest.
+    if ((keyInfo.purposes and KeyProperties.PURPOSE_SIGN) == 0) {
+      throw DeviceKeyException("key_invalidated", "device key does not permit signing")
+    }
+    if (keyInfo.digests.none { it == KeyProperties.DIGEST_SHA256 }) {
+      throw DeviceKeyException("key_invalidated", "device key does not permit SHA-256")
+    }
+
     val level = securityLevelString(keyInfo)
     val hardwareBacked = level == "strongbox" || level == "tee"
     if (!hardwareBacked && !allowSoftwareKeystoreForTest) {
@@ -134,7 +147,16 @@ class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
 
     val cert = entry.certificate
       ?: throw DeviceKeyException("key_invalidated", "no public certificate")
-    val spki = cert.publicKey.encoded
+    // The public key IS a standard ECPublicKey — verify P-256 curve parameters.
+    val pub = cert.publicKey
+    if (pub !is ECPublicKey) {
+      throw DeviceKeyException("key_invalidated", "public key is not EC")
+    }
+    val params = pub.params
+    if (params.curve.field.fieldSize != 256 || params.order.bitLength() != 256) {
+      throw DeviceKeyException("key_invalidated", "public key is not P-256")
+    }
+    val spki = pub.encoded // X.509 SubjectPublicKeyInfo DER
     if (spki == null || spki.size != 91) {
       throw DeviceKeyException("spki_invalid", "unexpected public key encoding")
     }
@@ -152,7 +174,7 @@ class PokitDeviceKeyStore(private val alias: String = DEFAULT_ALIAS) {
     )
   }
 
-  private fun keyInfoOf(priv: ECPrivateKey): KeyInfo? = try {
+  private fun keyInfoOf(priv: PrivateKey): KeyInfo? = try {
     KeyFactory.getInstance(priv.algorithm, KEYSTORE).getKeySpec(priv, KeyInfo::class.java)
   } catch (e: Exception) {
     null

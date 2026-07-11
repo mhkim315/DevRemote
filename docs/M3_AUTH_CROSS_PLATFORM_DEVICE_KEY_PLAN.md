@@ -241,13 +241,23 @@ a thin Expo wrapper.
   StrongBox/TEE is never implied unless reported; attestation deferred.
 - `sign` = `SHA256withECDSA` over raw bytes (no JS hashing), ASN.1 DER, off the
   UI/JS thread; no logging of message/signature/alias/exception internals.
+- Existing-key validation (the reviewer's runtime failure): the opaque Keystore
+  private key is **never cast to `ECPrivateKey`**. Validated via
+  `PrivateKey.algorithm == "EC"`, `KeyInfo.purposes` (SIGN) + `KeyInfo.digests`
+  (SHA-256), the certificate's `ECPublicKey` params (P-256 field size + order),
+  non-exportability (`encoded == null`), and canonical 91-byte SPKI.
 - Missing vs invalidated distinguished by typed errors; incompatible/invalidated
   keys are never silently recreated. Delete or app-data wipe → re-pair required.
 - E-track: `:pokit-device-key:compileReleaseKotlin` (gated), clean prebuild
   durability, Go non-deterministic interop (`TestNativeSignatureInterop`), JS
-  `getKeyInfo`/`securityLevel` validation, all M3-auth-1C fail-closed tests.
-- M-track (device/emulator): `connectedAndroidTest`
-  (`PokitDeviceKeyInstrumentationTest`) + real Samsung smoke.
+  `getKeyInfo`/`securityLevel` validation, all M3-auth-1C fail-closed tests, and
+  the **emulator instrumentation gate** `scripts/android-native-gate.sh`
+  (`connectedAndroidTest` — 14 tests incl. new-instance persistence, wrong-key
+  rejection, P-384 / SHA-512 existing-key rejection, and the Go interop fixture
+  export `TestAndroidFixture`).
+- M-track (physical device only): TEE/StrongBox confirmation, real-device
+  security level, persistence across a physical restart, UI responsiveness —
+  the Samsung smoke.
 - iOS and Web remain `not_implemented` / fail-closed until M3-auth-1B.
 
 ## 6. M3-auth-1B — iOS Secure Enclave provider

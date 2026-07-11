@@ -7,6 +7,9 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -119,5 +122,72 @@ func TestNativeSignatureInterop(t *testing.T) {
 	}
 	if !ecdsa.VerifyASN1(pub, digest[:], sig2) {
 		t.Fatal("second native-shaped signature was rejected")
+	}
+}
+
+// TestAndroidFixture verifies a REAL Android Keystore signature captured by the
+// instrumentation test (PokitDeviceKeyInstrumentationTest.exportGoInteropFixture).
+// It skips when the fixture is absent (no device run available), and otherwise
+// proves the daemon accepts the device-produced signature and rejects tampering.
+//
+// Producing the fixture (M-track / emulator):
+//   ./gradlew :pokit-device-key:connectedAndroidTest
+//   adb pull /data/data/<app>/files/android_signature_fixture.json \
+//     internal/devicetrust/testdata/android_signature_fixture.json
+func TestAndroidFixture(t *testing.T) {
+	path := filepath.Join("testdata", "android_signature_fixture.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Skip("no Android fixture; run :pokit-device-key:connectedAndroidTest and pull it into testdata/")
+	}
+	var fx struct {
+		Version          int    `json:"version"`
+		MessageHex       string `json:"messageHex"`
+		PublicKeySpkiHex string `json:"publicKeySpkiHex"`
+		SignatureHex     string `json:"signatureHex"`
+		DeviceID         string `json:"deviceId"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if fx.Version != 1 {
+		t.Fatalf("unexpected fixture version %d", fx.Version)
+	}
+
+	spki, err := hex.DecodeString(fx.PublicKeySpkiHex)
+	if err != nil {
+		t.Fatalf("decode spki: %v", err)
+	}
+	pub, err := ParseP256PublicKey(spki)
+	if err != nil {
+		t.Fatalf("ParseP256PublicKey rejected the Android SPKI: %v", err)
+	}
+	if got := Fingerprint(spki); got != fx.DeviceID {
+		t.Fatalf("deviceId %s != sha256(SPKI) %s", fx.DeviceID, got)
+	}
+	msg, _ := hex.DecodeString(fx.MessageHex)
+	sig, err := hex.DecodeString(fx.SignatureHex)
+	if err != nil {
+		t.Fatalf("decode sig: %v", err)
+	}
+	digest := sha256.Sum256(msg)
+	if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+		t.Fatal("daemon rejected the real Android signature")
+	}
+	// Reject a modified message.
+	bad := sha256.Sum256(append(msg, 'x'))
+	if ecdsa.VerifyASN1(pub, bad[:], sig) {
+		t.Fatal("Android signature verified against a modified message")
+	}
+	// Reject a different key.
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if ecdsa.VerifyASN1(&other.PublicKey, digest[:], sig) {
+		t.Fatal("Android signature verified against a different key")
+	}
+	// Reject a mutated signature.
+	m := append([]byte(nil), sig...)
+	m[len(m)-1] ^= 0x01
+	if ecdsa.VerifyASN1(pub, digest[:], m) {
+		t.Fatal("mutated Android signature verified")
 	}
 }
