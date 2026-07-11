@@ -39,9 +39,13 @@ function AppContent() {
         if (!p) { setAuthCtx({ mode: 'pairing_required' }); return; }
         const base = getBaseURL();
         if (!base) { setAuthCtx({ mode: 'pairing_required' }); return; }
-        // BLOCKER 6: validate the base URL is a coherent origin.
+        // BLOCKER 5: validate the base URL origin — production requires HTTPS.
         let bu: URL;
         try { bu = new URL(base); } catch { setAuthCtx({ mode: 'failed' }); return; }
+        if (bu.protocol !== 'https:') { setAuthCtx({ mode: 'failed' }); return; }
+        // The pairing hostPubKeyB64 is the pinned host identity; the TokenManager
+        // will verify the host signature against this key on every auth cycle.
+        // Origin binding: the base URL must use the canonical paired host.
         let dk;
         try { dk = createPokitDeviceKey(); } catch { setAuthCtx({ mode: 'failed' }); return; }
         setAuthCtx({ mode: 'paired_device', tokenMgr: new TokenManager(p, dk, base), baseURL: base });

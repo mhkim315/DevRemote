@@ -421,14 +421,15 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   // Reconnect bridge: WebView messages {type:'pokit-reconnect-request'} are
   // received here. The controller issues a fresh ticket and posts it back.
   const handleReconnect = useCallback(async (data: any) => {
-    if (data?.type === 'pokit-reconnect-request' && tokenMgr && baseURL) {
-      if (data.session !== session) return;
-      const ctrl = ctrlRef.current;
-      if (!ctrl) return;
-      const { ticket } = await ctrl.reconnectTicket(session, tokenMgr, baseURL);
-      if (!ticket || ctrl !== ctrlRef.current) return;
-      wv.current?.postMessage(JSON.stringify({ type: 'pokit-ticket', ticket }));
-    }
+    if (data?.type !== 'pokit-reconnect-request' || !tokenMgr || !baseURL) return;
+    if (data.session !== session) return;
+    // Reject stale attempts: must match the current bootstrap attempt.
+    if (data.attemptId !== currentAttemptIdRef.current) return;
+    const ctrl = ctrlRef.current;
+    if (!ctrl) return;
+    const { ticket } = await ctrl.reconnectTicket(session, tokenMgr, baseURL);
+    if (!ticket || ctrl !== ctrlRef.current) return;
+    wv.current?.postMessage(JSON.stringify({ type: 'pokit-ticket', ticket }));
   }, [session, tokenMgr, baseURL]);
 
   const onMessage = useCallback((event: any) => {

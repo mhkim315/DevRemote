@@ -60,26 +60,25 @@ export class TerminalController {
     return { attemptId, result: { html, baseUrl: baseURL, ticket: t.ticket, sessionId } };
   }
 
-  // reconnectTicket with singleflight. Simultaneous calls for the same
-  // attempt share one in-flight promise.
+  // reconnectTicket with singleflight. If a flight is already in progress for
+  // the current generation, return it immediately without cancelling or
+  // starting a new generation. Only start a new generation when there is no
+  // flight (first caller or after completion).
   async reconnectTicket(
     sessionId: string, tokenMgr: TokenManager, baseURL: string,
   ): Promise<{ attemptId: number; ticket?: string }> {
-    this.cancel();
-    const attemptId = ++this.gen;
-    if (this.reconnectFlight) {
-      const prev = await this.reconnectFlight;
-      if (prev.attemptId === attemptId) return prev;
-    }
+    if (this.reconnectFlight) return this.reconnectFlight;
+
+    // No flight in progress — cancel any stale work and start a new generation.
+    this.gen++;
+    const attemptId = this.gen;
     const flight = (async () => {
       const t = await getWSTicket(sessionId, tokenMgr, baseURL);
       if (attemptId !== this.gen) return { attemptId };
       return { attemptId, ticket: t.ticket };
     })();
     this.reconnectFlight = flight;
-    const result = await flight;
-    this.reconnectFlight = null;
-    return result;
+    try { return await flight; } finally { this.reconnectFlight = null; }
   }
 
   cancel(): void { this.gen++; this.reconnectFlight = null; }
