@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
-import { pairThenConnect } from '../lib/authMode';
 
 export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<boolean> } = {}) {
   const { connect, connectionError } = useConnection();
@@ -22,41 +21,28 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
   const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
 
-    // Detect pairing QR payload: JSON with sessionId.
-    let payload: any = null;
-    try { payload = JSON.parse(data); } catch { payload = null; }
-
-    if (payload && typeof payload === 'object' && payload.sessionId && payload.hostPubKey) {
+    // Detect pairing QR payload: JSON with sessionId + hostPubKey.
+    const { isPairingQR, pairFromScannedQR } = await import('../lib/connectPairing');
+    if (isPairingQR(data)) {
       setScanned(true);
-      // B4: any failure in pairing install or connection must re-enable the
-      // scanner exactly once — never swallow it into a stuck scanned=true state.
-      try {
-        // Import pairAndSave lazily so ConnectScreen doesn't bundle it eagerly.
-        const { pairAndSave } = await import('../lib/pairAndSave');
-        const { createPokitDeviceKey } = await import('../../modules/pokit-device-key');
-        const dk = createPokitDeviceKey();
-        // Operational base URL is the currently set daemon URL (tunnel/remote).
-        const { getBaseURL } = await import('../lib/client');
-        const base = getBaseURL();
-        if (!base) { alert('Set the daemon URL first'); setScanned(false); return; }
-        const result = await pairAndSave(data, dk, base);
-        if (result.status === 'approved') {
-          // Blocker C: install trusted auth state (onPaired) FIRST, then connect
-          // ONLY if it succeeded. pairThenConnect calls onReject exactly once on
-          // any failure so the scanner is usable again.
-          await pairThenConnect({
-            onPaired,
-            connect: () => connect(base),
-            onReject: () => setScanned(false),
-          });
-        } else {
-          alert('Pairing failed: ' + (result.errorDetail || result.status));
-          setScanned(false);
-        }
-      } catch (e: any) {
-        alert('Pairing error: ' + (e?.message || String(e)));
-        setScanned(false);
-      }
+      // The production pairing transition (Secure Enclave sign → persist origin →
+      // install trusted auth BEFORE connect) lives in connectPairing so it is
+      // testable end-to-end. onReject re-enables the scanner exactly once on any
+      // failure; no partial paired state and no legacy fallback.
+      const { pairAndSave } = await import('../lib/pairAndSave');
+      const { createPokitDeviceKey } = await import('../../modules/pokit-device-key');
+      const { getBaseURL } = await import('../lib/client');
+      await pairFromScannedQR({
+        data,
+        createDeviceKey: createPokitDeviceKey,
+        getBaseURL,
+        pairAndSave,
+        connect: (base) => connect(base),
+        onPaired,
+        onReject: () => setScanned(false),
+        onError: (msg) => alert(msg),
+        onNeedBaseURL: () => alert('Set the daemon URL first'),
+      });
       return;
     }
 
