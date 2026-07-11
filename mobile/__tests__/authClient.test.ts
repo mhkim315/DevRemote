@@ -25,31 +25,41 @@ const deviceKey = {
   getSupport: async () => 'supported' as const, hasKey: async () => true, ensureKey: async () => { throw new Error('x'); }, getPublicKeySpki: async () => DEV_SPKI, deleteKey: async () => {},
 };
 
-// Helper: build a valid challenge response + signed host proof.
-function challResp(bootId: string, cid: Uint8Array, sn: Uint8Array, capturedCN: Uint8Array) {
-  const now = new Date(); const issuedAt = now; const expiresAt = new Date(now.getTime() + 300_000);
-  const createdAtMS = issuedAt.getTime(); const expiresAtMS = expiresAt.getTime();
-  // Read the actual clientNonce from the authPost body.
-  return (body: unknown) => {
-    const b = body as { clientNonce: string };
-    const cn = new Uint8Array(32); for (let i = 0; i < 64; i += 2) cn[i >> 1] = parseInt(b.clientNonce.substr(i, 2), 16);
-    capturedCN.set(cn);
-    const t = buildAuthTranscript({ role: 'host', hostId: 'host-001', deviceId: DEV_ID, daemonBootId: bootId, challengeId: cid, clientNonce: capturedCN, serverNonce: sn, createdAtMS, expiresAtMS });
-    const sig = p256.sign(t, HOST_PRIV, { format: 'der', prehash: true });
-    return { version: 1, challengeId: toHex(cid), hostId: 'host-001', hostKeyFingerprint: HOST_FP, daemonBootId: bootId, serverNonce: toHex(sn), hostSignature: toHex(sig), issuedAt: issuedAt.toISOString(), expiresAt: expiresAt.toISOString() };
-  };
+// Shared auth session — challResp records timestamps; verifyResp reuses them
+// so the signed transcript is byte-identical across both phases.
+interface AuthSession { capturedCN: Uint8Array; createdAtMS: number; expiresAtMS: number; bootId: string; cid: Uint8Array; sn: Uint8Array; }
+let _tokenCounter = 0;
+
+function makeAuthSession(bootId: string, cid: Uint8Array, sn: Uint8Array): AuthSession {
+  const now = new Date();
+  return { capturedCN: new Uint8Array(32), createdAtMS: now.getTime(), expiresAtMS: now.getTime() + 300_000, bootId, cid, sn };
 }
 
-function verifyResp(capturedCN: Uint8Array, bootId: string, cid: Uint8Array, sn: Uint8Array) {
-  return (body: unknown) => {
-    const b = body as { signature: string };
-    const sigBytes = new Uint8Array(b.signature.match(/.{2}/g)!.map((h: string) => parseInt(h, 16)));
-    const now = new Date(); const ia = now; const ea = new Date(now.getTime() + 300_000);
-    const t = buildAuthTranscript({ role: 'device', hostId: 'host-001', deviceId: DEV_ID, daemonBootId: bootId, challengeId: cid, clientNonce: capturedCN, serverNonce: sn, createdAtMS: ia.getTime(), expiresAtMS: ea.getTime() });
+function mockChallenge(ses: AuthSession) {
+  mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(init!.body as string);
+    const cid = ses.cid;
+    for (let i = 0; i < 32; i++) cid[i] = i + 1;
+    const cn = new Uint8Array(32); for (let i = 0; i < 64; i += 2) cn[i >> 1] = parseInt(body.clientNonce.substr(i, 2), 16);
+    ses.capturedCN.set(cn);
+    const t = buildAuthTranscript({ role: 'host', hostId: 'host-001', deviceId: DEV_ID, daemonBootId: ses.bootId, challengeId: cid, clientNonce: ses.capturedCN, serverNonce: ses.sn, createdAtMS: ses.createdAtMS, expiresAtMS: ses.expiresAtMS });
+    const sig = p256.sign(t, HOST_PRIV, { format: 'der', prehash: true });
+    return { ok: true, json: async () => ({ version: 1, challengeId: toHex(cid), hostId: 'host-001', hostKeyFingerprint: HOST_FP, daemonBootId: ses.bootId, serverNonce: toHex(ses.sn), hostSignature: toHex(sig), issuedAt: new Date(ses.createdAtMS).toISOString(), expiresAt: new Date(ses.expiresAtMS).toISOString() }) } as any;
+  });
+}
+
+function mockVerify(ses: AuthSession): string {
+  const token = (++_tokenCounter).toString(16).padStart(64, '0');
+  mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(init!.body as string);
+    const sigBytes = new Uint8Array(body.signature.match(/.{2}/g)!.map((h: string) => parseInt(h, 16)));
+    const cid = ses.cid;
+    const t = buildAuthTranscript({ role: 'device', hostId: 'host-001', deviceId: DEV_ID, daemonBootId: ses.bootId, challengeId: cid, clientNonce: ses.capturedCN, serverNonce: ses.sn, createdAtMS: ses.createdAtMS, expiresAtMS: ses.expiresAtMS });
     const ok = p256.verify(sigBytes, t, DEV_PUB, { format: 'der', prehash: true });
     if (!ok) throw new Error(`device sig mismatch in fixture`);
-    return { token: '0'.repeat(64), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read', 'sessions:create'], deviceId: DEV_ID };
-  };
+    return { ok: true, json: async () => ({ token, tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read', 'sessions:create'], deviceId: DEV_ID }) } as any;
+  });
+  return token;
 }
 
 // Build fetch mocks that introspect the POST body.
@@ -64,84 +74,56 @@ describe('TokenManager', () => {
   beforeEach(() => mockFetch.mockReset());
 
   it('happy path: challenge → verify → bearer', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    // Use mockImplementationOnce directly (not via mockFetchPost helper).
-    let bounceCN = new Uint8Array(32);
-    mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(init!.body as string);
-      bounceCN = new Uint8Array(32); for (let i = 0; i < 64; i += 2) bounceCN[i >> 1] = parseInt(body.clientNonce.substr(i, 2), 16);
-      const now = new Date(); const iss = now; const exp = new Date(now.getTime() + 300_000);
-      const t = buildAuthTranscript({ role: 'host', hostId: 'host-001', deviceId: DEV_ID, daemonBootId: 'b1', challengeId: cid, clientNonce: bounceCN, serverNonce: sn, createdAtMS: iss.getTime(), expiresAtMS: exp.getTime() });
-      return { ok: true, json: async () => ({ version: 1, challengeId: toHex(cid), hostId: 'host-001', hostKeyFingerprint: HOST_FP, daemonBootId: 'b1', serverNonce: toHex(sn), hostSignature: toHex(p256.sign(t, HOST_PRIV, { format: 'der', prehash: true })), issuedAt: iss.toISOString(), expiresAt: exp.toISOString() }) } as any;
-    });
-    mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(init!.body as string);
-      const sigBytes = new Uint8Array(body.signature.match(/.{2}/g)!.map((h: string) => parseInt(h, 16)));
-      const now = new Date(); const t = buildAuthTranscript({ role: 'device', hostId: 'host-001', deviceId: DEV_ID, daemonBootId: 'b1', challengeId: cid, clientNonce: bounceCN, serverNonce: sn, createdAtMS: now.getTime(), expiresAtMS: now.getTime() + 300_000 });
-      p256.verify(sigBytes, t, DEV_PUB, { format: 'der', prehash: true }); // throws on mismatch
-      return { ok: true, json: async () => ({ token: '0'.repeat(64), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read', 'sessions:create'], deviceId: DEV_ID }) } as any;
-    });
+    const ses = makeAuthSession('b1', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    const tok = mockVerify(ses);
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
-    expect(await mgr.getValidToken()).toBe('0'.repeat(64));
+    expect(await mgr.getValidToken()).toBe(tok);
   });
 
   it('singleflight: concurrent calls share one challenge', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('b2', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'b2', cid, sn));
+    const ses = makeAuthSession('b2', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    const tok = mockVerify(ses);
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     const [a, b] = await Promise.all([mgr.getValidToken(), mgr.getValidToken()]);
-    expect(a).toBe('0'.repeat(64)); expect(a).toBe(b);
+    expect(a).toBe(tok); expect(a).toBe(b);
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it('forceRefresh: invalidateIfCurrent + getValidToken(true)', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('b3', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'b3', cid, sn));
+  it('forceRefresh: getValidToken(true) forces re-auth', async () => {
+    const ses1 = makeAuthSession('b3', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses1);
+    const tokA = mockVerify(ses1);
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
-    expect(await mgr.getValidToken()).toBe('0'.repeat(64));
-    // Invalidate the current token and force re-auth.
-    mgr.invalidateIfCurrent('0'.repeat(64));
-    const cid2 = new Uint8Array(32); for (let i = 0; i < 32; i++) cid2[i] = 32 - i;
-    const sn2 = new Uint8Array(32); sn2[0] = 0xcd; const cn2 = new Uint8Array(32);
-    mockFetchPost(challResp('b4', cid2, sn2, cn2));
-    mockFetchPost(verifyResp(cn2, 'b4', cid2, sn2));
-    expect(await mgr.getValidToken()).toBe('0'.repeat(64));
+    expect(await mgr.getValidToken()).toBe(tokA);
+    // forceRefresh → new challenge + verify.
+    const ses2 = makeAuthSession('b4', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses2);
+    const tokB = mockVerify(ses2);
+    expect(await mgr.getValidToken(true)).toBe(tokB);
+    expect(tokB).not.toBe(tokA);
     expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
   it('host signature failure', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab;
-    // Return a garbage host signature.
-    mockFetchPost(() => ({
-      version: 1, challengeId: toHex(cid), hostId: 'host-001', hostKeyFingerprint: HOST_FP,
-      daemonBootId: 'b5', serverNonce: toHex(sn),
-      hostSignature: toHex(new Uint8Array(70).fill(0x30)),
-      issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(),
-    }));
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ version: 1, challengeId: 'a'.repeat(64), hostId: 'host-001', hostKeyFingerprint: HOST_FP, daemonBootId: 'b5', serverNonce: 'b'.repeat(64), hostSignature: toHex(new Uint8Array(70).fill(0x30)), issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString() }) } as any));
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     await expect(mgr.getValidToken()).rejects.toMatchObject({ code: 'host_pin_fail' });
   });
 
   it('verify with missing deviceId', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('b6', cid, sn, cn));
-    mockFetchPost(() => ({ token: '0'.repeat(64), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'] }));
+    const ses = makeAuthSession('b6', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ token: '00'.repeat(32), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'] }) } as any));
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     await expect(mgr.getValidToken()).rejects.toMatchObject({ code: 'verify_rejected' });
   });
 
   it('unknown permission', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('b7', cid, sn, cn));
-    mockFetchPost(() => ({ token: '0'.repeat(64), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read', 'admin'], deviceId: DEV_ID }));
+    const ses = makeAuthSession('b7', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ token: '00'.repeat(32), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read', 'admin'], deviceId: DEV_ID }) } as any));
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     await expect(mgr.getValidToken()).rejects.toMatchObject({ code: 'verify_rejected' });
   });
@@ -156,62 +138,73 @@ describe('TokenManager', () => {
 describe('authenticatedFetch', () => {
   beforeEach(() => mockFetch.mockReset());
 
-  it('GET 401 → invalidateIfCurrent + force refresh → retry', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('f1', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'f1', cid, sn));
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 } as any);
-    // Force refresh challenge+verify.
-    mockFetchPost(challResp('f1x', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'f1x', cid, sn));
-    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 } as any);
+  it('GET 401 → refresh → retry with new Authorization', async () => {
+    const ses1 = makeAuthSession('f1', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses1);
+    const tokA = mockVerify(ses1);
+    // First GET uses tokA, returns 401.
+    mockFetch.mockImplementationOnce(async (url: string, init: RequestInit) => {
+      const auth = (init!.headers as Record<string, string>)['Authorization'];
+      if (auth === `Bearer ${tokA}`) return { ok: false, status: 401 } as any;
+      throw new Error(`unexpected auth: ${auth}`);
+    });
+    // refreshAfter401 → new session.
+    const ses2 = makeAuthSession('f1x', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses2);
+    const tokB = mockVerify(ses2);
+    expect(tokB).not.toBe(tokA);
+    // Retry GET uses tokB, returns 200.
+    mockFetch.mockImplementationOnce(async (url: string, init: RequestInit) => {
+      const auth = (init!.headers as Record<string, string>)['Authorization'];
+      if (auth === `Bearer ${tokB}`) return { ok: true, status: 200 } as any;
+      throw new Error(`retry auth mismatch: expected ${tokB}, got ${auth}`);
+    });
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     const res = await authenticatedFetch('http://daemon/api', { method: 'GET' }, mgr);
     expect(res.status).toBe(200);
   });
 
   it('POST 401 → no retry', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('f2', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'f2', cid, sn));
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 } as any);
+    const ses = makeAuthSession('f2', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    mockVerify(ses);
+    mockFetch.mockImplementationOnce(async () => ({ ok: false, status: 401 }) as any);
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     await expect(authenticatedFetch('http://daemon/api', { method: 'POST', body: '{}' }, mgr)).rejects.toMatchObject({ code: 'host_pin_fail' });
   });
 
   it('GET 401 → refresh → 401 → typed failure', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('d1', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'd1', cid, sn));
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 } as any);
-    mockFetchPost(challResp('d1x', cid, sn, cn));
-    mockFetchPost(verifyResp(cn, 'd1x', cid, sn));
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 } as any);
+    const ses1 = makeAuthSession('d1', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses1);
+    mockVerify(ses1);
+    mockFetch.mockImplementationOnce(async () => ({ ok: false, status: 401 }) as any);
+    // Refresh.
+    const ses2 = makeAuthSession('d1x', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses2);
+    mockVerify(ses2);
+    // Retry also 401.
+    mockFetch.mockImplementationOnce(async () => ({ ok: false, status: 401 }) as any);
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
     await expect(authenticatedFetch('http://daemon/api', { method: 'GET' }, mgr)).rejects.toMatchObject({ code: 'host_pin_fail' });
   });
 
-  it('stale 401 does not invalidate a fresh bearer', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('s1', cid, sn, cn));
-    mockFetchPost((body) => ({ ...verifyResp(cn, 's1', cid, sn)(body), token: '1'.repeat(64) }));
+  // refreshAfter401 atomically: if requestToken IS stale → returns latest without re-auth.
+  it('stale 401 returns the already-fresh bearer without a third auth', async () => {
+    const sesA = makeAuthSession('sa', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(sesA);
+    const tokA = mockVerify(sesA);
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
-    const tokA = await mgr.getValidToken();
-    // Refresh → new bearer tokB.
-    mgr.invalidateIfCurrent(tokA);
-    const cid2 = new Uint8Array(32); for (let i = 0; i < 32; i++) cid2[i] = 32 - i;
-    const sn2 = new Uint8Array(32); sn2[0] = 0xcd; const cn2 = new Uint8Array(32);
-    mockFetchPost(challResp('s2', cid2, sn2, cn2));
-    mockFetchPost((body) => ({ ...verifyResp(cn2, 's2', cid2, sn2)(body), token: '2'.repeat(64) }));
-    const tokB = await mgr.getValidToken(true);
-    expect(tokB).not.toBe(tokA);
-    // Stale 401 for tokA must NOT invalidate tokB.
-    mgr.invalidateIfCurrent(tokA);
-    expect(await mgr.getValidToken()).toBe(tokB);
+    await mgr.getValidToken(); // seed tokA
+
+    // Advance to tokB.
+    const sesB = makeAuthSession('sb', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(sesB);
+    const tokB = mockVerify(sesB);
+    await mgr.getValidToken(true); // force refresh → tokB
+
+    // Stale 401 for tokA → refreshAfter401 returns tokB (no third auth).
+    const reused = await mgr.refreshAfter401(tokA);
+    expect(reused).toBe(tokB);
   });
 });
 
@@ -219,30 +212,27 @@ describe('bearer token format', () => {
   beforeEach(() => mockFetch.mockReset());
 
   it('rejects 63-char token', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('tf1', cid, sn, cn));
-    mockFetchPost(() => ({ token: '0'.repeat(63), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'], deviceId: DEV_ID }));
+    const ses = makeAuthSession('tf1', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ token: '0'.repeat(63), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'], deviceId: DEV_ID }) } as any));
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
-    await expect((mgr as any).authenticate()).rejects.toMatchObject({ code: 'verify_rejected' });
+    await expect(mgr.getValidToken()).rejects.toMatchObject({ code: 'verify_rejected' });
   });
 
   it('rejects uppercase token', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('tf2', cid, sn, cn));
-    mockFetchPost(() => ({ token: 'F'.repeat(64), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'], deviceId: DEV_ID }));
+    const ses = makeAuthSession('tf2', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ token: 'F'.repeat(64), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'], deviceId: DEV_ID }) } as any));
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
-    await expect((mgr as any).authenticate()).rejects.toMatchObject({ code: 'verify_rejected' });
+    await expect(mgr.getValidToken()).rejects.toMatchObject({ code: 'verify_rejected' });
   });
 
   it('rejects token with newline', async () => {
-    const cid = new Uint8Array(32); for (let i = 0; i < 32; i++) cid[i] = i + 1;
-    const sn = new Uint8Array(32); sn[0] = 0xab; const cn = new Uint8Array(32);
-    mockFetchPost(challResp('tf3', cid, sn, cn));
-    mockFetchPost(() => ({ token: '0'.repeat(32) + '\n' + '0'.repeat(32), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'], deviceId: DEV_ID }));
+    const ses = makeAuthSession('tf3', new Uint8Array(32), new Uint8Array(32));
+    mockChallenge(ses);
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => ({ token: '0'.repeat(32) + '\n' + '0'.repeat(32), tokenType: 'Bearer', expiresAt: new Date(Date.now() + 600_000).toISOString(), permissions: ['sessions:read'], deviceId: DEV_ID }) } as any));
     const mgr = new TokenManager(pairing, deviceKey as any, 'http://daemon');
-    await expect((mgr as any).authenticate()).rejects.toMatchObject({ code: 'verify_rejected' });
+    await expect(mgr.getValidToken()).rejects.toMatchObject({ code: 'verify_rejected' });
   });
 });
 

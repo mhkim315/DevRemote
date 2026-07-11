@@ -45,11 +45,16 @@ export class TokenManager {
     this.pairing = pairing; this.deviceKey = deviceKey; this.baseURL = baseURL;
   }
 
-  // invalidateIfCurrent clears state ONLY if the given token matches the
-  // currently held bearer. A stale 401 from a request that used an already-
-  // replaced token must not invalidate the latest bearer.
-  invalidateIfCurrent(token: string): void {
-    if (this.state && this.state.token === token) this.state = null;
+  // refreshAfter401 handles a 401 for `requestToken` atomically:
+  // - if requestToken IS the current bearer → force a fresh challenge + return new token
+  // - if requestToken is stale (already replaced) → return the latest token as-is
+  // This prevents a stale 401 from destroying a freshly-refreshed bearer.
+  async refreshAfter401(requestToken: string): Promise<string> {
+    if (this.state && this.state.token === requestToken) {
+      this.state = null;
+      return this.getValidToken(true);
+    }
+    return this.getValidToken(false);
   }
 
   // getValidToken returns a fresh bearer. Callers get one shared in-flight
