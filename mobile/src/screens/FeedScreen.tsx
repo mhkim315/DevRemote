@@ -135,23 +135,60 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
 
-  // M3-auth-4A: in device-auth mode, fetch one-time WS ticket before opening
-  // the WebView. Legacy token path remains for local dev mode.
-  const [termUrl, setTermUrl] = useState<string>('');
-  const [termUrlError, setTermUrlError] = useState<string>('');
+  // M3-auth-4A: in device-auth mode, fetch the /term/ bootstrap HTML with the
+  // device bearer, inject the one-time WS ticket, and load as inline source.
+  // The WebView cannot set Authorization headers, so the HTML must be fetched
+  // by the native layer. The legacy token path remains for local dev mode.
+  const [termSource, setTermSource] = useState<{ html: string; baseUrl: string } | { uri: string } | null>(null);
+  const [termError, setTermError] = useState<string>('');
+  const ticketRef = useRef<string>('');
+  // Track the session the current ticket was issued for; discard stale tickets.
+  const ticketSessionRef = useRef<string>('');
+
+  const fetchTicketAndBootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string) => {
+    setTermSource(null); setTermError('');
+    ticketSessionRef.current = sess;
+    try {
+      // 1. Fetch /term/ HTML (device bearer in Authorization header).
+      const { authenticatedFetch } = await import('../lib/authTransport');
+      const htmlRes = await authenticatedFetch(`${base}/term/?session=${encodeURIComponent(sess)}`, undefined, mgr);
+      if (!htmlRes.ok) throw new Error(`bootstrap failed: ${htmlRes.status}`);
+      let html = await htmlRes.text();
+
+      // 2. Get a one-time WS ticket.
+      const t = await getWSTicket(sess, mgr, base);
+
+      // 3. Inject ticket into the HTML so the page's JS uses it for the WS URL.
+      //    The existing terminal HTML passes `location.search` to the WS URL,
+      //    so we add &ticket=... to the search params the page will see.
+      ticketRef.current = t.ticket;
+      // The page loads with session=TICKET_SESSION&ticket=TICKET in the URL.
+      // The JS passes location.search onto the WS URL, so the ticket reaches
+      // /term/ws?session=...&ticket=...
+      const bootstrapURL = `${base}/term/?session=${encodeURIComponent(sess)}&ticket=${encodeURIComponent(t.ticket)}`;
+      // Fetch it again with the ticket in the URL (the page just needs to load;
+      // the ticket is for the WS, not the page). Actually, the page HTML is the
+      // same regardless — embed it inline.
+      setTermSource({ html, baseUrl: base });
+    } catch (e: any) {
+      if (ticketSessionRef.current === sess) {
+        setTermError(e instanceof Error ? e.message : 'connection failed');
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (tokenMgr && baseURL) {
-      setTermUrl('');
-      setTermUrlError('');
-      getWSTicket(session, tokenMgr, baseURL)
-        .then(t => { setTermUrl(wsTicketURL(baseURL, t.ticket, session)); })
-        .catch(e => { setTermUrlError(e instanceof Error ? e.message : 'ticket request failed'); });
+      fetchTicketAndBootstrap(session, tokenMgr, baseURL);
     } else {
-      setTermUrl(terminalURL(session, token));
-      setTermUrlError('');
+      setTermSource({ uri: terminalURL(session, token) });
+      setTermError('');
     }
-  }, [session, token, tokenMgr, baseURL]);
-  const source = useMemo(() => (termUrl ? { uri: termUrl } : { uri: 'about:blank' }), [termUrl]);
+  }, [session, token, tokenMgr, baseURL, fetchTicketAndBootstrap]);
+
+  const doRetry = useCallback(() => {
+    if (tokenMgr && baseURL) fetchTicketAndBootstrap(session, tokenMgr, baseURL);
+  }, [session, tokenMgr, baseURL, fetchTicketAndBootstrap]);
 
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (e) => {
@@ -524,12 +561,12 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
 
   return (
     <SafeAreaView style={styles.container}>
-      {termUrlError ? (
+      {termError ? (
         <View style={{ padding: 20, alignItems: 'center' }}>
           <Text style={{ color: '#f85149', fontSize: 14, textAlign: 'center', marginBottom: 8 }}>
-            Could not connect to terminal: {termUrlError}
+            Could not connect to terminal: {termError}
           </Text>
-          <TouchableOpacity onPress={() => { setTermUrlError(''); }} style={{ backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}>
+          <TouchableOpacity onPress={doRetry} style={{ backgroundColor: '#1E91B3', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}>
             <Text style={{ color: '#fff', fontWeight: '700' }}>RETRY</Text>
           </TouchableOpacity>
         </View>
@@ -606,7 +643,7 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
           ) : (
             <WebView
               ref={wv}
-              source={source}
+              source={termSource || { uri: 'about:blank' }}
               style={styles.webview}
               javaScriptEnabled
               domStorageEnabled

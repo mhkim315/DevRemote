@@ -29,6 +29,8 @@ const linking: LinkingOptions<{}> = {
 
 function DashboardStackScreen({ route }: any) {
   const token = route.params?.token;
+  const tokenMgr = route.params?.tokenMgr;
+  const baseURL = route.params?.baseURL;
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="DashboardMain">
@@ -36,6 +38,8 @@ function DashboardStackScreen({ route }: any) {
           <DashboardScreen
             {...props}
             token={token}
+            tokenMgr={tokenMgr}
+            baseURL={baseURL}
             onSelectAgent={(session) => props.navigation.navigate('Terminal', { session })}
             onSnippets={() => props.navigation.navigate('Snippets')}
           />
@@ -43,11 +47,13 @@ function DashboardStackScreen({ route }: any) {
       </Stack.Screen>
       <Stack.Screen name="Terminal">
         {(props: any) => (
-          <FeedScreen 
-            {...props} 
-            session={props.route.params.session} 
-            token={token} 
-            onBack={() => props.navigation.goBack()} 
+          <FeedScreen
+            {...props}
+            session={props.route.params.session}
+            token={token}
+            tokenMgr={tokenMgr}
+            baseURL={baseURL}
+            onBack={() => props.navigation.goBack()}
           />
         )}
       </Stack.Screen>
@@ -63,7 +69,7 @@ function DashboardStackScreen({ route }: any) {
   );
 }
 
-export function RootTabs({ token }: { token?: string }) {
+export function RootTabs({ token, tokenMgr, baseURL }: { token?: string; tokenMgr?: any; baseURL?: string }) {
   return (
     <NavigationContainer theme={DarkTheme} linking={linking}>
       <Tab.Navigator
@@ -92,7 +98,7 @@ export function RootTabs({ token }: { token?: string }) {
         <Tab.Screen 
           name="DashboardStack" 
           component={DashboardStackScreen}
-          initialParams={{ token }}
+          initialParams={{ token, tokenMgr, baseURL }}
           options={{ title: 'Dashboard' }} 
         />
         <Tab.Screen 

@@ -12,6 +12,8 @@ interface Props {
   onSelectAgent: (sessionName: string) => void;
   onSnippets: () => void;
   token?: string;
+  tokenMgr?: any;  // M3-auth-4A: device bearer manager (optional, remote mode)
+  baseURL?: string; // M3-auth-4A: paired host base URL
 }
 
 export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Props) {
