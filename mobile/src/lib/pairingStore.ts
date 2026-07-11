@@ -12,7 +12,8 @@ export interface StoredPairing {
   hostPubKeyB64: string;
   deviceId: string;
   baseURL: string;
-  pairedAt: string; // ISO 8601
+  origin?: string;   // canonical origin (scheme://host:port), set at pair time
+  pairedAt: string;  // ISO 8601
   role: string;
 }
 
@@ -34,7 +35,7 @@ export async function loadPairing(): Promise<StoredPairing | null> {
   const p = parsed as Record<string, unknown>;
   if (typeof p.hostId !== 'string' || typeof p.hostPubKeyB64 !== 'string' ||
       typeof p.deviceId !== 'string' || typeof p.baseURL !== 'string' ||
-      typeof p.pairedAt !== 'string' || typeof p.role !== 'string') {
+      typeof p.origin !== 'string' || typeof p.pairedAt !== 'string' || typeof p.role !== 'string') {
     await AsyncStorage.removeItem(PAIRING_KEY);
     return null;
   }

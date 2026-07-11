@@ -17,7 +17,12 @@ export interface TerminalBootstrap {
   sessionId: string;
 }
 
+// Globally unique connection ID — ensures different controller instances can never
+// produce colliding attempt IDs (BLOCKER 3).
+let _nextConnId = 1;
+
 export class TerminalController {
+  readonly connId = _nextConnId++;
   gen = 0;
   private reconnectFlight: Promise<{ attemptId: number; ticket?: string }> | null = null;
 
@@ -40,17 +45,26 @@ export class TerminalController {
     // Inject ticket + reconnect bridge. The bridge installs AFTER the DOM
     // is fully loaded (DOMContentLoaded or fallback setTimeout) so the
     // daemon's real connect() is defined before we wrap it.
+    const connId = this.connId;
     const ticketScript = `<script>
 (function(){
-  var ticket=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId};
-  var u=new URL(location.href); u.searchParams.set('session',session); u.searchParams.set('ticket',ticket); window.history.replaceState({},'',u.toString());
+  var ticket=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId}, connId=${connId};
   var pending=false, realConnect=null;
-  function sendReconnect(){ try{window.ReactNativeWebView.postMessage(JSON.stringify({type:'pokit-reconnect-request',session:session,attemptId:attemptId}))}catch{} }
+  // Ticket is ephemeral: set it only for the new WebSocket() call, then strip
+  // from history so it never appears in navigation state or reconnect URLs.
+  function wsURL(tk){ var u=new URL(location.href); u.searchParams.set('session',session); u.searchParams.set('ticket',tk); return '/term/ws'+u.search; }
+  function sendReconnect(){ try{window.ReactNativeWebView.postMessage(JSON.stringify({type:'pokit-reconnect-request',session:session,attemptId:attemptId,connId:connId}))}catch{} }
   function install(){
     if(window.__pokitBridgeInstalled) return; window.__pokitBridgeInstalled=true;
     realConnect=window.connect; window.connect=function(){ if(pending) return; pending=true; sendReconnect(); };
-    // Listen for fresh ticket from native, validate it, then connect.
-    window.addEventListener('message',function(e){ try{ var d=JSON.parse(e.data); if(d&&d.type==='pokit-ticket'&&typeof d.ticket==='string'&&/^[0-9a-f]{64}$/.test(d.ticket)){ u.searchParams.set('ticket',d.ticket); window.history.replaceState({},'',u.toString()); pending=false; if(realConnect) realConnect(); } }catch{} });
+    // Replace the page's WS URL construction so it uses the ephemeral ticket.
+    // The original code does: new WebSocket(protocol+host+"/term/ws"+location.search)
+    // Override: the page will call our connect which triggers native → ticket → connect.
+    window.addEventListener('message',function(e){ try{ var d=JSON.parse(e.data); if(d&&d.type==='pokit-ticket'&&typeof d.ticket==='string'&&/^[0-9a-f]{64}$/.test(d.ticket)){ pending=false; if(realConnect){ var orig=window._realWSUrl; window._realWSUrl=wsURL(d.ticket); realConnect(); window._realWSUrl=null; } } }catch{} });
+    // Also intercept the raw WS URL construction. The daemon page builds the WS URL as:
+    // "ws://"+location.host+"/term/ws"+location.search
+    // We override it to use the ephemeral ticket URL.
+    var _origWS=window.WebSocket; window.WebSocket=function(url,protocols){ if(typeof url==='string'&&url.indexOf('/term/ws')!==-1&&window._realWSUrl){ url=window._realWSUrl; } return new _origWS(url,protocols); }; window.WebSocket.prototype=_origWS.prototype;
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',install); else setTimeout(install,0);
 })();
@@ -78,7 +92,7 @@ export class TerminalController {
       return { attemptId, ticket: t.ticket };
     })();
     this.reconnectFlight = flight;
-    try { return await flight; } finally { this.reconnectFlight = null; }
+    try { return await flight; } finally { if (this.reconnectFlight === flight) this.reconnectFlight = null; }
   }
 
   cancel(): void { this.gen++; this.reconnectFlight = null; }

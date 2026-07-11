@@ -18,7 +18,7 @@ const DEV_PRIV = p256.utils.randomSecretKey();
 const DEV_PUB = p256.getPublicKey(DEV_PRIV, false);
 const DEV_SPKI = (() => { const s = new Uint8Array(91); s.set(P256_PREFIX, 0); s.set(DEV_PUB, 26); return s; })();
 const DEV_ID = toHex(sha256(DEV_SPKI));
-const pairing = { hostId: 'host-001', hostPubKeyB64: HOST_B64, deviceId: DEV_ID, baseURL: 'http://daemon', pairedAt: '2026', role: 'owner' };
+const pairing = { hostId: 'host-001', hostPubKeyB64: HOST_B64, deviceId: DEV_ID, baseURL: 'http://daemon', origin: 'http://daemon', pairedAt: '2026', role: 'owner' };
 const deviceKey = {
   getKeyInfo: async () => ({ provider: 'android_keystore' as const, keyVersion: 1 as const, deviceId: DEV_ID, publicKeySpki: DEV_SPKI, hardwareBacked: true as const, nonExportable: true as const, securityLevel: 'tee' as const }),
   sign: async (msg: Uint8Array) => p256.sign(msg, DEV_PRIV, { format: 'der', prehash: true }),

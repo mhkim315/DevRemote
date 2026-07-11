@@ -153,6 +153,7 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
       const { attemptId, result } = await ctrl.bootstrap(sess, mgr, base);
       if (!result) return; // stale (attemptId mismatch from later cancel)
       currentAttemptIdRef.current = attemptId;
+      connIdRef.current = ctrl.connId;
       setTermSource({ html: result.html, baseUrl: result.baseUrl });
       setTermError('');
     } catch (e: any) {
@@ -420,11 +421,12 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
 
   // Reconnect bridge: WebView messages {type:'pokit-reconnect-request'} are
   // received here. The controller issues a fresh ticket and posts it back.
+  const connIdRef = useRef<number>(0);
   const handleReconnect = useCallback(async (data: any) => {
     if (data?.type !== 'pokit-reconnect-request' || !tokenMgr || !baseURL) return;
     if (data.session !== session) return;
-    // Reject stale attempts: must match the current bootstrap attempt.
-    if (data.attemptId !== currentAttemptIdRef.current) return;
+    if (data.connId !== connIdRef.current) return;   // different controller instance
+    if (data.attemptId !== currentAttemptIdRef.current) return; // stale bootstrap
     const ctrl = ctrlRef.current;
     if (!ctrl) return;
     const { ticket } = await ctrl.reconnectTicket(session, tokenMgr, baseURL);
