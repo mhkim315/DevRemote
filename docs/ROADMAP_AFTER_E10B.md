@@ -129,8 +129,8 @@ M2.5-5 Revoke / Minimal Audit                  ACCEPT df7a3bd9a (see acceptance 
 M3-auth-1C Cross-platform DeviceKey contract       ACCEPT 219631e75 (local Expo module; fail-closed providers; native compile gated)
 M3-auth-1A Android Keystore identity                ACCEPT 2fa572cdf (Pixel 9 21/21 instrumentation); Samsung TEE/StrongBox smoke = M-track
 M3-auth-2A Android pairing + host pinning            ACCEPT cd7f5eed8 (pairing client + QR + host pinning + e2e)
-M3-auth-3A Android bearer lifecycle                  NEXT
-M3-auth-4A Android WS-ticket transport               BLOCKED on 3A
+M3-auth-3A Android bearer lifecycle                  ACCEPT e7e9cf754 (singleflight + refreshAfter401 + strict DTO)
+M3-auth-4A Android WS-ticket transport               NEXT
 M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A
 M3-auth-1B iOS Secure Enclave identity               REQUIRED before iOS beta
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
