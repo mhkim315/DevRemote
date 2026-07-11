@@ -2,6 +2,7 @@ import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import { terminalURL, listSessions, getSessionHistory, getActivityHistory, ConnectivityFailure, PokitError } from '../lib/client';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
 import type { TokenManager } from '../lib/authClient';
+import { TerminalController } from '../lib/terminalController';
 import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platform, Keyboard, Modal, FlatList, ActivityIndicator, AppState} from 'react-native';
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -135,60 +136,46 @@ export default function FeedScreen({onBack, session, token, tokenMgr, baseURL}: 
   const [copyModalVisible, setCopyModalVisible] = useState(false);
   const [copyText, setCopyText] = useState('');
 
-  // M3-auth-4A: in device-auth mode, fetch the /term/ bootstrap HTML with the
-  // device bearer, inject the one-time WS ticket, and load as inline source.
-  // The WebView cannot set Authorization headers, so the HTML must be fetched
-  // by the native layer. The legacy token path remains for local dev mode.
+  // M3-auth-4A: TerminalController owns the bootstrap + ticket lifecycle.
+  // The legacy token path remains for local dev mode.
   const [termSource, setTermSource] = useState<{ html: string; baseUrl: string } | { uri: string } | null>(null);
   const [termError, setTermError] = useState<string>('');
-  const ticketRef = useRef<string>('');
-  // Track the session the current ticket was issued for; discard stale tickets.
-  const ticketSessionRef = useRef<string>('');
+  const ctrlRef = useRef<TerminalController | null>(null);
 
-  const fetchTicketAndBootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string) => {
-    setTermSource(null); setTermError('');
-    ticketSessionRef.current = sess;
+  const bootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string, gen: number) => {
     try {
-      // 1. Fetch /term/ HTML (device bearer in Authorization header).
-      const { authenticatedFetch } = await import('../lib/authTransport');
-      const htmlRes = await authenticatedFetch(`${base}/term/?session=${encodeURIComponent(sess)}`, undefined, mgr);
-      if (!htmlRes.ok) throw new Error(`bootstrap failed: ${htmlRes.status}`);
-      let html = await htmlRes.text();
-
-      // 2. Get a one-time WS ticket.
-      const t = await getWSTicket(sess, mgr, base);
-
-      // 3. Inject ticket into the HTML so the page's JS uses it for the WS URL.
-      //    The existing terminal HTML passes `location.search` to the WS URL,
-      //    so we add &ticket=... to the search params the page will see.
-      ticketRef.current = t.ticket;
-      // The page loads with session=TICKET_SESSION&ticket=TICKET in the URL.
-      // The JS passes location.search onto the WS URL, so the ticket reaches
-      // /term/ws?session=...&ticket=...
-      const bootstrapURL = `${base}/term/?session=${encodeURIComponent(sess)}&ticket=${encodeURIComponent(t.ticket)}`;
-      // Fetch it again with the ticket in the URL (the page just needs to load;
-      // the ticket is for the WS, not the page). Actually, the page HTML is the
-      // same regardless — embed it inline.
-      setTermSource({ html, baseUrl: base });
+      const ctrl = new TerminalController();
+      ctrlRef.current = ctrl;
+      const result = await ctrl.bootstrap(sess, mgr, base);
+      if (!ctrl.isCurrent(gen)) return; // stale
+      setTermSource({ html: result.html, baseUrl: result.baseUrl });
+      setTermError('');
     } catch (e: any) {
-      if (ticketSessionRef.current === sess) {
-        setTermError(e instanceof Error ? e.message : 'connection failed');
-      }
+      if (e?.message === 'aborted' || e?.message === 'stale bootstrap attempt') return;
+      setTermError(e instanceof Error ? e.message : 'connection failed');
     }
   }, []);
 
   useEffect(() => {
     if (tokenMgr && baseURL) {
-      fetchTicketAndBootstrap(session, tokenMgr, baseURL);
+      setTermSource(null); setTermError('');
+      const gen = Date.now();
+      bootstrap(session, tokenMgr, baseURL, gen);
     } else {
+      ctrlRef.current?.cancel();
+      ctrlRef.current = null;
       setTermSource({ uri: terminalURL(session, token) });
       setTermError('');
     }
-  }, [session, token, tokenMgr, baseURL, fetchTicketAndBootstrap]);
+    return () => { ctrlRef.current?.cancel(); };
+  }, [session, token, tokenMgr, baseURL, bootstrap]);
 
   const doRetry = useCallback(() => {
-    if (tokenMgr && baseURL) fetchTicketAndBootstrap(session, tokenMgr, baseURL);
-  }, [session, tokenMgr, baseURL, fetchTicketAndBootstrap]);
+    if (tokenMgr && baseURL) {
+      setTermSource(null); setTermError('');
+      bootstrap(session, tokenMgr, baseURL, Date.now());
+    }
+  }, [session, tokenMgr, baseURL, bootstrap]);
 
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', (e) => {

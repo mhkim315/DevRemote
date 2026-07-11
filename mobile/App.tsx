@@ -11,6 +11,10 @@ import { ConnectionProvider, useConnection } from './src/lib/connection';
 import AuthScreen from './src/screens/AuthScreen';
 import ConnectScreen from './src/screens/ConnectScreen';
 import { RootTabs } from './src/navigation/RootNavigator';
+import { TokenManager } from './src/lib/authClient';
+import { loadPairing } from './src/lib/pairingStore';
+import { createPokitDeviceKey } from './modules/pokit-device-key';
+import { getBaseURL } from './src/lib/client';
 
 // E6: explicit test-build gate — does not depend on stored baseURL.
 // Set EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 for local test builds.
@@ -19,7 +23,24 @@ const NO_LOGIN = typeof process !== 'undefined' &&
 
 function AppContent() {
   const [session, setSession] = useState<Session | null>(NO_LOGIN ? {} as Session : null);
+  const [tokenMgr, setTokenMgr] = useState<TokenManager | undefined>(undefined);
+  const [pairedBaseURL, setPairedBaseURL] = useState<string | undefined>(undefined);
   const { isConnected, loading } = useConnection();
+
+  // M3-auth-4A: if a pairing exists, create a host-scoped TokenManager so
+  // the authenticated terminal path is available.
+  useEffect(() => {
+    if (NO_LOGIN) return;
+    loadPairing().then(p => {
+      if (p && getBaseURL()) {
+        try {
+          const dk = createPokitDeviceKey();
+          setTokenMgr(new TokenManager(p, dk, getBaseURL()));
+          setPairedBaseURL(getBaseURL());
+        } catch {}
+      }
+    });
+  }, []);
 
   useEffect(() => {
     // E6: skip Supabase auth entirely when test flag is set.
@@ -99,7 +120,7 @@ function AppContent() {
       ) : !isConnected ? (
         <ConnectScreen />
       ) : (
-        <RootTabs token={session.access_token} />
+        <RootTabs token={session.access_token} tokenMgr={tokenMgr} baseURL={pairedBaseURL} />
       )}
     </SafeAreaProvider>
   );
