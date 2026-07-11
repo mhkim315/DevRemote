@@ -101,6 +101,10 @@ export class TerminalController {
 </script>`;
     html = html.replace(/<head[^>]*>/i, (m: string) => m + ticketScript);
 
+    // Inject PTY size consumer: after the daemon's xterm is initialized, apply
+    // the authoritative host geometry so the mobile xterm mirrors it.
+    html = html.replace('</body>', `<script>if(window.__pokitPTYSize){try{term.resize(__pokitPTYSize.cols,__pokitPTYSize.rows)}catch(e){}}</script></body>`);
+
     return { attemptId, result: { html, baseUrl: baseURL, ticket: t.ticket, sessionId } };
   }
 

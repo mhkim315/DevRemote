@@ -23,7 +23,7 @@ describe('pairingStore', () => {
   beforeEach(() => AsyncStorage.__reset());
 
   it('save + load round-trip', async () => {
-    await savePairing({ hostId: 'h', hostPubKeyB64: HOST_KEY, deviceId: 'd', baseURL: 'http://x', origin: 'http://x', pairedAt: '2026', role: 'owner' });
+    await savePairing({ hostId: 'h', hostPubKeyB64: HOST_KEY, deviceId: 'd', baseURL: 'http://x', pairedAt: '2026', role: 'owner' });
     const p = await loadPairing();
     expect(p).not.toBeNull();
     expect(p!.hostId).toBe('h');
@@ -36,7 +36,7 @@ describe('pairingStore', () => {
     expect(await loadPairing()).toBeNull();
   });
   it('clear removes pairing', async () => {
-    await savePairing({ hostId: 'h', hostPubKeyB64: HOST_KEY, deviceId: 'd', baseURL: 'http://x', origin: 'http://x', pairedAt: '2026', role: 'owner' });
+    await savePairing({ hostId: 'h', hostPubKeyB64: HOST_KEY, deviceId: 'd', baseURL: 'http://x', pairedAt: '2026', role: 'owner' });
     await clearPairing();
     expect(await loadPairing()).toBeNull();
   });

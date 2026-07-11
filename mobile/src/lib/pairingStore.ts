@@ -35,7 +35,7 @@ export async function loadPairing(): Promise<StoredPairing | null> {
   const p = parsed as Record<string, unknown>;
   if (typeof p.hostId !== 'string' || typeof p.hostPubKeyB64 !== 'string' ||
       typeof p.deviceId !== 'string' || typeof p.baseURL !== 'string' ||
-      typeof p.origin !== 'string' || typeof p.pairedAt !== 'string' || typeof p.role !== 'string') {
+      typeof p.pairedAt !== 'string' || typeof p.role !== 'string') {
     await AsyncStorage.removeItem(PAIRING_KEY);
     return null;
   }
