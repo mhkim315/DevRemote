@@ -74,6 +74,55 @@ async function apiGet(path: string, legacyToken?: string): Promise<Response> {
   return checkedFetch(`${_baseURL}${path}`, { headers: authHeaders(legacyToken) });
 }
 
+// apiPost centralises WRITE authentication with the SAME host-bound fail-closed
+// contract as apiGet. It is used by the M3a non-idempotent create.
+//
+// Non-idempotent safety (handoff §6): authenticatedFetch proactively refreshes
+// via getValidToken() BEFORE the request but never re-issues a POST after a 401
+// — a rejected create surfaces a recoverable AuthError WITHOUT a duplicate
+// session. Exactly one POST is ever sent.
+async function apiPost(path: string, body: unknown, legacyToken?: string): Promise<Response> {
+  const payload = JSON.stringify(body);
+  if (_deviceAuth) {
+    // Host-bound fail-closed: never send the device bearer (or the request) to
+    // a non-paired origin or any URL variant.
+    const { origin, error } = canonicalOrigin(_baseURL);
+    if (error || !origin || origin !== _deviceAuth.origin) {
+      throw new PokitError(
+        'Refusing to send the device credential to a non-paired host',
+        ConnectivityFailure.AuthError,
+        0,
+      );
+    }
+    const url = `${_baseURL}${path}`;
+    let res: Response;
+    try {
+      res = await authenticatedFetch(
+        url,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload },
+        _deviceAuth.tokenManager,
+      );
+    } catch (e: any) {
+      if (e && e.code === 'network_error') {
+        throw new PokitError('Daemon unreachable: ' + (e.message || 'request failed'), ConnectivityFailure.NetworkUnreachable);
+      }
+      // host_pin_fail (401/403, incl. a member/read-only create) is NOT retried
+      // for this non-idempotent POST: surface a recoverable auth error, no
+      // duplicate session.
+      throw new PokitError('Authentication failed. Re-scan the QR code.', ConnectivityFailure.AuthError, (e && e.statusCode) || 401);
+    }
+    if (!res.ok) {
+      throw new PokitError(`API error ${res.status}: ${url}`, ConnectivityFailure.APIError, res.status);
+    }
+    return res;
+  }
+  return checkedFetch(`${_baseURL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(legacyToken) },
+    body: payload,
+  });
+}
+
 // ── R1a typed connectivity errors ──
 
 export enum ConnectivityFailure {
@@ -214,9 +263,11 @@ export interface SessionLifecycle {
 }
 
 // listSessionProfiles returns the daemon-owned launch profiles. Availability
-// reflects whether the executable is installed on the Mac.
+// reflects whether the executable is installed on the Mac. Paired devices read
+// it over the host-bound device transport (apiGet); the legacy token path is
+// used only in explicit_local_dev.
 export async function listSessionProfiles(token?: string): Promise<SessionProfile[]> {
-  const res = await checkedFetch(`${_baseURL}/api/session-profiles`, { headers: authHeaders(token) });
+  const res = await apiGet('/api/session-profiles', token);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
 }
@@ -224,16 +275,18 @@ export async function listSessionProfiles(token?: string): Promise<SessionProfil
 // createSession launches a daemon-owned controlled_pty session from a profile.
 // The client sends ONLY {profileId, name, cwd} — never a canonical id, runner,
 // executable, or shell command. The daemon generates the canonical id and only
-// reports `running` once the Recorder is ready.
+// reports `running` once the Recorder is ready. Paired devices create over the
+// host-bound device transport (apiPost); a rejected create is never retried and
+// never produces a duplicate session.
 export async function createSession(
   input: { profileId: string; name?: string; cwd?: string },
   token?: string,
 ): Promise<SessionLifecycle> {
-  const res = await checkedFetch(`${_baseURL}/api/sessions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
-    body: JSON.stringify({ profileId: input.profileId, name: input.name ?? '', cwd: input.cwd ?? '' }),
-  });
+  const res = await apiPost(
+    '/api/sessions',
+    { profileId: input.profileId, name: input.name ?? '', cwd: input.cwd ?? '' },
+    token,
+  );
   return res.json();
 }
 
