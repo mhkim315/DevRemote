@@ -25,6 +25,21 @@
 
 jest.mock('react-native', () => ({ Platform: { OS: 'ios' }, NativeModules: {} }), { virtual: true });
 
+// conductPairing provisions the key (ensureLegacyKeyRemoved) and the full-chain
+// test persists via pairingStore — mock the native storages.
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: async () => null, setItemAsync: async () => {}, deleteItemAsync: async () => {},
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'when_unlocked_this_device_only',
+}), { virtual: true });
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const store = new Map<string, string>();
+  return { __esModule: true, default: {
+    getItem: async (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: async (k: string, v: string) => { store.set(k, v); },
+    removeItem: async (k: string) => { store.delete(k); },
+  } };
+}, { virtual: true });
+
 import { p256 } from '@noble/curves/nist.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { toHex, toBase64, fromBase64 } from '../src/lib/crypto';
@@ -33,6 +48,8 @@ import { TokenManager } from '../src/lib/authClient';
 import { getWSTicket, WS_TICKET_MAX_TTL_MS } from '../src/lib/wsTicket';
 import { completePairing, deriveTerminalAuth } from '../src/lib/authMode';
 import { conductPairing, buildPairingTranscript } from '../src/lib/pairingClient';
+import { pairAndSave } from '../src/lib/pairAndSave';
+import { loadPairing } from '../src/lib/pairingStore';
 import { pairFromScannedQR, isPairingQR, runScan } from '../src/lib/connectPairing';
 import { TerminalController } from '../src/lib/terminalController';
 import { _createWithNative } from '../modules/pokit-device-key/src';
@@ -312,6 +329,55 @@ describe('M3-auth-2B iOS integration', () => {
     expect((await run(() => iosThrowingKey('key_inaccessible'))).mode).toBe('failed');
     // valid, matching identity → paired_device
     expect((await run(() => iosDeviceKey())).mode).toBe('paired_device');
+  });
+
+  it('fresh-install / post-wipe: the pairing path PROVISIONS the SE key, then enters paired_device', async () => {
+    // A stateful native with NO key until ensureKey() creates it (fresh install
+    // or key wipe). getKeyInfo/sign fail key_missing until provisioned.
+    let provisioned = false;
+    const info = () => ({ provider: 'ios_secure_enclave', keyVersion: 1, deviceId: DEV_ID, publicKeySpkiHex: DEV_SPKI_HEX, hardwareBacked: true, nonExportable: true, securityLevel: 'secure_enclave' });
+    const missing = (): never => { throw Object.assign(new Error('x'), { code: 'key_missing' }); };
+    const sharedNative: NativePokitDeviceKey = {
+      getSupport: async () => 'supported',
+      hasKey: async () => provisioned,
+      ensureKey: async () => { provisioned = true; return info(); },
+      getKeyInfo: async () => (provisioned ? info() : missing()),
+      getPublicKeySpki: async () => (provisioned ? DEV_SPKI_HEX : missing()),
+      sign: async (messageHex: string) => {
+        if (!provisioned) return missing();
+        const msg = new Uint8Array(messageHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
+        return toHex(p256.sign(msg, DEV_PRIV, { format: 'der', prehash: true }));
+      },
+      deleteKey: async () => { provisioned = false; },
+    };
+    const makeKey = () => _createWithNative(sharedNative);
+    const complete = () => completePairing({
+      loadPairing: async () => (await loadPairing()) as any, getBaseURL: () => BASE,
+      createDeviceKey: () => makeKey() as any,
+      makeTokenManager: (p, dk, base) => new TokenManager(p as any, dk as any, base),
+    });
+
+    // Before pairing (no stored pairing AND no key) → pairing_required, not stuck.
+    expect((await complete()).mode).toBe('pairing_required');
+
+    mockPairApprove(); // daemon fake for conductPairing
+
+    // The REAL chain: runScan → pairFromScannedQR → pairAndSave → conductPairing
+    // (ensureKey provisions the key) → savePairing → onPaired (completePairing) →
+    // connect. paired_device is entered only after the approved deviceId matches
+    // the freshly provisioned identity.
+    const order: string[] = [];
+    await runScan({
+      data: makePairingQR(), isPairing: isPairingQR,
+      loadModules: async () => ({ pairFromScannedQR, pairAndSave, createDeviceKey: () => makeKey() as any, getBaseURL: () => BASE }),
+      connect: async () => { order.push('connect'); },
+      onPaired: async () => { const ctx = await complete(); order.push('paired:' + ctx.mode); return ctx.mode === 'paired_device'; },
+      setScanned: () => {}, notifyError: (m) => order.push('error:' + m),
+    });
+
+    expect(provisioned).toBe(true);                              // the SE key was CREATED during pairing
+    expect(order).toEqual(['paired:paired_device', 'connect']);  // then paired_device, then connect
+    expect((await loadPairing())?.deviceId).toBe(DEV_ID);        // persisted pairing binds to the new identity
   });
 
   // ── ConnectScreen scan boundary (runScan) ──

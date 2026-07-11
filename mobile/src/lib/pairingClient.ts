@@ -5,6 +5,7 @@ import type { PokitDeviceKey } from '../../modules/pokit-device-key';
 import { toBase64, toHex, fromHex, fromBase64, deviceFingerprint, verifyDer } from './crypto';
 import * as Crypto from 'expo-crypto';
 import { parsePairingQR } from './qrParser';
+import { ensureLegacyKeyRemoved } from './deviceIdentity';
 
 export type PairingStatus =
   | 'malformed_qr' | 'qr_expired' | 'unsafe_endpoint'
@@ -60,9 +61,17 @@ export async function conductPairing(
   if ('error' in qr) return { status: 'malformed_qr', errorDetail: qr.error };
   if (qr.expiresAt <= new Date()) return { status: 'qr_expired' };
 
-  // Device identity.
+  // Device identity. PROVISION the hardware key so a fresh install or a post-wipe
+  // re-pair works: remove any legacy JS software key (fail-closed), then
+  // ensureKey() creates-or-returns the Secure Enclave / Keystore identity. An
+  // inaccessible/incompatible EXISTING key stays a typed failure — ensureKey does
+  // not delete or regenerate a pre-existing identity — so we never silently
+  // rotate a paired key. Runs AFTER strict QR validation, BEFORE any network I/O.
   let identity: { deviceId: string; publicKeySpki: Uint8Array };
-  try { identity = await deviceKey.getKeyInfo(); } catch {
+  try {
+    await ensureLegacyKeyRemoved();
+    identity = await deviceKey.ensureKey();
+  } catch {
     return { status: 'network_error', errorDetail: 'device identity unavailable' };
   }
 

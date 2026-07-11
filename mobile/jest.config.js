@@ -14,5 +14,8 @@ module.exports = {
     '^expo-modules-core$': '<rootDir>/__tests__/__mocks__/expo-modules-core.js',
     '^react-native$': '<rootDir>/__tests__/__mocks__/react-native.js',
     '^expo-crypto$': '<rootDir>/__tests__/__mocks__/expo-crypto.js',
+    // deviceIdentity (reached transitively via pairingClient) imports SecureStore.
+    // A stateless default; deviceKey.test.ts overrides with a stateful jest.mock.
+    '^expo-secure-store$': '<rootDir>/__tests__/__mocks__/expo-secure-store.js',
   },
 };

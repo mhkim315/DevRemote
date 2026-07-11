@@ -5,6 +5,13 @@
 const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
+// conductPairing now provisions the device key (ensureLegacyKeyRemoved + ensureKey);
+// mock the legacy-key store so no real native module is touched.
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: async () => null, setItemAsync: async () => {}, deleteItemAsync: async () => {},
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'when_unlocked_this_device_only',
+}), { virtual: true });
+
 import { conductPairing, buildPairingTranscript } from '../src/lib/pairingClient';
 import { toHex, fromHex, toBase64, fromBase64, deviceFingerprint, verifyDer } from '../src/lib/crypto';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -55,7 +62,16 @@ const fakeDeviceKey = {
   sign: async (msg: Uint8Array) => p256.sign(msg, DEV_PRIV, { format: 'der', prehash: true }),
   getSupport: async () => 'supported' as const,
   hasKey: async () => true,
-  ensureKey: async () => { throw new Error('not called'); },
+  // conductPairing provisions via ensureKey(); return the same identity as getKeyInfo.
+  ensureKey: async () => ({
+    provider: 'android_keystore' as const,
+    keyVersion: 1 as const,
+    deviceId: DEV_ID,
+    publicKeySpki: DEV_SPKI,
+    hardwareBacked: true as const,
+    nonExportable: true as const,
+    securityLevel: 'tee' as const,
+  }),
   getPublicKeySpki: async () => DEV_SPKI,
   deleteKey: async () => {},
 };

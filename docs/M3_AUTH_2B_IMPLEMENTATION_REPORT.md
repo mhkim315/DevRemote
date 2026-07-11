@@ -104,12 +104,38 @@ auth/UI only; no daemon, Android-logic, or wire change):
   on a module-load failure — never sticks" and "runScan runs the real transition
   … and connects a plain HTTPS URL".
 
+## 4b. Remediation after the second REJECT (SE key provisioning)
+
+The prior fix routed a missing key to `pairing_required`, but the pairing path
+itself never CREATED the key — `conductPairing` only read it (`getKeyInfo`). On a
+fresh install or after a key/app-data wipe this looped: `pairing_required` → scan
+→ `getKeyInfo` `key_missing` → back to `pairing_required` — permanently
+un-pairable. Fixed:
+
+- **`conductPairing` (`pairingClient.ts`) now provisions the key** after strict
+  QR validation and before any network I/O: `ensureLegacyKeyRemoved()`
+  (fail-closed removal of the legacy JS software key) then `deviceKey.ensureKey()`
+  (create-or-return the Secure Enclave / Keystore identity). An
+  inaccessible/incompatible EXISTING key stays a typed failure — `ensureKey` does
+  not delete or regenerate a pre-existing identity — so a paired key is never
+  silently rotated.
+- **Production-path proof** (`m3aAuthIOSIntegration.test.ts`,
+  "fresh-install / post-wipe …"): a stateful native starts `key_missing` and only
+  yields an identity after `ensureKey()`. The test drives the REAL chain
+  `runScan → pairFromScannedQR → pairAndSave → conductPairing (ensureKey
+  provisions) → savePairing → onPaired (completePairing) → connect` (mocked
+  daemon + storages) and asserts the key is created during pairing, `paired_device`
+  is entered only after the approved deviceId matches the newly provisioned
+  identity, and the persisted pairing binds to it. `pairingClient.test.ts` /
+  `pairingTranscript.test.ts` updated for the `ensureKey` provisioning + the
+  transitive `expo-secure-store` dependency (global jest mock).
+
 ## 5. Verification
 
 Ran here (all green):
 - `npx tsc --noEmit`: PASS
-- `npx jest`: PASS (18 suites, **236** tests; +18 iOS integration + 3 new
-  `completePairing` key-binding cases)
+- `npx jest`: PASS (18 suites, **237** tests; iOS integration incl. the
+  fresh-install/wipe provisioning chain)
 - `sh scripts/build-gate.sh`: **ALL GATES PASSED** (backend `go test -race`,
   mobile typecheck + jest, Android Kotlin compile, invariants, security scan)
 - `sh -n scripts/ios-native-gate.sh`: PASS (syntax)
