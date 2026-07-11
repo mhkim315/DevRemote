@@ -127,8 +127,8 @@ M2.5-3 Challenge Auth / Short Session          ACCEPT 8cc1490f9
 M2.5-4 Unified REST / WSS Authentication       ACCEPT d6a5733cd (production-boundary proofs complete)
 M2.5-5 Revoke / Minimal Audit                  ACCEPT df7a3bd9a (see acceptance doc)
 M3-auth-1C Cross-platform DeviceKey contract       ACCEPT 219631e75 (local Expo module; fail-closed providers; native compile gated)
-M3-auth-1A Android Keystore identity                NEXT (Android release blocker)
-M3-auth-2A Android pairing + host pinning            BLOCKED on 1A
+M3-auth-1A Android Keystore identity                IMPLEMENTED (E-track); device instrumentation + Samsung smoke = M-track
+M3-auth-2A Android pairing + host pinning            NEXT (after 1A device gate)
 M3-auth-3A Android bearer lifecycle                  BLOCKED on 2A
 M3-auth-4A Android WS-ticket transport               BLOCKED on 3A
 M3  Mobile Lifecycle UX and Real-device Gate         M3a SCOPED ACCEPT; authenticated reverify after auth-4A

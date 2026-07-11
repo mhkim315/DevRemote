@@ -1,6 +1,6 @@
 # M3-auth Cross-platform Device Key Plan
 
-Status: approved remediation plan; M3-auth-1C is NEXT
+Status: M3-auth-1C ACCEPTED (`219631e75`); M3-auth-1A (Android Keystore) implemented — see §5a below.
 
 Branch: `feature/phase10-multi-adapter`
 
@@ -219,6 +219,36 @@ On the target Samsung device:
 Missing physical-device evidence is an M-track gate, but Kotlin compilation,
 autolinking, non-exportability, and automated native behavior are E-track
 acceptance requirements.
+
+## 5a. M3-auth-1A — IMPLEMENTED
+
+The Android Keystore provider is implemented inside the local Expo module
+`mobile/modules/pokit-device-key` (Expo autolinking owns registration; no manual
+application edits). Logic lives in `PokitDeviceKeyStore` (Expo-free, so Android
+instrumentation exercises the real Keystore directly); `PokitDeviceKeyModule` is
+a thin Expo wrapper.
+
+- Fixed native-owned alias `pokit.device.identity.v1` (never from JS/QR/network).
+- Non-exportable `AndroidKeyStore` EC/secp256r1, `PURPOSE_SIGN`, `DIGEST_SHA256`;
+  private scalar never crosses the bridge (`PrivateKey.encoded == null` asserted).
+- Atomic `ensureKey()` (`synchronized` check-and-create; existing alias validated,
+  never replaced on a race; re-read before returning).
+- Security level `strongbox`/`tee`/`os_keystore`/`unknown` from `KeyInfo`
+  (API 31+ `securityLevel`, else `isInsideSecureHardware`). **Production requires
+  TEE/StrongBox and fails closed** (`hardware_unavailable`) on software-only
+  Keystore; an internal test-only override (unreachable from JS/release) lets
+  emulator instrumentation run the success path while reporting the true level.
+  StrongBox/TEE is never implied unless reported; attestation deferred.
+- `sign` = `SHA256withECDSA` over raw bytes (no JS hashing), ASN.1 DER, off the
+  UI/JS thread; no logging of message/signature/alias/exception internals.
+- Missing vs invalidated distinguished by typed errors; incompatible/invalidated
+  keys are never silently recreated. Delete or app-data wipe → re-pair required.
+- E-track: `:pokit-device-key:compileReleaseKotlin` (gated), clean prebuild
+  durability, Go non-deterministic interop (`TestNativeSignatureInterop`), JS
+  `getKeyInfo`/`securityLevel` validation, all M3-auth-1C fail-closed tests.
+- M-track (device/emulator): `connectedAndroidTest`
+  (`PokitDeviceKeyInstrumentationTest`) + real Samsung smoke.
+- iOS and Web remain `not_implemented` / fail-closed until M3-auth-1B.
 
 ## 6. M3-auth-1B — iOS Secure Enclave provider
 

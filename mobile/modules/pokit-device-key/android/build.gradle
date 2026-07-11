@@ -11,5 +11,14 @@ android {
   defaultConfig {
     versionCode 1
     versionName '1.0.0'
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
   }
+}
+
+// androidTest-only deps (M3-auth-1A instrumentation). These are resolved only
+// when running connectedAndroidTest (M-track); the release compile gate
+// (:pokit-device-key:compileReleaseKotlin) does not resolve them.
+dependencies {
+  androidTestImplementation "androidx.test.ext:junit:1.1.5"
+  androidTestImplementation "androidx.test:runner:1.5.2"
 }

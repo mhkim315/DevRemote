@@ -37,11 +37,22 @@ const P256_SPKI_HEX =
   '4536be3a50f318fbf9a5475902a221502bef0d57e08c53b2cc0a56f17d9f9354';
 const FINGERPRINT = 'f1d59449b727165de732bf283338122b99628a615918fedc67d878fffcf47da7';
 
+const VALID_KEY_INFO = {
+  provider: 'android_keystore',
+  keyVersion: 1,
+  deviceId: FINGERPRINT,
+  publicKeySpkiHex: P256_SPKI_HEX,
+  hardwareBacked: true,
+  nonExportable: true,
+  securityLevel: 'tee',
+};
+
 function fakeNative(overrides: Partial<NativePokitDeviceKey> = {}): NativePokitDeviceKey {
   return {
     getSupport: async () => 'not_implemented',
     hasKey: async () => { throw new Error('not implemented'); },
     ensureKey: async () => { throw new Error('not implemented'); },
+    getKeyInfo: async () => { throw new Error('not implemented'); },
     getPublicKeySpki: async () => { throw new Error('not implemented'); },
     sign: async (_: string) => { throw new Error('not implemented'); },
     deleteKey: async () => { throw new Error('not implemented'); },
@@ -53,14 +64,8 @@ function okNative(): NativePokitDeviceKey {
   return {
     getSupport: async () => 'supported',
     hasKey: async () => true,
-    ensureKey: async () => ({
-      provider: 'android_keystore',
-      keyVersion: 1,
-      deviceId: FINGERPRINT,
-      publicKeySpkiHex: P256_SPKI_HEX,
-      hardwareBacked: true,
-      nonExportable: true,
-    }),
+    ensureKey: async () => ({ ...VALID_KEY_INFO }),
+    getKeyInfo: async () => ({ ...VALID_KEY_INFO }),
     getPublicKeySpki: async () => P256_SPKI_HEX,
     sign: async (_) => '3044022001a7c80dc4afea65966c4e138bf1038a9bf21ee38ffdc09604533a12f6ecaf78022035097449d58db7da4d8c95a8e86424273820699df463920dd60e9a7361c74bdd',
     deleteKey: async () => {},
@@ -164,7 +169,7 @@ describe('key version', () => {
   function ensureWithKV(kv: unknown) {
     const k = _createWithNative(fakeNative({
       getSupport: async () => 'supported',
-      ensureKey: async () => ({ provider: 'android_keystore', keyVersion: kv, deviceId: FINGERPRINT, publicKeySpkiHex: P256_SPKI_HEX, hardwareBacked: true, nonExportable: true }),
+      ensureKey: async () => ({ provider: 'android_keystore', keyVersion: kv, deviceId: FINGERPRINT, publicKeySpkiHex: P256_SPKI_HEX, hardwareBacked: true, nonExportable: true, securityLevel: 'tee' }),
     }));
     return k.ensureKey();
   }
@@ -367,6 +372,49 @@ describe('architecture invariants', () => {
     expect(mod.generatePrivateKey).toBeUndefined();
     expect(mod.signDer).toBeUndefined();
     expect(typeof mod.verifyDer).toBe('function'); // still needed for host pinning
+  });
+});
+
+// ── getKeyInfo + securityLevel ──
+
+describe('getKeyInfo + securityLevel', () => {
+  it('getKeyInfo returns a valid DeviceKeyInfo through the shared parser', async () => {
+    const k = _createWithNative(okNative());
+    const info = await k.getKeyInfo();
+    expect(info.provider).toBe('android_keystore');
+    expect(info.deviceId).toBe(FINGERPRINT);
+    expect(info.publicKeySpki.length).toBe(91);
+    expect(info.hardwareBacked).toBe(true);
+    expect(info.nonExportable).toBe(true);
+    expect(info.securityLevel).toBe('tee');
+  });
+  it('accepts strongbox / os_keystore levels', async () => {
+    for (const level of ['strongbox', 'os_keystore', 'unknown']) {
+      const k = _createWithNative(fakeNative({
+        getSupport: async () => 'supported',
+        getKeyInfo: async () => ({ ...VALID_KEY_INFO, securityLevel: level }),
+      }));
+      expect((await k.getKeyInfo()).securityLevel).toBe(level);
+    }
+  });
+  it('rejects a missing securityLevel', async () => {
+    const bad = { ...VALID_KEY_INFO } as any; delete bad.securityLevel;
+    const k = _createWithNative(fakeNative({ getSupport: async () => 'supported', getKeyInfo: async () => bad }));
+    await expect(k.getKeyInfo()).rejects.toThrow('securityLevel');
+  });
+  it('rejects an unknown securityLevel string', async () => {
+    const k = _createWithNative(fakeNative({
+      getSupport: async () => 'supported',
+      getKeyInfo: async () => ({ ...VALID_KEY_INFO, securityLevel: 'magic_chip' }),
+    }));
+    await expect(k.getKeyInfo()).rejects.toThrow('securityLevel');
+  });
+  it('getKeyInfo native exception propagates', async () => {
+    const k = _createWithNative(fakeNative({ getKeyInfo: async () => { throw new Error('key_invalidated'); } }));
+    await expect(k.getKeyInfo()).rejects.toThrow('key_invalidated');
+  });
+  it('missing module → getKeyInfo throws', async () => {
+    await expect(_createWithNative(null).getKeyInfo()).rejects.toThrow('native module not found');
   });
 });
 

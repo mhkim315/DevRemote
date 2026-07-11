@@ -27,6 +27,12 @@ export type DeviceKeySupport =
   | 'key_missing'
   | 'key_invalidated';
 
+export type DeviceKeySecurityLevel = 'strongbox' | 'tee' | 'os_keystore' | 'unknown';
+
+const SECURITY_LEVELS: ReadonlySet<string> = new Set([
+  'strongbox', 'tee', 'os_keystore', 'unknown',
+]);
+
 export interface DeviceKeyInfo {
   provider: DeviceKeyProvider;
   keyVersion: 1;
@@ -34,12 +40,14 @@ export interface DeviceKeyInfo {
   publicKeySpki: Uint8Array;
   hardwareBacked: true;
   nonExportable: true;
+  securityLevel: DeviceKeySecurityLevel;
 }
 
 export interface PokitDeviceKey {
   getSupport(): Promise<DeviceKeySupport>;
   hasKey(): Promise<boolean>;
   ensureKey(): Promise<DeviceKeyInfo>;
+  getKeyInfo(): Promise<DeviceKeyInfo>;
   getPublicKeySpki(): Promise<Uint8Array>;
   sign(message: Uint8Array): Promise<Uint8Array>;
   deleteKey(): Promise<void>;
@@ -54,6 +62,7 @@ export interface NativePokitDeviceKey {
   getSupport(): Promise<string>;
   hasKey(): Promise<boolean>;
   ensureKey(): Promise<Record<string, unknown>>;
+  getKeyInfo(): Promise<Record<string, unknown>>;
   getPublicKeySpki(): Promise<string>;
   sign(messageHex: string): Promise<string>;
   deleteKey(): Promise<void>;
@@ -80,6 +89,7 @@ function missingModuleProvider(): PokitDeviceKey {
     getSupport: async () => 'not_implemented' as DeviceKeySupport,
     hasKey: async () => { throw new Error('PokitDeviceKey: native module not found'); },
     ensureKey: op,
+    getKeyInfo: op,
     getPublicKeySpki: op,
     sign: op,
     deleteKey: op,
@@ -105,6 +115,7 @@ function validatedProvider(native: NativePokitDeviceKey): PokitDeviceKey {
       return native.hasKey();
     },
     ensureKey: async () => validateKeyInfo(await native.ensureKey()),
+    getKeyInfo: async () => validateKeyInfo(await native.getKeyInfo()),
     getPublicKeySpki: async () => {
       const hex = await native.getPublicKeySpki();
       return validateAndDecodeSPKI(hex);
@@ -157,6 +168,12 @@ function validateKeyInfo(raw: Record<string, unknown>): DeviceKeyInfo {
   const computed = deviceFingerprint(spki);
   if (computed !== nativeDeviceId) throw keyInfoErr('deviceId mismatch');
 
+  // securityLevel — allowlisted; must be hardware-backed to reach here.
+  const level = raw.securityLevel;
+  if (typeof level !== 'string' || !SECURITY_LEVELS.has(level)) {
+    throw keyInfoErr('securityLevel must be strongbox/tee/os_keystore/unknown');
+  }
+
   return {
     provider: provider as DeviceKeyProvider,
     keyVersion: 1,
@@ -164,6 +181,7 @@ function validateKeyInfo(raw: Record<string, unknown>): DeviceKeyInfo {
     publicKeySpki: spki,
     hardwareBacked: true,
     nonExportable: true,
+    securityLevel: level as DeviceKeySecurityLevel,
   };
 }
 
