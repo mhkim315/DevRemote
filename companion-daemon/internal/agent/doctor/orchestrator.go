@@ -478,7 +478,7 @@ type fixtureManifestEntry struct {
 // buildFixtureManifest walks the candidate adapter directory, computes a
 // digest for every source file, categorizes them (adapter vs test vs fixture),
 // and returns typed manifest entries plus a redaction scan result.
-func buildFixtureManifest(wsRoot, provider, targetDir string) (adapterManifest []string, pokitTestManifest []string, fixtureManifest []string, redaction RedactionResult) {
+func buildFixtureManifest(wsRoot, provider, targetDir string) (adapterManifest []string, pokitTestManifest []string, providerFixtureManifest []string, redaction RedactionResult) {
 	redaction.Clean = true // innocent until proven otherwise
 	candidateDir := filepath.Join(wsRoot, "internal", "agent", "adapters", provider, targetDir)
 	entries, err := os.ReadDir(candidateDir)
@@ -505,8 +505,16 @@ func buildFixtureManifest(wsRoot, provider, targetDir string) (adapterManifest [
 		} else if strings.HasSuffix(e.Name(), "_test.go") {
 			// Should not happen (sandbox rejects), but record if present.
 			pokitTestManifest = append(pokitTestManifest, entry)
-		} else {
+		} else if isProviderFixture(e.Name()) {
+			// Admitted provider fixture formats.
+			providerFixtureManifest = append(providerFixtureManifest, entry)
+		} else if strings.HasSuffix(e.Name(), ".go") {
 			adapterManifest = append(adapterManifest, entry)
+		} else {
+			// Unclassified file — fail closed.
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("%s: unclassified file type — must be .go or admitted fixture", e.Name()))
 		}
 
 		// Run redaction / secret scan.
@@ -566,6 +574,17 @@ func scanContentForSecrets(content string) bool {
 		"C:\\Users\\", "C:\\Documents and Settings\\",
 	} {
 		if strings.Contains(content, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isProviderFixture reports whether a filename is an admitted provider fixture
+// format. Provider fixtures carry provider, version, and source provenance.
+func isProviderFixture(name string) bool {
+	for _, ext := range []string{".json", ".jsonl", ".ndjson", ".log"} {
+		if strings.HasSuffix(name, ext) {
 			return true
 		}
 	}

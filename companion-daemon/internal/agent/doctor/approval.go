@@ -185,6 +185,18 @@ func NewReviewBundle(
 	if suiteResult.TotalTests == 0 {
 		return nil, fmt.Errorf("%w: suite result has zero tests", ErrEmptyField)
 	}
+	if !suiteResult.AllPassed() {
+		return nil, fmt.Errorf("%w: suite not fully passed (%d/%d)", ErrEmptyField, suiteResult.Passed, suiteResult.TotalTests)
+	}
+	for _, cr := range suiteResult.CommandResults {
+		if cr.Failed > 0 || cr.Skipped > 0 || cr.ExitCode != 0 {
+			return nil, fmt.Errorf("%w: command %q failed (exit=%d, fail=%d, skip=%d)",
+				ErrEmptyField, cr.Label, cr.ExitCode, cr.Failed, cr.Skipped)
+		}
+	}
+	if len(suiteResult.CommandResults) == 0 {
+		return nil, fmt.Errorf("%w: suite has no command results", ErrEmptyField)
+	}
 	if fixtureRedaction.Scanned == 0 {
 		return nil, fmt.Errorf("%w: fixture redaction has zero scanned files", ErrEmptyField)
 	}
@@ -232,7 +244,7 @@ func NewReviewBundle(
 		fixtureRedaction:        fixtureRedaction,
 		suiteCommandManifest:    scm,
 		suiteResultDigest:       HashJSON(suiteResult),
-		suiteResult:             suiteResult,
+		suiteResult:             suiteResult.deepCopy(),
 		driftEvidence:           driftEvidence,
 		workspaceDigest:         workspaceDigest,
 		remainingUnknowns:       ru,
@@ -302,12 +314,31 @@ func (as *ApprovalStore) Submit(bundle *ReviewBundle) (*ApprovalRequest, error) 
 		return nil, ErrRequestIDExists
 	}
 
-	// Validate non-empty fields.
+	// Defensive revalidation — same invariants as NewReviewBundle.
 	if bundle.baselineSHA == "" || bundle.evidenceDigest == "" || bundle.patchDigest == "" {
 		return nil, fmt.Errorf("%w: baseline/digest must be non-empty", ErrEmptyField)
 	}
 	if len(bundle.changedFiles) == 0 {
 		return nil, fmt.Errorf("%w: changed files must be non-empty", ErrEmptyField)
+	}
+	sr := bundle.suiteResult
+	if sr.TotalTests == 0 || !sr.AllPassed() {
+		return nil, fmt.Errorf("%w: suite must be fully passing", ErrEmptyField)
+	}
+	for _, cr := range sr.CommandResults {
+		if cr.Failed > 0 || cr.Skipped > 0 || cr.ExitCode != 0 {
+			return nil, fmt.Errorf("%w: command %q failed (exit=%d, fail=%d, skip=%d)",
+				ErrEmptyField, cr.Label, cr.ExitCode, cr.Failed, cr.Skipped)
+		}
+	}
+	if len(sr.CommandResults) == 0 {
+		return nil, fmt.Errorf("%w: suite has no command results", ErrEmptyField)
+	}
+	if !bundle.fixtureRedaction.Clean || bundle.fixtureRedaction.Scanned == 0 {
+		return nil, fmt.Errorf("%w: redaction not clean or zero-scanned", ErrEmptyField)
+	}
+	if bundle.workspaceDigest == "" {
+		return nil, fmt.Errorf("%w: workspace digest empty", ErrEmptyField)
 	}
 
 	state := StatePending
