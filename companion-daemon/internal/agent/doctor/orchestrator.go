@@ -305,12 +305,27 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		cmdLabels = append(cmdLabels, c.Label)
 	}
 
-	// Derive evidence provenance from actual input records.
+	// Derive evidence provenance from actual input records (weakest tier).
 	evidenceProv := deriveEvidenceProvenance(o.activeRequest.ObservedRecordSamples)
 
 	// Build real fixture manifest from workspace candidate directory.
-	fixtureManifest, fixtureRedaction := buildFixtureManifest(o.activeWorkspace.Root,
-		o.provider, o.targetDir)
+	adapterManifest, pokitTestManifest, providerFixtureManifest, redaction := buildFixtureManifest(
+		o.activeWorkspace.Root, o.provider, o.targetDir)
+
+	// Fail closed on any redaction finding — secrets must not enter the review bundle.
+	if !redaction.Clean {
+		return nil, fmt.Errorf("redaction scan failed: %d files scanned, findings present",
+			redaction.Scanned)
+	}
+	if redaction.Scanned == 0 {
+		return nil, fmt.Errorf("redaction scan found no files — empty fixture manifest")
+	}
+
+	// Combine all manifests for the review bundle.
+	allFixtures := make([]string, 0, len(adapterManifest)+len(pokitTestManifest)+len(providerFixtureManifest))
+	allFixtures = append(allFixtures, adapterManifest...)
+	allFixtures = append(allFixtures, pokitTestManifest...)
+	allFixtures = append(allFixtures, providerFixtureManifest...)
 
 	driftEv := DriftEvidence{}
 	if o.activeEvidence != nil {
@@ -326,16 +341,16 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 
 	bundle, err := NewReviewBundle(requestID, o.provider, o.activeReport.Provider, o.targetVersion,
 		baselineSHA, evidenceDigest, patchDigest,
-		o.activePatchBytes, // unified diff
-		files,              // changed files
-		fixtureManifest,    // fixture manifest
-		fixtureRedaction,   // fixture redaction
-		cmdLabels,          // suite command manifest
-		*o.activeSuite,     // suite result
-		driftEv,            // drift evidence
-		evidenceProv,       // evidence provenance
-		wsDigest,           // workspace digest
-		unknowns,           // remaining unknowns
+		o.activePatchBytes,       // unified diff
+		files,                    // changed files
+		allFixtures,              // fixture manifest
+		redaction,                // redaction result
+		cmdLabels,                // suite command manifest
+		o.activeSuite.deepCopy(), // suite result (deep copy)
+		driftEv,                  // drift evidence
+		evidenceProv,             // evidence provenance
+		wsDigest,                 // workspace digest
+		unknowns,                 // remaining unknowns
 	)
 	if err != nil {
 		return nil, err
@@ -427,40 +442,49 @@ func gitHeadSHA(repoRoot string) (string, error) {
 }
 
 // deriveEvidenceProvenance returns the provenance tier conservatively derived
-// from the input records. If records are present, uses the most common provenance.
-// Falls back to "unknown" if no records are available.
+// from the input records. Uses the WEAKEST provenance tier present (most
+// conservative) so mixed authoritative/advisory evidence does not appear
+// stronger than it is. Falls back to "unknown" if no records are available.
 func deriveEvidenceProvenance(records []contract.RawRecord) string {
 	if len(records) == 0 {
 		return string(contract.ProvenanceUnknown)
 	}
-	counts := map[string]int{}
+	weakestRank := -1
+	weakest := ""
 	for _, r := range records {
-		counts[string(r.Provenance)]++
-	}
-	best := ""
-	bestN := 0
-	for p, n := range counts {
-		if n > bestN {
-			bestN = n
-			best = p
+		p := string(r.Provenance)
+		rank := contract.ProvenanceRank(contract.Provenance(p))
+		if weakestRank == -1 || rank < weakestRank {
+			weakestRank = rank
+			weakest = p
 		}
 	}
-	if best == "" {
+	if weakest == "" {
 		return string(contract.ProvenanceUnknown)
 	}
-	return best
+	return weakest
+}
+
+// fixtureManifestEntry is one entry in a categorized manifest.
+type fixtureManifestEntry struct {
+	Path       string
+	Digest     string
+	Category   string // "adapter", "pokit_test", "provider_fixture"
+	Provenance string
 }
 
 // buildFixtureManifest walks the candidate adapter directory, computes a
-// digest for every source file, and returns a manifest of "<path> sha256:<hex>"
-// entries plus a redaction summary.
-func buildFixtureManifest(wsRoot, provider, targetDir string) (manifest []string, redaction string) {
+// digest for every source file, categorizes them (adapter vs test vs fixture),
+// and returns typed manifest entries plus a redaction scan result.
+func buildFixtureManifest(wsRoot, provider, targetDir string) (adapterManifest []string, pokitTestManifest []string, fixtureManifest []string, redaction RedactionResult) {
+	redaction.Clean = true // innocent until proven otherwise
 	candidateDir := filepath.Join(wsRoot, "internal", "agent", "adapters", provider, targetDir)
 	entries, err := os.ReadDir(candidateDir)
 	if err != nil {
-		return nil, "cannot read candidate dir"
+		redaction.Clean = false
+		redaction.Findings = append(redaction.Findings, "cannot read candidate dir")
+		return
 	}
-	hasSecret := false
 	for _, e := range entries {
 		if e.IsDir() || strings.HasSuffix(e.Name(), ".o") || strings.HasSuffix(e.Name(), ".test") {
 			continue
@@ -471,22 +495,49 @@ func buildFixtureManifest(wsRoot, provider, targetDir string) (manifest []string
 			continue
 		}
 		digest := HashBytes(data)
-		manifest = append(manifest, fmt.Sprintf("%s sha256:%s", e.Name(), digest))
+		entry := fmt.Sprintf("%s sha256:%s", e.Name(), digest)
+
+		// Categorize.
+		if e.Name() == "conformance_test.go" {
+			pokitTestManifest = append(pokitTestManifest, entry)
+		} else if strings.HasSuffix(e.Name(), "_test.go") {
+			// Should not happen (sandbox rejects), but record if present.
+			pokitTestManifest = append(pokitTestManifest, entry)
+		} else {
+			adapterManifest = append(adapterManifest, entry)
+		}
 
 		// Run redaction / secret scan.
+		redaction.Scanned++
 		content := string(data)
-		if contract.ContainsSensitive(content) {
-			hasSecret = true
+		if scanContentForSecrets(content) {
+			redaction.Clean = false
+			// Log only bounded metadata, never the raw content.
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("%s: sensitive pattern detected", e.Name()))
 		}
 	}
-	if len(manifest) == 0 {
-		return nil, "empty fixture manifest"
+	if redaction.Scanned == 0 {
+		redaction.Clean = false
+		redaction.Findings = append(redaction.Findings, "empty fixture manifest")
 	}
-	redaction = "scanned: " + itoa(len(manifest)) + " files, clean"
-	if hasSecret {
-		redaction = "scanned: " + itoa(len(manifest)) + " files, SECRET FOUND"
+	return
+}
+
+// scanContentForSecrets checks content for credential markers and private paths
+// WITHOUT the diagnostic length truncation. Returns true if any pattern is found.
+func scanContentForSecrets(content string) bool {
+	for _, p := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer ", "AKIA"} {
+		if strings.Contains(content, p) {
+			return true
+		}
 	}
-	return manifest, redaction
+	for _, root := range []string{"/Users/", "/home/"} {
+		if strings.Contains(content, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func itoa(i int) string {

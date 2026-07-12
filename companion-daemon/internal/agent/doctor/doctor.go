@@ -98,6 +98,33 @@ type CommandResult struct {
 // AllPassed reports whether every harness test passed.
 func (or ObservatoryResult) AllPassed() bool { return or.Failed == 0 && or.TotalTests > 0 }
 
+// deepCopy returns an ObservatoryResult with all slice fields independently
+// allocated. Mutation of the copy cannot affect the original or vice versa.
+// Preserves nil vs empty slice distinction for deterministic JSON hashing.
+func (or ObservatoryResult) deepCopy() ObservatoryResult {
+	cp := or
+	if or.Failures != nil {
+		cp.Failures = make([]ObsTestFailure, len(or.Failures))
+		copy(cp.Failures, or.Failures)
+	}
+	if or.CommandResults != nil {
+		cp.CommandResults = make([]CommandResult, len(or.CommandResults))
+		copy(cp.CommandResults, or.CommandResults)
+	}
+	return cp
+}
+
+// ── Redaction result ──
+
+// RedactionResult is the typed outcome of a secret/private-path scan.
+// Clean must be true for review to proceed; a non-clean result fails closed
+// before any review bundle is created.
+type RedactionResult struct {
+	Scanned  int      // number of files scanned
+	Clean    bool     // true iff no secrets/paths were found
+	Findings []string // bounded, redacted summaries (never raw secrets)
+}
+
 // ── Process request ──
 
 // ProcessRequest is the input to a Doctor repair workflow. It describes which

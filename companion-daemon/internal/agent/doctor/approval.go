@@ -49,10 +49,10 @@ type ReviewBundle struct {
 	evidenceDigest       string
 	evidenceProvenance   string // provenance tier of collected evidence
 	patchDigest          string
-	unifiedDiff          []byte   // exact unified diff bytes, immutable
-	changedFiles         []string // allowed-file manifest
-	fixtureManifest      []string // new fixture file paths
-	fixtureRedaction     string   // fixture provenance and redaction result
+	unifiedDiff          []byte          // exact unified diff bytes, immutable
+	changedFiles         []string        // allowed-file manifest
+	fixtureManifest      []string        // new fixture file paths
+	fixtureRedaction     RedactionResult // typed redaction scan result
 	suiteCommandManifest []string
 	suiteResultDigest    string
 	suiteResult          ObservatoryResult
@@ -78,14 +78,14 @@ func (rb *ReviewBundle) UnifiedDiff() []byte {
 	copy(d, rb.unifiedDiff)
 	return d
 }
-func (rb *ReviewBundle) ChangedFiles() []string    { return append([]string{}, rb.changedFiles...) }
-func (rb *ReviewBundle) FixtureManifest() []string { return append([]string{}, rb.fixtureManifest...) }
-func (rb *ReviewBundle) FixtureRedaction() string  { return rb.fixtureRedaction }
+func (rb *ReviewBundle) ChangedFiles() []string            { return append([]string{}, rb.changedFiles...) }
+func (rb *ReviewBundle) FixtureManifest() []string         { return append([]string{}, rb.fixtureManifest...) }
+func (rb *ReviewBundle) FixtureRedaction() RedactionResult { return rb.fixtureRedaction }
 func (rb *ReviewBundle) SuiteCommandManifest() []string {
 	return append([]string{}, rb.suiteCommandManifest...)
 }
 func (rb *ReviewBundle) SuiteResultDigest() string      { return rb.suiteResultDigest }
-func (rb *ReviewBundle) SuiteResult() ObservatoryResult { return rb.suiteResult }
+func (rb *ReviewBundle) SuiteResult() ObservatoryResult { return rb.suiteResult.deepCopy() }
 func (rb *ReviewBundle) DriftEvidence() DriftEvidence   { return rb.driftEvidence }
 func (rb *ReviewBundle) WorkspaceDigest() string        { return rb.workspaceDigest }
 func (rb *ReviewBundle) RemainingUnknowns() []string {
@@ -111,7 +111,7 @@ func (rb *ReviewBundle) BundleDigest() string {
 		UnifiedDiffDigest:    HashBytes(rb.unifiedDiff),
 		ChangedFiles:         sortedStrings(rb.changedFiles),
 		FixtureManifest:      sortedStrings(rb.fixtureManifest),
-		FixtureRedaction:     rb.fixtureRedaction,
+		FixtureRedaction:     HashJSON(rb.fixtureRedaction),
 		SuiteCommandManifest: sortedStrings(rb.suiteCommandManifest),
 		SuiteResultDigest:    rb.suiteResultDigest,
 		DriftEvidenceDigest:  HashJSON(rb.driftEvidence),
@@ -155,7 +155,7 @@ func NewReviewBundle(
 	evidenceDigest, patchDigest string,
 	unifiedDiff []byte,
 	changedFiles, fixtureManifest []string,
-	fixtureRedaction string,
+	fixtureRedaction RedactionResult,
 	suiteCommandManifest []string,
 	suiteResult ObservatoryResult,
 	driftEvidence DriftEvidence,
@@ -173,6 +173,9 @@ func NewReviewBundle(
 	}
 	if len(fixtureManifest) == 0 {
 		return nil, fmt.Errorf("%w: fixture manifest must be non-empty", ErrEmptyField)
+	}
+	if !fixtureRedaction.Clean {
+		return nil, fmt.Errorf("%w: fixture redaction is not clean", ErrEmptyField)
 	}
 	if workspaceDigest == "" {
 		return nil, fmt.Errorf("%w: workspace digest must be non-empty", ErrEmptyField)
@@ -230,10 +233,10 @@ func (rb *ReviewBundle) deepCopy() *ReviewBundle {
 		unifiedDiff:          ud,
 		changedFiles:         append([]string{}, rb.changedFiles...),
 		fixtureManifest:      append([]string{}, rb.fixtureManifest...),
-		fixtureRedaction:     rb.fixtureRedaction,
+		fixtureRedaction:     copyRedactionResult(rb.fixtureRedaction),
 		suiteCommandManifest: append([]string{}, rb.suiteCommandManifest...),
 		suiteResultDigest:    rb.suiteResultDigest,
-		suiteResult:          rb.suiteResult,
+		suiteResult:          rb.suiteResult.deepCopy(),
 		driftEvidence:        rb.driftEvidence,
 		workspaceDigest:      rb.workspaceDigest,
 		remainingUnknowns:    append([]string{}, rb.remainingUnknowns...),
@@ -249,7 +252,7 @@ type ApprovalRequest struct {
 	state  ApprovalState
 }
 
-func (ar *ApprovalRequest) Bundle() ReviewBundle { return ar.bundle } // value copy
+func (ar *ApprovalRequest) Bundle() ReviewBundle { return *ar.bundle.deepCopy() }
 func (ar *ApprovalRequest) State() ApprovalState { return ar.state }
 
 // ── ApprovalStore ──
@@ -405,6 +408,15 @@ func HashJSON(v any) string {
 		return "error:" + contract.SanitizeDiagnostic(err.Error())
 	}
 	return HashBytes(b)
+}
+
+func copyRedactionResult(r RedactionResult) RedactionResult {
+	cp := r
+	if r.Findings != nil {
+		cp.Findings = make([]string, len(r.Findings))
+		copy(cp.Findings, r.Findings)
+	}
+	return cp
 }
 
 func sortedStrings(ss []string) []string {

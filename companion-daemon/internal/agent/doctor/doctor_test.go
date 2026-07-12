@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,9 +25,13 @@ func testRecord(jsonStr string) contract.RawRecord {
 	return contract.RawRecord{Bytes: []byte(jsonStr), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog}
 }
 
+func cleanRedaction() RedactionResult {
+	return RedactionResult{Scanned: 1, Clean: true}
+}
+
 func testBundle(id, adapter, provider, ver, base, evDig, patchDig string, files, fixtures, cmds []string, sr ObservatoryResult) (*ReviewBundle, error) {
 	return NewReviewBundle(id, adapter, provider, ver, base, evDig, patchDig,
-		[]byte("test diff"), files, fixtures, "scanned: 1 files, clean", cmds, sr,
+		[]byte("test diff"), files, fixtures, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "test-ws-digest", nil)
 }
 
@@ -553,7 +558,7 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 
 	// Replay of rejected request ID must fail.
 	b3, _ := NewReviewBundle("fw-reject", "c", "C", "3", actualSHA, "ev", "patch",
-		patchBytes, []string{"f.go"}, []string{"adapter.go"}, "scanned: 1 files, clean",
+		patchBytes, []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "ws-digest", nil)
 	if _, err := orch2.approval.Submit(b3); err == nil {
@@ -762,35 +767,35 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 	cmds := []string{"T0"}
 
 	_, err := NewReviewBundle("", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), files, fix, "scanned: 1 files, clean", cmds, sr,
+		[]byte("diff"), files, fix, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty requestID should be rejected")
 	}
 
 	_, err = NewReviewBundle("r1", "a", "p", "v", "", "ev", "patch",
-		[]byte("diff"), files, fix, "scanned: 1 files, clean", cmds, sr,
+		[]byte("diff"), files, fix, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty baseline should be rejected")
 	}
 
 	_, err = NewReviewBundle("r2", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), nil, fix, "scanned: 1 files, clean", cmds, sr,
+		[]byte("diff"), nil, fix, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty changedFiles should be rejected")
 	}
 
 	_, err = NewReviewBundle("r3", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), files, nil, "scanned: 1 files, clean", cmds, sr,
+		[]byte("diff"), files, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty fixture manifest should be rejected")
 	}
 
 	_, err = NewReviewBundle("r4", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), files, fix, "scanned: 1 files, clean", cmds, sr,
+		[]byte("diff"), files, fix, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "", nil)
 	if err == nil {
 		t.Error("empty workspace digest should be rejected")
@@ -802,7 +807,7 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	store := NewApprovalStore()
 	b1, _ := NewReviewBundle("rm1", "c", "C", "3", "abc", "ev", "patch",
-		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, "scanned: 1 files, clean",
+		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, "native_log", "ws1", nil)
 	d1 := b1.BundleDigest()
@@ -810,7 +815,7 @@ func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 
 	// Different diff content → different digest.
 	b2, _ := NewReviewBundle("rm2", "c", "C", "3", "abc", "ev", "patch",
-		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, "scanned: 1 files, clean",
+		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, "native_log", "ws2", nil)
 	d2 := b2.BundleDigest()
@@ -823,5 +828,186 @@ func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	err := store.Approve("rm2", d1)
 	if !errors.Is(err, ErrDigestMismatch) {
 		t.Errorf("wrong digest should be rejected: got %v", err)
+	}
+}
+
+// ── Secret scan: adapter patch with secret blocked ──
+
+func TestSecretScan_AdapterPatchWithSecretBlocked(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	secretPatch := []byte("diff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/adapter.go\n@@ -0,0 +1,3 @@\n+package v3_0_0\n+// sk-supersecretkey\n+var x = 1\n")
+	stub := &StubRepairRunner{Patch: secretPatch, Success: true}
+	desc := testDesc("claude", []string{"2.1.202"})
+	actualSHA, _ := gitHeadSHA(repoRoot)
+	orch := NewOrchestrator(stub, repoRoot)
+	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl"}
+	orch.DetectDrift(req)
+	orch.CollectEvidence([]string{"user"}, nil)
+	orch.RequestRepair()
+	orch.SubmitPatch(stub.Patch)
+	ws, err := orch.ApplyPatchToWorkspace()
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	defer ws.Cleanup()
+	orch.RunFixedSuites()
+	_, err = orch.BuildReviewBundle("sec1", actualSHA)
+	if err == nil {
+		t.Error("secret-bearing adapter patch must block review bundle creation")
+	}
+}
+
+// ── Deep copy: SuiteResult immutability ──
+
+func TestSuiteResult_DeepCopyImmutability(t *testing.T) {
+	orig := ObservatoryResult{
+		TotalTests: 10, Passed: 9, Failed: 1,
+		Failures: []ObsTestFailure{{TestName: "fail1", Reason: "r1"}},
+		CommandResults: []CommandResult{
+			{Label: "cmd1", TotalTests: 5, Passed: 4, Failed: 1, Skipped: 0},
+		},
+	}
+	cp := orig.deepCopy()
+	orig.Failures[0] = ObsTestFailure{TestName: "hacked", Reason: "hacked"}
+	if cp.Failures[0].TestName == "hacked" {
+		t.Error("deep copy shares Failures backing array with original")
+	}
+	orig.CommandResults[0] = CommandResult{Label: "hacked"}
+	if cp.CommandResults[0].Label == "hacked" {
+		t.Error("deep copy shares CommandResults backing array with original")
+	}
+	cp2 := cp.deepCopy()
+	if cp2.Failures[0].TestName != "fail1" {
+		t.Errorf("double-deep-copy corrupted: %s", cp2.Failures[0].TestName)
+	}
+}
+
+// ── Deep copy: SuiteResult accessor returns independent copy ──
+
+func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
+	b, _ := NewReviewBundle("ac1", "c", "C", "3", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
+		[]string{"T0"}, ObservatoryResult{
+			TotalTests: 1, Passed: 1,
+			CommandResults: []CommandResult{{Label: "orig"}},
+		},
+		DriftEvidence{}, "native_log", "ws", nil)
+	sr := b.SuiteResult()
+	sr.CommandResults[0] = CommandResult{Label: "mutated"}
+	sr2 := b.SuiteResult()
+	if sr2.CommandResults[0].Label != "orig" {
+		t.Error("SuiteResult() shares backing array; mutation leaks")
+	}
+}
+
+// ── Conservative provenance ──
+
+func TestDeriveEvidenceProvenance_WeakestTier(t *testing.T) {
+	recs := []contract.RawRecord{
+		{Provenance: contract.ProvenanceNativeLog},
+		{Provenance: contract.ProvenanceProviderProtocol},
+	}
+	p := deriveEvidenceProvenance(recs)
+	if p != string(contract.ProvenanceNativeLog) {
+		t.Errorf("mixed authoritative: got %q, want native_log (weakest)", p)
+	}
+	recs2 := []contract.RawRecord{
+		{Provenance: contract.ProvenanceProviderProtocol},
+		{Provenance: contract.ProvenanceHeuristic},
+	}
+	p2 := deriveEvidenceProvenance(recs2)
+	if p2 != string(contract.ProvenanceHeuristic) {
+		t.Errorf("mixed auth+advisory: got %q, want heuristic (weakest)", p2)
+	}
+	recs3 := []contract.RawRecord{
+		{Provenance: contract.ProvenanceRuntime},
+		{Provenance: contract.ProvenanceUnknown},
+	}
+	p3 := deriveEvidenceProvenance(recs3)
+	if p3 != string(contract.ProvenanceUnknown) {
+		t.Errorf("mixed auth+unknown: got %q, want unknown (weakest)", p3)
+	}
+	recs4 := []contract.RawRecord{
+		{Provenance: contract.ProvenanceNativeLog},
+		{Provenance: contract.ProvenanceNativeLog},
+		{Provenance: contract.ProvenanceNativeLog},
+		{Provenance: contract.ProvenanceHeuristic},
+	}
+	p4 := deriveEvidenceProvenance(recs4)
+	if p4 != string(contract.ProvenanceHeuristic) {
+		t.Errorf("count manipulation: got %q, want heuristic", p4)
+	}
+}
+
+// ── Separate manifests ──
+
+func TestBuildFixtureManifest_SeparatesCategories(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	patchBytes := adapterPatchBytes(t)
+	stub := &StubRepairRunner{Patch: patchBytes, Success: true}
+	desc := testDesc("claude", []string{"2.1.202"})
+	orch := NewOrchestrator(stub, repoRoot)
+	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl"}
+	orch.DetectDrift(req)
+	orch.CollectEvidence([]string{"user"}, nil)
+	orch.RequestRepair()
+	orch.SubmitPatch(stub.Patch)
+	ws, err := orch.ApplyPatchToWorkspace()
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	defer ws.Cleanup()
+	adapterM, pokitM, fixtureM, _ := buildFixtureManifest(ws.Root, "claude", "v3_0_0")
+	foundAdapter := false
+	for _, e := range adapterM {
+		if strings.Contains(e, "adapter.go") {
+			foundAdapter = true
+		}
+	}
+	if !foundAdapter {
+		t.Errorf("adapter.go not in adapter manifest: %v", adapterM)
+	}
+	foundTest := false
+	for _, e := range pokitM {
+		if strings.Contains(e, "conformance_test.go") {
+			foundTest = true
+		}
+	}
+	if !foundTest {
+		t.Errorf("conformance_test.go not in Pokit test manifest: %v", pokitM)
+	}
+	if len(fixtureM) != 0 {
+		t.Errorf("unexpected fixture entries: %v", fixtureM)
+	}
+	for _, e := range pokitM {
+		if strings.Contains(e, "adapter.go") {
+			t.Error("adapter.go incorrectly in Pokit test manifest")
+		}
+	}
+}
+
+// ── Redaction: not clean blocks bundle ──
+
+func TestRedaction_NotCleanBlocksNewReviewBundle(t *testing.T) {
+	dirty := RedactionResult{Scanned: 1, Clean: false, Findings: []string{"secret found"}}
+	_, err := NewReviewBundle("r99", "a", "p", "v", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, dirty,
+		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
+		DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("non-clean redaction should block NewReviewBundle")
+	}
+}
+
+// ── Secret scan: scanner failure fails closed ──
+
+func TestRedaction_ScannerFailureFailsClosed(t *testing.T) {
+	// Non-existent directory → scanner returns Clean=false.
+	_, _, _, redaction := buildFixtureManifest("/nonexistent/path", "claude", "v3_0_0")
+	if redaction.Clean {
+		t.Error("scanner failure should set Clean=false")
+	}
+	if len(redaction.Findings) == 0 {
+		t.Error("scanner failure should report findings")
 	}
 }
