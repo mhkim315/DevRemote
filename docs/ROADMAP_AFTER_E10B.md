@@ -137,8 +137,8 @@ M3-auth-1B iOS Secure Enclave identity               ACCEPT a173fcf (hardware-ba
 M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      ACCEPT 0755853a2 (SE key provisioning is in the production scan path; identity-bound save/cold-start restore; Jest 237; physical iOS smoke + native gate = M-track)
 M3b Mobile lifecycle action UX                        ACCEPT 9cdf2f290 (authoritative lifecycleState + retained Catalog rows; reachable Force Kill/Delete; epoch-safe controller; per-action DTO validation; capability-enforced input; Jest 289 + clean-prebuild full gate PASS; physical-device/LTE smoke = M-track)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
-T0  Common AgentEvent Contract                  CODE COMPLETE (remediated after independent REJECT: AgentEvent gains provenance + stable Seq ordering; approval gated on authoritative provenance; strictly bounded cursor/record/batch/metadata; non-bypassable fixed harness with generic adversarial cases; advisory-status policy enforced in code; additive-only, no production/DTO change; go test -race + full build-gate PASS); see docs/T0_COMMON_AGENT_EVENT_IMPLEMENTATION_REPORT.md
-T1  Codex Adapter
+T0  Common AgentEvent Contract                  ACCEPT 3ce2604bd (provider-neutral six-op contract; provenance + Seq; bounded cursor/record/batch/metadata; approval/status authority rules; non-bypassable fixed harness; additive-only; clean-prebuild full gate PASS)
+T1  Codex Adapter                               NEXT (use docs/NEXT_SESSION_T1_CODEX_ADAPTER_HANDOFF.md)
 T2  Claude Adapter
 D1  Adapter Doctor/Repair                     PLANNED (AI-assisted, user-approved activation only)
 T3  Transcript Integration
