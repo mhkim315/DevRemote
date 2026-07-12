@@ -37,9 +37,9 @@ type RepairInput struct {
 }
 
 type RepairOutput struct {
-	Patch        []byte
-	Diagnostics  []string
-	Success      bool
+	Patch       []byte
+	Diagnostics []string
+	Success     bool
 }
 
 // ── Orchestrator ──
@@ -58,17 +58,17 @@ type Orchestrator struct {
 	approval *ApprovalStore
 	evidence *EvidenceCollector
 
-	activeRequest     *ProcessRequest
-	activeReport      *CompatibilityReport
-	activeEvidence    *DriftEvidence
+	activeRequest      *ProcessRequest
+	activeReport       *CompatibilityReport
+	activeEvidence     *DriftEvidence
 	activeRepairOutput *RepairOutput
-	activeOps         []PatchOperation
-	activePatchBytes  []byte // original immutable patch bytes from runner
-	activeSuite       *ObservatoryResult
-	activeBundle      *ReviewBundle
-	activeRunner      RepairRunner
-	activeWorkspace   *Workspace
-	repoRoot          string
+	activeOps          []PatchOperation
+	activePatchBytes   []byte // original immutable patch bytes from runner
+	activeSuite        *ObservatoryResult
+	activeBundle       *ReviewBundle
+	activeRunner       RepairRunner
+	activeWorkspace    *Workspace
+	repoRoot           string
 }
 
 func NewOrchestrator(runner RepairRunner, repoRoot string) *Orchestrator {
@@ -272,8 +272,33 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		cmdLabels = append(cmdLabels, c.Label)
 	}
 
+	evidenceProv := string(contract.ProvenanceNativeLog)
+	wsDigest := o.activeWorkspace.Digest()
+	driftEv := DriftEvidence{}
+	if o.activeEvidence != nil {
+		driftEv = *o.activeEvidence
+	}
+	var unknowns []string
+	for _, d := range o.activeReport.DriftEvidence.UnknownDiscriminators {
+		unknowns = append(unknowns, d)
+	}
+	for _, f := range o.activeReport.DriftEvidence.FieldShapeChanges {
+		unknowns = append(unknowns, f)
+	}
+
 	bundle, err := NewReviewBundle(requestID, o.provider, o.activeReport.Provider, o.targetVersion,
-		baselineSHA, evidenceDigest, patchDigest, files, cmdLabels, *o.activeSuite)
+		baselineSHA, evidenceDigest, patchDigest,
+		o.activePatchBytes,     // unified diff
+		files,                  // changed files
+		nil,                    // fixture manifest
+		"native_log, redacted", // fixture redaction
+		cmdLabels,              // suite command manifest
+		*o.activeSuite,         // suite result
+		driftEv,                // drift evidence
+		evidenceProv,           // evidence provenance
+		wsDigest,               // workspace digest
+		unknowns,               // remaining unknowns
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -57,12 +57,12 @@ type CompatibilityReport struct {
 // DriftEvidence is a bounded, redacted evidence bundle safe for display and
 // diagnostics. Every slice is capped; every string is sanitized.
 type DriftEvidence struct {
-	ObservedVersion        string
-	AgentVersionSource     string
-	ChangedPaths           []string // max 8
-	UnknownDiscriminators  []string // max 16
-	FieldShapeChanges      []string // max 8
-	FixtureTestMismatches  []string // max 8
+	ObservedVersion       string
+	AgentVersionSource    string
+	ChangedPaths          []string // max 8
+	UnknownDiscriminators []string // max 16
+	FieldShapeChanges     []string // max 8
+	FixtureTestMismatches []string // max 8
 }
 
 // ── Observatory (fixed-suite) result ──
@@ -76,11 +76,23 @@ type ObsTestFailure struct {
 // ObservatoryResult is the summary of running the fixed conformance suite.
 // The suite is immutable — no test can be added, skipped, or weakened.
 type ObservatoryResult struct {
-	AdapterName string
-	TotalTests  int
-	Passed      int
-	Failed      int
-	Failures    []ObsTestFailure // bounded to MaxFailures
+	AdapterName    string
+	TotalTests     int
+	Passed         int
+	Failed         int
+	Failures       []ObsTestFailure // bounded to MaxFailures
+	CommandResults []CommandResult  // per-command results, in execution order
+}
+
+// CommandResult is the immutable result of one fixed-suite command.
+type CommandResult struct {
+	Label      string
+	Command    string // exact "go ..." command executed
+	TotalTests int
+	Passed     int
+	Failed     int
+	Skipped    int
+	ExitCode   int
 }
 
 // AllPassed reports whether every harness test passed.
@@ -198,20 +210,45 @@ func fullWorkflowTest(
 		ObservedRecordSamples: samples,
 	}
 	report, err := orch.DetectDrift(req)
-	if err != nil { orch.Reset(); return nil, err }
-	if report.Compatible { orch.Reset(); return nil, nil }
-	if _, err := orch.CollectEvidence(knownDiscriminators, knownFields); err != nil { orch.Reset(); return nil, err }
-	if err := orch.RequestRepair(); err != nil { orch.Reset(); return nil, err }
-	if orch.activeRepairOutput == nil || !orch.activeRepairOutput.Success { orch.Reset(); return nil, errors.New("runner did not produce successful output") }
-	if _, err := orch.SubmitPatch(orch.activeRepairOutput.Patch); err != nil { orch.Reset(); return nil, err }
-	if _, err := orch.ApplyPatchToWorkspace(); err != nil { orch.Reset(); return nil, err }
-	if _, err := orch.RunFixedSuites(); err != nil { orch.Reset(); return nil, err }
+	if err != nil {
+		orch.Reset()
+		return nil, err
+	}
+	if report.Compatible {
+		orch.Reset()
+		return nil, nil
+	}
+	if _, err := orch.CollectEvidence(knownDiscriminators, knownFields); err != nil {
+		orch.Reset()
+		return nil, err
+	}
+	if err := orch.RequestRepair(); err != nil {
+		orch.Reset()
+		return nil, err
+	}
+	if orch.activeRepairOutput == nil || !orch.activeRepairOutput.Success {
+		orch.Reset()
+		return nil, errors.New("runner did not produce successful output")
+	}
+	if _, err := orch.SubmitPatch(orch.activeRepairOutput.Patch); err != nil {
+		orch.Reset()
+		return nil, err
+	}
+	if _, err := orch.ApplyPatchToWorkspace(); err != nil {
+		orch.Reset()
+		return nil, err
+	}
+	if _, err := orch.RunFixedSuites(); err != nil {
+		orch.Reset()
+		return nil, err
+	}
 	bundle, err := orch.BuildReviewBundle(requestID, baselineSHA)
 	if err != nil {
 		if orch.activeSuite != nil {
 			err = fmt.Errorf("%w; suite %d/%d", err, orch.activeSuite.Passed, orch.activeSuite.TotalTests)
 		}
-		orch.Reset(); return nil, err
+		orch.Reset()
+		return nil, err
 	}
 	return &Session{orch: orch, Bundle: bundle}, nil
 }

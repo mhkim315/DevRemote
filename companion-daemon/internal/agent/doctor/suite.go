@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"devremote/companion-daemon/internal/agent/contract"
@@ -32,20 +33,41 @@ func NewFixedSuite() *FixedSuite { return &FixedSuite{} }
 
 // Commands returns explicit immutable suite targets. Does NOT include
 // internal/agent/doctor to prevent recursive E2E execution in workspace.
+// Every declared label must have a matching command — the manifest
+// regression test (TestFixedSuite_HasRequiredCommands) enforces this.
 func (fs *FixedSuite) Commands(candidatePkg string) []FixedCommand {
 	// Explicit packages only — does NOT include internal/agent/doctor
 	// to prevent recursive E2E execution.
 	cmds := []FixedCommand{
+		// Build
 		{Label: "build-adapters", PkgPath: "./internal/agent/adapters/...", BuildOnly: true},
 		{Label: "build-contract", PkgPath: "./internal/agent/contract/...", BuildOnly: true},
+		// Vet (non-Doctor packages)
+		{Label: "vet-contract", PkgPath: "./internal/agent/contract/...", VetOnly: true},
+		{Label: "vet-adapters", PkgPath: "./internal/agent/adapters/...", VetOnly: true},
+		// T0 frozen harness and regressions
 		{Label: "T0-contract-conformance", PkgPath: "./internal/agent/contract/", RunRegex: "Conformance", MinTests: 1},
+		{Label: "T0-contract-race", PkgPath: "./internal/agent/contract/", RunRegex: "Conformance", MinTests: 1, Race: true},
+		// T1 Codex: build+vet in adapters batch; explicit conformance/race/regression
 		{Label: "T1-codex-conformance", PkgPath: "./internal/agent/adapters/codex/v0_144_1/", RunRegex: "Conformance", MinTests: 1},
+		{Label: "T1-codex-race", PkgPath: "./internal/agent/adapters/codex/v0_144_1/", RunRegex: "Conformance", MinTests: 1, Race: true},
+		{Label: "T1-codex-regression", PkgPath: "./internal/agent/adapters/codex/v0_144_1/", RunRegex: "TestCodexAdapter", MinTests: 5},
+		// T2 Claude: build+vet in adapters batch; explicit conformance/race/regression
 		{Label: "T2-claude-conformance", PkgPath: "./internal/agent/adapters/claude/v2_1_202/", RunRegex: "Conformance", MinTests: 1},
+		{Label: "T2-claude-race", PkgPath: "./internal/agent/adapters/claude/v2_1_202/", RunRegex: "Conformance", MinTests: 1, Race: true},
+		{Label: "T2-claude-regression", PkgPath: "./internal/agent/adapters/claude/v2_1_202/", RunRegex: "TestClaudeAdapter", MinTests: 5},
+		// Non-Doctor agent race regressions (Claude + Codex parser/detector contract
+		// tests only; Antigravity tests legitimately skip capabilities they don't support.)
+		{Label: "agent-race-regression", PkgPath: "./internal/agent/", RunRegex: "Test(Claude|Codex|MockDetector|MockParser_Contract_Claude|MockParser_Contract_Codex)_Contract", MinTests: 1, Race: true},
+		// Failure-isolation regression (T0 fixture adapter)
+		{Label: "failure-isolation", PkgPath: "./internal/agent/contract/", RunRegex: "FixtureAdapter", MinTests: 1},
 	}
 	if candidatePkg != "" {
 		cmds = append(cmds,
 			FixedCommand{Label: "candidate-build", PkgPath: candidatePkg, BuildOnly: true},
+			FixedCommand{Label: "candidate-vet", PkgPath: candidatePkg, VetOnly: true},
 			FixedCommand{Label: "candidate-conformance", PkgPath: candidatePkg, RunRegex: "Conformance", MinTests: 1},
+			FixedCommand{Label: "candidate-race", PkgPath: candidatePkg, RunRegex: "Conformance", MinTests: 1, Race: true},
 		)
 	}
 	return cmds
@@ -61,7 +83,7 @@ func (sr *SuiteRunner) RunInWorkspace(workspaceRoot, candidatePkg string) Observ
 	cmds := sr.suite.Commands(candidatePkg)
 	result := ObservatoryResult{AdapterName: "fixed-suite"}
 	for _, c := range cmds {
-		cr := sr.runInDir(c, workspaceRoot)
+		cr, cmdResult := sr.runInDir(c, workspaceRoot)
 		result.TotalTests += cr.TotalTests
 		result.Passed += cr.Passed
 		result.Failed += cr.Failed
@@ -69,12 +91,15 @@ func (sr *SuiteRunner) RunInWorkspace(workspaceRoot, candidatePkg string) Observ
 		if len(result.Failures) > MaxFailures {
 			result.Failures = result.Failures[:MaxFailures]
 		}
+		result.CommandResults = append(result.CommandResults, cmdResult)
 	}
 	return result
 }
 
-func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) ObservatoryResult {
+func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) (ObservatoryResult, CommandResult) {
 	r := ObservatoryResult{AdapterName: cmd.Label}
+	cr := CommandResult{Label: cmd.Label, Command: "go " + shellJoin(sr.buildArgs(cmd))}
+
 	ctx, cancel := context.WithTimeout(context.Background(), sr.timeoutFor(cmd))
 	defer cancel()
 
@@ -89,13 +114,15 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) ObservatoryResult 
 		r.TotalTests = 1
 		r.Failed = 1
 		r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: contract.SanitizeDiagnostic("pipe: " + err.Error())})
-		return r
+		cr.ExitCode = -1
+		return r, cr
 	}
 	if err := ec.Start(); err != nil {
 		r.TotalTests = 1
 		r.Failed = 1
 		r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: contract.SanitizeDiagnostic("start: " + err.Error())})
-		return r
+		cr.ExitCode = -1
+		return r, cr
 	}
 
 	dec := json.NewDecoder(stdout)
@@ -121,6 +148,13 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) ObservatoryResult 
 	}
 	waitErr := ec.Wait()
 	hadErr := false
+
+	// Capture exit code.
+	if ec.ProcessState != nil {
+		cr.ExitCode = ec.ProcessState.ExitCode()
+	} else if waitErr != nil {
+		cr.ExitCode = -1
+	}
 
 	if decErr {
 		hadErr = true
@@ -152,6 +186,7 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) ObservatoryResult 
 			r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: contract.SanitizeDiagnostic(reason)})
 		}
 	}
+	skipped := 0
 	for name, st := range status {
 		r.TotalTests++
 		switch st {
@@ -163,29 +198,40 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) ObservatoryResult 
 				r.Failures = append(r.Failures, ObsTestFailure{TestName: name, Reason: "test failed"})
 			}
 		case "skip":
+			skipped++
 			r.Failed++
 			if len(r.Failures) < MaxFailures {
 				r.Failures = append(r.Failures, ObsTestFailure{TestName: name, Reason: "required test skipped — treated as failure"})
 			}
 		}
 	}
+	cr.TotalTests = r.TotalTests
+	cr.Passed = r.Passed
+	cr.Failed = r.Failed
+	cr.Skipped = skipped
 	if pkgFail && r.TotalTests == 0 {
 		r.TotalTests = 1
 		r.Failed = 1
 		r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: "package failed"})
+		cr.TotalTests = 1
+		cr.Failed = 1
 	}
 	if r.TotalTests == 0 && cmd.MinTests > 0 {
 		r.TotalTests = 1
 		r.Failed = 1
 		r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: "zero tests — bypass detected"})
+		cr.TotalTests = 1
+		cr.Failed = 1
 	}
 	if cmd.MinTests > 0 && (r.Passed+r.Failed) < cmd.MinTests {
 		delta := cmd.MinTests - (r.Passed + r.Failed)
 		r.Failed += delta
 		r.TotalTests += delta
+		cr.Failed += delta
+		cr.TotalTests += delta
 		r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: fmt.Sprintf("min %d tests, got %d", cmd.MinTests, r.Passed+r.Failed-delta)})
 	}
-	return r
+	return r, cr
 }
 
 func (sr *SuiteRunner) buildArgs(cmd FixedCommand) []string {
@@ -211,6 +257,17 @@ func (sr *SuiteRunner) timeoutFor(cmd FixedCommand) time.Duration {
 		return raceTestTimeout
 	}
 	return suiteTimeout
+}
+
+func shellJoin(args []string) string {
+	var b strings.Builder
+	for i, a := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(a)
+	}
+	return b.String()
 }
 
 type suiteEvent struct {

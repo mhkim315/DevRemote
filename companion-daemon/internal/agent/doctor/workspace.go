@@ -1,15 +1,19 @@
 package doctor
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Workspace is an isolated directory containing the full accepted baseline
 // plus the patched candidate adapter.
 type Workspace struct {
-	Root       string
+	Root         string
 	CandidatePkg string // relative package path for go test
 }
 
@@ -18,6 +22,15 @@ func (w *Workspace) Cleanup() error {
 		return os.RemoveAll(w.Root)
 	}
 	return nil
+}
+
+// Digest computes a deterministic hash of the workspace contents after patch
+// application. Uses file listing with mod times as a lightweight content proxy.
+func (w *Workspace) Digest() string {
+	if w.Root == "" {
+		return ""
+	}
+	return workspaceDigest(w.Root)
 }
 
 // PrepareWorkspace copies the full agent tree from repoRoot into a temp dir,
@@ -80,4 +93,35 @@ func copyFile(src, dst string) error {
 	}
 	os.MkdirAll(filepath.Dir(dst), 0755)
 	return os.WriteFile(dst, data, 0644)
+}
+
+// workspaceDigest computes a deterministic hash of files in the workspace.
+// Walks the candidate adapter subtree and hashes file contents sorted by path.
+func workspaceDigest(root string) string {
+	h := sha256.New()
+	var paths []string
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return nil
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	sort.Strings(paths)
+	for _, p := range paths {
+		data, err := os.ReadFile(filepath.Join(root, p))
+		if err != nil {
+			continue
+		}
+		h.Write([]byte(p))
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

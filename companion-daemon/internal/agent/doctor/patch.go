@@ -33,7 +33,7 @@ type PatchHunk struct {
 }
 
 type PatchLine struct {
-	Kind    byte   // ' ' context, '+' add, '-' remove
+	Kind    byte // ' ' context, '+' add, '-' remove
 	Content string
 }
 
@@ -133,11 +133,15 @@ func ParsePatch(patch []byte) ([]PatchOperation, error) {
 			if n, _ := fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart, &curHunk.NewCount); n == 4 {
 				parsed = true
 			} else if n2, _ := fmt.Sscanf(line, "@@ -%d +%d,%d @@", &curHunk.OldStart, &curHunk.NewStart, &curHunk.NewCount); n2 == 3 {
-				curHunk.OldCount = 1; parsed = true
+				curHunk.OldCount = 1
+				parsed = true
 			} else if n3, _ := fmt.Sscanf(line, "@@ -%d,%d +%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart); n3 == 3 {
-				curHunk.NewCount = 1; parsed = true
+				curHunk.NewCount = 1
+				parsed = true
 			} else if n4, _ := fmt.Sscanf(line, "@@ -%d +%d @@", &curHunk.OldStart, &curHunk.NewStart); n4 == 2 {
-				curHunk.OldCount = 1; curHunk.NewCount = 1; parsed = true
+				curHunk.OldCount = 1
+				curHunk.NewCount = 1
+				parsed = true
 			}
 			if !parsed {
 				return nil, ErrMalformedPatch
