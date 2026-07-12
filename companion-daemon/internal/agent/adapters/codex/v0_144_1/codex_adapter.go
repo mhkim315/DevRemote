@@ -7,21 +7,23 @@
 // Every session_meta in a read batch is checked; a single missing / mismatched /
 // malformed cli_version forces the ENTIRE batch to EventUnknown + degraded.
 //
-// Seq / cursor: compact position+anchor cursor (fixed ~50 bytes regardless of
-// event count).  Format: "v:<ver>:<pos>:<anchor>" where ver=1 if 0.144.1
-// confirmed, pos=next absolute Seq, anchor=content-hash of the last emitted
-// record (empty initially).
+// Input policy: ReadEvents accepts ORDERED FULL-PREFIX snapshots only. The
+// caller must re-send all records from the beginning on every read. The cursor
+// encodes the absolute position of the next record to emit plus the content-hash
+// anchor of the last emitted record. On re-read the anchor is validated at the
+// exact expected position; any mismatch (tampered cursor, anchor loss, stream
+// rotation, position/anchor inconsistency) returns 0 events + degraded.
 //
-// Two input modes:
-//   - Full-prefix (harness): caller re-sends all records from the beginning.
-//     The anchor is found in the input → every record through the anchor is
-//     skipped → only new records emitted.  Zero re-emission.
-//   - Incremental (production): caller sends only new records.  The anchor is
-//     NOT found → all records are emitted with advancing Seq.
+// Cursor format: "<pos>:<anchor>" — pos is the absolute next Seq (decimal),
+// anchor is the content-hash of the record at pos-1 (empty when pos==0).
+// Cursor size is fixed at ~25 bytes regardless of event count.
 //
-// Anchor mismatch (found in the wrong position) → fail-closed + degraded.
+// Version state is NOT carried in the cursor. Every ReadEvents call scans the
+// current batch's session_meta records independently. A cursor claiming
+// "version confirmed" without actual 0.144.1 evidence in the batch cannot
+// activate typed events.
 //
-// Correlation: unavailable (R1).  DiscoverSessions returns nil.
+// Correlation: unavailable (R1). DiscoverSessions returns nil.
 package v0_144_1
 
 import (
@@ -38,10 +40,6 @@ import (
 )
 
 const supportedCodexVersion = "0.144.1"
-
-// cursorPrefix / cursorSep delimit cursor fields.
-const cursorPrefix = "v:"
-const cursorSep = ":"
 
 // Adapter implements contract.AgentAdapter for Codex CLI 0.144.1.
 type Adapter struct{ failRead bool }
@@ -66,58 +64,88 @@ func (a *Adapter) Descriptor() contract.AgentAdapterDescriptor {
 	}
 }
 
-// ── Cursor encoding ──
+// ── Cursor ──
 //
-// Format:  v:<version_ok>:<next_pos>:<anchor_id>
+// Format: "<pos>:<anchor>"
 //
-//	version_ok = "1" if exact 0.144.1 confirmed, "0" otherwise
-//	next_pos   = absolute next Seq (decimal)
-//	anchor_id  = content-hash of the last emitted record (empty initially)
+//	pos    = absolute next Seq to assign (decimal, 0 initially)
+//	anchor = content-hash of the record at pos-1 (empty when pos==0)
 //
-// Cursor size is fixed at ~50 bytes regardless of how many records have been
-// processed — it never grows beyond MaxCursorBytes.
-//
-// On re-read (full-prefix): the anchor is found in the input → all records up
-// to and including the anchor are skipped → zero re-emission.
-// On append (incremental): the anchor is NOT found → all records are new →
-// emitted with advancing Seq.
+// The anchor encodes the stream identity at the exact position so tampering,
+// rotation, or position/anchor inconsistency is detected and fails closed.
 
 type cursorState struct {
-	versionOK bool
-	nextPos   int64
-	anchor    string // hex content-hash, "" initially
+	nextPos int64
+	anchor  string // hex content-hash, "" iff nextPos==0
 }
+
+const cursorFieldSep = ":"
 
 func parseCursor(c contract.Cursor) (cursorState, error) {
 	if c.IsEmpty() {
 		return cursorState{}, nil
 	}
 	s := string(c)
-	if !strings.HasPrefix(s, cursorPrefix) {
-		return cursorState{}, strconv.ErrSyntax
+	idx := strings.IndexByte(s, ':')
+	if idx < 0 {
+		return cursorState{}, errCursorSyntax
 	}
-	s = s[len(cursorPrefix):]
-	parts := strings.SplitN(s, cursorSep, 3)
-	if len(parts) != 3 {
-		return cursorState{}, strconv.ErrSyntax
-	}
-	ver, ok := strconv.Atoi(parts[0])
-	if ok != nil || (ver != 0 && ver != 1) {
-		return cursorState{}, strconv.ErrSyntax
-	}
-	pos, err := strconv.ParseInt(parts[1], 10, 64)
+	pos, err := strconv.ParseInt(s[:idx], 10, 64)
 	if err != nil || pos < 0 {
-		return cursorState{}, strconv.ErrSyntax
+		return cursorState{}, errCursorSyntax
 	}
-	return cursorState{versionOK: ver == 1, nextPos: pos, anchor: parts[2]}, nil
+	anchor := s[idx+1:]
+	// Invariant: pos==0 iff anchor is empty. pos>0 requires anchor.
+	if (pos == 0) != (anchor == "") {
+		return cursorState{}, errCursorSyntax
+	}
+	// Anchor must be valid lowercase hex (16 chars) when present.
+	if anchor != "" && !isValidAnchor(anchor) {
+		return cursorState{}, errCursorSyntax
+	}
+	return cursorState{nextPos: pos, anchor: anchor}, nil
+}
+
+var errCursorSyntax = strconv.ErrSyntax
+
+func isValidAnchor(a string) bool {
+	if len(a) != 16 {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		c := a[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func encodeCursor(st cursorState) contract.Cursor {
-	ver := "0"
-	if st.versionOK {
-		ver = "1"
+	return contract.Cursor(strconv.FormatInt(st.nextPos, 10) + cursorFieldSep + st.anchor)
+}
+
+// validateCursorAnchor checks that the cursor anchor matches the record at
+// position nextPos-1 in the normalized input. Returns an error string if
+// validation fails (empty string on success).
+func validateCursorAnchor(cur cursorState, all []normResult) string {
+	if cur.nextPos == 0 {
+		if cur.anchor != "" {
+			return "non-empty anchor at position 0"
+		}
+		return ""
 	}
-	return contract.Cursor(cursorPrefix + ver + cursorSep + strconv.FormatInt(st.nextPos, 10) + cursorSep + st.anchor)
+	if cur.anchor == "" {
+		return "missing anchor at non-zero position"
+	}
+	idx := int(cur.nextPos - 1)
+	if idx >= len(all) {
+		return "cursor position beyond input length"
+	}
+	if all[idx].ev.ID != cur.anchor {
+		return "cursor anchor mismatch at position " + strconv.FormatInt(cur.nextPos-1, 10)
+	}
+	return ""
 }
 
 // ── Detect ──
@@ -163,6 +191,11 @@ type codexRecord struct {
 	Timestamp string         `json:"timestamp"`
 	Type      string         `json:"type"`
 	Payload   map[string]any `json:"payload"`
+}
+
+type normResult struct {
+	ev  contract.AgentEvent
+	deg contract.DegradedInfo
 }
 
 // ── NormalizeEvent ──
@@ -292,13 +325,13 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "batch truncated at bound")
 	}
 
-	// Parse compact position+anchor cursor.
+	// Parse cursor.
 	cur, err := parseCursor(in.Cursor)
 	if err != nil {
 		return contract.ReadResult{Degraded: contract.Degrade("invalid cursor: " + err.Error())}, nil
 	}
 
-	// ── Version gate: scan EVERY session_meta ──
+	// ── Version gate: validate from CURRENT batch only — no cursor authority ──
 	batchVersionOK := false
 	batchVersionFailed := false
 	for _, rec := range records {
@@ -321,38 +354,20 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			diags = append(diags, "unsupported Codex version: "+safeVersionDiag(v))
 		}
 	}
-
-	// Resolve effective version state: cursor-carried authority survives
-	// incremental batches that lack a session_meta. A conflicting meta in
-	// this batch overrides.
-	versionOK := cur.versionOK
-	if batchVersionFailed {
-		versionOK = false
-	} else if batchVersionOK {
-		versionOK = true
-	}
-	// If no meta in batch AND cursor didn't confirm → version failed.
-	versionFailed := !versionOK
-
-	if !versionOK {
-		degraded = true
-		diags = append(diags, "version not confirmed for 0.144.1")
+	if !batchVersionOK || batchVersionFailed {
+		batchVersionFailed = true
 	}
 
-	// ── Phase 1: normalise all accepted records ──
-	type norm struct {
-		ev  contract.AgentEvent
-		deg contract.DegradedInfo
-	}
-	var all []norm
+	// ── Normalize all accepted records ──
+	var all []normResult
 	for _, rec := range records {
 		if !contract.AcceptRecord(rec) {
 			degraded = true
 			diags = append(diags, "oversized record skipped")
 			continue
 		}
-		ev, recDeg := normalizeCodexEvent(rec, sessionID, rec.Source, versionFailed)
-		all = append(all, norm{ev, recDeg})
+		ev, recDeg := normalizeCodexEvent(rec, sessionID, rec.Source, batchVersionFailed)
+		all = append(all, normResult{ev, recDeg})
 		if recDeg.Degraded {
 			degraded = true
 			if recDeg.Reason != "" {
@@ -366,43 +381,25 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 	}
 
-	// ── Phase 2: anchor-based skip (full-prefix) or emit-all (incremental) ──
-	startIdx := 0
-	// Inconsistent cursor: position advanced but anchor lost.
-	if cur.anchor == "" && cur.nextPos > 0 {
+	// ── Cursor anchor validation ──
+	if msg := validateCursorAnchor(cur, all); msg != "" {
 		degraded = true
-		diags = append(diags, "cursor anchor lost")
-	}
-	if cur.anchor != "" {
-		found := -1
-		for i := range all {
-			if all[i].ev.ID == cur.anchor {
-				found = i
-				break
-			}
-		}
-		if found >= 0 {
-			// Full-prefix: skip records through the anchor.
-			startIdx = found + 1
-		} else {
-			// Anchor expected but not found: incremental input, tampered cursor,
-			// or stream rotation.  Emit all records but flag degradation so the
-			// caller knows the cursor could not be used for deduplication.
-			degraded = true
-			diags = append(diags, "cursor anchor not found in input")
-		}
+		diags = append(diags, msg)
+		deg := contract.Degrade(strings.Join(boundedDiags(diags), "; "))
+		return contract.ReadResult{Degraded: deg}, nil
 	}
 
-	// ── Phase 3: assign Seq, dedupe within batch, cap ──
+	// ── Emit: skip pos input records, assign Seq from absolute position ──
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
 	batchSeen := map[string]bool{}
 	var out []contract.AgentEvent
-	var newAnchor string
 	truncated := false
+	processed := int64(0)
 
-	for i := startIdx; i < len(all); i++ {
+	for i := int(cur.nextPos); i < len(all); i++ {
 		ev := all[i].ev
 		if ev.ID == "" || batchSeen[ev.ID] {
+			processed++
 			continue
 		}
 		if len(out) >= limit {
@@ -412,7 +409,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		batchSeen[ev.ID] = true
 		ev.Seq = cur.nextPos + int64(len(out))
 		out = append(out, ev)
-		newAnchor = ev.ID
+		processed++
 	}
 
 	if truncated {
@@ -420,34 +417,25 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "event limit truncated")
 	}
 
-	// Cap diagnostics.
-	if len(diags) > contract.MaxDiagnostics {
-		diags = diags[:contract.MaxDiagnostics]
+	// nextPos counts input positions consumed, not emitted events.
+	// Anchor = ID of the record at position nextPos-1 (even if batch-dedup'd).
+	nextPos := cur.nextPos + processed
+	var newAnchor string
+	if nextPos > 0 && int(nextPos)-1 < len(all) {
+		newAnchor = all[nextPos-1].ev.ID
+	}
+	if nextPos == 0 || len(out) == 0 && cur.nextPos == nextPos {
+		newAnchor = cur.anchor // unchanged
 	}
 
 	deg := contract.OK()
 	if degraded {
-		reason := strings.Join(diags, "; ")
-		if len(reason) > contract.MaxDiagnosticBytes {
-			reason = reason[:contract.MaxDiagnosticBytes]
-		}
-		deg = contract.Degrade(reason)
-	}
-
-	// Build next cursor: version state + absolute position + last anchor.
-	nextCur := cursorState{
-		versionOK: versionOK,
-		nextPos:   cur.nextPos + int64(len(out)),
-		anchor:    newAnchor,
-	}
-	// If no events emitted, preserve old anchor so full-prefix skip still works.
-	if len(out) == 0 {
-		nextCur.anchor = cur.anchor
+		deg = contract.Degrade(strings.Join(boundedDiags(diags), "; "))
 	}
 
 	return contract.ReadResult{
 		Events:     out,
-		NextCursor: encodeCursor(nextCur),
+		NextCursor: encodeCursor(cursorState{nextPos: nextPos, anchor: newAnchor}),
 		Degraded:   deg,
 	}, nil
 }
@@ -561,6 +549,13 @@ func boundedCodexMetadata(cr codexRecord) map[string]string {
 		m["resolution"] = boundStr(s, contract.MaxMetadataValueBytes)
 	}
 	return m
+}
+
+func boundedDiags(diags []string) []string {
+	if len(diags) > contract.MaxDiagnostics {
+		return diags[:contract.MaxDiagnostics]
+	}
+	return diags
 }
 
 func sourceOrDefault(s contract.AgentEventSource) contract.AgentEventSource {

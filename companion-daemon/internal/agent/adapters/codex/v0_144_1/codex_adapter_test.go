@@ -565,10 +565,13 @@ func TestCodexAdapter_PerRecordSource(t *testing.T) {
 	}
 }
 
-// ── Cursor: compact position+anchor design ──
+// ── Cursor: compact position+anchor, strict validation ──
+//
+// Input policy: ordered full-prefix snapshots.  The cursor encodes the
+// absolute position and content-hash anchor of the last emitted record.
+// Mismatch → 0 events + degraded.
 
 func TestCodexAdapter_Cursor_LargeFullPrefix_ZeroReemission(t *testing.T) {
-	// 300 records, re-read same prefix with cursor → 0 events.
 	a := &Adapter{}
 	var records []contract.RawRecord
 	records = append(records, sessionMeta0_144_1())
@@ -582,24 +585,22 @@ func TestCodexAdapter_Cursor_LargeFullPrefix_ZeroReemission(t *testing.T) {
 	if len(res1.Events) != 300 {
 		t.Fatalf("first read: got %d events, want 300", len(res1.Events))
 	}
-	// Cursor must be bounded regardless of record count.
 	if len(res1.NextCursor) > contract.MaxCursorBytes {
-		t.Errorf("cursor too large: %d bytes > %d limit", len(res1.NextCursor), contract.MaxCursorBytes)
+		t.Errorf("cursor too large: %d bytes", len(res1.NextCursor))
 	}
 
-	// Re-read identical prefix with cursor → must emit 0.
+	// Re-read identical prefix → anchor validated at pos-1 → 0 events.
 	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 		Cursor:  res1.NextCursor,
 	})
 	if len(res2.Events) != 0 {
-		t.Fatalf("re-read same prefix: got %d events, want 0", len(res2.Events))
+		t.Fatalf("re-read: got %d events, want 0", len(res2.Events))
 	}
 }
 
 func TestCodexAdapter_Cursor_MaxBatch_ZeroReemission(t *testing.T) {
-	// MaxEventsPerRead (1000) records with session_meta, re-read → 0.
 	a := &Adapter{}
 	var records []contract.RawRecord
 	records = append(records, sessionMeta0_144_1())
@@ -611,12 +612,11 @@ func TestCodexAdapter_Cursor_MaxBatch_ZeroReemission(t *testing.T) {
 		Records: records,
 	})
 	if len(res1.Events) != contract.MaxEventsPerRead {
-		t.Fatalf("first read: got %d events, want %d", len(res1.Events), contract.MaxEventsPerRead)
+		t.Fatalf("first read: got %d events", len(res1.Events))
 	}
 	if len(res1.NextCursor) > contract.MaxCursorBytes {
-		t.Errorf("cursor too large after max batch: %d bytes", len(res1.NextCursor))
+		t.Errorf("cursor too large: %d bytes", len(res1.NextCursor))
 	}
-
 	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
@@ -628,8 +628,6 @@ func TestCodexAdapter_Cursor_MaxBatch_ZeroReemission(t *testing.T) {
 }
 
 func TestCodexAdapter_Cursor_CallerLimitPagination(t *testing.T) {
-	// Paginate through records with caller limit: every source record emitted
-	// exactly once across all reads.
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -638,10 +636,9 @@ func TestCodexAdapter_Cursor_CallerLimitPagination(t *testing.T) {
 		codexRec(`{"timestamp":"2026-07-06T13:29:35.003Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
 		codexRec(`{"timestamp":"2026-07-06T13:29:35.004Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t3"}}`),
 	}
-
 	seen := map[string]bool{}
 	var cursor contract.Cursor
-	for limit := 2; ; limit += 2 {
+	for {
 		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
 			Records:   records,
@@ -664,9 +661,9 @@ func TestCodexAdapter_Cursor_CallerLimitPagination(t *testing.T) {
 	}
 }
 
-func TestCodexAdapter_Cursor_Incremental_TypedEvent(t *testing.T) {
-	// After version is confirmed, an incremental append (no session_meta in
-	// batch) must emit a correctly typed event, not EventUnknown.
+func TestCodexAdapter_Cursor_AppendAfterRead(t *testing.T) {
+	// Full-prefix with appended record: cursor skips previously emitted,
+	// new record gets typed event with advancing Seq.
 	a := &Adapter{}
 	first := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -676,42 +673,15 @@ func TestCodexAdapter_Cursor_Incremental_TypedEvent(t *testing.T) {
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: first,
 	})
-	cursor := res1.NextCursor
+	if len(res1.Events) != 2 {
+		t.Fatalf("first read: got %d events, want 2", len(res1.Events))
+	}
 
-	// Incremental: only new record, no session_meta. Version authority must
-	// survive from cursor.
+	// Full prefix with new record appended.
 	second := []contract.RawRecord{
-		codexRec(`{"timestamp":"2026-07-06T13:29:40.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}`),
-	}
-	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
-		Session: contract.SessionContext{SessionID: "pokit:host-a"},
-		Records: second,
-		Cursor:  cursor,
-	})
-	if len(res2.Events) != 1 {
-		t.Fatalf("incremental: got %d events, want 1", len(res2.Events))
-	}
-	if res2.Events[0].Type != agent.EventAgentStarted {
-		t.Errorf("incremental: type=%q, want agent_started (version authority preserved)", res2.Events[0].Type)
-	}
-}
-
-func TestCodexAdapter_Cursor_AppendSeqMonotonic(t *testing.T) {
-	// Appended event Seq must be greater than the previous maximum.
-	a := &Adapter{}
-	first := []contract.RawRecord{
 		sessionMeta0_144_1(),
-		codexRec(`{"timestamp":"2026-07-06T13:29:35.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
-		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
-	}
-	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
-		Session: contract.SessionContext{SessionID: "pokit:host-a"},
-		Records: first,
-	})
-	prevMax := res1.Events[len(res1.Events)-1].Seq
-
-	second := []contract.RawRecord{
-		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t3"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"first"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:40.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}`),
 	}
 	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
@@ -719,15 +689,18 @@ func TestCodexAdapter_Cursor_AppendSeqMonotonic(t *testing.T) {
 		Cursor:  res1.NextCursor,
 	})
 	if len(res2.Events) != 1 {
-		t.Fatalf("append: got %d events", len(res2.Events))
+		t.Fatalf("append: got %d events, want 1", len(res2.Events))
 	}
+	if res2.Events[0].Type != agent.EventAgentStarted {
+		t.Errorf("append: type=%q, want agent_started", res2.Events[0].Type)
+	}
+	prevMax := res1.Events[len(res1.Events)-1].Seq
 	if res2.Events[0].Seq <= prevMax {
 		t.Errorf("append Seq %d <= previous max %d", res2.Events[0].Seq, prevMax)
 	}
 }
 
 func TestCodexAdapter_Cursor_Deterministic(t *testing.T) {
-	// Identical input + cursor → byte-identical NextCursor.
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -749,8 +722,9 @@ func TestCodexAdapter_Cursor_Deterministic(t *testing.T) {
 	}
 }
 
-func TestCodexAdapter_Cursor_AnchorTamper_FailClosed(t *testing.T) {
-	// Tampering with the cursor anchor must fail closed (degraded, 0 events).
+// ── Fail-closed: 0 events + degraded on any cursor anomaly ──
+
+func TestCodexAdapter_Cursor_AnchorTamper_ZeroEvents(t *testing.T) {
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -760,12 +734,9 @@ func TestCodexAdapter_Cursor_AnchorTamper_FailClosed(t *testing.T) {
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
-	// Parse valid cursor, modify the anchor.
-	cur, err := parseCursor(res1.NextCursor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cur.anchor = "deadbeefcafebabe" // tampered
+	// Tamper: replace anchor with random hex.
+	cur, _ := parseCursor(res1.NextCursor)
+	cur.anchor = "deadbeefcafebabe"
 	tampered := encodeCursor(cur)
 
 	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
@@ -773,19 +744,15 @@ func TestCodexAdapter_Cursor_AnchorTamper_FailClosed(t *testing.T) {
 		Records: records,
 		Cursor:  tampered,
 	})
-	// Anchor tampered → not found in input → fail-closed with degraded.
-	// Records are emitted (adapter cannot silently drop valid input), but the
-	// caller is warned via Degraded that the cursor was not usable for dedup.
-	if !res2.Degraded.Degraded {
-		t.Error("tampered anchor must produce degraded")
+	if len(res2.Events) != 0 {
+		t.Errorf("tampered anchor: got %d events, want 0 (fail-closed)", len(res2.Events))
 	}
-	if len(res2.Events) == 0 {
-		t.Error("tampered anchor: got 0 events, want >0 (records still emitted, degraded)")
+	if !res2.Degraded.Degraded {
+		t.Error("tampered anchor must degrade")
 	}
 }
 
-func TestCodexAdapter_Cursor_AnchorLoss_FailClosed(t *testing.T) {
-	// Cursor with anchor removed (set to empty) must fail closed.
+func TestCodexAdapter_Cursor_AnchorLoss_ZeroEvents(t *testing.T) {
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -796,27 +763,23 @@ func TestCodexAdapter_Cursor_AnchorLoss_FailClosed(t *testing.T) {
 		Records: records,
 	})
 	cur, _ := parseCursor(res1.NextCursor)
-	cur.anchor = "" // anchor loss
-	anchorLost := encodeCursor(cur)
-
-	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+	// Construct a cursor with pos>0 but empty anchor directly (parseCursor
+	// rejects this as invalid syntax, so we build the string manually).
+	badCursor := contract.Cursor(strconv.FormatInt(cur.nextPos, 10) + ":")
+	res3, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
-		Cursor:  anchorLost,
+		Cursor:  badCursor,
 	})
-	// Full-prefix re-read without anchor → all records treated as new (re-emitted).
-	// This is the "anchor loss" case: records are replayed but degraded is set.
-	if !res2.Degraded.Degraded {
-		t.Error("anchor loss must produce degraded")
+	if len(res3.Events) != 0 {
+		t.Errorf("anchor loss: got %d events, want 0 (fail-closed)", len(res3.Events))
 	}
-	// Verify all records were re-emitted (loss of anchor means no skip).
-	if len(res2.Events) != 2 {
-		t.Errorf("anchor loss: got %d events, want 2 (full replay, degraded)", len(res2.Events))
+	if !res3.Degraded.Degraded {
+		t.Error("anchor loss must degrade")
 	}
 }
 
-func TestCodexAdapter_Cursor_StreamRotation_FailClosed(t *testing.T) {
-	// Cursor from one stream applied to a different stream must fail closed.
+func TestCodexAdapter_Cursor_StreamRotation_ZeroEvents(t *testing.T) {
 	a := &Adapter{}
 	streamA := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -827,36 +790,63 @@ func TestCodexAdapter_Cursor_StreamRotation_FailClosed(t *testing.T) {
 		Records: streamA,
 	})
 
-	// Apply stream-A cursor to completely different stream-B records.
+	// Apply stream-A cursor to completely different stream-B prefix.
 	streamB := []contract.RawRecord{
 		sessionMeta0_144_1(),
 		codexRec(`{"timestamp":"2026-07-06T14:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"streamB-1"}}`),
-		codexRec(`{"timestamp":"2026-07-06T14:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"streamB-2"}}`),
 	}
 	resB, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: streamB,
 		Cursor:  resA.NextCursor,
 	})
-	// Anchor from stream A not found in stream B → degraded.
-	if !resB.Degraded.Degraded {
-		t.Error("stream rotation must produce degraded")
+	if len(resB.Events) != 0 {
+		t.Errorf("stream rotation: got %d events, want 0 (fail-closed)", len(resB.Events))
 	}
-	// Must not silently replay: events may be emitted (incremental detection)
-	// but degraded flag is set and Seq continues from stream-A position.
-	if len(resB.Events) > 0 {
-		// Seq must continue from where stream A left off, not restart.
-		for _, e := range resB.Events {
-			if e.Seq < 2 {
-				t.Errorf("stream rotation Seq=%d, want >= 2 (continuation from stream A position)", e.Seq)
-			}
-		}
+	if !resB.Degraded.Degraded {
+		t.Error("stream rotation must degrade")
 	}
 }
 
-func TestCodexAdapter_Cursor_UnknownVersion_RemainsUnknown(t *testing.T) {
-	// Without session_meta confirming 0.144.1, version stays unknown.
+func TestCodexAdapter_Cursor_PositionAnchorMismatch_ZeroEvents(t *testing.T) {
+	// Cursor with correct anchor but wrong position → fail-closed.
 	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
+	}
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// Cursor has pos=2, anchor=t1_hash (last emitted).
+	// Tamper: set pos=1 but keep anchor as t1_hash → anchor is at pos 0, not pos-1=0.
+	cur, _ := parseCursor(res1.NextCursor)
+	cur.nextPos = 1 // mismatched: anchor (record 1's hash) should be at pos 0 if pos=1
+	tampered := encodeCursor(cur)
+
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  tampered,
+	})
+	if len(res2.Events) != 0 {
+		t.Errorf("position/anchor mismatch: got %d events, want 0", len(res2.Events))
+	}
+	if !res2.Degraded.Degraded {
+		t.Error("position/anchor mismatch must degrade")
+	}
+}
+
+func TestCodexAdapter_Cursor_VersionForgery_Rejected(t *testing.T) {
+	// A cursor claiming version confirmation without actual 0.144.1
+	// session_meta in the batch must NOT activate typed events.
+	// (Old cursor format v:1:0: — pos=0 anchor="" but ver=1 was forgeable.
+	// New format has no version field — version is always from current batch.)
+	a := &Adapter{}
+	// Craft a cursor at pos=0 (empty anchor) — forged "confirmed" equivalent
+	// in the old format would be v:1:0:. In new format, just start from 0.
 	records := []contract.RawRecord{
 		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
 	}
@@ -864,21 +854,51 @@ func TestCodexAdapter_Cursor_UnknownVersion_RemainsUnknown(t *testing.T) {
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
+	// No session_meta → version not confirmed → all events EventUnknown.
 	if len(res.Events) != 1 {
 		t.Fatalf("got %d events, want 1", len(res.Events))
 	}
 	if res.Events[0].Type != agent.EventUnknown {
-		t.Errorf("unconfirmed version: type=%q, want EventUnknown", res.Events[0].Type)
-	}
-	if !res.Degraded.Degraded {
-		t.Error("unconfirmed version must degrade")
+		t.Errorf("no session_meta: type=%q, want EventUnknown (no forged version authority)", res.Events[0].Type)
 	}
 }
 
-func TestCodexAdapter_Cursor_SeqBasedOnAbsolutePosition(t *testing.T) {
-	// Seq derives from absolute cursor position, not emitted-event count.
+func TestCodexAdapter_Cursor_DuplicateRecords_AnchorAtCorrectPosition(t *testing.T) {
+	// Cursor anchor is validated at exact position nextPos-1.
+	// Even when records are identical at different positions, the anchor
+	// at the specific position must match.
 	a := &Adapter{}
-	// First read: 2 records, limit=1 → 1 event emitted.
+	uniq := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"uniq"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		uniq,
+		uniq, // duplicate at position 2 (batch-dedup'd in read 1)
+	}
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// Cursor records pos=3 (3 input records processed).
+	if len(res1.Events) < 1 {
+		t.Fatal("no events emitted")
+	}
+
+	// Re-read: cursor pos=3, anchor should be the hash of uniq.
+	// validateCursorAnchor checks all[2].ID == anchor. all[2] is uniq
+	// (the duplicate copy), which has the same ID as all[1]. ✓
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  res1.NextCursor,
+	})
+	// pos=3 means skip all 3 records → 0 events.
+	if len(res2.Events) != 0 {
+		t.Errorf("re-read: got %d events, want 0 (all positions skipped)", len(res2.Events))
+	}
+}
+
+func TestCodexAdapter_Cursor_SeqFromAbsolutePosition(t *testing.T) {
+	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
 		codexRec(`{"timestamp":"2026-07-06T13:29:35.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
@@ -894,21 +914,21 @@ func TestCodexAdapter_Cursor_SeqBasedOnAbsolutePosition(t *testing.T) {
 	}
 	firstSeq := res1.Events[0].Seq
 
-	// Continuation full-prefix: cursor anchor marks the last emitted record.
-	// Records after it (t1, t2) are emitted with Seq = pos+0, pos+1.
+	// Continuation full-prefix: cursor pos=1, anchor=record[0].ID.
+	// Skip pos=1 records, emit records 1-2 with Seq=1,2.
 	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 		Cursor:  res1.NextCursor,
 	})
 	if len(res2.Events) != 2 {
-		t.Fatalf("continuation: got %d events, want 2 (records after anchor)", len(res2.Events))
+		t.Fatalf("continuation: got %d events, want 2", len(res2.Events))
 	}
 	if res2.Events[0].Seq != firstSeq+1 {
-		t.Errorf("continuation first Seq=%d, want %d (absolute position)", res2.Events[0].Seq, firstSeq+1)
+		t.Errorf("first continuation Seq=%d, want %d", res2.Events[0].Seq, firstSeq+1)
 	}
 	if res2.Events[1].Seq != firstSeq+2 {
-		t.Errorf("continuation second Seq=%d, want %d (absolute position)", res2.Events[1].Seq, firstSeq+2)
+		t.Errorf("second continuation Seq=%d, want %d", res2.Events[1].Seq, firstSeq+2)
 	}
 }
 
