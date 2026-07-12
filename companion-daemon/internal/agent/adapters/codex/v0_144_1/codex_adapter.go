@@ -8,15 +8,13 @@
 // Supported version: 0.144.1 (confirmed by `codex --version` in R1 evidence).
 // Every session_meta in a read batch is checked; a single missing / mismatched /
 // malformed cli_version forces the ENTIRE batch to EventUnknown + degraded.
-// Without an exact 0.144.1 confirmation no version-specific typed event is
-// emitted.
 //
-// Seq: the first 8 bytes of SHA-256(raw record) as a non-negative int63.  This
-// gives a ~2⁶³ collision-free stable ordering key.  Events are sorted by Seq
-// before emission; the cursor is a compact high-water-mark (last Seq).
-// Same-timestamp records are all preserved; out-of-order timestamps are
-// harmless; missing timestamps produce a valid Seq.  Re-reads with the same
-// cursor produce zero events.
+// Seq / cursor: Seq is a position-based ordinal (monotonically increasing
+// append order).  The cursor carries the set of already-emitted record IDs
+// (content-hash hex) so re-reads are suppressed: same records ⇒ same IDs ⇒
+// deduped against the cursor's seen-set.  The cursor is a bounded sliding
+// window — when the ID set exceeds MaxCursorBytes the oldest IDs are dropped,
+// which may re-emit very old records but never silently lose new ones.
 //
 // Correlation: unavailable (R1).  DiscoverSessions returns nil.
 package v0_144_1
@@ -24,11 +22,8 @@ package v0_144_1
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,9 +34,7 @@ import (
 const supportedCodexVersion = "0.144.1"
 
 // Adapter implements contract.AgentAdapter for Codex CLI 0.144.1.
-type Adapter struct {
-	failRead bool
-}
+type Adapter struct{ failRead bool }
 
 var _ contract.AgentAdapter = (*Adapter)(nil)
 
@@ -108,15 +101,77 @@ type codexRecord struct {
 	Payload   map[string]any `json:"payload"`
 }
 
+// ── Cursor encoding ──
+//
+// The cursor is an opaque comma-separated list of already-emitted content-hash
+// IDs, e.g. "a1b2c3d4,e5f6a7b8,9c0d1e2f".  An empty cursor means "start of
+// stream".  The next Seq to assign is derived from len(cursorIDs) — i.e. the
+// total number of records emitted so far.
+//
+// When the cursor would exceed MaxCursorBytes we keep only the most recent
+// entries so the cursor stays bounded.  A truncated cursor may allow a very old
+// record to be re-emitted; this is the contract's intended "compact
+// high-water-mark" trade-off.
+
+// parseCursorIDs splits a cursor string into a deduplication set.  Returns nil
+// for an empty cursor.
+func parseCursorIDs(cursor contract.Cursor) map[string]bool {
+	if cursor.IsEmpty() {
+		return nil
+	}
+	parts := strings.Split(string(cursor), ",")
+	m := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			m[p] = true
+		}
+	}
+	return m
+}
+
+// encodeCursor builds a bounded cursor from old seen-IDs plus new IDs.  Oldest
+// entries are dropped first when the encoded size would exceed MaxCursorBytes.
+func encodeCursor(old map[string]bool, newIDs []string) contract.Cursor {
+	// Collect all IDs: old first, then new.  Order matters — old IDs are
+	// dropped first on overflow so recent IDs survive.
+	all := make([]string, 0, len(old)+len(newIDs))
+	for id := range old {
+		all = append(all, id)
+	}
+	all = append(all, newIDs...)
+
+	// Build the cursor string, dropping oldest entries until it fits.
+	var cur string
+	for i := len(all) - 1; i >= 0; i-- {
+		cand := all[i]
+		if cand == "" {
+			continue
+		}
+		if cur == "" {
+			cur = cand
+		} else if len(cur)+1+len(cand) <= contract.MaxCursorBytes {
+			cur = cand + "," + cur
+		} else {
+			break // cursor full — oldest entries dropped
+		}
+	}
+	return contract.Cursor(cur)
+}
+
+// cursorBasePos returns the next Seq to assign from a cursor (0 for empty).
+func cursorBasePos(cursor contract.Cursor) int {
+	if cursor.IsEmpty() {
+		return 0
+	}
+	return len(parseCursorIDs(cursor))
+}
+
 // ── NormalizeEvent ──
 
 func (a *Adapter) NormalizeEvent(_ context.Context, rec contract.RawRecord) (contract.AgentEvent, contract.DegradedInfo) {
 	return normalizeCodexEvent(rec, "s", rec.Source, false)
 }
 
-// normalizeCodexEvent maps one Codex JSONL raw record to a contract AgentEvent.
-// When versionFailed is true the output is forced to EventUnknown regardless of
-// the record's own discriminators — used when the batch version gate failed.
 func normalizeCodexEvent(rec contract.RawRecord, sessionID string, src contract.AgentEventSource, versionFailed bool) (contract.AgentEvent, contract.DegradedInfo) {
 	prov := contract.ProvenanceNativeLog
 	if contract.IsKnownProvenance(rec.Provenance) {
@@ -133,26 +188,23 @@ func normalizeCodexEvent(rec contract.RawRecord, sessionID string, src contract.
 		return unknownRec(rec.Bytes, sessionID, prov, src, "missing type in Codex record")
 	}
 
-	// Version gate: session_meta carries cli_version.
 	if cr.Type == "session_meta" {
 		v := codexPayloadStr(cr, "cli_version")
 		if v != supportedCodexVersion {
 			return unknownRec(rec.Bytes, sessionID, prov, src, "unsupported Codex version: "+safeVersionDiag(v))
 		}
 	}
-
-	// Batch-wide version failure forces everything to unknown.
 	if versionFailed {
 		return unknownRec(rec.Bytes, sessionID, prov, src, "version mismatch in batch")
 	}
 
 	et, conf := classifyCodexRecord(cr)
 	ts := parseTimestamp(cr.Timestamp)
-	seq := computeSeq(rec.Bytes)
+	// Seq=0 is a placeholder — ReadEvents assigns the real position-based Seq.
+	seq := int64(0)
 
 	degraded := false
 	var reasons []string
-
 	if et == agent.EventUnknown && cr.Type != "turn_context" {
 		degraded = true
 		reasons = append(reasons, "unknown Codex record type: "+safeDiag(cr.Type))
@@ -166,7 +218,6 @@ func normalizeCodexEvent(rec contract.RawRecord, sessionID string, src contract.
 		Metadata: boundedCodexMetadata(cr),
 	}
 
-	// B5: approval_id on both requested and resolved.
 	if et == agent.EventApprovalRequested || et == agent.EventApprovalResolved {
 		aid := codexPayloadStr(cr, "approval_id")
 		if aid != "" {
@@ -244,17 +295,14 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "batch truncated at bound")
 	}
 
-	// Parse cursor watermark (last Seq).  Filter: ev.Seq > watermark.
-	watermark := int64(-1)
-	if !in.Cursor.IsEmpty() {
-		w, err := strconv.ParseInt(string(in.Cursor), 10, 64)
-		if err != nil {
-			return contract.ReadResult{Degraded: contract.Degrade("invalid cursor: unparseable watermark")}, nil
-		}
-		watermark = w
+	// Parse cursor: cross-read dedup set + base position.
+	cursorSeen := parseCursorIDs(in.Cursor)
+	basePos := 0
+	if cursorSeen != nil {
+		basePos = len(cursorSeen)
 	}
 
-	// ── Version gate (B2): scan EVERY session_meta ──
+	// ── Version gate: scan EVERY session_meta ──
 	versionOK := false
 	versionFailed := false
 	for _, rec := range records {
@@ -277,19 +325,16 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			diags = append(diags, "unsupported Codex version: "+safeVersionDiag(v))
 		}
 	}
-	// Without an exact 0.144.1 confirmation, no version-specific typed
-	// events may be emitted.  A conflicting or missing version poisons the
-	// entire batch.
 	if !versionOK || versionFailed {
 		versionFailed = true
-		versionOK = false
 	}
 
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
-	seenID := map[string]bool{}
+	batchSeen := map[string]bool{}
+	var newIDs []string
+	var out []contract.AgentEvent
+	truncated := false
 
-	// Phase 1: normalise ALL records, collect events + degradation.
-	var raw []contract.AgentEvent
 	for _, rec := range records {
 		if !contract.AcceptRecord(rec) {
 			degraded = true
@@ -311,32 +356,25 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		if ev.ID == "" {
 			continue
 		}
-		raw = append(raw, ev)
-	}
 
-	// Phase 2: sort by Seq (stable hash-based ordering).
-	sort.Slice(raw, func(i, j int) bool { return raw[i].Seq < raw[j].Seq })
-
-	// Phase 3: dedupe + watermark filter + cap.
-	var out []contract.AgentEvent
-	truncated := false
-	for _, ev := range raw {
-		if ev.Seq <= watermark || seenID[ev.ID] {
+		// Dedup: cross-read (cursor) + within-batch.
+		if cursorSeen != nil && cursorSeen[ev.ID] {
 			continue
 		}
+		if batchSeen[ev.ID] {
+			continue
+		}
+
 		if len(out) >= limit {
 			truncated = true
 			break
 		}
-		seenID[ev.ID] = true
-		out = append(out, ev)
-	}
 
-	// Watermark advances to the last emitted Seq.
-	for _, ev := range out {
-		if ev.Seq > watermark {
-			watermark = ev.Seq
-		}
+		batchSeen[ev.ID] = true
+		// Position-based Seq: monotonically increasing append order.
+		ev.Seq = int64(basePos + len(out))
+		out = append(out, ev)
+		newIDs = append(newIDs, ev.ID)
 	}
 
 	if truncated {
@@ -358,9 +396,12 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		deg = contract.Degrade(reason)
 	}
 
+	// Build cursor: old seen-IDs + new IDs, bounded to MaxCursorBytes.
+	nextCursor := encodeCursor(cursorSeen, newIDs)
+
 	return contract.ReadResult{
 		Events:     out,
-		NextCursor: contract.Cursor(strconv.FormatInt(watermark, 10)),
+		NextCursor: nextCursor,
 		Degraded:   deg,
 	}, nil
 }
@@ -396,16 +437,6 @@ func (a *Adapter) GetStatus(_ context.Context, in contract.StatusInput) (contrac
 
 // ── Helpers ──
 
-// computeSeq returns a stable, non-negative, collision-free Seq from raw record
-// bytes.  Uses the first 8 bytes of SHA-256 as a uint64 with the sign bit
-// cleared (int63), giving ~9×10¹⁸ values — collisions are practically
-// impossible.  Same bytes ⇒ same Seq.  No timestamp dependency.
-func computeSeq(raw []byte) int64 {
-	h := sha256.Sum256(raw)
-	u := binary.BigEndian.Uint64(h[:8])
-	return int64(u & 0x7FFFFFFFFFFFFFFF)
-}
-
 func hashBytesID(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:8])
@@ -414,14 +445,13 @@ func hashBytesID(b []byte) string {
 func unknownRec(raw []byte, sessionID string, prov contract.Provenance, src contract.AgentEventSource, reason string) (contract.AgentEvent, contract.DegradedInfo) {
 	ev := contract.SafeEvent(contract.AgentEvent{
 		ID: hashBytesID(raw), SessionID: sessionID, AgentKind: "codex",
-		Type: agent.EventUnknown, Seq: computeSeq(raw),
+		Type: agent.EventUnknown, Seq: 0,
 		Timestamp: timeZero, Confidence: 0.2,
 		Source: src, Provenance: string(prov),
 	})
 	return ev, contract.Degrade(reason)
 }
 
-// timeZero is the deterministic fallback for invalid/missing timestamps.
 var timeZero = time.Time{}
 
 func parseTimestamp(ts string) time.Time {

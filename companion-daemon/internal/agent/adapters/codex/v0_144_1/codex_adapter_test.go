@@ -565,11 +565,10 @@ func TestCodexAdapter_PerRecordSource(t *testing.T) {
 	}
 }
 
-// ── BLOCKER 1 (round 2): Seq/cursor prevents event loss ──
+// ── BLOCKER 1 (round 3): Position-based Seq + cursor append ──
 
-func TestCodexAdapter_Seq_CollisionFree(t *testing.T) {
-	// Same timestamp, similar content — must have different Seq values.
-	// The old µs+hash%1000 approach collided for turn_id=t3 and turn_id=t51.
+func TestCodexAdapter_Seq_PositionBased_Monotonic(t *testing.T) {
+	// Seq is position-based: strictly increasing, stable on re-read from empty.
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -580,9 +579,14 @@ func TestCodexAdapter_Seq_CollisionFree(t *testing.T) {
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
-	// All 3 records must be emitted (session_meta + 2 task_started).
 	if len(res.Events) != 3 {
-		t.Fatalf("collision-prone: got %d events, want 3", len(res.Events))
+		t.Fatalf("got %d events, want 3", len(res.Events))
+	}
+	// Seq must be strictly increasing in input order.
+	for i := 1; i < len(res.Events); i++ {
+		if res.Events[i].Seq <= res.Events[i-1].Seq {
+			t.Errorf("Seq not strictly increasing: %d <= %d", res.Events[i].Seq, res.Events[i-1].Seq)
+		}
 	}
 	// All Seq values must be distinct.
 	seqs := map[int64]bool{}
@@ -594,9 +598,103 @@ func TestCodexAdapter_Seq_CollisionFree(t *testing.T) {
 	}
 }
 
-func TestCodexAdapter_Seq_OutOfOrderTimestamp(t *testing.T) {
-	// Records with later timestamp before earlier — all must be preserved
-	// because Seq is hash-based and events are sorted before emission.
+func TestCodexAdapter_Cursor_AppendAfterRead(t *testing.T) {
+	// First read, then append a record whose content-hash is "lower" than
+	// previous records. Position-based Seq guarantees it is still emitted.
+	a := &Adapter{}
+	first := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"first"}}`),
+	}
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: first,
+	})
+	if len(res1.Events) != 2 {
+		t.Fatalf("first read: got %d events, want 2", len(res1.Events))
+	}
+	cursor := res1.NextCursor
+
+	// Append a new record — any content hash.  Must be emitted with Seq > previous.
+	second := []contract.RawRecord{
+		codexRec(`{"timestamp":"2026-07-06T13:29:40.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"second"}}`),
+	}
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: second,
+		Cursor:  cursor,
+	})
+	if len(res2.Events) != 1 {
+		t.Fatalf("append read: got %d events, want 1 (appended record emitted)", len(res2.Events))
+	}
+	// The appended record's Seq must be greater than all first-read Seqs.
+	for _, e := range res1.Events {
+		if res2.Events[0].Seq <= e.Seq {
+			t.Errorf("appended Seq %d not > previous Seq %d", res2.Events[0].Seq, e.Seq)
+		}
+	}
+}
+
+func TestCodexAdapter_Cursor_ResumeSamePrefix(t *testing.T) {
+	// After reading a prefix, re-reading the SAME records with the cursor
+	// must emit zero events.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+	}
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	cursor := res1.NextCursor
+
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  cursor,
+	})
+	if len(res2.Events) != 0 {
+		t.Errorf("re-read same prefix: got %d events, want 0", len(res2.Events))
+	}
+}
+
+func TestCodexAdapter_Cursor_CallerLimit_Continuation(t *testing.T) {
+	// Read with caller limit, then read remaining records from cursor.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:40.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
+	}
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		MaxEvents: 2,
+	})
+	if len(res1.Events) != 2 {
+		t.Fatalf("first limited read: got %d events, want 2", len(res1.Events))
+	}
+
+	// Continuation: cursor prevents re-emission of first 2 records; the
+	// remaining 2 NOT in cursor are emitted.
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  res1.NextCursor,
+	})
+	if len(res2.Events) != 2 {
+		t.Fatalf("continuation read: got %d events, want 2 (not-yet-emitted records)", len(res2.Events))
+	}
+	// Total across both reads covers all 4 records with no loss.
+	if len(res1.Events)+len(res2.Events) != 4 {
+		t.Errorf("total events across reads: %d, want 4", len(res1.Events)+len(res2.Events))
+	}
+}
+
+func TestCodexAdapter_Cursor_SourceOrderPreserved(t *testing.T) {
+	// Events must be emitted in input order regardless of timestamp ordering.
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -608,20 +706,19 @@ func TestCodexAdapter_Seq_OutOfOrderTimestamp(t *testing.T) {
 		Records: records,
 	})
 	if len(res.Events) != 3 {
-		t.Fatalf("out-of-order: got %d events, want 3 (both preserved)", len(res.Events))
+		t.Fatalf("got %d events, want 3", len(res.Events))
 	}
-	// Events sorted by Seq (hash), so Seq is strictly increasing.
-	for i := 1; i < len(res.Events); i++ {
-		if res.Events[i].Seq <= res.Events[i-1].Seq {
-			t.Errorf("Seq not strictly increasing after sort: %d <= %d", res.Events[i].Seq, res.Events[i-1].Seq)
-		}
+	// "late" timestamp record was first in input, must be emitted before "early".
+	if res.Events[1].ID == res.Events[2].ID {
+		t.Fatal("duplicate IDs")
+	}
+	// Verify the order by looking at Seq — first input → lower Seq.
+	if res.Events[1].Seq >= res.Events[2].Seq {
+		t.Errorf("source order not preserved: Seq %d >= %d", res.Events[1].Seq, res.Events[2].Seq)
 	}
 }
 
 func TestCodexAdapter_Seq_MissingTimestampEmitted(t *testing.T) {
-	// A record with no timestamp field must still be emitted (EventUnknown, degraded).
-	// The old code used time.Time{}.UnixNano() which is a large negative value,
-	// causing the record to be silently dropped by the watermark filter.
 	a := &Adapter{}
 	rec := codexRec(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"no-ts"}}`)
 	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
@@ -634,7 +731,6 @@ func TestCodexAdapter_Seq_MissingTimestampEmitted(t *testing.T) {
 	if res.Events[0].Type != agent.EventUnknown {
 		t.Errorf("missing-timestamp: type=%q, want EventUnknown", res.Events[0].Type)
 	}
-	// Must pass contract validation.
 	if err := contract.ValidateEvent(res.Events[0]); err != nil {
 		t.Errorf("emitted event fails ValidateEvent: %v", err)
 	}
