@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -193,11 +192,14 @@ func NewReviewBundle(
 	if len(changedFiles) == 0 {
 		return nil, fmt.Errorf("%w: changedFiles must be non-empty", ErrEmptyField)
 	}
-	// Derive authoritative command specs from Pokit-owned FixedSuite.
-	// Canonicalize the version directory name (same as orchestrator's CanonicalVersion).
-	canonDir := strings.ReplaceAll(strings.ReplaceAll(targetVersion, ".", "_"), "-", "_")
-	if !strings.HasPrefix(canonDir, "v") && !strings.HasPrefix(canonDir, "V") {
-		canonDir = "v" + canonDir
+	// Validate provider and version using authoritative functions
+	// (same as the orchestrator's Sandbox/CanonicalVersion).
+	if err := ValidateProvider(adapterName); err != nil {
+		return nil, fmt.Errorf("%w: invalid provider %q", ErrEmptyField, adapterName)
+	}
+	canonDir, err := CanonicalVersion(targetVersion)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid version %q", ErrEmptyField, targetVersion)
 	}
 	candidatePkg := "./internal/agent/adapters/" + adapterName + "/" + canonDir + "/"
 	authoritativeCmds := NewFixedSuite().Commands(candidatePkg)

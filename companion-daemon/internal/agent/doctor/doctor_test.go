@@ -57,7 +57,7 @@ func cmdsForMany(labels ...string) []FixedCommand {
 
 func passingSuiteResult() ObservatoryResult {
 	// Use the same derivation as NewReviewBundle (adapterName="c", ver="3.0.0").
-	candidatePkg := "./internal/agent/adapters/c/v3_0_0/"
+	candidatePkg := "./internal/agent/adapters/claude/v3_0_0/"
 	cmds := NewFixedSuite().Commands(candidatePkg)
 	results := make([]CommandResult, len(cmds))
 	for i, fc := range cmds {
@@ -382,7 +382,7 @@ func TestCollectDrift_UsesRealRecords(t *testing.T) {
 
 func TestApproval_SubmitAndApprove(t *testing.T) {
 	store := NewApprovalStore()
-	b, err := testBundle("r1", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
+	b, err := testBundle("r1", "claude", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
 	if err != nil {
 		t.Fatalf("testBundle: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestApproval_SubmitAndApprove(t *testing.T) {
 
 func TestApproval_UserSuppliedDigestRequired(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r2", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
+	b, _ := testBundle("r2", "claude", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
 	store.Submit(b)
 	if err := store.Approve("r2", "wrong"); !errors.Is(err, ErrDigestMismatch) {
 		t.Errorf("got %v", err)
@@ -408,7 +408,7 @@ func TestApproval_UserSuppliedDigestRequired(t *testing.T) {
 
 func TestApproval_ActivationAlwaysFailsClosed(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r3", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
+	b, _ := testBundle("r3", "claude", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
 	d := b.BundleDigest()
 	store.Submit(b)
 	store.Approve("r3", d)
@@ -418,9 +418,9 @@ func TestApproval_ActivationAlwaysFailsClosed(t *testing.T) {
 }
 
 func TestApproval_DigestRecomputed(t *testing.T) {
-	b1, _ := testBundle("r4", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
+	b1, _ := testBundle("r4", "claude", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
 	time.Sleep(2 * time.Millisecond)
-	b2, _ := testBundle("r5", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
+	b2, _ := testBundle("r5", "claude", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
 	if b1.BundleDigest() == b2.BundleDigest() {
 		t.Error("digests should differ with time")
 	}
@@ -428,7 +428,7 @@ func TestApproval_DigestRecomputed(t *testing.T) {
 
 func TestApproval_ReplayRejected(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r6", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
+	b, _ := testBundle("r6", "claude", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, passingSuiteResult())
 	store.Submit(b)
 	_, err := store.Submit(b)
 	if !errors.Is(err, ErrRequestIDExists) {
@@ -629,7 +629,7 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 		replayResults[i] = CommandResult{Label: fc.Label, Command: FixedCommandLabel(fc), ExitCode: 0}
 	}
 	replaySR = ObservatoryResult{CommandResults: replayResults}
-	b3, err3 := NewReviewBundle("fw-reject", "c", "C", "3", actualSHA, "ev", "patch",
+	b3, err3 := NewReviewBundle("fw-reject", "claude", "C", "3", actualSHA, "ev", "patch",
 		patchBytes, []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		replaySR,
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "ws-digest", nil)
@@ -880,7 +880,7 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	store := NewApprovalStore()
 	matchingSR := passingSuiteResult()
-	b1, err := NewReviewBundle("rm1", "c", "C", "3.0.0", "abc", "ev", "patch",
+	b1, err := NewReviewBundle("rm1", "claude", "C", "3.0.0", "abc", "ev", "patch",
 		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		matchingSR,
 		DriftEvidence{}, "native_log", "ws1", nil)
@@ -891,7 +891,7 @@ func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	store.Submit(b1)
 
 	// Different diff content → different digest.
-	b2, _ := NewReviewBundle("rm2", "c", "C", "3.0.0", "abc", "ev", "patch",
+	b2, _ := NewReviewBundle("rm2", "claude", "C", "3.0.0", "abc", "ev", "patch",
 		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		matchingSR,
 		DriftEvidence{}, "native_log", "ws2", nil)
@@ -962,7 +962,7 @@ func TestSuiteResult_DeepCopyImmutability(t *testing.T) {
 // ── Deep copy: SuiteResult accessor returns independent copy ──
 
 func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
-	b, err := NewReviewBundle("ac1", "c", "C", "3.0.0", "abc", "ev", "patch",
+	b, err := NewReviewBundle("ac1", "claude", "C", "3.0.0", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		ObservatoryResult{
 			CommandResults: append([]CommandResult{}, passingSuiteResult().CommandResults...),
@@ -972,7 +972,9 @@ func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
 		t.Fatalf("bundle creation: %v", err)
 	}
 	sr := b.SuiteResult()
-	if len(sr.CommandResults) == 0 { t.Fatal("no results") }
+	if len(sr.CommandResults) == 0 {
+		t.Fatal("no results")
+	}
 	sr.CommandResults[0] = CommandResult{Label: "mutated"}
 	sr2 := b.SuiteResult()
 	if sr2.CommandResults[0].Label != "build-adapters" {
@@ -1255,7 +1257,7 @@ func TestNewReviewBundle_RejectsAllPassedFalse(t *testing.T) {
 func TestNewReviewBundle_CallerMutationIsolated(t *testing.T) {
 	orig := passingSuiteResult()
 	orig.Failures = []ObsTestFailure{{TestName: "f1", Reason: "r1"}}
-	b, err := NewReviewBundle("iso", "c", "C", "3.0.0", "abc", "ev", "patch",
+	b, err := NewReviewBundle("iso", "claude", "C", "3.0.0", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
 		orig, DriftEvidence{}, "native_log", "ws", nil)
 	if err != nil {
@@ -1700,5 +1702,61 @@ func TestValidateSuiteEvidence_ZeroTestTestCommandBlocked(t *testing.T) {
 	err := ValidateSuiteEvidence(manifest, results, 5, 0, 5)
 	if err == nil {
 		t.Error("suite total > 0 but no commands report tests should be rejected")
+	}
+}
+
+// ── Provider/version validation in NewReviewBundle ──
+
+func TestNewReviewBundle_RejectsUnknownProvider(t *testing.T) {
+	_, err := NewReviewBundle("r", "unknown", "P", "3.0.0", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
+		passingSuiteResult(), DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("unknown provider should be rejected")
+	}
+}
+
+func TestNewReviewBundle_RejectsProviderTraversal(t *testing.T) {
+	_, err := NewReviewBundle("r", "../contract", "P", "3.0.0", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
+		passingSuiteResult(), DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("provider with traversal should be rejected")
+	}
+}
+
+func TestNewReviewBundle_RejectsProviderWithSlash(t *testing.T) {
+	_, err := NewReviewBundle("r", "claude/codex", "P", "3.0.0", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
+		passingSuiteResult(), DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("provider with slash should be rejected")
+	}
+}
+
+func TestNewReviewBundle_RejectsEmptyVersion(t *testing.T) {
+	_, err := NewReviewBundle("r", "claude", "P", "", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
+		passingSuiteResult(), DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("empty version should be rejected")
+	}
+}
+
+func TestNewReviewBundle_RejectsVersionTraversal(t *testing.T) {
+	_, err := NewReviewBundle("r", "claude", "P", "../../outside", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
+		passingSuiteResult(), DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("version with traversal should be rejected")
+	}
+}
+
+func TestNewReviewBundle_RejectsVersionWithSlash(t *testing.T) {
+	_, err := NewReviewBundle("r", "claude", "P", "v3/v4", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
+		passingSuiteResult(), DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("version with slash should be rejected")
 	}
 }
