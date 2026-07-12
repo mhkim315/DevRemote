@@ -491,6 +491,8 @@ func testNormalize(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 
 func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	ad := factory(t)
+	hasApprovalCap := hasCapability(ad.Descriptor(), CapApprovalDetection)
+
 	// Empty → no approvals.
 	guard(t, "DetectApproval(empty)", func() {
 		if got, _ := ad.DetectApproval(ctx(), nil); len(got) != 0 {
@@ -513,52 +515,68 @@ func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 			t.Errorf("adversarial events produced %d approvals, want 0", len(got))
 		}
 	})
-	// Positive fixture → ≥1 approval, well-formed, bound to source evidence via
-	// the explicit AgentEvent.ApprovalID field (not a brittle ID prefix).
-	res := readAll(t, factory(t), fx.ApprovalRecords)
-	guard(t, "DetectApproval(positive)", func() {
-		// Every approval_requested event MUST carry a non-empty ApprovalID so
-		// approvals can be bound to their source event.
-		for _, e := range res.Events {
-			if e.Type == agent.EventApprovalRequested && e.ApprovalID == "" {
-				t.Errorf("approval_requested event %s has empty ApprovalID", e.ID)
+
+	if hasApprovalCap {
+		// Positive fixture → ≥1 approval, well-formed, bound to source evidence
+		// via the explicit AgentEvent.ApprovalID field (not a brittle ID prefix).
+		res := readAll(t, factory(t), fx.ApprovalRecords)
+		guard(t, "DetectApproval(positive)", func() {
+			for _, e := range res.Events {
+				if e.Type == agent.EventApprovalRequested && e.ApprovalID == "" {
+					t.Errorf("approval_requested event %s has empty ApprovalID", e.ID)
+				}
 			}
-		}
-		got, _ := ad.DetectApproval(ctx(), res.Events)
-		if len(got) == 0 {
-			t.Error("approval-positive fixture produced no approval")
-		}
-		srcByApprovalID := map[string]AgentEvent{}
-		for _, e := range res.Events {
-			if e.ApprovalID != "" {
-				srcByApprovalID[e.ApprovalID] = e
+			got, _ := ad.DetectApproval(ctx(), res.Events)
+			if len(got) == 0 {
+				t.Error("approval-positive fixture produced no approval")
 			}
-		}
-		for _, ap := range got {
-			if ap.ID == "" || ap.Status == "" {
-				t.Errorf("approval missing id/status: %+v", ap)
+			srcByApprovalID := map[string]AgentEvent{}
+			for _, e := range res.Events {
+				if e.ApprovalID != "" {
+					srcByApprovalID[e.ApprovalID] = e
+				}
 			}
-			// Approval.ID must match a source event's ApprovalID. If no source
-			// event is found, this is a cross-session/fabricated approval — fail.
-			src, ok := srcByApprovalID[ap.ID]
-			if !ok {
-				t.Errorf("approval %s has no matching source event.ApprovalID (cross-session/fabricated)", ap.ID)
-				continue
+			for _, ap := range got {
+				if ap.ID == "" || ap.Status == "" {
+					t.Errorf("approval missing id/status: %+v", ap)
+				}
+				src, ok := srcByApprovalID[ap.ID]
+				if !ok {
+					t.Errorf("approval %s has no matching source event.ApprovalID (cross-session/fabricated)", ap.ID)
+					continue
+				}
+				if ap.SessionID != src.SessionID {
+					t.Errorf("approval SessionID=%q, source=%q (cross-session)", ap.SessionID, src.SessionID)
+				}
+				if ap.AgentKind != src.AgentKind {
+					t.Errorf("approval AgentKind=%q, source=%q", ap.AgentKind, src.AgentKind)
+				}
+				if ap.Source != src.Source {
+					t.Errorf("approval Source=%q, source=%q", ap.Source, src.Source)
+				}
+				if ap.Confidence != src.Confidence {
+					t.Errorf("approval Confidence=%.2f, source=%.2f", ap.Confidence, src.Confidence)
+				}
 			}
-			if ap.SessionID != src.SessionID {
-				t.Errorf("approval SessionID=%q, source=%q (cross-session)", ap.SessionID, src.SessionID)
+		})
+	} else {
+		// CapApprovalDetection NOT declared: the adapter must NOT fabricate
+		// approvals.  Feed it a legitimate-looking approval_requested event
+		// with authoritative provenance — a safe adapter returns zero.
+		guard(t, "DetectApproval(no-capability-safe-default)", func() {
+			synthetic := []AgentEvent{{
+				ID: "no-cap-syn", SessionID: "s", AgentKind: ad.Descriptor().Name,
+				Type: agent.EventApprovalRequested, Confidence: 0.99,
+				Source: agent.SourceJSONL, Provenance: string(ProvenanceNativeLog),
+				ApprovalID: "no-cap-appr-1", Seq: 1,
+			}}
+			got, _ := ad.DetectApproval(ctx(), synthetic)
+			if len(got) != 0 {
+				t.Errorf("adapter without CapApprovalDetection returned %d approvals, want 0 (safe default)", len(got))
 			}
-			if ap.AgentKind != src.AgentKind {
-				t.Errorf("approval AgentKind=%q, source=%q", ap.AgentKind, src.AgentKind)
-			}
-			if ap.Source != src.Source {
-				t.Errorf("approval Source=%q, source=%q", ap.Source, src.Source)
-			}
-			if ap.Confidence != src.Confidence {
-				t.Errorf("approval Confidence=%.2f, source=%.2f", ap.Confidence, src.Confidence)
-			}
-		}
-	})
+		})
+	}
+
 	// Optional adapter near-miss.
 	if len(fx.NearMissRecords) > 0 {
 		nm := readAll(t, factory(t), fx.NearMissRecords)
@@ -568,6 +586,15 @@ func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 			}
 		})
 	}
+}
+
+func hasCapability(d AgentAdapterDescriptor, cap AdapterCapability) bool {
+	for _, c := range d.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 func testStatus(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {

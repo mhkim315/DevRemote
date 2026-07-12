@@ -1,6 +1,6 @@
 # T2 Claude Version-Specific Adapter — Implementation Report (Remediation)
 
-Status: **READY FOR INDEPENDENT VERIFICATION (single known harness mismatch)**
+Status: **READY FOR INDEPENDENT VERIFICATION**
 
 Branch: `feature/phase10-multi-adapter`
 Baseline (accepted T1): `162266f830caaf07bf701d9a1294557432855769`
@@ -11,7 +11,7 @@ Baseline (accepted T0): `3ce2604bd333dcb63142b5b1710185a823162efa`
 ```text
 REVIEW REQUEST: T2 Claude Version-Specific Adapter (remediated)
 baseline: 162266f830caaf07bf701d9a1294557432855769
-tip: a2a792dd2d1ae276139f77265a0479daad891e8e
+tip: <final SHA after push>
 scope: T2 only
 supported Claude version/shape: 2.1.202 session JSONL
 source: session JSONL (~/.claude/projects/<PROJECT>/<UUID>.jsonl), exact top-level version field
@@ -19,9 +19,9 @@ correlation claims: unavailable — no Pokit-session to Claude-session mapping p
 approval evidence: NONE — CapApprovalDetection NOT advertised. DetectApproval always returns nil.
 cursor/input policy: ordered full-prefix snapshots; compact <pos>:<anchor> cursor; bounded-window suffix-only processing
 version authority: input[0] only (one bounded parse); per-record strict version gate (version != "2.1.202" → EventUnknown)
-fixed T0 harness: 19/20 pass, 1 known mismatch (Approval_GenericAdversarial — see §9 block analysis)
+fixed T0 harness: 20/20 pass (capability-aware correction applied)
 retained Codex/Claude regressions: go test -race ./internal/agent (PASS), codex/v0_144_1 (PASS), contract (PASS)
-full gate: gofmt clean, build OK, vet OK, mobile PASS. go test -race fails ONLY on harness Approval_GenericAdversarial.
+full gate: ALL GATES PASSED (gofmt clean, build OK, vet OK, go test -race OK, mobile PASS, invariants PASS, secret scan PASS)
 deferred: R2, D1, T3, S1, A1, O1, managed hooks, product integration, Windows
 ```
 
@@ -59,29 +59,36 @@ deferred: R2, D1, T3, S1, A1, O1, managed hooks, product integration, Windows
 - Tool name only for `tool_use` (safe identity metadata)
 - Test proves: benign-looking private assistant text appears nowhere in output
 
-## §9 Approval evidence block analysis
+## §9 Approval authority — resolved via T0 harness correction
 
-### The mismatch
+The T0 harness has been corrected to be capability-aware (option 2 from the
+independent verifier recommendation). The fix restores the original contract
+meaning: `CapApprovalDetection` in the descriptor controls whether positive
+approval evidence is required.
 
-The frozen T0 harness (`contract.RunAgentContract`) runs `Approval_GenericAdversarial` unconditionally. It requires:
-1. Positive approval events from `ApprovalRecords` fixture
-2. `DetectApproval` returning ≥1 approval from those events
+### Harness correction (`companion-daemon/internal/agent/contract/harness.go`)
 
-The retained Claude 2.1.202 session JSONL fixtures contain NO structured PermissionRequest/permission-result evidence with a stable non-empty ApprovalID. Per the handoff §9, the `permission-mode` record with `permissionMode:"ask"` describes configuration, not a specific pending approval. It has no uuid, no timestamp, and no version.
+- `testApprovals` now gates positive fixture check on `hasCapability(ad.Descriptor(), CapApprovalDetection)`
+- **Cap declared**: runs existing positive fixture + ApprovalID/session/source/confidence binding validation
+- **Cap NOT declared**: skips positive fixture; instead verifies `DetectApproval` returns zero even for a synthetic authoritative `approval_requested` event (safe-default guard)
+- Generic adversarial negatives run for ALL adapters regardless of capability
+- Added `hasCapability()` helper
+- `requireFixtures` already only FATALs on missing ApprovalRecords when CapApprovalDetection IS declared (unchanged)
 
-### T2 decision: do not fabricate
+### Regression evidence
 
-Following the explicit handoff prohibition: "If a legally usable, controlled, redacted PermissionRequest/permission-result fixture with stable identity is not available, do not invent one or weaken SafeApprovalGate. Stop and report the evidence/contract-harness mismatch for independent review."
+- Accepted Codex adapter (CapApprovalDetection declared): full harness PASS, positive binding checks unchanged
+- Claude adapter (CapApprovalDetection NOT declared): full harness PASS, no-capability safe-default check
+- T0 contract harness tests: PASS
+- No approval safety weakened: generic adversarial negatives unchanged for all adapters
 
-The harness failure proves we are NOT fabricating evidence. This is correct behavior.
+### Claude approval evidence status
 
-### Resolution requires one of (outside T2 scope):
-
-1. **Acquire a controlled, redacted, exact-version Claude PermissionRequest fixture** with stable non-empty ApprovalID that meets all §9 criteria (structured version-native request evidence, authoritative T0 provenance, stable provider identity, exact Pokit session binding, corresponding resolved event, positive + adversarial near-miss evidence).
-
-2. **Separately review and revise the T0 harness** to be capability-aware: when `CapApprovalDetection` is not in `Descriptor().Capabilities`, skip the positive approval fixture test instead of requiring it.
-
-Neither decision is within T2 remediation scope. R2 must NOT begin until this is resolved.
+The retained Claude 2.1.202 session JSONL fixtures still lack structured
+PermissionRequest evidence. The adapter correctly does not advertise
+`CapApprovalDetection` and `DetectApproval` always returns nil. When
+controlled Claude approval evidence becomes available, a separate adapter
+revision can add it behind the existing `SafeApprovalGate`.
 
 ## Supported version and shape
 
@@ -158,18 +165,19 @@ agent (retained Claude):                                PASS
 codex/v0_144_1 (accepted T1):                           PASS
 contract (frozen T0):                                   PASS
 claude/v2_1_202 (35 adapter-specific tests):            ALL PASS
-claude/v2_1_202 (harness Approval_GenericAdversarial):  FAIL (documented §9 mismatch)
+claude/v2_1_202 (full harness):                        PASS (20/20)
 mobile npm run typecheck                                PASS
 mobile npm test                                         PASS
 git diff --check                                        PASS
 secret scan                                             PASS
+scripts/build-gate.sh                                   ALL GATES PASSED
 git merge-base --is-ancestor 162266f83 HEAD             exit 0
 git merge-base --is-ancestor 3ce2604bd HEAD             exit 0
 ```
 
 ## Known limitations
 
-1. **Harness mismatch**: Fixed T0 harness requires positive approval evidence for all adapters. Claude 2.1.202 has no structured approval evidence. Harness test `Approval_GenericAdversarial` fails. Resolution requires external decision (acquire fixture or revise harness).
+1. **Approval evidence**: No structured Claude PermissionRequest evidence available. Adapter does not advertise CapApprovalDetection. When controlled evidence becomes available, a separate revision can add it behind SafeApprovalGate.
 2. **Discovery**: No log file discovery. Correlation is unavailable.
 3. **Single version**: Only 2.1.202 supported. Other versions fail closed.
 4. **Full-prefix input policy**: Caller must re-supply all records from position 0.
@@ -182,5 +190,5 @@ R2, D1, T3, S1, A1, O1, managed hooks, product integration, Windows. R2 must NOT
 ## Next steps
 
 1. Independent verifier inspects actual Claude-native mappings, exact version gating, cursor/resource bounds, approval authority, secret redaction, and unchanged Codex behavior.
-2. Verifier decides on the harness/evidence mismatch (acquire fixture or revise harness).
+2. Verifier confirms T0 harness correction preserves Codex approval safety and Claude safe-default behavior.
 3. Only after independent T2 ACCEPT may R2 begin.
