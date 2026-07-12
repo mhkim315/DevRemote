@@ -141,8 +141,8 @@ T0  Common AgentEvent Contract                  ACCEPT 3ce2604bd (provider-neutr
 T1  Codex Adapter                               ACCEPT 162266f83 (Codex CLI 0.144.1 session JSONL; fixed T0 harness; bounded position cursor; correlation unavailable; full gate PASS)
 T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202 session JSONL; capability-aware fixed harness; approval safely unavailable)
 R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
-D1  Adapter Doctor/Repair                     NEXT (authoritative handoff: NEXT_SESSION_D1_ADAPTER_DOCTOR_REPAIR_HANDOFF.md)
-T3  Transcript Integration
+D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
+T3  Transcript Integration                    NEXT (authoritative handoff: NEXT_SESSION_T3_TRANSCRIPT_INTEGRATION_HANDOFF.md)
 S1  Rich Agent Runtime Status Model
 A1  Mobile-first Approval System
 O1  Orchestrator
