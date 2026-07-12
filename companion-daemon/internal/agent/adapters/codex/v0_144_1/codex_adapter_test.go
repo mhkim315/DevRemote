@@ -307,15 +307,20 @@ func TestCodexAdapter_SameTimestamp_BothPreserved(t *testing.T) {
 
 func TestCodexAdapter_SameTimestamp_Dedupe(t *testing.T) {
 	a := &Adapter{}
-	// Same record twice => 1 event.
-	rec := sessionMeta0_144_1()
-	records := []contract.RawRecord{rec, rec}
+	// Same non-meta record twice → content dedup → 1 event.
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		rec,
+		rec,
+	}
 	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
-	if len(res.Events) != 1 {
-		t.Errorf("duplicate same-timestamp: got %d events, want 1", len(res.Events))
+	// session_meta (pos 0) + task_started (pos 1, pos 2 dedup'd) = 2 events.
+	if len(res.Events) != 2 {
+		t.Errorf("duplicate: got %d events, want 2", len(res.Events))
 	}
 }
 
@@ -935,41 +940,136 @@ func TestCodexAdapter_Cursor_SeqFromAbsolutePosition(t *testing.T) {
 
 // ── Cross-page duplicate suppression ──
 
-func TestCodexAdapter_Cursor_CrossPageDuplicate_NotReemitted(t *testing.T) {
-	// Duplicate record appears at position 0 and position 2.
-	// Paginate with MaxEvents=1 — the duplicate at pos 2 must NOT be
-	// re-emitted because the prefix dedup set includes it from pos 0.
-	a := &Adapter{}
-	b := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
+func TestCodexAdapter_OneShot_Equals_Paged(t *testing.T) {
+	// Same source read in one shot vs paginated must produce identical
+	// event ID sets regardless of MaxEvents.
 	records := []contract.RawRecord{
-		sessionMeta0_144_1(), // position 0
-		b,                    // position 1
-		b,                    // position 2 (duplicate of pos 1)
-		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`), // position 3
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.001Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.002Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.003Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
 	}
 
-	seen := map[string]bool{}
+	// One-shot.
+	a1 := &Adapter{}
+	res1, _ := a1.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	oneShot := idsSorted(res1.Events)
+
+	// Paged (MaxEvents=1).
+	a2 := &Adapter{}
+	var paged []string
 	var cursor contract.Cursor
 	for {
-		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		res, _ := a2.ReadEvents(context.Background(), contract.ReadInput{
 			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
 			Records:   records,
 			Cursor:    cursor,
 			MaxEvents: 1,
 		})
 		for _, e := range res.Events {
-			if seen[e.ID] {
-				t.Errorf("cross-page duplicate re-emitted: %s", e.ID)
-			}
-			seen[e.ID] = true
+			paged = append(paged, e.ID)
 		}
 		cursor = res.NextCursor
 		if len(res.Events) == 0 {
 			break
 		}
 	}
-	if len(seen) != 3 {
-		t.Errorf("got %d unique events, want 3 (session_meta + dup + t2)", len(seen))
+
+	if len(oneShot) != len(paged) {
+		t.Errorf("one-shot=%d events, paged=%d events (must be equal)", len(oneShot), len(paged))
+	}
+	// IDs are position-based — compare as sets (order independent).
+	oneSet := make(map[string]bool, len(oneShot))
+	for _, id := range oneShot {
+		oneSet[id] = true
+	}
+	for _, id := range paged {
+		if !oneSet[id] {
+			t.Errorf("paged event %s not in one-shot set", id)
+		}
+		delete(oneSet, id)
+	}
+	for id := range oneSet {
+		t.Errorf("one-shot event %s not in paged set", id)
+	}
+}
+
+func idsSorted(events []contract.AgentEvent) []string {
+	ids := make([]string, len(events))
+	for i, e := range events {
+		ids[i] = e.ID
+	}
+	// Simple insertion sort.
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j] < ids[j-1]; j-- {
+			ids[j], ids[j-1] = ids[j-1], ids[j]
+		}
+	}
+	return ids
+}
+
+func TestCodexAdapter_Cursor_ConflictingVersion_NotRecovered(t *testing.T) {
+	// Stream with 0.144.1 meta at pos 0, 9.9.9 meta at pos 1, then
+	// task_started at pos 2.  After paginating past the conflict, the
+	// adapter must NOT recover and emit a typed event at pos 2.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.001Z","type":"session_meta","payload":{"cli_version":"9.9.9"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+	}
+
+	// First page: MaxEvents=1.  Emits session_meta at pos 0, then hits
+	// 9.9.9 meta at pos 1 → conflict → 0 events + degraded, cursor
+	// unchanged at pos 1.
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		MaxEvents: 1,
+	})
+	// Should have emitted pos 0 (session_meta) and set cursor to pos 1.
+	if len(res1.Events) != 1 {
+		t.Fatalf("first page: got %d events, want 1", len(res1.Events))
+	}
+
+	// Second page: cursor at pos 1.  Suffix [9.9.9 meta, task_started].
+	// 9.9.9 meta at absPos 1 → conflict → 0 events, cursor unchanged.
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		Cursor:    res1.NextCursor,
+		MaxEvents: 1,
+	})
+	if len(res2.Events) != 0 {
+		t.Fatalf("conflict page: got %d events, want 0 (fail-closed)", len(res2.Events))
+	}
+	if !res2.Degraded.Degraded {
+		t.Error("conflict must degrade")
+	}
+	// Cursor must NOT advance past the conflicting meta.
+	cur2, _ := parseCursor(res2.NextCursor)
+	cur1, _ := parseCursor(res1.NextCursor)
+	if cur2.nextPos != cur1.nextPos {
+		t.Errorf("cursor advanced from %d to %d past conflict", cur1.nextPos, cur2.nextPos)
+	}
+
+	// Third page: re-read with same cursor.  Same records, same conflict.
+	res3, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		Cursor:    res1.NextCursor,
+		MaxEvents: 1,
+	})
+	if len(res3.Events) != 0 {
+		t.Errorf("re-read after conflict: got %d typed events, want 0 (no recovery)", len(res3.Events))
+	}
+	for _, e := range res3.Events {
+		if e.Type != agent.EventUnknown {
+			t.Errorf("conflicting stream recovered typed event: %s", e.Type)
+		}
 	}
 }
 
@@ -1162,8 +1262,7 @@ func TestCodexAdapter_ValidateEvent_AllReturnedEvents(t *testing.T) {
 // ── BLOCKER 2 (round 2): Version gate validates entire batch ──
 
 func TestCodexAdapter_VersionGate_MixedMeta_BatchAllUnknown(t *testing.T) {
-	// session_meta 0.144.1 followed by session_meta 9.9.9 — the second
-	// meta poisons the ENTIRE batch. All events must be EventUnknown.
+	// session_meta at pos > 0 is a stream conflict → 0 events + degraded.
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -1175,13 +1274,29 @@ func TestCodexAdapter_VersionGate_MixedMeta_BatchAllUnknown(t *testing.T) {
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
-	for _, e := range res.Events {
-		if e.Type != agent.EventUnknown {
-			t.Errorf("mixed meta batch: event %s type=%q, want EventUnknown for all", e.ID, e.Type)
-		}
+	// Stream conflict at pos 2: events before conflict (pos 0,1) emitted.
+	// Cursor stops at conflict (pos 2), does not advance past it.
+	if len(res.Events) != 2 {
+		t.Errorf("mixed meta: got %d events, want 2 (events before conflict emitted)", len(res.Events))
 	}
 	if !res.Degraded.Degraded {
 		t.Error("mixed meta batch must be degraded")
+	}
+	cur, _ := parseCursor(res.NextCursor)
+	if cur.nextPos != 2 {
+		t.Errorf("cursor at %d, want 2 (stopped at conflict position)", cur.nextPos)
+	}
+	// Re-read with same cursor → still sees conflict → 0 events + degraded.
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  res.NextCursor,
+	})
+	if len(res2.Events) != 0 {
+		t.Errorf("re-read after conflict stop: got %d events, want 0", len(res2.Events))
+	}
+	if !res2.Degraded.Degraded {
+		t.Error("re-read at conflict must remain degraded")
 	}
 }
 

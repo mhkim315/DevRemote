@@ -29,6 +29,7 @@ package v0_144_1
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
@@ -284,7 +285,7 @@ func classifyCodexRecord(cr codexRecord) (contract.AgentEventType, float64) {
 //
 // Bounded-window processing (no full-prefix scan, no unbounded prefix map):
 //  1. Version: parse ONLY input[0] (session_meta always at position 0).
-//  2. Anchor: validate hashBytesID(input[pos-1]) == anchor (one raw hash).
+//  2. Anchor: validate makePositionID(pos-1, input[pos-1]) == anchor (one record).
 //  3. Suffix = input[pos:]; BoundBatch only the suffix.
 //  4. Normalize suffix, emit with within-batch dedup.
 //  5. Cursor position counts consumed suffix positions.
@@ -341,8 +342,12 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "batch truncated at bound")
 	}
 
-	// Also scan bounded suffix for conflicting session_meta (bounded scan).
-	for _, rec := range bounded {
+	// BLOCKER 2: Any session_meta at position > 0 is a stream conflict.
+	// Position 0 is the sole version authority.  Find the first conflict
+	// position and only process records up to (but not including) it.
+	// The cursor stops at the conflict so the next call re-encounters it.
+	firstConflict := -1
+	for i, rec := range bounded {
 		if !contract.AcceptRecord(rec) {
 			continue
 		}
@@ -350,14 +355,28 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		if err := json.Unmarshal(rec.Bytes, &cr); err != nil || cr.Type != "session_meta" {
 			continue
 		}
-		v := codexPayloadStr(cr, "cli_version")
-		if v == supportedCodexVersion {
-			batchVersionOK = true
-		} else if v != "" {
-			batchVersionFailed = true
+		absPos := cur.nextPos + int64(i)
+		if absPos == 0 {
+			v := codexPayloadStr(cr, "cli_version")
+			if v == supportedCodexVersion {
+				batchVersionOK = true
+			} else if v != "" {
+				batchVersionFailed = true
+				degraded = true
+				diags = append(diags, "unsupported Codex version: "+safeVersionDiag(v))
+			}
+		} else {
+			// Session_meta at non-zero position → stream conflict.
+			firstConflict = i
 			degraded = true
-			diags = append(diags, "unsupported Codex version in suffix: "+safeVersionDiag(v))
+			diags = append(diags, "unexpected session_meta at position "+strconv.FormatInt(absPos, 10))
+			break
 		}
+	}
+	// Only process records up to (but not including) the first conflict.
+	processLimit := len(bounded)
+	if firstConflict >= 0 {
+		processLimit = firstConflict
 	}
 	if !batchVersionOK || batchVersionFailed {
 		batchVersionFailed = true
@@ -370,21 +389,26 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			diags = append(diags, "cursor position out of range or oversized anchor record")
 			return contract.ReadResult{Degraded: contract.Degrade(strings.Join(boundedDiags(diags), "; "))}, nil
 		}
-		if hashBytesID(input[idx].Bytes) != cur.anchor {
+		if makePositionID(cur.nextPos-1, input[idx].Bytes) != cur.anchor {
 			diags = append(diags, "cursor anchor mismatch at position "+strconv.FormatInt(cur.nextPos-1, 10))
 			return contract.ReadResult{Degraded: contract.Degrade(strings.Join(boundedDiags(diags), "; "))}, nil
 		}
 	}
 
-	// ── Normalize suffix ──
+	// ── Normalize: only up to processLimit (stops at conflict) ──
 	var all []normResult
-	for _, rec := range bounded {
+	for i := 0; i < processLimit; i++ {
+		rec := bounded[i]
 		if !contract.AcceptRecord(rec) {
 			degraded = true
 			diags = append(diags, "oversized record skipped")
 			continue
 		}
+		absPos := cur.nextPos + int64(i)
 		ev, recDeg := normalizeCodexEvent(rec, sessionID, rec.Source, batchVersionFailed)
+		// Position-based identity: same bytes at different source positions
+		// → different IDs.  One-shot and paged reads produce identical sets.
+		ev.ID = makePositionID(absPos, rec.Bytes)
 		all = append(all, normResult{ev, recDeg})
 		if recDeg.Degraded {
 			degraded = true
@@ -399,7 +423,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 	}
 
-	// ── Emit: within-batch dedup only ──
+	// ── Emit: content-hash dedup within batch, position-based IDs ──
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
 	batchSeen := map[string]bool{}
 	var out []contract.AgentEvent
@@ -412,7 +436,9 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			processed++
 			continue
 		}
-		if batchSeen[ev.ID] {
+		// Within-batch dedup by content hash (not position-based ID).
+		ck := hashBytesID(bounded[i].Bytes)
+		if batchSeen[ck] {
 			processed++
 			continue
 		}
@@ -420,7 +446,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			truncated = true
 			break
 		}
-		batchSeen[ev.ID] = true
+		batchSeen[ck] = true
 		ev.Seq = cur.nextPos + int64(len(out))
 		out = append(out, ev)
 		processed++
@@ -433,11 +459,11 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 
 	// nextPos counts suffix positions consumed.
 	nextPos := cur.nextPos + processed
-	// Anchor = raw-hash of original input record at nextPos-1.
+	// Anchor = position-based ID of input record at nextPos-1.
 	var newAnchor string
 	if nextPos > 0 && int(nextPos)-1 < len(input) {
 		if contract.AcceptRecord(input[nextPos-1]) {
-			newAnchor = hashBytesID(input[nextPos-1].Bytes)
+			newAnchor = makePositionID(nextPos-1, input[nextPos-1].Bytes)
 		}
 	}
 	if len(out) == 0 && nextPos == cur.nextPos {
@@ -490,6 +516,20 @@ func (a *Adapter) GetStatus(_ context.Context, in contract.StatusInput) (contrac
 func hashBytesID(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:8])
+}
+
+// makePositionID returns a position-based event ID:
+// SHA-256(pos || content)[:8].  Same content at different source positions
+// → different IDs.  This guarantees one-shot and paged reads produce
+// identical event sets regardless of MaxEvents.
+func makePositionID(pos int64, content []byte) string {
+	h := sha256.New()
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(pos))
+	h.Write(buf[:])
+	h.Write(content)
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8])
 }
 
 func unknownRec(raw []byte, sessionID string, prov contract.Provenance, src contract.AgentEventSource, reason string) (contract.AgentEvent, contract.DegradedInfo) {
