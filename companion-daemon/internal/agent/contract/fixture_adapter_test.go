@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,13 @@ import (
 )
 
 // fixtureAdapter is a minimal, provider-neutral SYNTHETIC adapter used only to
-// prove the fixed conformance harness and the contract's safe-default behavior.
-// It is NOT a provider adapter and contains no reverse-engineered provider
-// formats. Records are tiny synthetic JSON objects: {"id","kind","ts","text"}.
+// exercise the fixed conformance harness and the contract's safe-default
+// behavior. It is NOT a provider adapter and contains no reverse-engineered
+// provider formats. Records are tiny synthetic JSON objects: {"id","kind","ts","text"}.
+// "ts" doubles as the stable per-session ordering key (Seq). The cursor is a
+// bounded high-water-mark (max Seq), never an accumulating id set.
 type fixtureAdapter struct {
-	failRead bool // when true, ReadEvents returns a typed degraded result (isolation test)
+	failRead bool // when true, ReadEvents returns a typed degraded result (isolation)
 }
 
 var fxBase = time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
@@ -40,34 +43,42 @@ func (fixtureAdapter) Detect(_ context.Context, s SessionContext) (AgentIdentity
 }
 
 func (fixtureAdapter) DiscoverSessions(_ context.Context, in DiscoveryInput) ([]DiscoveredSession, error) {
-	// Only a context that names the fixture agent yields a proven correlation;
-	// anything else stays unavailable (no invented ownership, no cross-link).
 	if in.Session.ProcessName != "fixture-agent" {
-		return nil, nil
+		return nil, nil // no invented ownership / cross-link
 	}
-	return []DiscoveredSession{{
+	limit := EffectiveDiscoveryLimit(in.Limit)
+	out := []DiscoveredSession{{
 		ProviderSessionID: "prov-" + in.Session.SessionID,
 		Provider:          "fixture",
 		Correlation:       CorrelationProven,
 		Confidence:        0.95,
-	}}, nil
+	}}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 type fxRecord struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
-	TS   int    `json:"ts"`
+	TS   int64  `json:"ts"`
 	Text string `json:"text"`
 }
 
 func (fixtureAdapter) NormalizeEvent(_ context.Context, rec RawRecord) (AgentEvent, DegradedInfo) {
+	prov := ProvenanceNativeLog
+	if IsKnownProvenance(rec.Provenance) {
+		prov = rec.Provenance
+	}
 	var r fxRecord
 	if err := json.Unmarshal(rec.Bytes, &r); err != nil || r.Kind == "" {
 		// Malformed / unknown → safe unknown event, never a fabricated typed event.
-		// Note: the raw bytes (which may hold secrets) are NEVER copied to Text.
+		// Raw bytes (which may hold secrets) are NEVER copied to Text.
 		return SafeEvent(AgentEvent{
 			ID: hashID(rec.Bytes), SessionID: "s", AgentKind: "fixture",
-			Type: agent.EventUnknown, Timestamp: fxBase, Confidence: 0.2, Source: srcOr(rec.Source),
+			Type: agent.EventUnknown, Timestamp: fxBase, Confidence: 0.2,
+			Source: srcOr(rec.Source), Provenance: string(prov),
 		}), Degrade("unparseable record")
 	}
 	et := fxKindToType(r.Kind)
@@ -81,45 +92,68 @@ func (fixtureAdapter) NormalizeEvent(_ context.Context, rec RawRecord) (AgentEve
 	}
 	return AgentEvent{
 		ID: id, SessionID: "s", AgentKind: "fixture",
-		Type: et, Timestamp: fxBase.Add(time.Duration(r.TS) * time.Second),
-		Text: safeText(r.Text), Confidence: conf, Source: srcOr(rec.Source),
+		Type: et, Seq: r.TS, Timestamp: fxBase.Add(time.Duration(r.TS) * time.Second),
+		Text: safeText(r.Text), Confidence: conf,
+		Source: srcOr(rec.Source), Provenance: string(prov),
 	}, OK()
 }
 
 func (a fixtureAdapter) ReadEvents(ctx context.Context, in ReadInput) (ReadResult, error) {
 	if a.failRead {
 		// Isolation: a failing adapter returns a typed degraded result — no panic,
-		// no partial events, and nothing that could affect Live Terminal.
+		// no partial events, nothing that could affect Live Terminal.
 		return ReadResult{Degraded: Degrade("fixture read failure")}, nil
 	}
-	seen := cursorSet(in.Cursor)
+	degraded := false
+	if err := ValidateCursor(in.Cursor); err != nil {
+		return ReadResult{Degraded: Degrade("invalid cursor")}, nil
+	}
+	records, truncBatch := BoundBatch(in.Records)
+	degraded = degraded || truncBatch
+
+	watermark := int64(-1)
+	if !in.Cursor.IsEmpty() {
+		if w, err := strconv.ParseInt(string(in.Cursor), 10, 64); err == nil {
+			watermark = w
+		}
+	}
 	limit := EffectiveReadLimit(in.MaxEvents)
+	seenID := map[string]bool{}
 	var out []AgentEvent
 	truncated := false
-	for _, rec := range in.Records {
+	for _, rec := range records {
+		if !AcceptRecord(rec) {
+			degraded = true
+			continue // oversized record skipped
+		}
 		ev, _ := a.NormalizeEvent(ctx, rec)
-		if ev.ID == "" || seen[ev.ID] {
-			continue // dedupe by id
+		if ev.ID == "" || seenID[ev.ID] || ev.Seq <= watermark {
+			continue // dedupe by id + high-water-mark resume
 		}
 		if len(out) >= limit {
 			truncated = true
 			break
 		}
-		seen[ev.ID] = true
+		seenID[ev.ID] = true
+		if ev.Seq > watermark {
+			watermark = ev.Seq
+		}
 		out = append(out, ev)
 	}
+	degraded = degraded || truncated
 	deg := OK()
-	if truncated {
-		deg = Degrade("read truncated at bound")
+	if degraded {
+		deg = Degrade("read truncated or partially skipped at a bound")
 	}
-	return ReadResult{Events: out, NextCursor: setCursor(seen), Degraded: deg}, nil
+	// Bounded cursor: a single high-water-mark number, never an id set.
+	return ReadResult{Events: out, NextCursor: Cursor(strconv.FormatInt(watermark, 10)), Degraded: deg}, nil
 }
 
 func (fixtureAdapter) DetectApproval(_ context.Context, events []AgentEvent) ([]AgentApproval, error) {
 	var out []AgentApproval
 	for _, e := range events {
-		// Default no-approval: only an unambiguous approval_requested at/above the
-		// confidence floor qualifies. A near-miss assistant message never does.
+		// Default no-approval; SafeApprovalGate rejects advisory/unknown/prompt-hint/
+		// PTY provenance and low confidence, so a near-miss never becomes an approval.
 		if !SafeApprovalGate(e) {
 			continue
 		}
@@ -169,8 +203,6 @@ func srcOr(s AgentEventSource) AgentEventSource {
 	return agent.SourceJSONL
 }
 
-// safeText returns a bounded, secret-free rendering of provider text. Provider
-// text that still contains a secret/path is dropped rather than surfaced.
 func safeText(s string) string {
 	if ContainsSensitive(s) {
 		return ""
@@ -186,62 +218,40 @@ func hashID(b []byte) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func cursorSet(c Cursor) map[string]bool {
-	m := map[string]bool{}
-	for _, id := range strings.Split(string(c), "|") {
-		if id != "" {
-			m[id] = true
-		}
-	}
-	return m
-}
-
-func setCursor(seen map[string]bool) Cursor {
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	// Deterministic order for a stable cursor.
-	sortStrings(ids)
-	return Cursor(strings.Join(ids, "|"))
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
-}
-
 // ── Fixtures + harness invocation ──
 
+func fxRec(s string) RawRecord {
+	return RawRecord{Bytes: []byte(s), Source: agent.SourceJSONL, Provenance: ProvenanceNativeLog}
+}
+
 func fixtureFixtures() ConformanceFixtures {
-	rec := func(s string) RawRecord {
-		return RawRecord{Bytes: []byte(s), Source: agent.SourceJSONL, Provenance: ProvenanceNativeLog}
-	}
 	return ConformanceFixtures{
 		DetectContext:    SessionContext{SessionID: "s", ProcessName: "fixture-agent", CWD: "/tmp/fixture"},
 		ExpectDetectKind: "fixture",
 		ValidRecords: []RawRecord{
-			rec(`{"id":"e1","kind":"started","ts":1}`),
-			rec(`{"id":"e2","kind":"thinking","ts":2}`),
-			rec(`{"id":"e3","kind":"tool_start","ts":3}`),
-			rec(`{"id":"e4","kind":"done","ts":4}`),
+			fxRec(`{"id":"e1","kind":"started","ts":1}`),
+			fxRec(`{"id":"e2","kind":"thinking","ts":2}`),
+			fxRec(`{"id":"e3","kind":"tool_start","ts":3}`),
+			fxRec(`{"id":"e4","kind":"done","ts":4}`),
 		},
 		ExpectTypes: []AgentEventType{agent.EventAgentStarted, agent.EventThinking, agent.EventToolCallStarted, agent.EventCompleted},
+		// Distinct records for the harness bounds/dedupe/cursor checks. id and ts
+		// (Seq) are both distinct per i.
+		DistinctRecord: func(i int) RawRecord {
+			return fxRec(`{"id":"d` + strconv.Itoa(i) + `","kind":"message","ts":` + strconv.Itoa(i) + `}`)
+		},
+		FailingFactory: func(t *testing.T) AgentAdapter { return fixtureAdapter{failRead: true} },
 		ApprovalRecords: []RawRecord{
-			rec(`{"id":"a1","kind":"approval","ts":5}`),
+			fxRec(`{"id":"a1","kind":"approval","ts":5}`),
 		},
 		NearMissRecords: []RawRecord{
-			// Looks approval-ish (mentions "approve") but is an assistant message.
-			rec(`{"id":"n1","kind":"message","ts":6,"text":"should I approve this?"}`),
+			fxRec(`{"id":"n1","kind":"message","ts":6,"text":"should I approve this?"}`),
 		},
 		MalformedRecords: []RawRecord{
-			rec(`{`),
-			rec(`not json at all`),
+			fxRec(`{`),
+			fxRec(`not json at all`),
 			{Bytes: nil},
-			rec(`{"id":"x","kind":"totally-unknown","ts":7}`),
+			fxRec(`{"id":"x","kind":"totally-unknown","ts":7}`),
 		},
 	}
 }
@@ -250,46 +260,15 @@ func TestFixtureAdapter_Conformance(t *testing.T) {
 	RunAgentContract(t, "fixture", func(t *testing.T) AgentAdapter { return fixtureAdapter{} }, fixtureFixtures())
 }
 
-// Strong bound test with DISTINCT records (the generic harness only proves the
-// ≤cap invariant with repeated fixtures).
-func TestFixtureAdapter_ReadBoundTruncatesAndDegrades(t *testing.T) {
-	recs := make([]RawRecord, 0, MaxEventsPerRead+25)
-	for i := 0; i < MaxEventsPerRead+25; i++ {
-		recs = append(recs, RawRecord{Bytes: []byte(`{"id":"d` + itoa(i) + `","kind":"message","ts":` + itoa(i) + `}`), Source: agent.SourceJSONL})
-	}
-	res, _ := fixtureAdapter{}.ReadEvents(context.Background(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: recs})
-	if len(res.Events) != MaxEventsPerRead {
-		t.Fatalf("bounded read returned %d events, want %d", len(res.Events), MaxEventsPerRead)
-	}
-	if !res.Degraded.Degraded {
-		t.Error("truncation must be surfaced as degraded, not silent")
-	}
-}
-
-// A failing adapter returns a typed degraded result and cannot affect a second,
-// independent adapter (proxy for "cannot affect Live Terminal").
-func TestFixtureAdapter_FailureIsolation(t *testing.T) {
-	failing := fixtureAdapter{failRead: true}
-	res, err := failing.ReadEvents(context.Background(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: fixtureFixtures().ValidRecords})
-	if err != nil {
-		t.Fatalf("failing adapter must not error, it degrades: %v", err)
-	}
-	if !res.Degraded.Degraded || len(res.Events) != 0 {
-		t.Errorf("failing adapter must return degraded + no events, got %+v", res)
-	}
-	// A healthy adapter is unaffected.
-	ok, _ := fixtureAdapter{}.ReadEvents(context.Background(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: fixtureFixtures().ValidRecords})
-	if len(ok.Events) == 0 {
-		t.Error("healthy adapter affected by a separate failing adapter")
-	}
-}
-
 // Common DTO snapshot stability: normalized valid events serialize to a stable,
-// provider-neutral shape.
+// provider-neutral shape (now including seq + provenance).
 func TestFixtureAdapter_DTOSnapshotStable(t *testing.T) {
 	res, _ := fixtureAdapter{}.ReadEvents(context.Background(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: fixtureFixtures().ValidRecords})
 	got := toJSON(t, res.Events)
-	const want = `[{"id":"e1","sessionId":"s","agentKind":"fixture","type":"agent_started","timestamp":"2026-07-12T00:00:01Z","confidence":0.9,"source":"jsonl"},{"id":"e2","sessionId":"s","agentKind":"fixture","type":"thinking","timestamp":"2026-07-12T00:00:02Z","confidence":0.9,"source":"jsonl"},{"id":"e3","sessionId":"s","agentKind":"fixture","type":"tool_call_started","timestamp":"2026-07-12T00:00:03Z","confidence":0.9,"source":"jsonl"},{"id":"e4","sessionId":"s","agentKind":"fixture","type":"completed","timestamp":"2026-07-12T00:00:04Z","confidence":0.9,"source":"jsonl"}]`
+	const want = `[{"id":"e1","sessionId":"s","agentKind":"fixture","type":"agent_started","seq":1,"timestamp":"2026-07-12T00:00:01Z","confidence":0.9,"source":"jsonl","provenance":"native_log"},` +
+		`{"id":"e2","sessionId":"s","agentKind":"fixture","type":"thinking","seq":2,"timestamp":"2026-07-12T00:00:02Z","confidence":0.9,"source":"jsonl","provenance":"native_log"},` +
+		`{"id":"e3","sessionId":"s","agentKind":"fixture","type":"tool_call_started","seq":3,"timestamp":"2026-07-12T00:00:03Z","confidence":0.9,"source":"jsonl","provenance":"native_log"},` +
+		`{"id":"e4","sessionId":"s","agentKind":"fixture","type":"completed","seq":4,"timestamp":"2026-07-12T00:00:04Z","confidence":0.9,"source":"jsonl","provenance":"native_log"}]`
 	if got != want {
 		t.Errorf("DTO snapshot drifted:\n got: %s\nwant: %s", got, want)
 	}
@@ -298,9 +277,8 @@ func TestFixtureAdapter_DTOSnapshotStable(t *testing.T) {
 // A hostile record carrying a secret + absolute path must not surface either in
 // the normalized event or diagnostics.
 func TestFixtureAdapter_NoSecretLeak(t *testing.T) {
-	// Fragmented literal so no credential pattern appears in source.
 	body := `{"id":"s1","kind":"message","ts":1,"text":"token ` + "sk" + `-abcd1234567890abcd at /Users/victim/x"}`
-	rec := RawRecord{Bytes: []byte(body), Source: agent.SourceJSONL}
+	rec := RawRecord{Bytes: []byte(body), Source: agent.SourceJSONL, Provenance: ProvenanceNativeLog}
 	ev, deg := fixtureAdapter{}.NormalizeEvent(context.Background(), rec)
 	if ContainsSensitive(ev.Text) {
 		t.Errorf("event Text leaked sensitive content: %q", ev.Text)
@@ -308,18 +286,4 @@ func TestFixtureAdapter_NoSecretLeak(t *testing.T) {
 	if ContainsSensitive(deg.Reason) {
 		t.Errorf("degraded reason leaked sensitive content: %q", deg.Reason)
 	}
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var b [20]byte
-	p := len(b)
-	for i > 0 {
-		p--
-		b[p] = byte('0' + i%10)
-		i /= 10
-	}
-	return string(b[p:])
 }

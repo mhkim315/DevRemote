@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -10,8 +11,8 @@ import (
 func validEvent() AgentEvent {
 	return AgentEvent{
 		ID: "e1", SessionID: "s", AgentKind: "fixture",
-		Type: agent.EventThinking, Timestamp: time.Unix(0, 0),
-		Confidence: 0.9, Source: agent.SourceJSONL,
+		Type: agent.EventThinking, Seq: 1, Timestamp: time.Unix(0, 0),
+		Confidence: 0.9, Source: agent.SourceJSONL, Provenance: string(ProvenanceNativeLog),
 	}
 }
 
@@ -71,11 +72,24 @@ func TestValidateEvent(t *testing.T) {
 	bad := map[string]AgentEvent{
 		"missing id":       func() AgentEvent { e := validEvent(); e.ID = ""; return e }(),
 		"missing session":  func() AgentEvent { e := validEvent(); e.SessionID = ""; return e }(),
+		"negative seq":     func() AgentEvent { e := validEvent(); e.Seq = -1; return e }(),
 		"bad type":         func() AgentEvent { e := validEvent(); e.Type = "made_up"; return e }(),
 		"bad source":       func() AgentEvent { e := validEvent(); e.Source = "made_up"; return e }(),
+		"bad provenance":   func() AgentEvent { e := validEvent(); e.Provenance = "made_up"; return e }(),
+		"no provenance":    func() AgentEvent { e := validEvent(); e.Provenance = ""; return e }(),
 		"confidence high":  func() AgentEvent { e := validEvent(); e.Confidence = 1.5; return e }(),
 		"confidence low":   func() AgentEvent { e := validEvent(); e.Confidence = -0.1; return e }(),
 		"low-conf not unk": func() AgentEvent { e := validEvent(); e.Confidence = 0.2; return e }(),
+		"huge meta value": func() AgentEvent {
+			e := validEvent()
+			e.Metadata = map[string]string{"k": strings.Repeat("x", MaxMetadataValueBytes+1)}
+			return e
+		}(),
+		"huge meta key": func() AgentEvent {
+			e := validEvent()
+			e.Metadata = map[string]string{strings.Repeat("k", MaxMetadataKeyBytes+1): "v"}
+			return e
+		}(),
 	}
 	for name, e := range bad {
 		if err := ValidateEvent(e); err == nil {
@@ -148,18 +162,91 @@ func TestResolveStatusPrecedence(t *testing.T) {
 }
 
 func TestSafeApprovalGate(t *testing.T) {
-	yes := AgentEvent{Type: agent.EventApprovalRequested, Confidence: 0.6}
-	if !SafeApprovalGate(yes) {
-		t.Error("valid approval_requested should gate open")
+	ok := func(prov Provenance, conf float64, typ AgentEventType) AgentEvent {
+		return AgentEvent{Type: typ, Confidence: conf, Provenance: string(prov)}
 	}
+	// Authoritative provenance + approval_requested + adequate confidence → gate open.
+	for _, p := range []Provenance{ProvenanceRuntime, ProvenanceProviderProtocol, ProvenanceProviderHook, ProvenanceNativeLog} {
+		if !SafeApprovalGate(ok(p, 0.6, agent.EventApprovalRequested)) {
+			t.Errorf("authoritative provenance %s should gate open", p)
+		}
+	}
+	// Rejected: advisory/unknown/PTY provenance even at very high confidence.
+	for _, p := range []Provenance{ProvenanceHeuristic, ProvenancePromptHint, ProvenanceUnknown, ProvenancePTYStructural} {
+		if SafeApprovalGate(ok(p, 0.99, agent.EventApprovalRequested)) {
+			t.Errorf("provenance %s must never gate an approval (spoofable)", p)
+		}
+	}
+	// Rejected: too-low confidence, wrong type, empty provenance.
 	for _, e := range []AgentEvent{
-		{Type: agent.EventApprovalRequested, Confidence: 0.3}, // too low
-		{Type: agent.EventAssistantMessage, Confidence: 0.99}, // near-miss content
-		{Type: agent.EventUnknown, Confidence: 0.99},
+		ok(ProvenanceNativeLog, 0.3, agent.EventApprovalRequested), // too low
+		ok(ProvenanceNativeLog, 0.99, agent.EventAssistantMessage), // near-miss content
+		ok(ProvenanceNativeLog, 0.99, agent.EventUnknown),
+		{Type: agent.EventApprovalRequested, Confidence: 0.99}, // no provenance
 	} {
 		if SafeApprovalGate(e) {
-			t.Errorf("ambiguous/low event must not gate approval: %+v", e)
+			t.Errorf("ambiguous/low/near-miss event must not gate approval: %+v", e)
 		}
+	}
+}
+
+func TestResolveStatusAdvisoryPolicy(t *testing.T) {
+	// A prompt-hint alone cannot authoritatively declare a terminal status.
+	r := ResolveStatus([]StatusEvidence{
+		{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.99},
+	})
+	if r.Status == agent.StatusCompleted {
+		t.Errorf("advisory prompt-hint asserted completed: %+v", r)
+	}
+	if r.Confidence > AdvisoryStatusConfidenceCeiling {
+		t.Errorf("advisory confidence not capped: %.2f", r.Confidence)
+	}
+	if !r.Degraded.Degraded {
+		t.Error("advisory-terminal downgrade should be marked degraded")
+	}
+	// A non-terminal advisory status is allowed but confidence-capped.
+	r2 := ResolveStatus([]StatusEvidence{
+		{Status: agent.StatusThinking, Provenance: ProvenanceHeuristic, Confidence: 0.95},
+	})
+	if r2.Status != agent.StatusThinking || r2.Confidence > AdvisoryStatusConfidenceCeiling {
+		t.Errorf("advisory non-terminal handling wrong: %+v", r2)
+	}
+	// Strong evidence still wins over advisory (conflict).
+	r3 := ResolveStatus([]StatusEvidence{
+		{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.99},
+		{Status: agent.StatusWorking, Provenance: ProvenanceRuntime, Confidence: 0.6},
+	})
+	if r3.Status != agent.StatusWorking {
+		t.Errorf("strong evidence must win conflict: %+v", r3)
+	}
+}
+
+func TestCursorAndBatchBounds(t *testing.T) {
+	if ValidateCursor("") != nil {
+		t.Error("empty cursor must be valid")
+	}
+	if ValidateCursor(Cursor(strings.Repeat("a", MaxCursorBytes+1))) == nil {
+		t.Error("oversized cursor must be rejected")
+	}
+	if AcceptRecord(RawRecord{Bytes: make([]byte, MaxRecordBytes+1)}) {
+		t.Error("oversized record must be rejected")
+	}
+	if !AcceptRecord(RawRecord{Bytes: make([]byte, 10)}) {
+		t.Error("small record must be accepted")
+	}
+	// Batch record-count bound.
+	many := make([]RawRecord, MaxBatchRecords+5)
+	if _, trunc := BoundBatch(many); !trunc || len(func() []RawRecord { b, _ := BoundBatch(many); return b }()) > MaxBatchRecords {
+		t.Error("batch record count must be bounded + report truncation")
+	}
+}
+
+func TestBoundEventsHardCapOnZero(t *testing.T) {
+	// max <= 0 must be treated as the hard cap, never "unbounded".
+	events := make([]AgentEvent, MaxEventsPerRead+10)
+	bounded, trunc := BoundEvents(events, 0)
+	if len(bounded) != MaxEventsPerRead || !trunc {
+		t.Errorf("BoundEvents(_,0) len=%d trunc=%v, want %d,true", len(bounded), trunc, MaxEventsPerRead)
 	}
 }
 

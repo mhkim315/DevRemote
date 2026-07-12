@@ -1,6 +1,6 @@
 # T0 — Common AgentEvent Contract — Implementation Report
 
-Status: **READY FOR INDEPENDENT VERIFICATION**
+Status: **READY FOR INDEPENDENT RE-VERIFICATION (remediation applied)**
 
 Branch: `feature/phase10-multi-adapter`
 Baseline (accepted M3b): `9cdf2f290299f70d0b6d58e139771bfc336adb57` —
@@ -11,6 +11,45 @@ independently, without changing mobile, lifecycle, authentication, Terminal,
 approval, or Transcript behavior. It provides the common types, the six-operation
 adapter interface, validation/safe-default behavior, and a fixed external
 conformance harness. It does **not** implement Codex or Claude parsing.
+
+## 0. Remediation of the independent REJECT (5 contract blockers)
+
+The first T0 commit passed the gate but the frozen contract had structural
+defects the harness did not catch. All five are fixed; still additive (no
+production/DTO change):
+
+1. **Provenance + stable ordering in the canonical event.** `agent.AgentEvent`
+   now carries `Provenance` (evidence-STRENGTH tier, separate from `Source`, the
+   mechanical origin) and `Seq` (stable per-session ordering key that
+   disambiguates equal timestamps). Preservation proven through normalization,
+   the DTO snapshot, dedupe, and cursor resume. Legacy `models.AgentEvent` wire
+   event unchanged.
+2. **Approval authority gated on provenance.** `SafeApprovalGate` now requires an
+   authoritative provenance (runtime / provider_protocol / provider_hook /
+   native_log) plus `approval_requested` + confidence floor; advisory, unknown,
+   prompt-hint, and PTY-structural provenance are rejected even at confidence
+   0.99. The harness validates the adapter's actual `DetectApproval` RESULT
+   against generic adversarial events (not adapter-supplied fixtures).
+3. **Strictly bounded resources.** `MaxCursorBytes` + `ValidateCursor`,
+   `MaxRecordBytes` + `AcceptRecord`, `MaxBatchRecords/MaxBatchBytes` + `BoundBatch`,
+   per-entry metadata key/value bounds (every entry, not only when >32), caller
+   read/discovery limit enforcement, `BoundEvents(_,0)` capped to the hard limit,
+   and every truncation returns `Degraded=true`. The fixture cursor is a bounded
+   high-water-mark, not an accumulating id set.
+4. **Non-bypassable fixed harness.** `RunAgentContract` REQUIRES capability-
+   appropriate fixtures (missing ⇒ fail, never skip), forces empty-context
+   detection to unknown/low confidence, uses harness-generated DISTINCT records
+   for hard-cap/caller-limit/dedupe/cursor checks, asserts truncation ⇒ degraded
+   and bounded cursors, runs generic adversarial approval/status cases, and moves
+   failure isolation inside the harness via a required `FailingFactory`.
+5. **Advisory status policy in code.** `ResolveStatus` caps advisory-provenance
+   confidence at `AdvisoryStatusConfidenceCeiling` and downgrades an advisory-only
+   terminal claim (completed/failed/interrupted) to `StatusUnknown`+degraded;
+   strong evidence still wins by precedence.
+
+Full gate green after remediation: `go test -race ./...`, mobile tsc + jest
+21/289, `scripts/build-gate.sh` ALL GATES PASSED. Contract suite: 33 sub-tests,
+0 skipped.
 
 ## 1. Design decision (additive; no parallel model)
 
@@ -85,18 +124,21 @@ precedence + fallback, secret-free diagnostics.
 ## 3. Changed files (all additive)
 
 ```
+companion-daemon/internal/agent/models.go                     (add Seq + Provenance to canonical AgentEvent; additive, not on the public wire)
 companion-daemon/internal/agent/contract/contract.go          (types + six-op interface)
-companion-daemon/internal/agent/contract/cursor.go            (opaque cursor + bounds)
-companion-daemon/internal/agent/contract/validate.go          (validators + safe defaults + redaction)
-companion-daemon/internal/agent/contract/harness.go           (FIXED conformance harness)
+companion-daemon/internal/agent/contract/cursor.go            (opaque cursor + ValidateCursor + record/batch bounds)
+companion-daemon/internal/agent/contract/validate.go          (validators + safe defaults + provenance/status/approval policy + redaction)
+companion-daemon/internal/agent/contract/harness.go           (non-bypassable FIXED conformance harness)
 companion-daemon/internal/agent/contract/validate_test.go     (pure-function unit tests)
-companion-daemon/internal/agent/contract/fixture_adapter_test.go (synthetic adapter + harness run + isolation/bounds/snapshot/secret tests)
+companion-daemon/internal/agent/contract/fixture_adapter_test.go (synthetic adapter + harness run + snapshot/secret tests)
 docs/T0_COMMON_AGENT_EVENT_IMPLEMENTATION_REPORT.md            (this report)
 docs/ROADMAP_AFTER_E10B.md                                    (T0 tick)
 ```
 
-No existing production file changed. No mobile change. No Recorder/PTY/Terminal/
-auth change.
+`agent.AgentEvent` has zero production (non-test) references and is NOT on the
+public wire (`SessionTelemetry.Events` uses `models.AgentEvent`), so adding
+`Seq`/`Provenance` is additive and wire-safe. No mobile change. No Recorder/PTY/
+Terminal/auth change.
 
 ## 4. Evidence matrix (fixed harness + unit tests)
 

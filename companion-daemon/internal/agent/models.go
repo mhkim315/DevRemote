@@ -76,17 +76,27 @@ const (
 
 // AgentEvent is a normalized agent activity event.
 type AgentEvent struct {
-	ID         string            `json:"id"`
-	SessionID  string            `json:"sessionId"`
-	AgentKind  string            `json:"agentKind"`
-	Type       AgentEventType    `json:"type"`
-	Timestamp  time.Time         `json:"timestamp"`
-	Text       string            `json:"text,omitempty"`
-	ToolName   string            `json:"toolName,omitempty"`
-	ApprovalID string            `json:"approvalId,omitempty"`
-	RawRef     string            `json:"rawRef,omitempty"` // trace reference, not raw content
-	Confidence float64           `json:"confidence"`
-	Source     AgentEventSource  `json:"source"`
+	ID        string         `json:"id"`
+	SessionID string         `json:"sessionId"`
+	AgentKind string         `json:"agentKind"`
+	Type      AgentEventType `json:"type"`
+	// Seq is the STABLE per-session ordering key. Events are ordered by Seq
+	// (strictly increasing within a session); it is stable across re-reads and
+	// disambiguates events that share a Timestamp. Timestamp is display metadata,
+	// not the ordering authority.
+	Seq        int64            `json:"seq"`
+	Timestamp  time.Time        `json:"timestamp"`
+	Text       string           `json:"text,omitempty"`
+	ToolName   string           `json:"toolName,omitempty"`
+	ApprovalID string           `json:"approvalId,omitempty"`
+	RawRef     string           `json:"rawRef,omitempty"` // trace reference, not raw content
+	Confidence float64          `json:"confidence"`
+	Source     AgentEventSource `json:"source"` // mechanical origin (jsonl/log_file/screen/process/manual_link)
+	// Provenance is the EVIDENCE-STRENGTH tier (a contract.Provenance value:
+	// runtime/provider_protocol/provider_hook/native_log/pty_structural/heuristic/
+	// prompt_hint/unknown), kept SEPARATE from Source so approval/status authority
+	// can gate on how trustworthy the signal is, not merely where it came from.
+	Provenance string            `json:"provenance,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"` // agent-specific, must not drive UX
 }
 
@@ -102,11 +112,11 @@ type InputSchema struct {
 // Kind carries semantic meaning (approve/reject/neutral/open/cancel);
 // mobile uses Kind for styling, never infers semantics from ID.
 type InteractionOption struct {
-	ID      string       `json:"id"`              // stable key
-	Label   string       `json:"label"`           // display label
-	Kind    string       `json:"kind"`            // semantic: approve, reject, neutral, open, cancel
+	ID      string       `json:"id"`                // stable key
+	Label   string       `json:"label"`             // display label
+	Kind    string       `json:"kind"`              // semantic: approve, reject, neutral, open, cancel
 	Payload string       `json:"payload,omitempty"` // terminal fallback payload
-	Input   *InputSchema `json:"input,omitempty"` // input contract
+	Input   *InputSchema `json:"input,omitempty"`   // input contract
 }
 
 // AgentApproval represents a pending or resolved interaction request.
@@ -124,6 +134,6 @@ type AgentApproval struct {
 	Source     AgentEventSource    `json:"source"`
 	Confidence float64             `json:"confidence"`
 	Metadata   map[string]string   `json:"metadata,omitempty"`
-	CreatedAt  time.Time         `json:"createdAt"`
-	ResolvedAt *time.Time        `json:"resolvedAt,omitempty"`
+	CreatedAt  time.Time           `json:"createdAt"`
+	ResolvedAt *time.Time          `json:"resolvedAt,omitempty"`
 }

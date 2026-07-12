@@ -12,15 +12,19 @@ import (
 // This file is the FIXED T0 conformance harness. It lives in the contract package
 // — outside any version-specific adapter's write area — and is imported by every
 // adapter's own test (T1 Codex, T2 Claude, ...). An adapter cannot weaken it
-// without editing this reviewed package. It proves the contract-level guarantees
-// on the CONTRACT surface, using generic/synthetic inputs plus a small set of
-// adapter-declared positive fixtures. It never reverse-engineers provider-version
-// fixtures — those belong to T1/T2.
+// without editing this reviewed package.
+//
+// Design goal: a no-op or cheating adapter CANNOT pass. The harness (1) requires
+// capability-appropriate fixtures up front (missing fixtures fail, never skip),
+// (2) uses harness-GENERATED distinct/adversarial inputs for the safety-critical
+// checks (bounds, dedupe, cursor resume, approval/status authority, failure
+// isolation) rather than trusting adapter-supplied fixtures, and (3) validates
+// the adapter's actual RESULTS against the contract, not the adapter's internal
+// gate.
 
-// ConformanceFixtures are the minimal adapter-declared inputs the harness needs to
-// prove provider-specific positive behavior. Everything else (bounds, dedup,
-// cursor, panic-safety, status precedence, approval-default-no, secret-free
-// diagnostics) is proven from harness-generated generic inputs.
+// ConformanceFixtures are the adapter-declared inputs the harness needs. The
+// safety-critical checks do NOT rely on these; they exist for provider-positive
+// behavior and format-specific record generation.
 type ConformanceFixtures struct {
 	// DetectContext is a session the adapter should positively identify.
 	DetectContext SessionContext
@@ -28,43 +32,80 @@ type ConformanceFixtures struct {
 	ExpectDetectKind string
 
 	// ValidRecords normalize to known (non-unknown) events. ExpectTypes lists the
-	// event types that must appear.
+	// event types that must appear. REQUIRED.
 	ValidRecords []RawRecord
 	ExpectTypes  []AgentEventType
 
+	// DistinctRecord returns the i-th DISTINCT valid record (distinct id/content).
+	// REQUIRED — the harness uses it to generate more records than any cap so
+	// bounds/dedupe/cursor are proven with real distinct inputs, not repeats.
+	DistinctRecord func(i int) RawRecord
+
+	// FailingFactory builds an adapter whose ReadEvents fails (returns a typed
+	// degraded result). REQUIRED — proves failure isolation generically.
+	FailingFactory func(t *testing.T) AgentAdapter
+
 	// ApprovalRecords must, once read, yield at least one surfaced approval.
+	// REQUIRED when the descriptor declares CapApprovalDetection.
 	ApprovalRecords []RawRecord
-	// NearMissRecords look approval-ish but must yield ZERO approvals (adversarial).
+	// NearMissRecords look approval-ish but must yield ZERO approvals (optional;
+	// the harness ALSO runs its own generic adversarial approval cases).
 	NearMissRecords []RawRecord
 
-	// MalformedRecords are provider-invalid inputs that must never panic and never
-	// fabricate a confident typed event.
+	// MalformedRecords are provider-invalid inputs. Optional; the harness adds
+	// generic malformed inputs regardless.
 	MalformedRecords []RawRecord
 }
 
 // RunAgentContract runs the full fixed conformance suite against an adapter.
 func RunAgentContract(t *testing.T, name string, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	t.Helper()
+	requireFixtures(t, factory(t).Descriptor(), fx)
 	t.Run(name, func(t *testing.T) {
 		t.Run("Descriptor", func(t *testing.T) { testDescriptor(t, factory) })
-		t.Run("Detect_Invariants", func(t *testing.T) { testDetect(t, factory, fx) })
-		t.Run("Discover_NeverInventsOwnership", func(t *testing.T) { testDiscover(t, factory, fx) })
+		t.Run("Detect_EmptyIsUnknown", func(t *testing.T) { testDetect(t, factory, fx) })
+		t.Run("Discover_BoundedNoInventedOwnership", func(t *testing.T) { testDiscover(t, factory, fx) })
 		t.Run("Read_DeterministicNormalization", func(t *testing.T) { testDeterministic(t, factory, fx) })
-		t.Run("Read_ValidateAndVocabulary", func(t *testing.T) { testValidate(t, factory, fx) })
+		t.Run("Read_ValidateVocabularyProvenance", func(t *testing.T) { testValidate(t, factory, fx) })
+		t.Run("Read_StableSeqOrdering", func(t *testing.T) { testOrdering(t, factory, fx) })
 		t.Run("Read_MalformedSafe", func(t *testing.T) { testMalformed(t, factory, fx) })
-		t.Run("Read_Bounds", func(t *testing.T) { testBounds(t, factory, fx) })
-		t.Run("Read_DedupAndCursor", func(t *testing.T) { testDedupCursor(t, factory, fx) })
-		t.Run("Read_Ordering", func(t *testing.T) { testOrdering(t, factory, fx) })
+		t.Run("Read_HardBoundDegrades", func(t *testing.T) { testHardBound(t, factory, fx) })
+		t.Run("Read_CallerLimitHonored", func(t *testing.T) { testCallerLimit(t, factory, fx) })
+		t.Run("Read_DedupStableID", func(t *testing.T) { testDedupStableID(t, factory, fx) })
+		t.Run("Read_CursorBoundedResumeNoReemit", func(t *testing.T) { testCursorResume(t, factory, fx) })
 		t.Run("Normalize_NoLeakNoPanic", func(t *testing.T) { testNormalize(t, factory, fx) })
-		t.Run("Approval_PositiveAndNearMiss", func(t *testing.T) { testApprovals(t, factory, fx) })
-		t.Run("Status_PrecedenceAndFallback", func(t *testing.T) { testStatus(t, factory, fx) })
+		t.Run("Approval_GenericAdversarial", func(t *testing.T) { testApprovals(t, factory, fx) })
+		t.Run("Status_PrecedenceAndAdvisoryPolicy", func(t *testing.T) { testStatus(t, factory, fx) })
 		t.Run("Diagnostics_SecretFree", func(t *testing.T) { testDiagnosticsClean(t, factory, fx) })
+		t.Run("FailureIsolation", func(t *testing.T) { testFailureIsolation(t, factory, fx) })
 	})
+}
+
+// requireFixtures fails (never skips) when a capability's mandatory fixtures are
+// absent, so an under-specified suite cannot hide behind t.Skip.
+func requireFixtures(t *testing.T, d AgentAdapterDescriptor, fx ConformanceFixtures) {
+	t.Helper()
+	if fx.DistinctRecord == nil {
+		t.Fatal("ConformanceFixtures.DistinctRecord is required")
+	}
+	if fx.FailingFactory == nil {
+		t.Fatal("ConformanceFixtures.FailingFactory is required")
+	}
+	if len(fx.ValidRecords) == 0 || len(fx.ExpectTypes) == 0 {
+		t.Fatal("ConformanceFixtures.ValidRecords and ExpectTypes are required")
+	}
+	if fx.ExpectDetectKind == "" {
+		t.Fatal("ConformanceFixtures.ExpectDetectKind is required")
+	}
+	for _, c := range d.Capabilities {
+		if c == CapApprovalDetection && len(fx.ApprovalRecords) == 0 {
+			t.Fatal("CapApprovalDetection declared but no ApprovalRecords fixture")
+		}
+	}
 }
 
 func ctx() context.Context { return context.Background() }
 
-// guard runs fn and fails (without crashing the suite) if it panics.
 func guard(t *testing.T, label string, fn func()) {
 	t.Helper()
 	defer func() {
@@ -73,6 +114,25 @@ func guard(t *testing.T, label string, fn func()) {
 		}
 	}()
 	fn()
+}
+
+func distinct(fx ConformanceFixtures, n int) []RawRecord {
+	recs := make([]RawRecord, 0, n)
+	for i := 0; i < n; i++ {
+		recs = append(recs, fx.DistinctRecord(i))
+	}
+	return recs
+}
+
+func readWith(t *testing.T, a AgentAdapter, in ReadInput) ReadResult {
+	t.Helper()
+	var res ReadResult
+	guard(t, "ReadEvents", func() { res, _ = a.ReadEvents(ctx(), in) })
+	return res
+}
+
+func readAll(t *testing.T, a AgentAdapter, recs []RawRecord) ReadResult {
+	return readWith(t, a, ReadInput{Session: SessionContext{SessionID: "s"}, Records: recs})
 }
 
 func testDescriptor(t *testing.T, factory func(*testing.T) AgentAdapter) {
@@ -95,27 +155,25 @@ func testDescriptor(t *testing.T, factory func(*testing.T) AgentAdapter) {
 
 func testDetect(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	a := factory(t)
-	// Empty context must never produce a confident false positive.
+	// Empty context has NO evidence: it must ALWAYS be unknown AND low confidence.
 	guard(t, "Detect(empty)", func() {
 		id, _ := a.Detect(ctx(), SessionContext{})
-		if id.Confidence >= 0.5 && id.Kind != fx.ExpectDetectKind {
-			t.Errorf("empty context produced confident kind %q (%.2f)", id.Kind, id.Confidence)
+		if id.Kind != "unknown" {
+			t.Errorf("empty context kind=%q, want unknown", id.Kind)
 		}
-		if id.Confidence < 0.5 && id.Kind != "unknown" {
-			t.Errorf("confidence<0.5 must be unknown, got %q", id.Kind)
+		if id.Confidence >= 0.5 {
+			t.Errorf("empty context confidence=%.2f, want < 0.5", id.Confidence)
 		}
 	})
-	if fx.ExpectDetectKind != "" {
-		guard(t, "Detect(fixture)", func() {
-			id, err := a.Detect(ctx(), fx.DetectContext)
-			if err != nil {
-				t.Fatalf("Detect fixture: %v", err)
-			}
-			if id.Kind != fx.ExpectDetectKind {
-				t.Errorf("Detect kind=%q, want %q", id.Kind, fx.ExpectDetectKind)
-			}
-		})
-	}
+	guard(t, "Detect(fixture)", func() {
+		id, err := a.Detect(ctx(), fx.DetectContext)
+		if err != nil {
+			t.Fatalf("Detect fixture: %v", err)
+		}
+		if id.Kind != fx.ExpectDetectKind {
+			t.Errorf("Detect kind=%q, want %q", id.Kind, fx.ExpectDetectKind)
+		}
+	})
 }
 
 func testDiscover(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
@@ -132,8 +190,12 @@ func testDiscover(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confor
 				t.Errorf("invalid correlation %q", s.Correlation)
 			}
 		}
-		// An empty/unknown context must not yield a PROVEN correlation (no invented
-		// terminal ownership).
+		// caller Limit must be honored.
+		limited, _ := a.DiscoverSessions(ctx(), DiscoveryInput{Session: fx.DetectContext, Limit: 1})
+		if len(limited) > 1 {
+			t.Errorf("caller Limit=1 not honored: got %d", len(limited))
+		}
+		// Empty/unknown context must not yield a PROVEN correlation.
 		empty, _ := a.DiscoverSessions(ctx(), DiscoveryInput{Session: SessionContext{}})
 		for _, s := range empty {
 			if s.Correlation == CorrelationProven {
@@ -143,22 +205,9 @@ func testDiscover(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confor
 	})
 }
 
-func readAll(t *testing.T, a AgentAdapter, recs []RawRecord) ReadResult {
-	t.Helper()
-	var res ReadResult
-	guard(t, "ReadEvents", func() {
-		res, _ = a.ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: recs})
-	})
-	return res
-}
-
 func testDeterministic(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	if len(fx.ValidRecords) == 0 {
-		t.Skip("no valid records declared")
-	}
-	a1, a2 := factory(t), factory(t)
-	r1 := readAll(t, a1, fx.ValidRecords)
-	r2 := readAll(t, a2, fx.ValidRecords)
+	r1 := readAll(t, factory(t), fx.ValidRecords)
+	r2 := readAll(t, factory(t), fx.ValidRecords)
 	if toJSON(t, r1.Events) != toJSON(t, r2.Events) {
 		t.Error("normalization is not deterministic across fresh adapters")
 	}
@@ -171,6 +220,9 @@ func testValidate(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confor
 		if err := ValidateEvent(e); err != nil {
 			t.Errorf("emitted event fails ValidateEvent: %v (%+v)", err, e)
 		}
+		if !IsKnownProvenance(Provenance(e.Provenance)) {
+			t.Errorf("event has no valid provenance: %+v", e)
+		}
 		got[e.Type] = true
 	}
 	for _, want := range fx.ExpectTypes {
@@ -180,11 +232,23 @@ func testValidate(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confor
 	}
 }
 
-func testMalformed(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	recs := fx.MalformedRecords
-	if len(recs) == 0 {
-		recs = []RawRecord{{Bytes: []byte("{"), Source: agent.SourceJSONL}, {Bytes: []byte("\x00\xff not json")}, {Bytes: nil}}
+func testOrdering(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	// Distinct records with distinct ordering keys → strictly increasing Seq
+	// (stable ordering, disambiguating equal timestamps).
+	res := readAll(t, factory(t), distinct(fx, 8))
+	for i := 1; i < len(res.Events); i++ {
+		if res.Events[i].Seq <= res.Events[i-1].Seq {
+			t.Errorf("Seq not strictly increasing at %d: %d <= %d", i, res.Events[i].Seq, res.Events[i-1].Seq)
+		}
 	}
+}
+
+func testMalformed(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	recs := append([]RawRecord{
+		{Bytes: []byte("{"), Source: agent.SourceJSONL},
+		{Bytes: []byte("\x00\xff not json")},
+		{Bytes: nil},
+	}, fx.MalformedRecords...)
 	res := readAll(t, factory(t), recs)
 	for _, e := range res.Events {
 		if e.Type != agent.EventUnknown && e.Confidence >= 0.4 {
@@ -196,76 +260,70 @@ func testMalformed(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 	}
 }
 
-func testBounds(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	if len(fx.ValidRecords) == 0 {
-		t.Skip("no valid records declared")
-	}
-	ad := factory(t)
-	// Flood with far more than the cap of a valid record.
-	big := make([]RawRecord, 0, MaxEventsPerRead+50)
-	for i := 0; i < MaxEventsPerRead+50; i++ {
-		big = append(big, fx.ValidRecords[i%len(fx.ValidRecords)])
-	}
-	var res ReadResult
-	guard(t, "ReadEvents(flood)", func() {
-		res, _ = ad.ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: big})
-	})
+func testHardBound(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	// DISTINCT records well beyond the cap: the adapter must truncate to the cap
+	// AND report degraded (never silent).
+	res := readAll(t, factory(t), distinct(fx, MaxEventsPerRead+37))
 	if len(res.Events) > MaxEventsPerRead {
-		t.Errorf("read returned %d events > cap %d", len(res.Events), MaxEventsPerRead)
+		t.Fatalf("read returned %d events > cap %d", len(res.Events), MaxEventsPerRead)
+	}
+	if !res.Degraded.Degraded {
+		t.Error("truncation at the hard cap must set Degraded=true")
 	}
 }
 
-func testDedupCursor(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	if len(fx.ValidRecords) == 0 {
-		t.Skip("no valid records declared")
+func testCallerLimit(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	res := readWith(t, factory(t), ReadInput{Session: SessionContext{SessionID: "s"}, Records: distinct(fx, 20), MaxEvents: 5})
+	if len(res.Events) > 5 {
+		t.Errorf("caller MaxEvents=5 not honored: got %d", len(res.Events))
 	}
+}
+
+func testDedupStableID(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	// The SAME distinct record fed twice must collapse to ONE event. An adapter
+	// that re-issues a fresh id per identical record fails here.
+	r := fx.DistinctRecord(0)
+	res := readAll(t, factory(t), []RawRecord{r, r})
+	if len(res.Events) != 1 {
+		t.Errorf("identical record yielded %d events, want 1 (unstable id / no dedupe)", len(res.Events))
+	}
+}
+
+func testCursorResume(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	ad := factory(t)
-	// Duplicate the same records; IDs must dedupe.
-	dup := append(append([]RawRecord{}, fx.ValidRecords...), fx.ValidRecords...)
-	res := readAll(t, ad, dup)
-	seen := map[string]bool{}
-	for _, e := range res.Events {
-		if seen[e.ID] {
-			t.Errorf("duplicate event id survived: %s", e.ID)
-		}
-		seen[e.ID] = true
+	recs := distinct(fx, 12)
+	res := readAll(t, ad, recs)
+	if err := ValidateCursor(res.NextCursor); err != nil {
+		t.Errorf("NextCursor invalid: %v", err)
 	}
-	// Cursor resume: reading again from the returned cursor with the SAME records
-	// must not re-emit already-seen events.
+	if len(res.NextCursor) > MaxCursorBytes {
+		t.Errorf("NextCursor exceeds MaxCursorBytes: %d", len(res.NextCursor))
+	}
+	// Re-reading the SAME records from the returned cursor must re-emit NOTHING.
 	guard(t, "ReadEvents(resume)", func() {
-		again, _ := ad.ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: fx.ValidRecords, Cursor: res.NextCursor})
-		for _, e := range again.Events {
-			if seen[e.ID] {
-				t.Errorf("cursor resume re-emitted event %s", e.ID)
-			}
+		again, _ := ad.ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: recs, Cursor: res.NextCursor})
+		if len(again.Events) != 0 {
+			t.Errorf("cursor resume re-emitted %d events, want 0", len(again.Events))
 		}
 	})
-}
-
-func testOrdering(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	res := readAll(t, factory(t), fx.ValidRecords)
-	for i := 1; i < len(res.Events); i++ {
-		if res.Events[i].Timestamp.Before(res.Events[i-1].Timestamp) {
-			t.Errorf("events out of chronological order at %d", i)
-		}
+	// A large read must still yield a bounded cursor (no unbounded id accumulation).
+	big := readAll(t, factory(t), distinct(fx, MaxEventsPerRead))
+	if len(big.NextCursor) > MaxCursorBytes {
+		t.Errorf("cursor grew unbounded on a large read: %d bytes", len(big.NextCursor))
 	}
 }
 
 func testNormalize(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	ad := factory(t)
-	// Built from fragments so no literal credential appears in source (this proves
-	// redaction, it is not a real key).
 	secret := "sk" + "-SUPERSECRETdeadbeef0123456789"
 	rec := RawRecord{Bytes: []byte(`{"x":"` + secret + `","p":"/Users/victim/secret"}`), Source: agent.SourceJSONL, Provenance: ProvenanceNativeLog}
 	guard(t, "NormalizeEvent(secret)", func() {
 		ev, deg := ad.NormalizeEvent(ctx(), rec)
 		if ev.Type != agent.EventUnknown {
-			// If the adapter recognizes it, the event must still be contract-valid…
 			if err := ValidateEvent(ev); err != nil {
 				t.Errorf("normalized event invalid: %v", err)
 			}
 		}
-		// …and must never surface the raw secret or absolute path in Text/metadata.
 		if ContainsSensitive(ev.Text) {
 			t.Error("normalized event Text leaks a secret/path")
 		}
@@ -284,33 +342,47 @@ func testNormalize(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 
 func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	ad := factory(t)
-	// Default: no events → no approvals.
+	// Empty → no approvals.
 	guard(t, "DetectApproval(empty)", func() {
-		got, _ := ad.DetectApproval(ctx(), nil)
-		if len(got) != 0 {
+		if got, _ := ad.DetectApproval(ctx(), nil); len(got) != 0 {
 			t.Errorf("empty events produced %d approvals, want 0", len(got))
 		}
 	})
-	if len(fx.ApprovalRecords) > 0 {
-		res := readAll(t, factory(t), fx.ApprovalRecords)
-		guard(t, "DetectApproval(positive)", func() {
-			got, _ := ad.DetectApproval(ctx(), res.Events)
-			if len(got) == 0 {
-				t.Error("approval-positive fixture produced no approval")
-			}
-			for _, ap := range got {
-				if ap.ID == "" || ap.Status == "" {
-					t.Errorf("approval missing id/status: %+v", ap)
-				}
-			}
-		})
+	// GENERIC adversarial cases fed straight to DetectApproval — independent of the
+	// adapter's own fixtures. A conformant DetectApproval must return 0 for every
+	// one: a spoofable/advisory/low-confidence/near-miss signal is never an approval.
+	adversarial := []AgentEvent{
+		{ID: "x1", SessionID: "s", Type: agent.EventApprovalRequested, Confidence: 0.99, Source: agent.SourceScreen, Provenance: string(ProvenancePromptHint)},
+		{ID: "x2", SessionID: "s", Type: agent.EventApprovalRequested, Confidence: 0.99, Source: agent.SourceScreen, Provenance: string(ProvenanceHeuristic)},
+		{ID: "x3", SessionID: "s", Type: agent.EventApprovalRequested, Confidence: 0.99, Source: agent.SourceJSONL, Provenance: string(ProvenanceUnknown)},
+		{ID: "x4", SessionID: "s", Type: agent.EventApprovalRequested, Confidence: 0.99, Source: agent.SourceScreen, Provenance: string(ProvenancePTYStructural)},
+		{ID: "x5", SessionID: "s", Type: agent.EventAssistantMessage, Confidence: 0.99, Source: agent.SourceJSONL, Provenance: string(ProvenanceNativeLog), Text: "should I approve?"},
+		{ID: "x6", SessionID: "s", Type: agent.EventApprovalRequested, Confidence: 0.30, Source: agent.SourceJSONL, Provenance: string(ProvenanceNativeLog)},
 	}
+	guard(t, "DetectApproval(adversarial)", func() {
+		if got, _ := ad.DetectApproval(ctx(), adversarial); len(got) != 0 {
+			t.Errorf("adversarial events produced %d approvals, want 0", len(got))
+		}
+	})
+	// Positive fixture → ≥1 approval, well-formed.
+	res := readAll(t, factory(t), fx.ApprovalRecords)
+	guard(t, "DetectApproval(positive)", func() {
+		got, _ := ad.DetectApproval(ctx(), res.Events)
+		if len(got) == 0 {
+			t.Error("approval-positive fixture produced no approval")
+		}
+		for _, ap := range got {
+			if ap.ID == "" || ap.Status == "" {
+				t.Errorf("approval missing id/status: %+v", ap)
+			}
+		}
+	})
+	// Optional adapter near-miss.
 	if len(fx.NearMissRecords) > 0 {
-		res := readAll(t, factory(t), fx.NearMissRecords)
+		nm := readAll(t, factory(t), fx.NearMissRecords)
 		guard(t, "DetectApproval(near-miss)", func() {
-			got, _ := ad.DetectApproval(ctx(), res.Events)
-			if len(got) != 0 {
-				t.Errorf("adversarial near-miss produced %d approvals, want 0", len(got))
+			if got, _ := ad.DetectApproval(ctx(), nm.Events); len(got) != 0 {
+				t.Errorf("adapter near-miss produced %d approvals, want 0", len(got))
 			}
 		})
 	}
@@ -318,34 +390,40 @@ func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 
 func testStatus(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
 	ad := factory(t)
-	// Empty evidence → unknown/degraded fallback, never a fabricated active state.
 	guard(t, "GetStatus(empty)", func() {
 		res, _ := ad.GetStatus(ctx(), StatusInput{Session: SessionContext{SessionID: "s"}})
 		if !IsKnownStatus(res.Status) {
 			t.Errorf("status %q outside vocabulary", res.Status)
 		}
+		if terminalStatuses[res.Status] && res.Confidence >= 0.5 {
+			t.Error("empty evidence produced a confident terminal status")
+		}
 	})
-	// Precedence: a strong runtime signal must beat a conflicting heuristic one.
+	// Precedence: strong runtime beats a higher-confidence heuristic.
 	guard(t, "GetStatus(precedence)", func() {
-		res, _ := ad.GetStatus(ctx(), StatusInput{
-			Session: SessionContext{SessionID: "s"},
-			Evidence: []StatusEvidence{
-				{Status: agent.StatusIdle, Provenance: ProvenanceHeuristic, Confidence: 0.9},
-				{Status: agent.StatusWorking, Provenance: ProvenanceRuntime, Confidence: 0.6},
-			},
-		})
+		res, _ := ad.GetStatus(ctx(), StatusInput{Session: SessionContext{SessionID: "s"}, Evidence: []StatusEvidence{
+			{Status: agent.StatusIdle, Provenance: ProvenanceHeuristic, Confidence: 0.9},
+			{Status: agent.StatusWorking, Provenance: ProvenanceRuntime, Confidence: 0.6},
+		}})
 		if res.Status != agent.StatusWorking {
-			t.Errorf("precedence failed: got %q, want working (runtime > heuristic)", res.Status)
+			t.Errorf("precedence failed: got %q, want working", res.Status)
+		}
+	})
+	// Advisory-alone policy: a prompt-hint cannot authoritatively declare completed.
+	guard(t, "GetStatus(advisory-terminal)", func() {
+		res, _ := ad.GetStatus(ctx(), StatusInput{Session: SessionContext{SessionID: "s"}, Evidence: []StatusEvidence{
+			{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.99},
+		}})
+		if res.Status == agent.StatusCompleted && res.Confidence >= 0.75 {
+			t.Errorf("advisory prompt-hint asserted completed at high confidence (%.2f)", res.Confidence)
 		}
 	})
 }
 
 func testDiagnosticsClean(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	ad := factory(t)
-	// Fragmented so no literal credential appears in source.
 	hostile := "garbage /Users/x/tok " + "sk" + "-abc123456789012345"
-	recs := append(append([]RawRecord{}, fx.MalformedRecords...), RawRecord{Bytes: []byte(hostile)})
-	res := readAll(t, ad, recs)
+	recs := append([]RawRecord{{Bytes: []byte(hostile)}}, fx.MalformedRecords...)
+	res := readAll(t, factory(t), recs)
 	for _, d := range res.Degraded.Diagnostics {
 		if ContainsSensitive(d) {
 			t.Errorf("read diagnostics leak sensitive content: %q", d)
@@ -356,12 +434,31 @@ func testDiagnosticsClean(t *testing.T, factory func(*testing.T) AgentAdapter, f
 	}
 }
 
+func testFailureIsolation(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	failing := fx.FailingFactory(t)
+	var res ReadResult
+	var err error
+	guard(t, "ReadEvents(failing)", func() {
+		res, err = failing.ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: fx.ValidRecords})
+	})
+	if err != nil {
+		t.Fatalf("failing adapter must degrade, not error: %v", err)
+	}
+	if !res.Degraded.Degraded || len(res.Events) != 0 {
+		t.Errorf("failing adapter must return degraded + no events, got %+v", res)
+	}
+	// A healthy adapter is unaffected by the failing one.
+	ok := readAll(t, factory(t), fx.ValidRecords)
+	if len(ok.Events) == 0 {
+		t.Error("healthy adapter affected by a separate failing adapter")
+	}
+}
+
 func toJSON(t *testing.T, v any) string {
 	t.Helper()
-	// Stable field order for events by sorting on ID before marshaling.
 	if evs, ok := v.([]AgentEvent); ok {
 		cp := append([]AgentEvent{}, evs...)
-		sort.SliceStable(cp, func(i, j int) bool { return cp[i].ID < cp[j].ID })
+		sort.SliceStable(cp, func(i, j int) bool { return cp[i].Seq < cp[j].Seq })
 		v = cp
 	}
 	b, err := json.Marshal(v)
