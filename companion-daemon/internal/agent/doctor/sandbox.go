@@ -3,72 +3,56 @@ package doctor
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
 
-// ── Patch bounds ──
-
 const (
-	// MaxPatchBytes is the maximum total size of a unified patch (1 MiB).
-	MaxPatchBytes = 1 << 20
-	// MaxChangedFiles is the maximum number of files a patch may touch.
+	MaxPatchBytes   = 1 << 20 // 1 MiB
 	MaxChangedFiles = 32
 )
 
-// ── Patch parse errors ──
-
 var (
-	ErrPatchTooLarge      = errors.New("patch exceeds MaxPatchBytes")
-	ErrTooManyFiles       = errors.New("patch touches too many files")
-	ErrBinaryPatch        = errors.New("binary patch rejected")
-	ErrSymlinkEscape      = errors.New("symlink escape detected")
-	ErrHardlinkEscape     = errors.New("hard-link escape detected")
-	ErrAbsolutePath       = errors.New("absolute path rejected")
-	ErrParentRelative     = errors.New("parent-relative path rejected")
-	ErrExecutableMode     = errors.New("executable mode change rejected")
-	ErrRenameOutside      = errors.New("rename outside allowed scope rejected")
-	ErrDeleteOutside      = errors.New("delete outside allowed scope rejected")
-	ErrUnsupportedOp      = errors.New("unsupported patch operation")
-	ErrOutsideAllowlist   = errors.New("file outside write allowlist")
-	ErrDeniedPath         = errors.New("file is on the immutable deny list")
-	ErrAcceptedAdapter    = errors.New("modification to accepted adapter version rejected")
-	ErrContractModify     = errors.New("T0 contract or harness modification rejected")
+	ErrPatchTooLarge       = errors.New("patch exceeds MaxPatchBytes")
+	ErrTooManyFiles        = errors.New("patch touches too many files")
+	ErrEmptyPatch          = errors.New("empty patch rejected")
+	ErrMalformedPatch      = errors.New("malformed patch — no valid diff headers")
+	ErrBinaryPatch         = errors.New("binary patch rejected")
+	ErrSymlinkEscape       = errors.New("symlink escape detected")
+	ErrHardlinkEscape      = errors.New("hard-link escape detected")
+	ErrAbsolutePath        = errors.New("absolute path rejected")
+	ErrParentRelative      = errors.New("parent-relative path rejected")
+	ErrExecutableMode      = errors.New("executable mode change rejected")
+	ErrRenameRejected      = errors.New("rename rejected")
+	ErrDeleteRejected      = errors.New("delete rejected")
+	ErrOutsideAllowlist    = errors.New("file outside write allowlist")
+	ErrDeniedPath          = errors.New("file is on the immutable deny list")
+	ErrAcceptedAdapter     = errors.New("modification to accepted adapter version rejected")
+	ErrContractModify      = errors.New("T0 contract or harness modification rejected")
 )
 
 // ── AllowList ──
 
-// AllowList restricts write access for a repair operation. The Doctor owns
-// all allowlists — callers cannot inject paths.
 type AllowList struct {
-	WritePrefixes []string // cleaned directory prefixes or file paths
+	WritePrefixes []string
 }
 
 // ── Sandbox ──
 
-// Sandbox enforces the filesystem allowlist, deny list, and hardening rules
-// during patch validation. It parses real unified diffs and rejects any
-// operation that violates containment, accepted-adapter immutability, or
-// the T0 contract boundary.
 type Sandbox struct {
 	allowList AllowList
 }
 
-// NewSandbox builds a Sandbox for the given allowlist.
-func NewSandbox(al AllowList) *Sandbox {
-	return &Sandbox{allowList: al}
-}
+func NewSandbox(al AllowList) *Sandbox { return &Sandbox{allowList: al} }
 
 // ── Doctor-owned allowlists ──
 
-// acceptedAdapterPaths are the immutable accepted adapter subtrees. D1 must
-// never modify these.
 var acceptedAdapterPaths = []string{
 	"internal/agent/adapters/claude/v2_1_202",
 	"internal/agent/adapters/codex/v0_144_1",
 }
 
-// contractPaths are the immutable T0 contract and harness paths.
 var contractPaths = []string{
 	"internal/agent/contract",
 	"internal/agent/models.go",
@@ -77,7 +61,6 @@ var contractPaths = []string{
 	"internal/agent/parser.go",
 }
 
-// denyListPaths are paths the repair agent is explicitly barred from.
 var denyListPaths = []string{
 	"internal/term",
 	"internal/mux",
@@ -86,39 +69,40 @@ var denyListPaths = []string{
 	"docs",
 }
 
-// ProviderAllowList returns the Doctor-owned allowlist for a given provider
-// and new target version. Only files under that subtree may be written.
 func ProviderAllowList(provider, targetVersion string) AllowList {
 	prefix := filepath.Join("internal", "agent", "adapters", provider, targetVersion)
-	return AllowList{
-		WritePrefixes: []string{prefix + "/", prefix},
-	}
+	return AllowList{WritePrefixes: []string{prefix + "/", prefix}}
 }
 
-// ── Patch validation ──
+// ── PatchFile ──
 
-// PatchFile represents one changed file extracted from a unified diff.
 type PatchFile struct {
-	Path     string // relative path from diff header
-	OldMode  string // old file mode, if present
-	NewMode  string // new file mode, if present
-	IsNew    bool   // "new file" mode
-	IsDelete bool   // "deleted file" mode
-	IsRename bool   // "renamed" mode
-	IsBinary bool   // "Binary files ... differ" marker
+	Path     string
+	OldMode  string
+	NewMode  string
+	IsNew    bool
+	IsDelete bool
+	IsRename bool
+	IsBinary bool
 }
 
-// ValidatePatch parses a unified diff and validates every changed file
-// against the sandbox containment rules. Returns the parsed PatchFiles
-// on success, or an error describing the first rejection.
+// ── ValidatePatch ──
+
 func (s *Sandbox) ValidatePatch(patch []byte, provider, targetVersion string) ([]PatchFile, error) {
-	// Size check.
+	if len(patch) == 0 {
+		return nil, ErrEmptyPatch
+	}
 	if len(patch) > MaxPatchBytes {
 		return nil, ErrPatchTooLarge
 	}
 
-	files := parsePatchFiles(patch)
-
+	files, err := parsePatchFiles(patch)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, ErrMalformedPatch
+	}
 	if len(files) > MaxChangedFiles {
 		return nil, fmt.Errorf("%w: %d files (max %d)", ErrTooManyFiles, len(files), MaxChangedFiles)
 	}
@@ -128,65 +112,51 @@ func (s *Sandbox) ValidatePatch(patch []byte, provider, targetVersion string) ([
 			return nil, err
 		}
 	}
-
 	return files, nil
 }
 
-// validateFile applies all containment rules to a single patch file.
-// Immutable security boundaries (deny list, accepted adapters, T0 contract)
-// are checked BEFORE the allowlist so they produce specific rejection errors
-// rather than generic "outside allowlist" messages.
 func (s *Sandbox) validateFile(f PatchFile, provider, targetVersion string) error {
-	// Harden the path first.
-	cleaned, err := HardenedPath(f.Path)
+	cleaned, err := HardenedPath(".", f.Path)
 	if err != nil {
 		return err
 	}
 
-	// Binary patches rejected.
+	// REJECT: binary always.
 	if f.IsBinary {
 		return fmt.Errorf("%w: %s", ErrBinaryPatch, cleaned)
 	}
 
-	// Executable mode change rejected.
-	if modeChangeCreatesExecutable(f.OldMode, f.NewMode) {
+	// REJECT: rename always.
+	if f.IsRename {
+		return fmt.Errorf("%w: %s", ErrRenameRejected, cleaned)
+	}
+
+	// REJECT: delete always.
+	if f.IsDelete {
+		return fmt.Errorf("%w: %s", ErrDeleteRejected, cleaned)
+	}
+
+	// REJECT: new file with executable mode.
+	if f.IsNew && hasExecBit(f.NewMode) {
+		return fmt.Errorf("%w: %s (new file mode %s)", ErrExecutableMode, cleaned, f.NewMode)
+	}
+
+	// REJECT: existing file mode change adding executable bit.
+	if !f.IsNew && modeChangeCreatesExecutable(f.OldMode, f.NewMode) {
 		return fmt.Errorf("%w: %s (%s → %s)", ErrExecutableMode, cleaned, f.OldMode, f.NewMode)
 	}
 
-	// Immutable security boundaries checked FIRST (before allowlist).
-	// Must not be on the immutable deny list.
+	// Security boundaries BEFORE allowlist.
 	if isDeniedPath(cleaned) {
 		return fmt.Errorf("%w: %s", ErrDeniedPath, cleaned)
 	}
-
-	// Must not touch accepted adapter versions.
 	if isAcceptedAdapterPath(cleaned) {
 		return fmt.Errorf("%w: %s", ErrAcceptedAdapter, cleaned)
 	}
-
-	// Must not touch T0 contract.
 	if isContractPath(cleaned) {
 		return fmt.Errorf("%w: %s", ErrContractModify, cleaned)
 	}
 
-	// Delete must be within allowed scope.
-	if f.IsDelete {
-		if !s.isAllowedWrite(cleaned, provider, targetVersion) {
-			return fmt.Errorf("%w: %s", ErrDeleteOutside, cleaned)
-		}
-		return nil
-	}
-
-	// Rename — both old and new must be within allowed scope.
-	if f.IsRename {
-		if !s.isAllowedWrite(cleaned, provider, targetVersion) {
-			return fmt.Errorf("%w: %s", ErrRenameOutside, cleaned)
-		}
-		return nil
-	}
-
-	// Must be within write allowlist (checked LAST so security boundaries
-	// produce more specific errors).
 	if !s.isAllowedWrite(cleaned, provider, targetVersion) {
 		return fmt.Errorf("%w: %s", ErrOutsideAllowlist, cleaned)
 	}
@@ -194,20 +164,12 @@ func (s *Sandbox) validateFile(f PatchFile, provider, targetVersion string) erro
 	return nil
 }
 
-// isAllowedWrite checks whether a cleaned path is within the allowlist for
-// the given provider and target version.
 func (s *Sandbox) isAllowedWrite(cleaned, provider, targetVersion string) bool {
-	allowedPrefix := filepath.Join("internal", "agent", "adapters", provider, targetVersion)
-	allowedPrefixClean := filepath.Clean(allowedPrefix)
-
-	if cleaned == allowedPrefixClean {
+	allowed := filepath.Join("internal", "agent", "adapters", provider, targetVersion)
+	ac := filepath.Clean(allowed)
+	if cleaned == ac || strings.HasPrefix(cleaned, ac+"/") {
 		return true
 	}
-	if strings.HasPrefix(cleaned, allowedPrefixClean+"/") {
-		return true
-	}
-
-	// Also check explicit write prefixes.
 	for _, prefix := range s.allowList.WritePrefixes {
 		cp := filepath.Clean(prefix)
 		if cleaned == cp || strings.HasPrefix(cleaned, cp+"/") {
@@ -219,15 +181,18 @@ func (s *Sandbox) isAllowedWrite(cleaned, provider, targetVersion string) bool {
 
 // ── parsePatchFiles ──
 
-// parsePatchFiles extracts file paths and modes from a unified diff.
-// It recognizes "diff --git", "---", "+++", "new file mode", "deleted file
-// mode", "rename from/to", "Binary files ... differ" and similar headers.
-func parsePatchFiles(patch []byte) []PatchFile {
-	lines := strings.Split(string(patch), "\n")
+func parsePatchFiles(patch []byte) ([]PatchFile, error) {
+	text := string(patch)
+	if strings.TrimSpace(text) == "" {
+		return nil, ErrEmptyPatch
+	}
+
+	lines := strings.Split(text, "\n")
 	var files []PatchFile
 	var current *PatchFile
+	hasHeader := false
 
-	flushCurrent := func() {
+	flush := func() {
 		if current != nil && current.Path != "" {
 			files = append(files, *current)
 		}
@@ -238,17 +203,10 @@ func parsePatchFiles(patch []byte) []PatchFile {
 		line = strings.TrimRight(line, "\r")
 
 		if strings.HasPrefix(line, "diff --git ") {
-			flushCurrent()
+			flush()
+			hasHeader = true
 			current = &PatchFile{}
-			// diff --git a/<path> b/<path>
-			parts := strings.Fields(line)
-			if len(parts) >= 4 {
-				// "b/<path>" is the fourth token
-				bPath := parts[3]
-				if strings.HasPrefix(bPath, "b/") {
-					current.Path = bPath[2:]
-				}
-			}
+			current.Path = parseDiffGitPath(line)
 			continue
 		}
 
@@ -258,85 +216,194 @@ func parsePatchFiles(patch []byte) []PatchFile {
 
 		switch {
 		case strings.HasPrefix(line, "new file mode "):
-			current.OldMode = "" // was not present
 			current.NewMode = strings.TrimPrefix(line, "new file mode ")
 			current.IsNew = true
 		case strings.HasPrefix(line, "deleted file mode "):
 			current.OldMode = strings.TrimPrefix(line, "deleted file mode ")
-			current.NewMode = ""
 			current.IsDelete = true
 		case strings.HasPrefix(line, "old mode ") && current.OldMode == "":
 			current.OldMode = strings.TrimPrefix(line, "old mode ")
-		case strings.HasPrefix(line, "new mode "):
+		case strings.HasPrefix(line, "new mode ") && current.NewMode == "":
 			current.NewMode = strings.TrimPrefix(line, "new mode ")
-		case strings.HasPrefix(line, "rename from "):
+		case strings.HasPrefix(line, "rename from ") || strings.HasPrefix(line, "rename to "):
 			current.IsRename = true
 		case strings.HasPrefix(line, "Binary files "):
 			current.IsBinary = true
 		case strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ "):
-			// Extract path from --- a/<path> or +++ b/<path>
-			if current.Path == "" && strings.HasPrefix(line, "+++ b/") {
-				current.Path = line[6:]
+			if current.Path == "" {
+				if p := parseTriplePlusPath(line); p != "" {
+					current.Path = p
+				}
 			}
 		}
 	}
-	flushCurrent()
-	return files
+	flush()
+
+	if !hasHeader {
+		return nil, ErrMalformedPatch
+	}
+	return files, nil
 }
 
-// ── HardenedPath ──
+// parseDiffGitPath extracts the "b/" path from "diff --git a/<path> b/<path>".
+// Handles git-style quoted paths (paths starting/ending with ").
+func parseDiffGitPath(line string) string {
+	rest := strings.TrimPrefix(line, "diff --git ")
+	parts := parseGitDiffPaths(rest)
+	if len(parts) >= 2 {
+		return parts[1] // "b/" path
+	}
+	// Fallback: space-split
+	fields := strings.Fields(rest)
+	if len(fields) >= 4 && strings.HasPrefix(fields[3], "b/") {
+		return fields[3][2:]
+	}
+	return ""
+}
 
-// HardenedPath validates and cleans a file path for sandbox containment.
-// Rejects: absolute paths, parent-relative segments, symlink indicators.
-func HardenedPath(p string) (string, error) {
-	if p == "" {
+// parseGitDiffPaths splits "a/<path> b/<path>" handling quoted paths.
+func parseGitDiffPaths(s string) []string {
+	var result []string
+	for len(s) > 0 {
+		s = strings.TrimLeft(s, " \t")
+		if len(s) == 0 {
+			break
+		}
+		if s[0] == '"' {
+			path, rest := parseQuotedPath(s[1:])
+			result = append(result, path)
+			s = rest
+		} else {
+			end := strings.IndexAny(s, " \t")
+			if end < 0 {
+				result = append(result, s)
+				break
+			}
+			result = append(result, s[:end])
+			s = s[end:]
+		}
+	}
+	// Strip "a/" and "b/" prefixes if present.
+	for i, p := range result {
+		if strings.HasPrefix(p, "a/") {
+			result[i] = p[2:]
+		} else if strings.HasPrefix(p, "b/") {
+			result[i] = p[2:]
+		}
+	}
+	return result
+}
+
+// parseQuotedPath parses a git-quoted path starting after the opening ".
+func parseQuotedPath(s string) (path string, rest string) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			return b.String(), s[i+1:]
+		}
+		if c == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			switch next {
+			case '\\', '"':
+				b.WriteByte(next)
+				i++
+			case 't':
+				b.WriteByte('\t')
+				i++
+			case 'n':
+				b.WriteByte('\n')
+				i++
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(next)
+				i++
+			}
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), ""
+}
+
+// parseTriplePlusPath extracts the path from "+++ b/<path>".
+func parseTriplePlusPath(line string) string {
+	rest := strings.TrimPrefix(line, "+++ b/")
+	if rest == line {
+		// Try without "b/" prefix.
+		rest = strings.TrimPrefix(line, "+++ ")
+	}
+	// Strip trailing tab and timestamp.
+	if idx := strings.IndexByte(rest, '\t'); idx >= 0 {
+		rest = rest[:idx]
+	}
+	return rest
+}
+
+// ── HardenedPath with actual Lstat ──
+
+func HardenedPath(repoRoot, relPath string) (string, error) {
+	if relPath == "" {
 		return "", errors.New("empty path")
 	}
-	if filepath.IsAbs(p) {
-		return "", fmt.Errorf("%w: %s", ErrAbsolutePath, p)
+	if filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("%w: %s", ErrAbsolutePath, relPath)
 	}
 
-	// Reject parent-relative segments.
-	cleaned := filepath.Clean(p)
+	cleaned := filepath.Clean(relPath)
 	if strings.HasPrefix(cleaned, "..") || strings.Contains(cleaned, "/../") {
-		return "", fmt.Errorf("%w: %s", ErrParentRelative, p)
+		return "", fmt.Errorf("%w: %s", ErrParentRelative, relPath)
 	}
 
-	// Reject any component that looks like a symlink indicator.
-	// (In production, this would call os.Lstat on each component on the
-	// actual filesystem. For D1, we validate that no component is a known
-	// escape pattern.)
-	for _, part := range strings.Split(cleaned, "/") {
-		if part == ".." {
-			return "", fmt.Errorf("%w: %s", ErrParentRelative, p)
+	// Verify each component against the filesystem with Lstat.
+	components := strings.Split(cleaned, "/")
+	accum := repoRoot
+	for i, comp := range components {
+		if comp == "" || comp == "." {
+			continue
 		}
-		// Reject paths that contain symlink-ish markers.
-		if strings.Contains(part, "->") || strings.HasPrefix(part, "@") {
-			return "", fmt.Errorf("%w: %s", ErrSymlinkEscape, p)
+		if comp == ".." {
+			return "", fmt.Errorf("%w: %s", ErrParentRelative, relPath)
 		}
+		accum = filepath.Join(accum, comp)
+		_ = i // checked for symlink below
+
+		fi, err := os.Lstat(accum)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Non-existent component: allowed for new files/dirs.
+				continue
+			}
+			return "", fmt.Errorf("cannot stat %s: %w", comp, err)
+		}
+
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%w: %s is a symlink", ErrSymlinkEscape, accum)
+		}
+		// intermediate component exists and is not a symlink — ok
 	}
 
 	return cleaned, nil
 }
 
-// ── Mode check ──
+// ── Mode checks ──
 
-// modeChangeCreatesExecutable reports whether a mode change adds executable
-// bits where there were none.
+func hasExecBit(mode string) bool {
+	return len(mode) >= 4 && strings.Contains(mode[len(mode)-3:], "7") ||
+		len(mode) >= 4 && strings.Contains(mode[len(mode)-3:], "5") ||
+		len(mode) >= 4 && strings.Contains(mode[len(mode)-3:], "3") ||
+		len(mode) >= 4 && strings.Contains(mode[len(mode)-3:], "1")
+}
+
 func modeChangeCreatesExecutable(oldMode, newMode string) bool {
 	if oldMode == "" || newMode == "" {
 		return false
 	}
-	// If old mode didn't have execute bit set (e.g. 100644) and new mode
-	// does (e.g. 100755), that's an executable mode change.
-	oldExec := len(oldMode) >= 4 && oldMode[len(oldMode)-3] == '7'
-	newExec := len(newMode) >= 4 && newMode[len(newMode)-3] == '7'
-	return !oldExec && newExec
+	return !hasExecBit(oldMode) && hasExecBit(newMode)
 }
 
-// ── Path category checks ──
+// ── Path predicates ──
 
-// isDeniedPath reports whether a cleaned path falls within the immutable deny list.
 func isDeniedPath(cleaned string) bool {
 	for _, denied := range denyListPaths {
 		cd := filepath.Clean(denied)
@@ -347,8 +414,6 @@ func isDeniedPath(cleaned string) bool {
 	return false
 }
 
-// isAcceptedAdapterPath reports whether a cleaned path is within an accepted
-// (immutable) adapter version subtree.
 func isAcceptedAdapterPath(cleaned string) bool {
 	for _, accepted := range acceptedAdapterPaths {
 		ca := filepath.Clean(accepted)
@@ -359,7 +424,6 @@ func isAcceptedAdapterPath(cleaned string) bool {
 	return false
 }
 
-// isContractPath reports whether a cleaned path is within the T0 contract subtree.
 func isContractPath(cleaned string) bool {
 	for _, cp := range contractPaths {
 		cc := filepath.Clean(cp)
@@ -370,25 +434,12 @@ func isContractPath(cleaned string) bool {
 	return false
 }
 
-// ── AdapterAllowList ──
+// ── Public helpers ──
 
-// AdapterAllowList returns the canonical read+write allowlist for a specific
-// adapter under internal/agent/adapters/<provider>/<version>/.
-func AdapterAllowList(provider, version string) AllowList {
-	adapterDir := filepath.Join("internal", "agent", "adapters", provider, version)
-	return AllowList{
-		WritePrefixes: []string{adapterDir + "/", adapterDir},
-	}
-}
+func DeniedPath(cleaned string) bool { return isDeniedPath(cleaned) }
 
-// DenyList returns a copy of the immutable deny list for display.
 func DenyList() []string {
 	out := make([]string, len(denyListPaths))
 	copy(out, denyListPaths)
 	return out
-}
-
-// DeniedPath reports whether a cleaned path falls within the deny list.
-func DeniedPath(cleaned string) bool {
-	return isDeniedPath(cleaned)
 }

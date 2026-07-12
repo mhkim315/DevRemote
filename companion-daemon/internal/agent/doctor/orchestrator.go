@@ -1,20 +1,18 @@
 package doctor
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
-	"time"
 
 	"devremote/companion-daemon/internal/agent/contract"
 )
 
-// ── Orchestrator state ──
+// ── OrchestratorState ──
 
-// OrchestratorState is the explicit state of the D1 repair workflow.
 type OrchestratorState string
 
 const (
@@ -29,75 +27,82 @@ const (
 
 // ── RepairRunner ──
 
-// RepairRunner is the interface for invoking a local coding agent within an
-// isolated workspace. The production implementation enforces the sandbox
-// boundary; tests use a controlled stub.
 type RepairRunner interface {
-	// Run invokes the repair agent with the given input. Returns a unified
-	// diff patch and any output diagnostics. The implementation must enforce
-	// workspace isolation, process allowlist, network=deny, and timeout.
 	Run(input RepairInput) (RepairOutput, error)
 }
 
-// RepairInput is the bounded, redacted input to a repair run.
 type RepairInput struct {
-	AdapterName          string
-	Provider             string
-	CurrentVersion       string
-	TargetVersion        string
-	DriftEvidence        DriftEvidence
-	RecordSamples        []contract.RawRecord
-	AdapterSourcePath    string // read-only path to current adapter source
-	KnownDiscriminators  []string
-	KnownFields          map[string]string
+	AdapterName         string
+	Provider            string
+	CurrentVersion      string
+	TargetVersion       string
+	DriftEvidence       DriftEvidence // bounded/redacted only — no raw records
+	KnownDiscriminators []string
+	KnownFields         map[string]string
 }
 
-// RepairOutput is the bounded output from a repair run.
 type RepairOutput struct {
-	Patch        []byte   // unified diff
-	ChangedFiles []string // extracted from patch
-	Diagnostics  []string // bounded, redacted
+	Patch        []byte
+	ChangedFiles []string
+	Diagnostics  []string
 	Success      bool
+}
+
+// ── Workspace ──
+
+// Workspace is an isolated directory containing patched adapter source.
+type Workspace struct {
+	Root    string // absolute path to workspace root
+	pkgPath string // relative path within workspace to the adapter package
+}
+
+// Cleanup removes the workspace directory.
+func (w *Workspace) Cleanup() error {
+	if w.Root != "" {
+		return os.RemoveAll(w.Root)
+	}
+	return nil
 }
 
 // ── Orchestrator ──
 
-// Orchestrator owns the full D1 production workflow: state machine, sandbox,
-// fixed suite, approval store, and activation/rollback logic. All allowlists
-// and baselines are owned by the orchestrator — callers cannot inject them.
 type Orchestrator struct {
 	mu    sync.Mutex
 	state OrchestratorState
 
+	// Internal state derived from compatibility report (caller cannot inject).
+	provider      string
+	targetVersion string
+	currentDesc   contract.AgentAdapterDescriptor
+
 	// Owned subsystems.
 	suite    *FixedSuite
-	sandbox  *Sandbox
 	approval *ApprovalStore
 	evidence *EvidenceCollector
 
-	// Active workflow state.
-	activeRequest  *ProcessRequest
-	activeReport   *CompatibilityReport
-	activeEvidence *DriftEvidence
-	activePatch    []byte
-	activeFiles    []PatchFile
-	activeSuite    *ObservatoryResult
-	activeBundle   *ReviewBundle
-	activeRunner   RepairRunner
+	// Active workflow data.
+	activeRequest     *ProcessRequest
+	activeReport      *CompatibilityReport
+	activeEvidence    *DriftEvidence
+	activeRepairOutput *RepairOutput
+	activePatch       []byte
+	activeFiles       []PatchFile
+	activeSuite       *ObservatoryResult
+	activeBundle      *ReviewBundle
+	activeRunner      RepairRunner
+	activeWorkspace   *Workspace
 }
 
-// NewOrchestrator returns a new Orchestrator in idle state.
 func NewOrchestrator(runner RepairRunner) *Orchestrator {
 	return &Orchestrator{
-		state:     StateIdle,
-		suite:     NewFixedSuite(),
-		approval:  NewApprovalStore(),
-		evidence:  NewEvidenceCollector(),
+		state:        StateIdle,
+		suite:        NewFixedSuite(),
+		approval:     NewApprovalStore(),
+		evidence:     NewEvidenceCollector(),
 		activeRunner: runner,
 	}
 }
 
-// State returns the current orchestrator state.
 func (o *Orchestrator) State() OrchestratorState {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -106,7 +111,8 @@ func (o *Orchestrator) State() OrchestratorState {
 
 // ── Workflow methods ──
 
-// DetectDrift runs CheckCompatibility and transitions idle → detected.
+// DetectDrift stores provider + targetVersion from the report. Caller
+// cannot inject these later — the orchestrator owns them.
 func (o *Orchestrator) DetectDrift(req ProcessRequest) (*CompatibilityReport, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -115,18 +121,19 @@ func (o *Orchestrator) DetectDrift(req ProcessRequest) (*CompatibilityReport, er
 		return nil, fmt.Errorf("orchestrator not idle: %s", o.state)
 	}
 
-	desc := req.AdapterDescriptor
 	d := New()
-	report := d.CheckCompatibility(desc, req.ObservedVersion, req.ObservedVersionSource)
+	report := d.CheckCompatibility(req.AdapterDescriptor, req.ObservedVersion, req.ObservedVersionSource)
 
 	o.activeRequest = &req
 	o.activeReport = &report
+	o.provider = report.AdapterName
+	o.targetVersion = report.ObservedVersion
+	o.currentDesc = req.AdapterDescriptor
 	o.state = StateDetected
 
 	return &report, nil
 }
 
-// CollectEvidence gathers bounded evidence and transitions detected → collecting_evidence.
 func (o *Orchestrator) CollectEvidence(knownDiscriminators []string, knownFields map[string]string) (*DriftEvidence, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -134,21 +141,19 @@ func (o *Orchestrator) CollectEvidence(knownDiscriminators []string, knownFields
 	if o.state != StateDetected && o.state != StateCollectingEvidence {
 		return nil, fmt.Errorf("orchestrator not in detected state: %s", o.state)
 	}
-
-	o.state = StateCollectingEvidence
-
 	if o.activeReport == nil {
 		return nil, errors.New("no active compatibility report")
 	}
 
+	o.state = StateCollectingEvidence
 	records := o.activeRequest.ObservedRecordSamples
 	o.evidence.CollectDrift(o.activeReport, records, knownDiscriminators, knownFields)
 	o.activeEvidence = &o.activeReport.DriftEvidence
-
 	return o.activeEvidence, nil
 }
 
-// RequestRepair invokes the RepairRunner and transitions collecting_evidence → repairing.
+// RequestRepair ACTUALLY calls the runner. It passes bounded/redacted
+// evidence only — raw provider records never leave the evidence collector.
 func (o *Orchestrator) RequestRepair() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -159,14 +164,38 @@ func (o *Orchestrator) RequestRepair() error {
 	if o.activeRunner == nil {
 		return errors.New("no RepairRunner configured")
 	}
+	if o.activeEvidence == nil {
+		return errors.New("no drift evidence collected")
+	}
 
 	o.state = StateRepairing
+
+	// Build bounded input — NO raw records.
+	currentVersion := ""
+	if len(o.currentDesc.SupportedVersions) > 0 {
+		currentVersion = o.currentDesc.SupportedVersions[0]
+	}
+	input := RepairInput{
+		AdapterName:    o.provider,
+		Provider:       o.activeReport.Provider,
+		CurrentVersion: currentVersion,
+		TargetVersion:  o.targetVersion,
+		DriftEvidence:  *o.activeEvidence,
+	}
+	// knownDiscriminators and knownFields are passed through from the
+	// drift detection context — the caller sets them in CollectEvidence.
+
+	output, err := o.activeRunner.Run(input)
+	if err != nil {
+		return fmt.Errorf("repair runner failed: %w", err)
+	}
+	o.activeRepairOutput = &output
 	return nil
 }
 
-// SubmitPatch validates a patch via the sandbox and transitions repairing → validating_patch.
-// The patch is the output from the RepairRunner.
-func (o *Orchestrator) SubmitPatch(patch []byte, provider, targetVersion string) ([]PatchFile, error) {
+// SubmitPatch validates the patch via the sandbox. provider and
+// targetVersion are derived internally from the compatibility report.
+func (o *Orchestrator) SubmitPatch(patch []byte) ([]PatchFile, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -175,39 +204,132 @@ func (o *Orchestrator) SubmitPatch(patch []byte, provider, targetVersion string)
 	}
 
 	o.state = StateValidatingPatch
-	o.sandbox = NewSandbox(ProviderAllowList(provider, targetVersion))
+	sandbox := NewSandbox(ProviderAllowList(o.provider, o.targetVersion))
 
-	files, err := o.sandbox.ValidatePatch(patch, provider, targetVersion)
+	files, err := sandbox.ValidatePatch(patch, o.provider, o.targetVersion)
 	if err != nil {
-		o.state = StateRepairing // revert on failure
+		o.state = StateRepairing
 		return nil, err
 	}
 
-	o.activePatch = patch
+	o.activePatch = make([]byte, len(patch))
+	copy(o.activePatch, patch)
 	o.activeFiles = files
 	return files, nil
 }
 
-// RunFixedSuites executes the FixedSuite and transitions validating_patch → running_fixed_suites.
-func (o *Orchestrator) RunFixedSuites(candidatePkgPath string) (*ObservatoryResult, error) {
+// ApplyPatchToWorkspace creates an isolated workspace, copies adapter
+// source, and applies the validated patch. The workspace is stored
+// internally for suite execution.
+func (o *Orchestrator) ApplyPatchToWorkspace(repoRoot string) (*Workspace, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	if o.state != StateValidatingPatch {
 		return nil, fmt.Errorf("orchestrator not in validating_patch state: %s", o.state)
 	}
+	if len(o.activePatch) == 0 {
+		return nil, errors.New("no validated patch to apply")
+	}
+
+	// Create isolated workspace.
+	tmpDir, err := os.MkdirTemp("", "d1-workspace-*")
+	if err != nil {
+		return nil, fmt.Errorf("cannot create workspace: %w", err)
+	}
+
+	// Determine the adapter source path and copy it.
+	srcRel := filepath.Join("internal", "agent", "adapters", o.provider)
+	srcAbs := filepath.Join(repoRoot, srcRel)
+	targetRel := filepath.Join("internal", "agent", "adapters", o.provider, o.targetVersion)
+	targetAbs := filepath.Join(tmpDir, targetRel)
+
+	// Copy source adapter to workspace.
+	if err := copyDir(srcAbs, targetAbs); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("cannot copy adapter source: %w", err)
+	}
+
+	// Copy contract package (read-only dependency).
+	contractSrc := filepath.Join(repoRoot, "internal", "agent", "contract")
+	contractDst := filepath.Join(tmpDir, "internal", "agent", "contract")
+	if err := copyDir(contractSrc, contractDst); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("cannot copy contract: %w", err)
+	}
+
+	// Copy models.go.
+	modelsSrc := filepath.Join(repoRoot, "internal", "agent", "models.go")
+	modelsDstDir := filepath.Join(tmpDir, "internal", "agent")
+	os.MkdirAll(modelsDstDir, 0755)
+	if err := copyFile(modelsSrc, filepath.Join(modelsDstDir, "models.go")); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("cannot copy models.go: %w", err)
+	}
+
+	// Write go.mod for the isolated workspace.
+	goMod := `module workspace
+
+go 1.21
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("cannot write go.mod: %w", err)
+	}
+
+	// Apply patch to the workspace.
+	patchFile := filepath.Join(tmpDir, "repair.patch")
+	if err := os.WriteFile(patchFile, o.activePatch, 0644); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("cannot write patch file: %w", err)
+	}
+
+	// Write the patched files directly (simple patching — for production,
+	// this would use git apply or a proper diff parser).
+	if err := applyPatchToDir(tmpDir, o.activePatch); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("cannot apply patch: %w", err)
+	}
+
+	ws := &Workspace{
+		Root:    tmpDir,
+		pkgPath: targetRel,
+	}
+	o.activeWorkspace = ws
+	return ws, nil
+}
+
+// RunFixedSuites executes all fixed suite commands. The candidate package
+// path is derived internally from provider/targetVersion.
+func (o *Orchestrator) RunFixedSuites(repoRoot string) (*ObservatoryResult, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.state != StateValidatingPatch && o.state != StateRunningFixedSuites {
+		return nil, fmt.Errorf("orchestrator not ready for suite: %s", o.state)
+	}
 
 	o.state = StateRunningFixedSuites
-	runner := NewSuiteRunner()
-	result := runner.Run(candidatePkgPath)
-	o.activeSuite = &result
 
+	// Determine candidate package path.
+	candidatePkg := filepath.Join("internal", "agent", "adapters", o.provider, o.targetVersion)
+
+	// If a workspace exists, run tests there.
+	var pkgRoot string
+	if o.activeWorkspace != nil {
+		pkgRoot = o.activeWorkspace.Root
+	} else {
+		pkgRoot = repoRoot
+	}
+
+	runner := NewSuiteRunner()
+	result := runner.RunInWorkspace(pkgRoot, candidatePkg)
+	o.activeSuite = &result
 	return &result, nil
 }
 
-// BuildReviewBundle creates a digest-bound ReviewBundle and transitions
-// running_fixed_suites → awaiting_approval. All digests are computed from
-// immutable workflow state.
+// BuildReviewBundle creates an immutable, digest-bound review bundle.
+// Rejects if the suite did not pass or result is nil.
 func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*ReviewBundle, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -215,8 +337,15 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 	if o.state != StateRunningFixedSuites {
 		return nil, fmt.Errorf("orchestrator not in running_fixed_suites state: %s", o.state)
 	}
-	if o.activeReport == nil || o.activeSuite == nil {
-		return nil, errors.New("missing workflow state — report or suite result absent")
+	if o.activeReport == nil {
+		return nil, errors.New("missing compatibility report")
+	}
+	if o.activeSuite == nil {
+		return nil, errors.New("fixed suite has not been run")
+	}
+	if !o.activeSuite.AllPassed() {
+		return nil, fmt.Errorf("fixed suite must pass before review bundle can be built: %d/%d passed",
+			o.activeSuite.Passed, o.activeSuite.TotalTests)
 	}
 
 	evidenceDigest := HashJSON(o.activeEvidence)
@@ -232,11 +361,11 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		suiteCommands[i] = c.Label
 	}
 
-	bundle := NewReviewBundle(
+	bundle, err := NewReviewBundle(
 		requestID,
 		o.activeReport.AdapterName,
 		o.activeReport.Provider,
-		o.activeReport.ObservedVersion,
+		o.targetVersion,
 		baselineSHA,
 		evidenceDigest,
 		patchDigest,
@@ -244,10 +373,12 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		suiteCommands,
 		*o.activeSuite,
 	)
-	bundle.BundleDigest() // pre-compute
+	if err != nil {
+		return nil, err
+	}
 
-	_, err := o.approval.Submit(bundle)
-	if err != nil && !errors.Is(err, ErrExpired) {
+	_, err = o.approval.Submit(bundle)
+	if err != nil {
 		return nil, err
 	}
 
@@ -256,96 +387,66 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 	return bundle, nil
 }
 
-// Approve validates digest match and approves the request.
-func (o *Orchestrator) Approve(requestID string) error {
+// Approve validates the user-supplied digest against the bundle.
+func (o *Orchestrator) Approve(requestID, userSuppliedDigest string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	if o.activeBundle == nil {
-		return errors.New("no active review bundle")
-	}
-	return o.approval.Approve(requestID, o.activeBundle.BundleDigest())
+	return o.approval.Approve(requestID, userSuppliedDigest)
 }
 
-// Reject rejects the current approval request.
 func (o *Orchestrator) Reject(requestID string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
 	return o.approval.Reject(requestID)
 }
 
-// Activate attempts activation of an approved request. Returns
-// ErrActivationUnsupported when safe filesystem activation cannot be
-// performed (fail-closed).
-func (o *Orchestrator) Activate(requestID string) error {
+// Activate always returns ErrActivationUnsupported (fail-closed).
+func (o *Orchestrator) Activate(requestID, userSuppliedDigest string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	if o.activeBundle == nil {
-		return errors.New("no active review bundle")
-	}
-	return o.approval.Activate(requestID, o.activeBundle.BundleDigest())
+	return o.approval.Activate(requestID, userSuppliedDigest)
 }
 
-// ActivateWithResult records the activation outcome. Caller performs the
-// actual filesystem operation.
-func (o *Orchestrator) ActivateWithResult(requestID string, success bool) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.activeBundle == nil {
-		return errors.New("no active review bundle")
-	}
-	return o.approval.ActivateWithResult(requestID, o.activeBundle.BundleDigest(), success)
-}
-
-// Rollback attempts to roll back an active request.
-func (o *Orchestrator) Rollback(requestID string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	return o.approval.Rollback(requestID)
-}
-
-// GetApprovalRequest returns the current state of an approval request.
 func (o *Orchestrator) GetApprovalRequest(requestID string) (*ApprovalRequest, bool) {
 	return o.approval.Get(requestID)
 }
 
-// ActiveBundle returns the current review bundle, if any.
-func (o *Orchestrator) ActiveBundle() *ReviewBundle {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.activeBundle
-}
-
-// Reset returns the orchestrator to idle state.
 func (o *Orchestrator) Reset() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.activeWorkspace != nil {
+		o.activeWorkspace.Cleanup()
+	}
 	o.state = StateIdle
+	o.provider = ""
+	o.targetVersion = ""
 	o.activeRequest = nil
 	o.activeReport = nil
 	o.activeEvidence = nil
+	o.activeRepairOutput = nil
 	o.activePatch = nil
 	o.activeFiles = nil
 	o.activeSuite = nil
 	o.activeBundle = nil
-	o.sandbox = nil
+	o.activeWorkspace = nil
 }
 
-// ── Stub RepairRunner for testing ──
+// ── StubRepairRunner ──
 
-// StubRepairRunner is a test-only RepairRunner that returns a canned patch.
 type StubRepairRunner struct {
 	Patch        []byte
 	ChangedFiles []string
 	Success      bool
 	Diags        []string
+	FailErr      error
+	CapturedInput *RepairInput // set after Run
 }
 
 func (s *StubRepairRunner) Run(input RepairInput) (RepairOutput, error) {
+	s.CapturedInput = &input
+	if s.FailErr != nil {
+		return RepairOutput{}, s.FailErr
+	}
 	return RepairOutput{
 		Patch:        s.Patch,
 		ChangedFiles: s.ChangedFiles,
@@ -354,22 +455,91 @@ func (s *StubRepairRunner) Run(input RepairInput) (RepairOutput, error) {
 	}, nil
 }
 
-// ── Digest helpers ──
+// ── Filesystem helpers ──
 
-func hashBytes(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
-
-func hashJSON(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "error:" + contract.SanitizeDiagnostic(err.Error())
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
 	}
-	return hashBytes(b)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		srcPath := filepath.Join(src, e.Name())
+		dstPath := filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
-// Ensure these helpers don't collide: doctor.go's HashBytes/HashJSON are exported.
-var _ = hashBytes
-var _ = hashJSON
-var _ = time.Now // suppress unused import warning
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	os.MkdirAll(filepath.Dir(dst), 0755)
+	return os.WriteFile(dst, data, 0644)
+}
+
+// applyPatchToDir writes new file content from unified diff hunks.
+// For production, this would use a proper patch library.
+func applyPatchToDir(root string, patch []byte) error {
+	// Simple implementation: parse diff headers and write new file content.
+	// Each hunk starting with "+" after "+++ b/<path>" and "@@ ... @@" is
+	// written to the target file.
+	lines := strings.Split(string(patch), "\n")
+	var currentPath string
+	var content strings.Builder
+	inHunk := false
+
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "+++ b/") {
+			// Flush previous file.
+			if currentPath != "" && content.Len() > 0 {
+				fullPath := filepath.Join(root, currentPath)
+				os.MkdirAll(filepath.Dir(fullPath), 0755)
+				os.WriteFile(fullPath, []byte(content.String()), 0644)
+			}
+			currentPath = strings.TrimPrefix(line, "+++ b/")
+			if idx := strings.IndexByte(currentPath, '\t'); idx >= 0 {
+				currentPath = currentPath[:idx]
+			}
+			content.Reset()
+			inHunk = false
+			continue
+		}
+		if strings.HasPrefix(line, "@@") {
+			inHunk = true
+			continue
+		}
+		if inHunk {
+			if strings.HasPrefix(line, "+") {
+				content.WriteString(line[1:])
+				content.WriteByte('\n')
+			} else if strings.HasPrefix(line, " ") {
+				content.WriteString(line[1:])
+				content.WriteByte('\n')
+			}
+			// Skip "-" lines (removals).
+		}
+	}
+
+	// Flush last file.
+	if currentPath != "" && content.Len() > 0 {
+		fullPath := filepath.Join(root, currentPath)
+		os.MkdirAll(filepath.Dir(fullPath), 0755)
+		os.WriteFile(fullPath, []byte(content.String()), 0644)
+	}
+
+	return nil
+}

@@ -15,8 +15,6 @@ import (
 
 // ── Approval states ──
 
-// ApprovalState is a closed set of approval/activation states in the D1
-// state machine. Every state is explicit; no implicit or default activation.
 type ApprovalState string
 
 const (
@@ -25,24 +23,7 @@ const (
 	StateRejected                        ApprovalState = "rejected"
 	StateExpired                         ApprovalState = "expired"
 	StateApprovedButActivationUnsupported ApprovalState = "approved_but_activation_unsupported"
-	StateActivating                      ApprovalState = "activating"
-	StateActive                          ApprovalState = "active"
-	StateActivationFailed                ApprovalState = "activation_failed"
-	StateRollingBack                     ApprovalState = "rolling_back"
-	StateRolledBack                      ApprovalState = "rolled_back"
 )
-
-// terminalApprovalStates are states from which no forward progress is possible.
-var terminalApprovalStates = map[ApprovalState]bool{
-	StateRejected:                        true,
-	StateExpired:                         true,
-	StateActive:                          true,
-	StateRolledBack:                      true,
-	StateApprovedButActivationUnsupported: true,
-}
-
-// IsTerminal reports whether the state is a final state.
-func (s ApprovalState) IsTerminal() bool { return terminalApprovalStates[s] }
 
 // ── Errors ──
 
@@ -51,160 +32,196 @@ var (
 	ErrRequestNotFound       = errors.New("request not found")
 	ErrDigestMismatch        = errors.New("digest mismatch — bundle may have been modified")
 	ErrNotPending            = errors.New("request is not in pending state")
-	ErrNotApproved           = errors.New("request is not approved")
-	ErrNotActive             = errors.New("request is not active")
 	ErrExpired               = errors.New("request has expired")
-	ErrActivationUnsupported = errors.New("activation not supported for this request")
-	ErrAlreadyTerminal       = errors.New("request is already in a terminal state")
+	ErrActivationUnsupported = errors.New("safe activation not implemented — fail-closed")
+	ErrEmptyField            = errors.New("required field is empty")
 )
 
-// ── ReviewBundle ──
+// ── ReviewBundle (immutable, fields unexported) ──
 
-// ReviewBundle is the complete, immutable, digest-bound evidence package
-// presented for user review before activation. Every field is included in
-// the BundleDigest; any modification is detected as a digest mismatch.
 type ReviewBundle struct {
-	RequestID            string            `json:"request_id"`
-	AdapterName          string            `json:"adapter_name"`
-	Provider             string            `json:"provider"`
-	TargetVersion        string            `json:"target_version"`
-	BaselineSHA          string            `json:"baseline_sha"`
-	EvidenceDigest       string            `json:"evidence_digest"`
-	PatchDigest          string            `json:"patch_digest"`
-	ChangedFiles         []string          `json:"changed_files"`
-	SuiteCommandManifest []string          `json:"suite_command_manifest"`
-	SuiteResultDigest    string            `json:"suite_result_digest"`
-	SuiteResult          ObservatoryResult `json:"suite_result"`
-	CreatedAt            time.Time         `json:"created_at"`
-	ExpiresAt            time.Time         `json:"expires_at"`
-
-	// Internal digest cache (computed once, never mutated).
-	digest string
+	requestID            string
+	adapterName          string
+	provider             string
+	targetVersion        string
+	baselineSHA          string
+	evidenceDigest       string
+	patchDigest          string
+	changedFiles         []string
+	suiteCommandManifest []string
+	suiteResultDigest    string
+	suiteResult          ObservatoryResult
+	createdAt            time.Time
+	expiresAt            time.Time
 }
 
-// BundleDigest returns the deterministic SHA-256 digest of the entire bundle.
-// The digest is computed once on creation and cached; the bundle is immutable
-// after construction.
+// Accessors return deep copies of slice fields only.
+func (rb *ReviewBundle) RequestID() string             { return rb.requestID }
+func (rb *ReviewBundle) AdapterName() string           { return rb.adapterName }
+func (rb *ReviewBundle) Provider() string              { return rb.provider }
+func (rb *ReviewBundle) TargetVersion() string         { return rb.targetVersion }
+func (rb *ReviewBundle) BaselineSHA() string           { return rb.baselineSHA }
+func (rb *ReviewBundle) EvidenceDigest() string        { return rb.evidenceDigest }
+func (rb *ReviewBundle) PatchDigest() string           { return rb.patchDigest }
+func (rb *ReviewBundle) ChangedFiles() []string        { return append([]string{}, rb.changedFiles...) }
+func (rb *ReviewBundle) SuiteCommandManifest() []string { return append([]string{}, rb.suiteCommandManifest...) }
+func (rb *ReviewBundle) SuiteResultDigest() string     { return rb.suiteResultDigest }
+func (rb *ReviewBundle) SuiteResult() ObservatoryResult { return rb.suiteResult }
+func (rb *ReviewBundle) CreatedAt() time.Time          { return rb.createdAt }
+func (rb *ReviewBundle) ExpiresAt() time.Time          { return rb.expiresAt }
+func (rb *ReviewBundle) IsExpired() bool               { return time.Now().After(rb.expiresAt) }
+
+// BundleDigest computes the deterministic SHA-256 of ALL bundle fields,
+// including timestamps. It recomputes on every call — no caching.
 func (rb *ReviewBundle) BundleDigest() string {
-	if rb.digest != "" {
-		return rb.digest
-	}
-	rb.digest = computeBundleDigest(rb)
-	return rb.digest
-}
-
-// IsExpired reports whether the bundle has passed its expiry time.
-func (rb *ReviewBundle) IsExpired() bool {
-	return time.Now().After(rb.ExpiresAt)
-}
-
-// computeBundleDigest produces a deterministic SHA-256 hash of all
-// digest-relevant bundle fields. Fields are serialized in a stable order.
-func computeBundleDigest(rb *ReviewBundle) string {
-	// Build a deterministic JSON representation of the digest-relevant fields.
-	payload := struct {
-		RequestID            string   `json:"request_id"`
-		AdapterName          string   `json:"adapter_name"`
-		Provider             string   `json:"provider"`
-		TargetVersion        string   `json:"target_version"`
-		BaselineSHA          string   `json:"baseline_sha"`
-		EvidenceDigest       string   `json:"evidence_digest"`
-		PatchDigest          string   `json:"patch_digest"`
-		ChangedFiles         []string `json:"changed_files"`
-		SuiteCommandManifest []string `json:"suite_command_manifest"`
-		SuiteResultDigest    string   `json:"suite_result_digest"`
-	}{
-		RequestID:            rb.RequestID,
-		AdapterName:          rb.AdapterName,
-		Provider:             rb.Provider,
-		TargetVersion:        rb.TargetVersion,
-		BaselineSHA:          rb.BaselineSHA,
-		EvidenceDigest:       rb.EvidenceDigest,
-		PatchDigest:          rb.PatchDigest,
-		ChangedFiles:         sortedCopy(rb.ChangedFiles),
-		SuiteCommandManifest: sortedCopy(rb.SuiteCommandManifest),
-		SuiteResultDigest:    rb.SuiteResultDigest,
+	payload := bundleDigestPayload{
+		RequestID:            rb.requestID,
+		AdapterName:          rb.adapterName,
+		Provider:             rb.provider,
+		TargetVersion:        rb.targetVersion,
+		BaselineSHA:          rb.baselineSHA,
+		EvidenceDigest:       rb.evidenceDigest,
+		PatchDigest:          rb.patchDigest,
+		ChangedFiles:         sortedStrings(rb.changedFiles),
+		SuiteCommandManifest: sortedStrings(rb.suiteCommandManifest),
+		SuiteResultDigest:    rb.suiteResultDigest,
+		CreatedAt:            rb.createdAt.Format(time.RFC3339Nano),
+		ExpiresAt:            rb.expiresAt.Format(time.RFC3339Nano),
 	}
 	b, _ := json.Marshal(payload)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
 
-// sortedCopy returns a sorted copy of a string slice (deterministic ordering).
-func sortedCopy(ss []string) []string {
-	if ss == nil {
-		return nil
-	}
-	out := make([]string, len(ss))
-	copy(out, ss)
-	sort.Strings(out)
-	return out
+type bundleDigestPayload struct {
+	RequestID            string   `json:"request_id"`
+	AdapterName          string   `json:"adapter_name"`
+	Provider             string   `json:"provider"`
+	TargetVersion        string   `json:"target_version"`
+	BaselineSHA          string   `json:"baseline_sha"`
+	EvidenceDigest       string   `json:"evidence_digest"`
+	PatchDigest          string   `json:"patch_digest"`
+	ChangedFiles         []string `json:"changed_files"`
+	SuiteCommandManifest []string `json:"suite_command_manifest"`
+	SuiteResultDigest    string   `json:"suite_result_digest"`
+	CreatedAt            string   `json:"created_at"`
+	ExpiresAt            string   `json:"expires_at"`
 }
 
-// ── Digest helpers ──
-
-// HashBytes returns the hex-encoded SHA-256 of b.
-func HashBytes(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
+// NewReviewBundle creates a ReviewBundle. Returns error if any required
+// field (digest, baseline, changed files) is empty.
+func NewReviewBundle(
+	requestID, adapterName, provider, targetVersion, baselineSHA string,
+	evidenceDigest, patchDigest string,
+	changedFiles []string,
+	suiteCommandManifest []string,
+	suiteResult ObservatoryResult,
+) (*ReviewBundle, error) {
+	if requestID == "" || baselineSHA == "" || evidenceDigest == "" || patchDigest == "" {
+		return nil, fmt.Errorf("%w: requestID, baselineSHA, evidenceDigest, patchDigest required", ErrEmptyField)
+	}
+	if len(changedFiles) == 0 {
+		return nil, fmt.Errorf("%w: changedFiles must be non-empty", ErrEmptyField)
+	}
+	if suiteResult.TotalTests == 0 {
+		return nil, fmt.Errorf("%w: suite result has zero tests", ErrEmptyField)
+	}
+	cf := make([]string, len(changedFiles))
+	copy(cf, changedFiles)
+	scm := make([]string, len(suiteCommandManifest))
+	copy(scm, suiteCommandManifest)
+	return &ReviewBundle{
+		requestID:            requestID,
+		adapterName:          adapterName,
+		provider:             provider,
+		targetVersion:        targetVersion,
+		baselineSHA:          baselineSHA,
+		evidenceDigest:       evidenceDigest,
+		patchDigest:          patchDigest,
+		changedFiles:         cf,
+		suiteCommandManifest: scm,
+		suiteResultDigest:    HashJSON(suiteResult),
+		suiteResult:          suiteResult,
+		createdAt:            time.Now(),
+		expiresAt:            time.Now().Add(24 * time.Hour),
+	}, nil
 }
 
-// HashJSON marshals v to deterministic JSON and returns its SHA-256.
-func HashJSON(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return ""
+// ── Deep copy ──
+
+func (rb *ReviewBundle) deepCopy() *ReviewBundle {
+	return &ReviewBundle{
+		requestID:            rb.requestID,
+		adapterName:          rb.adapterName,
+		provider:             rb.provider,
+		targetVersion:        rb.targetVersion,
+		baselineSHA:          rb.baselineSHA,
+		evidenceDigest:       rb.evidenceDigest,
+		patchDigest:          rb.patchDigest,
+		changedFiles:         append([]string{}, rb.changedFiles...),
+		suiteCommandManifest: append([]string{}, rb.suiteCommandManifest...),
+		suiteResultDigest:    rb.suiteResultDigest,
+		suiteResult:          rb.suiteResult,
+		createdAt:            rb.createdAt,
+		expiresAt:            rb.expiresAt,
 	}
-	return HashBytes(b)
 }
 
 // ── ApprovalRequest ──
 
-// ApprovalRequest wraps a ReviewBundle with its current approval state.
-// The bundle is immutable; only the state changes.
 type ApprovalRequest struct {
-	Bundle ReviewBundle    `json:"bundle"`
-	State  ApprovalState   `json:"state"`
+	bundle ReviewBundle
+	state  ApprovalState
 }
+
+func (ar *ApprovalRequest) Bundle() ReviewBundle { return ar.bundle } // value copy
+func (ar *ApprovalRequest) State() ApprovalState  { return ar.state }
 
 // ── ApprovalStore ──
 
-// ApprovalStore manages the lifecycle of approval requests with replay
-// protection and digest validation. It is safe for concurrent use.
 type ApprovalStore struct {
 	mu       sync.Mutex
-	requests map[string]*ApprovalRequest // request ID → request
+	requests map[string]*ApprovalRequest
 }
 
-// NewApprovalStore returns a new empty ApprovalStore.
 func NewApprovalStore() *ApprovalStore {
 	return &ApprovalStore{requests: make(map[string]*ApprovalRequest)}
 }
 
-// Submit registers a new approval request. Returns ErrRequestIDExists if the
-// request ID has already been used (replay protection).
 func (as *ApprovalStore) Submit(bundle *ReviewBundle) (*ApprovalRequest, error) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
-	if _, exists := as.requests[bundle.RequestID]; exists {
+	if _, exists := as.requests[bundle.requestID]; exists {
 		return nil, ErrRequestIDExists
 	}
+
+	// Validate non-empty fields.
+	if bundle.baselineSHA == "" || bundle.evidenceDigest == "" || bundle.patchDigest == "" {
+		return nil, fmt.Errorf("%w: baseline/digest must be non-empty", ErrEmptyField)
+	}
+	if len(bundle.changedFiles) == 0 {
+		return nil, fmt.Errorf("%w: changed files must be non-empty", ErrEmptyField)
+	}
+
+	state := StatePending
 	if bundle.IsExpired() {
-		req := &ApprovalRequest{Bundle: *bundle, State: StateExpired}
-		as.requests[bundle.RequestID] = req
+		state = StateExpired
+	}
+
+	req := &ApprovalRequest{bundle: *bundle.deepCopy(), state: state}
+	as.requests[bundle.requestID] = req
+
+	if state == StateExpired {
 		return req, ErrExpired
 	}
-	req := &ApprovalRequest{Bundle: *bundle, State: StatePending}
-	as.requests[bundle.RequestID] = req
 	return req, nil
 }
 
-// Approve transitions a pending request to approved. It validates:
-// - Request exists and is pending
-// - Digest matches (bundle has not been modified)
-// - Bundle has not expired
-func (as *ApprovalStore) Approve(requestID string, expectedDigest string) error {
+// Approve transitions pending→approved. The user MUST supply the exact
+// digest they reviewed — the store validates it against the current
+// bundle digest (recomputed, not cached).
+func (as *ApprovalStore) Approve(requestID string, userSuppliedDigest string) error {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
@@ -212,26 +229,29 @@ func (as *ApprovalStore) Approve(requestID string, expectedDigest string) error 
 	if !ok {
 		return ErrRequestNotFound
 	}
-	if req.State != StatePending {
-		if req.State.IsTerminal() {
-			return ErrAlreadyTerminal
-		}
-		return ErrNotPending
+	if req.state != StatePending {
+		return fmt.Errorf("%w: current state is %s", ErrNotPending, req.state)
 	}
-	if req.Bundle.IsExpired() {
-		req.State = StateExpired
+	if req.bundle.IsExpired() {
+		req.state = StateExpired
 		return ErrExpired
 	}
-	if req.Bundle.BundleDigest() != expectedDigest {
-		return fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch,
-			contract.SanitizeDiagnostic(expectedDigest)[:16],
-			contract.SanitizeDiagnostic(req.Bundle.BundleDigest())[:16])
+
+	// Recompute digest — always, no cache.
+	currentDigest := req.bundle.BundleDigest()
+	if currentDigest != userSuppliedDigest {
+		userShort := contract.SanitizeDiagnostic(userSuppliedDigest)
+		digestShort := contract.SanitizeDiagnostic(currentDigest)
+		if len(userShort) > 16 { userShort = userShort[:16] }
+		if len(digestShort) > 16 { digestShort = digestShort[:16] }
+		return fmt.Errorf("%w: user supplied %s, bundle digest is %s",
+			ErrDigestMismatch, userShort, digestShort)
 	}
-	req.State = StateApproved
+
+	req.state = StateApproved
 	return nil
 }
 
-// Reject transitions a pending request to rejected.
 func (as *ApprovalStore) Reject(requestID string) error {
 	as.mu.Lock()
 	defer as.mu.Unlock()
@@ -240,19 +260,17 @@ func (as *ApprovalStore) Reject(requestID string) error {
 	if !ok {
 		return ErrRequestNotFound
 	}
-	if req.State.IsTerminal() {
-		return ErrAlreadyTerminal
+	if req.state == StateRejected || req.state == StateExpired || req.state == StateApprovedButActivationUnsupported {
+		return fmt.Errorf("request already in terminal state: %s", req.state)
 	}
-	req.State = StateRejected
+	req.state = StateRejected
 	return nil
 }
 
-// Activate transitions an approved request to active. It validates:
-// - Request is in approved state
-// - Digest matches
-// - Bundle has not expired
-// If activation is unsupported, transitions to approved_but_activation_unsupported.
-func (as *ApprovalStore) Activate(requestID string, expectedDigest string) error {
+// Activate always returns ErrActivationUnsupported. Safe filesystem
+// activation is not implemented — this is fail-closed by design.
+// The request transitions to approved_but_activation_unsupported.
+func (as *ApprovalStore) Activate(requestID string, userSuppliedDigest string) error {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
@@ -260,143 +278,62 @@ func (as *ApprovalStore) Activate(requestID string, expectedDigest string) error
 	if !ok {
 		return ErrRequestNotFound
 	}
-	if req.State != StateApproved {
-		if req.State.IsTerminal() {
-			return ErrAlreadyTerminal
-		}
-		return ErrNotApproved
+	if req.state != StateApproved {
+		return fmt.Errorf("request must be approved, current state: %s", req.state)
 	}
-	if req.Bundle.IsExpired() {
-		req.State = StateExpired
+	if req.bundle.IsExpired() {
+		req.state = StateExpired
 		return ErrExpired
 	}
-	if req.Bundle.BundleDigest() != expectedDigest {
-		req.State = StateActivationFailed
-		return fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch,
-			contract.SanitizeDiagnostic(expectedDigest)[:16],
-			contract.SanitizeDiagnostic(req.Bundle.BundleDigest())[:16])
-	}
 
-	req.State = StateActivating
-	// In a full production implementation, this would stage files, run
-	// integrity checks, atomically switch, verify via fixed suite, and
-	// auto-restore on failure. The D1 scope provides the review/approval
-	// contract; filesystem activation is gated on the caller's environment.
-	// When safe activation cannot be performed, we fail-closed.
-	req.State = StateApprovedButActivationUnsupported
-	return ErrActivationUnsupported
-}
-
-// ActivateWithResult transitions an approved request to active or
-// activation_failed based on the caller's activation outcome. The caller
-// performs the actual filesystem activation and reports success/failure.
-func (as *ApprovalStore) ActivateWithResult(requestID string, expectedDigest string, success bool) error {
-	as.mu.Lock()
-	defer as.mu.Unlock()
-
-	req, ok := as.requests[requestID]
-	if !ok {
-		return ErrRequestNotFound
-	}
-	if req.State != StateApproved {
-		if req.State.IsTerminal() {
-			return ErrAlreadyTerminal
-		}
-		return ErrNotApproved
-	}
-	if req.Bundle.IsExpired() {
-		req.State = StateExpired
-		return ErrExpired
-	}
-	if req.Bundle.BundleDigest() != expectedDigest {
-		req.State = StateActivationFailed
+	currentDigest := req.bundle.BundleDigest()
+	if currentDigest != userSuppliedDigest {
+		req.state = StateRejected
 		return ErrDigestMismatch
 	}
 
-	if success {
-		req.State = StateActive
-	} else {
-		req.State = StateActivationFailed
-	}
-	return nil
+	req.state = StateApprovedButActivationUnsupported
+	return ErrActivationUnsupported
 }
 
-// Rollback transitions an active request to rolled_back via rolling_back.
-// Only active requests can be rolled back.
-func (as *ApprovalStore) Rollback(requestID string) error {
+// Get returns a deep copy of the approval request. The caller cannot
+// mutate internal state through the returned value.
+func (as *ApprovalStore) Get(requestID string) (*ApprovalRequest, bool) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
 	req, ok := as.requests[requestID]
 	if !ok {
-		return ErrRequestNotFound
+		return nil, false
 	}
-	if req.State != StateActive && req.State != StateActivationFailed {
-		if req.State.IsTerminal() {
-			return ErrAlreadyTerminal
-		}
-		return ErrNotActive
+	cp := &ApprovalRequest{
+		bundle: *req.bundle.deepCopy(),
+		state:  req.state,
 	}
-
-	req.State = StateRollingBack
-	req.State = StateRolledBack
-	return nil
+	return cp, true
 }
 
-// Get returns the current approval request, if it exists.
-func (as *ApprovalStore) Get(requestID string) (*ApprovalRequest, bool) {
-	as.mu.Lock()
-	defer as.mu.Unlock()
-	req, ok := as.requests[requestID]
-	return req, ok
+// ── Helpers ──
+
+func HashBytes(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
 
-// ExpireStale transitions all pending requests past their expiry to expired.
-func (as *ApprovalStore) ExpireStale() int {
-	as.mu.Lock()
-	defer as.mu.Unlock()
-	count := 0
-	now := time.Now()
-	for _, req := range as.requests {
-		if req.State == StatePending && now.After(req.Bundle.ExpiresAt) {
-			req.State = StateExpired
-			count++
-		}
+func HashJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "error:" + contract.SanitizeDiagnostic(err.Error())
 	}
-	return count
+	return HashBytes(b)
 }
 
-// ── NewReviewBundle ──
-
-// NewReviewBundle creates a ReviewBundle with all digests computed and a
-// 24-hour expiry. All fields must be non-empty; empty digests are rejected
-// at Submit time.
-func NewReviewBundle(
-	requestID string,
-	adapterName string,
-	provider string,
-	targetVersion string,
-	baselineSHA string,
-	evidenceDigest string,
-	patchDigest string,
-	changedFiles []string,
-	suiteCommandManifest []string,
-	suiteResult ObservatoryResult,
-) *ReviewBundle {
-	suiteResultDigest := HashJSON(suiteResult)
-	return &ReviewBundle{
-		RequestID:            requestID,
-		AdapterName:          adapterName,
-		Provider:             provider,
-		TargetVersion:        targetVersion,
-		BaselineSHA:          baselineSHA,
-		EvidenceDigest:       evidenceDigest,
-		PatchDigest:          patchDigest,
-		ChangedFiles:         append([]string{}, changedFiles...),
-		SuiteCommandManifest: append([]string{}, suiteCommandManifest...),
-		SuiteResultDigest:    suiteResultDigest,
-		SuiteResult:          suiteResult,
-		CreatedAt:            time.Now(),
-		ExpiresAt:            time.Now().Add(24 * time.Hour),
+func sortedStrings(ss []string) []string {
+	if ss == nil {
+		return nil
 	}
+	out := make([]string, len(ss))
+	copy(out, ss)
+	sort.Strings(out)
+	return out
 }

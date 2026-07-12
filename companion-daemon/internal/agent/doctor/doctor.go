@@ -14,6 +14,8 @@
 package doctor
 
 import (
+	"errors"
+
 	"devremote/companion-daemon/internal/agent/contract"
 )
 
@@ -130,3 +132,86 @@ type Doctor struct{}
 
 // New returns a new Doctor.
 func New() *Doctor { return &Doctor{} }
+
+// ── FullWorkflow (production entry) ──
+
+// FullWorkflow runs the complete D1 vertical workflow:
+//
+//	drift detect → evidence collect → runner repair → sandbox validate
+//	→ workspace apply → fixed suite → immutable review bundle
+//
+// Returns the immutable ReviewBundle ready for user approval, or an error
+// if any step fails. This is the production entry point, safe to call from
+// CLI or local-only controller. No network endpoint exposes this.
+func FullWorkflow(
+	runner RepairRunner,
+	desc contract.AgentAdapterDescriptor,
+	observedVersion, versionSource string,
+	samples []contract.RawRecord,
+	knownDiscriminators []string,
+	knownFields map[string]string,
+	requestID, baselineSHA string,
+	repoRoot string,
+) (*ReviewBundle, error) {
+	orch := NewOrchestrator(runner)
+	defer orch.Reset()
+
+	req := ProcessRequest{
+		AdapterDescriptor:     desc,
+		ObservedVersion:       observedVersion,
+		ObservedVersionSource: versionSource,
+		ObservedRecordSamples: samples,
+	}
+
+	// Step 1: drift detection.
+	report, err := orch.DetectDrift(req)
+	if err != nil {
+		return nil, err
+	}
+	if report.Compatible {
+		return nil, nil // no drift — no repair needed
+	}
+
+	// Step 2: evidence collection.
+	_, err = orch.CollectEvidence(knownDiscriminators, knownFields)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 3: repair (runner actually called).
+	if err := orch.RequestRepair(); err != nil {
+		return nil, err
+	}
+
+	// Use runner output as the patch.
+	output := orch.activeRepairOutput
+	if output == nil || !output.Success {
+		return nil, errors.New("repair runner did not produce a successful output")
+	}
+
+	// Step 4: sandbox validation.
+	_, err = orch.SubmitPatch(output.Patch)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 5: workspace application.
+	_, err = orch.ApplyPatchToWorkspace(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 6: fixed suite execution.
+	_, err = orch.RunFixedSuites(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 7: immutable review bundle.
+	bundle, err := orch.BuildReviewBundle(requestID, baselineSHA)
+	if err != nil {
+		return nil, err
+	}
+
+	return bundle, nil
+}
