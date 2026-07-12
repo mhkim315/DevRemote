@@ -1448,6 +1448,100 @@ func TestCodexAdapter_MixedBatch_ReasonPreserved(t *testing.T) {
 	}
 }
 
+// ── Oversized record + valid record alignment ──
+
+func TestCodexAdapter_Oversized_ValidSeq(t *testing.T) {
+	// oversized record between valid records: valid records keep correct
+	// Seq based on absolute source position, not output count.
+	big := make([]byte, contract.MaxRecordBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),                        // pos 0: valid
+		{Bytes: big, Source: agent.SourceJSONL},     // pos 1: oversized
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`), // pos 2: valid
+	}
+	res, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// pos 0 (meta) + pos 2 (task_started) = 2 events.
+	if len(res.Events) != 2 {
+		t.Fatalf("got %d events, want 2", len(res.Events))
+	}
+	// pos 2 event must have Seq = 2 (absolute source position).
+	if res.Events[1].Seq != 2 {
+		t.Errorf("valid-after-oversized Seq=%d, want 2 (absolute pos)", res.Events[1].Seq)
+	}
+	// Cursor must be valid.
+	if err := contract.ValidateCursor(res.NextCursor); err != nil {
+		t.Errorf("cursor invalid after oversized: %v", err)
+	}
+	if _, err := parseCursor(res.NextCursor); err != nil {
+		t.Errorf("parseCursor failed: %v", err)
+	}
+	// Re-read with cursor → 0 events.
+	res2, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  res.NextCursor,
+	})
+	if len(res2.Events) != 0 {
+		t.Errorf("re-read after oversized: got %d events, want 0", len(res2.Events))
+	}
+}
+
+func TestCodexAdapter_Oversized_OneShotEqualsPaged(t *testing.T) {
+	big := make([]byte, contract.MaxRecordBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),                        // pos 0
+		{Bytes: big, Source: agent.SourceJSONL},     // pos 1: oversized
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`), // pos 2
+	}
+	oneShot := readAllEvents(t, &Adapter{}, records, 0)
+	for _, maxEv := range []int{1, 2} {
+		paged := readAllEvents(t, &Adapter{}, records, maxEv)
+		if len(oneShot) != len(paged) {
+			t.Errorf("MaxEvents=%d: one-shot=%d paged=%d (oversized mix)", maxEv, len(oneShot), len(paged))
+			continue
+		}
+		for i := range oneShot {
+			if oneShot[i] != paged[i] {
+				t.Errorf("MaxEvents=%d event %d mismatch: %+v vs %+v", maxEv, i, oneShot[i], paged[i])
+			}
+		}
+	}
+}
+
+func TestCodexAdapter_Oversized_AdjacentDuplicate(t *testing.T) {
+	big := make([]byte, contract.MaxRecordBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),                     // pos 0
+		rec,                                       // pos 1
+		{Bytes: big, Source: agent.SourceJSONL},   // pos 2: oversized
+		rec,                                       // pos 3: non-adjacent dup of pos 1
+	}
+	res, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// meta(pos0) + rec(pos1) + rec(pos3) = 3 (oversized pos2 skipped).
+	if len(res.Events) != 3 {
+		t.Fatalf("got %d events, want 3", len(res.Events))
+	}
+	if res.Events[2].Seq != 3 {
+		t.Errorf("non-adjacent dup after oversized Seq=%d, want 3", res.Events[2].Seq)
+	}
+}
+
 // ── Helpers ──
 
 func toJSON(t *testing.T, v any) string {

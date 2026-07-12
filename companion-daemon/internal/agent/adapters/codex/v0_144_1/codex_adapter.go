@@ -172,8 +172,11 @@ type codexRecord struct {
 }
 
 type normResult struct {
-	ev  contract.AgentEvent
-	deg contract.DegradedInfo
+	ev         contract.AgentEvent
+	deg        contract.DegradedInfo
+	absPos     int64
+	contentKey string
+	accepted   bool
 }
 
 // ── NormalizeEvent ──
@@ -395,21 +398,21 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 	}
 
-	// ── Normalize: only up to processLimit (stops at conflict) ──
+	// ── Normalize: one entry per source position (even skipped) ──
 	var all []normResult
 	for i := 0; i < processLimit; i++ {
 		rec := bounded[i]
+		absPos := cur.nextPos + int64(i)
+		ck := hashBytesID(rec.Bytes)
 		if !contract.AcceptRecord(rec) {
 			degraded = true
 			diags = append(diags, "oversized record skipped")
+			all = append(all, normResult{absPos: absPos, contentKey: ck, accepted: false})
 			continue
 		}
-		absPos := cur.nextPos + int64(i)
 		ev, recDeg := normalizeCodexEvent(rec, sessionID, rec.Source, batchVersionFailed)
-		// Position-based identity: same bytes at different source positions
-		// → different IDs.  One-shot and paged reads produce identical sets.
 		ev.ID = makePositionID(absPos, rec.Bytes)
-		all = append(all, normResult{ev, recDeg})
+		all = append(all, normResult{ev: ev, deg: recDeg, absPos: absPos, contentKey: ck, accepted: true})
 		if recDeg.Degraded {
 			degraded = true
 			if recDeg.Reason != "" {
@@ -423,34 +426,36 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 	}
 
-	// ── Emit: adjacent-only duplicate suppression, position-based IDs ──
+	// ── Emit: adjacent-only duplicate suppression ──
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
 	var out []contract.AgentEvent
 	truncated := false
 	processed := int64(0)
 
-	// Previous content hash for adjacent dedup (starts from the record
-	// just before the suffix, i.e. input[pos-1], for cross-page boundary).
+	// Previous content hash for adjacent dedup (cross-page boundary).
 	var prevCK string
 	if cur.nextPos > 0 {
 		idx := int(cur.nextPos - 1)
-		if idx < len(input) && contract.AcceptRecord(input[idx]) {
+		if idx < len(input) {
 			prevCK = hashBytesID(input[idx].Bytes)
 		}
 	}
 
 	for i := range all {
-		ev := all[i].ev
-		ck := hashBytesID(bounded[i].Bytes)
-		if ev.ID == "" {
+		nr := &all[i]
+		if !nr.accepted {
 			processed++
-			prevCK = ck
+			prevCK = nr.contentKey
 			continue
 		}
-		// Adjacent duplicate: same content as immediately preceding record
-		// (within batch or across page boundary).  Non-adjacent identical
-		// bytes at different source positions are distinct occurrences.
-		if ck == prevCK {
+		ev := nr.ev
+		if ev.ID == "" {
+			processed++
+			prevCK = nr.contentKey
+			continue
+		}
+		// Adjacent duplicate suppression.
+		if nr.contentKey == prevCK {
 			processed++
 			continue
 		}
@@ -458,10 +463,10 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			truncated = true
 			break
 		}
-		prevCK = ck
-		ev.Seq = cur.nextPos + int64(i) // absolute source position, not output count
-		out = append(out, ev)
 		processed++
+		prevCK = nr.contentKey
+		ev.Seq = nr.absPos // absolute source position
+		out = append(out, ev)
 	}
 
 	if truncated {
@@ -469,16 +474,18 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "event limit truncated")
 	}
 
-	// nextPos counts suffix positions consumed.
-	nextPos := cur.nextPos + processed
-	// Anchor = position-based ID of input record at nextPos-1.
-	var newAnchor string
-	if nextPos > 0 && int(nextPos)-1 < len(input) {
-		if contract.AcceptRecord(input[nextPos-1]) {
-			newAnchor = makePositionID(nextPos-1, input[nextPos-1].Bytes)
-		}
+	// nextPos = position after last emitted event (absolute source pos).
+	lastPos := cur.nextPos - 1
+	if len(out) > 0 {
+		lastPos = out[len(out)-1].Seq // Seq == absPos
 	}
-	if len(out) == 0 && nextPos == cur.nextPos {
+	nextPos := lastPos + 1
+	var newAnchor string
+	if lastPos >= 0 && int(lastPos) < len(input) {
+		newAnchor = makePositionID(lastPos, input[lastPos].Bytes)
+	}
+	if len(out) == 0 {
+		nextPos = cur.nextPos
 		newAnchor = cur.anchor
 	}
 
