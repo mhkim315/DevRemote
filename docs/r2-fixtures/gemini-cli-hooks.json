@@ -1,42 +1,52 @@
 {
   "_provenance": {
     "provider": "Gemini CLI",
-    "version": "Gemini CLI hooks v1 (documented 2026)",
-    "source_permalinks": [
-      "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/hooks/reference.md",
-      "https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/writing-hooks.md",
-      "https://github.com/google-gemini/gemini-cli/issues/9070"
+    "repository": "google-gemini/gemini-cli",
+    "pinned_commit": "e09410b6 (2026-04-10)",
+    "pinned_files": [
+      "https://github.com/google-gemini/gemini-cli/blob/e09410b6/docs/hooks/reference.md",
+      "https://github.com/google-gemini/gemini-cli/blob/e09410b6/docs/hooks/writing-hooks.md"
     ],
+    "content_hash": "pinned at commit e09410b6; future changes to main branch will differ",
     "retrieval_date": "2026-07-12",
     "license": "Apache-2.0 (google-gemini/gemini-cli)",
-    "capture_method": "copied from official Gemini CLI hooks reference documentation",
+    "capture_method": "derived from official Gemini CLI hooks reference documentation at pinned commit. JSON examples constructed from documented stdin/stdout field descriptions.",
     "redactions": ["<SESSION_ID>", "<TRANSCRIPT_PATH>", "<CWD>", "<PROMPT>", "<TOOL_NAME>", "<TOOL_INPUT>"],
     "conclusions_supported": [
-      "Gemini CLI provides a hook system with JSON-over-stdin/stdout",
+      "Gemini CLI provides a hook system with JSON-over-stdin/stdout at commit e09410b6",
       "All hooks receive base input: session_id, transcript_path, cwd, hook_event_name, timestamp",
-      "BeforeTool fires before tool invocation and can block execution via decision/exit code",
-      "SessionStart/SessionEnd provide lifecycle boundary events",
-      "BeforeTool is a policy/validation hook, NOT a user-approval request"
+      "BeforeTool fires before tool invocation; documented for argument validation, security checks, parameter rewriting",
+      "BeforeTool is a POLICY/VALIDATION hook — NOT a user-approval request",
+      "No dedicated permission/approval request event exists; Notification hook explicitly cannot block or grant permissions",
+      "SessionStart/SessionEnd provide lifecycle boundary events"
     ],
     "conclusions_not_supported": [
-      "This fixture does NOT prove BeforeTool represents a user approval request — it is documented as argument validation and security checks",
+      "This fixture does NOT prove BeforeTool represents a user approval request",
       "This fixture does NOT prove Pokit-session to Gemini-session correlation (requires managed launch)",
       "This fixture does NOT prove hooks fire during ordinary interactive TUI sessions",
-      "Gemini CLI has no dedicated permission/approval request event; Notification hook explicitly cannot block or grant permissions",
-      "Transcript JSON path/format is documented by third-party tools (Magia), not confirmed by official Gemini CLI schema documentation"
-    ]
+      "This fixture does NOT prove the hook schema at a later commit is identical",
+      "Transcript JSON path/format is documented by third-party tools, not confirmed by pinned Gemini CLI documentation"
+    ],
+    "example_to_section_map": {
+      "hook_base_input": "hooks/reference.md — Base input schema section",
+      "before_tool": "hooks/reference.md — BeforeTool event section",
+      "session_start": "hooks/reference.md — SessionStart event section",
+      "session_end": "hooks/reference.md — SessionEnd event section",
+      "notification": "hooks/reference.md — Notification event section"
+    }
   },
 
   "_evidence_classification": {
-    "hook_base_input": "documented — copied from official hooks/reference.md",
-    "before_tool": "documented — described as policy/validation hook for argument validation, security checks, parameter rewriting",
-    "session_lifecycle": "documented — SessionStart/SessionEnd documented with source/reason fields",
-    "notification": "documented — fires on system alerts but explicitly cannot block or grant permissions",
-    "approval_protocol": "unavailable — no dedicated permission request/result event exists in documented hook system"
+    "hook_base_input": "documented — from pinned hooks/reference.md at e09410b6",
+    "before_tool": "documented — described as policy/validation hook; NOT user approval",
+    "session_lifecycle": "documented — SessionStart/SessionEnd with source/reason fields",
+    "notification": "documented — fires on system alerts; explicitly cannot block or grant permissions",
+    "approval_protocol": "unavailable — no dedicated permission request/result event exists"
   },
 
   "examples": {
     "hook_base_input": {
+      "_source_section": "Base input schema (all hooks receive these fields)",
       "stdin": {
         "session_id": "<SESSION_ID>",
         "transcript_path": "<TRANSCRIPT_PATH>",
@@ -47,7 +57,8 @@
     },
 
     "before_tool": {
-      "_classification": "POLICY/VALIDATION HOOK — NOT user approval evidence",
+      "_source_section": "BeforeTool — documented at e09410b6",
+      "_classification": "POLICY/VALIDATION HOOK — NOT user approval evidence. Official docs: 'Fires before a tool is invoked. Used for argument validation, security checks, and parameter rewriting.' Denied reason is 'sent to the agent as a tool error.'",
       "stdin": {
         "session_id": "<SESSION_ID>",
         "transcript_path": "<TRANSCRIPT_PATH>",
@@ -63,12 +74,11 @@
       "stdout_deny": {
         "decision": "deny",
         "reason": "Operation blocked by security policy"
-      },
-      "exit_code_block": "Exit code 2 = block (the turn continues, no user prompt)",
-      "_note": "When denied, the reason is sent TO THE AGENT as a tool error, not to a human. Official docs: 'Fires before a tool is invoked. Used for argument validation, security checks, and parameter rewriting.'"
+      }
     },
 
     "session_start": {
+      "_source_section": "SessionStart — documented at e09410b6",
       "stdin": {
         "session_id": "<SESSION_ID>",
         "transcript_path": "<TRANSCRIPT_PATH>",
@@ -76,11 +86,11 @@
         "hook_event_name": "SessionStart",
         "timestamp": "2026-07-12T00:00:00.000Z",
         "source": "startup"
-      },
-      "_source_values": ["startup", "resume", "clear"]
+      }
     },
 
     "session_end": {
+      "_source_section": "SessionEnd — documented at e09410b6",
       "stdin": {
         "session_id": "<SESSION_ID>",
         "transcript_path": "<TRANSCRIPT_PATH>",
@@ -88,12 +98,12 @@
         "hook_event_name": "SessionEnd",
         "timestamp": "2026-07-12T00:00:00.000Z",
         "reason": "exit"
-      },
-      "_reason_values": ["exit", "clear", "logout", "prompt_input_exit", "other"]
+      }
     },
 
     "notification": {
-      "_classification": "CANNOT BLOCK OR GRANT PERMISSIONS — informational only",
+      "_source_section": "Notification — documented at e09410b6",
+      "_classification": "CANNOT BLOCK OR GRANT PERMISSIONS. Official docs: 'This hook cannot block alerts or grant permissions automatically. Flow-control fields are ignored.'",
       "stdin": {
         "session_id": "<SESSION_ID>",
         "transcript_path": "<TRANSCRIPT_PATH>",
@@ -102,8 +112,7 @@
         "timestamp": "2026-07-12T00:00:00.000Z",
         "notification_type": "tool_permissions",
         "message": "Tool requires permissions"
-      },
-      "_note": "Official docs: 'This hook cannot block alerts or grant permissions automatically. Flow-control fields are ignored.'"
+      }
     }
   }
 }

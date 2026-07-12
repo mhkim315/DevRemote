@@ -21,8 +21,8 @@ Every claim in this report is tagged with one of:
 
 | Provider | Exact source | Retrieval | License |
 |---|---|---|---|
-| Goose/ACP | [ACP architecture](https://agentclientprotocol.com/get-started/architecture), [ACP spec commit 5a094b24](https://github.com/agentclientprotocol/agent-client-protocol/blob/5a094b24/docs/get-started/architecture.mdx), [Rust SDK 0.1.1](https://docs.rs/agent-client-protocol/0.1.1/), [schema 0.10.3](https://docs.rs/agent-client-protocol-schema/0.10.3/), [TypeScript SDK](https://agentclientprotocol.github.io/typescript-sdk/types/RequestPermissionRequest.html), [Java SDK a3e979e1](https://github.com/agentclientprotocol/java-sdk/blob/a3e979e1/acp-core/src/main/java/com/agentclientprotocol/sdk/spec/AcpClientSession.java) | 2026-07-12 | Apache-2.0 |
-| Gemini CLI | [hooks/reference.md](https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/hooks/reference.md), [writing-hooks.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/writing-hooks.md), [configuration.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/configuration.md) | 2026-07-12 | Apache-2.0 |
+| Goose/ACP | **Wire protocol v1**. Schema: [ACP v1 1.4.0](https://docs.rs/agent-client-protocol-schema/1.4.0/), [PermissionOption](https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/struct.PermissionOption.html), [RequestPermissionOutcome](https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/enum.RequestPermissionOutcome.html), [StopReason](https://docs.rs/agent-client-protocol-schema/latest/agent_client_protocol_schema/v2/enum.StopReason.html), [ACP spec](https://agentclientprotocol.com/get-started/architecture) | 2026-07-12 | Apache-2.0 |
+| Gemini CLI | Pinned commit **e09410b6** (2026-04-10): [hooks/reference.md](https://github.com/google-gemini/gemini-cli/blob/e09410b6/docs/hooks/reference.md), [writing-hooks.md](https://github.com/google-gemini/gemini-cli/blob/e09410b6/docs/hooks/writing-hooks.md) | 2026-07-12 | Apache-2.0 |
 | OpenCode | [dev.opencode.ai/docs/plugins](https://dev.opencode.ai/docs/plugins/), [dev.opencode.ai/docs/server](https://dev.opencode.ai/docs/server/), [mcp-cli #502](https://github.com/theshadow27/mcp-cli/issues/502) | 2026-07-12 | MIT |
 | Cline | [docs.cline.bot/sdk/events](https://docs.cline.bot/sdk/events), [cline.bot/blog/cline-v3-36-hooks](https://cline.bot/blog/cline-v3-36-hooks), [npm @clinebot/agents](https://www.npmjs.com/package/@clinebot/agents) | 2026-07-12 | Apache-2.0 |
 | OpenHands | [docs.openhands.dev/sdk/guides/hooks](https://docs.openhands.dev/sdk/guides/hooks), [Issue #11943](https://github.com/OpenHands/OpenHands/issues/11943), [PR #12773](https://github.com/OpenHands/OpenHands/pull/12773) | 2026-07-12 | MIT |
@@ -39,7 +39,7 @@ For each agent and semantic event, four dimensions are reported SEPARATELY:
 
 Values: `yes`, `no`, `inferred`, `unverified`, `unavailable`
 
-### Goose (ACP 0.1.1 / schema 0.10.3)
+### Goose (ACP wire protocol v1, schema 1.4.0)
 
 | Event | R | O | C | A | Evidence |
 |---|---|---|---|---|---|
@@ -290,19 +290,21 @@ All scenarios fit within the existing D1 repair sandbox (read-only source, versi
 ### Recommendation: Goose (ACP)
 
 Goose via ACP is the recommended third production adapter. Evidence:
-- **ACP is a public, versioned specification** (0.1.1) with SDK implementations in Rust, TypeScript, Python, and Java — not a single-implementation protocol
-- **session/request_permission** is a dedicated, bidirectional JSON-RPC method with stable `toolCall.id`, `options` array, `sessionId` binding, and authoritative `optionId` result — the only structured approval protocol found beyond accepted T1 Codex
+- **ACP is a public, multi-implementor protocol** (wire protocol v1) with SDK implementations in Rust, TypeScript, Python, and Java
+- **Wire compatibility** is determined by `initialize.protocolVersion` negotiation, not by crate artifact versions
+- **session/request_permission** is a dedicated, bidirectional JSON-RPC method with typed `PermissionOption` (option_id, name, kind), `RequestPermissionOutcome` (Selected { option_id } | Cancelled), and `sessionId` binding — the only documented structured approval protocol found beyond accepted T1 Codex
 - **session/new → sessionId** provides stable session identity for Pokit correlation (managed launch required, same as T1/T2)
-- **tool_call + tool_call_update** with status state machine (pending→running→completed→failed) covers the full tool lifecycle
-- **stopReason** (end_turn, cancelled, max_tokens, error) provides structured terminal signals
+- **tool_call + tool_call_update** with status state machine covers the full tool lifecycle
+- **StopReason** values: EndTurn, MaxTokens, MaxTurnRequests, Refusal, Cancelled, Other(String)
 
 ### Caveats (must be verified before adapter implementation)
 
-1. ACP spec version drift: pin the exact ACP spec version; gate adapter on it
-2. Goose implementation fidelity: verify Goose's ACP server matches the ACP spec exactly
+1. ACP wire protocol version: pin the negotiated `protocolVersion`; gate adapter on it (NOT on crate artifact versions)
+2. Goose implementation fidelity: verify Goose's ACP server matches the ACP v1 schema; pin exact Goose commit
 3. Managed-launch correlation: prove Pokit-session to ACP-session binding before claiming `CorrelationProven`
 4. Multi-session behavior: verify per-session Agent isolation works as documented
-5. The claim "ACP is stable with a clear migration path" is **inferred**, not documented — ACP is versioned (0.1.1) which implies stability intent, but long-term stability is unproven
+5. StopReason availability: StopReason enum is feature-gated behind `unstable_protocol_v2`; confirm which values Goose's current implementation actually emits
+6. Long-term stability is **unverified** — ACP is versioned (wire v1) which implies stability intent, but observed history is limited
 
 ### Runner-up: Gemini CLI
 
