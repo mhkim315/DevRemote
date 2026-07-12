@@ -13,6 +13,8 @@ const (
 	maxDiscriminators    = 16
 	maxFieldShapeChanges = 8
 	maxDiscriminatorLen  = 80
+	maxEvidenceRecords   = contract.MaxBatchRecords // 5000
+	maxEvidenceBytes     = contract.MaxBatchBytes   // 8 MiB
 )
 
 // ── EvidenceCollector ──
@@ -30,11 +32,14 @@ func NewEvidenceCollector() *EvidenceCollector {
 
 // ── CollectDrift ──
 
-// CollectDrift populates DriftEvidence from a set of observed records. It
-// extracts unknown discriminators and field shape hints, bounded by the
-// evidence caps. No raw record content escapes.
+// CollectDrift populates DriftEvidence from the provided records. Records are
+// bounded via contract.AcceptRecord before JSON parsing; oversized records are
+// skipped and tracked as truncation. Unknown discriminators and field shape
+// hints are extracted within their respective caps. No raw record content
+// escapes.
 func (ec *EvidenceCollector) CollectDrift(
 	report *CompatibilityReport,
+	records []contract.RawRecord,
 	knownDiscriminators []string,
 	knownFields map[string]string, // field path → expected JSON type
 ) {
@@ -42,14 +47,16 @@ func (ec *EvidenceCollector) CollectDrift(
 		return
 	}
 	report.DriftEvidence.UnknownDiscriminators = ec.collectUnknownDiscriminators(
-		nil, knownDiscriminators)
+		records, knownDiscriminators)
 	report.DriftEvidence.FieldShapeChanges = ec.collectFieldShapeHints(
-		nil, knownFields)
+		records, knownFields)
 }
 
 // collectUnknownDiscriminators scans records for first-level discriminator
 // values (e.g. the "type" key) not in the known set. Each discriminator is
 // bounded and sanitized; the total count is capped at maxDiscriminators.
+// Records are bounded via AcceptRecord before parsing; oversized records are
+// skipped.
 func (ec *EvidenceCollector) collectUnknownDiscriminators(
 	records []contract.RawRecord,
 	known []string,
@@ -60,7 +67,18 @@ func (ec *EvidenceCollector) collectUnknownDiscriminators(
 	}
 
 	var found []string
-	for _, rec := range records {
+	byteTotal := 0
+	for i, rec := range records {
+		if i >= maxEvidenceRecords {
+			break
+		}
+		if !contract.AcceptRecord(rec) {
+			continue // skip oversized records
+		}
+		byteTotal += len(rec.Bytes)
+		if byteTotal > maxEvidenceBytes {
+			break
+		}
 		if len(found) >= maxDiscriminators {
 			break
 		}
@@ -113,6 +131,7 @@ func firstDiscriminator(raw []byte) string {
 // collectFieldShapeHints checks known field paths against the actual JSON
 // types observed in records. Only type information is collected (e.g.
 // "expected string, got array") — field values are never captured.
+// Records are bounded via AcceptRecord before parsing.
 func (ec *EvidenceCollector) collectFieldShapeHints(
 	records []contract.RawRecord,
 	knownFields map[string]string,
@@ -122,7 +141,18 @@ func (ec *EvidenceCollector) collectFieldShapeHints(
 	}
 
 	var hints []string
-	for _, rec := range records {
+	byteTotal := 0
+	for i, rec := range records {
+		if i >= maxEvidenceRecords {
+			break
+		}
+		if !contract.AcceptRecord(rec) {
+			continue
+		}
+		byteTotal += len(rec.Bytes)
+		if byteTotal > maxEvidenceBytes {
+			break
+		}
 		if len(hints) >= maxFieldShapeChanges {
 			break
 		}
