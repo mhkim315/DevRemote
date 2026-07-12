@@ -28,21 +28,17 @@ func validPatchBytes() []byte {
 new file mode 100644
 --- /dev/null
 +++ b/internal/agent/adapters/claude/v3_0_0/adapter.go
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,18 @@
 +package v3_0_0
-+
 +import (
-+\t"context"
-+\t"devremote/companion-daemon/internal/agent"
-+\t"devremote/companion-daemon/internal/agent/contract"
++	"context"
++	"devremote/companion-daemon/internal/agent"
++	"devremote/companion-daemon/internal/agent/contract"
 +)
-+
 +type Adapter struct{}
-+
 +var _ contract.AgentAdapter = (*Adapter)(nil)
-+
 +func (a *Adapter) Descriptor() contract.AgentAdapterDescriptor {
-+\treturn contract.AgentAdapterDescriptor{Name: "claude", Provider: "Claude Code", ContractVersion: contract.ContractVersion, SupportedVersions: []string{"3.0.0"}, Capabilities: []contract.AdapterCapability{contract.CapEvents, contract.CapStatus}}
++	return contract.AgentAdapterDescriptor{Name: "claude", Provider: "Claude Code", ContractVersion: contract.ContractVersion, SupportedVersions: []string{"3.0.0"}, Capabilities: []contract.AdapterCapability{contract.CapEvents, contract.CapStatus}}
 +}
 +func (a *Adapter) Detect(_ context.Context, _ contract.SessionContext) (contract.AgentIdentity, error) { return contract.AgentIdentity{Kind: "claude", Confidence: 0.9}, nil }
 +func (a *Adapter) DiscoverSessions(_ context.Context, _ contract.DiscoveryInput) ([]contract.DiscoveredSession, error) { return nil, nil }
@@ -50,8 +46,15 @@ new file mode 100644
 +func (a *Adapter) NormalizeEvent(_ context.Context, _ contract.RawRecord) (contract.AgentEvent, contract.DegradedInfo) { return contract.AgentEvent{Type: agent.EventUnknown, Confidence: 0.2}, contract.OK() }
 +func (a *Adapter) DetectApproval(_ context.Context, _ []contract.AgentEvent) ([]contract.AgentApproval, error) { return nil, nil }
 +func (a *Adapter) GetStatus(_ context.Context, _ contract.StatusInput) (contract.StatusResult, error) { return contract.StatusResult{Status: agent.StatusUnknown}, nil }
-+
 +const supportedVersion = "3.0.0"
+diff --git a/internal/agent/adapters/claude/v3_0_0/adapter_test.go b/internal/agent/adapters/claude/v3_0_0/adapter_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/agent/adapters/claude/v3_0_0/adapter_test.go
+@@ -0,0 +1,4 @@
++package v3_0_0
++import "testing"
++func TestConformance(t *testing.T) {}
 `)
 }
 
@@ -87,7 +90,7 @@ func TestPatch_MalformedRejected(t *testing.T) {
 func TestPatch_ValidParses(t *testing.T) {
 	ops, err := ParsePatch(validPatchBytes())
 	if err != nil { t.Fatalf("valid patch: %v", err) }
-	if len(ops) != 1 { t.Fatalf("got %d ops", len(ops)) }
+	if len(ops) < 2 { t.Fatalf("got %d ops, want 2", len(ops)) }
 	if ops[0].DiffPath != "internal/agent/adapters/claude/v3_0_0/adapter.go" {
 		t.Errorf("path=%q", ops[0].DiffPath)
 	}

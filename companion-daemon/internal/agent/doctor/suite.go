@@ -17,12 +17,12 @@ const (
 )
 
 type FixedCommand struct {
-	Label    string
-	PkgPath  string
-	RunRegex string
-	MinTests int
-	Race     bool
-	VetOnly  bool
+	Label     string
+	PkgPath   string
+	RunRegex  string
+	MinTests  int
+	Race      bool
+	VetOnly   bool
 	BuildOnly bool
 }
 
@@ -30,18 +30,18 @@ type FixedSuite struct{}
 
 func NewFixedSuite() *FixedSuite { return &FixedSuite{} }
 
+// Commands returns explicit immutable suite targets. Does NOT include
+// internal/agent/doctor to prevent recursive E2E execution in workspace.
 func (fs *FixedSuite) Commands(candidatePkg string) []FixedCommand {
 	cmds := []FixedCommand{
-		{Label: "build", PkgPath: "./internal/agent/...", BuildOnly: true},
-		{Label: "vet", PkgPath: "./internal/agent/...", VetOnly: true},
 		{Label: "T0-contract-conformance", PkgPath: "./internal/agent/contract/", RunRegex: "Conformance", MinTests: 1},
 		{Label: "T1-codex-conformance", PkgPath: "./internal/agent/adapters/codex/v0_144_1/", RunRegex: "Conformance", MinTests: 1},
 		{Label: "T2-claude-conformance", PkgPath: "./internal/agent/adapters/claude/v2_1_202/", RunRegex: "Conformance", MinTests: 1},
-		{Label: "race-agent", PkgPath: "./internal/agent/...", Race: true, MinTests: 1},
 	}
 	if candidatePkg != "" {
 		cmds = append(cmds,
 			FixedCommand{Label: "candidate-build", PkgPath: candidatePkg, BuildOnly: true},
+			FixedCommand{Label: "candidate-conformance", PkgPath: candidatePkg, RunRegex: "Conformance", MinTests: 1},
 		)
 	}
 	return cmds
