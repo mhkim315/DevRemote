@@ -150,7 +150,7 @@
           "toolCall": {
             "toolCallId": "<TOOL_CALL_ID>",
             "kind": "edit",
-            "status": "awaiting_permission",
+            "status": "pending",
             "title": "Edit file"
           },
           "options": [
@@ -196,7 +196,7 @@
           "update": {
             "sessionUpdate": "tool_call_update",
             "toolCallId": "<TOOL_CALL_ID>",
-            "status": "running",
+            "status": "in_progress",
             "kind": "edit",
             "title": "Editing file"
           }

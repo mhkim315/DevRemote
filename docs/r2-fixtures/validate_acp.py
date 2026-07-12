@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Validate Goose ACP fixture against the pinned ACP v1 JSON Schema.
 
-Usage: python3 validate_acp.py
+Requires: pip3 install jsonschema
 Pinned source: agent-client-protocol schema-v1.19.0, schema/v1/schema.json
 """
 
 import json, sys, os
+from jsonschema import validate, ValidationError, SchemaError
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCHEMA_PATH = os.path.join(SCRIPT_DIR, "acp-v1-schema.json")
@@ -15,144 +16,106 @@ def load_json(path):
     with open(path) as f:
         return json.load(f)
 
-def validate_against_schema(instance, schema, defs, path=""):
-    """Simple structural validation against ACP v1 schema $defs."""
-    errors = []
+def validate_instance(instance, schema, defs, label):
+    """Validate instance against a named schema definition."""
+    if isinstance(schema, str) and schema.startswith("#/$defs/"):
+        schema = defs[schema[len("#/$defs/"):]]
 
-    if "$ref" in schema:
-        ref = schema["$ref"]
-        if ref.startswith("#/$defs/"):
-            name = ref[len("#/$defs/"):]
-            if name in defs:
-                return validate_against_schema(instance, defs[name], defs, path)
-            else:
-                errors.append(f"{path}: unresolved $ref {ref}")
-                return errors
+    # Resolve all $ref in the schema before validation
+    resolved = resolve_refs(schema, defs)
 
-    schema_type = schema.get("type")
-    if schema_type:
-        if schema_type == "object" and not isinstance(instance, dict):
-            errors.append(f"{path}: expected object, got {type(instance).__name__}")
-            return errors
-        if schema_type == "array" and not isinstance(instance, list):
-            errors.append(f"{path}: expected array, got {type(instance).__name__}")
-            return errors
-        if schema_type == "string" and not isinstance(instance, str):
-            errors.append(f"{path}: expected string, got {type(instance).__name__}")
-            return errors
+    try:
+        validate(instance=instance, schema=resolved)
+        return []
+    except ValidationError as e:
+        return [f"{label}: {e.message} (at {'/'.join(str(p) for p in e.absolute_path)})"]
 
-    if isinstance(instance, dict) and "properties" in schema:
-        for prop_name, prop_schema in schema["properties"].items():
-            if prop_name in instance:
-                sub_errors = validate_against_schema(
-                    instance[prop_name], prop_schema, defs, f"{path}.{prop_name}"
-                )
-                errors.extend(sub_errors)
-        for req in schema.get("required", []):
-            if req not in instance:
-                errors.append(f"{path}: missing required field '{req}'")
-
-    if isinstance(instance, list) and "items" in schema:
-        for i, item in enumerate(instance):
-            sub_errors = validate_against_schema(
-                item, schema["items"], defs, f"{path}[{i}]"
-            )
-            errors.extend(sub_errors)
-
-    # Check oneOf / const values
-    if "oneOf" in schema:
-        matched = False
-        for variant in schema["oneOf"]:
-            if "const" in variant:
-                if instance == variant["const"]:
-                    matched = True
-                    break
-            elif "properties" in variant:
-                # Check discriminator
-                disc = schema.get("discriminator", {}).get("propertyName", "")
-                if disc and disc in instance:
-                    for vprop_name, vprop_schema in variant.get("properties", {}).items():
-                        if "const" in vprop_schema and instance.get(vprop_name) == vprop_schema["const"]:
-                            matched = True
-                            sub_errors = validate_against_schema(
-                                instance, variant, defs, path
-                            )
-                            errors.extend(sub_errors)
-                            break
-                    if matched:
-                        break
-        # Don't error on oneOf match failure; this is a best-effort structural check
-
-    return errors
+def resolve_refs(schema, defs):
+    """Recursively resolve $ref pointers in a schema."""
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            ref = schema["$ref"]
+            if ref.startswith("#/$defs/"):
+                name = ref[len("#/$defs/"):]
+                if name in defs:
+                    resolved = resolve_refs(defs[name], defs)
+                    # Merge any other keys alongside $ref
+                    rest = {k: v for k, v in schema.items() if k != "$ref"}
+                    if rest:
+                        resolved = {**resolved, **rest}
+                    return resolved
+            return schema
+        return {k: resolve_refs(v, defs) for k, v in schema.items()}
+    elif isinstance(schema, list):
+        return [resolve_refs(item, defs) for item in schema]
+    return schema
 
 def main():
-    schema = load_json(SCHEMA_PATH)
+    schema_doc = load_json(SCHEMA_PATH)
     fixture = load_json(FIXTURE_PATH)
-    defs = schema.get("$defs", {})
+    defs = schema_doc.get("$defs", {})
     all_errors = []
-
     examples = fixture.get("examples", {})
-    for name, example_group in examples.items():
-        if not isinstance(example_group, dict):
-            continue
-        for key, value in example_group.items():
-            if key.startswith("_"):
-                continue
-            if not isinstance(value, dict):
-                continue
 
-            # Unwrap JSON-RPC envelope: requests have params, responses have result
-            instance = value
-            prefix = f"{name}.{key}"
+    # ── Positive validations ──
 
-            # Map example names to schema types (more specific first)
-            type_map = [
-                ("permission_option", "example", "PermissionOption", None),
-                ("request_permission", "request", "RequestPermissionRequest", "params"),
-                ("request_permission", "response_selected", "RequestPermissionResponse", "result"),
-                ("request_permission", "response_cancelled", "RequestPermissionResponse", "result"),
-                ("session_update_tool_call", "notification", "SessionUpdate", "params"),
-            ]
+    # 1. PermissionOption
+    opt = examples.get("permission_option", {}).get("example")
+    if opt:
+        all_errors.extend(validate_instance(opt, defs["PermissionOption"], defs, "permission_option.example"))
 
-            schema_type = None
-            envelope_key = None
-            for ek_name, ek_key, st, ek2 in type_map:
-                if ek_name in name and ek_key == key:
-                    schema_type = st
-                    envelope_key = ek2
-                    break
+    # 2. RequestPermissionRequest (unwrap JSON-RPC envelope)
+    req = examples.get("request_permission", {}).get("request", {})
+    if "params" in req:
+        all_errors.extend(validate_instance(req["params"], defs["RequestPermissionRequest"], defs, "request_permission.request.params"))
 
-            if schema_type and schema_type in defs:
-                if envelope_key and envelope_key in value:
-                    instance = value[envelope_key]
-                    prefix = f"{prefix}.{envelope_key}"
-                errors = validate_against_schema(instance, defs[schema_type], defs, prefix)
-                all_errors.extend(errors)
+    # 3. RequestPermissionResponse — selected outcome
+    res_sel = examples.get("request_permission", {}).get("response_selected", {})
+    if "result" in res_sel:
+        all_errors.extend(validate_instance(res_sel["result"], defs["RequestPermissionResponse"], defs, "request_permission.response_selected.result"))
 
-    # Specific wire-format checks
-    # PermissionOption must use camelCase optionId (not snake_case option_id)
-    perm_opt = examples.get("permission_option", {}).get("example", {})
-    if "option_id" in perm_opt:
-        all_errors.append("permission_option.example: wire format must use 'optionId' (camelCase), not 'option_id' (Rust snake_case)")
-    if "optionId" not in perm_opt:
-        all_errors.append("permission_option.example: missing required wire field 'optionId'")
+    # 4. RequestPermissionResponse — cancelled outcome
+    res_canc = examples.get("request_permission", {}).get("response_cancelled", {})
+    if "result" in res_canc:
+        all_errors.extend(validate_instance(res_canc["result"], defs["RequestPermissionResponse"], defs, "request_permission.response_cancelled.result"))
 
-    # ToolCallUpdate must use toolCallId
-    tool_call = examples.get("session_update_tool_call", {}).get("notification", {}).get("params", {}).get("update", {}).get("content", {})
-    if "tool_call_id" in tool_call:
-        all_errors.append("tool_call_update: wire format must use 'toolCallId', not 'tool_call_id'")
+    # 5. SessionUpdate (tool_call_update) — validate params.update, not params
+    su = examples.get("session_update_tool_call", {}).get("notification", {})
+    if "params" in su and "update" in su["params"]:
+        all_errors.extend(validate_instance(su["params"]["update"], defs["SessionUpdate"], defs, "session_update_tool_call.notification.params.update"))
 
-    # StopReason: error must not appear as a documented value
+    # ── StopReason validation ──
     sr_values = set()
     for o in defs.get("StopReason", {}).get("oneOf", []):
         if "const" in o:
             sr_values.add(o["const"])
     stop_reason = examples.get("stop_reason", {})
-    for k, v in stop_reason.items():
-        if k == "_values" and isinstance(v, list):
-            for val in v:
-                if val not in sr_values and val != "Other(String)":
-                    all_errors.append(f"stop_reason._values: '{val}' is not in ACP v1 StopReason enum ({sorted(sr_values)})")
+    for val in stop_reason.get("_values", []):
+        if val not in sr_values:
+            all_errors.append(f"stop_reason._values: '{val}' is not in ACP v1 StopReason enum (valid: {sorted(sr_values)})")
+    if "Other(String)" in stop_reason.get("_values", []):
+        all_errors.append("stop_reason._values: 'Other(String)' is not an ACP v1 StopReason value. Remove it.")
+
+    # ── Wire format checks (examples section only — _wire_traceability may reference Rust names) ──
+    examples_json = json.dumps(fixture.get("examples", {}))
+    if "option_id" in examples_json:
+        all_errors.append("Fixture examples contain snake_case 'option_id' — must use camelCase 'optionId'")
+    if '"toolCallId"' not in examples_json:
+        all_errors.append("Fixture examples missing 'toolCallId' (wire field name for tool call identity)")
+
+    # ── Negative regression tests ──
+    neg_tests = [
+        ({"optionId": "x", "name": "x", "kind": "NOT_A_KIND"}, defs["PermissionOption"], "negative: invalid permission kind"),
+        ({"optionId": "x", "name": "x"}, defs["PermissionOption"], "negative: missing required 'kind'"),
+        ({"outcome": {"outcome": "invented", "optionId": "x"}}, defs["RequestPermissionResponse"], "negative: unknown outcome discriminator"),
+        ({"outcome": {"outcome": "selected"}}, defs["RequestPermissionResponse"], "negative: selected outcome missing optionId"),
+        ({"sessionUpdate": "invented", "toolCallId": "x"}, defs["SessionUpdate"], "negative: unknown sessionUpdate discriminator"),
+        ({"option_id": "x", "name": "x", "kind": "allow_once"}, defs["PermissionOption"], "negative: snake_case option_id instead of optionId"),
+    ]
+    for instance, schema, label in neg_tests:
+        errs = validate_instance(instance, schema, defs, label)
+        if not errs:
+            all_errors.append(f"{label}: FAILED — invalid fixture was accepted (validator fail-open)")
 
     if all_errors:
         print(f"VALIDATION FAILED: {len(all_errors)} error(s)")
@@ -160,7 +123,7 @@ def main():
             print(f"  - {e}")
         sys.exit(1)
     else:
-        print("VALIDATION PASSED")
+        print(f"VALIDATION PASSED ({len(neg_tests)} negative regression tests all correctly rejected)")
         sys.exit(0)
 
 if __name__ == "__main__":

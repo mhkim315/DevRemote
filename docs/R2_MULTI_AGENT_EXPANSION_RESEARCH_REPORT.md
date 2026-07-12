@@ -21,7 +21,7 @@ Every claim in this report is tagged with one of:
 
 | Provider | Exact source | Retrieval | License |
 |---|---|---|---|
-| Goose/ACP | **Wire protocol v1**. Schema: [ACP v1 1.4.0](https://docs.rs/agent-client-protocol-schema/1.4.0/), [PermissionOption](https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/struct.PermissionOption.html), [RequestPermissionOutcome](https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/enum.RequestPermissionOutcome.html), [StopReason](https://docs.rs/agent-client-protocol-schema/latest/agent_client_protocol_schema/v2/enum.StopReason.html), [ACP spec](https://agentclientprotocol.com/get-started/architecture) | 2026-07-12 | Apache-2.0 |
+| Goose/ACP | **Wire protocol v1**. Schema: [ACP v1 schema-v1.19.0](https://raw.githubusercontent.com/agentclientprotocol/agent-client-protocol/schema-v1.19.0/schema/v1/schema.json) (local copy: `docs/r2-fixtures/acp-v1-schema.json`), [ACP architecture](https://agentclientprotocol.com/get-started/architecture) | 2026-07-12 | Apache-2.0 |
 | Gemini CLI | Pinned commit **e09410b6** (2026-04-10): [hooks/reference.md](https://github.com/google-gemini/gemini-cli/blob/e09410b6/docs/hooks/reference.md), [writing-hooks.md](https://github.com/google-gemini/gemini-cli/blob/e09410b6/docs/hooks/writing-hooks.md) | 2026-07-12 | Apache-2.0 |
 | OpenCode | [dev.opencode.ai/docs/plugins](https://dev.opencode.ai/docs/plugins/), [dev.opencode.ai/docs/server](https://dev.opencode.ai/docs/server/), [mcp-cli #502](https://github.com/theshadow27/mcp-cli/issues/502) | 2026-07-12 | MIT |
 | Cline | [docs.cline.bot/sdk/events](https://docs.cline.bot/sdk/events), [cline.bot/blog/cline-v3-36-hooks](https://cline.bot/blog/cline-v3-36-hooks), [npm @clinebot/agents](https://www.npmjs.com/package/@clinebot/agents) | 2026-07-12 | Apache-2.0 |
@@ -39,7 +39,7 @@ For each agent and semantic event, four dimensions are reported SEPARATELY:
 
 Values: `yes`, `no`, `inferred`, `unverified`, `unavailable`
 
-### Goose (ACP wire protocol v1, schema 1.4.0)
+### Goose (ACP wire protocol v1, schema-v1.19.0)
 
 | Event | R | O | C | A | Evidence |
 |---|---|---|---|---|---|
@@ -48,14 +48,14 @@ Values: `yes`, `no`, `inferred`, `unverified`, `unavailable`
 | thinking | yes | `documented` — agent_thought_chunk notification | `inferred` | `no` — advisory only | ACP prompt lifecycle |
 | tool_call_started | yes | `documented` — tool_call notification with status "pending" | `inferred` | `no` — advisory only | ACP session/update spec |
 | tool_call_finished | yes | `documented` — tool_call_update with status "completed"/"failed" | `inferred` | `no` — advisory only | ACP session/update spec |
-| approval_requested | yes | `documented` — session/request_permission with toolCall.id + options + sessionId | `inferred` — sessionId present; managed-launch not yet proven | **yes** — structured request with stable ID, authoritative user result (optionId), session binding | ACP RequestPermissionRequest type |
+| approval_requested | yes | `documented` — session/request_permission with toolCallId + options + sessionId | `inferred` — sessionId present; managed-launch not yet proven | **yes** — structured request with stable toolCallId, authoritative user result (optionId in SelectedPermissionOutcome), session binding | ACP v1 schema RequestPermissionRequest + RequestPermissionOutcome |
 | approval_resolved | yes | `documented` — client response with chosen optionId | `inferred` | **yes** — authoritative user decision | ACP RequestPermission response |
 | completed | yes | `documented` — stopReason "end_turn" | `inferred` | `yes` — structured terminal signal | ACP prompt lifecycle |
 | failed | yes | `documented` — StopReason "cancelled" + JSON-RPC error handling | `inferred` | `yes` — structured terminal signal (but ACP v1 StopReason has no "error" value; failures use JSON-RPC errors or session error events) | ACP v1 schema + ACP architecture doc |
 | interrupted | yes | `documented` — stopReason "cancelled" | `inferred` | `yes` — structured terminal signal | ACP prompt lifecycle |
 | agent_started | yes | `documented` — session/new response | `inferred` | `no` — lifecycle event, not status authority | ACP architecture doc |
 
-**Approval verdict**: Goose ACP has a **dedicated, structured permission request/result protocol**. `session/request_permission` carries a stable `toolCall.id`, a `sessionId`, and a set of `options`. The client returns a chosen `optionId`. This is genuine structured approval evidence — the only one found among all researched agents beyond the accepted T1/T2.
+**Approval verdict**: Goose ACP has a **dedicated, structured permission request/result protocol**. `session/request_permission` carries a stable `toolCallId`, a `sessionId`, and typed `options` with `optionId`/`name`/`kind`. The client returns a chosen `optionId` in `SelectedPermissionOutcome`. This is genuine structured approval evidence — the only one found among all researched agents beyond the accepted T1/T2.
 
 ### Gemini CLI (hooks v1, documented 2026)
 
@@ -141,7 +141,7 @@ Values: `yes`, `no`, `inferred`, `unverified`, `unavailable`
 
 | Provider | Approval protocol | Structured request? | Stable approval ID? | Authoritative user result? | Session binding? | Verdict |
 |---|---|---|---|---|---|---|
-| **Goose (ACP)** | `session/request_permission` | **Yes** — dedicated bidirectional JSON-RPC | **Yes** — toolCall.id | **Yes** — optionId in client response | **Yes** — sessionId in params | **AVAILABLE** (documented) |
+| **Goose (ACP)** | `session/request_permission` | **Yes** — dedicated bidirectional JSON-RPC | **Yes** — toolCallId | **Yes** — optionId in SelectedPermissionOutcome | **Yes** — sessionId in params | **AVAILABLE** (schema-validated) |
 | **Codex (T1)** | `waiting_for_approval` event_msg | **Yes** — dedicated event type | **Yes** — approval_id | **Yes** — approval_resolved with resolution | **Yes** — session_id in meta | Accepted |
 | **Claude (T2)** | None | No | No | No | N/A | NOT ADVERTISED (§9) |
 | Gemini CLI | BeforeTool hook | **No** — policy/validation hook, not user approval | No | No | Inferred | **UNAVAILABLE** |
@@ -183,8 +183,8 @@ All 6 researched agents' documented event types map into the existing T0 closed 
 ```
 Observation → Design principle → Affected existing stage
 
-Goose ACP session/request_permission with stable toolCall.id + optionId
-→ structured approval with authoritative provenance (provider_protocol)
+Goose ACP session/request_permission with stable toolCallId + optionId (SelectedPermissionOutcome)
+→ structured approval (toolCallId, optionId, outcome discriminator) with authoritative provenance (provider_protocol)
 → future Goose adapter (separately authorized stage after R2)
 → T0: provenance = provider_protocol, approval = authoritative
 
@@ -290,12 +290,12 @@ All scenarios fit within the existing D1 repair sandbox (read-only source, versi
 ### Recommendation: Goose (ACP)
 
 Goose via ACP is the recommended third production adapter. Evidence:
-- **ACP is a public, multi-implementor protocol** (wire protocol v1) with SDK implementations in Rust, TypeScript, Python, and Java
+- **ACP is a public, multi-implementor protocol** (wire protocol v1, schema-v1.19.0) with SDK implementations in Rust, TypeScript, Python, and Java
 - **Wire compatibility** is determined by `initialize.protocolVersion` negotiation, not by crate artifact versions
-- **session/request_permission** is a dedicated, bidirectional JSON-RPC method with typed `PermissionOption` (option_id, name, kind), `RequestPermissionOutcome` (Selected { option_id } | Cancelled), and `sessionId` binding — the only documented structured approval protocol found beyond accepted T1 Codex
+- **session/request_permission** is a dedicated, bidirectional JSON-RPC method with typed `PermissionOption` (wire fields: `optionId`, `name`, `kind`), `RequestPermissionOutcome` (discriminator `outcome`: `"selected"` with `optionId` | `"cancelled"`), and `sessionId` binding — the only documented structured approval protocol found beyond accepted T1 Codex
 - **session/new → sessionId** provides stable session identity for Pokit correlation (managed launch required, same as T1/T2)
-- **tool_call + tool_call_update** with status state machine covers the full tool lifecycle
-- **StopReason** values: EndTurn, MaxTokens, MaxTurnRequests, Refusal, Cancelled, Other(String)
+- **tool_call + tool_call_update** with status state machine (pending → in_progress → completed | failed) covers the full tool lifecycle
+- **StopReason** (ACP v1): `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`
 
 ### Caveats (must be verified before adapter implementation)
 
