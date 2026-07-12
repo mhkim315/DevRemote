@@ -1,0 +1,148 @@
+{
+  "_provenance": {
+    "provider": "Goose (ACP — Agent Client Protocol)",
+    "spec_version": "ACP 0.1.1 / schema 0.10.3",
+    "implementations": [
+      "Goose (block/goose) — ACP server mode",
+      "Zed editor — ACP client",
+      "Devin — ACP custom agent"
+    ],
+    "source_permalinks": [
+      "https://agentclientprotocol.com/get-started/architecture",
+      "https://github.com/agentclientprotocol/agent-client-protocol/blob/5a094b24/docs/get-started/architecture.mdx",
+      "https://docs.rs/agent-client-protocol/0.1.1/x86_64-apple-darwin/agent_client_protocol/index.html",
+      "https://docs.rs/agent-client-protocol-schema/0.10.3/agent_client_protocol_schema/struct.RequestPermissionRequest.html",
+      "https://agentclientprotocol.github.io/typescript-sdk/types/RequestPermissionRequest.html",
+      "https://github.com/agentclientprotocol/java-sdk/blob/a3e979e1/acp-core/src/main/java/com/agentclientprotocol/sdk/spec/AcpClientSession.java"
+    ],
+    "retrieval_date": "2026-07-12",
+    "license": "Apache-2.0 (agent-client-protocol), Apache-2.0 (Goose)",
+    "capture_method": "copied from official ACP specification documentation examples",
+    "redactions": ["<SESSION_ID>", "<CWD>", "<PROJECT_PATH>", "<FILE_PATH>"],
+    "conclusions_supported": [
+      "ACP defines a structured JSON-RPC 2.0 protocol for agent-client communication",
+      "session/new creates a session and returns a stable sessionId",
+      "session/request_permission is a dedicated bidirectional request for user approval with stable toolCall.id, options array, and sessionId binding",
+      "session/update with tool_call_update carries tool status transitions (pending/running/completed/failed)",
+      "session/prompt with stopReason provides structured completion/failure/cancellation signals"
+    ],
+    "conclusions_not_supported": [
+      "This fixture does NOT prove that Goose's current implementation matches every ACP method exactly",
+      "This fixture does NOT prove Pokit-session to Goose-session correlation (requires managed launch)",
+      "This fixture does NOT prove ACP spec stability over time (version drift risk remains)",
+      "This fixture does NOT prove that all ACP implementors (Goose, Zed, Devin) behave identically"
+    ]
+  },
+
+  "_evidence_classification": {
+    "session_new": "documented — copied from official ACP architecture example",
+    "session_prompt": "documented — described in ACP prompt turn lifecycle docs",
+    "session_update_tool_call": "documented — structure from ACP notification spec",
+    "request_permission": "documented — structure from ACP RequestPermissionRequest type definition",
+    "stop_reason": "documented — described in ACP prompt turn lifecycle docs"
+  },
+
+  "examples": {
+    "session_new": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/new",
+        "params": {
+          "cwd": "<CWD>",
+          "mcpServers": []
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "<SESSION_ID>"
+        }
+      }
+    },
+
+    "session_prompt": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "<SESSION_ID>",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "<REDACTED_PROMPT>"
+            }
+          ]
+        }
+      }
+    },
+
+    "session_update_tool_call": {
+      "notification": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "<SESSION_ID>",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "content": {
+              "id": "<TOOL_CALL_ID>",
+              "status": "running",
+              "location": {
+                "filePath": "<FILE_PATH>",
+                "lineStart": 42,
+                "lineEnd": 45
+              }
+            }
+          }
+        }
+      },
+      "status_values": ["pending", "running", "completed", "failed", "awaiting_permission"]
+    },
+
+    "request_permission": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "<SESSION_ID>",
+          "toolCall": {
+            "id": "<TOOL_CALL_ID>",
+            "status": "awaiting_permission",
+            "location": {
+              "filePath": "<FILE_PATH>",
+              "lineStart": 42,
+              "lineEnd": 45
+            }
+          },
+          "options": [
+            {"id": "allow", "label": "Allow once"},
+            {"id": "allow_always", "label": "Always allow"},
+            {"id": "deny", "label": "Deny"}
+          ]
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "optionId": "allow"
+        }
+      }
+    },
+
+    "session_prompt_response": {
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "stopReason": "end_turn"
+        }
+      },
+      "stop_reason_values": ["end_turn", "cancelled", "max_tokens", "error"]
+    }
+  }
+}

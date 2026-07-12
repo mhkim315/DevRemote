@@ -1,0 +1,53 @@
+{
+  "_manifest": "R2 fixture inventory",
+  "_retrieval_date": "2026-07-12",
+  "fixtures": [
+    {
+      "file": "goose-acp-protocol.json",
+      "provider": "Goose (ACP — Agent Client Protocol)",
+      "version": "ACP spec 0.1.1 / schema 0.10.3",
+      "source_type": "official specification documentation examples",
+      "license": "Apache-2.0",
+      "status": "available — documented",
+      "supports": "structured session lifecycle, tool call state machine, dedicated permission request/result protocol"
+    },
+    {
+      "file": "gemini-cli-hooks.json",
+      "provider": "Gemini CLI",
+      "version": "hooks v1 (documented 2026, no release tag available)",
+      "source_type": "official hooks reference documentation",
+      "license": "Apache-2.0",
+      "status": "available — documented",
+      "supports": "session lifecycle events, policy/validation hooks (NOT approval)",
+      "explicitly_absent": "no dedicated permission request/result event; BeforeTool is policy hook; Notification hook cannot block or grant permissions"
+    }
+  ],
+  "unavailable_fixtures": [
+    {
+      "provider": "OpenCode",
+      "reason": "No official SSE event schema documentation with reproducible JSON examples found. Event types documented in plugin system and community wikis but not as a versioned protocol specification.",
+      "unverified_claims": "Exact SSE event payload structure, status vocabulary completeness, session ID stability across server restart"
+    },
+    {
+      "provider": "Cline",
+      "reason": "Hook payload documentation at docs.cline.bot references v3.36+ but no versioned JSON schema or reproducible test fixtures found. SDK events documented in npm packages (@clinebot/agents) but no protocol specification separate from implementation.",
+      "unverified_claims": "Exact hook JSON payload structure, CLI-vs-IDE hook behavior equivalence, task ID stability"
+    },
+    {
+      "provider": "OpenHands",
+      "reason": "Hooks system documented at docs.openhands.dev but under active SDK restructuring. No versioned hook schema specification or reproducible test fixtures found.",
+      "unverified_claims": "EventStream ID persistence, hook config schema stability, conversation_id lifecycle"
+    },
+    {
+      "provider": "Aider",
+      "reason": "No structured event protocol exists. .aider.chat.history.md is a conversation log file, not an event protocol. Official documentation confirms this is a markdown chat history file only.",
+      "unverified_claims": "Any structured tool/status/approval event classification from markdown parsing"
+    }
+  ],
+  "no_fixture_possible": [
+    {
+      "provider": "Aider",
+      "reason": "No structured event protocol is documented or implemented. Markdown chat history is not an event source. Only PTY/byte-stream observation is available."
+    }
+  ]
+}
