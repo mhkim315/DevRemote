@@ -159,8 +159,10 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 				newEvents, readErr := ReadNewEvents(cursor, parser, 500)
 				if readErr == nil && len(newEvents) > 0 {
 					s.events.Append(id, newEvents)
-					// T3: project accepted events into Transcript with correlation.
-					if s.transcript != nil && logRef.Agent != "" {
+					// T3: project ONLY accepted-adapter events (codex, claude).
+					// Gemini and Antigravity have no accepted T0 adapter and
+					// must not produce semantic Transcript segments.
+					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
 					}
 					parsedNewEvents = true
@@ -412,12 +414,24 @@ func convertToAgentEvents(legacy []models.AgentEvent, agentKind string) []agent.
 			AgentKind:  agentKind,
 			Type:       mapLegacyType(e.Type),
 			Text:       e.Detail,
-			Confidence: 0.9,
-			Provenance: "native_log",
+			Confidence: 0.0,           // not authoritative; provenance governs
+			Provenance: "native_log",   // accepted provenance tier: needs correlation
 			Timestamp:  ts,
 		})
 	}
 	return out
+}
+
+// isAcceptedAdapter returns true only for agent kinds that have an accepted
+// T0 contract.AgentAdapter in production (Codex v0.144.1, Claude v2.1.202).
+// Gemini, Antigravity, and unknown agents must not project semantic Transcript.
+func isAcceptedAdapter(kind string) bool {
+	switch kind {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
 }
 
 func mapLegacyType(t string) agent.AgentEventType {

@@ -7,19 +7,21 @@ import (
 
 // chunkQueue is a session-owned, bounded, single-worker queue for Recorder
 // PTY byte chunks. It guarantees:
-//   - Non-blocking enqueue (overflow → coalesced gap, never blocks Recorder)
+//   - Non-blocking enqueue (overflow → coalesced gap)
 //   - Single ordered worker (preserves chunk ordering)
 //   - Bounded event count and byte capacity
-//   - Deterministic shutdown via Close
+//   - Close/enqueue serialization (no send-on-closed-channel panic)
+//   - Worker completion signal for safe drain-before-clear
 type chunkQueue struct {
 	sessionID string
 	svc       *Service
 
-	mu       sync.Mutex
-	chunks   chan chunkItem
-	closed   bool
-	dropped  int64 // total chunks dropped due to overflow
-	overflow bool  // true if overflow has occurred since last gap emission
+	mu     sync.Mutex
+	chunks chan chunkItem
+	closed bool
+	done   chan struct{} // closed when worker exits
+	dropped int64
+	overflow bool
 }
 
 type chunkItem struct {
@@ -28,27 +30,24 @@ type chunkItem struct {
 }
 
 const (
-	// chunkQueueCapacity is the maximum number of queued chunks before overflow.
-	chunkQueueCapacity = 256
-
-	// chunkQueueMaxChunkBytes is the maximum bytes per chunk; larger chunks are truncated.
+	chunkQueueCapacity      = 256
 	chunkQueueMaxChunkBytes = 65536
 )
 
-// newChunkQueue creates a bounded queue and starts its worker goroutine.
 func newChunkQueue(sessionID string, svc *Service) *chunkQueue {
 	q := &chunkQueue{
 		sessionID: sessionID,
 		svc:       svc,
 		chunks:    make(chan chunkItem, chunkQueueCapacity),
+		done:      make(chan struct{}),
 	}
 	go q.worker()
 	return q
 }
 
-// enqueue attempts to deliver a chunk to the projector worker.
-// It never blocks: if the queue is full, the chunk is dropped and a
-// coalesced gap is emitted asynchronously.
+// enqueue attempts to deliver a chunk. It never blocks. If the queue is
+// closed or full, the chunk is dropped. Send-on-closed-channel panic is
+// prevented by checking closed under lock.
 func (q *chunkQueue) enqueue(data []byte, observedAt time.Time) {
 	if len(data) > chunkQueueMaxChunkBytes {
 		data = data[:chunkQueueMaxChunkBytes]
@@ -56,19 +55,23 @@ func (q *chunkQueue) enqueue(data []byte, observedAt time.Time) {
 	chunk := make([]byte, len(data))
 	copy(chunk, data)
 
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return
+	}
 	select {
 	case q.chunks <- chunkItem{data: chunk, observedAt: observedAt}:
-		// Delivered.
+		q.mu.Unlock()
 	default:
-		// Overflow: drop and mark.
-		q.mu.Lock()
 		q.dropped++
 		q.overflow = true
 		q.mu.Unlock()
 	}
 }
 
-// close shuts down the worker and drains remaining chunks.
+// close shuts down the worker and waits for it to drain. Safe to call
+// multiple times. After close, enqueue is a no-op.
 func (q *chunkQueue) close() {
 	q.mu.Lock()
 	if q.closed {
@@ -78,21 +81,26 @@ func (q *chunkQueue) close() {
 	q.closed = true
 	q.mu.Unlock()
 	close(q.chunks)
+	<-q.done // wait for worker to drain and exit
 }
 
-// worker processes chunks in order on a single goroutine.
+// isClosed reports whether close has been called.
+func (q *chunkQueue) isClosed() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.closed
+}
+
 func (q *chunkQueue) worker() {
+	defer close(q.done)
 	for item := range q.chunks {
-		// Emit any coalesced overflow gap before processing this chunk.
 		q.mu.Lock()
 		overflow := q.overflow
 		q.overflow = false
-		dropped := q.dropped
 		q.mu.Unlock()
 
 		if overflow {
 			q.svc.emitDegraded(q.sessionID, "byte-stream chunks dropped (queue overflow)", item.observedAt)
-			_ = dropped
 		}
 
 		q.svc.processChunk(q.sessionID, item.data, item.observedAt)

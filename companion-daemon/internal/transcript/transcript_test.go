@@ -180,11 +180,10 @@ func TestAgentEventProjectorBasic(t *testing.T) {
 		ID:         "evt-001",
 		SessionID:  "test:session",
 		AgentKind:  "claude",
-		Type:       agent.EventAssistantMessage,
-		Text:       "Here is the result of your query.",
+		Type:       agent.EventAgentStarted,
 		Confidence: 0.95,
 		Timestamp:  time.Now(),
-		Provenance: "native_log",
+		Provenance: "provider_protocol", // required for primary semantic
 	}
 
 	seg := proj.Project(event, "test:session")
@@ -197,22 +196,36 @@ func TestAgentEventProjectorBasic(t *testing.T) {
 	if seg.Source != SourceAgentEvent {
 		t.Errorf("expected SourceAgentEvent, got %s", seg.Source)
 	}
-	if seg.Text != "Here is the result of your query." {
-		t.Errorf("unexpected text: %q", seg.Text)
-	}
 	if seg.AgentEventRef != "evt-001" {
 		t.Errorf("expected AgentEventRef='evt-001', got %q", seg.AgentEventRef)
+	}
+}
+
+func TestAgentEventProjectorRejectsNativeLog(t *testing.T) {
+	proj := NewAgentEventProjector()
+	event := agent.AgentEvent{
+		ID:         "evt-nl",
+		SessionID:  "test:session",
+		AgentKind:  "claude",
+		Type:       agent.EventAssistantMessage,
+		Text:       "should not appear",
+		Provenance: "native_log", // below provider_protocol threshold
+	}
+	seg := proj.Project(event, "test:session")
+	if seg != nil {
+		t.Error("native_log events must not produce semantic Transcript segments")
 	}
 }
 
 func TestAgentEventProjectorThinkingRedacted(t *testing.T) {
 	proj := NewAgentEventProjector()
 	event := agent.AgentEvent{
-		ID:        "evt-002",
-		SessionID: "test:session",
-		AgentKind: "claude",
-		Type:      agent.EventThinking,
-		Text:      "Let me think about this problem step by step...",
+		ID:         "evt-002",
+		SessionID:  "test:session",
+		AgentKind:  "claude",
+		Type:       agent.EventThinking,
+		Text:       "Let me think about this problem step by step...",
+		Provenance: "provider_protocol",
 	}
 
 	seg := proj.Project(event, "test:session")
@@ -227,12 +240,13 @@ func TestAgentEventProjectorThinkingRedacted(t *testing.T) {
 func TestAgentEventProjectorToolCallNameOnly(t *testing.T) {
 	proj := NewAgentEventProjector()
 	event := agent.AgentEvent{
-		ID:        "evt-003",
-		SessionID: "test:session",
-		AgentKind: "claude",
-		Type:      agent.EventToolCallStarted,
-		Text:      `{"command": "rm -rf /", "path": "/secret"}`,
-		ToolName:  "bash",
+		ID:         "evt-003",
+		SessionID:  "test:session",
+		AgentKind:  "claude",
+		Type:       agent.EventToolCallStarted,
+		Text:       `{"command": "rm -rf /", "path": "/secret"}`,
+		ToolName:   "bash",
+		Provenance: "provider_protocol",
 	}
 
 	seg := proj.Project(event, "test:session")
@@ -269,30 +283,32 @@ func TestAgentEventProjectorCrossSessionRejected(t *testing.T) {
 func TestAgentEventProjectorBatch(t *testing.T) {
 	proj := NewAgentEventProjector()
 	events := []agent.AgentEvent{
-		{ID: "e1", SessionID: "s", AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "one"},
-		{ID: "e2", SessionID: "other", AgentKind: "codex", Type: agent.EventAssistantMessage, Text: "skip"},
-		{ID: "e3", SessionID: "s", AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "three"},
+		{ID: "e1", SessionID: "s", AgentKind: "claude", Type: agent.EventAgentStarted, Provenance: "provider_protocol"},
+		{ID: "e2", SessionID: "other", AgentKind: "codex", Type: agent.EventAgentStarted, Provenance: "provider_protocol"},
+		{ID: "e3", SessionID: "s", AgentKind: "claude", Type: agent.EventAgentStarted, Provenance: "provider_protocol"},
 	}
 
 	segs := proj.ProjectBatch(events, "s")
 	if len(segs) != 2 {
 		t.Fatalf("expected 2 segments (one cross-session skipped), got %d", len(segs))
 	}
-	if segs[0].Text != "one" {
-		t.Errorf("expected 'one', got %q", segs[0].Text)
+	// Text is now structural markers, not raw event text.
+	if segs[0].Kind != KindAgentEvent {
+		t.Errorf("expected KindAgentEvent, got %s", segs[0].Kind)
 	}
-	if segs[1].Text != "three" {
-		t.Errorf("expected 'three', got %q", segs[1].Text)
+	if segs[1].Kind != KindAgentEvent {
+		t.Errorf("expected KindAgentEvent, got %s", segs[1].Kind)
 	}
 }
 
 func TestAgentEventProjectorUnknownType(t *testing.T) {
 	proj := NewAgentEventProjector()
 	event := agent.AgentEvent{
-		ID:        "evt-005",
-		SessionID: "test:session",
-		AgentKind: "unknown",
-		Type:      agent.EventUnknown,
+		ID:         "evt-005",
+		SessionID:  "test:session",
+		AgentKind:  "unknown",
+		Type:       agent.EventUnknown,
+		Provenance: "provider_protocol",
 	}
 
 	seg := proj.Project(event, "test:session")
@@ -300,30 +316,28 @@ func TestAgentEventProjectorUnknownType(t *testing.T) {
 		t.Fatal("unknown events should still be projected (ordering preserved)")
 	}
 	if seg.Kind != KindAgentEvent {
-		t.Errorf("expected KindAgentEvent for unknown, got %s", seg.Kind)
-	}
-	if seg.Text != "" {
-		t.Errorf("unknown event text must be empty, got %q", seg.Text)
+		t.Errorf("expected KindAgentEvent, got %s", seg.Kind)
 	}
 }
 
 func TestAgentEventProjectorUserMessageRedacted(t *testing.T) {
 	proj := NewAgentEventProjector()
-	// User message that looks like code (3+ code indicators).
 	event := agent.AgentEvent{
-		ID:        "evt-006",
-		SessionID: "test:session",
-		AgentKind: "claude",
-		Type:      agent.EventUserMessage,
-		Text:      "func main() { fmt.Println(\"hello\") } // package main import \"fmt\"",
+		ID:         "evt-006",
+		SessionID:  "test:session",
+		AgentKind:  "claude",
+		Type:       agent.EventUserMessage,
+		Text:       "func main() { fmt.Println(\"hello\") } // package main import \"fmt\"",
+		Provenance: "provider_protocol",
 	}
 
 	seg := proj.Project(event, "test:session")
 	if seg == nil {
 		t.Fatal("expected non-nil segment")
 	}
+	// User messages are always structural markers, never raw text.
 	if seg.Text == event.Text {
-		t.Error("code-like user message must be redacted")
+		t.Error("user message raw text must not be projected")
 	}
 }
 
@@ -549,7 +563,7 @@ func TestServiceProjectAgentEvents(t *testing.T) {
 	sid := "test:svc"
 
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
-		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "hello", Provenance: "native_log"},
+		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "hello", Provenance: "provider_protocol"},
 	})
 
 	list := svc.ListTranscript(sid)
@@ -584,8 +598,9 @@ func TestServiceBothSources(t *testing.T) {
 	sid := "test:svc"
 
 	svc.FeedBytes(sid, []byte("fallback output\n"), time.Now())
+	// Use provider_protocol provenance so the event passes the gate.
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
-		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "semantic output", Provenance: "native_log"},
+		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAgentStarted, Text: "started", Provenance: "provider_protocol"},
 	})
 
 	list := svc.ListTranscript(sid)
@@ -614,7 +629,7 @@ func TestServiceClearTranscript(t *testing.T) {
 
 	svc.FeedBytes(sid, []byte("data\n"), time.Now())
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
-		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "data", Provenance: "native_log"},
+		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "data", Provenance: "provider_protocol"},
 	})
 
 	if len(svc.ListTranscript(sid)) == 0 {
@@ -648,10 +663,10 @@ func TestServiceCrossSessionIsolation(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 
 	svc.ProjectAgentEvents("sessionA", []agent.AgentEvent{
-		{ID: "ea", SessionID: "sessionA", AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "A only", Provenance: "native_log"},
+		{ID: "ea", SessionID: "sessionA", AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "A only", Provenance: "provider_protocol"},
 	})
 	svc.ProjectAgentEvents("sessionB", []agent.AgentEvent{
-		{ID: "eb", SessionID: "sessionB", AgentKind: "codex", Type: agent.EventAssistantMessage, Text: "B only", Provenance: "native_log"},
+		{ID: "eb", SessionID: "sessionB", AgentKind: "codex", Type: agent.EventAssistantMessage, Text: "B only", Provenance: "provider_protocol"},
 	})
 
 	if len(svc.ListTranscript("sessionA")) != 1 {

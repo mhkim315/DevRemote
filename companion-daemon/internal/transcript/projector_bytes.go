@@ -32,7 +32,11 @@ type ByteStreamProjector struct {
 	ansiState ansiParseState
 
 	// inputActive suppresses bytes during terminal input (echo privacy).
-	inputActive bool
+	// Reference-counted: each BeginInput increments, each EndInput decrements.
+	// Suppression is active while ref > 0. This handles overlapping inputs
+	// safely without timing heuristics.
+	inputActive   bool
+	inputRefCount int
 
 	// tuiBurstActive suppresses bytes during TUI/alternate-screen regions.
 	tuiBurstActive bool
@@ -113,8 +117,31 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 	var segments []TranscriptSegment
 	i := 0
 	for i < len(data) {
-		// Input suppression: drop everything.
+		// Input suppression: drop bytes until the first newline after
+		// suppression began. The newline is the structural end-of-line
+		// marker, not a content match. If no newline arrives, the entire
+		// echo region is omitted (safe degradation).
 		if p.inputActive {
+			nlIdx := -1
+			for j := i; j < len(data); j++ {
+				if data[j] == '\n' {
+					nlIdx = j
+					break
+				}
+			}
+			if nlIdx >= 0 {
+				// Newline found: suppression ends after this byte.
+				p.totalSuppressed += int64(nlIdx - i + 1)
+				if p.inputRefCount > 0 {
+					p.inputRefCount--
+				}
+				if p.inputRefCount == 0 {
+					p.inputActive = false
+				}
+				i = nlIdx + 1
+				continue
+			}
+			// No newline in this chunk: suppress everything.
 			p.totalSuppressed += int64(len(data) - i)
 			return segments
 		}
@@ -331,6 +358,7 @@ func (p *ByteStreamProjector) BeginInput(sessionID string, observedAt time.Time)
 	p.crProgress.Reset()
 	p.crActive = false
 
+	p.inputRefCount++
 	p.inputActive = true
 	boundary := NewInputBoundarySegment(sessionID, observedAt)
 	return &boundary
@@ -339,7 +367,12 @@ func (p *ByteStreamProjector) BeginInput(sessionID string, observedAt time.Time)
 func (p *ByteStreamProjector) EndInput(sessionID string, observedAt time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.inputActive = false
+	if p.inputRefCount > 0 {
+		p.inputRefCount--
+	}
+	if p.inputRefCount == 0 {
+		p.inputActive = false
+	}
 }
 
 // ── TUI burst ──

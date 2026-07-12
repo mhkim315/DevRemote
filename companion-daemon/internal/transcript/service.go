@@ -188,17 +188,25 @@ func (s *Service) TranscriptStats(sessionID string) StoreStats {
 }
 
 // ClearTranscript removes all segments and shuts down the queue for a session.
+// Queue is drained first to prevent the worker from resurrecting deleted state.
 func (s *Service) ClearTranscript(sessionID string) {
+	// Close queue first — wait for drain before clearing store.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.store.Clear(sessionID)
-	if q, ok := s.queues[sessionID]; ok {
-		q.close()
+	q, hasQ := s.queues[sessionID]
+	if hasQ {
 		delete(s.queues, sessionID)
 	}
+	s.mu.Unlock()
+	if hasQ {
+		q.close() // blocks until worker exits and drain completes
+	}
+
+	// Now safe to clear store: no worker can append.
+	s.mu.Lock()
+	s.store.Clear(sessionID)
 	delete(s.byteProjs, sessionID)
 	delete(s.arbiters, sessionID)
+	s.mu.Unlock()
 }
 
 // ── Arbitration queries ──

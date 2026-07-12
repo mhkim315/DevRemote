@@ -25,7 +25,10 @@ func NewAgentEventProjector() *AgentEventProjector {
 }
 
 // Project converts a single contract.AgentEvent into a TranscriptSegment.
-// Returns nil if the event should not be projected (cross-session, empty).
+// Returns nil if the event should not be projected:
+//   - empty or mismatched SessionID
+//   - provenance is not from an accepted correlation path
+//   - correlation is unavailable (per T1/T2 acceptance)
 func (p *AgentEventProjector) Project(event agent.AgentEvent, sessionID string) *TranscriptSegment {
 	// Session binding: require non-empty, exact match.
 	if event.SessionID == "" {
@@ -33,6 +36,22 @@ func (p *AgentEventProjector) Project(event agent.AgentEvent, sessionID string) 
 	}
 	if event.SessionID != sessionID {
 		return nil // cross-session: reject
+	}
+
+	// Correlation gate: only events with provider-protocol or stronger
+	// provenance may enter the semantic Transcript. Native-log events
+	// from uncorrelated sessions (current T1/T2 state) are excluded.
+	// This gate opens when a T0 adapter establishes CorrelationProven
+	// or CorrelationManagedLaunch with provider_protocol provenance.
+	prov := contract.Provenance(event.Provenance)
+	if prov == "" || prov == contract.ProvenanceUnknown || prov.Advisory() {
+		return nil
+	}
+	// Only provider_protocol or stronger (runtime, provider_hook) may
+	// produce semantic Transcript segments. Native-log without correlation
+	// is insufficient.
+	if contract.ProvenanceRank(prov) < contract.ProvenanceRank(contract.ProvenanceProviderProtocol) {
+		return nil
 	}
 
 	eventType := string(event.Type)
@@ -82,8 +101,10 @@ type displayFields struct {
 	toolName string
 }
 
-// displayFieldsForEvent returns the closed allowlist projection for an event.
-// It NEVER returns arbitrary event.Text — only type-specific structural fields.
+// displayFieldsForEvent returns the closed structural-display allowlist.
+// NEVER projects arbitrary event.Text. Only structural markers are exposed.
+// Provider payloads (assistant body, approval body, prompts, tool I/O)
+// are excluded per T3 privacy contract.
 func displayFieldsForEvent(event agent.AgentEvent) displayFields {
 	switch event.Type {
 	case agent.EventAgentStarted:
@@ -102,33 +123,29 @@ func displayFieldsForEvent(event agent.AgentEvent) displayFields {
 		return displayFields{kind: KindAgentEvent, text: "Waiting for input"}
 
 	case agent.EventToolCallStarted:
-		// Tool name is identity metadata, safe to expose.
-		// Tool input is NEVER exposed.
-		return displayFields{kind: KindAgentEvent, toolName: event.ToolName}
+		// Tool name only — bounded identity metadata. Input never exposed.
+		return displayFields{kind: KindAgentEvent, toolName: sanitizeToolName(event.ToolName)}
 
 	case agent.EventToolCallFinished:
-		return displayFields{kind: KindAgentEvent, toolName: event.ToolName}
+		return displayFields{kind: KindAgentEvent, toolName: sanitizeToolName(event.ToolName)}
 
 	case agent.EventApprovalRequested:
-		// Approval prompt IS required for mobile UX decision.
-		// The adapter contract already redacts private content from Text.
-		// We include the prompt bounded to MaxTextBytes.
-		return displayFields{kind: KindAgentEvent, text: boundedText(event.Text, MaxTextBytes)}
+		// Approval lifecycle marker only. Body belongs to A1 scope.
+		return displayFields{kind: KindAgentEvent, text: "Approval requested"}
 
 	case agent.EventApprovalResolved:
 		return displayFields{kind: KindAgentEvent, text: "Approval resolved"}
 
 	case agent.EventAssistantMessage:
-		// Assistant message text is structural output.
-		// Adapter contract guarantees it is already redacted of private content.
-		return displayFields{kind: KindAgentEvent, text: boundedText(event.Text, MaxTextBytes)}
+		// Structural marker only — body is provider payload, not Transcript content.
+		return displayFields{kind: KindAgentEvent, text: "Message"}
 
 	case agent.EventUserMessage:
-		// User messages contain prompts — NEVER project.
+		// Prompts are NEVER exposed.
 		return displayFields{kind: KindAgentEvent, text: "[user input]"}
 
 	case agent.EventThinking:
-		// Thinking is private — NEVER project.
+		// Thinking is private.
 		return displayFields{kind: KindAgentEvent}
 
 	case agent.EventUnknown:
@@ -137,6 +154,14 @@ func displayFieldsForEvent(event agent.AgentEvent) displayFields {
 	default:
 		return displayFields{kind: KindUnknown}
 	}
+}
+
+// sanitizeToolName bounds and validates a tool name for display.
+func sanitizeToolName(name string) string {
+	if len(name) > 128 {
+		return name[:128]
+	}
+	return name
 }
 
 // ── Correlation and provenance validation ──

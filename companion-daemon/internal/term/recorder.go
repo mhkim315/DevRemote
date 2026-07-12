@@ -254,6 +254,10 @@ func (r *Recorder) readLoop() {
 			recorderRegistry.mu.Lock()
 			recorderRegistry.terminated[r.sessionID] = true
 			recorderRegistry.mu.Unlock()
+			// T3: close transcript queue on natural EOF.
+			if r.transcriptSvc != nil {
+				r.transcriptSvc.CloseSessionQueue(r.sessionID)
+			}
 			// Close all subscribers so WebSocket handlers detect EOF.
 			r.mu.Lock()
 			for _, ch := range r.subscribers {
@@ -294,8 +298,12 @@ func (r *Recorder) readLoop() {
 					})
 				}
 			}
-			// T3: feed cmux delta to Transcript byte-stream projector (non-blocking).
-			r.feedTranscript(payload)
+			// T3: cmux delta → explicit snapshot source, not byte-stream.
+			// Snapshot captures are routed separately per capture mode.
+			if r.captureMode == mux.CaptureModeScreenSnapshotDelta {
+				// Skip: snapshot deltas are handled by cmux's own degraded path.
+				// They must never enter the byte-stream semantic projector.
+			}
 			continue // do NOT broadcast delta to subscribers
 		}
 

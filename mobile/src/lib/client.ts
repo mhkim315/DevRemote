@@ -408,13 +408,44 @@ export interface TranscriptResponse {
   contractVersion: string;
 }
 
+const VALID_KINDS = ['agent_event', 'terminal_output', 'input_boundary', 'degraded', 'ui_omitted', 'unknown'];
+const VALID_SOURCES = ['agent_event', 'byte_stream', 'snapshot_delta', 'unknown'];
+
+function validateSegment(seg: any, expectedSessionID: string): TranscriptSegment | null {
+  if (!seg || typeof seg !== 'object') return null;
+  if (seg.sessionId !== expectedSessionID) return null;
+  if (typeof seg.id !== 'string' || seg.id.length === 0 || seg.id.length > 64) return null;
+  if (typeof seg.seq !== 'number' || seg.seq < 0) return null;
+  if (!VALID_KINDS.includes(seg.kind)) return null;
+  if (!VALID_SOURCES.includes(seg.source)) return null;
+  if (seg.text !== undefined && typeof seg.text !== 'string') return null;
+  if (seg.text && seg.text.length > 40000) return null; // bounded
+  if (seg.contractVersion !== 't3.1') return null;
+  return seg as TranscriptSegment;
+}
+
 function validateTranscriptResponse(data: any, expectedSessionID: string): TranscriptResponse | null {
   if (!data || typeof data !== 'object') return null;
   if (data.sessionId !== expectedSessionID) return null;
   if (!Array.isArray(data.semantic)) return null;
   if (data.contractVersion !== 't3.1') return null;
-  const validSources = ['agent_event', 'byte_stream', 'snapshot_delta', 'unknown'];
-  if (!validSources.includes(data.primarySource)) return null;
+  if (!VALID_SOURCES.includes(data.primarySource)) return null;
+  // Validate channel consistency: primarySource must match content.
+  if (data.primarySource === 'agent_event' && data.semantic.length > 0) {
+    const hasNonAgent = data.semantic.some((s: any) => s.kind !== 'agent_event' && s.kind !== 'unknown');
+    if (hasNonAgent) return null; // channel/source mismatch
+  }
+  // Validate each semantic segment.
+  for (const seg of data.semantic) {
+    if (!validateSegment(seg, expectedSessionID)) return null;
+  }
+  // Validate fallback if present.
+  if (data.fallback !== undefined) {
+    if (!Array.isArray(data.fallback)) return null;
+    for (const seg of data.fallback) {
+      if (!validateSegment(seg, expectedSessionID)) return null;
+    }
+  }
   return data as TranscriptResponse;
 }
 

@@ -192,6 +192,7 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   const [activeTab, setActiveTab] = useState<'terminal' | 'activity' | 'transcript'>('activity');
   const activeTabRef = useRef(activeTab);
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
+  const [fallbackEvents, setFallbackEvents] = useState<any[]>([]);
   const [newOutputCount, setNewOutputCount] = useState(0);
   const lastSeenSeqRef = useRef(0);
   const transcriptMaxSeqRef = useRef(0);
@@ -438,17 +439,29 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
         });
     };
 
-    // T3: fetch Transcript from the dedicated versioned API.
-    // The response is a TranscriptResponse envelope with semantic + fallback channels.
+    // T3: fetch Transcript with cursor pagination. The after parameter
+    // ensures we only fetch segments newer than the last seen Seq,
+    // avoiding the 1000-segment window problem.
     const fetchTranscript = () => {
-      getTranscript(session, token)
+      const cursor = transcriptMaxSeqRef.current;
+      getTranscript(session, token, cursor > 0 ? cursor : undefined)
         .then((resp: TranscriptResponse | null) => {
           if (resp && resp.semantic) {
-            // Merge semantic + fallback for display (separated by source in UI).
-            const all: TranscriptSegment[] = [...resp.semantic, ...(resp.fallback || [])];
-            setTranscriptEvents(all);
+            // Keep semantic (primary) and fallback (degraded terminal-output) as
+            // separate state. Incremental: append new segments, dedup by ID.
+            setTranscriptEvents((prev: any[]) => {
+              const seen = new Set(prev.map((e: any) => e.id));
+              const fresh = resp.semantic.filter((s: any) => !seen.has(s.id));
+              return [...prev, ...fresh].sort((a: any, b: any) => a.seq - b.seq);
+            });
+            setFallbackEvents((prev: any[]) => {
+              const seen = new Set(prev.map((e: any) => e.id));
+              const fresh = (resp.fallback || []).filter((s: any) => !seen.has(s.id));
+              return [...prev, ...fresh].sort((a: any, b: any) => a.seq - b.seq);
+            });
             setActivityError('');
-            const maxSeq = all.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
+            const allSeqs = [...resp.semantic, ...(resp.fallback || [])];
+            const maxSeq = allSeqs.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
             transcriptMaxSeqRef.current = maxSeq;
             if (activeTabRef.current === 'transcript' && maxSeq > lastSeenSeqRef.current) {
               setNewOutputCount(maxSeq - lastSeenSeqRef.current);
@@ -457,7 +470,6 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
               lastSeenSeqRef.current = maxSeq;
             }
           } else if (resp === null) {
-            // Validation failed — degraded.
             setActivityError('Transcript response validation failed.');
           }
         })
