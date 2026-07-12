@@ -1,6 +1,10 @@
 # Next Session Handoff — T1 Codex Version-Specific Adapter
 
-Status: **READY FOR A FRESH EXECUTION AGENT**
+Status: **COMPLETE / SUPERSEDED — T1 accepted at `162266f83`; use the T2 handoff**
+
+Historical execution instructions are retained below as acceptance provenance.
+New work must use `docs/NEXT_SESSION_T2_CLAUDE_ADAPTER_HANDOFF.md`; do not restart
+T1 from this document.
 
 This is the authoritative T1 execution handoff. Work from the remote branch and
 accepted T0 commit below. Do not infer the baseline from local history or an old

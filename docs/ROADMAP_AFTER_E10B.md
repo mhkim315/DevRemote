@@ -138,8 +138,8 @@ M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      ACCEPT 0755853a2 (SE key p
 M3b Mobile lifecycle action UX                        ACCEPT 9cdf2f290 (authoritative lifecycleState + retained Catalog rows; reachable Force Kill/Delete; epoch-safe controller; per-action DTO validation; capability-enforced input; Jest 289 + clean-prebuild full gate PASS; physical-device/LTE smoke = M-track)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Common AgentEvent Contract                  ACCEPT 3ce2604bd (provider-neutral six-op contract; provenance + Seq; bounded cursor/record/batch/metadata; approval/status authority rules; non-bypassable fixed harness; additive-only; clean-prebuild full gate PASS)
-T1  Codex Adapter                               IN PROGRESS (isolated v0.144.1 adapter under independent remediation/review; correlation unavailable without proven launch evidence; no contract/harness change); see docs/T1_CODEX_ADAPTER_IMPLEMENTATION_REPORT.md
-T2  Claude Adapter
+T1  Codex Adapter                               ACCEPT 162266f83 (Codex CLI 0.144.1 session JSONL; fixed T0 harness; bounded position cursor; correlation unavailable; full gate PASS)
+T2  Claude Adapter                              NEXT (use docs/NEXT_SESSION_T2_CLAUDE_ADAPTER_HANDOFF.md)
 R2  Multi-agent Expansion Research            PLANNED (research-only; entry requires independent T1 + T2 ACCEPT)
 D1  Adapter Doctor/Repair                     PLANNED (AI-assisted, user-approved activation only)
 T3  Transcript Integration
