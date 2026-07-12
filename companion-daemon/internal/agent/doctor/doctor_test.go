@@ -29,24 +29,45 @@ func cleanRedaction() RedactionResult {
 	return RedactionResult{Scanned: 1, Clean: true}
 }
 
+// cmdsFor returns the authoritative FixedCommand for the given label.
+func cmdsFor(label string) []FixedCommand {
+	return cmdsForMany(label)
+}
+func admitFixture(path, content string) AdmittedFixture {
+	return AdmittedFixture{
+		Path: path, Provider: "claude", Version: "v3_0_0",
+		Provenance:     string(contract.ProvenanceNativeLog),
+		ExpectedDigest: HashBytes([]byte(content)),
+		SourceKind:     "observed",
+	}
+}
+
+func cmdsForMany(labels ...string) []FixedCommand {
+	all := NewFixedSuite().Commands("")
+	var out []FixedCommand
+	for _, l := range labels {
+		for _, fc := range all {
+			if fc.Label == l {
+				out = append(out, fc)
+			}
+		}
+	}
+	return out
+}
+
 func passingSuiteResult() ObservatoryResult {
 	// Use an authoritative Pokit-owned label so ValidateSuiteEvidence passes.
 	return ObservatoryResult{
 		TotalTests: 0, Passed: 0,
-		CommandResults: []CommandResult{{Label: "build-adapters", ExitCode: 0}},
+		CommandResults: []CommandResult{{Label: "build-adapters", Command: FixedCommandLabel(cmdsFor("build-adapters")[0]), ExitCode: 0}},
 	}
 }
 
-func testBundle(id, adapter, provider, ver, base, evDig, patchDig string, files, adapterFiles, cmds []string, sr ObservatoryResult) (*ReviewBundle, error) {
-	// Ensure command result labels match suite manifest labels and commands match
-	// the authoritative Pokit-owned FixedSuite spec.
-	if len(cmds) == 1 && len(sr.CommandResults) == 1 && sr.CommandResults[0].Label != cmds[0] {
-		sr.CommandResults[0].Label = cmds[0]
-	}
-	// Fill in authoritative command strings.
+func testBundle(id, adapter, provider, ver, base, evDig, patchDig string, files, adapterFiles []string, cmds []FixedCommand, sr ObservatoryResult) (*ReviewBundle, error) {
+	// Fill in authoritative command strings for any result that has an empty Command.
 	for i := range sr.CommandResults {
 		if sr.CommandResults[i].Command == "" {
-			for _, fc := range NewFixedSuite().Commands("") {
+			for _, fc := range cmds {
 				if fc.Label == sr.CommandResults[i].Label {
 					sr.CommandResults[i].Command = FixedCommandLabel(fc)
 					break
@@ -348,7 +369,7 @@ func TestCollectDrift_UsesRealRecords(t *testing.T) {
 
 func TestApproval_SubmitAndApprove(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r1", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, []string{"build-adapters"}, passingSuiteResult())
+	b, _ := testBundle("r1", "c", "C", "3.0.0", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, cmdsFor("build-adapters"), passingSuiteResult())
 	d := b.BundleDigest()
 	store.Submit(b)
 	if err := store.Approve("r1", d); err != nil {
@@ -362,7 +383,7 @@ func TestApproval_SubmitAndApprove(t *testing.T) {
 
 func TestApproval_UserSuppliedDigestRequired(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r2", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, []string{"build-adapters"}, passingSuiteResult())
+	b, _ := testBundle("r2", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, cmdsFor("build-adapters"), passingSuiteResult())
 	store.Submit(b)
 	if err := store.Approve("r2", "wrong"); !errors.Is(err, ErrDigestMismatch) {
 		t.Errorf("got %v", err)
@@ -371,7 +392,7 @@ func TestApproval_UserSuppliedDigestRequired(t *testing.T) {
 
 func TestApproval_ActivationAlwaysFailsClosed(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r3", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, []string{"build-adapters"}, passingSuiteResult())
+	b, _ := testBundle("r3", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, cmdsFor("build-adapters"), passingSuiteResult())
 	d := b.BundleDigest()
 	store.Submit(b)
 	store.Approve("r3", d)
@@ -381,9 +402,9 @@ func TestApproval_ActivationAlwaysFailsClosed(t *testing.T) {
 }
 
 func TestApproval_DigestRecomputed(t *testing.T) {
-	b1, _ := testBundle("r4", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, []string{"build-adapters"}, passingSuiteResult())
+	b1, _ := testBundle("r4", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, cmdsFor("build-adapters"), passingSuiteResult())
 	time.Sleep(2 * time.Millisecond)
-	b2, _ := testBundle("r5", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, []string{"build-adapters"}, passingSuiteResult())
+	b2, _ := testBundle("r5", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, cmdsFor("build-adapters"), passingSuiteResult())
 	if b1.BundleDigest() == b2.BundleDigest() {
 		t.Error("digests should differ with time")
 	}
@@ -391,7 +412,7 @@ func TestApproval_DigestRecomputed(t *testing.T) {
 
 func TestApproval_ReplayRejected(t *testing.T) {
 	store := NewApprovalStore()
-	b, _ := testBundle("r6", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, []string{"build-adapters"}, passingSuiteResult())
+	b, _ := testBundle("r6", "c", "C", "3", "abc", "ev", "patch", []string{"f.go"}, []string{"adapter.go"}, cmdsFor("build-adapters"), passingSuiteResult())
 	store.Submit(b)
 	_, err := store.Submit(b)
 	if !errors.Is(err, ErrRequestIDExists) {
@@ -581,12 +602,13 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 	}
 
 	// Replay of rejected request ID must fail.
+	replayCmds := cmdsFor("build-adapters")
 	replaySR := ObservatoryResult{
-		CommandResults: []CommandResult{{Label: "build-adapters", ExitCode: 0}},
+		CommandResults: []CommandResult{{Label: "build-adapters", Command: FixedCommandLabel(replayCmds[0]), ExitCode: 0}},
 	}
 	b3, _ := NewReviewBundle("fw-reject", "c", "C", "3", actualSHA, "ev", "patch",
 		patchBytes, []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"build-adapters"}, replaySR,
+		replayCmds, replaySR,
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "ws-digest", nil)
 	if _, err := orch2.approval.Submit(b3); err == nil {
 		t.Error("replay of rejected request ID should fail")
@@ -791,7 +813,7 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 	sr := passingSuiteResult()
 	files := []string{"f.go"}
 	fix := []string{"adapter.go"}
-	cmds := []string{"build-adapters"}
+	cmds := cmdsFor("build-adapters")
 
 	_, err := NewReviewBundle("", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), files, fix, nil, nil, cleanRedaction(), cmds, sr,
@@ -833,12 +855,13 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 
 func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	store := NewApprovalStore()
+	bundleCmds := cmdsFor("build-adapters")
 	matchingSR := ObservatoryResult{
-		CommandResults: []CommandResult{{Label: "build-adapters", ExitCode: 0}},
+		CommandResults: []CommandResult{{Label: "build-adapters", Command: FixedCommandLabel(bundleCmds[0]), ExitCode: 0}},
 	}
 	b1, _ := NewReviewBundle("rm1", "c", "C", "3", "abc", "ev", "patch",
 		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"build-adapters"}, matchingSR,
+		cmdsFor("build-adapters"), matchingSR,
 		DriftEvidence{}, "native_log", "ws1", nil)
 	d1 := b1.BundleDigest()
 	store.Submit(b1)
@@ -846,7 +869,7 @@ func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	// Different diff content → different digest.
 	b2, _ := NewReviewBundle("rm2", "c", "C", "3", "abc", "ev", "patch",
 		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"build-adapters"}, matchingSR,
+		cmdsFor("build-adapters"), matchingSR,
 		DriftEvidence{}, "native_log", "ws2", nil)
 	d2 := b2.BundleDigest()
 	if d1 == d2 {
@@ -917,8 +940,8 @@ func TestSuiteResult_DeepCopyImmutability(t *testing.T) {
 func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
 	b, err := NewReviewBundle("ac1", "c", "C", "3", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"build-adapters"}, ObservatoryResult{
-			CommandResults: []CommandResult{{Label: "build-adapters", ExitCode: 0}},
+		cmdsFor("build-adapters"), ObservatoryResult{
+			CommandResults: []CommandResult{{Label: "build-adapters", Command: FixedCommandLabel(cmdsFor("build-adapters")[0]), ExitCode: 0}},
 		},
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err != nil {
@@ -1024,7 +1047,7 @@ func TestRedaction_NotCleanBlocksNewReviewBundle(t *testing.T) {
 	dirty := RedactionResult{Scanned: 1, Clean: false, Findings: []string{"secret found"}}
 	_, err := NewReviewBundle("r99", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, dirty,
-		[]string{"build-adapters"}, passingSuiteResult(),
+		cmdsFor("build-adapters"), passingSuiteResult(),
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("non-clean redaction should block NewReviewBundle")
@@ -1081,7 +1104,7 @@ func TestRedaction_ZeroScannedCleanBlocked(t *testing.T) {
 	zeroClean := RedactionResult{Scanned: 0, Clean: true}
 	_, err := NewReviewBundle("rz1", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, zeroClean,
-		[]string{"build-adapters"}, passingSuiteResult(),
+		cmdsFor("build-adapters"), passingSuiteResult(),
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("zero-scanned clean redaction should be rejected")
@@ -1094,7 +1117,7 @@ func TestRedaction_CleanWithFindingsBlocked(t *testing.T) {
 	badClean := RedactionResult{Scanned: 1, Clean: true, Findings: []string{"something found"}}
 	_, err := NewReviewBundle("rz2", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, badClean,
-		[]string{"build-adapters"}, passingSuiteResult(),
+		cmdsFor("build-adapters"), passingSuiteResult(),
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("clean with findings should be rejected")
@@ -1141,7 +1164,7 @@ func TestNewReviewBundle_RejectsFailedSuite(t *testing.T) {
 		CommandResults: []CommandResult{{Label: "t0", ExitCode: 1, Failed: 1}}}
 	_, err := NewReviewBundle("r", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"t0"}, failed, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), failed, DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("failed suite should be rejected")
 	}
@@ -1152,7 +1175,7 @@ func TestNewReviewBundle_RejectsSkippedTests(t *testing.T) {
 		CommandResults: []CommandResult{{Label: "t0", ExitCode: 0, Skipped: 1, Failed: 1}}}
 	_, err := NewReviewBundle("r", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"t0"}, skipped, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), skipped, DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("skipped tests should be rejected")
 	}
@@ -1163,7 +1186,7 @@ func TestNewReviewBundle_RejectsNonzeroExitCode(t *testing.T) {
 		CommandResults: []CommandResult{{Label: "t0", ExitCode: 1}}}
 	_, err := NewReviewBundle("r", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"t0"}, exited, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), exited, DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("nonzero exit code should be rejected")
 	}
@@ -1175,7 +1198,7 @@ func TestNewReviewBundle_RejectsZeroTestSuite(t *testing.T) {
 		CommandResults: []CommandResult{{Label: "test1", TotalTests: 5, Failed: 5, ExitCode: 1}}}
 	_, err := NewReviewBundle("r", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"test1"}, zero, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), zero, DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("failed test command should be rejected")
 	}
@@ -1185,7 +1208,7 @@ func TestNewReviewBundle_RejectsMissingCommandResult(t *testing.T) {
 	noCmd := ObservatoryResult{TotalTests: 1, Passed: 1}
 	_, err := NewReviewBundle("r", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"t0"}, noCmd, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), noCmd, DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("missing command results should be rejected")
 	}
@@ -1196,7 +1219,7 @@ func TestNewReviewBundle_RejectsAllPassedFalse(t *testing.T) {
 		CommandResults: []CommandResult{{Label: "t0", ExitCode: 0, Failed: 1}}}
 	_, err := NewReviewBundle("r", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"t0"}, apf, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), apf, DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("AllPassed==false should be rejected")
 	}
@@ -1206,13 +1229,13 @@ func TestNewReviewBundle_RejectsAllPassedFalse(t *testing.T) {
 
 func TestNewReviewBundle_CallerMutationIsolated(t *testing.T) {
 	orig := ObservatoryResult{
-		TotalTests: 2, Passed: 2,
+		TotalTests: 0, Passed: 0,
 		Failures:       []ObsTestFailure{{TestName: "f1", Reason: "r1"}},
-		CommandResults: []CommandResult{{Label: "build-adapters", TotalTests: 2, Passed: 2, ExitCode: 0}},
+		CommandResults: []CommandResult{{Label: "build-adapters", Command: FixedCommandLabel(cmdsFor("build-adapters")[0]), ExitCode: 0}},
 	}
 	b, err := NewReviewBundle("iso", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"build-adapters"}, orig, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), orig, DriftEvidence{}, "native_log", "ws", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1249,7 +1272,7 @@ func TestApprovalStore_RejectsFailedSuite(t *testing.T) {
 		CommandResults: []CommandResult{{Label: "t0", ExitCode: 1, Failed: 1}}}
 	b, err := NewReviewBundle("as1", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
-		[]string{"t0"}, failed, DriftEvidence{}, "native_log", "ws", nil)
+		cmdsFor("build-adapters"), failed, DriftEvidence{}, "native_log", "ws", nil)
 	// Constructor must reject before Submit.
 	if err == nil {
 		t.Error("constructor should reject failed suite")
@@ -1284,8 +1307,8 @@ func TestBuildFixtureManifest_ProviderFixturesClassified(t *testing.T) {
 	os.WriteFile(filepath.Join(fixDir, "session.log"), []byte("session started\n"), 0644)
 
 	admitted := []AdmittedFixture{
-		{Path: "events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)},
-		{Path: "session.log", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)},
+		admitFixture("events.jsonl", `{"id":"f1","kind":"message","ts":1}`),
+		admitFixture("session.log", "session started\n"),
 	}
 	adapterM, pokitM, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
 	if !redact.Clean {
@@ -1381,7 +1404,7 @@ func TestE2E_ManifestsInBundleCorrect(t *testing.T) {
 	actualSHA, _ := gitHeadSHA(repoRoot)
 
 	orch := NewOrchestrator(stub, repoRoot)
-	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl", ObservedRecordSamples: []contract.RawRecord{testRecord(`{"type":"user"}`)}, AdmittedFixtures: []AdmittedFixture{{Path: "events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)}}}
+	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl", ObservedRecordSamples: []contract.RawRecord{testRecord(`{"type":"user"}`)}, AdmittedFixtures: []AdmittedFixture{admitFixture("events.jsonl", `{"id":"f1","kind":"message","ts":1}`)}}
 	orch.DetectDrift(req)
 	orch.CollectEvidence([]string{"user"}, nil)
 	orch.RequestRepair()
@@ -1428,8 +1451,8 @@ func TestE2E_ManifestsInBundleCorrect(t *testing.T) {
 
 func TestValidateSuiteEvidence_PartialResultsBlocked(t *testing.T) {
 	// Manifest declares 2 commands, results only have 1.
-	manifest := []string{"T0-contract-conformance", "T1-codex-conformance"}
-	cmd := FixedCommandLabel(authCmd("T0-contract-conformance"))
+	manifest := cmdsForMany("T0-contract-conformance", "T1-codex-conformance")
+	cmd := FixedCommandLabel(cmdsFor("T0-contract-conformance")[0])
 	results := []CommandResult{{Label: "T0-contract-conformance", Command: cmd, TotalTests: 1, Passed: 1, ExitCode: 0}}
 	err := ValidateSuiteEvidence(manifest, results, 1, 1, 0)
 	if err == nil {
@@ -1438,8 +1461,8 @@ func TestValidateSuiteEvidence_PartialResultsBlocked(t *testing.T) {
 }
 
 func TestValidateSuiteEvidence_DuplicateLabelBlocked(t *testing.T) {
-	manifest := []string{"T0-contract-conformance", "T0-contract-conformance"}
-	cmd := FixedCommandLabel(authCmd("T0-contract-conformance"))
+	manifest := cmdsForMany("T0-contract-conformance", "T0-contract-conformance")
+	cmd := FixedCommandLabel(cmdsFor("T0-contract-conformance")[0])
 	results := []CommandResult{{Label: "T0-contract-conformance", Command: cmd, TotalTests: 1, Passed: 1, ExitCode: 0}, {Label: "T0-contract-conformance", Command: cmd, TotalTests: 1, Passed: 1, ExitCode: 0}}
 	err := ValidateSuiteEvidence(manifest, results, 2, 2, 0)
 	if err == nil {
@@ -1448,11 +1471,11 @@ func TestValidateSuiteEvidence_DuplicateLabelBlocked(t *testing.T) {
 }
 
 func TestValidateSuiteEvidence_ExtraResultBlocked(t *testing.T) {
-	manifest := []string{"build-adapters"}
-	cmd := FixedCommandLabel(authCmd("build-adapters"))
+	manifest := cmdsFor("build-adapters")
+	cmd := FixedCommandLabel(cmdsFor("build-adapters")[0])
 	results := []CommandResult{
 		{Label: "build-adapters", Command: cmd, ExitCode: 0},
-		{Label: "T0-contract-conformance", Command: FixedCommandLabel(authCmd("T0-contract-conformance")), TotalTests: 1, Passed: 1, ExitCode: 0},
+		{Label: "T0-contract-conformance", Command: FixedCommandLabel(cmdsFor("T0-contract-conformance")[0]), TotalTests: 1, Passed: 1, ExitCode: 0},
 	}
 	err := ValidateSuiteEvidence(manifest, results, 1, 1, 0)
 	if err == nil {
@@ -1461,22 +1484,13 @@ func TestValidateSuiteEvidence_ExtraResultBlocked(t *testing.T) {
 }
 
 func TestValidateSuiteEvidence_AggregateMismatchBlocked(t *testing.T) {
-	manifest := []string{"T0-contract-conformance"}
-	cmd := FixedCommandLabel(authCmd("T0-contract-conformance"))
+	manifest := cmdsFor("T0-contract-conformance")
+	cmd := FixedCommandLabel(cmdsFor("T0-contract-conformance")[0])
 	results := []CommandResult{{Label: "T0-contract-conformance", Command: cmd, TotalTests: 10, Passed: 5, ExitCode: 0}}
 	err := ValidateSuiteEvidence(manifest, results, 10, 5, 0)
 	if err == nil {
 		t.Error("aggregate mismatch (passed!=total) should be rejected")
 	}
-}
-
-func authCmd(label string) FixedCommand {
-	for _, fc := range NewFixedSuite().Commands("") {
-		if fc.Label == label {
-			return fc
-		}
-	}
-	panic("unknown label: " + label)
 }
 
 // ── Fixture: unadmitted extension fails ──
@@ -1531,7 +1545,7 @@ func TestBuildFixtureManifest_AdmittedFixtureWithProvenance(t *testing.T) {
 	fixDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0")
 	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte(`{"id":"f1","kind":"message","ts":1}`), 0644)
 
-	admitted := []AdmittedFixture{{Path: "events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)}}
+	admitted := []AdmittedFixture{admitFixture("events.jsonl", `{"id":"f1","kind":"message","ts":1}`)}
 	_, _, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
 	if !redact.Clean {
 		t.Error("admitted fixture should be clean")
@@ -1542,7 +1556,7 @@ func TestBuildFixtureManifest_AdmittedFixtureWithProvenance(t *testing.T) {
 	if !strings.Contains(fixtureM[0], "provider=claude") {
 		t.Error("fixture entry missing provider")
 	}
-	if !strings.Contains(fixtureM[0], "version=3.0.0") {
+	if !strings.Contains(fixtureM[0], "version=v3_0_0") {
 		t.Error("fixture entry missing version")
 	}
 	if !strings.Contains(fixtureM[0], "provenance="+string(contract.ProvenanceNativeLog)) {
@@ -1575,7 +1589,7 @@ func TestBuildFixtureManifest_AdmittedNestedFixture(t *testing.T) {
 	os.WriteFile(filepath.Join(nestedDir, "events.jsonl"), []byte(`{"id":"n1","kind":"message","ts":1}`), 0644)
 
 	admitted := []AdmittedFixture{
-		{Path: "fixtures/events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)},
+		admitFixture("fixtures/events.jsonl", `{"id":"n1","kind":"message","ts":1}`),
 	}
 	_, _, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
 	if !redact.Clean {
@@ -1659,7 +1673,7 @@ func TestBuildFixtureManifest_NestedSecretDetected(t *testing.T) {
 
 func TestValidateSuiteEvidence_ZeroTestTestCommandBlocked(t *testing.T) {
 	// Test command with TotalTests:0 but suite total:5 → mismatch.
-	manifest := []string{"test"}
+	manifest := cmdsFor("build-adapters")
 	results := []CommandResult{{Label: "test", TotalTests: 0, ExitCode: 0}}
 	err := ValidateSuiteEvidence(manifest, results, 5, 0, 5)
 	if err == nil {

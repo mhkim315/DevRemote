@@ -307,10 +307,7 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		files = append(files, op.DiffPath)
 	}
 
-	var cmdLabels []string
-	for _, c := range NewFixedSuite().Commands(o.activeWorkspace.CandidatePkg) {
-		cmdLabels = append(cmdLabels, c.Label)
-	}
+	suiteCmds := NewFixedSuite().Commands(o.activeWorkspace.CandidatePkg)
 
 	// Derive evidence provenance from actual input records (weakest tier).
 	evidenceProv := deriveEvidenceProvenance(o.activeRequest.ObservedRecordSamples)
@@ -348,7 +345,7 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		pokitTestManifest,        // Pokit-owned test manifest
 		providerFixtureManifest,  // provider fixture manifest
 		redaction,                // redaction result
-		cmdLabels,                // suite command manifest
+		suiteCmds,                // Pokit-owned fixed command specs
 		o.activeSuite.deepCopy(), // suite result (deep copy)
 		driftEv,                  // drift evidence
 		evidenceProv,             // evidence provenance
@@ -512,7 +509,30 @@ func buildFixtureManifest(wsRoot, provider, targetDir string, admittedFixtures [
 				fmt.Sprintf("admitted %s: provider %q != %q", af.Path, af.Provider, provider))
 			continue
 		}
-		// Version is checked at scan time against actual file metadata if available.
+		if af.Version != targetDir {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: version %q != target %q", af.Path, af.Version, targetDir))
+			continue
+		}
+		if af.ExpectedDigest == "" {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: missing expected digest", af.Path))
+			continue
+		}
+		if !contract.IsKnownProvenance(contract.Provenance(af.Provenance)) {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: unknown provenance %q", af.Path, af.Provenance))
+			continue
+		}
+		if af.SourceKind == "" {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: missing source kind", af.Path))
+			continue
+		}
 		admitted[cleaned] = af
 	}
 

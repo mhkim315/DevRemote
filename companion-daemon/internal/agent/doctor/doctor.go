@@ -127,77 +127,70 @@ type RedactionResult struct {
 
 // ── Suite evidence validation ──
 
-// ValidateSuiteEvidence verifies that the declared command manifest and actual
-// command results match exactly — same label set, no duplicates/missing/extra,
-// aggregate totals consistent, every result clean. Used at every approval
-// boundary (constructor and store) so partial or forged results cannot pass.
-func ValidateSuiteEvidence(manifestLabels []string, results []CommandResult, total, passed, failed int) error {
-	// Check manifest and result label sets match exactly.
-	manifestSet := make(map[string]bool, len(manifestLabels))
-	for _, l := range manifestLabels {
-		if manifestSet[l] {
-			return fmt.Errorf("duplicate manifest label %q", l)
+// ValidateSuiteEvidence verifies that the declared Pokit-owned fixed command
+// specifications and actual command results match exactly — same label set,
+// no duplicates/missing/extra, every result's command string matches the
+// authoritative spec, aggregate totals consistent, every result clean.
+// Used at every approval boundary so partial or forged results cannot pass.
+func ValidateSuiteEvidence(commands []FixedCommand, results []CommandResult, total, passed, failed int) error {
+	// Build manifest from Pokit-owned command specs.
+	manifestSet := make(map[string]FixedCommand, len(commands))
+	for _, fc := range commands {
+		if _, dup := manifestSet[fc.Label]; dup {
+			return fmt.Errorf("duplicate manifest command %q", fc.Label)
 		}
-		manifestSet[l] = true
+		manifestSet[fc.Label] = fc
 	}
-	resultSet := make(map[string]bool, len(results))
+	resultSet := make(map[string]CommandResult, len(results))
 	for _, cr := range results {
-		if resultSet[cr.Label] {
+		if _, dup := resultSet[cr.Label]; dup {
 			return fmt.Errorf("duplicate result label %q", cr.Label)
 		}
-		resultSet[cr.Label] = true
+		resultSet[cr.Label] = cr
 	}
 	if len(manifestSet) != len(resultSet) {
-		return fmt.Errorf("manifest has %d labels, results have %d", len(manifestSet), len(resultSet))
+		return fmt.Errorf("manifest has %d commands, results have %d", len(manifestSet), len(resultSet))
 	}
-	for l := range manifestSet {
-		if !resultSet[l] {
-			return fmt.Errorf("missing result for manifest label %q", l)
-		}
-	}
-	for l := range resultSet {
-		if !manifestSet[l] {
-			return fmt.Errorf("unexpected result label %q (not in manifest)", l)
-		}
-	}
-	// Validate each result for correctness.
+	// Validate each result against the authoritative Pokit-owned spec.
 	var sumTotal, sumPassed, sumFailed int
-	for _, cr := range results {
+	for label, fc := range manifestSet {
+		cr, ok := resultSet[label]
+		if !ok {
+			return fmt.Errorf("missing result for manifest command %q", label)
+		}
+		expectedCmd := FixedCommandLabel(fc)
+		if cr.Command != expectedCmd {
+			return fmt.Errorf("command %q mismatch: result=%q expected=%q", label, cr.Command, expectedCmd)
+		}
 		if cr.ExitCode != 0 {
-			return fmt.Errorf("command %q exit=%d, want 0", cr.Label, cr.ExitCode)
+			return fmt.Errorf("command %q exit=%d, want 0", label, cr.ExitCode)
 		}
 		if cr.Failed > 0 || cr.Skipped > 0 {
-			return fmt.Errorf("command %q not clean (fail=%d skip=%d)",
-				cr.Label, cr.Failed, cr.Skipped)
+			return fmt.Errorf("command %q not clean (fail=%d skip=%d)", label, cr.Failed, cr.Skipped)
 		}
-		if cr.TotalTests > 0 {
-			if cr.Passed != cr.TotalTests {
-				return fmt.Errorf("command %q passed=%d != total=%d", cr.Label, cr.Passed, cr.TotalTests)
-			}
-			sumTotal += cr.TotalTests
-			sumPassed += cr.Passed
-			sumFailed += cr.Failed
+		if fc.BuildOnly || fc.VetOnly {
+			continue // build/vet: no test counts required
+		}
+		// Test/race command.
+		if cr.TotalTests == 0 {
+			return fmt.Errorf("test command %q has zero tests", label)
+		}
+		if cr.Passed != cr.TotalTests {
+			return fmt.Errorf("test command %q passed=%d != total=%d", label, cr.Passed, cr.TotalTests)
+		}
+		sumTotal += cr.TotalTests
+		sumPassed += cr.Passed
+		sumFailed += cr.Failed
+	}
+	// Unrecognized result labels (not in manifest).
+	for label := range resultSet {
+		if _, ok := manifestSet[label]; !ok {
+			return fmt.Errorf("unexpected result label %q (not in manifest)", label)
 		}
 	}
-	if total > 0 && (sumTotal != total || sumPassed != passed || sumFailed != failed) {
-		return fmt.Errorf("aggregate mismatch: suite total=%d/%d/%d, commands sum to %d/%d/%d",
+	if sumTotal != total || sumPassed != passed || sumFailed != failed {
+		return fmt.Errorf("aggregate mismatch: suite total=%d/%d/%d, test commands sum to %d/%d/%d",
 			total, passed, failed, sumTotal, sumPassed, sumFailed)
-	}
-	// If no results, reject. If any command reports tests but suite total is 0, reject.
-	hasTests := false
-	for _, cr := range results {
-		if cr.TotalTests > 0 {
-			hasTests = true
-		}
-	}
-	if len(results) == 0 {
-		return fmt.Errorf("suite has no results")
-	}
-	if hasTests && total == 0 {
-		return fmt.Errorf("suite total is 0 but commands report tests")
-	}
-	if !hasTests && total > 0 {
-		return fmt.Errorf("suite total > 0 but no commands report tests")
 	}
 	return nil
 }
@@ -211,12 +204,14 @@ func FixedCommandLabel(fc FixedCommand) string {
 
 // AdmittedFixture is one explicitly admitted provider fixture. Extension alone
 // is insufficient for classification — the user/workflow must declare each
-// fixture with provider, version, and source provenance.
+// fixture with provider, version, source provenance, and expected digest.
 type AdmittedFixture struct {
-	Path       string // relative path within candidate directory
-	Provider   string
-	Version    string
-	Provenance string // source provenance tier
+	Path           string // relative path within candidate directory
+	Provider       string
+	Version        string // must match canonical target version
+	Provenance     string // source provenance tier (closed vocabulary)
+	ExpectedDigest string // sha256 hex digest of expected file content
+	SourceKind     string // observed, documented, experiment, inferred
 }
 
 // ── Process request ──

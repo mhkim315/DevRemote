@@ -55,7 +55,7 @@ type ReviewBundle struct {
 	pokitTestManifest       []string        // Pokit-owned conformance test files
 	providerFixtureManifest []string        // runner-provided provider fixtures
 	fixtureRedaction        RedactionResult // typed redaction scan result
-	suiteCommandManifest    []string
+	suiteCommands           []FixedCommand  // Pokit-owned authoritative command specs
 	suiteResultDigest       string
 	suiteResult             ObservatoryResult
 	driftEvidence           DriftEvidence // bounded drift evidence
@@ -91,8 +91,18 @@ func (rb *ReviewBundle) ProviderFixtureManifest() []string {
 	return append([]string{}, rb.providerFixtureManifest...)
 }
 func (rb *ReviewBundle) FixtureRedaction() RedactionResult { return rb.fixtureRedaction }
-func (rb *ReviewBundle) SuiteCommandManifest() []string {
-	return append([]string{}, rb.suiteCommandManifest...)
+func (rb *ReviewBundle) SuiteCommands() []FixedCommand {
+	cp := make([]FixedCommand, len(rb.suiteCommands))
+	copy(cp, rb.suiteCommands)
+	return cp
+}
+
+func (rb *ReviewBundle) SuiteCommandLabels() []string {
+	labels := make([]string, len(rb.suiteCommands))
+	for i, fc := range rb.suiteCommands {
+		labels[i] = fc.Label
+	}
+	return labels
 }
 func (rb *ReviewBundle) SuiteResultDigest() string      { return rb.suiteResultDigest }
 func (rb *ReviewBundle) SuiteResult() ObservatoryResult { return rb.suiteResult.deepCopy() }
@@ -124,7 +134,7 @@ func (rb *ReviewBundle) BundleDigest() string {
 		PokitTestManifest:       sortedStrings(rb.pokitTestManifest),
 		ProviderFixtureManifest: sortedStrings(rb.providerFixtureManifest),
 		FixtureRedaction:        HashJSON(rb.fixtureRedaction),
-		SuiteCommandManifest:    sortedStrings(rb.suiteCommandManifest),
+		SuiteCommandManifest:    sortedStrings(rb.SuiteCommandLabels()),
 		SuiteResultDigest:       rb.suiteResultDigest,
 		DriftEvidenceDigest:     HashJSON(rb.driftEvidence),
 		WorkspaceDigest:         rb.workspaceDigest,
@@ -170,7 +180,7 @@ func NewReviewBundle(
 	unifiedDiff []byte,
 	changedFiles, adapterSourceManifest, pokitTestManifest, providerFixtureManifest []string,
 	fixtureRedaction RedactionResult,
-	suiteCommandManifest []string,
+	suiteCommands []FixedCommand,
 	suiteResult ObservatoryResult,
 	driftEvidence DriftEvidence,
 	evidenceProvenance, workspaceDigest string,
@@ -182,7 +192,7 @@ func NewReviewBundle(
 	if len(changedFiles) == 0 {
 		return nil, fmt.Errorf("%w: changedFiles must be non-empty", ErrEmptyField)
 	}
-	if err := ValidateSuiteEvidence(suiteCommandManifest, suiteResult.CommandResults,
+	if err := ValidateSuiteEvidence(suiteCommands, suiteResult.CommandResults,
 		suiteResult.TotalTests, suiteResult.Passed, suiteResult.Failed); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEmptyField, err)
 	}
@@ -209,8 +219,6 @@ func NewReviewBundle(
 	copy(pm, pokitTestManifest)
 	pfm := make([]string, len(providerFixtureManifest))
 	copy(pfm, providerFixtureManifest)
-	scm := make([]string, len(suiteCommandManifest))
-	copy(scm, suiteCommandManifest)
 	ru := make([]string, len(remainingUnknowns))
 	copy(ru, remainingUnknowns)
 	ud := make([]byte, len(unifiedDiff))
@@ -231,7 +239,7 @@ func NewReviewBundle(
 		pokitTestManifest:       pm,
 		providerFixtureManifest: pfm,
 		fixtureRedaction:        fixtureRedaction,
-		suiteCommandManifest:    scm,
+		suiteCommands:           copyFixedCommands(suiteCommands),
 		suiteResultDigest:       HashJSON(suiteResult),
 		suiteResult:             suiteResult.deepCopy(),
 		driftEvidence:           driftEvidence,
@@ -263,7 +271,7 @@ func (rb *ReviewBundle) deepCopy() *ReviewBundle {
 		pokitTestManifest:       append([]string{}, rb.pokitTestManifest...),
 		providerFixtureManifest: append([]string{}, rb.providerFixtureManifest...),
 		fixtureRedaction:        copyRedactionResult(rb.fixtureRedaction),
-		suiteCommandManifest:    append([]string{}, rb.suiteCommandManifest...),
+		suiteCommands:           copyFixedCommands(rb.suiteCommands),
 		suiteResultDigest:       rb.suiteResultDigest,
 		suiteResult:             rb.suiteResult.deepCopy(),
 		driftEvidence:           rb.driftEvidence,
@@ -311,7 +319,7 @@ func (as *ApprovalStore) Submit(bundle *ReviewBundle) (*ApprovalRequest, error) 
 		return nil, fmt.Errorf("%w: changed files must be non-empty", ErrEmptyField)
 	}
 	sr := bundle.suiteResult
-	if err := ValidateSuiteEvidence(bundle.suiteCommandManifest, sr.CommandResults,
+	if err := ValidateSuiteEvidence(bundle.suiteCommands, sr.CommandResults,
 		sr.TotalTests, sr.Passed, sr.Failed); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEmptyField, err)
 	}
@@ -448,6 +456,15 @@ func HashJSON(v any) string {
 		return "error:" + contract.SanitizeDiagnostic(err.Error())
 	}
 	return HashBytes(b)
+}
+
+func copyFixedCommands(fcs []FixedCommand) []FixedCommand {
+	if fcs == nil {
+		return nil
+	}
+	cp := make([]FixedCommand, len(fcs))
+	copy(cp, fcs)
+	return cp
 }
 
 func copyRedactionResult(r RedactionResult) RedactionResult {
