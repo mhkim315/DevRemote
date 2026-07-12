@@ -1,13 +1,52 @@
 # T1 — Codex Version-Specific Adapter — Implementation Report
 
-Status: **READY FOR INDEPENDENT VERIFICATION**
+Status: **READY FOR INDEPENDENT RE-VERIFICATION (remediation applied after REJECT)**
 
 Branch: `feature/phase10-multi-adapter`
 Baseline (accepted T0): `3ce2604bd333dcb63142b5b1710185a823162efa` —
 `git merge-base --is-ancestor 3ce2604bd333dcb63142b5b1710185a823162efa HEAD` exits 0.
 
 T1 implements a single version-specific Codex adapter behind the accepted T0
-contract in an isolated subtree. It does not change the contract, the fixed
+contract in an isolated subtree. The original submission passed the fixed harness
+but five blockers were identified at independent review. All five are remediated
+below; no contract, harness, or existing agent file was modified.
+
+## 0. Remediation of the independent REJECT (5 blockers)
+
+1. **Version gate (B1).** `cli_version` in `session_meta` payload is checked
+   against the exact `"0.144.1"` literal. A mismatch or missing version forces
+   the session_meta itself to `EventUnknown`/degraded AND poisons the entire
+   batch so all subsequent records become `EventUnknown`/degraded. A first-pass
+   version scan in `ReadEvents` determines `versionState` before any event is
+   emitted; non-meta records before version confirmation are classified but
+   flagged degraded. Tests: exact match, newer version, missing version,
+   non-string version, batch-wide mismatch, no-session_meta degraded.
+2. **No invented correlation (B2).** `DiscoverSessions` returns nil for all
+   inputs. R1 proved correlation is unavailable for ordinary interactive TUI;
+   without explicit launch evidence in `SessionContext`, `managed_launch` cannot
+   be claimed and a provider session ID must not be fabricated from the Pokit
+   session ID. Tests: empty context, process-name-only empty.
+3. **Same-timestamp record preservation (B3).** `Seq` is now
+   `timestamp.UnixNano()/µs*µs + content_hash % 1000` — a stable composite key
+   where same-timestamp records get distinct hash-derived tiebreakers. Events
+   are sorted by Seq before return. The cursor is the last Seq after sorting.
+   Tests: same-timestamp both preserved, same-timestamp dedupe, same-timestamp
+   cursor re-read no re-emit.
+4. **Per-record degradation accumulation + deterministic timestamps (B4).**
+   `ReadEvents` now accumulates per-record `DegradedInfo` into the batch result.
+   Invalid/missing timestamps use `time.Time{}` (zero), never `time.Now()`, so
+   repeated reads produce byte-identical results. Unknown/incompatible
+   discriminators are degraded. Tests: mixed valid+malformed batch degraded,
+   invalid-timestamp deterministic.
+5. **Approval identity on resolved (B5).** Both `EventApprovalRequested` and
+   `EventApprovalResolved` preserve `payload.approval_id` as
+   `AgentEvent.ApprovalID`, linking request and resolution as one approval
+   lifecycle. Missing `approval_id` on either event degrades to `EventUnknown`.
+   Tests: resolved carries ApprovalID, resolved missing ID, request+resolved
+   linked same ID.
+
+Additional corrections: `CapLogDetection` removed (no file scanning/LogRef
+discovery); per-record `Source` preserved (batch-first-record override removed).
 harness, the existing agent parser/detector, mobile, lifecycle, auth, Terminal,
 or Transcript code.
 
@@ -21,10 +60,11 @@ Observed discriminators: `session_meta`, `event_msg` (task_started /
 waiting_for_approval / approval_resolved), `response_item` (user/assistant),
 `turn_context`.
 
-**Correlation**: `managed_launch` — Pokit launched the process; no proven
-TUI-session↔log binding beyond launch identity. The R1 app-server JSON-RPC
-transport exists but thread/session mapping was not correlated to an ordinary
-interactive Codex TUI — it is not attached here.
+**Correlation**: `unavailable` — R1 proved ordinary interactive TUI correlation
+is unavailable. `DiscoverSessions` returns nil for all inputs. No `managed_launch`
+is claimed without explicit launch evidence in `SessionContext`. The R1 app-server
+JSON-RPC transport exists but thread/session mapping was not correlated to an
+ordinary interactive Codex TUI — it is not attached here.
 
 **Limitations**: `history.jsonl` alone is not authoritative for tool/approval.
 Unknown or incompatible shapes return `EventUnknown`/degraded, never a

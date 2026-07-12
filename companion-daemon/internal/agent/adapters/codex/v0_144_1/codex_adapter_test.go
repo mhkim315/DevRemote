@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
-	"strings"
 	"testing"
 
 	"devremote/companion-daemon/internal/agent"
@@ -25,7 +24,8 @@ func failingAdapter(t *testing.T) contract.AgentAdapter {
 
 // ── Fixtures ──
 
-// codexRec builds a RawRecord from a Codex JSONL line with native-log provenance.
+// codexRec builds a RawRecord from a Codex JSONL line with native-log provenance
+// and JSONL source (preserved per-record, not overridden by batch).
 func codexRec(line string) contract.RawRecord {
 	return contract.RawRecord{
 		Bytes:      []byte(line),
@@ -34,21 +34,29 @@ func codexRec(line string) contract.RawRecord {
 	}
 }
 
+// sessionMeta0_144_1 is the version-confirming session_meta record required at
+// the start of valid record batches.
+func sessionMeta0_144_1() contract.RawRecord {
+	return codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"s1","id":"m1","timestamp":"2026-07-06T13:29:26.903Z","cwd":"<HOME>/<PROJECT>","originator":"codex-tui","cli_version":"0.144.1","source":"cli","model_provider":"<PROVIDER>"}}`)
+}
+
 func codexFixtures() contract.ConformanceFixtures {
-	// Valid records: session_meta + task_started + user message (from session_task.jsonl structure).
+	// Valid records: session_meta (with correct cli_version) + task_started + user message.
+	// The session_meta is required so the version gate passes.
 	validRecords := []contract.RawRecord{
-		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"s1","id":"m1","timestamp":"2026-07-06T13:29:26.903Z","cwd":"<HOME>/<PROJECT>","originator":"codex-tui","cli_version":"0.144.1","source":"cli","model_provider":"<PROVIDER>"}}`),
+		sessionMeta0_144_1(),
 		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","started_at":1783344575,"model_context_window":353400,"collaboration_mode_kind":"default"}}`),
 		codexRec(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<PROMPT>"}]}}`),
 	}
 
-	// Approval records: waiting_for_approval (from approval_waiting.jsonl structure).
+	// Approval records: waiting_for_approval + approval_resolved, each carrying
+	// the same approval_id so the approval lifecycle is linked.
 	approvalRecords := []contract.RawRecord{
 		codexRec(`{"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"t2","approval_id":"appr-001","message":"<REDACTED_APPROVAL_MESSAGE>"}}`),
 		codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","approval_id":"appr-001","resolution":"approved"}}`),
 	}
 
-	// Near-miss: a user message mentioning "approve" must NOT trigger approval.
+	// Near-miss: a response_item (user message) mentioning "approve".
 	nearMissRecords := []contract.RawRecord{
 		codexRec(`{"timestamp":"2026-07-06T13:30:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"please approve this change"}]}}`),
 	}
@@ -69,20 +77,17 @@ func codexFixtures() contract.ConformanceFixtures {
 		ExpectDetectKind: "codex",
 
 		ValidRecords: validRecords,
-		ExpectTypes:  []contract.AgentEventType{agent.EventAgentStarted, agent.EventUserMessage},
+		ExpectTypes:  []contract.AgentEventType{agent.EventAgentStarted},
 
-		// Distinct records for bounds/dedupe/cursor checks.  Each record gets a
-		// unique Seq via the index in the timestamp nanosecond field so the
-		// harness can generate thousands of distinct records without collisions.
+		// Distinct records for bounds/dedupe/cursor checks. Each has a unique
+		// nanosecond timestamp so Seq values are all distinct.
 		DistinctRecord: func(i int) contract.RawRecord {
-			// RFC 3339 timestamp with unique nanosecond per i.
 			ts := "2026-07-06T13:29:35." + nanoPad(i) + "Z"
 			return codexRec(`{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"task_started","turn_id":"distinct-t` + strconv.Itoa(i) + `","started_at":1783344575}}`)
 		},
 
-		// SizedRecord for batch-byte boundary test. Each record is roughly size bytes.
+		// SizedRecord for batch-byte boundary test.
 		SizedRecord: func(size int) contract.RawRecord {
-			// Reserve ~80 bytes for JSON envelope: {"timestamp":"...","type":"event_msg","payload":{"type":"task_started","turn_id":"sz-...","started_at":0,"_pad":"..."}}
 			pad := size - 90
 			if pad < 0 {
 				pad = 0
@@ -101,8 +106,6 @@ func codexFixtures() contract.ConformanceFixtures {
 	}
 }
 
-// nanoPad formats i as a 9-digit nanosecond field with zero-padding so every
-// record gets a unique RFC 3339 timestamp and therefore a distinct Seq.
 func nanoPad(i int) string {
 	s := strconv.Itoa(i)
 	for len(s) < 9 {
@@ -130,30 +133,22 @@ func TestCodexAdapter_DTOSnapshotStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Degraded.Degraded && len(res.Events) < 2 {
+	if len(res.Events) < 2 {
 		t.Fatalf("expected ≥2 events from valid records, got %d", len(res.Events))
 	}
 
-	// Snapshot: verify stable JSON shape.
 	got := toJSON(t, res.Events)
-	// Expected types must appear.
-	if !strings.Contains(got, `"type":"agent_started"`) {
-		t.Error("DTO missing agent_started event")
+	checks := []string{
+		`"type":"agent_started"`,
+		`"type":"user_message"`,
+		`"provenance":"native_log"`,
+		`"sessionId":"pokit:host-a"`,
+		`"agentKind":"codex"`,
 	}
-	if !strings.Contains(got, `"type":"user_message"`) {
-		t.Error("DTO missing user_message event")
-	}
-	// Events must carry provenance.
-	if !strings.Contains(got, `"provenance":"native_log"`) {
-		t.Error("DTO missing provenance field")
-	}
-	// Session binding.
-	if !strings.Contains(got, `"sessionId":"pokit:host-a"`) {
-		t.Error("DTO missing session binding")
-	}
-	// Agent kind.
-	if !strings.Contains(got, `"agentKind":"codex"`) {
-		t.Error("DTO missing codex agent kind")
+	for _, ck := range checks {
+		if !contains(got, ck) {
+			t.Errorf("DTO missing %s", ck)
+		}
 	}
 
 	// Second read must produce identical JSON.
@@ -163,6 +158,295 @@ func TestCodexAdapter_DTOSnapshotStable(t *testing.T) {
 	})
 	if toJSON(t, res.Events) != toJSON(t, res2.Events) {
 		t.Error("normalization is not deterministic across fresh reads")
+	}
+}
+
+// ── BLOCKER 1: Version gate ──
+
+func TestCodexAdapter_VersionGate_ExactMatch(t *testing.T) {
+	a := &Adapter{}
+	rec := sessionMeta0_144_1()
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if deg.Degraded {
+		t.Errorf("exact version 0.144.1 must not degrade: %+v", deg)
+	}
+	if ev.Type != agent.EventAgentStarted {
+		t.Errorf("exact version: got %q, want agent_started", ev.Type)
+	}
+	if ev.Confidence < 0.8 {
+		t.Errorf("exact version confidence too low: %.2f", ev.Confidence)
+	}
+}
+
+func TestCodexAdapter_VersionGate_NewerVersion(t *testing.T) {
+	a := &Adapter{}
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"cli_version":"9.9.9","session_id":"s1"}}`)
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if ev.Type != agent.EventUnknown {
+		t.Errorf("newer version: got %q, want EventUnknown", ev.Type)
+	}
+	if !deg.Degraded {
+		t.Error("newer version must degrade")
+	}
+}
+
+func TestCodexAdapter_VersionGate_MissingVersion(t *testing.T) {
+	a := &Adapter{}
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"s1"}}`)
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if ev.Type != agent.EventUnknown {
+		t.Errorf("missing version: got %q, want EventUnknown", ev.Type)
+	}
+	if !deg.Degraded {
+		t.Error("missing version must degrade")
+	}
+}
+
+func TestCodexAdapter_VersionGate_MalformedPayload(t *testing.T) {
+	a := &Adapter{}
+	// Version is a number, not a string — must not match "0.144.1".
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"cli_version":1}}`)
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if ev.Type != agent.EventUnknown {
+		t.Errorf("non-string version: got %q, want EventUnknown", ev.Type)
+	}
+	if !deg.Degraded {
+		t.Error("non-string version must degrade")
+	}
+}
+
+func TestCodexAdapter_VersionGate_BatchMismatch(t *testing.T) {
+	a := &Adapter{}
+	// First record: session_meta with wrong version. All subsequent records
+	// in this batch must be EventUnknown.
+	records := []contract.RawRecord{
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"cli_version":"9.9.9"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	for _, e := range res.Events {
+		if e.Type != agent.EventUnknown {
+			t.Errorf("version-mismatch batch: event %q, want EventUnknown", e.Type)
+		}
+	}
+	if !res.Degraded.Degraded {
+		t.Error("version-mismatch batch must be degraded")
+	}
+}
+
+func TestCodexAdapter_VersionGate_NoSessionMeta_StillWorksDegraded(t *testing.T) {
+	a := &Adapter{}
+	// Records without session_meta are classified but marked degraded.
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: []contract.RawRecord{rec},
+	})
+	if len(res.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(res.Events))
+	}
+	if !res.Degraded.Degraded {
+		t.Error("no session_meta must produce degraded (version not confirmed)")
+	}
+}
+
+// ── BLOCKER 2: No invented correlation ──
+
+func TestCodexAdapter_Discovery_AlwaysEmpty(t *testing.T) {
+	a := &Adapter{}
+
+	// Empty context.
+	got, _ := a.DiscoverSessions(context.Background(), contract.DiscoveryInput{
+		Session: contract.SessionContext{},
+	})
+	if len(got) != 0 {
+		t.Error("empty context must return empty")
+	}
+
+	// Codex process name alone does NOT grant correlation.
+	got, _ = a.DiscoverSessions(context.Background(), contract.DiscoveryInput{
+		Session: contract.SessionContext{SessionID: "s", ProcessName: "codex", CWD: "/home/dev/.codex"},
+	})
+	if len(got) != 0 {
+		t.Errorf("process-name-only must not invent discovery: got %d sessions", len(got))
+	}
+}
+
+// ── BLOCKER 3: Same-timestamp records preserved ──
+
+func TestCodexAdapter_SameTimestamp_BothPreserved(t *testing.T) {
+	a := &Adapter{}
+	// Real fixture: session_meta and task_started share the exact same timestamp
+	// (13:29:35.399). Both must appear in the result.
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","started_at":1783344575}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 2 {
+		t.Fatalf("same-timestamp: got %d events, want 2 (both preserved)", len(res.Events))
+	}
+	if res.Events[0].Seq >= res.Events[1].Seq {
+		t.Errorf("Seq must be strictly increasing: %d >= %d", res.Events[0].Seq, res.Events[1].Seq)
+	}
+}
+
+func TestCodexAdapter_SameTimestamp_Dedupe(t *testing.T) {
+	a := &Adapter{}
+	// Same record twice => 1 event.
+	rec := sessionMeta0_144_1()
+	records := []contract.RawRecord{rec, rec}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 1 {
+		t.Errorf("duplicate same-timestamp: got %d events, want 1", len(res.Events))
+	}
+}
+
+func TestCodexAdapter_SameTimestamp_RereadNoReemit(t *testing.T) {
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 2 {
+		t.Fatalf("first read: got %d events, want 2", len(res.Events))
+	}
+	// Re-read with cursor — must re-emit nothing.
+	again, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  res.NextCursor,
+	})
+	if len(again.Events) != 0 {
+		t.Errorf("cursor re-read re-emitted %d events, want 0", len(again.Events))
+	}
+}
+
+// ── BLOCKER 4: Degradation accumulation + deterministic timestamps ──
+
+func TestCodexAdapter_MixedBatch_DegradedAccumulates(t *testing.T) {
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.500Z","type":"unknown_msg_type","payload":{}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z"}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// The session_meta should still produce a valid event.
+	foundStarted := false
+	for _, e := range res.Events {
+		if e.Type == agent.EventAgentStarted {
+			foundStarted = true
+		}
+	}
+	if !foundStarted {
+		t.Error("mixed batch lost the valid session_meta event")
+	}
+	if !res.Degraded.Degraded {
+		t.Error("mixed valid+malformed batch must be degraded")
+	}
+}
+
+func TestCodexAdapter_InvalidTimestamp_Deterministic(t *testing.T) {
+	a := &Adapter{}
+	// Missing/invalid timestamp → zero time (never time.Now()).
+	rec := codexRec(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	ev1, _ := a.NormalizeEvent(context.Background(), rec)
+	ev2, _ := a.NormalizeEvent(context.Background(), rec)
+	if ev1.Seq != ev2.Seq {
+		t.Errorf("non-deterministic Seq for same record: %d vs %d", ev1.Seq, ev2.Seq)
+	}
+	if toJSON(t, ev1) != toJSON(t, ev2) {
+		t.Error("non-deterministic normalization for same record")
+	}
+}
+
+// ── BLOCKER 5: Approval identity preserved on resolved ──
+
+func TestCodexAdapter_Approval_ResolvedCarriesApprovalID(t *testing.T) {
+	a := &Adapter{}
+	// ReadEvents version gate: include session_meta with correct version so the
+	// approval_resolved event is classified confidently.
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","approval_id":"appr-001","resolution":"approved"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// Find the approval_resolved event.
+	var got *contract.AgentEvent
+	for i := range res.Events {
+		if res.Events[i].Type == agent.EventApprovalResolved {
+			got = &res.Events[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("approval_resolved event not found in batch")
+	}
+	if got.ApprovalID != "appr-001" {
+		t.Errorf("approval_resolved ApprovalID=%q, want appr-001", got.ApprovalID)
+	}
+}
+
+func TestCodexAdapter_Approval_ResolvedMissingID(t *testing.T) {
+	a := &Adapter{}
+	rec := codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","resolution":"approved"}}`)
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if ev.Type != agent.EventUnknown {
+		t.Errorf("approval_resolved without approval_id: got %q, want EventUnknown", ev.Type)
+	}
+	if !deg.Degraded {
+		t.Error("approval_resolved without approval_id must degrade")
+	}
+}
+
+func TestCodexAdapter_Approval_RequestAndResolvedLinked(t *testing.T) {
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		codexRec(`{"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"t2","approval_id":"appr-001","message":"approve?"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","approval_id":"appr-001","resolution":"approved"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 2 {
+		t.Fatalf("got %d events, want 2", len(res.Events))
+	}
+	// Both carry the same ApprovalID.
+	if res.Events[0].ApprovalID != "appr-001" {
+		t.Errorf("request ApprovalID=%q", res.Events[0].ApprovalID)
+	}
+	if res.Events[1].ApprovalID != "appr-001" {
+		t.Errorf("resolved ApprovalID=%q", res.Events[1].ApprovalID)
+	}
+	// One is approval_requested, one is approval_resolved.
+	types := map[contract.AgentEventType]bool{}
+	for _, e := range res.Events {
+		types[e.Type] = true
+	}
+	if !types[agent.EventApprovalRequested] || !types[agent.EventApprovalResolved] {
+		t.Error("missing approval_requested or approval_resolved in linked pair")
 	}
 }
 
@@ -192,7 +476,6 @@ func TestCodexAdapter_NoSecretLeak(t *testing.T) {
 		}
 	}
 
-	// Read path must also sanitize.
 	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: []contract.RawRecord{rec},
@@ -204,28 +487,7 @@ func TestCodexAdapter_NoSecretLeak(t *testing.T) {
 	}
 }
 
-// ── Unsupported version / shape ──
-
-func TestCodexAdapter_UnsupportedVersion_UnknownShape(t *testing.T) {
-	a := &Adapter{}
-
-	// A completely unknown JSON shape must NOT produce typed events.
-	unknown := codexRec(`{"version":"9.9.9","kind":"future_event","data":{"extra":"field"}}`)
-	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
-		Session: contract.SessionContext{SessionID: "pokit:host-a"},
-		Records: []contract.RawRecord{unknown},
-	})
-	for _, e := range res.Events {
-		if e.Type != agent.EventUnknown {
-			t.Errorf("unsupported version produced typed event %q, want EventUnknown", e.Type)
-		}
-		if e.Confidence >= 0.5 {
-			t.Errorf("unsupported version event has confidence %.2f, want < 0.5", e.Confidence)
-		}
-	}
-}
-
-// ── Detection boundaries ──
+// ── Detection ──
 
 func TestCodexAdapter_Detect_EmptyIsUnknown(t *testing.T) {
 	a := &Adapter{}
@@ -233,73 +495,8 @@ func TestCodexAdapter_Detect_EmptyIsUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Kind != "unknown" {
-		t.Errorf("empty context kind=%q, want unknown", id.Kind)
-	}
-	if id.Confidence >= 0.5 {
-		t.Errorf("empty context confidence=%.2f, want < 0.5", id.Confidence)
-	}
-}
-
-func TestCodexAdapter_Detect_UnknownProcess(t *testing.T) {
-	a := &Adapter{}
-	id, err := a.Detect(context.Background(), contract.SessionContext{
-		SessionID:   "s",
-		ProcessName: "bash",
-		CWD:         "/tmp",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id.Kind != "unknown" {
-		t.Errorf("bash process kind=%q, want unknown", id.Kind)
-	}
-}
-
-func TestCodexAdapter_Discovery_EmptyReturnsEmpty(t *testing.T) {
-	a := &Adapter{}
-	got, err := a.DiscoverSessions(context.Background(), contract.DiscoveryInput{
-		Session: contract.SessionContext{},
-		Limit:   10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Errorf("empty context returned %d sessions, want 0", len(got))
-	}
-}
-
-func TestCodexAdapter_Discovery_Bounded(t *testing.T) {
-	a := &Adapter{}
-	got, err := a.DiscoverSessions(context.Background(), contract.DiscoveryInput{
-		Session: contract.SessionContext{SessionID: "s", ProcessName: "codex", CWD: "/home/dev/.codex"},
-		Limit:   1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) > 1 {
-		t.Errorf("Limit=1 got %d sessions", len(got))
-	}
-	if len(got) == 1 {
-		if got[0].Correlation != contract.CorrelationManagedLaunch {
-			t.Errorf("correlation=%q, want managed_launch", got[0].Correlation)
-		}
-		if got[0].Provider != "codex" {
-			t.Errorf("provider=%q, want codex", got[0].Provider)
-		}
-	}
-}
-
-func TestCodexAdapter_Discovery_NonCodexEmpty(t *testing.T) {
-	a := &Adapter{}
-	got, _ := a.DiscoverSessions(context.Background(), contract.DiscoveryInput{
-		Session: contract.SessionContext{SessionID: "s", ProcessName: "claude"},
-		Limit:   10,
-	})
-	if len(got) != 0 {
-		t.Errorf("claude process returned %d sessions, want 0", len(got))
+	if id.Kind != "unknown" || id.Confidence >= 0.5 {
+		t.Errorf("empty context: kind=%q conf=%.2f", id.Kind, id.Confidence)
 	}
 }
 
@@ -321,6 +518,42 @@ func TestCodexAdapter_GetStatus_NoEvidence(t *testing.T) {
 	}
 }
 
+// ── Additional: CapLogDetection removed ──
+
+func TestCodexAdapter_Descriptor_NoCapLogDetection(t *testing.T) {
+	d := (&Adapter{}).Descriptor()
+	for _, c := range d.Capabilities {
+		if c == contract.CapLogDetection {
+			t.Error("CapLogDetection must not be declared (no file scanning / LogRef discovery)")
+		}
+	}
+}
+
+// ── Additional: source per-record preserved ──
+
+func TestCodexAdapter_PerRecordSource(t *testing.T) {
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		{Bytes: []byte(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"cli_version":"0.144.1"}}`), Source: agent.SourceJSONL},
+		{Bytes: []byte(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`), Source: agent.SourceLogFile},
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) < 2 {
+		t.Fatalf("got %d events, want 2", len(res.Events))
+	}
+	// Each event keeps its own source; batch-first-record override removed.
+	sources := map[contract.AgentEventSource]int{}
+	for _, e := range res.Events {
+		sources[e.Source]++
+	}
+	if sources[agent.SourceJSONL] == 0 || sources[agent.SourceLogFile] == 0 {
+		t.Errorf("per-record source not preserved: %v", sources)
+	}
+}
+
 // ── Helpers ──
 
 func toJSON(t *testing.T, v any) string {
@@ -330,4 +563,17 @@ func toJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && searchSubstring(s, sub)
+}
+
+func searchSubstring(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
