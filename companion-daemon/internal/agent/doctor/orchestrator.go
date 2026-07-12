@@ -307,8 +307,6 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		files = append(files, op.DiffPath)
 	}
 
-	suiteCmds := NewFixedSuite().Commands(o.activeWorkspace.CandidatePkg)
-
 	// Derive evidence provenance from actual input records (weakest tier).
 	evidenceProv := deriveEvidenceProvenance(o.activeRequest.ObservedRecordSamples)
 
@@ -339,18 +337,18 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 
 	bundle, err := NewReviewBundle(requestID, o.provider, o.activeReport.Provider, o.targetVersion,
 		baselineSHA, evidenceDigest, patchDigest,
-		o.activePatchBytes,       // unified diff
-		files,                    // changed files
-		adapterManifest,          // adapter source manifest
-		pokitTestManifest,        // Pokit-owned test manifest
-		providerFixtureManifest,  // provider fixture manifest
-		redaction,                // redaction result
-		suiteCmds,                // Pokit-owned fixed command specs
-		o.activeSuite.deepCopy(), // suite result (deep copy)
-		driftEv,                  // drift evidence
-		evidenceProv,             // evidence provenance
-		wsDigest,                 // workspace digest
-		unknowns,                 // remaining unknowns
+		o.activePatchBytes,             // unified diff
+		files,                          // changed files
+		adapterManifest,                // adapter source manifest
+		pokitTestManifest,              // Pokit-owned test manifest
+		providerFixtureManifest,        // provider fixture manifest
+		redaction,                      // redaction result
+		o.activeWorkspace.CandidatePkg, // candidate pkg for FixedSuite derivation
+		o.activeSuite.deepCopy(),       // suite result (deep copy)
+		driftEv,                        // drift evidence
+		evidenceProv,                   // evidence provenance
+		wsDigest,                       // workspace digest
+		unknowns,                       // remaining unknowns
 	)
 	if err != nil {
 		return nil, err
@@ -533,6 +531,15 @@ func buildFixtureManifest(wsRoot, provider, targetDir string, admittedFixtures [
 				fmt.Sprintf("admitted %s: missing source kind", af.Path))
 			continue
 		}
+		switch af.SourceKind {
+		case "observed", "documented", "experiment", "inferred":
+			// valid
+		default:
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: invalid source kind %q", af.Path, af.SourceKind))
+			continue
+		}
 		admitted[cleaned] = af
 	}
 
@@ -575,8 +582,15 @@ func buildFixtureManifest(wsRoot, provider, targetDir string, admittedFixtures [
 			pokitTestManifest = append(pokitTestManifest, entry)
 		} else if af, ok := admitted[rel]; ok {
 			consumed[rel] = true
-			entry = fmt.Sprintf("%s sha256:%s provider=%s version=%s provenance=%s",
-				rel, digest, af.Provider, af.Version, af.Provenance)
+			// Verify expected digest matches actual file.
+			if af.ExpectedDigest != digest {
+				redaction.Clean = false
+				redaction.Findings = append(redaction.Findings,
+					fmt.Sprintf("%s: digest mismatch expected=%s actual=%s", rel, af.ExpectedDigest, digest[:16]))
+				return nil
+			}
+			entry = fmt.Sprintf("%s sha256:%s provider=%s version=%s provenance=%s source=%s",
+				rel, digest, af.Provider, af.Version, af.Provenance, af.SourceKind)
 			providerFixtureManifest = append(providerFixtureManifest, entry)
 		} else if strings.HasSuffix(name, ".go") {
 			adapterManifest = append(adapterManifest, entry)

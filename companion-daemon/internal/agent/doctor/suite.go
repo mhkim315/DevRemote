@@ -270,6 +270,20 @@ func (sr *SuiteRunner) timeoutFor(cmd FixedCommand) time.Duration {
 	return suiteTimeout
 }
 
+func fixedCommandsEqual(a, b []FixedCommand) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Label != b[i].Label || a[i].PkgPath != b[i].PkgPath ||
+			a[i].RunRegex != b[i].RunRegex || a[i].Race != b[i].Race ||
+			a[i].VetOnly != b[i].VetOnly || a[i].BuildOnly != b[i].BuildOnly {
+			return false
+		}
+	}
+	return true
+}
+
 func shellJoin(args []string) string {
 	var b strings.Builder
 	for i, a := range args {

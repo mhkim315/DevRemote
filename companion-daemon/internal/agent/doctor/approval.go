@@ -56,6 +56,7 @@ type ReviewBundle struct {
 	providerFixtureManifest []string        // runner-provided provider fixtures
 	fixtureRedaction        RedactionResult // typed redaction scan result
 	suiteCommands           []FixedCommand  // Pokit-owned authoritative command specs
+	suiteCommandsDigest     string          // sha256 of canonical command specs
 	suiteResultDigest       string
 	suiteResult             ObservatoryResult
 	driftEvidence           DriftEvidence // bounded drift evidence
@@ -134,7 +135,7 @@ func (rb *ReviewBundle) BundleDigest() string {
 		PokitTestManifest:       sortedStrings(rb.pokitTestManifest),
 		ProviderFixtureManifest: sortedStrings(rb.providerFixtureManifest),
 		FixtureRedaction:        HashJSON(rb.fixtureRedaction),
-		SuiteCommandManifest:    sortedStrings(rb.SuiteCommandLabels()),
+		SuiteCommandsDigest:     rb.suiteCommandsDigest,
 		SuiteResultDigest:       rb.suiteResultDigest,
 		DriftEvidenceDigest:     HashJSON(rb.driftEvidence),
 		WorkspaceDigest:         rb.workspaceDigest,
@@ -163,7 +164,7 @@ type bundleDigestPayload struct {
 	PokitTestManifest       []string `json:"pokit_test_manifest"`
 	ProviderFixtureManifest []string `json:"provider_fixture_manifest"`
 	FixtureRedaction        string   `json:"fixture_redaction"`
-	SuiteCommandManifest    []string `json:"suite_command_manifest"`
+	SuiteCommandsDigest     string   `json:"suite_commands_digest"`
 	SuiteResultDigest       string   `json:"suite_result_digest"`
 	DriftEvidenceDigest     string   `json:"drift_evidence_digest"`
 	WorkspaceDigest         string   `json:"workspace_digest"`
@@ -180,7 +181,7 @@ func NewReviewBundle(
 	unifiedDiff []byte,
 	changedFiles, adapterSourceManifest, pokitTestManifest, providerFixtureManifest []string,
 	fixtureRedaction RedactionResult,
-	suiteCommands []FixedCommand,
+	candidatePkg string,
 	suiteResult ObservatoryResult,
 	driftEvidence DriftEvidence,
 	evidenceProvenance, workspaceDigest string,
@@ -192,7 +193,11 @@ func NewReviewBundle(
 	if len(changedFiles) == 0 {
 		return nil, fmt.Errorf("%w: changedFiles must be non-empty", ErrEmptyField)
 	}
-	if err := ValidateSuiteEvidence(suiteCommands, suiteResult.CommandResults,
+	// Derive authoritative command specs from Pokit-owned FixedSuite.
+	// Caller cannot inject arbitrary FixedCommands — only the canonical
+	// suite specification is used as authority.
+	authoritativeCmds := NewFixedSuite().Commands(candidatePkg)
+	if err := ValidateSuiteEvidence(authoritativeCmds, suiteResult.CommandResults,
 		suiteResult.TotalTests, suiteResult.Passed, suiteResult.Failed); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEmptyField, err)
 	}
@@ -239,7 +244,8 @@ func NewReviewBundle(
 		pokitTestManifest:       pm,
 		providerFixtureManifest: pfm,
 		fixtureRedaction:        fixtureRedaction,
-		suiteCommands:           copyFixedCommands(suiteCommands),
+		suiteCommands:           copyFixedCommands(authoritativeCmds),
+		suiteCommandsDigest:     HashJSON(authoritativeCmds),
 		suiteResultDigest:       HashJSON(suiteResult),
 		suiteResult:             suiteResult.deepCopy(),
 		driftEvidence:           driftEvidence,
@@ -272,6 +278,7 @@ func (rb *ReviewBundle) deepCopy() *ReviewBundle {
 		providerFixtureManifest: append([]string{}, rb.providerFixtureManifest...),
 		fixtureRedaction:        copyRedactionResult(rb.fixtureRedaction),
 		suiteCommands:           copyFixedCommands(rb.suiteCommands),
+		suiteCommandsDigest:     rb.suiteCommandsDigest,
 		suiteResultDigest:       rb.suiteResultDigest,
 		suiteResult:             rb.suiteResult.deepCopy(),
 		driftEvidence:           rb.driftEvidence,
@@ -319,6 +326,12 @@ func (as *ApprovalStore) Submit(bundle *ReviewBundle) (*ApprovalRequest, error) 
 		return nil, fmt.Errorf("%w: changed files must be non-empty", ErrEmptyField)
 	}
 	sr := bundle.suiteResult
+	// Verify suite commands digest matches (anti-forgery).
+	if HashJSON(bundle.suiteCommands) != bundle.suiteCommandsDigest {
+		return nil, fmt.Errorf("%w: suite commands digest mismatch", ErrEmptyField)
+	}
+	// Re-validate against the authoritative commands stored in the bundle
+	// (derived internally by NewReviewBundle, not caller-provided).
 	if err := ValidateSuiteEvidence(bundle.suiteCommands, sr.CommandResults,
 		sr.TotalTests, sr.Passed, sr.Failed); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEmptyField, err)
