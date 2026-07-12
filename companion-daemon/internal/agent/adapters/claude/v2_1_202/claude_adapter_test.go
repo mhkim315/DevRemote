@@ -25,8 +25,6 @@ func failingAdapter(t *testing.T) contract.AgentAdapter {
 
 // ── Fixtures ──
 
-// claudeRec builds a RawRecord from a Claude JSONL line with native-log
-// provenance and JSONL source.
 func claudeRec(line string) contract.RawRecord {
 	return contract.RawRecord{
 		Bytes:      []byte(line),
@@ -35,23 +33,19 @@ func claudeRec(line string) contract.RawRecord {
 	}
 }
 
-// versionMeta2_1_202 is a realistic user record that carries the top-level
-// version field "2.1.202". The batch version authority is derived from
-// this record.
+// versionMeta2_1_202 carries top-level version "2.1.202".
 func versionMeta2_1_202() contract.RawRecord {
 	return claudeRec(`{"parentUuid":null,"isSidechain":false,"promptId":"<UUID>","type":"user","message":{"role":"user","content":"<PROMPT>"},"uuid":"<UUID>","timestamp":"2026-07-06T23:23:31.876Z","permissionMode":"default","origin":{"kind":"human"},"promptSource":"typed","userType":"external","entrypoint":"cli","cwd":"<HOME>/<PROJECT>","sessionId":"<UUID>","version":"2.1.202"}`)
 }
 
 func claudeFixtures() contract.ConformanceFixtures {
-	// Valid records: user_message + assistant thinking + assistant tool_use.
-	// First record carries version 2.1.202 for version gating.
+	// Valid records all carry version 2.1.202.
 	validRecords := []contract.RawRecord{
 		versionMeta2_1_202(),
 		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"message":{"id":"<UUID>","type":"message","role":"assistant","model":"<MODEL>","content":[{"type":"thinking","thinking":"<REDACTED_THINKING>","signature":"<UUID>"}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":99999,"output_tokens":999}},"type":"assistant","uuid":"<UUID>","timestamp":"2026-07-06T23:23:38.360Z","userType":"external","entrypoint":"cli","cwd":"<HOME>/<PROJECT>","sessionId":"<UUID>","version":"2.1.202"}`),
 		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"message":{"id":"<UUID>","type":"message","role":"assistant","model":"<MODEL>","content":[{"type":"tool_use","id":"<UUID>","name":"Bash","input":{"command":"<CMD>","description":"<REDACTED_DESCRIPTION>"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":99999,"output_tokens":999}},"type":"assistant","uuid":"<UUID>","timestamp":"2026-07-06T23:23:39.398Z","userType":"external","entrypoint":"cli","cwd":"<HOME>/<PROJECT>","sessionId":"<UUID>","version":"2.1.202"}`),
 	}
 
-	// Malformed records: unknown type, missing fields, garbage.
 	malformedRecords := []contract.RawRecord{
 		claudeRec(`{"type":"unknown_event_type","sessionId":"<UUID>","unexpectedField":"<REDACTED>"}`),
 		claudeRec(`{"type":"user","sessionId":"<UUID>"}`),
@@ -62,20 +56,10 @@ func claudeFixtures() contract.ConformanceFixtures {
 		{Bytes: nil},
 	}
 
-	// Synthetic approval records (harness-only, NOT from retained evidence).
-	// See §9 and the adapter package doc.  These represent what a Claude
-	// permission-request cycle WOULD look like with a stable ApprovalID.
-	approvalRecords := []contract.RawRecord{
-		versionMeta2_1_202(),
-		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"permission_request","id":"appr-claude-001","message":"<REDACTED_PERMISSION_REQUEST>"}]},"uuid":"<UUID>","timestamp":"2026-07-06T23:30:00.000Z","sessionId":"<UUID>","version":"2.1.202"}`),
-		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"type":"user_resolved","message":{"role":"user","content":[{"type":"permission_result","id":"appr-claude-001","resolution":"approved"}]},"uuid":"<UUID>","timestamp":"2026-07-06T23:30:05.000Z","sessionId":"<UUID>","version":"2.1.202"}`),
-	}
-
 	// Near-miss: records that look approval-ish but must yield ZERO approvals.
-	// permission-mode=ask is NOT approval evidence (§9).
 	nearMissRecords := []contract.RawRecord{
 		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"type":"permission-mode","permissionMode":"ask","sessionId":"<UUID>"}`),
-		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"message":{"id":"<UUID>","type":"message","role":"assistant","model":"<MODEL>","content":[{"type":"text","text":"I need your approval to proceed"}],"stop_reason":"end_turn"},"type":"assistant","uuid":"<UUID>","timestamp":"2026-07-06T23:24:05.000Z","userType":"external","entrypoint":"cli","cwd":"<HOME>/<PROJECT>","sessionId":"<UUID>","version":"2.1.202"}`),
+		claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"message":{"id":"<UUID>","type":"message","role":"assistant","model":"<MODEL>","content":[{"type":"text","text":"please approve this"}],"stop_reason":"end_turn"},"type":"assistant","uuid":"<UUID>","timestamp":"2026-07-06T23:24:05.000Z","userType":"external","entrypoint":"cli","cwd":"<HOME>/<PROJECT>","sessionId":"<UUID>","version":"2.1.202"}`),
 	}
 
 	return contract.ConformanceFixtures{
@@ -85,13 +69,11 @@ func claudeFixtures() contract.ConformanceFixtures {
 		ValidRecords: validRecords,
 		ExpectTypes:  []contract.AgentEventType{agent.EventUserMessage, agent.EventThinking, agent.EventToolCallStarted},
 
-		// Distinct records for bounds/dedupe/cursor checks.
 		DistinctRecord: func(i int) contract.RawRecord {
 			ts := "2026-07-06T23:23:38." + nanoPad(i) + "Z"
 			return claudeRec(`{"parentUuid":"<UUID>","isSidechain":false,"message":{"id":"<UUID>","type":"message","role":"assistant","model":"<MODEL>","content":[{"type":"thinking","thinking":"<REDACTED_THINKING>","signature":"<UUID>"}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":99999,"output_tokens":999}},"type":"assistant","uuid":"distinct-` + strconv.Itoa(i) + `","timestamp":"` + ts + `","userType":"external","entrypoint":"cli","cwd":"<HOME>/<PROJECT>","sessionId":"<UUID>","version":"2.1.202"}`)
 		},
 
-		// SizedRecord for batch-byte boundary test.
 		SizedRecord: func(size int) contract.RawRecord {
 			pad := size - 190
 			if pad < 0 {
@@ -105,7 +87,7 @@ func claudeFixtures() contract.ConformanceFixtures {
 		},
 
 		FailingFactory:   failingAdapter,
-		ApprovalRecords:  approvalRecords,
+		ApprovalRecords:  nil, // CapApprovalDetection is NOT declared — see §9
 		NearMissRecords:  nearMissRecords,
 		MalformedRecords: malformedRecords,
 	}
@@ -119,7 +101,7 @@ func nanoPad(i int) string {
 	return s
 }
 
-// ── Contract conformance ──
+// ── Contract conformance (expects harness limitation for no-approval adapters) ──
 
 func TestClaudeAdapter_Conformance(t *testing.T) {
 	contract.RunAgentContract(t, "claude", func(t *testing.T) contract.AgentAdapter {
@@ -157,7 +139,6 @@ func TestClaudeAdapter_DTOSnapshotStable(t *testing.T) {
 		}
 	}
 
-	// Second read must produce identical JSON.
 	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: claudeFixtures().ValidRecords,
@@ -167,7 +148,7 @@ func TestClaudeAdapter_DTOSnapshotStable(t *testing.T) {
 	}
 }
 
-// ── Version gate ──
+// ── B2: Exact per-record version gate ──
 
 func TestClaudeAdapter_VersionGate_ExactMatch(t *testing.T) {
 	a := &Adapter{}
@@ -198,41 +179,19 @@ func TestClaudeAdapter_VersionGate_NewerVersion(t *testing.T) {
 
 func TestClaudeAdapter_VersionGate_MissingVersion(t *testing.T) {
 	a := &Adapter{}
-	// Record with NO version field.  NormalizeEvent alone does not see
-	// batch context and can produce a typed event (matching the Codex
-	// adapter pattern).  Version enforcement is at the ReadEvents batch
-	// level, proved by TestClaudeAdapter_NoVersion_AllUnknown.
+	// Missing version → per-record gate fires → EventUnknown + degraded.
 	rec := claudeRec(`{"type":"user","message":{"role":"user","content":"x"},"uuid":"u1","timestamp":"2026-07-06T23:23:31.876Z","sessionId":"s1"}`)
-	ev, _ := a.NormalizeEvent(context.Background(), rec)
-	// NormalizeEvent on a record without version info: the adapter
-	// classifies it by structure alone.  Version gating is the caller's
-	// responsibility to enforce via ReadEvents batch context.
-	if ev.Type != agent.EventUserMessage {
-		t.Errorf("missing version (NormalizeEvent): got %q, want user_message (version gate is batch-level)", ev.Type)
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if ev.Type != agent.EventUnknown {
+		t.Errorf("missing version: got %q, want EventUnknown", ev.Type)
 	}
-	if err := contract.ValidateEvent(ev); err != nil {
-		t.Errorf("emitted event fails ValidateEvent: %v", err)
-	}
-	// ReadEvents with the same record must produce EventUnknown (no version
-	// confirmation at batch level).
-	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
-		Session: contract.SessionContext{SessionID: "pokit:host-a"},
-		Records: []contract.RawRecord{rec},
-	})
-	if len(res.Events) != 1 {
-		t.Fatalf("ReadEvents: got %d events, want 1", len(res.Events))
-	}
-	if res.Events[0].Type != agent.EventUnknown {
-		t.Errorf("ReadEvents no-version: got %q, want EventUnknown", res.Events[0].Type)
-	}
-	if !res.Degraded.Degraded {
-		t.Error("ReadEvents no-version must degrade")
+	if !deg.Degraded {
+		t.Error("missing version must degrade")
 	}
 }
 
 func TestClaudeAdapter_VersionGate_NonStringVersion(t *testing.T) {
 	a := &Adapter{}
-	// Version is a number, not a string — must not match "2.1.202".
 	rec := claudeRec(`{"type":"user","message":{"role":"user","content":"x"},"uuid":"u1","timestamp":"2026-07-06T23:23:31.876Z","sessionId":"s1","version":2}`)
 	ev, deg := a.NormalizeEvent(context.Background(), rec)
 	if ev.Type != agent.EventUnknown {
@@ -263,44 +222,31 @@ func TestClaudeAdapter_VersionGate_BatchMismatch(t *testing.T) {
 	}
 }
 
-func TestClaudeAdapter_VersionGate_ConflictingMidStream(t *testing.T) {
+// B2: Versioned first record does NOT authorize following versionless records.
+func TestClaudeAdapter_VersionGate_FirstVersionedDoesNotAuthorizeLaterVersionless(t *testing.T) {
 	a := &Adapter{}
 	records := []contract.RawRecord{
-		versionMeta2_1_202(),
-		claudeRec(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"}]},"uuid":"u2","timestamp":"2026-07-06T23:23:38.360Z","sessionId":"s1","version":"2.1.202"}`),
-		claudeRec(`{"type":"user","message":{"role":"user","content":"x"},"uuid":"u3","timestamp":"2026-07-06T23:23:50.000Z","sessionId":"s1","version":"9.9.9"}`),
-		claudeRec(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"uuid":"u4","timestamp":"2026-07-06T23:23:55.000Z","sessionId":"s1","version":"2.1.202"}`),
+		versionMeta2_1_202(), // pos 0: version OK
+		claudeRec(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"},"uuid":"u2","timestamp":"2026-07-06T23:23:38.360Z","sessionId":"s1","version":"2.1.202"}`), // pos 1: version OK
+		claudeRec(`{"type":"user","message":{"role":"user","content":"no version here"},"uuid":"u3","timestamp":"2026-07-06T23:23:40.000Z","sessionId":"s1"}`),                                                                       // pos 2: MISSING version
 	}
 	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
-	// Events before conflict (pos 0, 1) emitted. Cursor stops at conflict pos 2.
-	if len(res.Events) != 2 {
-		t.Errorf("conflicting mid-stream: got %d events, want 2 (events before conflict)", len(res.Events))
+	// Event at pos 2 must be EventUnknown (missing version).
+	if len(res.Events) < 3 {
+		t.Fatalf("got %d events, want 3", len(res.Events))
+	}
+	if res.Events[2].Type != agent.EventUnknown {
+		t.Errorf("versionless record after versioned first: got %q, want EventUnknown", res.Events[2].Type)
 	}
 	if !res.Degraded.Degraded {
-		t.Error("conflicting mid-stream must degrade")
-	}
-	cur, _ := parseCursor(res.NextCursor)
-	if cur.nextPos != 2 {
-		t.Errorf("cursor at %d, want 2 (stopped at conflict)", cur.nextPos)
-	}
-	// Re-read at conflict: still degraded, 0 events.
-	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
-		Session: contract.SessionContext{SessionID: "pokit:host-a"},
-		Records: records,
-		Cursor:  res.NextCursor,
-	})
-	if len(res2.Events) != 0 {
-		t.Errorf("re-read at conflict: got %d events, want 0", len(res2.Events))
-	}
-	if !res2.Degraded.Degraded {
-		t.Error("re-read at conflict must remain degraded")
+		t.Error("batch with versionless record must be degraded")
 	}
 }
 
-// ── No-meta / no-version stream ──
+// ── No-version stream remains unknown/degraded ──
 
 func TestClaudeAdapter_NoVersion_AllUnknown(t *testing.T) {
 	a := &Adapter{}
@@ -326,8 +272,6 @@ func TestClaudeAdapter_NoVersion_AllUnknown(t *testing.T) {
 
 func TestClaudeAdapter_HookShapeNotConflated(t *testing.T) {
 	a := &Adapter{}
-	// A 2.1.206 hook record (system/hook_started) must NOT be classified
-	// as a typed event. The adapter only supports 2.1.202 session JSONL.
 	hookRec := claudeRec(`{"type":"system","subtype":"hook_started","hook_name":"UserPromptSubmit","hook_event":"UserPromptSubmit","hook_id":"<redacted>","session_id":"<redacted>"}`)
 	ev, deg := a.NormalizeEvent(context.Background(), hookRec)
 	if ev.Type != agent.EventUnknown {
@@ -348,7 +292,6 @@ func TestClaudeAdapter_OneShot_Equals_Paged(t *testing.T) {
 	records := []contract.RawRecord{rec1, rec2, rec3}
 
 	oneShot := readAllEvents(t, a, records, 0)
-	// Verify all MaxEvents produce identical (ID, Seq, Type) tuples.
 	for _, maxEv := range []int{1, 2, 3} {
 		paged := readAllEvents(t, a, records, maxEv)
 		if len(oneShot) != len(paged) {
@@ -484,6 +427,7 @@ func TestClaudeAdapter_Cursor_StreamRotation_ZeroEvents(t *testing.T) {
 	})
 	streamB := []contract.RawRecord{
 		claudeRec(`{"type":"user","message":{"role":"user","content":"x"},"uuid":"sb1","timestamp":"2026-07-06T23:23:31.876Z","sessionId":"s1","version":"2.1.202"}`),
+		claudeRec(`{"type":"user","message":{"role":"user","content":"y"},"uuid":"sb2","timestamp":"2026-07-06T23:23:32.000Z","sessionId":"s1","version":"2.1.202"}`),
 	}
 	resB, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
@@ -553,7 +497,7 @@ func TestClaudeAdapter_MixedBatch_DegradedAccumulates(t *testing.T) {
 	a := &Adapter{}
 	records := []contract.RawRecord{
 		versionMeta2_1_202(),
-		claudeRec(`{"type":"unknown_event_type","sessionId":"<UUID>","unexpectedField":"<REDACTED>"}`),
+		claudeRec(`{"type":"unknown_event_type","sessionId":"<UUID>","unexpectedField":"<REDACTED>","version":"2.1.202"}`),
 		claudeRec(`{"type":"user","sessionId":"<UUID>"}`),
 	}
 	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
@@ -647,11 +591,9 @@ func TestClaudeAdapter_NoThinkingLeak(t *testing.T) {
 	if ev.Type != agent.EventThinking {
 		t.Errorf("thinking record: got %q, want thinking", ev.Type)
 	}
-	// Thinking text must NOT appear in event Text.
 	if strings.Contains(ev.Text, "Bash") || strings.Contains(ev.Text, "ls") {
 		t.Errorf("thinking text leaked into event Text: %q", ev.Text)
 	}
-	// Thinking signature must NOT leak.
 	if strings.Contains(ev.Text, "sig123") {
 		t.Errorf("thinking signature leaked: %q", ev.Text)
 	}
@@ -664,11 +606,9 @@ func TestClaudeAdapter_NoCommandLeak(t *testing.T) {
 	if ev.Type != agent.EventToolCallStarted {
 		t.Errorf("tool_use record: got %q, want tool_call_started", ev.Type)
 	}
-	// Command text must NOT leak into event Text.
 	if strings.Contains(ev.Text, "rm") || strings.Contains(ev.Text, "-rf") {
 		t.Errorf("command leaked into event Text: %q", ev.Text)
 	}
-	// Tool name IS safe identity metadata.
 	if ev.Text != "Bash" {
 		t.Errorf("tool name not surfaced: %q", ev.Text)
 	}
@@ -682,13 +622,49 @@ func TestClaudeAdapter_NoToolResultLeak(t *testing.T) {
 	if ev.Type != agent.EventToolCallFinished {
 		t.Errorf("tool_result record: got %q, want tool_call_finished", ev.Type)
 	}
-	// Tool result output must NOT leak.
 	if strings.Contains(ev.Text, "secret") || strings.Contains(ev.Text, "token") {
 		t.Errorf("tool result output leaked into event Text: %q", ev.Text)
 	}
 }
 
-// ── Approval: permission-mode is NOT approval evidence ──
+// B4: Assistant private text must NOT appear anywhere in normalized output.
+func TestClaudeAdapter_NoAssistantTextLeak(t *testing.T) {
+	a := &Adapter{}
+	// Assistant text with benign-looking private content.
+	rec := claudeRec(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The bug is in src/auth/login.go line 42 where we hardcode the dev secret"}],"stop_reason":"end_turn"},"uuid":"u1","timestamp":"2026-07-06T23:23:38.360Z","sessionId":"s1","version":"2.1.202"}`)
+	ev, deg := a.NormalizeEvent(context.Background(), rec)
+	if ev.Type != agent.EventAssistantMessage {
+		t.Errorf("assistant text record: got %q, want assistant_message", ev.Type)
+	}
+	// Text body must be empty — never copied into common event.
+	if ev.Text != "" {
+		t.Errorf("assistant text body leaked into event Text: %q", ev.Text)
+	}
+	// Degradation diagnostics must not contain the text body.
+	for _, d := range deg.Diagnostics {
+		if strings.Contains(d, "login.go") || strings.Contains(d, "hardcode") || strings.Contains(d, "dev secret") {
+			t.Errorf("assistant text body leaked into diagnostics: %q", d)
+		}
+	}
+	// Metadata must not contain the text body.
+	for _, v := range ev.Metadata {
+		if strings.Contains(v, "login.go") || strings.Contains(v, "dev secret") {
+			t.Errorf("assistant text body leaked into metadata: %q", v)
+		}
+	}
+}
+
+// B4: Assistant plain-English text body is always empty.
+func TestClaudeAdapter_AssistantText_BodyAlwaysEmpty(t *testing.T) {
+	a := &Adapter{}
+	rec := claudeRec(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is a summary of the project structure"}],"stop_reason":"end_turn"},"uuid":"u1","timestamp":"2026-07-06T23:23:38.360Z","sessionId":"s1","version":"2.1.202"}`)
+	ev, _ := a.NormalizeEvent(context.Background(), rec)
+	if ev.Text != "" {
+		t.Errorf("assistant text body not empty: %q", ev.Text)
+	}
+}
+
+// ── B1: No approval from synthetic shapes or permission-mode ──
 
 func TestClaudeAdapter_PermissionMode_NotApproval(t *testing.T) {
 	a := &Adapter{}
@@ -700,8 +676,6 @@ func TestClaudeAdapter_PermissionMode_NotApproval(t *testing.T) {
 	if !deg.Degraded {
 		t.Error("permission-mode must degrade")
 	}
-
-	// DetectApproval must return nil even when fed a permission-mode event.
 	approvals, _ := a.DetectApproval(context.Background(), []contract.AgentEvent{ev})
 	if len(approvals) != 0 {
 		t.Errorf("permission-mode produced %d approvals, want 0", len(approvals))
@@ -728,25 +702,30 @@ func TestClaudeAdapter_ToolUse_NotApproval(t *testing.T) {
 	}
 }
 
-// ── Descriptor: no CapLogDetection ──
+// B1: DetectApproval always returns nil (no CapApprovalDetection).
+func TestClaudeAdapter_DetectApproval_AlwaysNil(t *testing.T) {
+	a := &Adapter{}
+	events := []contract.AgentEvent{
+		{ID: "e1", SessionID: "s", Type: agent.EventApprovalRequested, Confidence: 0.99,
+			Source: agent.SourceJSONL, Provenance: string(contract.ProvenanceNativeLog), ApprovalID: "appr-1"},
+	}
+	got, _ := a.DetectApproval(context.Background(), events)
+	if len(got) != 0 {
+		t.Errorf("DetectApproval returned %d approvals, want 0 (always safe default)", len(got))
+	}
+}
 
-func TestClaudeAdapter_Descriptor_NoCapLogDetection(t *testing.T) {
+// ── Descriptor: no CapApprovalDetection, no CapLogDetection ──
+
+func TestClaudeAdapter_Descriptor_NoApprovalOrLogDetection(t *testing.T) {
 	d := (&Adapter{}).Descriptor()
 	for _, c := range d.Capabilities {
+		if c == contract.CapApprovalDetection {
+			t.Error("CapApprovalDetection must not be declared (no controlled approval evidence)")
+		}
 		if c == contract.CapLogDetection {
 			t.Error("CapLogDetection must not be declared (no safe file discovery)")
 		}
-	}
-	// CapApprovalDetection IS declared with a synthetic harness-only fixture.
-	// See package doc and §9 for the evidence limitation.
-	foundApproval := false
-	for _, c := range d.Capabilities {
-		if c == contract.CapApprovalDetection {
-			foundApproval = true
-		}
-	}
-	if !foundApproval {
-		t.Error("CapApprovalDetection must be declared (synthetic fixture for harness conformance)")
 	}
 }
 
@@ -784,8 +763,6 @@ func TestClaudeAdapter_Detect_CWDBoost(t *testing.T) {
 	id, _ := a.Detect(context.Background(), contract.SessionContext{
 		ProcessName: "node", CWD: "/Users/dev/.claude/projects/myproject",
 	})
-	// node alone isn't claude, but .claude in CWD gives a boost.
-	// Still shouldn't reach 0.5 with just CWD boost (0.1+0.15=0.25).
 	if id.Kind != "unknown" {
 		t.Errorf("node+.claude CWD: kind=%q, want unknown", id.Kind)
 	}

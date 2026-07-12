@@ -28,24 +28,22 @@
 // Pokit-session to Claude-session mapping has been proven for ordinary
 // interactive TUI sessions.
 //
-// Approval: declared with a synthetic harness-only fixture. The retained
-// Claude 2.1.202 session JSONL fixtures do NOT contain structured
-// PermissionRequest/permission-result evidence with a stable non-empty
-// ApprovalID. Per the handoff §9, the "permission-mode" record with
-// permissionMode:"ask" is NOT approval evidence — it describes configuration
-// and has no uuid, no timestamp, and no version.
+// Approval: NOT declared. The retained Claude 2.1.202 session JSONL
+// fixtures contain no structured PermissionRequest/permission-result
+// evidence with a stable non-empty ApprovalID. Per the handoff §9, the
+// "permission-mode" record with permissionMode:"ask" is NOT approval
+// evidence — it describes configuration and has no uuid, no timestamp,
+// and no version.
 //
-// To satisfy the fixed T0 harness (which requires positive approval
-// evidence when CapApprovalDetection is declared), a synthetic fixture is
-// provided that represents what a Claude permission-request cycle WOULD
-// look like. This fixture is clearly documented as conjectural, not from
-// retained evidence. Real Claude approval detection requires controlled
-// evidence not yet available.
-//
-// The adapter gates all approval outputs through contract.SafeApprovalGate
-// (authoritative provenance only, confidence floor, ApprovalID required).
-// The historical false positive of mapping permission-mode→approval is NOT
-// replicated.
+// CapApprovalDetection is not advertised. DetectApproval always returns
+// nil. The fixed T0 harness positive-approval test will fail because the
+// harness was designed assuming all adapters have approval detection. This
+// harness/evidence mismatch is documented in the implementation report;
+// the handoff explicitly prohibits inventing evidence to make it pass.
+// Resolving this mismatch requires either (a) a controlled redacted
+// PermissionRequest positive fixture from an exact Claude version/source,
+// or (b) a T0 harness revision that allows adapters without
+// CapApprovalDetection.  Neither is within T2 scope.
 //
 // Additional audit decisions:
 //   - Discovery: returns nil (no safe, bounded, read-only file discovery
@@ -91,7 +89,6 @@ func (a *Adapter) Descriptor() contract.AgentAdapterDescriptor {
 		Capabilities: []contract.AdapterCapability{
 			contract.CapEvents,
 			contract.CapStatus,
-			contract.CapApprovalDetection,
 			contract.CapIncrementalRead,
 			contract.CapProcessDetection,
 		},
@@ -269,9 +266,13 @@ func normalizeClaudeEvent(rec contract.RawRecord, sessionID string, src contract
 		return unknownRec(rec.Bytes, sessionID, prov, src, "missing type in Claude record")
 	}
 
-	// Version gate: top-level "version" must be "2.1.202".
-	// This is checked per-record and also at batch level in ReadEvents.
-	if cr.Version != "" && cr.Version != supportedClaudeVersion {
+	// Version gate: top-level "version" must equal "2.1.202".
+	// Missing, non-string, or mismatched version → EventUnknown + degraded.
+	// Known structural records that legitimately lack a version field
+	// (permission-mode, attachment, file-history-snapshot) are classified
+	// as EventUnknown by classifyClaudeRecord; the version gate still
+	// fires for them because version != "2.1.202".
+	if cr.Version != supportedClaudeVersion {
 		return unknownRec(rec.Bytes, sessionID, prov, src, "unsupported Claude version: "+safeVersionDiag(cr.Version))
 	}
 	if versionFailed {
@@ -296,21 +297,6 @@ func normalizeClaudeEvent(rec contract.RawRecord, sessionID string, src contract
 		Metadata: boundedClaudeMetadata(cr),
 	}
 
-	// Approval events: extract approval_id from the synthetic or native
-	// payload.  For harness-only synthetic fixtures, the approval_id is
-	// carried in a content-level id field.
-	if et == agent.EventApprovalRequested || et == agent.EventApprovalResolved {
-		aid := claudeApprovalID(cr)
-		if aid != "" {
-			ev.ApprovalID = aid
-		} else {
-			ev.Type = agent.EventUnknown
-			ev.Confidence = 0.25
-			degraded = true
-			reasons = append(reasons, string(et)+" without approval_id")
-		}
-	}
-
 	deg := contract.OK()
 	if degraded {
 		deg = contract.Degrade(strings.Join(reasons, "; "))
@@ -321,13 +307,9 @@ func normalizeClaudeEvent(rec contract.RawRecord, sessionID string, src contract
 func classifyClaudeRecord(cr claudeRecord) (contract.AgentEventType, float64) {
 	switch cr.Type {
 	case "user":
-		// Check if content is a tool_result, a synthetic permission_request
-		// (harness-only), or a plain user message.
+		// Check if content is a tool_result or a plain user message.
 		if isToolResult(cr.Message.Content) {
 			return agent.EventToolCallFinished, 0.85
-		}
-		if isPermissionRequest(cr.Message.Content) {
-			return agent.EventApprovalRequested, 0.9
 		}
 		return agent.EventUserMessage, 0.85
 	case "assistant":
@@ -347,10 +329,6 @@ func classifyClaudeRecord(cr claudeRecord) (contract.AgentEventType, float64) {
 		// no version, and permissionMode describes configuration/mode.
 		// See handoff §9.
 		return agent.EventUnknown, 0.3
-	case "user_resolved":
-		// Synthetic harness-only record for approval resolution.
-		// Mirrors the approval_resolved pattern from Codex.
-		return agent.EventApprovalResolved, 0.9
 	case "attachment", "file-history-snapshot":
 		return agent.EventUnknown, 0.3
 	default:
@@ -368,25 +346,6 @@ func isToolResult(content json.RawMessage) bool {
 	}
 	for _, c := range arr {
 		if c.Type == "tool_result" {
-			return true
-		}
-	}
-	return false
-}
-
-// isPermissionRequest detects a synthetic permission_request content type.
-// This is harness-only; the retained Claude 2.1.202 fixtures do not contain
-// structured permission-request evidence. See package doc.
-func isPermissionRequest(content json.RawMessage) bool {
-	if len(content) == 0 {
-		return false
-	}
-	var arr []claudeContent
-	if err := json.Unmarshal(content, &arr); err != nil {
-		return false
-	}
-	for _, c := range arr {
-		if c.Type == "permission_request" {
 			return true
 		}
 	}
@@ -452,43 +411,31 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 
 	input := in.Records
 
-	// ── Version: scan for position 0 with version field ──
+	// ── Version: position 0 is the sole batch authority ──
+	// Only input[0] is inspected (one bounded JSON parse).  If it does
+	// not carry exact "2.1.202", the entire batch is forced to
+	// EventUnknown + degraded.  There is no fallback scan over the full
+	// input — that would be an unbounded-resource violation.
+	// Per-record version enforcement is handled by normalizeClaudeEvent.
 	batchVersionOK := false
 	batchVersionFailed := false
 	if len(input) > 0 && contract.AcceptRecord(input[0]) {
 		var cr claudeRecord
-		if err := json.Unmarshal(input[0].Bytes, &cr); err == nil {
-			if cr.Version == supportedClaudeVersion {
-				batchVersionOK = true
-			} else if cr.Version != "" {
-				batchVersionFailed = true
-				degraded = true
+		if err := json.Unmarshal(input[0].Bytes, &cr); err == nil && cr.Version == supportedClaudeVersion {
+			batchVersionOK = true
+		} else {
+			batchVersionFailed = true
+			degraded = true
+			if err != nil {
+				diags = append(diags, "unparseable version authority at position 0")
+			} else {
 				diags = append(diags, "unsupported Claude version: "+safeVersionDiag(cr.Version))
 			}
 		}
-	}
-	// Also scan for version in the batch if position 0 didn't have one.
-	if !batchVersionOK && !batchVersionFailed {
-		for i, rec := range input {
-			if !contract.AcceptRecord(rec) {
-				continue
-			}
-			var cr claudeRecord
-			if err := json.Unmarshal(rec.Bytes, &cr); err != nil {
-				continue
-			}
-			if cr.Version == "" {
-				continue
-			}
-			if cr.Version == supportedClaudeVersion {
-				batchVersionOK = true
-			} else {
-				batchVersionFailed = true
-				degraded = true
-				diags = append(diags, "unsupported Claude version at position "+strconv.Itoa(i)+": "+safeVersionDiag(cr.Version))
-			}
-			break
-		}
+	} else {
+		batchVersionFailed = true
+		degraded = true
+		diags = append(diags, "missing version authority at position 0")
 	}
 
 	// ── Anchor validation BEFORE suffix slicing so out-of-range positions ──
@@ -512,40 +459,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		degraded = true
 		diags = append(diags, "batch truncated at bound")
 	}
-
-	// ── Stream conflict: conflicting version at position > 0 ──
-	firstConflict := -1
-	for i, rec := range bounded {
-		if !contract.AcceptRecord(rec) {
-			continue
-		}
-		var cr claudeRecord
-		if err := json.Unmarshal(rec.Bytes, &cr); err != nil || cr.Version == "" {
-			continue
-		}
-		absPos := cur.nextPos + int64(i)
-		if absPos == 0 {
-			if cr.Version == supportedClaudeVersion {
-				batchVersionOK = true
-			} else {
-				batchVersionFailed = true
-				degraded = true
-				diags = append(diags, "unsupported Claude version: "+safeVersionDiag(cr.Version))
-			}
-		} else {
-			// Conflicting version at non-zero position → stream conflict.
-			if cr.Version != supportedClaudeVersion || batchVersionFailed {
-				firstConflict = i
-				degraded = true
-				diags = append(diags, "conflicting version at position "+strconv.FormatInt(absPos, 10))
-				break
-			}
-		}
-	}
 	processLimit := len(bounded)
-	if firstConflict >= 0 {
-		processLimit = firstConflict
-	}
 	if !batchVersionOK || batchVersionFailed {
 		batchVersionFailed = true
 	}
@@ -652,25 +566,15 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 
 // ── DetectApproval ──
 //
-// All approval outputs are gated through contract.SafeApprovalGate (authoritative
-// provenance, confidence floor, non-empty ApprovalID).  The synthetic harness
-// fixture produces approval events with native_log provenance meeting the gate.
-// Real Claude fixtures (permission-mode, approval-like text, tool_use) do NOT
-// pass SafeApprovalGate and produce zero approvals.
+// CapApprovalDetection is NOT declared.  The retained Claude 2.1.202 fixtures
+// contain no structured PermissionRequest/permission-result evidence with a
+// stable non-empty ApprovalID.  The permission-mode record only describes
+// configuration and is not approval evidence (§9).  DetectApproval always
+// returns nil — a safe default that never manufactures an approval from
+// ambiguous evidence.
 
 func (a *Adapter) DetectApproval(_ context.Context, events []contract.AgentEvent) ([]contract.AgentApproval, error) {
-	var out []contract.AgentApproval
-	for _, e := range events {
-		if !contract.SafeApprovalGate(e) {
-			continue
-		}
-		out = append(out, contract.AgentApproval{
-			ID: e.ApprovalID, SessionID: e.SessionID, AgentKind: e.AgentKind,
-			Kind: "approval", Status: "pending", Prompt: "approval requested",
-			Source: e.Source, Confidence: e.Confidence, CreatedAt: e.Timestamp,
-		})
-	}
-	return out, nil
+	return nil, nil
 }
 
 // ── GetStatus ──
@@ -733,8 +637,12 @@ func safeClaudeText(cr claudeRecord) string {
 		// Do NOT copy user prompt text. Tool results stay internal.
 		return ""
 	case "assistant":
-		// Do NOT copy thinking text, tool_use commands, or private text.
-		// Only extract a safe label from the content type.
+		// Do NOT copy thinking text, tool_use commands, or private assistant
+		// text into common event Text.  Assistant text may contain private
+		// source excerpts, proprietary explanations, repository-specific
+		// names, user data, or sensitive content in natural language that
+		// ContainsSensitive cannot detect.  Only the event type and tool
+		// name (safe identity metadata) are preserved.
 		ct := dominantContentType(cr.Message.Content)
 		switch ct {
 		case "thinking":
@@ -747,12 +655,7 @@ func safeClaudeText(cr claudeRecord) string {
 			}
 			return ""
 		case "text":
-			// assistant text may contain sensitive content; keep bounded.
-			text := safeAssistantText(cr.Message.Content)
-			if text != "" && contract.ContainsSensitive(text) {
-				return ""
-			}
-			return text
+			return "" // assistant private text body must not be copied
 		}
 		return ""
 	case "permission-mode":
@@ -760,31 +663,6 @@ func safeClaudeText(cr claudeRecord) string {
 	default:
 		return ""
 	}
-}
-
-// claudeApprovalID extracts a stable approval identifier from a Claude record.
-// For synthetic/harness records this comes from the permission_request or
-// user_resolved content element's id field.
-func claudeApprovalID(cr claudeRecord) string {
-	if len(cr.Message.Content) == 0 {
-		return ""
-	}
-	var arr []claudeContent
-	if err := json.Unmarshal(cr.Message.Content, &arr); err != nil {
-		return ""
-	}
-	for _, c := range arr {
-		if c.Type == "permission_request" && c.ID != "" {
-			return c.ID
-		}
-	}
-	// For user_resolved type, the approval_id is in the first content element.
-	for _, c := range arr {
-		if c.ID != "" && !contract.ContainsSensitive(c.ID) {
-			return c.ID
-		}
-	}
-	return ""
 }
 
 func safeToolName(content json.RawMessage) string {
@@ -798,29 +676,6 @@ func safeToolName(content json.RawMessage) string {
 	for _, c := range arr {
 		if c.Type == "tool_use" && c.Name != "" && !contract.ContainsSensitive(c.Name) {
 			return boundStr(c.Name, 128)
-		}
-	}
-	return ""
-}
-
-func safeAssistantText(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	var arr []claudeContent
-	if err := json.Unmarshal(content, &arr); err != nil {
-		return ""
-	}
-	for _, c := range arr {
-		if c.Type == "text" && c.Text != "" {
-			text := c.Text
-			if contract.ContainsSensitive(text) {
-				return ""
-			}
-			if len(text) > 256 {
-				text = text[:256]
-			}
-			return text
 		}
 	}
 	return ""
