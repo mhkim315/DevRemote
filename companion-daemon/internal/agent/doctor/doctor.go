@@ -133,16 +133,32 @@ type Doctor struct{}
 // New returns a new Doctor.
 func New() *Doctor { return &Doctor{} }
 
-// ── FullWorkflow (production entry) ──
+// ── Session ──
 
-// FullWorkflow runs the complete D1 vertical workflow:
-//
-//	drift detect → evidence collect → runner repair → sandbox validate
-//	→ workspace apply → fixed suite → immutable review bundle
-//
-// Returns the immutable ReviewBundle ready for user approval, or an error
-// if any step fails. This is the production entry point, safe to call from
-// CLI or local-only controller. No network endpoint exposes this.
+// Session is the local-only workflow controller handle returned by
+// FullWorkflow. It retains the orchestrator, review bundle, and approval
+// state. Never expose through a remote tunnel.
+type Session struct {
+	orch   *Orchestrator
+	Bundle *ReviewBundle
+}
+
+func (s *Session) Approve(userDigest string) error {
+	return s.orch.Approve(s.Bundle.RequestID(), userDigest)
+}
+func (s *Session) Reject() error {
+	return s.orch.Reject(s.Bundle.RequestID())
+}
+func (s *Session) Activate(userDigest string) error {
+	return s.orch.Activate(s.Bundle.RequestID(), userDigest)
+}
+func (s *Session) GetRequest() (*ApprovalRequest, bool) {
+	return s.orch.GetApprovalRequest(s.Bundle.RequestID())
+}
+func (s *Session) Close() { s.orch.Reset() }
+
+// ── FullWorkflow ──
+
 func FullWorkflow(
 	runner RepairRunner,
 	desc contract.AgentAdapterDescriptor,
@@ -152,66 +168,24 @@ func FullWorkflow(
 	knownFields map[string]string,
 	requestID, baselineSHA string,
 	repoRoot string,
-) (*ReviewBundle, error) {
-	orch := NewOrchestrator(runner)
-	defer orch.Reset()
-
+) (*Session, error) {
+	orch := NewOrchestrator(runner, repoRoot)
 	req := ProcessRequest{
 		AdapterDescriptor:     desc,
 		ObservedVersion:       observedVersion,
 		ObservedVersionSource: versionSource,
 		ObservedRecordSamples: samples,
 	}
-
-	// Step 1: drift detection.
 	report, err := orch.DetectDrift(req)
-	if err != nil {
-		return nil, err
-	}
-	if report.Compatible {
-		return nil, nil // no drift — no repair needed
-	}
-
-	// Step 2: evidence collection.
-	_, err = orch.CollectEvidence(knownDiscriminators, knownFields)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 3: repair (runner actually called).
-	if err := orch.RequestRepair(); err != nil {
-		return nil, err
-	}
-
-	// Use runner output as the patch.
-	output := orch.activeRepairOutput
-	if output == nil || !output.Success {
-		return nil, errors.New("repair runner did not produce a successful output")
-	}
-
-	// Step 4: sandbox validation.
-	_, err = orch.SubmitPatch(output.Patch)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 5: workspace application.
-	_, err = orch.ApplyPatchToWorkspace(repoRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 6: fixed suite execution.
-	_, err = orch.RunFixedSuites(repoRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 7: immutable review bundle.
+	if err != nil { orch.Reset(); return nil, err }
+	if report.Compatible { orch.Reset(); return nil, nil }
+	if _, err := orch.CollectEvidence(knownDiscriminators, knownFields); err != nil { orch.Reset(); return nil, err }
+	if err := orch.RequestRepair(); err != nil { orch.Reset(); return nil, err }
+	if orch.activeRepairOutput == nil || !orch.activeRepairOutput.Success { orch.Reset(); return nil, errors.New("runner did not produce successful output") }
+	if _, err := orch.SubmitPatch(orch.activeRepairOutput.Patch); err != nil { orch.Reset(); return nil, err }
+	if _, err := orch.ApplyPatchToWorkspace(); err != nil { orch.Reset(); return nil, err }
+	if _, err := orch.RunFixedSuites(); err != nil { orch.Reset(); return nil, err }
 	bundle, err := orch.BuildReviewBundle(requestID, baselineSHA)
-	if err != nil {
-		return nil, err
-	}
-
-	return bundle, nil
+	if err != nil { orch.Reset(); return nil, err }
+	return &Session{orch: orch, Bundle: bundle}, nil
 }
