@@ -67,16 +67,18 @@ type fxRecord struct {
 }
 
 func (fixtureAdapter) NormalizeEvent(_ context.Context, rec RawRecord) (AgentEvent, DegradedInfo) {
+	return normalizeEvent(rec, "s")
+}
+
+func normalizeEvent(rec RawRecord, sessionID string) (AgentEvent, DegradedInfo) {
 	prov := ProvenanceNativeLog
 	if IsKnownProvenance(rec.Provenance) {
 		prov = rec.Provenance
 	}
 	var r fxRecord
 	if err := json.Unmarshal(rec.Bytes, &r); err != nil || r.Kind == "" {
-		// Malformed / unknown → safe unknown event, never a fabricated typed event.
-		// Raw bytes (which may hold secrets) are NEVER copied to Text.
 		return SafeEvent(AgentEvent{
-			ID: hashID(rec.Bytes), SessionID: "s", AgentKind: "fixture",
+			ID: hashID(rec.Bytes), SessionID: sessionID, AgentKind: "fixture",
 			Type: agent.EventUnknown, Timestamp: fxBase, Confidence: 0.2,
 			Source: srcOr(rec.Source), Provenance: string(prov),
 		}), Degrade("unparseable record")
@@ -91,7 +93,7 @@ func (fixtureAdapter) NormalizeEvent(_ context.Context, rec RawRecord) (AgentEve
 		id = hashID(rec.Bytes)
 	}
 	return AgentEvent{
-		ID: id, SessionID: "s", AgentKind: "fixture",
+		ID: id, SessionID: sessionID, AgentKind: "fixture",
 		Type: et, Seq: r.TS, Timestamp: fxBase.Add(time.Duration(r.TS) * time.Second),
 		Text: safeText(r.Text), Confidence: conf,
 		Source: srcOr(rec.Source), Provenance: string(prov),
@@ -100,9 +102,11 @@ func (fixtureAdapter) NormalizeEvent(_ context.Context, rec RawRecord) (AgentEve
 
 func (a fixtureAdapter) ReadEvents(ctx context.Context, in ReadInput) (ReadResult, error) {
 	if a.failRead {
-		// Isolation: a failing adapter returns a typed degraded result — no panic,
-		// no partial events, nothing that could affect Live Terminal.
 		return ReadResult{Degraded: Degrade("fixture read failure")}, nil
+	}
+	sessionID := in.Session.SessionID
+	if sessionID == "" {
+		sessionID = "s"
 	}
 	degraded := false
 	if err := ValidateCursor(in.Cursor); err != nil {
@@ -124,11 +128,11 @@ func (a fixtureAdapter) ReadEvents(ctx context.Context, in ReadInput) (ReadResul
 	for _, rec := range records {
 		if !AcceptRecord(rec) {
 			degraded = true
-			continue // oversized record skipped
+			continue
 		}
-		ev, _ := a.NormalizeEvent(ctx, rec)
+		ev, _ := normalizeEvent(rec, sessionID)
 		if ev.ID == "" || seenID[ev.ID] || ev.Seq <= watermark {
-			continue // dedupe by id + high-water-mark resume
+			continue
 		}
 		if len(out) >= limit {
 			truncated = true
@@ -145,7 +149,6 @@ func (a fixtureAdapter) ReadEvents(ctx context.Context, in ReadInput) (ReadResul
 	if degraded {
 		deg = Degrade("read truncated or partially skipped at a bound")
 	}
-	// Bounded cursor: a single high-water-mark number, never an id set.
 	return ReadResult{Events: out, NextCursor: Cursor(strconv.FormatInt(watermark, 10)), Degraded: deg}, nil
 }
 

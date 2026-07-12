@@ -73,6 +73,10 @@ func RunAgentContract(t *testing.T, name string, factory func(*testing.T) AgentA
 		t.Run("Read_CallerLimitHonored", func(t *testing.T) { testCallerLimit(t, factory, fx) })
 		t.Run("Read_DedupStableID", func(t *testing.T) { testDedupStableID(t, factory, fx) })
 		t.Run("Read_CursorBoundedResumeNoReemit", func(t *testing.T) { testCursorResume(t, factory, fx) })
+		t.Run("Read_SessionIDMustMatch", func(t *testing.T) { testSessionBinding(t, factory, fx) })
+		t.Run("Read_BoundsEnforced_OversizedRecord", func(t *testing.T) { testOversizedRecord(t, factory, fx) })
+		t.Run("Read_BoundsEnforced_OversizedBatch", func(t *testing.T) { testOversizedBatch(t, factory, fx) })
+		t.Run("Read_BoundsEnforced_InvalidCursor", func(t *testing.T) { testInvalidCursor(t, factory, fx) })
 		t.Run("Normalize_NoLeakNoPanic", func(t *testing.T) { testNormalize(t, factory, fx) })
 		t.Run("Approval_GenericAdversarial", func(t *testing.T) { testApprovals(t, factory, fx) })
 		t.Run("Status_PrecedenceAndAdvisoryPolicy", func(t *testing.T) { testStatus(t, factory, fx) })
@@ -195,11 +199,12 @@ func testDiscover(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confor
 		if len(limited) > 1 {
 			t.Errorf("caller Limit=1 not honored: got %d", len(limited))
 		}
-		// Empty/unknown context must not yield a PROVEN correlation.
+		// Empty/unknown context must yield ZERO results OR everything CorrelationUnavailable.
+		// Neither Proven nor ManagedLaunch is legitimate without evidence.
 		empty, _ := a.DiscoverSessions(ctx(), DiscoveryInput{Session: SessionContext{}})
 		for _, s := range empty {
-			if s.Correlation == CorrelationProven {
-				t.Error("empty context yielded a proven correlation (invented ownership)")
+			if s.Correlation == CorrelationProven || s.Correlation == CorrelationManagedLaunch {
+				t.Errorf("empty context yielded %s correlation — must be Unavailable or return nothing", s.Correlation)
 			}
 		}
 	})
@@ -257,6 +262,95 @@ func testMalformed(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 		if err := ValidateEvent(e); err != nil {
 			t.Errorf("malformed-derived event invalid: %v", err)
 		}
+	}
+}
+
+// ── B1: bound enforcement — the harness forces the adapter to honour AcceptRecord,
+//     BoundBatch, and ValidateCursor; silent acceptance is a contract violation.
+
+func testSessionBinding(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	// Every emitted event MUST carry the EXACT requested session ID.
+	reqSession := "controlled_pty:host-a"
+	res := readWith(t, factory(t), ReadInput{Session: SessionContext{SessionID: reqSession}, Records: fx.ValidRecords})
+	for _, e := range res.Events {
+		if e.SessionID != reqSession {
+			t.Errorf("event SessionID=%q, want %q (cross-session evidence)", e.SessionID, reqSession)
+		}
+	}
+}
+
+func testOversizedRecord(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	// A record exceeding MaxRecordBytes must produce ZERO events and either a
+	// degraded result or an error. Silently normalizing / dropping it is not enough.
+	big := RawRecord{Bytes: make([]byte, MaxRecordBytes+1), Source: agent.SourceJSONL}
+	var res ReadResult
+	var err error
+	guard(t, "ReadEvents(oversized-record)", func() {
+		res, err = factory(t).ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: []RawRecord{big}})
+	})
+	if err != nil {
+		return // error is an acceptable fail-closed path
+	}
+	if len(res.Events) != 0 {
+		t.Errorf("oversized record produced %d events, want 0", len(res.Events))
+	}
+	if !res.Degraded.Degraded {
+		t.Error("oversized record must set Degraded=true")
+	}
+}
+
+func testOversizedBatch(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	// A batch exceeding MaxBatchRecords must be capped and must report a degraded
+	// result. The output event cap is tested separately (testHardBound); this
+	// proves the adapter honours the INPUT batch cap.
+	many := make([]RawRecord, MaxBatchRecords+25)
+	for i := range many {
+		many[i] = fx.DistinctRecord(i)
+	}
+	var res ReadResult
+	var err error
+	guard(t, "ReadEvents(oversized-batch)", func() {
+		res, err = factory(t).ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: many})
+	})
+	if err != nil {
+		t.Fatalf("oversized batch must not error, it degrades: %v", err)
+	}
+	if !res.Degraded.Degraded {
+		t.Error("oversized batch must set Degraded=true")
+	}
+	if len(res.Events) > MaxEventsPerRead {
+		t.Errorf("oversized batch leaked %d events > hard cap %d", len(res.Events), MaxEventsPerRead)
+	}
+}
+
+func testInvalidCursor(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
+	a := factory(t)
+	// Oversized cursor → must fail-closed (no events, no full replay), either via
+	// an error or a degraded result.
+	in := ReadInput{Session: SessionContext{SessionID: "s"}, Records: fx.ValidRecords, Cursor: Cursor(string(make([]byte, MaxCursorBytes+1)))}
+	var res ReadResult
+	var err error
+	guard(t, "ReadEvents(oversized-cursor)", func() {
+		res, err = a.ReadEvents(ctx(), in)
+	})
+	if err == nil && !res.Degraded.Degraded {
+		t.Error("oversized cursor must degrade or error (not silently accepted)")
+	}
+	// An oversized cursor that still emits events is replaying history — that is
+	// a bypass of the bounded-read guarantee.
+	if len(res.Events) != 0 {
+		t.Errorf("oversized cursor replayed %d events, want 0 (fail-closed)", len(res.Events))
+	}
+	// Invalid-UTF8 cursor must also not silently replay.
+	in.Cursor = Cursor("\xff\xfe")
+	guard(t, "ReadEvents(invalid-utf8-cursor)", func() {
+		res, err = a.ReadEvents(ctx(), in)
+	})
+	if err == nil && !res.Degraded.Degraded {
+		t.Error("invalid-UTF8 cursor must degrade or error")
+	}
+	if len(res.Events) != 0 {
+		t.Errorf("invalid-UTF8 cursor replayed %d events, want 0", len(res.Events))
 	}
 }
 
@@ -364,16 +458,34 @@ func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 			t.Errorf("adversarial events produced %d approvals, want 0", len(got))
 		}
 	})
-	// Positive fixture → ≥1 approval, well-formed.
+	// Positive fixture → ≥1 approval, well-formed, bound to source evidence.
 	res := readAll(t, factory(t), fx.ApprovalRecords)
 	guard(t, "DetectApproval(positive)", func() {
 		got, _ := ad.DetectApproval(ctx(), res.Events)
 		if len(got) == 0 {
 			t.Error("approval-positive fixture produced no approval")
 		}
+		srcByID := map[string]AgentEvent{}
+		for _, e := range res.Events {
+			srcByID[e.ID] = e
+		}
 		for _, ap := range got {
 			if ap.ID == "" || ap.Status == "" {
 				t.Errorf("approval missing id/status: %+v", ap)
+			}
+			if src, ok := srcByID[ap.ID[len("ap-"):]]; ok {
+				if ap.SessionID != src.SessionID {
+					t.Errorf("approval SessionID=%q, source=%q (cross-session)", ap.SessionID, src.SessionID)
+				}
+				if ap.AgentKind != src.AgentKind {
+					t.Errorf("approval AgentKind=%q, source=%q", ap.AgentKind, src.AgentKind)
+				}
+				if ap.Source != src.Source {
+					t.Errorf("approval Source=%q, source=%q", ap.Source, src.Source)
+				}
+				if ap.Confidence != src.Confidence {
+					t.Errorf("approval Confidence=%.2f, source=%.2f", ap.Confidence, src.Confidence)
+				}
 			}
 		}
 	})
@@ -409,13 +521,47 @@ func testStatus(t *testing.T, factory func(*testing.T) AgentAdapter, fx Conforma
 			t.Errorf("precedence failed: got %q, want working", res.Status)
 		}
 	})
-	// Advisory-alone policy: a prompt-hint cannot authoritatively declare completed.
-	guard(t, "GetStatus(advisory-terminal)", func() {
+	// Advisory-alone policy: heuristic / prompt_hint / unknown provenance MUST NOT
+	// authoritatively declare a terminal status (completed/failed/interrupted).
+	for _, ev := range []StatusEvidence{
+		{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.99},
+		{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.50},
+		{Status: agent.StatusCompleted, Provenance: ProvenanceHeuristic, Confidence: 0.99},
+		{Status: agent.StatusFailed, Provenance: ProvenanceHeuristic, Confidence: 0.80},
+		{Status: agent.StatusCompleted, Provenance: ProvenanceUnknown, Confidence: 0.95},
+		{Status: agent.StatusInterrupted, Provenance: ProvenancePromptHint, Confidence: 0.75},
+	} {
+		guard(t, "GetStatus(advisory-terminal)", func() {
+			res, _ := ad.GetStatus(ctx(), StatusInput{Session: SessionContext{SessionID: "s"}, Evidence: []StatusEvidence{ev}})
+			if res.Status == ev.Status && res.Confidence > AdvisoryStatusConfidenceCeiling && !res.Degraded.Degraded {
+				t.Errorf("advisory %s asserted %s at confidence %.2f without degraded — must be unknown+degraded", ev.Provenance, ev.Status, res.Confidence)
+			}
+			if res.Status == ev.Status && !res.Degraded.Degraded {
+				t.Errorf("advisory %s asserted %s without degraded flag (conf=%.2f)", ev.Provenance, ev.Status, res.Confidence)
+			}
+			if res.Confidence > AdvisoryStatusConfidenceCeiling {
+				t.Errorf("advisory %s confidence %.2f exceeds ceiling %.2f", ev.Provenance, res.Confidence, AdvisoryStatusConfidenceCeiling)
+			}
+			if res.Provenance != ev.Provenance {
+				t.Errorf("returned provenance %q != input %q", res.Provenance, ev.Provenance)
+			}
+		})
+	}
+	// Strong evidence wins over advisory; the winning provenance+confidence must
+	// reflect the strong source, not the overridden advisory.
+	guard(t, "GetStatus(strong-over-advisory)", func() {
 		res, _ := ad.GetStatus(ctx(), StatusInput{Session: SessionContext{SessionID: "s"}, Evidence: []StatusEvidence{
 			{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.99},
+			{Status: agent.StatusWorking, Provenance: ProvenanceRuntime, Confidence: 0.60},
 		}})
-		if res.Status == agent.StatusCompleted && res.Confidence >= 0.75 {
-			t.Errorf("advisory prompt-hint asserted completed at high confidence (%.2f)", res.Confidence)
+		if res.Status != agent.StatusWorking {
+			t.Errorf("strong evidence lost precedence: got %s", res.Status)
+		}
+		if res.Provenance != ProvenanceRuntime {
+			t.Errorf("winning provenance %q, want runtime", res.Provenance)
+		}
+		if res.Confidence != 0.60 {
+			t.Errorf("winning confidence %.2f, want 0.60", res.Confidence)
 		}
 	})
 }
