@@ -11,7 +11,7 @@ Baseline (accepted T0): `3ce2604bd333dcb63142b5b1710185a823162efa`
 ```text
 REVIEW REQUEST: T2 Claude Version-Specific Adapter
 baseline: 162266f830caaf07bf701d9a1294557432855769
-tip: <full SHA after push>
+tip: f119f7b73826b66c209050c627bdd1d42074f028
 scope: T2 only
 supported Claude version/shape: 2.1.202 session JSONL
 source: session JSONL (~/.claude/projects/<PROJECT>/<UUID>.jsonl), exact top-level version field
