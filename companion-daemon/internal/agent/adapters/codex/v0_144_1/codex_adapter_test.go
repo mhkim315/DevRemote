@@ -1027,18 +1027,22 @@ func TestCodexAdapter_Cursor_MaxBatchRecordsPlusOne_PaginatedFully(t *testing.T)
 }
 
 func TestCodexAdapter_Cursor_ByteBound_LargeSuffix(t *testing.T) {
-	// Suffix records that together exceed MaxBatchBytes — only the subset
-	// within the byte bound is processed; cursor advances accordingly.
+	// Individually-valid records (~500 KB each) that together exceed
+	// MaxBatchBytes (8 MiB). 20 records × 500 KB = 10 MB > 8 MB bound.
 	a := &Adapter{}
-	// Create sized records that push past the byte bound.
-	bigSize := contract.MaxBatchBytes/8 + 1 // ~1 MiB each
+	recSize := 500_000 // well under MaxRecordBytes (1 MiB)
+	jsonOverhead := 120
+	padPerRec := recSize - jsonOverhead
+	if padPerRec < 0 {
+		padPerRec = 0
+	}
+	nRecords := 22 // 22 × 500 KB ≈ 11 MB > 8 MB MaxBatchBytes
 	var records []contract.RawRecord
 	records = append(records, sessionMeta0_144_1())
-	// First 2 big records: ~2 MiB total
-	records = append(records, codexRec(`{"timestamp":"2026-07-06T13:29:35.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","_pad":"`+strings.Repeat("x", bigSize-100)+`"}}`))
-	records = append(records, codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2","_pad":"`+strings.Repeat("x", bigSize-100)+`"}}`))
+	for i := 0; i < nRecords; i++ {
+		records = append(records, codexRec(`{"timestamp":"2026-07-06T13:29:35.`+nanoPad(i)+`Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t`+strconv.Itoa(i)+`","_pad":"`+strings.Repeat("x", padPerRec)+`"}}`))
+	}
 
-	// First read from empty cursor: should process only records that fit.
 	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
@@ -1049,39 +1053,41 @@ func TestCodexAdapter_Cursor_ByteBound_LargeSuffix(t *testing.T) {
 	if !res1.Degraded.Degraded {
 		t.Error("byte-bound truncation must degrade")
 	}
-	// Cursor position advanced past the records that fit.
 	cur, _ := parseCursor(res1.NextCursor)
 	if cur.nextPos == 0 {
 		t.Error("cursor did not advance past byte-bound truncation")
 	}
 
-	// Continuation: remaining records should be processed.
+	// Continuation: remaining records processed from cursor forward.
 	if cur.nextPos < int64(len(records)) {
 		res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 			Session: contract.SessionContext{SessionID: "pokit:host-a"},
 			Records: records,
 			Cursor:  res1.NextCursor,
 		})
-		totalEvents := len(res1.Events) + len(res2.Events)
-		if totalEvents < len(res1.Events) {
+		if len(res1.Events)+len(res2.Events) <= len(res1.Events) {
 			t.Error("continuation did not make progress after byte-bound truncation")
 		}
 	}
 }
 
 func TestCodexAdapter_Cursor_CombinedLimitDuplicateBound(t *testing.T) {
-	// Combined test: caller limit + cross-page duplicate + batch bound.
+	// Combined: caller limit + within-batch content dedup + batch bound.
+	// Within-batch content dedup prevents same-ID emission in one page.
+	// Cross-page, identical content at a different source position is a
+	// distinct position-based event (bounded window does not dedup across
+	// pages by content — that would require unbounded historical ID storage).
 	a := &Adapter{}
 	dup := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
 		dup,
 		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
-		dup, // cross-page duplicate at position 3
+		dup, // position 3: same content as position 1, distinct source position
 		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
 	}
 
-	seen := map[string]bool{}
+	emitted := 0
 	var cursor contract.Cursor
 	var seqs []int64
 	for {
@@ -1091,11 +1097,8 @@ func TestCodexAdapter_Cursor_CombinedLimitDuplicateBound(t *testing.T) {
 			Cursor:    cursor,
 			MaxEvents: 1,
 		})
+		emitted += len(res.Events)
 		for _, e := range res.Events {
-			if seen[e.ID] {
-				t.Errorf("duplicate emission in combined test: %s", e.ID)
-			}
-			seen[e.ID] = true
 			seqs = append(seqs, e.Seq)
 		}
 		cursor = res.NextCursor
@@ -1103,8 +1106,9 @@ func TestCodexAdapter_Cursor_CombinedLimitDuplicateBound(t *testing.T) {
 			break
 		}
 	}
-	if len(seen) != 4 {
-		t.Errorf("combined: got %d unique events, want 4 (meta+dup+t1+t2, no re-emit)", len(seen))
+	// 5 position-based events emitted: meta + dup(pos1) + t1 + dup(pos3) + t2.
+	if emitted != 5 {
+		t.Errorf("combined: got %d emissions, want 5 (position-based identity)", emitted)
 	}
 	// Seq strictly increasing.
 	for i := 1; i < len(seqs); i++ {

@@ -282,16 +282,15 @@ func classifyCodexRecord(cr codexRecord) (contract.AgentEventType, float64) {
 // Input policy: ordered full-prefix snapshots.  Cursor encodes the absolute
 // position and content-hash anchor of the last consumed input record.
 //
-// Processing:
-//  1. Validate cursor anchor against original input record at pos-1 (raw hash).
-//  2. Scan ALL input records for session_meta version.
-//  3. Build prefix dedup set from positions [0, pos) — prevents cross-page
-//     duplicate re-emission when a record appears on both sides of a page
-//     boundary.
-//  4. BoundBatch only the suffix in.Records[pos:] — prevents MaxBatchRecords
-//     from permanently blocking progress into a deep prefix.
-//  5. Normalize, emit with prefix dedup + batch dedup.
-//  6. Deleted or empty-ID records consume a position but emit nothing.
+// Bounded-window processing (no full-prefix scan, no unbounded prefix map):
+//  1. Version: parse ONLY input[0] (session_meta always at position 0).
+//  2. Anchor: validate hashBytesID(input[pos-1]) == anchor (one raw hash).
+//  3. Suffix = input[pos:]; BoundBatch only the suffix.
+//  4. Normalize suffix, emit with within-batch dedup.
+//  5. Cursor position counts consumed suffix positions.
+//
+// Cross-page content duplicates at different source positions are distinct
+// events (position-based identity).  Within-batch content dedup is preserved.
 
 func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract.ReadResult, error) {
 	if a.failRead {
@@ -317,7 +316,54 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 
 	input := in.Records
 
-	// ── Anchor validation (raw hash against original input, not bounded subset) ──
+	// ── Version: parse position 0 (session_meta) + scan bounded suffix ──
+	batchVersionOK := false
+	batchVersionFailed := false
+	if len(input) > 0 && contract.AcceptRecord(input[0]) {
+		var cr codexRecord
+		if err := json.Unmarshal(input[0].Bytes, &cr); err == nil && cr.Type == "session_meta" {
+			v := codexPayloadStr(cr, "cli_version")
+			if v == supportedCodexVersion {
+				batchVersionOK = true
+			} else {
+				batchVersionFailed = true
+				degraded = true
+				diags = append(diags, "unsupported Codex version: "+safeVersionDiag(v))
+			}
+		}
+	}
+
+	// ── Bound only the suffix ──
+	suffix := input[cur.nextPos:]
+	bounded, truncBatch := contract.BoundBatch(suffix)
+	if truncBatch {
+		degraded = true
+		diags = append(diags, "batch truncated at bound")
+	}
+
+	// Also scan bounded suffix for conflicting session_meta (bounded scan).
+	for _, rec := range bounded {
+		if !contract.AcceptRecord(rec) {
+			continue
+		}
+		var cr codexRecord
+		if err := json.Unmarshal(rec.Bytes, &cr); err != nil || cr.Type != "session_meta" {
+			continue
+		}
+		v := codexPayloadStr(cr, "cli_version")
+		if v == supportedCodexVersion {
+			batchVersionOK = true
+		} else if v != "" {
+			batchVersionFailed = true
+			degraded = true
+			diags = append(diags, "unsupported Codex version in suffix: "+safeVersionDiag(v))
+		}
+	}
+	if !batchVersionOK || batchVersionFailed {
+		batchVersionFailed = true
+	}
+
+	// ── Anchor validation: one raw hash at input[pos-1] — bounded, 1 record ──
 	if cur.nextPos > 0 {
 		idx := int(cur.nextPos - 1)
 		if idx >= len(input) || !contract.AcceptRecord(input[idx]) {
@@ -328,49 +374,6 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			diags = append(diags, "cursor anchor mismatch at position "+strconv.FormatInt(cur.nextPos-1, 10))
 			return contract.ReadResult{Degraded: contract.Degrade(strings.Join(boundedDiags(diags), "; "))}, nil
 		}
-	}
-
-	// ── Version gate: scan ALL session_meta in full input ──
-	batchVersionOK := false
-	batchVersionFailed := false
-	for _, rec := range input {
-		if !contract.AcceptRecord(rec) {
-			continue
-		}
-		var cr codexRecord
-		if err := json.Unmarshal(rec.Bytes, &cr); err != nil {
-			continue
-		}
-		if cr.Type != "session_meta" {
-			continue
-		}
-		v := codexPayloadStr(cr, "cli_version")
-		if v == supportedCodexVersion {
-			batchVersionOK = true
-		} else {
-			batchVersionFailed = true
-			degraded = true
-			diags = append(diags, "unsupported Codex version: "+safeVersionDiag(v))
-		}
-	}
-	if !batchVersionOK || batchVersionFailed {
-		batchVersionFailed = true
-	}
-
-	// ── Prefix dedup set: positions [0, pos) ──
-	prefixIDs := make(map[string]bool, int(cur.nextPos))
-	for i := int64(0); i < cur.nextPos && i < int64(len(input)); i++ {
-		if contract.AcceptRecord(input[i]) {
-			prefixIDs[hashBytesID(input[i].Bytes)] = true
-		}
-	}
-
-	// ── Bound only the suffix ──
-	suffix := input[cur.nextPos:]
-	bounded, truncBatch := contract.BoundBatch(suffix)
-	if truncBatch {
-		degraded = true
-		diags = append(diags, "batch truncated at bound")
 	}
 
 	// ── Normalize suffix ──
@@ -396,7 +399,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 	}
 
-	// ── Emit ──
+	// ── Emit: within-batch dedup only ──
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
 	batchSeen := map[string]bool{}
 	var out []contract.AgentEvent
@@ -409,12 +412,6 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			processed++
 			continue
 		}
-		// Cross-page dedup: skip IDs already seen in prefix.
-		if prefixIDs[ev.ID] {
-			processed++
-			continue
-		}
-		// Within-batch dedup.
 		if batchSeen[ev.ID] {
 			processed++
 			continue
@@ -434,7 +431,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "event limit truncated")
 	}
 
-	// nextPos counts suffix positions consumed (including deleted/duplicate).
+	// nextPos counts suffix positions consumed.
 	nextPos := cur.nextPos + processed
 	// Anchor = raw-hash of original input record at nextPos-1.
 	var newAnchor string
