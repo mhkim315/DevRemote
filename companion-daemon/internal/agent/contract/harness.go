@@ -269,9 +269,22 @@ func testMalformed(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 //     BoundBatch, and ValidateCursor; silent acceptance is a contract violation.
 
 func testSessionBinding(t *testing.T, factory func(*testing.T) AgentAdapter, fx ConformanceFixtures) {
-	// Every emitted event MUST carry the EXACT requested session ID.
+	// First: the canonical fixture session MUST yield events (prove the adapter
+	// actually emits events — an adapter that returns 0 for every request vacuously
+	// passes any session-ID check).
+	a := factory(t)
+	canonical := readWith(t, a, ReadInput{Session: SessionContext{SessionID: "fixture-session"}, Records: fx.ValidRecords})
+	if len(canonical.Events) == 0 {
+		t.Fatal("canonical session produced 0 events — adapter must emit events before binding checks apply")
+	}
+	// Every emitted event MUST carry the EXACT requested session ID. A different
+	// session ID must produce events with THAT ID; the adapter must not always
+	// return events from a hardcoded session.
 	reqSession := "controlled_pty:host-a"
 	res := readWith(t, factory(t), ReadInput{Session: SessionContext{SessionID: reqSession}, Records: fx.ValidRecords})
+	if len(res.Events) == 0 {
+		t.Fatalf("alternate session %q produced 0 events when records were supplied", reqSession)
+	}
 	for _, e := range res.Events {
 		if e.SessionID != reqSession {
 			t.Errorf("event SessionID=%q, want %q (cross-session evidence)", e.SessionID, reqSession)
@@ -320,6 +333,35 @@ func testOversizedBatch(t *testing.T, factory func(*testing.T) AgentAdapter, fx 
 	}
 	if len(res.Events) > MaxEventsPerRead {
 		t.Errorf("oversized batch leaked %d events > hard cap %d", len(res.Events), MaxEventsPerRead)
+	}
+
+	// ALSO test total-byte overflow: many records each under MaxRecordBytes, but
+	// together exceeding MaxBatchBytes. An adapter that processes the whole batch
+	// bypasses the byte bound.
+	half := MaxBatchBytes/2 + 1
+	bigRec := fx.DistinctRecord(0)
+	// Embed enough distinct bytes at the front so each record is ~half bytes.
+	prefix := make([]byte, half)
+	for i := range prefix {
+		prefix[i] = byte('a' + (i % 26))
+	}
+	bigRec.Bytes = prefix
+	// Two such records together exceed MaxBatchBytes; a conformat adapter must cap
+	// at 1 (or fewer) and degrade.
+	byteOver := []RawRecord{bigRec, bigRec}
+	var resB ReadResult
+	var errB error
+	guard(t, "ReadEvents(byte-overflow)", func() {
+		resB, errB = factory(t).ReadEvents(ctx(), ReadInput{Session: SessionContext{SessionID: "s"}, Records: byteOver})
+	})
+	if errB != nil {
+		return // error is an acceptable fail-closed path
+	}
+	if len(resB.Events) > 1 {
+		t.Errorf("byte-overflow batch leaked %d events (processed >MaxBatchBytes)", len(resB.Events))
+	}
+	if !resB.Degraded.Degraded {
+		t.Error("byte-overflow batch must set Degraded=true")
 	}
 }
 
@@ -458,34 +500,49 @@ func testApprovals(t *testing.T, factory func(*testing.T) AgentAdapter, fx Confo
 			t.Errorf("adversarial events produced %d approvals, want 0", len(got))
 		}
 	})
-	// Positive fixture → ≥1 approval, well-formed, bound to source evidence.
+	// Positive fixture → ≥1 approval, well-formed, bound to source evidence via
+	// the explicit AgentEvent.ApprovalID field (not a brittle ID prefix).
 	res := readAll(t, factory(t), fx.ApprovalRecords)
 	guard(t, "DetectApproval(positive)", func() {
+		// Every approval_requested event MUST carry a non-empty ApprovalID so
+		// approvals can be bound to their source event.
+		for _, e := range res.Events {
+			if e.Type == agent.EventApprovalRequested && e.ApprovalID == "" {
+				t.Errorf("approval_requested event %s has empty ApprovalID", e.ID)
+			}
+		}
 		got, _ := ad.DetectApproval(ctx(), res.Events)
 		if len(got) == 0 {
 			t.Error("approval-positive fixture produced no approval")
 		}
-		srcByID := map[string]AgentEvent{}
+		srcByApprovalID := map[string]AgentEvent{}
 		for _, e := range res.Events {
-			srcByID[e.ID] = e
+			if e.ApprovalID != "" {
+				srcByApprovalID[e.ApprovalID] = e
+			}
 		}
 		for _, ap := range got {
 			if ap.ID == "" || ap.Status == "" {
 				t.Errorf("approval missing id/status: %+v", ap)
 			}
-			if src, ok := srcByID[ap.ID[len("ap-"):]]; ok {
-				if ap.SessionID != src.SessionID {
-					t.Errorf("approval SessionID=%q, source=%q (cross-session)", ap.SessionID, src.SessionID)
-				}
-				if ap.AgentKind != src.AgentKind {
-					t.Errorf("approval AgentKind=%q, source=%q", ap.AgentKind, src.AgentKind)
-				}
-				if ap.Source != src.Source {
-					t.Errorf("approval Source=%q, source=%q", ap.Source, src.Source)
-				}
-				if ap.Confidence != src.Confidence {
-					t.Errorf("approval Confidence=%.2f, source=%.2f", ap.Confidence, src.Confidence)
-				}
+			// Approval.ID must match a source event's ApprovalID. If no source
+			// event is found, this is a cross-session/fabricated approval — fail.
+			src, ok := srcByApprovalID[ap.ID]
+			if !ok {
+				t.Errorf("approval %s has no matching source event.ApprovalID (cross-session/fabricated)", ap.ID)
+				continue
+			}
+			if ap.SessionID != src.SessionID {
+				t.Errorf("approval SessionID=%q, source=%q (cross-session)", ap.SessionID, src.SessionID)
+			}
+			if ap.AgentKind != src.AgentKind {
+				t.Errorf("approval AgentKind=%q, source=%q", ap.AgentKind, src.AgentKind)
+			}
+			if ap.Source != src.Source {
+				t.Errorf("approval Source=%q, source=%q", ap.Source, src.Source)
+			}
+			if ap.Confidence != src.Confidence {
+				t.Errorf("approval Confidence=%.2f, source=%.2f", ap.Confidence, src.Confidence)
 			}
 		}
 	})
@@ -523,6 +580,8 @@ func testStatus(t *testing.T, factory func(*testing.T) AgentAdapter, fx Conforma
 	})
 	// Advisory-alone policy: heuristic / prompt_hint / unknown provenance MUST NOT
 	// authoritatively declare a terminal status (completed/failed/interrupted).
+	// The contract REQUIRES exactly StatusUnknown + Degraded=true + confidence
+	// at or below the ceiling + returned provenance == input provenance.
 	for _, ev := range []StatusEvidence{
 		{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.99},
 		{Status: agent.StatusCompleted, Provenance: ProvenancePromptHint, Confidence: 0.50},
@@ -533,17 +592,22 @@ func testStatus(t *testing.T, factory func(*testing.T) AgentAdapter, fx Conforma
 	} {
 		guard(t, "GetStatus(advisory-terminal)", func() {
 			res, _ := ad.GetStatus(ctx(), StatusInput{Session: SessionContext{SessionID: "s"}, Evidence: []StatusEvidence{ev}})
-			if res.Status == ev.Status && res.Confidence > AdvisoryStatusConfidenceCeiling && !res.Degraded.Degraded {
-				t.Errorf("advisory %s asserted %s at confidence %.2f without degraded — must be unknown+degraded", ev.Provenance, ev.Status, res.Confidence)
+			// EXACT policy: every advisory terminal claim MUST be downgraded to
+			// StatusUnknown with Degraded=true and confidence at-or-below the
+			// ceiling. An adapter that returns a different non-terminal status
+			// (e.g. "working") still violates the contract — it did not downgrade
+			// the terminal claim.
+			if res.Status != agent.StatusUnknown {
+				t.Errorf("advisory %s terminal %s: got status=%q, want StatusUnknown", ev.Provenance, ev.Status, res.Status)
 			}
-			if res.Status == ev.Status && !res.Degraded.Degraded {
-				t.Errorf("advisory %s asserted %s without degraded flag (conf=%.2f)", ev.Provenance, ev.Status, res.Confidence)
+			if !res.Degraded.Degraded {
+				t.Errorf("advisory %s terminal %s: Degraded must be true", ev.Provenance, ev.Status)
 			}
 			if res.Confidence > AdvisoryStatusConfidenceCeiling {
 				t.Errorf("advisory %s confidence %.2f exceeds ceiling %.2f", ev.Provenance, res.Confidence, AdvisoryStatusConfidenceCeiling)
 			}
 			if res.Provenance != ev.Provenance {
-				t.Errorf("returned provenance %q != input %q", res.Provenance, ev.Provenance)
+				t.Errorf("advisory %s: returned provenance %q != input %q", ev.Provenance, res.Provenance, ev.Provenance)
 			}
 		})
 	}

@@ -92,12 +92,18 @@ func normalizeEvent(rec RawRecord, sessionID string) (AgentEvent, DegradedInfo) 
 	if id == "" {
 		id = hashID(rec.Bytes)
 	}
-	return AgentEvent{
+	ev := AgentEvent{
 		ID: id, SessionID: sessionID, AgentKind: "fixture",
 		Type: et, Seq: r.TS, Timestamp: fxBase.Add(time.Duration(r.TS) * time.Second),
 		Text: safeText(r.Text), Confidence: conf,
 		Source: srcOr(rec.Source), Provenance: string(prov),
-	}, OK()
+	}
+	// The T0 contract requires every approval_requested event to carry a non-empty
+	// ApprovalID so approvals are explicitly bound to their source event.
+	if et == agent.EventApprovalRequested {
+		ev.ApprovalID = id
+	}
+	return ev, OK()
 }
 
 func (a fixtureAdapter) ReadEvents(ctx context.Context, in ReadInput) (ReadResult, error) {
@@ -161,7 +167,7 @@ func (fixtureAdapter) DetectApproval(_ context.Context, events []AgentEvent) ([]
 			continue
 		}
 		out = append(out, AgentApproval{
-			ID: "ap-" + e.ID, SessionID: e.SessionID, AgentKind: e.AgentKind,
+			ID: e.ApprovalID, SessionID: e.SessionID, AgentKind: e.AgentKind,
 			Kind: "approval", Status: "pending", Prompt: "approval requested",
 			Source: e.Source, Confidence: e.Confidence, CreatedAt: e.Timestamp,
 		})
