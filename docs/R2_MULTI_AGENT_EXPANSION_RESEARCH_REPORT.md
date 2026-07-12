@@ -51,7 +51,7 @@ Values: `yes`, `no`, `inferred`, `unverified`, `unavailable`
 | approval_requested | yes | `documented` — session/request_permission with toolCall.id + options + sessionId | `inferred` — sessionId present; managed-launch not yet proven | **yes** — structured request with stable ID, authoritative user result (optionId), session binding | ACP RequestPermissionRequest type |
 | approval_resolved | yes | `documented` — client response with chosen optionId | `inferred` | **yes** — authoritative user decision | ACP RequestPermission response |
 | completed | yes | `documented` — stopReason "end_turn" | `inferred` | `yes` — structured terminal signal | ACP prompt lifecycle |
-| failed | yes | `documented` — stopReason "error" | `inferred` | `yes` — structured terminal signal | ACP prompt lifecycle |
+| failed | yes | `documented` — StopReason "cancelled" + JSON-RPC error handling | `inferred` | `yes` — structured terminal signal (but ACP v1 StopReason has no "error" value; failures use JSON-RPC errors or session error events) | ACP v1 schema + ACP architecture doc |
 | interrupted | yes | `documented` — stopReason "cancelled" | `inferred` | `yes` — structured terminal signal | ACP prompt lifecycle |
 | agent_started | yes | `documented` — session/new response | `inferred` | `no` — lifecycle event, not status authority | ACP architecture doc |
 
@@ -237,7 +237,7 @@ Based on documented (not inferred) version-drift patterns:
 
 | Scenario | Agent | Evidence | Repair |
 |---|---|---|---|
-| ACP spec version bump | Goose | ACP schema 0.10.3 → future | Version-gate adapter on spec version; map new/deprecated methods |
+| ACP wire protocol version negotiation | Goose | ACP wire protocol v1 negotiated via initialize.protocolVersion; schema artifact evolves independently | Version-gate adapter on negotiated protocolVersion; map new/deprecated methods via capability negotiation |
 | Hook schema field addition | Gemini CLI | hooks/reference.md documents current fields | Ignore unknown fields (forward-compatible); adapter-local |
 | SSE endpoint path change | OpenCode | REST API paths may change between versions | Version-specific endpoint registry in adapter |
 | Config file format migration | OpenHands | .openhands/hooks.json schema may evolve | Schema version detection; graceful degradation |
@@ -252,7 +252,7 @@ All scenarios fit within the existing D1 repair sandbox (read-only source, versi
 | Risk | Severity | Agents | Mitigation |
 |---|---|---|---|
 | Policy hooks misclassified as approval | **CRITICAL** | Gemini, Cline, OpenHands | Corrected in this report: policy hooks ≠ approval |
-| ACP spec version drift | LOW | Goose | Version-gate adapter on spec version; ACP is a public, multi-implementor spec with SDK releases |
+| ACP wire protocol drift | LOW | Goose | Version-gate adapter on negotiated protocolVersion; ACP wire protocol v1 is the current stable generation with multi-SDK support |
 | Hook correlation gap (managed launch) | MEDIUM | All hook-based agents | Same as Claude/Codex: managed launch required for Pokit session binding |
 | OpenCode permission.asked unverified | MEDIUM | OpenCode | Treat as unknown/degraded until pinned specification confirms payload |
 | Gemini transcript JSON unverified | MEDIUM | Gemini CLI | Third-party docs only; official schema not confirmed |
@@ -282,7 +282,7 @@ All scenarios fit within the existing D1 repair sandbox (read-only source, versi
 | Tool call state machine | ★★★★★ tool_call + tool_call_update | ★★★ BeforeTool/AfterTool | ★★★★ message.part.updated | ★★★ PreToolUse/PostToolUse | ★★★ PreToolUse/PostToolUse | ☆ markdown log |
 | **Approval protocol** | **★★★★★ request_permission** | **☆ unavailable** | **?? unverified** | **☆ unavailable** | **☆ unavailable** | **☆ unavailable** |
 | Status authority | ★★★★ stopReason (structured) | ★★ SessionEnd (lifecycle only) | ★★★ session.status | ★★ TaskCancel/Notification | ★★ SessionEnd (lifecycle only) | ☆ process exit |
-| Public contract stability | ★★★★ versioned spec (0.1.1) + multi-SDK | ★★ active Google dev | ★★★ community-driven | ★★ npm packages | ★★ SDK restructuring | ☆ no contract |
+| Public contract stability | ★★★★ wire protocol v1 (schema-v1.19.0) + multi-SDK | ★★ active Google dev | ★★★ community-driven | ★★ npm packages | ★★ SDK restructuring | ☆ no contract |
 | Implementation complexity | ★★★★ single binary, one protocol | ★★★ stdio hooks + file parsing | ★★★ SSE client + REST | ★★★ hook scripts + SDK | ★★★ hook scripts + server | N/A |
 | Pokit correlation feasibility | ★★★★ sessionId in every request | ★★★★ session_id in hook stdin | ★★★★ POST /session→sessionId | ★★★ taskId in hooks | ★★★ conversation_id | ☆ no session ID |
 | **Overall** | **1st** | **2nd** | **3rd** | **4th** | **5th** | **PTY only** |
@@ -303,8 +303,8 @@ Goose via ACP is the recommended third production adapter. Evidence:
 2. Goose implementation fidelity: verify Goose's ACP server matches the ACP v1 schema; pin exact Goose commit
 3. Managed-launch correlation: prove Pokit-session to ACP-session binding before claiming `CorrelationProven`
 4. Multi-session behavior: verify per-session Agent isolation works as documented
-5. StopReason availability: StopReason enum is feature-gated behind `unstable_protocol_v2`; confirm which values Goose's current implementation actually emits
-6. Long-term stability is **unverified** — ACP is versioned (wire v1) which implies stability intent, but observed history is limited
+5. Goose implementation fidelity: verify which StopReason values Goose's current implementation actually emits (ACP v1 schema defines: end_turn, max_tokens, max_turn_requests, refusal, cancelled)
+6. Long-term wire stability is **unverified** — ACP wire protocol v1 is the current stable generation, but the protocol's observed history is limited; capability negotiation governs evolution
 
 ### Runner-up: Gemini CLI
 
@@ -333,7 +333,7 @@ See `docs/r2-fixtures/MANIFEST.json` for the complete inventory.
 
 | Fixture | Provider | Status | Type |
 |---|---|---|---|
-| `goose-acp-protocol.json` | Goose (ACP 0.1.1) | **available** | Official specification examples |
+| `goose-acp-protocol.json` | Goose (ACP v1, schema-v1.19.0) | **available** | Schema-validated wire JSON |
 | `gemini-cli-hooks.json` | Gemini CLI (hooks v1) | **available** | Official documentation examples |
 | OpenCode SSE events | OpenCode | **unavailable** | No versioned specification with payload examples |
 | Cline hook payloads | Cline | **unavailable** | No versioned JSON schema or test fixtures |
@@ -370,7 +370,7 @@ Worktree: clean
 REVIEW REQUEST: R2 Multi-agent Expansion Research (remediated)
 baseline T2: ef4a162c7f9a5644fd52d89501e97f4e62301dfa
 scope: R2 research only
-researched: Goose (ACP 0.1.1), Gemini CLI (hooks v1), OpenCode (2026),
+researched: Goose (ACP v1, schema-v1.19.0), Gemini CLI (hooks v1, e09410b6), OpenCode (2026),
             Cline (v3.36+), OpenHands (hooks V1), Aider (2025-2026)
 fixtures: goose-acp-protocol.json (available), gemini-cli-hooks.json (available),
          4 providers unavailable (documented reasons)

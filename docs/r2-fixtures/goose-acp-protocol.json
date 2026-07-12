@@ -1,54 +1,115 @@
 {
   "_provenance": {
     "provider": "Goose (ACP — Agent Client Protocol)",
-    "wire_protocol_version": "1",
-    "schema_artifact_versions": {
-      "agent-client-protocol": "0.1.1 (Rust SDK crate — artifact version, NOT wire protocol)",
-      "agent-client-protocol-schema": "1.4.0 (schema crate — defines v1 wire types)"
+    "protocol_generation": "ACP v1",
+    "pinned_source": {
+      "repository": "agentclientprotocol/agent-client-protocol",
+      "release_tag": "schema-v1.19.0",
+      "schema_file": "schema/v1/schema.json",
+      "schema_commit": "schema-v1.19.0 (GitHub release, 2026-07-06)",
+      "schema_permalink": "https://raw.githubusercontent.com/agentclientprotocol/agent-client-protocol/schema-v1.19.0/schema/v1/schema.json",
+      "local_copy": "docs/r2-fixtures/acp-v1-schema.json"
     },
-    "_note": "ACP wire compatibility is determined by initialize.protocolVersion negotiation, not by crate artifact versions. The wire protocol version is 1. Crate versions are SDK release artifacts and must not be used as protocol version gates.",
-    "source_permalinks": [
-      "https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/struct.PermissionOption.html",
-      "https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/enum.RequestPermissionOutcome.html",
-      "https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/struct.SelectedPermissionOutcome.html",
-      "https://docs.rs/agent-client-protocol-schema/latest/agent_client_protocol_schema/v2/enum.StopReason.html",
-      "https://docs.rs/agent-client-protocol-schema/1.4.0/agent_client_protocol_schema/v1/struct.RequestPermissionResponse.html",
-      "https://github.com/agentclientprotocol/agent-client-protocol",
-      "https://agentclientprotocol.com/get-started/architecture"
-    ],
     "retrieval_date": "2026-07-12",
     "license": "Apache-2.0 (agent-client-protocol)",
-    "capture_method": "derived from official ACP v1 schema definitions at docs.rs (1.4.0). JSON examples constructed from struct/enum field definitions, NOT copied from a pre-existing example file.",
-    "redactions": ["<SESSION_ID>", "<CWD>", "<TOOL_CALL_ID>", "<FILE_PATH>"],
-    "conclusions_supported": [
-      "ACP v1 defines structured JSON-RPC 2.0 types for agent-client communication",
-      "PermissionOption has required fields: option_id (PermissionOptionId), name (String), kind (PermissionOptionKind)",
-      "RequestPermissionOutcome is Cancelled | Selected(SelectedPermissionOutcome)",
-      "SelectedPermissionOutcome carries option_id (PermissionOptionId)",
-      "StopReason v1: EndTurn, MaxTokens, MaxTurnRequests, Refusal, Cancelled, Other(String)",
-      "session/new creates a session and returns sessionId",
-      "session/request_permission is a dedicated bidirectional request for user approval"
-    ],
-    "conclusions_not_supported": [
-      "This fixture does NOT prove Goose's current implementation matches ACP v1 schema exactly",
-      "This fixture does NOT prove Pokit-session to Goose-session correlation (requires managed launch)",
-      "This fixture does NOT prove ACP long-term wire stability (protocol evolution is governed by capability negotiation)",
-      "ACP artifact versions (0.1.1, 1.4.0) are NOT wire protocol versions"
+    "capture_method": "generated from pinned ACP v1 JSON Schema (schema-v1.19.0). All field names, discriminators, enum values, and required fields match the schema exactly. JSON examples are minimal valid instances of each schema type.",
+    "redactions": ["<SESSION_ID>", "<CWD>", "<TOOL_CALL_ID>"],
+    "_note": "ACP wire compatibility is determined by initialize.protocolVersion negotiation (current stable: 1). Schema artifact version 1.19.0 is the release tag; it describes protocol generation v1 types. Crate versions (0.1.1, 1.4.0) are separate SDK artifacts and NOT wire protocol versions."
+  },
+
+  "_wire_traceability": {
+    "_description": "Mapping from Rust/SDK type names to actual ACP v1 wire JSON",
+    "mappings": [
+      {
+        "rust_type": "agent_client_protocol_schema::v1::PermissionOption",
+        "rust_member": "option_id: PermissionOptionId",
+        "wire_json": "optionId (string)",
+        "schema_location": "#/$defs/PermissionOption",
+        "fixture_path": "examples.permission_option.example"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::PermissionOption",
+        "rust_member": "name: String",
+        "wire_json": "name (string)",
+        "schema_location": "#/$defs/PermissionOption",
+        "fixture_path": "examples.permission_option.example"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::PermissionOption",
+        "rust_member": "kind: PermissionOptionKind",
+        "wire_json": "kind (string: allow_once | allow_always | reject_once | reject_always)",
+        "schema_location": "#/$defs/PermissionOptionKind",
+        "fixture_path": "examples.permission_option.example"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::ToolCallUpdate",
+        "rust_member": "tool_call_id: ToolCallId",
+        "wire_json": "toolCallId (string)",
+        "schema_location": "#/$defs/ToolCallUpdate",
+        "fixture_path": "examples.request_permission.request.params.toolCall"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::RequestPermissionOutcome",
+        "rust_member": "Cancelled",
+        "wire_json": "{\"outcome\": \"cancelled\"}",
+        "schema_location": "#/$defs/RequestPermissionOutcome",
+        "fixture_path": "examples.request_permission.response_cancelled"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::RequestPermissionOutcome",
+        "rust_member": "Selected(SelectedPermissionOutcome)",
+        "wire_json": "{\"outcome\": \"selected\", \"optionId\": \"...\"}",
+        "schema_location": "#/$defs/RequestPermissionOutcome + #/$defs/SelectedPermissionOutcome",
+        "fixture_path": "examples.request_permission.response_selected"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::StopReason",
+        "rust_member": "EndTurn",
+        "wire_json": "\"end_turn\"",
+        "schema_location": "#/$defs/StopReason",
+        "fixture_path": "examples.stop_reason._values"
+      },
+      {
+        "rust_type": "agent_client_protocol_schema::v1::SessionUpdate",
+        "rust_member": "sessionUpdate discriminator",
+        "wire_json": "sessionUpdate (string: user_message_chunk | agent_message_chunk | agent_thought_chunk | tool_call | tool_call_update | plan | ...)",
+        "schema_location": "#/$defs/SessionUpdate",
+        "fixture_path": "examples.session_update_tool_call.notification.params.update"
+      }
     ]
   },
 
   "_evidence_classification": {
-    "permission_option_schema": "documented — from docs.rs/agent-client-protocol-schema/1.4.0 struct definition",
-    "request_permission_outcome": "documented — from docs.rs enum definition",
-    "selected_permission_outcome": "documented — from docs.rs struct definition",
-    "stop_reason": "documented — from docs.rs enum definition (v2 feature-gated but v1 subset is EndTurn, MaxTokens, Cancelled)",
-    "session_new_format": "inferred — JSON-RPC structure from ACP architecture docs; exact params from protocol specification",
-    "session_update_tool_call": "inferred — notification structure from ACP architecture docs; exact content fields from schema"
+    "permission_option": "documented — from pinned ACP v1 schema (schema-v1.19.0, #/$defs/PermissionOption)",
+    "request_permission_outcome": "documented — from pinned ACP v1 schema (#/$defs/RequestPermissionOutcome, discriminator: outcome)",
+    "selected_permission_outcome": "documented — from pinned ACP v1 schema (#/$defs/SelectedPermissionOutcome, field: optionId)",
+    "stop_reason": "documented — from pinned ACP v1 schema (#/$defs/StopReason, values: end_turn, max_tokens, max_turn_requests, refusal, cancelled)",
+    "session_new": "inferred — JSON-RPC structure from ACP architecture docs; exact params not defined in v1 schema $defs",
+    "session_update": "documented — from pinned ACP v1 schema (#/$defs/SessionUpdate, discriminator: sessionUpdate)",
+    "tool_call_update": "documented — from pinned ACP v1 schema (#/$defs/ToolCallUpdate, required: toolCallId)"
   },
+
+  "_conclusions_supported": [
+    "ACP v1 defines wire types with camelCase JSON field names (schema-v1.19.0)",
+    "PermissionOption wire format: {optionId, name, kind} — all required",
+    "RequestPermissionOutcome discriminator: outcome = 'selected' | 'cancelled'",
+    "SelectedPermissionOutcome carries optionId (the chosen PermissionOption.optionId)",
+    "StopReason (ACP v1): end_turn, max_tokens, max_turn_requests, refusal, cancelled",
+    "ToolCallUpdate requires toolCallId; carries status, kind, title, locations, rawInput, rawOutput",
+    "SessionUpdate discriminator: sessionUpdate with 11 documented variants"
+  ],
+
+  "_conclusions_not_supported": [
+    "This fixture does NOT prove Goose's implementation matches ACP v1 schema at any specific commit",
+    "This fixture does NOT prove Pokit-session to Goose-session correlation (requires managed launch)",
+    "This fixture does NOT prove ACP long-term wire stability",
+    "ACP v1 schema does NOT define an 'error' StopReason value",
+    "ACP v1 StopReason is NOT feature-gated — it is defined in the pinned v1 schema"
+  ],
 
   "examples": {
     "session_new": {
-      "_source": "ACP architecture doc (agentclientprotocol.com/get-started/architecture)",
+      "_schema_source": "ACP architecture doc; session/new params not in v1 schema $defs",
       "request": {
         "jsonrpc": "2.0",
         "id": 2,
@@ -68,22 +129,18 @@
     },
 
     "permission_option": {
-      "_source": "docs.rs/agent-client-protocol-schema/1.4.0/v1/struct.PermissionOption.html",
-      "_schema": {
-        "option_id": "<PermissionOptionId> — unique identifier",
-        "name": "<String> — human-readable label",
-        "kind": "<PermissionOptionKind> — hint about nature of option",
-        "meta": "<Option<Meta>> — reserved, optional"
-      },
+      "_schema_source": "#/$defs/PermissionOption (schema-v1.19.0)",
+      "_schema_required": ["optionId", "name", "kind"],
       "example": {
-        "option_id": "allow_once",
+        "optionId": "allow_once",
         "name": "Allow once",
         "kind": "allow_once"
       }
     },
 
     "request_permission": {
-      "_source": "ACP architecture doc + PermissionOption/RequestPermissionResponse schema",
+      "_schema_source": "#/$defs/RequestPermissionRequest (schema-v1.19.0)",
+      "_schema_required": ["sessionId", "toolCall", "options"],
       "request": {
         "jsonrpc": "2.0",
         "id": 5,
@@ -91,40 +148,46 @@
         "params": {
           "sessionId": "<SESSION_ID>",
           "toolCall": {
-            "id": "<TOOL_CALL_ID>",
-            "status": "awaiting_permission"
+            "toolCallId": "<TOOL_CALL_ID>",
+            "kind": "edit",
+            "status": "awaiting_permission",
+            "title": "Edit file"
           },
           "options": [
-            {"option_id": "allow_once", "name": "Allow once", "kind": "allow_once"},
-            {"option_id": "allow_always", "name": "Always allow", "kind": "allow_always"},
-            {"option_id": "deny", "name": "Deny", "kind": "deny"}
+            {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "allow_always", "name": "Always allow", "kind": "allow_always"},
+            {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}
           ]
         }
       },
       "response_selected": {
-        "_outcome_variant": "Selected",
+        "_schema_source": "#/$defs/RequestPermissionResponse + #/$defs/RequestPermissionOutcome (outcome='selected') + #/$defs/SelectedPermissionOutcome (schema-v1.19.0)",
+        "_schema_required": ["outcome"],
         "jsonrpc": "2.0",
         "id": 5,
         "result": {
           "outcome": {
-            "Selected": {
-              "option_id": "allow_once"
-            }
+            "outcome": "selected",
+            "optionId": "allow_once"
           }
         }
       },
       "response_cancelled": {
-        "_outcome_variant": "Cancelled",
+        "_schema_source": "#/$defs/RequestPermissionResponse + #/$defs/RequestPermissionOutcome (outcome='cancelled') (schema-v1.19.0)",
+        "_schema_required": ["outcome"],
         "jsonrpc": "2.0",
         "id": 5,
         "result": {
-          "outcome": "Cancelled"
+          "outcome": {
+            "outcome": "cancelled"
+          }
         }
       }
     },
 
     "session_update_tool_call": {
-      "_source": "ACP architecture doc (notification structure inferred from spec descriptions)",
+      "_schema_source": "#/$defs/SessionUpdate + #/$defs/ToolCallUpdate (schema-v1.19.0)",
+      "_tool_call_update_required": ["toolCallId"],
       "notification": {
         "jsonrpc": "2.0",
         "method": "session/update",
@@ -132,20 +195,31 @@
           "sessionId": "<SESSION_ID>",
           "update": {
             "sessionUpdate": "tool_call_update",
-            "content": {
-              "id": "<TOOL_CALL_ID>",
-              "status": "running"
-            }
+            "toolCallId": "<TOOL_CALL_ID>",
+            "status": "running",
+            "kind": "edit",
+            "title": "Editing file"
           }
         }
       }
     },
 
     "stop_reason": {
-      "_source": "docs.rs/agent-client-protocol-schema/latest/v2/enum.StopReason.html",
-      "_values": ["EndTurn", "MaxTokens", "MaxTurnRequests", "Refusal", "Cancelled"],
-      "_other": "Other(String) — custom or future stop reason",
-      "_note": "StopReason is feature-gated behind unstable_protocol_v2. v1 subset available values may differ. EndTurn, MaxTokens, and Cancelled are the most commonly documented."
+      "_schema_source": "#/$defs/StopReason (schema-v1.19.0 — ACP v1, NOT v2/latest)",
+      "_values": [
+        "end_turn",
+        "max_tokens",
+        "max_turn_requests",
+        "refusal",
+        "cancelled"
+      ],
+      "_note": "ACP v1 StopReason is defined in the pinned schema-v1.19.0. There is NO 'error' value. Protocol/transport failures are separate from StopReason and must be handled as JSON-RPC errors or session error events.",
+      "failure_handling": {
+        "jsonrpc_error": "JSON-RPC error response (code + message) — transport/protocol level, not StopReason",
+        "session_error": "session/update with error content — if documented by implementation",
+        "process_failure": "Process exit / connection loss — runtime signal, not StopReason",
+        "transport_failure": "stdio/HTTP disconnect — runtime signal, not StopReason"
+      }
     }
   }
 }
