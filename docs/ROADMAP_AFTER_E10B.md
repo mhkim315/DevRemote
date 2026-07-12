@@ -138,8 +138,9 @@ M3-auth-2B iOS pairing/bearer/WS-ticket/Terminal      ACCEPT 0755853a2 (SE key p
 M3b Mobile lifecycle action UX                        ACCEPT 9cdf2f290 (authoritative lifecycleState + retained Catalog rows; reachable Force Kill/Delete; epoch-safe controller; per-action DTO validation; capability-enforced input; Jest 289 + clean-prebuild full gate PASS; physical-device/LTE smoke = M-track)
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Common AgentEvent Contract                  ACCEPT 3ce2604bd (provider-neutral six-op contract; provenance + Seq; bounded cursor/record/batch/metadata; approval/status authority rules; non-bypassable fixed harness; additive-only; clean-prebuild full gate PASS)
-T1  Codex Adapter                               CODE COMPLETE (isolated v0.144.1 adapter; six-op AgentAdapter + fixed-harness conformance; managed_launch correlation; no contract/harness change; clean-prebuild full gate PASS); see docs/T1_CODEX_ADAPTER_IMPLEMENTATION_REPORT.md
+T1  Codex Adapter                               IN PROGRESS (isolated v0.144.1 adapter under independent remediation/review; correlation unavailable without proven launch evidence; no contract/harness change); see docs/T1_CODEX_ADAPTER_IMPLEMENTATION_REPORT.md
 T2  Claude Adapter
+R2  Multi-agent Expansion Research            PLANNED (research-only; entry requires independent T1 + T2 ACCEPT)
 D1  Adapter Doctor/Repair                     PLANNED (AI-assisted, user-approved activation only)
 T3  Transcript Integration
 S1  Rich Agent Runtime Status Model
@@ -162,6 +163,7 @@ M3-auth-1B
 → T0 common AgentEvent contract
 → T1 Codex adapter
 → T2 Claude adapter
+→ R2 multi-agent expansion research
 → D1 Adapter Doctor/Repair
 → T3 Transcript integration
 → S1 status
@@ -174,6 +176,13 @@ sequencing update; their existing status text above remains authoritative. R1
 evidence is already scoped-accepted and informs T0.
 Notifications and distribution remain planned, but are not inserted into the
 critical sequence above.
+
+R2 is research-only and may begin only after both T1 and T2 have independent
+ACCEPT decisions. It compares publicly documented or legally inspectable event,
+session, ordering, authority, and version-drift behavior across additional local
+coding agents. It does not implement a third production adapter and does not
+modify the frozen T0 contract. See
+`docs/R2_MULTI_AGENT_EXPANSION_RESEARCH_PLAN.md`.
 
 Transcript data-model work is not a prerequisite for mobile lifecycle. The two
 projects share stable session identity and timestamps, but lifecycle state must
@@ -349,11 +358,13 @@ host-key recovery/rotation, discovery, and Push are explicitly deferred. The
 authentication/client boundaries introduced now must allow those additions
 without rewriting product screens or lifecycle handlers.
 
-## T0-D1-T3 — Agent Adapters, Repair, and Transcript Integration
+## T0-R2-D1-T3 — Agent Adapters, Expansion Research, Repair, and Transcript Integration
 
 Goal: establish a stable agent-event contract, implement Codex and Claude behind
 version-specific adapters, add a constrained repair stage for ordinary version
-drift, and only then integrate those events with Transcript projection.
+drift, and only then integrate those events with Transcript projection. After
+the first two adapters are independently accepted, R2 checks that these designs
+are not overfitted to Codex and Claude before D1 or T3 begins.
 
 Current guidance: it may be better to restart Transcript projection from a simpler
 contract rather than continue layering heuristics from cmux tuning.
@@ -394,6 +405,7 @@ The staged implementation is:
 T0  freeze the common AgentEvent model and six-operation adapter contract
 T1  implement and accept the Codex version-specific adapter
 T2  implement and accept the Claude version-specific adapter
+R2  research additional agents and report fit/gaps without implementing an adapter
 D1  detect version drift and propose a constrained, tested, user-approved repair
 T3  integrate common agent events with bounded Transcript projection/fallback
 ```
@@ -414,6 +426,11 @@ contract. D1 may patch only the version-specific adapter, must preserve older
 fixtures, prevent approval false positives, show diff/test evidence, and require
 explicit user activation. It cannot repair data that was removed, encrypted, or
 made inaccessible. See `docs/ADAPTER_DOCTOR_REPAIR_PLAN.md`.
+
+R2 findings do not automatically revise T0. A provider-specific concept must
+first be handled adapter-locally, through bounded metadata, or as an unknown
+event. A common-contract revision may be proposed only in a separate review
+after comparison against Codex, Claude, and at least one additional provider.
 
 T3 acceptance should preserve the earlier Transcript safety requirements:
 

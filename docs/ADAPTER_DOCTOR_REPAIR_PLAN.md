@@ -1,6 +1,6 @@
 # Adapter Doctor/Repair Plan
 
-Status: **PLANNED — do not implement before T1 Codex and T2 Claude adapters are accepted**
+Status: **PLANNED — do not implement before T1, T2, and R2 are complete**
 
 Position in the execution sequence:
 
@@ -11,6 +11,7 @@ M3-auth-1B
 → T0 common AgentEvent contract
 → T1 Codex adapter
 → T2 Claude adapter
+→ R2 multi-agent expansion research
 → D1 Adapter Doctor/Repair
 → T3 Transcript integration
 → S1 status
@@ -21,6 +22,11 @@ M3-auth-1B
 Windows remains deferred until after the Mac/Android closed beta. D1 does not
 introduce ConPTY, CNG/TPM, DPAPI, Named Pipes, Windows Services, NTFS ACL work,
 or speculative Windows provider abstractions.
+
+This sequence supersedes the earlier planning sequence that placed D1 directly
+after T2. The earlier documents remain historical evidence; they do not
+authorize D1 before the research-only R2 gate. R2 itself is defined in
+`docs/R2_MULTI_AGENT_EXPANSION_RESEARCH_PLAN.md`.
 
 ## Purpose
 
@@ -217,7 +223,8 @@ without fabricated status or approval signals.
 
 ## Planning acceptance
 
-This stage is ready for implementation planning only after T1 and T2 establish:
+This stage is ready for implementation planning only after T1 and T2 receive
+independent ACCEPT decisions and R2 establishes:
 
 - accepted Codex and Claude fixtures across known versions;
 - the immutable six-operation contract;
@@ -225,5 +232,7 @@ This stage is ready for implementation planning only after T1 and T2 establish:
 - explicit adapter source/write allowlists;
 - approval false-positive negative fixtures;
 - version/capability declarations and safe unknown behavior.
+- real multi-provider version-drift scenarios and a fit-gap assessment against
+  the frozen T0 contract.
 
 No D1 production implementation is authorized by this document.
