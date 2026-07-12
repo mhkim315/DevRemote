@@ -32,12 +32,16 @@ func NewFixedSuite() *FixedSuite { return &FixedSuite{} }
 
 func (fs *FixedSuite) Commands(candidatePkg string) []FixedCommand {
 	cmds := []FixedCommand{
+		{Label: "build", PkgPath: "./internal/agent/...", BuildOnly: true},
+		{Label: "vet", PkgPath: "./internal/agent/...", VetOnly: true},
 		{Label: "T0-contract-conformance", PkgPath: "./internal/agent/contract/", RunRegex: "Conformance", MinTests: 1},
+		{Label: "T1-codex-conformance", PkgPath: "./internal/agent/adapters/codex/v0_144_1/", RunRegex: "Conformance", MinTests: 1},
+		{Label: "T2-claude-conformance", PkgPath: "./internal/agent/adapters/claude/v2_1_202/", RunRegex: "Conformance", MinTests: 1},
+		{Label: "race-agent", PkgPath: "./internal/agent/...", Race: true, MinTests: 1},
 	}
 	if candidatePkg != "" {
 		cmds = append(cmds,
 			FixedCommand{Label: "candidate-build", PkgPath: candidatePkg, BuildOnly: true},
-			FixedCommand{Label: "candidate-vet", PkgPath: candidatePkg, VetOnly: true},
 		)
 	}
 	return cmds

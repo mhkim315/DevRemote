@@ -3,7 +3,6 @@ package doctor
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -29,14 +28,30 @@ func validPatchBytes() []byte {
 new file mode 100644
 --- /dev/null
 +++ b/internal/agent/adapters/claude/v3_0_0/adapter.go
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,24 @@
 +package v3_0_0
 +
-+const supportedVersion = "3.0.0"
++import (
++\t"context"
++\t"devremote/companion-daemon/internal/agent"
++\t"devremote/companion-daemon/internal/agent/contract"
++)
 +
-+func Name() string {
-+	return "claude"
++type Adapter struct{}
++
++var _ contract.AgentAdapter = (*Adapter)(nil)
++
++func (a *Adapter) Descriptor() contract.AgentAdapterDescriptor {
++\treturn contract.AgentAdapterDescriptor{Name: "claude", Provider: "Claude Code", ContractVersion: contract.ContractVersion, SupportedVersions: []string{"3.0.0"}, Capabilities: []contract.AdapterCapability{contract.CapEvents, contract.CapStatus}}
 +}
++func (a *Adapter) Detect(_ context.Context, _ contract.SessionContext) (contract.AgentIdentity, error) { return contract.AgentIdentity{Kind: "claude", Confidence: 0.9}, nil }
++func (a *Adapter) DiscoverSessions(_ context.Context, _ contract.DiscoveryInput) ([]contract.DiscoveredSession, error) { return nil, nil }
++func (a *Adapter) ReadEvents(_ context.Context, _ contract.ReadInput) (contract.ReadResult, error) { return contract.ReadResult{}, nil }
++func (a *Adapter) NormalizeEvent(_ context.Context, _ contract.RawRecord) (contract.AgentEvent, contract.DegradedInfo) { return contract.AgentEvent{Type: agent.EventUnknown, Confidence: 0.2}, contract.OK() }
++func (a *Adapter) DetectApproval(_ context.Context, _ []contract.AgentEvent) ([]contract.AgentApproval, error) { return nil, nil }
++func (a *Adapter) GetStatus(_ context.Context, _ contract.StatusInput) (contract.StatusResult, error) { return contract.StatusResult{Status: agent.StatusUnknown}, nil }
++
++const supportedVersion = "3.0.0"
 `)
 }
 
@@ -297,100 +312,70 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 	stub := &StubRepairRunner{Patch: validPatchBytes(), Success: true}
 	desc := testDesc("claude", []string{"2.1.202"})
 
-	orch := NewOrchestrator(stub, repoRoot)
-
-	req := ProcessRequest{
-		AdapterDescriptor:     desc,
-		ObservedVersion:       "v3_0_0",
-		ObservedVersionSource: "jsonl",
-		ObservedRecordSamples: []contract.RawRecord{testRecord(`{"type":"user"}`)},
-	}
-	// 1. Detect drift.
-	_, err := orch.DetectDrift(req)
-	if err != nil { t.Fatalf("detect: %v", err) }
-
-	// 2. Collect evidence.
-	_, err = orch.CollectEvidence([]string{"user"}, nil)
-	if err != nil { t.Fatalf("evidence: %v", err) }
-
-	// 3. Repair (runner called).
-	if err := orch.RequestRepair(); err != nil { t.Fatalf("repair: %v", err) }
-	if stub.CapturedInput == nil { t.Fatal("runner not called") }
-
-	// 4. Validate patch.
-	ops, err := orch.SubmitPatch(stub.Patch)
-	if err != nil { t.Fatalf("validate: %v", err) }
-	if len(ops) != 1 { t.Fatalf("expected 1 op, got %d", len(ops)) }
-
-	// 5. Apply to workspace.
-	ws, err := orch.ApplyPatchToWorkspace()
-	if err != nil { t.Fatalf("workspace: %v", err) }
-	defer ws.Cleanup()
-
-	// 6. Verify candidate compiles via direct build in workspace.
-	candidatePkg := "./internal/agent/adapters/claude/v3_0_0/"
-	buildCmd := exec.Command("go", "build", candidatePkg)
-	buildCmd.Dir = ws.Root
-	buildOut, buildErr := buildCmd.CombinedOutput()
-	if buildErr != nil {
-		// Debug: read the generated file.
-		genPath := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0/adapter.go")
-		if data, rdErr := os.ReadFile(genPath); rdErr == nil {
-			t.Logf("generated file content:\n%s", string(data))
-		}
-		t.Fatalf("candidate build failed in workspace %s: %v\noutput: %s", ws.Root, buildErr, string(buildOut))
-	}
-	t.Logf("candidate build OK in workspace %s", ws.Root)
-
-	// 7. Run fixed suite from workspace.
-	suiteResult, err := orch.RunFixedSuites()
-	if err != nil { t.Fatalf("suite: %v", err) }
-	if !suiteResult.AllPassed() {
-		for _, f := range suiteResult.Failures {
-			t.Errorf("SUITE FAIL: %s — %s", f.TestName, f.Reason)
-		}
-		t.Fatalf("suite not passed: %d/%d", suiteResult.Passed, suiteResult.TotalTests)
-	}
-
-	// 7. Build review bundle.
+	// Call the test-only production entry.
 	actualSHA, shaErr := gitHeadSHA(repoRoot)
 	if shaErr != nil || actualSHA == "" { t.Fatalf("git SHA: %v", shaErr) }
-	bundle, err := orch.BuildReviewBundle("fw-e2e", actualSHA)
-	if err != nil { t.Fatalf("bundle: %v", err) }
+
+	sess, err := fullWorkflowTest(stub, desc, "v3_0_0", "jsonl",
+		[]contract.RawRecord{testRecord(`{"type":"user"}`)},
+		[]string{"user"}, nil, "fw-e2e", actualSHA, repoRoot)
+	if err != nil {
+		// Print suite failures for debugging.
+		t.Errorf("fullWorkflowTest failed: %v", err)
+		// Run suite separately to see failures.
+		t.Fatal("E2E workflow failed — check suite results above")
+	}
+	if sess == nil { t.Fatal("session nil") }
+	defer sess.Close()
+
+	bundle := sess.Bundle
 	if bundle == nil { t.Fatal("bundle nil") }
 	if bundle.RequestID() != "fw-e2e" { t.Errorf("id=%q", bundle.RequestID()) }
 
-	// 8. Digest-bound approval.
+	// Verify runner was called.
+	if stub.CapturedInput == nil { t.Fatal("runner not called") }
+
+	// Approve with correct digest.
 	d := bundle.BundleDigest()
 	if d == "" { t.Error("digest empty") }
+	if err := sess.Approve(d); err != nil { t.Fatalf("approve: %v", err) }
+	ar, _ := sess.GetRequest()
+	if ar.State() != StateApproved { t.Errorf("state=%s, want approved", ar.State()) }
 
-	store := NewApprovalStore()
-	if _, err := store.Submit(bundle); err != nil { t.Fatalf("submit: %v", err) }
-	if err := store.Approve("fw-e2e", d); err != nil { t.Fatalf("approve: %v", err) }
-	ar, _ := store.Get("fw-e2e")
-	if ar.State() != StateApproved { t.Errorf("state=%s", ar.State()) }
+	// Wrong digest rejected (already approved, so wrong state).
+	if err := sess.Approve("wrong"); err == nil { t.Error("wrong digest should fail") }
 
-	// Wrong digest rejected.
-	if err := store.Approve("fw-e2e", "wrong"); !errors.Is(err, ErrNotPending) {
-		// Already approved, so wrong state
-	}
-
-	// 9. Activation fail-closed.
-	if err := store.Activate("fw-e2e", d); !errors.Is(err, ErrActivationUnsupported) {
+	// Activate fail-closed.
+	if err := sess.Activate(d); !errors.Is(err, ErrActivationUnsupported) {
 		t.Errorf("activate: %v", err)
 	}
+
+	// Reject a fresh session.
+	stub2 := &StubRepairRunner{Patch: validPatchBytes(), Success: true}
+	sess2, err := fullWorkflowTest(stub2, desc, "v3_0_0", "j",
+		[]contract.RawRecord{testRecord(`{"type":"user"}`)},
+		[]string{"user"}, nil, "fw-reject", actualSHA, repoRoot)
+	if err != nil { t.Fatalf("fullWorkflowTest reject: %v", err) }
+	defer sess2.Close()
+	d2 := sess2.Bundle.BundleDigest()
+	if err := sess2.Reject(); err != nil { t.Fatalf("reject: %v", err) }
+	ar2, _ := sess2.GetRequest()
+	if ar2.State() != StateRejected { t.Errorf("state=%s, want rejected", ar2.State()) }
+	// Cannot approve a rejected request.
+	if err := sess2.Approve(d2); err == nil { t.Error("approve after reject should fail") }
 }
 
-// Test that FullWorkflow with nil runner returns ErrRunnerUnavailable.
+// Test public FullWorkflow returns ErrRunnerUnavailable.
 func TestFullWorkflow_RunnerUnavailable(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 	desc := testDesc("claude", []string{"2.1.202"})
 	_, err := FullWorkflow(nil, desc, "v3_0_0", "j",
 		[]contract.RawRecord{testRecord(`{"type":"user"}`)},
 		[]string{"user"}, nil, "fu-1", "abc", repoRoot)
-	if !errors.Is(err, ErrRunnerUnavailable) {
-		t.Errorf("got %v, want ErrRunnerUnavailable", err)
-	}
+	if !errors.Is(err, ErrRunnerUnavailable) { t.Errorf("got %v, want ErrRunnerUnavailable", err) }
+	// Also with non-nil runner.
+	_, err = FullWorkflow(&StubRepairRunner{}, desc, "v3_0_0", "j", nil, nil, nil, "fu-2", "abc", repoRoot)
+	if !errors.Is(err, ErrRunnerUnavailable) { t.Errorf("got %v, want ErrRunnerUnavailable", err) }
 }
 
 // ── itoa ──

@@ -15,6 +15,7 @@ package doctor
 
 import (
 	"errors"
+	"fmt"
 
 	"devremote/companion-daemon/internal/agent/contract"
 )
@@ -159,7 +160,27 @@ func (s *Session) Close() { s.orch.Reset() }
 
 // ── FullWorkflow ──
 
+// FullWorkflow is the public production entry. Production repair runner
+// is not available — this always returns ErrRunnerUnavailable.
+// Use fullWorkflowTest for internal testing with a stub runner.
 func FullWorkflow(
+	runner RepairRunner,
+	desc contract.AgentAdapterDescriptor,
+	observedVersion, versionSource string,
+	samples []contract.RawRecord,
+	knownDiscriminators []string,
+	knownFields map[string]string,
+	requestID, baselineSHA string,
+	repoRoot string,
+) (*Session, error) {
+	if runner != nil {
+		return nil, ErrRunnerUnavailable
+	}
+	return nil, ErrRunnerUnavailable
+}
+
+// fullWorkflowTest is the test-only entry that accepts a runner.
+func fullWorkflowTest(
 	runner RepairRunner,
 	desc contract.AgentAdapterDescriptor,
 	observedVersion, versionSource string,
@@ -180,14 +201,17 @@ func FullWorkflow(
 	if err != nil { orch.Reset(); return nil, err }
 	if report.Compatible { orch.Reset(); return nil, nil }
 	if _, err := orch.CollectEvidence(knownDiscriminators, knownFields); err != nil { orch.Reset(); return nil, err }
-	// D1 is an inert workflow foundation; production runner unavailable.
-	if err := orch.RequestRepair(); errors.Is(err, ErrRunnerUnavailable) { orch.Reset(); return nil, err }
-	if err != nil { orch.Reset(); return nil, err }
+	if err := orch.RequestRepair(); err != nil { orch.Reset(); return nil, err }
 	if orch.activeRepairOutput == nil || !orch.activeRepairOutput.Success { orch.Reset(); return nil, errors.New("runner did not produce successful output") }
 	if _, err := orch.SubmitPatch(orch.activeRepairOutput.Patch); err != nil { orch.Reset(); return nil, err }
 	if _, err := orch.ApplyPatchToWorkspace(); err != nil { orch.Reset(); return nil, err }
 	if _, err := orch.RunFixedSuites(); err != nil { orch.Reset(); return nil, err }
 	bundle, err := orch.BuildReviewBundle(requestID, baselineSHA)
-	if err != nil { orch.Reset(); return nil, err }
+	if err != nil {
+		if orch.activeSuite != nil {
+			err = fmt.Errorf("%w; suite %d/%d", err, orch.activeSuite.Passed, orch.activeSuite.TotalTests)
+		}
+		orch.Reset(); return nil, err
+	}
 	return &Session{orch: orch, Bundle: bundle}, nil
 }

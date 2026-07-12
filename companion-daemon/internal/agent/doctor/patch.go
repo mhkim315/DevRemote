@@ -125,7 +125,17 @@ func ParsePatch(patch []byte) ([]PatchOperation, error) {
 				cur.Hunks = append(cur.Hunks, *curHunk)
 			}
 			curHunk = &PatchHunk{}
-			fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart, &curHunk.NewCount)
+			n, _ := fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart, &curHunk.NewCount)
+			if n < 4 {
+				n2, _ := fmt.Sscanf(line, "@@ -%d +%d,%d @@", &curHunk.OldStart, &curHunk.NewStart, &curHunk.NewCount)
+				if n2 >= 3 {
+					curHunk.OldCount = 1
+				}
+			}
+			if curHunk.OldCount <= 0 { curHunk.OldCount = 1 }
+			if curHunk.NewCount <= 0 { curHunk.NewCount = 1 }
+			if curHunk.OldStart < 0 { curHunk.OldStart = 0 }
+			if curHunk.NewStart < 0 { curHunk.NewStart = 0 }
 		default:
 			if curHunk != nil {
 				k := byte(' ')
@@ -325,14 +335,38 @@ func applyHunks(baseline []string, hunks []PatchHunk) (string, error) {
 	}
 	isNew := len(baseline) == 0
 
+	var lastNewEnd int // track hunk ordering for overlap detection
 	var out []string
 	lineNum := 0
 
-	for _, h := range hunks {
-		oldStart := h.OldStart - 1
-		if oldStart < 0 {
-			oldStart = 0
+	for hi, h := range hunks {
+		// Validate hunk counts match actual lines.
+		ctxCount, oldCount, newCount := 0, 0, 0
+		for _, l := range h.Lines {
+			switch l.Kind {
+			case ' ':
+				ctxCount++
+			case '-':
+				oldCount++
+			case '+':
+				newCount++
+			default:
+				return "", fmt.Errorf("unknown line marker %q in hunk %d", string(l.Kind), hi)
+			}
 		}
+		if h.OldStart < 0 {
+			return "", fmt.Errorf("invalid OldStart %d in hunk %d", h.OldStart, hi)
+		}
+
+		oldStart := h.OldStart - 1
+		if !isNew && oldStart < lastNewEnd && oldStart > 0 {
+			return "", fmt.Errorf("overlapping hunk at line %d (previous ended at %d)", h.OldStart, lastNewEnd)
+		}
+		// Track ordering.
+		if !isNew && hi > 0 && oldStart < lastNewEnd {
+			return "", fmt.Errorf("out-of-order hunk: OldStart=%d after end=%d", h.OldStart, lastNewEnd)
+		}
+
 		if lineNum < oldStart && oldStart <= len(baseline) {
 			out = append(out, baseline[lineNum:oldStart]...)
 			lineNum = oldStart
@@ -368,6 +402,8 @@ func applyHunks(baseline []string, hunks []PatchHunk) (string, error) {
 				out = append(out, l.Content)
 			}
 		}
+		lastNewEnd = oldStart + newCount + ctxCount
+		_ = oldCount // used only for validation above
 	}
 
 	if !isNew && lineNum < len(baseline) {

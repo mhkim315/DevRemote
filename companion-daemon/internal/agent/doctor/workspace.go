@@ -3,6 +3,7 @@ package doctor
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -34,6 +35,11 @@ func PrepareWorkspace(repoRoot string, ops []PatchOperation, provider, targetDir
 		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("copy repo: %w", err)
 	}
+
+	// Run go mod tidy to ensure dependencies are consistent.
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = tmpDir
+	tidyCmd.Run() // best-effort; failures are caught by build step
 
 	// Apply patch.
 	if err := ApplyPatch(tmpDir, ops); err != nil {
