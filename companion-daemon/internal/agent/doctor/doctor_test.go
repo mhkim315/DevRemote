@@ -32,11 +32,15 @@ func cleanRedaction() RedactionResult {
 func passingSuiteResult() ObservatoryResult {
 	return ObservatoryResult{
 		TotalTests: 1, Passed: 1,
-		CommandResults: []CommandResult{{Label: "test-cmd", ExitCode: 0}},
+		CommandResults: []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}},
 	}
 }
 
 func testBundle(id, adapter, provider, ver, base, evDig, patchDig string, files, adapterFiles, cmds []string, sr ObservatoryResult) (*ReviewBundle, error) {
+	// Ensure command result labels match suite manifest labels.
+	if len(cmds) == 1 && len(sr.CommandResults) == 1 && sr.CommandResults[0].Label != cmds[0] {
+		sr.CommandResults[0].Label = cmds[0]
+	}
 	return NewReviewBundle(id, adapter, provider, ver, base, evDig, patchDig,
 		[]byte("test diff"), files, adapterFiles, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "test-ws-digest", nil)
@@ -564,9 +568,13 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 	}
 
 	// Replay of rejected request ID must fail.
+	replaySR := ObservatoryResult{
+		TotalTests: 1, Passed: 1,
+		CommandResults: []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}},
+	}
 	b3, _ := NewReviewBundle("fw-reject", "c", "C", "3", actualSHA, "ev", "patch",
 		patchBytes, []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"T0"}, passingSuiteResult(),
+		[]string{"T0"}, replaySR,
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "ws-digest", nil)
 	if _, err := orch2.approval.Submit(b3); err == nil {
 		t.Error("replay of rejected request ID should fail")
@@ -813,9 +821,11 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 
 func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	store := NewApprovalStore()
+	matchingSR := ObservatoryResult{TotalTests: 1, Passed: 1,
+		CommandResults: []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}}}
 	b1, _ := NewReviewBundle("rm1", "c", "C", "3", "abc", "ev", "patch",
 		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"T0"}, passingSuiteResult(),
+		[]string{"T0"}, matchingSR,
 		DriftEvidence{}, "native_log", "ws1", nil)
 	d1 := b1.BundleDigest()
 	store.Submit(b1)
@@ -823,7 +833,7 @@ func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	// Different diff content → different digest.
 	b2, _ := NewReviewBundle("rm2", "c", "C", "3", "abc", "ev", "patch",
 		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
-		[]string{"T0"}, passingSuiteResult(),
+		[]string{"T0"}, matchingSR,
 		DriftEvidence{}, "native_log", "ws2", nil)
 	d2 := b2.BundleDigest()
 	if d1 == d2 {
@@ -896,13 +906,13 @@ func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{
 			TotalTests: 1, Passed: 1,
-			CommandResults: []CommandResult{{Label: "orig"}},
+			CommandResults: []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}},
 		},
 		DriftEvidence{}, "native_log", "ws", nil)
 	sr := b.SuiteResult()
 	sr.CommandResults[0] = CommandResult{Label: "mutated"}
 	sr2 := b.SuiteResult()
-	if sr2.CommandResults[0].Label != "orig" {
+	if sr2.CommandResults[0].Label != "T0" {
 		t.Error("SuiteResult() shares backing array; mutation leaks")
 	}
 }
@@ -964,7 +974,7 @@ func TestBuildFixtureManifest_SeparatesCategories(t *testing.T) {
 		t.Fatalf("workspace: %v", err)
 	}
 	defer ws.Cleanup()
-	adapterM, pokitM, fixtureM, _ := buildFixtureManifest(ws.Root, "claude", "v3_0_0")
+	adapterM, pokitM, fixtureM, _ := buildFixtureManifest(ws.Root, "claude", "v3_0_0", nil)
 	foundAdapter := false
 	for _, e := range adapterM {
 		if strings.Contains(e, "adapter.go") {
@@ -1010,7 +1020,7 @@ func TestRedaction_NotCleanBlocksNewReviewBundle(t *testing.T) {
 
 func TestRedaction_ScannerFailureFailsClosed(t *testing.T) {
 	// Non-existent directory → scanner returns Clean=false.
-	_, _, _, redaction := buildFixtureManifest("/nonexistent/path", "claude", "v3_0_0")
+	_, _, _, redaction := buildFixtureManifest("/nonexistent/path", "claude", "v3_0_0", nil)
 	if redaction.Clean {
 		t.Error("scanner failure should set Clean=false")
 	}
@@ -1181,7 +1191,7 @@ func TestNewReviewBundle_CallerMutationIsolated(t *testing.T) {
 	orig := ObservatoryResult{
 		TotalTests: 2, Passed: 2,
 		Failures:       []ObsTestFailure{{TestName: "f1", Reason: "r1"}},
-		CommandResults: []CommandResult{{Label: "cmd1", ExitCode: 0}},
+		CommandResults: []CommandResult{{Label: "cmd1", TotalTests: 2, Passed: 2, ExitCode: 0}},
 	}
 	b, err := NewReviewBundle("iso", "a", "p", "v", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"a.go"}, nil, nil, cleanRedaction(),
@@ -1256,7 +1266,11 @@ func TestBuildFixtureManifest_ProviderFixturesClassified(t *testing.T) {
 	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte(`{"id":"f1","kind":"message","ts":1}`), 0644)
 	os.WriteFile(filepath.Join(fixDir, "session.log"), []byte("session started\n"), 0644)
 
-	adapterM, pokitM, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0")
+	admitted := []AdmittedFixture{
+		{Path: "events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)},
+		{Path: "session.log", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)},
+	}
+	adapterM, pokitM, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
 	if !redact.Clean {
 		t.Error("redaction should be clean")
 	}
@@ -1329,7 +1343,7 @@ func TestBuildFixtureManifest_UnclassifiedFileFailsClosed(t *testing.T) {
 	fixDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0")
 	os.WriteFile(filepath.Join(fixDir, "unknown.bin"), []byte("binary"), 0644)
 
-	_, _, _, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0")
+	_, _, _, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", nil)
 	if redact.Clean {
 		t.Error("unclassified file should fail closed")
 	}
@@ -1350,7 +1364,7 @@ func TestE2E_ManifestsInBundleCorrect(t *testing.T) {
 	actualSHA, _ := gitHeadSHA(repoRoot)
 
 	orch := NewOrchestrator(stub, repoRoot)
-	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl", ObservedRecordSamples: []contract.RawRecord{testRecord(`{"type":"user"}`)}}
+	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl", ObservedRecordSamples: []contract.RawRecord{testRecord(`{"type":"user"}`)}, AdmittedFixtures: []AdmittedFixture{{Path: "events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)}}}
 	orch.DetectDrift(req)
 	orch.CollectEvidence([]string{"user"}, nil)
 	orch.RequestRepair()
@@ -1390,5 +1404,118 @@ func TestE2E_ManifestsInBundleCorrect(t *testing.T) {
 		if strings.Contains(e, "events.jsonl") {
 			t.Error("events.jsonl in adapter manifest")
 		}
+	}
+}
+
+// ── Suite validation: partial results blocked ──
+
+func TestValidateSuiteEvidence_PartialResultsBlocked(t *testing.T) {
+	// Manifest declares 3 commands, results only have 1.
+	manifest := []string{"T0", "T1", "T2"}
+	results := []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}}
+	err := ValidateSuiteEvidence(manifest, results, 1, 1, 0)
+	if err == nil {
+		t.Error("partial results should be rejected")
+	}
+}
+
+func TestValidateSuiteEvidence_DuplicateLabelBlocked(t *testing.T) {
+	manifest := []string{"T0", "T0"}
+	results := []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}, {Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}}
+	err := ValidateSuiteEvidence(manifest, results, 2, 2, 0)
+	if err == nil {
+		t.Error("duplicate labels should be rejected")
+	}
+}
+
+func TestValidateSuiteEvidence_ExtraResultBlocked(t *testing.T) {
+	manifest := []string{"T0"}
+	results := []CommandResult{
+		{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0},
+		{Label: "EXTRA", TotalTests: 1, Passed: 1, ExitCode: 0},
+	}
+	err := ValidateSuiteEvidence(manifest, results, 2, 2, 0)
+	if err == nil {
+		t.Error("extra result should be rejected")
+	}
+}
+
+func TestValidateSuiteEvidence_AggregateMismatchBlocked(t *testing.T) {
+	manifest := []string{"T0"}
+	results := []CommandResult{{Label: "T0", TotalTests: 1, Passed: 1, ExitCode: 0}}
+	err := ValidateSuiteEvidence(manifest, results, 100, 50, 50)
+	if err == nil {
+		t.Error("aggregate mismatch should be rejected")
+	}
+}
+
+// ── Fixture: unadmitted extension fails ──
+
+func TestBuildFixtureManifest_UnadmittedExtensionFails(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	patchBytes := adapterPatchBytes(t)
+	stub := &StubRepairRunner{Patch: patchBytes, Success: true}
+	desc := testDesc("claude", []string{"2.1.202"})
+	orch := NewOrchestrator(stub, repoRoot)
+	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl"}
+	orch.DetectDrift(req)
+	orch.CollectEvidence([]string{"user"}, nil)
+	orch.RequestRepair()
+	orch.SubmitPatch(stub.Patch)
+	ws, err := orch.ApplyPatchToWorkspace()
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	defer ws.Cleanup()
+
+	// Write a .jsonl file WITHOUT admitting it.
+	fixDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0")
+	os.WriteFile(filepath.Join(fixDir, "unadmitted.jsonl"), []byte(`{"x":1}`), 0644)
+
+	_, _, _, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", nil)
+	if redact.Clean {
+		t.Error("unadmitted .jsonl file should fail closed")
+	}
+}
+
+// ── Fixture: admitted fixture with valid provenance ──
+
+func TestBuildFixtureManifest_AdmittedFixtureWithProvenance(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	patchBytes := adapterPatchBytes(t)
+	stub := &StubRepairRunner{Patch: patchBytes, Success: true}
+	desc := testDesc("claude", []string{"2.1.202"})
+	orch := NewOrchestrator(stub, repoRoot)
+	req := ProcessRequest{AdapterDescriptor: desc, ObservedVersion: "v3_0_0", ObservedVersionSource: "jsonl"}
+	orch.DetectDrift(req)
+	orch.CollectEvidence([]string{"user"}, nil)
+	orch.RequestRepair()
+	orch.SubmitPatch(stub.Patch)
+	ws, err := orch.ApplyPatchToWorkspace()
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	defer ws.Cleanup()
+
+	// Write a .jsonl file WITH explicit admission.
+	fixDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0")
+	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte(`{"id":"f1","kind":"message","ts":1}`), 0644)
+
+	admitted := []AdmittedFixture{{Path: "events.jsonl", Provider: "claude", Version: "3.0.0", Provenance: string(contract.ProvenanceNativeLog)}}
+	_, _, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
+	if !redact.Clean {
+		t.Error("admitted fixture should be clean")
+	}
+	if len(fixtureM) != 1 {
+		t.Fatalf("got %d fixture entries, want 1", len(fixtureM))
+	}
+	if !strings.Contains(fixtureM[0], "provider=claude") {
+		t.Error("fixture entry missing provider")
+	}
+	if !strings.Contains(fixtureM[0], "version=3.0.0") {
+		t.Error("fixture entry missing version")
+	}
+	if !strings.Contains(fixtureM[0], "provenance="+string(contract.ProvenanceNativeLog)) {
+		t.Error("fixture entry missing provenance")
 	}
 }

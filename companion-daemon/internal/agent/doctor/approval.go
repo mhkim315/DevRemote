@@ -182,20 +182,9 @@ func NewReviewBundle(
 	if len(changedFiles) == 0 {
 		return nil, fmt.Errorf("%w: changedFiles must be non-empty", ErrEmptyField)
 	}
-	if suiteResult.TotalTests == 0 {
-		return nil, fmt.Errorf("%w: suite result has zero tests", ErrEmptyField)
-	}
-	if !suiteResult.AllPassed() {
-		return nil, fmt.Errorf("%w: suite not fully passed (%d/%d)", ErrEmptyField, suiteResult.Passed, suiteResult.TotalTests)
-	}
-	for _, cr := range suiteResult.CommandResults {
-		if cr.Failed > 0 || cr.Skipped > 0 || cr.ExitCode != 0 {
-			return nil, fmt.Errorf("%w: command %q failed (exit=%d, fail=%d, skip=%d)",
-				ErrEmptyField, cr.Label, cr.ExitCode, cr.Failed, cr.Skipped)
-		}
-	}
-	if len(suiteResult.CommandResults) == 0 {
-		return nil, fmt.Errorf("%w: suite has no command results", ErrEmptyField)
+	if err := ValidateSuiteEvidence(suiteCommandManifest, suiteResult.CommandResults,
+		suiteResult.TotalTests, suiteResult.Passed, suiteResult.Failed); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrEmptyField, err)
 	}
 	if fixtureRedaction.Scanned == 0 {
 		return nil, fmt.Errorf("%w: fixture redaction has zero scanned files", ErrEmptyField)
@@ -322,17 +311,9 @@ func (as *ApprovalStore) Submit(bundle *ReviewBundle) (*ApprovalRequest, error) 
 		return nil, fmt.Errorf("%w: changed files must be non-empty", ErrEmptyField)
 	}
 	sr := bundle.suiteResult
-	if sr.TotalTests == 0 || !sr.AllPassed() {
-		return nil, fmt.Errorf("%w: suite must be fully passing", ErrEmptyField)
-	}
-	for _, cr := range sr.CommandResults {
-		if cr.Failed > 0 || cr.Skipped > 0 || cr.ExitCode != 0 {
-			return nil, fmt.Errorf("%w: command %q failed (exit=%d, fail=%d, skip=%d)",
-				ErrEmptyField, cr.Label, cr.ExitCode, cr.Failed, cr.Skipped)
-		}
-	}
-	if len(sr.CommandResults) == 0 {
-		return nil, fmt.Errorf("%w: suite has no command results", ErrEmptyField)
+	if err := ValidateSuiteEvidence(bundle.suiteCommandManifest, sr.CommandResults,
+		sr.TotalTests, sr.Passed, sr.Failed); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrEmptyField, err)
 	}
 	if !bundle.fixtureRedaction.Clean || bundle.fixtureRedaction.Scanned == 0 {
 		return nil, fmt.Errorf("%w: redaction not clean or zero-scanned", ErrEmptyField)

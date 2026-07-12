@@ -125,6 +125,77 @@ type RedactionResult struct {
 	Findings []string // bounded, redacted summaries (never raw secrets)
 }
 
+// ── Suite evidence validation ──
+
+// ValidateSuiteEvidence verifies that the declared command manifest and actual
+// command results match exactly — same label set, no duplicates/missing/extra,
+// aggregate totals consistent, every result clean. Used at every approval
+// boundary (constructor and store) so partial or forged results cannot pass.
+func ValidateSuiteEvidence(manifestLabels []string, results []CommandResult, total, passed, failed int) error {
+	if total == 0 {
+		return fmt.Errorf("suite has zero tests")
+	}
+	if failed > 0 || passed == 0 {
+		return fmt.Errorf("suite not fully passed: %d/%d", passed, total)
+	}
+	// Check manifest and result label sets match exactly.
+	manifestSet := make(map[string]bool, len(manifestLabels))
+	for _, l := range manifestLabels {
+		if manifestSet[l] {
+			return fmt.Errorf("duplicate manifest label %q", l)
+		}
+		manifestSet[l] = true
+	}
+	resultSet := make(map[string]bool, len(results))
+	for _, cr := range results {
+		if resultSet[cr.Label] {
+			return fmt.Errorf("duplicate result label %q", cr.Label)
+		}
+		resultSet[cr.Label] = true
+	}
+	if len(manifestSet) != len(resultSet) {
+		return fmt.Errorf("manifest has %d labels, results have %d", len(manifestSet), len(resultSet))
+	}
+	for l := range manifestSet {
+		if !resultSet[l] {
+			return fmt.Errorf("missing result for manifest label %q", l)
+		}
+	}
+	for l := range resultSet {
+		if !manifestSet[l] {
+			return fmt.Errorf("unexpected result label %q (not in manifest)", l)
+		}
+	}
+	// Aggregate totals must match.
+	var sumTotal, sumPassed, sumFailed int
+	for _, cr := range results {
+		sumTotal += cr.TotalTests
+		sumPassed += cr.Passed
+		sumFailed += cr.Failed
+		if cr.Failed > 0 || cr.Skipped > 0 || cr.ExitCode != 0 {
+			return fmt.Errorf("command %q not clean (exit=%d fail=%d skip=%d)",
+				cr.Label, cr.ExitCode, cr.Failed, cr.Skipped)
+		}
+	}
+	if sumTotal != total || sumPassed != passed || sumFailed != failed {
+		return fmt.Errorf("aggregate mismatch: suite total=%d/%d/%d, commands sum to %d/%d/%d",
+			total, passed, failed, sumTotal, sumPassed, sumFailed)
+	}
+	return nil
+}
+
+// ── Provider fixture admission ──
+
+// AdmittedFixture is one explicitly admitted provider fixture. Extension alone
+// is insufficient for classification — the user/workflow must declare each
+// fixture with provider, version, and source provenance.
+type AdmittedFixture struct {
+	Path       string // relative path within candidate directory
+	Provider   string
+	Version    string
+	Provenance string // source provenance tier
+}
+
 // ── Process request ──
 
 // ProcessRequest is the input to a Doctor repair workflow. It describes which
@@ -135,6 +206,7 @@ type ProcessRequest struct {
 	ObservedVersionSource string
 	ObservedRecordSamples []contract.RawRecord
 	ConformanceFixtures   contract.ConformanceFixtures
+	AdmittedFixtures      []AdmittedFixture // explicitly admitted provider fixtures
 }
 
 // ── Repair plan ──
