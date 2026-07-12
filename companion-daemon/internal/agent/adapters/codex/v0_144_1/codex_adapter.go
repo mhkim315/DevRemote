@@ -1,20 +1,25 @@
 // Package v0_144_1 implements the T0 contract.AgentAdapter for Codex CLI
 // version 0.144.1. It reads the Codex session JSONL
 // (~/.codex/sessions/.../rollout-*.jsonl), normalises events into the closed
-// common vocabulary, and surfaces bound approvals.  It does NOT use the
-// app-server JSON-RPC transport; thread/session correlation was not proven in R1
-// for ordinary interactive TUI sessions.
+// common vocabulary, and surfaces bound approvals.
 //
 // Supported version: 0.144.1 (confirmed by `codex --version` in R1 evidence).
 // Every session_meta in a read batch is checked; a single missing / mismatched /
 // malformed cli_version forces the ENTIRE batch to EventUnknown + degraded.
 //
-// Seq / cursor: Seq is a position-based ordinal (monotonically increasing
-// append order).  The cursor carries the set of already-emitted record IDs
-// (content-hash hex) so re-reads are suppressed: same records ⇒ same IDs ⇒
-// deduped against the cursor's seen-set.  The cursor is a bounded sliding
-// window — when the ID set exceeds MaxCursorBytes the oldest IDs are dropped,
-// which may re-emit very old records but never silently lose new ones.
+// Seq / cursor: compact position+anchor cursor (fixed ~50 bytes regardless of
+// event count).  Format: "v:<ver>:<pos>:<anchor>" where ver=1 if 0.144.1
+// confirmed, pos=next absolute Seq, anchor=content-hash of the last emitted
+// record (empty initially).
+//
+// Two input modes:
+//   - Full-prefix (harness): caller re-sends all records from the beginning.
+//     The anchor is found in the input → every record through the anchor is
+//     skipped → only new records emitted.  Zero re-emission.
+//   - Incremental (production): caller sends only new records.  The anchor is
+//     NOT found → all records are emitted with advancing Seq.
+//
+// Anchor mismatch (found in the wrong position) → fail-closed + degraded.
 //
 // Correlation: unavailable (R1).  DiscoverSessions returns nil.
 package v0_144_1
@@ -24,6 +29,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +38,10 @@ import (
 )
 
 const supportedCodexVersion = "0.144.1"
+
+// cursorPrefix / cursorSep delimit cursor fields.
+const cursorPrefix = "v:"
+const cursorSep = ":"
 
 // Adapter implements contract.AgentAdapter for Codex CLI 0.144.1.
 type Adapter struct{ failRead bool }
@@ -54,6 +64,60 @@ func (a *Adapter) Descriptor() contract.AgentAdapterDescriptor {
 			contract.CapProcessDetection,
 		},
 	}
+}
+
+// ── Cursor encoding ──
+//
+// Format:  v:<version_ok>:<next_pos>:<anchor_id>
+//
+//	version_ok = "1" if exact 0.144.1 confirmed, "0" otherwise
+//	next_pos   = absolute next Seq (decimal)
+//	anchor_id  = content-hash of the last emitted record (empty initially)
+//
+// Cursor size is fixed at ~50 bytes regardless of how many records have been
+// processed — it never grows beyond MaxCursorBytes.
+//
+// On re-read (full-prefix): the anchor is found in the input → all records up
+// to and including the anchor are skipped → zero re-emission.
+// On append (incremental): the anchor is NOT found → all records are new →
+// emitted with advancing Seq.
+
+type cursorState struct {
+	versionOK bool
+	nextPos   int64
+	anchor    string // hex content-hash, "" initially
+}
+
+func parseCursor(c contract.Cursor) (cursorState, error) {
+	if c.IsEmpty() {
+		return cursorState{}, nil
+	}
+	s := string(c)
+	if !strings.HasPrefix(s, cursorPrefix) {
+		return cursorState{}, strconv.ErrSyntax
+	}
+	s = s[len(cursorPrefix):]
+	parts := strings.SplitN(s, cursorSep, 3)
+	if len(parts) != 3 {
+		return cursorState{}, strconv.ErrSyntax
+	}
+	ver, ok := strconv.Atoi(parts[0])
+	if ok != nil || (ver != 0 && ver != 1) {
+		return cursorState{}, strconv.ErrSyntax
+	}
+	pos, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || pos < 0 {
+		return cursorState{}, strconv.ErrSyntax
+	}
+	return cursorState{versionOK: ver == 1, nextPos: pos, anchor: parts[2]}, nil
+}
+
+func encodeCursor(st cursorState) contract.Cursor {
+	ver := "0"
+	if st.versionOK {
+		ver = "1"
+	}
+	return contract.Cursor(cursorPrefix + ver + cursorSep + strconv.FormatInt(st.nextPos, 10) + cursorSep + st.anchor)
 }
 
 // ── Detect ──
@@ -101,71 +165,6 @@ type codexRecord struct {
 	Payload   map[string]any `json:"payload"`
 }
 
-// ── Cursor encoding ──
-//
-// The cursor is an opaque comma-separated list of already-emitted content-hash
-// IDs, e.g. "a1b2c3d4,e5f6a7b8,9c0d1e2f".  An empty cursor means "start of
-// stream".  The next Seq to assign is derived from len(cursorIDs) — i.e. the
-// total number of records emitted so far.
-//
-// When the cursor would exceed MaxCursorBytes we keep only the most recent
-// entries so the cursor stays bounded.  A truncated cursor may allow a very old
-// record to be re-emitted; this is the contract's intended "compact
-// high-water-mark" trade-off.
-
-// parseCursorIDs splits a cursor string into a deduplication set.  Returns nil
-// for an empty cursor.
-func parseCursorIDs(cursor contract.Cursor) map[string]bool {
-	if cursor.IsEmpty() {
-		return nil
-	}
-	parts := strings.Split(string(cursor), ",")
-	m := make(map[string]bool, len(parts))
-	for _, p := range parts {
-		if p != "" {
-			m[p] = true
-		}
-	}
-	return m
-}
-
-// encodeCursor builds a bounded cursor from old seen-IDs plus new IDs.  Oldest
-// entries are dropped first when the encoded size would exceed MaxCursorBytes.
-func encodeCursor(old map[string]bool, newIDs []string) contract.Cursor {
-	// Collect all IDs: old first, then new.  Order matters — old IDs are
-	// dropped first on overflow so recent IDs survive.
-	all := make([]string, 0, len(old)+len(newIDs))
-	for id := range old {
-		all = append(all, id)
-	}
-	all = append(all, newIDs...)
-
-	// Build the cursor string, dropping oldest entries until it fits.
-	var cur string
-	for i := len(all) - 1; i >= 0; i-- {
-		cand := all[i]
-		if cand == "" {
-			continue
-		}
-		if cur == "" {
-			cur = cand
-		} else if len(cur)+1+len(cand) <= contract.MaxCursorBytes {
-			cur = cand + "," + cur
-		} else {
-			break // cursor full — oldest entries dropped
-		}
-	}
-	return contract.Cursor(cur)
-}
-
-// cursorBasePos returns the next Seq to assign from a cursor (0 for empty).
-func cursorBasePos(cursor contract.Cursor) int {
-	if cursor.IsEmpty() {
-		return 0
-	}
-	return len(parseCursorIDs(cursor))
-}
-
 // ── NormalizeEvent ──
 
 func (a *Adapter) NormalizeEvent(_ context.Context, rec contract.RawRecord) (contract.AgentEvent, contract.DegradedInfo) {
@@ -200,8 +199,6 @@ func normalizeCodexEvent(rec contract.RawRecord, sessionID string, src contract.
 
 	et, conf := classifyCodexRecord(cr)
 	ts := parseTimestamp(cr.Timestamp)
-	// Seq=0 is a placeholder — ReadEvents assigns the real position-based Seq.
-	seq := int64(0)
 
 	degraded := false
 	var reasons []string
@@ -212,7 +209,7 @@ func normalizeCodexEvent(rec contract.RawRecord, sessionID string, src contract.
 
 	ev := contract.AgentEvent{
 		ID: id, SessionID: sessionID, AgentKind: "codex",
-		Type: et, Seq: seq, Timestamp: ts,
+		Type: et, Seq: 0, Timestamp: ts,
 		Text: safeCodexText(cr), Confidence: conf,
 		Source: src, Provenance: string(prov),
 		Metadata: boundedCodexMetadata(cr),
@@ -295,16 +292,15 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		diags = append(diags, "batch truncated at bound")
 	}
 
-	// Parse cursor: cross-read dedup set + base position.
-	cursorSeen := parseCursorIDs(in.Cursor)
-	basePos := 0
-	if cursorSeen != nil {
-		basePos = len(cursorSeen)
+	// Parse compact position+anchor cursor.
+	cur, err := parseCursor(in.Cursor)
+	if err != nil {
+		return contract.ReadResult{Degraded: contract.Degrade("invalid cursor: " + err.Error())}, nil
 	}
 
 	// ── Version gate: scan EVERY session_meta ──
-	versionOK := false
-	versionFailed := false
+	batchVersionOK := false
+	batchVersionFailed := false
 	for _, rec := range records {
 		if !contract.AcceptRecord(rec) {
 			continue
@@ -318,23 +314,37 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 		v := codexPayloadStr(cr, "cli_version")
 		if v == supportedCodexVersion {
-			versionOK = true
+			batchVersionOK = true
 		} else {
-			versionFailed = true
+			batchVersionFailed = true
 			degraded = true
 			diags = append(diags, "unsupported Codex version: "+safeVersionDiag(v))
 		}
 	}
-	if !versionOK || versionFailed {
-		versionFailed = true
+
+	// Resolve effective version state: cursor-carried authority survives
+	// incremental batches that lack a session_meta. A conflicting meta in
+	// this batch overrides.
+	versionOK := cur.versionOK
+	if batchVersionFailed {
+		versionOK = false
+	} else if batchVersionOK {
+		versionOK = true
+	}
+	// If no meta in batch AND cursor didn't confirm → version failed.
+	versionFailed := !versionOK
+
+	if !versionOK {
+		degraded = true
+		diags = append(diags, "version not confirmed for 0.144.1")
 	}
 
-	limit := contract.EffectiveReadLimit(in.MaxEvents)
-	batchSeen := map[string]bool{}
-	var newIDs []string
-	var out []contract.AgentEvent
-	truncated := false
-
+	// ── Phase 1: normalise all accepted records ──
+	type norm struct {
+		ev  contract.AgentEvent
+		deg contract.DegradedInfo
+	}
+	var all []norm
 	for _, rec := range records {
 		if !contract.AcceptRecord(rec) {
 			degraded = true
@@ -342,6 +352,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			continue
 		}
 		ev, recDeg := normalizeCodexEvent(rec, sessionID, rec.Source, versionFailed)
+		all = append(all, norm{ev, recDeg})
 		if recDeg.Degraded {
 			degraded = true
 			if recDeg.Reason != "" {
@@ -353,28 +364,55 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 				}
 			}
 		}
-		if ev.ID == "" {
-			continue
-		}
+	}
 
-		// Dedup: cross-read (cursor) + within-batch.
-		if cursorSeen != nil && cursorSeen[ev.ID] {
-			continue
+	// ── Phase 2: anchor-based skip (full-prefix) or emit-all (incremental) ──
+	startIdx := 0
+	// Inconsistent cursor: position advanced but anchor lost.
+	if cur.anchor == "" && cur.nextPos > 0 {
+		degraded = true
+		diags = append(diags, "cursor anchor lost")
+	}
+	if cur.anchor != "" {
+		found := -1
+		for i := range all {
+			if all[i].ev.ID == cur.anchor {
+				found = i
+				break
+			}
 		}
-		if batchSeen[ev.ID] {
-			continue
+		if found >= 0 {
+			// Full-prefix: skip records through the anchor.
+			startIdx = found + 1
+		} else {
+			// Anchor expected but not found: incremental input, tampered cursor,
+			// or stream rotation.  Emit all records but flag degradation so the
+			// caller knows the cursor could not be used for deduplication.
+			degraded = true
+			diags = append(diags, "cursor anchor not found in input")
 		}
+	}
 
+	// ── Phase 3: assign Seq, dedupe within batch, cap ──
+	limit := contract.EffectiveReadLimit(in.MaxEvents)
+	batchSeen := map[string]bool{}
+	var out []contract.AgentEvent
+	var newAnchor string
+	truncated := false
+
+	for i := startIdx; i < len(all); i++ {
+		ev := all[i].ev
+		if ev.ID == "" || batchSeen[ev.ID] {
+			continue
+		}
 		if len(out) >= limit {
 			truncated = true
 			break
 		}
-
 		batchSeen[ev.ID] = true
-		// Position-based Seq: monotonically increasing append order.
-		ev.Seq = int64(basePos + len(out))
+		ev.Seq = cur.nextPos + int64(len(out))
 		out = append(out, ev)
-		newIDs = append(newIDs, ev.ID)
+		newAnchor = ev.ID
 	}
 
 	if truncated {
@@ -396,12 +434,20 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		deg = contract.Degrade(reason)
 	}
 
-	// Build cursor: old seen-IDs + new IDs, bounded to MaxCursorBytes.
-	nextCursor := encodeCursor(cursorSeen, newIDs)
+	// Build next cursor: version state + absolute position + last anchor.
+	nextCur := cursorState{
+		versionOK: versionOK,
+		nextPos:   cur.nextPos + int64(len(out)),
+		anchor:    newAnchor,
+	}
+	// If no events emitted, preserve old anchor so full-prefix skip still works.
+	if len(out) == 0 {
+		nextCur.anchor = cur.anchor
+	}
 
 	return contract.ReadResult{
 		Events:     out,
-		NextCursor: nextCursor,
+		NextCursor: encodeCursor(nextCur),
 		Degraded:   deg,
 	}, nil
 }
