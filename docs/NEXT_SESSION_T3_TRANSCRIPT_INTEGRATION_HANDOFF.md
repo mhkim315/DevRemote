@@ -87,12 +87,13 @@ architecture sketch alone.
 ## 3. T3 objective
 
 Integrate the accepted common `contract.AgentEvent` model with a bounded,
-readable Transcript projection while retaining a safe generic terminal fallback:
+readable Transcript projection while retaining a safe, explicitly separate
+generic terminal fallback:
 
 ```text
-authoritatively correlated adapter events ─┐
-                                           ├─> bounded Transcript projection/store/read path
-Recorder byte-stream projection input ─────┘
+authoritatively correlated adapter events ──> primary semantic Transcript
+
+Recorder byte-stream projection input ──────> separate fallback/degraded terminal-output channel
 
 Recorder raw PTY bytes ───────────────────────> Live Terminal (unchanged)
 ```
@@ -107,6 +108,28 @@ be executable in production code and covered through its real controller/handler
 T3 does not implement S1 Status, A1 approval UX/authorization, O1 orchestration,
 or another production adapter.
 
+### 3.1 Source arbitration
+
+For a session with correctly correlated accepted AgentEvents, those AgentEvents
+are the primary semantic Transcript source. Recorder byte-stream projection is a
+separate fallback or visibly degraded terminal-output channel; it is not a second
+semantic agent-message source.
+
+Do not merge, correlate, suppress, or equate AgentEvent and PTY content through:
+
+- timestamp proximity;
+- text equality or substring matching;
+- fuzzy matching;
+- prompt/command recognition;
+- ordering guesses;
+- shared CWD or process-name heuristics.
+
+Do not present duplicate semantic and fallback representations as if they were
+independent agent messages. Source selection/arbitration must be explicit,
+session-owned, deterministic, and testable from declared correlation,
+capabilities, and degradation state. When safe arbitration is unavailable, retain
+source separation and label the fallback rather than inventing a merge.
+
 ## 4. Hard invariants
 
 These are release blockers, not follow-ups:
@@ -118,6 +141,7 @@ raw PTY bytes → Live Terminal unchanged
 projection enqueue = copied, bounded, non-blocking
 projection failure/overflow → never blocks or corrupts Live Terminal
 raw terminal input text → never stored, logged, or projected
+PTY echo of terminal input → never allowed to re-enter Transcript
 Transcript → readable history only; never lifecycle/input/approval authority
 adapter events → accepted only with correct session correlation and provenance
 cmux snapshot rules → never run on byte_stream input
@@ -128,6 +152,15 @@ Stop/Kill/Delete → lifecycle state, not inferred from Transcript
 Do not add a second PTY reader. Do not put typed JSON/control events into Recorder
 raw subscribers, bootstrap ring, Activity history, or terminal output. Do not
 change Terminal bytes to make Transcript prettier.
+
+The raw-input invariant includes terminal echo. Merely avoiding storage of bytes
+written through `InputWriter` is insufficient: a PTY may echo the same typed bytes
+back through Recorder output. Do not remove echoed text through prompt matching,
+string equality, shell parsing, timing windows, or other content heuristics. Use
+an explicit content-free input-boundary/echo-suppression mechanism whose state is
+owned by the session projection path, or omit/degrade projection whenever input
+and output cannot be separated safely. The mechanism may retain bounded counts,
+timestamps, or opaque boundaries, but never the input content itself.
 
 The current protocol/mobile authentication contracts must remain operating-system
 neutral. Windows support remains deferred. Do not add ConPTY, CNG/TPM, DPAPI,
@@ -203,6 +236,12 @@ one bounded `terminal_ui_omitted` marker and resume; never flatten repaint traff
 into giant lines. Preserve ordinary repeated log lines—do not globally deduplicate
 them.
 
+Model terminal input as an explicit content-free boundary. Prove that PTY echo
+cannot make typed command content enter the Transcript. If the adapter/PTY mode
+cannot distinguish echo from output without inspecting or retaining the input
+string, omit or degrade that projection region. Never infer an echo by comparing
+the output with a command, prompt, or recently typed string.
+
 Queue capacity must have explicit event and byte bounds. A full queue must never
 block Recorder. Coalesce a bounded projection-gap indication and expose a metric
 or diagnostic without logging content.
@@ -215,7 +254,7 @@ universal protocol. Snapshot cleanup, stable-prefix logic, and timeouts must nev
 run on byte-stream or agent-event input. T3 must not claim cmux Transcript is
 reliable.
 
-### 6.5 Storage, API, and product consumer
+### 6.5 Storage, API, and required product consumer
 
 The store must be session-isolated, bounded, deterministically ordered, and safe
 under concurrent append/read/delete. Retained exited sessions may retain readable
@@ -231,6 +270,24 @@ do not introduce a Transcript-specific credential path.
 The mobile/product path must select Transcript availability from declared
 capabilities and lifecycle state, not host OS names. Do not make projected text a
 fallback for Live Terminal input/control.
+
+T3 completion requires the complete executable product path:
+
+```text
+production session-owned producer
+→ bounded projector and session-isolated store
+→ authenticated session-scoped read API
+→ central authenticated mobile transport
+→ actual mobile Transcript read and rendering path
+```
+
+A helper-only package, daemon-only shadow projection, uncalled controller, or
+backend test endpoint is not sufficient. A feature flag is acceptable only when
+the production path can be enabled and exercised end to end, fails closed when
+disabled or unauthorized, and has automated production-path coverage. Ticket,
+bearer, pairing, permissions, and host-origin binding must reuse the accepted
+authentication architecture; no credential may enter Transcript content or a
+navigation URL.
 
 ## 7. Required fixtures and automated evidence
 
@@ -253,6 +310,8 @@ At minimum cover:
 10. cmux snapshot isolation and visibly degraded output;
 11. session delete/history retention and cross-session isolation;
 12. credential, raw-input, prompt, tool-I/O, signature, and path leakage negatives.
+13. PTY echo of a controlled typed command, proving the command text cannot enter
+    Transcript through Recorder output.
 
 Production-path tests—not helper-only tests—must prove:
 
@@ -260,14 +319,37 @@ Production-path tests—not helper-only tests—must prove:
 - raw subscriber/bootstrap bytes are byte-for-byte unchanged;
 - slow, failed, or full Transcript projection cannot delay raw delivery;
 - terminal input is metadata-only at most and raw typed text is absent everywhere;
+- a controlled production-path PTY echo test proves typed command text cannot
+  re-enter Transcript through terminal output;
 - byte-stream and snapshot projectors cannot be selected for the wrong mode;
 - valid correlated AgentEvents reach only the intended session Transcript;
 - unbound/cross-session events cannot enter it;
 - Transcript failures do not change session lifecycle or close a socket/process;
 - API and product consumer show ordered bounded output and safe degraded markers;
+- the authenticated read API and real mobile controller/component render the
+  accepted session Transcript end to end, while unauthorized/wrong-session/error
+  results render no stale or cross-session content;
 - accepted T0/T1/T2/D1 tests and public DTO snapshots do not regress.
 
-## 8. Scope exclusions
+## 8. Required staged implementation order
+
+Implement T3 sequentially. Each checkpoint is an internal implementation boundary,
+not an acceptance boundary:
+
+```text
+T3-A  code-path audit, versioned Transcript contract, bounded store
+T3-B  accepted AgentEvent production projection and explicit source arbitration
+T3-C  bounded byte-stream fallback, echo privacy, and snapshot isolation
+T3-D  authenticated API and actual mobile read/render consumer
+T3-E  integrated production-path regression, privacy, race, and safety gates
+```
+
+Do not request independent acceptance for T3-A through T3-D. Intermediate commits
+may be pushed for recovery/reviewability, but must be labelled as incomplete and
+must not contain the final `REVIEW REQUEST: T3` marker. The only independent
+acceptance request covers the complete T3-A through T3-E contract.
+
+## 9. Scope exclusions
 
 Do not start or implement:
 
@@ -287,7 +369,7 @@ and document why the existing Activity DTO cannot safely carry the contract. Do
 not revise the frozen T0 common AgentEvent contract during T3. A genuine
 cross-provider gap requires a separate reviewed proposal.
 
-## 9. Disk, process, and temporary-workspace safety
+## 10. Disk, process, and temporary-workspace safety
 
 Previous D1 verification accidentally created recursive test execution and more
 than 6,000 `go-build*`/`d1-workspace-*` directories, consuming about 86 GiB. T3
@@ -325,7 +407,7 @@ runaway test/build processes: <count>
 Do not delete unrelated user caches or worktrees. Cleanup is limited to artifacts
 created by the current run unless the user explicitly authorizes more.
 
-## 10. Required gates
+## 11. Required gates
 
 Run focused tests while developing, then sequentially run:
 
@@ -355,7 +437,14 @@ native code; T3 should not require native authentication changes. Physical-devic
 Transcript smoke may be recorded as M-track only when the automated production
 path is complete; it may not excuse a helper-only integration.
 
-## 11. Commit, push, and review request
+Because T3-D requires mobile production code, run and report the mobile TypeScript
+typecheck and Jest/unit gates explicitly even if the repository build gate also
+runs them. Add production controller/component tests for successful read/render,
+loading/error/no-content behavior, session switch, stale response, unmount, retry,
+authorization failure, and cross-session isolation. If any native mobile file is
+changed, run the corresponding native compile/gate as well.
+
+## 12. Commit, push, and review request
 
 Keep implementation and unrelated cleanup separate. Before committing:
 
@@ -400,21 +489,28 @@ reviewing an intermediate commit as the finished result.
 Stop after push. Request independent T3 verification. Do not begin S1, A1, O1,
 another adapter, Windows work, or a T3 acceptance/handoff document yourself.
 
-## 12. Done condition
+## 13. Done condition
 
 T3 is ready for independent review only when all of the following are true:
 
 - the accepted D1 baseline is an ancestor and remote/local tips match;
 - the production Transcript path consumes correctly bound common AgentEvents and
-  a safe generic byte-stream fallback;
+  uses them as its primary semantic source, with a safe explicitly separate
+  generic byte-stream fallback;
 - raw Terminal bytes, Recorder single-reader ownership, lifecycle, authentication,
   and approval authority remain unchanged;
+- PTY echo cannot cause typed input content to enter Transcript, proven through
+  the production session-owned path without content-matching heuristics;
 - projection/store/API/product paths are bounded, session-isolated, non-secret,
   and fail safely;
+- the authenticated session-scoped API and actual mobile read/render path work
+  end to end and pass TypeScript/mobile tests;
 - byte-stream and snapshot behavior are separated;
 - production-path race/overflow/failure/correlation tests pass;
 - accepted T0/T1/T2/D1 regression gates pass;
 - no recursive tests, runaway processes, or run-owned temporary artifacts remain;
+- T3-A through T3-E are all complete; no intermediate checkpoint is presented as
+  independently acceptable;
 - the report and final pushed commit contain the required review marker;
 - the worktree is clean and the final full remote SHA is reported.
 
