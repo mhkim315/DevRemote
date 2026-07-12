@@ -1458,8 +1458,8 @@ func TestCodexAdapter_Oversized_ValidSeq(t *testing.T) {
 		big[i] = 'x'
 	}
 	records := []contract.RawRecord{
-		sessionMeta0_144_1(),                        // pos 0: valid
-		{Bytes: big, Source: agent.SourceJSONL},     // pos 1: oversized
+		sessionMeta0_144_1(),                    // pos 0: valid
+		{Bytes: big, Source: agent.SourceJSONL}, // pos 1: oversized
 		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`), // pos 2: valid
 	}
 	res, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
@@ -1498,8 +1498,8 @@ func TestCodexAdapter_Oversized_OneShotEqualsPaged(t *testing.T) {
 		big[i] = 'x'
 	}
 	records := []contract.RawRecord{
-		sessionMeta0_144_1(),                        // pos 0
-		{Bytes: big, Source: agent.SourceJSONL},     // pos 1: oversized
+		sessionMeta0_144_1(),                    // pos 0
+		{Bytes: big, Source: agent.SourceJSONL}, // pos 1: oversized
 		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`), // pos 2
 	}
 	oneShot := readAllEvents(t, &Adapter{}, records, 0)
@@ -1524,9 +1524,9 @@ func TestCodexAdapter_Oversized_BreaksAdjacency(t *testing.T) {
 	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
-		rec,                                   // pos 1
+		rec,                                     // pos 1
 		{Bytes: big, Source: agent.SourceJSONL}, // pos 2: oversized
-		rec,                                   // pos 3: same as pos 1, but adjacency broken
+		rec,                                     // pos 3: same as pos 1, but adjacency broken
 	}
 	res, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
@@ -1573,10 +1573,10 @@ func TestCodexAdapter_Oversized_AdjacentDuplicate(t *testing.T) {
 	}
 	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
 	records := []contract.RawRecord{
-		sessionMeta0_144_1(),                     // pos 0
-		rec,                                       // pos 1
-		{Bytes: big, Source: agent.SourceJSONL},   // pos 2: oversized
-		rec,                                       // pos 3: non-adjacent dup of pos 1
+		sessionMeta0_144_1(),                    // pos 0
+		rec,                                     // pos 1
+		{Bytes: big, Source: agent.SourceJSONL}, // pos 2: oversized
+		rec,                                     // pos 3: non-adjacent dup of pos 1
 	}
 	res, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
