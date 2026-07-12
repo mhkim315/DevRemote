@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 
 	"devremote/companion-daemon/internal/agent"
@@ -932,7 +933,186 @@ func TestCodexAdapter_Cursor_SeqFromAbsolutePosition(t *testing.T) {
 	}
 }
 
-// ── Existing cursor regression tests (adapted for position+anchor) ──
+// ── Cross-page duplicate suppression ──
+
+func TestCodexAdapter_Cursor_CrossPageDuplicate_NotReemitted(t *testing.T) {
+	// Duplicate record appears at position 0 and position 2.
+	// Paginate with MaxEvents=1 — the duplicate at pos 2 must NOT be
+	// re-emitted because the prefix dedup set includes it from pos 0.
+	a := &Adapter{}
+	b := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(), // position 0
+		b,                    // position 1
+		b,                    // position 2 (duplicate of pos 1)
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`), // position 3
+	}
+
+	seen := map[string]bool{}
+	var cursor contract.Cursor
+	for {
+		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+			Records:   records,
+			Cursor:    cursor,
+			MaxEvents: 1,
+		})
+		for _, e := range res.Events {
+			if seen[e.ID] {
+				t.Errorf("cross-page duplicate re-emitted: %s", e.ID)
+			}
+			seen[e.ID] = true
+		}
+		cursor = res.NextCursor
+		if len(res.Events) == 0 {
+			break
+		}
+	}
+	if len(seen) != 3 {
+		t.Errorf("got %d unique events, want 3 (session_meta + dup + t2)", len(seen))
+	}
+}
+
+func TestCodexAdapter_Cursor_MaxBatchRecordsPlusOne_PaginatedFully(t *testing.T) {
+	// Full prefix of MaxBatchRecords+1 records. Paginate through all.
+	// Verify every record emitted exactly once, no loss, no duplicates.
+	a := &Adapter{}
+	n := contract.MaxBatchRecords + 1
+	var records []contract.RawRecord
+	records = append(records, sessionMeta0_144_1())
+	for i := 1; i < n; i++ {
+		records = append(records, codexRec(`{"timestamp":"2026-07-06T13:29:35.`+nanoPad(i)+`Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t`+strconv.Itoa(i)+`"}}`))
+	}
+
+	seen := map[string]bool{}
+	var cursor contract.Cursor
+	var seqs []int64
+	for {
+		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+			Records:   records,
+			Cursor:    cursor,
+			MaxEvents: 200,
+		})
+		for _, e := range res.Events {
+			if seen[e.ID] {
+				t.Errorf("duplicate emission: %s", e.ID)
+			}
+			seen[e.ID] = true
+			seqs = append(seqs, e.Seq)
+		}
+		cursor = res.NextCursor
+		if len(res.Events) == 0 {
+			break
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("MaxBatchRecords+1 pagination: got %d unique events, want %d", len(seen), n)
+	}
+	// All Seq strictly increasing across pages.
+	for i := 1; i < len(seqs); i++ {
+		if seqs[i] <= seqs[i-1] {
+			t.Errorf("cross-page Seq not strictly increasing: %d <= %d", seqs[i], seqs[i-1])
+		}
+	}
+	// Final cursor re-read → 0 events.
+	final, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  cursor,
+	})
+	if len(final.Events) != 0 {
+		t.Errorf("final re-read: got %d events, want 0", len(final.Events))
+	}
+}
+
+func TestCodexAdapter_Cursor_ByteBound_LargeSuffix(t *testing.T) {
+	// Suffix records that together exceed MaxBatchBytes — only the subset
+	// within the byte bound is processed; cursor advances accordingly.
+	a := &Adapter{}
+	// Create sized records that push past the byte bound.
+	bigSize := contract.MaxBatchBytes/8 + 1 // ~1 MiB each
+	var records []contract.RawRecord
+	records = append(records, sessionMeta0_144_1())
+	// First 2 big records: ~2 MiB total
+	records = append(records, codexRec(`{"timestamp":"2026-07-06T13:29:35.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","_pad":"`+strings.Repeat("x", bigSize-100)+`"}}`))
+	records = append(records, codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2","_pad":"`+strings.Repeat("x", bigSize-100)+`"}}`))
+
+	// First read from empty cursor: should process only records that fit.
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res1.Events) == 0 {
+		t.Fatal("first read produced 0 events")
+	}
+	if !res1.Degraded.Degraded {
+		t.Error("byte-bound truncation must degrade")
+	}
+	// Cursor position advanced past the records that fit.
+	cur, _ := parseCursor(res1.NextCursor)
+	if cur.nextPos == 0 {
+		t.Error("cursor did not advance past byte-bound truncation")
+	}
+
+	// Continuation: remaining records should be processed.
+	if cur.nextPos < int64(len(records)) {
+		res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+			Session: contract.SessionContext{SessionID: "pokit:host-a"},
+			Records: records,
+			Cursor:  res1.NextCursor,
+		})
+		totalEvents := len(res1.Events) + len(res2.Events)
+		if totalEvents < len(res1.Events) {
+			t.Error("continuation did not make progress after byte-bound truncation")
+		}
+	}
+}
+
+func TestCodexAdapter_Cursor_CombinedLimitDuplicateBound(t *testing.T) {
+	// Combined test: caller limit + cross-page duplicate + batch bound.
+	a := &Adapter{}
+	dup := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		dup,
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		dup, // cross-page duplicate at position 3
+		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
+	}
+
+	seen := map[string]bool{}
+	var cursor contract.Cursor
+	var seqs []int64
+	for {
+		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+			Records:   records,
+			Cursor:    cursor,
+			MaxEvents: 1,
+		})
+		for _, e := range res.Events {
+			if seen[e.ID] {
+				t.Errorf("duplicate emission in combined test: %s", e.ID)
+			}
+			seen[e.ID] = true
+			seqs = append(seqs, e.Seq)
+		}
+		cursor = res.NextCursor
+		if len(res.Events) == 0 {
+			break
+		}
+	}
+	if len(seen) != 4 {
+		t.Errorf("combined: got %d unique events, want 4 (meta+dup+t1+t2, no re-emit)", len(seen))
+	}
+	// Seq strictly increasing.
+	for i := 1; i < len(seqs); i++ {
+		if seqs[i] <= seqs[i-1] {
+			t.Errorf("combined cross-page Seq: %d <= %d", seqs[i], seqs[i-1])
+		}
+	}
+}
 
 func TestCodexAdapter_Seq_MissingTimestampEmitted(t *testing.T) {
 	a := &Adapter{}
