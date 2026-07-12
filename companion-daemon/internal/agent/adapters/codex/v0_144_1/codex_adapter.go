@@ -459,7 +459,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			break
 		}
 		prevCK = ck
-		ev.Seq = cur.nextPos + int64(len(out))
+		ev.Seq = cur.nextPos + int64(i) // absolute source position, not output count
 		out = append(out, ev)
 		processed++
 	}

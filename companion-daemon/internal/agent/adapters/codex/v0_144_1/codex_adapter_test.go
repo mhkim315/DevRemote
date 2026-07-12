@@ -942,7 +942,7 @@ func TestCodexAdapter_Cursor_SeqFromAbsolutePosition(t *testing.T) {
 
 func TestCodexAdapter_OneShot_Equals_Paged(t *testing.T) {
 	// Non-adjacent duplicate fixture: one-shot and paged must produce
-	// identical event ID sets regardless of MaxEvents.
+	// identical (ID, Seq, Type) tuples regardless of MaxEvents.
 	dup := codexRec(`{"timestamp":"2026-07-06T13:29:35.001Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
@@ -951,32 +951,33 @@ func TestCodexAdapter_OneShot_Equals_Paged(t *testing.T) {
 		dup, // position 3 — non-adjacent duplicate of position 1
 	}
 
-	oneShot := readAllIDs(t, &Adapter{}, records, 0)
-	paged := readAllIDs(t, &Adapter{}, records, 1)
-
-	if len(oneShot) != len(paged) {
-		t.Errorf("one-shot=%d events, paged=%d events (must be equal)", len(oneShot), len(paged))
-	}
-	oneSet := make(map[string]bool, len(oneShot))
-	for _, id := range oneShot {
-		oneSet[id] = true
-	}
-	for _, id := range paged {
-		if !oneSet[id] {
-			t.Errorf("paged event %s not in one-shot set", id)
+	oneShot := readAllEvents(t, &Adapter{}, records, 0)
+	for _, maxEv := range []int{1, 2, 3} {
+		paged := readAllEvents(t, &Adapter{}, records, maxEv)
+		if len(oneShot) != len(paged) {
+			t.Errorf("MaxEvents=%d: one-shot=%d events, paged=%d", maxEv, len(oneShot), len(paged))
+			continue
 		}
-		delete(oneSet, id)
-	}
-	for id := range oneSet {
-		t.Errorf("one-shot event %s not in paged set", id)
+		for i := range oneShot {
+			if oneShot[i].ID != paged[i].ID || oneShot[i].Seq != paged[i].Seq || oneShot[i].Type != paged[i].Type {
+				t.Errorf("MaxEvents=%d event %d:\n  one-shot: id=%s seq=%d type=%s\n  paged:    id=%s seq=%d type=%s",
+					maxEv, i, oneShot[i].ID, oneShot[i].Seq, oneShot[i].Type, paged[i].ID, paged[i].Seq, paged[i].Type)
+			}
+		}
 	}
 }
 
-// readAllIDs returns all event IDs from reading the given records, either
-// one-shot (maxEvents=0) or paged with the given maxEvents per page.
-func readAllIDs(t *testing.T, a *Adapter, records []contract.RawRecord, maxEvents int) []string {
+type eventKey struct {
+	ID   string
+	Seq  int64
+	Type contract.AgentEventType
+}
+
+// readAllEvents returns all (ID, Seq, Type) from reading records, either
+// one-shot (maxEvents=0) or paged per maxEvents.
+func readAllEvents(t *testing.T, a *Adapter, records []contract.RawRecord, maxEvents int) []eventKey {
 	t.Helper()
-	var ids []string
+	var out []eventKey
 	var cursor contract.Cursor
 	for {
 		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
@@ -986,14 +987,47 @@ func readAllIDs(t *testing.T, a *Adapter, records []contract.RawRecord, maxEvent
 			MaxEvents: maxEvents,
 		})
 		for _, e := range res.Events {
-			ids = append(ids, e.ID)
+			out = append(out, eventKey{ID: e.ID, Seq: e.Seq, Type: e.Type})
 		}
 		cursor = res.NextCursor
 		if len(res.Events) == 0 {
 			break
 		}
 	}
-	return ids
+	return out
+}
+
+func TestCodexAdapter_AdjacentDup_TailSeqConsistent(t *testing.T) {
+	// Adjacent duplicate suppressed → tail event Seq is absolute source
+	// position, identical in one-shot and paged reads.
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(), // pos 0
+		rec,                  // pos 1
+		rec,                  // pos 2 (adjacent duplicate, suppressed)
+		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"tail"}}`), // pos 3
+	}
+
+	oneShot := readAllEvents(t, &Adapter{}, records, 0)
+	if len(oneShot) != 3 {
+		t.Fatalf("one-shot: got %d events, want 3", len(oneShot))
+	}
+	// Tail event at pos 3: Seq must be 3 (absolute position, not 2).
+	if oneShot[2].Seq != 3 {
+		t.Errorf("one-shot tail Seq=%d, want 3 (absolute source position)", oneShot[2].Seq)
+	}
+
+	// Paged must produce identical results.
+	for _, maxEv := range []int{1, 2} {
+		paged := readAllEvents(t, &Adapter{}, records, maxEv)
+		if len(paged) != 3 {
+			t.Errorf("MaxEvents=%d: got %d events, want 3", maxEv, len(paged))
+			continue
+		}
+		if paged[2].Seq != 3 {
+			t.Errorf("MaxEvents=%d tail Seq=%d, want 3", maxEv, paged[2].Seq)
+		}
+	}
 }
 
 func TestCodexAdapter_AdjacentDuplicate_WithinPage(t *testing.T) {
@@ -1083,13 +1117,13 @@ func TestCodexAdapter_NonAdjacentDuplicate_TwoDistinctPositions(t *testing.T) {
 	}
 
 	// Paged with MaxEvents=2.
-	paged := readAllIDs(t, &Adapter{}, records, 2)
+	paged := readAllEvents(t, &Adapter{}, records, 2)
 	if len(paged) != 4 {
 		t.Errorf("paged non-adjacent: got %d events, want 4", len(paged))
 	}
 
 	// Paged with MaxEvents=1.
-	paged1 := readAllIDs(t, &Adapter{}, records, 1)
+	paged1 := readAllEvents(t, &Adapter{}, records, 1)
 	if len(paged1) != 4 {
 		t.Errorf("paged-1 non-adjacent: got %d events, want 4", len(paged1))
 	}
@@ -1277,7 +1311,7 @@ func TestCodexAdapter_Cursor_CombinedLimitDuplicateBound(t *testing.T) {
 	}
 
 	// Paged (MaxEvents=1) → also 5 events.
-	paged := readAllIDs(t, &Adapter{}, records, 1)
+	paged := readAllEvents(t, &Adapter{}, records, 1)
 	if len(paged) != 5 {
 		t.Errorf("paged: got %d events, want 5", len(paged))
 	}
