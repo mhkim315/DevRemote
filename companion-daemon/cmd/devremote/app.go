@@ -18,6 +18,7 @@ import (
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
+	"devremote/companion-daemon/internal/transcript"
 	"devremote/companion-daemon/internal/watcher"
 )
 
@@ -94,6 +95,7 @@ type App struct {
 	telemetry          *term.TelemetryService // telemetry sampling (owns state machine)
 	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
 	activity           *term.ActivityBuffer   // E10b: IPC replay
+	transcriptSvc      *transcript.Service    // T3: Transcript integration
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
@@ -179,6 +181,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		})
 	}
 	activity := term.NewActivityBuffer(2000)
+	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
+	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
 	lifecycle := term.NewLifecycleService(reg, activity)
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
@@ -213,7 +217,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	sessionMgr.SetOnRevoke(cb)
 	challengeStore := devicetrust.NewChallengeStore()
 
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Lifecycle: lifecycle,
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit}
 
 	serveMux := http.NewServeMux()
@@ -259,6 +263,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
 		serveMux.HandleFunc("/debug/diag", h.AuthMiddleware(h.HandleDiagnostic))
 		serveMux.HandleFunc("/debug/e8diag", h.AuthMiddleware(term.HandleE8Diag))
+		// T3 Transcript: session-scoped read API.
+		serveMux.HandleFunc("GET /api/sessions/{id}/transcript", h.AuthMiddleware(transcript.HandleTranscript(transcriptSvc)))
+		serveMux.HandleFunc("GET /api/sessions/{id}/transcript/stats", h.AuthMiddleware(transcript.HandleTranscriptStats(transcriptSvc)))
 	} else {
 		// Method-level permissions: GET→read, POST create→create, DELETE→history:delete.
 		// PUT (legacy no-op) is disabled in remote mode.
@@ -292,6 +299,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleHTML, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("/push/register",
 			devicetrust.RequirePrincipal(sessionMgr, registerPush, devicetrust.PermSessionsRead))
+		// T3 Transcript: session-scoped read API with device-auth.
+		serveMux.HandleFunc("GET /api/sessions/{id}/transcript",
+			devicetrust.RequirePrincipal(sessionMgr, transcript.HandleTranscript(transcriptSvc), devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("GET /api/sessions/{id}/transcript/stats",
+			devicetrust.RequirePrincipal(sessionMgr, transcript.HandleTranscriptStats(transcriptSvc), devicetrust.PermSessionsRead))
 		// Only product-used diagnostics remain remotely reachable. Raw dump and
 		// E8 instrumentation are deliberately local-only.
 		serveMux.HandleFunc("/debug/cmd",
@@ -314,22 +326,23 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	return &App{
-		config:       cfg,
-		deps:         deps,
-		registry:     reg,
-		server:       &http.Server{Addr: addr, Handler: serveMux},
-		events:       events,
-		links:        links,
-		telemetry:    telemetry,
-		activity:     activity,
-		lifecycle:    lifecycle,
-		authHandler:  authH,
-		sessionMgr:   sessionMgr,
-		wsTickets:    wsTickets,
-		connRegistry: connRegistry,
-		audit:        audit,
-		handlers:     h,
-		ipcPath:      "/tmp/pokit.sock",
+		config:        cfg,
+		deps:          deps,
+		registry:      reg,
+		server:        &http.Server{Addr: addr, Handler: serveMux},
+		events:        events,
+		links:         links,
+		telemetry:     telemetry,
+		activity:      activity,
+		transcriptSvc: transcriptSvc,
+		lifecycle:     lifecycle,
+		authHandler:   authH,
+		sessionMgr:    sessionMgr,
+		wsTickets:     wsTickets,
+		connRegistry:  connRegistry,
+		audit:         audit,
+		handlers:      h,
+		ipcPath:       "/tmp/pokit.sock",
 	}, nil
 }
 

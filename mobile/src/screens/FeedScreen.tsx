@@ -1,5 +1,6 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import { terminalURL, listSessions, getSessionHistory, getActivityHistory, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
+import { terminalURL, listSessions, getSessionHistory, getActivityHistory, getTranscript, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
+import type { TranscriptSegment } from '../lib/client';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
 import type { TokenManager } from '../lib/authClient';
 import { TerminalController, shouldIssueReconnect } from '../lib/terminalController';
@@ -43,27 +44,93 @@ const NORMAL_MACROS: { label: string; chars: number[] }[] = [
 
 
 
-// ── E8g2 Transcript component ──
-// Renders recorder-backed terminal_output as readable full-width text.
-// terminal_input becomes a minimal divider. Newest-first (inverted) so
-// current output is immediately visible — scroll UP for history.
-// No client-side text merge: backend ActivityBuffer already combines
-// adjacent output. Duplication-prevention: FlatList keyed on unique seq.
+// ── E8g2 Transcript component (T3-updated) ──
+// Renders versioned TranscriptSegment[] from the T3 Transcript API.
+// Falls back to legacy ActivityEvent format when T3 segments are unavailable.
+// Agent events are rendered with agent kind + event type labels;
+// terminal_output is full-width monospace text; input_boundary is a divider;
+// degraded/ui_omitted markers show bounded diagnostic text.
+// Newest-first (inverted) so current output is immediately visible.
 
-type OutputSpan = { text: string; isInput: boolean; key: string };
+type OutputSpan = {
+  text: string;
+  isInput: boolean;
+  isDegraded: boolean;
+  isAgentEvent: boolean;
+  agentLabel?: string;
+  key: string;
+};
 
 function E8g2Transcript({ events }: { events: any[] }) {
-  // Process events newest-first so inverted FlatList anchors at latest output.
-  // Activity tab uses the same pattern: reversed array + inverted.
   const spans: OutputSpan[] = useMemo(() => {
     const result: OutputSpan[] = [];
-    // Walk newest→oldest so index 0 = newest (inverted FlatList shows index 0 at bottom).
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
+
+      // T3 TranscriptSegment format.
+      if (e.kind) {
+        switch (e.kind) {
+          case 'agent_event':
+            result.push({
+              text: e.text || '',
+              isInput: false,
+              isDegraded: false,
+              isAgentEvent: true,
+              agentLabel: e.agentKind ? `${e.agentKind} · ${e.eventType || ''}` : (e.eventType || ''),
+              key: `ae${e.seq}`,
+            });
+            break;
+          case 'terminal_output':
+            if ((e.text || '').length > 0) {
+              result.push({
+                text: e.text,
+                isInput: false,
+                isDegraded: false,
+                isAgentEvent: false,
+                key: `to${e.seq}`,
+              });
+            }
+            break;
+          case 'input_boundary':
+            result.push({ text: '', isInput: true, isDegraded: false, isAgentEvent: false, key: `ib${e.seq}` });
+            break;
+          case 'degraded':
+            result.push({
+              text: e.degradedReason || 'Transcript degraded',
+              isInput: false,
+              isDegraded: true,
+              isAgentEvent: false,
+              key: `dg${e.seq}`,
+            });
+            break;
+          case 'ui_omitted':
+            result.push({
+              text: '[terminal UI omitted]',
+              isInput: false,
+              isDegraded: true,
+              isAgentEvent: false,
+              key: `uo${e.seq}`,
+            });
+            break;
+          default:
+            if ((e.text || '').length > 0) {
+              result.push({
+                text: e.text,
+                isInput: false,
+                isDegraded: false,
+                isAgentEvent: false,
+                key: `un${e.seq}`,
+              });
+            }
+        }
+        continue;
+      }
+
+      // Legacy ActivityEvent format (fallback).
       if (e.type === 'terminal_output' && (e.text || '').length > 0) {
-        result.push({ text: e.text, isInput: false, key: `o${e.seq}` });
+        result.push({ text: e.text, isInput: false, isDegraded: false, isAgentEvent: false, key: `o${e.seq}` });
       } else if (e.type === 'terminal_input') {
-        result.push({ text: '', isInput: true, key: `i${e.seq}` });
+        result.push({ text: '', isInput: true, isDegraded: false, isAgentEvent: false, key: `i${e.seq}` });
       }
     }
     return result;
@@ -79,17 +146,37 @@ function E8g2Transcript({ events }: { events: any[] }) {
       keyExtractor={(item) => item.key}
       contentContainerStyle={styles.transcriptList}
       inverted
-      renderItem={({ item }) =>
-        item.isInput ? (
-          <View style={styles.transcriptInputDivider} />
-        ) : (
+      renderItem={({ item }) => {
+        if (item.isInput) {
+          return <View style={styles.transcriptInputDivider} />;
+        }
+        if (item.isDegraded) {
+          return (
+            <View style={styles.transcriptDegradedBlock}>
+              <Text style={styles.transcriptDegradedText}>{item.text}</Text>
+            </View>
+          );
+        }
+        if (item.isAgentEvent && item.agentLabel) {
+          return (
+            <View style={styles.transcriptOutputBlock}>
+              <Text style={styles.transcriptAgentLabel}>{item.agentLabel}</Text>
+              {item.text ? (
+                <Text style={styles.transcriptOutputText} selectable={true}>
+                  {item.text.replace(/\r/g, '')}
+                </Text>
+              ) : null}
+            </View>
+          );
+        }
+        return (
           <View style={styles.transcriptOutputBlock}>
             <Text style={styles.transcriptOutputText} selectable={true}>
               {item.text.replace(/\r/g, '')}
             </Text>
           </View>
-        )
-      }
+        );
+      }}
     />
   );
 }
@@ -351,10 +438,11 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
         });
     };
 
-    // E8g: fetch transcript — ref-based to avoid stale closure on activeTab.
+    // T3: fetch Transcript from the dedicated versioned API.
+    // Falls back to legacy activity endpoint when T3 is unavailable.
     const fetchTranscript = () => {
-      getActivityHistory(session, token)
-        .then(data => {
+      getTranscript(session, token)
+        .then((data: TranscriptSegment[]) => {
           if (Array.isArray(data)) {
             setTranscriptEvents(data);
             setActivityError('');
@@ -368,7 +456,28 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
             }
           }
         })
-        .catch(err => {
+        .catch(async (err) => {
+          // Fall back to legacy activity endpoint on 404 (T3 not yet deployed).
+          if (err instanceof PokitError && err.statusCode === 404) {
+            try {
+              const data = await getActivityHistory(session, token);
+              if (Array.isArray(data)) {
+                setTranscriptEvents(data);
+                setActivityError('');
+                const maxSeq = data.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
+                transcriptMaxSeqRef.current = maxSeq;
+                if (activeTabRef.current === 'transcript' && maxSeq > lastSeenSeqRef.current) {
+                  setNewOutputCount(maxSeq - lastSeenSeqRef.current);
+                }
+                if (activeTabRef.current !== 'transcript') {
+                  lastSeenSeqRef.current = maxSeq;
+                }
+              }
+              return;
+            } catch (_fallbackErr) {
+              // Both endpoints failed.
+            }
+          }
           console.error(err);
           if (err instanceof PokitError) {
             setActivityError(err.failure === ConnectivityFailure.NetworkUnreachable
@@ -1096,6 +1205,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#0D2D45',
     marginHorizontal: 12,
     marginVertical: 8,
+  },
+  transcriptAgentLabel: {
+    color: '#45EBE9',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  transcriptDegradedBlock: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(248, 81, 73, 0.08)',
+    marginHorizontal: 8,
+    marginVertical: 4,
+    borderRadius: 4,
+  },
+  transcriptDegradedText: {
+    color: '#f85149',
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   returnBtn: {
     backgroundColor: '#1C1C1E',

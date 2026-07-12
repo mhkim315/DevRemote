@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // Recorder owns the PTY read loop for a session.
@@ -25,11 +26,27 @@ type Recorder struct {
 	readErr     error
 	captureMode mux.TranscriptCaptureMode // source of truth for capture behavior
 
+	// T3 Transcript: optional non-blocking byte-stream feed.
+	// When non-nil, readLoop feeds copied chunks to the Transcript service
+	// byte-stream projector. nil means Transcript integration is disabled.
+	transcriptSvc *transcript.Service
+
 	// Terminal bootstrap: ring buffer of recent raw PTY bytes.
 	// Late-attaching subscribers receive this before live stream.
 	bootstrapBuf  []byte
 	bootstrapPos  int
 	bootstrapFull bool
+}
+
+// transcriptSvcSingleton is the optional T3 Transcript service, set once
+// during app initialization. Recorders check this to feed byte-stream data
+// into the Transcript byte-stream projector without requiring signature
+// changes to StartRecorder/EnsureRecorder.
+var transcriptSvcSingleton *transcript.Service
+
+// SetTranscriptService sets the process-wide Transcript service for Recorder feeding.
+func SetTranscriptService(svc *transcript.Service) {
+	transcriptSvcSingleton = svc
 }
 
 // recorderRegistry tracks active recorders.
@@ -74,6 +91,7 @@ func StartRecorder(sessionID string, stream mux.TerminalStream, activity *Activi
 	recorderRegistry.recorders[sessionID] = r
 
 	r.captureMode = resolveCaptureMode(sessionID)
+	r.transcriptSvc = transcriptSvcSingleton
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch
@@ -196,6 +214,17 @@ func (r *Recorder) unregisterSelf() {
 	}
 }
 
+// feedTranscript feeds copied payload bytes to the T3 Transcript byte-stream
+// projector asynchronously so Transcript projection never blocks raw PTY delivery.
+func (r *Recorder) feedTranscript(payload []byte) {
+	if r.transcriptSvc == nil {
+		return
+	}
+	chunk := make([]byte, len(payload))
+	copy(chunk, payload)
+	go r.transcriptSvc.FeedBytes(r.sessionID, chunk, time.Now())
+}
+
 // readLoop reads PTY output, broadcasts to subscribers, appends to ActivityBuffer.
 // On exit (EOF, error, or cancel), the recorder unregisters itself — but only
 // if no newer recorder for the same sessionID has been created.
@@ -260,6 +289,8 @@ func (r *Recorder) readLoop() {
 					})
 				}
 			}
+			// T3: feed cmux delta to Transcript byte-stream projector (non-blocking).
+			r.feedTranscript(payload)
 			continue // do NOT broadcast delta to subscribers
 		}
 
@@ -292,6 +323,9 @@ func (r *Recorder) readLoop() {
 				})
 			}
 		}
+
+		// T3: feed raw bytes to Transcript byte-stream projector (non-blocking).
+		r.feedTranscript(payload)
 
 		// Broadcast to subscribers after append — eliminates race between
 		// subscriber receive and ActivityBuffer.List.
@@ -487,6 +521,7 @@ func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *Activit
 	ch := r.Subscribe()
 	recorderRegistry.recorders[sessionID] = r
 	r.captureMode = resolveCaptureMode(sessionID)
+	r.transcriptSvc = transcriptSvcSingleton
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch

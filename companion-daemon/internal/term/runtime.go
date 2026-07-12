@@ -9,6 +9,7 @@ import (
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // registryCtxKey is used to store the Registry in a request context.
@@ -50,6 +51,7 @@ type Handlers struct {
 	SessionMgr   *devicetrust.DeviceSessionManager
 	HostIdentity *devicetrust.HostIdentity // M2.5-4: for ticket host binding
 	Audit        devicetrust.AuditLog      // M2.5-5: minimal local audit (nil ⇒ no audit)
+	Transcript   *transcript.Service       // T3: bounded session-isolated Transcript store + projectors
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

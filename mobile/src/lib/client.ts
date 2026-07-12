@@ -381,6 +381,38 @@ export async function getActivityHistory(sessionID: string, token?: string) {
   return res.json();
 }
 
+// T3: fetch versioned Transcript segments from the dedicated Transcript API.
+// Returns TranscriptSegment[] with stable IDs, monotonic Seq, explicit
+// source (agent_event | terminal_output | input_boundary | degraded | ui_omitted),
+// and bounded safe text. Primary semantic source is AgentEvent when available;
+// byte-stream terminal_output is the fallback.
+export interface TranscriptSegment {
+  id: string;
+  seq: number;
+  sessionId: string;
+  kind: 'agent_event' | 'terminal_output' | 'input_boundary' | 'degraded' | 'ui_omitted' | 'unknown';
+  source: 'agent_event' | 'byte_stream' | 'snapshot_delta' | 'unknown';
+  text?: string;
+  agentEventRef?: string;
+  agentKind?: string;
+  eventType?: string;
+  toolName?: string;
+  confidence?: number;
+  byteCount?: number;
+  degradedReason?: string;
+  observedAt: string;
+  contractVersion: string;
+}
+
+export async function getTranscript(sessionID: string, token?: string, after?: number): Promise<TranscriptSegment[]> {
+  let path = `/api/sessions/${encodeURIComponent(sessionID)}/transcript`;
+  if (after !== undefined && after > 0) {
+    path += `?after=${after}`;
+  }
+  const res = await apiGet(path, token);
+  return res.json();
+}
+
 export async function sendDebugCommand(sessionID: string, command: string, token?: string) {
   const res = await checkedFetch(
     `${_baseURL}/debug/cmd?session=${encodeURIComponent(sessionID)}`,
