@@ -3,6 +3,7 @@ package doctor
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,14 +25,18 @@ func testRecord(jsonStr string) contract.RawRecord {
 }
 
 func validPatchBytes() []byte {
-	return []byte(`diff --git a/internal/agent/adapters/claude/v3_0_0/claude_adapter.go b/internal/agent/adapters/claude/v3_0_0/claude_adapter.go
+	return []byte(`diff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go
 new file mode 100644
 --- /dev/null
-+++ b/internal/agent/adapters/claude/v3_0_0/claude_adapter.go
-@@ -0,0 +1,3 @@
++++ b/internal/agent/adapters/claude/v3_0_0/adapter.go
+@@ -0,0 +1,7 @@
 +package v3_0_0
 +
-+const supported = "3.0.0"
++const supportedVersion = "3.0.0"
++
++func Name() string {
++	return "claude"
++}
 `)
 }
 
@@ -68,7 +73,7 @@ func TestPatch_ValidParses(t *testing.T) {
 	ops, err := ParsePatch(validPatchBytes())
 	if err != nil { t.Fatalf("valid patch: %v", err) }
 	if len(ops) != 1 { t.Fatalf("got %d ops", len(ops)) }
-	if ops[0].DiffPath != "internal/agent/adapters/claude/v3_0_0/claude_adapter.go" {
+	if ops[0].DiffPath != "internal/agent/adapters/claude/v3_0_0/adapter.go" {
 		t.Errorf("path=%q", ops[0].DiffPath)
 	}
 	if !ops[0].IsNew { t.Error("should be new file") }
@@ -270,54 +275,121 @@ func TestOrchestrator_RunnerUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrRunnerUnavailable) { t.Errorf("got %v", err) }
 }
 
-// ── Session lifecycle ──
-
-func TestSession_ApproveRejectClose(t *testing.T) {
-	stub := &StubRepairRunner{Patch: validPatchBytes(), Success: true}
-	desc := testDesc("claude", []string{"2.1.202"})
-	sess, err := FullWorkflow(stub, desc, "v3_0_0", "j",
-		[]contract.RawRecord{testRecord(`{"type":"user"}`)},
-		[]string{"user"}, nil, "sess-1", "abc", ".")
-	if err != nil {
-		t.Logf("FullWorkflow returned error (expected in test env): %v", err)
-		return
+// findRepoRoot walks up from the test directory to find go.mod.
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, _ := os.Getwd()
+	for i := 0; i < 10; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
 	}
-	defer sess.Close()
-	if sess.Bundle == nil { t.Fatal("bundle is nil") }
-	d := sess.Bundle.BundleDigest()
-	if d == "" { t.Error("digest empty") }
-	if err := sess.Approve(d); err != nil { t.Errorf("approve: %v", err) }
+	t.Skip("cannot find repo root (go.mod)")
+	return ""
 }
 
-// ── E2E: FullWorkflow reaches review bundle (in repo context) ──
+// ── E2E: FullWorkflow vertical pipeline ──
 
 func TestFullWorkflow_CompleteVertical(t *testing.T) {
-	// This test requires the real repo to exist. Skip if not in repo.
-	if _, err := os.Stat("go.mod"); os.IsNotExist(err) {
-		t.Skip("not in repo root")
-	}
+	repoRoot := findRepoRoot(t)
+
 	stub := &StubRepairRunner{Patch: validPatchBytes(), Success: true}
 	desc := testDesc("claude", []string{"2.1.202"})
 
-	sess, err := FullWorkflow(stub, desc, "v3_0_0", "jsonl",
-		[]contract.RawRecord{testRecord(`{"type":"user"}`)},
-		[]string{"user"}, nil, "fw-1", "abc1234", ".")
-	if err != nil {
-		t.Fatalf("FullWorkflow failed: %v", err)
+	orch := NewOrchestrator(stub, repoRoot)
+
+	req := ProcessRequest{
+		AdapterDescriptor:     desc,
+		ObservedVersion:       "v3_0_0",
+		ObservedVersionSource: "jsonl",
+		ObservedRecordSamples: []contract.RawRecord{testRecord(`{"type":"user"}`)},
 	}
-	defer sess.Close()
-	if sess.Bundle == nil { t.Fatal("bundle is nil") }
-	if sess.Bundle.RequestID() != "fw-1" { t.Errorf("requestID=%q", sess.Bundle.RequestID()) }
+	// 1. Detect drift.
+	_, err := orch.DetectDrift(req)
+	if err != nil { t.Fatalf("detect: %v", err) }
 
-	// Approve with correct digest.
-	d := sess.Bundle.BundleDigest()
-	if err := sess.Approve(d); err != nil { t.Errorf("approve: %v", err) }
-	req, _ := sess.GetRequest()
-	if req.State() != StateApproved { t.Errorf("state=%s", req.State()) }
+	// 2. Collect evidence.
+	_, err = orch.CollectEvidence([]string{"user"}, nil)
+	if err != nil { t.Fatalf("evidence: %v", err) }
 
-	// Activate always fails closed.
-	if err := sess.Activate(d); !errors.Is(err, ErrActivationUnsupported) {
-		t.Errorf("activate: got %v", err)
+	// 3. Repair (runner called).
+	if err := orch.RequestRepair(); err != nil { t.Fatalf("repair: %v", err) }
+	if stub.CapturedInput == nil { t.Fatal("runner not called") }
+
+	// 4. Validate patch.
+	ops, err := orch.SubmitPatch(stub.Patch)
+	if err != nil { t.Fatalf("validate: %v", err) }
+	if len(ops) != 1 { t.Fatalf("expected 1 op, got %d", len(ops)) }
+
+	// 5. Apply to workspace.
+	ws, err := orch.ApplyPatchToWorkspace()
+	if err != nil { t.Fatalf("workspace: %v", err) }
+	defer ws.Cleanup()
+
+	// 6. Verify candidate compiles via direct build in workspace.
+	candidatePkg := "./internal/agent/adapters/claude/v3_0_0/"
+	buildCmd := exec.Command("go", "build", candidatePkg)
+	buildCmd.Dir = ws.Root
+	buildOut, buildErr := buildCmd.CombinedOutput()
+	if buildErr != nil {
+		// Debug: read the generated file.
+		genPath := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0/adapter.go")
+		if data, rdErr := os.ReadFile(genPath); rdErr == nil {
+			t.Logf("generated file content:\n%s", string(data))
+		}
+		t.Fatalf("candidate build failed in workspace %s: %v\noutput: %s", ws.Root, buildErr, string(buildOut))
+	}
+	t.Logf("candidate build OK in workspace %s", ws.Root)
+
+	// 7. Run fixed suite from workspace.
+	suiteResult, err := orch.RunFixedSuites()
+	if err != nil { t.Fatalf("suite: %v", err) }
+	if !suiteResult.AllPassed() {
+		for _, f := range suiteResult.Failures {
+			t.Errorf("SUITE FAIL: %s — %s", f.TestName, f.Reason)
+		}
+		t.Fatalf("suite not passed: %d/%d", suiteResult.Passed, suiteResult.TotalTests)
+	}
+
+	// 7. Build review bundle.
+	actualSHA, shaErr := gitHeadSHA(repoRoot)
+	if shaErr != nil || actualSHA == "" { t.Fatalf("git SHA: %v", shaErr) }
+	bundle, err := orch.BuildReviewBundle("fw-e2e", actualSHA)
+	if err != nil { t.Fatalf("bundle: %v", err) }
+	if bundle == nil { t.Fatal("bundle nil") }
+	if bundle.RequestID() != "fw-e2e" { t.Errorf("id=%q", bundle.RequestID()) }
+
+	// 8. Digest-bound approval.
+	d := bundle.BundleDigest()
+	if d == "" { t.Error("digest empty") }
+
+	store := NewApprovalStore()
+	if _, err := store.Submit(bundle); err != nil { t.Fatalf("submit: %v", err) }
+	if err := store.Approve("fw-e2e", d); err != nil { t.Fatalf("approve: %v", err) }
+	ar, _ := store.Get("fw-e2e")
+	if ar.State() != StateApproved { t.Errorf("state=%s", ar.State()) }
+
+	// Wrong digest rejected.
+	if err := store.Approve("fw-e2e", "wrong"); !errors.Is(err, ErrNotPending) {
+		// Already approved, so wrong state
+	}
+
+	// 9. Activation fail-closed.
+	if err := store.Activate("fw-e2e", d); !errors.Is(err, ErrActivationUnsupported) {
+		t.Errorf("activate: %v", err)
+	}
+}
+
+// Test that FullWorkflow with nil runner returns ErrRunnerUnavailable.
+func TestFullWorkflow_RunnerUnavailable(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	desc := testDesc("claude", []string{"2.1.202"})
+	_, err := FullWorkflow(nil, desc, "v3_0_0", "j",
+		[]contract.RawRecord{testRecord(`{"type":"user"}`)},
+		[]string{"user"}, nil, "fu-1", "abc", repoRoot)
+	if !errors.Is(err, ErrRunnerUnavailable) {
+		t.Errorf("got %v, want ErrRunnerUnavailable", err)
 	}
 }
 

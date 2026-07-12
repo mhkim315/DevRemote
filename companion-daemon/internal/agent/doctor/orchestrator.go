@@ -3,6 +3,8 @@ package doctor
 import (
 	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
 	"sync"
 
 	"devremote/companion-daemon/internal/agent/contract"
@@ -61,6 +63,7 @@ type Orchestrator struct {
 	activeEvidence    *DriftEvidence
 	activeRepairOutput *RepairOutput
 	activeOps         []PatchOperation
+	activePatchBytes  []byte // original immutable patch bytes from runner
 	activeSuite       *ObservatoryResult
 	activeBundle      *ReviewBundle
 	activeRunner      RepairRunner
@@ -192,6 +195,8 @@ func (o *Orchestrator) SubmitPatch(patch []byte) ([]PatchOperation, error) {
 	}
 	o.state = StateValidatingPatch
 	o.activeOps = ops
+	o.activePatchBytes = make([]byte, len(patch))
+	copy(o.activePatchBytes, patch)
 	return ops, nil
 }
 
@@ -245,9 +250,17 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		return nil, fmt.Errorf("suite not passed: %d/%d", o.activeSuite.Passed, o.activeSuite.TotalTests)
 	}
 
-	patchBytes := patchOpsToBytes(o.activeOps)
+	// Verify baseline SHA against actual git HEAD.
+	actualSHA, err := gitHeadSHA(o.repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("cannot verify baseline SHA: %w", err)
+	}
+	if baselineSHA != "" && actualSHA != baselineSHA {
+		return nil, fmt.Errorf("baseline SHA mismatch: expected %s, actual %s", baselineSHA, actualSHA)
+	}
+
 	evidenceDigest := HashJSON(o.activeEvidence)
-	patchDigest := HashBytes(patchBytes)
+	patchDigest := HashBytes(o.activePatchBytes) // original immutable patch bytes
 
 	var files []string
 	for _, op := range o.activeOps {
@@ -341,23 +354,11 @@ func (s *StubRepairRunner) Run(input RepairInput) (RepairOutput, error) {
 	return RepairOutput{Patch: s.Patch, Diagnostics: s.Diags, Success: s.Success}, nil
 }
 
-func patchOpsToBytes(ops []PatchOperation) []byte {
-	var b []byte
-	for _, op := range ops {
-		b = append(b, []byte(fmt.Sprintf("diff --git a/%s b/%s\n", op.DiffPath, op.DiffPath))...)
-		if op.IsNew {
-			b = append(b, []byte(fmt.Sprintf("new file mode %s\n", op.NewMode))...)
-		}
-		b = append(b, []byte(fmt.Sprintf("--- a/%s\n", op.DiffPath))...)
-		b = append(b, []byte(fmt.Sprintf("+++ b/%s\n", op.DiffPath))...)
-		for _, h := range op.Hunks {
-			b = append(b, []byte(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount))...)
-			for _, l := range h.Lines {
-				b = append(b, l.Kind)
-				b = append(b, []byte(l.Content)...)
-				b = append(b, '\n')
-			}
-		}
+func gitHeadSHA(repoRoot string) (string, error) {
+	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse: %w", err)
 	}
-	return b
+	return strings.TrimSpace(string(out)), nil
 }

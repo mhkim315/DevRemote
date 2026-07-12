@@ -180,7 +180,9 @@ func FullWorkflow(
 	if err != nil { orch.Reset(); return nil, err }
 	if report.Compatible { orch.Reset(); return nil, nil }
 	if _, err := orch.CollectEvidence(knownDiscriminators, knownFields); err != nil { orch.Reset(); return nil, err }
-	if err := orch.RequestRepair(); err != nil { orch.Reset(); return nil, err }
+	// D1 is an inert workflow foundation; production runner unavailable.
+	if err := orch.RequestRepair(); errors.Is(err, ErrRunnerUnavailable) { orch.Reset(); return nil, err }
+	if err != nil { orch.Reset(); return nil, err }
 	if orch.activeRepairOutput == nil || !orch.activeRepairOutput.Success { orch.Reset(); return nil, errors.New("runner did not produce successful output") }
 	if _, err := orch.SubmitPatch(orch.activeRepairOutput.Patch); err != nil { orch.Reset(); return nil, err }
 	if _, err := orch.ApplyPatchToWorkspace(); err != nil { orch.Reset(); return nil, err }

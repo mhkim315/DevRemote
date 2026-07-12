@@ -138,9 +138,6 @@ func ParsePatch(patch []byte) ([]PatchOperation, error) {
 			}
 		}
 	}
-	if curHunk != nil && len(curHunk.Lines) > 0 {
-		cur.Hunks = append(cur.Hunks, *curHunk)
-	}
 	flush()
 
 	if !hasHeader {
@@ -295,21 +292,91 @@ func applyOne(absRoot string, op *PatchOperation) error {
 	if _, err := HardenedPath(absRoot, target); err != nil {
 		return err
 	}
+
+	// For new files, read no baseline.
+	var baseline []string
+	if !op.IsNew {
+		data, err := os.ReadFile(absTarget)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("read baseline %s: %w", absTarget, err)
+		}
+		if len(data) > 0 {
+			baseline = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		}
+	}
+
+	// Apply hunks with context verification.
+	result, err := applyHunks(baseline, op.Hunks)
+	if err != nil {
+		return fmt.Errorf("apply %s: %w", absTarget, err)
+	}
+
 	dir := filepath.Dir(absTarget)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	var content strings.Builder
-	for _, h := range op.Hunks {
+	return os.WriteFile(absTarget, []byte(result), 0644)
+}
+
+// applyHunks applies hunks to the baseline with strict context verification.
+func applyHunks(baseline []string, hunks []PatchHunk) (string, error) {
+	if len(hunks) == 0 {
+		return strings.Join(baseline, "\n"), nil
+	}
+	isNew := len(baseline) == 0
+
+	var out []string
+	lineNum := 0
+
+	for _, h := range hunks {
+		oldStart := h.OldStart - 1
+		if oldStart < 0 {
+			oldStart = 0
+		}
+		if lineNum < oldStart && oldStart <= len(baseline) {
+			out = append(out, baseline[lineNum:oldStart]...)
+			lineNum = oldStart
+		}
+
+		if !isNew {
+			contextIdx := lineNum
+			for _, l := range h.Lines {
+				switch l.Kind {
+				case ' ':
+					if contextIdx >= len(baseline) {
+						return "", fmt.Errorf("context mismatch at line %d: expected %q, file too short", contextIdx+1, l.Content)
+					}
+					if baseline[contextIdx] != l.Content {
+						return "", fmt.Errorf("context mismatch at line %d: expected %q, got %q", contextIdx+1, l.Content, baseline[contextIdx])
+					}
+					contextIdx++
+				case '-':
+					if contextIdx >= len(baseline) {
+						return "", fmt.Errorf("removal at line %d: expected %q, file too short", contextIdx+1, l.Content)
+					}
+					if baseline[contextIdx] != l.Content {
+						return "", fmt.Errorf("removal mismatch at line %d: expected %q, got %q", contextIdx+1, l.Content, baseline[contextIdx])
+					}
+					contextIdx++
+				}
+			}
+			lineNum = contextIdx
+		}
+
 		for _, l := range h.Lines {
-			if l.Kind == '+' || l.Kind == ' ' {
-				content.WriteString(l.Content)
-				content.WriteByte('\n')
+			if l.Kind != '-' {
+				out = append(out, l.Content)
 			}
 		}
 	}
-	if err := os.WriteFile(absTarget, []byte(content.String()), 0644); err != nil {
-		return fmt.Errorf("write %s: %w", absTarget, err)
+
+	if !isNew && lineNum < len(baseline) {
+		out = append(out, baseline[lineNum:]...)
 	}
-	return nil
+
+	result := strings.Join(out, "\n")
+	if result != "" {
+		result += "\n"
+	}
+	return result, nil
 }

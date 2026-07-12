@@ -29,31 +29,10 @@ func PrepareWorkspace(repoRoot string, ops []PatchOperation, provider, targetDir
 		return nil, fmt.Errorf("cannot create workspace: %w", err)
 	}
 
-	// Copy full internal/agent tree.
-	srcAgent := filepath.Join(repoRoot, "internal", "agent")
-	dstAgent := filepath.Join(tmpDir, "internal", "agent")
-	if err := copyDir(srcAgent, dstAgent); err != nil {
+	// Copy full repo tree (needed for go build/test in workspace).
+	if err := copyDir(repoRoot, tmpDir); err != nil {
 		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("copy agent tree: %w", err)
-	}
-
-	// Copy go.mod and go.sum.
-	for _, f := range []string{"go.mod", "go.sum"} {
-		src := filepath.Join(repoRoot, f)
-		if _, err := os.Stat(src); err == nil {
-			if err := copyFile(src, filepath.Join(tmpDir, f)); err != nil {
-				os.RemoveAll(tmpDir)
-				return nil, fmt.Errorf("copy %s: %w", f, err)
-			}
-		}
-	}
-
-	// Copy internal/models.go (needed by agent package).
-	modelsSrc := filepath.Join(repoRoot, "internal", "models.go")
-	modelsDstDir := filepath.Join(tmpDir, "internal")
-	os.MkdirAll(modelsDstDir, 0755)
-	if _, err := os.Stat(modelsSrc); err == nil {
-		copyFile(modelsSrc, filepath.Join(modelsDstDir, "models.go"))
+		return nil, fmt.Errorf("copy repo: %w", err)
 	}
 
 	// Apply patch.
@@ -75,6 +54,10 @@ func copyDir(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
+		// Skip .git and vendor directories.
+		if e.IsDir() && (e.Name() == ".git" || e.Name() == "vendor" || e.Name() == "dist") {
+			continue
+		}
 		sp := filepath.Join(src, e.Name())
 		dp := filepath.Join(dst, e.Name())
 		if e.IsDir() {
