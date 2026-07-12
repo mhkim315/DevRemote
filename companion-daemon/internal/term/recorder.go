@@ -298,11 +298,18 @@ func (r *Recorder) readLoop() {
 					})
 				}
 			}
-			// T3: cmux delta → explicit snapshot source, not byte-stream.
-			// Snapshot captures are routed separately per capture mode.
-			if r.captureMode == mux.CaptureModeScreenSnapshotDelta {
-				// Skip: snapshot deltas are handled by cmux's own degraded path.
-				// They must never enter the byte-stream semantic projector.
+			// T3: cmux delta → SourceSnapshot degraded path.
+			// Store as degraded segments with snapshot provenance,
+			// separate from byte-stream semantic channel.
+			if r.captureMode == mux.CaptureModeScreenSnapshotDelta && r.transcriptSvc != nil {
+				text := stripANSI(string(payload))
+				text = strings.ReplaceAll(text, "\r", "\n")
+				if !isANSIControlOnly(text) && len(text) > 3 {
+					if len(text) > 32768 {
+						text = text[:32768]
+					}
+					r.transcriptSvc.AddSnapshotSegment(r.sessionID, text, len(payload), time.Now())
+				}
 			}
 			continue // do NOT broadcast delta to subscribers
 		}

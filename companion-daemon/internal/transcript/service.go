@@ -34,19 +34,35 @@ func NewService(cfg StoreConfig) *Service {
 // ── AgentEvent projection path ──
 
 // ProjectAgentEvents projects accepted AgentEvents into the Transcript store.
-// Only events bound to the requested session are projected. Cross-session
-// events are silently skipped.
+// Only events with PROVEN session correlation may enter the semantic Transcript.
+// Uncorrelated events are silently dropped — byte-stream remains primary.
 func (s *Service) ProjectAgentEvents(sessionID string, events []agent.AgentEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	arb := s.ensureArbiter(sessionID)
 
+	// Gate: only project when correlation is explicitly established.
+	// Until correlation is proven, byte-stream is the sole semantic source.
+	if !arb.CanBePrimarySource() {
+		return
+	}
+
 	segments := s.agentProj.ProjectBatch(events, sessionID)
 	if len(segments) > 0 {
 		arb.RecordAgentEvent()
 		s.store.Append(sessionID, segments)
 	}
+}
+
+// SetCorrelation establishes the correlation state for a session.
+// Only CorrelationProven or CorrelationManagedLaunch enable AgentEvent
+// as the primary semantic source. Must be called before events arrive.
+func (s *Service) SetCorrelation(sessionID string, cs CorrelationState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	arb := s.ensureArbiter(sessionID)
+	arb.SetCorrelation(cs)
 }
 
 // ── Byte-stream fallback path (non-blocking enqueue) ──
@@ -233,6 +249,25 @@ func (s *Service) HasAgentEvents(sessionID string) bool {
 		return false
 	}
 	return arb.HasAgentEvents()
+}
+
+// AddSnapshotSegment appends a cmux/snapshot-sourced segment with degraded
+// SourceSnapshot provenance. Separate from both AgentEvent and byte-stream.
+func (s *Service) AddSnapshotSegment(sessionID string, text string, byteCount int, observedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	arb := s.ensureArbiter(sessionID)
+	seg := TranscriptSegment{
+		SessionID:       sessionID,
+		Kind:            KindTerminalOutput,
+		Source:          SourceSnapshot,
+		Text:            boundedText(text, MaxTextBytes),
+		ByteCount:       byteCount,
+		ObservedAt:      observedAt,
+		ContractVersion: ContractVersion,
+	}
+	s.store.Append(sessionID, []TranscriptSegment{seg})
+	_ = arb
 }
 
 // FeedBytesBatch directly appends pre-built terminal output segments.

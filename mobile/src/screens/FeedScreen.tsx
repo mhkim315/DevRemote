@@ -196,6 +196,8 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   const [newOutputCount, setNewOutputCount] = useState(0);
   const lastSeenSeqRef = useRef(0);
   const transcriptMaxSeqRef = useRef(0);
+  // T3: generation counter prevents stale async responses from writing to wrong session.
+  const sessionGenRef = useRef(0);
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
@@ -238,11 +240,16 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
     );
   }
 
-  // Reset lifecycle tracking when the viewed session changes.
+  // Reset lifecycle + T3 Transcript state when the viewed session changes.
   useEffect(() => {
     setLifecycleState('unknown');
     setPendingAction(null);
     setActionError('');
+    setTranscriptEvents([]);
+    setFallbackEvents([]);
+    transcriptMaxSeqRef.current = 0;
+    lastSeenSeqRef.current = 0;
+    sessionGenRef.current++;
     lifecycleCtrlRef.current?.setSession(session, token);
   }, [session, token]);
 
@@ -439,13 +446,14 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
         });
     };
 
-    // T3: fetch Transcript with cursor pagination. The after parameter
-    // ensures we only fetch segments newer than the last seen Seq,
-    // avoiding the 1000-segment window problem.
+    // T3: fetch Transcript with cursor pagination. Generation guard
+    // prevents stale responses from previous sessions.
     const fetchTranscript = () => {
       const cursor = transcriptMaxSeqRef.current;
+      const gen = sessionGenRef.current;
       getTranscript(session, token, cursor > 0 ? cursor : undefined)
         .then((resp: TranscriptResponse | null) => {
+          if (gen !== sessionGenRef.current) return; // stale response
           if (resp && resp.semantic) {
             // Keep semantic (primary) and fallback (degraded terminal-output) as
             // separate state. Incremental: append new segments, dedup by ID.
@@ -1014,7 +1022,16 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
           ) : !transcriptEvents || transcriptEvents.length === 0 ? (
             <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
           ) : (
-            <E8g2Transcript events={transcriptEvents} />
+            <>
+              <E8g2Transcript events={transcriptEvents} />
+              {/* T3: fallback channel — degraded terminal-only output, separate from semantic */}
+              {fallbackEvents && fallbackEvents.length > 0 && (
+                <View style={styles.fallbackSection}>
+                  <Text style={styles.fallbackHeader}>⌇ Terminal output (degraded)</Text>
+                  <E8g2Transcript events={fallbackEvents} />
+                </View>
+              )}
+            </>
           )}
           {supportsLiveTerminal && (
           <TouchableOpacity style={styles.returnBtn} onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('terminal'); }}>
@@ -1242,6 +1259,20 @@ const styles = StyleSheet.create({
     color: '#f85149',
     fontSize: 12,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  fallbackSection: {
+    borderTopWidth: 1,
+    borderTopColor: '#555',
+    marginTop: 12,
+    paddingTop: 8,
+  },
+  fallbackHeader: {
+    color: '#999',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    paddingHorizontal: 12,
+    marginBottom: 8,
   },
   returnBtn: {
     backgroundColor: '#1C1C1E',

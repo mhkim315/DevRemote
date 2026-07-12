@@ -32,11 +32,9 @@ type ByteStreamProjector struct {
 	ansiState ansiParseState
 
 	// inputActive suppresses bytes during terminal input (echo privacy).
-	// Reference-counted: each BeginInput increments, each EndInput decrements.
-	// Suppression is active while ref > 0. This handles overlapping inputs
-	// safely without timing heuristics.
-	inputActive   bool
-	inputRefCount int
+	// Set by BeginInput, cleared by EndInput or auto-cleared when the
+	// first newline after suppression begins is observed.
+	inputActive bool
 
 	// tuiBurstActive suppresses bytes during TUI/alternate-screen regions.
 	tuiBurstActive bool
@@ -118,9 +116,10 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 	i := 0
 	for i < len(data) {
 		// Input suppression: drop bytes until the first newline after
-		// suppression began. The newline is the structural end-of-line
-		// marker, not a content match. If no newline arrives, the entire
-		// echo region is omitted (safe degradation).
+		// suppression began. The newline is the structural termination
+		// marker, never a content match. If EndInput is called externally
+		// (e.g., by Recorder on safe boundary), suppression ends sooner.
+		// If no newline arrives, the entire echo region is omitted.
 		if p.inputActive {
 			nlIdx := -1
 			for j := i; j < len(data); j++ {
@@ -130,18 +129,12 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 				}
 			}
 			if nlIdx >= 0 {
-				// Newline found: suppression ends after this byte.
 				p.totalSuppressed += int64(nlIdx - i + 1)
-				if p.inputRefCount > 0 {
-					p.inputRefCount--
-				}
-				if p.inputRefCount == 0 {
-					p.inputActive = false
-				}
+				p.inputActive = false // auto-release on newline
 				i = nlIdx + 1
 				continue
 			}
-			// No newline in this chunk: suppress everything.
+			// No newline yet: suppress entire chunk.
 			p.totalSuppressed += int64(len(data) - i)
 			return segments
 		}
@@ -352,13 +345,9 @@ func (p *ByteStreamProjector) commitCRLine(sessionID string, observedAt time.Tim
 func (p *ByteStreamProjector) BeginInput(sessionID string, observedAt time.Time) *TranscriptSegment {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Flush any partial/CR state before suppressing.
 	p.partialLine.Reset()
 	p.crProgress.Reset()
 	p.crActive = false
-
-	p.inputRefCount++
 	p.inputActive = true
 	boundary := NewInputBoundarySegment(sessionID, observedAt)
 	return &boundary
@@ -367,12 +356,7 @@ func (p *ByteStreamProjector) BeginInput(sessionID string, observedAt time.Time)
 func (p *ByteStreamProjector) EndInput(sessionID string, observedAt time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.inputRefCount > 0 {
-		p.inputRefCount--
-	}
-	if p.inputRefCount == 0 {
-		p.inputActive = false
-	}
+	p.inputActive = false
 }
 
 // ── TUI burst ──

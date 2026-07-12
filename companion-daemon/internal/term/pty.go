@@ -426,10 +426,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			})
 		}
 		// T3: echo privacy — suppress byte-stream projection during input.
-		// Uses reference-counted suppression: each input begins, and the
-		// Recorder's byte-stream projector will omit the echo region.
-		// EndInput is called when the Recorder observes the next newline
-		// after input (content-free boundary via Recorder coordination).
+		// BeginInput starts suppression; the byte-stream projector
+		// auto-releases when it observes the first newline after input
+		// (structural termination, never content matching).
 		if h.Transcript != nil {
 			h.Transcript.BeginInput(session, time.Now())
 		}
@@ -441,13 +440,6 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 		} else if rec != nil {
 			rec.WriteInput(msg)
-		}
-		// T3: schedule echo suppression release via Recorder coordination.
-		// The Recorder will call EndInput after observing a deterministic
-		// safe boundary (next newline after input). If the Recorder has no
-		// transcript service, we release directly after a safe interval.
-		if h.Transcript != nil && rec == nil {
-			h.Transcript.EndInput(session, time.Now())
 		}
 	}
 

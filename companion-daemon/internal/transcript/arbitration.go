@@ -13,23 +13,28 @@ package transcript
 //     prompt/command recognition, CWD, or process-name heuristics.
 //   - Source is explicit on every segment.
 type SourceArbiter struct {
-	// agentEventAvailable is set when the first correlated AgentEvent is projected.
 	agentEventAvailable bool
-
-	// byteStreamActive counts byte-stream segments suppressed after AgentEvent
-	// becomes primary. They are tracked but hidden from the semantic listing.
 	byteStreamSuppressed int64
-
-	// degraded indicates the arbiter entered a degraded state.
-	degraded bool
+	degraded             bool
+	correlation          CorrelationState // set via SetCorrelation
 }
 
 func NewSourceArbiter() *SourceArbiter {
 	return &SourceArbiter{}
 }
 
+// SetCorrelation records the session correlation state. Only CorrelationProven
+// or CorrelationManagedLaunch can enable AgentEvent as primary source.
+func (a *SourceArbiter) SetCorrelation(cs CorrelationState) {
+	a.correlation = cs
+}
+
+// CanBePrimarySource returns true only when correlation is explicitly proven.
+func (a *SourceArbiter) CanBePrimarySource() bool {
+	return a.correlation.CanBePrimarySource()
+}
+
 // RecordAgentEvent marks that a correlated AgentEvent has been projected.
-// After this, byte-stream segments are suppressed from semantic listing.
 func (a *SourceArbiter) RecordAgentEvent() {
 	a.agentEventAvailable = true
 }

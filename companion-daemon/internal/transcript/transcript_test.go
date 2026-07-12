@@ -562,6 +562,9 @@ func TestServiceProjectAgentEvents(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
+	// Establish correlation before projecting.
+	svc.SetCorrelation(sid, CorrelationState{Correlation: "proven"})
+
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
 		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "hello", Provenance: "provider_protocol"},
 	})
@@ -598,7 +601,8 @@ func TestServiceBothSources(t *testing.T) {
 	sid := "test:svc"
 
 	svc.FeedBytes(sid, []byte("fallback output\n"), time.Now())
-	// Use provider_protocol provenance so the event passes the gate.
+	// Establish correlation before projecting agent events.
+	svc.SetCorrelation(sid, CorrelationState{Correlation: "proven"})
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
 		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAgentStarted, Text: "started", Provenance: "provider_protocol"},
 	})
@@ -662,6 +666,8 @@ func TestServiceTranscriptStats(t *testing.T) {
 func TestServiceCrossSessionIsolation(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 
+	svc.SetCorrelation("sessionA", CorrelationState{Correlation: "proven"})
+	svc.SetCorrelation("sessionB", CorrelationState{Correlation: "proven"})
 	svc.ProjectAgentEvents("sessionA", []agent.AgentEvent{
 		{ID: "ea", SessionID: "sessionA", AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "A only", Provenance: "provider_protocol"},
 	})
