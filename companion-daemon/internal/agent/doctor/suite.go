@@ -98,12 +98,12 @@ func (sr *SuiteRunner) RunInWorkspace(workspaceRoot, candidatePkg string) Observ
 
 func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) (ObservatoryResult, CommandResult) {
 	r := ObservatoryResult{AdapterName: cmd.Label}
-	cr := CommandResult{Label: cmd.Label, Command: "go " + shellJoin(sr.buildArgs(cmd))}
+	cr := CommandResult{Label: cmd.Label, Command: "go " + shellJoin(cmd.BuildArgs())}
 
 	ctx, cancel := context.WithTimeout(context.Background(), sr.timeoutFor(cmd))
 	defer cancel()
 
-	args := sr.buildArgs(cmd)
+	args := cmd.BuildArgs()
 	ec := exec.CommandContext(ctx, "go", args...)
 	if dir != "" {
 		ec.Dir = dir
@@ -244,21 +244,22 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) (ObservatoryResult
 	return r, cr
 }
 
-func (sr *SuiteRunner) buildArgs(cmd FixedCommand) []string {
-	if cmd.BuildOnly {
-		return []string{"build", cmd.PkgPath}
+// BuildArgs returns the "go" argument list for this command.
+func (fc FixedCommand) BuildArgs() []string {
+	if fc.BuildOnly {
+		return []string{"build", fc.PkgPath}
 	}
-	if cmd.VetOnly {
-		return []string{"vet", cmd.PkgPath}
+	if fc.VetOnly {
+		return []string{"vet", fc.PkgPath}
 	}
 	args := []string{"test", "-json"}
-	if cmd.Race {
+	if fc.Race {
 		args = append(args, "-race")
 	}
-	if cmd.RunRegex != "" {
-		args = append(args, "-run", cmd.RunRegex)
+	if fc.RunRegex != "" {
+		args = append(args, "-run", fc.RunRegex)
 	}
-	args = append(args, cmd.PkgPath)
+	args = append(args, fc.PkgPath)
 	return args
 }
 

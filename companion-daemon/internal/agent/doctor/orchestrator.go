@@ -3,6 +3,7 @@ package doctor
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -481,67 +482,113 @@ type fixtureManifestEntry struct {
 func buildFixtureManifest(wsRoot, provider, targetDir string, admittedFixtures []AdmittedFixture) (adapterManifest []string, pokitTestManifest []string, providerFixtureManifest []string, redaction RedactionResult) {
 	redaction.Clean = true // innocent until proven otherwise
 
-	// Build admitted fixture lookup by path.
+	// Build admitted fixture lookup by path; validate each admission.
 	admitted := make(map[string]AdmittedFixture, len(admittedFixtures))
 	for _, af := range admittedFixtures {
-		admitted[af.Path] = af
+		// Canonicalize and validate the admitted path.
+		cleaned := filepath.Clean(af.Path)
+		if cleaned != af.Path || strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted path %q invalid", af.Path))
+			continue
+		}
+		if _, exists := admitted[cleaned]; exists {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("duplicate admission for %q", cleaned))
+			continue
+		}
+		// Validate provenance is in closed vocabulary.
+		if !contract.IsKnownProvenance(contract.Provenance(af.Provenance)) {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: unknown provenance %q", af.Path, af.Provenance))
+			continue
+		}
+		if af.Provider != provider {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted %s: provider %q != %q", af.Path, af.Provider, provider))
+			continue
+		}
+		// Version is checked at scan time against actual file metadata if available.
+		admitted[cleaned] = af
 	}
 
 	candidateDir := filepath.Join(wsRoot, "internal", "agent", "adapters", provider, targetDir)
-	entries, err := os.ReadDir(candidateDir)
-	if err != nil {
-		redaction.Clean = false
-		redaction.Findings = append(redaction.Findings, "cannot read candidate dir")
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".o") || strings.HasSuffix(e.Name(), ".test") {
-			continue
-		}
-		p := filepath.Join(candidateDir, e.Name())
-		data, err := os.ReadFile(p)
+	consumed := make(map[string]bool)
+
+	// Recursively walk the candidate subtree so nested fixtures are scanned.
+	err := filepath.WalkDir(candidateDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			continue
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings, "walk error: "+err.Error())
+			return nil
+		}
+		if d.IsDir() {
+			return nil // descend
+		}
+		name := d.Name()
+		if strings.HasSuffix(name, ".o") || strings.HasSuffix(name, ".test") {
+			return nil
+		}
+		// Compute relative path from candidateDir.
+		rel, err := filepath.Rel(candidateDir, p)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings, "path escape: "+p)
+			return nil
+		}
+
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return nil
 		}
 		digest := HashBytes(data)
-		entry := fmt.Sprintf("%s sha256:%s", e.Name(), digest)
+		entry := fmt.Sprintf("%s sha256:%s", rel, digest)
 
 		// Categorize.
-		if e.Name() == "conformance_test.go" {
+		if name == "conformance_test.go" && rel == "conformance_test.go" {
 			pokitTestManifest = append(pokitTestManifest, entry)
-		} else if strings.HasSuffix(e.Name(), "_test.go") {
-			// Should not happen (sandbox rejects), but record if present.
+		} else if strings.HasSuffix(name, "_test.go") {
 			pokitTestManifest = append(pokitTestManifest, entry)
-		} else if af, ok := admitted[e.Name()]; ok {
-			// Explicitly admitted provider fixture — must match provider/version.
-			if af.Provider != provider {
-				redaction.Clean = false
-				redaction.Findings = append(redaction.Findings,
-					fmt.Sprintf("%s: admitted provider %q != %q", e.Name(), af.Provider, provider))
-			} else {
-				entry = fmt.Sprintf("%s sha256:%s provider=%s version=%s provenance=%s",
-					e.Name(), digest, af.Provider, af.Version, af.Provenance)
-				providerFixtureManifest = append(providerFixtureManifest, entry)
-			}
-		} else if strings.HasSuffix(e.Name(), ".go") {
+		} else if af, ok := admitted[rel]; ok {
+			consumed[rel] = true
+			entry = fmt.Sprintf("%s sha256:%s provider=%s version=%s provenance=%s",
+				rel, digest, af.Provider, af.Version, af.Provenance)
+			providerFixtureManifest = append(providerFixtureManifest, entry)
+		} else if strings.HasSuffix(name, ".go") {
 			adapterManifest = append(adapterManifest, entry)
 		} else {
-			// Unclassified file — must be explicitly admitted as a fixture or be .go.
 			redaction.Clean = false
 			redaction.Findings = append(redaction.Findings,
-				fmt.Sprintf("%s: unclassified — not .go and not an admitted fixture", e.Name()))
+				fmt.Sprintf("%s: unclassified — not .go and not an admitted fixture", rel))
 		}
 
-		// Run redaction / secret scan.
+		// Run redaction / secret scan on every file.
 		redaction.Scanned++
-		content := string(data)
-		if scanContentForSecrets(content) {
+		if scanContentForSecrets(string(data)) {
 			redaction.Clean = false
-			// Log only bounded metadata, never the raw content.
 			redaction.Findings = append(redaction.Findings,
-				fmt.Sprintf("%s: sensitive pattern detected", e.Name()))
+				fmt.Sprintf("%s: sensitive pattern detected", rel))
+		}
+		return nil
+	})
+	if err != nil {
+		redaction.Clean = false
+		redaction.Findings = append(redaction.Findings, "walk failed: "+err.Error())
+	}
+
+	// Unconsumed admissions fail closed.
+	for path := range admitted {
+		if !consumed[path] {
+			redaction.Clean = false
+			redaction.Findings = append(redaction.Findings,
+				fmt.Sprintf("admitted fixture %q not found in workspace", path))
 		}
 	}
+
 	if redaction.Scanned == 0 {
 		redaction.Clean = false
 		redaction.Findings = append(redaction.Findings, "empty fixture manifest")

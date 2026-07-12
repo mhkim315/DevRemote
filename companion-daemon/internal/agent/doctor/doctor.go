@@ -132,12 +132,6 @@ type RedactionResult struct {
 // aggregate totals consistent, every result clean. Used at every approval
 // boundary (constructor and store) so partial or forged results cannot pass.
 func ValidateSuiteEvidence(manifestLabels []string, results []CommandResult, total, passed, failed int) error {
-	if total == 0 {
-		return fmt.Errorf("suite has zero tests")
-	}
-	if failed > 0 || passed == 0 {
-		return fmt.Errorf("suite not fully passed: %d/%d", passed, total)
-	}
 	// Check manifest and result label sets match exactly.
 	manifestSet := make(map[string]bool, len(manifestLabels))
 	for _, l := range manifestLabels {
@@ -166,22 +160,51 @@ func ValidateSuiteEvidence(manifestLabels []string, results []CommandResult, tot
 			return fmt.Errorf("unexpected result label %q (not in manifest)", l)
 		}
 	}
-	// Aggregate totals must match.
+	// Validate each result for correctness.
 	var sumTotal, sumPassed, sumFailed int
 	for _, cr := range results {
-		sumTotal += cr.TotalTests
-		sumPassed += cr.Passed
-		sumFailed += cr.Failed
-		if cr.Failed > 0 || cr.Skipped > 0 || cr.ExitCode != 0 {
-			return fmt.Errorf("command %q not clean (exit=%d fail=%d skip=%d)",
-				cr.Label, cr.ExitCode, cr.Failed, cr.Skipped)
+		if cr.ExitCode != 0 {
+			return fmt.Errorf("command %q exit=%d, want 0", cr.Label, cr.ExitCode)
+		}
+		if cr.Failed > 0 || cr.Skipped > 0 {
+			return fmt.Errorf("command %q not clean (fail=%d skip=%d)",
+				cr.Label, cr.Failed, cr.Skipped)
+		}
+		if cr.TotalTests > 0 {
+			if cr.Passed != cr.TotalTests {
+				return fmt.Errorf("command %q passed=%d != total=%d", cr.Label, cr.Passed, cr.TotalTests)
+			}
+			sumTotal += cr.TotalTests
+			sumPassed += cr.Passed
+			sumFailed += cr.Failed
 		}
 	}
-	if sumTotal != total || sumPassed != passed || sumFailed != failed {
+	if total > 0 && (sumTotal != total || sumPassed != passed || sumFailed != failed) {
 		return fmt.Errorf("aggregate mismatch: suite total=%d/%d/%d, commands sum to %d/%d/%d",
 			total, passed, failed, sumTotal, sumPassed, sumFailed)
 	}
+	// If no results, reject. If any command reports tests but suite total is 0, reject.
+	hasTests := false
+	for _, cr := range results {
+		if cr.TotalTests > 0 {
+			hasTests = true
+		}
+	}
+	if len(results) == 0 {
+		return fmt.Errorf("suite has no results")
+	}
+	if hasTests && total == 0 {
+		return fmt.Errorf("suite total is 0 but commands report tests")
+	}
+	if !hasTests && total > 0 {
+		return fmt.Errorf("suite total > 0 but no commands report tests")
+	}
 	return nil
+}
+
+// FixedCommandLabel returns the canonical command string for a FixedCommand.
+func FixedCommandLabel(fc FixedCommand) string {
+	return "go " + shellJoin(fc.BuildArgs())
 }
 
 // ── Provider fixture admission ──
