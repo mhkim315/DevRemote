@@ -1,6 +1,6 @@
 # Adapter Doctor/Repair Plan
 
-Status: **PLANNED — do not implement before T1, T2, and R2 are complete**
+Status: **READY — implement only through the authoritative D1 handoff**
 
 Position in the execution sequence:
 
@@ -235,4 +235,7 @@ independent ACCEPT decisions and R2 establishes:
 - real multi-provider version-drift scenarios and a fit-gap assessment against
   the frozen T0 contract.
 
-No D1 production implementation is authorized by this document.
+D1 implementation is authorized only by
+`docs/NEXT_SESSION_D1_ADAPTER_DOCTOR_REPAIR_HANDOFF.md`. That handoff fixes the
+accepted baseline, writable scope, safety invariants, gates, and review request;
+this planning document alone does not broaden them.

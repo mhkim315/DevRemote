@@ -139,9 +139,9 @@ M3b Mobile lifecycle action UX                        ACCEPT 9cdf2f290 (authorit
 R1  Runtime Signal Discovery                    SCOPED ACCEPT (evidence)
 T0  Common AgentEvent Contract                  ACCEPT 3ce2604bd (provider-neutral six-op contract; provenance + Seq; bounded cursor/record/batch/metadata; approval/status authority rules; non-bypassable fixed harness; additive-only; clean-prebuild full gate PASS)
 T1  Codex Adapter                               ACCEPT 162266f83 (Codex CLI 0.144.1 session JSONL; fixed T0 harness; bounded position cursor; correlation unavailable; full gate PASS)
-T2  Claude Adapter                              NEXT (use docs/NEXT_SESSION_T2_CLAUDE_ADAPTER_HANDOFF.md)
-R2  Multi-agent Expansion Research            PLANNED (research-only; entry requires independent T1 + T2 ACCEPT)
-D1  Adapter Doctor/Repair                     PLANNED (AI-assisted, user-approved activation only)
+T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202 session JSONL; capability-aware fixed harness; approval safely unavailable)
+R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
+D1  Adapter Doctor/Repair                     NEXT (authoritative handoff: NEXT_SESSION_D1_ADAPTER_DOCTOR_REPAIR_HANDOFF.md)
 T3  Transcript Integration
 S1  Rich Agent Runtime Status Model
 A1  Mobile-first Approval System
