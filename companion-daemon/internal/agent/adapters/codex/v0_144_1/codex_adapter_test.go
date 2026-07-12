@@ -50,8 +50,10 @@ func codexFixtures() contract.ConformanceFixtures {
 	}
 
 	// Approval records: waiting_for_approval + approval_resolved, each carrying
-	// the same approval_id so the approval lifecycle is linked.
+	// the same approval_id so the approval lifecycle is linked.  Must include
+	// session_meta so the version gate passes.
 	approvalRecords := []contract.RawRecord{
+		sessionMeta0_144_1(),
 		codexRec(`{"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"t2","approval_id":"appr-001","message":"<REDACTED_APPROVAL_MESSAGE>"}}`),
 		codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","approval_id":"appr-001","resolution":"approved"}}`),
 	}
@@ -240,7 +242,8 @@ func TestCodexAdapter_VersionGate_BatchMismatch(t *testing.T) {
 
 func TestCodexAdapter_VersionGate_NoSessionMeta_StillWorksDegraded(t *testing.T) {
 	a := &Adapter{}
-	// Records without session_meta are classified but marked degraded.
+	// Without session_meta, no version-specific typed events may be emitted.
+	// The event is still returned, but forced to EventUnknown + degraded.
 	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
 	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
@@ -248,6 +251,9 @@ func TestCodexAdapter_VersionGate_NoSessionMeta_StillWorksDegraded(t *testing.T)
 	})
 	if len(res.Events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(res.Events))
+	}
+	if res.Events[0].Type != agent.EventUnknown {
+		t.Errorf("no-meta: type=%q, want EventUnknown", res.Events[0].Type)
 	}
 	if !res.Degraded.Degraded {
 		t.Error("no session_meta must produce degraded (version not confirmed)")
@@ -423,6 +429,7 @@ func TestCodexAdapter_Approval_ResolvedMissingID(t *testing.T) {
 func TestCodexAdapter_Approval_RequestAndResolvedLinked(t *testing.T) {
 	a := &Adapter{}
 	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
 		codexRec(`{"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"t2","approval_id":"appr-001","message":"approve?"}}`),
 		codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","approval_id":"appr-001","resolution":"approved"}}`),
 	}
@@ -430,23 +437,27 @@ func TestCodexAdapter_Approval_RequestAndResolvedLinked(t *testing.T) {
 		Session: contract.SessionContext{SessionID: "pokit:host-a"},
 		Records: records,
 	})
-	if len(res.Events) != 2 {
-		t.Fatalf("got %d events, want 2", len(res.Events))
+	if len(res.Events) < 2 {
+		t.Fatalf("got %d events, want ≥2", len(res.Events))
 	}
 	// Both carry the same ApprovalID.
-	if res.Events[0].ApprovalID != "appr-001" {
-		t.Errorf("request ApprovalID=%q", res.Events[0].ApprovalID)
+	var reqEv, resEv *contract.AgentEvent
+	for i := range res.Events {
+		switch res.Events[i].Type {
+		case agent.EventApprovalRequested:
+			reqEv = &res.Events[i]
+		case agent.EventApprovalResolved:
+			resEv = &res.Events[i]
+		}
 	}
-	if res.Events[1].ApprovalID != "appr-001" {
-		t.Errorf("resolved ApprovalID=%q", res.Events[1].ApprovalID)
+	if reqEv == nil || resEv == nil {
+		t.Fatal("missing approval_requested or approval_resolved in linked pair")
 	}
-	// One is approval_requested, one is approval_resolved.
-	types := map[contract.AgentEventType]bool{}
-	for _, e := range res.Events {
-		types[e.Type] = true
+	if reqEv.ApprovalID != "appr-001" {
+		t.Errorf("request ApprovalID=%q", reqEv.ApprovalID)
 	}
-	if !types[agent.EventApprovalRequested] || !types[agent.EventApprovalResolved] {
-		t.Error("missing approval_requested or approval_resolved in linked pair")
+	if resEv.ApprovalID != "appr-001" {
+		t.Errorf("resolved ApprovalID=%q", resEv.ApprovalID)
 	}
 }
 
@@ -551,6 +562,179 @@ func TestCodexAdapter_PerRecordSource(t *testing.T) {
 	}
 	if sources[agent.SourceJSONL] == 0 || sources[agent.SourceLogFile] == 0 {
 		t.Errorf("per-record source not preserved: %v", sources)
+	}
+}
+
+// ── BLOCKER 1 (round 2): Seq/cursor prevents event loss ──
+
+func TestCodexAdapter_Seq_CollisionFree(t *testing.T) {
+	// Same timestamp, similar content — must have different Seq values.
+	// The old µs+hash%1000 approach collided for turn_id=t3 and turn_id=t51.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t3","started_at":1}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t51","started_at":1}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// All 3 records must be emitted (session_meta + 2 task_started).
+	if len(res.Events) != 3 {
+		t.Fatalf("collision-prone: got %d events, want 3", len(res.Events))
+	}
+	// All Seq values must be distinct.
+	seqs := map[int64]bool{}
+	for _, e := range res.Events {
+		if seqs[e.Seq] {
+			t.Errorf("Seq collision: %d", e.Seq)
+		}
+		seqs[e.Seq] = true
+	}
+}
+
+func TestCodexAdapter_Seq_OutOfOrderTimestamp(t *testing.T) {
+	// Records with later timestamp before earlier — all must be preserved
+	// because Seq is hash-based and events are sorted before emission.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T14:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"late"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:00:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"early"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 3 {
+		t.Fatalf("out-of-order: got %d events, want 3 (both preserved)", len(res.Events))
+	}
+	// Events sorted by Seq (hash), so Seq is strictly increasing.
+	for i := 1; i < len(res.Events); i++ {
+		if res.Events[i].Seq <= res.Events[i-1].Seq {
+			t.Errorf("Seq not strictly increasing after sort: %d <= %d", res.Events[i].Seq, res.Events[i-1].Seq)
+		}
+	}
+}
+
+func TestCodexAdapter_Seq_MissingTimestampEmitted(t *testing.T) {
+	// A record with no timestamp field must still be emitted (EventUnknown, degraded).
+	// The old code used time.Time{}.UnixNano() which is a large negative value,
+	// causing the record to be silently dropped by the watermark filter.
+	a := &Adapter{}
+	rec := codexRec(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"no-ts"}}`)
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: []contract.RawRecord{rec},
+	})
+	if len(res.Events) != 1 {
+		t.Fatalf("missing-timestamp: got %d events, want 1 (emitted as EventUnknown)", len(res.Events))
+	}
+	if res.Events[0].Type != agent.EventUnknown {
+		t.Errorf("missing-timestamp: type=%q, want EventUnknown", res.Events[0].Type)
+	}
+	// Must pass contract validation.
+	if err := contract.ValidateEvent(res.Events[0]); err != nil {
+		t.Errorf("emitted event fails ValidateEvent: %v", err)
+	}
+}
+
+func TestCodexAdapter_ValidateEvent_AllReturnedEvents(t *testing.T) {
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"t2","approval_id":"appr-001"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:30:05.000Z","type":"event_msg","payload":{"type":"approval_resolved","turn_id":"t2","approval_id":"appr-001"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 5 {
+		t.Fatalf("got %d events, want 5", len(res.Events))
+	}
+	for _, e := range res.Events {
+		if err := contract.ValidateEvent(e); err != nil {
+			t.Errorf("ValidateEvent failed for %s (type=%s): %v", e.ID, e.Type, err)
+		}
+	}
+}
+
+// ── BLOCKER 2 (round 2): Version gate validates entire batch ──
+
+func TestCodexAdapter_VersionGate_MixedMeta_BatchAllUnknown(t *testing.T) {
+	// session_meta 0.144.1 followed by session_meta 9.9.9 — the second
+	// meta poisons the ENTIRE batch. All events must be EventUnknown.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T14:00:00.000Z","type":"session_meta","payload":{"cli_version":"9.9.9"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	for _, e := range res.Events {
+		if e.Type != agent.EventUnknown {
+			t.Errorf("mixed meta batch: event %s type=%q, want EventUnknown for all", e.ID, e.Type)
+		}
+	}
+	if !res.Degraded.Degraded {
+		t.Error("mixed meta batch must be degraded")
+	}
+}
+
+func TestCodexAdapter_VersionGate_NoMeta_AllUnknown(t *testing.T) {
+	// No session_meta at all — version unconfirmed. No version-specific
+	// typed events may be emitted. Everything must be EventUnknown.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:29:38.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+		codexRec(`{"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"t2","approval_id":"appr-001"}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	for _, e := range res.Events {
+		if e.Type != agent.EventUnknown {
+			t.Errorf("no-meta batch: event %s type=%q, want EventUnknown for all", e.ID, e.Type)
+		}
+	}
+	if !res.Degraded.Degraded {
+		t.Error("no-meta batch must be degraded")
+	}
+}
+
+// ── BLOCKER 3 (round 2): Degradation reason preservation ──
+
+func TestCodexAdapter_MixedBatch_ReasonPreserved(t *testing.T) {
+	// Mixed valid+malformed batch must preserve a specific degradation reason,
+	// not just an empty degraded flag.
+	a := &Adapter{}
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.500Z","type":"unknown_msg_type","payload":{}}`),
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if !res.Degraded.Degraded {
+		t.Fatal("batch with unknown type must be degraded")
+	}
+	// The reason must contain something about the unknown type, not just be empty.
+	if res.Degraded.Reason == "" {
+		t.Error("degraded reason is empty — per-record reason was lost")
+	}
+	if !contains(res.Degraded.Reason, "unknown") && !contains(res.Degraded.Reason, "unknown_msg_type") {
+		t.Errorf("degraded reason missing specific cause: %q", res.Degraded.Reason)
 	}
 }
 

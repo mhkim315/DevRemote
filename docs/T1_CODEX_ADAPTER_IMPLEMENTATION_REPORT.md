@@ -86,7 +86,7 @@ This isolates the version-specific adapter from the Pokit-owned contract
 
 | Operation | Implementation | Key safety rule |
 |---|---|---|
-| `Descriptor` | Returns `AgentAdapterDescriptor` with name=`codex`, provider=`Codex CLI`, `ContractVersion`, `SupportedVersions=["0.144.1"]`, capabilities=`[Events, Status, ApprovalDetection, IncrementalRead, ProcessDetection, LogDetection]` | declares exactly the supported version from R1 evidence |
+| `Descriptor` | Returns `AgentAdapterDescriptor` with name=`codex`, provider=`Codex CLI`, `ContractVersion`, `SupportedVersions=["0.144.1"]`, capabilities=`[Events, Status, ApprovalDetection, IncrementalRead, ProcessDetection]` | declares exactly the supported version from R1 evidence |
 | `Detect` | Reuses the existing `CodexDetector` logic: process-name confidence 0.6, CWD `.codex` boost +0.15, log boost +0.1; confidence < 0.5 → `Kind="unknown"` | empty/partial evidence guaranteed unknown + low confidence |
 | `DiscoverSessions` | Returns one `DiscoveredSession` with `CorrelationManagedLaunch` when process is `codex`; bounded by `EffectiveDiscoveryLimit`; empty/non-codex returns nil | never invents `proven` ownership or cross-links sessions |
 | `ReadEvents` | Bounds: `ValidateCursor`, `BoundBatch` (count + bytes), `AcceptRecord` (per-record), `EffectiveReadLimit` (output). Cursor = compact high-water-mark (last Seq). Dedupe by stable ID + Seq filter against watermark. Session binding from `ReadInput.Session.SessionID`. Degrades on any violation. | all T0 caps enforced; oversized cursor/batch/record triggers degraded, not silent acceptance |
