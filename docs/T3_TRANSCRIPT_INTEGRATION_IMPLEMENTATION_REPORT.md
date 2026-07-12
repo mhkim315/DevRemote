@@ -9,7 +9,7 @@ Branch: `feature/phase10-multi-adapter`
 ```text
 accepted D1 / T3 baseline: 8f7c22def81abf0b932f6dbbacc07325ae2bb12e
 handoff document:          68eccf1f7967860195814f337297b7249a7d4b33
-final implementation tip:  <will be set after commit>
+final implementation tip:  0fe9bda2263bc8ea495d06261ecd7162b5e49062
 ```
 
 Ancestry verification — all accepted phases are ancestors of HEAD:
@@ -297,7 +297,7 @@ recursive go test: NOT triggered (explicit package lists used)
 
 ## 11. Final review marker
 
-REVIEW REQUEST: T3 Transcript Integration — <full remote SHA>
+REVIEW REQUEST: T3 Transcript Integration — 0fe9bda2263bc8ea495d06261ecd7162b5e49062
 
 ## 12. T3-A through T3-E completion status
 
