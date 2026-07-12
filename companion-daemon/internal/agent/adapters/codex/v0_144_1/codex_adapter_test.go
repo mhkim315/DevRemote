@@ -941,47 +941,22 @@ func TestCodexAdapter_Cursor_SeqFromAbsolutePosition(t *testing.T) {
 // ── Cross-page duplicate suppression ──
 
 func TestCodexAdapter_OneShot_Equals_Paged(t *testing.T) {
-	// Same source read in one shot vs paginated must produce identical
-	// event ID sets regardless of MaxEvents.
+	// Non-adjacent duplicate fixture: one-shot and paged must produce
+	// identical event ID sets regardless of MaxEvents.
+	dup := codexRec(`{"timestamp":"2026-07-06T13:29:35.001Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
-		codexRec(`{"timestamp":"2026-07-06T13:29:35.001Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
-		codexRec(`{"timestamp":"2026-07-06T13:29:35.002Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
-		codexRec(`{"timestamp":"2026-07-06T13:29:35.003Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
+		dup, // position 1
+		codexRec(`{"timestamp":"2026-07-06T13:29:35.002Z","type":"response_item","payload":{"type":"message","role":"user"}}`), // position 2
+		dup, // position 3 — non-adjacent duplicate of position 1
 	}
 
-	// One-shot.
-	a1 := &Adapter{}
-	res1, _ := a1.ReadEvents(context.Background(), contract.ReadInput{
-		Session: contract.SessionContext{SessionID: "pokit:host-a"},
-		Records: records,
-	})
-	oneShot := idsSorted(res1.Events)
-
-	// Paged (MaxEvents=1).
-	a2 := &Adapter{}
-	var paged []string
-	var cursor contract.Cursor
-	for {
-		res, _ := a2.ReadEvents(context.Background(), contract.ReadInput{
-			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
-			Records:   records,
-			Cursor:    cursor,
-			MaxEvents: 1,
-		})
-		for _, e := range res.Events {
-			paged = append(paged, e.ID)
-		}
-		cursor = res.NextCursor
-		if len(res.Events) == 0 {
-			break
-		}
-	}
+	oneShot := readAllIDs(t, &Adapter{}, records, 0)
+	paged := readAllIDs(t, &Adapter{}, records, 1)
 
 	if len(oneShot) != len(paged) {
 		t.Errorf("one-shot=%d events, paged=%d events (must be equal)", len(oneShot), len(paged))
 	}
-	// IDs are position-based — compare as sets (order independent).
 	oneSet := make(map[string]bool, len(oneShot))
 	for _, id := range oneShot {
 		oneSet[id] = true
@@ -997,18 +972,127 @@ func TestCodexAdapter_OneShot_Equals_Paged(t *testing.T) {
 	}
 }
 
-func idsSorted(events []contract.AgentEvent) []string {
-	ids := make([]string, len(events))
-	for i, e := range events {
-		ids[i] = e.ID
-	}
-	// Simple insertion sort.
-	for i := 1; i < len(ids); i++ {
-		for j := i; j > 0 && ids[j] < ids[j-1]; j-- {
-			ids[j], ids[j-1] = ids[j-1], ids[j]
+// readAllIDs returns all event IDs from reading the given records, either
+// one-shot (maxEvents=0) or paged with the given maxEvents per page.
+func readAllIDs(t *testing.T, a *Adapter, records []contract.RawRecord, maxEvents int) []string {
+	t.Helper()
+	var ids []string
+	var cursor contract.Cursor
+	for {
+		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+			Records:   records,
+			Cursor:    cursor,
+			MaxEvents: maxEvents,
+		})
+		for _, e := range res.Events {
+			ids = append(ids, e.ID)
+		}
+		cursor = res.NextCursor
+		if len(res.Events) == 0 {
+			break
 		}
 	}
 	return ids
+}
+
+func TestCodexAdapter_AdjacentDuplicate_WithinPage(t *testing.T) {
+	// Adjacent identical records → only first emitted.
+	a := &Adapter{}
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		rec,
+		rec, // adjacent duplicate
+	}
+	res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res.Events) != 2 {
+		t.Errorf("adjacent within-page: got %d events, want 2 (meta + first dup, adjacent suppressed)", len(res.Events))
+	}
+}
+
+func TestCodexAdapter_AdjacentDuplicate_AcrossPageBoundary(t *testing.T) {
+	// Duplicate straddles a page boundary → adjacent dedup via cross-page
+	// content hash from input[pos-1].
+	a := &Adapter{}
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		rec,
+		rec, // adjacent to position 1
+		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
+	}
+
+	// Page 1: MaxEvents=1 → emits meta. Cursor pos=1, prevCK=meta_hash.
+	res1, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		MaxEvents: 1,
+	})
+	if len(res1.Events) != 1 {
+		t.Fatalf("page 1: got %d events, want 1", len(res1.Events))
+	}
+
+	// Page 2: suffix starts at position 1 (rec). prevCK from input[pos-1]
+	// = input[0] = session_meta hash. rec at pos 1 has different hash →
+	// emitted. rec at pos 2 has same hash as prevCK (rec) → suppressed.
+	// pos 3 (t2) has different hash → emitted. MaxEvents=1 → only rec emitted.
+	res2, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		Cursor:    res1.NextCursor,
+		MaxEvents: 1,
+	})
+	if len(res2.Events) != 1 {
+		t.Fatalf("page 2: got %d events, want 1 (rec emitted, adjacent dup suppressed)", len(res2.Events))
+	}
+
+	// Page 3: suffix [t2]. Emitted.
+	res3, _ := a.ReadEvents(context.Background(), contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: "pokit:host-a"},
+		Records:   records,
+		Cursor:    res2.NextCursor,
+		MaxEvents: 1,
+	})
+	if len(res3.Events) != 1 {
+		t.Fatalf("page 3: got %d events, want 1 (t2)", len(res3.Events))
+	}
+}
+
+func TestCodexAdapter_NonAdjacentDuplicate_TwoDistinctPositions(t *testing.T) {
+	// Non-adjacent identical bytes → two distinct position-based events,
+	// consistent across all page sizes.
+	dup := codexRec(`{"timestamp":"2026-07-06T13:29:35.001Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		dup,
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"response_item","payload":{"type":"message","role":"user"}}`),
+		dup, // non-adjacent duplicate
+	}
+
+	// One-shot: meta + dup(pos1) + middle + dup(pos3) = 4 events.
+	res1, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res1.Events) != 4 {
+		t.Errorf("one-shot non-adjacent: got %d events, want 4", len(res1.Events))
+	}
+
+	// Paged with MaxEvents=2.
+	paged := readAllIDs(t, &Adapter{}, records, 2)
+	if len(paged) != 4 {
+		t.Errorf("paged non-adjacent: got %d events, want 4", len(paged))
+	}
+
+	// Paged with MaxEvents=1.
+	paged1 := readAllIDs(t, &Adapter{}, records, 1)
+	if len(paged1) != 4 {
+		t.Errorf("paged-1 non-adjacent: got %d events, want 4", len(paged1))
+	}
 }
 
 func TestCodexAdapter_Cursor_ConflictingVersion_NotRecovered(t *testing.T) {
@@ -1172,49 +1256,30 @@ func TestCodexAdapter_Cursor_ByteBound_LargeSuffix(t *testing.T) {
 }
 
 func TestCodexAdapter_Cursor_CombinedLimitDuplicateBound(t *testing.T) {
-	// Combined: caller limit + within-batch content dedup + batch bound.
-	// Within-batch content dedup prevents same-ID emission in one page.
-	// Cross-page, identical content at a different source position is a
-	// distinct position-based event (bounded window does not dedup across
-	// pages by content — that would require unbounded historical ID storage).
-	a := &Adapter{}
+	// Non-adjacent duplicates: both emitted (distinct source positions).
+	// One-shot and paged produce identical results (5 events each).
 	dup := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"dup"}}`)
 	records := []contract.RawRecord{
 		sessionMeta0_144_1(),
-		dup,
-		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`),
-		dup, // position 3: same content as position 1, distinct source position
-		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`),
+		dup, // position 1
+		codexRec(`{"timestamp":"2026-07-06T13:29:36.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`), // position 2
+		dup, // position 3 — non-adjacent duplicate
+		codexRec(`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}`), // position 4
 	}
 
-	emitted := 0
-	var cursor contract.Cursor
-	var seqs []int64
-	for {
-		res, _ := a.ReadEvents(context.Background(), contract.ReadInput{
-			Session:   contract.SessionContext{SessionID: "pokit:host-a"},
-			Records:   records,
-			Cursor:    cursor,
-			MaxEvents: 1,
-		})
-		emitted += len(res.Events)
-		for _, e := range res.Events {
-			seqs = append(seqs, e.Seq)
-		}
-		cursor = res.NextCursor
-		if len(res.Events) == 0 {
-			break
-		}
+	// One-shot → 5 events.
+	res1, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	if len(res1.Events) != 5 {
+		t.Errorf("one-shot: got %d events, want 5", len(res1.Events))
 	}
-	// 5 position-based events emitted: meta + dup(pos1) + t1 + dup(pos3) + t2.
-	if emitted != 5 {
-		t.Errorf("combined: got %d emissions, want 5 (position-based identity)", emitted)
-	}
-	// Seq strictly increasing.
-	for i := 1; i < len(seqs); i++ {
-		if seqs[i] <= seqs[i-1] {
-			t.Errorf("combined cross-page Seq: %d <= %d", seqs[i], seqs[i-1])
-		}
+
+	// Paged (MaxEvents=1) → also 5 events.
+	paged := readAllIDs(t, &Adapter{}, records, 1)
+	if len(paged) != 5 {
+		t.Errorf("paged: got %d events, want 5", len(paged))
 	}
 }
 

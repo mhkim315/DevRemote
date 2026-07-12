@@ -423,22 +423,34 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		}
 	}
 
-	// ── Emit: content-hash dedup within batch, position-based IDs ──
+	// ── Emit: adjacent-only duplicate suppression, position-based IDs ──
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
-	batchSeen := map[string]bool{}
 	var out []contract.AgentEvent
 	truncated := false
 	processed := int64(0)
 
+	// Previous content hash for adjacent dedup (starts from the record
+	// just before the suffix, i.e. input[pos-1], for cross-page boundary).
+	var prevCK string
+	if cur.nextPos > 0 {
+		idx := int(cur.nextPos - 1)
+		if idx < len(input) && contract.AcceptRecord(input[idx]) {
+			prevCK = hashBytesID(input[idx].Bytes)
+		}
+	}
+
 	for i := range all {
 		ev := all[i].ev
+		ck := hashBytesID(bounded[i].Bytes)
 		if ev.ID == "" {
 			processed++
+			prevCK = ck
 			continue
 		}
-		// Within-batch dedup by content hash (not position-based ID).
-		ck := hashBytesID(bounded[i].Bytes)
-		if batchSeen[ck] {
+		// Adjacent duplicate: same content as immediately preceding record
+		// (within batch or across page boundary).  Non-adjacent identical
+		// bytes at different source positions are distinct occurrences.
+		if ck == prevCK {
 			processed++
 			continue
 		}
@@ -446,7 +458,7 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 			truncated = true
 			break
 		}
-		batchSeen[ck] = true
+		prevCK = ck
 		ev.Seq = cur.nextPos + int64(len(out))
 		out = append(out, ev)
 		processed++
