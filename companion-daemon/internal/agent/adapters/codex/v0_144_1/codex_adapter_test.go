@@ -1517,6 +1517,55 @@ func TestCodexAdapter_Oversized_OneShotEqualsPaged(t *testing.T) {
 	}
 }
 
+func TestCodexAdapter_Oversized_BreaksAdjacency(t *testing.T) {
+	// Oversized record between two identical records: the second identical
+	// record is NOT suppressed because oversized breaks adjacency.
+	big := make([]byte, contract.MaxRecordBytes+1)
+	rec := codexRec(`{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		rec,                                   // pos 1
+		{Bytes: big, Source: agent.SourceJSONL}, // pos 2: oversized
+		rec,                                   // pos 3: same as pos 1, but adjacency broken
+	}
+	res, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// Both rec at pos 1 and rec at pos 3 emitted (oversized breaks adjacency).
+	if len(res.Events) != 3 {
+		t.Fatalf("got %d events, want 3", len(res.Events))
+	}
+}
+
+func TestCodexAdapter_Oversized_TrailingReplayFails(t *testing.T) {
+	// Trailing oversized: cursor at oversized position → re-read with
+	// same cursor → fail-closed (0 events + degraded).
+	big := make([]byte, contract.MaxRecordBytes+1)
+	records := []contract.RawRecord{
+		sessionMeta0_144_1(),
+		{Bytes: big, Source: agent.SourceJSONL}, // pos 1: oversized
+	}
+	res1, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+	})
+	// Cursor at pos 0 (oversized at pos 1 blocks advancement, anchor can't
+	// be set for oversized position).
+	if !res1.Degraded.Degraded {
+		t.Fatal("oversized batch must be degraded")
+	}
+	// Re-read same: cursor at last valid position → 0 events.
+	res2, _ := (&Adapter{}).ReadEvents(context.Background(), contract.ReadInput{
+		Session: contract.SessionContext{SessionID: "pokit:host-a"},
+		Records: records,
+		Cursor:  res1.NextCursor,
+	})
+	if len(res2.Events) != 0 {
+		t.Errorf("trailing oversized re-read: got %d events, want 0", len(res2.Events))
+	}
+}
+
 func TestCodexAdapter_Oversized_AdjacentDuplicate(t *testing.T) {
 	big := make([]byte, contract.MaxRecordBytes+1)
 	for i := range big {

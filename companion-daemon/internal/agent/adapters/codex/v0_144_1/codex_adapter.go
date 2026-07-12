@@ -403,13 +403,14 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 	for i := 0; i < processLimit; i++ {
 		rec := bounded[i]
 		absPos := cur.nextPos + int64(i)
-		ck := hashBytesID(rec.Bytes)
 		if !contract.AcceptRecord(rec) {
 			degraded = true
 			diags = append(diags, "oversized record skipped")
-			all = append(all, normResult{absPos: absPos, contentKey: ck, accepted: false})
+			// Empty contentKey: never hash oversized payload.
+			all = append(all, normResult{absPos: absPos, contentKey: "", accepted: false})
 			continue
 		}
+		ck := hashBytesID(rec.Bytes)
 		ev, recDeg := normalizeCodexEvent(rec, sessionID, rec.Source, batchVersionFailed)
 		ev.ID = makePositionID(absPos, rec.Bytes)
 		all = append(all, normResult{ev: ev, deg: recDeg, absPos: absPos, contentKey: ck, accepted: true})
