@@ -40,27 +40,29 @@ var (
 // ── ReviewBundle (immutable, fields unexported) ──
 
 type ReviewBundle struct {
-	requestID            string
-	adapterName          string
-	provider             string
-	targetVersion        string
-	baselineSHA          string
-	rollbackSHA          string // previous accepted adapter version SHA
-	evidenceDigest       string
-	evidenceProvenance   string // provenance tier of collected evidence
-	patchDigest          string
-	unifiedDiff          []byte          // exact unified diff bytes, immutable
-	changedFiles         []string        // allowed-file manifest
-	fixtureManifest      []string        // new fixture file paths
-	fixtureRedaction     RedactionResult // typed redaction scan result
-	suiteCommandManifest []string
-	suiteResultDigest    string
-	suiteResult          ObservatoryResult
-	driftEvidence        DriftEvidence // bounded drift evidence
-	workspaceDigest      string        // digest of workspace after patch
-	remainingUnknowns    []string      // bounded, redacted remaining unknowns
-	createdAt            time.Time
-	expiresAt            time.Time
+	requestID               string
+	adapterName             string
+	provider                string
+	targetVersion           string
+	baselineSHA             string
+	rollbackSHA             string // previous accepted adapter version SHA
+	evidenceDigest          string
+	evidenceProvenance      string // provenance tier of collected evidence
+	patchDigest             string
+	unifiedDiff             []byte          // exact unified diff bytes, immutable
+	changedFiles            []string        // allowed-file manifest
+	adapterSourceManifest   []string        // runner-provided adapter source files
+	pokitTestManifest       []string        // Pokit-owned conformance test files
+	providerFixtureManifest []string        // runner-provided provider fixtures
+	fixtureRedaction        RedactionResult // typed redaction scan result
+	suiteCommandManifest    []string
+	suiteResultDigest       string
+	suiteResult             ObservatoryResult
+	driftEvidence           DriftEvidence // bounded drift evidence
+	workspaceDigest         string        // digest of workspace after patch
+	remainingUnknowns       []string      // bounded, redacted remaining unknowns
+	createdAt               time.Time
+	expiresAt               time.Time
 }
 
 // Accessors return deep copies of slice fields only.
@@ -78,8 +80,16 @@ func (rb *ReviewBundle) UnifiedDiff() []byte {
 	copy(d, rb.unifiedDiff)
 	return d
 }
-func (rb *ReviewBundle) ChangedFiles() []string            { return append([]string{}, rb.changedFiles...) }
-func (rb *ReviewBundle) FixtureManifest() []string         { return append([]string{}, rb.fixtureManifest...) }
+func (rb *ReviewBundle) ChangedFiles() []string { return append([]string{}, rb.changedFiles...) }
+func (rb *ReviewBundle) AdapterSourceManifest() []string {
+	return append([]string{}, rb.adapterSourceManifest...)
+}
+func (rb *ReviewBundle) PokitTestManifest() []string {
+	return append([]string{}, rb.pokitTestManifest...)
+}
+func (rb *ReviewBundle) ProviderFixtureManifest() []string {
+	return append([]string{}, rb.providerFixtureManifest...)
+}
 func (rb *ReviewBundle) FixtureRedaction() RedactionResult { return rb.fixtureRedaction }
 func (rb *ReviewBundle) SuiteCommandManifest() []string {
 	return append([]string{}, rb.suiteCommandManifest...)
@@ -99,26 +109,28 @@ func (rb *ReviewBundle) IsExpired() bool      { return time.Now().After(rb.expir
 // including timestamps. It recomputes on every call — no caching.
 func (rb *ReviewBundle) BundleDigest() string {
 	payload := bundleDigestPayload{
-		RequestID:            rb.requestID,
-		AdapterName:          rb.adapterName,
-		Provider:             rb.provider,
-		TargetVersion:        rb.targetVersion,
-		BaselineSHA:          rb.baselineSHA,
-		RollbackSHA:          rb.rollbackSHA,
-		EvidenceDigest:       rb.evidenceDigest,
-		EvidenceProvenance:   rb.evidenceProvenance,
-		PatchDigest:          rb.patchDigest,
-		UnifiedDiffDigest:    HashBytes(rb.unifiedDiff),
-		ChangedFiles:         sortedStrings(rb.changedFiles),
-		FixtureManifest:      sortedStrings(rb.fixtureManifest),
-		FixtureRedaction:     HashJSON(rb.fixtureRedaction),
-		SuiteCommandManifest: sortedStrings(rb.suiteCommandManifest),
-		SuiteResultDigest:    rb.suiteResultDigest,
-		DriftEvidenceDigest:  HashJSON(rb.driftEvidence),
-		WorkspaceDigest:      rb.workspaceDigest,
-		RemainingUnknowns:    sortedStrings(rb.remainingUnknowns),
-		CreatedAt:            rb.createdAt.Format(time.RFC3339Nano),
-		ExpiresAt:            rb.expiresAt.Format(time.RFC3339Nano),
+		RequestID:               rb.requestID,
+		AdapterName:             rb.adapterName,
+		Provider:                rb.provider,
+		TargetVersion:           rb.targetVersion,
+		BaselineSHA:             rb.baselineSHA,
+		RollbackSHA:             rb.rollbackSHA,
+		EvidenceDigest:          rb.evidenceDigest,
+		EvidenceProvenance:      rb.evidenceProvenance,
+		PatchDigest:             rb.patchDigest,
+		UnifiedDiffDigest:       HashBytes(rb.unifiedDiff),
+		ChangedFiles:            sortedStrings(rb.changedFiles),
+		AdapterSourceManifest:   sortedStrings(rb.adapterSourceManifest),
+		PokitTestManifest:       sortedStrings(rb.pokitTestManifest),
+		ProviderFixtureManifest: sortedStrings(rb.providerFixtureManifest),
+		FixtureRedaction:        HashJSON(rb.fixtureRedaction),
+		SuiteCommandManifest:    sortedStrings(rb.suiteCommandManifest),
+		SuiteResultDigest:       rb.suiteResultDigest,
+		DriftEvidenceDigest:     HashJSON(rb.driftEvidence),
+		WorkspaceDigest:         rb.workspaceDigest,
+		RemainingUnknowns:       sortedStrings(rb.remainingUnknowns),
+		CreatedAt:               rb.createdAt.Format(time.RFC3339Nano),
+		ExpiresAt:               rb.expiresAt.Format(time.RFC3339Nano),
 	}
 	b, _ := json.Marshal(payload)
 	h := sha256.Sum256(b)
@@ -126,35 +138,37 @@ func (rb *ReviewBundle) BundleDigest() string {
 }
 
 type bundleDigestPayload struct {
-	RequestID            string   `json:"request_id"`
-	AdapterName          string   `json:"adapter_name"`
-	Provider             string   `json:"provider"`
-	TargetVersion        string   `json:"target_version"`
-	BaselineSHA          string   `json:"baseline_sha"`
-	RollbackSHA          string   `json:"rollback_sha"`
-	EvidenceDigest       string   `json:"evidence_digest"`
-	EvidenceProvenance   string   `json:"evidence_provenance"`
-	PatchDigest          string   `json:"patch_digest"`
-	UnifiedDiffDigest    string   `json:"unified_diff_digest"`
-	ChangedFiles         []string `json:"changed_files"`
-	FixtureManifest      []string `json:"fixture_manifest"`
-	FixtureRedaction     string   `json:"fixture_redaction"`
-	SuiteCommandManifest []string `json:"suite_command_manifest"`
-	SuiteResultDigest    string   `json:"suite_result_digest"`
-	DriftEvidenceDigest  string   `json:"drift_evidence_digest"`
-	WorkspaceDigest      string   `json:"workspace_digest"`
-	RemainingUnknowns    []string `json:"remaining_unknowns"`
-	CreatedAt            string   `json:"created_at"`
-	ExpiresAt            string   `json:"expires_at"`
+	RequestID               string   `json:"request_id"`
+	AdapterName             string   `json:"adapter_name"`
+	Provider                string   `json:"provider"`
+	TargetVersion           string   `json:"target_version"`
+	BaselineSHA             string   `json:"baseline_sha"`
+	RollbackSHA             string   `json:"rollback_sha"`
+	EvidenceDigest          string   `json:"evidence_digest"`
+	EvidenceProvenance      string   `json:"evidence_provenance"`
+	PatchDigest             string   `json:"patch_digest"`
+	UnifiedDiffDigest       string   `json:"unified_diff_digest"`
+	ChangedFiles            []string `json:"changed_files"`
+	AdapterSourceManifest   []string `json:"adapter_source_manifest"`
+	PokitTestManifest       []string `json:"pokit_test_manifest"`
+	ProviderFixtureManifest []string `json:"provider_fixture_manifest"`
+	FixtureRedaction        string   `json:"fixture_redaction"`
+	SuiteCommandManifest    []string `json:"suite_command_manifest"`
+	SuiteResultDigest       string   `json:"suite_result_digest"`
+	DriftEvidenceDigest     string   `json:"drift_evidence_digest"`
+	WorkspaceDigest         string   `json:"workspace_digest"`
+	RemainingUnknowns       []string `json:"remaining_unknowns"`
+	CreatedAt               string   `json:"created_at"`
+	ExpiresAt               string   `json:"expires_at"`
 }
 
 // NewReviewBundle creates a ReviewBundle. Returns error if any required
-// field (digest, baseline, changed files) is empty.
+// field (digest, baseline, changed files, manifests) is empty.
 func NewReviewBundle(
 	requestID, adapterName, provider, targetVersion, baselineSHA string,
 	evidenceDigest, patchDigest string,
 	unifiedDiff []byte,
-	changedFiles, fixtureManifest []string,
+	changedFiles, adapterSourceManifest, pokitTestManifest, providerFixtureManifest []string,
 	fixtureRedaction RedactionResult,
 	suiteCommandManifest []string,
 	suiteResult ObservatoryResult,
@@ -171,19 +185,29 @@ func NewReviewBundle(
 	if suiteResult.TotalTests == 0 {
 		return nil, fmt.Errorf("%w: suite result has zero tests", ErrEmptyField)
 	}
-	if len(fixtureManifest) == 0 {
-		return nil, fmt.Errorf("%w: fixture manifest must be non-empty", ErrEmptyField)
+	if fixtureRedaction.Scanned == 0 {
+		return nil, fmt.Errorf("%w: fixture redaction has zero scanned files", ErrEmptyField)
 	}
 	if !fixtureRedaction.Clean {
 		return nil, fmt.Errorf("%w: fixture redaction is not clean", ErrEmptyField)
+	}
+	if fixtureRedaction.Clean && len(fixtureRedaction.Findings) > 0 {
+		return nil, fmt.Errorf("%w: clean redaction must have empty findings", ErrEmptyField)
+	}
+	if len(adapterSourceManifest) == 0 && len(providerFixtureManifest) == 0 {
+		return nil, fmt.Errorf("%w: at least one of adapter or fixture manifest must be non-empty", ErrEmptyField)
 	}
 	if workspaceDigest == "" {
 		return nil, fmt.Errorf("%w: workspace digest must be non-empty", ErrEmptyField)
 	}
 	cf := make([]string, len(changedFiles))
 	copy(cf, changedFiles)
-	fm := make([]string, len(fixtureManifest))
-	copy(fm, fixtureManifest)
+	am := make([]string, len(adapterSourceManifest))
+	copy(am, adapterSourceManifest)
+	pm := make([]string, len(pokitTestManifest))
+	copy(pm, pokitTestManifest)
+	pfm := make([]string, len(providerFixtureManifest))
+	copy(pfm, providerFixtureManifest)
 	scm := make([]string, len(suiteCommandManifest))
 	copy(scm, suiteCommandManifest)
 	ru := make([]string, len(remainingUnknowns))
@@ -191,27 +215,29 @@ func NewReviewBundle(
 	ud := make([]byte, len(unifiedDiff))
 	copy(ud, unifiedDiff)
 	return &ReviewBundle{
-		requestID:            requestID,
-		adapterName:          adapterName,
-		provider:             provider,
-		targetVersion:        targetVersion,
-		baselineSHA:          baselineSHA,
-		rollbackSHA:          baselineSHA, // same as baseline; activation not implemented
-		evidenceDigest:       evidenceDigest,
-		evidenceProvenance:   evidenceProvenance,
-		patchDigest:          patchDigest,
-		unifiedDiff:          ud,
-		changedFiles:         cf,
-		fixtureManifest:      fm,
-		fixtureRedaction:     fixtureRedaction,
-		suiteCommandManifest: scm,
-		suiteResultDigest:    HashJSON(suiteResult),
-		suiteResult:          suiteResult,
-		driftEvidence:        driftEvidence,
-		workspaceDigest:      workspaceDigest,
-		remainingUnknowns:    ru,
-		createdAt:            time.Now(),
-		expiresAt:            time.Now().Add(24 * time.Hour),
+		requestID:               requestID,
+		adapterName:             adapterName,
+		provider:                provider,
+		targetVersion:           targetVersion,
+		baselineSHA:             baselineSHA,
+		rollbackSHA:             baselineSHA,
+		evidenceDigest:          evidenceDigest,
+		evidenceProvenance:      evidenceProvenance,
+		patchDigest:             patchDigest,
+		unifiedDiff:             ud,
+		changedFiles:            cf,
+		adapterSourceManifest:   am,
+		pokitTestManifest:       pm,
+		providerFixtureManifest: pfm,
+		fixtureRedaction:        fixtureRedaction,
+		suiteCommandManifest:    scm,
+		suiteResultDigest:       HashJSON(suiteResult),
+		suiteResult:             suiteResult,
+		driftEvidence:           driftEvidence,
+		workspaceDigest:         workspaceDigest,
+		remainingUnknowns:       ru,
+		createdAt:               time.Now(),
+		expiresAt:               time.Now().Add(24 * time.Hour),
 	}, nil
 }
 
@@ -221,27 +247,29 @@ func (rb *ReviewBundle) deepCopy() *ReviewBundle {
 	ud := make([]byte, len(rb.unifiedDiff))
 	copy(ud, rb.unifiedDiff)
 	return &ReviewBundle{
-		requestID:            rb.requestID,
-		adapterName:          rb.adapterName,
-		provider:             rb.provider,
-		targetVersion:        rb.targetVersion,
-		baselineSHA:          rb.baselineSHA,
-		rollbackSHA:          rb.rollbackSHA,
-		evidenceDigest:       rb.evidenceDigest,
-		evidenceProvenance:   rb.evidenceProvenance,
-		patchDigest:          rb.patchDigest,
-		unifiedDiff:          ud,
-		changedFiles:         append([]string{}, rb.changedFiles...),
-		fixtureManifest:      append([]string{}, rb.fixtureManifest...),
-		fixtureRedaction:     copyRedactionResult(rb.fixtureRedaction),
-		suiteCommandManifest: append([]string{}, rb.suiteCommandManifest...),
-		suiteResultDigest:    rb.suiteResultDigest,
-		suiteResult:          rb.suiteResult.deepCopy(),
-		driftEvidence:        rb.driftEvidence,
-		workspaceDigest:      rb.workspaceDigest,
-		remainingUnknowns:    append([]string{}, rb.remainingUnknowns...),
-		createdAt:            rb.createdAt,
-		expiresAt:            rb.expiresAt,
+		requestID:               rb.requestID,
+		adapterName:             rb.adapterName,
+		provider:                rb.provider,
+		targetVersion:           rb.targetVersion,
+		baselineSHA:             rb.baselineSHA,
+		rollbackSHA:             rb.rollbackSHA,
+		evidenceDigest:          rb.evidenceDigest,
+		evidenceProvenance:      rb.evidenceProvenance,
+		patchDigest:             rb.patchDigest,
+		unifiedDiff:             ud,
+		changedFiles:            append([]string{}, rb.changedFiles...),
+		adapterSourceManifest:   append([]string{}, rb.adapterSourceManifest...),
+		pokitTestManifest:       append([]string{}, rb.pokitTestManifest...),
+		providerFixtureManifest: append([]string{}, rb.providerFixtureManifest...),
+		fixtureRedaction:        copyRedactionResult(rb.fixtureRedaction),
+		suiteCommandManifest:    append([]string{}, rb.suiteCommandManifest...),
+		suiteResultDigest:       rb.suiteResultDigest,
+		suiteResult:             rb.suiteResult.deepCopy(),
+		driftEvidence:           rb.driftEvidence,
+		workspaceDigest:         rb.workspaceDigest,
+		remainingUnknowns:       append([]string{}, rb.remainingUnknowns...),
+		createdAt:               rb.createdAt,
+		expiresAt:               rb.expiresAt,
 	}
 }
 

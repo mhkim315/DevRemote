@@ -295,6 +295,12 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 	evidenceDigest := HashJSON(o.activeEvidence)
 	patchDigest := HashBytes(o.activePatchBytes)
 
+	// Scan the exact unified diff for secrets BEFORE any bundle creation.
+	// Secrets in preamble, headers, hunk metadata, or filenames must be caught.
+	if scanContentForSecrets(string(o.activePatchBytes)) {
+		return nil, fmt.Errorf("secret/credential detected in unified diff — review blocked")
+	}
+
 	var files []string
 	for _, op := range o.activeOps {
 		files = append(files, op.DiffPath)
@@ -321,12 +327,6 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		return nil, fmt.Errorf("redaction scan found no files — empty fixture manifest")
 	}
 
-	// Combine all manifests for the review bundle.
-	allFixtures := make([]string, 0, len(adapterManifest)+len(pokitTestManifest)+len(providerFixtureManifest))
-	allFixtures = append(allFixtures, adapterManifest...)
-	allFixtures = append(allFixtures, pokitTestManifest...)
-	allFixtures = append(allFixtures, providerFixtureManifest...)
-
 	driftEv := DriftEvidence{}
 	if o.activeEvidence != nil {
 		driftEv = *o.activeEvidence
@@ -343,7 +343,9 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		baselineSHA, evidenceDigest, patchDigest,
 		o.activePatchBytes,       // unified diff
 		files,                    // changed files
-		allFixtures,              // fixture manifest
+		adapterManifest,          // adapter source manifest
+		pokitTestManifest,        // Pokit-owned test manifest
+		providerFixtureManifest,  // provider fixture manifest
 		redaction,                // redaction result
 		cmdLabels,                // suite command manifest
 		o.activeSuite.deepCopy(), // suite result (deep copy)
@@ -526,14 +528,44 @@ func buildFixtureManifest(wsRoot, provider, targetDir string) (adapterManifest [
 
 // scanContentForSecrets checks content for credential markers and private paths
 // WITHOUT the diagnostic length truncation. Returns true if any pattern is found.
+// This supersedes contract.ContainsSensitive which bounds at 256 bytes and is
+// unsuitable for scanning full source files or diffs.
 func scanContentForSecrets(content string) bool {
-	for _, p := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer ", "AKIA"} {
+	// Credential markers.
+	for _, p := range []string{
+		"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer ", "AKIA",
+		"-----BEGIN RSA PRIVATE KEY-----",
+		"-----BEGIN EC PRIVATE KEY-----",
+		"-----BEGIN PRIVATE KEY-----",
+		"-----BEGIN OPENSSH PRIVATE KEY-----",
+		"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+		"glpat-",                       // GitLab personal access token
+		"github_pat_",                  // GitHub fine-grained token
+		"gho_", "ghu_", "ghs_", "ghr_", // GitHub OAuth tokens
+		"eyJ", // JWT header heuristic (base64url of {"alg)
+	} {
 		if strings.Contains(content, p) {
 			return true
 		}
 	}
-	for _, root := range []string{"/Users/", "/home/"} {
-		if strings.Contains(content, root) {
+	// Credential assignment patterns.
+	for _, p := range []string{
+		"api_key=", "apikey=", "api-key=",
+		"token=", "secret=", "password=", "passwd=",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_ACCESS_KEY_ID",
+	} {
+		if strings.Contains(content, p) {
+			return true
+		}
+	}
+	// Private path sentinels.
+	for _, p := range []string{
+		"/Users/", "/home/",
+		"/private/", "/var/root/",
+		"C:\\Users\\", "C:\\Documents and Settings\\",
+	} {
+		if strings.Contains(content, p) {
 			return true
 		}
 	}

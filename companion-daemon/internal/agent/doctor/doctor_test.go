@@ -29,9 +29,9 @@ func cleanRedaction() RedactionResult {
 	return RedactionResult{Scanned: 1, Clean: true}
 }
 
-func testBundle(id, adapter, provider, ver, base, evDig, patchDig string, files, fixtures, cmds []string, sr ObservatoryResult) (*ReviewBundle, error) {
+func testBundle(id, adapter, provider, ver, base, evDig, patchDig string, files, adapterFiles, cmds []string, sr ObservatoryResult) (*ReviewBundle, error) {
 	return NewReviewBundle(id, adapter, provider, ver, base, evDig, patchDig,
-		[]byte("test diff"), files, fixtures, cleanRedaction(), cmds, sr,
+		[]byte("test diff"), files, adapterFiles, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "test-ws-digest", nil)
 }
 
@@ -497,7 +497,7 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 	if bundle.WorkspaceDigest() != wsDigest {
 		t.Error("bundle workspace digest doesn't match")
 	}
-	if len(bundle.FixtureManifest()) == 0 {
+	if len(bundle.AdapterSourceManifest()) == 0 {
 		t.Error("fixture manifest is empty")
 	}
 
@@ -558,7 +558,7 @@ func TestFullWorkflow_CompleteVertical(t *testing.T) {
 
 	// Replay of rejected request ID must fail.
 	b3, _ := NewReviewBundle("fw-reject", "c", "C", "3", actualSHA, "ev", "patch",
-		patchBytes, []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
+		patchBytes, []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, string(contract.ProvenanceNativeLog), "ws-digest", nil)
 	if _, err := orch2.approval.Submit(b3); err == nil {
@@ -767,35 +767,35 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 	cmds := []string{"T0"}
 
 	_, err := NewReviewBundle("", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), files, fix, cleanRedaction(), cmds, sr,
+		[]byte("diff"), files, fix, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty requestID should be rejected")
 	}
 
 	_, err = NewReviewBundle("r1", "a", "p", "v", "", "ev", "patch",
-		[]byte("diff"), files, fix, cleanRedaction(), cmds, sr,
+		[]byte("diff"), files, fix, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty baseline should be rejected")
 	}
 
 	_, err = NewReviewBundle("r2", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), nil, fix, cleanRedaction(), cmds, sr,
+		[]byte("diff"), nil, fix, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty changedFiles should be rejected")
 	}
 
 	_, err = NewReviewBundle("r3", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), files, nil, cleanRedaction(), cmds, sr,
+		[]byte("diff"), files, nil, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
 		t.Error("empty fixture manifest should be rejected")
 	}
 
 	_, err = NewReviewBundle("r4", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), files, fix, cleanRedaction(), cmds, sr,
+		[]byte("diff"), files, fix, nil, nil, cleanRedaction(), cmds, sr,
 		DriftEvidence{}, "native_log", "", nil)
 	if err == nil {
 		t.Error("empty workspace digest should be rejected")
@@ -807,7 +807,7 @@ func TestReviewBundle_IncompleteBlocked(t *testing.T) {
 func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 	store := NewApprovalStore()
 	b1, _ := NewReviewBundle("rm1", "c", "C", "3", "abc", "ev", "patch",
-		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
+		[]byte("diff v1"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, "native_log", "ws1", nil)
 	d1 := b1.BundleDigest()
@@ -815,7 +815,7 @@ func TestApproval_PostReviewMutationInvalidates(t *testing.T) {
 
 	// Different diff content → different digest.
 	b2, _ := NewReviewBundle("rm2", "c", "C", "3", "abc", "ev", "patch",
-		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
+		[]byte("diff v2"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, "native_log", "ws2", nil)
 	d2 := b2.BundleDigest()
@@ -886,7 +886,7 @@ func TestSuiteResult_DeepCopyImmutability(t *testing.T) {
 
 func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
 	b, _ := NewReviewBundle("ac1", "c", "C", "3", "abc", "ev", "patch",
-		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, cleanRedaction(),
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		[]string{"T0"}, ObservatoryResult{
 			TotalTests: 1, Passed: 1,
 			CommandResults: []CommandResult{{Label: "orig"}},
@@ -991,7 +991,7 @@ func TestBuildFixtureManifest_SeparatesCategories(t *testing.T) {
 func TestRedaction_NotCleanBlocksNewReviewBundle(t *testing.T) {
 	dirty := RedactionResult{Scanned: 1, Clean: false, Findings: []string{"secret found"}}
 	_, err := NewReviewBundle("r99", "a", "p", "v", "abc", "ev", "patch",
-		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, dirty,
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, dirty,
 		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err == nil {
@@ -1009,5 +1009,95 @@ func TestRedaction_ScannerFailureFailsClosed(t *testing.T) {
 	}
 	if len(redaction.Findings) == 0 {
 		t.Error("scanner failure should report findings")
+	}
+}
+
+// ── Secret scan: preamble secret in diff blocked ──
+
+func TestSecretScan_DiffPreambleSecretBlocked(t *testing.T) {
+	// Secret in preamble (before first diff --git) is invisible to parser
+	// but visible to the review bundle via UnifiedDiff().
+	secretDiff := []byte("sk-mysecretkey\ndiff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/adapter.go\n@@ -0,0 +1,2 @@\n+package v3_0_0\n+var x = 1\n")
+	// Scan the full diff bytes — must detect the preamble secret.
+	if !scanContentForSecrets(string(secretDiff)) {
+		t.Error("preamble secret must be detected")
+	}
+}
+
+// ── Secret scan: hunk header trailing text ──
+
+func TestSecretScan_HunkHeaderTrailingSecret(t *testing.T) {
+	// Secret in hunk header trailing text (after @@ line).
+	secretDiff := []byte("diff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/adapter.go\n@@ -0,0 +1,2 @@ ghp_secretinhunk\n+package v3_0_0\n+var x = 1\n")
+	if !scanContentForSecrets(string(secretDiff)) {
+		t.Error("hunk header trailing secret must be detected")
+	}
+}
+
+// ── Secret scan: secret in filename ──
+
+func TestSecretScan_FilenameSecret(t *testing.T) {
+	secretDiff := []byte("diff --git a/internal/agent/adapters/claude/v3_0_0/Bearer token.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/Bearer token.go\n@@ -0,0 +1,1 @@\n+package v3_0_0\n")
+	if !scanContentForSecrets(string(secretDiff)) {
+		t.Error("secret pattern in filename must be detected")
+	}
+}
+
+// ── Redaction: zero-scanned clean blocked ──
+
+func TestRedaction_ZeroScannedCleanBlocked(t *testing.T) {
+	zeroClean := RedactionResult{Scanned: 0, Clean: true}
+	_, err := NewReviewBundle("rz1", "a", "p", "v", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, zeroClean,
+		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
+		DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("zero-scanned clean redaction should be rejected")
+	}
+}
+
+// ── Redaction: clean with findings blocked ──
+
+func TestRedaction_CleanWithFindingsBlocked(t *testing.T) {
+	badClean := RedactionResult{Scanned: 1, Clean: true, Findings: []string{"something found"}}
+	_, err := NewReviewBundle("rz2", "a", "p", "v", "abc", "ev", "patch",
+		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, badClean,
+		[]string{"T0"}, ObservatoryResult{TotalTests: 1, Passed: 1},
+		DriftEvidence{}, "native_log", "ws", nil)
+	if err == nil {
+		t.Error("clean with findings should be rejected")
+	}
+}
+
+// ── Secret scan: expanded detector regressions ──
+
+func TestSecretScan_ExpandedPatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"PEM RSA", "-----BEGIN RSA PRIVATE KEY-----\nMIIEpA...", true},
+		{"PEM EC", "-----BEGIN EC PRIVATE KEY-----\n...", true},
+		{"PEM generic", "-----BEGIN PRIVATE KEY-----\n...", true},
+		{"JWT header", "eyJhbGciOiJIUzI1NiJ9.payload.signature", true},
+		{"api_key=", "api_key=abc123", true},
+		{"token=", "token=secret123", true},
+		{"password=", "password=hunter2", true},
+		{"AWS secret", "AWS_SECRET_ACCESS_KEY=wJalrXUtn", true},
+		{"AWS key", "AWS_ACCESS_KEY_ID=AKIA...", true},
+		{"GitLab PAT", "glpat-abcdefghij", true},
+		{"GitHub PAT", "github_pat_abcdefghij", true},
+		{"/private/", "/private/var/db/secrets", true},
+		{"Windows Users", "C:\\Users\\victim\\secret.txt", true},
+		{"clean Go", "package main\nfunc main() {}\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanContentForSecrets(tt.content)
+			if got != tt.want {
+				t.Errorf("scanContentForSecrets(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
 	}
 }
