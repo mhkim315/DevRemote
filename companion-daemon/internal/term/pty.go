@@ -425,6 +425,10 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				Bytes:     len(msg),
 			})
 		}
+		// T3: echo privacy — suppress byte-stream projection during input echo.
+		if h.Transcript != nil {
+			h.Transcript.BeginInput(session, time.Now())
+		}
 		if writer, ok := s.(mux.InputWriter); ok {
 			if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
 				log.Printf("WS input write err: %v", inErr)
@@ -433,6 +437,14 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 		} else if rec != nil {
 			rec.WriteInput(msg)
+		}
+		// T3: schedule echo suppression release after a bounded window.
+		// We cannot safely detect echo end by string comparison, so we
+		// suppress the next N Recorder chunks (content-free boundary).
+		if h.Transcript != nil {
+			time.AfterFunc(200*time.Millisecond, func() {
+				h.Transcript.EndInput(session, time.Now())
+			})
 		}
 	}
 

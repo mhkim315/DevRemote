@@ -10,6 +10,7 @@ import (
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // TelemetryService owns the telemetry state machine and background sampling loop.
@@ -22,6 +23,7 @@ type TelemetryService struct {
 	detector    AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
 	approvals   ApprovalStore                            // Phase A9: approval tracking
 	activity    *ActivityBuffer                          // E8f2: activity capture
+	transcript  *transcript.Service                      // T3: AgentEvent → Transcript projection
 	logResolver func(models.ProcessInfo) (LogRef, error) // Phase A5b: injectable resolver (nil = production ResolveAgentLog)
 	interval    time.Duration
 
@@ -31,7 +33,7 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals ApprovalStore, activity *ActivityBuffer) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals ApprovalStore, activity *ActivityBuffer, transcriptSvc *transcript.Service) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
@@ -43,9 +45,10 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, 
 		events:    events,
 		links:     links,
 		notifier:  notifier,
-		detector:  detector,
-		approvals: approvals,
-		activity:  activity,
+		detector:   detector,
+		approvals:  approvals,
+		activity:   activity,
+		transcript: transcriptSvc,
 		interval:  2 * time.Second,
 		sessions:  make(map[string]*sessionStateData),
 		done:      make(chan struct{}),
@@ -156,6 +159,10 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 				newEvents, readErr := ReadNewEvents(cursor, parser, 500)
 				if readErr == nil && len(newEvents) > 0 {
 					s.events.Append(id, newEvents)
+					// T3: project accepted events into Transcript with correlation.
+					if s.transcript != nil && logRef.Agent != "" {
+						s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
+					}
 					parsedNewEvents = true
 					lastEvent = newEvents[len(newEvents)-1]
 
@@ -391,4 +398,51 @@ func firstNonEmpty(candidates ...string) string {
 		}
 	}
 	return ""
+}
+
+// convertToAgentEvents converts legacy models.AgentEvent to agent.AgentEvent
+// for T3 Transcript projection. The agent kind is supplied from log detection.
+func convertToAgentEvents(legacy []models.AgentEvent, agentKind string) []agent.AgentEvent {
+	out := make([]agent.AgentEvent, 0, len(legacy))
+	for _, e := range legacy {
+		ts, _ := time.Parse(time.RFC3339, e.Timestamp)
+		out = append(out, agent.AgentEvent{
+			ID:         e.ID,
+			SessionID:  e.Session,
+			AgentKind:  agentKind,
+			Type:       mapLegacyType(e.Type),
+			Text:       e.Detail,
+			Confidence: 0.9,
+			Provenance: "native_log",
+			Timestamp:  ts,
+		})
+	}
+	return out
+}
+
+func mapLegacyType(t string) agent.AgentEventType {
+	switch t {
+	case "user", "user_message":
+		return agent.EventUserMessage
+	case "assistant", "assistant_message", "message":
+		return agent.EventAssistantMessage
+	case "thinking":
+		return agent.EventThinking
+	case "tool_use", "tool_call_started":
+		return agent.EventToolCallStarted
+	case "tool_result", "tool_call_finished":
+		return agent.EventToolCallFinished
+	case "approval_requested":
+		return agent.EventApprovalRequested
+	case "approval_resolved":
+		return agent.EventApprovalResolved
+	case "error", "failed":
+		return agent.EventFailed
+	case "done", "completed":
+		return agent.EventCompleted
+	case "interrupted":
+		return agent.EventInterrupted
+	default:
+		return agent.EventUnknown
+	}
 }

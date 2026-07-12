@@ -6,14 +6,13 @@ import (
 	"strconv"
 )
 
-// HandleTranscript is the HTTP handler for the session-scoped Transcript read API.
+// HandleTranscript returns the session-scoped Transcript read API.
 //
 // GET /api/sessions/{id}/transcript
-//   - Returns all segments for the session, oldest-first.
-//   - Query param `?after=<seq>` returns only segments with Seq > seq.
 //
-// Authentication and session-scoping are enforced by the caller (middleware).
-// This handler performs no auth; it only reads from the Transcript store.
+// Returns a TranscriptResponse envelope with separated semantic and
+// fallback channels. When AgentEvent is primary, byte-stream segments
+// are routed to the fallback channel.
 func HandleTranscript(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -25,6 +24,14 @@ func HandleTranscript(svc *Service) http.HandlerFunc {
 		if sessionID == "" {
 			http.Error(w, "missing session id", http.StatusBadRequest)
 			return
+		}
+
+		// Bounded page size.
+		limit := 1000
+		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 5000 {
+				limit = n
+			}
 		}
 
 		var segments []TranscriptSegment
@@ -40,19 +47,20 @@ func HandleTranscript(svc *Service) http.HandlerFunc {
 			segments = svc.ListTranscript(sessionID)
 		}
 
-		if segments == nil {
-			segments = []TranscriptSegment{}
+		// Apply page limit.
+		if len(segments) > limit {
+			segments = segments[:limit]
 		}
+
+		resp := svc.BuildResponse(sessionID, segments)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(segments)
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 
 // HandleTranscriptStats is an optional diagnostic endpoint.
-//
-// GET /api/sessions/{id}/transcript/stats
 func HandleTranscriptStats(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -70,31 +78,5 @@ func HandleTranscriptStats(svc *Service) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(stats)
-	}
-}
-
-// HandleTranscriptSource is an optional arbitration query endpoint.
-//
-// GET /api/sessions/{id}/transcript/source
-func HandleTranscriptSource(svc *Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		sessionID := r.PathValue("id")
-		if sessionID == "" {
-			http.Error(w, "missing session id", http.StatusBadRequest)
-			return
-		}
-
-		source := svc.PrimarySource(sessionID)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"sessionId":     sessionID,
-			"primarySource": string(source),
-		})
 	}
 }

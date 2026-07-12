@@ -381,11 +381,7 @@ export async function getActivityHistory(sessionID: string, token?: string) {
   return res.json();
 }
 
-// T3: fetch versioned Transcript segments from the dedicated Transcript API.
-// Returns TranscriptSegment[] with stable IDs, monotonic Seq, explicit
-// source (agent_event | terminal_output | input_boundary | degraded | ui_omitted),
-// and bounded safe text. Primary semantic source is AgentEvent when available;
-// byte-stream terminal_output is the fallback.
+// T3: versioned Transcript response envelope with separated semantic/fallback channels.
 export interface TranscriptSegment {
   id: string;
   seq: number;
@@ -404,13 +400,32 @@ export interface TranscriptSegment {
   contractVersion: string;
 }
 
-export async function getTranscript(sessionID: string, token?: string, after?: number): Promise<TranscriptSegment[]> {
+export interface TranscriptResponse {
+  sessionId: string;
+  semantic: TranscriptSegment[];
+  fallback?: TranscriptSegment[];
+  primarySource: 'agent_event' | 'byte_stream' | 'snapshot_delta' | 'unknown';
+  contractVersion: string;
+}
+
+function validateTranscriptResponse(data: any, expectedSessionID: string): TranscriptResponse | null {
+  if (!data || typeof data !== 'object') return null;
+  if (data.sessionId !== expectedSessionID) return null;
+  if (!Array.isArray(data.semantic)) return null;
+  if (data.contractVersion !== 't3.1') return null;
+  const validSources = ['agent_event', 'byte_stream', 'snapshot_delta', 'unknown'];
+  if (!validSources.includes(data.primarySource)) return null;
+  return data as TranscriptResponse;
+}
+
+export async function getTranscript(sessionID: string, token?: string, after?: number): Promise<TranscriptResponse | null> {
   let path = `/api/sessions/${encodeURIComponent(sessionID)}/transcript`;
   if (after !== undefined && after > 0) {
     path += `?after=${after}`;
   }
   const res = await apiGet(path, token);
-  return res.json();
+  const raw = await res.json();
+  return validateTranscriptResponse(raw, sessionID);
 }
 
 export async function sendDebugCommand(sessionID: string, command: string, token?: string) {

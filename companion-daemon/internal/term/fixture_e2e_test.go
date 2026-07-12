@@ -390,7 +390,7 @@ func TestFixtureE2E_StreamContent(t *testing.T) {
 func TestFixtureE2E_Telemetry(t *testing.T) {
 	h, _ := fixtureE2EHandlers(t)
 
-	svc := NewTelemetryService(h.Registry, h.Events, NewNopLinkStore(), NoopNotifier{}, nil, nil, nil)
+	svc := NewTelemetryService(h.Registry, h.Events, NewNopLinkStore(), NoopNotifier{}, nil, nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	go svc.Run(ctx)

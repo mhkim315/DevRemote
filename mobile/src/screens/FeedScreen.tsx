@@ -1,6 +1,6 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import { terminalURL, listSessions, getSessionHistory, getActivityHistory, getTranscript, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
-import type { TranscriptSegment } from '../lib/client';
+import type { TranscriptSegment, TranscriptResponse } from '../lib/client';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
 import type { TokenManager } from '../lib/authClient';
 import { TerminalController, shouldIssueReconnect } from '../lib/terminalController';
@@ -439,14 +439,16 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
     };
 
     // T3: fetch Transcript from the dedicated versioned API.
-    // Falls back to legacy activity endpoint when T3 is unavailable.
+    // The response is a TranscriptResponse envelope with semantic + fallback channels.
     const fetchTranscript = () => {
       getTranscript(session, token)
-        .then((data: TranscriptSegment[]) => {
-          if (Array.isArray(data)) {
-            setTranscriptEvents(data);
+        .then((resp: TranscriptResponse | null) => {
+          if (resp && resp.semantic) {
+            // Merge semantic + fallback for display (separated by source in UI).
+            const all: TranscriptSegment[] = [...resp.semantic, ...(resp.fallback || [])];
+            setTranscriptEvents(all);
             setActivityError('');
-            const maxSeq = data.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
+            const maxSeq = all.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
             transcriptMaxSeqRef.current = maxSeq;
             if (activeTabRef.current === 'transcript' && maxSeq > lastSeenSeqRef.current) {
               setNewOutputCount(maxSeq - lastSeenSeqRef.current);
@@ -454,6 +456,9 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
             if (activeTabRef.current !== 'transcript') {
               lastSeenSeqRef.current = maxSeq;
             }
+          } else if (resp === null) {
+            // Validation failed — degraded.
+            setActivityError('Transcript response validation failed.');
           }
         })
         .catch(async (err) => {

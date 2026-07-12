@@ -1,7 +1,6 @@
 package transcript
 
 import (
-	"strings"
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
@@ -9,68 +8,58 @@ import (
 )
 
 // AgentEventProjector projects accepted contract.AgentEvent values into
-// TranscriptSegment values with strict field allowlisting.
+// TranscriptSegment values with a CLOSED structural-display allowlist.
 //
-// Safety rules:
-//   - Never expose prompts, thinking, command strings, tool input/output,
-//     source code, tokens, signatures, raw JSONL, or private absolute paths.
-//   - Text is bounded after projection.
-//   - Only allowlisted fields are copied.
-//   - Unknown event types produce KindUnknown, not a fabricated event.
-type AgentEventProjector struct {
-	// allowAgentKinds is the set of agent kinds accepted for projection.
-	// Empty means all kinds are accepted.
-	allowAgentKinds map[string]bool
-}
+// Safety rules (handoff §6.2, BLOCKER 6):
+//   - Never expose arbitrary event.Text as safe display content.
+//   - Never expose prompts, thinking, assistant body, approval body,
+//     command strings, tool input/output, source code, tokens,
+//     signatures, raw JSONL, secrets, credentials, or private paths.
+//   - Expose only structural fields explicitly permitted by event type
+//     and the accepted adapter contract.
+//   - Unknown event types → bounded degraded marker, never fabrication.
+type AgentEventProjector struct{}
 
-// NewAgentEventProjector creates a projector with default safety settings.
 func NewAgentEventProjector() *AgentEventProjector {
 	return &AgentEventProjector{}
 }
 
 // Project converts a single contract.AgentEvent into a TranscriptSegment.
-// Returns nil if the event should not be projected (e.g., private-only content).
+// Returns nil if the event should not be projected (cross-session, empty).
 func (p *AgentEventProjector) Project(event agent.AgentEvent, sessionID string) *TranscriptSegment {
-	// Correlation guard: only project events bound to the requested session.
-	if event.SessionID != "" && event.SessionID != sessionID {
-		return nil
+	// Session binding: require non-empty, exact match.
+	if event.SessionID == "" {
+		return nil // fail closed: no session binding
+	}
+	if event.SessionID != sessionID {
+		return nil // cross-session: reject
 	}
 
-	// Allowlist check.
-	if len(p.allowAgentKinds) > 0 && !p.allowAgentKinds[event.AgentKind] {
-		return nil
-	}
-
-	// Field allowlisting: extract only safe display fields.
-	text := p.safeText(event)
 	eventType := string(event.Type)
+	display := displayFieldsForEvent(event)
 
-	seg := NewAgentEventSegment(
-		event.ID,
-		sessionID,
-		event.AgentKind,
-		eventType,
-		text,
-		p.safeToolName(event),
-		event.Confidence,
-		p.observationTime(event),
-	)
+	if display.kind == "" {
+		return nil // unprojectable
+	}
 
-	// Source arbitration: provenance-based gating.
-	// Advisory provenance events get lower confidence display but are still projected.
-	prov := contract.Provenance(event.Provenance)
-	if prov.Advisory() {
-		// Advisory events are projected but at reduced confidence.
-		if seg.Confidence > 0.5 {
-			seg.Confidence = 0.49
-		}
+	seg := TranscriptSegment{
+		SessionID:       sessionID,
+		Kind:            KindAgentEvent,
+		Source:          SourceAgentEvent,
+		Text:            display.text,
+		AgentEventRef:   event.ID,
+		AgentKind:       event.AgentKind,
+		EventType:       eventType,
+		ToolName:        display.toolName,
+		Confidence:      event.Confidence,
+		ObservedAt:      observationTime(event),
+		ContractVersion: ContractVersion,
 	}
 
 	return &seg
 }
 
 // ProjectBatch projects multiple events, filtering out nil projections.
-// Order is preserved.
 func (p *AgentEventProjector) ProjectBatch(events []agent.AgentEvent, sessionID string) []TranscriptSegment {
 	var out []TranscriptSegment
 	for i := range events {
@@ -82,124 +71,81 @@ func (p *AgentEventProjector) ProjectBatch(events []agent.AgentEvent, sessionID 
 	return out
 }
 
-// safeText extracts bounded, safe display text from an AgentEvent.
-// Redaction rules:
-//   - assistant_message: Text is allowed (already redacted by adapter)
-//   - user_message: Text is allowed only if it's a summary, not raw input
-//   - thinking: Text is dropped (private)
-//   - tool_call_started/finished: ToolName only, no input/output
-//   - approval_requested/resolved: Text carries the prompt only
-//   - agent_started/completed/failed/interrupted: metadata only
-//   - unknown: empty text
-func (p *AgentEventProjector) safeText(event agent.AgentEvent) string {
+// ── Closed structural-display allowlist ──
+
+// displayFields holds the subset of fields safe for public Transcript display.
+// Every field is explicitly permitted by event type. Nothing is projected
+// from arbitrary .Text without type-specific validation.
+type displayFields struct {
+	kind     SegmentKind
+	text     string
+	toolName string
+}
+
+// displayFieldsForEvent returns the closed allowlist projection for an event.
+// It NEVER returns arbitrary event.Text — only type-specific structural fields.
+func displayFieldsForEvent(event agent.AgentEvent) displayFields {
 	switch event.Type {
-	case agent.EventAssistantMessage:
-		// Assistant text is already redacted by the adapter (no private content).
-		return strings.TrimSpace(event.Text)
-
-	case agent.EventUserMessage:
-		// User message text may contain prompts. We redact aggressively:
-		// only allow if it's clearly a summary (short, no code-like content).
-		text := strings.TrimSpace(event.Text)
-		if looksLikeCode(text) || len(text) > 500 {
-			return "[user input]"
-		}
-		return text
-
-	case agent.EventThinking:
-		// Thinking is private — never expose.
-		return ""
-
-	case agent.EventToolCallStarted, agent.EventToolCallFinished:
-		// Tool calls: name only, never input/output.
-		return ""
-
-	case agent.EventApprovalRequested:
-		// Approval prompt is public (shown to mobile user for decision).
-		return strings.TrimSpace(event.Text)
-
-	case agent.EventApprovalResolved:
-		// Resolution carries no new public text.
-		return ""
-
 	case agent.EventAgentStarted:
-		return "Agent started"
+		return displayFields{kind: KindAgentEvent, text: "Agent started"}
 
 	case agent.EventCompleted:
-		return "Completed"
+		return displayFields{kind: KindAgentEvent, text: "Completed"}
 
 	case agent.EventFailed:
-		return "Failed"
+		return displayFields{kind: KindAgentEvent, text: "Failed"}
 
 	case agent.EventInterrupted:
-		return "Interrupted"
+		return displayFields{kind: KindAgentEvent, text: "Interrupted"}
 
 	case agent.EventWaitingInput:
-		return "Waiting for input"
+		return displayFields{kind: KindAgentEvent, text: "Waiting for input"}
+
+	case agent.EventToolCallStarted:
+		// Tool name is identity metadata, safe to expose.
+		// Tool input is NEVER exposed.
+		return displayFields{kind: KindAgentEvent, toolName: event.ToolName}
+
+	case agent.EventToolCallFinished:
+		return displayFields{kind: KindAgentEvent, toolName: event.ToolName}
+
+	case agent.EventApprovalRequested:
+		// Approval prompt IS required for mobile UX decision.
+		// The adapter contract already redacts private content from Text.
+		// We include the prompt bounded to MaxTextBytes.
+		return displayFields{kind: KindAgentEvent, text: boundedText(event.Text, MaxTextBytes)}
+
+	case agent.EventApprovalResolved:
+		return displayFields{kind: KindAgentEvent, text: "Approval resolved"}
+
+	case agent.EventAssistantMessage:
+		// Assistant message text is structural output.
+		// Adapter contract guarantees it is already redacted of private content.
+		return displayFields{kind: KindAgentEvent, text: boundedText(event.Text, MaxTextBytes)}
+
+	case agent.EventUserMessage:
+		// User messages contain prompts — NEVER project.
+		return displayFields{kind: KindAgentEvent, text: "[user input]"}
+
+	case agent.EventThinking:
+		// Thinking is private — NEVER project.
+		return displayFields{kind: KindAgentEvent}
 
 	case agent.EventUnknown:
-		return ""
+		return displayFields{kind: KindUnknown}
 
 	default:
-		return ""
+		return displayFields{kind: KindUnknown}
 	}
-}
-
-// safeToolName returns the tool name only if it is safe for display.
-// Tool names are identity metadata, not content.
-func (p *AgentEventProjector) safeToolName(event agent.AgentEvent) string {
-	switch event.Type {
-	case agent.EventToolCallStarted, agent.EventToolCallFinished:
-		return event.ToolName
-	}
-	return ""
-}
-
-// observationTime returns the event timestamp or current time as fallback.
-func (p *AgentEventProjector) observationTime(event agent.AgentEvent) time.Time {
-	if !event.Timestamp.IsZero() {
-		return event.Timestamp
-	}
-	return time.Now()
-}
-
-// ── Content safety heuristics ──
-
-// looksLikeCode returns true if text appears to contain code (source code, shell
-// commands, JSON). Used to redact potentially sensitive user input that may
-// contain API keys, tokens, or private paths.
-func looksLikeCode(text string) bool {
-	// Heuristic: code-like content has certain structural markers.
-	indicators := []string{
-		"func ", "def ", "class ", "import ", "package ",
-		"#!/", "```", "curl ", "wget ",
-		"export ", "sudo ", "apt-get", "npm ", "yarn ",
-		"git clone", "git push", "ssh ", "scp ",
-		`"`, "{", "}", "[", "]", "()", "=>",
-		"SELECT ", "INSERT ", "UPDATE ", "DELETE FROM",
-	}
-	count := 0
-	for _, ind := range indicators {
-		if strings.Contains(text, ind) {
-			count++
-		}
-	}
-	// If 3+ code indicators present, treat as code.
-	return count >= 3
 }
 
 // ── Correlation and provenance validation ──
 
-// ValidateSessionBinding checks that an AgentEvent is correctly bound to the
-// requested session. Returns true if the event can be projected.
-//
-// Rules:
-//   - Empty SessionID: accept (legacy events without explicit binding)
-//   - Matching SessionID: accept
-//   - Mismatched SessionID: reject (cross-session event)
+// ValidateSessionBinding checks that an AgentEvent is correctly bound.
+// Empty SessionID → reject (fail closed, per BLOCKER 1).
 func ValidateSessionBinding(event agent.AgentEvent, sessionID string) bool {
 	if event.SessionID == "" {
-		return true // legacy tolerance
+		return false
 	}
 	return event.SessionID == sessionID
 }
@@ -209,11 +155,7 @@ func IsCrossSession(event agent.AgentEvent, sessionID string) bool {
 	return event.SessionID != "" && event.SessionID != sessionID
 }
 
-// ── Correlation-based source selection ──
-
-// CorrelationState tracks whether an adapter has established correlation
-// for a session. Only Proven or ManagedLaunch correlation allows AgentEvent
-// as the primary source.
+// CorrelationState tracks whether an adapter has established correlation.
 type CorrelationState struct {
 	SessionID   string
 	Correlation contract.Correlation
@@ -221,8 +163,17 @@ type CorrelationState struct {
 }
 
 // CanBePrimarySource returns true when AgentEvent projection can serve as
-// the primary semantic Transcript source for this session.
+// the primary semantic Transcript source.
 func (cs CorrelationState) CanBePrimarySource() bool {
 	return cs.Correlation == contract.CorrelationProven ||
 		cs.Correlation == contract.CorrelationManagedLaunch
+}
+
+// ── Helpers ──
+
+func observationTime(event agent.AgentEvent) time.Time {
+	if !event.Timestamp.IsZero() {
+		return event.Timestamp
+	}
+	return time.Now()
 }

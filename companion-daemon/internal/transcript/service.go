@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -8,13 +9,14 @@ import (
 )
 
 // Service is the per-process Transcript integration service.
-// It owns the bounded store, projectors, and per-session arbitration state.
-// One Service instance is shared across all sessions.
+// It owns the bounded store, projectors, per-session arbitration state,
+// and per-session bounded chunk queues for byte-stream projection.
 type Service struct {
 	store     *Store
 	agentProj *AgentEventProjector
 	byteProjs map[string]*ByteStreamProjector // sessionID → projector
 	arbiters  map[string]*SourceArbiter       // sessionID → arbiter
+	queues    map[string]*chunkQueue          // sessionID → bounded byte-stream queue
 	mu        sync.Mutex
 }
 
@@ -25,6 +27,7 @@ func NewService(cfg StoreConfig) *Service {
 		agentProj: NewAgentEventProjector(),
 		byteProjs: make(map[string]*ByteStreamProjector),
 		arbiters:  make(map[string]*SourceArbiter),
+		queues:    make(map[string]*chunkQueue),
 	}
 }
 
@@ -46,22 +49,77 @@ func (s *Service) ProjectAgentEvents(sessionID string, events []agent.AgentEvent
 	}
 }
 
-// ── Byte-stream fallback path ──
+// ── Byte-stream fallback path (non-blocking enqueue) ──
 
-// FeedBytes processes a Recorder byte chunk through the byte-stream projector
-// and appends any resulting segments to the store.
+// FeedBytes enqueues a Recorder byte chunk for ordered, non-blocking
+// projection. It never blocks the caller. If no queue is active for the
+// session, it processes synchronously (used in tests and simple paths).
 func (s *Service) FeedBytes(sessionID string, chunk []byte, observedAt time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	q, hasQ := s.queues[sessionID]
+	if !hasQ {
+		// Synchronous path: no queue attached.
+		bp := s.ensureByteProj(sessionID)
+		arb := s.ensureArbiter(sessionID)
+		segments := bp.Feed(sessionID, chunk, observedAt)
+		if len(segments) > 0 {
+			arb.RecordByteStream()
+			s.store.Append(sessionID, segments)
+		}
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	q.enqueue(chunk, observedAt)
+}
 
+// EnableQueue attaches a bounded chunk queue to a session, making FeedBytes
+// non-blocking. Called from the Recorder production path.
+func (s *Service) EnableQueue(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.queues[sessionID]; !ok {
+		q := newChunkQueue(sessionID, s)
+		s.queues[sessionID] = q
+	}
+}
+
+// FlushBytes flushes any accumulated partial state in the byte-stream
+// projector for the session.
+func (s *Service) FlushBytes(sessionID string, observedAt time.Time) {
+	s.mu.Lock()
 	bp := s.ensureByteProj(sessionID)
 	arb := s.ensureArbiter(sessionID)
-
-	segments := bp.Feed(sessionID, chunk, observedAt)
+	segments := bp.Flush(sessionID, observedAt)
 	if len(segments) > 0 {
 		arb.RecordByteStream()
 		s.store.Append(sessionID, segments)
 	}
+	s.mu.Unlock()
+}
+
+// emitDegraded appends a degraded marker directly (called from queue worker).
+func (s *Service) emitDegraded(sessionID string, reason string, observedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	arb := s.ensureArbiter(sessionID)
+	arb.RecordDegraded()
+	s.store.Append(sessionID, []TranscriptSegment{
+		NewDegradedSegment(sessionID, reason, observedAt),
+	})
+}
+
+// processChunk is called by the chunk queue worker to project a single chunk.
+func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Time) {
+	s.mu.Lock()
+	bp := s.ensureByteProj(sessionID)
+	arb := s.ensureArbiter(sessionID)
+	segments := bp.Feed(sessionID, data, observedAt)
+	if len(segments) > 0 {
+		arb.RecordByteStream()
+		s.store.Append(sessionID, segments)
+	}
+	s.mu.Unlock()
 }
 
 // BeginInput marks the start of terminal input for echo suppression.
@@ -129,12 +187,16 @@ func (s *Service) TranscriptStats(sessionID string) StoreStats {
 	return s.store.Stats(sessionID)
 }
 
-// ClearTranscript removes all segments for a session.
+// ClearTranscript removes all segments and shuts down the queue for a session.
 func (s *Service) ClearTranscript(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.store.Clear(sessionID)
+	if q, ok := s.queues[sessionID]; ok {
+		q.close()
+		delete(s.queues, sessionID)
+	}
 	delete(s.byteProjs, sessionID)
 	delete(s.arbiters, sessionID)
 }
@@ -166,8 +228,6 @@ func (s *Service) HasAgentEvents(sessionID string) bool {
 }
 
 // FeedBytesBatch directly appends pre-built terminal output segments.
-// Used when the caller already has structured terminal output (e.g., from
-// ActivityBuffer replay) and doesn't need byte-stream character processing.
 func (s *Service) FeedBytesBatch(sessionID string, segments []TranscriptSegment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,6 +235,31 @@ func (s *Service) FeedBytesBatch(sessionID string, segments []TranscriptSegment)
 	arb := s.ensureArbiter(sessionID)
 	arb.RecordByteStream()
 	s.store.Append(sessionID, segments)
+}
+
+// BuildResponse constructs the separated TranscriptResponse envelope.
+func (s *Service) BuildResponse(sessionID string, segments []TranscriptSegment) TranscriptResponse {
+	s.mu.Lock()
+	arb := s.arbiters[sessionID]
+	s.mu.Unlock()
+	return NewTranscriptResponse(sessionID, segments, arb)
+}
+
+// ── Queue shutdown (called on Recorder stop) ──
+
+// CloseSessionQueue gracefully shuts down the chunk queue for a session.
+// The worker drains remaining chunks and flushes the projector.
+func (s *Service) CloseSessionQueue(sessionID string) {
+	s.mu.Lock()
+	q, ok := s.queues[sessionID]
+	if ok {
+		delete(s.queues, sessionID)
+	}
+	s.mu.Unlock()
+	if ok {
+		q.close()
+		log.Printf("TRANSCRIPT queue close session=%s", sessionID)
+	}
 }
 
 // ── Internal helpers ──
@@ -195,4 +280,13 @@ func (s *Service) ensureArbiter(sessionID string) *SourceArbiter {
 	arb := NewSourceArbiter()
 	s.arbiters[sessionID] = arb
 	return arb
+}
+
+func (s *Service) ensureQueue(sessionID string) *chunkQueue {
+	if q, ok := s.queues[sessionID]; ok {
+		return q
+	}
+	q := newChunkQueue(sessionID, s)
+	s.queues[sessionID] = q
+	return q
 }

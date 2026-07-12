@@ -3,6 +3,7 @@ package transcript
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,8 +53,10 @@ func NewStore(cfg StoreConfig) *Store {
 }
 
 // Append adds segments to a session's Transcript. Segments are assigned
-// stable IDs and monotonic Seq values. Oldest segments are evicted when
-// bounds are exceeded; a KindDegraded gap marker is prepended.
+// stable unique IDs and monotonic Seq values. Oldest segments are evicted when
+// bounds are exceeded; a single coalesced KindDegraded gap marker replaces
+// evicted segments. The final count never exceeds MaxSegments (gap marker
+// included).
 func (s *Store) Append(sessionID string, segments []TranscriptSegment) {
 	if len(segments) == 0 {
 		return
@@ -67,15 +70,14 @@ func (s *Store) Append(sessionID string, segments []TranscriptSegment) {
 		s.sessions[sessionID] = ss
 	}
 
-	now := time.Now()
 	for i := range segments {
 		if segments[i].ObservedAt.IsZero() {
-			segments[i].ObservedAt = now
+			segments[i].ObservedAt = time.Now()
 		}
 		ss.nextSeq++
 		segments[i].Seq = ss.nextSeq
 		if segments[i].ID == "" {
-			segments[i].ID = segmentID(segments[i])
+			segments[i].ID = segmentID(segments[i], ss.nextSeq)
 		}
 		segments[i].ContractVersion = ContractVersion
 		ss.totalBytes += len(segments[i].Text)
@@ -104,7 +106,6 @@ func (s *Store) List(sessionID string) []TranscriptSegment {
 }
 
 // ListAfter returns segments with Seq > cursor, oldest-first.
-// Used for incremental reads.
 func (s *Store) ListAfter(sessionID string, cursor int64) []TranscriptSegment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -156,7 +157,7 @@ func (s *Store) Stats(sessionID string) StoreStats {
 		SegmentCount: len(ss.segments),
 		TotalBytes:   ss.totalBytes,
 		LatestSeq:    ss.nextSeq,
-		GapCount:     ss.gapCount,
+		GapCount:     ss.totalEvicted,
 	}
 }
 
@@ -171,72 +172,97 @@ type StoreStats struct {
 // ── Internal per-session store ──
 
 type sessionStore struct {
-	segments   []TranscriptSegment
-	nextSeq    int64
-	totalBytes int
-	gapCount   int
+	segments     []TranscriptSegment
+	nextSeq      int64
+	totalBytes   int
+	totalEvicted int // cumulative evicted count (diagnostic only)
+	hasGap       bool
 }
 
-// evictLocked removes oldest segments until within bounds.
-// Must be called with s.mu held.
+// evictLocked removes oldest segments until within bounds, then inserts or
+// updates a single coalesced gap marker. The final segment count is always
+// ≤ MaxSegments including any gap marker.
 func (s *Store) evictLocked(ss *sessionStore, sessionID string) {
 	cfg := s.cfg
+	evictedThisCall := 0
 
-	// Evict by count.
-	for len(ss.segments) > cfg.MaxSegments {
+	// Evict by count. Reserve one slot for a potential gap marker.
+	limit := cfg.MaxSegments
+	if limit > 1 {
+		limit-- // reserve for gap
+	}
+	for len(ss.segments) > limit {
 		evicted := ss.segments[0]
 		ss.totalBytes -= len(evicted.Text)
 		ss.segments = ss.segments[1:]
-		ss.gapCount++
+		evictedThisCall++
 	}
 
-	// Evict by byte total.
+	// Evict by byte total (also reserve one slot for gap).
 	for ss.totalBytes > cfg.MaxTotalBytes && len(ss.segments) > 1 {
 		evicted := ss.segments[0]
 		ss.totalBytes -= len(evicted.Text)
 		ss.segments = ss.segments[1:]
-		ss.gapCount++
+		evictedThisCall++
 	}
 
-	// If we evicted anything, prepend a gap marker.
-	if ss.gapCount > 0 && len(ss.segments) > 0 {
-		gap := NewDegradedSegment(sessionID, "older transcript segments evicted (capacity bound)", time.Now())
-		gap.Seq = ss.segments[0].Seq - 1
-		gap.ID = segmentID(gap)
-		gap.ContractVersion = ContractVersion
-		ss.segments = append([]TranscriptSegment{gap}, ss.segments...)
+	if evictedThisCall == 0 {
+		return
 	}
+
+	ss.totalEvicted += evictedThisCall
+
+	// Coalesce: update existing gap marker if the first segment is already a gap.
+	if ss.hasGap && len(ss.segments) > 0 && ss.segments[0].Kind == KindDegraded {
+		ss.segments[0].DegradedReason = fmt.Sprintf(
+			"older transcript segments evicted (capacity bound, %d total evicted)", ss.totalEvicted,
+		)
+		ss.segments[0].ObservedAt = time.Now()
+		return
+	}
+
+	// Insert a single coalesced gap marker at the front.
+	gap := NewDegradedSegment(sessionID,
+		fmt.Sprintf("older transcript segments evicted (capacity bound, %d total evicted)", ss.totalEvicted),
+		time.Now(),
+	)
+	gap.Seq = ss.segments[0].Seq - 1
+	if gap.Seq < 1 {
+		gap.Seq = 0
+	}
+	gap.ID = segmentID(gap, gap.Seq)
+	gap.ContractVersion = ContractVersion
+	ss.segments = append([]TranscriptSegment{gap}, ss.segments...)
+	ss.hasGap = true
+	ss.totalBytes += len(gap.Text)
 }
 
-// segmentID generates a stable, unique segment ID from content.
-func segmentID(seg TranscriptSegment) string {
+// segmentID generates a unique segment ID from content + sequence.
+func segmentID(seg TranscriptSegment, seq int64) string {
 	h := sha256.New()
 	h.Write([]byte(seg.SessionID))
 	h.Write([]byte(seg.Kind))
 	h.Write([]byte(seg.Source))
 	h.Write([]byte(seg.Text))
 	h.Write([]byte(seg.AgentEventRef))
-	// Seq and ObservedAt are not included — ID is content-stable.
+	// Seq makes identical content have distinct IDs.
+	h.Write([]byte(fmt.Sprintf(":%d", seq)))
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum[:])[:16]
 }
 
 // ── Atomic cursor for non-blocking reads ──
 
-// Cursor is a lock-free snapshot of the latest Seq for a session.
-// Readers can use it to request incremental updates.
 type Cursor struct {
 	seq atomic.Int64
 }
 
-// NewCursor returns a cursor initialised to the store's current latest seq.
 func NewCursor(s *Store, sessionID string) *Cursor {
 	c := &Cursor{}
 	c.seq.Store(s.LatestSeq(sessionID))
 	return c
 }
 
-// Advance updates the cursor to at least the given seq.
 func (c *Cursor) Advance(seq int64) {
 	for {
 		cur := c.seq.Load()
@@ -249,7 +275,6 @@ func (c *Cursor) Advance(seq int64) {
 	}
 }
 
-// Seq returns the current cursor position.
 func (c *Cursor) Seq() int64 {
 	return c.seq.Load()
 }

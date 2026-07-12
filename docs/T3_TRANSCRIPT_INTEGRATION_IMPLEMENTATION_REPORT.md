@@ -9,7 +9,8 @@ Branch: `feature/phase10-multi-adapter`
 ```text
 accepted D1 / T3 baseline: 8f7c22def81abf0b932f6dbbacc07325ae2bb12e
 handoff document:          68eccf1f7967860195814f337297b7249a7d4b33
-final implementation tip:  0fe9bda2263bc8ea495d06261ecd7162b5e49062
+final implementation tip:  <will be set after commit>
+remediated tip (BLOCKER 1-7 fixes): <will be set after commit>
 ```
 
 Ancestry verification — all accepted phases are ancestors of HEAD:
@@ -231,13 +232,61 @@ runaway test/build processes: 0
 recursive go test: NOT triggered (explicit package lists used)
 ```
 
-## 9. Honestly deferred
+## 9. BLOCKER remediation (v2)
 
-- **Physical-device Transcript smoke test**: M-track only; automated production path is complete and tested
-- **AgentEvent projection from TelemetryService**: Service API is implemented and tested; the production hook point from TelemetryService.processSession → Transcript.ProjectAgentEvents is documented but not yet wired (requires coordination with the existing telemetry state machine)
-- **Transcript persistence across daemon restart**: Store is in-memory; persistence deferred per handoff scope
-- **Doctor test failures**: Pre-existing on baseline (fixture manifest path issues); not caused by T3
-- **Full VT100/xterm screen emulator**: Not implemented (handoff scope exclusion)
+### BLOCKER 1 — AgentEvent production projection wired
+- `TelemetryService` now carries `transcript *transcript.Service`
+- `processSession` calls `s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))`
+- `convertToAgentEvents` maps legacy `models.AgentEvent` → `agent.AgentEvent` with explicit agent kind
+- Projector rejects empty SessionID (fail-closed)
+- `CorrelationState.CanBePrimarySource()` enforced at production boundary
+
+### BLOCKER 2 — Source arbitration enforced in storage/API
+- `TranscriptResponse` envelope separates `semantic` (primary) and `fallback` channels
+- `SourceArbiter.SuppressByteStream()` gates byte-stream append after AgentEvent primary
+- API returns `primarySource` field; mobile renders channels separately
+- Mobile `validateTranscriptResponse()` enforces SessionID equality, closed vocabularies, contract version
+
+### BLOCKER 3 — Echo privacy wired to production WS input path
+- `HandleWS` calls `h.Transcript.BeginInput(session, time.Now())` before `WriteInput`
+- `time.AfterFunc(200ms, ...)` calls `EndInput` after bounded window
+- Byte-stream projector suppresses all bytes during input window
+- No typed command content, prompt matching, or string comparison used
+
+### BLOCKER 4 — Bounded ordered worker replaces per-chunk goroutines
+- `chunkQueue`: session-owned bounded channel (256 capacity), single ordered worker goroutine
+- Non-blocking enqueue: `select { case q.chunks <- item: ... default: drop + coalesced gap }`
+- `Service.EnableQueue(sessionID)` called from Recorder; `CloseSessionQueue` on stop
+- Synchronous fallback path when no queue attached (tests)
+- Deterministic shutdown: `close(q.chunks)` → worker drains → flush
+
+### BLOCKER 5 — Capture-mode routing and stateful ANSI/UTF-8
+- Byte-stream projector rewritten with stateful UTF-8 decoder across chunk boundaries
+- Stateful ANSI escape sequence parser (CSI, OSC, ESC) across chunks
+- CR progress: captured in `crProgress` buffer; committed only when followed by non-CR or chunk-end
+- Double-CR, CR+LF, and backspace handling
+- `IsAlternateScreenStart/End`, `HasClearScreen` detectors available for TUI routing
+
+### BLOCKER 6 — Closed structural-display allowlist
+- `displayFieldsForEvent()`: type-specific structural fields only
+- NEVER projects arbitrary `event.Text`
+- `EventUserMessage` → `"[user input]"` (prompts never exposed)
+- `EventThinking` → empty text
+- `EventToolCallStarted/Finished` → tool name only (never input/output)
+- `EventAssistantMessage` → text (adapter-redacted per contract)
+- `EventApprovalRequested` → bounded text (adapter-redacted)
+
+### BLOCKER 7 — Store bounds, IDs, gap coalescing, lifecycle deletion
+- Evict to `MaxSegments - 1` before gap marker insertion → final count always ≤ MaxSegments
+- Single coalesced gap marker: update existing if first segment is already degraded
+- Unique IDs: `segmentID()` includes Seq for distinct same-content IDs
+- `LifecycleService` carries `transcript *transcript.Service`; `Delete()` calls `ClearTranscript(id)`
+- Transcript retained after Stop/Kill/exit until explicit Delete
+
+### Honest deferrals
+- Physical-device Transcript smoke test: M-track only
+- Transcript persistence across daemon restart: in-memory per scope
+- Doctor test failures (4): pre-existing on D1 baseline, not caused by T3
 
 ## 10. Production data flow diagram
 

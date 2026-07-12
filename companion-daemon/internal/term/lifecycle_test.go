@@ -77,7 +77,7 @@ func (s *lcSession) TerminateGroup(force bool) error {
 func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
 	reg := mux.MustNewRegistry(a)
-	svc := NewLifecycleService(reg, NewActivityBuffer(50))
+	svc := NewLifecycleService(reg, NewActivityBuffer(50), nil)
 	svc.graceful = 200 * time.Millisecond
 	return svc
 }
@@ -268,7 +268,7 @@ func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
 func realService(t *testing.T) *LifecycleService {
 	t.Helper()
 	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
-	svc := NewLifecycleService(reg, NewActivityBuffer(100))
+	svc := NewLifecycleService(reg, NewActivityBuffer(100), nil)
 	svc.graceful = 400 * time.Millisecond
 	return svc
 }

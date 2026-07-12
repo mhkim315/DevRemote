@@ -487,11 +487,15 @@ func TestByteStreamProjectorFlush(t *testing.T) {
 
 func TestSourceArbiterInitial(t *testing.T) {
 	arb := NewSourceArbiter()
-	if arb.PrimarySource() != SourceUnknown {
-		t.Errorf("expected SourceUnknown initially, got %s", arb.PrimarySource())
+	// Without AgentEvent, primary source is byte-stream (the fallback).
+	if arb.PrimarySource() != SourceByteStream {
+		t.Errorf("expected SourceByteStream initially, got %s", arb.PrimarySource())
 	}
 	if arb.HasAgentEvents() {
 		t.Error("expected no agent events initially")
+	}
+	if arb.SuppressByteStream() {
+		t.Error("byte-stream should NOT be suppressed without AgentEvent primary")
 	}
 }
 

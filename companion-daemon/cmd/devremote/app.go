@@ -183,7 +183,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	activity := term.NewActivityBuffer(2000)
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
-	lifecycle := term.NewLifecycleService(reg, activity)
+	lifecycle := term.NewLifecycleService(reg, activity, transcriptSvc)
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
 	// configured yet (first run without pairing) the endpoints return an error.
@@ -317,7 +317,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if cfg.EnableAgentDetection {
 		agentDetector = agent.NewTermAgentDetector()
 	}
-	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity)
+	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity, transcriptSvc)
 	h.Telemetry = telemetry
 
 	addr := ":9171"

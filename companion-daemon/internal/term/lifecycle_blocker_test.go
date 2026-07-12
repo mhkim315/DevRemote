@@ -72,7 +72,7 @@ func (a *stuckAdapter) TerminateSession(context.Context, string) error { return 
 func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	stuck := &stuckSession{id: "stuck1", stream: &fakeStream{closed: make(chan struct{})}}
 	reg := mux.MustNewRegistry(&stuckAdapter{sess: stuck})
-	svc := NewLifecycleService(reg, NewActivityBuffer(10))
+	svc := NewLifecycleService(reg, NewActivityBuffer(10), nil)
 	svc.graceful = 50 * time.Millisecond
 	svc.killGrace = 50 * time.Millisecond
 	id := "controlled_pty:stuck1"

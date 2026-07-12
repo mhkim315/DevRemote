@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // Lifecycle errors map to structured, non-500 handler responses.
@@ -35,19 +36,21 @@ type LifecycleResult struct {
 // state so registry removal and recorder stop happen exactly once, and natural
 // exit, Stop and Kill all converge on one final state.
 type LifecycleService struct {
-	reg       *mux.Registry
-	activity  *ActivityBuffer
-	catalog   *SessionCatalog
-	graceful  time.Duration
-	killGrace time.Duration
+	reg        *mux.Registry
+	activity   *ActivityBuffer
+	transcript *transcript.Service // T3: cleared on session delete
+	catalog    *SessionCatalog
+	graceful   time.Duration
+	killGrace  time.Duration
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
 }
 
-func NewLifecycleService(reg *mux.Registry, activity *ActivityBuffer) *LifecycleService {
+func NewLifecycleService(reg *mux.Registry, activity *ActivityBuffer, transcriptSvc *transcript.Service) *LifecycleService {
 	return &LifecycleService{
-		reg:       reg,
+		reg:        reg,
+		transcript: transcriptSvc,
 		activity:  activity,
 		catalog:   NewSessionCatalog(),
 		graceful:  5 * time.Second,
@@ -238,6 +241,9 @@ func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResu
 	s.catalog.remove(id)
 	if s.activity != nil {
 		s.activity.Clear(id)
+	}
+	if s.transcript != nil {
+		s.transcript.ClearTranscript(id)
 	}
 	DeleteRecorder(id)
 	// Keep the per-session lock in the map: removing it while another operation

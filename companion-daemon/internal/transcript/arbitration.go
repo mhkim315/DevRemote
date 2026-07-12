@@ -1,122 +1,145 @@
 package transcript
 
-// SourceArbiter manages source selection between primary AgentEvent-sourced
-// Transcript segments and the byte-stream fallback.
+// SourceArbiter enforces source separation at the storage boundary.
 //
-// Rules (handoff §3.1):
-//   - AgentEvent segments are the PRIMARY semantic source when available.
-//   - Byte-stream segments are a SEPARATE fallback channel.
-//   - NEVER merge, correlate, or deduplicate across the two sources.
+// Rules (handoff §3.1, BLOCKER 2):
+//   - Correlated AgentEvents are the PRIMARY semantic Transcript source.
+//   - Byte-stream projection is a SEPARATE fallback/degraded channel.
+//   - When AgentEvent is primary, byte-stream segments are suppressed
+//     from the semantic Transcript listing and routed to a separate
+//     fallback channel.
+//   - NEVER merge, correlate, or deduplicate across sources.
 //   - NEVER use timestamp proximity, text equality, fuzzy matching,
 //     prompt/command recognition, CWD, or process-name heuristics.
 //   - Source is explicit on every segment.
-//   - When safe arbitration is unavailable, retain source separation.
 type SourceArbiter struct {
-	// agentEventAvailable is true when at least one correctly correlated
-	// AgentEvent has been projected for the session.
+	// agentEventAvailable is set when the first correlated AgentEvent is projected.
 	agentEventAvailable bool
 
-	// byteStreamAvailable is true when at least one byte-stream segment
-	// has been projected for the session.
-	byteStreamAvailable bool
+	// byteStreamActive counts byte-stream segments suppressed after AgentEvent
+	// becomes primary. They are tracked but hidden from the semantic listing.
+	byteStreamSuppressed int64
 
-	// degraded indicates that the arbiter has entered a degraded state
-	// (e.g., correlation lost, projection failure).
+	// degraded indicates the arbiter entered a degraded state.
 	degraded bool
 }
 
-// NewSourceArbiter creates a fresh arbiter for a session.
 func NewSourceArbiter() *SourceArbiter {
 	return &SourceArbiter{}
 }
 
-// RecordAgentEvent notifies the arbiter that an AgentEvent-sourced segment
-// was appended. This transitions the session to primary-agent-event mode.
+// RecordAgentEvent marks that a correlated AgentEvent has been projected.
+// After this, byte-stream segments are suppressed from semantic listing.
 func (a *SourceArbiter) RecordAgentEvent() {
 	a.agentEventAvailable = true
 }
 
-// RecordByteStream notifies the arbiter that a byte-stream-sourced segment
-// was appended.
+// RecordByteStream marks a byte-stream segment appended before AgentEvent primary.
 func (a *SourceArbiter) RecordByteStream() {
-	a.byteStreamAvailable = true
+	// When AgentEvent is not yet primary, byte-stream segments are the only content.
+	// After AgentEvent becomes primary, this is a no-op (segments get suppressed).
 }
 
-// RecordDegraded notifies the arbiter of a degraded state.
+// RecordByteStreamSuppressed increments the suppressed byte-stream counter.
+func (a *SourceArbiter) RecordByteStreamSuppressed() {
+	a.byteStreamSuppressed++
+}
+
+// RecordDegraded marks degraded state.
 func (a *SourceArbiter) RecordDegraded() {
 	a.degraded = true
 }
 
-// PrimarySource reports which source is currently the primary Transcript source.
-// It never returns a merged or ambiguous value.
+// PrimarySource reports the current primary semantic source.
 func (a *SourceArbiter) PrimarySource() SegmentSource {
 	if a.agentEventAvailable {
 		return SourceAgentEvent
 	}
-	if a.byteStreamAvailable {
-		return SourceByteStream
-	}
-	return SourceUnknown
+	return SourceByteStream
 }
 
-// HasAgentEvents reports whether any AgentEvent-sourced segments exist.
+// HasAgentEvents reports whether AgentEvent-sourced segments exist.
 func (a *SourceArbiter) HasAgentEvents() bool {
 	return a.agentEventAvailable
 }
 
-// IsDegraded reports whether the arbiter is in a degraded state.
+// IsDegraded reports degraded state.
 func (a *SourceArbiter) IsDegraded() bool {
 	return a.degraded
 }
 
-// ── Segment interleaving policy ──
-
-// InterleavePolicy controls how segments from different sources are ordered
-// when both sources are active.
-type InterleavePolicy int
-
-const (
-	// InterleaveByTime: segments are ordered by observation time.
-	// This is the default. It does NOT merge or correlate sources;
-	// each segment retains its explicit source label.
-	InterleaveByTime InterleavePolicy = iota
-
-	// InterleaveAgentFirst: AgentEvent segments always precede byte-stream
-	// segments within the same time window. Byte-stream segments are still
-	// retained as fallback evidence.
-	InterleaveAgentFirst
-)
-
-// SegmentAccumulator collects segments from multiple projectors and emits
-// them in observation-time order without merging across sources.
-type SegmentAccumulator struct {
-	segments []TranscriptSegment
-	policy   InterleavePolicy
+// SuppressByteStream reports whether new byte-stream segments should be
+// suppressed from the semantic listing (routed to fallback channel instead).
+func (a *SourceArbiter) SuppressByteStream() bool {
+	return a.agentEventAvailable
 }
 
-// NewSegmentAccumulator creates an accumulator.
-func NewSegmentAccumulator(policy InterleavePolicy) *SegmentAccumulator {
-	return &SegmentAccumulator{policy: policy}
+// ── Transcript response envelope ──
+
+// TranscriptResponse is the API response envelope that separates the
+// primary semantic Transcript from the byte-stream fallback channel.
+// When AgentEvent is primary, semantic contains AgentEvent segments
+// and fallback contains suppressed byte-stream segments.
+// When AgentEvent is unavailable, semantic contains byte-stream segments
+// and fallback is empty.
+type TranscriptResponse struct {
+	// SessionID is the canonical Pokit session identifier.
+	SessionID string `json:"sessionId"`
+
+	// Semantic contains the primary semantic Transcript segments.
+	// When AgentEvent is primary: AgentEvent-sourced segments.
+	// When AgentEvent unavailable: byte-stream terminal output.
+	Semantic []TranscriptSegment `json:"semantic"`
+
+	// Fallback contains the separate byte-stream fallback channel.
+	// Non-nil only when AgentEvent is primary and byte-stream segments exist.
+	Fallback []TranscriptSegment `json:"fallback,omitempty"`
+
+	// PrimarySource declares the current primary source.
+	PrimarySource SegmentSource `json:"primarySource"`
+
+	// ContractVersion is the Transcript contract version.
+	ContractVersion string `json:"contractVersion"`
 }
 
-// Add appends segments to the accumulator.
-func (sa *SegmentAccumulator) Add(segments []TranscriptSegment) {
-	sa.segments = append(sa.segments, segments...)
-}
-
-// Flush returns accumulated segments in observation order and clears the buffer.
-func (sa *SegmentAccumulator) Flush() []TranscriptSegment {
-	if len(sa.segments) == 0 {
-		return nil
+// NewTranscriptResponse builds the separated response from stored segments
+// and the arbiter's state.
+func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, arb *SourceArbiter) TranscriptResponse {
+	if arb == nil || !arb.HasAgentEvents() {
+		// No AgentEvent primary: all segments are semantic (byte-stream fallback).
+		if allSegments == nil {
+			allSegments = []TranscriptSegment{}
+		}
+		return TranscriptResponse{
+			SessionID:       sessionID,
+			Semantic:        allSegments,
+			PrimarySource:   SourceByteStream,
+			ContractVersion: ContractVersion,
+		}
 	}
-	// Simple insertion-order return (segments are already timestamp-ordered
-	// within their source; Feed and ProjectBatch both preserve input order).
-	out := sa.segments
-	sa.segments = nil
-	return out
-}
 
-// Len returns the number of buffered segments.
-func (sa *SegmentAccumulator) Len() int {
-	return len(sa.segments)
+	// AgentEvent is primary: split into semantic and fallback channels.
+	var semantic, fallback []TranscriptSegment
+	for _, seg := range allSegments {
+		switch seg.Kind {
+		case KindAgentEvent, KindUnknown:
+			semantic = append(semantic, seg)
+		case KindTerminalOutput, KindDegraded, KindUIOmitted, KindInputBoundary:
+			fallback = append(fallback, seg)
+		default:
+			semantic = append(semantic, seg)
+		}
+	}
+
+	if semantic == nil {
+		semantic = []TranscriptSegment{}
+	}
+
+	return TranscriptResponse{
+		SessionID:       sessionID,
+		Semantic:        semantic,
+		Fallback:        fallback,
+		PrimarySource:   SourceAgentEvent,
+		ContractVersion: ContractVersion,
+	}
 }

@@ -92,6 +92,9 @@ func StartRecorder(sessionID string, stream mux.TerminalStream, activity *Activi
 
 	r.captureMode = resolveCaptureMode(sessionID)
 	r.transcriptSvc = transcriptSvcSingleton
+	if r.transcriptSvc != nil {
+		r.transcriptSvc.EnableQueue(r.sessionID)
+	}
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch
@@ -161,6 +164,9 @@ func (r *Recorder) Stop() {
 
 	r.cancel()
 	r.stream.Close()
+	if r.transcriptSvc != nil {
+		r.transcriptSvc.CloseSessionQueue(r.sessionID)
+	}
 	<-r.done
 
 	r.mu.Lock()
@@ -215,14 +221,13 @@ func (r *Recorder) unregisterSelf() {
 }
 
 // feedTranscript feeds copied payload bytes to the T3 Transcript byte-stream
-// projector asynchronously so Transcript projection never blocks raw PTY delivery.
+// projector via a bounded, non-blocking queue. The queue has a single ordered
+// worker; overflow chunks are dropped with a coalesced gap marker.
 func (r *Recorder) feedTranscript(payload []byte) {
 	if r.transcriptSvc == nil {
 		return
 	}
-	chunk := make([]byte, len(payload))
-	copy(chunk, payload)
-	go r.transcriptSvc.FeedBytes(r.sessionID, chunk, time.Now())
+	r.transcriptSvc.FeedBytes(r.sessionID, payload, time.Now())
 }
 
 // readLoop reads PTY output, broadcasts to subscribers, appends to ActivityBuffer.
@@ -522,6 +527,9 @@ func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *Activit
 	recorderRegistry.recorders[sessionID] = r
 	r.captureMode = resolveCaptureMode(sessionID)
 	r.transcriptSvc = transcriptSvcSingleton
+	if r.transcriptSvc != nil {
+		r.transcriptSvc.EnableQueue(r.sessionID)
+	}
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch
