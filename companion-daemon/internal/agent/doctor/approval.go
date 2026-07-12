@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,7 +182,6 @@ func NewReviewBundle(
 	unifiedDiff []byte,
 	changedFiles, adapterSourceManifest, pokitTestManifest, providerFixtureManifest []string,
 	fixtureRedaction RedactionResult,
-	candidatePkg string,
 	suiteResult ObservatoryResult,
 	driftEvidence DriftEvidence,
 	evidenceProvenance, workspaceDigest string,
@@ -194,8 +194,12 @@ func NewReviewBundle(
 		return nil, fmt.Errorf("%w: changedFiles must be non-empty", ErrEmptyField)
 	}
 	// Derive authoritative command specs from Pokit-owned FixedSuite.
-	// Caller cannot inject arbitrary FixedCommands — only the canonical
-	// suite specification is used as authority.
+	// Canonicalize the version directory name (same as orchestrator's CanonicalVersion).
+	canonDir := strings.ReplaceAll(strings.ReplaceAll(targetVersion, ".", "_"), "-", "_")
+	if !strings.HasPrefix(canonDir, "v") && !strings.HasPrefix(canonDir, "V") {
+		canonDir = "v" + canonDir
+	}
+	candidatePkg := "./internal/agent/adapters/" + adapterName + "/" + canonDir + "/"
 	authoritativeCmds := NewFixedSuite().Commands(candidatePkg)
 	if err := ValidateSuiteEvidence(authoritativeCmds, suiteResult.CommandResults,
 		suiteResult.TotalTests, suiteResult.Passed, suiteResult.Failed); err != nil {

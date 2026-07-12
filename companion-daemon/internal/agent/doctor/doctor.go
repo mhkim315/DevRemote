@@ -148,13 +148,15 @@ func ValidateSuiteEvidence(commands []FixedCommand, results []CommandResult, tot
 		}
 		resultSet[cr.Label] = cr
 	}
-	// Validate each result against the authoritative Pokit-owned spec.
-	// Every result must match a manifest command; extra manifest entries (un-executed) OK.
+	if len(manifestSet) != len(resultSet) {
+		return fmt.Errorf("manifest has %d commands, results have %d", len(manifestSet), len(resultSet))
+	}
+	// Validate every manifest command has a matching result.
 	var sumTotal, sumPassed, sumFailed int
-	for label, cr := range resultSet {
-		fc, ok := manifestSet[label]
+	for label, fc := range manifestSet {
+		cr, ok := resultSet[label]
 		if !ok {
-			return fmt.Errorf("unexpected result label %q (not in manifest)", label)
+			return fmt.Errorf("missing result for manifest command %q", label)
 		}
 		expectedCmd := FixedCommandLabel(fc)
 		if cr.Command != expectedCmd {
@@ -179,6 +181,11 @@ func ValidateSuiteEvidence(commands []FixedCommand, results []CommandResult, tot
 		sumTotal += cr.TotalTests
 		sumPassed += cr.Passed
 		sumFailed += cr.Failed
+	}
+	for label := range resultSet {
+		if _, ok := manifestSet[label]; !ok {
+			return fmt.Errorf("unexpected result label %q (not in manifest)", label)
+		}
 	}
 	if sumTotal != total || sumPassed != passed || sumFailed != failed {
 		return fmt.Errorf("aggregate mismatch: suite total=%d/%d/%d, test commands sum to %d/%d/%d",

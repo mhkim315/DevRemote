@@ -337,18 +337,17 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 
 	bundle, err := NewReviewBundle(requestID, o.provider, o.activeReport.Provider, o.targetVersion,
 		baselineSHA, evidenceDigest, patchDigest,
-		o.activePatchBytes,             // unified diff
-		files,                          // changed files
-		adapterManifest,                // adapter source manifest
-		pokitTestManifest,              // Pokit-owned test manifest
-		providerFixtureManifest,        // provider fixture manifest
-		redaction,                      // redaction result
-		o.activeWorkspace.CandidatePkg, // candidate pkg for FixedSuite derivation
-		o.activeSuite.deepCopy(),       // suite result (deep copy)
-		driftEv,                        // drift evidence
-		evidenceProv,                   // evidence provenance
-		wsDigest,                       // workspace digest
-		unknowns,                       // remaining unknowns
+		o.activePatchBytes,       // unified diff
+		files,                    // changed files
+		adapterManifest,          // adapter source manifest
+		pokitTestManifest,        // Pokit-owned test manifest
+		providerFixtureManifest,  // provider fixture manifest
+		redaction,                // redaction result
+		o.activeSuite.deepCopy(), // suite result (deep copy)
+		driftEv,                  // drift evidence
+		evidenceProv,             // evidence provenance
+		wsDigest,                 // workspace digest
+		unknowns,                 // remaining unknowns
 	)
 	if err != nil {
 		return nil, err
