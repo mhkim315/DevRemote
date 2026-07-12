@@ -33,7 +33,11 @@ func NewFixedSuite() *FixedSuite { return &FixedSuite{} }
 // Commands returns explicit immutable suite targets. Does NOT include
 // internal/agent/doctor to prevent recursive E2E execution in workspace.
 func (fs *FixedSuite) Commands(candidatePkg string) []FixedCommand {
+	// Explicit packages only — does NOT include internal/agent/doctor
+	// to prevent recursive E2E execution.
 	cmds := []FixedCommand{
+		{Label: "build-adapters", PkgPath: "./internal/agent/adapters/...", BuildOnly: true},
+		{Label: "build-contract", PkgPath: "./internal/agent/contract/...", BuildOnly: true},
 		{Label: "T0-contract-conformance", PkgPath: "./internal/agent/contract/", RunRegex: "Conformance", MinTests: 1},
 		{Label: "T1-codex-conformance", PkgPath: "./internal/agent/adapters/codex/v0_144_1/", RunRegex: "Conformance", MinTests: 1},
 		{Label: "T2-claude-conformance", PkgPath: "./internal/agent/adapters/claude/v2_1_202/", RunRegex: "Conformance", MinTests: 1},

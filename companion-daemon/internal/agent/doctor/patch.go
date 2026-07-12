@@ -66,6 +66,10 @@ func ParsePatch(patch []byte) ([]PatchOperation, error) {
 	}
 
 	lines := strings.Split(text, "\n")
+	// Strip trailing empty line from split (normal text files end with \n).
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	var ops []PatchOperation
 	var cur *PatchOperation
 	var curHunk *PatchHunk
@@ -124,24 +128,22 @@ func ParsePatch(patch []byte) ([]PatchOperation, error) {
 			if curHunk != nil && len(curHunk.Lines) > 0 {
 				cur.Hunks = append(cur.Hunks, *curHunk)
 			}
-			curHunk = &PatchHunk{}
-			n, _ := fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart, &curHunk.NewCount)
-			if n < 4 {
-				// Try single-count format: @@ -X +Y,Z @@
-				n2, _ := fmt.Sscanf(line, "@@ -%d +%d,%d @@", &curHunk.OldStart, &curHunk.NewStart, &curHunk.NewCount)
-				if n2 >= 3 {
-					curHunk.OldCount = 1 // implicit old count
-				} else {
-					// Try @@ -X,Y +Z @@
-					n3, _ := fmt.Sscanf(line, "@@ -%d,%d +%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart)
-					if n3 >= 3 {
-						curHunk.NewCount = 1
-					}
-				}
+			curHunk = &PatchHunk{OldStart: -1}
+			parsed := false
+			if n, _ := fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart, &curHunk.NewCount); n == 4 {
+				parsed = true
+			} else if n2, _ := fmt.Sscanf(line, "@@ -%d +%d,%d @@", &curHunk.OldStart, &curHunk.NewStart, &curHunk.NewCount); n2 == 3 {
+				curHunk.OldCount = 1; parsed = true
+			} else if n3, _ := fmt.Sscanf(line, "@@ -%d,%d +%d @@", &curHunk.OldStart, &curHunk.OldCount, &curHunk.NewStart); n3 == 3 {
+				curHunk.NewCount = 1; parsed = true
+			} else if n4, _ := fmt.Sscanf(line, "@@ -%d +%d @@", &curHunk.OldStart, &curHunk.NewStart); n4 == 2 {
+				curHunk.OldCount = 1; curHunk.NewCount = 1; parsed = true
 			}
-			// Preserve zero counts (new file: -0,0). Only reject negative.
+			if !parsed {
+				return nil, ErrMalformedPatch
+			}
 			if curHunk.OldStart < 0 || curHunk.NewStart < 0 {
-				curHunk = nil // malformed, skip
+				return nil, ErrMalformedPatch
 			}
 		default:
 			if curHunk != nil {
@@ -364,9 +366,12 @@ func applyHunks(baseline []string, hunks []PatchHunk) (string, error) {
 		// Declared counts must match actual.
 		declOld := ctxCount + oldCount
 		declNew := ctxCount + newCount
-		// New files may have OldCount=0; context lines in new files are
-		// semantically additions (the old file is /dev/null).
-		if !isNew && h.OldCount != declOld {
+		// New files must have OldCount=0. Context/removal lines in new files
+		// are invalid (the old file is /dev/null and has no content).
+		if isNew && declOld != 0 {
+			return "", fmt.Errorf("hunk %d new file has context/removal lines (ctx=%d rem=%d)", hi, ctxCount, oldCount)
+		}
+		if h.OldCount != declOld {
 			return "", fmt.Errorf("hunk %d declared old count %d != actual %d (ctx=%d rem=%d)", hi, h.OldCount, declOld, ctxCount, oldCount)
 		}
 		if h.NewCount != declNew {
