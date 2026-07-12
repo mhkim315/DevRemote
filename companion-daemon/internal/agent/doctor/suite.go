@@ -109,6 +109,9 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) (ObservatoryResult
 		ec.Dir = dir
 	}
 
+	var stderrBuf strings.Builder
+	ec.Stderr = &stderrBuf
+
 	stdout, err := ec.StdoutPipe()
 	if err != nil {
 		r.TotalTests = 1
@@ -182,6 +185,13 @@ func (sr *SuiteRunner) runInDir(cmd FixedCommand, dir string) (ObservatoryResult
 			reason := "process failed"
 			if waitErr != nil {
 				reason = "process failed: " + waitErr.Error()
+			}
+			if stderrBuf.Len() > 0 {
+				stderr := stderrBuf.String()
+				if len(stderr) > 256 {
+					stderr = stderr[:256]
+				}
+				reason += ": " + stderr
 			}
 			r.Failures = append(r.Failures, ObsTestFailure{TestName: cmd.Label, Reason: contract.SanitizeDiagnostic(reason)})
 		}

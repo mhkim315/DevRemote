@@ -19,6 +19,7 @@ var (
 	ErrParentRelative   = errors.New("parent-relative path rejected")
 	ErrProviderInvalid  = errors.New("provider not in closed vocabulary")
 	ErrVersionInvalid   = errors.New("target version fails grammar")
+	ErrTestFileRejected = errors.New("_test.go files rejected — candidate must not provide its own acceptance test")
 )
 
 // ── Closed vocabulary ──
@@ -115,6 +116,10 @@ func (s *Sandbox) validateOp(op *PatchOperation) error {
 	}
 	if !op.IsNew && modeChangeCreatesExecutable(op.OldMode, op.NewMode) {
 		return fmt.Errorf("%w: %s (%s→%s)", ErrExecutableMode, op.DiffPath, op.OldMode, op.NewMode)
+	}
+	// Candidate must not provide its own acceptance test or fixtures.
+	if strings.HasSuffix(op.DiffPath, "_test.go") {
+		return fmt.Errorf("%w: %s", ErrTestFileRejected, op.DiffPath)
 	}
 
 	path := op.DiffPath

@@ -171,6 +171,12 @@ func NewReviewBundle(
 	if suiteResult.TotalTests == 0 {
 		return nil, fmt.Errorf("%w: suite result has zero tests", ErrEmptyField)
 	}
+	if len(fixtureManifest) == 0 {
+		return nil, fmt.Errorf("%w: fixture manifest must be non-empty", ErrEmptyField)
+	}
+	if workspaceDigest == "" {
+		return nil, fmt.Errorf("%w: workspace digest must be non-empty", ErrEmptyField)
+	}
 	cf := make([]string, len(changedFiles))
 	copy(cf, changedFiles)
 	fm := make([]string, len(fixtureManifest))

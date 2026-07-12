@@ -3,7 +3,9 @@ package doctor
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -230,9 +232,18 @@ func (o *Orchestrator) RunFixedSuites() (*ObservatoryResult, error) {
 	if o.activeWorkspace == nil {
 		return nil, errors.New("no workspace")
 	}
+	preDigest := o.activeWorkspace.Digest()
 	o.state = StateRunningFixedSuites
 	runner := NewSuiteRunner()
 	result := runner.RunInWorkspace(o.activeWorkspace.Root, o.activeWorkspace.CandidatePkg)
+
+	// Verify source-tree digest unchanged after suites.
+	postDigest := workspaceDigest(o.activeWorkspace.Root)
+	if preDigest != postDigest {
+		return nil, fmt.Errorf("source-tree mutated during suite: pre=%s post=%s",
+			preDigest[:16], postDigest[:16])
+	}
+
 	o.activeSuite = &result
 	return &result, nil
 }
@@ -259,8 +270,30 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		return nil, fmt.Errorf("baseline SHA mismatch: expected %s, actual %s", baselineSHA, actualSHA)
 	}
 
+	// Verify workspace digest — must be non-empty and match post-patch state.
+	wsDigest := o.activeWorkspace.Digest()
+	if wsDigest == "" {
+		return nil, fmt.Errorf("workspace digest is empty")
+	}
+	currentDigest := workspaceDigest(o.activeWorkspace.Root)
+	if currentDigest != wsDigest {
+		return nil, fmt.Errorf("workspace digest changed: post-patch=%s current=%s",
+			wsDigest[:16], currentDigest[:16])
+	}
+
+	// Independently recreate workspace from same baseline + exact patch,
+	// verify identical digest.
+	recreatedDigest, err := RecreateWorkspace(o.repoRoot, o.activeOps, o.provider, o.targetDir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot recreate workspace: %w", err)
+	}
+	if recreatedDigest != wsDigest {
+		return nil, fmt.Errorf("recreated workspace digest mismatch: original=%s recreated=%s",
+			wsDigest[:16], recreatedDigest[:16])
+	}
+
 	evidenceDigest := HashJSON(o.activeEvidence)
-	patchDigest := HashBytes(o.activePatchBytes) // original immutable patch bytes
+	patchDigest := HashBytes(o.activePatchBytes)
 
 	var files []string
 	for _, op := range o.activeOps {
@@ -272,8 +305,13 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 		cmdLabels = append(cmdLabels, c.Label)
 	}
 
-	evidenceProv := string(contract.ProvenanceNativeLog)
-	wsDigest := o.activeWorkspace.Digest()
+	// Derive evidence provenance from actual input records.
+	evidenceProv := deriveEvidenceProvenance(o.activeRequest.ObservedRecordSamples)
+
+	// Build real fixture manifest from workspace candidate directory.
+	fixtureManifest, fixtureRedaction := buildFixtureManifest(o.activeWorkspace.Root,
+		o.provider, o.targetDir)
+
 	driftEv := DriftEvidence{}
 	if o.activeEvidence != nil {
 		driftEv = *o.activeEvidence
@@ -288,16 +326,16 @@ func (o *Orchestrator) BuildReviewBundle(requestID, baselineSHA string) (*Review
 
 	bundle, err := NewReviewBundle(requestID, o.provider, o.activeReport.Provider, o.targetVersion,
 		baselineSHA, evidenceDigest, patchDigest,
-		o.activePatchBytes,     // unified diff
-		files,                  // changed files
-		nil,                    // fixture manifest
-		"native_log, redacted", // fixture redaction
-		cmdLabels,              // suite command manifest
-		*o.activeSuite,         // suite result
-		driftEv,                // drift evidence
-		evidenceProv,           // evidence provenance
-		wsDigest,               // workspace digest
-		unknowns,               // remaining unknowns
+		o.activePatchBytes, // unified diff
+		files,              // changed files
+		fixtureManifest,    // fixture manifest
+		fixtureRedaction,   // fixture redaction
+		cmdLabels,          // suite command manifest
+		*o.activeSuite,     // suite result
+		driftEv,            // drift evidence
+		evidenceProv,       // evidence provenance
+		wsDigest,           // workspace digest
+		unknowns,           // remaining unknowns
 	)
 	if err != nil {
 		return nil, err
@@ -386,4 +424,79 @@ func gitHeadSHA(repoRoot string) (string, error) {
 		return "", fmt.Errorf("git rev-parse: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// deriveEvidenceProvenance returns the provenance tier conservatively derived
+// from the input records. If records are present, uses the most common provenance.
+// Falls back to "unknown" if no records are available.
+func deriveEvidenceProvenance(records []contract.RawRecord) string {
+	if len(records) == 0 {
+		return string(contract.ProvenanceUnknown)
+	}
+	counts := map[string]int{}
+	for _, r := range records {
+		counts[string(r.Provenance)]++
+	}
+	best := ""
+	bestN := 0
+	for p, n := range counts {
+		if n > bestN {
+			bestN = n
+			best = p
+		}
+	}
+	if best == "" {
+		return string(contract.ProvenanceUnknown)
+	}
+	return best
+}
+
+// buildFixtureManifest walks the candidate adapter directory, computes a
+// digest for every source file, and returns a manifest of "<path> sha256:<hex>"
+// entries plus a redaction summary.
+func buildFixtureManifest(wsRoot, provider, targetDir string) (manifest []string, redaction string) {
+	candidateDir := filepath.Join(wsRoot, "internal", "agent", "adapters", provider, targetDir)
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		return nil, "cannot read candidate dir"
+	}
+	hasSecret := false
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".o") || strings.HasSuffix(e.Name(), ".test") {
+			continue
+		}
+		p := filepath.Join(candidateDir, e.Name())
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		digest := HashBytes(data)
+		manifest = append(manifest, fmt.Sprintf("%s sha256:%s", e.Name(), digest))
+
+		// Run redaction / secret scan.
+		content := string(data)
+		if contract.ContainsSensitive(content) {
+			hasSecret = true
+		}
+	}
+	if len(manifest) == 0 {
+		return nil, "empty fixture manifest"
+	}
+	redaction = "scanned: " + itoa(len(manifest)) + " files, clean"
+	if hasSecret {
+		redaction = "scanned: " + itoa(len(manifest)) + " files, SECRET FOUND"
+	}
+	return manifest, redaction
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	s := ""
+	for i > 0 {
+		s = string(rune('0'+i%10)) + s
+		i /= 10
+	}
+	return s
 }

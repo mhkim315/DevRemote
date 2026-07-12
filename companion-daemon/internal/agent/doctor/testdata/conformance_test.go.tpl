@@ -1,4 +1,7 @@
-package v3_0_0
+// Package conformance — Pokit-owned candidate conformance driver template.
+// The placeholder PACKAGE_NAME is substituted by PrepareWorkspace with the
+// canonical target directory (e.g., v3_0_0).
+package PACKAGE_NAME
 
 import (
 	"strconv"
@@ -8,7 +11,7 @@ import (
 	"devremote/companion-daemon/internal/agent/contract"
 )
 
-func TestConformance(t *testing.T) {
+func TestCandidateConformance(t *testing.T) {
 	fx := contract.ConformanceFixtures{
 		DetectContext:    contract.SessionContext{SessionID: "s", ProcessName: "claude", CWD: "/tmp/.claude"},
 		ExpectDetectKind: "claude",
@@ -28,9 +31,6 @@ func TestConformance(t *testing.T) {
 			if size < 50 {
 				size = 50
 			}
-			// Build valid JSON of exactly `size` bytes by padding a text field.
-			// Template: {"id":"sz","kind":"message","ts":0,"pad":"<N x chars>"}
-			// Overhead (everything except the pad chars): 42 bytes
 			prefix := `{"id":"sz","kind":"message","ts":0,"pad":"`
 			suffix := `"}`
 			overhead := len(prefix) + len(suffix)
