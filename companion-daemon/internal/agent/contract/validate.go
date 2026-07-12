@@ -137,6 +137,12 @@ func ValidateEvent(e AgentEvent) error {
 	if e.Confidence < 0.4 && e.Type != agent.EventUnknown {
 		return errInvalid("low-confidence event must be EventUnknown")
 	}
+	// An approval_requested event MUST carry a non-empty ApprovalID so approvals
+	// are explicitly bound to their source event. An approval without a binding
+	// ID is not contract-valid (cross-session / fabricated-approval risk).
+	if e.Type == agent.EventApprovalRequested && e.ApprovalID == "" {
+		return errInvalid("approval_requested event must have a non-empty ApprovalID")
+	}
 	if len(e.Metadata) > MaxMetadataEntries {
 		return errInvalid("metadata exceeds entry bound")
 	}
@@ -174,6 +180,11 @@ func SafeEvent(e AgentEvent) AgentEvent {
 	}
 	if e.Confidence > 1 {
 		e.Confidence = 1
+	}
+	// An approval_requested event without a binding ApprovalID is degraded to
+	// EventUnknown — an unbound approval cannot safely be surfaced.
+	if e.Type == agent.EventApprovalRequested && e.ApprovalID == "" {
+		e.Type = agent.EventUnknown
 	}
 	if e.Confidence < 0.4 {
 		e.Type = agent.EventUnknown

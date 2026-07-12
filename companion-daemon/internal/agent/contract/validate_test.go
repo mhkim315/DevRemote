@@ -70,12 +70,18 @@ func TestValidateEvent(t *testing.T) {
 		t.Fatalf("valid event rejected: %v", err)
 	}
 	bad := map[string]AgentEvent{
-		"missing id":       func() AgentEvent { e := validEvent(); e.ID = ""; return e }(),
-		"missing session":  func() AgentEvent { e := validEvent(); e.SessionID = ""; return e }(),
-		"negative seq":     func() AgentEvent { e := validEvent(); e.Seq = -1; return e }(),
-		"bad type":         func() AgentEvent { e := validEvent(); e.Type = "made_up"; return e }(),
-		"bad source":       func() AgentEvent { e := validEvent(); e.Source = "made_up"; return e }(),
-		"bad provenance":   func() AgentEvent { e := validEvent(); e.Provenance = "made_up"; return e }(),
+		"missing id":      func() AgentEvent { e := validEvent(); e.ID = ""; return e }(),
+		"missing session": func() AgentEvent { e := validEvent(); e.SessionID = ""; return e }(),
+		"negative seq":    func() AgentEvent { e := validEvent(); e.Seq = -1; return e }(),
+		"bad type":        func() AgentEvent { e := validEvent(); e.Type = "made_up"; return e }(),
+		"bad source":      func() AgentEvent { e := validEvent(); e.Source = "made_up"; return e }(),
+		"bad provenance":  func() AgentEvent { e := validEvent(); e.Provenance = "made_up"; return e }(),
+		"approval no apprID": func() AgentEvent {
+			e := validEvent()
+			e.Type = agent.EventApprovalRequested
+			e.Provenance = string(ProvenanceNativeLog)
+			return e
+		}(),
 		"no provenance":    func() AgentEvent { e := validEvent(); e.Provenance = ""; return e }(),
 		"confidence high":  func() AgentEvent { e := validEvent(); e.Confidence = 1.5; return e }(),
 		"confidence low":   func() AgentEvent { e := validEvent(); e.Confidence = -0.1; return e }(),
@@ -113,6 +119,18 @@ func TestSafeEventCoercion(t *testing.T) {
 	low := SafeEvent(AgentEvent{ID: "y", SessionID: "s", Type: agent.EventThinking, Source: agent.SourceJSONL, Confidence: 0.1})
 	if low.Type != agent.EventUnknown {
 		t.Errorf("low-confidence typed event not degraded to unknown: %s", low.Type)
+	}
+}
+
+func TestSafeEventDegradesApprovalWithoutID(t *testing.T) {
+	// approval_requested with empty ApprovalID must degrade to EventUnknown.
+	e := SafeEvent(AgentEvent{
+		ID: "a", SessionID: "s", Type: agent.EventApprovalRequested,
+		Source: agent.SourceJSONL, Provenance: string(ProvenanceNativeLog),
+		Confidence: 0.9, ApprovalID: "",
+	})
+	if e.Type != agent.EventUnknown {
+		t.Errorf("approval_requested without ApprovalID must degrade to unknown, got %s", e.Type)
 	}
 }
 

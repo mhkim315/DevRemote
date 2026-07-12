@@ -52,6 +52,11 @@ type ConformanceFixtures struct {
 	// the harness ALSO runs its own generic adversarial approval cases).
 	NearMissRecords []RawRecord
 
+	// SizedRecord returns a valid record roughly size bytes long (≤ MaxRecordBytes).
+	// Used by the MaxBatchBytes boundary test to generate many small-bounded records
+	// whose total exceeds the byte cap. REQUIRED.
+	SizedRecord func(size int) RawRecord
+
 	// MalformedRecords are provider-invalid inputs. Optional; the harness adds
 	// generic malformed inputs regardless.
 	MalformedRecords []RawRecord
@@ -100,6 +105,9 @@ func requireFixtures(t *testing.T, d AgentAdapterDescriptor, fx ConformanceFixtu
 	}
 	if fx.ExpectDetectKind == "" {
 		t.Fatal("ConformanceFixtures.ExpectDetectKind is required")
+	}
+	if fx.SizedRecord == nil {
+		t.Fatal("ConformanceFixtures.SizedRecord is required")
 	}
 	for _, c := range d.Capabilities {
 		if c == CapApprovalDetection && len(fx.ApprovalRecords) == 0 {
@@ -335,20 +343,15 @@ func testOversizedBatch(t *testing.T, factory func(*testing.T) AgentAdapter, fx 
 		t.Errorf("oversized batch leaked %d events > hard cap %d", len(res.Events), MaxEventsPerRead)
 	}
 
-	// ALSO test total-byte overflow: many records each under MaxRecordBytes, but
-	// together exceeding MaxBatchBytes. An adapter that processes the whole batch
-	// bypasses the byte bound.
-	half := MaxBatchBytes/2 + 1
-	bigRec := fx.DistinctRecord(0)
-	// Embed enough distinct bytes at the front so each record is ~half bytes.
-	prefix := make([]byte, half)
-	for i := range prefix {
-		prefix[i] = byte('a' + (i % 26))
+	// ALSO test total-byte overflow: many records each <= MaxRecordBytes, but
+	// together exceeding MaxBatchBytes. Use SizedRecord so every record is valid
+	// at the per-record level; only the batch byte cap stops them.
+	recSize := MaxBatchBytes/9 + 1 // ~932 KiB, well under MaxRecordBytes (1 MiB)
+	count := 12                    // >9 MiB total, well over MaxBatchBytes (8 MiB)
+	byteOver := make([]RawRecord, count)
+	for i := range byteOver {
+		byteOver[i] = fx.SizedRecord(recSize)
 	}
-	bigRec.Bytes = prefix
-	// Two such records together exceed MaxBatchBytes; a conformat adapter must cap
-	// at 1 (or fewer) and degrade.
-	byteOver := []RawRecord{bigRec, bigRec}
 	var resB ReadResult
 	var errB error
 	guard(t, "ReadEvents(byte-overflow)", func() {
@@ -357,11 +360,21 @@ func testOversizedBatch(t *testing.T, factory func(*testing.T) AgentAdapter, fx 
 	if errB != nil {
 		return // error is an acceptable fail-closed path
 	}
-	if len(resB.Events) > 1 {
-		t.Errorf("byte-overflow batch leaked %d events (processed >MaxBatchBytes)", len(resB.Events))
-	}
+	// The adapter must stop at the byte boundary, so it processes fewer records
+	// than count. It MUST report degraded (silent truncation is a bypass).
 	if !resB.Degraded.Degraded {
 		t.Error("byte-overflow batch must set Degraded=true")
+	}
+	// The adapter must NOT process the full oversized batch — at most
+	// MaxBatchBytes / recSize records can fit within the byte cap, so fewer
+	// than count (and still capped by MaxEventsPerRead).
+	if len(resB.Events) >= count {
+		t.Errorf("byte-overflow batch processed all %d records (bypassed MaxBatchBytes)", len(resB.Events))
+	}
+	// At least one record should still be processed (this proves we didn't hit
+	// per-record limits and the adapter actually exercises the batch-byte cap).
+	if len(resB.Events) == 0 {
+		t.Error("byte-overflow batch produced 0 events (per-record limit hit instead of batch-byte cap?)")
 	}
 }
 

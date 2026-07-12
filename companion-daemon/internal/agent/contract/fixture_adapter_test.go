@@ -249,6 +249,17 @@ func fixtureFixtures() ConformanceFixtures {
 		DistinctRecord: func(i int) RawRecord {
 			return fxRec(`{"id":"d` + strconv.Itoa(i) + `","kind":"message","ts":` + strconv.Itoa(i) + `}`)
 		},
+		SizedRecord: func(size int) RawRecord {
+			pad := size - 40
+			if pad < 0 {
+				pad = 0
+			}
+			b := make([]byte, pad)
+			for i := range b {
+				b[i] = byte('a' + (i % 26))
+			}
+			return fxRec(`{"id":"sz` + strconv.Itoa(size) + `","kind":"message","ts":0,"text":"` + string(b) + `"}`)
+		},
 		FailingFactory: func(t *testing.T) AgentAdapter { return fixtureAdapter{failRead: true} },
 		ApprovalRecords: []RawRecord{
 			fxRec(`{"id":"a1","kind":"approval","ts":5}`),
