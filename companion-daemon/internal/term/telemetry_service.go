@@ -162,6 +162,51 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 			if parser != nil {
 				rr := readRawLines(cursor, 500)
 				rawLines := rr.Lines
+
+				// ── B1: Accepted adapter path — INDEPENDENT of legacy parser ──
+				// Must run from rawLines directly. Records the legacy parser
+				// ignores must still reach the accepted adapter, advance the
+				// cursor, and produce semantic Transcript segments.
+				if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
+					if stateData.Adapter == nil {
+						stateData.Adapter = newAdapterState()
+					}
+					a := stateData.Adapter
+					if rr.GenerationChanged || a.path != logRef.Path {
+						a.resetForGeneration(logRef.Path)
+					}
+					a.appendRecords(rawLines)
+					records, acursor, overflowed := a.buildAdapterInput()
+					if overflowed {
+						// B3: at most one degraded marker per generation.
+						if a.shouldEmitOverflowMarker() {
+							s.transcript.EmitDegraded(id, "semantic ingestion overflowed", now())
+						}
+					} else {
+						acceptedEvents, adapterVersion, nextCursor, degraded := callAcceptedAdapter(logRef.Agent, records, id, acursor)
+						a.setCursor(nextCursor)
+						// B2: adapter degraded/version-conflict → revoke authority.
+						if degraded {
+							a.markVersionConflict()
+						} else if adapterVersion != "" {
+							a.updateVersion(adapterVersion, logRef.Agent)
+						}
+						binding := transcript.LookupLaunch(id)
+						corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))
+						s.transcript.SetCorrelation(id, transcript.CorrelationState{
+							SessionID:   id,
+							Correlation: corr,
+							Provider:    logRef.Agent,
+						})
+						if corr == contract.CorrelationManagedLaunch {
+							if len(acceptedEvents) > 0 {
+								s.transcript.ProjectAgentEvents(id, acceptedEvents)
+							}
+						}
+					}
+				}
+
+				// ── Legacy parser path — unchanged ──
 				var newEvents []models.AgentEvent
 				for _, line := range rawLines {
 					parsed, _ := parser.Parse(line)
@@ -169,42 +214,6 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 				}
 				if len(newEvents) > 0 {
 					s.events.Append(id, newEvents)
-					// T3: project ONLY accepted-adapter events (codex, claude).
-					// Gemini and Antigravity have no accepted T0 adapter and
-					// must not produce semantic Transcript segments.
-					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
-						if stateData.Adapter == nil {
-							stateData.Adapter = newAdapterState()
-						}
-						a := stateData.Adapter
-						if rr.GenerationChanged || a.path != logRef.Path {
-							a.resetForGeneration(logRef.Path)
-						}
-						a.appendRecords(rawLines)
-						records, cursor, overflowed := a.buildAdapterInput()
-						if overflowed {
-							// One bounded degraded marker; stop calling adapter.
-							s.transcript.EmitDegraded(id, "semantic ingestion overflowed", now())
-						} else {
-							acceptedEvents, adapterVersion, nextCursor := callAcceptedAdapter(logRef.Agent, records, id, cursor)
-							a.setCursor(nextCursor)
-							if adapterVersion != "" {
-								a.updateVersion(adapterVersion)
-							}
-							binding := transcript.LookupLaunch(id)
-							corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))
-							s.transcript.SetCorrelation(id, transcript.CorrelationState{
-								SessionID:   id,
-								Correlation: corr,
-								Provider:    logRef.Agent,
-							})
-							if corr == contract.CorrelationManagedLaunch {
-								if len(acceptedEvents) > 0 {
-									s.transcript.ProjectAgentEvents(id, acceptedEvents)
-								}
-							}
-						}
-					}
 					parsedNewEvents = true
 					lastEvent = newEvents[len(newEvents)-1]
 
@@ -509,13 +518,13 @@ func getProcessPID(id string, snapshots map[string]models.ProcessInfo) int {
 }
 
 // callAcceptedAdapter passes the full prefix and opaque cursor to the accepted
-// version-specific T1/T2 adapter. It returns the adapter's events, the stream
-// version extracted from the first record (for LaunchCorrelation), and the
-// opaque NextCursor for the next poll.
+// version-specific T1/T2 adapter. Returns events, stream version (for
+// LaunchCorrelation), opaque NextCursor, and whether the adapter reported
+// degraded (version conflict, cursor failure, malformed authority).
 //
 // The adapter receives the FULL prefix from position 0 — the caller must not
 // slice or rebase the input. The cursor is passed through unchanged.
-func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string) {
+func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string, bool) {
 	var adapter contract.AgentAdapter
 	switch kind {
 	case "codex":
@@ -523,7 +532,7 @@ func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevC
 	case "claude":
 		adapter = &claude.Adapter{}
 	default:
-		return nil, "", prevCursor
+		return nil, "", prevCursor, false
 	}
 
 	ctx := context.Background()
@@ -539,7 +548,7 @@ func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevC
 		})
 	}
 	if len(records) == 0 {
-		return nil, "", prevCursor
+		return nil, "", prevCursor, false
 	}
 
 	result, err := adapter.ReadEvents(ctx, contract.ReadInput{
@@ -549,18 +558,23 @@ func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevC
 		MaxEvents: 500,
 	})
 	nextCursor := prevCursor
+	degraded := result.Degraded.Degraded
 	if err == nil && string(result.NextCursor) != "" {
 		nextCursor = string(result.NextCursor)
 	}
-	if err != nil || len(result.Events) == 0 {
-		return nil, "", nextCursor
+	if err != nil {
+		return nil, "", nextCursor, true // adapter error → degraded
+	}
+	if len(result.Events) == 0 && degraded {
+		return nil, "", nextCursor, true
+	}
+	if len(result.Events) == 0 {
+		return nil, "", nextCursor, false
 	}
 
-	// Extract stream version from the first valid record.
-	// The adapter has already validated it — this is data extraction only.
 	discoveredVersion := extractStreamVersion(kind, records)
 
-	return result.Events, discoveredVersion, string(result.NextCursor)
+	return result.Events, discoveredVersion, string(result.NextCursor), degraded
 }
 
 // extractStreamVersion reads the version from the first structural record field.

@@ -2,6 +2,9 @@ package term
 
 import (
 	"testing"
+
+	"devremote/companion-daemon/internal/agent/contract"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // ── Generation and reset tests ──
@@ -12,7 +15,7 @@ func TestAdapterState_GenerationReset(t *testing.T) {
 	// Append some records.
 	a.appendRecords([][]byte{[]byte(`{"a":1}`), []byte(`{"a":2}`)})
 	a.setCursor("5:abc123")
-	a.updateVersion("0.144.1")
+	a.updateVersion("0.144.1", "codex")
 
 	// Verify state was set.
 	if !a.versionValid {
@@ -242,6 +245,100 @@ func TestAdapterState_OverflowDegradedOnly(t *testing.T) {
 	_, _, overflowed = a.buildAdapterInput()
 	if !overflowed {
 		t.Error("overflow was cleared by subsequent append — must be sticky")
+	}
+}
+
+// ── B3: Overflow marker dedup ──
+
+func TestAdapterState_OverflowMarkerExactlyOnce(t *testing.T) {
+	a := newAdapterState()
+	a.resetForGeneration("/path/test.jsonl")
+
+	// Trigger overflow.
+	lines := make([][]byte, 2001)
+	for i := range lines {
+		lines[i] = []byte(`{"r":` + itoa(i) + `}`)
+	}
+	a.appendRecords(lines)
+
+	// First call: should emit.
+	if !a.shouldEmitOverflowMarker() {
+		t.Error("first shouldEmitOverflowMarker: expected true")
+	}
+
+	// Second call: should NOT emit (markerEmitted = true).
+	if a.shouldEmitOverflowMarker() {
+		t.Error("second shouldEmitOverflowMarker: expected false (already emitted)")
+	}
+
+	// Third call: still false.
+	if a.shouldEmitOverflowMarker() {
+		t.Error("third shouldEmitOverflowMarker: expected false (already emitted)")
+	}
+
+	// After generation reset: should emit again (new generation).
+	a.resetForGeneration("/path/new.jsonl")
+	lines2 := make([][]byte, 2001)
+	for i := range lines2 {
+		lines2[i] = []byte(`{"r2":` + itoa(i) + `}`)
+	}
+	a.appendRecords(lines2)
+	if !a.shouldEmitOverflowMarker() {
+		t.Error("after reset shouldEmitOverflowMarker: expected true (new generation)")
+	}
+}
+
+// ── B2: Version authority tests ──
+
+func TestAdapterState_VersionConflictRevokesAuthority(t *testing.T) {
+	a := newAdapterState()
+	a.resetForGeneration("/path/test.jsonl")
+
+	// Accepted version.
+	if !a.updateVersion("0.144.1", "codex") {
+		t.Error("updateVersion accepted: expected true")
+	}
+	if !a.versionValid {
+		t.Error("versionValid should be true")
+	}
+
+	// Conflicting version → revoke.
+	if a.updateVersion("0.144.2", "codex") {
+		t.Error("updateVersion conflicting: expected false")
+	}
+	if a.versionValid {
+		t.Error("versionValid should be false after conflict")
+	}
+	if !a.versionConflict {
+		t.Error("versionConflict should be true")
+	}
+}
+
+func TestAdapterState_DegradedRevokesAuthority(t *testing.T) {
+	a := newAdapterState()
+	a.resetForGeneration("/path/test.jsonl")
+
+	// Establish version.
+	a.updateVersion("0.144.1", "codex")
+
+	// Adapter reports degraded → mark conflict.
+	a.markVersionConflict()
+	if a.versionValid {
+		t.Error("versionValid should be false after markVersionConflict")
+	}
+	if !a.versionConflict {
+		t.Error("versionConflict should be true after markVersionConflict")
+	}
+
+	// Correlation must be unavailable after conflict.
+	corr := a.launchCorrelation(&transcript.LaunchBinding{
+		SessionID:       "s",
+		Provider:        "codex",
+		AcceptedVersion: "0.144.1",
+		PID:             0,
+	}, "codex", 12345)
+	if corr != contract.CorrelationUnavailable {
+		t.Errorf("correlation after version conflict: got %v, want Unavailable", corr)
 	}
 }
 

@@ -328,8 +328,13 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 	}()
 
 	// Stream IPC connection to PTY stdin (Raw byte copy)
+	ts := GetTranscriptService()
+	canonicalID := fmt.Sprintf("%s:%s", s.AdapterName(), s.ID())
 	if reader.Buffered() > 0 {
 		bufferedData, _ := reader.Peek(reader.Buffered())
+		if ts != nil {
+			ts.BeginInput(canonicalID, time.Now())
+		}
 		if writer, ok := s.(mux.InputWriter); ok {
 			writer.WriteInput(context.Background(), bufferedData)
 		} else {
@@ -343,6 +348,9 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 		n, err := conn.Read(buf)
 		if err != nil {
 			break
+		}
+		if ts != nil {
+			ts.BeginInput(canonicalID, time.Now())
 		}
 		if writer, ok := s.(mux.InputWriter); ok {
 			writer.WriteInput(context.Background(), buf[:n])
@@ -391,6 +399,8 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, activi
 	}()
 
 	// Local stdin → recorder WriteInput.
+	// T3: echo privacy — suppress byte-stream projection during input.
+	ts := GetTranscriptService()
 	buf := make([]byte, 1024)
 	for {
 		n, err := conn.Read(buf)
@@ -398,6 +408,9 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, activi
 			return
 		}
 		if n > 0 {
+			if ts != nil {
+				ts.BeginInput(sessionID, time.Now())
+			}
 			rec.WriteInput(buf[:n])
 		}
 	}

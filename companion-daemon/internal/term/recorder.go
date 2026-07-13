@@ -49,6 +49,11 @@ func SetTranscriptService(svc *transcript.Service) {
 	transcriptSvcSingleton = svc
 }
 
+// GetTranscriptService returns the process-wide Transcript service, or nil.
+func GetTranscriptService() *transcript.Service {
+	return transcriptSvcSingleton
+}
+
 // recorderRegistry tracks active recorders.
 var recorderRegistry = struct {
 	mu         sync.Mutex

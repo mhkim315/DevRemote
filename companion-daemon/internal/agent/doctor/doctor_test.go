@@ -962,10 +962,14 @@ func TestSuiteResult_DeepCopyImmutability(t *testing.T) {
 // ── Deep copy: SuiteResult accessor returns independent copy ──
 
 func TestSuiteResult_AccessorReturnsDeepCopy(t *testing.T) {
+	psr := passingSuiteResult()
 	b, err := NewReviewBundle("ac1", "claude", "C", "3.0.0", "abc", "ev", "patch",
 		[]byte("diff"), []string{"f.go"}, []string{"adapter.go"}, nil, nil, cleanRedaction(),
 		ObservatoryResult{
-			CommandResults: append([]CommandResult{}, passingSuiteResult().CommandResults...),
+			TotalTests:     psr.TotalTests,
+			Passed:         psr.Passed,
+			Failed:         psr.Failed,
+			CommandResults: append([]CommandResult{}, psr.CommandResults...),
 		},
 		DriftEvidence{}, "native_log", "ws", nil)
 	if err != nil {
@@ -1327,12 +1331,12 @@ func TestBuildFixtureManifest_ProviderFixturesClassified(t *testing.T) {
 
 	// Create a provider fixture file in the candidate directory.
 	fixDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0")
-	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte(`{"id":"f1","kind":"message","ts":1}\n`), 0644)
+	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte("{\"id\":\"f1\",\"kind\":\"message\",\"ts\":1}\n"), 0644)
 	os.WriteFile(filepath.Join(fixDir, "session.log"), []byte("session started\n"), 0644)
 
 	admitted := []AdmittedFixture{
 		admitFixture("events.jsonl", `{"id":"f1","kind":"message","ts":1}`),
-		admitFixture("session.log", "session started\n"),
+		admitFixture("session.log", "session started"),
 	}
 	adapterM, pokitM, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
 	if !redact.Clean {
@@ -1567,7 +1571,7 @@ func TestBuildFixtureManifest_AdmittedFixtureWithProvenance(t *testing.T) {
 
 	// Write a .jsonl file WITH explicit admission.
 	fixDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0")
-	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte(`{"id":"f1","kind":"message","ts":1}\n`), 0644)
+	os.WriteFile(filepath.Join(fixDir, "events.jsonl"), []byte("{\"id\":\"f1\",\"kind\":\"message\",\"ts\":1}\n"), 0644)
 
 	admitted := []AdmittedFixture{admitFixture("events.jsonl", `{"id":"f1","kind":"message","ts":1}`)}
 	_, _, fixtureM, redact := buildFixtureManifest(ws.Root, "claude", "v3_0_0", admitted)
@@ -1610,7 +1614,7 @@ func TestBuildFixtureManifest_AdmittedNestedFixture(t *testing.T) {
 	// Create a nested directory with an admitted fixture.
 	nestedDir := filepath.Join(ws.Root, "internal/agent/adapters/claude/v3_0_0", "fixtures")
 	os.MkdirAll(nestedDir, 0755)
-	os.WriteFile(filepath.Join(nestedDir, "events.jsonl"), []byte(`{"id":"n1","kind":"message","ts":1}\n`), 0644)
+	os.WriteFile(filepath.Join(nestedDir, "events.jsonl"), []byte("{\"id\":\"n1\",\"kind\":\"message\",\"ts\":1}\n"), 0644)
 
 	admitted := []AdmittedFixture{
 		admitFixture("fixtures/events.jsonl", `{"id":"n1","kind":"message","ts":1}`),
