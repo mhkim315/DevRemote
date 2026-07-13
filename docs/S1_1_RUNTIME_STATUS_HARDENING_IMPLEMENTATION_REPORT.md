@@ -262,12 +262,88 @@ the public DTO, T0/T1/T2, and mobile remain unchanged.
 | --- | --- | --- | --- |
 | R1 — `WinningSeq` ignored confidence, so it could bind a non-winner when two same-(status,provenance) candidates differ in confidence | `e1651f0` | `locateWinningSeq` also matches normalized confidence via `normConfidence` (same clamp01 the contract applies before selection); no re-derived precedence | `TestS11A_LowerConfidenceLaterEventDoesNotWin` (reviewer counterexample), `_HigherConfidenceLaterEventWins`, `_OutOfRangeConfidenceClampedWinnerMatched`, `_UnequalConfidenceOneShotEqualsIncremental` |
 | R2 — `LaunchBinding.Adapter` stored but never verified in correlation | `3108e5e` | `LaunchCorrelation` takes `discoveredAdapter` and requires a non-empty exact match; `processSession` passes the runtime's actual `sess.AdapterName()` | `TestS11B_CorrelationPIDStartRules/{adapter mismatch,empty discovered adapter}`, `_EmptyBindingAdapterFailsClosed`, `_ProductionAdapterMismatchNoStatus` |
-| R3 — replacement published the binding before invalidation, leaving a concurrent-poll window (and a stream-stale-write that could reject the later invalidation) | `ef47b55` | one production-owned boundary `TelemetryService.RegisterOrReplaceLaunch`: reserve gen → invalidate old status+ingestion at gen → publish; registry split into `ReserveLaunchGeneration` + `PublishLaunch` | `TestS11R3_InvalidationPrecedesPublish`, `_ConcurrentPollReplacementRace` (`-race`), `_ReplacementIsolatedPerSession`, `_BoundaryMonotonicAcrossDeleteRecreate` |
+| R3 (first attempt — later REJECTed, see §9.2) | `ef47b55` | `RegisterOrReplaceLaunch` composed `ReserveLaunchGeneration` + a separate invalidate + `PublishLaunch` — but the three steps were separately locked, so concurrent replacements could publish a lower generation last, and the test used a non-deterministic `select/default` that masked it | superseded by §9.2 |
 
-Remediation baseline: `07a4bb3` (reviewer REJECT doc, docs-only). Remediation
-final implementation SHA: `ef47b551e6c9fdb141676b35c0731be8c0e35d14`.
+Remediation baseline: `07a4bb3` (reviewer REJECT doc, docs-only). First-remediation
+implementation SHA: `ef47b551e6c9fdb141676b35c0731be8c0e35d14` (R1/R2 accepted; R3 rejected).
 
-### 9.1 Verified non-blocking product limitation (documented per handoff §5)
+### 9.2 R3 remediation 2 — one serialized registry transaction (re-verification `5896603`)
+
+The first R3 attempt was independently REJECTed
+(`docs/S1_1_RUNTIME_STATUS_HARDENING_REVERIFICATION.md`): reserve / invalidate /
+publish were three separately-locked steps, so two concurrent replacements could
+interleave and let a lower reserved generation publish AFTER a higher one
+(launch identity regression), and two concurrent first registrations could both
+skip invalidation. `PublishLaunch` also did not reject a stale generation. The
+concurrency test recorded `lastGen` but never asserted it and let a final
+replacement mask any intermediate regression.
+
+Final fix — one registry-owned, serialized per-session transition
+`LaunchRegistry.RegisterOrReplace(spec, invalidate)` (commit at the marker SHA):
+
+```text
+gate := per-session transition mutex        // different sessions stay concurrent
+gate.Lock()
+  r.mu.Lock();  nextGen++; gen := nextGen; existed := bindings[id] present;  r.mu.Unlock()
+  if existed { invalidate(gen) }            // pre-publication high-water, NO r.mu held
+  r.mu.Lock()
+    if cur present && gen <= cur.Generation { return cur.Generation }  // strict monotonic: never regress
+    bindings[id] = {…, Generation: gen}     // publish
+  r.mu.Unlock()
+gate.Unlock()
+```
+
+- The whole reserve→invalidate→publish transition is serialized per session by the
+  gate, so the "lower generation publishes last" window cannot exist.
+- Publication rejects any `gen <= currentPublished` — a stale transition never
+  regresses the binding.
+- Two concurrent first registrations are serialized by the gate; the second
+  observes the first's binding and takes the replacement (invalidating) path, so
+  they cannot both skip invalidation.
+- The invalidation callback runs while the gate is held but the registry map mutex
+  is NOT — the audited lock order forbids deadlock (see below).
+- The unsafe split API (`ReserveLaunchGeneration`/`PublishLaunch`) is removed;
+  `RegisterLaunch` now routes through the same transition with a nil callback
+  (first-registration/test only) and the strict monotonic check still applies, so
+  no path can publish a replacement without the transition. Lifecycle `Clear`
+  (delete) remains a distinct full removal.
+
+**Lock-order proof (no inverse acquisition, no deadlock).** Audited mutation paths
+and the locks each takes, in order:
+
+| Path | Lock order | Holds a lock across a registry call? |
+| --- | --- | --- |
+| poll `processSession` | `telemetry.s.mu` (acquired then RELEASED) → `LookupLaunch`(`registry.mu`) → `statusStore.mu` | No — released before registry/store calls; sequential |
+| `RegisterOrReplace` transition | `gate` → [`registry.mu` acquire/release] → `invalidate` cb → [`registry.mu` acquire/release] | callback runs with NO `registry.mu` held |
+| `invalidate` cb (`invalidateForLaunch`) | `telemetry.s.mu` (acquire/release) → `statusStore.mu` (acquire/release) | No |
+| `statusStore.*` | `statusStore.mu` only (leaf) | No |
+| launch registry Lookup/Remove | `registry.mu` only (leaf — never calls into term/status) | N/A |
+
+The gate is acquired ONLY by transitions; the poll and the status store never
+acquire it, and the registry map mutex is never held across a term/status call.
+So the global order is `gate → {registry.mu | telemetry.s.mu | statusStore.mu}`
+with no cycle. No path takes a status/adapter lock before the launch registry.
+
+Deterministic tests (non-vacuous — verified by a negative control that disables
+the gate and observes the serialization test FAIL with the reviewer's exact
+"B published gen 3 while A held the gate"):
+
+- `transcript.TestS11R3_Registry_GateSerializesReserveThenPublish` — a
+  `launchGateWaitHook` seam holds transition A inside its invalidation callback
+  (gate held, generation allocated) and proves transition B, on arriving at the
+  gate, has NOT allocated its generation and cannot publish until A completes;
+- `transcript.TestS11R3_Registry_StrictMonotonicPublishRejectsStale` — a lower
+  generation cannot overwrite a higher published one;
+- `transcript.TestS11R3_Registry_ConcurrentReplacementsMonotonic` — snapshots the
+  binding after every completion; it never drops below a just-published generation;
+- term `TestS11R3_LookupNeverAheadOfHighWater`, `_ConcurrentFirstRegistrationsSerialized`,
+  `_DifferentSessionsConcurrent`, `_DeleteRecreateMonotonic`, `_HeavyConcurrentRace`
+  (`-race`) — production-boundary wiring, isolation, monotonicity, and race safety.
+
+R3-2 baseline: `5896603` (re-verification doc, docs-only). Final implementation
+SHA: `ff4f61affc17b0f60b6fc67c8f41c2605e02ed1f`.
+
+
 
 The local CLI `pokit run claude` / `pokit run codex` path
 (`cmd/devremote/client.go:runClient` → local socket → `createLocalControlled`)
@@ -287,4 +363,4 @@ Changing the `pokit run` protocol is explicitly deferred.
 
 ---
 
-REVIEW REQUEST: S1.1 Runtime Status Hardening remediation — ef47b551e6c9fdb141676b35c0731be8c0e35d14
+REVIEW REQUEST: S1.1 Runtime Status Hardening remediation — ff4f61affc17b0f60b6fc67c8f41c2605e02ed1f
