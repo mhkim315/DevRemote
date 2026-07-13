@@ -146,6 +146,7 @@ type sessionStateData struct {
 	StreamGeneration  int      // incremented on inode/truncation/path change
 	AcceptedVersion   string   // discovered version (preserved across polls)
 	VersionConfirmed  bool     // true when current stream validated version
+	VersionAnchor     []byte   // preserved session_meta for version authority
 	// SamplingFailures tracks consecutive telemetry errors.
 	SamplingFailures int
 }

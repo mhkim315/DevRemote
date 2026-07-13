@@ -1,6 +1,7 @@
 package term
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -181,15 +182,25 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 							stateData.AdapterCursor = ""
 							stateData.AcceptedVersion = ""
 							stateData.VersionConfirmed = false
+							stateData.VersionAnchor = nil
 							stateData.RecordWindowInode = cursor.Inode
 							stateData.StreamGeneration++
 						}
 						stateData.RecordWindow = append(stateData.RecordWindow, rawLines...)
+						if len(stateData.VersionAnchor) == 0 && len(rawLines) > 0 && bytes.Contains(rawLines[0], []byte("session_meta")) {
+							stateData.VersionAnchor = rawLines[0]
+						}
 						if len(stateData.RecordWindow) > 2000 {
 							stateData.RecordWindow = stateData.RecordWindow[len(stateData.RecordWindow)-2000:]
 							stateData.AdapterCursor = "" // force revalidation after trim
+							stateData.VersionConfirmed = false
+							stateData.AcceptedVersion = ""
 						}
-						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, stateData.RecordWindow, id, stateData.AdapterCursor)
+						adapterInput := stateData.RecordWindow
+						if len(stateData.VersionAnchor) > 0 && len(adapterInput) > 0 && !bytes.Equal(stateData.VersionAnchor, adapterInput[0]) {
+							adapterInput = append([][]byte{stateData.VersionAnchor}, adapterInput...)
+						}
+						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, adapterInput, id, stateData.AdapterCursor)
 						stateData.AdapterCursor = nextCursor
 						if discoveredVersion != "" {
 							stateData.AcceptedVersion = discoveredVersion
