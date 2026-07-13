@@ -1,6 +1,9 @@
 # Next Session Handoff — S1.1 R3 Atomicity Remediation 2
 
-Status: **READY — ONE R3 BLOCKER ONLY**
+Status: **SUPERSEDED — R3 SERIALIZATION ACCEPTED; FINAL CLEANUP REQUIRED**
+
+Continue only from `docs/NEXT_SESSION_S1_1_REMEDIATION_3_HANDOFF.md`. This file
+remains the historical transaction-remediation contract.
 
 R1 exact winner binding and R2 adapter binding are independently accepted. Do
 not redesign or broaden them. Fix only the remaining R3 registry transaction

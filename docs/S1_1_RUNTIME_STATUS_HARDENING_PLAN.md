@@ -1,16 +1,16 @@
 # S1.1 Runtime Status Hardening — Planning Boundary
 
-Status: **R3 REMEDIATION 2 REQUIRED — re-verification REJECT at `faa3917`**
+Status: **FINAL REGISTRY CLEANUP REQUIRED — re-verification REJECT at `4e096bf`**
 
 S1.1 is a separate hardening milestone between accepted S1 and A1. S1 was
 independently accepted at implementation `b6504bd7d5c634f0c0459ae87503b82d17c1537b`
 with canonical marker `70ef5df28dede7b0f3025eeaab7826f76a229fbf`.
 
 Authoritative execution handoff:
-`docs/NEXT_SESSION_S1_1_REMEDIATION_2_HANDOFF.md`.
+`docs/NEXT_SESSION_S1_1_REMEDIATION_3_HANDOFF.md`.
 
 Independent evidence:
-`docs/S1_1_RUNTIME_STATUS_HARDENING_REVERIFICATION.md`.
+`docs/S1_1_RUNTIME_STATUS_HARDENING_REVERIFICATION_2.md`.
 
 ## 1. Purpose
 
@@ -98,6 +98,12 @@ the winner-confidence and adapter-binding defects. Its replacement path remains
 non-atomic across concurrent registrations because reserve, lookup, invalidate,
 and publish are separately locked. Only this R3 transaction remains active; do
 not reopen accepted R1/R2 or begin A1.
+
+R3 remediation 2 (`ff4f61a`, report head `4e096bf`) closes the same-session
+serialization defect. Final acceptance remains blocked because its per-session
+gate map grows with every historical session ID and a nil-invalidation
+replacement helper still bypasses the otherwise-correct transaction. Only these
+two cleanup items remain active.
 
 The ordinary local CLI currently remains a managed-lifecycle path: it sends a
 legacy command string and does not register recognized-agent launch authority.
