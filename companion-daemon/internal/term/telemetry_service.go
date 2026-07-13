@@ -527,36 +527,32 @@ func (s *TelemetryService) Clear(sessionID string) {
 }
 
 // RegisterOrReplaceLaunch is the single production-owned atomic launch
-// replacement boundary (S1.1-R3). It enforces the ordering:
+// replacement boundary (S1.1-R3). It delegates to the registry's serialized
+// per-session transition, supplying a pre-publication invalidation callback. The
+// registry guarantees the ordering under one held session gate:
 //
-//	reserve strictly-newer launch generation
-//	→ (replacement only) invalidate old status + reset adapter ingestion state
-//	   AT the reserved generation
-//	→ publish the new binding (now observable to correlation)
+//	allocate strictly-newer generation
+//	→ (replacement only) invalidate old status + reset adapter ingestion AT that gen
+//	→ publish the new binding with a strict monotonic check (no regression)
 //
-// The invalidation happens BEFORE the binding is published, so a concurrent
-// telemetry poll can never observe the new launch generation before the
-// non-current status high-water exists — it cannot attribute prior-stream
-// evidence to the new launch, and a delayed prior-launch write stays rejected by
-// the launch-generation rule. First registration publishes with no prior state to
-// invalidate. This is distinct from lifecycle Clear (delete), which removes the
-// record entirely.
+// so a concurrent telemetry poll can never observe the new launch generation
+// before its non-current high-water exists, two concurrent replacements can never
+// let a lower generation publish last, and two concurrent first registrations
+// cannot both skip invalidation (the gate serializes them; the second sees the
+// first's binding and takes the replacement path). This is distinct from lifecycle
+// Clear (delete), which removes the record entirely.
 func (s *TelemetryService) RegisterOrReplaceLaunch(spec transcript.LaunchSpec) (int64, bool) {
-	gen := transcript.ReserveLaunchGeneration()
-	// A replacement is one where a prior binding already exists. Invalidate at the
-	// reserved generation FIRST so the high-water is installed before publish.
-	replacing := transcript.LookupLaunch(spec.SessionID) != nil
-	if replacing {
-		s.invalidateForLaunchLocked(spec.SessionID, gen)
-	}
-	transcript.PublishLaunch(spec, gen)
-	return gen, replacing
+	return transcript.RegisterOrReplaceLaunch(spec, func(gen int64) {
+		s.invalidateForLaunch(spec.SessionID, gen)
+	})
 }
 
-// invalidateForLaunchLocked installs a non-current high-water at the new launch
-// generation and resets the per-session adapter ingestion epoch. Caller ensures
-// this runs BEFORE the replacement binding is published.
-func (s *TelemetryService) invalidateForLaunchLocked(sessionID string, launchGen int64) {
+// invalidateForLaunch installs a non-current high-water at the new launch
+// generation and resets the per-session adapter ingestion epoch. It is invoked by
+// the registry transition BEFORE the replacement binding is published (and while
+// the session's transition gate is held, but NO registry map lock is held — see
+// the audited lock order in launch_binding.go).
+func (s *TelemetryService) invalidateForLaunch(sessionID string, launchGen int64) {
 	if s.statusStore == nil {
 		return
 	}

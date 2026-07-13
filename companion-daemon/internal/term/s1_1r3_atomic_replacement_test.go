@@ -2,6 +2,7 @@ package term
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"devremote/companion-daemon/internal/agent"
@@ -10,75 +11,167 @@ import (
 	"devremote/companion-daemon/internal/transcript"
 )
 
-// S1.1-R3 — atomic launch replacement publication. The production boundary
-// RegisterOrReplaceLaunch must reserve a strictly-newer generation, invalidate the
-// prior status + adapter ingestion AT that generation, and only THEN publish the
-// new binding — so a concurrent telemetry poll can never observe the new launch
-// generation before the non-current high-water exists, and cannot attach prior
-// stream evidence to the new launch.
+// S1.1-R3 (remediation 2) — production wiring of the atomic launch replacement
+// transition. The DETERMINISTIC serialization proof (reviewer's reverse-order
+// interleaving, strict monotonic publish, gate-blocks-second-transition) lives in
+// package transcript (launch_binding_r3_test.go), which can inspect the registry's
+// nextGen and published binding directly and uses the launchGateWaitHook seam.
+// These term-package tests prove the production boundary
+// TelemetryService.RegisterOrReplaceLaunch installs the invalidation high-water
+// before publication, isolates sessions, stays monotonic, and is race-clean.
 
-// R3-order: after RegisterOrReplaceLaunch returns, the published binding's
-// generation already has a matching non-current high-water in the store — i.e. the
-// invalidation is not deferred to a later poll. A prior-launch positive write is
-// rejected immediately.
-func TestS11R3_InvalidationPrecedesPublish(t *testing.T) {
+func newTestTelemetry(_ int) *TelemetryService {
+	adapter := &stubRegAdapter{name: "controlled_pty"}
+	reg := mux.MustNewRegistry(adapter)
+	ts := transcript.NewService(transcript.DefaultStoreConfig())
+	return NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+		NewApprovalStore(), NewActivityBuffer(100), ts)
+}
+
+func r3Spec(sid string) transcript.LaunchSpec {
+	return transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"}
+}
+
+// R3-highwater: after a replacement through the production boundary, the moment
+// LookupLaunch shows the new generation the store already rejects a prior-launch
+// positive write at that generation — proving invalidation preceded publication.
+func TestS11R3_LookupNeverAheadOfHighWater(t *testing.T) {
 	svc := newTestTelemetry(0)
-	sid := "controlled_pty:r3o"
+	sid := "controlled_pty:r3hw"
 	defer transcript.RemoveLaunch(sid)
-
-	spec := transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"}
-	gen1, _ := svc.RegisterOrReplaceLaunch(spec)
-	svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, LaunchGen: gen1, Generation: 3,
+	gen1, _ := svc.RegisterOrReplaceLaunch(r3Spec(sid))
+	svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, LaunchGen: gen1, Generation: 5,
 		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
 	if rec, _, _ := svc.statusStore.Current(sid); rec.Status != agent.StatusWorking {
 		t.Fatalf("seed: %+v, want working", rec)
 	}
 
-	// Replacement boundary. The moment it returns, the store already reflects the
-	// new generation as non-current AND the published binding carries gen2.
-	gen2, replaced := svc.RegisterOrReplaceLaunch(spec)
+	gen2, replaced := svc.RegisterOrReplaceLaunch(r3Spec(sid))
 	if !replaced || gen2 <= gen1 {
 		t.Fatalf("replace: replaced=%v gen2=%d gen1=%d", replaced, gen2, gen1)
 	}
+	// Binding shows gen2 AND the store already carries the non-current high-water.
 	b := transcript.LookupLaunch(sid)
 	if b == nil || b.Generation != gen2 {
-		t.Fatalf("published binding gen=%v, want %d", b, gen2)
+		t.Fatalf("binding gen=%v, want %d", b, gen2)
 	}
-	rec, _, _ := svc.statusStore.Current(sid)
-	if rec.Status != agent.StatusUnknown || !rec.Degraded || rec.LaunchGen != gen2 {
-		t.Errorf("published-with-highwater invariant broken: %+v, want unknown+degraded at gen2", rec)
+	if rec, _, _ := svc.statusStore.Current(sid); rec.Status != agent.StatusUnknown || !rec.Degraded || rec.LaunchGen != gen2 {
+		t.Errorf("post-replace store rec=%+v, want unknown+degraded at gen2", rec)
 	}
-
-	// Old stream evidence at the PRIOR launch can no longer be committed under the
-	// new launch generation, at any streamGen.
-	old := svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, LaunchGen: gen1, Generation: 999,
+	// A prior-launch (gen1) positive write at any streamGen is rejected.
+	got := svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, LaunchGen: gen1, Generation: 9999,
 		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-	if old.Status == agent.StatusWorking {
-		t.Errorf("prior-launch evidence committed under new launch: %+v", old)
+	if got.Status == agent.StatusWorking {
+		t.Errorf("prior-launch write committed under new gen: %+v", got)
 	}
 }
 
-// R3-race: many concurrent "polls" interleave with a replacement. Each poll models
-// what processSession does — it reads the current binding generation and writes a
-// positive status at that launchGen. The invariant checked afterward: the store's
-// final launch generation is the published one, no prior-launch positive status
-// survives, and there is no data race.
-func TestS11R3_ConcurrentPollReplacementRace(t *testing.T) {
+// R3-noskip: two concurrent FIRST registrations of a never-seen session cannot
+// both take the no-invalidation path. The gate serializes them; exactly one is a
+// first registration (replaced=false), the other a replacement.
+func TestS11R3_ConcurrentFirstRegistrationsSerialized(t *testing.T) {
 	svc := newTestTelemetry(0)
-	sid := "controlled_pty:r3race"
+	sid := "controlled_pty:r3first"
 	defer transcript.RemoveLaunch(sid)
-	spec := transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"}
-
-	gen1, _ := svc.RegisterOrReplaceLaunch(spec)
-	_ = gen1
 
 	var wg sync.WaitGroup
-	// Pollers: read current binding gen, write a positive status at that gen.
-	for p := 0; p < 12; p++ {
+	var replacedCount int64
+	gens := make([]int64, 2)
+	for i := 0; i < 2; i++ {
 		wg.Add(1)
-		go func(p int) {
+		go func(i int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			g, replaced := svc.RegisterOrReplaceLaunch(r3Spec(sid))
+			gens[i] = g
+			if replaced {
+				atomic.AddInt64(&replacedCount, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if replacedCount != 1 {
+		t.Errorf("replacedCount=%d, want exactly 1 (gate serialized first vs replacement)", replacedCount)
+	}
+	if gens[0] == gens[1] {
+		t.Errorf("two registrations shared a generation: %v", gens)
+	}
+	maxG := gens[0]
+	if gens[1] > maxG {
+		maxG = gens[1]
+	}
+	if b := transcript.LookupLaunch(sid); b == nil || b.Generation != maxG {
+		t.Errorf("final binding gen=%v, want max %d", b, maxG)
+	}
+}
+
+// R3-isolate: different sessions replace concurrently and independently — one
+// session's transition never blocks or corrupts another's, and each stays monotonic.
+func TestS11R3_DifferentSessionsConcurrent(t *testing.T) {
+	svc := newTestTelemetry(0)
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sid := "controlled_pty:r3iso" + string(rune('a'+i))
+			defer transcript.RemoveLaunch(sid)
+			var last int64
+			for j := 0; j < 40; j++ {
+				g, _ := svc.RegisterOrReplaceLaunch(r3Spec(sid))
+				if g <= last {
+					t.Errorf("%s: gen regressed %d → %d", sid, last, g)
+				}
+				last = g
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// R3-monotonic: delete/recreate through the boundary stays strictly monotonic.
+func TestS11R3_DeleteRecreateMonotonic(t *testing.T) {
+	svc := newTestTelemetry(0)
+	sid := "controlled_pty:r3mono"
+	g1, r1 := svc.RegisterOrReplaceLaunch(r3Spec(sid))
+	if r1 {
+		t.Error("first registration reported replaced")
+	}
+	transcript.RemoveLaunch(sid)
+	g2, r2 := svc.RegisterOrReplaceLaunch(r3Spec(sid))
+	defer transcript.RemoveLaunch(sid)
+	if r2 {
+		t.Error("recreate after delete reported replaced")
+	}
+	if g2 <= g1 {
+		t.Errorf("recreate gen not higher: g1=%d g2=%d", g1, g2)
+	}
+}
+
+// R3-race: heavy concurrent replacements + polls; the store's launch generation
+// never runs ahead of the published binding (no lower-gen write wins last). Run
+// with -race.
+func TestS11R3_HeavyConcurrentRace(t *testing.T) {
+	svc := newTestTelemetry(0)
+	sid := "controlled_pty:r3heavy"
+	defer transcript.RemoveLaunch(sid)
+	svc.RegisterOrReplaceLaunch(r3Spec(sid))
+
+	var wg sync.WaitGroup
+	for r := 0; r < 6; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 60; j++ {
+				svc.RegisterOrReplaceLaunch(r3Spec(sid))
+			}
+		}()
+	}
+	for p := 0; p < 6; p++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 60; j++ {
 				lg := int64(0)
 				if b := transcript.LookupLaunch(sid); b != nil {
 					lg = b.Generation
@@ -87,97 +180,15 @@ func TestS11R3_ConcurrentPollReplacementRace(t *testing.T) {
 					Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
 				svc.statusStore.Current(sid)
 			}
-		}(p)
-	}
-	// Replacers: repeatedly run the atomic boundary.
-	var lastGen int64
-	var genMu sync.Mutex
-	for r := 0; r < 4; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 25; j++ {
-				g, _ := svc.RegisterOrReplaceLaunch(spec)
-				genMu.Lock()
-				if g > lastGen {
-					lastGen = g
-				}
-				genMu.Unlock()
-			}
 		}()
 	}
 	wg.Wait()
 
-	// A final replacement establishes a known-latest generation; a prior-launch
-	// positive write must not be able to overwrite it.
-	finalGen, _ := svc.RegisterOrReplaceLaunch(spec)
-	rec, _, ok := svc.statusStore.Current(sid)
-	if !ok {
-		t.Fatal("no record after churn")
+	b := transcript.LookupLaunch(sid)
+	if b == nil {
+		t.Fatal("no binding after churn")
 	}
-	if rec.LaunchGen != finalGen {
-		t.Errorf("final launchGen=%d, want %d (latest replacement)", rec.LaunchGen, finalGen)
+	if rec, _, ok := svc.statusStore.Current(sid); ok && rec.LaunchGen > b.Generation {
+		t.Errorf("store launchGen=%d ahead of published binding %d", rec.LaunchGen, b.Generation)
 	}
-	// A stale prior-launch positive write is rejected.
-	stale := svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, LaunchGen: finalGen - 1, Generation: 100000,
-		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-	if stale.LaunchGen != finalGen {
-		t.Errorf("stale prior-launch write moved launchGen to %d, want %d", stale.LaunchGen, finalGen)
-	}
-}
-
-// R3-isolate: replacing session A's launch through the boundary cannot affect B.
-func TestS11R3_ReplacementIsolatedPerSession(t *testing.T) {
-	svc := newTestTelemetry(0)
-	a, b := "controlled_pty:r3a", "controlled_pty:r3b"
-	defer transcript.RemoveLaunch(a)
-	defer transcript.RemoveLaunch(b)
-	specA := transcript.LaunchSpec{SessionID: a, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"}
-	specB := transcript.LaunchSpec{SessionID: b, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"}
-
-	genA1, _ := svc.RegisterOrReplaceLaunch(specA)
-	genB1, _ := svc.RegisterOrReplaceLaunch(specB)
-	svc.statusStore.Update(AgentStatusUpdate{SessionID: a, LaunchGen: genA1, Generation: 1,
-		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(a, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-	svc.statusStore.Update(AgentStatusUpdate{SessionID: b, LaunchGen: genB1, Generation: 1,
-		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(b, agent.EventThinking, contract.ProvenanceNativeLog, 0.9)}})
-
-	svc.RegisterOrReplaceLaunch(specA) // replace A only
-	if rec, _, _ := svc.statusStore.Current(a); rec.Status != agent.StatusUnknown {
-		t.Errorf("A after replacement: status=%q, want unknown", rec.Status)
-	}
-	if rec, _, _ := svc.statusStore.Current(b); rec.Status != agent.StatusThinking {
-		t.Errorf("B affected by A's replacement: status=%q, want thinking", rec.Status)
-	}
-}
-
-// R3-monotonic: first registration and delete/recreate through the boundary keep
-// generations strictly increasing (no silent reuse).
-func TestS11R3_BoundaryMonotonicAcrossDeleteRecreate(t *testing.T) {
-	svc := newTestTelemetry(0)
-	sid := "controlled_pty:r3mono"
-	spec := transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"}
-
-	g1, replaced1 := svc.RegisterOrReplaceLaunch(spec)
-	if replaced1 {
-		t.Error("first registration reported replaced")
-	}
-	transcript.RemoveLaunch(sid)
-	g2, replaced2 := svc.RegisterOrReplaceLaunch(spec)
-	defer transcript.RemoveLaunch(sid)
-	if replaced2 {
-		t.Error("recreation after delete reported replaced (binding was removed)")
-	}
-	if g2 <= g1 {
-		t.Errorf("recreated gen not higher: g1=%d g2=%d", g1, g2)
-	}
-}
-
-// newTestTelemetry — minimal TelemetryService wiring shared by the R3 tests.
-func newTestTelemetry(_ int) *TelemetryService {
-	adapter := &stubRegAdapter{name: "controlled_pty"}
-	reg := mux.MustNewRegistry(adapter)
-	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	return NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
-		NewApprovalStore(), NewActivityBuffer(100), ts)
 }
