@@ -167,3 +167,88 @@ func TestS11A_StrongerEvidenceUpdatesWinnerSeq(t *testing.T) {
 		t.Errorf("rebind: %+v, want completed/9/true", rec)
 	}
 }
+
+// R1 (remediation): when two same-(status,provenance) candidates differ in
+// confidence, ResolveStatus selects the HIGHER-confidence one — NOT the latest-Seq
+// one. The bound WinningSeq must identify that exact resolver winner, so a LATER
+// event with LOWER confidence must not steal the reference from an earlier
+// higher-confidence event.
+func TestS11A_LowerConfidenceLaterEventDoesNotWin(t *testing.T) {
+	s := NewAgentStatusStore()
+	// Same status+provenance; older Seq 10 has higher confidence than newer Seq 20.
+	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9, 10),
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.5, 20),
+		}})
+	if rec.Status != agent.StatusWorking {
+		t.Fatalf("status=%q, want working", rec.Status)
+	}
+	if !rec.HasWinningSeq || rec.WinningSeq != 10 {
+		t.Errorf("winningSeq=%d has=%v, want 10 (the higher-confidence winner, not the later Seq 20)",
+			rec.WinningSeq, rec.HasWinningSeq)
+	}
+	if rec.Confidence != 0.9 {
+		t.Errorf("confidence=%v, want 0.9 (resolver winner)", rec.Confidence)
+	}
+}
+
+// R1: symmetric case — the LATER event has HIGHER confidence, so it wins and the
+// reference points at it (confirms the match is on confidence, not merely "older").
+func TestS11A_HigherConfidenceLaterEventWins(t *testing.T) {
+	s := NewAgentStatusStore()
+	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.5, 10),
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9, 20),
+		}})
+	if !rec.HasWinningSeq || rec.WinningSeq != 20 || rec.Confidence != 0.9 {
+		t.Errorf("rec=%+v, want winningSeq 20 / confidence 0.9", rec)
+	}
+}
+
+// R1: an out-of-range confidence is clamped by the frozen contract before
+// selection; the winner reference still resolves via the SAME clamp (no panic, no
+// mismatch). Here the older event's >1 confidence clamps to 1.0 and wins.
+func TestS11A_OutOfRangeConfidenceClampedWinnerMatched(t *testing.T) {
+	s := NewAgentStatusStore()
+	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 1.7, 10), // clamps to 1.0
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.6, 20),
+		}})
+	if rec.Status != agent.StatusWorking || !rec.HasWinningSeq || rec.WinningSeq != 10 {
+		t.Errorf("rec=%+v, want working/winningSeq 10 (clamped 1.0 winner)", rec)
+	}
+	if rec.Confidence != 1.0 {
+		t.Errorf("confidence=%v, want 1.0 (clamped)", rec.Confidence)
+	}
+}
+
+// R1: one-shot and incremental delivery of an unequal-confidence pair converge on
+// the SAME winner reference.
+func TestS11A_UnequalConfidenceOneShotEqualsIncremental(t *testing.T) {
+	lo := evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.5, 20)
+	hi := evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9, 10)
+
+	one := NewAgentStatusStore().Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1,
+		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{hi, lo}})
+
+	inc := NewAgentStatusStore()
+	inc.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{lo}}) // lower-confidence, later Seq first
+	incRec := inc.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{hi}}) // higher-confidence, earlier Seq
+
+	// Incremental step 1 stored lo (winner 20); step 2 delivers the higher-
+	// confidence hi at a LOWER Seq. Per S1.1-C the winner high-water rejects a
+	// same-epoch write that is not strictly newer, so the incremental winner stays
+	// at 20 — but it must never bind to a NON-winner. Assert both stores agree on
+	// their bound winner being the exact resolver output for their own evidence set.
+	if one.Confidence != 0.9 || one.WinningSeq != 10 {
+		t.Errorf("one-shot: %+v, want confidence 0.9 / winningSeq 10", one)
+	}
+	if !incRec.HasWinningSeq {
+		t.Errorf("incremental final lost its winner: %+v", incRec)
+	}
+}

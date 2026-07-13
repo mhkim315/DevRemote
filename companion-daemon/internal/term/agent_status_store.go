@@ -228,25 +228,52 @@ func buildStatusEvidence(filtered []agent.AgentEvent) (evidence []contract.Statu
 // locateWinningSeq maps the RESOLVED status back to the Seq of the exact accepted
 // candidate that produced it, WITHOUT re-deriving precedence. It scans the
 // already-ordered candidate list (latest-Seq first) and returns the first
-// candidate whose (Status, Provenance) equals the resolver's winning output. This
-// is a lookup of the resolver's own decision, never a second resolver.
+// candidate whose (Status, Provenance, normalized Confidence) equals the
+// resolver's winning output. This is a lookup of the resolver's own decision,
+// never a second resolver.
+//
+// Confidence matters: the frozen ResolveStatus selects by provenance rank and
+// THEN by normalized (clamp01) confidence, so two same-(status,provenance)
+// candidates with different confidence resolve to the HIGHER-confidence one — not
+// necessarily the latest-Seq one. Matching on status+provenance alone could bind
+// the anti-replay reference to a candidate that did not win; matching normalized
+// confidence too binds the exact winner. normConfidence applies the SAME clamp the
+// contract applied before selection, so the comparison is exact float equality
+// against the resolver's own clamped output.
 //
 // It fails closed: a degraded result, a StatusUnknown result, or any resolved
-// status that does not correspond to a positive accepted candidate (e.g. an
-// advisory-terminal claim that ResolveStatus downgraded to unknown) yields
-// ok=false and NO fabricated winning identity. Because the accepted production
-// path is native_log (non-advisory), the resolver never transforms a winning
-// candidate's status/provenance, so the exact winner is always found there.
+// status/confidence that does not correspond to a positive accepted candidate
+// (e.g. an advisory-terminal claim ResolveStatus downgraded to unknown, or an
+// advisory winner whose confidence was ceiling-capped below its clamped value)
+// yields ok=false and NO fabricated winning identity. The accepted production path
+// is native_log (non-advisory), so the resolver never transforms a winning
+// candidate's status/provenance/confidence and the exact winner is always found.
 func locateWinningSeq(evidence []contract.StatusEvidence, seqs []int64, res contract.StatusResult) (int64, bool) {
 	if res.Degraded.Degraded || res.Status == agent.StatusUnknown {
 		return 0, false
 	}
 	for i := range evidence {
-		if evidence[i].Status == res.Status && evidence[i].Provenance == res.Provenance {
+		if evidence[i].Status == res.Status &&
+			evidence[i].Provenance == res.Provenance &&
+			normConfidence(evidence[i].Confidence) == res.Confidence {
 			return seqs[i], true
 		}
 	}
 	return 0, false
+}
+
+// normConfidence clamps a raw event confidence to [0,1] exactly as the frozen
+// contract's ResolveStatus does before it selects the winner. It is arithmetic-free
+// (clamp only) so a matched candidate's value equals the resolver's clamped output
+// bit-for-bit; it never reimplements status precedence or the advisory ceiling.
+func normConfidence(c float64) float64 {
+	if c < 0 {
+		return 0
+	}
+	if c > 1 {
+		return 1
+	}
+	return c
 }
 
 // hasStatusCap reports whether the adapter advertises the frozen CapStatus
