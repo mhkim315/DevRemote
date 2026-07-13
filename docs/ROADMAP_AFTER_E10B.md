@@ -142,8 +142,8 @@ T1  Codex Adapter                               ACCEPT 162266f83 (Codex CLI 0.14
 T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202 session JSONL; capability-aware fixed harness; approval safely unavailable)
 R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
 D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
-T3  Transcript Integration                    IN PROGRESS / REJECT at 0c82cf0 (continue with NEXT_SESSION_T3_REMEDIATION_HANDOFF.md; original full contract remains NEXT_SESSION_T3_TRANSCRIPT_INTEGRATION_HANDOFF.md)
-S1  Rich Agent Runtime Status Model
+T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
+S1  Rich Agent Runtime Status Model           NEXT (execute S1-A through S1-E via NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md)
 A1  Mobile-first Approval System
 O1  Orchestrator
 N1  Notifications                             PLANNED outside the revised critical path
@@ -446,6 +446,25 @@ may safely collapse to a bounded marker directing the user to Live Terminal.
 ## S1 — Runtime Status Model
 
 Goal: introduce structured agent/session state.
+
+Execution handoff: `docs/NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md`.
+
+The earlier example list below mixed daemon lifecycle and agent activity. It is
+retained as historical product intent but superseded by the accepted authority
+split:
+
+```text
+daemon lifecycle: starting | running | stopping | exited | killed | failed
+agent activity: unknown | idle | thinking | working | waiting_input |
+                waiting_approval | completed | failed | interrupted | degraded
+observation health: fresh | stale | unavailable/degraded
+approval action state: deferred to A1
+```
+
+S1 is staged as S1-A audit/contract, S1-B internal status state, S1-C accepted
+T1/T2 production wiring, S1-D authenticated API/mobile consumer, and S1-E
+integrated regression/safety verification. Intermediate checkpoints are not
+independent acceptance points; request review only after the complete S1 path.
 
 Example states:
 

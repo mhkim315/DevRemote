@@ -1,8 +1,13 @@
 # Next Session Handoff — T3 Transcript Integration Remediation
 
-Status: **IN PROGRESS / INDEPENDENT REJECT**
+Status: **HISTORICAL — T3 ACCEPTED AT `9ad6f834f70e88b800e60124c8e408d38bca9d2b`**
 
-This is the authoritative continuation document for the current T3 remediation.
+T3 is complete. This document is retained as remediation history and must not be
+used to restart implementation. The acceptance record is
+`docs/T3_TRANSCRIPT_INTEGRATION_FINAL_ACCEPTANCE.md`; the next authorized stage
+is S1 through `docs/NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md`.
+
+This was the authoritative continuation document for the T3 remediation.
 It supplements `NEXT_SESSION_T3_TRANSCRIPT_INTEGRATION_HANDOFF.md`; where the two
 documents differ about current implementation status or the remediation starting
 point, this document wins. The original handoff remains authoritative for the

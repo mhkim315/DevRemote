@@ -1,8 +1,12 @@
 # Next Session Handoff — T3 Transcript Integration
 
-Status: **IN PROGRESS — USE THE REMEDIATION HANDOFF**
+Status: **HISTORICAL — T3 ACCEPTED AT `9ad6f834f70e88b800e60124c8e408d38bca9d2b`**
 
-Current continuation: read
+T3 is complete. This document remains the historical full contract, not an active
+execution instruction. See `docs/T3_TRANSCRIPT_INTEGRATION_FINAL_ACCEPTANCE.md`.
+The next stage is `docs/NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md`.
+
+Historical remediation instruction: read
 `docs/NEXT_SESSION_T3_REMEDIATION_HANDOFF.md` first. The implementation at
 `0c82cf02ae2f48ef67ee66b5e2d609965e39d34c` received an independent **REJECT**;
 the remediation handoff records the exact remaining cursor/window, authority,
