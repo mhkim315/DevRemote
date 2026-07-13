@@ -30,12 +30,41 @@ const KNOWN_STATUSES = new Set([
   'completed', 'failed', 'interrupted', 'degraded',
 ]);
 const KNOWN_PROVENANCES = new Set([
-  '', 'runtime', 'provider_protocol', 'provider_hook', 'native_log',
+  'runtime', 'provider_protocol', 'provider_hook', 'native_log',
   'pty_structural', 'heuristic', 'prompt_hint', 'unknown',
 ]);
 // Strict RFC3339 with a required 'T' separator and a required timezone (Z or ±HH:MM).
-// A date-only string such as "2026-07-13" is rejected.
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+// A date-only string such as "2026-07-13" is rejected. Fractional seconds are
+// allowed but length-bounded below; calendar validity is checked separately.
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+// RFC3339 with sane fractional seconds fits comfortably; cap the string to reject
+// pathological payloads (e.g. 100KB of fractional digits).
+const MAX_OBSERVED_AT_LEN = 40;
+
+function daysInMonth(year: number, month: number): number {
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+// isStrictRFC3339 requires a bounded, format-correct, CALENDAR-VALID timestamp.
+// It rejects impossible dates (e.g. 2026-02-30) that a lenient Date.parse would
+// silently normalize, plus out-of-range time and timezone components.
+function isStrictRFC3339(s: string): boolean {
+  if (s.length > MAX_OBSERVED_AT_LEN) return false;
+  const m = RFC3339.exec(s);
+  if (!m) return false;
+  const [, y, mo, d, h, mi, se, tz] = m;
+  const year = Number(y), month = Number(mo), day = Number(d);
+  const hour = Number(h), min = Number(mi), sec = Number(se);
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  if (hour > 23 || min > 59 || sec > 60) return false; // 60 permits a leap second
+  if (tz !== 'Z') {
+    const offH = Number(tz.slice(1, 3)), offM = Number(tz.slice(4, 6));
+    if (offH > 23 || offM > 59) return false;
+  }
+  return !isNaN(Date.parse(s));
+}
 
 // validateAgentActivity strictly validates the untrusted DTO and returns a typed
 // copy or null. It FAILS CLOSED: every mandatory field must be present and typed,
@@ -61,9 +90,7 @@ export function validateAgentActivity(raw: unknown): AgentActivity | null {
     return null;
   }
   if (typeof o.degraded !== 'boolean') return null;
-  if (typeof o.observedAt !== 'string' || !RFC3339.test(o.observedAt) || isNaN(Date.parse(o.observedAt))) {
-    return null;
-  }
+  if (typeof o.observedAt !== 'string' || !isStrictRFC3339(o.observedAt)) return null;
   if (typeof o.stale !== 'boolean') return null;
 
   return {

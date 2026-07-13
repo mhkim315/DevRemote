@@ -40,14 +40,18 @@ describe('validateAgentActivity — fail closed', () => {
     expect(validateAgentActivity({ ...VALID, evil: 'x' })).toBeNull();
   });
 
-  it('enforces closed status and provenance vocabularies', () => {
+  it('enforces closed status and provenance vocabularies (empty provenance rejected)', () => {
     expect(validateAgentActivity({ ...VALID, status: 'orchestrator_thought' })).toBeNull();
     expect(validateAgentActivity({ ...VALID, provenance: 'made_up' })).toBeNull();
+    expect(validateAgentActivity({ ...VALID, provenance: '' })).toBeNull(); // '' not in closed vocab
     for (const s of ['unknown', 'idle', 'thinking', 'working', 'waiting_approval',
       'waiting_input', 'completed', 'failed', 'interrupted', 'degraded']) {
       expect(validateAgentActivity({ ...VALID, status: s })).not.toBeNull();
     }
-    expect(validateAgentActivity({ ...VALID, provenance: '' })).not.toBeNull();
+    for (const p of ['runtime', 'provider_protocol', 'provider_hook', 'native_log',
+      'pty_structural', 'heuristic', 'prompt_hint', 'unknown']) {
+      expect(validateAgentActivity({ ...VALID, provenance: p })).not.toBeNull();
+    }
   });
 
   it('requires finite confidence in [0,1]', () => {
@@ -56,11 +60,23 @@ describe('validateAgentActivity — fail closed', () => {
     }
   });
 
-  it('requires strict RFC3339 timestamps (rejects date-only and junk)', () => {
-    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13' })).toBeNull(); // date-only
+  it('requires bounded, calendar-valid, strict RFC3339 timestamps', () => {
+    // date-only / no timezone / junk
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13' })).toBeNull();
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00' })).toBeNull();
     expect(validateAgentActivity({ ...VALID, observedAt: 'not-a-date' })).toBeNull();
-    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00' })).toBeNull(); // no tz
+    // oversized fractional seconds (pathological payload)
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00.' + '9'.repeat(100) + 'Z' })).toBeNull();
+    // calendar-impossible dates that Date.parse would silently normalize
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-02-30T00:00:00Z' })).toBeNull();
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-02-29T00:00:00Z' })).toBeNull(); // 2026 not leap
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-13-01T00:00:00Z' })).toBeNull();
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T25:00:00Z' })).toBeNull();
+    // valid UTC and offset forms, incl. a real leap day
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00Z' })).not.toBeNull();
     expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00+09:00' })).not.toBeNull();
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00.123Z' })).not.toBeNull();
+    expect(validateAgentActivity({ ...VALID, observedAt: '2024-02-29T12:34:56Z' })).not.toBeNull(); // leap year
   });
 
   it('rejects non-boolean degraded/stale', () => {
