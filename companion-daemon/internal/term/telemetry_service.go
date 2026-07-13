@@ -457,7 +457,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 				continue
 			}
 			st.AgentActivity = &AgentActivityDTO{
-				ContractVersion: AgentActivityContractVersion,
+				ContractVersion: contract.ContractVersion, // frozen T0 version, not a new one
 				Status:          string(rec.Status),
 				Provenance:      string(rec.Provenance),
 				Confidence:      rec.Confidence,

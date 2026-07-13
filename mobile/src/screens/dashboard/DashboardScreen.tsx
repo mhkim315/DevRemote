@@ -5,7 +5,7 @@ import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { NewSessionModal } from '../../components/NewSessionModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { listSessions, createOrUpdateSession, ConnectivityFailure, PokitError } from '../../lib/client';
-import { createRequestGuard } from '../../lib/requestGuard';
+import { createPollController } from '../../lib/sessionPoller';
 import { useConnection } from '../../lib/connection';
 import { isDegraded } from '../../lib/agentDisplay';
 
@@ -20,8 +20,8 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
-  // S1-D (D7): guards session-list responses against unmount / out-of-order.
-  const guardRef = useRef(createRequestGuard());
+  // S1-D: singleflight + mounted poll controller (no starvation, no post-unmount commit).
+  const pollRef = useRef(createPollController<any[]>());
   const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure, refreshDiagnostics } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
@@ -29,21 +29,20 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
-    // S1-D (D7): bind this response to the latest generation + mounted state so a
-    // stale/out-of-order or post-unmount response is dropped, never committed.
-    const req = guardRef.current.begin();
-    listSessions(token)
-      .then(data => {
-        if (!guardRef.current.isCurrent(req)) return;
+    // S1-D: singleflight — skip if a poll is already in flight (no starvation on a
+    // slow network); the controller also drops any response that resolves after
+    // unmount.
+    pollRef.current.poll(
+      () => listSessions(token),
+      data => {
         const normalized = (data || []).map((s: any) =>
           typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
         ).sort((a: SessionTelemetry, b: SessionTelemetry) => String(a.id).localeCompare(String(b.id)));
         setSessions(normalized);
         setFetchError('');
         setLoading(false);
-      })
-      .catch(err => {
-        if (!guardRef.current.isCurrent(req)) return;
+      },
+      err => {
         console.error(err);
         // R1a: classify the error for actionable messaging.
         if (err instanceof PokitError) {
@@ -74,10 +73,10 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   };
 
   useEffect(() => {
-    const guard = guardRef.current;
+    const poll = pollRef.current;
     fetchSessions();
     const interval = setInterval(fetchSessions, 1500);
-    return () => { clearInterval(interval); guard.cancel(); };
+    return () => { clearInterval(interval); poll.stop(); };
   }, []);
 
   const handleSaveProfile = async (id: string, runner: string, color: string) => {

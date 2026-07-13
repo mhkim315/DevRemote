@@ -57,7 +57,7 @@ type SessionTelemetry struct {
 // activity — never as session lifecycle, and a stale record must not be shown as
 // the current live activity.
 type AgentActivityDTO struct {
-	ContractVersion string  `json:"contractVersion"` // schema version; mobile validates exactly
+	ContractVersion string  `json:"contractVersion"` // frozen T0 contract.ContractVersion; mobile validates exactly
 	Status          string  `json:"status"`          // agent.AgentStatus value
 	Provenance      string  `json:"provenance"`      // contract.Provenance tier that won
 	Confidence      float64 `json:"confidence"`      // 0.0–1.0
@@ -65,10 +65,6 @@ type AgentActivityDTO struct {
 	ObservedAt      string  `json:"observedAt"` // RFC3339 (UTC)
 	Stale           bool    `json:"stale"`      // activity-record staleness (NOT poll health)
 }
-
-// AgentActivityContractVersion is the S1 activity DTO schema version. Mobile
-// validates it exactly, so bump only on a breaking activity-DTO shape change.
-const AgentActivityContractVersion = "s1.1"
 
 // mergeLifecycleState makes /api/sessions authoritative for managed-session
 // lifecycle. It (1) annotates each LIVE row that has a catalog entry with the

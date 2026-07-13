@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { RUNNERS } from '../lib/runners';
 import { formatAgentKind, formatAgentStatus, isDegraded } from '../lib/agentDisplay';
-import { AgentActivity, validateAgentActivity, activityDisplay, sessionNeedsApproval } from '../lib/agentActivity';
+import { AgentActivity, deriveCardActivity, sessionNeedsApproval } from '../lib/agentActivity';
 import { AgentApproval } from '../lib/client';
 
 export interface AgentEvent {
@@ -89,9 +89,11 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
   // Phase A9 / S1-D: the approval CTA is driven by the approval store ONLY —
   // agent activity (even `waiting_approval`) never creates it.
   const needsApproval = sessionNeedsApproval(session.approvals);
-  // S1-D: validate the untrusted agent-activity DTO before rendering it.
-  const activity = validateAgentActivity(session.agentActivity);
-  const activityView = activity ? activityDisplay(activity) : null;
+  // S1-D: the card's activity render decision. When an accepted `agentActivity`
+  // DTO exists it governs the activity dimension; the legacy heuristic
+  // `agentStatus` is not shown as a peer authority and is never a fallback for a
+  // malformed/future DTO.
+  const card = deriveCardActivity(session);
 
   return (
     <View style={styles.cardWrapper}>
@@ -122,31 +124,41 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
           </View>
         </View>
 
-        {(session.agentKind || session.agentStatus) && (
+        {(session.agentKind || card.showLegacyStatus) && (
         <View style={{ flexDirection: 'row', marginTop: 6, gap: 8 }}>
           {session.agentKind && (
             <Text style={{ color: isDegraded(session.agentConfidence, session.agentKind) ? '#666' : '#ccc', fontSize: 11 }}>
               🤖 {formatAgentKind(session.agentKind)}
             </Text>
           )}
-          {session.agentStatus && (
+          {/* Legacy heuristic status — shown ONLY when there is no accepted DTO. */}
+          {card.showLegacyStatus && session.agentStatus && (
             <Text style={{ color: isDegraded(session.agentConfidence, session.agentKind) ? '#666' : '#888', fontSize: 11 }}>
               {formatAgentStatus(session.agentStatus)}
             </Text>
           )}
         </View>
       )}
-      {/* S1-D: agent-activity dimension, rendered SEPARATELY from session state /
-          lifecycle. A stale or degraded record is visibly flagged (dimmed) so it
-          is not read as the current live activity. */}
-      {activityView && (
+      {/* S1-D: accepted agent-activity dimension, rendered SEPARATELY from session
+          state / lifecycle. A stale/degraded record is labelled as a non-current
+          state (never "Working"/"Thinking") and dimmed. A malformed/future DTO
+          shows an explicit unavailable marker — never the legacy heuristic. */}
+      {card.activity && (
         <View style={{ flexDirection: 'row', marginTop: 4, alignItems: 'center' }}>
           <Text style={styles.activityLabel}>ACTIVITY</Text>
           <Text
             testID="agent-activity"
-            style={[styles.activityValue, !activityView.current && styles.activityMuted]}
+            style={[styles.activityValue, !card.activity.current && styles.activityMuted]}
           >
-            {activityView.label}
+            {card.activity.label}
+          </Text>
+        </View>
+      )}
+      {card.malformed && (
+        <View style={{ flexDirection: 'row', marginTop: 4, alignItems: 'center' }}>
+          <Text style={styles.activityLabel}>ACTIVITY</Text>
+          <Text testID="agent-activity" style={[styles.activityValue, styles.activityMuted]}>
+            Unavailable
           </Text>
         </View>
       )}

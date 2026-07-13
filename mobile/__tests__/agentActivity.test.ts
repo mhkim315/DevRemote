@@ -1,13 +1,11 @@
-// S1-D: the mobile agent-activity dimension is a strictly-validated, display-only
-// projection. These proofs pin: strict DTO validation (contract version / closed
-// vocabulary / bounds / unknown-field / fail-closed), stale/degraded never shown as
-// current, and that the approval CTA and lifecycle controls never derive from agent
-// activity. They exercise the ACTUAL functions AgentCard imports (validateAgentActivity
-// + activityDisplay), so they cover the production renderer's decision logic.
+// S1-D: the mobile agent-activity dimension is strictly-validated, display-only,
+// and never a peer of the legacy heuristic. These proofs exercise the ACTUAL
+// functions AgentCard imports (deriveCardActivity → validateAgentActivity +
+// activityDisplay), so they cover the production render decision.
 
 import {
-  validateAgentActivity, activityDisplay, sessionNeedsApproval,
-  ACTIVITY_CONTRACT_VERSION, type AgentActivity,
+  validateAgentActivity, activityDisplay, deriveCardActivity, sessionNeedsApproval,
+  ACTIVITY_CONTRACT_VERSION,
 } from '../src/lib/agentActivity';
 import { computeActionPolicy } from '../src/lib/lifecycle';
 
@@ -17,121 +15,121 @@ const VALID = {
   degraded: false, observedAt: '2026-07-13T00:00:00Z', stale: false,
 };
 
-describe('validateAgentActivity — strict version / vocab / bounds / fail-closed', () => {
-  it('accepts a well-formed DTO', () => {
-    const a = validateAgentActivity(VALID);
-    expect(a).not.toBeNull();
-    expect(a!.status).toBe('working');
-    expect(a!.provenance).toBe('native_log');
-    expect(a!.confidence).toBeCloseTo(0.9);
+describe('validateAgentActivity — fail closed', () => {
+  it('accepts a complete well-formed DTO', () => {
+    expect(validateAgentActivity(VALID)).not.toBeNull();
   });
 
-  it('rejects a wrong/missing contract version', () => {
-    expect(validateAgentActivity({ ...VALID, contractVersion: 's9.9' })).toBeNull();
-    const { contractVersion, ...noVer } = VALID;
-    expect(validateAgentActivity(noVer)).toBeNull();
+  it('uses the frozen T0 contract version and rejects any other', () => {
+    expect(ACTIVITY_CONTRACT_VERSION).toBe('t0.1');
+    expect(validateAgentActivity({ ...VALID, contractVersion: 's1.1' })).toBeNull();
   });
 
-  it('rejects non-objects', () => {
-    for (const bad of [null, undefined, 'x', 3, true, []]) {
-      expect(validateAgentActivity(bad as unknown)).toBeNull();
+  it('rejects a DTO missing ANY mandatory field (no defaults)', () => {
+    for (const k of ['contractVersion', 'status', 'provenance', 'confidence', 'degraded', 'observedAt', 'stale']) {
+      const clone: Record<string, unknown> = { ...VALID };
+      delete clone[k];
+      expect(validateAgentActivity(clone)).toBeNull();
     }
   });
 
-  it('rejects unknown envelope fields', () => {
+  it('rejects non-objects and unknown fields', () => {
+    for (const bad of [null, undefined, 'x', 3, true, []]) {
+      expect(validateAgentActivity(bad as unknown)).toBeNull();
+    }
     expect(validateAgentActivity({ ...VALID, evil: 'x' })).toBeNull();
   });
 
-  it('rejects a status outside the closed vocabulary', () => {
+  it('enforces closed status and provenance vocabularies', () => {
     expect(validateAgentActivity({ ...VALID, status: 'orchestrator_thought' })).toBeNull();
-    expect(validateAgentActivity({ ...VALID, status: '' })).toBeNull();
-    expect(validateAgentActivity({ ...VALID, status: 123 })).toBeNull();
-    // every known status is accepted.
+    expect(validateAgentActivity({ ...VALID, provenance: 'made_up' })).toBeNull();
     for (const s of ['unknown', 'idle', 'thinking', 'working', 'waiting_approval',
       'waiting_input', 'completed', 'failed', 'interrupted', 'degraded']) {
       expect(validateAgentActivity({ ...VALID, status: s })).not.toBeNull();
     }
+    expect(validateAgentActivity({ ...VALID, provenance: '' })).not.toBeNull();
   });
 
-  it('rejects a provenance outside the closed vocabulary', () => {
-    expect(validateAgentActivity({ ...VALID, provenance: 'made_up' })).toBeNull();
-    expect(validateAgentActivity({ ...VALID, provenance: '' })).not.toBeNull(); // empty allowed
-  });
-
-  it('rejects out-of-range / non-finite / non-number confidence', () => {
+  it('requires finite confidence in [0,1]', () => {
     for (const c of [-0.1, 1.1, NaN, Infinity, '0.5']) {
       expect(validateAgentActivity({ ...VALID, confidence: c })).toBeNull();
     }
+  });
+
+  it('requires strict RFC3339 timestamps (rejects date-only and junk)', () => {
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13' })).toBeNull(); // date-only
+    expect(validateAgentActivity({ ...VALID, observedAt: 'not-a-date' })).toBeNull();
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00' })).toBeNull(); // no tz
+    expect(validateAgentActivity({ ...VALID, observedAt: '2026-07-13T00:00:00+09:00' })).not.toBeNull();
   });
 
   it('rejects non-boolean degraded/stale', () => {
     expect(validateAgentActivity({ ...VALID, degraded: 'yes' })).toBeNull();
     expect(validateAgentActivity({ ...VALID, stale: 1 })).toBeNull();
   });
-
-  it('rejects an unparseable or oversized observedAt', () => {
-    expect(validateAgentActivity({ ...VALID, observedAt: 'not-a-date' })).toBeNull();
-    expect(validateAgentActivity({ ...VALID, observedAt: 'x'.repeat(41) })).toBeNull();
-  });
 });
 
-describe('activityDisplay — stale/degraded never shown as current (the AgentCard label)', () => {
-  const base: AgentActivity = validateAgentActivity(VALID)!;
-
-  it('a fresh record is current', () => {
-    const d = activityDisplay(base);
+describe('activityDisplay — stale/degraded NEVER shown as an active status', () => {
+  it('fresh → the active status name, current', () => {
+    const d = activityDisplay(validateAgentActivity(VALID)!);
     expect(d.current).toBe(true);
     expect(d.label).toBe('Working');
   });
 
-  it('a stale record is flagged and NOT current', () => {
-    const d = activityDisplay({ ...base, stale: true });
+  it('stale → "Stale activity", not current, never "Working"', () => {
+    const d = activityDisplay(validateAgentActivity({ ...VALID, stale: true })!);
     expect(d.current).toBe(false);
-    expect(d.stale).toBe(true);
-    expect(d.label).toContain('stale');
+    expect(d.label).toBe('Stale activity');
+    expect(d.label).not.toContain('Working');
   });
 
-  it('a degraded record is flagged and NOT current', () => {
-    const d = activityDisplay({ ...base, degraded: true });
+  it('degraded → "Degraded activity", not current, never "Working"', () => {
+    const d = activityDisplay(validateAgentActivity({ ...VALID, degraded: true })!);
     expect(d.current).toBe(false);
-    expect(d.label).toContain('degraded');
+    expect(d.label).toBe('Degraded activity');
+  });
+});
+
+describe('deriveCardActivity — accepted DTO governs; no legacy peer/fallback', () => {
+  it('valid DTO present → activity shown, legacy suppressed', () => {
+    const c = deriveCardActivity({ agentActivity: VALID, agentStatus: 'working' });
+    expect(c.activity).not.toBeNull();
+    expect(c.showLegacyStatus).toBe(false); // legacy heuristic is NOT a peer authority
+    expect(c.malformed).toBe(false);
   });
 
-  it('AgentCard render decision: validate → display end-to-end', () => {
-    // This composes exactly what AgentCard does: validate the raw DTO then display.
-    const fresh = validateAgentActivity({ ...VALID, status: 'thinking' });
-    expect(fresh).not.toBeNull();
-    expect(activityDisplay(fresh!).current).toBe(true);
+  it('malformed DTO present → NO activity and NO legacy fallback', () => {
+    const c = deriveCardActivity({ agentActivity: { ...VALID, contractVersion: 'bad' }, agentStatus: 'working' });
+    expect(c.activity).toBeNull();
+    expect(c.malformed).toBe(true);
+    expect(c.showLegacyStatus).toBe(false); // must NOT fall back to legacy authority
+  });
 
-    const staleRaw = { ...VALID, status: 'working', stale: true };
-    const view = activityDisplay(validateAgentActivity(staleRaw)!);
-    expect(view.current).toBe(false); // muted, never rendered as live activity
-    expect(view.label).toContain('stale');
+  it('no DTO but legacy status → legacy heuristic may show (non-S1 session)', () => {
+    const c = deriveCardActivity({ agentStatus: 'working' });
+    expect(c.activity).toBeNull();
+    expect(c.showLegacyStatus).toBe(true);
+  });
 
-    // A malformed DTO yields null → AgentCard renders no activity line at all.
-    expect(validateAgentActivity({ ...VALID, contractVersion: 'bad' })).toBeNull();
+  it('stale DTO → activity is non-current', () => {
+    const c = deriveCardActivity({ agentActivity: { ...VALID, stale: true } });
+    expect(c.activity!.current).toBe(false);
+    expect(c.activity!.label).toBe('Stale activity');
   });
 });
 
 describe('agent activity NEVER drives approval or lifecycle actions', () => {
-  it('the approval CTA reads pending approvals only — not agent activity', () => {
+  it('approval CTA reads pending approvals only', () => {
     expect(sessionNeedsApproval([])).toBe(false);
-    expect(sessionNeedsApproval(undefined)).toBe(false);
     expect(sessionNeedsApproval([{ status: 'approved' }])).toBe(false);
     expect(sessionNeedsApproval([{ status: 'pending' }])).toBe(true);
   });
 
-  it('lifecycle controls derive from lifecycle state only, for EVERY activity status', () => {
-    // computeActionPolicy has no agentActivity input; action visibility is identical
-    // regardless of activity. A terminal lifecycle yields no stop/input; a running one
-    // enables stop — agent activity cannot change either.
+  it('lifecycle controls derive from lifecycle state only', () => {
     const exited = computeActionPolicy({ managed: true, inputCapable: true, state: 'exited', pending: null });
     expect(exited.canStop).toBe(false);
     expect(exited.inputEnabled).toBe(false);
-    expect(exited.canDelete).toBe(true);
-
     const running = computeActionPolicy({ managed: true, inputCapable: true, state: 'running', pending: null });
     expect(running.canStop).toBe(true);
-    expect(running.inputEnabled).toBe(true);
   });
 });

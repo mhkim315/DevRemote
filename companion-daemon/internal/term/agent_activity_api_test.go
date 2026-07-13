@@ -1,7 +1,6 @@
 package term
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -96,21 +95,66 @@ func TestS1D_AgentActivity_StaleFlagged(t *testing.T) {
 	}
 }
 
-// The real Delete handler removes the activity from the API immediately, and a
-// recreated id does not resurrect the old activity.
-func TestS1D_DeleteRemovesAgentActivityFromAPI(t *testing.T) {
+// The real authenticated DELETE route (HandleSessionDelete) removes the activity
+// from the API immediately, and a recreated id does not resurrect the old activity
+// — all observed through the production /api/sessions response.
+func TestS1D_RealDeleteRouteRemovesActivity_APIObserved(t *testing.T) {
 	h, life, telem := s1dSetup(t)
 	seedWorking(telem.statusStore)
+	seedCatalog(life, s1dSID, "controlled_pty", "s1", LifecycleExited) // terminal → deletable
 	if getSessionsSnapshot(t, h)[s1dSID].AgentActivity == nil {
 		t.Fatal("precondition: agentActivity must be present before delete")
 	}
 
-	seedCatalog(life, s1dSID, "controlled_pty", "s1", LifecycleExited)
-	if _, err := life.Delete(context.Background(), s1dSID); err != nil {
-		t.Fatalf("Delete: %v", err)
+	// Drive the REAL authenticated DELETE route + real HandleSessionDelete handler.
+	m := devicetrust.NewDeviceSessionManager("boot", 20*time.Minute)
+	rawDel, _, _, err := m.CreateAfterVerifiedChallenge("d", "host", "boot", []string{devicetrust.PermHistoryDelete})
+	if err != nil {
+		t.Fatalf("mint delete: %v", err)
 	}
+	delRoute := devicetrust.RequirePrincipal(m, h.HandleSessionDelete, devicetrust.PermHistoryDelete)
+	req := httptest.NewRequest("DELETE", "/api/sessions/"+s1dSID, nil)
+	req.SetPathValue("id", s1dSID)
+	req.Header.Set("Authorization", "Bearer "+rawDel)
+	rr := httptest.NewRecorder()
+	delRoute(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE route: %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+
+	// API observation: the activity is gone right after the delete.
 	if row, ok := getSessionsSnapshot(t, h)[s1dSID]; ok && row.AgentActivity != nil {
-		t.Errorf("agentActivity survived Delete in the API: %+v", row.AgentActivity)
+		t.Errorf("agentActivity survived the real DELETE route: %+v", row.AgentActivity)
+	}
+
+	// Recreate the same id → fresh activity, no inheritance of the old status.
+	telem.statusStore.Update(AgentStatusUpdate{SessionID: s1dSID, Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev(s1dSID, agent.EventThinking, contract.ProvenanceNativeLog, 0.9)}})
+	row := getSessionsSnapshot(t, h)[s1dSID]
+	if row.AgentActivity == nil || row.AgentActivity.Status != string(agent.StatusThinking) {
+		t.Errorf("recreated activity = %+v, want thinking (fresh, no inheritance)", row.AgentActivity)
+	}
+}
+
+// A device WITHOUT history:delete cannot delete (403), so activity is not removed.
+func TestS1D_DeleteRoute_RequiresHistoryDeletePermission(t *testing.T) {
+	h, life, telem := s1dSetup(t)
+	seedWorking(telem.statusStore)
+	seedCatalog(life, s1dSID, "controlled_pty", "s1", LifecycleExited)
+
+	m := devicetrust.NewDeviceSessionManager("boot", 20*time.Minute)
+	rawRead, _, _, _ := m.CreateAfterVerifiedChallenge("d", "host", "boot", devicetrust.PermissionsForRole(devicetrust.RoleMember))
+	delRoute := devicetrust.RequirePrincipal(m, h.HandleSessionDelete, devicetrust.PermHistoryDelete)
+	req := httptest.NewRequest("DELETE", "/api/sessions/"+s1dSID, nil)
+	req.SetPathValue("id", s1dSID)
+	req.Header.Set("Authorization", "Bearer "+rawRead) // member: no history:delete
+	rr := httptest.NewRecorder()
+	delRoute(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("delete without history:delete: %d, want 403", rr.Code)
+	}
+	if getSessionsSnapshot(t, h)[s1dSID].AgentActivity == nil {
+		t.Error("activity wrongly removed by an unauthorized delete")
 	}
 }
 
@@ -215,8 +259,8 @@ func TestS1D_AgentActivity_BoundedFieldsAndVersion(t *testing.T) {
 	h.HandleSessionsAPI(rr, req)
 	raw := rr.Body.String()
 
-	// Version present and exact.
-	if !contains(raw, `"contractVersion":"`+AgentActivityContractVersion+`"`) {
+	// Version present and exact (the frozen T0 contract version, not a new one).
+	if !contains(raw, `"contractVersion":"`+contract.ContractVersion+`"`) {
 		t.Errorf("missing/incorrect activity contractVersion in %s", raw)
 	}
 
