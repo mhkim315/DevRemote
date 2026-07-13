@@ -59,6 +59,17 @@ type AgentActivityRecord struct {
 	ObservedAt     time.Time
 	Generation     int    // adapterState.streamGen binding this result belongs to
 	Version        string // accepted provider version binding
+
+	// S1.1-A — bounded winning-evidence reference. WinningSeq is the stable
+	// per-session AgentEvent.Seq of the exact accepted event that produced this
+	// resolved status. It is an INTERNAL trace/anti-replay reference only: it is
+	// NOT part of the public agentActivity DTO and carries no text/metadata.
+	// HasWinningSeq is false whenever there is no accepted positive winner — an
+	// unknown/degraded/revoked result never fabricates a winning identity.
+	// S1.1-C uses (Generation, WinningSeq) to reject same-generation replay of an
+	// older winning revision.
+	WinningSeq    int64
+	HasWinningSeq bool
 }
 
 // AgentStatusUpdate is one resolution request for a single session. It carries
@@ -148,7 +159,12 @@ func statusForEvent(ev agent.AgentEvent) (agent.AgentStatus, bool) {
 // keeps first-seen on exact ties, so the latest event is placed first). Empty,
 // unknown, or invalid provenance is dropped (never upgraded); confidence must be
 // positive and is taken verbatim from the event.
-func buildStatusEvidence(filtered []agent.AgentEvent) []contract.StatusEvidence {
+//
+// S1.1-A: it returns a PARALLEL seqs slice — seqs[i] is the stable AgentEvent.Seq
+// of the accepted event that produced evidence[i]. The two slices share ordering
+// and length so the winning candidate located after resolution maps back to an
+// exact source Seq without re-deriving precedence.
+func buildStatusEvidence(filtered []agent.AgentEvent) (evidence []contract.StatusEvidence, seqs []int64) {
 	idx := make([]int, len(filtered))
 	for i := range idx {
 		idx[i] = i
@@ -162,6 +178,7 @@ func buildStatusEvidence(filtered []agent.AgentEvent) []contract.StatusEvidence 
 		return ia > ib
 	})
 	out := make([]contract.StatusEvidence, 0, len(filtered))
+	outSeqs := make([]int64, 0, len(filtered))
 	for _, i := range idx {
 		ev := filtered[i]
 		status, ok := statusForEvent(ev)
@@ -181,8 +198,33 @@ func buildStatusEvidence(filtered []agent.AgentEvent) []contract.StatusEvidence 
 			Provenance: prov,
 			Confidence: ev.Confidence, // never upgraded; ResolveStatus clamps/ceilings
 		})
+		outSeqs = append(outSeqs, ev.Seq)
 	}
-	return out
+	return out, outSeqs
+}
+
+// locateWinningSeq maps the RESOLVED status back to the Seq of the exact accepted
+// candidate that produced it, WITHOUT re-deriving precedence. It scans the
+// already-ordered candidate list (latest-Seq first) and returns the first
+// candidate whose (Status, Provenance) equals the resolver's winning output. This
+// is a lookup of the resolver's own decision, never a second resolver.
+//
+// It fails closed: a degraded result, a StatusUnknown result, or any resolved
+// status that does not correspond to a positive accepted candidate (e.g. an
+// advisory-terminal claim that ResolveStatus downgraded to unknown) yields
+// ok=false and NO fabricated winning identity. Because the accepted production
+// path is native_log (non-advisory), the resolver never transforms a winning
+// candidate's status/provenance, so the exact winner is always found there.
+func locateWinningSeq(evidence []contract.StatusEvidence, seqs []int64, res contract.StatusResult) (int64, bool) {
+	if res.Degraded.Degraded || res.Status == agent.StatusUnknown {
+		return 0, false
+	}
+	for i := range evidence {
+		if evidence[i].Status == res.Status && evidence[i].Provenance == res.Provenance {
+			return seqs[i], true
+		}
+	}
+	return 0, false
 }
 
 // hasStatusCap reports whether the adapter advertises the frozen CapStatus
@@ -238,7 +280,7 @@ func (s *AgentStatusStore) Update(in AgentStatusUpdate) AgentActivityRecord {
 		return AgentActivityRecord{} // fail-closed on absent/absurd id
 	}
 	filtered := filterSessionEvents(in.Events, in.SessionID)
-	evidence := buildStatusEvidence(filtered)
+	evidence, seqs := buildStatusEvidence(filtered)
 	if len(evidence) == 0 {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -249,7 +291,11 @@ func (s *AgentStatusStore) Update(in AgentStatusUpdate) AgentActivityRecord {
 		RecentEvents: filtered, // B2: same filtered set the evidence came from
 		Evidence:     evidence,
 	})
-	return s.store(in.SessionID, in.Generation, in.Version, res)
+	// S1.1-A: bind the resolved status to the exact accepted event Seq that won,
+	// located from the resolver's own output over the accepted ordering. A
+	// degraded/unknown resolution binds no winner (fail closed).
+	winSeq, hasWin := locateWinningSeq(evidence, seqs, res)
+	return s.store(in.SessionID, in.Generation, in.Version, res, winSeq, hasWin)
 }
 
 // Revoke forces a session's activity to unknown+degraded when authority is lost
@@ -258,7 +304,8 @@ func (s *AgentStatusStore) Revoke(sessionID string, generation int, version, rea
 	if len(sessionID) == 0 || len(sessionID) > maxSessionIDLen {
 		return AgentActivityRecord{}
 	}
-	return s.store(sessionID, generation, version, unknownDegraded(reason))
+	// Authority loss carries NO winning-evidence reference (fail closed).
+	return s.store(sessionID, generation, version, unknownDegraded(reason), 0, false)
 }
 
 // Invalidate marks a session non-current at a NEW stream generation without
@@ -272,7 +319,8 @@ func (s *AgentStatusStore) Invalidate(sessionID string, generation int, reason s
 	if len(sessionID) == 0 || len(sessionID) > maxSessionIDLen {
 		return AgentActivityRecord{}
 	}
-	return s.store(sessionID, generation, "", unknownDegraded(reason))
+	// A non-current invalidation carries NO winning-evidence reference.
+	return s.store(sessionID, generation, "", unknownDegraded(reason), 0, false)
 }
 
 // RevokeIfPresent downgrades an EXISTING record to unknown+degraded (used when a
@@ -280,7 +328,8 @@ func (s *AgentStatusStore) Invalidate(sessionID string, generation int, reason s
 // record is left absent, so an initially-uncorrelated session never gains a
 // phantom record. Returns (record, true) if a record was present.
 func (s *AgentStatusStore) RevokeIfPresent(sessionID string, generation int, version, reason string) (AgentActivityRecord, bool) {
-	rec := s.mkRecord(sessionID, generation, version, unknownDegraded(reason))
+	// Authority loss carries NO winning-evidence reference (fail closed).
+	rec := s.mkRecord(sessionID, generation, version, unknownDegraded(reason), 0, false)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev, ok := s.records[sessionID]
@@ -294,7 +343,7 @@ func (s *AgentStatusStore) RevokeIfPresent(sessionID string, generation int, ver
 	return rec, true
 }
 
-func (s *AgentStatusStore) mkRecord(sessionID string, generation int, version string, res contract.StatusResult) AgentActivityRecord {
+func (s *AgentStatusStore) mkRecord(sessionID string, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
 	return AgentActivityRecord{
 		SessionID:      sessionID,
 		Status:         res.Status,
@@ -305,12 +354,14 @@ func (s *AgentStatusStore) mkRecord(sessionID string, generation int, version st
 		ObservedAt:     s.now(),
 		Generation:     generation,
 		Version:        boundStr(version, maxVersionLen),
+		WinningSeq:     winSeq,
+		HasWinningSeq:  hasWin,
 	}
 }
 
 // store applies the generation rule and the size bound, then records atomically.
-func (s *AgentStatusStore) store(sessionID string, generation int, version string, res contract.StatusResult) AgentActivityRecord {
-	rec := s.mkRecord(sessionID, generation, version, res)
+func (s *AgentStatusStore) store(sessionID string, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
+	rec := s.mkRecord(sessionID, generation, version, res, winSeq, hasWin)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prev, ok := s.records[sessionID]; ok {
