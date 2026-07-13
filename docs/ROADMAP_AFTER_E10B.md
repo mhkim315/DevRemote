@@ -145,7 +145,7 @@ D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patc
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
-A1  Approval Safety                           PLAN RE-VERIFICATION REQUIRED (atomic claim + approval-specific receipt boundary frozen)
+A1  Approval Safety                           REJECT 3b56c4f (B1-B8 atomic claim/receipt/action/lifecycle/DTO/auth remediation required)
 N1  Notifications                             BLOCKED until independent A1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -527,11 +527,13 @@ generation-bound, authenticated, single-use action path.
 Authoritative plan: `docs/A1_APPROVAL_SAFETY_PLAN.md`.
 Execution handoff: `docs/NEXT_SESSION_A1_APPROVAL_SAFETY_HANDOFF.md`.
 
-The independent plan review returned `ACCEPT WITH REQUIRED PLAN CHANGES`. The
-documentation remediation freezes atomic `ClaimForExecution`, canonical
+The independent plan review returned `ACCEPT WITH REQUIRED PLAN CHANGES`; its
+documentation remediation froze atomic `ClaimForExecution`, canonical
 ActionDigest/idempotency, server-derived requester binding, an approval-specific
-delivery receipt, bounded public DTOs, and the complete acceptance gate. A1
-implementation remains blocked until independent plan re-verification.
+delivery receipt, bounded public DTOs, and the complete acceptance gate. The
+first implementation `3b56c4f` was independently rejected for not implementing
+those boundaries despite a green existing suite. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_HANDOFF.md`; N1 remains blocked.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,

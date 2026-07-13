@@ -1,16 +1,18 @@
 # A1 Approval Safety — Authoritative Planning Boundary
 
-Status: **DOCUMENTATION REMEDIATION COMPLETE — INDEPENDENT PLAN RE-VERIFICATION REQUIRED**
+Status: **PLAN ACCEPTED; IMPLEMENTATION REJECTED AT `3b56c4f` — B1-B8 REMEDIATION REQUIRED**
 
 Baseline reviewed: `ace458056699c26a323eea49d44f8dc1efdaded7`.
 Accepted S1.1 implementation ancestor:
 `02c8385e3270fbbc4df45e0c71ccad6ebe11a076`.
 
 This document freezes A1 scope and acceptance after the independent
-`ACCEPT WITH REQUIRED PLAN CHANGES` review. It does not authorize A1
-implementation. The execution handoff remains
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_HANDOFF.md` and is blocked until this plan
-receives independent re-verification.
+`ACCEPT WITH REQUIRED PLAN CHANGES` review. The first implementation at
+`3b56c4f05d16653b5fd9c494d8f1682135701603` was independently rejected because
+it did not implement the frozen atomic claim, delivery receipt, action/
+idempotency, lifecycle-race, provider-actionability, DTO, auth, and acceptance-
+test boundaries. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_HANDOFF.md`.
 
 ## 1. Authority boundary
 

@@ -1,6 +1,11 @@
 # Next Session Handoff — A1 Approval Safety
 
-Status: **PLAN REMEDIATION COMPLETE — INDEPENDENT RE-VERIFICATION REQUIRED**
+Status: **SUPERSEDED — IMPLEMENTATION REJECTED; USE THE REMEDIATION HANDOFF**
+
+Reviewed implementation `3b56c4f05d16653b5fd9c494d8f1682135701603`
+did not satisfy the remediated plan. Continue only from
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_HANDOFF.md` and
+`docs/A1_APPROVAL_SAFETY_VERIFICATION.md`.
 
 This handoff is written for a fresh Claude Code execution session backed by
 DeepSeek V4 Pro. It does not authorize implementation until the remediated plan
