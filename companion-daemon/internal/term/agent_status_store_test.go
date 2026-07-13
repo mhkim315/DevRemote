@@ -2,6 +2,7 @@ package term
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -63,6 +64,23 @@ func ev(sessionID string, t agent.AgentEventType, prov contract.Provenance, conf
 	return agent.AgentEvent{SessionID: sessionID, Type: t, Provenance: string(prov), Confidence: conf}
 }
 
+// evSeq is ev with an explicit Seq (for tie-ordering tests).
+func evSeq(sessionID string, t agent.AgentEventType, prov contract.Provenance, conf float64, seq int64) agent.AgentEvent {
+	e := ev(sessionID, t, prov, conf)
+	e.Seq = seq
+	return e
+}
+
+// noCapAdapter advertises NO CapStatus; GetStatus must never be called on it.
+type noCapAdapter struct{ resolvingAdapter }
+
+func (noCapAdapter) Descriptor() contract.AgentAdapterDescriptor {
+	return contract.AgentAdapterDescriptor{Name: "nocap"} // no CapStatus
+}
+func (noCapAdapter) GetStatus(context.Context, contract.StatusInput) (contract.StatusResult, error) {
+	panic("GetStatus must not be called on an adapter without CapStatus")
+}
+
 // --- 8 required authority negatives + supporting cases ---
 
 // 1. advisory terminal claim → unknown + degraded (frozen ResolveStatus downgrade).
@@ -112,15 +130,15 @@ func TestAgentStatusStore_NoEvidencePollLeavesPrior(t *testing.T) {
 	}
 }
 
-// 3. unknown provenance/status → safe unknown.
+// 3. unknown/invalid provenance → dropped, no typed status (B1).
 func TestAgentStatusStore_UnknownProvenanceSafeUnknown(t *testing.T) {
 	s := NewAgentStatusStore()
-	rec := s.Update(AgentStatusUpdate{
+	s.Update(AgentStatusUpdate{
 		SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.Provenance("bogus_prov"), 0.9)},
 	})
-	if rec.Status != agent.StatusUnknown {
-		t.Errorf("unknown-provenance evidence: status=%q, want unknown", rec.Status)
+	if _, _, ok := s.Current("a:1"); ok {
+		t.Error("unknown-provenance event created a typed status (must be dropped)")
 	}
 }
 
@@ -258,12 +276,169 @@ func TestAgentStatusStore_HappyPathWorking(t *testing.T) {
 	}
 }
 
-// empty-provenance events default to the accepted native_log path (never upgraded).
-func TestAgentStatusStore_EmptyProvenanceDefaultsNativeLog(t *testing.T) {
+// B1: empty provenance is NOT upgraded to native_log; it creates no typed status.
+func TestAgentStatusStore_EmptyProvenanceNotUpgraded(t *testing.T) {
+	s := NewAgentStatusStore()
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{{SessionID: "a:1", Type: agent.EventCompleted, Confidence: 0.9}}}) // no provenance
+	if _, _, ok := s.Current("a:1"); ok {
+		t.Error("empty-provenance completed event created a status (must not be promoted to native_log)")
+	}
+}
+
+// --- B1-B6 remediation tests ---
+
+// B2: an empty SessionID event is discarded (never treated as the current session).
+func TestAgentStatusStore_EmptySessionIDDiscarded(t *testing.T) {
+	s := NewAgentStatusStore()
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev("", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	if _, _, ok := s.Current("a:1"); ok {
+		t.Error("empty-SessionID event created a record (must be discarded)")
+	}
+}
+
+// B3: a non-authoritative approval never becomes waiting_approval.
+func TestAgentStatusStore_NonAuthoritativeApproval(t *testing.T) {
+	mk := func(prov contract.Provenance, conf float64, id string) agent.AgentEvent {
+		e := ev("a:1", agent.EventApprovalRequested, prov, conf)
+		e.ApprovalID = id
+		return e
+	}
+	cases := map[string]agent.AgentEvent{
+		"heuristic provenance": mk(contract.ProvenanceHeuristic, 0.9, "ap1"),
+		"missing approval id":  mk(contract.ProvenanceNativeLog, 0.9, ""),
+		"low confidence":       mk(contract.ProvenanceNativeLog, 0.3, "ap1"),
+	}
+	for name, e := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := NewAgentStatusStore()
+			s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+				Events: []agent.AgentEvent{e}})
+			if rec, _, ok := s.Current("a:1"); ok && rec.Status == agent.StatusWaitingApproval {
+				t.Errorf("non-authoritative approval produced waiting_approval: %+v", rec)
+			}
+		})
+	}
+}
+
+// B3: a fully-authoritative approval does produce waiting_approval.
+func TestAgentStatusStore_AuthoritativeApproval(t *testing.T) {
+	s := NewAgentStatusStore()
+	e := ev("a:1", agent.EventApprovalRequested, contract.ProvenanceNativeLog, 0.9)
+	e.ApprovalID = "ap1"
+	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{e}})
+	if rec.Status != agent.StatusWaitingApproval {
+		t.Errorf("authoritative approval: status=%q, want waiting_approval", rec.Status)
+	}
+}
+
+// B4: on equal precedence, the latest validated Seq wins (thinking → working).
+func TestAgentStatusStore_TieLatestSeq_ThinkingWorking(t *testing.T) {
 	s := NewAgentStatusStore()
 	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
-		Events: []agent.AgentEvent{{SessionID: "a:1", Type: agent.EventThinking, Confidence: 0.7}}}) // no provenance
-	if rec.Status != agent.StatusThinking || rec.Provenance != contract.ProvenanceNativeLog {
-		t.Errorf("empty-provenance default: status=%q prov=%q, want thinking/native_log", rec.Status, rec.Provenance)
+		Events: []agent.AgentEvent{
+			evSeq("a:1", agent.EventThinking, contract.ProvenanceNativeLog, 0.85, 1),
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.85, 2),
+		}})
+	if rec.Status != agent.StatusWorking {
+		t.Errorf("tie thinking(seq1)→working(seq2): status=%q, want working (latest)", rec.Status)
+	}
+}
+
+// B4: latest Seq wins even when the batch is presented out of order (working → completed).
+func TestAgentStatusStore_TieLatestSeq_WorkingCompleted(t *testing.T) {
+	s := NewAgentStatusStore()
+	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{
+			evSeq("a:1", agent.EventCompleted, contract.ProvenanceNativeLog, 0.85, 5), // later, listed first
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.85, 4),
+		}})
+	if rec.Status != agent.StatusCompleted {
+		t.Errorf("tie working(seq4)→completed(seq5): status=%q, want completed (latest)", rec.Status)
+	}
+}
+
+// B4: one-shot and incremental polling converge on the same final status.
+func TestAgentStatusStore_OneShotEqualsIncremental(t *testing.T) {
+	one := NewAgentStatusStore()
+	oneRec := one.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{
+			evSeq("a:1", agent.EventThinking, contract.ProvenanceNativeLog, 0.85, 1),
+			evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.85, 2),
+		}})
+	inc := NewAgentStatusStore()
+	inc.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{evSeq("a:1", agent.EventThinking, contract.ProvenanceNativeLog, 0.85, 1)}})
+	incRec := inc.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.85, 2)}})
+	if oneRec.Status != agent.StatusWorking || incRec.Status != agent.StatusWorking {
+		t.Errorf("one-shot=%q incremental=%q, want both working", oneRec.Status, incRec.Status)
+	}
+}
+
+// B6b: an adapter without CapStatus is never queried; result is unknown+degraded.
+func TestAgentStatusStore_NoCapStatusNotQueried(t *testing.T) {
+	s := NewAgentStatusStore()
+	rec := s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: noCapAdapter{},
+		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	if rec.Status != agent.StatusUnknown || !rec.Degraded {
+		t.Errorf("no-CapStatus adapter: status=%q degraded=%v, want unknown/degraded", rec.Status, rec.Degraded)
+	}
+}
+
+// B5: the store is size-bounded; churn beyond the cap evicts deterministically (oldest-first).
+func TestAgentStatusStore_BoundedEviction(t *testing.T) {
+	base := time.Unix(2_000_000, 0)
+	s := NewAgentStatusStore()
+	tick := int64(0)
+	s.now = func() time.Time { tick++; return base.Add(time.Duration(tick) * time.Second) }
+
+	total := maxSessions + 50
+	for i := 0; i < total; i++ {
+		sid := "a:" + strconv.Itoa(i)
+		s.Update(AgentStatusUpdate{SessionID: sid, Generation: 1, Adapter: resolvingAdapter{},
+			Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	}
+	if got := s.Len(); got > maxSessions {
+		t.Errorf("store size=%d exceeds bound %d", got, maxSessions)
+	}
+	if _, _, ok := s.Current("a:" + strconv.Itoa(total-1)); !ok {
+		t.Error("most recent session evicted (eviction not oldest-first)")
+	}
+	if _, _, ok := s.Current("a:0"); ok {
+		t.Error("oldest session should have been evicted under churn")
+	}
+}
+
+// B5: an absurdly long SessionID is rejected (fail-closed).
+func TestAgentStatusStore_AbsurdSessionIDRejected(t *testing.T) {
+	s := NewAgentStatusStore()
+	huge := make([]byte, maxSessionIDLen+1)
+	for i := range huge {
+		huge[i] = 'x'
+	}
+	rec := s.Update(AgentStatusUpdate{SessionID: string(huge), Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev(string(huge), agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	if rec.Status != "" || s.Len() != 0 {
+		t.Errorf("absurd session id not rejected: rec=%+v len=%d", rec, s.Len())
+	}
+}
+
+// B6a: RevokeIfPresent downgrades an existing record but never creates one.
+func TestAgentStatusStore_RevokeIfPresent(t *testing.T) {
+	s := NewAgentStatusStore()
+	if rec, ok := s.RevokeIfPresent("a:1", 1, "", "lost"); ok || rec.Status != "" {
+		t.Errorf("RevokeIfPresent on absent created a record: %+v ok=%v", rec, ok)
+	}
+	if _, _, ok := s.Current("a:1"); ok {
+		t.Error("RevokeIfPresent must not create a record for an absent session")
+	}
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	rec, ok := s.RevokeIfPresent("a:1", 1, "", "correlation unavailable")
+	if !ok || rec.Status != agent.StatusUnknown || !rec.Degraded {
+		t.Errorf("RevokeIfPresent on present: %+v ok=%v, want unknown/degraded", rec, ok)
 	}
 }

@@ -2,6 +2,7 @@ package term
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -9,33 +10,40 @@ import (
 	"devremote/companion-daemon/internal/agent/contract"
 )
 
-// S1-B — Internal agent-activity status resolver and bounded session-owned store.
+// S1-B/C — Internal agent-activity status resolver and bounded session-owned store.
 //
 // This is the provider-neutral status boundary. It consumes ONLY accepted,
-// session-bound AgentEvents, delegates final precedence/resolution to the
+// exactly-session-bound AgentEvents, delegates final precedence/resolution to the
 // accepted version-specific adapter's frozen GetStatus (which delegates to
 // contract.ResolveStatus), and stores exactly one immutable current result per
 // canonical session ID.
 //
-// Authority rules enforced here (handoff §208-239):
+// Authority rules enforced here:
 //   - agent activity is resolved ONLY from accepted evidence via GetStatus;
 //     lifecycle and connectivity health are NEVER inputs to GetStatus.
-//   - cross-session events are rejected (evidence is filtered to the target id).
-//   - an older stream generation can never overwrite a newer session generation.
+//   - an event is evidence for a session ONLY when ev.SessionID == that id exactly
+//     (empty or cross-session events are discarded from BOTH evidence and the
+//     adapter's RecentEvents).
+//   - empty/unknown/invalid provenance NEVER creates a typed status (it is dropped,
+//     never promoted to a strong tier). Provenance/confidence are never upgraded.
+//   - waiting_approval requires a non-empty ApprovalID, exact session binding,
+//     approval-authoritative provenance, and confidence ≥ ApprovalConfidenceFloor.
+//   - on equal precedence, the LATEST validated Seq wins (not first-seen order).
+//   - the accepted adapter is only queried when it advertises CapStatus.
 //   - adapter error/panic isolates to a degraded result for that one session.
-//   - a delete clears the record; a recreated session cannot inherit old status.
-//   - the stale policy is read-time only: elapsed time may mark a prior result
-//     stale, but never manufactures a new activity status.
+//   - an older stream generation can never overwrite a newer session generation.
+//   - the store is size-bounded with deterministic eviction; strings are bounded.
+//   - Clear() drops a session on delete; a recreated session cannot inherit status.
+//   - read-time stale policy flags a prior result stale but never fabricates a status.
 //
-// It contains no HTTP/mobile code (that is S1-D) and no production polling wiring
-// (that is S1-C).
+// No HTTP/mobile code (S1-D), no independent log reader/cursor (S1-C reuses the
+// accepted-adapter production batch).
 
 const (
-	// maxDegradedReason bounds the stored degraded reason; contract.Degrade already
-	// sanitizes/bounds, this is a defensive second cap so total state stays bounded.
-	maxDegradedReason = 240
-	// defaultActivityStaleAfter is the deterministic staleness horizon for a stored
-	// result. It marks a prior result stale; it never changes the stored status.
+	maxDegradedReason         = 240
+	maxSessions               = 1024 // B5: bounded number of session records
+	maxSessionIDLen           = 512  // B5: reject absurd session ids (fail-closed)
+	maxVersionLen             = 64   // B5: bounded version string
 	defaultActivityStaleAfter = 45 * time.Second
 )
 
@@ -81,42 +89,92 @@ func NewAgentStatusStore() *AgentStatusStore {
 	}
 }
 
-// buildStatusEvidence maps accepted AgentEvents to closed, conservative
-// StatusEvidence for the target session. Cross-session events are dropped. Only
-// the closed set below produces evidence; every other event type contributes
-// nothing (so it can never fabricate a status). Provenance and confidence come
-// from the event and are NEVER upgraded — an empty provenance defaults to the
-// accepted path's native_log; a known provenance is passed through verbatim; an
-// unknown non-empty provenance is passed through and dropped by ResolveStatus.
-func buildStatusEvidence(events []agent.AgentEvent, sessionID string) []contract.StatusEvidence {
-	out := make([]contract.StatusEvidence, 0, len(events))
+func boundStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// filterSessionEvents keeps only events bound to sessionID EXACTLY. Empty and
+// cross-session ids are discarded. The result is used for BOTH evidence and the
+// adapter's RecentEvents so the adapter never sees foreign/empty-session events.
+func filterSessionEvents(events []agent.AgentEvent, sessionID string) []agent.AgentEvent {
+	out := make([]agent.AgentEvent, 0, len(events))
 	for _, ev := range events {
-		if ev.SessionID != "" && ev.SessionID != sessionID {
-			continue // cross-session evidence is rejected
+		if ev.SessionID == sessionID {
+			out = append(out, ev)
 		}
-		var status agent.AgentStatus
-		switch ev.Type {
-		case agent.EventThinking:
-			status = agent.StatusThinking
-		case agent.EventToolCallStarted:
-			status = agent.StatusWorking
-		case agent.EventWaitingInput:
-			status = agent.StatusWaitingInput
-		case agent.EventApprovalRequested:
-			status = agent.StatusWaitingApproval // display-only activity; A1 owns approval action state
-		case agent.EventCompleted:
-			status = agent.StatusCompleted
-		case agent.EventFailed:
-			status = agent.StatusFailed
-		case agent.EventInterrupted:
-			status = agent.StatusInterrupted
-		default:
-			continue // agent_started/user_message/assistant_message/tool_call_finished/
-			// approval_resolved/unknown → no evidence (never infer a state from these)
+	}
+	return out
+}
+
+// statusForEvent maps one accepted event to a status in the closed set, applying
+// the approval-authority gate. It returns ok=false for events that must not
+// create a typed status.
+func statusForEvent(ev agent.AgentEvent) (agent.AgentStatus, bool) {
+	switch ev.Type {
+	case agent.EventThinking:
+		return agent.StatusThinking, true
+	case agent.EventToolCallStarted:
+		return agent.StatusWorking, true
+	case agent.EventWaitingInput:
+		return agent.StatusWaitingInput, true
+	case agent.EventCompleted:
+		return agent.StatusCompleted, true
+	case agent.EventFailed:
+		return agent.StatusFailed, true
+	case agent.EventInterrupted:
+		return agent.StatusInterrupted, true
+	case agent.EventApprovalRequested:
+		// B3: an approval activity requires an identified, exactly-bound,
+		// approval-authoritative, confident event. Heuristic/prompt-hint or
+		// id-less approval events never create waiting_approval (even display-only).
+		if ev.ApprovalID != "" &&
+			contract.ApprovalAuthoritative(contract.Provenance(ev.Provenance)) &&
+			ev.Confidence >= contract.ApprovalConfidenceFloor {
+			return agent.StatusWaitingApproval, true
+		}
+		return "", false
+	default:
+		// agent_started/user_message/assistant_message/tool_call_finished/
+		// approval_resolved/unknown → no evidence.
+		return "", false
+	}
+}
+
+// buildStatusEvidence turns session-filtered events into closed StatusEvidence,
+// ordered so that on equal precedence the LATEST validated Seq wins (ResolveStatus
+// keeps first-seen on exact ties, so the latest event is placed first). Empty,
+// unknown, or invalid provenance is dropped (never upgraded); confidence must be
+// positive and is taken verbatim from the event.
+func buildStatusEvidence(filtered []agent.AgentEvent) []contract.StatusEvidence {
+	idx := make([]int, len(filtered))
+	for i := range idx {
+		idx[i] = i
+	}
+	// Latest-first: higher Seq first; on equal Seq, later batch position first.
+	sort.SliceStable(idx, func(a, b int) bool {
+		ia, ib := idx[a], idx[b]
+		if filtered[ia].Seq != filtered[ib].Seq {
+			return filtered[ia].Seq > filtered[ib].Seq
+		}
+		return ia > ib
+	})
+	out := make([]contract.StatusEvidence, 0, len(filtered))
+	for _, i := range idx {
+		ev := filtered[i]
+		status, ok := statusForEvent(ev)
+		if !ok {
+			continue
 		}
 		prov := contract.Provenance(ev.Provenance)
-		if ev.Provenance == "" {
-			prov = contract.ProvenanceNativeLog
+		// B1: empty/unknown/invalid provenance never creates a typed status.
+		if prov == "" || prov == contract.ProvenanceUnknown || !contract.IsKnownProvenance(prov) {
+			continue
+		}
+		if ev.Confidence <= 0 {
+			continue
 		}
 		out = append(out, contract.StatusEvidence{
 			Status:     status,
@@ -127,47 +185,60 @@ func buildStatusEvidence(events []agent.AgentEvent, sessionID string) []contract
 	return out
 }
 
-// safeGetStatus calls the accepted adapter's frozen GetStatus with panic and
-// error isolation. A panicking or erroring adapter degrades ONLY this session's
-// status; it never propagates to telemetry, Recorder, Terminal, lifecycle, or
-// other sessions.
+// hasStatusCap reports whether the adapter advertises the frozen CapStatus
+// capability. GetStatus is only called on adapters that do.
+func hasStatusCap(a contract.AgentAdapter) bool {
+	if a == nil {
+		return false
+	}
+	for _, c := range a.Descriptor().Capabilities {
+		if c == contract.CapStatus {
+			return true
+		}
+	}
+	return false
+}
+
+func unknownDegraded(reason string) contract.StatusResult {
+	return contract.StatusResult{
+		Status:     agent.StatusUnknown,
+		Provenance: contract.ProvenanceUnknown,
+		Degraded:   contract.Degrade(reason),
+	}
+}
+
+// safeGetStatus calls the accepted adapter's frozen GetStatus with capability,
+// panic, and error isolation. An adapter without CapStatus is NOT called. A
+// panicking or erroring adapter degrades ONLY this session's status; it never
+// propagates to telemetry, Recorder, Terminal, lifecycle, or other sessions.
 func safeGetStatus(adapter contract.AgentAdapter, in contract.StatusInput) (res contract.StatusResult) {
 	defer func() {
 		if r := recover(); r != nil {
-			res = contract.StatusResult{
-				Status:     agent.StatusUnknown,
-				Provenance: contract.ProvenanceUnknown,
-				Degraded:   contract.Degrade("adapter status panic"),
-			}
+			res = unknownDegraded("adapter status panic")
 		}
 	}()
-	if adapter == nil {
-		return contract.StatusResult{
-			Status: agent.StatusUnknown, Provenance: contract.ProvenanceUnknown,
-			Degraded: contract.Degrade("no status adapter"),
-		}
+	if !hasStatusCap(adapter) {
+		return unknownDegraded("adapter lacks status capability")
 	}
 	r, err := adapter.GetStatus(context.Background(), in)
 	if err != nil {
-		return contract.StatusResult{
-			Status: agent.StatusUnknown, Provenance: contract.ProvenanceUnknown,
-			Degraded: contract.Degrade("adapter status error"),
-		}
+		return unknownDegraded("adapter status error")
 	}
 	return r
 }
 
 // Update resolves and stores the current activity result for one session. It
-// builds bounded, session-filtered evidence and, when that evidence is non-empty,
-// delegates resolution to the accepted adapter's GetStatus (frozen precedence/
-// ceiling/terminal-downgrade) and stores the result under the generation rule.
-//
-// A poll that yields NO status evidence for this session (cross-session events or
-// only non-status event types) does NOT overwrite a valid prior result — it is
-// left for the stale policy so a quiet poll never fabricates or erases a status.
-// Authority loss (version conflict, overflow) is expressed via Revoke, not here.
+// filters events to the exact session, and — when the resulting evidence is
+// non-empty — delegates resolution to the accepted adapter's GetStatus and stores
+// the result under the generation rule. A poll that yields no status evidence
+// leaves any valid prior result untouched (no fabrication, no downgrade); authority
+// loss (version conflict, overflow, correlation loss) is expressed via Revoke.
 func (s *AgentStatusStore) Update(in AgentStatusUpdate) AgentActivityRecord {
-	evidence := buildStatusEvidence(in.Events, in.SessionID)
+	if len(in.SessionID) == 0 || len(in.SessionID) > maxSessionIDLen {
+		return AgentActivityRecord{} // fail-closed on absent/absurd id
+	}
+	filtered := filterSessionEvents(in.Events, in.SessionID)
+	evidence := buildStatusEvidence(filtered)
 	if len(evidence) == 0 {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -175,55 +246,91 @@ func (s *AgentStatusStore) Update(in AgentStatusUpdate) AgentActivityRecord {
 	}
 	res := safeGetStatus(in.Adapter, contract.StatusInput{
 		Session:      contract.SessionContext{SessionID: in.SessionID},
-		RecentEvents: in.Events,
+		RecentEvents: filtered, // B2: same filtered set the evidence came from
 		Evidence:     evidence,
 	})
 	return s.store(in.SessionID, in.Generation, in.Version, res)
 }
 
 // Revoke forces a session's activity to unknown+degraded when authority is lost
-// (accepted-version conflict or ingestion overflow). It obeys the same generation
-// rule as Update. This is an explicit downgrade, never a fabricated activity.
+// (accepted-version conflict or ingestion overflow). It obeys the generation rule.
 func (s *AgentStatusStore) Revoke(sessionID string, generation int, version, reason string) AgentActivityRecord {
-	res := contract.StatusResult{
-		Status: agent.StatusUnknown, Provenance: contract.ProvenanceUnknown,
-		Degraded: contract.Degrade(reason),
+	if len(sessionID) == 0 || len(sessionID) > maxSessionIDLen {
+		return AgentActivityRecord{}
 	}
-	return s.store(sessionID, generation, version, res)
+	return s.store(sessionID, generation, version, unknownDegraded(reason))
 }
 
-// store applies the generation rule and atomically records the result. An older
-// stream generation than the currently stored one is rejected (returns the
-// existing record unchanged); a same/newer generation replaces atomically.
-func (s *AgentStatusStore) store(sessionID string, generation int, version string, res contract.StatusResult) AgentActivityRecord {
-	reason := res.Degraded.Reason
-	if len(reason) > maxDegradedReason {
-		reason = reason[:maxDegradedReason]
+// RevokeIfPresent downgrades an EXISTING record to unknown+degraded (used when a
+// previously-managed correlation becomes unavailable). A session with no prior
+// record is left absent, so an initially-uncorrelated session never gains a
+// phantom record. Returns (record, true) if a record was present.
+func (s *AgentStatusStore) RevokeIfPresent(sessionID string, generation int, version, reason string) (AgentActivityRecord, bool) {
+	rec := s.mkRecord(sessionID, generation, version, unknownDegraded(reason))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, ok := s.records[sessionID]
+	if !ok {
+		return AgentActivityRecord{}, false
 	}
-	rec := AgentActivityRecord{
+	if generation < prev.Generation {
+		return prev, true // a stale revoke cannot overwrite a newer generation
+	}
+	s.records[sessionID] = rec
+	return rec, true
+}
+
+func (s *AgentStatusStore) mkRecord(sessionID string, generation int, version string, res contract.StatusResult) AgentActivityRecord {
+	return AgentActivityRecord{
 		SessionID:      sessionID,
 		Status:         res.Status,
 		Provenance:     res.Provenance,
 		Confidence:     res.Confidence,
 		Degraded:       res.Degraded.Degraded,
-		DegradedReason: reason,
+		DegradedReason: boundStr(res.Degraded.Reason, maxDegradedReason),
 		ObservedAt:     s.now(),
 		Generation:     generation,
-		Version:        version,
+		Version:        boundStr(version, maxVersionLen),
 	}
+}
+
+// store applies the generation rule and the size bound, then records atomically.
+func (s *AgentStatusStore) store(sessionID string, generation int, version string, res contract.StatusResult) AgentActivityRecord {
+	rec := s.mkRecord(sessionID, generation, version, res)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if prev, ok := s.records[sessionID]; ok && generation < prev.Generation {
-		return prev // an older generation cannot overwrite the current session
+	if prev, ok := s.records[sessionID]; ok {
+		if generation < prev.Generation {
+			return prev // an older generation cannot overwrite the current session
+		}
+		s.records[sessionID] = rec
+		return rec
 	}
-	s.records[sessionID] = rec // atomic replace on same/newer generation
+	if len(s.records) >= maxSessions {
+		s.evictOldestLocked() // deterministic: oldest ObservedAt, tie by id
+	}
+	s.records[sessionID] = rec
 	return rec
 }
 
+// evictOldestLocked removes the record with the smallest ObservedAt (ties broken
+// by lexically-smallest SessionID) so eviction is deterministic. Caller holds mu.
+func (s *AgentStatusStore) evictOldestLocked() {
+	var victim string
+	var vt time.Time
+	first := true
+	for id, r := range s.records {
+		if first || r.ObservedAt.Before(vt) || (r.ObservedAt.Equal(vt) && id < victim) {
+			victim, vt, first = id, r.ObservedAt, false
+		}
+	}
+	if victim != "" {
+		delete(s.records, victim)
+	}
+}
+
 // Current returns the stored record and whether it is stale (read-time policy).
-// Staleness NEVER mutates the stored status — a stale result keeps its status and
-// is merely flagged; display may downgrade a stale result to unknown, but this
-// store never fabricates a new active status from elapsed time.
+// Staleness NEVER mutates the stored status.
 func (s *AgentStatusStore) Current(sessionID string) (rec AgentActivityRecord, stale bool, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -233,6 +340,13 @@ func (s *AgentStatusStore) Current(sessionID string) (rec AgentActivityRecord, s
 	}
 	stale = s.now().Sub(rec.ObservedAt) > s.staleAfter
 	return rec, stale, true
+}
+
+// Len returns the number of stored session records (test/introspection).
+func (s *AgentStatusStore) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.records)
 }
 
 // Clear removes a session's record on explicit session/history delete so a

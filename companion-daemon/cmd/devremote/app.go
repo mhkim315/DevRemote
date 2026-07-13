@@ -319,6 +319,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity, transcriptSvc)
 	h.Telemetry = telemetry
+	// S1: the Delete path clears the agent-activity store (owned by telemetry).
+	lifecycle.SetStatusClearer(telemetry)
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {

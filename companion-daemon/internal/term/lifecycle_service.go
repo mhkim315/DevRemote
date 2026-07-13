@@ -29,6 +29,11 @@ type LifecycleResult struct {
 	State     LifecycleState `json:"state"`
 }
 
+// StatusClearer drops S1 agent-activity status for a session. The production
+// Delete path calls it so a deleted session immediately loses its activity record
+// (and a recreated id cannot inherit it). TelemetryService satisfies this.
+type StatusClearer interface{ Clear(sessionID string) }
+
 // LifecycleService is the single owner of Stop/Kill/Delete for managed
 // sessions. Every action converges here: capability check, catalog state,
 // process-group termination, and one-time runtime cleanup. Per-session locks
@@ -39,6 +44,7 @@ type LifecycleService struct {
 	reg        *mux.Registry
 	activity   *ActivityBuffer
 	transcript *transcript.Service // T3: cleared on session delete
+	status     StatusClearer       // S1: agent-activity store, cleared on session delete
 	catalog    *SessionCatalog
 	graceful   time.Duration
 	killGrace  time.Duration
@@ -61,6 +67,10 @@ func NewLifecycleService(reg *mux.Registry, activity *ActivityBuffer, transcript
 
 // Catalog exposes the read-only catalog (state lookups in handlers/tests).
 func (s *LifecycleService) Catalog() *SessionCatalog { return s.catalog }
+
+// SetStatusClearer wires the S1 agent-activity store so Delete clears it. Wired
+// in the composition root after the TelemetryService is constructed.
+func (s *LifecycleService) SetStatusClearer(c StatusClearer) { s.status = c }
 
 func (s *LifecycleService) lockFor(id string) *sync.Mutex {
 	s.mu.Lock()
@@ -244,6 +254,11 @@ func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResu
 	}
 	if s.transcript != nil {
 		s.transcript.ClearTranscript(id)
+	}
+	// S1: a deleted session immediately loses its agent-activity record so a
+	// recreated id cannot inherit it.
+	if s.status != nil {
+		s.status.Clear(id)
 	}
 	DeleteRecorder(id)
 	// Keep the per-session lock in the map: removing it while another operation

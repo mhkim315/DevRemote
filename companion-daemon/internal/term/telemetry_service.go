@@ -223,18 +223,24 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						}
 						// S1-C: feed the SAME accepted, version/correlation-gated batch
 						// to the session-owned agent-activity store. Positive status only
-						// from correlated new events; a version conflict revokes authority
-						// to unknown+degraded. Polls with no status evidence leave the
-						// prior record untouched (Update is a no-op on empty evidence).
+						// from correlated new events; a version conflict revokes authority;
+						// a previously-valid session that LOSES correlation is revoked to
+						// unknown+degraded (a never-correlated session stays absent).
 						if s.statusStore != nil {
 							switch {
 							case a.versionConflict:
 								s.statusStore.Revoke(id, a.streamGen, a.version, "accepted version conflict")
-							case corr == contract.CorrelationManagedLaunch && len(acceptedEvents) > 0:
-								s.statusStore.Update(AgentStatusUpdate{
-									SessionID: id, Generation: a.streamGen, Version: a.version,
-									Events: acceptedEvents, Adapter: acceptedAdapterFor(logRef.Agent),
-								})
+							case corr == contract.CorrelationManagedLaunch:
+								if len(acceptedEvents) > 0 {
+									s.statusStore.Update(AgentStatusUpdate{
+										SessionID: id, Generation: a.streamGen, Version: a.version,
+										Events: acceptedEvents, Adapter: acceptedAdapterFor(logRef.Agent),
+									})
+								}
+							default:
+								// correlation unavailable (not a version conflict): revoke a
+								// previously-valid status; leave never-correlated sessions absent.
+								s.statusStore.RevokeIfPresent(id, a.streamGen, a.version, "correlation unavailable")
 							}
 						}
 					}

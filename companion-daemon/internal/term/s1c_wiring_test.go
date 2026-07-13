@@ -213,3 +213,110 @@ func TestS1C_IncrementalPoll_LeavesPrior(t *testing.T) {
 		t.Errorf("second poll downgraded prior: status=%q, want waiting_approval (unchanged)", second.Status)
 	}
 }
+
+// B6a: a previously-valid session that LOSES correlation is revoked to unknown+degraded.
+func TestS1C_CorrelationLoss_Revokes(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/codex_cl.jsonl"
+	writeLines(t, logPath, []string{
+		`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"s1","cli_version":"0.144.1"}}`,
+		`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","approval_id":"appr-1"}}`,
+	})
+	sid := "controlled_pty:cdxloss"
+	svc, sess := s1cSvc(t, "codex", logPath, sid)
+	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
+
+	s1cPoll(svc, sess, sid, "codex")
+	if first, _, ok := svc.statusStore.Current(sid); !ok || first.Status != agent.StatusWaitingApproval {
+		t.Fatalf("poll 1: status=%q ok=%v, want waiting_approval", first.Status, ok)
+	}
+
+	// Correlation lost (binding removed) — the next poll must revoke the prior status.
+	transcript.RemoveLaunch(sid)
+	s1cPoll(svc, sess, sid, "codex")
+	rec, _, ok := svc.statusStore.Current(sid)
+	if !ok || rec.Status != agent.StatusUnknown || !rec.Degraded {
+		t.Errorf("after correlation loss: status=%q degraded=%v, want unknown/degraded", rec.Status, rec.Degraded)
+	}
+}
+
+// B6c: the real production Delete handler clears the S1 status immediately, and a
+// recreated session with the same id does not inherit it.
+func TestS1C_DeleteHandlerClearsStatus_NoInherit(t *testing.T) {
+	managed := newLSAdapter("controlled_pty", true, "d1")
+	reg := mux.MustNewRegistry(managed)
+	life := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	ts := transcript.NewService(transcript.DefaultStoreConfig())
+	telem := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+		NewApprovalStore(), NewActivityBuffer(100), ts)
+	life.SetStatusClearer(telem) // production wiring (mirrors app.go)
+
+	sid := "controlled_pty:d1"
+	// Seed a real activity record through the store's production API.
+	telem.statusStore.Update(AgentStatusUpdate{SessionID: sid, Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	if _, _, ok := telem.statusStore.Current(sid); !ok {
+		t.Fatal("precondition: status record must exist before delete")
+	}
+
+	// Terminal catalog row so Delete is permitted, then run the REAL Delete handler.
+	seedCatalog(life, sid, "controlled_pty", "d1", LifecycleExited)
+	if _, err := life.Delete(context.Background(), sid); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, _, ok := telem.statusStore.Current(sid); ok {
+		t.Error("Delete handler did not clear the S1 status record")
+	}
+
+	// Recreate the same id → must start fresh (no inheritance of a prior status).
+	rec := telem.statusStore.Update(AgentStatusUpdate{SessionID: sid, Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev(sid, agent.EventThinking, contract.ProvenanceNativeLog, 0.9)}})
+	if rec.Status != agent.StatusThinking {
+		t.Errorf("recreated session status=%q, want thinking (fresh, no inheritance)", rec.Status)
+	}
+}
+
+// B4 (production): one-shot and incremental polling converge on the same final status.
+func TestS1C_OneShotEqualsIncremental_Claude(t *testing.T) {
+	thinkingLine := `{"type":"assistant","version":"2.1.202","message":{"role":"assistant","content":[{"type":"thinking","thinking":"x"}]},"sessionId":"s","uuid":"u1","timestamp":"2026-07-06T13:29:36.000Z"}`
+	toolLine := `{"type":"assistant","version":"2.1.202","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]},"sessionId":"s","uuid":"u2","timestamp":"2026-07-06T13:29:37.000Z"}`
+	userLine := `{"type":"user","version":"2.1.202","message":{"role":"user","content":"hi"},"sessionId":"s","uuid":"u0","timestamp":"2026-07-06T13:29:35.399Z"}`
+
+	// One-shot: all three lines present in a single poll.
+	dir1 := t.TempDir()
+	p1 := dir1 + "/one.jsonl"
+	writeLines(t, p1, []string{userLine, thinkingLine, toolLine})
+	sid1 := "controlled_pty:one"
+	svc1, sess1 := s1cSvc(t, "claude", p1, sid1)
+	transcript.RegisterLaunch(sid1, "claude", "controlled_pty", "2.1.202", 0, 1)
+	defer transcript.RemoveLaunch(sid1)
+	s1cPoll(svc1, sess1, sid1, "claude")
+	one, _, ok := svc1.statusStore.Current(sid1)
+	if !ok || one.Status != agent.StatusWorking {
+		t.Fatalf("one-shot: status=%q ok=%v, want working", one.Status, ok)
+	}
+
+	// Incremental: thinking first, then append tool_use and poll again.
+	dir2 := t.TempDir()
+	p2 := dir2 + "/inc.jsonl"
+	writeLines(t, p2, []string{userLine, thinkingLine})
+	sid2 := "controlled_pty:inc"
+	svc2, sess2 := s1cSvc(t, "claude", p2, sid2)
+	transcript.RegisterLaunch(sid2, "claude", "controlled_pty", "2.1.202", 0, 1)
+	defer transcript.RemoveLaunch(sid2)
+	s1cPoll(svc2, sess2, sid2, "claude")
+	if mid, _, _ := svc2.statusStore.Current(sid2); mid.Status != agent.StatusThinking {
+		t.Fatalf("incremental step 1: status=%q, want thinking", mid.Status)
+	}
+	f, err := os.OpenFile(p2, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(toolLine + "\n")
+	f.Close()
+	s1cPoll(svc2, sess2, sid2, "claude")
+	inc, _, ok := svc2.statusStore.Current(sid2)
+	if !ok || inc.Status != agent.StatusWorking {
+		t.Errorf("incremental final: status=%q, want working (== one-shot)", inc.Status)
+	}
+}
