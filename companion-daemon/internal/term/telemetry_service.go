@@ -30,6 +30,10 @@ type TelemetryService struct {
 	transcript  *transcript.Service                      // T3: AgentEvent → Transcript projection
 	logResolver func(models.ProcessInfo) (LogRef, error) // Phase A5b: injectable resolver (nil = production ResolveAgentLog)
 	interval    time.Duration
+	// statusStore is the S1 session-owned agent-activity store. It is fed from the
+	// SAME accepted-adapter read path as Transcript (no second reader) and holds
+	// the advisory activity result separately from lifecycle/health.
+	statusStore *AgentStatusStore
 
 	mu       sync.Mutex
 	sessions map[string]*sessionStateData
@@ -45,17 +49,18 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, 
 		approvals = NewApprovalStore()
 	}
 	return &TelemetryService{
-		reg:        reg,
-		events:     events,
-		links:      links,
-		notifier:   notifier,
-		detector:   detector,
-		approvals:  approvals,
-		activity:   activity,
-		transcript: transcriptSvc,
-		interval:   2 * time.Second,
-		sessions:   make(map[string]*sessionStateData),
-		done:       make(chan struct{}),
+		reg:         reg,
+		events:      events,
+		links:       links,
+		notifier:    notifier,
+		detector:    detector,
+		approvals:   approvals,
+		activity:    activity,
+		transcript:  transcriptSvc,
+		interval:    2 * time.Second,
+		statusStore: NewAgentStatusStore(),
+		sessions:    make(map[string]*sessionStateData),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -91,6 +96,11 @@ func (s *TelemetryService) Run(ctx context.Context) {
 		for id := range s.sessions {
 			if !activeSet[id] {
 				delete(s.sessions, id)
+				// S1-C: a session that left the registry loses its cached activity
+				// record too (bounded state; no inheritance on later reuse).
+				if s.statusStore != nil {
+					s.statusStore.Clear(id)
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -182,6 +192,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						if a.shouldEmitOverflowMarker() {
 							s.transcript.EmitDegraded(id, "semantic ingestion overflowed", now())
 						}
+						// S1-C: ingestion overflow revokes activity authority for this
+						// generation → safe unknown+degraded (no fabricated status).
+						if s.statusStore != nil {
+							s.statusStore.Revoke(id, a.streamGen, a.version, "semantic ingestion overflowed")
+						}
 					} else {
 						acceptedEvents, adapterVersion, nextCursor, degraded := callAcceptedAdapter(logRef.Agent, records, id, acursor)
 						a.setCursor(nextCursor)
@@ -204,6 +219,22 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						if corr == contract.CorrelationManagedLaunch {
 							if len(acceptedEvents) > 0 {
 								s.transcript.ProjectAgentEvents(id, acceptedEvents)
+							}
+						}
+						// S1-C: feed the SAME accepted, version/correlation-gated batch
+						// to the session-owned agent-activity store. Positive status only
+						// from correlated new events; a version conflict revokes authority
+						// to unknown+degraded. Polls with no status evidence leave the
+						// prior record untouched (Update is a no-op on empty evidence).
+						if s.statusStore != nil {
+							switch {
+							case a.versionConflict:
+								s.statusStore.Revoke(id, a.streamGen, a.version, "accepted version conflict")
+							case corr == contract.CorrelationManagedLaunch && len(acceptedEvents) > 0:
+								s.statusStore.Update(AgentStatusUpdate{
+									SessionID: id, Generation: a.streamGen, Version: a.version,
+									Events: acceptedEvents, Adapter: acceptedAdapterFor(logRef.Agent),
+								})
 							}
 						}
 					}
@@ -412,11 +443,31 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 	return res
 }
 
+// acceptedAdapterFor returns a fresh accepted version-specific adapter instance
+// for the given agent kind, or nil if the kind is not an accepted adapter. The
+// accepted adapters are stateless for GetStatus/ReadEvents (they delegate to the
+// frozen contract), so a fresh instance per call is correct.
+func acceptedAdapterFor(kind string) contract.AgentAdapter {
+	switch kind {
+	case "codex":
+		return &codex.Adapter{}
+	case "claude":
+		return &claude.Adapter{}
+	default:
+		return nil
+	}
+}
+
 // Clear removes all cached telemetry state for a session.
 func (s *TelemetryService) Clear(sessionID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+	s.mu.Unlock()
+	// S1-C: clear the session-owned agent-activity record so a recreated session
+	// with the same id cannot inherit the old status.
+	if s.statusStore != nil {
+		s.statusStore.Clear(sessionID)
+	}
 }
 
 // buildInteractionOptions returns capability-aware interaction options for a session.
@@ -528,13 +579,8 @@ func getProcessPID(id string, snapshots map[string]models.ProcessInfo) int {
 // The adapter receives the FULL prefix from position 0 — the caller must not
 // slice or rebase the input. The cursor is passed through unchanged.
 func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string, bool) {
-	var adapter contract.AgentAdapter
-	switch kind {
-	case "codex":
-		adapter = &codex.Adapter{}
-	case "claude":
-		adapter = &claude.Adapter{}
-	default:
+	adapter := acceptedAdapterFor(kind)
+	if adapter == nil {
 		return nil, "", prevCursor, false
 	}
 

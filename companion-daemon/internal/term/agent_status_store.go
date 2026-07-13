@@ -158,42 +158,65 @@ func safeGetStatus(adapter contract.AgentAdapter, in contract.StatusInput) (res 
 }
 
 // Update resolves and stores the current activity result for one session. It
-// builds bounded, session-filtered evidence, delegates resolution to the
-// accepted adapter's GetStatus (frozen precedence/ceiling/terminal-downgrade),
-// and applies the store's binding rules. An older generation than the currently
-// stored one is REJECTED (returns the existing record unchanged). The returned
-// record is the new (or unchanged) current record.
+// builds bounded, session-filtered evidence and, when that evidence is non-empty,
+// delegates resolution to the accepted adapter's GetStatus (frozen precedence/
+// ceiling/terminal-downgrade) and stores the result under the generation rule.
+//
+// A poll that yields NO status evidence for this session (cross-session events or
+// only non-status event types) does NOT overwrite a valid prior result — it is
+// left for the stale policy so a quiet poll never fabricates or erases a status.
+// Authority loss (version conflict, overflow) is expressed via Revoke, not here.
 func (s *AgentStatusStore) Update(in AgentStatusUpdate) AgentActivityRecord {
 	evidence := buildStatusEvidence(in.Events, in.SessionID)
+	if len(evidence) == 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.records[in.SessionID] // leave prior (zero value if none)
+	}
 	res := safeGetStatus(in.Adapter, contract.StatusInput{
 		Session:      contract.SessionContext{SessionID: in.SessionID},
 		RecentEvents: in.Events,
 		Evidence:     evidence,
 	})
+	return s.store(in.SessionID, in.Generation, in.Version, res)
+}
 
+// Revoke forces a session's activity to unknown+degraded when authority is lost
+// (accepted-version conflict or ingestion overflow). It obeys the same generation
+// rule as Update. This is an explicit downgrade, never a fabricated activity.
+func (s *AgentStatusStore) Revoke(sessionID string, generation int, version, reason string) AgentActivityRecord {
+	res := contract.StatusResult{
+		Status: agent.StatusUnknown, Provenance: contract.ProvenanceUnknown,
+		Degraded: contract.Degrade(reason),
+	}
+	return s.store(sessionID, generation, version, res)
+}
+
+// store applies the generation rule and atomically records the result. An older
+// stream generation than the currently stored one is rejected (returns the
+// existing record unchanged); a same/newer generation replaces atomically.
+func (s *AgentStatusStore) store(sessionID string, generation int, version string, res contract.StatusResult) AgentActivityRecord {
 	reason := res.Degraded.Reason
 	if len(reason) > maxDegradedReason {
 		reason = reason[:maxDegradedReason]
 	}
 	rec := AgentActivityRecord{
-		SessionID:      in.SessionID,
+		SessionID:      sessionID,
 		Status:         res.Status,
 		Provenance:     res.Provenance,
 		Confidence:     res.Confidence,
 		Degraded:       res.Degraded.Degraded,
 		DegradedReason: reason,
 		ObservedAt:     s.now(),
-		Generation:     in.Generation,
-		Version:        in.Version,
+		Generation:     generation,
+		Version:        version,
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if prev, ok := s.records[in.SessionID]; ok && in.Generation < prev.Generation {
-		// A stale/older-generation result cannot overwrite the current session.
-		return prev
+	if prev, ok := s.records[sessionID]; ok && generation < prev.Generation {
+		return prev // an older generation cannot overwrite the current session
 	}
-	s.records[in.SessionID] = rec // atomic replace on same/newer generation
+	s.records[sessionID] = rec // atomic replace on same/newer generation
 	return rec
 }
 

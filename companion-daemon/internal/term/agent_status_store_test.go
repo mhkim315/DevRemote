@@ -83,15 +83,32 @@ func TestAgentStatusStore_AdvisoryTerminalDowngraded(t *testing.T) {
 	}
 }
 
-// 2. cross-session event → rejected (no foreign status leaks in).
+// 2. cross-session event → rejected (no record created; no foreign status leaks).
 func TestAgentStatusStore_CrossSessionRejected(t *testing.T) {
 	s := NewAgentStatusStore()
-	rec := s.Update(AgentStatusUpdate{
+	s.Update(AgentStatusUpdate{
 		SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{ev("b:2", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)},
 	})
-	if rec.Status != agent.StatusUnknown {
-		t.Errorf("cross-session event leaked: status=%q, want unknown", rec.Status)
+	if _, _, ok := s.Current("a:1"); ok {
+		t.Error("cross-session event created a record for a:1 (evidence must be filtered out)")
+	}
+}
+
+// 2b. a poll with no status evidence must NOT overwrite a valid prior result.
+func TestAgentStatusStore_NoEvidencePollLeavesPrior(t *testing.T) {
+	s := NewAgentStatusStore()
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	// Poll delivering only non-status events (agent_started) and a cross-session event.
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{
+			ev("a:1", agent.EventAgentStarted, contract.ProvenanceNativeLog, 0.9),
+			ev("b:2", agent.EventCompleted, contract.ProvenanceNativeLog, 0.9),
+		}})
+	cur, _, ok := s.Current("a:1")
+	if !ok || cur.Status != agent.StatusWorking {
+		t.Errorf("no-evidence poll altered prior: status=%q ok=%v, want working (unchanged)", cur.Status, ok)
 	}
 }
 
@@ -187,7 +204,22 @@ func TestAgentStatusStore_DeleteClearsAndNoInherit(t *testing.T) {
 	}
 }
 
-// stale policy: elapsed time flags stale but never fabricates/changes the status.
+// Revoke forces unknown+degraded (authority loss) and obeys the generation rule.
+func TestAgentStatusStore_RevokeDowngrades(t *testing.T) {
+	s := NewAgentStatusStore()
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 2, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
+	rec := s.Revoke("a:1", 2, "2.1.202", "accepted version conflict")
+	if rec.Status != agent.StatusUnknown || !rec.Degraded {
+		t.Errorf("revoke: status=%q degraded=%v, want unknown/degraded", rec.Status, rec.Degraded)
+	}
+	// An older-generation revoke cannot overwrite a newer record.
+	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 5, Adapter: resolvingAdapter{},
+		Events: []agent.AgentEvent{ev("a:1", agent.EventThinking, contract.ProvenanceNativeLog, 0.9)}})
+	if got := s.Revoke("a:1", 3, "", "late"); got.Status != agent.StatusThinking || got.Generation != 5 {
+		t.Errorf("stale revoke overwrote newer generation: %+v", got)
+	}
+}
 func TestAgentStatusStore_StaleDoesNotFabricate(t *testing.T) {
 	base := time.Unix(1_000_000, 0)
 	clock := base
