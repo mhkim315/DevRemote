@@ -447,7 +447,7 @@ All 4 doctor test failures reproduce identically on accepted D1 baseline `8f7c22
 
 ## 14. Final review marker
 
-REVIEW REQUEST: T3 Transcript Integration — 0c0aabf938ffd369109e77df574ee26ec242dab5
+REVIEW REQUEST: T3 Transcript Integration — db8d831c6d5d5dbcc4f324fa25762a6217a15b8a
 
 ## 15. T3-A through T3-E completion status
 
