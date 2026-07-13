@@ -1,16 +1,16 @@
 # S1.1 Runtime Status Hardening — Planning Boundary
 
-Status: **FINAL REGISTRY CLEANUP REQUIRED — re-verification REJECT at `4e096bf`**
+Status: **ACCEPT — implementation `02c8385`, reviewed report HEAD `895a6b3`**
 
 S1.1 is a separate hardening milestone between accepted S1 and A1. S1 was
 independently accepted at implementation `b6504bd7d5c634f0c0459ae87503b82d17c1537b`
 with canonical marker `70ef5df28dede7b0f3025eeaab7826f76a229fbf`.
 
 Authoritative execution handoff:
-`docs/NEXT_SESSION_S1_1_REMEDIATION_3_HANDOFF.md`.
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_HANDOFF.md` (next milestone).
 
 Independent evidence:
-`docs/S1_1_RUNTIME_STATUS_HARDENING_REVERIFICATION_2.md`.
+`docs/S1_1_RUNTIME_STATUS_HARDENING_FINAL_ACCEPTANCE.md`.
 
 ## 1. Purpose
 
@@ -104,6 +104,11 @@ serialization defect. Final acceptance remains blocked because its per-session
 gate map grows with every historical session ID and a nil-invalidation
 replacement helper still bypasses the otherwise-correct transaction. Only these
 two cleanup items remain active.
+
+Final cleanup `02c8385` replaces the dynamic gate map with fixed striped locks
+and makes nil-invalidation/first-only replacement fail closed. Independent
+verification passed focused race tests and the complete build gate. S1.1 is
+closed; do not reopen it during A1.
 
 The ordinary local CLI currently remains a managed-lifecycle path: it sends a
 legacy command string and does not register recognized-agent launch authority.

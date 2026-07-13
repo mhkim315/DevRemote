@@ -1,6 +1,9 @@
 # Next Session Handoff — S1.1 Final Registry Cleanup
 
-Status: **READY — TWO R3 CLEANUP BLOCKERS ONLY**
+Status: **COMPLETE — SUPERSEDED BY S1.1 FINAL ACCEPTANCE**
+
+Accepted implementation: `02c8385e3270fbbc4df45e0c71ccad6ebe11a076`.
+Continue from `docs/NEXT_SESSION_A1_APPROVAL_SAFETY_HANDOFF.md`.
 
 The R1 winner binding, R2 adapter binding, and R3 same-session transaction are
 independently accepted. Do not redesign them. Close only the two findings in:
