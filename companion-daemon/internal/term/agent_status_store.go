@@ -80,6 +80,17 @@ type AgentActivityRecord struct {
 	// replay of an older winning revision.
 	WinningSeq    int64
 	HasWinningSeq bool
+
+	// S1.1-C — WinnerHighWater is the highest winning Seq ACCEPTED within the
+	// current (LaunchGen, Generation) epoch, whether or not the current record
+	// still shows a positive status. It survives a downgrade to unknown/degraded
+	// so that a same-epoch REPLAY of an older Seq — or a repeated/rewound cursor
+	// batch — cannot restore an already-superseded positive status. It resets only
+	// when the epoch advances (a newer LaunchGen or streamGen), which legitimately
+	// starts a fresh event stream. HasWinnerHighWater is false until the first
+	// positive winner in the epoch. Internal only; never in the public DTO.
+	WinnerHighWater    int64
+	HasWinnerHighWater bool
 }
 
 // AgentStatusUpdate is one resolution request for a single session. It carries
@@ -351,13 +362,11 @@ func (s *AgentStatusStore) RevokeIfPresent(sessionID string, launchGen int64, ge
 	if staleWrite(launchGen, generation, prev) {
 		return prev, true // a stale revoke cannot overwrite a newer generation
 	}
-	// Preserve the launch high-water (see store): an unspecified (0) downgrade
-	// must not lower it, so a later delayed older-launch write stays rejected.
-	if prev.LaunchGen > rec.LaunchGen {
-		rec.LaunchGen = prev.LaunchGen
-	}
-	s.records[sessionID] = rec
-	return rec, true
+	// A downgrade never carries a winner but must preserve the epoch's launch and
+	// winner high-water so a later same-epoch replay stays rejected.
+	merged, _ := reconcileEpoch(prev, rec)
+	s.records[sessionID] = merged
+	return merged, true
 }
 
 func (s *AgentStatusStore) mkRecord(sessionID string, launchGen int64, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
@@ -398,7 +407,63 @@ func staleWrite(launchGen int64, streamGen int, prev AgentActivityRecord) bool {
 	return streamGen < prev.Generation
 }
 
-// store applies the generation rule and the size bound, then records atomically.
+// sameEpoch reports whether rec falls in the SAME (launch, stream) epoch as prev.
+// A launchGen of 0 inherits prev's launch (unspecified downgrade), so it stays in
+// the current launch epoch; a higher launch or stream generation is a NEW epoch
+// that legitimately restarts the event stream and resets the winner high-water.
+// Caller has already established rec is not a staleWrite.
+func sameEpoch(rec, prev AgentActivityRecord) bool {
+	effLaunch := rec.LaunchGen
+	if effLaunch == 0 {
+		effLaunch = prev.LaunchGen
+	}
+	return effLaunch == prev.LaunchGen && rec.Generation == prev.Generation
+}
+
+// reconcileEpoch merges a non-stale write rec against the existing prev record,
+// enforcing S1.1-B launch-generation carry-forward and the S1.1-C per-epoch
+// winner high-water. It returns the record to store and whether the write was
+// REJECTED as a same-epoch regression (in which case prev is returned unchanged).
+//
+// S1.1-C rules:
+//   - a positive update whose winning Seq is NOT STRICTLY ABOVE the epoch's
+//     winner high-water is a replay / cursor rewind / repeated or re-read batch
+//     and is rejected — it carries no new information, so it cannot move the
+//     winner backward NOR restore a status that was since downgraded to
+//     unknown/degraded. A repeated identical batch is therefore idempotent;
+//   - the winner high-water survives a downgrade within the epoch, so recovery
+//     requires FRESH evidence (a strictly higher Seq) or a NEW epoch;
+//   - advancing the launch or stream generation resets the high-water (a new
+//     event stream), and the launch high-water is carried forward monotonically
+//     so a later delayed older-launch write is still rejected by staleWrite.
+func reconcileEpoch(prev, rec AgentActivityRecord) (AgentActivityRecord, bool) {
+	inEpoch := sameEpoch(rec, prev)
+	// Reject a same-epoch positive write that is not strictly newer than the
+	// epoch's winner high-water (replay / rewind / repeated / re-read batch).
+	if inEpoch && rec.HasWinningSeq && prev.HasWinnerHighWater && rec.WinningSeq <= prev.WinnerHighWater {
+		return prev, true
+	}
+	// Carry the launch high-water forward: an unspecified (0) downgrade must not
+	// lower it, so a later delayed older nonzero-launch write stays rejected.
+	if prev.LaunchGen > rec.LaunchGen {
+		rec.LaunchGen = prev.LaunchGen
+	}
+	// Carry the winner high-water within the same epoch (survives a downgrade);
+	// a new epoch starts fresh.
+	if inEpoch && prev.HasWinnerHighWater {
+		rec.WinnerHighWater = prev.WinnerHighWater
+		rec.HasWinnerHighWater = true
+	}
+	// A positive winner at or above the current high-water raises it.
+	if rec.HasWinningSeq && (!rec.HasWinnerHighWater || rec.WinningSeq >= rec.WinnerHighWater) {
+		rec.WinnerHighWater = rec.WinningSeq
+		rec.HasWinnerHighWater = true
+	}
+	return rec, false
+}
+
+// store applies the generation rule, the S1.1-C epoch reconciliation, and the
+// size bound, then records atomically.
 func (s *AgentStatusStore) store(sessionID string, launchGen int64, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
 	rec := s.mkRecord(sessionID, launchGen, generation, version, res, winSeq, hasWin)
 	s.mu.Lock()
@@ -407,14 +472,17 @@ func (s *AgentStatusStore) store(sessionID string, launchGen int64, generation i
 		if staleWrite(launchGen, generation, prev) {
 			return prev // an older launch/stream generation cannot overwrite the current session
 		}
-		// The stored LaunchGen is a monotonic high-water: an unspecified (0) write
-		// downgrades the record without lowering the launch generation, so a later
-		// delayed OLDER nonzero-launch write is still rejected.
-		if prev.LaunchGen > rec.LaunchGen {
-			rec.LaunchGen = prev.LaunchGen
+		merged, rejected := reconcileEpoch(prev, rec)
+		if rejected {
+			return prev // same-epoch replay/regression: leave the prior record intact
 		}
-		s.records[sessionID] = rec
-		return rec
+		s.records[sessionID] = merged
+		return merged
+	}
+	// First record for this session: seed the winner high-water from the winner.
+	if rec.HasWinningSeq {
+		rec.WinnerHighWater = rec.WinningSeq
+		rec.HasWinnerHighWater = true
 	}
 	if len(s.records) >= maxSessions {
 		s.evictOldestLocked() // deterministic: oldest ObservedAt, tie by id
