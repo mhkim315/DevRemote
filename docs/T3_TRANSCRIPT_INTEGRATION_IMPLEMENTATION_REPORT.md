@@ -13,7 +13,8 @@ original implementation tip:     0fe9bda2263bc8ea495d06261ecd7162b5e49062
 BLOCKER 1-7 fixes (v2):          919fc21b83f6b5cdff23c4f0a5f8912ac6224705
 REJECTED at:                     0c82cf02ae2f48ef67ee66b5e2d609965e39d34c
 handoff for remediation:         5cd69939d096483ce0e871d45d27ccd65048b276
-	8-BLOCKER CLOSURE (v4):          c0e2516c3b82e39069fdc881a9a958c7c3fb3bfd  ← CURRENT
+	8-BLOCKER CLOSURE (v4):          c0e2516c3b82e39069fdc881a9a958c7c3fb3bfd
+	FINAL 4 BLOCKERS (v5):          0c0aabf938ffd369109e77df574ee26ec242dab5  ← CURRENT
 ```
 
 Ancestry verification — all accepted phases are ancestors of HEAD:
@@ -446,7 +447,7 @@ All 4 doctor test failures reproduce identically on accepted D1 baseline `8f7c22
 
 ## 14. Final review marker
 
-REVIEW REQUEST: T3 Transcript Integration — c0e2516c3b82e39069fdc881a9a958c7c3fb3bfd
+REVIEW REQUEST: T3 Transcript Integration — 0c0aabf938ffd369109e77df574ee26ec242dab5
 
 ## 15. T3-A through T3-E completion status
 
