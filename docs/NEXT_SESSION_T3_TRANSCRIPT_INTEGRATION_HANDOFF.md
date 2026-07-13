@@ -1,6 +1,14 @@
 # Next Session Handoff — T3 Transcript Integration
 
-Status: **READY FOR A FRESH EXECUTION AGENT**
+Status: **IN PROGRESS — USE THE REMEDIATION HANDOFF**
+
+Current continuation: read
+`docs/NEXT_SESSION_T3_REMEDIATION_HANDOFF.md` first. The implementation at
+`0c82cf02ae2f48ef67ee66b5e2d609965e39d34c` received an independent **REJECT**;
+the remediation handoff records the exact remaining cursor/window, authority,
+privacy, product-path, and test work. This original document remains authoritative
+for the complete T3 contract and done conditions, but its earlier "ready" status
+is superseded.
 
 This is the authoritative T3 execution handoff. It begins at the independently
 accepted D1 tip and authorizes T3 only. Do not reconstruct T3 from an older

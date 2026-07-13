@@ -142,7 +142,7 @@ T1  Codex Adapter                               ACCEPT 162266f83 (Codex CLI 0.14
 T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202 session JSONL; capability-aware fixed harness; approval safely unavailable)
 R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
 D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
-T3  Transcript Integration                    NEXT (authoritative handoff: NEXT_SESSION_T3_TRANSCRIPT_INTEGRATION_HANDOFF.md)
+T3  Transcript Integration                    IN PROGRESS / REJECT at 0c82cf0 (continue with NEXT_SESSION_T3_REMEDIATION_HANDOFF.md; original full contract remains NEXT_SESSION_T3_TRANSCRIPT_INTEGRATION_HANDOFF.md)
 S1  Rich Agent Runtime Status Model
 A1  Mobile-first Approval System
 O1  Orchestrator
