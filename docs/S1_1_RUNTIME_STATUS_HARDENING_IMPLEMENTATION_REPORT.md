@@ -340,8 +340,59 @@ the gate and observes the serialization test FAIL with the reviewer's exact
   `_DifferentSessionsConcurrent`, `_DeleteRecreateMonotonic`, `_HeavyConcurrentRace`
   (`-race`) — production-boundary wiring, isolation, monotonicity, and race safety.
 
-R3-2 baseline: `5896603` (re-verification doc, docs-only). Final implementation
-SHA: `ff4f61affc17b0f60b6fc67c8f41c2605e02ed1f`.
+R3-2 baseline: `5896603` (re-verification doc, docs-only). R3-2 implementation
+SHA: `ff4f61affc17b0f60b6fc67c8f41c2605e02ed1f` (serialization accepted; two cleanup
+blockers remained).
+
+### 9.3 R3 cleanup — bounded gates + non-bypassable replacement (re-verification-2 `e396a11`)
+
+R3-2's serialization algorithm was accepted; two cleanup blockers remained
+(`docs/S1_1_RUNTIME_STATUS_HARDENING_REVERIFICATION_2.md`):
+
+**C1 — unbounded per-session gate map.** The transition gate was a
+`map[string]*sync.Mutex` that grew one entry per historical session ID forever
+(`RemoveLaunch` deleted the binding but never the gate). Fix: a FIXED-SIZE striped
+lock array `gates [launchGateStripes]sync.Mutex` (256 stripes) selected by an
+FNV-1a hash of the canonical session ID. The synchronization state is now
+constant regardless of how many sessions are created/deleted; stripe collisions
+only serialize unrelated sessions (never weaken correctness), so no
+gate-retirement/ABA protocol is needed. The stripe pointer is stable for the
+process lifetime, so a waiter holds it safely. Same session ID → same stripe, so
+its transitions and `RemoveLaunch` stay mutually serialized.
+
+**C2 — nil-invalidation replacement bypass.** `RegisterLaunch(spec)` routed to
+`RegisterOrReplace(spec, nil)` and could replace a live binding with no
+invalidation; `createFromProfile` used it when `Handlers.Telemetry == nil`. Fix:
+`RegisterOrReplace` now returns `(published, replaced, ok)` and FAILS CLOSED on a
+replacement with a nil callback (existing binding untouched, `ok=false`) — a nil
+callback is never permission to replace. The exported API is split:
+`RegisterFirstLaunch` (first-registration-only; fails closed if a binding exists)
+and `RegisterOrReplaceLaunch(spec, invalidate)` (the term boundary supplies the
+callback). `createFromProfile` uses the telemetry boundary in production and
+`RegisterFirstLaunch` (fail-closed) only when telemetry is absent — it never takes
+a weaker replacement path. Tests use `RegisterFirstLaunch` / an explicit callback,
+not a production bypass.
+
+Negative tests (non-vacuous — a negative control that removes the C2 guard makes
+`TestS11R3_C2_NilInvalidationReplacementRefused` FAIL):
+
+- `TestS11R3_C1_UniqueChurnBoundedSyncState` — 5000 unique register/remove cycles
+  leave bindings at 0 and the stripe set at its constant size;
+- `TestS11R3_C1_StripeCollisionStillCorrect` — two IDs colliding on one stripe both
+  register/remove correctly;
+- `TestS11R3_C2_NilInvalidationReplacementRefused` — a nil-callback replacement
+  leaves the binding unchanged and reports `ok=false`;
+- `TestS11R3_C2_FirstLaunchFailsClosedOnExisting` — `RegisterFirstLaunch` refuses to
+  replace an existing binding;
+- `TestS11R3_C2_CallbackReplacementInvalidatesBeforePublish` — a normal
+  callback-backed replacement still invalidates (callback sees the OLD binding)
+  before publishing the new generation.
+
+All prior R1/R2/R3 tests remain green; frozen `ResolveStatus`, public DTO, T0/T1/T2,
+and mobile remain unchanged.
+
+R3-cleanup baseline: `e396a11` (re-verification-2 doc, docs-only). Final
+implementation SHA: `02c8385e3270fbbc4df45e0c71ccad6ebe11a076`.
 
 
 
@@ -363,4 +414,4 @@ Changing the `pokit run` protocol is explicitly deferred.
 
 ---
 
-REVIEW REQUEST: S1.1 Runtime Status Hardening remediation — ff4f61affc17b0f60b6fc67c8f41c2605e02ed1f
+REVIEW REQUEST: S1.1 Runtime Status Hardening remediation — 02c8385e3270fbbc4df45e0c71ccad6ebe11a076
