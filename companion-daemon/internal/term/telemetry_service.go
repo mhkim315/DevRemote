@@ -185,7 +185,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						acceptedEvents, _, nextCursor := readViaAcceptedAdapter(logRef.Agent, a.buildAdapterInput(), id, a.cursor())
 						a.setCursor(nextCursor)
 						binding := transcript.LookupLaunch(id)
-						corr := a.launchCorrelation(binding, logRef.Agent)
+						corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
