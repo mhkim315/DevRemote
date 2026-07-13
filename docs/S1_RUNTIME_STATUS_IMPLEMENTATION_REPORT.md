@@ -284,10 +284,15 @@ Accepted midpoint: S1-B/C `2f3fdfc`, S1-D `17553e0` (both independently accepted
 - **Restart**: the in-memory store is empty by design; an accepted session with no current DTO renders
   `Unavailable` and never the legacy heuristic as accepted authority.
 - **Reconnect / freshness**: a failed poll or an expired last-success horizon forces a previously-fresh
-  activity to non-current (`Stale activity`); only a post-reconnect successful response is committed
-  (singleflight + mounted guard).
-- **Generation**: any stream-generation change immediately clears the prior positive status; a new
-  generation with no status event leaves the session absent until fresh correlated evidence arrives.
+  activity to non-current (`Stale activity`). The poll controller enforces a bounded per-request deadline
+  (a hung request fails and frees polling instead of blocking it) and a connection epoch, so a response
+  begun before a disconnect is dropped after reconnect — only a post-reconnect response is committed
+  (singleflight + mounted + deadline + epoch).
+- **Generation**: a stream-generation change immediately invalidates the prior positive status by storing
+  a NON-CURRENT unknown+degraded record at the new generation (a high-water mark) — not a full delete —
+  so a delayed older-generation update/revoke is rejected and cannot resurrect it; full `Clear` stays
+  reserved for lifecycle/history delete. A new generation with no status event stays explicitly
+  non-current until fresh correlated evidence arrives.
 - **Unsupported version**: the mobile validator fails closed (null → `Unavailable`), never a legacy fallback.
 - **Approval**: `waiting_approval` is display-only; it creates no ApprovalStore entry and authorizes nothing.
 
@@ -316,4 +321,4 @@ Skips / limitations (honest evidence level):
 
 ---
 
-REVIEW REQUEST: S1 Rich Agent Runtime Status — c8c9a14fd3d52c45ec5278b57cb91b5b89f728a4
+REVIEW REQUEST: S1 Rich Agent Runtime Status — b6504bd7d5c634f0c0459ae87503b82d17c1537b
