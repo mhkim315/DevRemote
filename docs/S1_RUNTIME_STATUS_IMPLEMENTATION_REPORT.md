@@ -313,3 +313,7 @@ Skips / limitations (honest evidence level):
   lib is available).
 - **Physical device smoke**: not run here. **M-track.**
 - Temporary Go caches under `/tmp/devremote-s1-go-*` only; no stage worktrees or generated candidates retained.
+
+---
+
+REVIEW REQUEST: S1 Rich Agent Runtime Status — c8c9a14fd3d52c45ec5278b57cb91b5b89f728a4
