@@ -81,18 +81,38 @@ func TestProcessSession_AcceptedAdapterIndependent(t *testing.T) {
 		t.Fatal("processSession: no Transcript segments produced")
 	}
 
-	hasAgentEvent := false
+	// Verify exact segment properties, not just KindAgentEvent presence.
+	// Accepted adapter must produce correctly-typed events with proper source.
+	hasTypedAgentEvent := false
+	hasUnknown := false
 	for _, seg := range segments {
-		if seg.Kind == transcript.KindAgentEvent {
-			hasAgentEvent = true
-			t.Logf("segment: kind=%s source=%s agentKind=%s eventType=%s",
-				seg.Kind, seg.Source, seg.AgentKind, seg.EventType)
+		t.Logf("segment: kind=%s source=%s agentKind=%s eventType=%s text=%q",
+			seg.Kind, seg.Source, seg.AgentKind, seg.EventType, seg.Text)
+		if seg.Kind != transcript.KindAgentEvent {
+			t.Errorf("unexpected segment kind: %s", seg.Kind)
+		}
+		if seg.Source != transcript.SourceAgentEvent {
+			t.Errorf("unexpected segment source: %s (want agent_event)", seg.Source)
+		}
+		if seg.AgentKind != "codex" {
+			t.Errorf("unexpected agent kind: %s (want codex)", seg.AgentKind)
+		}
+		if seg.SessionID != sid {
+			t.Errorf("wrong session: %s", seg.SessionID)
+		}
+		// At least one segment must be a typed event (not EventUnknown).
+		if seg.EventType != "" && seg.EventType != "unknown" {
+			hasTypedAgentEvent = true
+		}
+		if seg.EventType == "unknown" {
+			hasUnknown = true
 		}
 	}
-	if !hasAgentEvent {
-		t.Error("expected at least one KindAgentEvent segment")
+	if !hasTypedAgentEvent {
+		t.Error("expected at least one typed (non-unknown) accepted-adapter event — got only EventUnknown")
 	}
-	t.Logf("%d Transcript segments via processSession", len(segments))
+	t.Logf("%d Transcript segments via processSession (typed=%v unknown_present=%v)",
+		len(segments), hasTypedAgentEvent, hasUnknown)
 }
 
 // ── B2.2: version conflict → no AgentEvent segments ──

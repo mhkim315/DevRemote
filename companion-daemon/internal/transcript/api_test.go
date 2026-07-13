@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
 func TestHandleTranscript_ReturnsResponse(t *testing.T) {
@@ -199,4 +201,75 @@ func itoa64(n int64) string {
 		s = "-" + s
 	}
 	return s
+}
+
+// ── Authentication tests (RequirePrincipal wrapper) ──
+
+func TestHandleTranscript_Auth_MissingToken(t *testing.T) {
+	svc := NewService(DefaultStoreConfig())
+	h := devicetrust.RequirePrincipal(
+		devicetrust.NewDeviceSessionManager("b", 20*time.Minute),
+		HandleTranscript(svc),
+		devicetrust.PermSessionsRead,
+	)
+	req := httptest.NewRequest("GET", "/api/sessions/x/transcript", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleTranscript_Auth_InvalidToken(t *testing.T) {
+	svc := NewService(DefaultStoreConfig())
+	h := devicetrust.RequirePrincipal(
+		devicetrust.NewDeviceSessionManager("b", 20*time.Minute),
+		HandleTranscript(svc),
+		devicetrust.PermSessionsRead,
+	)
+	req := httptest.NewRequest("GET", "/api/sessions/x/transcript", nil)
+	req.Header.Set("Authorization", "Bearer deadbeef")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("invalid token: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleTranscript_Auth_ValidToken(t *testing.T) {
+	svc := NewService(DefaultStoreConfig())
+	m := devicetrust.NewDeviceSessionManager("b", 20*time.Minute)
+	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b",
+		devicetrust.PermissionsForRole(devicetrust.RoleOwner))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	h := devicetrust.RequirePrincipal(m, HandleTranscript(svc), devicetrust.PermSessionsRead)
+	req := httptest.NewRequest("GET", "/api/sessions/x/transcript", nil)
+	req.SetPathValue("id", "x")
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("valid token: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleTranscript_Auth_WrongPermission(t *testing.T) {
+	svc := NewService(DefaultStoreConfig())
+	m := devicetrust.NewDeviceSessionManager("b", 20*time.Minute)
+	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b",
+		devicetrust.PermissionsForRole(devicetrust.RoleMember))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// RoleMember has sessions:read but NOT sessions:kill.
+	h := devicetrust.RequirePrincipal(m, HandleTranscript(svc), devicetrust.PermSessionsKill)
+	req := httptest.NewRequest("GET", "/api/sessions/x/transcript", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("wrong permission: got %d, want %d", rec.Code, http.StatusForbidden)
+	}
 }
