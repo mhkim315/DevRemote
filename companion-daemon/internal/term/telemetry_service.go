@@ -164,13 +164,17 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// Gemini and Antigravity have no accepted T0 adapter and
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
-						// Establish correlation state from actual adapter discovery.
-						// T1/T2 adapters currently return CorrelationUnavailable for
-						// ordinary interactive sessions — this correctly prevents
-						// semantic AgentEvent projection until correlation is proven.
+						// Correlation from accepted T1/T2 adapter contract.
+						// T1 Codex and T2 Claude adapters document CorrelationUnavailable
+						// for ordinary interactive TUI sessions. This correctly prevents
+						// semantic AgentEvent projection until a managed-launch mode
+						// provides CorrelationProven or CorrelationManagedLaunch.
+						// When that mode is implemented, the correlation will flow from
+						// the actual adapter's DiscoverSessions() result.
+						corr := acceptedAdapterCorrelation(logRef.Agent)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
-							Correlation: contract.CorrelationUnavailable,
+							Correlation: corr,
 							Provider:    logRef.Agent,
 						})
 						s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
@@ -434,13 +438,28 @@ func convertToAgentEvents(legacy []models.AgentEvent, agentKind string) []agent.
 
 // isAcceptedAdapter returns true only for agent kinds that have an accepted
 // T0 contract.AgentAdapter in production (Codex v0.144.1, Claude v2.1.202).
-// Gemini, Antigravity, and unknown agents must not project semantic Transcript.
 func isAcceptedAdapter(kind string) bool {
 	switch kind {
 	case "codex", "claude":
 		return true
 	default:
 		return false
+	}
+}
+
+// acceptedAdapterCorrelation returns the correlation state documented by the
+// accepted T1/T2 adapters. Currently CorrelationUnavailable for all interactive
+// sessions. When a managed-launch mode is implemented, this will return
+// CorrelationProven or CorrelationManagedLaunch based on the adapter's
+// DiscoverSessions() result.
+func acceptedAdapterCorrelation(kind string) contract.Correlation {
+	switch kind {
+	case "codex", "claude":
+		// Per T1/T2 acceptance: ordinary interactive TUI correlation is unavailable.
+		// Managed-launch correlation (future) would return CorrelationManagedLaunch.
+		return contract.CorrelationUnavailable
+	default:
+		return contract.CorrelationUnavailable
 	}
 }
 

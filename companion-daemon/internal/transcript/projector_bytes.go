@@ -31,13 +31,17 @@ type ByteStreamProjector struct {
 	// ansiState tracks whether we are inside a CSI/OSC escape sequence.
 	ansiState ansiParseState
 
-	// inputActive suppresses bytes during terminal input (echo privacy).
-	// Set by BeginInput, cleared by EndInput or after suppressChunks
-	// chunks have been fully suppressed (content-free boundary).
-	inputActive     bool
-	suppressChunks  int // remaining chunks to suppress after input
+	// inputActive permanently suppresses byte-stream projection after
+	// terminal input. There is no heuristic-based auto-release — echo
+	// cannot be safely distinguished from output without content matching.
+	// Suppression ends only via explicit EndInput from a trusted source
+	// (e.g. session termination, mode reset, or PTY protocol boundary).
+	// Until then, the byte-stream channel is degraded (omitted).
+	inputActive bool
 
 	// tuiBurstActive suppresses bytes during TUI/alternate-screen regions.
+	// Activated when the stateful ANSI parser detects alternate-screen enter
+	// (ESC[?1049h), deactivated on exit (ESC[?1049l).
 	tuiBurstActive bool
 	tuiBurstCount  int
 
@@ -116,18 +120,12 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 	var segments []TranscriptSegment
 	i := 0
 	for i < len(data) {
-		// Input suppression: drop entire chunks for suppressChunks count.
-		// This is a content-free boundary: we suppress N Recorder chunks
-		// (~4KB) after input, which safely covers typical PTY echo without
-		// content matching, timing heuristics, or newline detection.
+		// Input suppression: permanently omit all bytes until explicit
+		// EndInput. No heuristic (time, newline, chunk count, or content
+		// matching) is used. If no safe EndInput signal exists, the
+		// byte-stream channel stays degraded for the session lifetime.
 		if p.inputActive {
 			p.totalSuppressed += int64(len(data) - i)
-			if p.suppressChunks > 0 {
-				p.suppressChunks--
-			}
-			if p.suppressChunks == 0 {
-				p.inputActive = false
-			}
 			return segments
 		}
 
@@ -137,14 +135,17 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 			return segments
 		}
 
-		// ANSI escape handling — skip entire sequence.
+		// ANSI escape handling — skip entire sequence. Statefully detect
+		// alternate-screen enter/exit for TUI burst suppression.
 		if p.ansiState != ansiNone {
+			start := i
 			consumed := p.consumeANSI(data[i:])
 			if consumed == 0 {
-				// Incomplete ANSI sequence at chunk end — save for next chunk.
 				p.utf8Buf = append(p.utf8Buf, data[i:]...)
 				return segments
 			}
+			// Check consumed ANSI bytes for TUI sequences.
+			p.checkTUISequence(data[start : start+consumed])
 			i += consumed
 			continue
 		}
@@ -298,6 +299,18 @@ func (p *ByteStreamProjector) consumeANSI(data []byte) int {
 	}
 }
 
+// checkTUISequence detects alternate-screen enter/exit in consumed ANSI bytes
+// and toggles TUI burst suppression statefully. This works correctly even when
+// the escape sequence is split across Recorder chunks (stateful parsing).
+func (p *ByteStreamProjector) checkTUISequence(seq []byte) {
+	if IsAlternateScreenStart(seq) {
+		p.BeginTUIBurst()
+	} else if IsAlternateScreenEnd(seq) {
+		p.tuiBurstActive = false
+		p.tuiBurstCount = 0
+	}
+}
+
 func (p *ByteStreamProjector) writeRune(r rune) {
 	p.crActive = false
 	p.partialLine.WriteRune(r)
@@ -340,8 +353,7 @@ func (p *ByteStreamProjector) BeginInput(sessionID string, observedAt time.Time)
 	p.partialLine.Reset()
 	p.crProgress.Reset()
 	p.crActive = false
-	p.inputActive = true
-	p.suppressChunks = 4 // suppress next 4 Recorder chunks (~4KB echo window)
+	p.inputActive = true // permanent suppression until explicit EndInput
 	boundary := NewInputBoundarySegment(sessionID, observedAt)
 	return &boundary
 }
@@ -350,7 +362,6 @@ func (p *ByteStreamProjector) EndInput(sessionID string, observedAt time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.inputActive = false
-	p.suppressChunks = 0
 }
 
 // ── TUI burst ──

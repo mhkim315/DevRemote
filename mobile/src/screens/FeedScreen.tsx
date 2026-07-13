@@ -1023,11 +1023,20 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
               <Text style={{color: '#8b949e', fontSize: 11, textAlign: 'center'}}>Transcript may still be loading. Retrying automatically.</Text>
             </View>
           ) : !transcriptEvents || transcriptEvents.length === 0 ? (
-            <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
+            <>
+              {/* T3: fallback may have content even when semantic is empty (snapshot-only) */}
+              {fallbackEvents && fallbackEvents.length > 0 ? (
+                <View style={styles.fallbackSection}>
+                  <Text style={styles.fallbackHeader}>⌇ Terminal output (snapshot / degraded)</Text>
+                  <E8g2Transcript events={fallbackEvents} />
+                </View>
+              ) : (
+                <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
+              )}
+            </>
           ) : (
             <>
               <E8g2Transcript events={transcriptEvents} />
-              {/* T3: fallback channel — degraded terminal-only output, separate from semantic */}
               {fallbackEvents && fallbackEvents.length > 0 && (
                 <View style={styles.fallbackSection}>
                   <Text style={styles.fallbackHeader}>⌇ Terminal output (degraded)</Text>
