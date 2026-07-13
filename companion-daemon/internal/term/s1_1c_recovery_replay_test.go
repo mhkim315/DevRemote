@@ -213,7 +213,7 @@ func TestS11C_RestartBeginsAbsentUntilFreshEvidence(t *testing.T) {
 
 	// The launch is re-registered for the current instance and a poll runs; only
 	// then does fresh correlated evidence produce a status.
-	transcript.RegisterLaunch(transcript.LaunchSpec{
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{
 		SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1",
 	})
 	s1cPoll(svc, sess, sid, "codex")

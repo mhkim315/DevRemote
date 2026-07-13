@@ -68,7 +68,7 @@ func TestS1E_GenerationChangeInvalidatesPriorStatus(t *testing.T) {
 	cur := p1
 	svc, sess := s1eCodexSvc(t, sid, &cur)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	// Generation N → waiting_approval.
 	s1cPoll(svc, sess, sid, "codex")
@@ -97,7 +97,7 @@ func TestS1E_TruncationGenerationChangeInvalidates(t *testing.T) {
 	cur := p
 	svc, sess := s1eCodexSvc(t, sid, &cur)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 	if _, _, ok := svc.statusStore.Current(sid); !ok {

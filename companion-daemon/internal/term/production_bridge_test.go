@@ -50,7 +50,7 @@ func TestProduction_AcceptedOnlyRecordReachesTranscript(t *testing.T) {
 		t.Fatal("expected events, got 0")
 	}
 
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 	if !a.updateVersion(version, "codex") {
 		t.Fatal("updateVersion rejected valid version")
 	}
@@ -160,7 +160,7 @@ func TestProduction_VersionConflictRevokesCorrelation(t *testing.T) {
 
 	sid := "controlled_pty:vctest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "controlled_pty", "codex", 0, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("got %v, want Unavailable", corr)
@@ -203,7 +203,7 @@ func TestProduction_OverflowMarkerExactlyOnce(t *testing.T) {
 func TestProduction_PIDMismatchZeroSegments(t *testing.T) {
 	sid := "controlled_pty:pidtest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 12345})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 12345})
 
 	a := newAdapterState()
 	a.resetForGeneration("/p/test.jsonl")
@@ -220,7 +220,7 @@ func TestProduction_PIDMismatchZeroSegments(t *testing.T) {
 func TestProduction_ProviderMismatchZeroSegments(t *testing.T) {
 	sid := "controlled_pty:provtest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	a := newAdapterState()
 	a.resetForGeneration("/p/test.jsonl")
@@ -272,7 +272,7 @@ func TestProduction_TranscriptAPIResponseAfterPolls(t *testing.T) {
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	sid := "controlled_pty:apitest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	a := newAdapterState()
 	a.resetForGeneration(logPath)

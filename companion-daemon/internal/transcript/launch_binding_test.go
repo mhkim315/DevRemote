@@ -23,19 +23,20 @@ func resetRegistry(t *testing.T) {
 }
 
 // B-1: two launches of the same canonical ID receive strictly increasing
-// generations, and the second REPLACES the first (no silent no-op).
+// generations, and the second REPLACES the first (no silent no-op). Replacement
+// goes through RegisterOrReplaceLaunch with an invalidation callback.
 func TestS11B_ReRegisterIsMonotonicAndReplaces(t *testing.T) {
 	resetRegistry(t)
 	sid := "controlled_pty:reg1"
 	defer RemoveLaunch(sid)
 
-	gen1, replaced1 := RegisterLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 100})
-	if replaced1 {
-		t.Errorf("first registration reported replaced=true")
+	gen1, ok1 := RegisterFirstLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 100})
+	if !ok1 {
+		t.Errorf("first registration failed")
 	}
-	gen2, replaced2 := RegisterLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 200})
-	if !replaced2 {
-		t.Errorf("second registration must report replaced=true (no silent no-op)")
+	gen2, replaced2, ok2 := RegisterOrReplaceLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 200}, func(int64) {})
+	if !ok2 || !replaced2 {
+		t.Errorf("second registration must replace (ok=%v replaced=%v)", ok2, replaced2)
 	}
 	if gen2 <= gen1 {
 		t.Errorf("generations not strictly increasing: gen1=%d gen2=%d", gen1, gen2)
@@ -52,15 +53,15 @@ func TestS11B_ReRegisterIsMonotonicAndReplaces(t *testing.T) {
 func TestS11B_DeleteRecreateHigherGeneration(t *testing.T) {
 	resetRegistry(t)
 	sid := "controlled_pty:reg2"
-	gen1, _ := RegisterLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	gen1, _ := RegisterFirstLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 	RemoveLaunch(sid)
 	if LookupLaunch(sid) != nil {
 		t.Fatal("binding not removed")
 	}
-	gen2, replaced := RegisterLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	gen2, ok := RegisterFirstLaunch(LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 	defer RemoveLaunch(sid)
-	if replaced {
-		t.Errorf("recreation after delete reported replaced=true (map entry was gone)")
+	if !ok {
+		t.Errorf("recreation after delete failed (map entry was gone → first registration)")
 	}
 	if gen2 <= gen1 {
 		t.Errorf("recreated generation not higher: gen1=%d gen2=%d", gen1, gen2)

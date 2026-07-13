@@ -55,7 +55,7 @@ func TestS1C_CodexWaitingApproval_ProductionPath(t *testing.T) {
 	sid := "controlled_pty:cdx1"
 	svc, sess := s1cSvc(t, "codex", logPath, sid)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 
@@ -95,7 +95,7 @@ func TestS1C_ClaudeWorking_ProductionPath(t *testing.T) {
 	sid := "controlled_pty:cla1"
 	svc, sess := s1cSvc(t, "claude", logPath, sid)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
 
 	s1cPoll(svc, sess, sid, "claude")
 
@@ -126,7 +126,7 @@ func TestS1C_VersionConflict_RevokesToUnknownDegraded(t *testing.T) {
 	sid := "controlled_pty:cdx2"
 	svc, sess := s1cSvc(t, "codex", logPath, sid)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 
@@ -170,7 +170,7 @@ func TestS1C_NonStatusEventsOnly_NoRecord(t *testing.T) {
 	sid := "controlled_pty:cdx4"
 	svc, sess := s1cSvc(t, "codex", logPath, sid)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 
@@ -191,7 +191,7 @@ func TestS1C_IncrementalPoll_LeavesPrior(t *testing.T) {
 	sid := "controlled_pty:cdx5"
 	svc, sess := s1cSvc(t, "codex", logPath, sid)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 	first, _, ok := svc.statusStore.Current(sid)
@@ -224,7 +224,7 @@ func TestS1C_CorrelationLoss_Revokes(t *testing.T) {
 	})
 	sid := "controlled_pty:cdxloss"
 	svc, sess := s1cSvc(t, "codex", logPath, sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 	if first, _, ok := svc.statusStore.Current(sid); !ok || first.Status != agent.StatusWaitingApproval {
@@ -288,7 +288,7 @@ func TestS1C_OneShotEqualsIncremental_Claude(t *testing.T) {
 	writeLines(t, p1, []string{userLine, thinkingLine, toolLine})
 	sid1 := "controlled_pty:one"
 	svc1, sess1 := s1cSvc(t, "claude", p1, sid1)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid1, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid1, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
 	defer transcript.RemoveLaunch(sid1)
 	s1cPoll(svc1, sess1, sid1, "claude")
 	one, _, ok := svc1.statusStore.Current(sid1)
@@ -302,7 +302,7 @@ func TestS1C_OneShotEqualsIncremental_Claude(t *testing.T) {
 	writeLines(t, p2, []string{userLine, thinkingLine})
 	sid2 := "controlled_pty:inc"
 	svc2, sess2 := s1cSvc(t, "claude", p2, sid2)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid2, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid2, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
 	defer transcript.RemoveLaunch(sid2)
 	s1cPoll(svc2, sess2, sid2, "claude")
 	if mid, _, _ := svc2.statusStore.Current(sid2); mid.Status != agent.StatusThinking {

@@ -107,9 +107,15 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 			Version: version, PID: pid, StartedAt: startedAt,
 		}
 		if h.Telemetry != nil {
+			// Production path: the atomic replacement boundary with status
+			// invalidation. In production Handlers.Telemetry is always wired.
 			h.Telemetry.RegisterOrReplaceLaunch(spec)
 		} else {
-			transcript.RegisterLaunch(spec)
+			// C2: with no telemetry/status wiring there is no safe invalidation, so
+			// we must NOT take a replacement path. RegisterFirstLaunch fails closed
+			// if a binding already exists rather than silently replacing recognized
+			// identity without invalidation.
+			transcript.RegisterFirstLaunch(spec)
 		}
 	}
 

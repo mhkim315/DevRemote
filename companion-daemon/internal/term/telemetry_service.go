@@ -542,9 +542,12 @@ func (s *TelemetryService) Clear(sessionID string) {
 // first's binding and takes the replacement path). This is distinct from lifecycle
 // Clear (delete), which removes the record entirely.
 func (s *TelemetryService) RegisterOrReplaceLaunch(spec transcript.LaunchSpec) (int64, bool) {
-	return transcript.RegisterOrReplaceLaunch(spec, func(gen int64) {
+	gen, replaced, _ := transcript.RegisterOrReplaceLaunch(spec, func(gen int64) {
 		s.invalidateForLaunch(spec.SessionID, gen)
 	})
+	// ok is always true here: the callback is non-nil, so a replacement can never
+	// be refused for a missing invalidation.
+	return gen, replaced
 }
 
 // invalidateForLaunch installs a non-current high-water at the new launch

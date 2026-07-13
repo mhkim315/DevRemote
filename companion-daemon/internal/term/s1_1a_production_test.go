@@ -25,7 +25,7 @@ func TestS11A_ProductionPathPreservesWinner(t *testing.T) {
 	sid := "controlled_pty:cdxA"
 	svc, sess := s1cSvc(t, "codex", logPath, sid)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 

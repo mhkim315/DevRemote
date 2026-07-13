@@ -47,12 +47,16 @@ type LaunchSpec struct {
 // Concurrency model (S1.1-R3):
 //   - `mu` guards the binding map and the monotonic counter. It is a LEAF lock:
 //     no method holds `mu` while calling into the term/status layer.
-//   - `gates` holds one per-session transition mutex. RegisterOrReplace holds a
-//     session's gate for the WHOLE reserve→invalidate→publish transition, so
+//   - `gates` is a FIXED-SIZE striped set of transition mutexes selected by a
+//     stable hash of the canonical session ID (S1.1-R3 cleanup C1). A transition
+//     holds its session's stripe for the WHOLE reserve→invalidate→publish, so
 //     same-session replacements are fully serialized while different sessions run
-//     concurrently. The pre-publication invalidation callback runs while the gate
-//     is held but `mu` is NOT — the audited lock order is
-//     gate → (mu released) → term s.mu / store.mu (each taken and released) → (mu
+//     concurrently (unless their IDs collide onto the same stripe, which only
+//     serializes them — it never weakens correctness). The synchronization state
+//     is constant-bounded: it never grows with the historical session count, so no
+//     gate-retirement / ABA protocol is needed. The invalidation callback runs
+//     while the stripe is held but `mu` is NOT — the audited lock order is
+//     stripe → (mu released) → term s.mu / store.mu (each taken and released) → (mu
 //     released) — with no inverse acquisition, so there is no deadlock.
 type LaunchRegistry struct {
 	mu       sync.Mutex
@@ -65,31 +69,47 @@ type LaunchRegistry struct {
 	// tokens; they need not be dense per session.
 	nextGen int64
 
-	gateMu sync.Mutex             // guards the gates map itself (never held during a transition)
-	gates  map[string]*sync.Mutex // sessionID → per-session transition gate
+	// gates is a fixed-size stripe array; a session maps to exactly one stripe by
+	// launchGateStripes-modulo of its FNV-1a hash. Never resized, never deleted.
+	gates [launchGateStripes]sync.Mutex
 }
+
+// launchGateStripes bounds the transition-synchronization state. 256 stripes make
+// collisions rare in practice while keeping the memory constant regardless of how
+// many unique sessions are created and deleted over the daemon's lifetime.
+const launchGateStripes = 256
 
 var globalLaunchRegistry = &LaunchRegistry{
 	bindings: make(map[string]LaunchBinding),
-	gates:    make(map[string]*sync.Mutex),
 }
 
 // launchGateWaitHook is a test-only seam (nil in production); see its use in
 // RegisterOrReplace.
 var launchGateWaitHook func(sessionID string)
 
-// sessionGate returns the transition mutex for a session, creating it on first
-// use. gateMu is held only briefly to fetch/create the gate; it is never held
-// while a transition runs, so it cannot serialize unrelated sessions.
+// sessionGate returns the FIXED striped transition mutex for a session, chosen by
+// a stable FNV-1a hash modulo the stripe count. The returned pointer is stable for
+// the process lifetime (the array never resizes), so a waiter can hold it safely
+// with no retirement/ABA concern, and the synchronization state never grows with
+// the number of historical sessions. A given session ID always maps to the same
+// stripe, so its transitions and its removal are mutually serialized.
 func (r *LaunchRegistry) sessionGate(sessionID string) *sync.Mutex {
-	r.gateMu.Lock()
-	defer r.gateMu.Unlock()
-	g, ok := r.gates[sessionID]
-	if !ok {
-		g = &sync.Mutex{}
-		r.gates[sessionID] = g
+	return &r.gates[launchGateStripe(sessionID)]
+}
+
+// launchGateStripe hashes a canonical session ID to a stripe index with FNV-1a
+// (stable across runs and platforms; no Date/random dependency).
+func launchGateStripe(sessionID string) uint32 {
+	const (
+		offset = 2166136261
+		prime  = 16777619
+	)
+	h := uint32(offset)
+	for i := 0; i < len(sessionID); i++ {
+		h ^= uint32(sessionID[i])
+		h *= prime
 	}
-	return g
+	return h % launchGateStripes
 }
 
 // RegisterOrReplace is the ONE serialized per-session launch transition. It is the
@@ -98,19 +118,23 @@ func (r *LaunchRegistry) sessionGate(sessionID string) *sync.Mutex {
 //  1. acquires the session transition gate (serializes same-session replacements);
 //  2. allocates the next monotonic generation and reads the current binding under
 //     the short map mutex, then releases the map mutex;
-//  3. if this is a REPLACEMENT (a binding already existed), runs invalidate(gen)
-//     — with NO registry lock held — so the new generation's status/ingestion
-//     high-water is installed BEFORE the binding is observable;
+//  3. if this is a REPLACEMENT (a binding already existed), it REQUIRES a non-nil
+//     invalidate callback and runs invalidate(gen) — with NO registry lock held —
+//     so the new generation's status/ingestion high-water is installed BEFORE the
+//     binding is observable. A replacement with a nil callback FAILS CLOSED: the
+//     existing binding is left unchanged and ok=false is returned. A nil callback
+//     is never treated as permission to replace (S1.1-R3 cleanup C2);
 //  4. publishes the new binding with a STRICT monotonic check: a generation that
 //     is not strictly newer than the currently published one is rejected, so a
 //     lower reserved generation can never overwrite a higher published one;
 //  5. releases the gate.
 //
-// invalidate may be nil (first registration / tests with no status wiring); it is
-// only invoked on a replacement. Returns the published generation and whether a
-// prior binding was replaced. On a rejected stale publish it returns the CURRENT
-// (winning) generation and replaced=true, leaving the newer binding intact.
-func (r *LaunchRegistry) RegisterOrReplace(spec LaunchSpec, invalidate func(generation int64)) (published int64, replaced bool) {
+// Returns the published generation, whether a prior binding existed (replaced),
+// and ok — false only when a replacement was refused because no invalidation
+// callback was supplied (the existing binding is then untouched). A first
+// registration (no prior binding) always publishes and returns ok=true regardless
+// of the callback.
+func (r *LaunchRegistry) RegisterOrReplace(spec LaunchSpec, invalidate func(generation int64)) (published int64, replaced bool, ok bool) {
 	gate := r.sessionGate(spec.SessionID)
 	if launchGateWaitHook != nil {
 		// Test-only seam: fires SYNCHRONOUSLY before blocking on the gate (before
@@ -126,11 +150,17 @@ func (r *LaunchRegistry) RegisterOrReplace(spec LaunchSpec, invalidate func(gene
 	r.mu.Lock()
 	r.nextGen++
 	gen := r.nextGen
-	_, existed := r.bindings[spec.SessionID]
+	prev, existed := r.bindings[spec.SessionID]
 	r.mu.Unlock()
 
+	// C2: a replacement without an invalidation callback fails closed — the safe
+	// pre-publication invalidation must run, so a nil callback may NOT replace.
+	if existed && invalidate == nil {
+		return prev.Generation, true, false
+	}
+
 	// Step 3: pre-publication invalidation for a replacement, outside the map mutex.
-	if existed && invalidate != nil {
+	if existed {
 		invalidate(gen)
 	}
 
@@ -141,7 +171,7 @@ func (r *LaunchRegistry) RegisterOrReplace(spec LaunchSpec, invalidate func(gene
 	if curExists && gen <= cur.Generation {
 		// A concurrent transition already published a newer (or equal) generation
 		// while this one was mid-flight. Never regress: keep the winner.
-		return cur.Generation, true
+		return cur.Generation, true, true
 	}
 	name := spec.ProcessName
 	if name == "" {
@@ -157,24 +187,31 @@ func (r *LaunchRegistry) RegisterOrReplace(spec LaunchSpec, invalidate func(gene
 		StartedAt:       spec.StartedAt,
 		Generation:      gen,
 	}
-	return gen, existed
+	return gen, existed, true
 }
 
-// RegisterLaunch records a FIRST managed launch binding (or, for tests, a simple
-// replace with no status wiring). It routes through the serialized transition with
-// a nil invalidation callback. Production REPLACEMENT must go through the term
-// layer's RegisterOrReplaceLaunch, which supplies the invalidation callback; this
-// convenience must never be used to replace a live production launch (there is no
-// status wiring to invalidate here). The strict monotonic publish check still
-// applies, so it can never regress a published generation.
-func RegisterLaunch(spec LaunchSpec) (generation int64, replaced bool) {
-	return globalLaunchRegistry.RegisterOrReplace(spec, nil)
+// RegisterFirstLaunch records a FIRST managed launch binding. It is
+// first-registration-only: if a binding for the session already exists it FAILS
+// CLOSED (ok=false) and leaves the existing binding unchanged — it never replaces
+// without invalidation. Use RegisterOrReplaceLaunch (with an invalidation
+// callback) for any path that may replace a live binding. Returns the published
+// generation and ok.
+func RegisterFirstLaunch(spec LaunchSpec) (generation int64, ok bool) {
+	gen, replaced, published := globalLaunchRegistry.RegisterOrReplace(spec, nil)
+	if replaced {
+		// A binding already existed — refuse (no invalidation wiring here).
+		return gen, false
+	}
+	return gen, published
 }
 
 // RegisterOrReplaceLaunch is the package entry point for the term-layer
 // replacement boundary: it runs the serialized transition with a caller-supplied
-// pre-publication invalidation callback.
-func RegisterOrReplaceLaunch(spec LaunchSpec, invalidate func(generation int64)) (generation int64, replaced bool) {
+// pre-publication invalidation callback. A nil callback is rejected for a
+// replacement (fail closed) by the transition. Returns the published generation,
+// whether a prior binding existed, and ok (false only when a replacement was
+// refused for lack of an invalidation callback).
+func RegisterOrReplaceLaunch(spec LaunchSpec, invalidate func(generation int64)) (generation int64, replaced bool, ok bool) {
 	return globalLaunchRegistry.RegisterOrReplace(spec, invalidate)
 }
 

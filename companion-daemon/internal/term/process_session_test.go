@@ -59,7 +59,7 @@ func TestProcessSession_AcceptedAdapterIndependent(t *testing.T) {
 	adapter.sessions = []mux.Session{sess}
 	defer transcript.RemoveLaunch(sid)
 
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	svc := NewTelemetryService(
 		reg, events, links, nil, nil, approvals, activity, ts,
@@ -131,7 +131,7 @@ func TestProcessSession_VersionConflictNoSegments(t *testing.T) {
 	sid := "controlled_pty:mock2"
 	sess := &procSessMock{id: "mock2", adapter: "controlled_pty"}
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	svc := NewTelemetryService(
 		reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
