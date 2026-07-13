@@ -186,10 +186,13 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						acceptedEvents, adapterVersion, nextCursor, degraded := callAcceptedAdapter(logRef.Agent, records, id, acursor)
 						a.setCursor(nextCursor)
 						// B2: adapter degraded/version-conflict → revoke authority.
-						if degraded {
-							a.markVersionConflict()
-						} else if adapterVersion != "" {
+						// Per-record EventUnknown may set degraded=true without a
+						// version problem. Only revoke when version is not validated.
+						if adapterVersion != "" {
 							a.updateVersion(adapterVersion, logRef.Agent)
+						}
+						if degraded && !a.versionValid {
+							a.markVersionConflict()
 						}
 						binding := transcript.LookupLaunch(id)
 						corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))

@@ -138,3 +138,51 @@ describe('validateSegment', () => {
     expect(resp!.fallback).toHaveLength(1);
   });
 });
+
+describe('TranscriptResponse channels', () => {
+  it('semantic-only with agent_event', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
+      sessionId: 's', semantic: [{ ...validSegment({ sessionId: 's' }), kind: 'agent_event', source: 'agent_event' }],
+      fallback: [], primarySource: 'agent_event', contractVersion: 't3.1',
+    }));
+    const r = await getTranscript('s', 't');
+    expect(r).not.toBeNull();
+    expect(r!.semantic).toHaveLength(1);
+    expect(r!.semantic[0].kind).toBe('agent_event');
+  });
+
+  it('fallback-only with terminal_output', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
+      sessionId: 's', semantic: [],
+      fallback: [{ ...validSegment({ id: 'f1', sessionId: 's' }), kind: 'terminal_output', source: 'byte_stream' }],
+      primarySource: 'byte_stream', contractVersion: 't3.1',
+    }));
+    const r = await getTranscript('s', 't');
+    expect(r).not.toBeNull();
+    expect(r!.fallback).toHaveLength(1);
+    expect(r!.primarySource).toBe('byte_stream');
+  });
+
+  it('both channels with distinct sources', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
+      sessionId: 's',
+      semantic: [{ ...validSegment({ sessionId: 's' }), source: 'agent_event' }],
+      fallback: [{ ...validSegment({ id: 'f1', sessionId: 's' }), kind: 'terminal_output', source: 'byte_stream' }],
+      primarySource: 'agent_event', contractVersion: 't3.1',
+    }));
+    const r = await getTranscript('s', 't');
+    expect(r).not.toBeNull();
+    expect(r!.semantic[0].source).toBe('agent_event');
+    expect(r!.fallback![0].source).toBe('byte_stream');
+  });
+
+  it('byteStreamSuppressed flag present', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
+      sessionId: 's', semantic: [], fallback: [],
+      primarySource: 'byte_stream', byteStreamSuppressed: true, contractVersion: 't3.1',
+    }));
+    const r = await getTranscript('s', 't');
+    expect(r).not.toBeNull();
+    expect(r!.byteStreamSuppressed).toBe(true);
+  });
+});

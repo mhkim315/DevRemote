@@ -269,10 +269,19 @@ func (s *Service) HasAgentEvents(sessionID string) bool {
 
 // AddSnapshotSegment appends a cmux/snapshot-sourced segment with degraded
 // SourceSnapshot provenance. Separate from both AgentEvent and byte-stream.
+// If byte-stream is suppressed (terminal input occurred), snapshot text is
+// NOT stored — snapshots may contain echoed input bytes.
 func (s *Service) AddSnapshotSegment(sessionID string, text string, byteCount int, observedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	arb := s.ensureArbiter(sessionID)
+	if arb.IsByteStreamSuppressed() {
+		// Snapshot may contain echoed terminal input — suppress permanently.
+		s.store.Append(sessionID, []TranscriptSegment{
+			NewDegradedSegment(sessionID, "snapshot suppressed after terminal input", observedAt),
+		})
+		return
+	}
 	seg := TranscriptSegment{
 		SessionID:       sessionID,
 		Kind:            KindTerminalOutput,
