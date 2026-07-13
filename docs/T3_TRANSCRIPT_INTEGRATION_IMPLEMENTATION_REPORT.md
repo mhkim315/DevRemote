@@ -346,7 +346,7 @@ recursive go test: NOT triggered (explicit package lists used)
 
 ## 11. Final review marker
 
-REVIEW REQUEST: T3 Transcript Integration — a4143c6bbc79e79f181c6d350672d03d8eb3438f
+REVIEW REQUEST: T3 Transcript Integration — 9834adc91f81a7b98f2cb948799f86363ec37ca1
 
 ## 12. T3-A through T3-E completion status
 
