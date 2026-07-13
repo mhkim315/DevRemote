@@ -174,10 +174,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						binding := transcript.LookupLaunch(id)
 						// Reset on generation change (inode, truncation, path).
-						genChanged := cursor.Inode != stateData.RecordWindowInode
-						if !genChanged && cursor.Offset == 0 && len(stateData.RecordWindow) > 0 {
-							genChanged = true // same-inode truncation
-						}
+						genChanged := rr.GenerationChanged || cursor.Inode != stateData.RecordWindowInode
 						if genChanged {
 							stateData.RecordWindow = nil
 							stateData.RecordWindowBase = 0
