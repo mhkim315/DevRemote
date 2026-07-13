@@ -139,14 +139,8 @@ type sessionStateData struct {
 	Cursor       *LogCursor
 	Parser       AgentLogParser
 	// T3: accepted adapter state
-	AdapterCursor     string   // adapter NextCursor for incremental reads
-	RecordWindow      [][]byte // bounded full-prefix snapshot for adapter
-	RecordWindowInode uint64   // inode of the source for the current window
-	RecordWindowBase  int      // absolute position of window[0] in the stream
-	StreamGeneration  int      // incremented on inode/truncation/path change
-	AcceptedVersion   string   // discovered version (preserved across polls)
-	VersionConfirmed  bool     // true when current stream validated version
-	VersionAnchor     []byte   // preserved session_meta for version authority
+	// T3: accepted adapter positioned state (nil until used)
+	Adapter *adapterState
 	// SamplingFailures tracks consecutive telemetry errors.
 	SamplingFailures int
 }

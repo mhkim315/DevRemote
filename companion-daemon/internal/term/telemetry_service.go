@@ -1,7 +1,6 @@
 package term
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -173,45 +172,20 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// Gemini and Antigravity have no accepted T0 adapter and
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
+						if stateData.Adapter == nil {
+							stateData.Adapter = newAdapterState()
+						}
+						a := stateData.Adapter
+						if rr.GenerationChanged || a.path != logRef.Path {
+							a.resetForGeneration(logRef.Path)
+						}
+						a.appendRecords(rawLines)
+						a.trimIfNeeded(2000)
+						a.updateVersion(logRef.Agent)
+						acceptedEvents, _, nextCursor := readViaAcceptedAdapter(logRef.Agent, a.buildAdapterInput(), id, a.cursor())
+						a.setCursor(nextCursor)
 						binding := transcript.LookupLaunch(id)
-						// Reset on generation change (inode, truncation, path).
-						genChanged := rr.GenerationChanged || cursor.Inode != stateData.RecordWindowInode
-						if genChanged {
-							stateData.RecordWindow = nil
-							stateData.RecordWindowBase = 0
-							stateData.AdapterCursor = ""
-							stateData.AcceptedVersion = ""
-							stateData.VersionConfirmed = false
-							stateData.VersionAnchor = nil
-							stateData.RecordWindowInode = cursor.Inode
-							stateData.StreamGeneration++
-						}
-						stateData.RecordWindow = append(stateData.RecordWindow, rawLines...)
-						if len(stateData.VersionAnchor) == 0 && len(rawLines) > 0 && bytes.Contains(rawLines[0], []byte("session_meta")) {
-							stateData.VersionAnchor = rawLines[0]
-						}
-						if len(stateData.RecordWindow) > 2000 {
-							stateData.RecordWindow = stateData.RecordWindow[len(stateData.RecordWindow)-2000:]
-							stateData.AdapterCursor = "" // force revalidation after trim
-							stateData.VersionConfirmed = false
-							stateData.AcceptedVersion = ""
-						}
-						adapterInput := stateData.RecordWindow
-						if len(stateData.VersionAnchor) > 0 && len(adapterInput) > 0 && !bytes.Equal(stateData.VersionAnchor, adapterInput[0]) {
-							adapterInput = append([][]byte{stateData.VersionAnchor}, adapterInput...)
-						}
-						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, adapterInput, id, stateData.AdapterCursor)
-						stateData.AdapterCursor = nextCursor
-						if discoveredVersion != "" {
-							stateData.AcceptedVersion = discoveredVersion
-							stateData.VersionConfirmed = true
-						}
-						discoveredPID := getProcessPID(id, processSnapshots)
-						versionForCorr := ""
-						if stateData.VersionConfirmed {
-							versionForCorr = stateData.AcceptedVersion
-						}
-						corr := transcript.LaunchCorrelation(binding, logRef.Agent, versionForCorr, discoveredPID)
+						corr := a.launchCorrelation(binding, logRef.Agent)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
@@ -221,8 +195,6 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 							if len(acceptedEvents) > 0 {
 								s.transcript.ProjectAgentEvents(id, acceptedEvents)
 							}
-						} else {
-							s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
 						}
 					}
 					parsedNewEvents = true
