@@ -172,36 +172,49 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						binding := transcript.LookupLaunch(id)
-						// Reset on rotation; maintain bounded full-prefix snapshot.
-						if cursor.Inode != stateData.RecordWindowInode {
+						// Reset on generation change (inode, truncation, path).
+						genChanged := cursor.Inode != stateData.RecordWindowInode
+						if !genChanged && cursor.Offset == 0 && len(stateData.RecordWindow) > 0 {
+							genChanged = true // same-inode truncation
+						}
+						if genChanged {
 							stateData.RecordWindow = nil
+							stateData.RecordWindowBase = 0
 							stateData.AdapterCursor = ""
 							stateData.AcceptedVersion = ""
+							stateData.VersionConfirmed = false
 							stateData.RecordWindowInode = cursor.Inode
+							stateData.StreamGeneration++
 						}
 						stateData.RecordWindow = append(stateData.RecordWindow, rawLines...)
 						if len(stateData.RecordWindow) > 2000 {
 							stateData.RecordWindow = stateData.RecordWindow[len(stateData.RecordWindow)-2000:]
+							stateData.AdapterCursor = "" // force revalidation after trim
 						}
 						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, stateData.RecordWindow, id, stateData.AdapterCursor)
 						stateData.AdapterCursor = nextCursor
 						if discoveredVersion != "" {
 							stateData.AcceptedVersion = discoveredVersion
+							stateData.VersionConfirmed = true
 						}
 						discoveredPID := getProcessPID(id, processSnapshots)
-						corr := transcript.LaunchCorrelation(binding, logRef.Agent, stateData.AcceptedVersion, discoveredPID)
+						versionForCorr := ""
+						if stateData.VersionConfirmed {
+							versionForCorr = stateData.AcceptedVersion
+						}
+						corr := transcript.LaunchCorrelation(binding, logRef.Agent, versionForCorr, discoveredPID)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
 							Provider:    logRef.Agent,
 						})
-						var events []agent.AgentEvent
-						if corr == contract.CorrelationManagedLaunch && len(acceptedEvents) > 0 {
-							events = acceptedEvents
+						if corr == contract.CorrelationManagedLaunch {
+							if len(acceptedEvents) > 0 {
+								s.transcript.ProjectAgentEvents(id, acceptedEvents)
+							}
 						} else {
-							events = convertToAgentEvents(newEvents, logRef.Agent)
+							s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
 						}
-						s.transcript.ProjectAgentEvents(id, events)
 					}
 					parsedNewEvents = true
 					lastEvent = newEvents[len(newEvents)-1]
