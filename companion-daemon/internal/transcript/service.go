@@ -139,21 +139,22 @@ func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Ti
 }
 
 // BeginInput marks the start of terminal input for echo privacy.
-// Emits a content-free input boundary AND a degraded marker notifying
-// that byte-stream projection is suppressed.
+// Idempotent: if already suppressed, does not emit duplicate markers.
 func (s *Service) BeginInput(sessionID string, observedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bp := s.ensureByteProj(sessionID)
 	arb := s.ensureArbiter(sessionID)
+	if arb.IsByteStreamSuppressed() {
+		return // already suppressed, no duplicate markers
+	}
 
+	bp := s.ensureByteProj(sessionID)
 	seg := bp.BeginInput(sessionID, observedAt)
 	if seg != nil {
 		s.store.Append(sessionID, []TranscriptSegment{*seg})
 	}
 	arb.MarkByteStreamSuppressed()
-	// Emit degraded marker so UI knows capture is paused.
 	s.store.Append(sessionID, []TranscriptSegment{
 		NewDegradedSegment(sessionID, "Byte-stream projection suppressed after terminal input", observedAt),
 	})

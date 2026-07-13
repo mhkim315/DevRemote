@@ -171,7 +171,8 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						// When that mode is implemented, the correlation will flow from
 						// the actual adapter's DiscoverSessions() result.
 						binding := transcript.LookupLaunch(id)
-						corr := transcript.LaunchCorrelation(binding, logRef.Agent)
+						// Version validated at launch binding level (create.go passes accepted version).
+						corr := transcript.LaunchCorrelation(binding, logRef.Agent, "", 0)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
@@ -442,6 +443,20 @@ func isAcceptedAdapter(kind string) bool {
 	switch kind {
 	case "codex", "claude":
 		return true
+	default:
+		return false
+	}
+}
+
+// isAcceptedVersion checks that the detected provider version matches
+// the accepted adapter version. Unsupported/newer versions must not
+// produce semantic Transcript.
+func isAcceptedVersion(kind, version string) bool {
+	switch kind {
+	case "codex":
+		return version == "0.144.1"
+	case "claude":
+		return version == "2.1.202"
 	default:
 		return false
 	}

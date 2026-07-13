@@ -134,17 +134,21 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 			return segments
 		}
 
-		// TUI burst suppression.
+		// TUI burst: suppress printable output but continue parsing
+		// ANSI sequences to detect alternate-screen exit.
 		if p.tuiBurstActive {
-			p.tuiBurstCount += len(data) - i
-			return segments
+			// Only process ANSI escapes — skip everything else.
+			if p.ansiState != ansiNone || (data[i] == 0x1b && i+1 < len(data) && (data[i+1] == '[' || data[i+1] == ']')) {
+				if data[i] == 0x1b { if data[i+1] == '[' { p.ansiState = ansiCSI } else if data[i+1] == ']' { p.ansiState = ansiOSC } else { p.ansiState = ansiESC }; i += 2; continue }; goto processANSI
+			}
+			p.tuiBurstCount++
+			i++
+			continue
 		}
 
+		processANSI:
 		// ANSI escape handling — skip entire sequence. Statefully detect
 		// alternate-screen enter/exit for TUI burst suppression.
-		// NOTE: at this point i is past the ESC[ prefix (set by the
-		// detection block below). We must reconstruct the full sequence
-		// for TUI detection: data[escStart : i+consumed].
 		if p.ansiState != ansiNone {
 			escStart := i - 2 // back to the ESC byte
 			if escStart < 0 {
@@ -152,8 +156,11 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 			}
 			consumed := p.consumeANSI(data[i:])
 			if consumed == 0 {
-				// Save incomplete ANSI from ESC byte for next chunk.
+				// Save incomplete sequence from ESC byte for next chunk.
+				// Reset ANSI state so the next Feed re-enters the state
+				// machine from the beginning with the full prefix.
 				p.utf8Buf = append(p.utf8Buf, data[escStart:]...)
+				p.ansiState = ansiNone
 				return segments
 			}
 			// Reconstruct full sequence for TUI detection.

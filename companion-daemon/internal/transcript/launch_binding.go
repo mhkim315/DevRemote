@@ -8,12 +8,14 @@ import (
 
 // LaunchBinding is an immutable session-owned launch authority.
 // Only the session creation controller (pokit run) may create one.
-// It establishes CorrelationManagedLaunch for controlled sessions.
 type LaunchBinding struct {
-	SessionID    string
-	Provider     string // "codex" or "claude"
-	Adapter      string // "controlled_pty"
-	Generation   int64  // process generation, monotonic
+	SessionID          string
+	Provider           string // "codex" or "claude"
+	Adapter            string // "controlled_pty"
+	AcceptedVersion    string // "0.144.1" or "2.1.202"
+	ProcessName        string // executable name (codex/claude)
+	PID                int    // process ID at launch time
+	Generation         int64  // monotonic launch counter per session
 }
 
 // LaunchRegistry stores active launch bindings. Only the session creation
@@ -31,17 +33,20 @@ var globalLaunchRegistry = &LaunchRegistry{
 // RegisterLaunch records a managed launch binding. Only the session
 // creation controller may call this. It establishes that the named
 // session was launched under Pokit's control with the given provider.
-func RegisterLaunch(sessionID, provider, adapter string, generation int64) {
+func RegisterLaunch(sessionID, provider, adapter, version string, pid int, generation int64) {
 	globalLaunchRegistry.mu.Lock()
 	defer globalLaunchRegistry.mu.Unlock()
 	if _, exists := globalLaunchRegistry.bindings[sessionID]; exists {
-		return // immutable once set
+		return
 	}
 	globalLaunchRegistry.bindings[sessionID] = LaunchBinding{
-		SessionID:  sessionID,
-		Provider:   provider,
-		Adapter:    adapter,
-		Generation: generation,
+		SessionID:       sessionID,
+		Provider:        provider,
+		Adapter:         adapter,
+		AcceptedVersion: version,
+		ProcessName:     provider,
+		PID:             pid,
+		Generation:      generation,
 	}
 }
 
@@ -65,12 +70,18 @@ func RemoveLaunch(sessionID string) {
 }
 
 // LaunchCorrelation returns the correlation state for a managed session.
-func LaunchCorrelation(binding *LaunchBinding, discoveredProvider string) contract.Correlation {
+// Validates provider, version, and process identity match.
+func LaunchCorrelation(binding *LaunchBinding, discoveredProvider, discoveredVersion string, discoveredPID int) contract.Correlation {
 	if binding == nil {
 		return contract.CorrelationUnavailable
 	}
-	// Provider must match the launch binding exactly.
 	if binding.Provider != discoveredProvider {
+		return contract.CorrelationUnavailable
+	}
+	if binding.AcceptedVersion != "" && discoveredVersion != "" && binding.AcceptedVersion != discoveredVersion {
+		return contract.CorrelationUnavailable
+	}
+	if binding.PID != 0 && discoveredPID != 0 && binding.PID != discoveredPID {
 		return contract.CorrelationUnavailable
 	}
 	return contract.CorrelationManagedLaunch
