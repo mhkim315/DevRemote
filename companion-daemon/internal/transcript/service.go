@@ -138,7 +138,9 @@ func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Ti
 	s.mu.Unlock()
 }
 
-// BeginInput marks the start of terminal input for echo suppression.
+// BeginInput marks the start of terminal input for echo privacy.
+// Emits a content-free input boundary AND a degraded marker notifying
+// that byte-stream projection is suppressed.
 func (s *Service) BeginInput(sessionID string, observedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,7 +152,11 @@ func (s *Service) BeginInput(sessionID string, observedAt time.Time) {
 	if seg != nil {
 		s.store.Append(sessionID, []TranscriptSegment{*seg})
 	}
-	arb.RecordByteStream()
+	arb.MarkByteStreamSuppressed()
+	// Emit degraded marker so UI knows capture is paused.
+	s.store.Append(sessionID, []TranscriptSegment{
+		NewDegradedSegment(sessionID, "Byte-stream projection suppressed after terminal input", observedAt),
+	})
 }
 
 // EndInput marks the end of terminal input echo suppression.
@@ -214,7 +220,7 @@ func (s *Service) ClearTranscript(sessionID string) {
 	}
 	s.mu.Unlock()
 	if hasQ {
-		q.close() // blocks until worker exits and drain completes
+		q.close()
 	}
 
 	// Now safe to clear store: no worker can append.
@@ -223,6 +229,9 @@ func (s *Service) ClearTranscript(sessionID string) {
 	delete(s.byteProjs, sessionID)
 	delete(s.arbiters, sessionID)
 	s.mu.Unlock()
+
+	// Clean up managed launch binding.
+	RemoveLaunch(sessionID)
 }
 
 // ── Arbitration queries ──

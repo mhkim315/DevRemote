@@ -13,10 +13,11 @@ package transcript
 //     prompt/command recognition, CWD, or process-name heuristics.
 //   - Source is explicit on every segment.
 type SourceArbiter struct {
-	agentEventAvailable bool
+	agentEventAvailable  bool
 	byteStreamSuppressed int64
 	degraded             bool
-	correlation          CorrelationState // set via SetCorrelation
+	permanentSuppress    bool // true after input causes permanent byte-stream suppression
+	correlation          CorrelationState
 }
 
 func NewSourceArbiter() *SourceArbiter {
@@ -74,37 +75,36 @@ func (a *SourceArbiter) IsDegraded() bool {
 }
 
 // SuppressByteStream reports whether new byte-stream segments should be
-// suppressed from the semantic listing (routed to fallback channel instead).
+// suppressed from the semantic listing.
 func (a *SourceArbiter) SuppressByteStream() bool {
 	return a.agentEventAvailable
 }
 
+// MarkByteStreamSuppressed records that byte-stream projection is permanently
+// suppressed (e.g. after terminal input for echo privacy).
+func (a *SourceArbiter) MarkByteStreamSuppressed() {
+	a.permanentSuppress = true
+}
+
+// IsByteStreamSuppressed reports permanent suppression state.
+func (a *SourceArbiter) IsByteStreamSuppressed() bool {
+	return a.permanentSuppress
+}
+
 // ── Transcript response envelope ──
 
-// TranscriptResponse is the API response envelope that separates the
-// primary semantic Transcript from the byte-stream fallback channel.
-// When AgentEvent is primary, semantic contains AgentEvent segments
-// and fallback contains suppressed byte-stream segments.
-// When AgentEvent is unavailable, semantic contains byte-stream segments
-// and fallback is empty.
+// TranscriptResponse is the API response envelope.
 type TranscriptResponse struct {
-	// SessionID is the canonical Pokit session identifier.
-	SessionID string `json:"sessionId"`
-
-	// Semantic contains the primary semantic Transcript segments.
-	// When AgentEvent is primary: AgentEvent-sourced segments.
-	// When AgentEvent unavailable: byte-stream terminal output.
-	Semantic []TranscriptSegment `json:"semantic"`
-
-	// Fallback contains the separate byte-stream fallback channel.
-	// Non-nil only when AgentEvent is primary and byte-stream segments exist.
-	Fallback []TranscriptSegment `json:"fallback,omitempty"`
-
-	// PrimarySource declares the current primary source.
-	PrimarySource SegmentSource `json:"primarySource"`
-
-	// ContractVersion is the Transcript contract version.
-	ContractVersion string `json:"contractVersion"`
+	SessionID       string              `json:"sessionId"`
+	Semantic        []TranscriptSegment `json:"semantic"`
+	Fallback        []TranscriptSegment `json:"fallback,omitempty"`
+	PrimarySource   SegmentSource       `json:"primarySource"`
+	// ByteStreamSuppressed is true when byte-stream projection has been
+	// permanently suppressed (e.g. after terminal input for echo privacy).
+	// The UI should indicate that live terminal output is not available
+	// in the Transcript.
+	ByteStreamSuppressed bool `json:"byteStreamSuppressed,omitempty"`
+	ContractVersion      string `json:"contractVersion"`
 }
 
 // NewTranscriptResponse builds the separated response.
@@ -162,11 +162,14 @@ func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, ar
 		primary = SourceSnapshot
 	}
 
+	suppressed := arb != nil && arb.IsByteStreamSuppressed()
+
 	return TranscriptResponse{
-		SessionID:       sessionID,
-		Semantic:        semantic,
-		Fallback:        fallback,
-		PrimarySource:   primary,
-		ContractVersion: ContractVersion,
+		SessionID:            sessionID,
+		Semantic:             semantic,
+		Fallback:             fallback,
+		PrimarySource:        primary,
+		ByteStreamSuppressed: suppressed,
+		ContractVersion:      ContractVersion,
 	}
 }

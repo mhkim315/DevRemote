@@ -405,6 +405,7 @@ export interface TranscriptResponse {
   semantic: TranscriptSegment[];
   fallback?: TranscriptSegment[];
   primarySource: 'agent_event' | 'byte_stream' | 'snapshot_delta' | 'unknown';
+  byteStreamSuppressed?: boolean;
   contractVersion: string;
 }
 
@@ -420,7 +421,7 @@ const SEGMENT_KNOWN_FIELDS = new Set([
   'id','seq','sessionId','kind','source','text','agentEventRef','agentKind',
   'eventType','toolName','confidence','byteCount','degradedReason','observedAt','contractVersion'
 ]);
-const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','contractVersion']);
+const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','byteStreamSuppressed','contractVersion']);
 
 function byteLength(s: string): number {
   // Count UTF-8 bytes (not JS character count).

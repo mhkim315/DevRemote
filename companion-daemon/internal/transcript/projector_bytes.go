@@ -137,15 +137,23 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 
 		// ANSI escape handling — skip entire sequence. Statefully detect
 		// alternate-screen enter/exit for TUI burst suppression.
+		// NOTE: at this point i is past the ESC[ prefix (set by the
+		// detection block below). We must reconstruct the full sequence
+		// for TUI detection: data[escStart : i+consumed].
 		if p.ansiState != ansiNone {
-			start := i
+			escStart := i - 2 // back to the ESC byte
+			if escStart < 0 {
+				escStart = 0
+			}
 			consumed := p.consumeANSI(data[i:])
 			if consumed == 0 {
-				p.utf8Buf = append(p.utf8Buf, data[i:]...)
+				// Save incomplete ANSI from ESC byte for next chunk.
+				p.utf8Buf = append(p.utf8Buf, data[escStart:]...)
 				return segments
 			}
-			// Check consumed ANSI bytes for TUI sequences.
-			p.checkTUISequence(data[start : start+consumed])
+			// Reconstruct full sequence including ESC[ for TUI detection.
+			fullSeq := data[escStart : i+consumed]
+			p.checkTUISequence(fullSeq)
 			i += consumed
 			continue
 		}
@@ -300,11 +308,12 @@ func (p *ByteStreamProjector) consumeANSI(data []byte) int {
 }
 
 // checkTUISequence detects alternate-screen enter/exit in consumed ANSI bytes
-// and toggles TUI burst suppression statefully. This works correctly even when
-// the escape sequence is split across Recorder chunks (stateful parsing).
+// and toggles TUI burst suppression. Called from Feed() which already holds
+// p.mu — must NOT re-lock.
 func (p *ByteStreamProjector) checkTUISequence(seq []byte) {
 	if IsAlternateScreenStart(seq) {
-		p.BeginTUIBurst()
+		p.tuiBurstActive = true
+		p.tuiBurstCount = 0
 	} else if IsAlternateScreenEnd(seq) {
 		p.tuiBurstActive = false
 		p.tuiBurstCount = 0

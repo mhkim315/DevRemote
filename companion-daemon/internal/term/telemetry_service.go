@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
-	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
@@ -171,7 +170,8 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						// provides CorrelationProven or CorrelationManagedLaunch.
 						// When that mode is implemented, the correlation will flow from
 						// the actual adapter's DiscoverSessions() result.
-						corr := acceptedAdapterCorrelation(logRef.Agent)
+						binding := transcript.LookupLaunch(id)
+						corr := transcript.LaunchCorrelation(binding, logRef.Agent)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
@@ -444,22 +444,6 @@ func isAcceptedAdapter(kind string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-// acceptedAdapterCorrelation returns the correlation state documented by the
-// accepted T1/T2 adapters. Currently CorrelationUnavailable for all interactive
-// sessions. When a managed-launch mode is implemented, this will return
-// CorrelationProven or CorrelationManagedLaunch based on the adapter's
-// DiscoverSessions() result.
-func acceptedAdapterCorrelation(kind string) contract.Correlation {
-	switch kind {
-	case "codex", "claude":
-		// Per T1/T2 acceptance: ordinary interactive TUI correlation is unavailable.
-		// Managed-launch correlation (future) would return CorrelationManagedLaunch.
-		return contract.CorrelationUnavailable
-	default:
-		return contract.CorrelationUnavailable
 	}
 }
 

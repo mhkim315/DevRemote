@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // createSessionRequest is the HTTP POST /api/sessions body. HTTP creation is
@@ -86,6 +87,11 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
+		// T3: register managed launch binding for accepted adapters.
+		if req.ProfileID == "codex" || req.ProfileID == "claude" {
+			transcript.RegisterLaunch(canonicalID, req.ProfileID, adapter, 1)
+		}
+
 	// M2: catalog the managed session + start its exit watcher on the exact
 	// Recorder we just started.
 	if h.Lifecycle != nil {

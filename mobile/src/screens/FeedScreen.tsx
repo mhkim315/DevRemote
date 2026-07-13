@@ -193,6 +193,7 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
   const activeTabRef = useRef(activeTab);
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
   const [fallbackEvents, setFallbackEvents] = useState<any[]>([]);
+  const [byteStreamSuppressed, setByteStreamSuppressed] = useState(false);
   const [newOutputCount, setNewOutputCount] = useState(0);
   const lastSeenSeqRef = useRef(0);
   const transcriptMaxSeqRef = useRef(0);
@@ -247,6 +248,7 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
     setActionError('');
     setTranscriptEvents([]);
     setFallbackEvents([]);
+    setByteStreamSuppressed(false);
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
     sessionGenRef.current++;
@@ -470,6 +472,7 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
               const fresh = (resp.fallback || []).filter((s: any) => !seen.has(s.id));
               return [...prev, ...fresh].sort((a: any, b: any) => a.seq - b.seq);
             });
+            setByteStreamSuppressed(!!resp.byteStreamSuppressed);
             setActivityError('');
             const allSeqs = [...resp.semantic, ...(resp.fallback || [])];
             const maxSeq = allSeqs.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
@@ -1016,6 +1019,14 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
               </Text>
             </TouchableOpacity>
           )}
+          {/* T3: byte-stream suppressed after terminal input */}
+          {byteStreamSuppressed && (
+            <View style={styles.suppressedBanner}>
+              <Text style={styles.suppressedBannerText}>
+                Transcript capture paused after terminal input. Live output may not appear here.
+              </Text>
+            </View>
+          )}
           {/* R1a: transcript endpoint error state */}
           {activityError ? (
             <View style={{padding: 20, alignItems: 'center'}}>
@@ -1285,6 +1296,21 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     paddingHorizontal: 12,
     marginBottom: 8,
+  },
+  suppressedBanner: {
+    backgroundColor: 'rgba(248, 181, 0, 0.1)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginHorizontal: 8,
+    marginBottom: 8,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(248, 181, 0, 0.3)',
+  },
+  suppressedBannerText: {
+    color: '#f8b500',
+    fontSize: 11,
+    textAlign: 'center',
   },
   returnBtn: {
     backgroundColor: '#1C1C1E',
