@@ -172,11 +172,24 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						binding := transcript.LookupLaunch(id)
-						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, rawLines, id, stateData.AdapterCursor)
+						// Reset on rotation; maintain bounded full-prefix snapshot.
+						if cursor.Inode != stateData.RecordWindowInode {
+							stateData.RecordWindow = nil
+							stateData.AdapterCursor = ""
+							stateData.AcceptedVersion = ""
+							stateData.RecordWindowInode = cursor.Inode
+						}
+						stateData.RecordWindow = append(stateData.RecordWindow, rawLines...)
+						if len(stateData.RecordWindow) > 2000 {
+							stateData.RecordWindow = stateData.RecordWindow[len(stateData.RecordWindow)-2000:]
+						}
+						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, stateData.RecordWindow, id, stateData.AdapterCursor)
 						stateData.AdapterCursor = nextCursor
-						// Use discovered version for correlation validation.
+						if discoveredVersion != "" {
+							stateData.AcceptedVersion = discoveredVersion
+						}
 						discoveredPID := getProcessPID(id, processSnapshots)
-						corr := transcript.LaunchCorrelation(binding, logRef.Agent, discoveredVersion, discoveredPID)
+						corr := transcript.LaunchCorrelation(binding, logRef.Agent, stateData.AcceptedVersion, discoveredPID)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
@@ -529,8 +542,12 @@ func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, pr
 		Cursor:    contract.Cursor(prevCursor),
 		MaxEvents: 500,
 	})
+	nextCursor := prevCursor
+	if err == nil && string(result.NextCursor) != "" {
+		nextCursor = string(result.NextCursor)
+	}
 	if err != nil || len(result.Events) == 0 {
-		return nil, "", prevCursor
+		return nil, "", nextCursor
 	}
 
 	discoveredVersion := ""

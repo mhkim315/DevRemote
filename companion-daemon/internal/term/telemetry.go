@@ -130,15 +130,20 @@ func sessionCapabilities(s mux.Session) []string {
 }
 
 type sessionStateData struct {
-	LastOutput       []byte
-	LastActivity     time.Time
-	State            string
-	Load             int
-	Runner           string
-	RunnerColor      string
-	Cursor           *LogCursor
-	Parser           AgentLogParser
-	AdapterCursor    string // T3: accepted adapter cursor for incremental reads
+	LastOutput   []byte
+	LastActivity time.Time
+	State        string
+	Load         int
+	Runner       string
+	RunnerColor  string
+	Cursor       *LogCursor
+	Parser       AgentLogParser
+	// T3: accepted adapter state
+	AdapterCursor     string   // adapter NextCursor for incremental reads
+	RecordWindow      [][]byte // bounded full-prefix snapshot for adapter
+	RecordWindowInode uint64   // inode of the source for the current window
+	AcceptedVersion   string   // discovered version (preserved across polls)
+	// SamplingFailures tracks consecutive telemetry errors.
 	SamplingFailures int
 }
 
