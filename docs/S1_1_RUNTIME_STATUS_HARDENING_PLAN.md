@@ -1,0 +1,87 @@
+# S1.1 Runtime Status Hardening — Planning Boundary
+
+Status: **PLANNED — DO NOT EXECUTE BEFORE INDEPENDENT S1-E ACCEPT**
+
+S1.1 is a separate hardening milestone between accepted S1 and A1. It is not a
+condition for implementing the remaining S1-E correctness work, and this document
+does not authorize implementation.
+
+## 1. Purpose
+
+Harden runtime evidence traceability, exact runtime identity, and recovery/replay
+behavior without changing the frozen T0/S1 authority model or expanding the
+public DTO without a demonstrated consumer.
+
+## 2. Frozen constraints
+
+- T0 `ResolveStatus`, provenance ranking, confidence ceiling, and closed status
+  vocabulary remain authoritative.
+- Process, CWD, PTY, prompt, Transcript, and screen signals may support bounded
+  identity or diagnostics but cannot select agent status.
+- `waiting_approval` remains display-only and cannot create or authorize an
+  approval action.
+- No raw adapter cursor, duplicate evidence-source field, host identity, public
+  degraded reason, or new public status is added without a separately reviewed
+  downstream requirement.
+- S1.1 does not implement A1, O1, O2, Git/worktree operations, automated command
+  execution, automatic rework, review bundles, merges, or Windows support.
+
+## 3. S1.1-A — Bounded winning-evidence metadata
+
+Reuse the current internal `AgentActivityRecord` fields: status, provenance,
+confidence, observed time, bounded degraded reason, stream generation, and
+provider version. Do not duplicate them under new names.
+
+Evaluate only the minimum additional bounded identity needed to explain ordering,
+such as winning event ID, winning `Seq`, or an equivalent internal revision.
+Keep opaque adapter cursors in the adapter ingestion owner. Do not expose new
+public fields unless an identified S1/A1/O1 consumer and privacy/bounds review
+justify them.
+
+## 4. S1.1-B — Runtime identity binding
+
+Build on existing canonical session ID, adapter kind, provider/version,
+`adapterState.streamGen`, and `LaunchBinding`. Required research/implementation
+questions include:
+
+- real monotonic launch generation rather than a constant generation;
+- safe launch-binding replacement with incompatible prior evidence invalidated;
+- PID plus process-start identity or an equivalent non-reusable process token;
+- adapter/provider/version/correlation-generation mismatch handling;
+- atomic replacement so no prior-positive authority window remains.
+
+PID alone is never sufficient because it can be reused. Host identity is not part
+of the current daemon-local in-memory status key and must not be added without a
+cross-host persistence/consumer requirement.
+
+## 5. S1.1-C — Recovery and replay hardening
+
+Cover:
+
+- same-generation replay and cursor regression;
+- cursor/event duplication and resume;
+- bounded-store eviction under churn;
+- correlation loss and recovery;
+- adapter/provider/launch-binding replacement;
+- daemon recovery boundaries after accepted S1 behavior;
+- stale event rejection using the existing generation/Seq/cursor model.
+
+Recovery may produce absent, unknown, unavailable, or degraded status. It must
+never confidently display incompatible prior evidence as current.
+
+## 6. Outputs and acceptance boundary
+
+Before implementation, create a focused S1.1 execution handoff from the accepted
+S1 SHA. S1.1 acceptance must include an internal evidence/identity matrix, bounded
+negative tests, recovery/replay regression evidence, full gates, and confirmation
+that the public DTO and frozen T0 contract were unchanged unless separately
+approved.
+
+After independent S1.1 acceptance, proceed to A1. Do not combine the S1.1 and A1
+review requests.
+
+## 7. Approval boundary carried forward
+
+A1 authority must come from ApprovalStore state bound to exact session ID,
+approval ID, authoritative approval provenance, and current generation. S1/S1.1
+runtime status is never authorization input.

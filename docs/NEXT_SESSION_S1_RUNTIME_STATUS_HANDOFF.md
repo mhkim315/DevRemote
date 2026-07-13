@@ -10,17 +10,20 @@ acceptance only once, after S1-A through S1-E are all complete.
 Do not infer the task from chat summaries, an old roadmap, or an unpushed
 worktree. Do not begin A1, O1, Notifications, another adapter, or Windows work.
 
-Current independently checked midpoint:
+Current independently checked progress:
 
 ```text
 S1-A audit:                 8d73a4a (checkpoint)
 S1-B internal contract:    33c1fed (checkpoint)
 S1-C production wiring:    e8d53d0 (checkpoint)
 S1-B/C authority hardening: 2f3fdfcbff0fc21e78f9c077f8cf2cef61024d6d
-midpoint result:           ACCEPT — proceed to S1-D only
+S1-D API/mobile checkpoint: 17553e0106404bf75a75899c720ff7be0df3fad0
+checkpoint result:         ACCEPT — proceed to revised S1-E only
 ```
 
-This is not final S1 acceptance. S1-D and S1-E remain required.
+This is not final S1 acceptance. S1-E remains required. Its authoritative next
+execution packet is `docs/NEXT_SESSION_S1_E_FINALIZATION_HANDOFF.md`. The accepted
+post-S1 sequence is planned in `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`.
 
 ## 0. Repository identity and commit recovery
 
@@ -28,6 +31,7 @@ This is not final S1 acceptance. S1-D and S1-E remain required.
 canonical repository: https://github.com/mhkim315/DevRemote.git
 branch: feature/phase10-multi-adapter
 accepted T3 / S1 code baseline: 9ad6f834f70e88b800e60124c8e408d38bca9d2b
+accepted S1-D checkpoint: 17553e0106404bf75a75899c720ff7be0df3fad0
 accepted D1: 8f7c22def81abf0b932f6dbbacc07325ae2bb12e
 accepted R2: 6f940b03bbb451dd0ddcfc6bf7ce5f86bbec3b50
 accepted T2: ef4a162c7f9a5644fd52d89501e97f4e62301dfa
@@ -48,6 +52,7 @@ git rev-parse HEAD
 git rev-parse origin/feature/phase10-multi-adapter
 git log --oneline -30
 git merge-base --is-ancestor 9ad6f834f70e88b800e60124c8e408d38bca9d2b HEAD
+git merge-base --is-ancestor 17553e0106404bf75a75899c720ff7be0df3fad0 HEAD
 git merge-base --is-ancestor 8f7c22def81abf0b932f6dbbacc07325ae2bb12e HEAD
 git merge-base --is-ancestor 6f940b03bbb451dd0ddcfc6bf7ce5f86bbec3b50 HEAD
 git merge-base --is-ancestor ef4a162c7f9a5644fd52d89501e97f4e62301dfa HEAD
@@ -415,6 +420,12 @@ and clean worktree, and stop for checkpoint review. Do not emit the final S1
 ### S1-E — Integrated regression, safety evidence, and final review request
 
 Goal: prove the complete S1 contract without expanding scope.
+
+The milestone boundary was revised after S1-D acceptance. Before executing this
+section, read and follow `docs/NEXT_SESSION_S1_E_FINALIZATION_HANDOFF.md`. That
+packet adds the required stream-generation invalidation, daemon restart/mobile
+freshness, and cleanup evidence while explicitly deferring launch/process identity
+hardening to S1.1. It does not authorize S1.1 or A1 implementation.
 
 Required final regression matrix:
 

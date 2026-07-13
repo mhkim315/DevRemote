@@ -143,9 +143,11 @@ T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202
 R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
 D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
-S1  Rich Agent Runtime Status Model           IN PROGRESS (S1-B/C midpoint ACCEPT 2f3fdfc; S1-D next)
-A1  Mobile-first Approval System
-O1  Orchestrator
+S1  Rich Agent Runtime Status Model           IN PROGRESS (S1-D ACCEPT 17553e0; revised S1-E finalization next)
+S1.1 Runtime Status Hardening                 PLANNED after independent S1-E ACCEPT
+A1  Approval Safety                           PLANNED after independent S1.1 ACCEPT
+O1  Deterministic Broker                      PLANNED after A1
+O2  Developer-Verifier Loop                   PLANNED after O1
 N1  Notifications                             PLANNED outside the revised critical path
 P1  Play Store / Distribution readiness
 ```
@@ -167,8 +169,10 @@ M3-auth-1B
 → D1 Adapter Doctor/Repair
 → T3 Transcript integration
 → S1 status
-→ A1 approval
-→ O1 orchestrator
+→ S1.1 runtime status hardening
+→ A1 approval safety
+→ O1 deterministic broker
+→ O2 developer-verifier loop
 ```
 
 M3-auth-1B/M3-auth-2B positions and iOS/auth scope are unchanged by this
@@ -467,10 +471,14 @@ integrated regression/safety verification. Intermediate checkpoints are not
 independent acceptance points; request review only after the complete S1 path.
 
 Execution-agent instructions use the task packet format in
-`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`. The S1-B/C midpoint was
-independently accepted at `2f3fdfcbff0fc21e78f9c077f8cf2cef61024d6d`;
-S1-D is the next bounded checkpoint. This midpoint does not replace final S1
-acceptance after S1-E.
+`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`. S1-D was independently accepted
+at `17553e0106404bf75a75899c720ff7be0df3fad0`; revised S1-E finalization is the
+next bounded checkpoint via `docs/NEXT_SESSION_S1_E_FINALIZATION_HANDOFF.md`.
+This checkpoint does not replace final S1 acceptance after S1-E.
+
+After S1-E is independently accepted, execute S1.1 as a separate hardening
+milestone using `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`. S1.1 preserves the
+frozen T0/S1 authority model and does not begin A1.
 
 Example states:
 
@@ -485,17 +493,31 @@ Example states:
 - failed
 - exited
 
-Sources:
+Agent-activity authority comes only from accepted, version/correlation-gated
+T1/T2 AgentEvents resolved through frozen T0 `GetStatus`/`ResolveStatus`.
+Lifecycle remains a separate daemon authority. PTY, screen, prompt, CWD, process,
+and Transcript signals are not agent-status authority; process evidence may only
+support identity/correlation under the accepted rules.
 
-- runtime lifecycle
-- PTY output patterns
-- JSONL / agent logs as optional enhancers
+## S1.1 — Runtime Status Hardening
 
-JSONL is secondary/enrichment data, not the source of truth.
+Goal: harden bounded winning-evidence traceability, launch/process identity, and
+recovery/replay behavior after S1 acceptance without changing frozen T0 status
+authority or expanding the public DTO without a demonstrated consumer.
+
+Plan: `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`.
+
+S1.1 is not part of S1-E and must not begin before independent S1 acceptance.
+It must finish independently before A1 begins.
 
 ## A1 — Mobile-first Approval System
 
 Goal: safe mobile approval/control.
+
+Authority boundary: `waiting_approval` status is display-only. Approval authority
+must come from ApprovalStore state bound to exact session ID, approval ID,
+authoritative approval provenance, and current generation. S1/S1.1 status is
+never authorization input.
 
 Examples:
 
