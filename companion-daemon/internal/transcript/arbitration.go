@@ -95,15 +95,15 @@ func (a *SourceArbiter) IsByteStreamSuppressed() bool {
 
 // TranscriptResponse is the API response envelope.
 type TranscriptResponse struct {
-	SessionID       string              `json:"sessionId"`
-	Semantic        []TranscriptSegment `json:"semantic"`
-	Fallback        []TranscriptSegment `json:"fallback,omitempty"`
-	PrimarySource   SegmentSource       `json:"primarySource"`
+	SessionID     string              `json:"sessionId"`
+	Semantic      []TranscriptSegment `json:"semantic"`
+	Fallback      []TranscriptSegment `json:"fallback,omitempty"`
+	PrimarySource SegmentSource       `json:"primarySource"`
 	// ByteStreamSuppressed is true when byte-stream projection has been
 	// permanently suppressed (e.g. after terminal input for echo privacy).
 	// The UI should indicate that live terminal output is not available
 	// in the Transcript.
-	ByteStreamSuppressed bool `json:"byteStreamSuppressed,omitempty"`
+	ByteStreamSuppressed bool   `json:"byteStreamSuppressed,omitempty"`
 	ContractVersion      string `json:"contractVersion"`
 }
 

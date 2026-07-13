@@ -114,3 +114,53 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 
 	return events, nil
 }
+
+// ReadRawLines reads raw JSONL lines from the cursor position.
+// Returns raw byte slices without parsing. Used by the T3 accepted
+// adapter path to pass original provider records to ReadEvents.
+func ReadRawLines(cursor *LogCursor, maxLines int) ([][]byte, error) {
+	file, err := os.Open(cursor.Path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat log file: %w", err)
+	}
+
+	sysStat, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, fmt.Errorf("failed to get underlying stat")
+	}
+	if cursor.Inode != sysStat.Ino || stat.Size() < cursor.Offset {
+		cursor.Offset = 0
+		cursor.Inode = sysStat.Ino
+	}
+
+	_, err = file.Seek(cursor.Offset, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := bufio.NewReader(file)
+	var lines [][]byte
+
+	for len(lines) < maxLines {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if line[len(line)-1] == '\n' {
+				line = line[:len(line)-1]
+			}
+			if len(line) > 0 && len(line) < maxRecordSize {
+				lines = append(lines, line)
+			}
+			cursor.Offset += int64(len(line)) + 1
+		}
+		if err != nil {
+			break
+		}
+	}
+	return lines, nil
+}

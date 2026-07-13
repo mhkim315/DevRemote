@@ -16,11 +16,11 @@ type chunkQueue struct {
 	sessionID string
 	svc       *Service
 
-	mu     sync.Mutex
-	chunks chan chunkItem
-	closed bool
-	done   chan struct{} // closed when worker exits
-	dropped int64
+	mu       sync.Mutex
+	chunks   chan chunkItem
+	closed   bool
+	done     chan struct{} // closed when worker exits
+	dropped  int64
 	overflow bool
 }
 

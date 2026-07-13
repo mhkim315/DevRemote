@@ -167,16 +167,20 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						binding := transcript.LookupLaunch(id)
-						corr := transcript.LaunchCorrelation(binding, logRef.Agent, "", 0)
+						// Extract raw JSONL lines for the accepted adapter path.
+						rawLines := readRawLines(cursor, 500)
+						acceptedEvents, discoveredVersion := readViaAcceptedAdapter(logRef.Agent, rawLines, id)
+						// Use discovered version for correlation validation.
+						discoveredPID := getProcessPID(id, processSnapshots)
+						corr := transcript.LaunchCorrelation(binding, logRef.Agent, discoveredVersion, discoveredPID)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
 							Provider:    logRef.Agent,
 						})
-						// Use accepted adapter for managed launches, legacy parser for others.
 						var events []agent.AgentEvent
-						if corr == contract.CorrelationManagedLaunch {
-							events = readViaAcceptedAdapter(logRef.Agent, newEvents)
+						if corr == contract.CorrelationManagedLaunch && len(acceptedEvents) > 0 {
+							events = acceptedEvents
 						} else {
 							events = convertToAgentEvents(newEvents, logRef.Agent)
 						}
@@ -464,10 +468,31 @@ func isAcceptedVersion(kind, version string) bool {
 	}
 }
 
-// readViaAcceptedAdapter uses the accepted version-specific T1/T2 adapter
-// to normalize events through the T0 contract. Only called for managed
-// launches with CorrelationManagedLaunch.
-func readViaAcceptedAdapter(kind string, rawEvents []models.AgentEvent) []agent.AgentEvent {
+// readRawLines reads raw JSONL lines from the cursor's log file.
+// Returns up to maxLines raw byte slices.
+func readRawLines(cursor *LogCursor, maxLines int) [][]byte {
+	if cursor == nil || cursor.Path == "" {
+		return nil
+	}
+	lines, err := ReadRawLines(cursor, maxLines)
+	if err != nil {
+		return nil
+	}
+	return lines
+}
+
+// getProcessPID extracts the PID for a session from process snapshots.
+func getProcessPID(id string, snapshots map[string]models.ProcessInfo) int {
+	if info, ok := snapshots[id]; ok {
+		return info.PID
+	}
+	return 0
+}
+
+// readViaAcceptedAdapter reads raw JSONL lines through the accepted
+// version-specific T1/T2 adapter. The adapter's ReadEvents handles version
+// detection, normalization, and degradation. Only called for managed launches.
+func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string) ([]agent.AgentEvent, string) {
 	var adapter contract.AgentAdapter
 	switch kind {
 	case "codex":
@@ -475,24 +500,48 @@ func readViaAcceptedAdapter(kind string, rawEvents []models.AgentEvent) []agent.
 	case "claude":
 		adapter = &claude.Adapter{}
 	default:
-		return nil
+		return nil, ""
 	}
 
 	ctx := context.Background()
-	var out []agent.AgentEvent
-	for _, raw := range rawEvents {
-		rec := contract.RawRecord{
-			Bytes:      []byte(raw.Detail),
+	records := make([]contract.RawRecord, 0, len(rawLines))
+	for _, line := range rawLines {
+		if len(line) == 0 {
+			continue
+		}
+		records = append(records, contract.RawRecord{
+			Bytes:      line,
 			Source:     agent.SourceJSONL,
 			Provenance: contract.ProvenanceNativeLog,
+		})
+	}
+	if len(records) == 0 {
+		return nil, ""
+	}
+
+	result, err := adapter.ReadEvents(ctx, contract.ReadInput{
+		Session:   contract.SessionContext{SessionID: sessionID},
+		Records:   records,
+		MaxEvents: 500,
+	})
+	if err != nil || len(result.Events) == 0 {
+		return nil, ""
+	}
+
+	// Extract discovered version from the first non-unknown event metadata.
+	discoveredVersion := ""
+	for _, ev := range result.Events {
+		if v, ok := ev.Metadata["cli_version"]; ok && v != "" {
+			discoveredVersion = v
+			break
 		}
-		ev, _ := adapter.NormalizeEvent(ctx, rec)
-		if ev.Type != agent.EventUnknown && ev.Type != "" {
-			ev.SessionID = raw.Session
-			out = append(out, ev)
+		if v, ok := ev.Metadata["version"]; ok && v != "" {
+			discoveredVersion = v
+			break
 		}
 	}
-	return out
+
+	return result.Events, discoveredVersion
 }
 
 func mapLegacyType(t string) agent.AgentEventType {
