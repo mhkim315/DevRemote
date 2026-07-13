@@ -1,6 +1,12 @@
 # Next Session Handoff — S1.1 Runtime Status Hardening
 
-Status: **READY FOR A FRESH EXECUTION AGENT — S1.1 ONLY**
+Status: **SUPERSEDED AFTER INDEPENDENT REJECT**
+
+The first A/B/C execution from this packet produced implementation `715c22b` and
+was independently rejected at report HEAD `1547c93`. Do not execute this packet
+again. Continue only from `docs/NEXT_SESSION_S1_1_REMEDIATION_HANDOFF.md` and its
+three focused blockers. This document remains the frozen original acceptance
+contract and historical scope record.
 
 This is the authoritative execution packet after independent S1 ACCEPT. It is
 written for a fresh Claude Code execution session backed by DeepSeek V4 Pro, but

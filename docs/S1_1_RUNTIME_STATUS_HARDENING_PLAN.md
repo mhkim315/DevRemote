@@ -1,13 +1,16 @@
 # S1.1 Runtime Status Hardening — Planning Boundary
 
-Status: **NEXT — AUTHORIZED AFTER INDEPENDENT S1 ACCEPT**
+Status: **REMEDIATION REQUIRED — independent REJECT at reviewed HEAD `1547c93`**
 
 S1.1 is a separate hardening milestone between accepted S1 and A1. S1 was
 independently accepted at implementation `b6504bd7d5c634f0c0459ae87503b82d17c1537b`
 with canonical marker `70ef5df28dede7b0f3025eeaab7826f76a229fbf`.
 
 Authoritative execution handoff:
-`docs/NEXT_SESSION_S1_1_RUNTIME_STATUS_HARDENING_HANDOFF.md`.
+`docs/NEXT_SESSION_S1_1_REMEDIATION_HANDOFF.md`.
+
+Independent evidence:
+`docs/S1_1_RUNTIME_STATUS_HARDENING_VERIFICATION.md`.
 
 ## 1. Purpose
 
@@ -82,6 +85,20 @@ approved.
 
 After independent S1.1 acceptance, proceed to A1. Do not combine the S1.1 and A1
 review requests.
+
+The first A/B/C implementation (`715c22b`, report head `1547c93`) passed the full
+gate but was independently rejected for three narrow correctness gaps: exact
+winner binding omitted confidence, adapter identity was stored but not checked,
+and replacement publication preceded status invalidation. These are S1.1
+correctness requirements, not new features. Complete the focused remediation
+handoff before requesting acceptance again.
+
+The ordinary local CLI currently remains a managed-lifecycle path: it sends a
+legacy command string and does not register recognized-agent launch authority.
+S1.1 acceptance must not describe that path as recognized managed-agent or
+orchestration-certified. Redesigning the CLI path is outside the focused
+remediation and must be handled as an explicit downstream readiness item rather
+than inferred from command/process text.
 
 ## 7. Approval boundary carried forward
 
