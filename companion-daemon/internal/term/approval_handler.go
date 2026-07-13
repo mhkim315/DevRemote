@@ -4,14 +4,21 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"time"
 
 	"devremote/companion-daemon/internal/agent"
 )
 
 // HandleApprovalAction handles POST /api/sessions/<id>/approvals/<approvalId>.
 // Body: {"action":"<option-id>", "input":"<optional user input>"}.
-// Semantics are derived from the selected option's Kind, never from action ID.
+//
+// A1-C: the handler drives the generation-bound AuthoritativeApprovalStore through
+// the frozen lifecycle — validate the exact allowed option, atomically reserve the
+// pending request (at-most-once), deliver only the exact action, and commit the
+// resolution ONLY after delivery is durably accepted; a decision whose delivery
+// cannot be confirmed fails closed as delivery_failed and is never reported as a
+// success. Resolution status is derived from the option Kind, never the action ID.
+// (A1-D hardens this further: strict body bounds, and revalidation against live
+// runtime identity immediately before delivery.)
 func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -34,72 +41,120 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Look up approval (includes expired for diagnostic purposes).
-	target := h.Approvals.Lookup(sessionID, approvalID)
-	if target == nil {
-		http.Error(w, "Approval not found", http.StatusNotFound)
+	// Look up the current authoritative request to validate the action against its
+	// exact allowed options BEFORE reserving. The reservation below re-checks state
+	// atomically, so a concurrent resolution between here and Reserve is caught.
+	snap, ok := h.Approvals.LookupRecord(sessionID, approvalID)
+	if !ok {
+		h.finishApproval(w, r, sessionID, approvalID, req.Action, "", OutcomeNotFound)
 		return
 	}
 
-	// Find the selected option and validate.
-	selected := findOption(req.Action, target.Options)
+	selected := findOption(req.Action, snap.Options)
 	if selected == nil {
-		http.Error(w, "Action not available for this approval", http.StatusBadRequest)
+		h.finishApproval(w, r, sessionID, approvalID, req.Action, "", OutcomeUnknownAction)
 		return
 	}
-
-	// Reject input for options that do not declare an input contract.
+	// Input contract validation.
 	if req.Input != "" && selected.Input == nil {
-		http.Error(w, "Input not accepted for this action", http.StatusBadRequest)
+		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeInputRejected)
 		return
 	}
-
-	// Validate required input.
 	if selected.Input != nil && selected.Input.Required && req.Input == "" {
-		http.Error(w, "Input required for this action", http.StatusBadRequest)
+		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeInputRejected)
 		return
 	}
 
-	// Check expiry before resolving.
-	if time.Since(target.CreatedAt) > approvalExpiry {
-		http.Error(w, "Approval expired", http.StatusGone)
+	// Atomic at-most-once reservation (pending → executing). A concurrent second
+	// submit, an expired request, or an already-terminal/invalidated request is
+	// refused here without any delivery.
+	_, oc := h.Approvals.Reserve(sessionID, approvalID)
+	if oc != OutcomeOK {
+		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, oc)
 		return
 	}
 
-	// Resolve via ApprovalStore. Status derived from option Kind, not action ID.
-	status := mapKindToStatus(selected.Kind)
-	resolved := h.Approvals.Resolve(sessionID, approvalID, status)
-	if !resolved {
-		http.Error(w, "Approval already resolved", http.StatusConflict)
+	// Delivery. The resolution is committed ONLY after the required action is
+	// durably accepted by the owned delivery boundary.
+	needsCmd, requiresConfirmation := deliveryPlan(selected)
+	switch {
+	case requiresConfirmation:
+		// A decision that requires the agent to durably receive it. The terminal
+		// fallback cannot confirm the agent accepted it, so fail closed — never a
+		// false success. No command is synthesized.
+		h.Approvals.Fail(sessionID, approvalID)
+		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeDeliveryFailed)
+		return
+	case needsCmd:
+		// Fire-and-forget raw input the user explicitly chose to send. Enqueue into
+		// the owned delivery boundary; enqueue IS the accepted semantics for raw
+		// input (not a confirmation-required decision).
+		payload := inputPayload(selected, req.Input)
+		if payload != "" {
+			h.Cmds.Put(sessionID, []byte(payload))
+		}
+		h.Approvals.Commit(sessionID, approvalID, selected.Kind)
+	default:
+		// A denial or a no-delivery action (reject/cancel/open/neutral-no-input):
+		// no terminal command is emitted (no-command-on-rejection) and the user's
+		// decision is recorded.
+		h.Approvals.Commit(sessionID, approvalID, selected.Kind)
+	}
+
+	h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeOK)
+}
+
+// finishApproval writes the response for an outcome and emits a privacy-safe audit
+// log (IDs + outcome codes only, never raw input or prompt).
+func (h *Handlers) finishApproval(w http.ResponseWriter, _ *http.Request, sessionID, approvalID, action, kind string, oc ActionOutcome) {
+	status := outcomeHTTPStatus(oc)
+	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s outcome=%s http=%d",
+		sessionID, approvalID, action, kind, oc, status)
+	if oc == OutcomeOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"action":  action,
+			"outcome": string(oc),
+		})
 		return
 	}
+	http.Error(w, string(oc), status)
+}
 
-	// Execute terminal fallback action.
-	actionPayload := buildPayload(selected, req.Input)
-	if actionPayload != "" {
-		h.Cmds.Put(sessionID, []byte(actionPayload))
+// deliveryPlan classifies how an option is delivered. requiresConfirmation is true
+// for decision actions (approve) that need durable agent receipt the terminal
+// fallback cannot confirm — those fail closed. reject/cancel are denials that emit
+// no command. A neutral option carrying an explicit input contract is fire-and-
+// forget raw input (needsCmd). open and neutral-no-input resolve with no delivery.
+func deliveryPlan(opt *agent.InteractionOption) (needsCmd, requiresConfirmation bool) {
+	switch opt.Kind {
+	case "approve":
+		return false, true
+	case "reject", "cancel", "open":
+		return false, false
+	default: // neutral and any other kind
+		if opt.Input != nil {
+			return true, false
+		}
+		return false, false
 	}
+}
 
-	// Audit log (no raw input/prompt exposure).
-	hasTerminalInput := actionPayload != ""
-	inputPlacement := ""
-	if selected.Input != nil {
-		inputPlacement = selected.Input.Placement
+// inputPayload builds the terminal payload for a fire-and-forget input option from
+// the user's explicit input. It NEVER synthesizes a decision keystroke; it only
+// forwards the literal input the user chose to send, per the option's placement.
+func inputPayload(opt *agent.InteractionOption, input string) string {
+	if opt.Input == nil || input == "" {
+		return ""
 	}
-	if req.Input != "" && !hasTerminalInput {
-		// Input preserved as audit metadata, not injected into terminal.
-		log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s agent=%s input_placement=%s input_preserved=true",
-			sessionID, approvalID, req.Action, selected.Kind, target.AgentKind, inputPlacement)
-	} else {
-		log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s agent=%s input_placement=%s",
-			sessionID, approvalID, req.Action, selected.Kind, target.AgentKind, inputPlacement)
+	switch opt.Input.Placement {
+	case "as_payload", "after_payload":
+		return input + "\n"
+	default: // metadata_only or unset: input is not injected into the terminal
+		return ""
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "ok",
-		"action": req.Action,
-	})
 }
 
 // findOption returns the InteractionOption matching the given action ID.
@@ -110,70 +165,4 @@ func findOption(action string, options []agent.InteractionOption) *agent.Interac
 		}
 	}
 	return nil
-}
-
-// mapKindToStatus derives resolution status from the option's semantic Kind.
-// Action ID is never used to infer status — Kind is the source of truth.
-func mapKindToStatus(kind string) string {
-	switch kind {
-	case "approve":
-		return "approved"
-	case "reject", "cancel":
-		return "rejected"
-	default:
-		return "resolved"
-	}
-}
-
-// buildPayload constructs the terminal fallback payload from the selected option.
-func buildPayload(opt *agent.InteractionOption, input string) string {
-	hasInput := opt.Input != nil
-	placement := ""
-	if hasInput {
-		placement = opt.Input.Placement
-	}
-
-	// Explicit placement: "as_payload" uses input as the terminal payload.
-	if placement == "as_payload" {
-		if input != "" {
-			return input + "\n"
-		}
-		return ""
-	}
-
-	// Explicit placement: "after_payload" appends input after the primary payload.
-	if placement == "after_payload" {
-		base := defaultPayload(opt)
-		if base != "" && input != "" {
-			return base + input + "\n"
-		}
-		if base != "" {
-			return base
-		}
-		if input != "" {
-			return input + "\n"
-		}
-		return ""
-	}
-
-	// "metadata_only" or no placement: input is stored in audit/approval metadata,
-	// not sent to terminal. Use default payload only.
-	return defaultPayload(opt)
-}
-
-// defaultPayload returns the terminal fallback payload for an option based on its Kind.
-func defaultPayload(opt *agent.InteractionOption) string {
-	if opt.Payload != "" {
-		return opt.Payload + "\n"
-	}
-	switch opt.Kind {
-	case "approve":
-		return "y\n"
-	case "reject", "cancel":
-		return "n\n"
-	case "open":
-		return ""
-	default:
-		return ""
-	}
 }

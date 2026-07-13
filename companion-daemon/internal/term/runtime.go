@@ -35,16 +35,16 @@ func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
 // rather than hidden behind context extraction or package globals.
 type Handlers struct {
 	Registry          *mux.Registry
-	Verifier          TokenVerifier     // may be nil if auth is not configured
-	Events            EventStore        // agent event storage (never nil in production)
-	Links             LinkStore         // session link storage (never nil in production)
-	Cmds              CommandBroker     // pending command storage (never nil in production)
-	Telemetry         *TelemetryService // telemetry state (nil until wired)
-	AgentDetector     AgentDetector     // Phase A5: optional agent detector (nil if not wired)
-	Approvals         ApprovalStore     // Phase A9: approval tracking (never nil in production)
-	InsecureLocalOnly bool              // E6: accepts dev-token in auth middleware
-	Activity          *ActivityBuffer   // E8f: terminal activity capture
-	Lifecycle         *LifecycleService // M2: Stop/Kill/Delete for managed sessions
+	Verifier          TokenVerifier               // may be nil if auth is not configured
+	Events            EventStore                  // agent event storage (never nil in production)
+	Links             LinkStore                   // session link storage (never nil in production)
+	Cmds              CommandBroker               // pending command storage (never nil in production)
+	Telemetry         *TelemetryService           // telemetry state (nil until wired)
+	AgentDetector     AgentDetector               // Phase A5: optional agent detector (nil if not wired)
+	Approvals         *AuthoritativeApprovalStore // A1: generation-bound approval store (never nil in production)
+	InsecureLocalOnly bool                        // E6: accepts dev-token in auth middleware
+	Activity          *ActivityBuffer             // E8f: terminal activity capture
+	Lifecycle         *LifecycleService           // M2: Stop/Kill/Delete for managed sessions
 	// M2.5-4: device authentication (concrete types from devicetrust)
 	WSTickets    *devicetrust.WSTicketStore
 	ConnRegistry *devicetrust.AuthenticatedConnRegistry

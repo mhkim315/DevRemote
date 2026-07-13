@@ -25,7 +25,7 @@ type TelemetryService struct {
 	links       LinkStore
 	notifier    Notifier
 	detector    AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
-	approvals   ApprovalStore                            // Phase A9: approval tracking
+	approvals   *AuthoritativeApprovalStore              // A1: generation-bound approval store
 	activity    *ActivityBuffer                          // E8f2: activity capture
 	transcript  *transcript.Service                      // T3: AgentEvent → Transcript projection
 	logResolver func(models.ProcessInfo) (LogRef, error) // Phase A5b: injectable resolver (nil = production ResolveAgentLog)
@@ -41,12 +41,12 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals ApprovalStore, activity *ActivityBuffer, transcriptSvc *transcript.Service) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals *AuthoritativeApprovalStore, activity *ActivityBuffer, transcriptSvc *transcript.Service) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
 	if approvals == nil {
-		approvals = NewApprovalStore()
+		approvals = NewAuthoritativeApprovalStore()
 	}
 	return &TelemetryService{
 		reg:         reg,
@@ -112,6 +112,10 @@ func (s *TelemetryService) reconcileSessions(sessions []mux.Session) {
 			delete(s.sessions, id)
 			if s.statusStore != nil {
 				s.statusStore.Clear(id)
+			}
+			// A1-C: a session that disappeared holds no live approval authority.
+			if s.approvals != nil {
+				s.approvals.Clear(id)
 			}
 		}
 	}
@@ -209,6 +213,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						if s.statusStore != nil && prevPath != "" {
 							s.statusStore.Invalidate(id, launchGen, a.streamGen, "stream generation changed")
 						}
+						// A1-C: a stream-generation change invalidates prior pending
+						// approval authority immediately (the prior event stream is gone).
+						if s.approvals != nil && prevPath != "" {
+							s.approvals.InvalidateSession(id, "stream generation changed")
+						}
 					}
 					a.appendRecords(rawLines)
 					records, acursor, overflowed := a.buildAdapterInput()
@@ -272,6 +281,22 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 								s.statusStore.RevokeIfPresent(id, launchGen, a.streamGen, a.version, "correlation unavailable")
 							}
 						}
+
+						// A1-C: approval authority follows the SAME accepted, version/
+						// correlation-gated batch as status. Requests are established ONLY
+						// by the accepted adapter's DetectApproval (capability-gated) under
+						// a managed launch; a version conflict or a lost correlation
+						// invalidates any prior pending authority (fail closed).
+						if s.approvals != nil {
+							switch {
+							case a.versionConflict:
+								s.approvals.InvalidateSession(id, "accepted version conflict")
+							case corr == contract.CorrelationManagedLaunch:
+								s.ingestApprovals(id, launchGen, a.streamGen, logRef.Agent, a.version, acceptedEvents)
+							default:
+								s.approvals.InvalidateSession(id, "correlation unavailable")
+							}
+						}
 					}
 				}
 
@@ -286,30 +311,12 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					parsedNewEvents = true
 					lastEvent = newEvents[len(newEvents)-1]
 
-					// Phase A9: detect approval events and track in ApprovalStore.
-					// Phase A9: capability-aware approval options.
-					var newApprovals []agent.AgentApproval
-					for _, e := range newEvents {
-						if e.Type == "approval_requested" {
-							options := buildInteractionOptions(sess)
-
-							newApprovals = append(newApprovals, agent.AgentApproval{
-								ID:         fmt.Sprintf("%s-%s", id, e.ID),
-								SessionID:  id,
-								AgentKind:  logRef.Agent,
-								Kind:       "approval",
-								Status:     "pending",
-								Prompt:     firstNonEmpty(e.Detail, e.Summary, "Interaction requested"),
-								Options:    options,
-								Default:    "reject",
-								Source:     "jsonl",
-								Confidence: 0.9,
-							})
-						}
-					}
-					if len(newApprovals) > 0 {
-						s.approvals.Upsert(id, newApprovals)
-					}
+					// A1-C: the legacy parser NO LONGER creates approval authority.
+					// Its approval_requested lines can be spoofed and carry no
+					// generation/provenance/action binding. Approvals are established
+					// only by the accepted adapter's DetectApproval on the accepted
+					// batch above. Legacy events remain diagnostic history in the
+					// event store only, never an actionable approval.
 				}
 			}
 		} else {
@@ -524,6 +531,11 @@ func (s *TelemetryService) Clear(sessionID string) {
 	if s.statusStore != nil {
 		s.statusStore.Clear(sessionID)
 	}
+	// A1-C: drop approval authority on delete so a recreated session with the same
+	// canonical id cannot inherit a prior pending request.
+	if s.approvals != nil {
+		s.approvals.Clear(sessionID)
+	}
 }
 
 // RegisterOrReplaceLaunch is the single production-owned atomic launch
@@ -570,31 +582,11 @@ func (s *TelemetryService) invalidateForLaunch(sessionID string, launchGen int64
 	// rule, so this high-water rejects any prior-launch write regardless of its
 	// (higher) streamGen.
 	s.statusStore.Invalidate(sessionID, launchGen, 0, "launch binding replaced")
-}
-
-// buildInteractionOptions returns capability-aware interaction options for a session.
-// Each option carries a semantic Kind for mobile styling; mobile never infers meaning from ID.
-func buildInteractionOptions(sess mux.Session) []agent.InteractionOption {
-	_, hasInput := sess.(mux.InputWriter)
-	_, hasStream := sess.(mux.StreamOpener)
-
-	var options []agent.InteractionOption
-	if hasStream {
-		options = append(options, agent.InteractionOption{ID: "open_terminal", Label: "Open Terminal", Kind: "open"})
+	// A1-C: a launch replacement invalidates all prior pending approval authority;
+	// the new launch begins with none.
+	if s.approvals != nil {
+		s.approvals.InvalidateSession(sessionID, "launch binding replaced")
 	}
-	if hasInput {
-		options = append(options,
-			agent.InteractionOption{ID: "approve", Label: "Approve", Kind: "approve"},
-			agent.InteractionOption{ID: "reject", Label: "Reject", Kind: "reject"},
-			agent.InteractionOption{ID: "send_text", Label: "Send Text", Kind: "neutral",
-				Input: &agent.InputSchema{Required: true, Placeholder: "Enter text to send", Placement: "as_payload"}},
-			agent.InteractionOption{ID: "send_key", Label: "Send Key", Kind: "neutral",
-				Input: &agent.InputSchema{Required: true, Placeholder: "Key sequence", Placement: "as_payload"}},
-		)
-	}
-	// Observe-only: return empty options (no view_only fake action).
-	// Mobile renders "No remote actions available" for empty options.
-	return options
 }
 
 // firstNonEmpty returns the first non-empty string from the given candidates.
