@@ -16,9 +16,9 @@ import (
 
 // SessionTelemetry holds the calculated state of a session.
 type SessionTelemetry struct {
-	ID                  string                `json:"id"`
-	DisplayID           string                `json:"displayId,omitempty"` // local ID without adapter prefix
-	State               string                `json:"state"`
+	ID        string `json:"id"`
+	DisplayID string `json:"displayId,omitempty"` // local ID without adapter prefix
+	State     string `json:"state"`
 	// LifecycleState is the daemon-AUTHORITATIVE managed-session lifecycle sourced
 	// from the Session Catalog: starting|running|stopping|exited|killed|failed.
 	// It is SEPARATE from `state`/`agentStatus` (agent activity: idle/thinking/
@@ -78,12 +78,12 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 			continue
 		}
 		snapshot = append(snapshot, SessionTelemetry{
-			ID:                  e.ID,
-			DisplayID:           mux.ParseSessionID(e.ID).LocalID,
-			State:               "idle", // agent-activity neutral; lifecycle is below
-			LifecycleState:      string(e.State),
-			Runner:              e.Name,
-			Adapter:             e.Adapter,
+			ID:             e.ID,
+			DisplayID:      mux.ParseSessionID(e.ID).LocalID,
+			State:          "idle", // agent-activity neutral; lifecycle is below
+			LifecycleState: string(e.State),
+			Runner:         e.Name,
+			Adapter:        e.Adapter,
 			// History/Activity is retained until Delete, so keep the read affordance.
 			Capabilities:        []string{"history"},
 			AdapterCapabilities: adapterCapabilityStrings(reg, e.Adapter),
@@ -138,6 +138,7 @@ type sessionStateData struct {
 	RunnerColor      string
 	Cursor           *LogCursor
 	Parser           AgentLogParser
+	AdapterCursor    string // T3: accepted adapter cursor for incremental reads
 	SamplingFailures int
 }
 

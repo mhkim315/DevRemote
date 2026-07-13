@@ -172,7 +172,8 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						binding := transcript.LookupLaunch(id)
-						acceptedEvents, discoveredVersion := readViaAcceptedAdapter(logRef.Agent, rawLines, id)
+						acceptedEvents, discoveredVersion, nextCursor := readViaAcceptedAdapter(logRef.Agent, rawLines, id, stateData.AdapterCursor)
+						stateData.AdapterCursor = nextCursor
 						// Use discovered version for correlation validation.
 						discoveredPID := getProcessPID(id, processSnapshots)
 						corr := transcript.LaunchCorrelation(binding, logRef.Agent, discoveredVersion, discoveredPID)
@@ -493,9 +494,9 @@ func getProcessPID(id string, snapshots map[string]models.ProcessInfo) int {
 }
 
 // readViaAcceptedAdapter reads raw JSONL lines through the accepted
-// version-specific T1/T2 adapter. The adapter's ReadEvents handles version
-// detection, normalization, and degradation. Only called for managed launches.
-func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string) ([]agent.AgentEvent, string) {
+// version-specific T1/T2 adapter. Preserves and returns the adapter's
+// opaque cursor for incremental reads across polls.
+func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string) {
 	var adapter contract.AgentAdapter
 	switch kind {
 	case "codex":
@@ -503,7 +504,7 @@ func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string) ([
 	case "claude":
 		adapter = &claude.Adapter{}
 	default:
-		return nil, ""
+		return nil, "", prevCursor
 	}
 
 	ctx := context.Background()
@@ -519,19 +520,19 @@ func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string) ([
 		})
 	}
 	if len(records) == 0 {
-		return nil, ""
+		return nil, "", prevCursor
 	}
 
 	result, err := adapter.ReadEvents(ctx, contract.ReadInput{
 		Session:   contract.SessionContext{SessionID: sessionID},
 		Records:   records,
+		Cursor:    contract.Cursor(prevCursor),
 		MaxEvents: 500,
 	})
 	if err != nil || len(result.Events) == 0 {
-		return nil, ""
+		return nil, "", prevCursor
 	}
 
-	// Extract discovered version from the first non-unknown event metadata.
 	discoveredVersion := ""
 	for _, ev := range result.Events {
 		if v, ok := ev.Metadata["cli_version"]; ok && v != "" {
@@ -544,7 +545,7 @@ func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string) ([
 		}
 	}
 
-	return result.Events, discoveredVersion
+	return result.Events, discoveredVersion, string(result.NextCursor)
 }
 
 func mapLegacyType(t string) agent.AgentEventType {
