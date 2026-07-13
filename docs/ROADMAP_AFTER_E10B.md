@@ -144,7 +144,7 @@ R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/auth
 D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
-S1.1 Runtime Status Hardening                 REJECT 1547c93 (3 focused blockers; remediation handoff ready)
+S1.1 Runtime Status Hardening                 REJECT faa3917 (R1/R2 accepted; 1 R3 atomicity blocker remains)
 A1  Approval Safety                           BLOCKED until independent S1.1 ACCEPT
 N1  Notifications                             PLANNED after A1
 O1  Deterministic Broker                      PLANNED after N1
@@ -478,7 +478,7 @@ S1 is independently accepted at implementation
 
 S1.1 remains the active hardening milestone. Its first A/B/C implementation was
 independently rejected despite a green gate; execute only the focused follow-up
-in `docs/NEXT_SESSION_S1_1_REMEDIATION_HANDOFF.md`. It preserves the frozen
+in `docs/NEXT_SESSION_S1_1_REMEDIATION_2_HANDOFF.md`. It preserves the frozen
 T0/S1 authority model and does not begin A1.
 
 Example states:
@@ -507,7 +507,7 @@ recovery/replay behavior after S1 acceptance without changing frozen T0 status
 authority or expanding the public DTO without a demonstrated consumer.
 
 Plan: `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`.
-Execution handoff: `docs/NEXT_SESSION_S1_1_REMEDIATION_HANDOFF.md`.
+Execution handoff: `docs/NEXT_SESSION_S1_1_REMEDIATION_2_HANDOFF.md`.
 
 S1.1 is not part of accepted S1. It must finish independently before A1 begins.
 

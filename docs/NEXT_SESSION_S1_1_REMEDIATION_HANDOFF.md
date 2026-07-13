@@ -1,6 +1,10 @@
 # Next Session Handoff — S1.1 Focused Remediation
 
-Status: **READY — S1.1 REJECT REMEDIATION ONLY**
+Status: **SUPERSEDED — R1/R2 ACCEPTED, R3 REMEDIATION 2 REQUIRED**
+
+Do not execute this packet again. Continue from
+`docs/NEXT_SESSION_S1_1_REMEDIATION_2_HANDOFF.md`. This file remains the
+historical first-remediation contract.
 
 Independent decision:
 `docs/S1_1_RUNTIME_STATUS_HARDENING_VERIFICATION.md` — **REJECT**

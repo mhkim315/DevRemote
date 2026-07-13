@@ -1,16 +1,16 @@
 # S1.1 Runtime Status Hardening — Planning Boundary
 
-Status: **REMEDIATION REQUIRED — independent REJECT at reviewed HEAD `1547c93`**
+Status: **R3 REMEDIATION 2 REQUIRED — re-verification REJECT at `faa3917`**
 
 S1.1 is a separate hardening milestone between accepted S1 and A1. S1 was
 independently accepted at implementation `b6504bd7d5c634f0c0459ae87503b82d17c1537b`
 with canonical marker `70ef5df28dede7b0f3025eeaab7826f76a229fbf`.
 
 Authoritative execution handoff:
-`docs/NEXT_SESSION_S1_1_REMEDIATION_HANDOFF.md`.
+`docs/NEXT_SESSION_S1_1_REMEDIATION_2_HANDOFF.md`.
 
 Independent evidence:
-`docs/S1_1_RUNTIME_STATUS_HARDENING_VERIFICATION.md`.
+`docs/S1_1_RUNTIME_STATUS_HARDENING_REVERIFICATION.md`.
 
 ## 1. Purpose
 
@@ -92,6 +92,12 @@ winner binding omitted confidence, adapter identity was stored but not checked,
 and replacement publication preceded status invalidation. These are S1.1
 correctness requirements, not new features. Complete the focused remediation
 handoff before requesting acceptance again.
+
+The first remediation (`ef47b55`, report head `faa3917`) independently closes
+the winner-confidence and adapter-binding defects. Its replacement path remains
+non-atomic across concurrent registrations because reserve, lookup, invalidate,
+and publish are separately locked. Only this R3 transaction remains active; do
+not reopen accepted R1/R2 or begin A1.
 
 The ordinary local CLI currently remains a managed-lifecycle path: it sends a
 legacy command string and does not register recognized-agent launch authority.
