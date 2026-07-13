@@ -233,3 +233,83 @@ rollback is deletion-only and leaves `9ad6f83` behavior intact.
 - **S1-D** — additive authenticated (`sessions:read`) DTO + strict server/mobile validation + real
   mobile component rendering activity separately from lifecycle.
 - **S1-E** — full regression matrix + final-tree gate + push + single REVIEW REQUEST.
+
+---
+
+## 10. S1 completion record (S1-A → S1-E)
+
+### 10.1 Commit / SHA traceability
+
+| Stage | Commit | Scope |
+| --- | --- | --- |
+| S1-A | `8d73a4a` | status-path audit + authority matrix (this report, doc-only) |
+| S1-B | `33c1fed` | session-owned bounded status store + 8 authority negatives |
+| S1-C | `e8d53d0` | `processSession` accepted-adapter → store wiring (no second reader) |
+| S1-B/C hardening | `2f3fdfc` | reviewer blockers B1–B6 (provenance/session/approval/tie/bound/lifecycle) |
+| S1-D | `0b8e14a`→`3db66c9`→`17553e0` | authed `agentActivity` DTO + strict mobile validator + card render decision |
+| S1-E | this stage | E1 generation invalidation, E2 connectivity/restart freshness, E3 cleanup evidence, E4 golden+race |
+
+Accepted midpoint: S1-B/C `2f3fdfc`, S1-D `17553e0` (both independently accepted).
+
+### 10.2 Requirement → production-path test matrix
+
+| Requirement | Production owner | Test |
+| --- | --- | --- |
+| accepted evidence → store via GetStatus | `TelemetryService.processSession` | `TestS1C_*` (codex/claude/version-conflict/uncorrelated) |
+| E1 generation change invalidates prior positive status | `processSession` gen-change → `statusStore.Clear` | `TestS1E_GenerationChangeInvalidatesPriorStatus`, `TestS1E_TruncationGenerationChangeInvalidates` |
+| older generation cannot overwrite newer | `AgentStatusStore.store` | `TestAgentStatusStore_OldGenerationCannotOverwrite` |
+| E2 connectivity/freshness → non-current | `deriveCardActivity` + `isConnectionStale` + `DashboardScreen` | Jest `connection stale → forced non-current`, `isConnectionStale` |
+| E2 restart: accepted session, no DTO → no legacy authority | `deriveCardActivity` | Jest `no DTO + accepted session → Unavailable` |
+| E2 reconnect commits only new response | `sessionPoller` singleflight + mounted | `sessionPoller.test.ts` (delayed/unmount) |
+| E3 lifecycle/history delete clears store | `LifecycleService.Delete` (real route) | `TestS1D_RealDeleteRouteRemovesActivity_APIObserved` |
+| E3 registry disappearance clears store | `TelemetryService.reconcileSessions` | `TestS1E_RegistryDisappearanceClears` |
+| E3 link/unlink/relink clear store | `HandleLinksAPI` → `Telemetry.Clear`; gen-change for relink | `TestS1E_LinkUnlinkClearStatus`, `TestS1E_GenerationChange*` |
+| E3 same-id recreation no inheritance | store `Clear` + fresh `Update` | `TestS1D_RealDeleteRoute*`, `TestAgentStatusStore_DeleteClearsAndNoInherit` |
+| E4 cross-language DTO golden (t0.1 + shape) | `AgentActivityDTO` marshal ↔ mobile validator | `TestS1E_DTOGoldenShape`, `agentActivityGolden.test.ts` |
+| E4 race under update/gen/clear/recreate | `AgentStatusStore` | `TestS1E_StatusStoreRace` (`-race`) |
+| lifecycle/approval never derive from activity | `computeActionPolicy`, `sessionNeedsApproval` | Jest `agent activity NEVER drives ...` |
+| unsupported/future version fails closed | mobile validator | Jest `rejects wrong contract version`, golden drift |
+
+### 10.3 Confirmed reuse (no new subsystem)
+
+- Ordering/cursor/generation: `ReadRawLines.GenerationChanged`, `adapterState.streamGen`, the accepted
+  adapter opaque cursor, and event `Seq` (tie-break) — no second cursor/poller/correlation was added.
+- Cleanup: `TelemetryService.Clear`, `TelemetryService.reconcileSessions`, `LifecycleService.Delete`,
+  and the existing `mux.MigrateLegacyID` — no new cleanup registry.
+- Resolution: the frozen `contract.ResolveStatus` via accepted-adapter `GetStatus`; `contract.ContractVersion`
+  (`t0.1`) is the single shared version constant, mirrored (not code-generated) into the mobile validator.
+
+### 10.4 Behavior summary
+
+- **Restart**: the in-memory store is empty by design; an accepted session with no current DTO renders
+  `Unavailable` and never the legacy heuristic as accepted authority.
+- **Reconnect / freshness**: a failed poll or an expired last-success horizon forces a previously-fresh
+  activity to non-current (`Stale activity`); only a post-reconnect successful response is committed
+  (singleflight + mounted guard).
+- **Generation**: any stream-generation change immediately clears the prior positive status; a new
+  generation with no status event leaves the session absent until fresh correlated evidence arrives.
+- **Unsupported version**: the mobile validator fails closed (null → `Unavailable`), never a legacy fallback.
+- **Approval**: `waiting_approval` is display-only; it creates no ApprovalStore entry and authorizes nothing.
+
+### 10.5 Commands, counts, skips, cleanup
+
+```sh
+cd companion-daemon
+gofmt -l ./internal/agent ./internal/term    # (pre-existing non-S1 files only; all S1 files clean)
+go build ./... && go vet ./...               # OK
+go test -race ./internal/agent/... ./internal/term/... -count=1   # PASS
+cd ../mobile && npm run typecheck && npm test # tsc OK; Jest 26 suites / 354 tests PASS
+cd .. && git diff --check                     # OK
+sh scripts/build-gate.sh                      # ALL GATES PASSED (native gate below)
+```
+
+Skips / limitations (honest evidence level):
+
+- **Native Android Kotlin compile**: environment-blocked — `mobile/android/gradlew` is absent in this
+  environment. Run with the generated `android/` project before P1. **M-track.**
+- **RN component mount render**: `react-test-renderer` is not available offline (react 19.2.3), so the
+  AgentCard render is proven via its imported production render-decision function (`deriveCardActivity`)
+  plus rg import-chain evidence, not a mounted component. **M-track** (add a mount test where the render
+  lib is available).
+- **Physical device smoke**: not run here. **M-track.**
+- Temporary Go caches under `/tmp/devremote-s1-go-*` only; no stage worktrees or generated candidates retained.

@@ -5,7 +5,7 @@
 
 import {
   validateAgentActivity, activityDisplay, deriveCardActivity, sessionNeedsApproval,
-  ACTIVITY_CONTRACT_VERSION,
+  isConnectionStale, ACTIVITY_CONTRACT_VERSION,
 } from '../src/lib/agentActivity';
 import { computeActionPolicy } from '../src/lib/lifecycle';
 
@@ -108,29 +108,63 @@ describe('activityDisplay — stale/degraded NEVER shown as an active status', (
 
 describe('deriveCardActivity — accepted DTO governs; no legacy peer/fallback', () => {
   it('valid DTO present → activity shown, legacy suppressed', () => {
-    const c = deriveCardActivity({ agentActivity: VALID, agentStatus: 'working' });
+    const c = deriveCardActivity({ agentActivity: VALID, agentStatus: 'working', agentKind: 'codex' });
     expect(c.activity).not.toBeNull();
-    expect(c.showLegacyStatus).toBe(false); // legacy heuristic is NOT a peer authority
+    expect(c.showLegacyStatus).toBe(false);
     expect(c.malformed).toBe(false);
+    expect(c.unavailable).toBe(false);
   });
 
   it('malformed DTO present → NO activity and NO legacy fallback', () => {
-    const c = deriveCardActivity({ agentActivity: { ...VALID, contractVersion: 'bad' }, agentStatus: 'working' });
+    const c = deriveCardActivity({ agentActivity: { ...VALID, contractVersion: 'bad' }, agentStatus: 'working', agentKind: 'codex' });
     expect(c.activity).toBeNull();
     expect(c.malformed).toBe(true);
-    expect(c.showLegacyStatus).toBe(false); // must NOT fall back to legacy authority
+    expect(c.showLegacyStatus).toBe(false);
   });
 
-  it('no DTO but legacy status → legacy heuristic may show (non-S1 session)', () => {
-    const c = deriveCardActivity({ agentStatus: 'working' });
+  it('no DTO + non-accepted session → legacy heuristic may show', () => {
+    const c = deriveCardActivity({ agentStatus: 'working', agentKind: 'gemini' });
     expect(c.activity).toBeNull();
     expect(c.showLegacyStatus).toBe(true);
+    expect(c.unavailable).toBe(false);
+  });
+
+  it('no DTO + accepted session (e.g. after restart) → Unavailable, NO legacy fallback', () => {
+    for (const kind of ['codex', 'claude']) {
+      const c = deriveCardActivity({ agentStatus: 'working', agentKind: kind });
+      expect(c.activity).toBeNull();
+      expect(c.unavailable).toBe(true);
+      expect(c.showLegacyStatus).toBe(false); // heuristic never becomes accepted authority
+    }
   });
 
   it('stale DTO → activity is non-current', () => {
     const c = deriveCardActivity({ agentActivity: { ...VALID, stale: true } });
     expect(c.activity!.current).toBe(false);
     expect(c.activity!.label).toBe('Stale activity');
+  });
+
+  it('connection stale → a fresh DTO is forced non-current (never live "Working")', () => {
+    const fresh = deriveCardActivity({ agentActivity: VALID }, { connectionStale: false });
+    expect(fresh.activity!.current).toBe(true);
+    const stale = deriveCardActivity({ agentActivity: VALID }, { connectionStale: true });
+    expect(stale.activity!.current).toBe(false);
+    expect(stale.activity!.label).toBe('Stale activity');
+  });
+});
+
+describe('isConnectionStale — poll failure or freshness expiry', () => {
+  it('a failed last poll is stale', () => {
+    expect(isConnectionStale('Cannot reach daemon.', 1000, 1500, 6000)).toBe(true);
+  });
+  it('a recent success with no error is fresh', () => {
+    expect(isConnectionStale('', 1000, 2000, 6000)).toBe(false);
+  });
+  it('an expired last-success is stale even without an error', () => {
+    expect(isConnectionStale('', 1000, 1000 + 7000, 6000)).toBe(true);
+  });
+  it('no success yet and no error is not stale', () => {
+    expect(isConnectionStale('', null, 5000, 6000)).toBe(false);
   });
 });
 

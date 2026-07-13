@@ -80,33 +80,39 @@ func (s *TelemetryService) Run(ctx context.Context) {
 		sessions := s.reg.Sessions(ctx)
 		processSnapshots, batchAdapters, failedAdapters := collectProcessSnapshots(ctx, s.reg.Adapters())
 
-		s.mu.Lock()
-		activeSet := make(map[string]bool)
-		for _, sess := range sessions {
-			id := sess.AdapterName() + ":" + sess.ID()
-			activeSet[id] = true
-			if s.sessions[id] == nil {
-				s.sessions[id] = &sessionStateData{
-					LastActivity: time.Now(),
-					State:        "idle",
-					Load:         0,
-				}
-			}
-		}
-		for id := range s.sessions {
-			if !activeSet[id] {
-				delete(s.sessions, id)
-				// S1-C: a session that left the registry loses its cached activity
-				// record too (bounded state; no inheritance on later reuse).
-				if s.statusStore != nil {
-					s.statusStore.Clear(id)
-				}
-			}
-		}
-		s.mu.Unlock()
+		s.reconcileSessions(sessions)
 
 		for _, sess := range sessions {
 			s.processSession(ctx, sess, processSnapshots, batchAdapters, failedAdapters)
+		}
+	}
+}
+
+// reconcileSessions adds newly-seen sessions and prunes ones that have left the
+// Registry. A pruned session's cached telemetry AND its S1 agent-activity record
+// are cleared (bounded state; no inheritance if the id is later reused). This is
+// the production owner of "Registry disappearance" cleanup.
+func (s *TelemetryService) reconcileSessions(sessions []mux.Session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	activeSet := make(map[string]bool, len(sessions))
+	for _, sess := range sessions {
+		id := sess.AdapterName() + ":" + sess.ID()
+		activeSet[id] = true
+		if s.sessions[id] == nil {
+			s.sessions[id] = &sessionStateData{
+				LastActivity: time.Now(),
+				State:        "idle",
+				Load:         0,
+			}
+		}
+	}
+	for id := range s.sessions {
+		if !activeSet[id] {
+			delete(s.sessions, id)
+			if s.statusStore != nil {
+				s.statusStore.Clear(id)
+			}
 		}
 	}
 }
@@ -184,6 +190,14 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					a := stateData.Adapter
 					if rr.GenerationChanged || a.path != logRef.Path {
 						a.resetForGeneration(logRef.Path)
+						// E1: a stream-generation change (inode/path/truncation) invalidates
+						// any prior positive status for this session IMMEDIATELY. Until new
+						// correlated status evidence arrives in the new generation, the product
+						// result is absent — a gen-N `working`/`waiting_approval` must never
+						// survive into gen N+1 that carries no status event.
+						if s.statusStore != nil {
+							s.statusStore.Clear(id)
+						}
 					}
 					a.appendRecords(rawLines)
 					records, acursor, overflowed := a.buildAdapterInput()

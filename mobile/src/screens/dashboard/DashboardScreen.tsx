@@ -6,6 +6,7 @@ import { NewSessionModal } from '../../components/NewSessionModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { listSessions, createOrUpdateSession, ConnectivityFailure, PokitError } from '../../lib/client';
 import { createPollController } from '../../lib/sessionPoller';
+import { isConnectionStale } from '../../lib/agentActivity';
 import { useConnection } from '../../lib/connection';
 import { isDegraded } from '../../lib/agentDisplay';
 
@@ -22,6 +23,8 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [fetchError, setFetchError] = useState('');
   // S1-D: singleflight + mounted poll controller (no starvation, no post-unmount commit).
   const pollRef = useRef(createPollController<any[]>());
+  // S1-E: last successful poll time; feeds connectivity/freshness staleness.
+  const lastSuccessRef = useRef<number | null>(null);
   const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure, refreshDiagnostics } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
@@ -41,6 +44,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         setSessions(normalized);
         setFetchError('');
         setLoading(false);
+        lastSuccessRef.current = Date.now(); // S1-E: mark a fresh successful poll
       },
       err => {
         console.error(err);
@@ -155,6 +159,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
       session={s}
       onPress={() => onSelectAgent(s.id)}
       onSettings={() => { setEditSession(s); setModalVisible(true); }}
+      connectionStale={isConnectionStale(fetchError, lastSuccessRef.current, Date.now(), 6000)}
     />
   );
 

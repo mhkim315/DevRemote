@@ -43,6 +43,9 @@ interface Props {
   session: SessionTelemetry;
   onPress: () => void;
   onSettings?: () => void;
+  // S1-E: true when the daemon poll failed or last-success freshness expired; a
+  // previously-fresh activity is then shown as non-current, never as live.
+  connectionStale?: boolean;
 }
 
 function getStatusColor(state: SessionTelemetry['state']) {
@@ -54,7 +57,7 @@ function getStatusColor(state: SessionTelemetry['state']) {
   }
 }
 
-export function AgentCard({ session, onPress, onSettings }: Props) {
+export function AgentCard({ session, onPress, onSettings, connectionStale }: Props) {
   const [frameIndex, setFrameIndex] = useState(0);
   const runnerDef = RUNNERS.find(r => r.id === session.runner) || RUNNERS[0];
   const runnerColor = session.runnerColor || '#58a6ff';
@@ -89,11 +92,11 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
   // Phase A9 / S1-D: the approval CTA is driven by the approval store ONLY —
   // agent activity (even `waiting_approval`) never creates it.
   const needsApproval = sessionNeedsApproval(session.approvals);
-  // S1-D: the card's activity render decision. When an accepted `agentActivity`
-  // DTO exists it governs the activity dimension; the legacy heuristic
-  // `agentStatus` is not shown as a peer authority and is never a fallback for a
-  // malformed/future DTO.
-  const card = deriveCardActivity(session);
+  // S1-D/E: the card's activity render decision. An accepted `agentActivity` DTO
+  // governs the activity dimension (forced non-current when the connection is
+  // stale); the legacy heuristic `agentStatus` is never a peer/fallback, and an
+  // accepted session with no DTO shows "Unavailable".
+  const card = deriveCardActivity(session, { connectionStale });
 
   return (
     <View style={styles.cardWrapper}>
@@ -155,6 +158,14 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
         </View>
       )}
       {card.malformed && (
+        <View style={{ flexDirection: 'row', marginTop: 4, alignItems: 'center' }}>
+          <Text style={styles.activityLabel}>ACTIVITY</Text>
+          <Text testID="agent-activity" style={[styles.activityValue, styles.activityMuted]}>
+            Unavailable
+          </Text>
+        </View>
+      )}
+      {card.unavailable && (
         <View style={{ flexDirection: 'row', marginTop: 4, alignItems: 'center' }}>
           <Text style={styles.activityLabel}>ACTIVITY</Text>
           <Text testID="agent-activity" style={[styles.activityValue, styles.activityMuted]}>

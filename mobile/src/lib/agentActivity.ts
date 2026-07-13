@@ -125,26 +125,64 @@ export function activityDisplay(a: AgentActivity): ActivityDisplay {
 }
 
 export interface CardActivity {
-  /** validated+formatted activity to show, or null when none/malformed. */
+  /** validated+formatted activity to show, or null when none/malformed/unavailable. */
   activity: ActivityDisplay | null;
-  /** show the legacy heuristic agentStatus ONLY when no accepted DTO exists. */
+  /** show the legacy heuristic agentStatus ONLY when no accepted DTO exists AND the
+      session is not an accepted-adapter (codex/claude) session. */
   showLegacyStatus: boolean;
   /** an accepted DTO was present but failed validation. */
   malformed: boolean;
+  /** an accepted-adapter session has no current activity (e.g. after a daemon
+      restart, or connectivity loss) — show "Unavailable", never legacy authority. */
+  unavailable: boolean;
 }
+
+// Accepted-adapter agent kinds. For these, the legacy heuristic agentStatus is
+// NEVER a fallback authority — absence of an accepted DTO shows "Unavailable".
+const ACCEPTED_AGENT_KINDS = new Set(['claude', 'codex']);
 
 // deriveCardActivity is the AgentCard render decision. When an authoritative
 // `agentActivity` DTO is present, it governs the activity dimension: a valid DTO
-// renders, a malformed/future DTO renders nothing (never the legacy heuristic),
-// and the legacy `agentStatus` is NOT shown as a peer authority. Only a session
-// with NO accepted DTO may still show the legacy heuristic status.
-export function deriveCardActivity(session: { agentActivity?: unknown; agentStatus?: string }): CardActivity {
+// renders (forced non-current when the connection is stale), a malformed/future
+// DTO renders "Unavailable" (never the legacy heuristic). With NO accepted DTO,
+// an accepted-adapter (codex/claude) session shows "Unavailable" — it must not
+// present the legacy heuristic as accepted authority (e.g. right after a daemon
+// restart) — while a non-accepted session may still show its legacy heuristic.
+export function deriveCardActivity(
+  session: { agentActivity?: unknown; agentStatus?: string; agentKind?: string },
+  opts?: { connectionStale?: boolean },
+): CardActivity {
+  const connectionStale = !!opts?.connectionStale;
   const hasDTO = session.agentActivity !== undefined && session.agentActivity !== null;
   if (hasDTO) {
     const a = validateAgentActivity(session.agentActivity);
-    return { activity: a ? activityDisplay(a) : null, showLegacyStatus: false, malformed: !a };
+    if (!a) return { activity: null, showLegacyStatus: false, malformed: true, unavailable: false };
+    let view = activityDisplay(a);
+    if (connectionStale && view.current) {
+      // A polling failure / freshness expiry makes a previously-fresh reading
+      // non-current — never keep showing "Working" while the daemon is unreachable.
+      view = { label: 'Stale activity', stale: true, degraded: view.degraded, current: false };
+    }
+    return { activity: view, showLegacyStatus: false, malformed: false, unavailable: false };
   }
-  return { activity: null, showLegacyStatus: !!session.agentStatus, malformed: false };
+  if (ACCEPTED_AGENT_KINDS.has(session.agentKind ?? '')) {
+    return { activity: null, showLegacyStatus: false, malformed: false, unavailable: true };
+  }
+  return { activity: null, showLegacyStatus: !!session.agentStatus, malformed: false, unavailable: false };
+}
+
+// isConnectionStale reports whether the mobile view should treat its cached
+// activity as non-current: a failed last poll, or a last-success older than the
+// freshness horizon.
+export function isConnectionStale(
+  fetchError: string,
+  lastSuccessMs: number | null,
+  nowMs: number,
+  maxAgeMs: number,
+): boolean {
+  if (fetchError !== '') return true;
+  if (lastSuccessMs !== null && nowMs - lastSuccessMs > maxAgeMs) return true;
+  return false;
 }
 
 // sessionNeedsApproval decides the approval CTA from the approval store ONLY.
