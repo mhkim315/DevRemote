@@ -159,7 +159,8 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 			s.mu.Unlock()
 
 			if parser != nil {
-				rawLines := readRawLines(cursor, 500)
+				rr := readRawLines(cursor, 500)
+				rawLines := rr.Lines
 				var newEvents []models.AgentEvent
 				for _, line := range rawLines {
 					parsed, _ := parser.Parse(line)
@@ -500,15 +501,15 @@ func isAcceptedVersion(kind, version string) bool {
 
 // readRawLines reads raw JSONL lines from the cursor's log file.
 // Returns up to maxLines raw byte slices.
-func readRawLines(cursor *LogCursor, maxLines int) [][]byte {
+func readRawLines(cursor *LogCursor, maxLines int) RawLinesResult {
 	if cursor == nil || cursor.Path == "" {
-		return nil
+		return RawLinesResult{}
 	}
-	lines, err := ReadRawLines(cursor, maxLines)
+	result, err := ReadRawLines(cursor, maxLines)
 	if err != nil {
-		return nil
+		return RawLinesResult{}
 	}
-	return lines
+	return result
 }
 
 // getProcessPID extracts the PID for a session from process snapshots.

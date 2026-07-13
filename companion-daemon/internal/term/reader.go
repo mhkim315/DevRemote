@@ -48,16 +48,11 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 	reader := bufio.NewReader(file)
 	var events []models.AgentEvent
 
-	// We read line by line. We keep track of how many bytes we've consumed for the current line
-	// so that if we hit EOF without \n, we can just return and let the next poll read from cursor.Offset.
-
 	var currentLine []byte
 	var currentLineLen int64
 
 	for len(events) < maxEvents {
 		chunk, err := reader.ReadSlice('\n')
-
-		// Accumulate bytes for the current line size
 		currentLineLen += int64(len(chunk))
 
 		if !cursor.Discarding {
@@ -65,22 +60,18 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 			if int64(len(currentLine)) > maxRecordSize {
 				log.Printf("Warning: skipped oversized record (size > %d) at offset %d", maxRecordSize, cursor.Offset)
 				cursor.Discarding = true
-				currentLine = nil // Free memory
+				currentLine = nil
 			}
 		}
 
 		if err == bufio.ErrBufferFull {
-			// Line is longer than buffer, continue reading next chunk of the same line
 			continue
 		}
 
 		if err == io.EOF {
 			if len(chunk) > 0 && chunk[len(chunk)-1] != '\n' {
-				// Partial write at end of file. Do not increment cursor offset for this line!
-				// We'll read it again next time.
 				break
 			}
-			// Exact EOF after a newline, or empty EOF
 			if len(chunk) > 0 {
 				cursor.Offset += currentLineLen
 			}
@@ -91,21 +82,18 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 			return events, fmt.Errorf("read error: %w", err)
 		}
 
-		// We reached a newline
 		cursor.Offset += currentLineLen
 		currentLineLen = 0
 
 		if cursor.Discarding {
 			cursor.Discarding = false
-			continue // Skip processing this discarded line
+			continue
 		}
 
-		// Parse the complete line
 		parsedEvents, parseErr := parser.Parse(currentLine)
-		currentLine = nil // Reset for next line
+		currentLine = nil
 
 		if parseErr != nil {
-			// Skip malformed lines gracefully
 			continue
 		}
 
@@ -115,33 +103,41 @@ func ReadNewEvents(cursor *LogCursor, parser AgentLogParser, maxEvents int) ([]m
 	return events, nil
 }
 
-// ReadRawLines reads raw JSONL lines from the cursor position.
-// Returns raw byte slices without parsing. Used by the T3 accepted
-// adapter path to pass original provider records to ReadEvents.
-func ReadRawLines(cursor *LogCursor, maxLines int) ([][]byte, error) {
+// RawLinesResult bundles raw lines with a generation-changed signal.
+// The caller must check GenerationChanged before using the lines with
+// stream-derived adapter state.
+type RawLinesResult struct {
+	Lines             [][]byte
+	GenerationChanged bool // inode change or truncation detected by reader
+}
+
+// ReadRawLines reads raw JSONL lines from the cursor position and
+// reports whether the stream generation changed (inode or truncation).
+func ReadRawLines(cursor *LogCursor, maxLines int) (RawLinesResult, error) {
 	file, err := os.Open(cursor.Path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %w", err)
+		return RawLinesResult{}, fmt.Errorf("failed to open log file: %w", err)
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat log file: %w", err)
+		return RawLinesResult{}, fmt.Errorf("failed to stat log file: %w", err)
 	}
 
 	sysStat, ok := stat.Sys().(*syscall.Stat_t)
 	if !ok {
-		return nil, fmt.Errorf("failed to get underlying stat")
+		return RawLinesResult{}, fmt.Errorf("failed to get underlying stat")
 	}
-	if cursor.Inode != sysStat.Ino || stat.Size() < cursor.Offset {
+	genChanged := cursor.Inode != sysStat.Ino || stat.Size() < cursor.Offset
+	cursor.Inode = sysStat.Ino
+	if genChanged {
 		cursor.Offset = 0
-		cursor.Inode = sysStat.Ino
 	}
 
 	_, err = file.Seek(cursor.Offset, io.SeekStart)
 	if err != nil {
-		return nil, err
+		return RawLinesResult{}, err
 	}
 
 	reader := bufio.NewReader(file)
@@ -150,20 +146,17 @@ func ReadRawLines(cursor *LogCursor, maxLines int) ([][]byte, error) {
 	for len(lines) < maxLines {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
-			// Complete record: trim newline, advance cursor.
 			line = line[:len(line)-1]
 			if len(line) > 0 && len(line) < maxRecordSize {
 				lines = append(lines, line)
 			}
 			cursor.Offset += int64(len(line)) + 1
 		} else if len(line) > 0 {
-			// Partial record at EOF: do NOT advance cursor.
-			// Next poll will re-read when the write completes.
-			break
+			break // partial EOF, retry next poll
 		}
 		if err != nil {
 			break
 		}
 	}
-	return lines, nil
+	return RawLinesResult{Lines: lines, GenerationChanged: genChanged}, nil
 }
