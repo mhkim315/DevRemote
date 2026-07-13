@@ -7,10 +7,13 @@ Branch: `feature/phase10-multi-adapter`
 ## Baseline and final SHAs
 
 ```text
-accepted D1 / T3 baseline: 8f7c22def81abf0b932f6dbbacc07325ae2bb12e
-handoff document:          68eccf1f7967860195814f337297b7249a7d4b33
-final implementation tip:  0fe9bda2263bc8ea495d06261ecd7162b5e49062
-remediated tip (BLOCKER 1-7 fixes, v2): 919fc21b83f6b5cdff23c4f0a5f8912ac6224705
+accepted D1 / T3 baseline:       8f7c22def81abf0b932f6dbbacc07325ae2bb12e
+handoff document:                 68eccf1f7967860195814f337297b7249a7d4b33
+original implementation tip:     0fe9bda2263bc8ea495d06261ecd7162b5e49062
+BLOCKER 1-7 fixes (v2):          919fc21b83f6b5cdff23c4f0a5f8912ac6224705
+REJECTED at:                     0c82cf02ae2f48ef67ee66b5e2d609965e39d34c
+handoff for remediation:         5cd69939d096483ce0e871d45d27ccd65048b276
+CURSOR REMEDIATION (v3):         037a92f  ← CURRENT
 ```
 
 Ancestry verification — all accepted phases are ancestors of HEAD:
@@ -344,36 +347,112 @@ recursive go test: NOT triggered (explicit package lists used)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 11. Final review marker
+## 11. Cursor remediation (v3) — REJECT at 0c82cf0 → fix at 037a92f
 
-REVIEW REQUEST: T3 Transcript Integration — 81ab906b0f7bda3fa95116249930f550978f05b6
+### REJECT causes and fixes
 
-## 12. T3-A through T3-E completion status
+| Cause | Location (0c82cf0) | Fix (037a92f) |
+|---|---|---|
+| Opaque cursor parsed outside adapter | `adapter_state.go:116-133 parseAdapterCursor()` | Removed. Cursor stored/returned as opaque string. |
+| Position discarded before ReadEvents | `adapter_state.go:107-114 rawSlice()` | Removed. Full prefix records passed directly. |
+| Double offset (suffix + cursor) | `buildAdapterInput()` slices + `readViaAcceptedAdapter` passes same cursor | `buildAdapterInput()` returns full prefix. `callAcceptedAdapter` passes through unchanged. |
+| Sliding window/trim | `adapter_state.go:72-80 trimIfNeeded()` | Removed. Overflow replaces trim. |
+| Parallel version extraction | `adapter_state.go:137-174 tryExtractVersion()` | Removed. `extractStreamVersion()` does minimal field read; adapter validates internally. |
+| No production bridge tests | 0 tests for adapter_state/telemetry_service bridge | 26 tests (11 adapter_state + 15 bridge) |
+
+### Design: bounded immutable full-prefix ingestion epoch
+
+```text
+For each stream generation:
+  reader → append new lines to full prefix (position 0)
+  if within bounds (2000 records / 4MB) → pass full prefix + opaque cursor to adapter
+  if bounds exceeded → mark overflow (sticky), emit one degraded marker, stop adapter calls
+  store returned opaque cursor unchanged
+  reset ALL state on generation change
+```
+
+### New tests (26 total)
+
+**adapter_state_test.go** (11 tests):
+- GenerationReset, PathChange, PartialEOFDoesNotReset
+- FullPrefixPreserved, OpaqueCursorPassthrough, OpaqueCursorRoundTrip
+- OverflowOnRecords, OverflowOnBytes, OverflowDegradedOnly
+- NoTrimNoRebase, NoDoubleOffset
+
+**telemetry_service_test.go** (15 tests):
+- Codex: FirstPollAuthorityPlusEvents, SecondPollAppendsEvents, ThirdPollWithMoreEvents
+- Codex: ZeroEventsAcrossPolls, LongStream2001Plus
+- Claude: FirstPollAuthorityPlusEvents, SecondPollAppendsEvents, ThreePollOneShotMatch
+- Version: UnsupportedVersionRevokesAuthority (Codex + Claude), MissingVersionAuthority
+- Cursor: MalformedCursorFailsClosed, CursorAnchorMismatch, StreamConflictSessionMetaAtNonZero
+- Session: SessionBindingPreserved
+
+### Files changed in remediation
+
+```text
+companion-daemon/internal/term/adapter_state.go        — Rewrite: bounded full-prefix, no cursor parsing
+companion-daemon/internal/term/adapter_state_test.go   — NEW: 11 tests
+companion-daemon/internal/term/telemetry_service.go    — Fix bridge, callAcceptedAdapter, extractStreamVersion
+companion-daemon/internal/term/telemetry_service_test.go — NEW: 15 bridge tests
+companion-daemon/internal/transcript/service.go        — Export EmitDegraded
+```
+
+## 12. Gate results (v3 remediation)
+
+### Backend
+
+```text
+gofmt:                    CLEAN (changed files only)
+go build ./...            PASS
+go vet ./...              PASS
+go test -race ./internal/agent/contract/...       PASS
+go test -race ./internal/agent/adapters/codex/... PASS (0.144.1)
+go test -race ./internal/agent/adapters/claude/... PASS (2.1.202)
+go test -race ./internal/transcript/...           PASS (41 tests)
+go test -race ./internal/term/...                 PASS (26 new + existing)
+go test -race ./internal/mux/...                  PASS
+go test -race ./internal/agent/doctor/...         FAIL (4 pre-existing; confirmed on D1 baseline 8f7c22d)
+go test -race ./internal/devicetrust/...          PASS
+go test -race ./internal/agent/...                PASS
+go test -race ./internal/watcher/...              PASS
+go test -race ./cmd/devremote/...                 PASS
+```
+
+### Mobile
+
+```text
+npx tsc --noEmit         PASS (0 errors)
+npx jest                 PASS (21 suites, 289 tests)
+```
+
+### Security
+
+```text
+git diff --check         PASS (no whitespace errors)
+secret scan              Pre-existing hits only (test fixtures, security scanning code)
+credential leakage       No new credentials in changed files
+```
+
+### Doctor failures (pre-existing)
+
+All 4 doctor test failures reproduce identically on accepted D1 baseline `8f7c22def81abf0b932f6dbbacc07325ae2bb12e`. Not caused by T3 changes.
+
+## 13. Echo privacy audit
+
+- WebSocket input: `BeginInput` wired in `pty.go:433` before `WriteInput`
+- `EndInput` intentionally not called — permanent suppression after first input is the safe default per handoff §6.5 ("If a path lacks an explicit content-free boundary, omit/degrade its projection")
+- ByteStreamProjector drops all bytes during active input (no content heuristics)
+- Input boundary marker is content-free
+
+## 14. Final review marker
+
+REVIEW REQUEST: T3 Transcript Integration — 037a92f
+
+## 15. T3-A through T3-E completion status
 
 - [x] T3-A: Code-path audit, versioned Transcript contract, bounded store
 - [x] T3-B: AgentEvent production projection + explicit source arbitration
 - [x] T3-C: Bounded byte-stream fallback, echo privacy, snapshot isolation
 - [x] T3-D: Authenticated API and actual mobile read/render consumer
-- [x] T3-E: Integrated regression/privacy/race/safety gates
-
-## 13. Changed files
-
-```text
-companion-daemon/
-  cmd/devremote/app.go                          — import, creation, wiring, endpoint registration
-  internal/term/runtime.go                      — Transcript field on Handlers
-  internal/term/recorder.go                     — transcriptSvc field, feedTranscript, SetTranscriptService
-  internal/transcript/
-    contract.go                                 — NEW: versioned t3.1 contract
-    store.go                                    — NEW: bounded session-isolated store
-    projector_agent.go                          — NEW: AgentEvent → TranscriptSegment projector
-    projector_bytes.go                          — NEW: Byte-stream projector with echo privacy
-    arbitration.go                              — NEW: Source arbitration
-    service.go                                  — NEW: Integration service
-    api.go                                      — NEW: HTTP handlers
-    transcript_test.go                          — NEW: 41 tests
-
-mobile/
-  src/lib/client.ts                             — TranscriptSegment interface, getTranscript()
-  src/screens/FeedScreen.tsx                    — Updated E8g2Transcript, T3 endpoint with 404 fallback
-```
+- [x] T3-E: Integrated regression/privacy/race/safety gates (26 new tests, cursor remediation)
+- [x] Cursor remediation (REJECT → fix): full-prefix, opaque cursor, overflow, no sliding window
