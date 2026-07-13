@@ -201,19 +201,35 @@ func TestAgentEventProjectorBasic(t *testing.T) {
 	}
 }
 
-func TestAgentEventProjectorRejectsNativeLog(t *testing.T) {
+func TestAgentEventProjectorAcceptsNativeLog(t *testing.T) {
 	proj := NewAgentEventProjector()
 	event := agent.AgentEvent{
 		ID:         "evt-nl",
 		SessionID:  "test:session",
 		AgentKind:  "claude",
+		Type:       agent.EventAgentStarted,
+		Provenance: "native_log",
+	}
+	// native_log passes the projector (correlation gate at service level
+	// controls semantic access separately). Advisory/unknown still rejected.
+	seg := proj.Project(event, "test:session")
+	if seg == nil {
+		t.Error("native_log events should pass the projector (correlation gate is separate)")
+	}
+}
+
+func TestAgentEventProjectorRejectsAdvisory(t *testing.T) {
+	proj := NewAgentEventProjector()
+	event := agent.AgentEvent{
+		ID:         "evt-adv",
+		SessionID:  "test:session",
+		AgentKind:  "claude",
 		Type:       agent.EventAssistantMessage,
-		Text:       "should not appear",
-		Provenance: "native_log", // below provider_protocol threshold
+		Provenance: "heuristic",
 	}
 	seg := proj.Project(event, "test:session")
 	if seg != nil {
-		t.Error("native_log events must not produce semantic Transcript segments")
+		t.Error("advisory provenance events must be rejected")
 	}
 }
 

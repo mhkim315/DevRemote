@@ -38,19 +38,12 @@ func (p *AgentEventProjector) Project(event agent.AgentEvent, sessionID string) 
 		return nil // cross-session: reject
 	}
 
-	// Correlation gate: only events with provider-protocol or stronger
-	// provenance may enter the semantic Transcript. Native-log events
-	// from uncorrelated sessions (current T1/T2 state) are excluded.
-	// This gate opens when a T0 adapter establishes CorrelationProven
-	// or CorrelationManagedLaunch with provider_protocol provenance.
+	// Provenance validation: reject empty, unknown, or advisory provenance.
+	// The correlation gate (CorrelationState.CanBePrimarySource) at the
+	// service level is the separate authority for semantic access.
+	// Provenance records evidence strength for display metadata.
 	prov := contract.Provenance(event.Provenance)
 	if prov == "" || prov == contract.ProvenanceUnknown || prov.Advisory() {
-		return nil
-	}
-	// Only provider_protocol or stronger (runtime, provider_hook) may
-	// produce semantic Transcript segments. Native-log without correlation
-	// is insufficient.
-	if contract.ProvenanceRank(prov) < contract.ProvenanceRank(contract.ProvenanceProviderProtocol) {
 		return nil
 	}
 

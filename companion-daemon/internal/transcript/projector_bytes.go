@@ -108,10 +108,15 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 		observedAt = time.Now()
 	}
 
-	// Prepend any incomplete UTF-8 bytes from the previous chunk.
+	// Prepend any incomplete bytes from the previous chunk.
+	// This handles both incomplete UTF-8 sequences and incomplete ANSI
+	// escape sequences (CSI/OSC/ESC). The ANSI state machine resumes
+	// where it left off.
 	var data []byte
 	if len(p.utf8Buf) > 0 {
-		data = append(p.utf8Buf, chunk...)
+		data = make([]byte, len(p.utf8Buf)+len(chunk))
+		copy(data, p.utf8Buf)
+		copy(data[len(p.utf8Buf):], chunk)
 		p.utf8Buf = nil
 	} else {
 		data = chunk
@@ -151,9 +156,12 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 				p.utf8Buf = append(p.utf8Buf, data[escStart:]...)
 				return segments
 			}
-			// Reconstruct full sequence including ESC[ for TUI detection.
+			// Reconstruct full sequence for TUI detection.
 			fullSeq := data[escStart : i+consumed]
-			p.checkTUISequence(fullSeq)
+			if seg := p.checkTUISequence(fullSeq); seg != nil {
+				seg.SessionID = sessionID
+				segments = append(segments, *seg)
+			}
 			i += consumed
 			continue
 		}
@@ -307,17 +315,24 @@ func (p *ByteStreamProjector) consumeANSI(data []byte) int {
 	}
 }
 
-// checkTUISequence detects alternate-screen enter/exit in consumed ANSI bytes
-// and toggles TUI burst suppression. Called from Feed() which already holds
-// p.mu — must NOT re-lock.
-func (p *ByteStreamProjector) checkTUISequence(seq []byte) {
+// checkTUISequence detects alternate-screen enter/exit and toggles TUI burst
+// suppression. Called from Feed() which already holds p.mu — must NOT re-lock.
+// Returns a ui_omitted segment on exit (the caller must append it).
+func (p *ByteStreamProjector) checkTUISequence(seq []byte) *TranscriptSegment {
 	if IsAlternateScreenStart(seq) {
 		p.tuiBurstActive = true
 		p.tuiBurstCount = 0
 	} else if IsAlternateScreenEnd(seq) {
+		count := p.tuiBurstCount
 		p.tuiBurstActive = false
 		p.tuiBurstCount = 0
+		if count > 0 {
+			// Emit omission marker for the TUI region.
+			seg := NewUIOmittedSegment("", time.Now())
+			return &seg
+		}
 	}
+	return nil
 }
 
 func (p *ByteStreamProjector) writeRune(r rune) {
