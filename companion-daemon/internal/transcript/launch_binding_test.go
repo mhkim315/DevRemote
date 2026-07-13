@@ -67,33 +67,36 @@ func TestS11B_DeleteRecreateHigherGeneration(t *testing.T) {
 	}
 }
 
-// B-3: PID+StartedAt exact-match rules.
+// B-3: adapter + PID + StartedAt exact-match rules.
 func TestS11B_CorrelationPIDStartRules(t *testing.T) {
 	start := time.Unix(1_700_000_000, 0)
 	other := time.Unix(1_700_000_099, 0)
-	base := &LaunchBinding{Provider: "codex", AcceptedVersion: "0.144.1", PID: 4242, StartedAt: start}
+	base := &LaunchBinding{Adapter: "controlled_pty", Provider: "codex", AcceptedVersion: "0.144.1", PID: 4242, StartedAt: start}
 
 	cases := []struct {
 		name        string
 		binding     *LaunchBinding
+		adapter     string
 		provider    string
 		version     string
 		pid         int
 		start       time.Time
 		wantManaged bool
 	}{
-		{"exact PID+start match", base, "codex", "0.144.1", 4242, start, true},
-		{"same PID different start (reuse)", base, "codex", "0.144.1", 4242, other, false},
-		{"same PID missing start", base, "codex", "0.144.1", 4242, time.Time{}, false},
-		{"different PID", base, "codex", "0.144.1", 9999, start, false},
-		{"missing discovered PID", base, "codex", "0.144.1", 0, start, false},
-		{"provider mismatch", base, "claude", "0.144.1", 4242, start, false},
-		{"version mismatch", base, "codex", "9.9.9", 4242, start, false},
-		{"nil binding", nil, "codex", "0.144.1", 4242, start, false},
+		{"exact adapter+PID+start match", base, "controlled_pty", "codex", "0.144.1", 4242, start, true},
+		{"adapter mismatch", base, "tmux", "codex", "0.144.1", 4242, start, false},
+		{"empty discovered adapter", base, "", "codex", "0.144.1", 4242, start, false},
+		{"same PID different start (reuse)", base, "controlled_pty", "codex", "0.144.1", 4242, other, false},
+		{"same PID missing start", base, "controlled_pty", "codex", "0.144.1", 4242, time.Time{}, false},
+		{"different PID", base, "controlled_pty", "codex", "0.144.1", 9999, start, false},
+		{"missing discovered PID", base, "controlled_pty", "codex", "0.144.1", 0, start, false},
+		{"provider mismatch", base, "controlled_pty", "claude", "0.144.1", 4242, start, false},
+		{"version mismatch", base, "controlled_pty", "codex", "9.9.9", 4242, start, false},
+		{"nil binding", nil, "controlled_pty", "codex", "0.144.1", 4242, start, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := LaunchCorrelation(tc.binding, tc.provider, tc.version, tc.pid, tc.start)
+			got := LaunchCorrelation(tc.binding, tc.adapter, tc.provider, tc.version, tc.pid, tc.start)
 			want := contract.CorrelationUnavailable
 			if tc.wantManaged {
 				want = contract.CorrelationManagedLaunch
@@ -105,18 +108,31 @@ func TestS11B_CorrelationPIDStartRules(t *testing.T) {
 	}
 }
 
+// B-3b (R2): a binding whose adapter is empty can never correlate, even when all
+// other fields match — the adapter rule fails closed on an empty binding adapter.
+func TestS11B_EmptyBindingAdapterFailsClosed(t *testing.T) {
+	b := &LaunchBinding{Provider: "codex", AcceptedVersion: "0.144.1"} // Adapter == ""
+	if got := LaunchCorrelation(b, "controlled_pty", "codex", "0.144.1", 0, time.Time{}); got != contract.CorrelationUnavailable {
+		t.Errorf("empty binding adapter: got %v, want Unavailable", got)
+	}
+}
+
 // B-4: a binding that claims NO PID does not gate on process identity (weaker
-// correlation still holds on provider/version) but never wildcard-matches a
-// claimed identity. This preserves the accepted S1 behavior for bindings with
+// correlation still holds on adapter/provider/version) but never wildcard-matches
+// a claimed identity. This preserves the accepted S1 behavior for bindings with
 // PID 0 while the PID rule strengthens bindings that do claim one.
 func TestS11B_NoPIDBindingIgnoresProcessIdentity(t *testing.T) {
-	b := &LaunchBinding{Provider: "codex", AcceptedVersion: "0.144.1"} // PID 0, no start
-	// Even with a discovered PID/start, provider+version alone suffice (managed).
-	if got := LaunchCorrelation(b, "codex", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationManagedLaunch {
-		t.Errorf("no-PID binding: got %v, want ManagedLaunch (provider/version only)", got)
+	b := &LaunchBinding{Adapter: "controlled_pty", Provider: "codex", AcceptedVersion: "0.144.1"} // PID 0, no start
+	// Even with a discovered PID/start, adapter+provider+version suffice (managed).
+	if got := LaunchCorrelation(b, "controlled_pty", "codex", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationManagedLaunch {
+		t.Errorf("no-PID binding: got %v, want ManagedLaunch (adapter/provider/version)", got)
 	}
 	// A provider mismatch still fails.
-	if got := LaunchCorrelation(b, "claude", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationUnavailable {
+	if got := LaunchCorrelation(b, "controlled_pty", "claude", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationUnavailable {
 		t.Errorf("no-PID binding provider mismatch: got %v, want Unavailable", got)
+	}
+	// An adapter mismatch fails even with everything else matching.
+	if got := LaunchCorrelation(b, "tmux", "codex", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationUnavailable {
+		t.Errorf("no-PID binding adapter mismatch: got %v, want Unavailable", got)
 	}
 }

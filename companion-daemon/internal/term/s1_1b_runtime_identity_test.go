@@ -180,6 +180,48 @@ func TestS11B_ProductionCorrelationUsesRuntimeIdentity(t *testing.T) {
 	})
 }
 
+// R2 (production path): a launch binding recorded for one adapter must NOT
+// correlate when the runtime session reports a DIFFERENT adapter, even though
+// provider/version match. Drives processSession with a session whose canonical id
+// and AdapterName() are a non-controlled_pty adapter while the binding claims
+// controlled_pty → no positive status is produced.
+func TestS11B_ProductionAdapterMismatchNoStatus(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/codex.jsonl"
+	writeLines(t, logPath, []string{
+		`{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"s1","cli_version":"0.144.1"}}`,
+		`{"timestamp":"2026-07-06T13:29:37.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","approval_id":"appr-1"}}`,
+	})
+	// The runtime session is a DIFFERENT adapter than the binding claims.
+	sid := "tmux:mism"
+	ts := transcript.NewService(transcript.DefaultStoreConfig())
+	regAdapter := &stubRegAdapter{name: "tmux"}
+	reg := mux.MustNewRegistry(regAdapter)
+	sess := &procSessMock{id: "mism", adapter: "tmux"}
+	regAdapter.sessions = []mux.Session{sess}
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+		NewApprovalStore(), NewActivityBuffer(100), ts)
+	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
+		return LogRef{Path: logPath, Agent: "codex", Session: sid}, nil
+	})
+	svc.mu.Lock()
+	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle"}
+	svc.mu.Unlock()
+	// Binding claims controlled_pty, but the runtime adapter is tmux.
+	transcript.RegisterLaunch(transcript.LaunchSpec{
+		SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1",
+	})
+	defer transcript.RemoveLaunch(sid)
+
+	svc.processSession(context.Background(), sess,
+		map[string]models.ProcessInfo{sid: {PID: 1234, Command: "codex"}},
+		map[string]bool{"tmux": false}, map[string]bool{})
+
+	if rec, _, ok := svc.statusStore.Current(sid); ok && rec.Status == agent.StatusWaitingApproval {
+		t.Errorf("adapter mismatch produced positive status: %+v", rec)
+	}
+}
+
 // B-wiring: the create.go registration helpers are exercised against a REAL
 // controlled_pty session and a REAL TelemetryService — proving the production
 // create→identity→register→replacement-invalidation chain, not just isolated

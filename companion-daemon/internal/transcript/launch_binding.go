@@ -113,8 +113,8 @@ func RemoveLaunch(sessionID string) {
 }
 
 // LaunchCorrelation returns the correlation state for a managed session.
-// Validates provider, version, and process identity. Empty/missing values
-// fail closed — they are not wildcards.
+// Validates adapter, provider, version, and process identity. Empty/missing
+// values fail closed — they are not wildcards.
 //
 // S1.1-B process-identity rule: when the binding claims a PID, discovery must
 // report the SAME nonzero PID; and when the binding ALSO claims a start time,
@@ -123,8 +123,17 @@ func RemoveLaunch(sessionID string) {
 // replacement process. A binding that claims no PID does not gate on process
 // identity (weaker correlation), but never treats a missing value as a wildcard
 // match against a claimed one.
-func LaunchCorrelation(binding *LaunchBinding, discoveredProvider, discoveredVersion string, discoveredPID int, discoveredStart time.Time) contract.Correlation {
+//
+// S1.1-B adapter rule (remediation R2): the runtime's actual terminal adapter
+// must EXACTLY equal the binding's Adapter, and both must be non-empty. A binding
+// recorded for one adapter (e.g. controlled_pty) can never correlate against a
+// different runtime adapter even when provider/version/PID/start match.
+func LaunchCorrelation(binding *LaunchBinding, discoveredAdapter, discoveredProvider, discoveredVersion string, discoveredPID int, discoveredStart time.Time) contract.Correlation {
 	if binding == nil {
+		return contract.CorrelationUnavailable
+	}
+	// Require a non-empty exact adapter match (fail closed on empty/mismatch).
+	if binding.Adapter == "" || discoveredAdapter == "" || binding.Adapter != discoveredAdapter {
 		return contract.CorrelationUnavailable
 	}
 	if binding.Provider != discoveredProvider {

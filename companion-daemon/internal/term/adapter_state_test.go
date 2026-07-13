@@ -335,9 +335,10 @@ func TestAdapterState_DegradedRevokesAuthority(t *testing.T) {
 	corr := a.launchCorrelation(&transcript.LaunchBinding{
 		SessionID:       "s",
 		Provider:        "codex",
+		Adapter:         "controlled_pty",
 		AcceptedVersion: "0.144.1",
 		PID:             0,
-	}, "codex", 12345, time.Time{})
+	}, "controlled_pty", "codex", 12345, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("correlation after version conflict: got %v, want Unavailable", corr)
 	}

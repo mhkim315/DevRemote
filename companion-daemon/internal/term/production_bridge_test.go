@@ -55,7 +55,7 @@ func TestProduction_AcceptedOnlyRecordReachesTranscript(t *testing.T) {
 		t.Fatal("updateVersion rejected valid version")
 	}
 	binding := transcript.LookupLaunch(sid)
-	corr := a.launchCorrelation(binding, "codex", 0, time.Time{})
+	corr := a.launchCorrelation(binding, "controlled_pty", "codex", 0, time.Time{})
 	ts.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: corr, Provider: "codex"})
 	if corr != contract.CorrelationManagedLaunch {
 		t.Fatalf("correlation: got %v, want ManagedLaunch", corr)
@@ -161,7 +161,7 @@ func TestProduction_VersionConflictRevokesCorrelation(t *testing.T) {
 	sid := "controlled_pty:vctest"
 	defer transcript.RemoveLaunch(sid)
 	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 0, time.Time{})
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "controlled_pty", "codex", 0, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("got %v, want Unavailable", corr)
 	}
@@ -209,7 +209,7 @@ func TestProduction_PIDMismatchZeroSegments(t *testing.T) {
 	a.resetForGeneration("/p/test.jsonl")
 	a.updateVersion("0.144.1", "codex")
 
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 99999, time.Time{})
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "controlled_pty", "codex", 99999, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("PID mismatch: got %v, want Unavailable", corr)
 	}
@@ -226,7 +226,7 @@ func TestProduction_ProviderMismatchZeroSegments(t *testing.T) {
 	a.resetForGeneration("/p/test.jsonl")
 	a.updateVersion("0.144.1", "codex")
 
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "claude", 0, time.Time{})
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "controlled_pty", "claude", 0, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("provider mismatch: got %v, want Unavailable", corr)
 	}
@@ -284,7 +284,7 @@ func TestProduction_TranscriptAPIResponseAfterPolls(t *testing.T) {
 	a.setCursor(nc)
 	a.updateVersion(version, "codex")
 
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 0, time.Time{})
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "controlled_pty", "codex", 0, time.Time{})
 	ts.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: corr, Provider: "codex"})
 	ts.ProjectAgentEvents(sid, events)
 

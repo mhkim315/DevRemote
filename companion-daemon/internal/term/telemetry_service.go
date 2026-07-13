@@ -235,7 +235,9 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 							a.markVersionConflict()
 						}
 						pid, start := getProcessIdentity(ctx, sess, id, processSnapshots, batchAdapters)
-						corr := a.launchCorrelation(launchBinding, logRef.Agent, pid, start)
+						// R2: correlate against the runtime's ACTUAL terminal adapter, not
+						// a constant — a binding recorded for a different adapter fails closed.
+						corr := a.launchCorrelation(launchBinding, sess.AdapterName(), logRef.Agent, pid, start)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
