@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, SafeAreaView, ActivityIndicator, TouchableOpacity, Alert, Platform, ScrollView } from 'react-native';
 import { AgentCard, SessionTelemetry } from '../../components/AgentCard';
 import { AgentProfileModal } from '../../components/AgentProfileModal';
 import { NewSessionModal } from '../../components/NewSessionModal';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { listSessions, createOrUpdateSession, ConnectivityFailure, PokitError } from '../../lib/client';
+import { createRequestGuard } from '../../lib/requestGuard';
 import { useConnection } from '../../lib/connection';
 import { isDegraded } from '../../lib/agentDisplay';
 
@@ -19,6 +20,8 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
+  // S1-D (D7): guards session-list responses against unmount / out-of-order.
+  const guardRef = useRef(createRequestGuard());
   const { disconnect, connectionError, daemonReachable, sessionsLoaded, sessionsEmpty, failure, refreshDiagnostics } = useConnection();
 
   const [modalVisible, setModalVisible] = useState(false);
@@ -26,8 +29,12 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
+    // S1-D (D7): bind this response to the latest generation + mounted state so a
+    // stale/out-of-order or post-unmount response is dropped, never committed.
+    const req = guardRef.current.begin();
     listSessions(token)
       .then(data => {
+        if (!guardRef.current.isCurrent(req)) return;
         const normalized = (data || []).map((s: any) =>
           typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
         ).sort((a: SessionTelemetry, b: SessionTelemetry) => String(a.id).localeCompare(String(b.id)));
@@ -36,6 +43,7 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         setLoading(false);
       })
       .catch(err => {
+        if (!guardRef.current.isCurrent(req)) return;
         console.error(err);
         // R1a: classify the error for actionable messaging.
         if (err instanceof PokitError) {
@@ -66,9 +74,10 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   };
 
   useEffect(() => {
+    const guard = guardRef.current;
     fetchSessions();
     const interval = setInterval(fetchSessions, 1500);
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); guard.cancel(); };
   }, []);
 
   const handleSaveProfile = async (id: string, runner: string, color: string) => {

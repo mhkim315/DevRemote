@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { RUNNERS } from '../lib/runners';
 import { formatAgentKind, formatAgentStatus, isDegraded } from '../lib/agentDisplay';
+import { AgentActivity, validateAgentActivity, activityDisplay, sessionNeedsApproval } from '../lib/agentActivity';
 import { AgentApproval } from '../lib/client';
 
 export interface AgentEvent {
@@ -33,6 +34,9 @@ export interface SessionTelemetry {
   agentStatus?: string;
   agentConfidence?: number;
   approvals?: AgentApproval[];
+  // S1-D: advisory agent-activity dimension (validated at render), SEPARATE from
+  // `state`/`lifecycleState`. Never drives lifecycle or approval actions.
+  agentActivity?: AgentActivity;
 }
 
 interface Props {
@@ -82,8 +86,12 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
     : runnerDef.frames[frameIndex];
 
   const recentEdit = session.events?.slice().reverse().find(e => e.type === 'file_edit');
-  // Phase A9: use structured approvals instead of scanning events.
-  const needsApproval = (session.approvals || []).some(a => a.status === 'pending');
+  // Phase A9 / S1-D: the approval CTA is driven by the approval store ONLY —
+  // agent activity (even `waiting_approval`) never creates it.
+  const needsApproval = sessionNeedsApproval(session.approvals);
+  // S1-D: validate the untrusted agent-activity DTO before rendering it.
+  const activity = validateAgentActivity(session.agentActivity);
+  const activityView = activity ? activityDisplay(activity) : null;
 
   return (
     <View style={styles.cardWrapper}>
@@ -126,6 +134,20 @@ export function AgentCard({ session, onPress, onSettings }: Props) {
               {formatAgentStatus(session.agentStatus)}
             </Text>
           )}
+        </View>
+      )}
+      {/* S1-D: agent-activity dimension, rendered SEPARATELY from session state /
+          lifecycle. A stale or degraded record is visibly flagged (dimmed) so it
+          is not read as the current live activity. */}
+      {activityView && (
+        <View style={{ flexDirection: 'row', marginTop: 4, alignItems: 'center' }}>
+          <Text style={styles.activityLabel}>ACTIVITY</Text>
+          <Text
+            testID="agent-activity"
+            style={[styles.activityValue, !activityView.current && styles.activityMuted]}
+          >
+            {activityView.label}
+          </Text>
         </View>
       )}
       <View style={styles.animationContainer}>
@@ -187,4 +209,7 @@ const styles = StyleSheet.create({
   viewOnlyBadge: { backgroundColor: '#2C2C2E', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#8b949e' },
 	  viewOnlyText: { fontSize: 8, color: '#8b949e', fontWeight: '700', letterSpacing: 0.5 },
 	  capTag: { fontSize: 10, color: '#1E91B3', marginLeft: 6 },
+  activityLabel: { fontSize: 8, color: '#6E7681', fontWeight: '700', letterSpacing: 0.5, marginRight: 6 },
+  activityValue: { fontSize: 11, color: '#8b949e', fontWeight: '600' },
+  activityMuted: { color: '#565f6b', fontStyle: 'italic' },
 });

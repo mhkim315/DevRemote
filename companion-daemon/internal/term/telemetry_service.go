@@ -446,6 +446,27 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 		st := &res[i]
 		st.Approvals = s.approvals.List(st.ID)
 	}
+	// S1-D: additive advisory agent-activity projection from the session-owned
+	// store. Separate from lifecycle (LifecycleState) and poll health (Stale); a
+	// stale record is flagged so the UI does not present it as current activity.
+	if s.statusStore != nil {
+		for i := range res {
+			st := &res[i]
+			rec, stale, ok := s.statusStore.Current(st.ID)
+			if !ok {
+				continue
+			}
+			st.AgentActivity = &AgentActivityDTO{
+				ContractVersion: AgentActivityContractVersion,
+				Status:          string(rec.Status),
+				Provenance:      string(rec.Provenance),
+				Confidence:      rec.Confidence,
+				Degraded:        rec.Degraded,
+				ObservedAt:      rec.ObservedAt.UTC().Format(time.RFC3339),
+				Stale:           stale,
+			}
+		}
+	}
 	return res
 }
 

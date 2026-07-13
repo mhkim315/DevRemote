@@ -37,12 +37,38 @@ type SessionTelemetry struct {
 	AgentStatus         string                `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
 	AgentConfidence     float64               `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
 	Approvals           []agent.AgentApproval `json:"approvals,omitempty"`       // pending/resolved approvals (Phase A9+)
+	// AgentActivity is the S1 additive, authenticated ADVISORY agent-activity
+	// projection sourced from the session-owned AgentStatusStore. It is kept
+	// SEPARATE from the daemon-authoritative lifecycle (LifecycleState) and from
+	// telemetry poll health (Stale). It never enables lifecycle/approval actions.
+	AgentActivity *AgentActivityDTO `json:"agentActivity,omitempty"`
 	// Agent events flow through the existing Events field via
 	// TelemetryService.processSession → EventStore → Snapshot.
 	Stale         bool      `json:"stale,omitempty"`
 	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
 	LastError     string    `json:"lastError,omitempty"`
 }
+
+// AgentActivityDTO is the S1 advisory agent-activity dimension exposed on a
+// session row. It carries ONLY bounded, UI-needed values: status (frozen T0
+// vocabulary), the winning provenance, confidence, degraded, the observation time,
+// and whether the record is stale. It deliberately excludes raw errors, evidence,
+// prompts, private paths, and adapter records. Consumers must render it as agent
+// activity — never as session lifecycle, and a stale record must not be shown as
+// the current live activity.
+type AgentActivityDTO struct {
+	ContractVersion string  `json:"contractVersion"` // schema version; mobile validates exactly
+	Status          string  `json:"status"`          // agent.AgentStatus value
+	Provenance      string  `json:"provenance"`      // contract.Provenance tier that won
+	Confidence      float64 `json:"confidence"`      // 0.0–1.0
+	Degraded        bool    `json:"degraded"`
+	ObservedAt      string  `json:"observedAt"` // RFC3339 (UTC)
+	Stale           bool    `json:"stale"`      // activity-record staleness (NOT poll health)
+}
+
+// AgentActivityContractVersion is the S1 activity DTO schema version. Mobile
+// validates it exactly, so bump only on a breaking activity-DTO shape change.
+const AgentActivityContractVersion = "s1.1"
 
 // mergeLifecycleState makes /api/sessions authoritative for managed-session
 // lifecycle. It (1) annotates each LIVE row that has a catalog entry with the
