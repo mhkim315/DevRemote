@@ -1,10 +1,13 @@
 # S1.1 Runtime Status Hardening — Planning Boundary
 
-Status: **PLANNED — DO NOT EXECUTE BEFORE INDEPENDENT S1-E ACCEPT**
+Status: **NEXT — AUTHORIZED AFTER INDEPENDENT S1 ACCEPT**
 
-S1.1 is a separate hardening milestone between accepted S1 and A1. It is not a
-condition for implementing the remaining S1-E correctness work, and this document
-does not authorize implementation.
+S1.1 is a separate hardening milestone between accepted S1 and A1. S1 was
+independently accepted at implementation `b6504bd7d5c634f0c0459ae87503b82d17c1537b`
+with canonical marker `70ef5df28dede7b0f3025eeaab7826f76a229fbf`.
+
+Authoritative execution handoff:
+`docs/NEXT_SESSION_S1_1_RUNTIME_STATUS_HARDENING_HANDOFF.md`.
 
 ## 1. Purpose
 

@@ -1,8 +1,17 @@
 # Next Session Handoff — S1 Rich Agent Runtime Status
 
-Status: **READY FOR A FRESH EXECUTION AGENT — S1 ONLY**
+Status: **COMPLETED — S1 ACCEPTED; DO NOT RE-EXECUTE**
 
-This is the authoritative S1 execution and onboarding document. It is deliberately
+S1 is independently accepted at implementation
+`b6504bd7d5c634f0c0459ae87503b82d17c1537b`, canonical marker
+`70ef5df28dede7b0f3025eeaab7826f76a229fbf`. This document is retained as
+historical execution evidence. The authoritative next task is
+`docs/NEXT_SESSION_S1_1_RUNTIME_STATUS_HARDENING_HANDOFF.md`.
+
+> Historical notice: imperative instructions and “next” statements below record
+> the completed S1 workflow and no longer authorize work.
+
+This was the authoritative S1 execution and onboarding document. It is deliberately
 split into five bounded stages for a fresh Claude Code execution session using
 DeepSeek V4 Pro. Complete the stages sequentially, but request independent
 acceptance only once, after S1-A through S1-E are all complete.
@@ -21,9 +30,9 @@ S1-D API/mobile checkpoint: 17553e0106404bf75a75899c720ff7be0df3fad0
 checkpoint result:         ACCEPT — proceed to revised S1-E only
 ```
 
-This is not final S1 acceptance. S1-E remains required. Its authoritative next
-execution packet is `docs/NEXT_SESSION_S1_E_FINALIZATION_HANDOFF.md`. The accepted
-post-S1 sequence is planned in `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`.
+This was a historical pre-final checkpoint. S1-E was subsequently completed and
+accepted; use `docs/S1_FINAL_ACCEPTANCE.md` for the final decision and the S1.1
+handoff named above for current work.
 
 ## 0. Repository identity and commit recovery
 

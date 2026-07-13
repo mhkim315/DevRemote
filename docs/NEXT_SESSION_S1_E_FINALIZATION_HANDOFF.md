@@ -1,8 +1,16 @@
 # Next Session Handoff — S1-E Final Correctness and Acceptance
 
-Status: **READY FOR A FRESH EXECUTION AGENT — S1-E ONLY**
+Status: **COMPLETED — S1 ACCEPTED; DO NOT RE-EXECUTE**
 
-This is the authoritative next execution packet for completing S1. It applies
+S1-E is accepted at implementation
+`b6504bd7d5c634f0c0459ae87503b82d17c1537b`, canonical marker
+`70ef5df28dede7b0f3025eeaab7826f76a229fbf`. This packet is historical. Continue
+only through `docs/NEXT_SESSION_S1_1_RUNTIME_STATUS_HARDENING_HANDOFF.md`.
+
+> Historical notice: imperative instructions below record the completed S1-E
+> workflow and no longer authorize work.
+
+This was the authoritative execution packet for completing S1. It applies
 the accepted milestone-boundary revision after S1-D. Read it together with the
 umbrella contract in `docs/NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md`; if an old
 sequence description conflicts with this packet, this newer boundary revision

@@ -143,8 +143,8 @@ T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202
 R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
 D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
-S1  Rich Agent Runtime Status Model           IN PROGRESS (S1-D ACCEPT 17553e0; revised S1-E finalization next)
-S1.1 Runtime Status Hardening                 PLANNED after independent S1-E ACCEPT
+S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
+S1.1 Runtime Status Hardening                 NEXT (fresh-agent handoff from accepted S1 SHA 70ef5df)
 A1  Approval Safety                           PLANNED after independent S1.1 ACCEPT
 O1  Deterministic Broker                      PLANNED after A1
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -451,7 +451,8 @@ may safely collapse to a bounded marker directing the user to Live Terminal.
 
 Goal: introduce structured agent/session state.
 
-Execution handoff: `docs/NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md`.
+Historical execution handoff: `docs/NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md`.
+Final acceptance: `docs/S1_FINAL_ACCEPTANCE.md`.
 
 The earlier example list below mixed daemon lifecycle and agent activity. It is
 retained as historical product intent but superseded by the accepted authority
@@ -465,19 +466,18 @@ observation health: fresh | stale | unavailable/degraded
 approval action state: deferred to A1
 ```
 
-S1 is staged as S1-A audit/contract, S1-B internal status state, S1-C accepted
+S1 was staged as S1-A audit/contract, S1-B internal status state, S1-C accepted
 T1/T2 production wiring, S1-D authenticated API/mobile consumer, and S1-E
 integrated regression/safety verification. Intermediate checkpoints are not
 independent acceptance points; request review only after the complete S1 path.
 
-Execution-agent instructions use the task packet format in
-`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`. S1-D was independently accepted
-at `17553e0106404bf75a75899c720ff7be0df3fad0`; revised S1-E finalization is the
-next bounded checkpoint via `docs/NEXT_SESSION_S1_E_FINALIZATION_HANDOFF.md`.
-This checkpoint does not replace final S1 acceptance after S1-E.
+S1 is independently accepted at implementation
+`b6504bd7d5c634f0c0459ae87503b82d17c1537b`, canonical marker
+`70ef5df28dede7b0f3025eeaab7826f76a229fbf`. Its accepted contract is recorded in
+`docs/S1_FINAL_ACCEPTANCE.md`.
 
-After S1-E is independently accepted, execute S1.1 as a separate hardening
-milestone using `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`. S1.1 preserves the
+S1.1 is the next separate hardening milestone. Execute it only through
+`docs/NEXT_SESSION_S1_1_RUNTIME_STATUS_HARDENING_HANDOFF.md`; it preserves the
 frozen T0/S1 authority model and does not begin A1.
 
 Example states:
@@ -506,9 +506,9 @@ recovery/replay behavior after S1 acceptance without changing frozen T0 status
 authority or expanding the public DTO without a demonstrated consumer.
 
 Plan: `docs/S1_1_RUNTIME_STATUS_HARDENING_PLAN.md`.
+Execution handoff: `docs/NEXT_SESSION_S1_1_RUNTIME_STATUS_HARDENING_HANDOFF.md`.
 
-S1.1 is not part of S1-E and must not begin before independent S1 acceptance.
-It must finish independently before A1 begins.
+S1.1 is not part of accepted S1. It must finish independently before A1 begins.
 
 ## A1 — Mobile-first Approval System
 
