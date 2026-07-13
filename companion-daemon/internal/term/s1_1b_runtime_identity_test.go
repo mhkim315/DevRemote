@@ -226,8 +226,8 @@ func TestS11B_ProductionAdapterMismatchNoStatus(t *testing.T) {
 // controlled_pty session and a REAL TelemetryService — proving the production
 // create→identity→register→replacement-invalidation chain, not just isolated
 // helpers. managedProcessIdentity reads the session's own ProcessProvider; a
-// replacement RegisterLaunch reports replaced=true and InvalidateForLaunch
-// installs a non-current high-water at the new launch generation.
+// same-ID relaunch goes through the atomic RegisterOrReplaceLaunch boundary which
+// invalidates prior status at the reserved generation before publishing.
 func TestS11B_CreateRegisterReplaceWiring(t *testing.T) {
 	adapter := mux.NewControlledPTYAdapter()
 	reg := mux.MustNewRegistry(adapter)
@@ -250,12 +250,13 @@ func TestS11B_CreateRegisterReplaceWiring(t *testing.T) {
 	if pid <= 0 || startedAt.IsZero() {
 		t.Fatalf("managedProcessIdentity returned pid=%d start=%v, want real identity", pid, startedAt)
 	}
-
-	// First launch registration (as create.go does for an accepted profile).
-	gen1, replaced1 := transcript.RegisterLaunch(transcript.LaunchSpec{
+	spec := transcript.LaunchSpec{
 		SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1",
 		PID: pid, StartedAt: startedAt,
-	})
+	}
+
+	// First launch via the production boundary (no prior binding → not a replace).
+	gen1, replaced1 := svc.RegisterOrReplaceLaunch(spec)
 	if replaced1 {
 		t.Error("first registration reported replaced=true")
 	}
@@ -266,24 +267,25 @@ func TestS11B_CreateRegisterReplaceWiring(t *testing.T) {
 		t.Fatalf("seed: status=%q, want working", rec.Status)
 	}
 
-	// A same-ID re-registration REPLACES → create.go installs the launch high-water.
-	gen2, replaced2 := transcript.RegisterLaunch(transcript.LaunchSpec{
-		SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1",
-		PID: pid, StartedAt: startedAt,
-	})
+	// A same-ID relaunch through the atomic boundary: it reserves gen2, invalidates
+	// the prior status at gen2, then publishes — all before returning.
+	gen2, replaced2 := svc.RegisterOrReplaceLaunch(spec)
 	if !replaced2 || gen2 <= gen1 {
 		t.Fatalf("replacement: replaced=%v gen2=%d gen1=%d, want replaced+higher", replaced2, gen2, gen1)
 	}
-	svc.InvalidateForLaunch(sid, gen2)
 
-	// The prior positive status is now non-current, and a delayed prior-launch
-	// write cannot resurrect it.
+	// The prior positive status is already non-current (invalidation ran inside the
+	// boundary, before publish), and a delayed prior-launch write cannot resurrect it.
 	if rec, _, _ := svc.statusStore.Current(sid); rec.Status != agent.StatusUnknown || !rec.Degraded || rec.LaunchGen != gen2 {
-		t.Errorf("after replacement invalidation: %+v, want unknown+degraded at gen2", rec)
+		t.Errorf("after replacement: %+v, want unknown+degraded at gen2", rec)
 	}
 	svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, LaunchGen: gen1, Generation: 99,
 		Adapter: resolvingAdapter{}, Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
 	if rec, _, _ := svc.statusStore.Current(sid); rec.Status == agent.StatusWorking {
 		t.Error("delayed prior-launch write resurrected working after replacement")
+	}
+	// The published binding carries gen2.
+	if b := transcript.LookupLaunch(sid); b == nil || b.Generation != gen2 {
+		t.Errorf("published binding gen = %v, want %d", b, gen2)
 	}
 }

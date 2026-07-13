@@ -63,17 +63,40 @@ var globalLaunchRegistry = &LaunchRegistry{
 // strictly-increasing launch Generation. It returns the assigned generation and
 // whether an existing binding for the same session ID was replaced.
 //
-// Unlike the prior implementation it NEVER silently ignores a second registration
-// for the same session ID: a re-registration replaces the stale binding at a
-// higher generation so a recreated/relaunched session can never inherit stale
-// provider/version/PID/start identity. The caller inspects `replaced` to install
-// a status high-water for the new generation before any new positive evidence.
+// It is a convenience for FIRST registration and for tests: it reserves a
+// generation and publishes atomically with no invalidation step in between.
+// Production REPLACEMENT must NOT use this directly — a replacement has to
+// invalidate prior status/ingestion at the reserved generation BEFORE the new
+// binding becomes observable (see ReserveLaunchGeneration + PublishLaunch, composed
+// by the term-layer replacement boundary). Using this for a replacement would
+// re-open the publication-before-invalidation window.
 func RegisterLaunch(spec LaunchSpec) (generation int64, replaced bool) {
+	gen := ReserveLaunchGeneration()
+	replaced = PublishLaunch(spec, gen)
+	return gen, replaced
+}
+
+// ReserveLaunchGeneration reserves a strictly-increasing launch generation WITHOUT
+// publishing a binding. LookupLaunch continues to return the prior binding (or nil)
+// until PublishLaunch is called. This is the first half of the atomic replacement
+// boundary: the caller invalidates prior status/ingestion at the reserved
+// generation before publishing, so no concurrent poll can observe the new binding
+// (and attribute stale evidence to it) before the invalidation high-water exists.
+func ReserveLaunchGeneration() int64 {
+	globalLaunchRegistry.mu.Lock()
+	defer globalLaunchRegistry.mu.Unlock()
+	globalLaunchRegistry.nextGen++
+	return globalLaunchRegistry.nextGen
+}
+
+// PublishLaunch publishes (or replaces) the binding for a session at a
+// previously reserved generation, making it observable to LookupLaunch. It
+// returns whether a prior binding existed. The generation must come from
+// ReserveLaunchGeneration so monotonicity is preserved.
+func PublishLaunch(spec LaunchSpec, generation int64) (replaced bool) {
 	globalLaunchRegistry.mu.Lock()
 	defer globalLaunchRegistry.mu.Unlock()
 	_, replaced = globalLaunchRegistry.bindings[spec.SessionID]
-	globalLaunchRegistry.nextGen++
-	gen := globalLaunchRegistry.nextGen
 	name := spec.ProcessName
 	if name == "" {
 		name = spec.Provider
@@ -86,9 +109,9 @@ func RegisterLaunch(spec LaunchSpec) (generation int64, replaced bool) {
 		ProcessName:     name,
 		PID:             spec.PID,
 		StartedAt:       spec.StartedAt,
-		Generation:      gen,
+		Generation:      generation,
 	}
-	return gen, replaced
+	return replaced
 }
 
 // LookupLaunch returns the launch binding for a session, or nil if not

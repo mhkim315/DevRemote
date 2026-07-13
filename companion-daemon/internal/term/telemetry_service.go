@@ -526,14 +526,37 @@ func (s *TelemetryService) Clear(sessionID string) {
 	}
 }
 
-// InvalidateForLaunch installs a non-current high-water at a NEW launch
-// generation when a same-ID launch binding is REPLACED (S1.1-B). Unlike Clear
-// (used for lifecycle/history delete), it does not delete the record: it stores
-// an unknown+degraded result AT the new launch generation so a delayed write
-// bound to the PRIOR launch is rejected by the generation rule and cannot
-// resurrect a stale status. It also resets the per-session adapter ingestion
-// epoch so the replaced launch's stream state does not carry into the new launch.
-func (s *TelemetryService) InvalidateForLaunch(sessionID string, launchGen int64) {
+// RegisterOrReplaceLaunch is the single production-owned atomic launch
+// replacement boundary (S1.1-R3). It enforces the ordering:
+//
+//	reserve strictly-newer launch generation
+//	→ (replacement only) invalidate old status + reset adapter ingestion state
+//	   AT the reserved generation
+//	→ publish the new binding (now observable to correlation)
+//
+// The invalidation happens BEFORE the binding is published, so a concurrent
+// telemetry poll can never observe the new launch generation before the
+// non-current status high-water exists — it cannot attribute prior-stream
+// evidence to the new launch, and a delayed prior-launch write stays rejected by
+// the launch-generation rule. First registration publishes with no prior state to
+// invalidate. This is distinct from lifecycle Clear (delete), which removes the
+// record entirely.
+func (s *TelemetryService) RegisterOrReplaceLaunch(spec transcript.LaunchSpec) (int64, bool) {
+	gen := transcript.ReserveLaunchGeneration()
+	// A replacement is one where a prior binding already exists. Invalidate at the
+	// reserved generation FIRST so the high-water is installed before publish.
+	replacing := transcript.LookupLaunch(spec.SessionID) != nil
+	if replacing {
+		s.invalidateForLaunchLocked(spec.SessionID, gen)
+	}
+	transcript.PublishLaunch(spec, gen)
+	return gen, replacing
+}
+
+// invalidateForLaunchLocked installs a non-current high-water at the new launch
+// generation and resets the per-session adapter ingestion epoch. Caller ensures
+// this runs BEFORE the replacement binding is published.
+func (s *TelemetryService) invalidateForLaunchLocked(sessionID string, launchGen int64) {
 	if s.statusStore == nil {
 		return
 	}

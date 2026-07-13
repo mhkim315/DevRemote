@@ -89,10 +89,11 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 	}
 	// T3/S1.1-B: register managed launch binding for accepted adapters. The
 	// binding captures the daemon-owned child PID + spawn StartedAt (runtime
-	// identity) and receives a monotonic launch generation. A same-ID
-	// re-registration REPLACES the stale binding at a higher generation; when it
-	// replaces one, install a status high-water at the new launch generation so a
-	// delayed prior-launch write cannot resurrect a stale status.
+	// identity) and receives a monotonic launch generation. Registration goes
+	// through the atomic replacement boundary (reserve → invalidate → publish) so a
+	// same-ID relaunch invalidates prior status/ingestion authority at the reserved
+	// generation BEFORE the new binding is observable — no concurrent poll can
+	// attribute stale evidence to the new launch.
 	if req.ProfileID == "codex" || req.ProfileID == "claude" {
 		version := ""
 		if req.ProfileID == "codex" {
@@ -101,12 +102,14 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 			version = "2.1.202"
 		}
 		pid, startedAt := managedProcessIdentity(r.Context(), h.Registry, canonicalID)
-		gen, replaced := transcript.RegisterLaunch(transcript.LaunchSpec{
+		spec := transcript.LaunchSpec{
 			SessionID: canonicalID, Provider: req.ProfileID, Adapter: adapter,
 			Version: version, PID: pid, StartedAt: startedAt,
-		})
-		if replaced && h.Telemetry != nil {
-			h.Telemetry.InvalidateForLaunch(canonicalID, gen)
+		}
+		if h.Telemetry != nil {
+			h.Telemetry.RegisterOrReplaceLaunch(spec)
+		} else {
+			transcript.RegisterLaunch(spec)
 		}
 	}
 
