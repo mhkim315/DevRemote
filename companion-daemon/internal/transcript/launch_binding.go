@@ -9,13 +9,13 @@ import (
 // LaunchBinding is an immutable session-owned launch authority.
 // Only the session creation controller (pokit run) may create one.
 type LaunchBinding struct {
-	SessionID          string
-	Provider           string // "codex" or "claude"
-	Adapter            string // "controlled_pty"
-	AcceptedVersion    string // "0.144.1" or "2.1.202"
-	ProcessName        string // executable name (codex/claude)
-	PID                int    // process ID at launch time
-	Generation         int64  // monotonic launch counter per session
+	SessionID       string
+	Provider        string // "codex" or "claude"
+	Adapter         string // "controlled_pty"
+	AcceptedVersion string // "0.144.1" or "2.1.202"
+	ProcessName     string // executable name (codex/claude)
+	PID             int    // process ID at launch time
+	Generation      int64  // monotonic launch counter per session
 }
 
 // LaunchRegistry stores active launch bindings. Only the session creation
@@ -70,7 +70,8 @@ func RemoveLaunch(sessionID string) {
 }
 
 // LaunchCorrelation returns the correlation state for a managed session.
-// Validates provider, version, and process identity match.
+// Validates provider, version, and process identity. Empty/missing values
+// fail closed — they are not wildcards.
 func LaunchCorrelation(binding *LaunchBinding, discoveredProvider, discoveredVersion string, discoveredPID int) contract.Correlation {
 	if binding == nil {
 		return contract.CorrelationUnavailable
@@ -78,11 +79,17 @@ func LaunchCorrelation(binding *LaunchBinding, discoveredProvider, discoveredVer
 	if binding.Provider != discoveredProvider {
 		return contract.CorrelationUnavailable
 	}
-	if binding.AcceptedVersion != "" && discoveredVersion != "" && binding.AcceptedVersion != discoveredVersion {
-		return contract.CorrelationUnavailable
+	// Require version match when binding specifies a version.
+	if binding.AcceptedVersion != "" {
+		if discoveredVersion == "" || binding.AcceptedVersion != discoveredVersion {
+			return contract.CorrelationUnavailable
+		}
 	}
-	if binding.PID != 0 && discoveredPID != 0 && binding.PID != discoveredPID {
-		return contract.CorrelationUnavailable
+	// Require PID match when binding specifies a PID.
+	if binding.PID != 0 {
+		if discoveredPID == 0 || binding.PID != discoveredPID {
+			return contract.CorrelationUnavailable
+		}
 	}
 	return contract.CorrelationManagedLaunch
 }

@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
+	claude "devremote/companion-daemon/internal/agent/adapters/claude/v2_1_202"
+	codex "devremote/companion-daemon/internal/agent/adapters/codex/v0_144_1"
+	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
@@ -41,17 +44,17 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, 
 		approvals = NewApprovalStore()
 	}
 	return &TelemetryService{
-		reg:       reg,
-		events:    events,
-		links:     links,
-		notifier:  notifier,
+		reg:        reg,
+		events:     events,
+		links:      links,
+		notifier:   notifier,
 		detector:   detector,
 		approvals:  approvals,
 		activity:   activity,
 		transcript: transcriptSvc,
-		interval:  2 * time.Second,
-		sessions:  make(map[string]*sessionStateData),
-		done:      make(chan struct{}),
+		interval:   2 * time.Second,
+		sessions:   make(map[string]*sessionStateData),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -163,22 +166,21 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// Gemini and Antigravity have no accepted T0 adapter and
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
-						// Correlation from accepted T1/T2 adapter contract.
-						// T1 Codex and T2 Claude adapters document CorrelationUnavailable
-						// for ordinary interactive TUI sessions. This correctly prevents
-						// semantic AgentEvent projection until a managed-launch mode
-						// provides CorrelationProven or CorrelationManagedLaunch.
-						// When that mode is implemented, the correlation will flow from
-						// the actual adapter's DiscoverSessions() result.
 						binding := transcript.LookupLaunch(id)
-						// Version validated at launch binding level (create.go passes accepted version).
 						corr := transcript.LaunchCorrelation(binding, logRef.Agent, "", 0)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
 							Provider:    logRef.Agent,
 						})
-						s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
+						// Use accepted adapter for managed launches, legacy parser for others.
+						var events []agent.AgentEvent
+						if corr == contract.CorrelationManagedLaunch {
+							events = readViaAcceptedAdapter(logRef.Agent, newEvents)
+						} else {
+							events = convertToAgentEvents(newEvents, logRef.Agent)
+						}
+						s.transcript.ProjectAgentEvents(id, events)
 					}
 					parsedNewEvents = true
 					lastEvent = newEvents[len(newEvents)-1]
@@ -429,8 +431,8 @@ func convertToAgentEvents(legacy []models.AgentEvent, agentKind string) []agent.
 			AgentKind:  agentKind,
 			Type:       mapLegacyType(e.Type),
 			Text:       e.Detail,
-			Confidence: 0.0,           // not authoritative; provenance governs
-			Provenance: "native_log",   // accepted provenance tier: needs correlation
+			Confidence: 0.0,          // not authoritative; provenance governs
+			Provenance: "native_log", // accepted provenance tier: needs correlation
 			Timestamp:  ts,
 		})
 	}
@@ -460,6 +462,37 @@ func isAcceptedVersion(kind, version string) bool {
 	default:
 		return false
 	}
+}
+
+// readViaAcceptedAdapter uses the accepted version-specific T1/T2 adapter
+// to normalize events through the T0 contract. Only called for managed
+// launches with CorrelationManagedLaunch.
+func readViaAcceptedAdapter(kind string, rawEvents []models.AgentEvent) []agent.AgentEvent {
+	var adapter contract.AgentAdapter
+	switch kind {
+	case "codex":
+		adapter = &codex.Adapter{}
+	case "claude":
+		adapter = &claude.Adapter{}
+	default:
+		return nil
+	}
+
+	ctx := context.Background()
+	var out []agent.AgentEvent
+	for _, raw := range rawEvents {
+		rec := contract.RawRecord{
+			Bytes:      []byte(raw.Detail),
+			Source:     agent.SourceJSONL,
+			Provenance: contract.ProvenanceNativeLog,
+		}
+		ev, _ := adapter.NormalizeEvent(ctx, rec)
+		if ev.Type != agent.EventUnknown && ev.Type != "" {
+			ev.SessionID = raw.Session
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 func mapLegacyType(t string) agent.AgentEventType {

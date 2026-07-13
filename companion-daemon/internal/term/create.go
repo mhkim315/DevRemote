@@ -87,12 +87,16 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-		// T3: register managed launch binding for accepted adapters.
-		if req.ProfileID == "codex" || req.ProfileID == "claude" {
-			version := ""
-				if req.ProfileID == "codex" { version = "0.144.1" } else if req.ProfileID == "claude" { version = "2.1.202" }
-				transcript.RegisterLaunch(canonicalID, req.ProfileID, adapter, version, 0, 1)
+	// T3: register managed launch binding for accepted adapters.
+	if req.ProfileID == "codex" || req.ProfileID == "claude" {
+		version := ""
+		if req.ProfileID == "codex" {
+			version = "0.144.1"
+		} else if req.ProfileID == "claude" {
+			version = "2.1.202"
 		}
+		transcript.RegisterLaunch(canonicalID, req.ProfileID, adapter, version, 0, 1)
+	}
 
 	// M2: catalog the managed session + start its exit watcher on the exact
 	// Recorder we just started.

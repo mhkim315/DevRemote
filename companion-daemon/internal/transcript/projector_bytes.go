@@ -47,8 +47,8 @@ type ByteStreamProjector struct {
 
 	// crProgress tracks the most recent CR-terminated progress line.
 	// If the next character is not CR, it is committed as final.
-	crProgress   strings.Builder
-	crActive     bool
+	crProgress strings.Builder
+	crActive   bool
 
 	lastFlush       time.Time
 	totalProjected  int64
@@ -61,23 +61,23 @@ type ansiParseState int
 
 const (
 	ansiNone ansiParseState = iota
-	ansiCSI  // inside ESC[...sequence
-	ansiOSC  // inside ESC]...sequence
-	ansiESC  // single ESC + one char
+	ansiCSI                 // inside ESC[...sequence
+	ansiOSC                 // inside ESC]...sequence
+	ansiESC                 // single ESC + one char
 )
 
 // ByteStreamProjectorConfig controls projector behavior.
 type ByteStreamProjectorConfig struct {
-	MaxQueueBytes   int
+	MaxQueueBytes    int
 	MaxTUIBurstBytes int
-	FlushTimeout    time.Duration
+	FlushTimeout     time.Duration
 }
 
 func DefaultByteStreamConfig() ByteStreamProjectorConfig {
 	return ByteStreamProjectorConfig{
-		MaxQueueBytes:   65536,
+		MaxQueueBytes:    65536,
 		MaxTUIBurstBytes: 131072,
-		FlushTimeout:    5 * time.Second,
+		FlushTimeout:     5 * time.Second,
 	}
 }
 
@@ -139,14 +139,25 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 		if p.tuiBurstActive {
 			// Only process ANSI escapes — skip everything else.
 			if p.ansiState != ansiNone || (data[i] == 0x1b && i+1 < len(data) && (data[i+1] == '[' || data[i+1] == ']')) {
-				if data[i] == 0x1b { if data[i+1] == '[' { p.ansiState = ansiCSI } else if data[i+1] == ']' { p.ansiState = ansiOSC } else { p.ansiState = ansiESC }; i += 2; continue }; goto processANSI
+				if data[i] == 0x1b {
+					if data[i+1] == '[' {
+						p.ansiState = ansiCSI
+					} else if data[i+1] == ']' {
+						p.ansiState = ansiOSC
+					} else {
+						p.ansiState = ansiESC
+					}
+					i += 2
+					continue
+				}
+				goto processANSI
 			}
 			p.tuiBurstCount++
 			i++
 			continue
 		}
 
-		processANSI:
+	processANSI:
 		// ANSI escape handling — skip entire sequence. Statefully detect
 		// alternate-screen enter/exit for TUI burst suppression.
 		if p.ansiState != ansiNone {
@@ -459,12 +470,12 @@ func (p *ByteStreamProjector) Diagnostics() ByteStreamDiag {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return ByteStreamDiag{
-		PartialLen:     p.partialLine.Len(),
-		InputActive:    p.inputActive,
-		TUIBurstActive: p.tuiBurstActive,
-		TotalProjected: p.totalProjected,
+		PartialLen:      p.partialLine.Len(),
+		InputActive:     p.inputActive,
+		TUIBurstActive:  p.tuiBurstActive,
+		TotalProjected:  p.totalProjected,
 		TotalSuppressed: p.totalSuppressed,
-		Overflowed:     p.overflowed,
+		Overflowed:      p.overflowed,
 	}
 }
 
