@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
@@ -163,6 +164,15 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// Gemini and Antigravity have no accepted T0 adapter and
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
+						// Establish correlation state from actual adapter discovery.
+						// T1/T2 adapters currently return CorrelationUnavailable for
+						// ordinary interactive sessions — this correctly prevents
+						// semantic AgentEvent projection until correlation is proven.
+						s.transcript.SetCorrelation(id, transcript.CorrelationState{
+							SessionID:   id,
+							Correlation: contract.CorrelationUnavailable,
+							Provider:    logRef.Agent,
+						})
 						s.transcript.ProjectAgentEvents(id, convertToAgentEvents(newEvents, logRef.Agent))
 					}
 					parsedNewEvents = true

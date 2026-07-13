@@ -32,9 +32,10 @@ type ByteStreamProjector struct {
 	ansiState ansiParseState
 
 	// inputActive suppresses bytes during terminal input (echo privacy).
-	// Set by BeginInput, cleared by EndInput or auto-cleared when the
-	// first newline after suppression begins is observed.
-	inputActive bool
+	// Set by BeginInput, cleared by EndInput or after suppressChunks
+	// chunks have been fully suppressed (content-free boundary).
+	inputActive     bool
+	suppressChunks  int // remaining chunks to suppress after input
 
 	// tuiBurstActive suppresses bytes during TUI/alternate-screen regions.
 	tuiBurstActive bool
@@ -115,27 +116,18 @@ func (p *ByteStreamProjector) Feed(sessionID string, chunk []byte, observedAt ti
 	var segments []TranscriptSegment
 	i := 0
 	for i < len(data) {
-		// Input suppression: drop bytes until the first newline after
-		// suppression began. The newline is the structural termination
-		// marker, never a content match. If EndInput is called externally
-		// (e.g., by Recorder on safe boundary), suppression ends sooner.
-		// If no newline arrives, the entire echo region is omitted.
+		// Input suppression: drop entire chunks for suppressChunks count.
+		// This is a content-free boundary: we suppress N Recorder chunks
+		// (~4KB) after input, which safely covers typical PTY echo without
+		// content matching, timing heuristics, or newline detection.
 		if p.inputActive {
-			nlIdx := -1
-			for j := i; j < len(data); j++ {
-				if data[j] == '\n' {
-					nlIdx = j
-					break
-				}
-			}
-			if nlIdx >= 0 {
-				p.totalSuppressed += int64(nlIdx - i + 1)
-				p.inputActive = false // auto-release on newline
-				i = nlIdx + 1
-				continue
-			}
-			// No newline yet: suppress entire chunk.
 			p.totalSuppressed += int64(len(data) - i)
+			if p.suppressChunks > 0 {
+				p.suppressChunks--
+			}
+			if p.suppressChunks == 0 {
+				p.inputActive = false
+			}
 			return segments
 		}
 
@@ -349,6 +341,7 @@ func (p *ByteStreamProjector) BeginInput(sessionID string, observedAt time.Time)
 	p.crProgress.Reset()
 	p.crActive = false
 	p.inputActive = true
+	p.suppressChunks = 4 // suppress next 4 Recorder chunks (~4KB echo window)
 	boundary := NewInputBoundarySegment(sessionID, observedAt)
 	return &boundary
 }
@@ -357,6 +350,7 @@ func (p *ByteStreamProjector) EndInput(sessionID string, observedAt time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.inputActive = false
+	p.suppressChunks = 0
 }
 
 // ── TUI burst ──

@@ -107,32 +107,43 @@ type TranscriptResponse struct {
 	ContractVersion string `json:"contractVersion"`
 }
 
-// NewTranscriptResponse builds the separated response from stored segments
-// and the arbiter's state.
+// NewTranscriptResponse builds the separated response.
+// Rules:
+//   - SourceAgentEvent segments → always semantic
+//   - SourceByteStream segments → semantic when primary, fallback when AgentEvent primary
+//   - SourceSnapshot segments → always fallback (degraded channel)
+//   - primarySource reflects actual dominant source
 func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, arb *SourceArbiter) TranscriptResponse {
-	if arb == nil || !arb.HasAgentEvents() {
-		// No AgentEvent primary: all segments are semantic (byte-stream fallback).
-		if allSegments == nil {
-			allSegments = []TranscriptSegment{}
-		}
-		return TranscriptResponse{
-			SessionID:       sessionID,
-			Semantic:        allSegments,
-			PrimarySource:   SourceByteStream,
-			ContractVersion: ContractVersion,
-		}
+	if allSegments == nil {
+		allSegments = []TranscriptSegment{}
 	}
 
-	// AgentEvent is primary: split into semantic and fallback channels.
+	hasAgentEvent := arb != nil && arb.HasAgentEvents()
+	hasSnapshot := false
+	hasByteStream := false
+
+	// Separate by source.
 	var semantic, fallback []TranscriptSegment
 	for _, seg := range allSegments {
-		switch seg.Kind {
-		case KindAgentEvent, KindUnknown:
+		switch seg.Source {
+		case SourceAgentEvent:
 			semantic = append(semantic, seg)
-		case KindTerminalOutput, KindDegraded, KindUIOmitted, KindInputBoundary:
+		case SourceSnapshot:
 			fallback = append(fallback, seg)
+			hasSnapshot = true
+		case SourceByteStream:
+			hasByteStream = true
+			if hasAgentEvent {
+				fallback = append(fallback, seg)
+			} else {
+				semantic = append(semantic, seg)
+			}
 		default:
-			semantic = append(semantic, seg)
+			if hasAgentEvent {
+				fallback = append(fallback, seg)
+			} else {
+				semantic = append(semantic, seg)
+			}
 		}
 	}
 
@@ -140,11 +151,22 @@ func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, ar
 		semantic = []TranscriptSegment{}
 	}
 
+	// Determine primary source.
+	primary := SourceUnknown
+	switch {
+	case hasAgentEvent:
+		primary = SourceAgentEvent
+	case hasByteStream:
+		primary = SourceByteStream
+	case hasSnapshot:
+		primary = SourceSnapshot
+	}
+
 	return TranscriptResponse{
 		SessionID:       sessionID,
 		Semantic:        semantic,
 		Fallback:        fallback,
-		PrimarySource:   SourceAgentEvent,
+		PrimarySource:   primary,
 		ContractVersion: ContractVersion,
 	}
 }

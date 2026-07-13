@@ -253,10 +253,13 @@ export default function FeedScreen({onBack, session, token, authCtx}: Props) {
     lifecycleCtrlRef.current?.setSession(session, token);
   }, [session, token]);
 
-  // On unmount (Back/navigation away), invalidate any in-flight lifecycle action
-  // so a late Stop/Kill/Delete response cannot mutate the gone screen or fire a
-  // duplicate onBack. dispose() issues no request.
-  useEffect(() => () => { lifecycleCtrlRef.current?.dispose(); }, []);
+  // On unmount (Back/navigation away), invalidate all in-flight async work.
+  // Bump generation so late fetch responses, lifecycle actions, and state
+  // mutations cannot affect the unmounted screen.
+  useEffect(() => () => {
+    sessionGenRef.current++;
+    lifecycleCtrlRef.current?.dispose();
+  }, []);
 
   const confirmStop = useCallback(() => {
     if (!actionPolicy.canStop) return;

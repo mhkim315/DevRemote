@@ -344,6 +344,15 @@ func (r *Recorder) readLoop() {
 			}
 		}
 
+		// T3: detect TUI boundaries for transcript omission.
+		if r.transcriptSvc != nil {
+			if transcript.IsAlternateScreenStart(payload) {
+				r.transcriptSvc.BeginTUIBurst(r.sessionID)
+			} else if transcript.IsAlternateScreenEnd(payload) {
+				r.transcriptSvc.EndTUIBurst(r.sessionID, time.Now())
+			}
+		}
+
 		// T3: feed raw bytes to Transcript byte-stream projector (non-blocking).
 		r.feedTranscript(payload)
 

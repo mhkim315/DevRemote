@@ -410,30 +410,66 @@ export interface TranscriptResponse {
 
 const VALID_KINDS = ['agent_event', 'terminal_output', 'input_boundary', 'degraded', 'ui_omitted', 'unknown'];
 const VALID_SOURCES = ['agent_event', 'byte_stream', 'snapshot_delta', 'unknown'];
+const VALID_EVENT_TYPES = ['agent_started','user_message','assistant_message','thinking','tool_call_started','tool_call_finished','approval_requested','approval_resolved','waiting_input','completed','failed','interrupted','unknown'];
 const MAX_RESPONSE_SEGMENTS = 10000;
 const MAX_ID_LEN = 64;
-const MAX_TEXT_LEN = 40000;
+const MAX_TEXT_BYTES = 40000;
 const MAX_REASON_LEN = 512;
+
+const SEGMENT_KNOWN_FIELDS = new Set([
+  'id','seq','sessionId','kind','source','text','agentEventRef','agentKind',
+  'eventType','toolName','confidence','byteCount','degradedReason','observedAt','contractVersion'
+]);
+const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','contractVersion']);
+
+function byteLength(s: string): number {
+  // Count UTF-8 bytes (not JS character count).
+  let len = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) len += 1;
+    else if (c < 0x800) len += 2;
+    else if (c < 0xd800 || c >= 0xe000) len += 3;
+    else { i++; len += 4; } // surrogate pair
+  }
+  return len;
+}
+
+function isValidISODate(s: string): boolean {
+  if (typeof s !== 'string' || s.length < 10) return false;
+  const d = new Date(s);
+  return !isNaN(d.getTime());
+}
 
 function validateSegment(seg: any, expectedSessionID: string): TranscriptSegment | null {
   if (!seg || typeof seg !== 'object') return null;
   if (seg.sessionId !== expectedSessionID) return null;
   if (typeof seg.id !== 'string' || seg.id.length === 0 || seg.id.length > MAX_ID_LEN) return null;
-  if (typeof seg.seq !== 'number' || !Number.isFinite(seg.seq) || seg.seq < 0) return null;
+  if (typeof seg.seq !== 'number' || !Number.isFinite(seg.seq) || seg.seq < 0 || !Number.isInteger(seg.seq)) return null;
   if (!VALID_KINDS.includes(seg.kind)) return null;
   if (!VALID_SOURCES.includes(seg.source)) return null;
   // kind/source cross-validation
   if (seg.kind === 'agent_event' && seg.source !== 'agent_event') return null;
   if (seg.source === 'agent_event' && seg.kind !== 'agent_event' && seg.kind !== 'unknown') return null;
-  // text bounds
+  // required observedAt
+  if (typeof seg.observedAt !== 'string' || !isValidISODate(seg.observedAt)) return null;
+  // text byte bounds
   if (seg.text !== undefined && seg.text !== null && typeof seg.text !== 'string') return null;
-  if (seg.text && seg.text.length > MAX_TEXT_LEN) return null;
-  // metadata field bounds
-  if (seg.agentKind && (typeof seg.agentKind !== 'string' || seg.agentKind.length > 128)) return null;
-  if (seg.toolName && (typeof seg.toolName !== 'string' || seg.toolName.length > 256)) return null;
-  if (seg.agentEventRef && (typeof seg.agentEventRef !== 'string' || seg.agentEventRef.length > MAX_ID_LEN)) return null;
-  if (seg.degradedReason && (typeof seg.degradedReason !== 'string' || seg.degradedReason.length > MAX_REASON_LEN)) return null;
+  if (seg.text && byteLength(seg.text) > MAX_TEXT_BYTES) return null;
+  // numeric field bounds
+  if (seg.confidence !== undefined && (typeof seg.confidence !== 'number' || seg.confidence < 0 || seg.confidence > 1)) return null;
+  if (seg.byteCount !== undefined && (typeof seg.byteCount !== 'number' || !Number.isInteger(seg.byteCount) || seg.byteCount < 0)) return null;
+  // string field bounds
+  if (seg.agentKind !== undefined && (typeof seg.agentKind !== 'string' || byteLength(seg.agentKind) > 128)) return null;
+  if (seg.toolName !== undefined && (typeof seg.toolName !== 'string' || byteLength(seg.toolName) > 256)) return null;
+  if (seg.agentEventRef !== undefined && (typeof seg.agentEventRef !== 'string' || byteLength(seg.agentEventRef) > MAX_ID_LEN)) return null;
+  if (seg.eventType !== undefined && (typeof seg.eventType !== 'string' || !VALID_EVENT_TYPES.includes(seg.eventType))) return null;
+  if (seg.degradedReason !== undefined && (typeof seg.degradedReason !== 'string' || byteLength(seg.degradedReason) > MAX_REASON_LEN)) return null;
   if (seg.contractVersion !== 't3.1') return null;
+  // Reject unknown fields
+  for (const k of Object.keys(seg)) {
+    if (!SEGMENT_KNOWN_FIELDS.has(k)) return null;
+  }
   return seg as TranscriptSegment;
 }
 
@@ -444,34 +480,47 @@ function validateTranscriptResponse(data: any, expectedSessionID: string): Trans
   if (data.semantic.length > MAX_RESPONSE_SEGMENTS) return null;
   if (data.contractVersion !== 't3.1') return null;
   if (!VALID_SOURCES.includes(data.primarySource)) return null;
+  // Reject unknown envelope fields
+  for (const k of Object.keys(data)) {
+    if (!ENVELOPE_KNOWN_FIELDS.has(k)) return null;
+  }
 
+  const allSeenIDs = new Set<string>();
   // Validate semantic: ordering + no duplicates.
   const seenIDs = new Set<string>();
   let prevSeq = -1;
   for (const seg of data.semantic) {
     const s = validateSegment(seg, expectedSessionID);
     if (!s) return null;
-    if (seenIDs.has(s.id)) return null; // duplicate ID
+    if (seenIDs.has(s.id)) return null;
     seenIDs.add(s.id);
-    if (s.seq <= prevSeq) return null; // not strictly increasing
+    allSeenIDs.add(s.id);
+    if (s.seq <= prevSeq) return null;
     prevSeq = s.seq;
   }
 
-  // Channel consistency: primarySource != agent_event means no agent_event in semantic.
-  if (data.primarySource !== 'agent_event') {
-    for (const seg of data.semantic) {
-      if (seg.kind === 'agent_event') return null;
-    }
+  // primarySource consistency
+  if (data.primarySource === 'snapshot_delta') {
+    const hasNonSnapshot = data.semantic.some((s: any) => s.source !== 'snapshot_delta');
+    if (hasNonSnapshot) return null;
+  }
+  if (data.primarySource === 'agent_event') {
+    if (!data.semantic.some((s: any) => s.kind === 'agent_event')) return null;
   }
 
-  // Validate fallback: never contains agent_event.
+  // Validate fallback: never contains agent_event, no cross-channel duplicate IDs.
   if (data.fallback !== undefined) {
     if (!Array.isArray(data.fallback)) return null;
     if (data.fallback.length > MAX_RESPONSE_SEGMENTS) return null;
+    let fbPrevSeq = -1;
     for (const seg of data.fallback) {
       const s = validateSegment(seg, expectedSessionID);
       if (!s) return null;
-      if (s.kind === 'agent_event') return null; // agent events must be in semantic
+      if (s.kind === 'agent_event') return null;
+      if (allSeenIDs.has(s.id)) return null; // cross-channel duplicate
+      allSeenIDs.add(s.id);
+      if (s.seq <= fbPrevSeq) return null;
+      fbPrevSeq = s.seq;
     }
   }
   return data as TranscriptResponse;
