@@ -159,16 +159,19 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 			s.mu.Unlock()
 
 			if parser != nil {
-				newEvents, readErr := ReadNewEvents(cursor, parser, 500)
-				if readErr == nil && len(newEvents) > 0 {
+				rawLines := readRawLines(cursor, 500)
+				var newEvents []models.AgentEvent
+				for _, line := range rawLines {
+					parsed, _ := parser.Parse(line)
+					newEvents = append(newEvents, parsed...)
+				}
+				if len(newEvents) > 0 {
 					s.events.Append(id, newEvents)
 					// T3: project ONLY accepted-adapter events (codex, claude).
 					// Gemini and Antigravity have no accepted T0 adapter and
 					// must not produce semantic Transcript segments.
 					if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
 						binding := transcript.LookupLaunch(id)
-						// Extract raw JSONL lines for the accepted adapter path.
-						rawLines := readRawLines(cursor, 500)
 						acceptedEvents, discoveredVersion := readViaAcceptedAdapter(logRef.Agent, rawLines, id)
 						// Use discovered version for correlation validation.
 						discoveredPID := getProcessPID(id, processSnapshots)

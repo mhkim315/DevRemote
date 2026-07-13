@@ -149,14 +149,17 @@ func ReadRawLines(cursor *LogCursor, maxLines int) ([][]byte, error) {
 
 	for len(lines) < maxLines {
 		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			if line[len(line)-1] == '\n' {
-				line = line[:len(line)-1]
-			}
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			// Complete record: trim newline, advance cursor.
+			line = line[:len(line)-1]
 			if len(line) > 0 && len(line) < maxRecordSize {
 				lines = append(lines, line)
 			}
 			cursor.Offset += int64(len(line)) + 1
+		} else if len(line) > 0 {
+			// Partial record at EOF: do NOT advance cursor.
+			// Next poll will re-read when the write completes.
+			break
 		}
 		if err != nil {
 			break
