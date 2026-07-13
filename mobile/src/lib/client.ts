@@ -576,24 +576,49 @@ export interface AgentApproval {
   resolvedAt?: string;
 }
 
+// A1-E: the mobile approval action rides the SAME host-bound paired-device
+// transport (apiPost) as the accepted create/lifecycle writes — never the legacy
+// checkedFetch+Supabase-token path. apiPost is fail-closed on a non-paired origin
+// (zero requests, bearer never sent) and never replays a non-idempotent POST after
+// a 401. The daemon returns the frozen closed outcome vocabulary; a 2xx body is
+// strictly decoded so a malformed/foreign response is not a false success. Non-2xx
+// (400/404/409/410/502) surfaces as a PokitError carrying the status so the card
+// can message honestly (e.g. 502 delivery_failed, 409 already-resolved/stale, 410
+// expired) without replaying the action.
+export type ApprovalActionOutcome =
+  | 'ok' | 'not_found' | 'session_mismatch' | 'expired' | 'already_terminal'
+  | 'stale_generation' | 'unknown_action' | 'input_rejected' | 'delivery_failed';
+
+export interface ApprovalActionResult {
+  outcome: ApprovalActionOutcome;
+  action: string;
+}
+
 export async function resolveApproval(
   sessionID: string,
   approvalID: string,
   action: string,
   input?: string,
   token?: string
-): Promise<Response> {
+): Promise<ApprovalActionResult> {
   const body: Record<string, string> = { action };
   if (input) body.input = input;
-  const res = await checkedFetch(
-    `${_baseURL}/api/sessions/${encodeURIComponent(sessionID)}/approvals/${encodeURIComponent(approvalID)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
-      body: JSON.stringify(body),
-    }
+  const res = await apiPost(
+    `/api/sessions/${encodeURIComponent(sessionID)}/approvals/${encodeURIComponent(approvalID)}`,
+    body,
+    token
   );
-  return res;
+  // apiPost already threw on any non-2xx; a 2xx must be the exact success shape.
+  let parsed: any = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || parsed.status !== 'ok' || parsed.outcome !== 'ok' || parsed.action !== action) {
+    throw new PokitError('Malformed approval response', ConnectivityFailure.APIError, res.status || 0);
+  }
+  return { outcome: 'ok', action };
 }
 
 export async function registerPushToken(token: string, pushToken: string) {

@@ -48,8 +48,9 @@ function daysInMonth(year: number, month: number): number {
 
 // isStrictRFC3339 requires a bounded, format-correct, CALENDAR-VALID timestamp.
 // It rejects impossible dates (e.g. 2026-02-30) that a lenient Date.parse would
-// silently normalize, plus out-of-range time and timezone components.
-function isStrictRFC3339(s: string): boolean {
+// silently normalize, plus out-of-range time and timezone components. Exported so
+// the A1 approval decoder validates timestamps with the same strict rule.
+export function isStrictRFC3339(s: string): boolean {
   if (s.length > MAX_OBSERVED_AT_LEN) return false;
   const m = RFC3339.exec(s);
   if (!m) return false;

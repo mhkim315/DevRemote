@@ -19,23 +19,29 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
   };
 
   const handleAction = async (action: string, input?: string) => {
+    if (loading) return; // one exact request in flight at a time
     setLoading(true);
     setError(null);
     try {
-      const res = await resolveApproval(sessionId, approval.id, action, input, token);
-      if (!res.ok) {
-        if (res.status === 409) {
-          setError('Already resolved');
-        } else if (res.status === 410) {
-          setError('Approval expired');
-        } else {
-          setError(`Failed (${res.status})`);
-        }
+      await resolveApproval(sessionId, approval.id, action, input, token);
+      onResolved();
+    } catch (e: any) {
+      // Honest per-outcome messaging from the daemon's status. Input is preserved
+      // (inputValues is untouched) so a recoverable failure does not lose typing.
+      const status = e?.statusCode;
+      if (status === 409) {
+        setError('No longer current — refresh');
+      } else if (status === 410) {
+        setError('Approval expired');
+      } else if (status === 502) {
+        setError("Couldn't deliver — resolve in the terminal");
+      } else if (status === 400) {
+        setError('Action not accepted');
+      } else if (status === 401 || status === 403) {
+        setError('Not authorized on this device');
       } else {
-        onResolved();
+        setError('Network error — tap to retry');
       }
-    } catch (e) {
-      setError('Network error — tap to retry');
     } finally {
       setLoading(false);
     }
