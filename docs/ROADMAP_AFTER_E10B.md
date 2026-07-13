@@ -145,8 +145,8 @@ D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patc
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
-A1  Approval Safety                           NEXT (fresh-agent handoff from accepted S1.1 SHA 02c8385)
-N1  Notifications                             PLANNED after A1
+A1  Approval Safety                           PLAN RE-VERIFICATION REQUIRED (atomic claim + approval-specific receipt boundary frozen)
+N1  Notifications                             BLOCKED until independent A1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
@@ -521,25 +521,37 @@ Support terminology at this boundary is intentionally strict:
 
 ## A1 — Mobile-first Approval System
 
-Goal: safe mobile approval/control.
+Goal: safely resolve exact, accepted provider approval requests through one
+generation-bound, authenticated, single-use action path.
+
+Authoritative plan: `docs/A1_APPROVAL_SAFETY_PLAN.md`.
+Execution handoff: `docs/NEXT_SESSION_A1_APPROVAL_SAFETY_HANDOFF.md`.
+
+The independent plan review returned `ACCEPT WITH REQUIRED PLAN CHANGES`. The
+documentation remediation freezes atomic `ClaimForExecution`, canonical
+ActionDigest/idempotency, server-derived requester binding, an approval-specific
+delivery receipt, bounded public DTOs, and the complete acceptance gate. A1
+implementation remains blocked until independent plan re-verification.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,
 authoritative approval provenance, and current generation. S1/S1.1 status is
 never authorization input.
 
-Examples:
+Scope examples are limited to exact provider approval options whose
+evidence-to-action and action-to-delivery mappings have controlled, accepted
+fixtures. If a mapping is unproven, the signal is non-actionable display only.
+No blind Y/N or arbitrary terminal payload is synthesized.
 
-- Approve
-- Reject
-- Send message
-- Continue
-- Stop
-- Resume
-- Retry
+Existing Stop/Kill remain in the accepted lifecycle contract. Generic Send
+Message, Continue, Resume, Retry, Task/Dispatch, worker flow, and orchestration
+actions are not A1 and remain deferred to O1/O2 or a separately reviewed
+contract.
 
-Approval must be grounded in runtime state and agent-specific signals, not blind
-transcript parsing alone.
+Approval must originate only from a currently correlated accepted adapter with
+`CapApprovalDetection`, `DetectApproval`, and `SafeApprovalGate`. Runtime status,
+legacy parser text, transcript/screen/PTY/prompt text, process name, CWD, and
+heuristic evidence never create approval authority.
 
 ## N1 — Notifications
 
