@@ -10,6 +10,18 @@ acceptance only once, after S1-A through S1-E are all complete.
 Do not infer the task from chat summaries, an old roadmap, or an unpushed
 worktree. Do not begin A1, O1, Notifications, another adapter, or Windows work.
 
+Current independently checked midpoint:
+
+```text
+S1-A audit:                 8d73a4a (checkpoint)
+S1-B internal contract:    33c1fed (checkpoint)
+S1-C production wiring:    e8d53d0 (checkpoint)
+S1-B/C authority hardening: 2f3fdfcbff0fc21e78f9c077f8cf2cef61024d6d
+midpoint result:           ACCEPT — proceed to S1-D only
+```
+
+This is not final S1 acceptance. S1-D and S1-E remain required.
+
 ## 0. Repository identity and commit recovery
 
 ```text
@@ -59,6 +71,15 @@ the remote advances, fetch and rebase or fast-forward normally, inspect the new
 commits, preserve accepted ancestry, and rerun all gates before pushing.
 
 ## 1. DeepSeek V4 Pro execution protocol
+
+The reusable operating rule is
+`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`. Read it before this section and
+apply its task packet, evidence-level, remediation, and resource-hygiene rules.
+
+S1-B/C showed that the main acceleration came from exact blocker-to-test
+instructions, not from asking the model to "be more careful." Continue using an
+exact production caller, prohibited behavior, required behavior, negative test,
+and completion evidence for every remaining item.
 
 This task has many nearby concepts with similar names. Work in small, explicit
 units so a locally plausible change does not silently cross an authority boundary.
@@ -325,6 +346,72 @@ Required tests:
 
 Run `npm run typecheck` and focused Jest whenever mobile code changes.
 
+#### S1-D execution packet — use without broadening
+
+Checkpoint: **S1-D only**. Start from
+`2f3fdfcbff0fc21e78f9c077f8cf2cef61024d6d` or a descendant that preserves it.
+Do not start S1-E until this checkpoint has been reviewed. This checkpoint review
+is not the final S1 `REVIEW REQUEST`.
+
+Required production chain (adapt names only where the S1-A audit proves the
+repository uses a different accepted owner):
+
+```text
+TelemetryService accepted-adapter update
+  -> session-owned S1 AgentStatusStore snapshot
+  -> additive versioned session read DTO
+  -> existing sessions:read authenticated production route
+  -> mobile host-bound apiGet transport
+  -> strict DTO validator
+  -> actually imported Dashboard/FeedScreen status renderer
+```
+
+Use an additive nested `agentActivity`/`runtimeStatus` object. Do not reinterpret
+legacy `state`, `lifecycleState`, or `agentStatus`, and do not use agent activity
+to change lifecycle action policy.
+
+| ID | Bad behavior to prevent | Required production behavior | Required regression proof |
+| --- | --- | --- | --- |
+| D1 | an unused endpoint/helper makes S1 appear reachable | the existing product session-read path calls the S1 snapshot owner and the actual mobile screen imports its renderer | route-to-client-to-component production call/import test |
+| D2 | one session's activity is returned for another | canonical requested session ID must exactly match the stored snapshot; absent/mismatch returns safe unknown/absent status | wrong-session and cross-session leakage tests |
+| D3 | stale activity is displayed as current thinking/working | preserve the stale observation explicitly; mobile renders stale/unknown/degraded, never an active label | stale-clock response and rendered-label negative test |
+| D4 | agent activity changes Stop/Kill/Delete or approval actions | lifecycle remains the sole lifecycle-action authority; `waiting_approval` is label-only | identical action visibility across every agent activity status |
+| D5 | remote read bypasses device authorization | use the existing `sessions:read` principal boundary; paired mobile uses host-bound device bearer only | missing, malformed, insufficient, and valid bearer route tests plus paired-transport test |
+| D6 | malformed or future DTO is partially trusted | validate contract version, exact session ID, closed status/provenance vocabulary, finite confidence in range, RFC3339 time, bounds, channel separation, and unknown fields according to repository strict-validation convention | table tests for each malformed field and oversized payload |
+| D7 | a previous request renders after session switch/unmount | bind response to session generation and mounted state before commit | deferred A->B session switch and unmount tests |
+| D8 | delete/recreate inherits old status | production delete clears S1 state; retained history behavior follows the accepted lifecycle contract without fabricating activity | delete, retained row, and same-ID recreation tests |
+| D9 | diagnostic/private adapter data crosses the API | expose only bounded product fields; never raw evidence, errors, records, prompts, paths, commands, tool I/O, or metadata | response snapshot/secret/path negative tests |
+
+Implementation constraints:
+
+- reuse `AgentStatusStore`; do not create a second poller, cursor, resolver, or
+  correlation system;
+- use the accepted S1-B/C status/provenance/confidence/degraded result without
+  upgrading it in the API or UI;
+- preserve the current `/api/sessions` wire fields byte-for-byte except for the
+  explicitly additive versioned nested field;
+- prefer the existing authenticated session-list route unless the audit proves an
+  additive session-scoped route is required; do not expose two competing status
+  APIs;
+- do not edit T0/T1/T2 adapter semantics, T3 projection, Recorder, Terminal,
+  lifecycle transitions, A1 approval state, or Windows behavior;
+- do not add a status-derived approval CTA.
+
+Focused evidence required before the S1-D checkpoint commit:
+
+```text
+Go: production route/auth/session/delete tests with -race
+TypeScript: npm run typecheck
+Jest: strict DTO, host-bound transport, session-race, and actual renderer tests
+Call graph: rg evidence showing the product imports the tested renderer/client
+Diff: git diff --check and reviewed final diff
+```
+
+Then run `sh scripts/build-gate.sh` on the final S1-D tree. Report native skips
+honestly. Commit with an `S1-D` prefix, push, verify local/remote full SHA equality
+and clean worktree, and stop for checkpoint review. Do not emit the final S1
+`REVIEW REQUEST` and do not begin S1-E in the same execution turn.
+
 ### S1-E — Integrated regression, safety evidence, and final review request
 
 Goal: prove the complete S1 contract without expanding scope.
@@ -454,4 +541,3 @@ tests are complete. Do not claim a physical-device pass without running it.
 Potential richer provider status that requires new managed hooks/protocol signals
 must remain unknown/degraded until those signals are independently evidenced. It
 is not a reason to add heuristics or weaken S1 acceptance.
-

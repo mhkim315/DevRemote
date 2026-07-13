@@ -143,7 +143,7 @@ T2  Claude Adapter                              ACCEPT ef4a162c7 (Claude 2.1.202
 R2  Multi-agent Expansion Research            ACCEPT 6f940b03b (8-agent fit/authority matrix; pinned ACP/Gemini fixtures; T0 remains frozen)
 D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patch/workspace/fixed-suite/review boundary; activation remains fail-closed)
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
-S1  Rich Agent Runtime Status Model           NEXT (execute S1-A through S1-E via NEXT_SESSION_S1_RUNTIME_STATUS_HANDOFF.md)
+S1  Rich Agent Runtime Status Model           IN PROGRESS (S1-B/C midpoint ACCEPT 2f3fdfc; S1-D next)
 A1  Mobile-first Approval System
 O1  Orchestrator
 N1  Notifications                             PLANNED outside the revised critical path
@@ -465,6 +465,12 @@ S1 is staged as S1-A audit/contract, S1-B internal status state, S1-C accepted
 T1/T2 production wiring, S1-D authenticated API/mobile consumer, and S1-E
 integrated regression/safety verification. Intermediate checkpoints are not
 independent acceptance points; request review only after the complete S1 path.
+
+Execution-agent instructions use the task packet format in
+`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`. The S1-B/C midpoint was
+independently accepted at `2f3fdfcbff0fc21e78f9c077f8cf2cef61024d6d`;
+S1-D is the next bounded checkpoint. This midpoint does not replace final S1
+acceptance after S1-E.
 
 Example states:
 
