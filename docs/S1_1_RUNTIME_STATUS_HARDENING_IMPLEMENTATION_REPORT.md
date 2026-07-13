@@ -250,4 +250,41 @@ sh scripts/build-gate.sh             # Backend OK; Mobile typecheck OK; Mobile j
 
 ---
 
-REVIEW REQUEST: S1.1 Runtime Status Hardening — 715c22b59320fa80628b394bde1cd4a4a07571e0
+## 9. Remediation after independent REJECT (verification `07a4bb3`)
+
+The first S1.1 submission (`715c22b`) was independently REJECTed with three
+focused correctness blockers
+(`docs/S1_1_RUNTIME_STATUS_HARDENING_VERIFICATION.md`). Each is fixed below in a
+narrow commit with a matching production negative test; frozen `ResolveStatus`,
+the public DTO, T0/T1/T2, and mobile remain unchanged.
+
+| Blocker | Commit | Fix | Key test(s) |
+| --- | --- | --- | --- |
+| R1 — `WinningSeq` ignored confidence, so it could bind a non-winner when two same-(status,provenance) candidates differ in confidence | `e1651f0` | `locateWinningSeq` also matches normalized confidence via `normConfidence` (same clamp01 the contract applies before selection); no re-derived precedence | `TestS11A_LowerConfidenceLaterEventDoesNotWin` (reviewer counterexample), `_HigherConfidenceLaterEventWins`, `_OutOfRangeConfidenceClampedWinnerMatched`, `_UnequalConfidenceOneShotEqualsIncremental` |
+| R2 — `LaunchBinding.Adapter` stored but never verified in correlation | `3108e5e` | `LaunchCorrelation` takes `discoveredAdapter` and requires a non-empty exact match; `processSession` passes the runtime's actual `sess.AdapterName()` | `TestS11B_CorrelationPIDStartRules/{adapter mismatch,empty discovered adapter}`, `_EmptyBindingAdapterFailsClosed`, `_ProductionAdapterMismatchNoStatus` |
+| R3 — replacement published the binding before invalidation, leaving a concurrent-poll window (and a stream-stale-write that could reject the later invalidation) | `ef47b55` | one production-owned boundary `TelemetryService.RegisterOrReplaceLaunch`: reserve gen → invalidate old status+ingestion at gen → publish; registry split into `ReserveLaunchGeneration` + `PublishLaunch` | `TestS11R3_InvalidationPrecedesPublish`, `_ConcurrentPollReplacementRace` (`-race`), `_ReplacementIsolatedPerSession`, `_BoundaryMonotonicAcrossDeleteRecreate` |
+
+Remediation baseline: `07a4bb3` (reviewer REJECT doc, docs-only). Remediation
+final implementation SHA: `ef47b551e6c9fdb141676b35c0731be8c0e35d14`.
+
+### 9.1 Verified non-blocking product limitation (documented per handoff §5)
+
+The local CLI `pokit run claude` / `pokit run codex` path
+(`cmd/devremote/client.go:runClient` → local socket → `createLocalControlled`)
+still joins arguments into one command string and executes through the legacy
+`bash -c` branch, and does NOT register a recognized launch binding. Therefore:
+
+- `pokit run claude/codex` currently provides **managed lifecycle**, not
+  recognized managed-agent authority;
+- the recognized PID/StartedAt/LaunchGen correlation path implemented here is the
+  accepted **preset HTTP profile** create path (`createFromProfile`);
+- arbitrary local commands correctly receive no supported-agent semantic authority.
+
+This is NOT one of the three remediation blockers and does not expand the A/B/C
+scope. It is recorded as an O1-readiness boundary: do not describe the current
+local CLI path as `recognized managed-agent` or `orchestration-certified`.
+Changing the `pokit run` protocol is explicitly deferred.
+
+---
+
+REVIEW REQUEST: S1.1 Runtime Status Hardening remediation — ef47b551e6c9fdb141676b35c0731be8c0e35d14
