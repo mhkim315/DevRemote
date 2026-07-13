@@ -2,6 +2,7 @@ package term
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -180,20 +181,27 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 							a.resetForGeneration(logRef.Path)
 						}
 						a.appendRecords(rawLines)
-						a.trimIfNeeded(2000)
-						a.updateVersion(logRef.Agent)
-						acceptedEvents, _, nextCursor := readViaAcceptedAdapter(logRef.Agent, a.buildAdapterInput(), id, a.cursor())
-						a.setCursor(nextCursor)
-						binding := transcript.LookupLaunch(id)
-						corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))
-						s.transcript.SetCorrelation(id, transcript.CorrelationState{
-							SessionID:   id,
-							Correlation: corr,
-							Provider:    logRef.Agent,
-						})
-						if corr == contract.CorrelationManagedLaunch {
-							if len(acceptedEvents) > 0 {
-								s.transcript.ProjectAgentEvents(id, acceptedEvents)
+						records, cursor, overflowed := a.buildAdapterInput()
+						if overflowed {
+							// One bounded degraded marker; stop calling adapter.
+							s.transcript.EmitDegraded(id, "semantic ingestion overflowed", now())
+						} else {
+							acceptedEvents, adapterVersion, nextCursor := callAcceptedAdapter(logRef.Agent, records, id, cursor)
+							a.setCursor(nextCursor)
+							if adapterVersion != "" {
+								a.updateVersion(adapterVersion)
+							}
+							binding := transcript.LookupLaunch(id)
+							corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))
+							s.transcript.SetCorrelation(id, transcript.CorrelationState{
+								SessionID:   id,
+								Correlation: corr,
+								Provider:    logRef.Agent,
+							})
+							if corr == contract.CorrelationManagedLaunch {
+								if len(acceptedEvents) > 0 {
+									s.transcript.ProjectAgentEvents(id, acceptedEvents)
+								}
 							}
 						}
 					}
@@ -500,10 +508,14 @@ func getProcessPID(id string, snapshots map[string]models.ProcessInfo) int {
 	return 0
 }
 
-// readViaAcceptedAdapter reads raw JSONL lines through the accepted
-// version-specific T1/T2 adapter. Preserves and returns the adapter's
-// opaque cursor for incremental reads across polls.
-func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string) {
+// callAcceptedAdapter passes the full prefix and opaque cursor to the accepted
+// version-specific T1/T2 adapter. It returns the adapter's events, the stream
+// version extracted from the first record (for LaunchCorrelation), and the
+// opaque NextCursor for the next poll.
+//
+// The adapter receives the FULL prefix from position 0 — the caller must not
+// slice or rebase the input. The cursor is passed through unchanged.
+func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string) {
 	var adapter contract.AgentAdapter
 	switch kind {
 	case "codex":
@@ -544,20 +556,57 @@ func readViaAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, pr
 		return nil, "", nextCursor
 	}
 
-	discoveredVersion := ""
-	for _, ev := range result.Events {
-		if v, ok := ev.Metadata["cli_version"]; ok && v != "" {
-			discoveredVersion = v
-			break
-		}
-		if v, ok := ev.Metadata["version"]; ok && v != "" {
-			discoveredVersion = v
-			break
-		}
-	}
+	// Extract stream version from the first valid record.
+	// The adapter has already validated it — this is data extraction only.
+	discoveredVersion := extractStreamVersion(kind, records)
 
 	return result.Events, discoveredVersion, string(result.NextCursor)
 }
+
+// extractStreamVersion reads the version from the first structural record field.
+// This is NOT validation — the adapter already validated the version internally.
+// We only need the version string for LaunchCorrelation comparison.
+func extractStreamVersion(kind string, records []contract.RawRecord) string {
+	if len(records) == 0 {
+		return ""
+	}
+	if len(records[0].Bytes) == 0 {
+		return ""
+	}
+	// Minimal extraction from the first record — no structural validation.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(records[0].Bytes, &m); err != nil {
+		return ""
+	}
+	switch kind {
+	case "codex":
+		// Codex: payload.cli_version
+		payload, _ := m["payload"]
+		if payload != nil {
+			var p map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &p); err == nil {
+				if cv, ok := p["cli_version"]; ok {
+					var v string
+					if err := json.Unmarshal(cv, &v); err == nil && v != "" {
+						return v
+					}
+				}
+			}
+		}
+	case "claude":
+		// Claude: top-level version
+		if ver, ok := m["version"]; ok {
+			var v string
+			if err := json.Unmarshal(ver, &v); err == nil && v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// now returns the current time. Extracted as a function so tests can override.
+var now = time.Now
 
 func mapLegacyType(t string) agent.AgentEventType {
 	switch t {

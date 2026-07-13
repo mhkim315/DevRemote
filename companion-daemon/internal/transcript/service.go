@@ -114,6 +114,12 @@ func (s *Service) FlushBytes(sessionID string, observedAt time.Time) {
 	s.mu.Unlock()
 }
 
+// EmitDegraded appends a degraded marker directly (called from queue worker
+// and from TelemetryService for overflow markers).
+func (s *Service) EmitDegraded(sessionID string, reason string, observedAt time.Time) {
+	s.emitDegraded(sessionID, reason, observedAt)
+}
+
 // emitDegraded appends a degraded marker directly (called from queue worker).
 func (s *Service) emitDegraded(sessionID string, reason string, observedAt time.Time) {
 	s.mu.Lock()
