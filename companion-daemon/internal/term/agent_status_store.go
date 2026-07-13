@@ -60,14 +60,24 @@ type AgentActivityRecord struct {
 	Generation     int    // adapterState.streamGen binding this result belongs to
 	Version        string // accepted provider version binding
 
+	// S1.1-B — LaunchGen is the monotonic launch-instance identity (transcript
+	// LaunchBinding.Generation) this result belongs to. It is a SEPARATE axis from
+	// Generation (streamGen): LaunchGen identifies the process/runtime launch,
+	// streamGen identifies the accepted event-stream path/inode/truncation epoch.
+	// The two are combined lexicographically by the store's generation rule
+	// (LaunchGen dominates; streamGen breaks ties within one launch) so a write
+	// bound to an OLDER launch can never overwrite a newer launch's record. It is
+	// internal only — NOT part of the public agentActivity DTO.
+	LaunchGen int64
+
 	// S1.1-A — bounded winning-evidence reference. WinningSeq is the stable
 	// per-session AgentEvent.Seq of the exact accepted event that produced this
 	// resolved status. It is an INTERNAL trace/anti-replay reference only: it is
 	// NOT part of the public agentActivity DTO and carries no text/metadata.
 	// HasWinningSeq is false whenever there is no accepted positive winner — an
 	// unknown/degraded/revoked result never fabricates a winning identity.
-	// S1.1-C uses (Generation, WinningSeq) to reject same-generation replay of an
-	// older winning revision.
+	// S1.1-C uses (LaunchGen, Generation, WinningSeq) to reject same-generation
+	// replay of an older winning revision.
 	WinningSeq    int64
 	HasWinningSeq bool
 }
@@ -77,6 +87,7 @@ type AgentActivityRecord struct {
 // (S1-C) sources these from the accepted-adapter hook in processSession.
 type AgentStatusUpdate struct {
 	SessionID  string
+	LaunchGen  int64 // S1.1-B: monotonic launch-instance identity (0 = unmanaged/legacy)
 	Generation int
 	Version    string
 	Events     []agent.AgentEvent
@@ -295,55 +306,61 @@ func (s *AgentStatusStore) Update(in AgentStatusUpdate) AgentActivityRecord {
 	// located from the resolver's own output over the accepted ordering. A
 	// degraded/unknown resolution binds no winner (fail closed).
 	winSeq, hasWin := locateWinningSeq(evidence, seqs, res)
-	return s.store(in.SessionID, in.Generation, in.Version, res, winSeq, hasWin)
+	return s.store(in.SessionID, in.LaunchGen, in.Generation, in.Version, res, winSeq, hasWin)
 }
 
 // Revoke forces a session's activity to unknown+degraded when authority is lost
 // (accepted-version conflict or ingestion overflow). It obeys the generation rule.
-func (s *AgentStatusStore) Revoke(sessionID string, generation int, version, reason string) AgentActivityRecord {
+func (s *AgentStatusStore) Revoke(sessionID string, launchGen int64, generation int, version, reason string) AgentActivityRecord {
 	if len(sessionID) == 0 || len(sessionID) > maxSessionIDLen {
 		return AgentActivityRecord{}
 	}
 	// Authority loss carries NO winning-evidence reference (fail closed).
-	return s.store(sessionID, generation, version, unknownDegraded(reason), 0, false)
+	return s.store(sessionID, launchGen, generation, version, unknownDegraded(reason), 0, false)
 }
 
-// Invalidate marks a session non-current at a NEW stream generation without
-// deleting its record. Unlike Clear (used for lifecycle/history delete), it
-// stores an unknown+degraded result AT the new generation, which raises the
-// generation high-water mark: a late update/revoke from an OLDER generation is
-// then rejected by the generation rule and cannot resurrect the prior positive
-// status. Used on a stream-generation change so a gen-N `working` never survives
-// into gen N+1, and a delayed gen-N write cannot re-store it.
-func (s *AgentStatusStore) Invalidate(sessionID string, generation int, reason string) AgentActivityRecord {
+// Invalidate marks a session non-current at a NEW generation (stream or launch)
+// without deleting its record. Unlike Clear (used for lifecycle/history delete),
+// it stores an unknown+degraded result AT the new generation, which raises the
+// generation high-water mark: a late update/revoke from an OLDER launch or stream
+// generation is then rejected by the generation rule and cannot resurrect the
+// prior positive status. Used on a stream-generation change AND on a launch
+// replacement (S1.1-B) so a prior-launch/prior-stream positive status never
+// survives, and a delayed prior-generation write cannot re-store it.
+func (s *AgentStatusStore) Invalidate(sessionID string, launchGen int64, generation int, reason string) AgentActivityRecord {
 	if len(sessionID) == 0 || len(sessionID) > maxSessionIDLen {
 		return AgentActivityRecord{}
 	}
 	// A non-current invalidation carries NO winning-evidence reference.
-	return s.store(sessionID, generation, "", unknownDegraded(reason), 0, false)
+	return s.store(sessionID, launchGen, generation, "", unknownDegraded(reason), 0, false)
 }
 
 // RevokeIfPresent downgrades an EXISTING record to unknown+degraded (used when a
 // previously-managed correlation becomes unavailable). A session with no prior
 // record is left absent, so an initially-uncorrelated session never gains a
 // phantom record. Returns (record, true) if a record was present.
-func (s *AgentStatusStore) RevokeIfPresent(sessionID string, generation int, version, reason string) (AgentActivityRecord, bool) {
+func (s *AgentStatusStore) RevokeIfPresent(sessionID string, launchGen int64, generation int, version, reason string) (AgentActivityRecord, bool) {
 	// Authority loss carries NO winning-evidence reference (fail closed).
-	rec := s.mkRecord(sessionID, generation, version, unknownDegraded(reason), 0, false)
+	rec := s.mkRecord(sessionID, launchGen, generation, version, unknownDegraded(reason), 0, false)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev, ok := s.records[sessionID]
 	if !ok {
 		return AgentActivityRecord{}, false
 	}
-	if generation < prev.Generation {
+	if staleWrite(launchGen, generation, prev) {
 		return prev, true // a stale revoke cannot overwrite a newer generation
+	}
+	// Preserve the launch high-water (see store): an unspecified (0) downgrade
+	// must not lower it, so a later delayed older-launch write stays rejected.
+	if prev.LaunchGen > rec.LaunchGen {
+		rec.LaunchGen = prev.LaunchGen
 	}
 	s.records[sessionID] = rec
 	return rec, true
 }
 
-func (s *AgentStatusStore) mkRecord(sessionID string, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
+func (s *AgentStatusStore) mkRecord(sessionID string, launchGen int64, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
 	return AgentActivityRecord{
 		SessionID:      sessionID,
 		Status:         res.Status,
@@ -354,19 +371,47 @@ func (s *AgentStatusStore) mkRecord(sessionID string, generation int, version st
 		ObservedAt:     s.now(),
 		Generation:     generation,
 		Version:        boundStr(version, maxVersionLen),
+		LaunchGen:      launchGen,
 		WinningSeq:     winSeq,
 		HasWinningSeq:  hasWin,
 	}
 }
 
+// staleWrite reports whether a write bound to (launchGen, streamGen) is OLDER than
+// the stored record and must be rejected. The two generation axes are combined
+// lexicographically: LaunchGen dominates (a newer launch instance always wins,
+// even at a lower streamGen, because a new launch legitimately restarts the
+// event-stream epoch), and streamGen breaks ties WITHIN one launch.
+//
+// A launchGen of 0 is "unspecified/unmanaged": it does NOT compete on the launch
+// axis (in production every launchGen==0 write is a safe downgrade — correlation
+// unavailable, version conflict, or overflow — never a positive status), so it
+// falls through to the stream-generation rule and, per store(), never lowers the
+// stored launch high-water. This lets a current observer downgrade a session
+// whose binding just disappeared while still rejecting a delayed OLDER nonzero
+// launch write. This is the single generation rule for update, revoke,
+// invalidate, and revoke-if-present.
+func staleWrite(launchGen int64, streamGen int, prev AgentActivityRecord) bool {
+	if launchGen != 0 && launchGen != prev.LaunchGen {
+		return launchGen < prev.LaunchGen
+	}
+	return streamGen < prev.Generation
+}
+
 // store applies the generation rule and the size bound, then records atomically.
-func (s *AgentStatusStore) store(sessionID string, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
-	rec := s.mkRecord(sessionID, generation, version, res, winSeq, hasWin)
+func (s *AgentStatusStore) store(sessionID string, launchGen int64, generation int, version string, res contract.StatusResult, winSeq int64, hasWin bool) AgentActivityRecord {
+	rec := s.mkRecord(sessionID, launchGen, generation, version, res, winSeq, hasWin)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prev, ok := s.records[sessionID]; ok {
-		if generation < prev.Generation {
-			return prev // an older generation cannot overwrite the current session
+		if staleWrite(launchGen, generation, prev) {
+			return prev // an older launch/stream generation cannot overwrite the current session
+		}
+		// The stored LaunchGen is a monotonic high-water: an unspecified (0) write
+		// downgrades the record without lowering the launch generation, so a later
+		// delayed OLDER nonzero-launch write is still rejected.
+		if prev.LaunchGen > rec.LaunchGen {
+			rec.LaunchGen = prev.LaunchGen
 		}
 		s.records[sessionID] = rec
 		return rec

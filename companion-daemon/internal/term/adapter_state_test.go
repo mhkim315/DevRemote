@@ -2,6 +2,7 @@ package term
 
 import (
 	"testing"
+	"time"
 
 	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/transcript"
@@ -336,7 +337,7 @@ func TestAdapterState_DegradedRevokesAuthority(t *testing.T) {
 		Provider:        "codex",
 		AcceptedVersion: "0.144.1",
 		PID:             0,
-	}, "codex", 12345)
+	}, "codex", 12345, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("correlation after version conflict: got %v, want Unavailable", corr)
 	}

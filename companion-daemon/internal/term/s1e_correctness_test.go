@@ -68,7 +68,7 @@ func TestS1E_GenerationChangeInvalidatesPriorStatus(t *testing.T) {
 	cur := p1
 	svc, sess := s1eCodexSvc(t, sid, &cur)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	// Generation N → waiting_approval.
 	s1cPoll(svc, sess, sid, "codex")
@@ -97,7 +97,7 @@ func TestS1E_TruncationGenerationChangeInvalidates(t *testing.T) {
 	cur := p
 	svc, sess := s1eCodexSvc(t, sid, &cur)
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	s1cPoll(svc, sess, sid, "codex")
 	if _, _, ok := svc.statusStore.Current(sid); !ok {
@@ -125,7 +125,7 @@ func TestS1E_GenerationHighWaterRejectsLateWrite(t *testing.T) {
 			Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}}
 	}
 	s.Update(work(5)) // generation N: working
-	s.Invalidate("a:1", 6, "stream generation changed")
+	s.Invalidate("a:1", 0, 6, "stream generation changed")
 	if rec, _, ok := s.Current("a:1"); !ok || rec.Status != agent.StatusUnknown || !rec.Degraded || rec.Generation != 6 {
 		t.Fatalf("after invalidate: %+v ok=%v, want unknown+degraded at gen 6", rec, ok)
 	}
@@ -134,7 +134,7 @@ func TestS1E_GenerationHighWaterRejectsLateWrite(t *testing.T) {
 		t.Errorf("late gen-5 update resurrected status=%q, want unknown (high-water reject)", got.Status)
 	}
 	// A delayed gen-N (5) revoke is likewise rejected; the record stays at gen 6.
-	s.Revoke("a:1", 5, "", "late")
+	s.Revoke("a:1", 0, 5, "", "late")
 	if rec, _, _ := s.Current("a:1"); rec.Generation != 6 {
 		t.Errorf("late gen-5 revoke moved generation to %d, want 6", rec.Generation)
 	}
@@ -251,8 +251,8 @@ func TestS1E_StatusStoreRace(t *testing.T) {
 			for j := 0; j < 60; j++ {
 				s.Update(AgentStatusUpdate{SessionID: sid, Generation: j, Adapter: resolvingAdapter{},
 					Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-				s.Revoke(sid, j, "0.144.1", "conflict")
-				s.RevokeIfPresent(sid, j, "0.144.1", "loss")
+				s.Revoke(sid, 0, j, "0.144.1", "conflict")
+				s.RevokeIfPresent(sid, 0, j, "0.144.1", "loss")
 				s.Current(sid)
 				if j%10 == 0 {
 					s.Clear(sid) // recreation restarts from a fresh record

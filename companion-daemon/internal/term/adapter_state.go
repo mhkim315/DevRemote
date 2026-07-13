@@ -1,6 +1,8 @@
 package term
 
 import (
+	"time"
+
 	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/transcript"
 )
@@ -115,14 +117,14 @@ func (a *adapterState) shouldEmitOverflowMarker() bool {
 	return true
 }
 
-func (a *adapterState) launchCorrelation(binding *transcript.LaunchBinding, kind string, discoveredPID int) contract.Correlation {
+func (a *adapterState) launchCorrelation(binding *transcript.LaunchBinding, kind string, discoveredPID int, discoveredStart time.Time) contract.Correlation {
 	if binding == nil {
 		return contract.CorrelationUnavailable
 	}
 	if a.versionConflict || !a.versionValid {
 		return contract.CorrelationUnavailable
 	}
-	return transcript.LaunchCorrelation(binding, kind, a.version, discoveredPID)
+	return transcript.LaunchCorrelation(binding, kind, a.version, discoveredPID, discoveredStart)
 }
 
 func (a *adapterState) clear() {

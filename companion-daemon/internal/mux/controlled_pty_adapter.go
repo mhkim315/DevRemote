@@ -7,6 +7,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"devremote/companion-daemon/internal/models"
 )
 
 // controlledPTYAdapter manages child PTY sessions owned by the daemon.
@@ -108,9 +110,10 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	}
 
 	s := &controlledPTYSession{
-		id:     id,
-		title:  id,
-		native: native,
+		id:        id,
+		title:     id,
+		native:    native,
+		startedAt: time.Now(),
 	}
 	a.sessions[id] = s
 
@@ -156,15 +159,32 @@ func (a *controlledPTYAdapter) TerminateSession(_ context.Context, id string) er
 // --- controlledPTYSession ---
 
 type controlledPTYSession struct {
-	id     string
-	title  string
-	exited bool
-	native *NativeSession
+	id        string
+	title     string
+	exited    bool
+	native    *NativeSession
+	startedAt time.Time // spawn time, recorded at CreateSession (S1.1-B runtime identity)
 }
 
 func (s *controlledPTYSession) ID() string          { return s.id }
 func (s *controlledPTYSession) Title() string       { return s.title }
 func (s *controlledPTYSession) AdapterName() string { return "controlled_pty" }
+
+// ProcessInfo exposes the daemon-owned child PID and the spawn StartedAt so the
+// managed-launch correlation (S1.1-B) can bind agent status to the exact runtime
+// instance. Both values come from state the adapter already owns — the child
+// *exec.Cmd it started and the timestamp recorded at CreateSession — NOT from any
+// ps/lsof scraping. This is supporting runtime identity only; it never selects
+// agent status. Returns an error (no fabricated identity) if the process is gone.
+func (s *controlledPTYSession) ProcessInfo(_ context.Context) (models.ProcessInfo, error) {
+	if s.native == nil || s.native.Cmd == nil || s.native.Cmd.Process == nil {
+		return models.ProcessInfo{}, fmt.Errorf("controlled_pty: no process")
+	}
+	return models.ProcessInfo{
+		PID:       s.native.Cmd.Process.Pid,
+		StartedAt: s.startedAt,
+	}, nil
+}
 
 func (s *controlledPTYSession) OpenStream(_ context.Context) (TerminalStream, error) {
 	return s.native, nil

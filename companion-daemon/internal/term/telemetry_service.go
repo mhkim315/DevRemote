@@ -188,6 +188,14 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						stateData.Adapter = newAdapterState()
 					}
 					a := stateData.Adapter
+					// S1.1-B: the launch-instance generation gates every status write
+					// this poll so a delayed write bound to a replaced launch is rejected.
+					// Looked up once; the binding is re-read for correlation below.
+					launchBinding := transcript.LookupLaunch(id)
+					launchGen := int64(0)
+					if launchBinding != nil {
+						launchGen = launchBinding.Generation
+					}
 					prevPath := a.path
 					if rr.GenerationChanged || a.path != logRef.Path {
 						a.resetForGeneration(logRef.Path)
@@ -199,7 +207,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						// The INITIAL generation (prevPath == "") is not a change, so a
 						// never-seen session gets no phantom record here.
 						if s.statusStore != nil && prevPath != "" {
-							s.statusStore.Invalidate(id, a.streamGen, "stream generation changed")
+							s.statusStore.Invalidate(id, launchGen, a.streamGen, "stream generation changed")
 						}
 					}
 					a.appendRecords(rawLines)
@@ -212,7 +220,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						// S1-C: ingestion overflow revokes activity authority for this
 						// generation → safe unknown+degraded (no fabricated status).
 						if s.statusStore != nil {
-							s.statusStore.Revoke(id, a.streamGen, a.version, "semantic ingestion overflowed")
+							s.statusStore.Revoke(id, launchGen, a.streamGen, a.version, "semantic ingestion overflowed")
 						}
 					} else {
 						acceptedEvents, adapterVersion, nextCursor, degraded := callAcceptedAdapter(logRef.Agent, records, id, acursor)
@@ -226,8 +234,8 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						if degraded && !a.versionValid {
 							a.markVersionConflict()
 						}
-						binding := transcript.LookupLaunch(id)
-						corr := a.launchCorrelation(binding, logRef.Agent, getProcessPID(id, processSnapshots))
+						pid, start := getProcessIdentity(ctx, sess, id, processSnapshots, batchAdapters)
+						corr := a.launchCorrelation(launchBinding, logRef.Agent, pid, start)
 						s.transcript.SetCorrelation(id, transcript.CorrelationState{
 							SessionID:   id,
 							Correlation: corr,
@@ -243,21 +251,23 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						// from correlated new events; a version conflict revokes authority;
 						// a previously-valid session that LOSES correlation is revoked to
 						// unknown+degraded (a never-correlated session stays absent).
+						// S1.1-B: every write carries the launch-instance generation so a
+						// delayed write bound to a replaced launch is rejected.
 						if s.statusStore != nil {
 							switch {
 							case a.versionConflict:
-								s.statusStore.Revoke(id, a.streamGen, a.version, "accepted version conflict")
+								s.statusStore.Revoke(id, launchGen, a.streamGen, a.version, "accepted version conflict")
 							case corr == contract.CorrelationManagedLaunch:
 								if len(acceptedEvents) > 0 {
 									s.statusStore.Update(AgentStatusUpdate{
-										SessionID: id, Generation: a.streamGen, Version: a.version,
+										SessionID: id, LaunchGen: launchGen, Generation: a.streamGen, Version: a.version,
 										Events: acceptedEvents, Adapter: acceptedAdapterFor(logRef.Agent),
 									})
 								}
 							default:
 								// correlation unavailable (not a version conflict): revoke a
 								// previously-valid status; leave never-correlated sessions absent.
-								s.statusStore.RevokeIfPresent(id, a.streamGen, a.version, "correlation unavailable")
+								s.statusStore.RevokeIfPresent(id, launchGen, a.streamGen, a.version, "correlation unavailable")
 							}
 						}
 					}
@@ -514,6 +524,30 @@ func (s *TelemetryService) Clear(sessionID string) {
 	}
 }
 
+// InvalidateForLaunch installs a non-current high-water at a NEW launch
+// generation when a same-ID launch binding is REPLACED (S1.1-B). Unlike Clear
+// (used for lifecycle/history delete), it does not delete the record: it stores
+// an unknown+degraded result AT the new launch generation so a delayed write
+// bound to the PRIOR launch is rejected by the generation rule and cannot
+// resurrect a stale status. It also resets the per-session adapter ingestion
+// epoch so the replaced launch's stream state does not carry into the new launch.
+func (s *TelemetryService) InvalidateForLaunch(sessionID string, launchGen int64) {
+	if s.statusStore == nil {
+		return
+	}
+	// Reset the adapter ingestion epoch for the new launch so a stale cursor/
+	// prefix from the prior launch cannot feed the new launch generation.
+	s.mu.Lock()
+	if sd := s.sessions[sessionID]; sd != nil && sd.Adapter != nil {
+		sd.Adapter.clear()
+	}
+	s.mu.Unlock()
+	// streamGen 0 at the new launch: the launch axis dominates the generation
+	// rule, so this high-water rejects any prior-launch write regardless of its
+	// (higher) streamGen.
+	s.statusStore.Invalidate(sessionID, launchGen, 0, "launch binding replaced")
+}
+
 // buildInteractionOptions returns capability-aware interaction options for a session.
 // Each option carries a semantic Kind for mobile styling; mobile never infers meaning from ID.
 func buildInteractionOptions(sess mux.Session) []agent.InteractionOption {
@@ -607,12 +641,26 @@ func readRawLines(cursor *LogCursor, maxLines int) RawLinesResult {
 	return result
 }
 
-// getProcessPID extracts the PID for a session from process snapshots.
-func getProcessPID(id string, snapshots map[string]models.ProcessInfo) int {
+// getProcessIdentity extracts the PID and process start time for a session for
+// launch correlation. It prefers the batch process snapshot (tmux/cmux
+// ProcessSnapshotProvider); for a non-batch adapter (controlled_pty) it falls
+// back to the session's own ProcessProvider — the SAME source the launch binding
+// captured at create — so a managed launch can rediscover its exact runtime
+// identity. A missing snapshot AND a session that cannot report identity yields
+// (0, zero): fail closed, never a fabricated identity; LaunchCorrelation then
+// treats a claimed-but-undiscovered identity as unavailable, never a wildcard.
+func getProcessIdentity(ctx context.Context, sess mux.Session, id string, snapshots map[string]models.ProcessInfo, batchAdapters map[string]bool) (int, time.Time) {
 	if info, ok := snapshots[id]; ok {
-		return info.PID
+		return info.PID, info.StartedAt
 	}
-	return 0
+	if !batchAdapters[sess.AdapterName()] {
+		if pp, ok := sess.(mux.ProcessProvider); ok {
+			if info, err := pp.ProcessInfo(ctx); err == nil {
+				return info.PID, info.StartedAt
+			}
+		}
+	}
+	return 0, time.Time{}
 }
 
 // callAcceptedAdapter passes the full prefix and opaque cursor to the accepted

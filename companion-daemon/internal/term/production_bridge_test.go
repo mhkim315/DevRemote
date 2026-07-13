@@ -50,12 +50,12 @@ func TestProduction_AcceptedOnlyRecordReachesTranscript(t *testing.T) {
 		t.Fatal("expected events, got 0")
 	}
 
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 	if !a.updateVersion(version, "codex") {
 		t.Fatal("updateVersion rejected valid version")
 	}
 	binding := transcript.LookupLaunch(sid)
-	corr := a.launchCorrelation(binding, "codex", 0)
+	corr := a.launchCorrelation(binding, "codex", 0, time.Time{})
 	ts.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: corr, Provider: "codex"})
 	if corr != contract.CorrelationManagedLaunch {
 		t.Fatalf("correlation: got %v, want ManagedLaunch", corr)
@@ -160,8 +160,8 @@ func TestProduction_VersionConflictRevokesCorrelation(t *testing.T) {
 
 	sid := "controlled_pty:vctest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 0)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 0, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("got %v, want Unavailable", corr)
 	}
@@ -203,13 +203,13 @@ func TestProduction_OverflowMarkerExactlyOnce(t *testing.T) {
 func TestProduction_PIDMismatchZeroSegments(t *testing.T) {
 	sid := "controlled_pty:pidtest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 12345, 1)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1", PID: 12345})
 
 	a := newAdapterState()
 	a.resetForGeneration("/p/test.jsonl")
 	a.updateVersion("0.144.1", "codex")
 
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 99999)
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 99999, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("PID mismatch: got %v, want Unavailable", corr)
 	}
@@ -220,13 +220,13 @@ func TestProduction_PIDMismatchZeroSegments(t *testing.T) {
 func TestProduction_ProviderMismatchZeroSegments(t *testing.T) {
 	sid := "controlled_pty:provtest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	a := newAdapterState()
 	a.resetForGeneration("/p/test.jsonl")
 	a.updateVersion("0.144.1", "codex")
 
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "claude", 0)
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "claude", 0, time.Time{})
 	if corr != contract.CorrelationUnavailable {
 		t.Errorf("provider mismatch: got %v, want Unavailable", corr)
 	}
@@ -272,7 +272,7 @@ func TestProduction_TranscriptAPIResponseAfterPolls(t *testing.T) {
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	sid := "controlled_pty:apitest"
 	defer transcript.RemoveLaunch(sid)
-	transcript.RegisterLaunch(sid, "codex", "controlled_pty", "0.144.1", 0, 1)
+	transcript.RegisterLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	a := newAdapterState()
 	a.resetForGeneration(logPath)
@@ -284,7 +284,7 @@ func TestProduction_TranscriptAPIResponseAfterPolls(t *testing.T) {
 	a.setCursor(nc)
 	a.updateVersion(version, "codex")
 
-	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 0)
+	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "codex", 0, time.Time{})
 	ts.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: corr, Provider: "codex"})
 	ts.ProjectAgentEvents(sid, events)
 

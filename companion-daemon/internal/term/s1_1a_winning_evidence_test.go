@@ -122,12 +122,12 @@ func TestS11A_DegradedAndRevokeCarryNoWinner(t *testing.T) {
 	rv := NewAgentStatusStore()
 	rv.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 2, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{evSeq("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9, 8)}})
-	rrec := rv.Revoke("a:1", 2, "2.1.202", "accepted version conflict")
+	rrec := rv.Revoke("a:1", 0, 2, "2.1.202", "accepted version conflict")
 	if rrec.HasWinningSeq {
 		t.Errorf("revoke fabricated a winner: %+v", rrec)
 	}
 	// Invalidate (stream-generation change) → no winner either.
-	irec := rv.Invalidate("a:1", 3, "stream generation changed")
+	irec := rv.Invalidate("a:1", 0, 3, "stream generation changed")
 	if irec.HasWinningSeq {
 		t.Errorf("invalidate fabricated a winner: %+v", irec)
 	}

@@ -87,7 +87,12 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-	// T3: register managed launch binding for accepted adapters.
+	// T3/S1.1-B: register managed launch binding for accepted adapters. The
+	// binding captures the daemon-owned child PID + spawn StartedAt (runtime
+	// identity) and receives a monotonic launch generation. A same-ID
+	// re-registration REPLACES the stale binding at a higher generation; when it
+	// replaces one, install a status high-water at the new launch generation so a
+	// delayed prior-launch write cannot resurrect a stale status.
 	if req.ProfileID == "codex" || req.ProfileID == "claude" {
 		version := ""
 		if req.ProfileID == "codex" {
@@ -95,7 +100,14 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		} else if req.ProfileID == "claude" {
 			version = "2.1.202"
 		}
-		transcript.RegisterLaunch(canonicalID, req.ProfileID, adapter, version, 0, 1)
+		pid, startedAt := managedProcessIdentity(r.Context(), h.Registry, canonicalID)
+		gen, replaced := transcript.RegisterLaunch(transcript.LaunchSpec{
+			SessionID: canonicalID, Provider: req.ProfileID, Adapter: adapter,
+			Version: version, PID: pid, StartedAt: startedAt,
+		})
+		if replaced && h.Telemetry != nil {
+			h.Telemetry.InvalidateForLaunch(canonicalID, gen)
+		}
 	}
 
 	// M2: catalog the managed session + start its exit watcher on the exact
@@ -235,6 +247,27 @@ func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuf
 	// No viewer yet — do not retain the starter subscription.
 	rec.Unsubscribe(subCh)
 	return rec, nil
+}
+
+// managedProcessIdentity resolves the freshly-created session's PID and spawn
+// start time from its own adapter session (controlled_pty ProcessProvider). It
+// is best-effort supporting identity: on any failure it returns (0, zero) so the
+// launch binding claims no process identity rather than a fabricated one. It does
+// NOT scrape ps/lsof — it reads only what the adapter already owns.
+func managedProcessIdentity(ctx context.Context, reg *mux.Registry, canonicalID string) (int, time.Time) {
+	sess, err := reg.FindSession(ctx, canonicalID)
+	if err != nil {
+		return 0, time.Time{}
+	}
+	pp, ok := sess.(mux.ProcessProvider)
+	if !ok {
+		return 0, time.Time{}
+	}
+	info, err := pp.ProcessInfo(ctx)
+	if err != nil {
+		return 0, time.Time{}
+	}
+	return info.PID, info.StartedAt
 }
 
 // genLocalID generates a unique daemon-owned local session id. Clients never

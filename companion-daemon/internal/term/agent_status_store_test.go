@@ -227,14 +227,14 @@ func TestAgentStatusStore_RevokeDowngrades(t *testing.T) {
 	s := NewAgentStatusStore()
 	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 2, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-	rec := s.Revoke("a:1", 2, "2.1.202", "accepted version conflict")
+	rec := s.Revoke("a:1", 0, 2, "2.1.202", "accepted version conflict")
 	if rec.Status != agent.StatusUnknown || !rec.Degraded {
 		t.Errorf("revoke: status=%q degraded=%v, want unknown/degraded", rec.Status, rec.Degraded)
 	}
 	// An older-generation revoke cannot overwrite a newer record.
 	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 5, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{ev("a:1", agent.EventThinking, contract.ProvenanceNativeLog, 0.9)}})
-	if got := s.Revoke("a:1", 3, "", "late"); got.Status != agent.StatusThinking || got.Generation != 5 {
+	if got := s.Revoke("a:1", 0, 3, "", "late"); got.Status != agent.StatusThinking || got.Generation != 5 {
 		t.Errorf("stale revoke overwrote newer generation: %+v", got)
 	}
 }
@@ -429,7 +429,7 @@ func TestAgentStatusStore_AbsurdSessionIDRejected(t *testing.T) {
 // B6a: RevokeIfPresent downgrades an existing record but never creates one.
 func TestAgentStatusStore_RevokeIfPresent(t *testing.T) {
 	s := NewAgentStatusStore()
-	if rec, ok := s.RevokeIfPresent("a:1", 1, "", "lost"); ok || rec.Status != "" {
+	if rec, ok := s.RevokeIfPresent("a:1", 0, 1, "", "lost"); ok || rec.Status != "" {
 		t.Errorf("RevokeIfPresent on absent created a record: %+v ok=%v", rec, ok)
 	}
 	if _, _, ok := s.Current("a:1"); ok {
@@ -437,7 +437,7 @@ func TestAgentStatusStore_RevokeIfPresent(t *testing.T) {
 	}
 	s.Update(AgentStatusUpdate{SessionID: "a:1", Generation: 1, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-	rec, ok := s.RevokeIfPresent("a:1", 1, "", "correlation unavailable")
+	rec, ok := s.RevokeIfPresent("a:1", 0, 1, "", "correlation unavailable")
 	if !ok || rec.Status != agent.StatusUnknown || !rec.Degraded {
 		t.Errorf("RevokeIfPresent on present: %+v ok=%v, want unknown/degraded", rec, ok)
 	}
