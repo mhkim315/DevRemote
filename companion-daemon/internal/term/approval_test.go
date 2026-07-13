@@ -187,7 +187,7 @@ func TestAction_RejectSucceeds_NoCommandEmitted(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	cmds := NewCommandBroker()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
-	h := &Handlers{Approvals: store, Cmds: cmds}
+	h := &Handlers{Approvals: store, Cmds: cmds, InsecureLocalOnly: true}
 
 	rr := doAction(h, "codex:s1", "a1", `{"action":"reject"}`)
 	if rr.Code != http.StatusOK {
@@ -206,7 +206,7 @@ func TestAction_ApproveFailsClosedNoConfirmableChannel(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	cmds := NewCommandBroker()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
-	h := &Handlers{Approvals: store, Cmds: cmds}
+	h := &Handlers{Approvals: store, Cmds: cmds, InsecureLocalOnly: true}
 
 	rr := doAction(h, "codex:s1", "a1", `{"action":"approve"}`)
 	if rr.Code != http.StatusBadGateway { // 502 delivery_failed
@@ -224,7 +224,7 @@ func TestAction_ApproveFailsClosedNoConfirmableChannel(t *testing.T) {
 func TestAction_UnknownActionAndNotFound(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 
 	if rr := doAction(h, "codex:s1", "a1", `{"action":"nope"}`); rr.Code != http.StatusBadRequest {
 		t.Errorf("unknown action code=%d want 400", rr.Code)
@@ -241,7 +241,7 @@ func TestAction_UnknownActionAndNotFound(t *testing.T) {
 func TestAction_DuplicateResolveConflict(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 
 	if rr := doAction(h, "codex:s1", "a1", `{"action":"reject"}`); rr.Code != http.StatusOK {
 		t.Fatalf("first reject code=%d", rr.Code)
@@ -258,7 +258,7 @@ func TestAction_ExpiredGone(t *testing.T) {
 	store.now = func() time.Time { return base }
 	seedApproval(store, "codex:s1", "a1", codexOpts())
 	store.now = func() time.Time { return base.Add(authApprovalExpiry + time.Second) }
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 	if rr := doAction(h, "codex:s1", "a1", `{"action":"reject"}`); rr.Code != http.StatusGone {
 		t.Errorf("expired code=%d want 410", rr.Code)
 	}
@@ -268,7 +268,7 @@ func TestAction_InvalidatedRequestConflict(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
 	store.InvalidateSession("codex:s1", "correlation lost")
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 	if rr := doAction(h, "codex:s1", "a1", `{"action":"reject"}`); rr.Code != http.StatusConflict {
 		t.Errorf("invalidated code=%d want 409", rr.Code)
 	}
@@ -282,7 +282,7 @@ func TestAction_InputContractValidation(t *testing.T) {
 		{ID: "reject", Label: "Reject", Kind: "reject"},
 	}
 	seedApproval(store, "codex:s1", "a1", opts)
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 
 	// Required input missing → 400, reservation not consumed.
 	if rr := doAction(h, "codex:s1", "a1", `{"action":"send"}`); rr.Code != http.StatusBadRequest {
@@ -301,7 +301,7 @@ func TestAction_FireAndForgetInputDelivered(t *testing.T) {
 		{ID: "send", Label: "Send", Kind: "neutral", Input: &agent.InputSchema{Required: true, Placement: "as_payload"}},
 	}
 	seedApproval(store, "codex:s1", "a1", opts)
-	h := &Handlers{Approvals: store, Cmds: cmds}
+	h := &Handlers{Approvals: store, Cmds: cmds, InsecureLocalOnly: true}
 
 	rr := doAction(h, "codex:s1", "a1", `{"action":"send","input":"ls -la"}`)
 	if rr.Code != http.StatusOK {
@@ -319,7 +319,7 @@ func TestAction_FireAndForgetInputDelivered(t *testing.T) {
 func TestAction_MethodAndBodyGuards(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 	// Empty action.
 	if rr := doAction(h, "codex:s1", "a1", `{}`); rr.Code != http.StatusBadRequest {
 		t.Errorf("empty action code=%d want 400", rr.Code)
@@ -333,7 +333,7 @@ func TestAction_MethodAndBodyGuards(t *testing.T) {
 func TestAction_ResponseOutcomeShape(t *testing.T) {
 	store := NewAuthoritativeApprovalStore()
 	seedApproval(store, "codex:s1", "a1", codexOpts())
-	h := &Handlers{Approvals: store, Cmds: NewCommandBroker()}
+	h := &Handlers{Approvals: store, Cmds: NewCommandBroker(), InsecureLocalOnly: true}
 	rr := doAction(h, "codex:s1", "a1", `{"action":"reject"}`)
 	var body map[string]string
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {

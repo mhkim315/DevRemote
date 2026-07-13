@@ -52,6 +52,11 @@ type Handlers struct {
 	HostIdentity *devicetrust.HostIdentity // M2.5-4: for ticket host binding
 	Audit        devicetrust.AuditLog      // M2.5-5: minimal local audit (nil ⇒ no audit)
 	Transcript   *transcript.Service       // T3: bounded session-isolated Transcript store + projectors
+	// A1-D: resolves the current launch-instance generation for a session so the
+	// approval action boundary can revalidate runtime identity immediately before
+	// delivery (catches a launch replacement racing an in-flight action). nil ⇒
+	// revalidation is skipped; wired to transcript.LookupLaunch in production.
+	LaunchGenOf func(sessionID string) (int64, bool)
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

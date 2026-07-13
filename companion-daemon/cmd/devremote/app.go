@@ -219,6 +219,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit}
+	// A1-D: revalidate approval runtime identity against the live launch instance.
+	h.LaunchGenOf = func(sessionID string) (int64, bool) {
+		lb := transcript.LookupLaunch(sessionID)
+		if lb == nil {
+			return 0, false
+		}
+		return lb.Generation, true
+	}
 
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()

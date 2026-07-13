@@ -4,8 +4,18 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"unicode/utf8"
 
 	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/devicetrust"
+)
+
+const (
+	// maxApprovalBodyBytes bounds the request body so a malicious/oversized POST
+	// cannot exhaust memory before decoding.
+	maxApprovalBodyBytes = 8 << 10 // 8 KiB
+	// maxApprovalInputBytes bounds the user-supplied input string.
+	maxApprovalInputBytes = 4096
 )
 
 // HandleApprovalAction handles POST /api/sessions/<id>/approvals/<approvalId>.
@@ -36,8 +46,23 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		Action string `json:"action"`
 		Input  string `json:"input,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Action == "" {
+	// Strict bounded decode: cap the body, reject unknown fields, and reject
+	// trailing data after the single JSON object. Malformed/oversized bodies fail
+	// closed before any lookup.
+	r.Body = http.MaxBytesReader(w, r.Body, maxApprovalBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || req.Action == "" {
 		http.Error(w, "Invalid body: {\"action\":\"...\", \"input\":\"...\"} required", http.StatusBadRequest)
+		return
+	}
+	if dec.More() {
+		http.Error(w, "Invalid body: unexpected trailing data", http.StatusBadRequest)
+		return
+	}
+	// Bound and validate the input string (oversize / malformed UTF-8 fail closed).
+	if len(req.Input) > maxApprovalInputBytes || !utf8.ValidString(req.Input) {
+		http.Error(w, string(OutcomeInputRejected), outcomeHTTPStatus(OutcomeInputRejected))
 		return
 	}
 
@@ -48,6 +73,24 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		h.finishApproval(w, r, sessionID, approvalID, req.Action, "", OutcomeNotFound)
 		return
+	}
+
+	// Bind the current authorization context. On the production (paired-device)
+	// route the request already passed RequirePrincipal(PermTerminalInput); this is
+	// defense-in-depth that the authenticated principal carries the exact permission
+	// the record was created under, so a legacy/arbitrary bearer or a downgraded
+	// device can never resolve it. The insecure-local dev route has no device
+	// principal and is gated separately by InsecureLocalOnly.
+	if !h.InsecureLocalOnly {
+		need := snap.RequiredPerm
+		if need == "" {
+			need = devicetrust.PermTerminalInput
+		}
+		p := devicetrust.PrincipalFromContext(r.Context())
+		if p == nil || !principalHasPerm(p, need) {
+			http.Error(w, "insufficient permissions", http.StatusForbidden)
+			return
+		}
 	}
 
 	selected := findOption(req.Action, snap.Options)
@@ -63,6 +106,20 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	if selected.Input != nil && selected.Input.Required && req.Input == "" {
 		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeInputRejected)
 		return
+	}
+
+	// Revalidate runtime identity immediately before delivery: if the launch
+	// instance was replaced since the request was ingested, the request is no longer
+	// current authority. This closes the window between a launch replacement and the
+	// next telemetry poll's invalidation. Only meaningful for a managed launch
+	// (LaunchGen != 0) and when a resolver is wired.
+	if snap.LaunchGen != 0 && h.LaunchGenOf != nil {
+		curGen, ok := h.LaunchGenOf(sessionID)
+		if !ok || curGen != snap.LaunchGen {
+			h.Approvals.InvalidateSession(sessionID, "launch replaced before action")
+			h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeStaleGeneration)
+			return
+		}
 	}
 
 	// Atomic at-most-once reservation (pending → executing). A concurrent second
@@ -165,4 +222,18 @@ func findOption(action string, options []agent.InteractionOption) *agent.Interac
 		}
 	}
 	return nil
+}
+
+// principalHasPerm reports whether the authenticated device principal carries the
+// exact permission the approval record requires.
+func principalHasPerm(p *devicetrust.Principal, need string) bool {
+	if p == nil {
+		return false
+	}
+	for _, perm := range p.Permissions {
+		if perm == need {
+			return true
+		}
+	}
+	return false
 }
