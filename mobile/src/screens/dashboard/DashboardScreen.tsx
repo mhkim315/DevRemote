@@ -17,6 +17,11 @@ interface Props {
   authCtx?: any;  // M3-auth-4A
 }
 
+// S1-E: a poll that does not settle within this bound is failed so a hung request
+// cannot block polling or leave a stale "Working" card. Kept below the activity
+// freshness horizon (6000ms) so a hung poll surfaces as non-current promptly.
+const POLL_DEADLINE_MS = 5000;
+
 export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,9 +37,9 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   const [editSession, setEditSession] = useState<SessionTelemetry | null>(null);
 
   const fetchSessions = () => {
-    // S1-D: singleflight — skip if a poll is already in flight (no starvation on a
-    // slow network); the controller also drops any response that resolves after
-    // unmount.
+    // S1-D/E: singleflight + a bounded deadline (a hung request fails after
+    // POLL_DEADLINE_MS so it cannot block polling or freshness) + connection-epoch
+    // drop of any pre-disconnect response; the controller also drops post-unmount.
     pollRef.current.poll(
       () => listSessions(token),
       data => {
@@ -47,6 +52,10 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         lastSuccessRef.current = Date.now(); // S1-E: mark a fresh successful poll
       },
       err => {
+        // A failed/timed-out poll signals connection trouble: invalidate the epoch
+        // so a stale in-flight response cannot commit after reconnect, and surface
+        // the error so cards render non-current immediately.
+        pollRef.current.invalidate();
         console.error(err);
         // R1a: classify the error for actionable messaging.
         if (err instanceof PokitError) {
@@ -73,7 +82,9 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         // stay consistent with the current failure, not a stale probe.
         refreshDiagnostics();
         setLoading(false);
-      });
+      },
+      POLL_DEADLINE_MS,
+    );
   };
 
   useEffect(() => {

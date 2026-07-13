@@ -261,6 +261,20 @@ func (s *AgentStatusStore) Revoke(sessionID string, generation int, version, rea
 	return s.store(sessionID, generation, version, unknownDegraded(reason))
 }
 
+// Invalidate marks a session non-current at a NEW stream generation without
+// deleting its record. Unlike Clear (used for lifecycle/history delete), it
+// stores an unknown+degraded result AT the new generation, which raises the
+// generation high-water mark: a late update/revoke from an OLDER generation is
+// then rejected by the generation rule and cannot resurrect the prior positive
+// status. Used on a stream-generation change so a gen-N `working` never survives
+// into gen N+1, and a delayed gen-N write cannot re-store it.
+func (s *AgentStatusStore) Invalidate(sessionID string, generation int, reason string) AgentActivityRecord {
+	if len(sessionID) == 0 || len(sessionID) > maxSessionIDLen {
+		return AgentActivityRecord{}
+	}
+	return s.store(sessionID, generation, "", unknownDegraded(reason))
+}
+
 // RevokeIfPresent downgrades an EXISTING record to unknown+degraded (used when a
 // previously-managed correlation becomes unavailable). A session with no prior
 // record is left absent, so an initially-uncorrelated session never gains a

@@ -79,8 +79,11 @@ func TestS1E_GenerationChangeInvalidatesPriorStatus(t *testing.T) {
 	// Generation change (new inode/path) whose generation N+1 has no status event.
 	cur = p2
 	s1cPoll(svc, sess, sid, "codex")
-	if rec, _, ok := svc.statusStore.Current(sid); ok {
-		t.Errorf("prior-generation status survived a generation change: %+v", rec)
+	// The prior positive status must not survive: the row is now explicitly
+	// non-current (unknown + degraded), never the gen-N waiting_approval.
+	rec, _, ok := svc.statusStore.Current(sid)
+	if !ok || rec.Status == agent.StatusWaitingApproval || !rec.Degraded {
+		t.Errorf("prior-generation status survived a generation change: %+v ok=%v", rec, ok)
 	}
 }
 
@@ -107,8 +110,37 @@ func TestS1E_TruncationGenerationChangeInvalidates(t *testing.T) {
 	}
 	writeLines(t, p, []string{codexMetaLine, codexTaskStartedLine})
 	s1cPoll(svc, sess, sid, "codex")
-	if rec, _, ok := svc.statusStore.Current(sid); ok {
-		t.Errorf("status survived truncation generation change: %+v", rec)
+	rec, _, ok := svc.statusStore.Current(sid)
+	if !ok || rec.Status == agent.StatusWaitingApproval || !rec.Degraded {
+		t.Errorf("status survived truncation generation change: %+v ok=%v", rec, ok)
+	}
+}
+
+// E1/B3: a generation change preserves a high-water mark, so a DELAYED older-
+// generation update/revoke cannot resurrect the prior positive status.
+func TestS1E_GenerationHighWaterRejectsLateWrite(t *testing.T) {
+	s := NewAgentStatusStore()
+	work := func(gen int) AgentStatusUpdate {
+		return AgentStatusUpdate{SessionID: "a:1", Generation: gen, Adapter: resolvingAdapter{},
+			Events: []agent.AgentEvent{ev("a:1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}}
+	}
+	s.Update(work(5)) // generation N: working
+	s.Invalidate("a:1", 6, "stream generation changed")
+	if rec, _, ok := s.Current("a:1"); !ok || rec.Status != agent.StatusUnknown || !rec.Degraded || rec.Generation != 6 {
+		t.Fatalf("after invalidate: %+v ok=%v, want unknown+degraded at gen 6", rec, ok)
+	}
+	// A delayed gen-N (5) update must NOT resurrect working.
+	if got := s.Update(work(5)); got.Status != agent.StatusUnknown {
+		t.Errorf("late gen-5 update resurrected status=%q, want unknown (high-water reject)", got.Status)
+	}
+	// A delayed gen-N (5) revoke is likewise rejected; the record stays at gen 6.
+	s.Revoke("a:1", 5, "", "late")
+	if rec, _, _ := s.Current("a:1"); rec.Generation != 6 {
+		t.Errorf("late gen-5 revoke moved generation to %d, want 6", rec.Generation)
+	}
+	// New evidence in the CURRENT generation (6) does replace the marker.
+	if got := s.Update(work(6)); got.Status != agent.StatusWorking {
+		t.Errorf("current-generation update status=%q, want working", got.Status)
 	}
 }
 

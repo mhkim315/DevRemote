@@ -188,15 +188,18 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						stateData.Adapter = newAdapterState()
 					}
 					a := stateData.Adapter
+					prevPath := a.path
 					if rr.GenerationChanged || a.path != logRef.Path {
 						a.resetForGeneration(logRef.Path)
-						// E1: a stream-generation change (inode/path/truncation) invalidates
-						// any prior positive status for this session IMMEDIATELY. Until new
-						// correlated status evidence arrives in the new generation, the product
-						// result is absent — a gen-N `working`/`waiting_approval` must never
-						// survive into gen N+1 that carries no status event.
-						if s.statusStore != nil {
-							s.statusStore.Clear(id)
+						// E1/B3: a stream-generation CHANGE invalidates any prior positive
+						// status IMMEDIATELY. This is NOT a full Clear (reserved for lifecycle
+						// delete): it stores a non-current unknown+degraded record AT the new
+						// generation, raising the generation high-water mark so a delayed
+						// OLDER-generation update/revoke cannot resurrect the prior status.
+						// The INITIAL generation (prevPath == "") is not a change, so a
+						// never-seen session gets no phantom record here.
+						if s.statusStore != nil && prevPath != "" {
+							s.statusStore.Invalidate(id, a.streamGen, "stream generation changed")
 						}
 					}
 					a.appendRecords(rawLines)
