@@ -30,6 +30,12 @@ Read in order:
 4. this handoff;
 5. the B1-B8 remediation report and touched code/tests.
 
+This is authority and concurrency work. Sections 5 through 8 of
+`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md` are mandatory. Before editing
+production code, write the bounded contract note and binding table required by
+that protocol. Do not start R2-A until the note explicitly covers claim,
+idempotency, delivery receipt, invalidation, capacity, retry, and restart.
+
 ## 1. Preserve without redesign
 
 - `waiting_approval` and all heuristic/PTY/prompt/status evidence are display-only;
