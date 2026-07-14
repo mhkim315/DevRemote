@@ -3,7 +3,7 @@
 Status: **CP0 EVIDENCE ONLY — capacity ZERO; no production code; H0 ACCEPTED baseline**
 
 Date: 2026-07-15. Executor: Claude Code. Baseline `b60ed2474` (H0/H0-R1 accepted).
-Authority: handoff §9/§10 (risk-proportional CP0 criteria) + plan §7/§8/§11.2 +
+Authority: handoff §9/§10 (proportionate-scope CP0 criteria) + plan §7/§8/§11.2 +
 reviewer ACCEPT boundary ("남은 CP0 증거 수집"; cdhash/공급망/전체 schema bundle 재개 금지).
 
 ## 1. Pinned provider executable (version-drift containment)
@@ -16,7 +16,7 @@ recording package-lock resolved/integrity, artifact digests, and the (unused)
 global version for contrast. Ambient `~/.codex` auth only; no credential copies.
 **Claim wording**: "exact-version 0.144.1 executable executed via explicit path,
 version + artifact digests recorded before execution" — NOT a complete
-process-image attestation; gate #1 remains BLOCKED per risk-proportional criteria.
+process-image attestation; gate #1 remains BLOCKED per proportionate-scope criteria.
 
 Post-install checks (all PASS before this packet): ① `--version` == 0.144.1
 (fail-closed path); ② app-server initialize handshake success; ③ consumed schema

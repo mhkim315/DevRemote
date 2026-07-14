@@ -8,7 +8,7 @@ Date: 2026-07-14
 > `docs/NEXT_EXECUTOR_A1_1_CP0_HARNESS_RECOVERY_HANDOFF.md` first. The current canonical
 > tip `0f67833` contains a confirmed recursive-lock deadlock and is not accepted. The
 > replacement agent is authorized for recovery packet H0 only. The newer handoff also
-> freezes the risk-proportional boundary that defers cdhash/full-supply-chain and full
+> freezes the proportionate-scope boundary that defers cdhash/full-supply-chain and full
 > schema-bundle certification work.
 
 ## 1. Canonical repository identity

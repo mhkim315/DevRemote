@@ -218,7 +218,7 @@ Do not run a real model turn merely to validate the lock fix. One real accept an
 real decline trace may be recaptured only after H0 is independently accepted and CP0
 evidence collection resumes.
 
-## 10. Risk-proportional CP0 criteria after H0
+## 10. Proportionate-scope CP0 criteria after H0
 
 These rules govern later CP0 work but are **not H0 implementation tasks**.
 

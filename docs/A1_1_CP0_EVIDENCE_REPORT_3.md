@@ -2,7 +2,7 @@
 
 Status: **CP0 IN PROGRESS — gate #6 (cancel/duplicate/timeout/cleanup) PROVEN with
 pinned 0.144.1; #2–#5 re-corroborated on the fixed harness; #1 stays BLOCKED
-(risk-proportional); #7 NOT PROVEN (design open). A1.1 / A1 / N1 / CP1 remain
+(proportionate-scope); #7 NOT PROVEN (design open). A1.1 / A1 / N1 / CP1 remain
 BLOCKED. Capacity stays ZERO.**
 
 Date: 2026-07-15. Executor: Claude Code, canonical checkout. Baseline `b60ed2474`
@@ -32,7 +32,7 @@ Global PATH codex drifted `0.144.1 → 0.144.4` between sessions. Per user direc
 **Claim wording (bounded)**: an exact-version 0.144.1 executable in a dedicated
 directory was executed via explicit path with version + artifact digests recorded
 before execution. This is NOT complete process-image attestation; gate #1 stays
-BLOCKED per the risk-proportional criteria (cdhash/supply-chain not resumed).
+BLOCKED per the proportionate-scope criteria (cdhash/supply-chain not resumed).
 
 Post-install checks (all PASS): version fail-closed path; initialize handshake;
 consumed schema subset 17/17 raw-sha256-identical to the committed manifest;
