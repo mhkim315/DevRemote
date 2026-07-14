@@ -1,0 +1,27 @@
+A1.1 CP0 exact-version certification evidence (installed binary, this session)
+
+codex --version : codex-cli 0.144.1
+retrieval date  : 2026-07-14
+
+PATH entry      : /opt/homebrew/bin/codex  (symlink -> node shim codex.js)
+node shim       : @openai/codex/bin/codex.js
+                  sha256 134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477  size 7236
+vendored native : @openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+                  Mach-O 64-bit executable arm64
+                  sha256 29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a  size 260405808
+launch chain    : node -> codex.js (resolves platform package) -> spawn(native codex app-server)
+
+transport       : stdio:// (default); ws:// experimental/available/excluded
+schema bundle   : codex app-server generate-json-schema --out <dir>   (WITHOUT --experimental)
+                  267 files; deterministic manifest sha256
+                  cafb9881d2563af545c888b6574501fc6bbe0bb458249194446d4a242745aed2
+                  (reproduce: for each file, sha256; sort by path; sha256 of the sorted "hash  path" list)
+
+initialize      : platformFamily=unix  platformOs=macos  version=0.144.1  environmentId(init)=null
+runtime approval: environmentId="local" (NOT null)  ; approvalId absent for shell approvals
+                  availableDecisions present WITHOUT --experimental (lists accept/cancel, not decline)
+auth            : "Logged in using ChatGPT"
+
+FINDINGS THAT CONTRADICT THE PLAN (require reviewer attention before CP0 complete):
+1. environmentId is "local" at runtime, not null. Plan/verdict froze it null/absent.
+2. availableDecisions appears without --experimental; plan §2 labels it experimental.
