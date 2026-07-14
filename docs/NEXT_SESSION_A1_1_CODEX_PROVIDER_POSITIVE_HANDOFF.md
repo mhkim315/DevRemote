@@ -147,13 +147,22 @@ CP0 changes no production capacity. It must use a real, exact supported Codex
 binary and pinned schema/source evidence to prove all of the following:
 
 - local stdio app-server initialization and lifecycle;
+- TOCTOU-hardened binary identity (regular file, not symlink; digest bound to
+  device+inode; verified artifact == spawned artifact) and a schema bundle generated
+  WITHOUT `--experimental` with per-file digests + a deterministic manifest digest
+  (plan §4.1);
 - stable native request ID plus thread/turn/item identity;
-- exact command-approval request shape for the initial supported request;
+- exact command-approval request shape for the initial supported request, including
+  the optional-field freeze (`approvalId == null`; no network/policy amendment or
+  unsupported semantic fields) (plan §6);
 - allow-once and deny response shape;
 - ordering and meaning of matching `serverRequest/resolved`;
 - provider cancellation, timeout, duplicate response and child cleanup behavior;
 - a bounded real product path that starts/resumes a thread and starts a turn without
   creating a terminal replacement or generic Task/Dispatch API.
+
+Treat app-server as shipped-but-experimental and `0.144.1`-only; do not assume any
+other version is compatible.
 
 Stop BLOCKED if identity, response consumption, cleanup or the bounded user path
 cannot be proven. Do not weaken the acceptance criteria, fabricate a nonce where a
@@ -169,12 +178,19 @@ The only candidate tuple is the one frozen by the plan:
 
 ```text
 provider:          codex
-provider version:  0.144.1 exactly
+provider version:  0.144.1 exactly (shipped-but-experimental app-server; no other version)
 transport:         local app-server v2 stdio JSONL
 profile:           explicit managed codex_app_server profile
-request:           normal commandExecution requestApproval
+binary identity:   regular-file digest bound to device+inode; verified == spawned
+schema identity:   per-file digests + deterministic manifest digest (no --experimental)
+request:           normal commandExecution requestApproval (approvalId == null)
 actions:           allow_once and deny
 ```
+
+Delivery routing (plan §3.1) is frozen before CP3: the default `ApprovalDelivery` is
+always unavailable; only the exact server-derived certified runtime tuple routes to the
+Codex bridge; every other runtime/provider stays capacity zero; bridge register/replace/
+delete is atomic with runtime supersession.
 
 Unsupported versions, WebSocket, PermissionRequest hooks, attached TUI sessions,
 ordinary `pokit run codex`, experimental fields, file/network/MCP/session-wide

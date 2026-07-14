@@ -4,6 +4,14 @@ Status: **READY FOR INDEPENDENT PLAN RE-VERIFICATION — IMPLEMENTATION NOT YET 
 
 Date: 2026-07-14
 
+Revision: incorporates the four required plan changes from the ACCEPT-WITH-REQUIRED-
+PLAN-CHANGES review — (1) app-server reclassified shipped-but-experimental / exact-
+`0.144.1`-only (§1, §2); (2) TOCTOU-hardened binary + schema identity mechanism (§4.1,
+CP0/CP1); (3) typed-parse JSON canonicalization that does not reject whitespace/key
+order, plus the initial optional-field freeze (§6, CP2); (4) frozen provider delivery
+routing boundary — default unavailable, server-derived certified-tuple routing only,
+atomic with supersession (§3.1, CP3).
+
 Repository: `https://github.com/mhkim315/DevRemote.git`
 
 Branch: `feature/phase10-multi-adapter`
@@ -42,18 +50,22 @@ Do not use app-server WebSocket transport. It is explicitly experimental and
 unsupported. The initial certified transport is local stdio JSONL only. Do not use
 experimental app-server request fields or decisions.
 
-This is the smallest production-credible candidate, not a completed capability.
-App-server supplies a provider-owned JSON-RPC request ID, thread/turn/item identity,
-a response channel on the same connection, and `serverRequest/resolved`. A
-controlled exact-version trace must still prove the resolution semantics before
-capacity may become non-zero.
+This is the smallest production-credible candidate, not a completed capability, and
+the app-server surface is **shipped but experimental**: the `0.144.1` CLI itself marks
+`app-server` as `[experimental]`. It is accepted here only as an exact-version
+certification candidate, with no stability or backward/forward-compatibility guarantee.
+No version other than `0.144.1` is automatically compatible; any other version is
+non-actionable until separately certified. App-server supplies a provider-owned
+JSON-RPC request ID, thread/turn/item identity, a response channel on the same
+connection, and `serverRequest/resolved`. A controlled exact-version trace must still
+prove the resolution semantics before capacity may become non-zero.
 
 ## 2. Evidence classification
 
 | Surface | Classification | Confirmed evidence | A1 decision |
 | --- | --- | --- | --- |
 | Codex `PermissionRequest` hook | shipped, blocking; payload contract still incomplete for A1 | exact-version hook/schema exposes session/turn/tool fields and allow/deny response, but no external invocation ID or post-response acknowledgement | research/future only; non-actionable |
-| app-server v2 stdio | shipped protocol surface | initialization, thread/turn/item events, approval server requests and matching response IDs | selected candidate |
+| app-server v2 stdio | shipped but EXPERIMENTAL protocol surface (exact-version certification candidate; no stability/compat guarantee; `0.144.1` CLI marks `app-server` `[experimental]`) | initialization, thread/turn/item events, approval server requests and matching response IDs | selected candidate — `0.144.1` only; other versions non-actionable |
 | app-server WebSocket | experimental/unsupported | official app-server README | excluded |
 | `additionalPermissions`, `availableDecisions`, permission amendments | experimental | protocol annotations/schema | excluded |
 | external peer attachment to an existing Codex TUI | unavailable/unverified | current TUI internally uses app-server, but no stable external peer-attach contract is documented | must not be claimed |
@@ -107,6 +119,28 @@ terminal delivery. A queue admission or process write is not Codex acceptance. A
 Codex delivery implementation may reuse its validated binding rules, but must not
 return `DeliveryAccepted` merely because an item entered that queue.
 
+### 3.1 Delivery routing boundary (frozen before CP3)
+
+Production currently wires exactly one `ApprovalDelivery` at
+`companion-daemon/cmd/devremote/app.go:229` (`NewGatedApprovalDelivery`, capacity 0).
+The Codex bridge must be introduced as a server-side ROUTER, not a global replacement:
+
+- the **default path is always `NewUnavailableApprovalDelivery`** — every delivery is
+  unavailable unless it is explicitly routed to the certified Codex bridge;
+- **only the exactly-certified runtime tuple** (section 4) routes to the Codex bridge;
+- the **routing key is derived by the server** from the stored `RuntimeRef` and the
+  certification registry — never from a client- or provider-supplied string. A request
+  claiming `provider == codex` without a matching certified live runtime routes to
+  unavailable;
+- every other runtime and every other provider keeps **capacity zero**;
+- **bridge registration, replacement and deletion are atomic with runtime
+  supersession**: a launch/stream/connection change or deletion removes the bridge
+  route in the same linearization as the supersession, so a stale bridge can never
+  receive or answer a request for a superseded runtime.
+
+This routing layer is provider-neutral wiring; it does not add provider fields to the
+frozen store/DTO contract.
+
 ## 4. Certified runtime, not provider-wide enablement
 
 Certification is an exact tuple, not `provider == codex`:
@@ -114,8 +148,8 @@ Certification is an exact tuple, not `provider == codex`:
 ```text
 provider                 codex
 provider version         0.144.1 exactly
-binary identity          resolved executable digest recorded at launch
-schema identity          pinned generated app-server schema digest
+binary identity          regular-file digest bound to filesystem identity (device+inode), recorded at launch
+schema identity          per-file digests + deterministic manifest digest of the full generated schema bundle (generated WITHOUT --experimental)
 transport                local stdio JSONL
 launch profile           explicit codex_app_server managed profile
 protocol mode            app-server v2; experimentalApi disabled
@@ -124,14 +158,37 @@ actions                  allow_once, deny
 ```
 
 The daemon must resolve one executable, validate its exact version and schema, and
-spawn that same executable directly. PATH lookup at certification and a different
-PATH lookup at spawn are not sufficient identity.
+spawn that same executable directly. PATH lookup at certification and a different PATH
+lookup at spawn are not sufficient identity.
 
-An arbitrary command, the current legacy local `pokit run codex`, a regular Codex
-TUI profile, an attached session, a native-log-only adapter or a heuristic signal
-never inherits this certification. Certification is current-runtime state and is
-revoked on process replacement, app-server connection replacement, schema/version
-mismatch, launch/stream change, correlation loss, deletion or termination.
+### 4.1 Binary identity — TOCTOU-hardened (CP0/CP1 requirement)
+
+A digest recorded at certification and a later `spawn` of a path do not by themselves
+prove the spawned bytes equal the verified bytes: the file can be replaced between hash
+and exec. CP0/CP1 must therefore:
+
+- verify the resolved artifact is a **regular file, not a symlink** (reject symlinks and
+  non-regular files);
+- bind the recorded **binary digest to the file's filesystem identity** (device + inode)
+  captured at verification;
+- guarantee the **verified artifact is the spawned artifact** — hold an open handle to
+  the verified file and spawn from that same handle (e.g. exec the open fd / `/dev/fd`
+  path), or re-verify device+inode+digest identity immediately adjacent to spawn so a
+  replacement between hash and exec fails closed;
+- generate the app-server schema **without `--experimental`**, compute a **per-file
+  digest for every file in the generated bundle** and a **deterministic manifest digest**
+  over the sorted (path, digest) list;
+- include the full **binary/schema certification tuple in the launch binding and the
+  app-server connection epoch**, so any binary/schema/version drift or reconnection
+  revokes certification (see the revocation list below).
+
+### 4.2 Certification lifetime
+
+An arbitrary command, the current legacy local `pokit run codex`, a regular Codex TUI
+profile, an attached session, a native-log-only adapter or a heuristic signal never
+inherits this certification. Certification is current-runtime state and is revoked on
+process replacement, app-server connection replacement, schema/version mismatch,
+launch/stream change, correlation loss, deletion or termination.
 
 Production capability/capacity remains zero until every exit gate in section 11
 passes against this exact tuple. Activation is a separate focused change after the
@@ -199,12 +256,34 @@ to the frozen public/core contract.
 
 Canonicalization has two distinct products:
 
-1. **Native request fingerprint**, internal only. Length-frame the method,
-   request-ID type/value, thread/turn/item IDs, explicit null approval ID, command,
-   cwd, stable command-action fields and every stable field that changes approval
-   meaning. Reject invalid UTF-8, unknown fields, duplicates, floats where integers
-   are required, over-bound values and non-canonical JSON. Do not hash arbitrary
-   display text.
+1. **Native request fingerprint**, internal only. It is computed from a TYPED parse,
+   never from the raw JSON bytes. The daemon must:
+   - parse the request into typed Go structures with a strict decoder that **rejects
+     duplicate keys and unknown fields**;
+   - **validate types, UTF-8, integer-vs-float and length bounds** for every retained
+     field (reject floats where integers are required, over-bound values, invalid
+     UTF-8);
+   - build a Pokit **canonical representation** from the typed values (length-framing
+     the method, request-ID type/value, thread/turn/item IDs, explicit null approval
+     ID, command, cwd and stable command-action fields), and digest THAT.
+
+   Normal insignificant whitespace and JSON object key-ordering differences are NOT
+   grounds for rejection, and the **original JSON serialization is never used as
+   authority or as digest input** — only the typed, canonical representation is. Do not
+   hash arbitrary display text.
+
+   Initial command-approval optional-field freeze (any deviation is non-actionable):
+   - `approvalId`: MUST be `null`;
+   - network context and policy amendments: `null`/absent;
+   - any unsupported semantic field: `null`/absent;
+   - `command`: null/empty is rejected (a command approval must carry a bounded
+     non-empty command);
+   - field roles are fixed — `command` and the stable command-action fields are
+     **authority + fingerprint**; `cwd` is **fingerprint** (redacted for display only);
+     `environment` is **excluded** from authority and fingerprint (not retained as
+     authority); `reason` and any free-form text are **display-only** and excluded from
+     both fingerprints; `commandActions` stable identifiers are **authority +
+     fingerprint**.
 2. **Selected action digest**, the existing `CanonicalAction.Digest()`. Use the
    fixed Pokit option ID, `a1.action.v1`, a fixed kind such as
    `provider_approval_decision`, and no free-form input. Allow and deny have
@@ -322,10 +401,17 @@ commit.
 
 - Entry: independent R11 ACCEPT recorded; frozen provider-neutral core ancestry;
   independent A1.1 plan ACCEPT recorded.
-- Pin exact binary/source/schema and record classification.
+- Pin exact binary/source/schema and record classification, including that app-server
+  is shipped-but-experimental and `0.144.1`-only (section 1/2).
+- Verify binary identity per section 4.1: regular file (not symlink), digest bound to
+  device+inode, and a spawn method that guarantees the verified artifact is the spawned
+  artifact. Generate the schema WITHOUT `--experimental` and record per-file digests +
+  the deterministic manifest digest.
 - Run controlled redacted traces for allow, deny, cancel, timeout and duplicate
   response using a real `codex app-server` child.
 - Prove `serverRequest/resolved` ordering and consumption semantics.
+- Confirm the initial command-approval optional-field freeze holds in real traces
+  (`approvalId == null`; no network/policy amendment or unsupported semantic fields).
 - Prove a bounded real production path can start/resume a thread and start a turn.
 - Produce fixtures without prompts, secrets, repository paths or personal data.
 
@@ -334,24 +420,30 @@ production turn path cannot be proven. CP0 changes no production capacity.
 
 ### CP1 — managed app-server runtime, capacity zero
 
-- Directly spawn the certified executable with stdio pipes.
+- Directly spawn the certified executable with stdio pipes using the section 4.1
+  TOCTOU-hardened, verified-equals-spawned artifact method.
 - Implement bounded strict JSONL framing, one reader, one ordered writer,
   initialize/initialized handshake and connection epoch.
-- Bind SessionID, RuntimeRef, PID/start identity, binary/schema certification and
-  lifecycle cleanup.
+- Bind SessionID, RuntimeRef, PID/start identity, and the binary/schema certification
+  tuple (section 4.1) into the launch binding and connection epoch.
 - Keep the existing Recorder/PTy paths untouched.
 
 ### CP2 — Codex request registry and safe ingestion, capacity zero
 
 - Implement only the request/action scope in section 5.
 - Add bounded immutable native request storage and exact duplicate/conflict rules.
-- Derive ApprovalID, internal fingerprint and safe DTO summary.
+- Derive ApprovalID, internal fingerprint (typed parse per section 6: reject duplicate
+  keys/unknown fields, validate types/UTF-8/length, canonicalize from typed values, no
+  raw-JSON digest input) and safe DTO summary.
 - Feed the existing authoritative A1 store without bypassing its capability,
   provenance, generation or expiry checks.
 - Unknown/unsupported requests remain non-actionable.
 
 ### CP3 — Codex delivery and resolution bridge, capacity zero
 
+- Implement the section 3.1 delivery ROUTER: default `Unavailable`; route to the Codex
+  bridge only for the exact server-derived certified runtime tuple; bridge
+  register/replace/delete atomic with runtime supersession.
 - Implement the existing `ApprovalDelivery` contract for an exact native request.
 - Reserve, revalidate, write and resolve according to section 7.
 - Return accepted/already-accepted only with matching provider resolution evidence.
