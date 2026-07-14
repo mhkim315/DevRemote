@@ -518,6 +518,122 @@ func (n *ngGate) check(expected RuntimeRef) bool {
 func (n *ngGate) replace(rt RuntimeRef) { n.mu.Lock(); n.rt = rt; n.mu.Unlock() }
 func (n *ngGate) write()                { n.mu.Lock(); n.count++; n.mu.Unlock() }
 
+// R6-A: the gate rejects substituted bytes BEFORE append. The binding owns the digest
+// of one payload, the request carries different bytes — the gate must return ok=false,
+// produce no ReceiptID/handle, and the captured drain remains empty.
+func TestDeliveryGate_SubstitutedPayloadRejectedBeforeAcceptance(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	h, _ := g.Activate("codex:s1", rt, 4)
+	// Build a binding whose PayloadDigest is digest("authorised"), but DELIVER "substituted".
+	goodReq := gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("authorised"))                                                  // binding matches
+	badReq := ApprovalDeliveryRequest{ClaimToken: goodReq.ClaimToken, Binding: goodReq.Binding, Payload: []byte("substituted")} // wrong bytes
+	if _, _, ok := g.Accept(badReq); ok {
+		t.Fatal("substituted bytes accepted by the gate")
+	}
+	if items := g.Drain(h); len(items) != 0 {
+		t.Errorf("substituted-payload gate left items in captured endpoint: %v", items)
+	}
+	// The correct payload is still accept-able (not consumed).
+	if _, _, ok := g.Accept(goodReq); !ok {
+		t.Error("correct payload rejected after the substituted attempt")
+	}
+	if items := g.Drain(h); len(items) != 1 {
+		t.Fatalf("correct payload not landed: %v", items)
+	}
+}
+
+// Malformed binding fields rejected: each individually empty field, cross-session,
+// cross-runtime, empty token, invalid key.
+func TestDeliveryGate_MalformedBindingRejected(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	g.Activate("codex:s1", rt, 4)
+	okReq := gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))
+	for _, test := range []struct {
+		desc string
+		mut  func(r *ApprovalDeliveryRequest)
+	}{
+		{"empty-approval-id", func(r *ApprovalDeliveryRequest) { r.Binding.ApprovalID = "" }},
+		{"empty-session", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "" }},
+		{"empty-action-digest", func(r *ApprovalDeliveryRequest) { r.Binding.ActionDigest = "" }},
+		{"empty-payload-digest", func(r *ApprovalDeliveryRequest) { r.Binding.PayloadDigest = "" }},
+		{"empty-claim-token", func(r *ApprovalDeliveryRequest) { r.ClaimToken = "" }},
+		{"invalid-key", func(r *ApprovalDeliveryRequest) { r.Binding.IdempotencyKey = "has space" }},
+		{"cross-session", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "codex:OTHER" }},
+		{"cross-runtime", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.LaunchGen = 99 }},
+	} {
+		r := okReq
+		test.mut(&r)
+		if _, _, ok := g.Accept(r); ok {
+			t.Errorf("%s: accepted a malformed item", test.desc)
+		}
+	}
+	// payload-digest mismatch also rejects (covered by the substituted-payload test).
+}
+
+// R6-B: an endpoint with one accepted item SURVIVES bound exhaustion and drain by its
+// handle still returns that exact item. A terminal endpoint is safe for eviction only
+// when deactivated+empty; the test forces safe eviction by deactivating the first
+// handle, draining it, and verifying it is reclaimed. A retired-nonempty endpoint is
+// NOT a safe victim.
+func TestDeliveryGate_SafeEvictionNeverDestroysAcceptedItems(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	hFirst, _ := g.Activate("codex:s0", rt, 4)
+	g.Accept(gateReq("codex:s0", "a1", "k1", "ad", rt, []byte("keep-me")))
+	// Deactivate the current session (simulate delete/unlink/termination), making it
+	// retired and non-current but still holding its accepted item.
+	g.Deactivate("codex:s0")
+	// Now fill up so the first endpoint is under eviction pressure. An empty retired
+	// endpoint is reclaimed; a non-empty retired one is NOT.
+	for i := 0; i < maxGateEndpoints-1; i++ {
+		sid := fmt.Sprintf("codex:e%d", i)
+		g.Activate(sid, rt, 0)
+		g.Activate(sid, rt, 0) // second activate retires+reclaims the empty previous one
+	}
+	// Deactivated+non-empty → NOT a safe victim; its items survive.
+	drained := g.Drain(hFirst)
+	if len(drained) != 1 || string(drained[0].Payload) != "keep-me" {
+		t.Fatalf("accepted item evicted: drain=%v", drained)
+	}
+	// After draining, hFirst is now deactivated+empty+retired → a safe victim. The next
+	// activation reclaims it.
+	hAfter, _ := g.Activate("codex:sNew", rt, 4)
+	if hAfter == "" {
+		t.Error("activate failed after the deactivated endpoint was drained (should reclaim)")
+	}
+	if g.endpoints[hFirst] != nil {
+		t.Error("empty deactivated endpoint not reclaimed after drain")
+	}
+}
+
+// R6-C: identical SessionID + RuntimeRef + capacity returns the same handle (idempotent,
+// no growth). A genuine RuntimeRef change retires the old and publishes a new handle,
+// preserving already-accepted items for captured-handle drain.
+func TestDeliveryGate_IdempotentSameRuntimeActivation(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rtA := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	rtB := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 6, StreamGen: 0}
+	h1, _ := g.Activate("codex:s1", rtA, 4)
+	countBefore := len(g.endpoints)
+	h2, _ := g.Activate("codex:s1", rtA, 4) // same runtime → idempotent
+	if h1 != h2 || len(g.endpoints) != countBefore {
+		t.Fatalf("same-runtime activation must be idempotent: h1=%q h2=%q endpoints=%d", h1, h2, len(g.endpoints))
+	}
+	g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("x")))
+	// A genuine generation change (different RuntimeRef) is a true replacement with a
+	// new handle. The already-accepted item MUST survive the replacement for
+	// captured-handle drain.
+	h3, _ := g.Activate("codex:s1", rtB, 4)
+	if h1 == h3 {
+		t.Error("genuine runtime change must produce a new handle")
+	}
+	if items := g.Drain(h1); len(items) != 1 || items[0].Binding.IdempotencyKey != "k1" {
+		t.Fatalf("gen-change lost accepted A items: %v", items)
+	}
+}
+
 // Concurrent claims for the same approval yield exactly one execution owner.
 func TestClaim_ConcurrentOneOwner(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()

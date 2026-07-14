@@ -165,55 +165,87 @@ func (g *RuntimeDeliveryGate) genToken() (string, bool) {
 }
 
 // Activate publishes a NEW generation-owned endpoint for a session and retires the
-// prior one (keeping its accepted items). It returns the new opaque handle. On entropy
-// failure it publishes NO accepting endpoint (fail closed) and returns ok=false. An
-// out-of-range capacity yields an explicit no-channel endpoint (capacity 0).
+// prior one (keeping its accepted items). It is idempotent for an identical
+// RuntimeRef + effective capacity (R6-C): the current handle is reused with no entropy
+// allocation and no growth. Admission is all-or-nothing (R6-B): if the endpoint bound
+// would be exceeded and no SAFE (retired, empty) victim exists, it fails WITHOUT
+// changing the current mapping, queues, or ownership. Entropy failure publishes
+// nothing. An out-of-range capacity yields an explicit no-channel endpoint (capacity 0).
 func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity int) (handle string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Retire the current endpoint (do not destroy its queue).
-	if oldID, exists := g.current[sessionID]; exists {
-		if e := g.endpoints[oldID]; e != nil {
-			e.active = false
-		}
-		delete(g.current, sessionID)
+	effCap := capacity
+	if effCap < 0 || effCap > maxGateCapacity {
+		effCap = 0
 	}
-
+	// R6-C: same-runtime/capacity activation is idempotent.
+	oldID, hasOld := g.current[sessionID]
+	if hasOld {
+		if e := g.endpoints[oldID]; e != nil && e.active && e.runtime.equal(rt) && e.capacity == effCap {
+			return oldID, true
+		}
+	}
+	// Entropy tokens BEFORE any mutation.
 	id, tok1 := g.genToken()
 	nonce, tok2 := g.genToken()
 	if !tok1 || !tok2 {
-		return "", false // entropy failure: no accepting endpoint published
+		return "", false
 	}
-	cap := capacity
-	if cap < 0 || cap > maxGateCapacity {
-		cap = 0 // explicit no-channel (fail closed), never a silent clamp to a usable value
+	// R6-B: decide disposition + admission BEFORE mutating anything.
+	oldEmpty := false
+	if hasOld {
+		if e := g.endpoints[oldID]; e != nil {
+			oldEmpty = len(e.queue) == 0 && e.queuedBytes == 0
+		}
 	}
-	e := &genEndpoint{id: id, sessionID: sessionID, runtime: rt, active: true, capacity: cap, nonce: nonce}
+	projected := len(g.endpoints) + 1
+	if hasOld && oldEmpty {
+		projected = len(g.endpoints) // net zero: old removed, new added
+	}
+	victim := ""
+	if projected > maxGateEndpoints {
+		victim = g.findSafeVictimLocked(oldID)
+		if victim == "" {
+			return "", false // fail closed: no safe victim, nothing mutated
+		}
+	}
+	// Dispose of the old endpoint, then publish the new one.
+	if hasOld {
+		if oldEmpty {
+			g.removeLocked(oldID) // reclaim
+		} else {
+			// Retire the current endpoint (keep its queue).
+			if e := g.endpoints[oldID]; e != nil {
+				e.active = false
+			}
+			delete(g.current, sessionID)
+		}
+	}
+	if victim != "" {
+		g.removeLocked(victim)
+	}
+	e := &genEndpoint{id: id, sessionID: sessionID, runtime: rt, active: true, capacity: effCap, nonce: nonce}
 	g.endpoints[id] = e
 	g.current[sessionID] = id
 	g.order = append(g.order, id)
-	g.evictLocked()
 	return id, true
 }
 
-// evictLocked bounds the total number of endpoints, preferring to evict the oldest
-// RETIRED (inactive) endpoint. Caller holds mu.
-func (g *RuntimeDeliveryGate) evictLocked() {
-	for len(g.endpoints) > maxGateEndpoints {
-		victim := ""
-		// prefer the oldest inactive endpoint
-		for _, id := range g.order {
-			if e := g.endpoints[id]; e != nil && !e.active {
-				victim = id
-				break
-			}
+// findSafeVictimLocked returns the oldest inactive endpoint that is empty (no accepted
+// items, no queued bytes) and is not the endpoint being replaced (excludeID). If no
+// such safe victim exists it returns "". Caller holds mu.
+func (g *RuntimeDeliveryGate) findSafeVictimLocked(excludeID string) string {
+	for _, id := range g.order {
+		if id == excludeID {
+			continue
 		}
-		if victim == "" {
-			victim = g.order[0] // all active: evict the oldest (bounded degradation)
+		e := g.endpoints[id]
+		if e != nil && !e.active && len(e.queue) == 0 && e.queuedBytes == 0 && g.current[e.sessionID] != id {
+			return id
 		}
-		g.removeLocked(victim)
 	}
+	return ""
 }
 
 func (g *RuntimeDeliveryGate) removeLocked(id string) {
@@ -245,27 +277,43 @@ func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 	}
 }
 
-// Accept is the sole acceptance point. Under one lock it verifies the current endpoint
-// equals the expected runtime, is active, has capacity, and that the item fits the
-// byte bounds, then appends a typed fully-bound item and returns the receipt plus the
-// endpoint handle. Any over-limit, replaced/removed/no-channel generation returns
-// ok=false and appends nothing. No callback and no external I/O occur here.
+// Accept is the sole acceptance point. Under one lock it validates the COMPLETE
+// canonical item (full binding identity, canonical key, claim ownership, exact
+// runtime match, and payload-digest equality) BEFORE appending, so substituted bytes
+// or a malformed binding are rejected before daemon acceptance, not only at commit.
+// Any mismatch, over-limit, replaced/removed/no-channel generation returns ok=false
+// and appends nothing.
 func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt DeliveryReceipt, handle string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	eid, exists := g.current[req.Binding.SessionID]
+
+	// R6-A: validate the complete canonical item BEFORE any append.
+	b := req.Binding
+	if b.ApprovalID == "" || b.SessionID == "" || b.ActionDigest == "" || b.PayloadDigest == "" ||
+		!validCanonicalKey(b.IdempotencyKey) || req.ClaimToken == "" {
+		return DeliveryReceipt{}, "", false
+	}
+	eid, exists := g.current[b.SessionID]
 	if !exists {
 		return DeliveryReceipt{}, "", false
 	}
 	e := g.endpoints[eid]
-	if e == nil || !e.active || !e.runtime.equal(req.Binding.Runtime) || e.capacity == 0 {
+	if e == nil || !e.active || e.capacity == 0 {
+		return DeliveryReceipt{}, "", false
+	}
+	if e.sessionID != b.SessionID || !e.runtime.equal(b.Runtime) {
+		return DeliveryReceipt{}, "", false
+	}
+	// The EXACT bytes being appended must match the binding's domain-separated
+	// payload digest. Substituted bytes are rejected here, NOT at commit.
+	if b.PayloadDigest != payloadDigest(req.Payload) {
 		return DeliveryReceipt{}, "", false
 	}
 	if len(e.queue) >= e.capacity {
-		return DeliveryReceipt{}, "", false // queue full → fail closed
+		return DeliveryReceipt{}, "", false
 	}
 	if len(req.Payload) > maxGateItemBytes || g.totalBytes+len(req.Payload) > maxGateTotalQueuedBytes {
-		return DeliveryReceipt{}, "", false // byte bounds → fail closed
+		return DeliveryReceipt{}, "", false
 	}
 	e.seq++
 	rid := e.nonce + "-" + strconv.Itoa(e.seq)
