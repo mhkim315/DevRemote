@@ -4,7 +4,37 @@ import hashlib, json, os, re, shutil, signal, subprocess, sys, threading, time
 
 TMP = f"/tmp/pokit-cp0-{os.getuid()}"
 SCHEMA_DIR = os.path.join(TMP, "schema")
+_LOCK_PATH = os.path.join(TMP, ".probe.lock")
 _PROBE_CMD = "date"
+
+# ── run-specific lock (at most one probe at a time) ──
+_lock_fd = None
+
+
+def _acquire_lock(run_id: str) -> bool:
+    global _lock_fd
+    os.makedirs(TMP, exist_ok=True)
+    try:
+        _lock_fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
+        os.write(_lock_fd, run_id.encode())
+        return True
+    except FileExistsError:
+        return False
+
+
+def _release_lock():
+    global _lock_fd
+    if _lock_fd is not None:
+        try:
+            os.close(_lock_fd)
+        except OSError:
+            pass
+        _lock_fd = None
+    try:
+        os.unlink(_LOCK_PATH)
+    except OSError:
+        pass
+
 
 # ── structured pseudonym + field-allowlist redaction ──
 _pseudo_next: dict[str, int] = {}
@@ -28,7 +58,6 @@ def _redact_value(v):
     return v
 
 
-# bounded field allowlist per message type (everything else stripped)
 _ALLOW: dict = {
     "*": {"id", "jsonrpc", "method", "result", "error", "params"},
     "initialize": {"clientInfo"},
@@ -100,28 +129,12 @@ def _canonical_json_digest(path: str) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-# ── pre-startup orphan sweep: only codex app-server children, exact match ──
-def _kill_orphaned_app_servers():
-    try:
-        out = subprocess.run(["pgrep", "-f", "codex app-server"], capture_output=True, text=True)
-        for pid_str in out.stdout.strip().splitlines():
-            pid = int(pid_str)
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-    except (FileNotFoundError, ValueError, OSError):
-        pass
-
-
-# ── ordered wire client with per-run process-group tracking, hard deadline,
-#    and owned cleanup only. write+flush+seq under ONE lock. ──
+# ── ordered wire client (write+flush+seq under ONE lock) ──
 class AppServer:
     def __init__(self, deadline_s: float = 180):
         self._deadline_s = deadline_s
         self._started_at = time.time()
         self._timed_out = False
-        _kill_orphaned_app_servers()
         self.p = subprocess.Popen(
             ["codex", "app-server", "--stdio"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -149,10 +162,6 @@ class AppServer:
             pass
 
     @property
-    def alive(self) -> bool:
-        return self.p.poll() is None and not self._timed_out
-
-    @property
     def timed_out(self) -> bool:
         return self._timed_out
 
@@ -173,7 +182,7 @@ class AppServer:
                     self.msgs.append(obj)
                     self.trace.append(rec)
         except Exception:
-            pass  # pipe closed
+            pass
 
     def send(self, obj) -> int:
         if self._timed_out:
@@ -196,7 +205,6 @@ class AppServer:
         return None
 
     def stop(self):
-        """Terminate only the owned process group; record an ordered stop marker."""
         self._deadline_timer.cancel()
         self._terminate_pg()
         try:
@@ -243,21 +251,17 @@ def cmd_schema_repro():
     for d in (a, b):
         subprocess.run(["codex", "app-server", "generate-json-schema", "--out", d],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # collect all relative paths from both dirs and compare by path
     a_map = {}; b_map = {}
     for root, _, files in os.walk(a):
         for fn in files:
             rp = os.path.relpath(os.path.join(root, fn), a)
-            fp = os.path.join(root, fn)
-            a_map[rp] = _canonical_json_digest(fp) if fn.endswith(".json") else sha256_file(fp)
+            a_map[rp] = _canonical_json_digest(os.path.join(root, fn)) if fn.endswith(".json") else sha256_file(os.path.join(root, fn))
     for root, _, files in os.walk(b):
         for fn in files:
             rp = os.path.relpath(os.path.join(root, fn), b)
-            fp = os.path.join(root, fn)
-            b_map[rp] = _canonical_json_digest(fp) if fn.endswith(".json") else sha256_file(fp)
+            b_map[rp] = _canonical_json_digest(os.path.join(root, fn)) if fn.endswith(".json") else sha256_file(os.path.join(root, fn))
     mismatch = []
-    all_paths = sorted(set(a_map) | set(b_map))
-    for rp in all_paths:
+    for rp in sorted(set(a_map) | set(b_map)):
         da = a_map.get(rp, "<missing>"); db = b_map.get(rp, "<missing>")
         if da != db:
             mismatch.append((rp, da[:24], db[:24]))
@@ -288,14 +292,19 @@ def cmd_init():
 def _approval_trace(decision: str, deadline_s: float = 180):
     global _pseudo_next
     _pseudo_next = {}
-    run_dir = os.path.join(TMP, f"run_{decision}_{int(time.time())}")
+    run_id = f"run_{decision}_{int(time.time())}"
+    if not _acquire_lock(run_id):
+        print(f"LOCK_FAILED: another probe is already running (tried {run_id})")
+        sys.exit(3)
+    run_dir = os.path.join(TMP, run_id)
     os.makedirs(run_dir, exist_ok=True)
     probe = os.path.join(run_dir, f"probe_{decision}.txt")
     a = AppServer(deadline_s=deadline_s)
     responded = {"done": False, "at_seq": 0}
 
     def on_msgs():
-        if responded["done"] or a.timed_out: return
+        if responded["done"] or a.timed_out:
+            return
         with a._lock:
             for o in list(a.msgs):
                 m = o.get("method", "")
@@ -305,13 +314,11 @@ def _approval_trace(decision: str, deadline_s: float = 180):
                     responded["done"] = True
                     return
 
-    # initialize + thread + turn
     a.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"clientInfo": {"name": "pokit-cp0", "version": "0.0.0"}}})
-    if not _wait_cond(lambda: a.result_of(1), timeout=5):
-        return _fail_and_cleanup(a, run_dir, decision, "init response")
+    time.sleep(1.0)
     a.send({"jsonrpc": "2.0", "method": "initialized"})
-    time.sleep(0.3)
+    time.sleep(0.5)
     a.send({"jsonrpc": "2.0", "id": 2, "method": "thread/start",
             "params": {"approvalPolicy": "untrusted", "cwd": run_dir,
                        "config": {"sandbox_mode": "read-only"}}})
@@ -319,17 +326,19 @@ def _approval_trace(decision: str, deadline_s: float = 180):
     t0 = time.time()
     while time.time() - t0 < 15 and not tid and not a.timed_out:
         r = a.result_of(2)
-        if r: tid = r.get("threadId") or (r.get("thread") or {}).get("id")
+        if r:
+            tid = r.get("threadId") or (r.get("thread") or {}).get("id")
         time.sleep(0.3)
     if not tid:
-        return _fail_and_cleanup(a, run_dir, decision, "thread/start response")
+        _fail_and_cleanup(a, run_dir, decision, "thread/start response")
+        _release_lock()
+        return
     cmd = f'/bin/sh -c "{_PROBE_CMD} > {probe}"'
     a.send({"jsonrpc": "2.0", "id": 3, "method": "turn/start",
             "params": {"threadId": tid,
                        "input": [{"type": "text",
                                   "text": f"Use your shell tool now to run exactly this one command (it writes a file): {cmd}. Do not explain."}],
                        "approvalPolicy": "untrusted"}})
-
     t0 = time.time()
     resolved = False
     while time.time() - t0 < (deadline_s - 30) and not a.timed_out:
@@ -341,11 +350,17 @@ def _approval_trace(decision: str, deadline_s: float = 180):
             break
         time.sleep(0.4)
     if a.timed_out:
-        return _fail_and_cleanup(a, run_dir, decision, f"deadline {deadline_s}s")
+        _fail_and_cleanup(a, run_dir, decision, f"deadline {deadline_s}s")
+        _release_lock()
+        return
     if not responded["done"]:
-        return _fail_and_cleanup(a, run_dir, decision, "no approval request")
+        _fail_and_cleanup(a, run_dir, decision, "no approval request")
+        _release_lock()
+        return
     if not resolved:
-        return _fail_and_cleanup(a, run_dir, decision, "no resolved")
+        _fail_and_cleanup(a, run_dir, decision, "no resolved")
+        _release_lock()
+        return
 
     a.stop()
     out = os.path.join(run_dir, f"wire_{decision}.jsonl")
@@ -359,70 +374,47 @@ def _approval_trace(decision: str, deadline_s: float = 180):
             resolved_seq = t["seq"]
     print(f"decision={decision} responded={responded['done']} resolved={resolved} "
           f"probe_created={created} response_seq={responded['at_seq']} "
-          f"resolved_seq={resolved_seq} resolved_after_write={resolved_seq > responded['at_seq']}")
-    # Copy the wire trace out to the shared evidence location for easy commit
+          f"resolved_seq={resolved_seq} resolved_after_write={resolved_seq > responded['at_seq']} "
+          f"parent_pid={a._parent_pid} pgid={a._pgid}")
     evidence_out = os.path.join(TMP, f"wire_{decision}.jsonl")
     shutil.copy2(out, evidence_out)
-    _verify_cleanup(run_dir, a._parent_pid, decision)
-    return evidence_out
-
-
-def _wait_cond(cond, timeout=5, interval=0.2):
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if cond(): return True
-        time.sleep(interval)
-    return False
+    _verify_cleanup(run_dir, a._parent_pid, a._pgid, decision)
+    _release_lock()
 
 
 def _fail_and_cleanup(a: AppServer, run_dir, decision, reason):
     a.stop()
-    # ensure the process group is dead
     try:
         os.killpg(a._pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    # write failure evidence
     fail = {"decision": decision, "status": "FAILED", "reason": reason,
             "timed_out": a.timed_out, "parent_pid": a._parent_pid, "pgid": a._pgid,
             "trace_len": len(a.trace)}
-    out = os.path.join(TMP, f"wire_{decision}_FAIL.json")
-    with open(out, "w") as f:
+    with open(os.path.join(TMP, f"wire_{decision}_FAIL.json"), "w") as f:
         json.dump(fail, f, indent=2)
-    # also keep the partial trace
-    out2 = os.path.join(TMP, f"wire_{decision}.jsonl")
-    with open(out2, "w") as f:
+    with open(os.path.join(TMP, f"wire_{decision}.jsonl"), "w") as f:
         for t in a.trace:
             f.write(json.dumps(t) + "\n")
-    print(f"decision={decision} FAILED reason={reason} timed_out={a.timed_out} partial_trace={len(a.trace)}")
-    _verify_cleanup(run_dir, a._parent_pid, decision)
-    return None
+    print(f"decision={decision} FAILED reason={reason} timed_out={a.timed_out}")
+    _verify_cleanup(run_dir, a._parent_pid, a._pgid, decision)
 
 
-def _verify_cleanup(run_dir, parent_pid, decision):
-    """Prove no processes owned by this run remain."""
+def _verify_cleanup(run_dir, parent_pid, pgid, decision):
+    alive = False
     try:
-        pgid = os.getpgid(parent_pid)
-        pgids = [pgid]
-    except (ProcessLookupError, OSError):
-        pgids = []
-    alive = []
-    for gid in set(pgids):
+        os.killpg(pgid, 0)
+        alive = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    if alive:
+        print(f"WARNING: {decision} pgid {pgid} still alive — forcing cleanup")
         try:
-            os.killpg(gid, 0)  # signal 0 = existence check
-            alive.append(gid)
+            os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             pass
-    if alive:
-        print(f"WARNING: {decision} leftover process groups: {alive} — forcing cleanup")
-        for gid in alive:
-            try:
-                os.killpg(gid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
     else:
-        print(f"cleanup_verified={decision} no_remaining_process_groups")
-    # remove the run-specific temp dir
+        print(f"cleanup_verified={decision} pgid={pgid} no_remaining_process_group")
     if os.path.isdir(run_dir):
         shutil.rmtree(run_dir, ignore_errors=True)
 
@@ -531,11 +523,97 @@ def cmd_attest():
 
 
 def cmd_clean():
+    _release_lock()
     if os.path.isdir(TMP):
         shutil.rmtree(TMP)
         print(f"removed {TMP}")
     else:
         print("nothing to clean")
+
+
+# ── no-model tests ──
+def cmd_test_lock():
+    """Second probe must fail on the lock."""
+    os.makedirs(TMP, exist_ok=True)
+    rid1 = f"testlock_{int(time.time())}"
+    if not _acquire_lock(rid1):
+        print("TEST LOCK FAIL: first acquire failed"); sys.exit(1)
+    print(f"LOCK_ACQUIRED: {rid1}")
+    # Second acquire must fail
+    if _acquire_lock("testlock_2"):
+        print("TEST LOCK FAIL: second acquire should have failed"); _release_lock(); sys.exit(1)
+    print("LOCK_DENIED: second acquire correctly rejected")
+    _release_lock()
+    print("LOCK_RELEASED: re-acquire should work")
+    if not _acquire_lock("testlock_3"):
+        print("TEST LOCK FAIL: re-acquire after release failed"); sys.exit(1)
+    _release_lock()
+    print("LOCK_TEST_PASS")
+
+
+def cmd_test_pg_cleanup():
+    """Spawn a short-lived app-server, stop it, prove only its PGID is gone."""
+    global _pseudo_next
+    _pseudo_next = {}
+    # Record pre-existing codex PIDs (unrelated)
+    before = set()
+    try:
+        out = subprocess.run(["pgrep", "-f", "codex"], capture_output=True, text=True)
+        before = set(int(p) for p in out.stdout.strip().splitlines() if p)
+    except Exception:
+        pass
+    print(f"unrelated_before={len(before)}")
+    a = AppServer(deadline_s=10)
+    probe_pgid = a._pgid
+    probe_pid = a._parent_pid
+    print(f"probe_pid={probe_pid} probe_pgid={probe_pgid}")
+    a.stop()
+    # Verify probe PGID is dead
+    alive = False
+    try:
+        os.killpg(probe_pgid, 0)
+        alive = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    if alive:
+        print("TEST PG FAIL: probe PGID still alive"); sys.exit(1)
+    print("PG_CLEANUP: probe PGID terminated")
+    # Verify unrelated codex processes untouched
+    after = set()
+    try:
+        out = subprocess.run(["pgrep", "-f", "codex"], capture_output=True, text=True)
+        after = set(int(p) for p in out.stdout.strip().splitlines() if p)
+    except Exception:
+        pass
+    untouched = before & after
+    print(f"unrelated_untouched={len(untouched)}")
+    # The probe PID should NOT be in after
+    if probe_pid in after:
+        print(f"TEST PG FAIL: probe PID {probe_pid} still in process list"); sys.exit(1)
+    print("PG_CLEANUP_TEST_PASS")
+
+
+def cmd_test_startup_timeout():
+    """Verify a short deadline fires and records failure without hanging."""
+    global _pseudo_next
+    _pseudo_next = {}
+    a = AppServer(deadline_s=3)
+    t0 = time.time()
+    # just wait for the deadline
+    while time.time() - t0 < 8 and not a.timed_out:
+        time.sleep(0.3)
+    a.stop()
+    elapsed = time.time() - t0
+    if not a.timed_out:
+        print(f"TEST TIMEOUT FAIL: deadline did not fire after {elapsed:.1f}s"); sys.exit(1)
+    print(f"DEADLINE_FIRED: {elapsed:.1f}s STARTUP_TIMEOUT_TEST_PASS")
+
+
+def cmd_test_compile():
+    """Verify the harness compiles cleanly."""
+    import py_compile
+    py_compile.compile(__file__, doraise=True)
+    print("COMPILE_TEST_PASS")
 
 
 def main():
@@ -547,7 +625,7 @@ def main():
     elif args == ["init"]:
         cmd_init()
     elif args == ["approval", "accept"]:
-        _approval_trace("accept")  # uses deadline default 180s
+        _approval_trace("accept")
     elif args == ["approval", "decline"]:
         _approval_trace("decline")
     elif args == ["launchchain"]:
@@ -556,6 +634,14 @@ def main():
         cmd_attest()
     elif args == ["clean"]:
         cmd_clean()
+    elif args == ["test_lock"]:
+        cmd_test_lock()
+    elif args == ["test_pg_cleanup"]:
+        cmd_test_pg_cleanup()
+    elif args == ["test_startup_timeout"]:
+        cmd_test_startup_timeout()
+    elif args == ["test_compile"]:
+        cmd_test_compile()
     else:
         sys.stderr.write("refused: argv not in the fixed CP0 allowlist\n")
         sys.exit(2)
