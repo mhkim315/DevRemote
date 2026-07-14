@@ -193,8 +193,8 @@ func deliveryOutcomeHTTP(o DeliveryOutcome) (int, string) {
 
 // sanitizeLogID makes an attacker-influenced identifier log-safe: it strips control/
 // newline bytes, then applies the repository's conservative diagnostic redaction
-// (home paths, sk-/ghp_/xox/Bearer tokens, Authorization headers, key=value secrets),
-// and bounds the result. Identifiers are never logged verbatim.
+// (home paths, API-key and bearer-token patterns, Authorization headers, key=value
+// secrets), and bounds the result. Identifiers are never logged verbatim.
 func sanitizeLogID(s string) string {
 	b := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
