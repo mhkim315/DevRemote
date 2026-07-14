@@ -1,6 +1,6 @@
 # Next Session Handoff — A1.1 Codex Provider-Positive Path
 
-Status: **PLAN REVIEW REQUIRED — DO NOT IMPLEMENT CP0 UNTIL INDEPENDENT PLAN ACCEPT**
+Status: **INDEPENDENT PLAN ACCEPT — EXECUTE CP0 ONLY; CAPACITY MUST REMAIN ZERO**
 
 Date: 2026-07-14
 
@@ -61,22 +61,22 @@ Read these documents before proposing or changing code:
 3. `docs/A1_APPROVAL_SAFETY_REMEDIATION_11_REPORT.md`;
 4. `docs/A1_APPROVAL_SAFETY_REVERIFICATION_11.md`;
 5. `docs/A1_CODEX_PROVIDER_POSITIVE_PATH_PLAN.md`;
-6. `docs/ROADMAP_AFTER_E10B.md`;
-7. this handoff.
+6. `docs/A1_1_PLAN_INDEPENDENT_VERIFICATION.md`;
+7. `docs/ROADMAP_AFTER_E10B.md`;
+8. this handoff.
 
 Then inspect the current production boundaries named in the plan rather than
 relying on earlier remediation summaries.
 
 ## 4. Immediate next action
 
-The immediate next action is **independent A1.1 plan verification**, not
-implementation. The reviewer must validate the pinned Codex surface, CP0 evidence
-requirements, authority binding, privacy boundary, production entry path and stop
-conditions.
+Independent A1.1 plan verification is recorded in
+`docs/A1_1_PLAN_INDEPENDENT_VERIFICATION.md`. The executor is authorized to perform
+**CP0 only** after syncing the canonical commit containing that verdict.
 
-Only after a separate documentation commit records an independent plan ACCEPT may
-the executor begin CP0. Do not interpret R11 ACCEPT as automatic authorization for
-provider research or implementation.
+CP0 begins with the required contract note and filled binding table, then the exact-
+version redacted evidence spike. CP0 changes no production capacity and does not
+authorize CP1. Stop BLOCKED if any CP0 hard gate cannot be proven.
 
 ## 5. Frozen authority boundary
 
@@ -150,11 +150,13 @@ binary and pinned schema/source evidence to prove all of the following:
 - TOCTOU-hardened binary identity (regular file, not symlink; digest bound to
   device+inode; verified artifact == spawned artifact) and a schema bundle generated
   WITHOUT `--experimental` with per-file digests + a deterministic manifest digest
-  (plan §4.1);
+  (plan §4.1). Adjacent path re-verification is not sufficient; the actual process
+  image must be bound to the verified digest;
 - stable native request ID plus thread/turn/item identity;
 - exact command-approval request shape for the initial supported request, including
-  the optional-field freeze (`approvalId == null`; no network/policy amendment or
-  unsupported semantic fields) (plan §6);
+  the optional-field freeze (`approvalId == null`, `environmentId == null`/absent;
+  no network/policy amendment or unsupported semantic fields; `commandActions` is
+  display/corroboration only) (plan §6);
 - allow-once and deny response shape;
 - ordering and meaning of matching `serverRequest/resolved`;
 - provider cancellation, timeout, duplicate response and child cleanup behavior;
@@ -241,12 +243,9 @@ the authoritative final gate and push that exact verified tree.
 
 ## 13. Review and stop condition
 
-The plan-review result must be one of `ACCEPT`, `ACCEPT WITH REQUIRED CHANGES` or
-`REJECT`, with exact document sections and production symbols for every finding.
-
-After plan acceptance, each implementation packet must clearly label behavior as
-production-wired, test-only, unavailable, skipped or blocked. A green test suite is
-not proof of provider consumption.
+The plan-review result is recorded as ACCEPT. Each implementation packet must clearly
+label behavior as production-wired, test-only, unavailable, skipped or blocked. A
+green test suite is not proof of provider consumption.
 
 The final A1.1 review request may be made only after real production allow-once and
 deny paths pass end to end and capacity activation is confined to the exact certified

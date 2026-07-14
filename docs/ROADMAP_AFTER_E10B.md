@@ -146,7 +146,7 @@ T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
 A1  Approval Safety Core                      FROZEN after independent R11 ACCEPT (implementation 2e70512; R11 evidence d5a965c; report 997a697; provider-positive path absent)
-A1.1 Codex Provider-Positive Path             PLANNED / BLOCKING N1 (app-server stdio candidate; capacity stays zero through CP4; real allow+deny E2E required)
+A1.1 Codex Provider-Positive Path             PLAN ACCEPT / CP0 AUTHORIZED / BLOCKING N1 (app-server stdio candidate; capacity stays zero through CP4; real allow+deny E2E required)
 A1.2 Claude Approval Extension                OPTIONAL FOLLOW-UP (not automatically an N1 prerequisite; separate evidence and authorization required)
 N1  Notifications                             BLOCKED until independent A1.1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
@@ -576,11 +576,12 @@ R11 ACCEPT at report HEAD `997a697`; the provider-neutral A1 safety core is now
 frozen. This does not complete the product milestone: production mapping remains
 empty and delivery capacity remains zero.
 
-A1.1 is the bounded completion track. It uses the exact Codex `0.144.1` app-server
-v2 stdio candidate described in the A1.1 plan, keeps capacity zero through CP4 and
-requires independently verified real allow-once and deny paths before CP5 can
-activate the exact certified tuple. N1 remains blocked until independent A1.1
-acceptance.
+A1.1 is the bounded completion track. Independent plan verification is recorded in
+`docs/A1_1_PLAN_INDEPENDENT_VERIFICATION.md` and authorizes CP0 only. The track uses
+the exact Codex `0.144.1` app-server v2 stdio candidate described in the A1.1 plan,
+keeps capacity zero through CP4 and requires independently verified real allow-once
+and deny paths before CP5 can activate the exact certified tuple. N1 remains blocked
+until independent A1.1 acceptance.
 
 A1.2 is only a possible later Claude-specific extension. It must first prove exact
 hook invocation identity, one-response ownership and provider consumption. It must

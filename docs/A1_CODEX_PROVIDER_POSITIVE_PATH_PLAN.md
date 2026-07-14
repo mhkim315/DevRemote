@@ -1,6 +1,6 @@
 # A1.1 Codex Provider-Positive Path Plan
 
-Status: **READY FOR INDEPENDENT PLAN RE-VERIFICATION — IMPLEMENTATION NOT YET AUTHORIZED**
+Status: **INDEPENDENT PLAN ACCEPT — CP0 AUTHORIZED; PRODUCTION CAPACITY REMAINS ZERO**
 
 Date: 2026-07-14
 
@@ -11,6 +11,11 @@ CP0/CP1); (3) typed-parse JSON canonicalization that does not reject whitespace/
 order, plus the initial optional-field freeze (§6, CP2); (4) frozen provider delivery
 routing boundary — default unavailable, server-derived certified-tuple routing only,
 atomic with supersession (§3.1, CP3).
+
+Independent final review additionally removed adjacent path re-verification as a
+TOCTOU mitigation, froze `environmentId` to null/absent, classified best-effort
+`commandActions` as non-authoritative, and corrected WebSocket from “unsupported” to
+experimental/available-but-uncertified.
 
 Repository: `https://github.com/mhkim315/DevRemote.git`
 
@@ -46,9 +51,10 @@ tool invocation ID. The hook process also has no separate provider-consumption
 acknowledgement after it writes stdout and exits. Those omissions prevent the
 exact request ownership and consumption proof required by A1.
 
-Do not use app-server WebSocket transport. It is explicitly experimental and
-unsupported. The initial certified transport is local stdio JSONL only. Do not use
-experimental app-server request fields or decisions.
+Do not use app-server WebSocket transport. It is experimental and available in the
+`0.144.1` binary, but it is excluded and uncertified for A1.1. The initial certified
+transport candidate is local stdio JSONL only. Do not use experimental app-server
+request fields or decisions.
 
 This is the smallest production-credible candidate, not a completed capability, and
 the app-server surface is **shipped but experimental**: the `0.144.1` CLI itself marks
@@ -66,7 +72,7 @@ prove the resolution semantics before capacity may become non-zero.
 | --- | --- | --- | --- |
 | Codex `PermissionRequest` hook | shipped, blocking; payload contract still incomplete for A1 | exact-version hook/schema exposes session/turn/tool fields and allow/deny response, but no external invocation ID or post-response acknowledgement | research/future only; non-actionable |
 | app-server v2 stdio | shipped but EXPERIMENTAL protocol surface (exact-version certification candidate; no stability/compat guarantee; `0.144.1` CLI marks `app-server` `[experimental]`) | initialization, thread/turn/item events, approval server requests and matching response IDs | selected candidate — `0.144.1` only; other versions non-actionable |
-| app-server WebSocket | experimental/unsupported | official app-server README | excluded |
+| app-server WebSocket | experimental and available in the binary; uncertified for A1.1 | exact-version CLI help and official app-server README | excluded |
 | `additionalPermissions`, `availableDecisions`, permission amendments | experimental | protocol annotations/schema | excluded |
 | external peer attachment to an existing Codex TUI | unavailable/unverified | current TUI internally uses app-server, but no stable external peer-attach contract is documented | must not be claimed |
 | existing POKIT `pokit run codex` | managed lifecycle only for this purpose | CLI joins argv into a command string and local create can enter the legacy shell-command path; it is not the certified app-server client | remains non-actionable |
@@ -171,10 +177,15 @@ and exec. CP0/CP1 must therefore:
   non-regular files);
 - bind the recorded **binary digest to the file's filesystem identity** (device + inode)
   captured at verification;
-- guarantee the **verified artifact is the spawned artifact** — hold an open handle to
-  the verified file and spawn from that same handle (e.g. exec the open fd / `/dev/fd`
-  path), or re-verify device+inode+digest identity immediately adjacent to spawn so a
-  replacement between hash and exec fails closed;
+- guarantee the **verified artifact is the spawned artifact**. A path check immediately
+  before `exec` is NOT sufficient and is not an accepted alternative. CP0 must prove an
+  OS-supported mechanism that executes the same verified open file description, or a
+  post-spawn attestation of the actual process image that is cryptographically tied to
+  the verified digest. If `/dev/fd`, an inherited descriptor or another platform
+  primitive is proposed, CP0 must demonstrate it on the supported macOS runtime with a
+  deterministic adversarial replacement between verification and spawn. If different
+  bytes can start, or the actual process image cannot be bound to the certification
+  digest, stop BLOCKED;
 - generate the app-server schema **without `--experimental`**, compute a **per-file
   digest for every file in the generated bundle** and a **deterministic manifest digest**
   over the sorted (path, digest) list;
@@ -278,12 +289,17 @@ Canonicalization has two distinct products:
    - any unsupported semantic field: `null`/absent;
    - `command`: null/empty is rejected (a command approval must carry a bounded
      non-empty command);
-   - field roles are fixed — `command` and the stable command-action fields are
-     **authority + fingerprint**; `cwd` is **fingerprint** (redacted for display only);
-     `environment` is **excluded** from authority and fingerprint (not retained as
-     authority); `reason` and any free-form text are **display-only** and excluded from
-     both fingerprints; `commandActions` stable identifiers are **authority +
-     fingerprint**.
+   - `cwd`: null/empty is rejected for the initial scope; it must be a bounded,
+     normalized absolute path and is included in the internal authority fingerprint
+     while remaining redacted from public display;
+   - `environmentId`: MUST be `null`/absent in the initial scope. A later non-null
+     environment changes execution meaning and requires a separately reviewed
+     fingerprint rule; it must never be silently ignored;
+   - field roles are fixed — `command` and `cwd` are **authority + fingerprint**;
+     `reason` and other free-form explanatory text are **display-only** and excluded
+     from both fingerprints; `commandActions` is explicitly **best-effort display /
+     corroborating evidence only**, is excluded from authority and the fingerprint,
+     and cannot create or distinguish an actionable approval.
 2. **Selected action digest**, the existing `CanonicalAction.Digest()`. Use the
    fixed Pokit option ID, `a1.action.v1`, a fixed kind such as
    `provider_approval_decision`, and no free-form input. Allow and deny have
@@ -411,7 +427,8 @@ commit.
   response using a real `codex app-server` child.
 - Prove `serverRequest/resolved` ordering and consumption semantics.
 - Confirm the initial command-approval optional-field freeze holds in real traces
-  (`approvalId == null`; no network/policy amendment or unsupported semantic fields).
+  (`approvalId == null`; `environmentId == null`/absent; no network/policy amendment
+  or unsupported semantic fields; `commandActions` remains non-authoritative).
 - Prove a bounded real production path can start/resume a thread and start a turn.
 - Produce fixtures without prompts, secrets, repository paths or personal data.
 
@@ -567,10 +584,10 @@ Official Claude reference:
 
 ## 14. Exit decision
 
-The proposed implementation boundary is **READY FOR INDEPENDENT PLAN REVIEW**:
+The implementation boundary is **INDEPENDENTLY ACCEPTED FOR CP0 ONLY**:
 
 1. R11 and the provider-neutral safety foundation remain frozen ancestors;
-2. this A1.1 plan must receive independent ACCEPT before CP0 begins;
+2. CP0 must begin with its contract note and filled binding table;
 3. CP0 must prove exact app-server request/response resolution and a bounded real
    production turn path;
 4. capability remains zero through CP4;
