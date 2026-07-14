@@ -490,20 +490,47 @@ func TestDeliveryGate_MalformedMetadataRejected(t *testing.T) {
 }
 
 func TestDeliveryGate_ActivateRejectsBadSessionAndRuntime(t *testing.T) {
-	g := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	tests := []struct {
 		desc, session string
 		rt            RuntimeRef
 	}{
-		{"bad-session", "no-colon", rt},
-		{"bad-adapter-empty", "codex:s1", RuntimeRef{Adapter: "", Version: "v"}},
-		{"bad-version-empty", "codex:s1", RuntimeRef{Adapter: "c", Version: ""}},
+		{"bad-session-no-colon", "no-colon", rt},
+		{"bad-session-empty-adapter", ":local", rt},
+		{"bad-session-control-char", "codex:a\x01b", rt},
+		{"bad-session-adapter-space", "cod ex:s1", rt},
+		{"bad-session-uppercase-adapter", "Codex:s1", rt},
+		{"bad-adapter-empty", "codex:s1", RuntimeRef{Adapter: "", Version: "1.0"}},
+		{"bad-adapter-uppercase", "codex:s1", RuntimeRef{Adapter: "Codex", Version: "1.0"}},
+		{"bad-version-empty", "codex:s1", RuntimeRef{Adapter: "codex", Version: ""}},
+		{"bad-version-slash", "codex:s1", RuntimeRef{Adapter: "codex", Version: "1/0"}},
+		{"bad-version-traversal", "codex:s1", RuntimeRef{Adapter: "codex", Version: "../etc"}},
 	}
 	for _, x := range tests {
-		if h, ok := g.Activate(x.desc, x.rt, 4); ok || h != "" {
-			t.Errorf("%s: activation must fail, got handle=%q", x.desc, h)
-		}
+		t.Run(x.desc, func(t *testing.T) {
+			g := NewRuntimeDeliveryGate()
+			// R9-A2: pass x.session (not x.desc); each bad identity must fail closed
+			// and leave every accounting structure untouched.
+			if h, ok := g.Activate(x.session, x.rt, 4); ok || h != "" {
+				t.Fatalf("%s: activation must fail, got handle=%q ok=%v", x.desc, h, ok)
+			}
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			if len(g.endpoints) != 0 || len(g.current) != 0 || len(g.order) != 0 || g.totalBytes != 0 {
+				t.Errorf("%s: rejected activation mutated state: endpoints=%d current=%d order=%d bytes=%d",
+					x.desc, len(g.endpoints), len(g.current), len(g.order), g.totalBytes)
+			}
+		})
+	}
+	// Known-bad the FORMER length-only implementation accepted: a session with a
+	// control character and a path-shaped version now both fail closed.
+	g := NewRuntimeDeliveryGate()
+	if h, ok := g.Activate("codex:ok\ninject", rt, 4); ok || h != "" {
+		t.Errorf("control-char session must be rejected (length-only regression), got %q", h)
+	}
+	// Accepted canonical control still succeeds.
+	if h, ok := g.Activate("codex:s1", rt, 4); !ok || h == "" {
+		t.Errorf("canonical session/runtime must activate, got handle=%q ok=%v", h, ok)
 	}
 }
 

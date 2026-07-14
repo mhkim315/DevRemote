@@ -1,0 +1,286 @@
+package term
+
+import (
+	"fmt"
+	"testing"
+)
+
+// R9-A mandatory coverage: exact-limit / one-over bounds and canonical grammar for
+// every retained identity field at BOTH authority boundaries (Activate, Accept),
+// aggregate byte exhaustion that actually reaches the global bound, the combined
+// payload+metadata charged-item boundary, and payload non-aliasing. Every rejection
+// asserts that no accounting structure mutated.
+
+func r9rt() RuntimeRef {
+	return RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+}
+
+// snapshotGate captures the full accounting state for unchanged-on-reject assertions.
+type gateSnap struct {
+	endpoints, current, order, totalBytes int
+	perEndpoint                           map[string]int // handle -> queuedBytes
+	perQueue                              map[string]int // handle -> len(queue)
+	perSeq                                map[string]int // handle -> seq
+}
+
+func snapshotGate(g *RuntimeDeliveryGate) gateSnap {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := gateSnap{
+		endpoints: len(g.endpoints), current: len(g.current), order: len(g.order),
+		totalBytes:  g.totalBytes,
+		perEndpoint: map[string]int{}, perQueue: map[string]int{}, perSeq: map[string]int{},
+	}
+	for id, e := range g.endpoints {
+		s.perEndpoint[id] = e.queuedBytes
+		s.perQueue[id] = len(e.queue)
+		s.perSeq[id] = e.seq
+	}
+	return s
+}
+
+func (want gateSnap) assertUnchanged(t *testing.T, g *RuntimeDeliveryGate, ctx string) {
+	t.Helper()
+	got := snapshotGate(g)
+	if got.endpoints != want.endpoints || got.current != want.current ||
+		got.order != want.order || got.totalBytes != want.totalBytes {
+		t.Errorf("%s: aggregate state changed: endpoints %d→%d current %d→%d order %d→%d bytes %d→%d",
+			ctx, want.endpoints, got.endpoints, want.current, got.current,
+			want.order, got.order, want.totalBytes, got.totalBytes)
+	}
+	for id, wb := range want.perEndpoint {
+		if got.perEndpoint[id] != wb {
+			t.Errorf("%s: endpoint %s queuedBytes %d→%d", ctx, id, wb, got.perEndpoint[id])
+		}
+		if got.perQueue[id] != want.perQueue[id] {
+			t.Errorf("%s: endpoint %s queue len %d→%d", ctx, id, want.perQueue[id], got.perQueue[id])
+		}
+		if got.perSeq[id] != want.perSeq[id] {
+			t.Errorf("%s: endpoint %s seq %d→%d", ctx, id, want.perSeq[id], got.perSeq[id])
+		}
+	}
+}
+
+// ── Activate-boundary bounds: SessionID, Runtime.Adapter, Runtime.Version ──
+
+func TestDeliveryGate_ActivateBoundsExactAndOneOver(t *testing.T) {
+	rt := r9rt()
+	// SessionID: "codex:" (6) + local. Exact = 512 total → accept; 513 → reject.
+	sidExact := "codex:" + makeLargeStr(maxSessionIDLen-6)
+	sidOver := "codex:" + makeLargeStr(maxSessionIDLen-6+1)
+	if len(sidExact) != maxSessionIDLen || len(sidOver) != maxSessionIDLen+1 {
+		t.Fatalf("fixture length: exact=%d over=%d", len(sidExact), len(sidOver))
+	}
+	if h, ok := g4Activate(t, sidExact, rt); !ok || h == "" {
+		t.Errorf("exact-limit SessionID must activate")
+	}
+	g := NewRuntimeDeliveryGate()
+	before := snapshotGate(g)
+	if h, ok := g.Activate(sidOver, rt, 4); ok || h != "" {
+		t.Errorf("one-over SessionID must fail closed, got %q", h)
+	}
+	before.assertUnchanged(t, g, "sessionID one-over")
+
+	// Runtime.Adapter: grammar [a-z][a-z0-9_-]*, bound maxVersionLen (64).
+	adExact := makeLargeStr(maxVersionLen)    // 64 × 'x' — valid grammar
+	adOver := makeLargeStr(maxVersionLen + 1) // 65 × 'x' — over bound
+	if h, ok := g4Activate(t, "codex:s1", RuntimeRef{Adapter: adExact, Version: "1.0"}); !ok || h == "" {
+		t.Errorf("exact-limit adapter must activate")
+	}
+	g2 := NewRuntimeDeliveryGate()
+	b2 := snapshotGate(g2)
+	if h, ok := g2.Activate("codex:s1", RuntimeRef{Adapter: adOver, Version: "1.0"}, 4); ok || h != "" {
+		t.Errorf("one-over adapter must fail closed, got %q", h)
+	}
+	b2.assertUnchanged(t, g2, "adapter one-over")
+
+	// Runtime.Version: grammar [A-Za-z0-9][A-Za-z0-9._-]{0,63}, bound 64.
+	vExact := makeLargeStr(maxVersionLen)    // 64 × 'x'
+	vOver := makeLargeStr(maxVersionLen + 1) // 65 × 'x'
+	if h, ok := g4Activate(t, "codex:s1", RuntimeRef{Adapter: "codex", Version: vExact}); !ok || h == "" {
+		t.Errorf("exact-limit version must activate")
+	}
+	g3 := NewRuntimeDeliveryGate()
+	b3 := snapshotGate(g3)
+	if h, ok := g3.Activate("codex:s1", RuntimeRef{Adapter: "codex", Version: vOver}, 4); ok || h != "" {
+		t.Errorf("one-over version must fail closed, got %q", h)
+	}
+	b3.assertUnchanged(t, g3, "version one-over")
+}
+
+func g4Activate(t *testing.T, sid string, rt RuntimeRef) (string, bool) {
+	t.Helper()
+	g := NewRuntimeDeliveryGate()
+	return g.Activate(sid, rt, 4)
+}
+
+// ── Accept-boundary bounds: ApprovalID exact/one-over + re-validated identity ──
+
+func TestDeliveryGate_AcceptApprovalIDBounds(t *testing.T) {
+	rt := r9rt()
+	// exact 256 → accepted.
+	g := NewRuntimeDeliveryGate()
+	g.Activate("codex:s1", rt, 4)
+	idExact := makeLargeStr(authMaxApprovalIDLen)
+	if _, _, ok := g.Accept(gateReq("codex:s1", idExact, "k1", dig("d"), rt, []byte("x"))); !ok {
+		t.Errorf("exact-limit ApprovalID must be accepted")
+	}
+	// one-over 257 → rejected, state unchanged.
+	g2 := NewRuntimeDeliveryGate()
+	g2.Activate("codex:s1", rt, 4)
+	before := snapshotGate(g2)
+	idOver := makeLargeStr(authMaxApprovalIDLen + 1)
+	if _, _, ok := g2.Accept(gateReq("codex:s1", idOver, "k1", dig("d"), rt, []byte("x"))); ok {
+		t.Errorf("one-over ApprovalID must be rejected")
+	}
+	before.assertUnchanged(t, g2, "approvalID one-over")
+}
+
+// Accept independently re-validates identity grammar (a valid endpoint exists, but the
+// request binding carries a malformed identity → rejected before any mutation).
+func TestDeliveryGate_AcceptRevalidatesIdentityGrammar(t *testing.T) {
+	rt := r9rt()
+	cases := []struct {
+		desc string
+		mut  func(r *ApprovalDeliveryRequest)
+	}{
+		{"session-control", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "codex:a\x01b" }},
+		{"session-adapter-space", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "cod ex:s1" }},
+		{"session-uppercase-adapter", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "Codex:s1" }},
+		{"adapter-uppercase", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Adapter = "Codex" }},
+		{"version-slash", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Version = "1/0" }},
+		{"version-backslash", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Version = "1\\0" }},
+		{"version-traversal", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Version = "../x" }},
+		{"version-leading-dot", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Version = ".1" }},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			g := NewRuntimeDeliveryGate()
+			g.Activate("codex:s1", rt, 4)
+			before := snapshotGate(g)
+			r := gateReq("codex:s1", "a1", "k1", dig("d"), rt, []byte("x"))
+			c.mut(&r)
+			if _, _, ok := g.Accept(r); ok {
+				t.Fatalf("%s: malformed identity accepted", c.desc)
+			}
+			before.assertUnchanged(t, g, c.desc)
+		})
+	}
+}
+
+// ── Combined payload+metadata charged-item boundary (exact 4096 / one-over 4097) ──
+
+func TestDeliveryGate_ChargedItemBoundaryExactAndOneOver(t *testing.T) {
+	rt := r9rt()
+	sid, approval, key, ad := "codex:s1", "a1", "k1", dig("d")
+	// charged(payload=nil) is the fixed base; grow payload to hit maxGateItemBytes exactly.
+	base := chargedItemBytes(gateReq(sid, approval, key, ad, rt, nil))
+	pLen := maxGateItemBytes - base
+	if pLen <= 0 {
+		t.Fatalf("base %d ≥ item limit %d", base, maxGateItemBytes)
+	}
+	exact := gateReq(sid, approval, key, ad, rt, make([]byte, pLen))
+	if got := chargedItemBytes(exact); got != maxGateItemBytes {
+		t.Fatalf("charged=%d, want exactly %d", got, maxGateItemBytes)
+	}
+	g := NewRuntimeDeliveryGate()
+	g.Activate(sid, rt, 4)
+	if _, _, ok := g.Accept(exact); !ok {
+		t.Errorf("exact charged-item boundary (%d) must be accepted", maxGateItemBytes)
+	}
+	// one-over: +1 payload byte → charged 4097 → rejected, state unchanged.
+	g2 := NewRuntimeDeliveryGate()
+	g2.Activate(sid, rt, 4)
+	before := snapshotGate(g2)
+	over := gateReq(sid, approval, key, ad, rt, make([]byte, pLen+1))
+	if got := chargedItemBytes(over); got != maxGateItemBytes+1 {
+		t.Fatalf("one-over charged=%d, want %d", got, maxGateItemBytes+1)
+	}
+	if _, _, ok := g2.Accept(over); ok {
+		t.Errorf("one-over charged-item (%d) must be rejected", maxGateItemBytes+1)
+	}
+	before.assertUnchanged(t, g2, "charged one-over")
+}
+
+// ── Aggregate exhaustion that actually REACHES the global bound ──
+//
+// A single endpoint is capacity-limited to maxGateCapacity (64) items, so no single
+// endpoint can reach maxGateTotalQueuedBytes. Deactivated endpoints retain their bytes,
+// so the GLOBAL total is accumulated across many retired endpoints until the next
+// otherwise-valid item is rejected ONLY by the aggregate g.totalBytes check — proven
+// by (a) the item being individually valid, (b) the target endpoint having free
+// capacity, and (c) the identical item succeeding on a fresh gate.
+func TestDeliveryGate_AggregateExhaustionReachesGlobalBound(t *testing.T) {
+	rt := r9rt()
+	g := NewRuntimeDeliveryGate()
+	// Large, individually-valid items so charged is near the per-item cap; fixed-width
+	// session names keep the charged size constant across items.
+	payload := make([]byte, 3600)
+	c := chargedItemBytes(gateReq("codex:agg000", "aa", "kk", dig("d"), rt, payload))
+	if c > maxGateItemBytes {
+		t.Fatalf("probe item not individually valid: charged=%d", c)
+	}
+	n := 0
+	for g.totalBytes+c <= maxGateTotalQueuedBytes {
+		sid := fmt.Sprintf("codex:agg%03d", n)
+		n++
+		if _, ok := g.Activate(sid, rt, maxGateCapacity); !ok {
+			t.Fatalf("activate %s", sid)
+		}
+		for i := 0; i < maxGateCapacity && g.totalBytes+c <= maxGateTotalQueuedBytes; i++ {
+			if _, _, ok := g.Accept(gateReq(sid, "aa", "kk", dig("d"), rt, payload)); !ok {
+				t.Fatalf("fill accept failed at endpoint %s item %d (totalBytes=%d)", sid, i, g.totalBytes)
+			}
+		}
+		g.Deactivate(sid) // retire; bytes retained in the global total
+	}
+	// We are within one item of the global bound.
+	if g.totalBytes <= maxGateTotalQueuedBytes-c {
+		t.Fatalf("did not approach global bound: totalBytes=%d (limit %d, item %d)", g.totalBytes, maxGateTotalQueuedBytes, c)
+	}
+	if g.totalBytes < maxGateTotalQueuedBytes/2 {
+		t.Fatalf("aggregate too small to prove global bound: %d", g.totalBytes)
+	}
+	// Fresh endpoint with free capacity; the SAME item (individually valid) must now be
+	// rejected purely by the aggregate check, leaving the total unchanged.
+	final := fmt.Sprintf("codex:agg%03d", n)
+	if _, ok := g.Activate(final, rt, maxGateCapacity); !ok {
+		t.Fatalf("activate final %s", final)
+	}
+	before := snapshotGate(g)
+	if _, _, ok := g.Accept(gateReq(final, "aa", "kk", dig("d"), rt, payload)); ok {
+		t.Fatalf("aggregate-exhausting item accepted (totalBytes=%d + %d > %d)", g.totalBytes, c, maxGateTotalQueuedBytes)
+	}
+	before.assertUnchanged(t, g, "aggregate exhaustion reject")
+	// Non-vacuous: the identical item is accepted on a fresh gate (so the rejection was
+	// the aggregate bound, not an intrinsic per-item defect).
+	fresh := NewRuntimeDeliveryGate()
+	fresh.Activate(final, rt, maxGateCapacity)
+	if _, _, ok := fresh.Accept(gateReq(final, "aa", "kk", dig("d"), rt, payload)); !ok {
+		t.Errorf("item is individually valid but rejected on a fresh gate — aggregate proof is vacuous")
+	}
+}
+
+// Payload retained by Accept is a defensive copy: mutating the caller's slice after
+// acceptance never changes the drained item, and the drained copies are independent.
+func TestDeliveryGate_AcceptPayloadNonAliasing(t *testing.T) {
+	rt := r9rt()
+	g := NewRuntimeDeliveryGate()
+	h, _ := g.Activate("codex:s1", rt, 4)
+	payload := []byte("original")
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", dig("d"), rt, payload)); !ok {
+		t.Fatal("accept")
+	}
+	payload[0] = 'X' // caller mutates its slice after acceptance
+	items := g.Drain(h)
+	if len(items) != 1 || string(items[0].Payload) != "original" {
+		t.Fatalf("payload aliased caller slice: %q", items[0].Payload)
+	}
+	items[0].Payload[0] = 'Z' // mutate the drained copy
+	// A second drain from a fresh accept must be unaffected by the earlier mutation.
+	g.Accept(gateReq("codex:s1", "a2", "k2", dig("d"), rt, []byte("second")))
+	again := g.Drain(h)
+	if len(again) != 1 || string(again[0].Payload) != "second" {
+		t.Errorf("drained copy mutation leaked across items: %q", again[0].Payload)
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"strconv"
 	"sync"
+
+	"devremote/companion-daemon/internal/mux"
 )
 
 // A1 remediation 5 — approval-specific delivery boundary + generation-owned delivery
@@ -121,29 +123,58 @@ func allHex(s string) bool {
 // (32 hex chars, the store's newClaimToken).
 func validClaimToken(t string) bool { return len(t) == 32 && allHex(t) }
 
-// validSessionID reports canonical format: <adapter>:<local> with a non-empty
-// adapter part and a bounded total length.
+// validSessionID reports whether s is a CANONICAL compound session ID. R9-A: length
+// alone is insufficient — control characters, whitespace, path-shaped strings and
+// invalid adapter grammar must be rejected. The single canonical boundary in
+// internal/mux is reused: parse once, require a non-empty adapter and local part, an
+// exact canonical round trip, SessionRef.Validate (rejects control chars) and
+// ValidateAdapterName ([a-z][a-z0-9_-]*) on the adapter.
 func validSessionID(s string) bool {
-	if len(s) > maxSessionIDLen || len(s) == 0 {
+	if len(s) == 0 || len(s) > maxSessionIDLen {
 		return false
 	}
-	idx := -1
-	for i := 0; i < len(s); i++ {
-		if s[i] == ':' {
-			idx = i
-			break
-		}
+	ref := mux.ParseSessionID(s)
+	if ref.Adapter == "" || ref.LocalID == "" {
+		return false
 	}
-	return idx > 0 && idx < len(s)-1
+	if ref.Canonical() != s {
+		return false
+	}
+	if ref.Validate() != nil {
+		return false
+	}
+	return mux.ValidateAdapterName(ref.Adapter) == nil
 }
 
 // validApprovalID is the store's bound: non-empty, max 256 chars.
 func validApprovalID(s string) bool { return len(s) > 0 && len(s) <= authMaxApprovalIDLen }
 
-// validAdapterVersion is a closed, reasonable-length provider identity.
-func validAdapterID(s string) bool { return len(s) > 0 && len(s) <= maxVersionLen }
+// validAdapterID validates a runtime adapter/provider identity with the existing
+// accepted adapter grammar (R9-A2), not length alone.
+func validAdapterID(s string) bool {
+	return len(s) > 0 && len(s) <= maxVersionLen && mux.ValidateAdapterName(s) == nil
+}
 
-func validVersion(v string) bool { return len(v) > 0 && len(v) <= maxVersionLen }
+// validVersion enforces one bounded ASCII version grammar (R9-A: `[A-Za-z0-9]
+// [A-Za-z0-9._-]{0,63}`). The first byte must be alphanumeric; the remainder may add
+// dot/underscore/dash. Slash, backslash, control characters, whitespace and
+// traversal-shaped values (which require a leading dot or a separator) are rejected.
+func validVersion(v string) bool {
+	if len(v) == 0 || len(v) > maxVersionLen {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		if i > 0 && (c == '.' || c == '_' || c == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // validGateBindingMeta validates EVERY variable-length canonical field before
 // the gate retains it. A non-canonical digest/token/key or an over-length session/
@@ -158,16 +189,38 @@ func validGateBindingMeta(req ApprovalDeliveryRequest) bool {
 		validClaimToken(req.ClaimToken)
 }
 
-// totalItemBytes returns the EXACT retained bytes (payload + every stored metadata
-// field including the runtime adapter/version/env and a 64-byte ReceiptID bound).
-// The 64 bytes account for: nonce(16) + seq/dash(max 10) + struct overhead.
-func totalItemBytes(req ApprovalDeliveryRequest) int {
+// gateItemFixedCharge is a CONSERVATIVE, repository-owned fixed per-item accounting
+// charge. It is NOT an exact byte count: it covers the derived ReceiptID (nonce hex
+// 32 + '-' + up to ~10 seq digits) plus struct/bookkeeping headroom. It is named and
+// accounted separately from the exact retained variable bytes so no estimate is ever
+// called "exact".
+const gateItemFixedCharge = 64
+
+// exactRetainedVariableBytes returns the EXACT number of retained variable-length
+// bytes: the payload plus every stored metadata string (approval, session, both
+// digests, idempotency key, runtime adapter/version, claim token). It excludes the
+// conservative fixed charge.
+func exactRetainedVariableBytes(req ApprovalDeliveryRequest) int {
 	return len(req.Payload) +
 		len(req.Binding.ApprovalID) + len(req.Binding.SessionID) +
 		len(req.Binding.ActionDigest) + len(req.Binding.PayloadDigest) +
 		len(req.Binding.IdempotencyKey) + len(req.Binding.Runtime.Adapter) +
 		len(req.Binding.Runtime.Version) +
-		len(req.ClaimToken) + 64
+		len(req.ClaimToken)
+}
+
+// chargedItemBytes is the value admission is metered against:
+//
+//	exact retained variable bytes + conservative fixed charge.
+//
+// Overflow safety (no checked-add needed): payload ≤ maxGateItemBytes (4096) and the
+// eight identity/digest/token fields are each individually bounded by their validators
+// (512+256+64+64+128+64+64+32 = 1184), so exactRetainedVariableBytes < 5280 and
+// chargedItemBytes < 5344 for any request that reaches accounting. The running
+// g.totalBytes is bounded by maxGateTotalQueuedBytes (2 MiB); g.totalBytes +
+// chargedItemBytes < 2 MiB + 6 KiB, far below math.MaxInt32.
+func chargedItemBytes(req ApprovalDeliveryRequest) int {
+	return exactRetainedVariableBytes(req) + gateItemFixedCharge
 }
 
 // AcceptedDelivery is a typed, fully-bound accepted queue item. It is an internal,
@@ -415,7 +468,7 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	if len(req.Payload) > maxGateItemBytes {
 		return DeliveryReceipt{}, "", false
 	}
-	totalItem := totalItemBytes(req) // payload + all retained metadata
+	totalItem := chargedItemBytes(req) // exact retained variable bytes + fixed charge
 	if totalItem > maxGateItemBytes || g.totalBytes+totalItem > maxGateTotalQueuedBytes {
 		return DeliveryReceipt{}, "", false
 	}
