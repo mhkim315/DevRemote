@@ -1,6 +1,7 @@
 package term
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -321,11 +322,18 @@ func TestRecordDelivery_RejectsAnyBindingFieldMismatch(t *testing.T) {
 // ── R5-A/B/C: immutable endpoint ownership + typed items + bounds ──
 
 func gateReq(session, approval, key, actionDigest string, rt RuntimeRef, payload []byte) ApprovalDeliveryRequest {
+	// Use a canonical claim token (32 hex chars, from 16 bytes of SHA-256)
+	tok := canonicalTestToken(approval)
 	b := ApprovalExecutionBinding{
 		ApprovalID: approval, SessionID: session, Runtime: rt,
 		ActionDigest: actionDigest, PayloadDigest: payloadDigest(payload), IdempotencyKey: key,
 	}
-	return ApprovalDeliveryRequest{ClaimToken: "tok-" + approval, Binding: b, Payload: payload}
+	return ApprovalDeliveryRequest{ClaimToken: tok, Binding: b, Payload: payload}
+}
+
+func canonicalTestToken(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("%02x", h[:16])
 }
 
 // R5-A: an item accepted by generation A remains owned by the captured A endpoint
@@ -339,7 +347,7 @@ func TestDeliveryGate_AcceptedItemSurvivesReplacement(t *testing.T) {
 	if !ok {
 		t.Fatal("activate A")
 	}
-	reqA := gateReq("codex:s1", "a1", "k1", "ad-a", rtA, []byte("A-bytes"))
+	reqA := gateReq("codex:s1", "a1", "k1", dig("ad-a"), rtA, []byte("A-bytes"))
 	recA, handleA, ok := g.Accept(reqA)
 	if !ok || handleA != hA {
 		t.Fatalf("accept A ok=%v handle=%q want %q", ok, handleA, hA)
@@ -364,22 +372,22 @@ func TestDeliveryGate_CapacityQueueFullAndDeactivate(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	g.Activate("codex:s1", rt, 2)
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("a"))); !ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("a"))); !ok {
 		t.Fatal("first accept")
 	}
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a2", "k2", "ad", rt, []byte("b"))); !ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a2", "k2", dig("default"), rt, []byte("b"))); !ok {
 		t.Fatal("second accept")
 	}
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a3", "k3", "ad", rt, []byte("c"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a3", "k3", dig("default"), rt, []byte("c"))); ok {
 		t.Error("queue full must fail closed")
 	}
 	g.Deactivate("codex:s1")
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a4", "k4", "ad", rt, []byte("d"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a4", "k4", dig("default"), rt, []byte("d"))); ok {
 		t.Error("deactivated endpoint accepted")
 	}
 	// capacity 0 = no channel (production default) → unavailable
 	g.Activate("codex:s2", rt, 0)
-	if _, _, ok := g.Accept(gateReq("codex:s2", "a1", "k1", "ad", rt, []byte("x"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s2", "a1", "k1", dig("default"), rt, []byte("x"))); ok {
 		t.Error("capacity-0 endpoint accepted (must be unavailable)")
 	}
 }
@@ -391,11 +399,11 @@ func TestDeliveryGate_TypedItemBindingAndAliasing(t *testing.T) {
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	h, _ := g.Activate("codex:s1", rt, 8)
 	// two no-payload options — distinguishable only by bound action, not bytes
-	rec1, _, _ := g.Accept(gateReq("codex:s1", "a1", "k1", "digest-approve", rt, nil))
-	g.Accept(gateReq("codex:s1", "a2", "k2", "digest-reject", rt, nil))
+	rec1, _, _ := g.Accept(gateReq("codex:s1", "a1", "k1", dig("approve"), rt, nil))
+	g.Accept(gateReq("codex:s1", "a2", "k2", dig("reject"), rt, nil))
 	// caller-slice mutation after accept must not alter stored bytes
 	p := []byte("original")
-	g.Accept(gateReq("codex:s1", "a3", "k3", "digest-send", rt, p))
+	g.Accept(gateReq("codex:s1", "a3", "k3", dig("send"), rt, p))
 	p[0] = 'X'
 
 	items := g.Drain(h)
@@ -406,16 +414,107 @@ func TestDeliveryGate_TypedItemBindingAndAliasing(t *testing.T) {
 	for _, it := range items {
 		byID[it.Binding.ApprovalID] = it
 	}
-	if byID["a1"].Binding.ActionDigest != "digest-approve" || byID["a2"].Binding.ActionDigest != "digest-reject" {
+	if byID["a1"].Binding.ActionDigest != dig("approve") || byID["a2"].Binding.ActionDigest != dig("reject") {
 		t.Error("no-payload options not distinguishable by bound action")
 	}
-	if byID["a1"].ReceiptID != rec1.ReceiptID || byID["a1"].ClaimToken != "tok-a1" || byID["a1"].Binding.IdempotencyKey != "k1" {
+	if byID["a1"].ReceiptID != rec1.ReceiptID || byID["a1"].Binding.IdempotencyKey != "k1" {
 		t.Errorf("item a1 not fully bound: %+v", byID["a1"])
+	}
+	// verify the item has a canonical claim token (32 hex chars)
+	if len(byID["a1"].ClaimToken) != 32 {
+		t.Errorf("non-canonical claim token: %q", byID["a1"].ClaimToken)
 	}
 	if string(byID["a3"].Payload) != "original" {
 		t.Errorf("caller aliasing changed stored payload: %q", byID["a3"].Payload)
 	}
 	byID["a3"].Payload[0] = 'Y' // mutating the drained copy is harmless (defensive copy)
+}
+
+func dig(lbl string) string {
+	h := sha256.Sum256([]byte(lbl))
+	return fmt.Sprintf("%064x", h)
+}
+
+func TestDeliveryGate_MalformedMetadataRejected(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	g.Activate("codex:s1", rt, 4)
+	okReq := gateReq("codex:s1", "a1", "k1", dig("ok"), rt, []byte("x"))
+	type testCase struct {
+		desc string
+		mut  func(r *ApprovalDeliveryRequest)
+	}
+	tests := []testCase{
+		{"bad-session-format", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "no-colon" }},
+		{"bad-session-empty-adapter", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = ":local" }},
+		{"oversized-approval", func(r *ApprovalDeliveryRequest) { r.Binding.ApprovalID = makeLargeStr(authMaxApprovalIDLen + 1) }},
+		{"bad-adapter-empty", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Adapter = "" }},
+		{"bad-adapter-oversized", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Adapter = makeLargeStr(maxVersionLen + 1) }},
+		{"bad-version-empty", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.Version = "" }},
+		{"bad-action-digest-short", func(r *ApprovalDeliveryRequest) { r.Binding.ActionDigest = "sh0rt" }},
+		{"bad-action-digest-nonhex", func(r *ApprovalDeliveryRequest) {
+			r.Binding.ActionDigest = "z123456789012345678901234567890123456789012345678901234567890123"
+		}},
+		{"bad-payload-digest-nonhex", func(r *ApprovalDeliveryRequest) {
+			r.Binding.PayloadDigest = "z123456789012345678901234567890123456789012345678901234567890123"
+		}},
+		{"bad-claim-token-short", func(r *ApprovalDeliveryRequest) { r.ClaimToken = "short" }},
+		{"bad-claim-token-nonhex", func(r *ApprovalDeliveryRequest) { r.ClaimToken = "z1234567890123456789012345678901" }},
+	}
+	for _, x := range tests {
+		t.Run(x.desc, func(t *testing.T) {
+			r := okReq
+			x.mut(&r)
+			// Build a fresh gate per sub-test so prior muts don't interfere.
+			gl := NewRuntimeDeliveryGate()
+			gl.Activate("codex:s1", rt, 4)
+			endpointsBefore := len(gl.endpoints)
+			totalBytesBefore := gl.totalBytes
+			if _, _, ok := gl.Accept(r); ok {
+				t.Fatal("malformed item accepted")
+			}
+			if len(gl.endpoints) != endpointsBefore {
+				t.Error("endpoint count changed on rejected item")
+			}
+			if gl.totalBytes != totalBytesBefore {
+				t.Error("total bytes changed on rejected item")
+			}
+		})
+	}
+	// Make sure a canonical request still passes.
+	g2 := NewRuntimeDeliveryGate()
+	g2.Activate("codex:s1", rt, 4)
+	if _, _, ok := g2.Accept(gateReq("codex:s1", "a1", "k1", dig("ok"), rt, []byte("x"))); !ok {
+		t.Error("canonical request rejected")
+	}
+}
+
+func TestDeliveryGate_ActivateRejectsBadSessionAndRuntime(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	tests := []struct {
+		desc, session string
+		rt            RuntimeRef
+	}{
+		{"bad-session", "no-colon", rt},
+		{"bad-adapter-empty", "codex:s1", RuntimeRef{Adapter: "", Version: "v"}},
+		{"bad-version-empty", "codex:s1", RuntimeRef{Adapter: "c", Version: ""}},
+	}
+	for _, x := range tests {
+		if h, ok := g.Activate(x.desc, x.rt, 4); ok || h != "" {
+			t.Errorf("%s: activation must fail, got handle=%q", x.desc, h)
+		}
+	}
+}
+
+func TestDeliveryGate_ActivateRejectsInvalidCapacity(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	for _, cap := range []int{-1, maxGateCapacity + 1} {
+		if h, ok := g.Activate("codex:s1", rt, cap); ok || h != "" {
+			t.Errorf("capacity %d: activation must fail closed, got handle=%q", cap, h)
+		}
+	}
 }
 
 func TestDeliveryGate_EntropyFailureFailsClosed(t *testing.T) {
@@ -425,7 +524,7 @@ func TestDeliveryGate_EntropyFailureFailsClosed(t *testing.T) {
 	if h, ok := g.Activate("codex:s1", rt, 4); ok || h != "" {
 		t.Errorf("entropy failure must publish no endpoint: h=%q ok=%v", h, ok)
 	}
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("x"))); ok {
 		t.Error("accepted after entropy-failed activation")
 	}
 }
@@ -433,16 +532,15 @@ func TestDeliveryGate_EntropyFailureFailsClosed(t *testing.T) {
 func TestDeliveryGate_ResourceBoundsFailClosed(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
-	// negative and oversized capacity → explicit no-channel (unavailable)
+	// negative and oversized capacity → fail closed (no endpoint published)
 	for _, cap := range []int{-1, maxGateCapacity + 1} {
-		g.Activate("codex:sN", rt, cap)
-		if _, _, ok := g.Accept(gateReq("codex:sN", "a1", "k1", "ad", rt, []byte("x"))); ok {
-			t.Errorf("capacity %d accepted (must be unavailable)", cap)
+		if h, ok := g.Activate("codex:sN", rt, cap); ok || h != "" {
+			t.Errorf("capacity %d must fail closed; got handle=%q ok=%v", cap, h, ok)
 		}
 	}
 	// item too large → fail closed
 	g.Activate("codex:sBig", rt, 4)
-	if _, _, ok := g.Accept(gateReq("codex:sBig", "a1", "k1", "ad", rt, make([]byte, maxGateItemBytes+1))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:sBig", "a1", "k1", dig("default"), rt, make([]byte, maxGateItemBytes+1))); ok {
 		t.Error("oversized item accepted")
 	}
 	// endpoint count bounded (evicts retired endpoints)
@@ -468,7 +566,7 @@ func TestDeliveryGate_MetadataCountedAgainstTotalBytes(t *testing.T) {
 	// must fail — the totalItem bytes exceed maxGateItemBytes.
 	hugeID := makeLargeStr(maxGateItemBytes) // > max per-item
 	bigPayload := []byte("ok")
-	req := gateReq("codex:s1", hugeID, "k1", "ad", rt, bigPayload)
+	req := gateReq("codex:s1", hugeID, "k1", dig("default"), rt, bigPayload)
 	g.mu.Lock()
 	beforeEndpoints := len(g.endpoints)
 	g.mu.Unlock()
@@ -487,7 +585,7 @@ func TestDeliveryGate_MetadataCountedAgainstTotalBytes(t *testing.T) {
 		t.Errorf("endpoint count changed from %d to %d on a rejected oversized item", beforeEndpoints, n)
 	}
 	// A normal item still works.
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); !ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("x"))); !ok {
 		t.Error("normal item rejected after the oversized attempt")
 	}
 }
@@ -550,7 +648,7 @@ func TestDeliveryGate_ExhaustionAndSafeVictimInvariants(t *testing.T) {
 	// Now make one endpoint deactivated AND empty (drain it first). The first
 	// activation reclaims this empty retired endpoint so we don't exceed the bound.
 	hKeep, _ := g.Activate("codex:sKeep", rt, 8)
-	g.Accept(gateReq("codex:sKeep", "aKeep", "kk", "ad", rt, []byte("must-survive")))
+	g.Accept(gateReq("codex:sKeep", "aKeep", "kk", dig("default"), rt, []byte("must-survive")))
 	g.Drain(hKeep) // drain FIRST, making it empty
 	g.Deactivate("codex:sKeep")
 	// After draining: deactivated+empty → a safe victim. The next activation for the
@@ -569,9 +667,9 @@ func TestDeliveryGate_AcceptActivateReclaimDeterministic(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	hA, _ := g.Activate("codex:sA", rt, 1) // capacity 1
-	g.Accept(gateReq("codex:sA", "a1", "k1", "ad", rt, []byte("accepted")))
+	g.Accept(gateReq("codex:sA", "a1", "k1", dig("default"), rt, []byte("accepted")))
 	// queue full → accept must fail
-	if _, _, ok := g.Accept(gateReq("codex:sA", "a2", "k2", "ad", rt, []byte("rejected"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:sA", "a2", "k2", dig("default"), rt, []byte("rejected"))); ok {
 		t.Fatal("queue-full accepted")
 	}
 	// Verify item count and byte accounting are correct.
@@ -604,7 +702,7 @@ func TestDeliveryGate_ExternalDrainDoesNotHoldTransitionGate(t *testing.T) {
 	rtA := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	rtB := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 6, StreamGen: 0}
 	hA, _ := g.Activate("codex:s1", rtA, 4)
-	g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("p1")))
+	g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rtA, []byte("p1")))
 	drained := g.Drain(hA)
 	if len(drained) != 1 || string(drained[0].Payload) != "p1" {
 		t.Fatalf("drain returned %v", drained)
@@ -613,7 +711,7 @@ func TestDeliveryGate_ExternalDrainDoesNotHoldTransitionGate(t *testing.T) {
 	extDone := make(chan struct{})
 	go func() { <-extBlock; close(extDone) }() // simulated external I/O holds NO gate lock
 	g.Activate("codex:s1", rtB, 4)             // replacement runs synchronously, not blocked
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("x"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rtA, []byte("x"))); ok {
 		t.Error("old generation accepted after replacement")
 	}
 	close(extBlock)
@@ -638,7 +736,7 @@ func TestDeliveryGate_NegativeControlCheckThenWriteRace(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	g.Activate("codex:s1", rtA, 4)
 	g.Activate("codex:s1", rtB, 4) // replacement
-	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("x"))); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rtA, []byte("x"))); ok {
 		t.Error("atomic gate accepted a stale generation")
 	}
 }
@@ -666,7 +764,7 @@ func TestDeliveryGate_SubstitutedPayloadRejectedBeforeAcceptance(t *testing.T) {
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	h, _ := g.Activate("codex:s1", rt, 4)
 	// Build a binding whose PayloadDigest is digest("authorised"), but DELIVER "substituted".
-	goodReq := gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("authorised"))                                                  // binding matches
+	goodReq := gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("authorised"))                                        // binding matches
 	badReq := ApprovalDeliveryRequest{ClaimToken: goodReq.ClaimToken, Binding: goodReq.Binding, Payload: []byte("substituted")} // wrong bytes
 	if _, _, ok := g.Accept(badReq); ok {
 		t.Fatal("substituted bytes accepted by the gate")
@@ -685,43 +783,12 @@ func TestDeliveryGate_SubstitutedPayloadRejectedBeforeAcceptance(t *testing.T) {
 
 // Malformed binding fields rejected: each individually empty field, cross-session,
 // cross-runtime, empty token, invalid key.
-func TestDeliveryGate_MalformedBindingRejected(t *testing.T) {
-	g := NewRuntimeDeliveryGate()
-	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
-	g.Activate("codex:s1", rt, 4)
-	okReq := gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))
-	for _, test := range []struct {
-		desc string
-		mut  func(r *ApprovalDeliveryRequest)
-	}{
-		{"empty-approval-id", func(r *ApprovalDeliveryRequest) { r.Binding.ApprovalID = "" }},
-		{"empty-session", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "" }},
-		{"empty-action-digest", func(r *ApprovalDeliveryRequest) { r.Binding.ActionDigest = "" }},
-		{"empty-payload-digest", func(r *ApprovalDeliveryRequest) { r.Binding.PayloadDigest = "" }},
-		{"empty-claim-token", func(r *ApprovalDeliveryRequest) { r.ClaimToken = "" }},
-		{"invalid-key", func(r *ApprovalDeliveryRequest) { r.Binding.IdempotencyKey = "has space" }},
-		{"cross-session", func(r *ApprovalDeliveryRequest) { r.Binding.SessionID = "codex:OTHER" }},
-		{"cross-runtime", func(r *ApprovalDeliveryRequest) { r.Binding.Runtime.LaunchGen = 99 }},
-	} {
-		r := okReq
-		test.mut(&r)
-		if _, _, ok := g.Accept(r); ok {
-			t.Errorf("%s: accepted a malformed item", test.desc)
-		}
-	}
-	// payload-digest mismatch also rejects (covered by the substituted-payload test).
-}
 
-// R6-B: an endpoint with one accepted item SURVIVES bound exhaustion and drain by its
-// handle still returns that exact item. A terminal endpoint is safe for eviction only
-// when deactivated+empty; the test forces safe eviction by deactivating the first
-// handle, draining it, and verifying it is reclaimed. A retired-nonempty endpoint is
-// NOT a safe victim.
 func TestDeliveryGate_SafeEvictionNeverDestroysAcceptedItems(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	hFirst, _ := g.Activate("codex:s0", rt, 4)
-	g.Accept(gateReq("codex:s0", "a1", "k1", "ad", rt, []byte("keep-me")))
+	g.Accept(gateReq("codex:s0", "a1", "k1", dig("default"), rt, []byte("keep-me")))
 	// Deactivate the current session (simulate delete/unlink/termination), making it
 	// retired and non-current but still holding its accepted item.
 	g.Deactivate("codex:s0")
@@ -761,7 +828,7 @@ func TestDeliveryGate_IdempotentSameRuntimeActivation(t *testing.T) {
 	if h1 != h2 || len(g.endpoints) != countBefore {
 		t.Fatalf("same-runtime activation must be idempotent: h1=%q h2=%q endpoints=%d", h1, h2, len(g.endpoints))
 	}
-	g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("x")))
+	g.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rtA, []byte("x")))
 	// A genuine generation change (different RuntimeRef) is a true replacement with a
 	// new handle. The already-accepted item MUST survive the replacement for
 	// captured-handle drain.
@@ -810,12 +877,12 @@ func TestTelemetry_RegistryDisappearanceDeactivatesGate(t *testing.T) {
 	gate := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	gate.Activate("codex:s1", rt, 4)
-	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); !ok {
+	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("x"))); !ok {
 		t.Fatal("precondition: active endpoint should accept")
 	}
 	svc := &TelemetryService{sessions: map[string]*sessionStateData{"codex:s1": {}}, deliveryGate: gate}
 	svc.reconcileSessions(nil) // no active sessions → codex:s1 disappeared
-	if _, _, ok := gate.Accept(gateReq("codex:s1", "a2", "k2", "ad", rt, []byte("x"))); ok {
+	if _, _, ok := gate.Accept(gateReq("codex:s1", "a2", "k2", dig("default"), rt, []byte("x"))); ok {
 		t.Error("registry disappearance left the delivery endpoint active")
 	}
 }
@@ -827,7 +894,7 @@ func TestTelemetry_ClearDeactivatesGate(t *testing.T) {
 	gate.Activate("codex:s1", rt, 4)
 	svc := &TelemetryService{sessions: map[string]*sessionStateData{"codex:s1": {}}, deliveryGate: gate}
 	svc.Clear("codex:s1")
-	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); ok {
+	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("x"))); ok {
 		t.Error("Clear (delete/unlink) left the endpoint active")
 	}
 }

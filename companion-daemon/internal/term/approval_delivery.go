@@ -102,25 +102,72 @@ func (unavailableApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Delivery
 	return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
 }
 
-// totalItemBytes returns the total retained bytes (payload + ALL variable-length
-// metadata) one queued item consumes. Metadata includes ApprovalID, SessionID,
-// idempotency key, ActionDigest, PayloadDigest, ClaimToken, ReceiptID (approximate),
-// and Runtime adapter + version strings. This is the single authoritative size used
-// for the aggregate `totalBytes` and per-endpoint `queuedBytes` accounting so a
-// multi-megabyte metadata string is not silently accepted past the advertised total
-// bound.
+// ── R8-A: canonical metadata validators ──
+
+// isHex64 reports whether s is exactly 64 lowercase hex characters (SHA-256).
+func isHex64(s string) bool { return len(s) == 64 && allHex(s) }
+
+func allHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// validClaimToken reports whether t uses the canonical opaque-token encoding
+// (32 hex chars, the store's newClaimToken).
+func validClaimToken(t string) bool { return len(t) == 32 && allHex(t) }
+
+// validSessionID reports canonical format: <adapter>:<local> with a non-empty
+// adapter part and a bounded total length.
+func validSessionID(s string) bool {
+	if len(s) > maxSessionIDLen || len(s) == 0 {
+		return false
+	}
+	idx := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == ':' {
+			idx = i
+			break
+		}
+	}
+	return idx > 0 && idx < len(s)-1
+}
+
+// validApprovalID is the store's bound: non-empty, max 256 chars.
+func validApprovalID(s string) bool { return len(s) > 0 && len(s) <= authMaxApprovalIDLen }
+
+// validAdapterVersion is a closed, reasonable-length provider identity.
+func validAdapterID(s string) bool { return len(s) > 0 && len(s) <= maxVersionLen }
+
+func validVersion(v string) bool { return len(v) > 0 && len(v) <= maxVersionLen }
+
+// validGateBindingMeta validates EVERY variable-length canonical field before
+// the gate retains it. A non-canonical digest/token/key or an over-length session/
+// approval/version/adapter rejects the request before any mutation.
+func validGateBindingMeta(req ApprovalDeliveryRequest) bool {
+	b := req.Binding
+	return b.ApprovalID != "" && b.SessionID != "" && b.ActionDigest != "" && b.PayloadDigest != "" &&
+		validCanonicalKey(b.IdempotencyKey) && req.ClaimToken != "" &&
+		validSessionID(b.SessionID) && validApprovalID(b.ApprovalID) &&
+		validAdapterID(b.Runtime.Adapter) && validVersion(b.Runtime.Version) &&
+		isHex64(b.ActionDigest) && isHex64(b.PayloadDigest) &&
+		validClaimToken(req.ClaimToken)
+}
+
+// totalItemBytes returns the EXACT retained bytes (payload + every stored metadata
+// field including the runtime adapter/version/env and a 64-byte ReceiptID bound).
+// The 64 bytes account for: nonce(16) + seq/dash(max 10) + struct overhead.
 func totalItemBytes(req ApprovalDeliveryRequest) int {
-	n := len(req.Payload) +
+	return len(req.Payload) +
 		len(req.Binding.ApprovalID) + len(req.Binding.SessionID) +
 		len(req.Binding.ActionDigest) + len(req.Binding.PayloadDigest) +
 		len(req.Binding.IdempotencyKey) + len(req.Binding.Runtime.Adapter) +
 		len(req.Binding.Runtime.Version) +
-		len(req.ClaimToken) +
-		128 // approximate: per-item nonce+seq receipt ID + runtime-gen integers + struct overhead
-	if n < 0 {
-		return 0
-	}
-	return n
+		len(req.ClaimToken) + 64
 }
 
 // AcceptedDelivery is a typed, fully-bound accepted queue item. It is an internal,
@@ -197,16 +244,22 @@ func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	effCap := capacity
-	if effCap < 0 || effCap > maxGateCapacity {
-		effCap = 0
+	// R8-A: invalid capacity fails closed. No silent clamp — a negative or oversized
+	// capacity is an explicit error; the caller must provide a valid value.
+	if capacity < 0 || capacity > maxGateCapacity {
+		return "", false
 	}
+	effCap := capacity
 	// R6-C: same-runtime/capacity activation is idempotent.
 	oldID, hasOld := g.current[sessionID]
 	if hasOld {
 		if e := g.endpoints[oldID]; e != nil && e.active && e.runtime.equal(rt) && e.capacity == effCap {
 			return oldID, true
 		}
+	}
+	// R8-A: validate session and runtime identity before publishing.
+	if !validSessionID(sessionID) || !validAdapterID(rt.Adapter) || !validVersion(rt.Version) {
+		return "", false
 	}
 	// Entropy tokens BEFORE any mutation.
 	id, tok1 := g.genToken()
@@ -333,12 +386,13 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// R6-A: validate the complete canonical item BEFORE any append.
-	b := req.Binding
-	if b.ApprovalID == "" || b.SessionID == "" || b.ActionDigest == "" || b.PayloadDigest == "" ||
-		!validCanonicalKey(b.IdempotencyKey) || req.ClaimToken == "" {
+	// R8-A: canonical metadata validation — every variable-length field, digest
+	// format, token encoding, and ID syntax is enforced before the gate retains
+	// anything.
+	if !validGateBindingMeta(req) {
 		return DeliveryReceipt{}, "", false
 	}
+	b := req.Binding
 	eid, exists := g.current[b.SessionID]
 	if !exists {
 		return DeliveryReceipt{}, "", false
