@@ -145,7 +145,7 @@ D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patc
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
-A1  Approval Safety                           REJECT 0f95c7c3 (R6 pre-accept payload binding, non-destructive bounded admission, same-runtime endpoint idempotence; positive-provider blocker)
+A1  Approval Safety                           REJECT/BLOCKED (independent R8 verdict: canonical identity/accounting and production/concurrency evidence incomplete; implementation 8ec3630/report ebdc507; remediation 9 required; provider-positive path absent)
 N1  Notifications                             BLOCKED until independent A1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -551,10 +551,16 @@ queue/drain entries are not fully bound, receipt entropy/resource bounds fail
 closed incompletely, and final report HEAD `d3aa0b09` fails secret scan. That
 round used the now-superseded remediation-5 handoff. Remediation 5 at
 `0f95c7c3` introduced captured handles, typed queue items and fixed bounds, but
-re-verification found payload mismatch reaches daemon acceptance, endpoint
-pressure silently destroys accepted items, and identical production polls rotate
-handles. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_6_HANDOFF.md`.
+later review found payload mismatch, destructive endpoint pressure and repeated
+handle rotation. Remediations 6 and 7 added pre-append payload validation,
+non-destructive admission, idempotent same-runtime activation and aggregate
+metadata accounting. Remediation 8 implementation `8ec3630` and report `ebdc507`
+added digest/token validation and fail-closed capacity, but identity checks remain
+length-only, one Activate test is vacuous, aggregate-bound evidence is incomplete,
+and the required production/concurrency packet was explicitly deferred. The
+independent verdict is recorded in
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_8.md`. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_9_HANDOFF.md`.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,
