@@ -90,12 +90,26 @@ def _with_run_lock(run_id: str, fn):
 
 # ── structured pseudonym + field-allowlist redaction ──
 _pseudo_next: dict[str, int] = {}
+_pseudo_map: dict = {}
 
 
-def _pseudo(label: str) -> str:
-    n = _pseudo_next.get(label, 0) + 1
-    _pseudo_next[label] = n
-    return f"{label}-{n}"
+def _reset_pseudonyms():
+    global _pseudo_next, _pseudo_map
+    _pseudo_next = {}
+    _pseudo_map = {}
+
+
+def _pseudo(label: str, value) -> str:
+    """Stable per-value pseudonym: (field-domain, original-value) maps to the
+    SAME token for the whole run, so request/thread/turn/item identity
+    relations (e.g. resolved.requestId == request.id) remain independently
+    verifiable without exposing the real values."""
+    key = (label, value)
+    if key not in _pseudo_map:
+        n = _pseudo_next.get(label, 0) + 1
+        _pseudo_next[label] = n
+        _pseudo_map[key] = f"{label}-{n}"
+    return _pseudo_map[key]
 
 
 _HOST_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9-]{2,}\.[A-Za-z][A-Za-z0-9-]{2,}\b")
@@ -131,21 +145,31 @@ _ALLOW: dict = {
     "mcpServer/startupStatus/updated": {"id", "status"},
     "account/rateLimits/updated": set(),
     "turn/completed": {"threadId", "turnId"},
+    "turn/interrupt": {"threadId", "turnId"},
+    "turn/aborted": {"threadId", "turnId"},
+    "turn/failed": {"threadId", "turnId"},
 }
 
 _REPLACE_FIELDS = {"command": "<REDACTED-CMD>", "cwd": "<CWD>",
-                   "text": "<REDACTED>", "config": "<REDACTED>"}
+                   "text": "<REDACTED>", "config": "<REDACTED>",
+                   "input": "<REDACTED-INPUT>"}
 
+# requestId shares the "objid" domain with JSON-RPC id so that
+# serverRequest/resolved.requestId is comparable with the original
+# request's outer id under the stable pseudonym map.
 _PSEUDO_FIELDS = {"threadId": "thread", "turnId": "turn", "itemId": "item",
-                  "requestId": "request", "id": "objid", "installId": "install",
+                  "requestId": "objid", "id": "objid", "installId": "install",
                   "serverName": "hostname"}
 
 
 def _label_field(k: str, v):
     if k in _PSEUDO_FIELDS and isinstance(v, (str, int)):
-        return _pseudo(_PSEUDO_FIELDS[k])
-    if k in _REPLACE_FIELDS and isinstance(v, str):
+        return _pseudo(_PSEUDO_FIELDS[k], v)
+    if k in _REPLACE_FIELDS:
         return _REPLACE_FIELDS[k]
+    if isinstance(v, (dict, list)):
+        # defense in depth: nested structures never pass through verbatim
+        return "<REDACTED>"
     return _redact_value(v)
 
 
@@ -153,16 +177,106 @@ def _allowed_keys(method_like: str) -> set:
     return _ALLOW.get(method_like, _ALLOW.get("*", set()))
 
 
+# ── method-specific structural projectors (bounded, never copy nested) ──
+def _project_available_decisions(v):
+    """Preserve only the bounded decision tags; drop amendment/exec-policy
+    payloads entirely."""
+    if not isinstance(v, list):
+        return "<REDACTED>"
+    tags = []
+    for e in v:
+        if isinstance(e, str):
+            tags.append(e)
+        elif isinstance(e, dict) and len(e) == 1:
+            tags.append(f"<{next(iter(e))}:PAYLOAD-DROPPED>")
+        else:
+            tags.append("<REDACTED-DECISION>")
+    return tags
+
+
+def _project_turn_start(params: dict) -> dict:
+    out = {"input": "<REDACTED-INPUT>"}
+    if params.get("threadId") is not None:
+        out["threadId"] = _pseudo("thread", params["threadId"])
+    if isinstance(params.get("approvalPolicy"), str):
+        out["approvalPolicy"] = params["approvalPolicy"]
+    return out
+
+
+def _project_turn_started(params: dict) -> dict:
+    out = {}
+    if params.get("threadId") is not None:
+        out["threadId"] = _pseudo("thread", params["threadId"])
+    turn = params.get("turn")
+    if isinstance(turn, dict) and turn.get("id") is not None:
+        out["turnId"] = _pseudo("turn", turn["id"])
+    return out
+
+
+def _project_item(params: dict) -> dict:
+    """item/started + item/completed: the item object nests id/type/status/
+    command; project only bounded scalar fields, redact command."""
+    out = {}
+    if params.get("threadId") is not None:
+        out["threadId"] = _pseudo("thread", params["threadId"])
+    if params.get("turnId") is not None:
+        out["turnId"] = _pseudo("turn", params["turnId"])
+    item = params.get("item") if isinstance(params.get("item"), dict) else params
+    if item.get("id") is not None:
+        out["itemId"] = _pseudo("item", item["id"])
+    # "itemType"/"itemStatus": never reuse the record's "type" key (the
+    # method name) — a projected params field must not clobber it.
+    for k, outk in (("type", "itemType"), ("status", "itemStatus"), ("exitCode", "exitCode")):
+        v = item.get(k)
+        if v is not None:
+            out[outk] = v if isinstance(v, (str, int, float, bool)) else "<REDACTED>"
+    if "command" in item:
+        out["command"] = "<REDACTED-CMD>"
+    return out
+
+
+def _project_request_approval(params: dict) -> dict:
+    out = {}
+    for k, dom in (("threadId", "thread"), ("turnId", "turn"), ("itemId", "item")):
+        if params.get(k) is not None:
+            out[k] = _pseudo(dom, params[k])
+    if "command" in params:
+        out["command"] = "<REDACTED-CMD>"
+    if "cwd" in params:
+        out["cwd"] = "<CWD>"
+    if isinstance(params.get("environmentId"), (str, type(None))):
+        out["environmentId"] = params.get("environmentId")
+    if "availableDecisions" in params:
+        out["availableDecisions"] = _project_available_decisions(params["availableDecisions"])
+    return out
+
+
+_PROJECTORS = {
+    "turn/start": _project_turn_start,
+    "turn/started": _project_turn_started,
+    "item/started": _project_item,
+    "item/completed": _project_item,
+    "item/commandExecution/requestApproval": _project_request_approval,
+}
+
+
 def _filtered_flat(obj: dict, direction: str) -> dict:
     m = obj.get("method") or ("result" if "result" in obj else ("error" if "error" in obj else "?"))
     rec: dict = {"dir": direction, "type": m}
     if "id" in obj:
         rec["id"] = _label_field("id", obj["id"])
+    if isinstance(obj.get("error"), dict):
+        # bounded refusal evidence: numeric code only, never the message text
+        rec["error_code"] = obj["error"].get("code")
     params = obj.get("params") or obj.get("result")
     if isinstance(params, dict):
-        keys = _allowed_keys(m)
-        for k in keys & params.keys():
-            rec[k] = _label_field(k, params[k])
+        proj = _PROJECTORS.get(m)
+        if proj is not None:
+            rec.update(proj(params))
+        else:
+            keys = _allowed_keys(m)
+            for k in keys & params.keys():
+                rec[k] = _label_field(k, params[k])
     return rec
 
 
@@ -185,7 +299,94 @@ def _canonical_json_digest(path: str) -> str:
 import array as _array
 import socket as _socket
 
-_CODEX_CMD = ["codex", "app-server", "--stdio"]
+# ── pinned provider executable (exact-version 0.144.1) ──
+# The global PATH codex drifted (observed 0.144.4). CP0 evidence is pinned to
+# exactly 0.144.1, installed in a dedicated prefix OUTSIDE the repository.
+# The harness never uses PATH lookup for the provider: it executes this
+# explicit absolute path and fail-closes (exit 4) when the executable is
+# missing, reports another version, or any recorded artifact digest differs.
+# Wording note: this is an exact-version + artifact-digest record made BEFORE
+# execution — it is NOT a complete process-image attestation (CP0 gate #1
+# stays BLOCKED per the risk-proportional criteria).
+_PINNED_CODEX_PREFIX = os.path.expanduser("~/.pokit-cp0-toolchain")
+_PINNED_CODEX_BIN = _PINNED_CODEX_PREFIX + "/node_modules/.bin/codex"
+_PINNED_CODEX_SHIM = _PINNED_CODEX_PREFIX + "/node_modules/@openai/codex/bin/codex.js"
+_PINNED_CODEX_NATIVE = (_PINNED_CODEX_PREFIX +
+                        "/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex")
+_PINNED_CODEX_VERSION = "codex-cli 0.144.1"
+_PINNED_CODEX_SHIM_SHA256 = "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477"
+_PINNED_CODEX_NATIVE_SHA256 = "29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a"
+_pinned_codex_checked = False
+
+
+def _pinned_codex_bin() -> str:
+    """Verify the pinned executable (version string + shim/native artifact
+    digests) once per process BEFORE any provider spawn. Fail-closed."""
+    global _pinned_codex_checked
+    if _pinned_codex_checked:
+        return _PINNED_CODEX_BIN
+    try:
+        out = subprocess.run([_PINNED_CODEX_BIN, "--version"],
+                             capture_output=True, text=True, timeout=30)
+        ver = out.stdout.strip()
+    except Exception as e:
+        print(f"PINNED_CODEX_VERIFY_FAILED: {e}")
+        sys.exit(4)
+    if out.returncode != 0 or ver != _PINNED_CODEX_VERSION:
+        print(f"PINNED_CODEX_VERIFY_FAILED: version {ver!r}, require {_PINNED_CODEX_VERSION!r}")
+        sys.exit(4)
+    # The executed entrypoint must actually BE the verified shim: .bin/codex
+    # is a symlink and must resolve to the digest-checked codex.js.
+    if os.path.realpath(_PINNED_CODEX_BIN) != os.path.realpath(_PINNED_CODEX_SHIM):
+        print("PINNED_CODEX_VERIFY_FAILED: .bin/codex does not resolve to the verified shim")
+        sys.exit(4)
+    for label, path, want in (("shim", _PINNED_CODEX_SHIM, _PINNED_CODEX_SHIM_SHA256),
+                              ("native", _PINNED_CODEX_NATIVE, _PINNED_CODEX_NATIVE_SHA256)):
+        try:
+            got = sha256_file(path)
+        except OSError as e:
+            print(f"PINNED_CODEX_VERIFY_FAILED: {label} unreadable: {e}")
+            sys.exit(4)
+        if got != want:
+            print(f"PINNED_CODEX_VERIFY_FAILED: {label} digest {got[:16]}… != pinned {want[:16]}…")
+            sys.exit(4)
+    _pinned_codex_checked = True
+    return _PINNED_CODEX_BIN
+
+
+def _pinned_codex_cmd() -> list:
+    return [_pinned_codex_bin(), "app-server", "--stdio"]
+
+
+def _pinned_codex_identity() -> dict:
+    """Bounded identity record: pinned executable version + artifact digests
+    + package-lock provenance, and the (never executed for evidence) global
+    PATH version for contrast."""
+    ident = {"pinned_prefix_redacted": _redact_value(_PINNED_CODEX_PREFIX),
+             "pinned_bin_realpath_redacted": "/Users/<U>/.pokit-cp0-toolchain/node_modules/.bin/codex",
+             "pinned_version": _PINNED_CODEX_VERSION,
+             "shim_sha256": _PINNED_CODEX_SHIM_SHA256,
+             "native_sha256": _PINNED_CODEX_NATIVE_SHA256}
+    try:
+        with open(os.path.join(_PINNED_CODEX_PREFIX, "package-lock.json")) as f:
+            lk = json.load(f)
+        for name, pkg in lk.get("packages", {}).items():
+            if name == "node_modules/@openai/codex":
+                ident["lock_resolved"] = pkg.get("resolved")
+                ident["lock_integrity"] = pkg.get("integrity")
+            elif name == "node_modules/@openai/codex-darwin-arm64":
+                ident["lock_native_resolved"] = pkg.get("resolved")
+                ident["lock_native_integrity"] = pkg.get("integrity")
+    except Exception as e:
+        ident["lock_error"] = str(e)
+    try:
+        g = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=30)
+        ident["global_path_version_not_used"] = g.stdout.strip()
+    except Exception as e:
+        ident["global_path_version_error"] = str(e)
+    return ident
+
+
 _BENIGN_CHILD_CMD = [sys.executable, "-c", "import time; time.sleep(9999)"]
 _READY_FRAME_LEN = 64
 
@@ -399,9 +600,10 @@ class AppServer:
         self._deadline_timer = None
         if _test_no_spawn:
             return  # test seam (H0-C): state machinery only, no child/timer
-        # External supervisor bounds Popen startup wall-clock
+        # External supervisor bounds Popen startup wall-clock; the provider
+        # is always the pinned exact-version executable, never PATH lookup.
         spawned_pid, spawned_pgid, sin, sout, serr = _spawn_with_timeout(
-            cmd or _CODEX_CMD, 15)
+            cmd or _pinned_codex_cmd(), 15)
         self._pgid = spawned_pgid  # may be set even on failure; stop() re-kills safely
         if spawned_pid is None:
             self._timed_out = True
@@ -517,6 +719,34 @@ class AppServer:
         with self._lock:
             return any(o.get("method") == name for o in self.msgs)
 
+    def count_method(self, name: str) -> int:
+        with self._lock:
+            return sum(1 for o in self.msgs if o.get("method") == name)
+
+    def approval_request_id(self):
+        """Read-only view of the first approval request id — does NOT claim."""
+        with self._lock:
+            for o in self.msgs:
+                if "requestApproval" in o.get("method", "") and o.get("id") is not None:
+                    return o["id"]
+        return None
+
+    def approval_request_param(self, key: str):
+        """Read-only param of the first approval request — does NOT claim."""
+        with self._lock:
+            for o in self.msgs:
+                if "requestApproval" in o.get("method", ""):
+                    return (o.get("params") or {}).get(key)
+        return None
+
+    def first_param(self, method: str, key: str):
+        with self._lock:
+            for o in self.msgs:
+                if o.get("method") == method:
+                    p = o.get("params") or {}
+                    return p.get(key)
+        return None
+
     def result_of(self, req_id: int):
         with self._lock:
             for o in list(self.msgs):
@@ -628,12 +858,11 @@ def _assert_pg_cleaned(pgid: int, timeout_s: float = 8.0):
 
 # ── subcommands ──
 def cmd_schema():
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     os.makedirs(TMP, exist_ok=True)
     if os.path.isdir(SCHEMA_DIR): shutil.rmtree(SCHEMA_DIR)
     os.makedirs(SCHEMA_DIR)
-    subprocess.run(["codex", "app-server", "generate-json-schema", "--out", SCHEMA_DIR],
+    subprocess.run([_pinned_codex_bin(), "app-server", "generate-json-schema", "--out", SCHEMA_DIR],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     entries = []
     for root, _, files in os.walk(SCHEMA_DIR):
@@ -653,15 +882,50 @@ def cmd_schema():
     print(f"schema files={len(entries)} manifest_digest={man_digest}")
 
 
+# Consumed-subset pinning (risk-proportional CP0): ONLY the protocol/request/
+# response files actually used by the positive path + lifecycle traces.
+_SUBSET_RE = (r"(Initialize|ThreadStart|TurnStart|ItemStarted|ItemCompleted|"
+              r"CommandExecutionRequestApproval|ServerRequestResolved|"
+              r"TurnCompleted|TurnInterrupt)")
+
+
+def cmd_schema_subset():
+    """Generate the bundle with the pinned executable and pin the consumed
+    subset: per-file raw sha256 (byte identity, comparable with the
+    committed 0.144.1 manifest) + canonical-JSON digest (structural)."""
+    os.makedirs(TMP, exist_ok=True)
+    d = os.path.join(TMP, "schema_subset_gen")
+    if os.path.isdir(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    subprocess.run([_pinned_codex_bin(), "app-server", "generate-json-schema", "--out", d],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rows = []
+    for root, _, files in os.walk(d):
+        for fn in sorted(files):
+            rel = os.path.relpath(os.path.join(root, fn), d)
+            if re.search(_SUBSET_RE, rel):
+                fp = os.path.join(root, fn)
+                rows.append((rel, sha256_file(fp),
+                             _canonical_json_digest(fp) if fn.endswith(".json") else "-"))
+    rows.sort()
+    man = os.path.join(TMP, "schema_subset.manifest")
+    with open(man, "w") as f:
+        f.write("# consumed-subset manifest — pinned codex-cli 0.144.1\n")
+        f.write("# columns: raw_sha256  canonical_json_sha256  relative_path\n")
+        for rel, raw, canon in rows:
+            f.write(f"{raw}  {canon}  {rel}\n")
+    print(f"schema_subset files={len(rows)} manifest={man} manifest_sha256={sha256_file(man)}")
+
+
 def cmd_schema_repro():
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     a = os.path.join(TMP, "schema_repro_a"); b = os.path.join(TMP, "schema_repro_b")
     for d in (a, b):
         if os.path.isdir(d): shutil.rmtree(d)
         os.makedirs(d)
     for d in (a, b):
-        subprocess.run(["codex", "app-server", "generate-json-schema", "--out", d],
+        subprocess.run([_pinned_codex_bin(), "app-server", "generate-json-schema", "--out", d],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     a_map = {}; b_map = {}
     for root, _, files in os.walk(a):
@@ -684,8 +948,7 @@ def cmd_schema_repro():
 
 
 def cmd_init():
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     os.makedirs(TMP, exist_ok=True)
     a = AppServer()
     try:
@@ -704,10 +967,65 @@ def cmd_init():
 
 
 def _approval_trace(decision: str, deadline_s: float = 180):
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     run_id = f"run_{decision}_{int(time.time())}"
     _with_run_lock(run_id, lambda: _approval_trace_locked(decision, deadline_s, run_id))
+
+
+def _trace_header(a: "AppServer", run_id: str) -> dict:
+    """Bounded per-run identity record: pinned executable identity, the
+    supervisor-acknowledged spawned PID/PGID, process-start identity and the
+    connection generation (this run; seq epoch starts at 1)."""
+    hdr = {"type": "trace_header", "run_id": run_id,
+           "connection_generation": run_id, "seq_epoch_start": 1,
+           "spawned_pid": a._parent_pid, "spawned_pgid": a._pgid,
+           "pinned": _pinned_codex_identity()}
+    try:
+        out = subprocess.run(["ps", "-p", str(a._parent_pid), "-o", "lstart="],
+                             capture_output=True, text=True, timeout=10)
+        hdr["process_start_identity"] = out.stdout.strip()
+    except Exception as e:
+        hdr["process_start_identity_error"] = str(e)
+    return hdr
+
+
+def _write_wire(a: "AppServer", run_dir: str, name: str, header: dict):
+    out = os.path.join(run_dir, f"wire_{name}.jsonl")
+    with open(out, "w") as f:
+        f.write(json.dumps(header) + "\n")
+        for t in a.trace:
+            f.write(json.dumps(t) + "\n")
+    shutil.copy2(out, os.path.join(TMP, f"wire_{name}.jsonl"))
+
+
+def _start_approval_turn(a: "AppServer", run_dir: str, probe: str):
+    """Shared positive-path setup: initialize/initialized, thread/start
+    (untrusted + read-only sandbox), then a turn whose command must trigger a
+    command-execution approval request. Returns threadId or None."""
+    a.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"clientInfo": {"name": "pokit-cp0", "version": "0.0.0"}}})
+    time.sleep(1.0)
+    a.send({"jsonrpc": "2.0", "method": "initialized"})
+    time.sleep(0.5)
+    a.send({"jsonrpc": "2.0", "id": 2, "method": "thread/start",
+            "params": {"approvalPolicy": "untrusted", "cwd": run_dir,
+                       "config": {"sandbox_mode": "read-only"}}})
+    tid = None
+    t0 = time.time()
+    while time.time() - t0 < 15 and not tid and not a.timed_out:
+        r = a.result_of(2)
+        if r:
+            tid = r.get("threadId") or (r.get("thread") or {}).get("id")
+        time.sleep(0.3)
+    if not tid:
+        return None
+    cmd = f'/bin/sh -c "{_PROBE_CMD} > {probe}"'
+    a.send({"jsonrpc": "2.0", "id": 3, "method": "turn/start",
+            "params": {"threadId": tid,
+                       "input": [{"type": "text",
+                                  "text": f"Use your shell tool now to run exactly this one command (it writes a file): {cmd}. Do not explain."}],
+                       "approvalPolicy": "untrusted"}})
+    return tid
 
 
 def _approval_trace_locked(decision: str, deadline_s: float, run_id: str):
@@ -720,30 +1038,11 @@ def _approval_trace_locked(decision: str, deadline_s: float, run_id: str):
         if a.timed_out:
             _fail_and_cleanup(a, run_dir, decision, "app-server spawn timeout")
             return
-        a.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"clientInfo": {"name": "pokit-cp0", "version": "0.0.0"}}})
-        time.sleep(1.0)
-        a.send({"jsonrpc": "2.0", "method": "initialized"})
-        time.sleep(0.5)
-        a.send({"jsonrpc": "2.0", "id": 2, "method": "thread/start",
-                "params": {"approvalPolicy": "untrusted", "cwd": run_dir,
-                           "config": {"sandbox_mode": "read-only"}}})
-        tid = None
-        t0 = time.time()
-        while time.time() - t0 < 15 and not tid and not a.timed_out:
-            r = a.result_of(2)
-            if r:
-                tid = r.get("threadId") or (r.get("thread") or {}).get("id")
-            time.sleep(0.3)
+        header = _trace_header(a, run_id)
+        tid = _start_approval_turn(a, run_dir, probe)
         if not tid:
             _fail_and_cleanup(a, run_dir, decision, "thread/start response")
             return
-        cmd = f'/bin/sh -c "{_PROBE_CMD} > {probe}"'
-        a.send({"jsonrpc": "2.0", "id": 3, "method": "turn/start",
-                "params": {"threadId": tid,
-                           "input": [{"type": "text",
-                                      "text": f"Use your shell tool now to run exactly this one command (it writes a file): {cmd}. Do not explain."}],
-                           "approvalPolicy": "untrusted"}})
         t0 = time.time()
         responded_seq = None
         resolved = False
@@ -775,10 +1074,7 @@ def _approval_trace_locked(decision: str, deadline_s: float, run_id: str):
             return
 
         a.stop()
-        out = os.path.join(run_dir, f"wire_{decision}.jsonl")
-        with open(out, "w") as f:
-            for t in a.trace:
-                f.write(json.dumps(t) + "\n")
+        _write_wire(a, run_dir, decision, header)
         created = os.path.exists(probe)
         resolved_seq = 0
         for t in a.trace:
@@ -788,12 +1084,167 @@ def _approval_trace_locked(decision: str, deadline_s: float, run_id: str):
               f"probe_created={created} response_seq={responded_seq} "
               f"resolved_seq={resolved_seq} resolved_after_write={resolved_seq > responded_seq} "
               f"parent_pid={a._parent_pid} pgid={a._pgid}")
-        evidence_out = os.path.join(TMP, f"wire_{decision}.jsonl")
-        shutil.copy2(out, evidence_out)
         _verify_cleanup(run_dir, a._parent_pid, a._pgid, decision)
     finally:
         if a is not None:
             a.stop()  # idempotent; covers every exception path (H0-B)
+
+
+# ── #6 lifecycle traces: duplicate / timeout / cancel (evidence, capacity zero) ──
+def _lifecycle_trace(mode: str, deadline_s: float = 180):
+    _reset_pseudonyms()
+    run_id = f"run_{mode}_{int(time.time())}"
+    _with_run_lock(run_id, lambda: _lifecycle_trace_locked(mode, deadline_s, run_id))
+
+
+def _lifecycle_trace_locked(mode: str, deadline_s: float, run_id: str):
+    run_dir = os.path.join(TMP, run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    probe = os.path.join(run_dir, f"probe_{mode}.txt")
+    a = None
+    try:
+        a = AppServer(deadline_s=deadline_s)
+        if a.timed_out:
+            _fail_and_cleanup(a, run_dir, mode, "app-server spawn timeout")
+            return
+        header = _trace_header(a, run_id)
+        tid = _start_approval_turn(a, run_dir, probe)
+        if not tid:
+            _fail_and_cleanup(a, run_dir, mode, "thread/start response")
+            return
+        summary = {"mode": mode}
+        if mode == "duplicate":
+            _run_duplicate_phase(a, summary, deadline_s)
+        elif mode == "timeout":
+            _run_timeout_phase(a, summary)
+        elif mode == "cancel":
+            _run_cancel_phase(a, tid, summary)
+        summary["probe_created"] = os.path.exists(probe)
+        summary["provider_timed_out"] = a.timed_out
+        a.stop()
+        _write_wire(a, run_dir, mode, header)
+        with open(os.path.join(TMP, f"lifecycle_{mode}_summary.json"), "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"mode={mode} " + " ".join(f"{k}={v}" for k, v in summary.items() if k != "mode"))
+        _verify_cleanup(run_dir, a._parent_pid, a._pgid, mode)
+    finally:
+        if a is not None:
+            a.stop()
+
+
+def _run_duplicate_phase(a: "AppServer", summary: dict, deadline_s: float):
+    """Respond once via the production claim path; after the matching
+    resolved, write a SECOND response with the same JSON-RPC id via a
+    wire-level seam that deliberately bypasses the local claim (the claim's
+    own duplicate refusal is proven by test_response_no_deadlock). Records
+    PROVIDER duplicate handling."""
+    responded_seq = None
+    t0 = time.time()
+    while time.time() - t0 < (deadline_s - 60) and not a.timed_out:
+        if responded_seq is None:
+            s = a.respond_to_approval("accept")
+            if s is not None:
+                responded_seq = s
+            if responded_seq == -1:
+                break
+        if responded_seq is not None and a.saw_method("serverRequest/resolved"):
+            break
+        time.sleep(0.4)
+    summary["first_response_seq"] = responded_seq
+    resolved_before = a.count_method("serverRequest/resolved")
+    summary["resolved_after_first"] = resolved_before
+    if responded_seq in (None, -1) or resolved_before < 1:
+        summary["status"] = "FAILED: no first response/resolved"
+        return
+    req_id = a.approval_request_id()
+    # wire-level duplicate seam (evidence-only claim bypass)
+    summary["dup_response_seq"] = a.send(
+        {"jsonrpc": "2.0", "id": req_id, "result": {"decision": "accept"}})
+    time.sleep(8)  # bounded observation window for the provider reaction
+    with a._lock:
+        errs = [o for o in a.msgs if o.get("id") == req_id and "error" in o]
+        resolved_after = sum(1 for o in a.msgs
+                             if o.get("method") == "serverRequest/resolved")
+    summary["provider_error_on_dup"] = bool(errs)
+    summary["provider_error_codes"] = sorted({(o.get("error") or {}).get("code") for o in errs})
+    summary["second_resolved"] = resolved_after > resolved_before
+    summary["status"] = "OK"
+
+
+def _run_timeout_phase(a: "AppServer", summary: dict, window_s: float = 60):
+    """Never respond. The request must stay pending (no resolved without a
+    response) for the whole window; then stop() terminates the child and a
+    late response attempt must fail closed. No decision is synthesized."""
+    t0 = time.time()
+    req_seen_at = None
+    while time.time() - t0 < window_s and not a.timed_out:
+        if req_seen_at is None and a.approval_request_id() is not None:
+            req_seen_at = round(time.time() - t0, 1)
+        time.sleep(0.5)
+    summary["window_s"] = window_s
+    summary["approval_request_seen_at_s"] = req_seen_at
+    summary["resolved_during_window"] = a.saw_method("serverRequest/resolved")
+    if req_seen_at is None:
+        summary["status"] = "FAILED: no approval request within window"
+        return
+    a.stop()  # timeout policy: send nothing, terminate the owned child
+    summary["post_stop_send_rc"] = a.send(
+        {"jsonrpc": "2.0", "id": a.approval_request_id(),
+         "result": {"decision": "accept"}})
+    summary["fail_closed_after_stop"] = summary["post_stop_send_rc"] == -1
+    summary["status"] = ("OK" if not summary["resolved_during_window"]
+                         and summary["fail_closed_after_stop"] else "AMBIGUOUS")
+
+
+def _run_cancel_phase(a: "AppServer", tid: str, summary: dict, window_s: float = 60):
+    """On approval-pending, send turn/interrupt {threadId, turnId}
+    (schema-verified). A resolved that precedes any response write is
+    provider-side resolution, NOT success (plan §7); a post-interrupt
+    response attempt is recorded as refused/ambiguous, never success."""
+    t0 = time.time()
+    req_id = None
+    turn_id = None
+    while time.time() - t0 < window_s and not a.timed_out:
+        if req_id is None:
+            req_id = a.approval_request_id()
+        if turn_id is None:
+            # The approval request itself carries turnId; turn/started nests
+            # it at params.turn.id — prefer the request-bound identity.
+            turn_id = a.approval_request_param("turnId")
+            if turn_id is None:
+                turn = a.first_param("turn/started", "turn")
+                if isinstance(turn, dict):
+                    turn_id = turn.get("id")
+        if req_id is not None and turn_id is not None:
+            break
+        time.sleep(0.4)
+    summary["approval_request_seen"] = req_id is not None
+    summary["turn_id_seen"] = turn_id is not None
+    if req_id is None or turn_id is None:
+        summary["status"] = "FAILED: missing approval request or turnId"
+        return
+    resolved_before = a.count_method("serverRequest/resolved")
+    summary["interrupt_seq"] = a.send(
+        {"jsonrpc": "2.0", "id": 4, "method": "turn/interrupt",
+         "params": {"threadId": tid, "turnId": turn_id}})
+    t0 = time.time()
+    while time.time() - t0 < 20 and not a.timed_out:
+        if a.count_method("serverRequest/resolved") > resolved_before \
+                and a.result_of(4) is not None:
+            break
+        time.sleep(0.4)
+    summary["resolved_after_interrupt_before_any_response"] = (
+        a.count_method("serverRequest/resolved") > resolved_before)
+    summary["interrupt_result_received"] = a.result_of(4) is not None
+    # Late response after provider-side resolution: record refusal only.
+    late = a.respond_to_approval("accept")
+    summary["late_response_seq"] = late
+    time.sleep(5)  # bounded observation window for the provider reaction
+    with a._lock:
+        errs = [o for o in a.msgs if o.get("id") == req_id and "error" in o]
+    summary["provider_error_on_late_response"] = bool(errs)
+    summary["late_response_counts_as_success"] = False  # rule: resolved-before-write
+    summary["status"] = "OK"
 
 
 def _fail_and_cleanup(a: AppServer, run_dir, decision, reason):
@@ -850,8 +1301,7 @@ def _spawned_image_info(a: "AppServer") -> dict:
 
 
 def cmd_launchchain():
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     os.makedirs(TMP, exist_ok=True)
     info = {"os": os.uname().sysname, "arch": os.uname().machine}
     node = shutil.which("node")
@@ -862,9 +1312,14 @@ def cmd_launchchain():
                         "realpath": "/opt/homebrew/Cellar/node/<REDACTED>", "version": ver}
     codex = shutil.which("codex")
     if codex:
+        # Recorded for CONTRAST only — evidence runs never execute the PATH codex.
         shim = os.path.realpath(codex)
-        info["shim"] = {**_digest_and_stat(shim),
+        info["global_path_shim_not_used"] = {**_digest_and_stat(shim),
                         "realpath": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js"}
+    # The executed provider: pinned exact-version 0.144.1 identity.
+    info["pinned_codex"] = _pinned_codex_identity()
+    info["pinned_shim"] = _digest_and_stat(_PINNED_CODEX_SHIM)
+    info["pinned_native"] = _digest_and_stat(_PINNED_CODEX_NATIVE)
     a = AppServer()
     try:
         time.sleep(1.0)
@@ -878,8 +1333,7 @@ def cmd_launchchain():
 
 
 def cmd_attest():
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     os.makedirs(TMP, exist_ok=True)
     d = os.path.join(TMP, "attest")
     if os.path.isdir(d): shutil.rmtree(d)
@@ -1185,8 +1639,7 @@ def cmd_test_pg_cleanup():
     """Gate 5a: stop() kills exactly the owned PG; descriptors and timer are
     cleared once; stop() is idempotent; the wire fails closed after stop;
     unrelated processes are preserved. Benign child — no codex, no model."""
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     before = _pgrep_codex()
     if before is None:
         print("OBSERVATION_FAILED: pgrep unavailable — cannot certify isolation")
@@ -1223,8 +1676,7 @@ def cmd_test_runtime_timeout():
     deadline): the deadline fires, the owned PG is killed and cleaned, the
     caller returns, and the wire fails closed. The bounded poll below waits
     on elapsed wall-clock, which IS the property under test."""
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     a = AppServer(deadline_s=2, cmd=_BENIGN_CHILD_CMD)
     if a.timed_out or a._pgid is None:
         print("TEST RUNTIME FAIL: spawn failed"); sys.exit(1)
@@ -1249,8 +1701,7 @@ def cmd_test_launchchain_smoke():
     """Gate 6: launch-chain PID resolution uses the supervisor PID/PGID
     contract with no None dereference — on a live benign child AND on an
     unspawned instance (the removed code raised AttributeError on a.p)."""
-    global _pseudo_next
-    _pseudo_next = {}
+    _reset_pseudonyms()
     a = AppServer(deadline_s=30, cmd=_BENIGN_CHILD_CMD)
     try:
         if a.timed_out or a._parent_pid is None:
@@ -1314,12 +1765,20 @@ def main():
         cmd_schema()
     elif args == ["schema_repro"]:
         cmd_schema_repro()
+    elif args == ["schema_subset"]:
+        cmd_schema_subset()
     elif args == ["init"]:
         cmd_init()
     elif args == ["approval", "accept"]:
         _approval_trace("accept")
     elif args == ["approval", "decline"]:
         _approval_trace("decline")
+    elif args == ["approval", "duplicate"]:
+        _lifecycle_trace("duplicate")
+    elif args == ["approval", "timeout"]:
+        _lifecycle_trace("timeout")
+    elif args == ["approval", "cancel"]:
+        _lifecycle_trace("cancel")
     elif args == ["launchchain"]:
         cmd_launchchain()
     elif args == ["attest"]:

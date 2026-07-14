@@ -1,0 +1,12 @@
+{
+  "mode": "duplicate",
+  "first_response_seq": 27,
+  "resolved_after_first": 1,
+  "dup_response_seq": 33,
+  "provider_error_on_dup": false,
+  "provider_error_codes": [],
+  "second_resolved": false,
+  "status": "OK",
+  "probe_created": true,
+  "provider_timed_out": false
+}

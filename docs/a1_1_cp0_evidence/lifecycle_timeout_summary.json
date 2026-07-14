@@ -1,0 +1,11 @@
+{
+  "mode": "timeout",
+  "window_s": 60,
+  "approval_request_seen_at_s": 9.1,
+  "resolved_during_window": false,
+  "post_stop_send_rc": -1,
+  "fail_closed_after_stop": true,
+  "status": "OK",
+  "probe_created": false,
+  "provider_timed_out": false
+}

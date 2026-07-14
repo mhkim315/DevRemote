@@ -1,28 +1,7 @@
 {
-  "note": "CP0 redacted live evidence from installed codex-cli 0.144.1 app-server (stdio). UUIDs/paths redacted; command is a harmless CP0 spike write.",
-  "decision": "decline",
-  "approval_request": {
-    "method": "item/commandExecution/requestApproval",
-    "id": 0,
-    "params": {
-      "threadId": "<UUID>",
-      "turnId": "<UUID>",
-      "itemId": "exec-<UUID>",
-      "startedAtMs": 1784024232445,
-      "environmentId": "local",
-      "command": "/bin/zsh -lc '/bin/sh -c \"date > /tmp/pokit_cp0_ro_decline.txt\"'",
-      "cwd": "/tmp",
-      "commandActions": [
-        { "type": "unknown", "command": "/bin/sh -c \"date > /tmp/pokit_cp0_ro_decline.txt\"" }
-      ],
-      "proposedExecpolicyAmendment": ["/bin/sh", "-c", "date > /tmp/pokit_cp0_ro_decline.txt"],
-      "availableDecisions": [
-        "accept",
-        { "acceptWithExecpolicyAmendment": { "execpolicy_amendment": ["/bin/sh", "-c", "date > /tmp/pokit_cp0_ro_decline.txt"] } },
-        "cancel"
-      ]
-    }
-  },
-  "our_response": { "jsonrpc": "2.0", "id": 0, "result": { "decision": "decline" } },
-  "resolved_notification": { "method": "serverRequest/resolved", "params": { "threadId": "<UUID>", "requestId": 0 } }
+  "type": "superseded_evidence",
+  "status": "non_authoritative",
+  "reason": "legacy full-payload artifact removed from the current tree by privacy remediation",
+  "historical_source_commit": "042dddf3153d8b9c6ab89ee84d1544728281b2a5",
+  "replacement": "wire_decline_pinned.jsonl"
 }

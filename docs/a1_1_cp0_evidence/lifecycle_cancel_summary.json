@@ -1,0 +1,14 @@
+{
+  "mode": "cancel",
+  "approval_request_seen": true,
+  "turn_id_seen": true,
+  "interrupt_seq": 27,
+  "resolved_after_interrupt_before_any_response": true,
+  "interrupt_result_received": true,
+  "late_response_seq": 34,
+  "provider_error_on_late_response": false,
+  "late_response_counts_as_success": false,
+  "status": "OK",
+  "probe_created": false,
+  "provider_timed_out": false
+}

@@ -1,0 +1,31 @@
+{"type": "trace_header", "run_id": "run_decline_1784063901", "connection_generation": "run_decline_1784063901", "seq_epoch_start": 1, "spawned_pid": 96597, "spawned_pgid": 96596, "pinned": {"pinned_prefix_redacted": "/Users/<U>/.pokit-cp0-toolchain", "pinned_bin_realpath_redacted": "/Users/<U>/.pokit-cp0-toolchain/node_modules/.bin/codex", "pinned_version": "codex-cli 0.144.1", "shim_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477", "native_sha256": "29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a", "lock_resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.1.tgz", "lock_integrity": "sha512-Xir1zqPfpenhdoAoshN53uonzbBXj18COyzRkFlVZpSNyEl5XtkuYu9oddELePFN7K/0sXUcSO34Ad5IeCXPbw==", "lock_native_resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.144.1-darwin-arm64.tgz", "lock_native_integrity": "sha512-dABeDK+ATqMG54MGBd3VjpKfh5EOoqx9PKVQB2QYDaEXx3F6CdUCXue5QIMfr4OxziUj8pUcLAQyd+KFqiTUFw==", "global_path_version_not_used": "codex-cli 0.144.4"}, "process_start_identity": "2026\ub144  7\uc6d4 15\uc77c \uc218\uc694\uc77c 06\uc2dc 18\ubd84 21\ucd08"}
+{"dir": "daemon->provider", "type": "initialize", "id": "objid-1", "clientInfo": "<REDACTED>", "seq": 1}
+{"dir": "provider->daemon", "type": "result", "id": "objid-1", "seq": 2}
+{"dir": "provider->daemon", "type": "remoteControl/status/changed", "status": "disabled", "seq": 3}
+{"dir": "daemon->provider", "type": "initialized", "seq": 4}
+{"dir": "daemon->provider", "type": "thread/start", "id": "objid-2", "cwd": "<CWD>", "approvalPolicy": "untrusted", "config": "<REDACTED>", "seq": 5}
+{"dir": "provider->daemon", "type": "result", "id": "objid-2", "seq": 6}
+{"dir": "provider->daemon", "type": "thread/started", "seq": 7}
+{"dir": "provider->daemon", "type": "mcpServer/startupStatus/updated", "status": "starting", "seq": 8}
+{"dir": "provider->daemon", "type": "mcpServer/startupStatus/updated", "status": "ready", "seq": 9}
+{"dir": "daemon->provider", "type": "turn/start", "id": "objid-3", "input": "<REDACTED-INPUT>", "threadId": "thread-1", "approvalPolicy": "untrusted", "seq": 10}
+{"dir": "provider->daemon", "type": "result", "id": "objid-3", "seq": 11}
+{"dir": "provider->daemon", "type": "thread/status/changed", "threadId": "thread-1", "status": "<REDACTED>", "seq": 12}
+{"dir": "provider->daemon", "type": "turn/started", "threadId": "thread-1", "turnId": "turn-1", "seq": 13}
+{"dir": "provider->daemon", "type": "item/started", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1", "itemType": "userMessage", "seq": 14}
+{"dir": "provider->daemon", "type": "item/completed", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1", "itemType": "userMessage", "seq": 15}
+{"dir": "provider->daemon", "type": "item/started", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-2", "itemType": "reasoning", "seq": 16}
+{"dir": "provider->daemon", "type": "item/completed", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-2", "itemType": "reasoning", "seq": 17}
+{"dir": "provider->daemon", "type": "thread/tokenUsage/updated", "seq": 18}
+{"dir": "provider->daemon", "type": "account/rateLimits/updated", "seq": 19}
+{"dir": "provider->daemon", "type": "item/started", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-3", "itemType": "reasoning", "seq": 20}
+{"dir": "provider->daemon", "type": "item/completed", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-3", "itemType": "reasoning", "seq": 21}
+{"dir": "provider->daemon", "type": "thread/status/changed", "threadId": "thread-1", "status": "<REDACTED>", "seq": 22}
+{"dir": "provider->daemon", "type": "item/started", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-4", "itemType": "commandExecution", "itemStatus": "inProgress", "command": "<REDACTED-CMD>", "seq": 23}
+{"dir": "provider->daemon", "type": "item/commandExecution/requestApproval", "id": "objid-4", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-4", "command": "<REDACTED-CMD>", "cwd": "<CWD>", "environmentId": "local", "availableDecisions": ["accept", "<acceptWithExecpolicyAmendment:PAYLOAD-DROPPED>", "cancel"], "seq": 24}
+{"dir": "daemon->provider", "type": "result", "id": "objid-4", "seq": 25}
+{"dir": "provider->daemon", "type": "serverRequest/resolved", "threadId": "thread-1", "requestId": "objid-4", "seq": 26}
+{"dir": "provider->daemon", "type": "item/completed", "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-4", "itemType": "commandExecution", "itemStatus": "declined", "command": "<REDACTED-CMD>", "seq": 27}
+{"dir": "provider->daemon", "type": "thread/status/changed", "threadId": "thread-1", "status": "<REDACTED>", "seq": 28}
+{"dir": "provider->daemon", "type": "thread/tokenUsage/updated", "seq": 29}
+{"dir": "provider->daemon", "type": "account/rateLimits/updated", "seq": 30}
