@@ -145,7 +145,7 @@ D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patc
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
-A1  Approval Safety                           REJECT 5360ec61 (R5 captured generation queue, fully-bound item/receipt, fixed bounds/entropy, exact-final-tree gate; positive-provider blocker)
+A1  Approval Safety                           REJECT 0f95c7c3 (R6 pre-accept payload binding, non-destructive bounded admission, same-runtime endpoint idempotence; positive-provider blocker)
 N1  Notifications                             BLOCKED until independent A1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -548,8 +548,13 @@ remain blocked. Remediation 4 at `5360ec61` fixed complete
 requester presence, registry-disappearance cleanup and callback-under-lock, but
 re-verification found accepted queue entries are lost on generation replacement,
 queue/drain entries are not fully bound, receipt entropy/resource bounds fail
-closed incompletely, and final report HEAD `d3aa0b09` fails secret scan. Execute
-only `docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_5_HANDOFF.md`.
+closed incompletely, and final report HEAD `d3aa0b09` fails secret scan. That
+round used the now-superseded remediation-5 handoff. Remediation 5 at
+`0f95c7c3` introduced captured handles, typed queue items and fixed bounds, but
+re-verification found payload mismatch reaches daemon acceptance, endpoint
+pressure silently destroys accepted items, and identical production polls rotate
+handles. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_6_HANDOFF.md`.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,

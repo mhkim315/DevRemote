@@ -1,6 +1,6 @@
 # A1 Approval Safety — Authoritative Planning Boundary
 
-Status: **PLAN ACCEPTED; REMEDIATION 4 `5360ec61` REJECTED — R5-A THROUGH R5-D REQUIRED; POSITIVE PROVIDER PATH BLOCKED**
+Status: **PLAN ACCEPTED; REMEDIATION 5 `0f95c7c3` REJECTED — R6-A THROUGH R6-C REQUIRED; POSITIVE PROVIDER PATH BLOCKED**
 
 Baseline reviewed: `ace458056699c26a323eea49d44f8dc1efdaded7`.
 Accepted S1.1 implementation ancestor:
@@ -27,9 +27,13 @@ registry-disappearance cleanup, callback-under-lock and the scan exclusion, but
 independent re-verification reproduced accepted-item loss across generation
 replacement, found that the queue stores only unbound bytes and has fail-open
 receipt/resource edges, and found that final report HEAD `d3aa0b09` fails the
-secret gate. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_5_HANDOFF.md` after reading
-`docs/A1_APPROVAL_SAFETY_REVERIFICATION_4.md`.
+secret gate. Remediation 5 at `0f95c7c3` added captured handles, typed items,
+fixed bounds and exact final-tree gating, but independent re-verification found
+payload substitution is still accepted before store rejection, endpoint bounds
+silently evict accepted receipt ownership, and identical production polls rotate
+endpoint handles. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_6_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_5.md`.
 
 ## 1. Authority boundary
 
