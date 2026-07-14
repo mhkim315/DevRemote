@@ -1,8 +1,15 @@
 # Next Session Handoff — A1.1 Codex Provider-Positive Path
 
-Status: **CP0 CONTINUE UNDER CHECKPOINT-1 AMENDMENT; CP1 UNAUTHORIZED; CAPACITY ZERO**
+Status: **SUPERSEDED FOR THE CURRENT TURN BY CP0 HARNESS RECOVERY H0; CP1 UNAUTHORIZED; CAPACITY ZERO**
 
 Date: 2026-07-14
+
+> Replacement executor: read
+> `docs/NEXT_EXECUTOR_A1_1_CP0_HARNESS_RECOVERY_HANDOFF.md` first. The current canonical
+> tip `0f67833` contains a confirmed recursive-lock deadlock and is not accepted. The
+> replacement agent is authorized for recovery packet H0 only. The newer handoff also
+> freezes the risk-proportional boundary that defers cdhash/full-supply-chain and full
+> schema-bundle certification work.
 
 ## 1. Canonical repository identity
 
