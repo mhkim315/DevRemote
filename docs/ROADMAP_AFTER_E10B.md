@@ -145,8 +145,10 @@ D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patc
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
-A1  Approval Safety                           REJECT/BLOCKED (independent R8 verdict: canonical identity/accounting and production/concurrency evidence incomplete; implementation 8ec3630/report ebdc507; remediation 9 required; provider-positive path absent)
-N1  Notifications                             BLOCKED until independent A1 ACCEPT
+A1  Approval Safety Core                      FROZEN after independent R11 ACCEPT (implementation 2e70512; R11 evidence d5a965c; report 997a697; provider-positive path absent)
+A1.1 Codex Provider-Positive Path             PLANNED / BLOCKING N1 (app-server stdio candidate; capacity stays zero through CP4; real allow+deny E2E required)
+A1.2 Claude Approval Extension                OPTIONAL FOLLOW-UP (not automatically an N1 prerequisite; separate evidence and authorization required)
+N1  Notifications                             BLOCKED until independent A1.1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
@@ -170,11 +172,16 @@ M3-auth-1B
 → T3 Transcript integration
 → S1 status
 → S1.1 runtime status hardening
-→ A1 approval safety
+→ A1 approval safety core
+→ A1.1 Codex provider-positive path
 → N1 notifications
 → O1 deterministic broker
 → O2 developer-verifier loop
 ```
+
+A1.2 is deliberately outside the critical sequence. If later authorized, it is a
+Claude-specific extension review and implementation, not a reason to delay N1 after
+A1.1 acceptance and not a generic provider SDK.
 
 M3-auth-1B/M3-auth-2B positions and iOS/auth scope are unchanged by this
 sequencing update; their existing status text above remains authoritative. R1
@@ -519,13 +526,14 @@ Support terminology at this boundary is intentionally strict:
 - no current path is **orchestration-certified** before O1 adds typed dispatch,
   acknowledgement, completion authority, and dynamic eligibility.
 
-## A1 — Mobile-first Approval System
+## A1 / A1.1 — Mobile-first Approval System and Codex positive path
 
 Goal: safely resolve exact, accepted provider approval requests through one
 generation-bound, authenticated, single-use action path.
 
-Authoritative plan: `docs/A1_APPROVAL_SAFETY_PLAN.md`.
-Execution handoff: `docs/NEXT_SESSION_A1_APPROVAL_SAFETY_HANDOFF.md`.
+Frozen provider-neutral plan: `docs/A1_APPROVAL_SAFETY_PLAN.md`.
+A1.1 provider plan: `docs/A1_CODEX_PROVIDER_POSITIVE_PATH_PLAN.md`.
+Current execution handoff: `docs/NEXT_SESSION_A1_1_CODEX_PROVIDER_POSITIVE_HANDOFF.md`.
 
 The independent plan review returned `ACCEPT WITH REQUIRED PLAN CHANGES`; its
 documentation remediation froze atomic `ClaimForExecution`, canonical
@@ -559,8 +567,25 @@ added digest/token validation and fail-closed capacity, but identity checks rema
 length-only, one Activate test is vacuous, aggregate-bound evidence is incomplete,
 and the required production/concurrency packet was explicitly deferred. The
 independent verdict is recorded in
-`docs/A1_APPROVAL_SAFETY_REVERIFICATION_8.md`. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_9_HANDOFF.md`.
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_8.md`. Remediations 9 and 10 then closed
+canonical identity validation, retained-memory/accounting bounds, production
+telemetry evidence and deterministic contested-state coverage. R11 added the
+missing deep queue-content snapshot and exact production endpoint/order ownership
+assertions. `docs/A1_APPROVAL_SAFETY_REVERIFICATION_11.md` records the independent
+R11 ACCEPT at report HEAD `997a697`; the provider-neutral A1 safety core is now
+frozen. This does not complete the product milestone: production mapping remains
+empty and delivery capacity remains zero.
+
+A1.1 is the bounded completion track. It uses the exact Codex `0.144.1` app-server
+v2 stdio candidate described in the A1.1 plan, keeps capacity zero through CP4 and
+requires independently verified real allow-once and deny paths before CP5 can
+activate the exact certified tuple. N1 remains blocked until independent A1.1
+acceptance.
+
+A1.2 is only a possible later Claude-specific extension. It must first prove exact
+hook invocation identity, one-response ownership and provider consumption. It must
+not modify the frozen A1 core or extract a speculative generic plugin SDK, and it is
+not automatically an N1 prerequisite.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,
