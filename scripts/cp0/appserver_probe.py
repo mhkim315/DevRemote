@@ -262,27 +262,53 @@ def cmd_attest():
     subprocess.run([cc, srcB, "-o", binB], check=True)
     shutil.copy(binA, binp)
     verified_digest = sha256_file(binp)
+    # fexecve helper: exec exactly the bytes referenced by an open fd, even after the
+    # on-disk path is replaced. This is the canonical POSIX primitive for
+    # verified==spawned (macOS supports fexecve; Python does not wrap it).
+    fexec_src = os.path.join(d, "fexec.c")
+    fexec_bin = os.path.join(d, "fexec")
+    open(fexec_src, "w").write(
+        '#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\n'
+        'extern char **environ;\n'
+        'int main(int argc,char**argv){int fd=atoi(argv[1]);char*a[]={"prog",0};'
+        'fexecve(fd,a,environ);perror("fexecve");return 3;}\n')
+    fexecve_available = subprocess.run([cc, fexec_src, "-o", fexec_bin],
+                                       capture_output=True, text=True).returncode == 0
+    result["fexecve_available_on_platform"] = fexecve_available
     fd = os.open(binp, os.O_RDONLY)
+    os.set_inheritable(fd, True)
     os.remove(binp)
-    shutil.copy(binB, binp)
+    shutil.copy(binB, binp)  # path now holds different bytes (VERSION_B)
+    # (a) exec via /dev/fd (often restricted on macOS)
     devfd = f"/dev/fd/{fd}"
     try:
-        via_fd = subprocess.run([devfd], capture_output=True, text=True)
-        fd_out = via_fd.stdout.strip()
+        r = subprocess.run([devfd], capture_output=True, text=True, pass_fds=(fd,))
+        devfd_out = r.stdout.strip() or f"<rc={r.returncode} err={r.stderr.strip()[:60]}>"
     except Exception as e:
-        fd_out = f"<exec-fd-failed: {e}>"
+        devfd_out = f"<exec-fd-failed: {e}>"
+    # (b) exec via fexecve (canonical POSIX; may be absent on macOS)
+    if fexecve_available:
+        try:
+            r = subprocess.run([fexec_bin, str(fd)], capture_output=True, text=True, pass_fds=(fd,))
+            fexecve_out = r.stdout.strip() or f"<rc={r.returncode} err={r.stderr.strip()[:60]}>"
+        except Exception as e:
+            fexecve_out = f"<fexecve-failed: {e}>"
+    else:
+        fexecve_out = "<fexecve-unavailable-on-platform>"
     via_path = subprocess.run([binp], capture_output=True, text=True).stdout.strip()
     os.close(fd)
     result.update({
         "verified_digest": verified_digest,
-        "exec_via_open_fd_output": fd_out,
+        "exec_via_devfd_output": devfd_out,
+        "exec_via_fexecve_output": fexecve_out,
         "exec_via_path_output": via_path,
-        "verified_equals_spawned_via_fd": fd_out == "VERSION_A",
+        "verified_equals_spawned_via_fexecve": fexecve_out == "VERSION_A",
+        "verified_equals_spawned_via_devfd": devfd_out == "VERSION_A",
         "path_exec_sees_replacement": via_path == "VERSION_B",
     })
-    result["status"] = ("PROVEN: /dev/fd exec binds verified==spawned across adversarial path replacement"
-                        if result["verified_equals_spawned_via_fd"] and result["path_exec_sees_replacement"]
-                        else "BLOCKED: could not bind spawned image to verified bytes")
+    result["status"] = ("PROVEN: fexecve binds verified==spawned across adversarial path replacement"
+                        if result["verified_equals_spawned_via_fexecve"] and result["path_exec_sees_replacement"]
+                        else "BLOCKED: could not bind spawned image to verified bytes on this macOS")
     open(os.path.join(TMP, "attest.json"), "w").write(json.dumps(result, indent=2))
     print(json.dumps(result))
 
