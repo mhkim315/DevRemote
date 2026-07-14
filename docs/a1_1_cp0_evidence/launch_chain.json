@@ -1,0 +1,19 @@
+{
+  "os": "Darwin",
+  "arch": "arm64",
+  "node": {
+    "path_kind": "regular",
+    "size": 40767392,
+    "sha256": "fd28bb776513c4ba69f2ab5bb7e5f6719e9083cd4c59b8c10b69a64cff52926e",
+    "realpath": "/opt/homebrew/Cellar/<EMAIL>/20.20.2/bin/node",
+    "version": "v20.20.2"
+  },
+  "shim": {
+    "path_kind": "regular",
+    "size": 7236,
+    "sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+    "realpath": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+    "is_symlink_on_path": true
+  },
+  "spawned_image_path": "node"
+}

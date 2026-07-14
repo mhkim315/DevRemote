@@ -1,0 +1,12 @@
+{
+  "cc": true,
+  "fexecve_available_on_platform": false,
+  "verified_digest": "1aa3d7b7e3817f9a086f14be69237a55fca4c8049b423f1f91bca4ca7baf3664",
+  "exec_via_devfd_output": "<exec-fd-failed: [Errno 13] Permission denied: '/dev/fd/3'>",
+  "exec_via_fexecve_output": "<fexecve-unavailable-on-platform>",
+  "exec_via_path_output": "VERSION_B",
+  "verified_equals_spawned_via_fexecve": false,
+  "verified_equals_spawned_via_devfd": false,
+  "path_exec_sees_replacement": true,
+  "status": "BLOCKED: could not bind spawned image to verified bytes on this macOS"
+}
