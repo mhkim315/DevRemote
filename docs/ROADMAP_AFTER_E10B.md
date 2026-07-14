@@ -145,7 +145,7 @@ D1  Adapter Doctor/Repair                     ACCEPT 8f7c22def (constrained patc
 T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic/fallback projection; echo privacy; authenticated API; production mobile renderer; full gate PASS)
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
-A1  Approval Safety                           REJECT ed466094 (R2 claim/digest/permission, idempotency, receipt/runtime, DTO/log and positive-provider blockers)
+A1  Approval Safety                           REJECT 0521c382 (R3 auth/idempotency replay, exact payload, delivery linearization, retry/log and positive-provider blockers)
 N1  Notifications                             BLOCKED until independent A1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -536,8 +536,12 @@ those boundaries despite a green existing suite. The B1-B8 remediation at
 `ed466094` retained the safe ingestion, non-actionable production default,
 device-auth transport and bounded backend DTO, but re-verification rejected its
 claim/idempotency/receipt machinery and confirmed that the mandatory positive
-provider delivery path is still unavailable. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_2_HANDOFF.md`; N1 remains blocked.
+provider delivery path is still unavailable. Remediation 2 at `0521c382` fixed
+store digest/permission checks, cross-Approval ledger reuse, receipt field checks,
+capacity fail-closed and mobile UTF-8 bounds, but re-verification found remaining
+requester/replay, payload, delivery-linearization, retry and log-redaction gaps.
+Execute only `docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_3_HANDOFF.md`; N1
+remains blocked.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,

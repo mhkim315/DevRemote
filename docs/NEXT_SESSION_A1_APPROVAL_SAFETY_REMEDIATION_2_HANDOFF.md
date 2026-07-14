@@ -1,6 +1,11 @@
 # Next Session Handoff — A1 Approval Safety Remediation 2
 
-Status: **READY — R2-A THROUGH R2-E ONLY**
+Status: **SUPERSEDED — REMEDIATION 2 REVIEWED; USE REMEDIATION 3 HANDOFF**
+
+The implementation produced from this handoff was independently rejected at
+`0521c3828b9d78028f64f9479f8269f469050f85`. Continue only from
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_3_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_2.md`.
 
 This handoff continues A1 after independent rejection of the B1-B8 remediation.
 Preserve the accepted safety foundation; do not redesign A1 or begin N1/O1/O2.
