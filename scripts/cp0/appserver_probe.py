@@ -129,19 +129,95 @@ def _canonical_json_digest(path: str) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# ── external Popen supervisor with SCM_RIGHTS fd-passing ──
+import array as _array
+import socket as _socket
+
+
+def _spawn_codex_with_timeout(timeout_s: float = 15):
+    """Fork a supervisor child. It spawns codex app-server and sends the
+    grandchild's PID, PGID, and stdio pipe FDs back to the parent via
+    SCM_RIGHTS over a socketpair. The grandchild survives through its own
+    session. On timeout, the supervisor's entire process group is killed."""
+    a, b = _socket.socketpair(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    pid = os.fork()
+    if pid == 0:
+        # --- supervisor child ---
+        a.close()
+        try:
+            p = subprocess.Popen(
+                ["codex", "app-server", "--stdio"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, bufsize=1, start_new_session=True,
+            )
+            pgid = os.getpgid(p.pid)
+            fds = [p.stdin.fileno(), p.stdout.fileno(), p.stderr.fileno()]
+            ancillary = [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS, _array.array("i", fds))]
+            msg = f"{p.pid}\n{pgid}\n".encode()
+            b.sendmsg([msg], ancillary)
+            b.close()
+            # grandchild survives via start_new_session; supervisor exits
+            os._exit(0)
+        except Exception as e:
+            b.sendmsg([f"ERROR:{e}\n".encode()], [])
+            b.close()
+            os._exit(1)
+
+    # --- parent ---
+    b.close()
+    a.settimeout(timeout_s)
+    spawned_pid = spawned_pgid = None
+    sin = sout = serr = None
+    try:
+        data, ancdata, _, _ = a.recvmsg(1024, 4096)
+        lines = data.decode().splitlines()
+        if len(lines) >= 2 and not lines[0].startswith("ERROR"):
+            spawned_pid = int(lines[0])
+            spawned_pgid = int(lines[1])
+            # Extract pipe FDs from SCM_RIGHTS
+            for cmsg_level, cmsg_type, cmsg_data in ancdata:
+                if cmsg_level == _socket.SOL_SOCKET and cmsg_type == _socket.SCM_RIGHTS:
+                    recv_fds = list(_array.array("i", cmsg_data))
+                    if len(recv_fds) >= 3:
+                        sin = os.fdopen(recv_fds[0], "w")
+                        sout = os.fdopen(recv_fds[1], "r")
+                        serr = os.fdopen(recv_fds[2], "r")
+        os.waitpid(pid, 0)
+    except (TimeoutError, _socket.timeout, OSError):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        os.waitpid(pid, 0)
+    finally:
+        a.close()
+    return spawned_pid, spawned_pgid, sin, sout, serr
+
+
 # ── ordered wire client (write+flush+seq under ONE lock) ──
 class AppServer:
     def __init__(self, deadline_s: float = 180):
         self._deadline_s = deadline_s
         self._started_at = time.time()
         self._timed_out = False
-        self.p = subprocess.Popen(
-            ["codex", "app-server", "--stdio"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1, start_new_session=True,
-        )
-        self._pgid = os.getpgid(self.p.pid)
-        self._parent_pid = self.p.pid
+        # External supervisor bounds Popen startup to 15s wall-clock
+        spawned_pid, spawned_pgid, sin, sout, serr = _spawn_codex_with_timeout(15)
+        if spawned_pid is None:
+            self._timed_out = True
+            self._pgid = None
+            self._parent_pid = None
+            self._sin = None
+            self._sout = None
+            self.p = None
+            self.trace = []
+            self.msgs = []
+            self._lock = threading.Lock()
+            return
+        self._pgid = spawned_pgid
+        self._parent_pid = spawned_pid
+        self._sin = sin
+        self._sout = sout
+        self.p = None  # no direct Popen handle; we own the PGID
         self._seq = 0
         self.trace: list[dict] = []
         self.msgs: list[dict] = []
@@ -166,8 +242,10 @@ class AppServer:
         return self._timed_out
 
     def _reader(self):
+        if self._sout is None:
+            return
         try:
-            for line in self.p.stdout:
+            for line in self._sout:
                 line = line.rstrip("\n")
                 if not line.strip():
                     continue
@@ -185,12 +263,12 @@ class AppServer:
             pass
 
     def send(self, obj) -> int:
-        if self._timed_out:
+        if self._timed_out or self._sin is None:
             return -1
         line = json.dumps(obj) + "\n"
         with self._lock:
-            self.p.stdin.write(line)
-            self.p.stdin.flush()
+            self._sin.write(line)
+            self._sin.flush()
             self._seq += 1
             rec = _filtered_flat(obj, "daemon->provider")
             rec["seq"] = self._seq
@@ -207,10 +285,11 @@ class AppServer:
     def stop(self):
         self._deadline_timer.cancel()
         self._terminate_pg()
-        try:
-            self.p.wait(timeout=2)
-        except Exception:
-            pass
+        for f in (self._sin, self._sout):
+            try:
+                if f: f.close()
+            except OSError:
+                pass
         return self._parent_pid
 
 
@@ -564,6 +643,8 @@ def cmd_test_pg_cleanup():
         pass
     print(f"unrelated_before={len(before)}")
     a = AppServer(deadline_s=10)
+    if a.timed_out or a._pgid is None:
+        print("TEST PG FAIL: spawn timed out"); sys.exit(1)
     probe_pgid = a._pgid
     probe_pid = a._parent_pid
     print(f"probe_pid={probe_pid} probe_pgid={probe_pgid}")
