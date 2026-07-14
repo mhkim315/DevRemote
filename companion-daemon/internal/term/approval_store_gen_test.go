@@ -625,102 +625,13 @@ func makeLargeStr(n int) string {
 	return string(b)
 }
 
-// R7-B (test 1): repeated correlated polls with the same RuntimeRef preserve one
-// endpoint/handle; a genuine generation change produces exactly one replacement.
-func TestTelemetry_RepeatedPollPreservesHandle(t *testing.T) {
-	gate := NewRuntimeDeliveryGate()
-	rtA := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
-	rtB := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 6, StreamGen: 2}
-	// Simulate processSession calling gate.Activate with the same RuntimeRef across
-	// repeated polls (the telemetry's constant RuntimeRef for the same stream).
-	h1, ok := gate.Activate("codex:s1", rtA, 0)
-	if !ok {
-		t.Fatal("first activate")
-	}
-	countBefore := len(gate.endpoints)
-	for i := 0; i < 10; i++ {
-		h, ok := gate.Activate("codex:s1", rtA, 0) // repeated polls, same RuntimeRef
-		if !ok || h != h1 || len(gate.endpoints) != countBefore {
-			t.Fatalf("poll %d: handle changed from %q to %q, endpoints from %d to %d", i, h1, h, countBefore, len(gate.endpoints))
-		}
-	}
-	// A genuine generation change (e.g. launch replaced) produces a new handle while
-	// keeping the retired A endpoint (capacity 0, empty → reclaimed, net-zero).
-	hNew, _ := gate.Activate("codex:s1", rtB, 0)
-	if h1 == hNew {
-		t.Errorf("gen change must produce a new handle, got %q == %q", h1, hNew)
-	}
-}
-
-// R7-B (tests 2+3+4): all-active exhaustion fails before mutation; retired-nonempty
-// exhaustion fails before mutation and preserves the accepted item; deactivation+drain
-// makes an endpoint a safe victim (reclaimed deterministically).
-func TestDeliveryGate_ExhaustionAndSafeVictimInvariants(t *testing.T) {
-	g := NewRuntimeDeliveryGate()
-	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
-	// Fill with active endpoints. After this loop, every session is active and no
-	// safe victim exists — the next activation must fail closed WITHOUT mutation.
-	for i := 0; i < maxGateEndpoints; i++ {
-		if _, ok := g.Activate(fmt.Sprintf("codex:a%d", i), rt, 0); !ok {
-			t.Fatalf("activate %d", i)
-		}
-	}
-	endpointsBefore := len(g.endpoints)
-	if h, ok := g.Activate("codex:sFail", rt, 0); ok || h != "" {
-		t.Fatal("activation succeeded when all endpoints were active and bound exhausted")
-	}
-	if len(g.endpoints) != endpointsBefore {
-		t.Errorf("failed activation mutated endpoint count: %d -> %d", endpointsBefore, len(g.endpoints))
-	}
-	// Now make one endpoint deactivated AND empty (drain it first). The first
-	// activation reclaims this empty retired endpoint so we don't exceed the bound.
-	hKeep, _ := g.Activate("codex:sKeep", rt, 8)
-	g.Accept(gateReq("codex:sKeep", "aKeep", "kk", dig("default"), rt, []byte("must-survive")))
-	g.Drain(hKeep) // drain FIRST, making it empty
-	g.Deactivate("codex:sKeep")
-	// After draining: deactivated+empty → a safe victim. The next activation for the
-	// SAME session reclaims it (findRetiredEmptyForSessionLocked matches the session).
-	_ = g // the reclaim is exercised; let the assertion below validate it
-	// R7 note: the bound-exhausted reclaim path for a deactivated+empty endpoint
-	// belonging to the SAME session is verified by the reclaim test earlier in the
-	// test suite. This sub-case exercises the findRetiredEmptyForSessionLocked scan.
-}
-
-// R7-B (test 5): deterministic barrier test for accept vs activate/reclaim. Use a
-// bounded gate with helper that encodes the queue occupancy and byte accounting across
-// contested operations. Simple sequential proof: accept, then deactivate+activate to
-// reclaim the now-empty endpoint; verify no other endpoint affected.
-func TestDeliveryGate_AcceptActivateReclaimDeterministic(t *testing.T) {
-	g := NewRuntimeDeliveryGate()
-	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
-	hA, _ := g.Activate("codex:sA", rt, 1) // capacity 1
-	g.Accept(gateReq("codex:sA", "a1", "k1", dig("default"), rt, []byte("accepted")))
-	// queue full → accept must fail
-	if _, _, ok := g.Accept(gateReq("codex:sA", "a2", "k2", dig("default"), rt, []byte("rejected"))); ok {
-		t.Fatal("queue-full accepted")
-	}
-	// Verify item count and byte accounting are correct.
-	items := g.Drain(hA)
-	if len(items) != 1 {
-		t.Fatalf("expected exactly 1 item, got %d", len(items))
-	}
-	g.Deactivate("codex:sA")
-	countBefore := len(g.endpoints)
-	// Activate a new endpoint with the same session: the old empty retired endpoint
-	// is reclaimed, and the new endpoint is current; net endpoint count is unchanged.
-	hB, _ := g.Activate("codex:sA", rt, 1)
-	if hA == hB {
-		t.Error("new activation did not publish a new handle")
-	}
-	if len(g.endpoints) != countBefore {
-		t.Errorf("endpoint count changed from %d to %d (reclaim should be net-zero)", countBefore, len(g.endpoints))
-	}
-	// Negative control: a direct mutation would corrupt the queue — prove items
-	// drained from hA (before reclaim) are unaffected by the reclaim.
-	if string(items[0].Payload) != "accepted" {
-		t.Error("reclaimed endpoint's items were mutated")
-	}
-}
+// R9-B replaces the former direct-gate telemetry/exhaustion/reclaim tests
+// (TestTelemetry_RepeatedPollPreservesHandle, TestDeliveryGate_ExhaustionAndSafeVictimInvariants,
+// TestDeliveryGate_AcceptActivateReclaimDeterministic). The production-path,
+// explicit-capacity, and deterministic-interleaving proofs now live in
+// approval_delivery_r9b_test.go. They are removed here (not relabeled) because a
+// direct gate.Activate call, an ignored ok result, and a sequential accept-then-drain
+// are not the evidence R9-B requires.
 
 // The external drain snapshots under a brief lock; provider I/O runs on the copies
 // OUTSIDE the gate, so a slow drain cannot block a runtime replacement.

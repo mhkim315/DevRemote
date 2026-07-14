@@ -267,6 +267,11 @@ type RuntimeDeliveryGate struct {
 	totalBytes int
 	// randFail is a NARROW test seam forcing entropy failure; false in production.
 	randFail bool
+	// acceptEntryHook is a NARROW test seam invoked at the very start of Accept,
+	// BEFORE the gate lock is taken, to force a deterministic accept-vs-replacement
+	// interleaving (R9-B3). It is nil in production and is set once by a test before
+	// any concurrent use, so it is never mutated concurrently.
+	acceptEntryHook func()
 }
 
 func NewRuntimeDeliveryGate() *RuntimeDeliveryGate {
@@ -436,6 +441,11 @@ func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 // repository-owned total limit. Any mismatch, over-limit, replaced/removed/no-channel
 // generation returns ok=false and appends nothing.
 func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt DeliveryReceipt, handle string, ok bool) {
+	// R9-B3 test seam: a deterministic pause BEFORE the lock, so a test can drive a
+	// replacement into the accept-vs-activate window. nil in production.
+	if g.acceptEntryHook != nil {
+		g.acceptEntryHook()
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
