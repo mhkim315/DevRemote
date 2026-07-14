@@ -35,7 +35,8 @@ const (
 	maxGateCapacity         = 64
 	maxGateEndpoints        = 128
 	maxGateItemBytes        = 4096
-	maxGateTotalQueuedBytes = 1 << 20
+	maxGateItemMetaBytes    = 4096 // per-item metadata (totalItemBytes - len(payload))
+	maxGateTotalQueuedBytes = 2 << 20
 )
 
 type DeliveryOutcome string
@@ -99,6 +100,27 @@ func NewUnavailableApprovalDelivery() ApprovalDelivery { return unavailableAppro
 
 func (unavailableApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
+}
+
+// totalItemBytes returns the total retained bytes (payload + ALL variable-length
+// metadata) one queued item consumes. Metadata includes ApprovalID, SessionID,
+// idempotency key, ActionDigest, PayloadDigest, ClaimToken, ReceiptID (approximate),
+// and Runtime adapter + version strings. This is the single authoritative size used
+// for the aggregate `totalBytes` and per-endpoint `queuedBytes` accounting so a
+// multi-megabyte metadata string is not silently accepted past the advertised total
+// bound.
+func totalItemBytes(req ApprovalDeliveryRequest) int {
+	n := len(req.Payload) +
+		len(req.Binding.ApprovalID) + len(req.Binding.SessionID) +
+		len(req.Binding.ActionDigest) + len(req.Binding.PayloadDigest) +
+		len(req.Binding.IdempotencyKey) + len(req.Binding.Runtime.Adapter) +
+		len(req.Binding.Runtime.Version) +
+		len(req.ClaimToken) +
+		128 // approximate: per-item nonce+seq receipt ID + runtime-gen integers + struct overhead
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // AcceptedDelivery is a typed, fully-bound accepted queue item. It is an internal,
@@ -199,28 +221,38 @@ func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity
 			oldEmpty = len(e.queue) == 0 && e.queuedBytes == 0
 		}
 	}
+	// When the session was deactivated (hasOld=false), scan for a retired empty
+	// endpoint from a prior activation of the SAME session that can be reclaimed. The
+	// endpoint must be inactive, empty, and belong to this session; it is also a
+	// candidate for the projected net-zero count.
+	reclaim := ""
+	if !hasOld {
+		reclaim = g.findRetiredEmptyForSessionLocked(sessionID)
+	}
 	projected := len(g.endpoints) + 1
-	if hasOld && oldEmpty {
+	if (hasOld && oldEmpty) || reclaim != "" {
 		projected = len(g.endpoints) // net zero: old removed, new added
 	}
 	victim := ""
 	if projected > maxGateEndpoints {
 		victim = g.findSafeVictimLocked(oldID)
 		if victim == "" {
-			return "", false // fail closed: no safe victim, nothing mutated
+			return "", false
 		}
 	}
 	// Dispose of the old endpoint, then publish the new one.
 	if hasOld {
 		if oldEmpty {
-			g.removeLocked(oldID) // reclaim
+			g.removeLocked(oldID)
 		} else {
-			// Retire the current endpoint (keep its queue).
 			if e := g.endpoints[oldID]; e != nil {
 				e.active = false
 			}
 			delete(g.current, sessionID)
 		}
+	}
+	if reclaim != "" {
+		g.removeLocked(reclaim)
 	}
 	if victim != "" {
 		g.removeLocked(victim)
@@ -242,6 +274,19 @@ func (g *RuntimeDeliveryGate) findSafeVictimLocked(excludeID string) string {
 		}
 		e := g.endpoints[id]
 		if e != nil && !e.active && len(e.queue) == 0 && e.queuedBytes == 0 && g.current[e.sessionID] != id {
+			return id
+		}
+	}
+	return ""
+}
+
+// findRetiredEmptyForSessionLocked returns a retired (inactive), empty endpoint
+// belonging to sessionID, for reclaim when the session was deactivated and a new
+// activation reuses the session.
+func (g *RuntimeDeliveryGate) findRetiredEmptyForSessionLocked(sessionID string) string {
+	for _, id := range g.order {
+		e := g.endpoints[id]
+		if e != nil && !e.active && e.sessionID == sessionID && len(e.queue) == 0 && e.queuedBytes == 0 {
 			return id
 		}
 	}
@@ -281,8 +326,9 @@ func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 // canonical item (full binding identity, canonical key, claim ownership, exact
 // runtime match, and payload-digest equality) BEFORE appending, so substituted bytes
 // or a malformed binding are rejected before daemon acceptance, not only at commit.
-// Any mismatch, over-limit, replaced/removed/no-channel generation returns ok=false
-// and appends nothing.
+// The total retained bytes (payload + ALL metadata strings) are counted against the
+// repository-owned total limit. Any mismatch, over-limit, replaced/removed/no-channel
+// generation returns ok=false and appends nothing.
 func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt DeliveryReceipt, handle string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -312,7 +358,15 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	if len(e.queue) >= e.capacity {
 		return DeliveryReceipt{}, "", false
 	}
-	if len(req.Payload) > maxGateItemBytes || g.totalBytes+len(req.Payload) > maxGateTotalQueuedBytes {
+	if len(req.Payload) > maxGateItemBytes {
+		return DeliveryReceipt{}, "", false
+	}
+	totalItem := totalItemBytes(req) // payload + all retained metadata
+	if totalItem > maxGateItemBytes || g.totalBytes+totalItem > maxGateTotalQueuedBytes {
+		return DeliveryReceipt{}, "", false
+	}
+	metaBytes := totalItem - len(req.Payload)
+	if metaBytes > maxGateItemMetaBytes {
 		return DeliveryReceipt{}, "", false
 	}
 	e.seq++
@@ -322,8 +376,8 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 		Payload: append([]byte(nil), req.Payload...),
 	}
 	e.queue = append(e.queue, item)
-	e.queuedBytes += len(req.Payload)
-	g.totalBytes += len(req.Payload)
+	e.queuedBytes += totalItem
+	g.totalBytes += totalItem
 	return DeliveryReceipt{
 		Outcome: DeliveryAccepted, ClaimToken: req.ClaimToken, Binding: req.Binding,
 		ReceiptID: rid, DeliveredPayloadDigest: payloadDigest(req.Payload),
