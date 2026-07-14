@@ -59,7 +59,7 @@ does not hold the transition gate; check-then-write negative control vs the atom
 ## Secret-scan integrity (R4-D)
 
 Remove the content-based exclusion; rely on the upstream heading rewording (no
-`sk-`/`ghp_`-shaped substring). Negative control: a real secret-shaped value is still
+API-key/token-shaped substring). Negative control: a real secret-shaped value is still
 detected; the reworded heading is not.
 
 ## Blocked (R4-E)

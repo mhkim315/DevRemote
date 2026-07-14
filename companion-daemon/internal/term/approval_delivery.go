@@ -7,26 +7,36 @@ import (
 	"sync"
 )
 
-// A1 remediation 3/4 (R3-B/R3-C/R4-C) — approval-specific delivery boundary + a
-// generation-owned delivery gate with a bounded, non-blocking, production-owned
-// in-memory acceptance queue.
+// A1 remediation 5 — approval-specific delivery boundary + generation-owned delivery
+// gate with immutable endpoint ownership and typed, fully-bound queue items.
 //
 // A delivery request and its receipt carry the ONE immutable ApprovalExecutionBinding
-// the claim token owns; the receipt also carries an opaque ReceiptID and the digest
-// of the EXACT bytes accepted. RecordDelivery compares every binding field, the claim
+// the claim token owns; the receipt also carries an opaque ReceiptID and the digest of
+// the exact bytes accepted. RecordDelivery compares every binding field, the claim
 // token, and the delivered-payload digest before a success may commit.
 //
-// Linearization (R4-C): the under-lock acceptance is a bounded append into a
-// generation-owned in-memory queue owned by the gate — never an arbitrary interface
-// callback. It cannot block or perform I/O; queue-full returns non-acceptance and
-// writes nothing. Activation/replacement/deactivation take the SAME lock, so a
-// replaced generation accepts no bytes. Any external drain reads the CAPTURED
-// generation queue via Drain (a brief locked snapshot) and performs provider I/O
-// AFTER releasing the lock, so a slow drain cannot hold the transition gate.
+// Endpoint ownership (R5-A/R5-B): each Activate publishes a NEW immutable
+// generation-owned endpoint (opaque handle) and retires the previous one WITHOUT
+// destroying its already-accepted items. Accept appends one typed, fully-bound item
+// (binding + claim token + receipt id + defensive payload) into the current endpoint
+// and returns the endpoint handle; Drain returns typed defensive copies from a
+// CAPTURED handle, never a mutable session lookup, so an item accepted by generation A
+// stays owned by A across an A→B replacement.
+//
+// Bounds/entropy (R5-C): capacity, endpoint count, items, item bytes, and total queued
+// bytes are repository-owned constants; every over-limit or entropy-failure path fails
+// closed and appends nothing.
 //
 // No accepted provider action-delivery channel exists, so production activates every
 // endpoint with capacity 0 (no channel) → Accept returns unavailable and no bytes are
-// ever accepted. The gate/receipt semantics are proven with controlled tests.
+// ever accepted; retired endpoints are always empty.
+
+const (
+	maxGateCapacity         = 64
+	maxGateEndpoints        = 128
+	maxGateItemBytes        = 4096
+	maxGateTotalQueuedBytes = 1 << 20
+)
 
 type DeliveryOutcome string
 
@@ -52,8 +62,6 @@ func deliverySucceeded(o DeliveryOutcome) bool {
 	return o == DeliveryAccepted || o == DeliveryAlreadyAccepted
 }
 
-// deliveryProvesNonAcceptance reports whether an outcome proves the daemon boundary
-// accepted NOTHING (so a bounded manual retry is safe).
 func deliveryProvesNonAcceptance(o DeliveryOutcome) bool {
 	switch o {
 	case DeliveryUnavailable, DeliveryStaleRuntime, DeliveryRuntimeMismatch, DeliveryRejected:
@@ -84,14 +92,6 @@ type ApprovalDelivery interface {
 	Deliver(req ApprovalDeliveryRequest) DeliveryReceipt
 }
 
-func newGateNonce() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "n"
-	}
-	return hex.EncodeToString(b[:])
-}
-
 // unavailableApprovalDelivery is a no-channel boundary that accepts nothing.
 type unavailableApprovalDelivery struct{}
 
@@ -101,105 +101,223 @@ func (unavailableApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Delivery
 	return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
 }
 
-// genEndpoint is a per-session, generation-owned bounded delivery queue. capacity 0
-// means no delivery channel (production) — nothing is ever accepted.
+// AcceptedDelivery is a typed, fully-bound accepted queue item. It is an internal,
+// server-side value used by an (as-yet-unavailable) external provider drain; it never
+// enters a public/mobile DTO.
+type AcceptedDelivery struct {
+	Binding    ApprovalExecutionBinding
+	ClaimToken string
+	ReceiptID  string
+	Payload    []byte
+}
+
+func (a AcceptedDelivery) copy() AcceptedDelivery {
+	return AcceptedDelivery{
+		Binding:    a.Binding,
+		ClaimToken: a.ClaimToken,
+		ReceiptID:  a.ReceiptID,
+		Payload:    append([]byte(nil), a.Payload...),
+	}
+}
+
+// genEndpoint is an immutable-identity, generation-owned bounded delivery endpoint.
+// capacity 0 means no delivery channel (production) — nothing is ever accepted.
 type genEndpoint struct {
-	runtime  RuntimeRef
-	active   bool
-	capacity int
-	queue    [][]byte
-	seq      int
-	nonce    string
+	id          string
+	sessionID   string
+	runtime     RuntimeRef
+	active      bool
+	capacity    int
+	queue       []AcceptedDelivery
+	seq         int
+	nonce       string
+	queuedBytes int
 }
 
 // RuntimeDeliveryGate linearizes approval delivery acceptance against runtime
-// activation/replacement/deactivation per session. It directly owns the concrete
-// bounded queue; there is NO callback under the lock.
+// activation/replacement/deactivation per session, retaining retired endpoints so
+// already-accepted items are not destroyed by a replacement.
 type RuntimeDeliveryGate struct {
-	mu       sync.Mutex
-	sessions map[string]*genEndpoint
+	mu         sync.Mutex
+	current    map[string]string       // sessionID -> current endpoint id
+	endpoints  map[string]*genEndpoint // endpoint id -> endpoint (current or retired)
+	order      []string                // endpoint ids in creation order (bounded eviction)
+	totalBytes int
+	// randFail is a NARROW test seam forcing entropy failure; false in production.
+	randFail bool
 }
 
 func NewRuntimeDeliveryGate() *RuntimeDeliveryGate {
-	return &RuntimeDeliveryGate{sessions: make(map[string]*genEndpoint)}
+	return &RuntimeDeliveryGate{current: make(map[string]string), endpoints: make(map[string]*genEndpoint)}
 }
 
-// Activate installs rt as the current generation-owned endpoint with a bounded
-// acceptance capacity, superseding any prior generation. capacity 0 = no channel
-// (production): the endpoint tracks generation currency but accepts nothing.
-func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity int) {
+// genToken produces an opaque server-side identifier, or ("", false) on entropy
+// failure (or the test seam). It NEVER falls back to a fixed value.
+func (g *RuntimeDeliveryGate) genToken() (string, bool) {
+	if g.randFail {
+		return "", false
+	}
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", false
+	}
+	return hex.EncodeToString(b[:]), true
+}
+
+// Activate publishes a NEW generation-owned endpoint for a session and retires the
+// prior one (keeping its accepted items). It returns the new opaque handle. On entropy
+// failure it publishes NO accepting endpoint (fail closed) and returns ok=false. An
+// out-of-range capacity yields an explicit no-channel endpoint (capacity 0).
+func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity int) (handle string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.sessions[sessionID] = &genEndpoint{runtime: rt, active: true, capacity: capacity, nonce: newGateNonce()}
+
+	// Retire the current endpoint (do not destroy its queue).
+	if oldID, exists := g.current[sessionID]; exists {
+		if e := g.endpoints[oldID]; e != nil {
+			e.active = false
+		}
+		delete(g.current, sessionID)
+	}
+
+	id, tok1 := g.genToken()
+	nonce, tok2 := g.genToken()
+	if !tok1 || !tok2 {
+		return "", false // entropy failure: no accepting endpoint published
+	}
+	cap := capacity
+	if cap < 0 || cap > maxGateCapacity {
+		cap = 0 // explicit no-channel (fail closed), never a silent clamp to a usable value
+	}
+	e := &genEndpoint{id: id, sessionID: sessionID, runtime: rt, active: true, capacity: cap, nonce: nonce}
+	g.endpoints[id] = e
+	g.current[sessionID] = id
+	g.order = append(g.order, id)
+	g.evictLocked()
+	return id, true
 }
 
-// Deactivate marks a session's endpoint inactive (replacement/delete/unlink/
-// termination/registry disappearance). After this it accepts nothing.
+// evictLocked bounds the total number of endpoints, preferring to evict the oldest
+// RETIRED (inactive) endpoint. Caller holds mu.
+func (g *RuntimeDeliveryGate) evictLocked() {
+	for len(g.endpoints) > maxGateEndpoints {
+		victim := ""
+		// prefer the oldest inactive endpoint
+		for _, id := range g.order {
+			if e := g.endpoints[id]; e != nil && !e.active {
+				victim = id
+				break
+			}
+		}
+		if victim == "" {
+			victim = g.order[0] // all active: evict the oldest (bounded degradation)
+		}
+		g.removeLocked(victim)
+	}
+}
+
+func (g *RuntimeDeliveryGate) removeLocked(id string) {
+	if e := g.endpoints[id]; e != nil {
+		g.totalBytes -= e.queuedBytes
+		if g.current[e.sessionID] == id {
+			delete(g.current, e.sessionID)
+		}
+		delete(g.endpoints, id)
+	}
+	for i, oid := range g.order {
+		if oid == id {
+			g.order = append(g.order[:i], g.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// Deactivate marks a session's current endpoint inactive (delete/unlink/termination/
+// registry disappearance). Its already-accepted items remain drainable by handle.
 func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if e, ok := g.sessions[sessionID]; ok {
-		e.active = false
+	if id, ok := g.current[sessionID]; ok {
+		if e := g.endpoints[id]; e != nil {
+			e.active = false
+		}
+		delete(g.current, sessionID)
 	}
 }
 
-// Accept is the sole acceptance point. Under one lock it verifies the current
-// endpoint equals the expected runtime, is active, and has capacity, then appends the
-// exact bytes into the generation-owned queue and returns a ReceiptID — a bounded,
-// non-blocking, in-memory operation. Queue-full or a replaced/removed/no-channel
-// generation returns ok=false and writes nothing. No external I/O occurs here.
-func (g *RuntimeDeliveryGate) Accept(sessionID string, expected RuntimeRef, payload []byte) (receiptID string, ok bool) {
+// Accept is the sole acceptance point. Under one lock it verifies the current endpoint
+// equals the expected runtime, is active, has capacity, and that the item fits the
+// byte bounds, then appends a typed fully-bound item and returns the receipt plus the
+// endpoint handle. Any over-limit, replaced/removed/no-channel generation returns
+// ok=false and appends nothing. No callback and no external I/O occur here.
+func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt DeliveryReceipt, handle string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	e := g.sessions[sessionID]
-	if e == nil || !e.active || !e.runtime.equal(expected) || e.capacity == 0 {
-		return "", false
+	eid, exists := g.current[req.Binding.SessionID]
+	if !exists {
+		return DeliveryReceipt{}, "", false
+	}
+	e := g.endpoints[eid]
+	if e == nil || !e.active || !e.runtime.equal(req.Binding.Runtime) || e.capacity == 0 {
+		return DeliveryReceipt{}, "", false
 	}
 	if len(e.queue) >= e.capacity {
-		return "", false // fail closed
+		return DeliveryReceipt{}, "", false // queue full → fail closed
 	}
-	cp := append([]byte(nil), payload...)
-	e.queue = append(e.queue, cp)
+	if len(req.Payload) > maxGateItemBytes || g.totalBytes+len(req.Payload) > maxGateTotalQueuedBytes {
+		return DeliveryReceipt{}, "", false // byte bounds → fail closed
+	}
 	e.seq++
-	return e.nonce + "-" + strconv.Itoa(e.seq), true
+	rid := e.nonce + "-" + strconv.Itoa(e.seq)
+	item := AcceptedDelivery{
+		Binding: req.Binding, ClaimToken: req.ClaimToken, ReceiptID: rid,
+		Payload: append([]byte(nil), req.Payload...),
+	}
+	e.queue = append(e.queue, item)
+	e.queuedBytes += len(req.Payload)
+	g.totalBytes += len(req.Payload)
+	return DeliveryReceipt{
+		Outcome: DeliveryAccepted, ClaimToken: req.ClaimToken, Binding: req.Binding,
+		ReceiptID: rid, DeliveredPayloadDigest: payloadDigest(req.Payload),
+	}, eid, true
 }
 
-// Drain returns and clears the session endpoint's accepted payloads under a brief
-// lock. The caller performs any external/provider I/O AFTER this returns (outside the
-// lock), so a slow drain never holds the transition gate.
-func (g *RuntimeDeliveryGate) Drain(sessionID string) [][]byte {
+// Drain returns and clears the CAPTURED endpoint's accepted items as typed defensive
+// copies, then external/provider I/O runs on them OUTSIDE the lock. It uses the opaque
+// endpoint handle, never a mutable session lookup, so it cannot cross generations.
+func (g *RuntimeDeliveryGate) Drain(handle string) []AcceptedDelivery {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	e := g.sessions[sessionID]
+	e := g.endpoints[handle]
 	if e == nil || len(e.queue) == 0 {
 		return nil
 	}
-	out := e.queue
+	out := make([]AcceptedDelivery, len(e.queue))
+	for i := range e.queue {
+		out[i] = e.queue[i].copy()
+	}
+	g.totalBytes -= e.queuedBytes
+	e.queuedBytes = 0
 	e.queue = nil
 	return out
 }
 
 // gatedApprovalDelivery is the production boundary: it accepts ONLY through the
-// generation-owned gate. With capacity 0 (no provider channel) it returns
-// `unavailable` and writes no bytes; when a bounded endpoint exists, an accepted
-// receipt is created only after the daemon-owned acceptance, carrying the
-// delivered-payload digest.
+// generation-owned gate. With capacity 0 (no provider channel) it returns unavailable
+// and writes no bytes; when a bounded endpoint exists, an accepted receipt is created
+// only after the daemon-owned acceptance, carrying the delivered-payload digest.
 type gatedApprovalDelivery struct {
 	gate *RuntimeDeliveryGate
 }
 
-// NewGatedApprovalDelivery wires the production delivery boundary to the gate.
 func NewGatedApprovalDelivery(gate *RuntimeDeliveryGate) ApprovalDelivery {
 	return gatedApprovalDelivery{gate: gate}
 }
 
 func (d gatedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
-	rid, ok := d.gate.Accept(req.Binding.SessionID, req.Binding.Runtime, req.Payload)
+	receipt, _, ok := d.gate.Accept(req)
 	if !ok {
 		return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
 	}
-	return DeliveryReceipt{
-		Outcome: DeliveryAccepted, ClaimToken: req.ClaimToken, Binding: req.Binding,
-		ReceiptID: rid, DeliveredPayloadDigest: payloadDigest(req.Payload),
-	}
+	return receipt
 }

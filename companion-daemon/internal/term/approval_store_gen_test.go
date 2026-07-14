@@ -58,7 +58,7 @@ func digestOf(opt agent.InteractionOption, input string) string {
 func acceptReceipt(c ClaimResult) DeliveryReceipt {
 	return DeliveryReceipt{
 		Outcome: DeliveryAccepted, ClaimToken: c.Token, Binding: c.Binding,
-		ReceiptID: newGateNonce(), DeliveredPayloadDigest: payloadDigest(c.Payload),
+		ReceiptID: "rcpt", DeliveredPayloadDigest: payloadDigest(c.Payload),
 	}
 }
 
@@ -270,7 +270,7 @@ func TestRecordDelivery_SubstitutedPayloadCannotCommit(t *testing.T) {
 	// digest → commit must fail (no false success).
 	substituted := DeliveryReceipt{
 		Outcome: DeliveryAccepted, ClaimToken: c.Token, Binding: c.Binding,
-		ReceiptID: newGateNonce(), DeliveredPayloadDigest: payloadDigest([]byte("substituted\n")),
+		ReceiptID: "rcpt", DeliveredPayloadDigest: payloadDigest([]byte("substituted\n")),
 	}
 	if commit := s.RecordDelivery(substituted); commit.Committed {
 		t.Fatal("substituted payload committed a success")
@@ -318,63 +318,163 @@ func TestRecordDelivery_RejectsAnyBindingFieldMismatch(t *testing.T) {
 	}
 }
 
-// ── R4-C: bounded gate acceptance + linearization ──
+// ── R5-A/B/C: immutable endpoint ownership + typed items + bounds ──
 
-func TestDeliveryGate_BoundedAcceptAndCapacity(t *testing.T) {
+func gateReq(session, approval, key, actionDigest string, rt RuntimeRef, payload []byte) ApprovalDeliveryRequest {
+	b := ApprovalExecutionBinding{
+		ApprovalID: approval, SessionID: session, Runtime: rt,
+		ActionDigest: actionDigest, PayloadDigest: payloadDigest(payload), IdempotencyKey: key,
+	}
+	return ApprovalDeliveryRequest{ClaimToken: "tok-" + approval, Binding: b, Payload: payload}
+}
+
+// R5-A: an item accepted by generation A remains owned by the captured A endpoint
+// across an A→B replacement; captured-A drain returns exactly item A, B is empty, and
+// the retired A accepts nothing new.
+func TestDeliveryGate_AcceptedItemSurvivesReplacement(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	rtA := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	rtB := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 6, StreamGen: 0}
-	g.Activate("codex:s1", rtA, 2) // bounded capacity 2
-	if _, ok := g.Accept("codex:s1", rtA, []byte("a")); !ok {
-		t.Fatal("first accept should succeed")
+	hA, ok := g.Activate("codex:s1", rtA, 4)
+	if !ok {
+		t.Fatal("activate A")
 	}
-	if _, ok := g.Accept("codex:s1", rtA, []byte("b")); !ok {
-		t.Fatal("second accept should succeed")
+	reqA := gateReq("codex:s1", "a1", "k1", "ad-a", rtA, []byte("A-bytes"))
+	recA, handleA, ok := g.Accept(reqA)
+	if !ok || handleA != hA {
+		t.Fatalf("accept A ok=%v handle=%q want %q", ok, handleA, hA)
 	}
-	// queue full → fail closed, no write
-	if _, ok := g.Accept("codex:s1", rtA, []byte("c")); ok {
+	hB, ok := g.Activate("codex:s1", rtB, 4) // publish B, retire A
+	if !ok {
+		t.Fatal("activate B")
+	}
+	itemsA := g.Drain(hA) // CAPTURED A handle
+	if len(itemsA) != 1 || itemsA[0].ReceiptID != recA.ReceiptID || itemsA[0].Binding.ApprovalID != "a1" {
+		t.Fatalf("captured-A drain lost/redirected item: %+v", itemsA)
+	}
+	if itemsB := g.Drain(hB); len(itemsB) != 0 {
+		t.Errorf("B drain non-empty (A item redirected): %v", itemsB)
+	}
+	if _, _, ok := g.Accept(reqA); ok {
+		t.Error("retired generation A accepted a new item")
+	}
+}
+
+func TestDeliveryGate_CapacityQueueFullAndDeactivate(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	g.Activate("codex:s1", rt, 2)
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("a"))); !ok {
+		t.Fatal("first accept")
+	}
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a2", "k2", "ad", rt, []byte("b"))); !ok {
+		t.Fatal("second accept")
+	}
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a3", "k3", "ad", rt, []byte("c"))); ok {
 		t.Error("queue full must fail closed")
 	}
-	// replacement → old generation accepts nothing, new does (with its own capacity)
-	g.Activate("codex:s1", rtB, 2)
-	if _, ok := g.Accept("codex:s1", rtA, []byte("x")); ok {
-		t.Error("old generation accepted after replacement")
-	}
-	if _, ok := g.Accept("codex:s1", rtB, []byte("x")); !ok {
-		t.Error("new generation should accept")
-	}
 	g.Deactivate("codex:s1")
-	if _, ok := g.Accept("codex:s1", rtB, []byte("x")); ok {
-		t.Error("deactivated runtime accepted")
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a4", "k4", "ad", rt, []byte("d"))); ok {
+		t.Error("deactivated endpoint accepted")
 	}
-	// capacity 0 (no provider channel — production default) → unavailable
-	g.Activate("codex:s2", rtA, 0)
-	if _, ok := g.Accept("codex:s2", rtA, []byte("x")); ok {
+	// capacity 0 = no channel (production default) → unavailable
+	g.Activate("codex:s2", rt, 0)
+	if _, _, ok := g.Accept(gateReq("codex:s2", "a1", "k1", "ad", rt, []byte("x"))); ok {
 		t.Error("capacity-0 endpoint accepted (must be unavailable)")
 	}
 }
 
-// The external drain snapshots the queue under a brief lock and then performs I/O
-// OUTSIDE the gate, so a slow external drain cannot block a runtime replacement.
+// R5-B: the queued item is fully bound; a no-payload option is distinguishable by its
+// bound action (not raw bytes), and caller-slice mutation cannot alter stored bytes.
+func TestDeliveryGate_TypedItemBindingAndAliasing(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	h, _ := g.Activate("codex:s1", rt, 8)
+	// two no-payload options — distinguishable only by bound action, not bytes
+	rec1, _, _ := g.Accept(gateReq("codex:s1", "a1", "k1", "digest-approve", rt, nil))
+	g.Accept(gateReq("codex:s1", "a2", "k2", "digest-reject", rt, nil))
+	// caller-slice mutation after accept must not alter stored bytes
+	p := []byte("original")
+	g.Accept(gateReq("codex:s1", "a3", "k3", "digest-send", rt, p))
+	p[0] = 'X'
+
+	items := g.Drain(h)
+	if len(items) != 3 {
+		t.Fatalf("items=%d want 3", len(items))
+	}
+	byID := map[string]AcceptedDelivery{}
+	for _, it := range items {
+		byID[it.Binding.ApprovalID] = it
+	}
+	if byID["a1"].Binding.ActionDigest != "digest-approve" || byID["a2"].Binding.ActionDigest != "digest-reject" {
+		t.Error("no-payload options not distinguishable by bound action")
+	}
+	if byID["a1"].ReceiptID != rec1.ReceiptID || byID["a1"].ClaimToken != "tok-a1" || byID["a1"].Binding.IdempotencyKey != "k1" {
+		t.Errorf("item a1 not fully bound: %+v", byID["a1"])
+	}
+	if string(byID["a3"].Payload) != "original" {
+		t.Errorf("caller aliasing changed stored payload: %q", byID["a3"].Payload)
+	}
+	byID["a3"].Payload[0] = 'Y' // mutating the drained copy is harmless (defensive copy)
+}
+
+func TestDeliveryGate_EntropyFailureFailsClosed(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	g.randFail = true
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	if h, ok := g.Activate("codex:s1", rt, 4); ok || h != "" {
+		t.Errorf("entropy failure must publish no endpoint: h=%q ok=%v", h, ok)
+	}
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); ok {
+		t.Error("accepted after entropy-failed activation")
+	}
+}
+
+func TestDeliveryGate_ResourceBoundsFailClosed(t *testing.T) {
+	g := NewRuntimeDeliveryGate()
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
+	// negative and oversized capacity → explicit no-channel (unavailable)
+	for _, cap := range []int{-1, maxGateCapacity + 1} {
+		g.Activate("codex:sN", rt, cap)
+		if _, _, ok := g.Accept(gateReq("codex:sN", "a1", "k1", "ad", rt, []byte("x"))); ok {
+			t.Errorf("capacity %d accepted (must be unavailable)", cap)
+		}
+	}
+	// item too large → fail closed
+	g.Activate("codex:sBig", rt, 4)
+	if _, _, ok := g.Accept(gateReq("codex:sBig", "a1", "k1", "ad", rt, make([]byte, maxGateItemBytes+1))); ok {
+		t.Error("oversized item accepted")
+	}
+	// endpoint count bounded (evicts retired endpoints)
+	for i := 0; i < maxGateEndpoints+20; i++ {
+		g.Activate(fmt.Sprintf("codex:e%d", i), rt, 0)
+	}
+	g.mu.Lock()
+	n := len(g.endpoints)
+	g.mu.Unlock()
+	if n > maxGateEndpoints {
+		t.Errorf("endpoint count %d exceeds bound %d", n, maxGateEndpoints)
+	}
+}
+
+// The external drain snapshots under a brief lock; provider I/O runs on the copies
+// OUTSIDE the gate, so a slow drain cannot block a runtime replacement.
 func TestDeliveryGate_ExternalDrainDoesNotHoldTransitionGate(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	rtA := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	rtB := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 6, StreamGen: 0}
-	g.Activate("codex:s1", rtA, 4)
-	g.Accept("codex:s1", rtA, []byte("p1"))
-
-	drained := g.Drain("codex:s1") // fast, releases the gate lock
-	if len(drained) != 1 || string(drained[0]) != "p1" {
+	hA, _ := g.Activate("codex:s1", rtA, 4)
+	g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("p1")))
+	drained := g.Drain(hA)
+	if len(drained) != 1 || string(drained[0].Payload) != "p1" {
 		t.Fatalf("drain returned %v", drained)
 	}
 	extBlock := make(chan struct{})
 	extDone := make(chan struct{})
-	go func() { <-extBlock; close(extDone) }() // simulated external provider I/O holds NO gate lock
-
-	// A runtime replacement runs synchronously and must NOT block on the external I/O.
-	g.Activate("codex:s1", rtB, 4)
-	if _, ok := g.Accept("codex:s1", rtA, []byte("x")); ok {
-		t.Error("old generation accepted after replacement despite pending external drain")
+	go func() { <-extBlock; close(extDone) }() // simulated external I/O holds NO gate lock
+	g.Activate("codex:s1", rtB, 4)             // replacement runs synchronously, not blocked
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("x"))); ok {
+		t.Error("old generation accepted after replacement")
 	}
 	close(extBlock)
 	<-extDone
@@ -386,23 +486,19 @@ func TestDeliveryGate_ExternalDrainDoesNotHoldTransitionGate(t *testing.T) {
 func TestDeliveryGate_NegativeControlCheckThenWriteRace(t *testing.T) {
 	rtA := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	rtB := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 6, StreamGen: 0}
-
-	// Broken gate: check, release, (replacement interleaves), write.
 	ng := &ngGate{rt: rtA, active: true}
-	checkOK := ng.check(rtA) // passes for rtA
-	ng.replace(rtB)          // replacement in the check-to-write window
+	checkOK := ng.check(rtA)
+	ng.replace(rtB) // replacement in the check-to-write window
 	if checkOK {
 		ng.write() // writes despite rtB now current → STALE accept
 	}
 	if ng.count == 0 {
 		t.Fatal("negative control expected a stale write from the broken check-then-write gate")
 	}
-
-	// The real atomic gate does NOT have that window: after replacement, rtA rejects.
 	g := NewRuntimeDeliveryGate()
 	g.Activate("codex:s1", rtA, 4)
 	g.Activate("codex:s1", rtB, 4) // replacement
-	if _, ok := g.Accept("codex:s1", rtA, []byte("x")); ok {
+	if _, _, ok := g.Accept(gateReq("codex:s1", "a1", "k1", "ad", rtA, []byte("x"))); ok {
 		t.Error("atomic gate accepted a stale generation")
 	}
 }
@@ -458,12 +554,12 @@ func TestTelemetry_RegistryDisappearanceDeactivatesGate(t *testing.T) {
 	gate := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	gate.Activate("codex:s1", rt, 4)
-	if _, ok := gate.Accept("codex:s1", rt, []byte("x")); !ok {
+	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); !ok {
 		t.Fatal("precondition: active endpoint should accept")
 	}
 	svc := &TelemetryService{sessions: map[string]*sessionStateData{"codex:s1": {}}, deliveryGate: gate}
 	svc.reconcileSessions(nil) // no active sessions → codex:s1 disappeared
-	if _, ok := gate.Accept("codex:s1", rt, []byte("x")); ok {
+	if _, _, ok := gate.Accept(gateReq("codex:s1", "a2", "k2", "ad", rt, []byte("x"))); ok {
 		t.Error("registry disappearance left the delivery endpoint active")
 	}
 }
@@ -475,7 +571,7 @@ func TestTelemetry_ClearDeactivatesGate(t *testing.T) {
 	gate.Activate("codex:s1", rt, 4)
 	svc := &TelemetryService{sessions: map[string]*sessionStateData{"codex:s1": {}}, deliveryGate: gate}
 	svc.Clear("codex:s1")
-	if _, ok := gate.Accept("codex:s1", rt, []byte("x")); ok {
+	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", "ad", rt, []byte("x"))); ok {
 		t.Error("Clear (delete/unlink) left the endpoint active")
 	}
 }
