@@ -436,8 +436,11 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	}
 	auth := canonicalRequesterAuth(req.Requester)
 
-	// R3-A: FULL current authority BEFORE any idempotent-replay decision.
-	if !req.Requester.present() || (rec.requiredPerm != "" && !req.Requester.hasPermission(rec.requiredPerm)) {
+	// R3-A/R4-A: the SINGLE requester validator gates EVERY path — this runs before
+	// the idempotent-replay branch, so an initial claim, a bounded manual retry, and
+	// an already_accepted replay all require a complete server-derived requester
+	// context AND the stored permission.
+	if !requesterAuthorized(req.Requester, rec.requiredPerm) {
 		return ClaimResult{Outcome: ClaimUnauthorized}
 	}
 	if req.Runtime.Adapter != bound.Adapter || req.Runtime.Version != bound.Version {

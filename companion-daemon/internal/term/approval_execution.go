@@ -45,8 +45,20 @@ func (r RequesterContext) hasPermission(need string) bool {
 	return false
 }
 
+// present reports whether the COMPLETE server-authenticated requester identity was
+// derived. All four server-derived fields (DeviceID, HostID, BearerSessionID, BootID)
+// must be non-empty; a missing field fails closed. This is validated inside the store
+// (the deepest authority boundary), not left to a handler convention.
 func (r RequesterContext) present() bool {
-	return r.DeviceID != "" && r.BearerSessionID != ""
+	return r.DeviceID != "" && r.HostID != "" && r.BearerSessionID != "" && r.BootID != ""
+}
+
+// requesterAuthorized is the SINGLE requester validator the store applies to EVERY
+// path — initial claim, bounded manual retry, and already_accepted replay — so no
+// path can obtain execution authority with an incomplete server-derived context or
+// without the stored permission.
+func requesterAuthorized(r RequesterContext, storedPerm string) bool {
+	return r.present() && (storedPerm == "" || r.hasPermission(storedPerm))
 }
 
 // RequesterAuthContext is the IMMUTABLE canonical requester authorization identity

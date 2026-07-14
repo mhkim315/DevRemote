@@ -30,7 +30,7 @@ func (f *fixtureDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	atomic.AddInt32(&f.calls, 1)
 	rid, pd := "", ""
 	if f.outcome == DeliveryAccepted || f.outcome == DeliveryAlreadyAccepted {
-		rid = newReceiptID()
+		rid = newGateNonce()
 		pd = payloadDigest(req.Payload)
 	}
 	return DeliveryReceipt{Outcome: f.outcome, ClaimToken: req.ClaimToken, Binding: req.Binding, ReceiptID: rid, DeliveredPayloadDigest: pd}

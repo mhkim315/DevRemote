@@ -100,7 +100,6 @@ func (s *TelemetryService) Run(ctx context.Context) {
 // the production owner of "Registry disappearance" cleanup.
 func (s *TelemetryService) reconcileSessions(sessions []mux.Session) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	activeSet := make(map[string]bool, len(sessions))
 	for _, sess := range sessions {
 		id := sess.AdapterName() + ":" + sess.ID()
@@ -113,16 +112,31 @@ func (s *TelemetryService) reconcileSessions(sessions []mux.Session) {
 			}
 		}
 	}
+	// Collect the pruned (registry-disappeared) IDs under s.mu, then perform the
+	// external store/gate cleanup AFTER releasing s.mu so no other lock (status store,
+	// approval store, delivery gate) is ever nested under the telemetry mutex.
+	var pruned []string
 	for id := range s.sessions {
 		if !activeSet[id] {
 			delete(s.sessions, id)
-			if s.statusStore != nil {
-				s.statusStore.Clear(id)
-			}
-			// A1-C: a session that disappeared holds no live approval authority.
-			if s.approvals != nil {
-				s.approvals.Clear(id)
-			}
+			pruned = append(pruned, id)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, id := range pruned {
+		if s.statusStore != nil {
+			s.statusStore.Clear(id)
+		}
+		// A1-C: a session that disappeared holds no live approval authority.
+		if s.approvals != nil {
+			s.approvals.Clear(id)
+		}
+		// A1 R4-B: registry disappearance is a distinct production cleanup owner —
+		// deactivate the exact generation-owned delivery endpoint so a terminated
+		// generation accepts no further bytes.
+		if s.deliveryGate != nil {
+			s.deliveryGate.Deactivate(id)
 		}
 	}
 }
@@ -314,7 +328,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						// graph without accepting any delivery.
 						if s.deliveryGate != nil {
 							if !a.versionConflict && corr == contract.CorrelationManagedLaunch {
-								s.deliveryGate.Activate(id, RuntimeRef{Adapter: logRef.Agent, Version: a.version, LaunchGen: launchGen, StreamGen: a.streamGen}, nil)
+								s.deliveryGate.Activate(id, RuntimeRef{Adapter: logRef.Agent, Version: a.version, LaunchGen: launchGen, StreamGen: a.streamGen}, 0)
 							} else {
 								s.deliveryGate.Deactivate(id)
 							}

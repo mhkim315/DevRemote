@@ -3,28 +3,30 @@ package term
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"sync"
 )
 
-// A1 remediation 3 (R3-B/R3-C) — approval-specific delivery boundary + generation-
-// owned delivery gate.
+// A1 remediation 3/4 (R3-B/R3-C/R4-C) — approval-specific delivery boundary + a
+// generation-owned delivery gate with a bounded, non-blocking, production-owned
+// in-memory acceptance queue.
 //
 // A delivery request and its receipt carry the ONE immutable ApprovalExecutionBinding
 // the claim token owns; the receipt also carries an opaque ReceiptID and the digest
-// of the EXACT bytes delivered. RecordDelivery compares every binding field, the claim
-// token, and the delivered-payload digest before a success may commit, so substituted
-// bytes cannot commit.
+// of the EXACT bytes accepted. RecordDelivery compares every binding field, the claim
+// token, and the delivered-payload digest before a success may commit.
 //
-// Delivery acceptance is linearized by the per-session RuntimeDeliveryGate: under one
-// gate lock the current generation-owned endpoint is verified AND the exact bytes are
-// enqueued into that endpoint (the acceptance point). Activation, launch/stream
-// replacement, correlation loss, delete, unlink, and termination take the SAME lock,
-// so a replacement cannot interleave between the check and the enqueue, and an old
-// generation accepts no bytes. No external I/O is performed while any lock is held.
+// Linearization (R4-C): the under-lock acceptance is a bounded append into a
+// generation-owned in-memory queue owned by the gate — never an arbitrary interface
+// callback. It cannot block or perform I/O; queue-full returns non-acceptance and
+// writes nothing. Activation/replacement/deactivation take the SAME lock, so a
+// replaced generation accepts no bytes. Any external drain reads the CAPTURED
+// generation queue via Drain (a brief locked snapshot) and performs provider I/O
+// AFTER releasing the lock, so a slow drain cannot hold the transition gate.
 //
-// No accepted provider action-delivery channel exists, so production registers NO
-// sink; Accept fails and the production gated boundary returns `unavailable`, writing
-// no bytes. The gate/receipt semantics are proven with a controlled fixture sink.
+// No accepted provider action-delivery channel exists, so production activates every
+// endpoint with capacity 0 (no channel) → Accept returns unavailable and no bytes are
+// ever accepted. The gate/receipt semantics are proven with controlled tests.
 
 type DeliveryOutcome string
 
@@ -51,8 +53,7 @@ func deliverySucceeded(o DeliveryOutcome) bool {
 }
 
 // deliveryProvesNonAcceptance reports whether an outcome proves the daemon boundary
-// accepted NOTHING (so a bounded manual retry is safe). An accepted/already_accepted
-// outcome is not a failure; every other closed outcome is an unambiguous non-acceptance.
+// accepted NOTHING (so a bounded manual retry is safe).
 func deliveryProvesNonAcceptance(o DeliveryOutcome) bool {
 	switch o {
 	case DeliveryUnavailable, DeliveryStaleRuntime, DeliveryRuntimeMismatch, DeliveryRejected:
@@ -76,17 +77,17 @@ type DeliveryReceipt struct {
 	ClaimToken             string
 	Binding                ApprovalExecutionBinding
 	ReceiptID              string
-	DeliveredPayloadDigest string // digest of the EXACT bytes delivered
+	DeliveredPayloadDigest string
 }
 
 type ApprovalDelivery interface {
 	Deliver(req ApprovalDeliveryRequest) DeliveryReceipt
 }
 
-func newReceiptID() string {
-	var b [16]byte
+func newGateNonce() string {
+	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return ""
+		return "n"
 	}
 	return hex.EncodeToString(b[:])
 }
@@ -100,39 +101,40 @@ func (unavailableApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Delivery
 	return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
 }
 
-// DeliverySink is a generation-owned delivery endpoint. Enqueue is called UNDER the
-// gate lock — it must be fast (a bounded in-memory append) and perform NO external
-// I/O; the external drain targets this captured endpoint separately.
-type DeliverySink interface {
-	Enqueue(payload []byte) (receiptID string)
+// genEndpoint is a per-session, generation-owned bounded delivery queue. capacity 0
+// means no delivery channel (production) — nothing is ever accepted.
+type genEndpoint struct {
+	runtime  RuntimeRef
+	active   bool
+	capacity int
+	queue    [][]byte
+	seq      int
+	nonce    string
 }
 
 // RuntimeDeliveryGate linearizes approval delivery acceptance against runtime
-// activation/replacement/deactivation per session.
+// activation/replacement/deactivation per session. It directly owns the concrete
+// bounded queue; there is NO callback under the lock.
 type RuntimeDeliveryGate struct {
 	mu       sync.Mutex
 	sessions map[string]*genEndpoint
-}
-
-type genEndpoint struct {
-	runtime RuntimeRef
-	active  bool
-	sink    DeliverySink
 }
 
 func NewRuntimeDeliveryGate() *RuntimeDeliveryGate {
 	return &RuntimeDeliveryGate{sessions: make(map[string]*genEndpoint)}
 }
 
-// Activate installs rt as the current generation-owned endpoint for a session,
-// superseding any prior generation. sink is nil in production (no channel).
-func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, sink DeliverySink) {
+// Activate installs rt as the current generation-owned endpoint with a bounded
+// acceptance capacity, superseding any prior generation. capacity 0 = no channel
+// (production): the endpoint tracks generation currency but accepts nothing.
+func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.sessions[sessionID] = &genEndpoint{runtime: rt, active: true, sink: sink}
+	g.sessions[sessionID] = &genEndpoint{runtime: rt, active: true, capacity: capacity, nonce: newGateNonce()}
 }
 
-// Deactivate marks a session's endpoint inactive (delete/unlink/termination).
+// Deactivate marks a session's endpoint inactive (replacement/delete/unlink/
+// termination/registry disappearance). After this it accepts nothing.
 func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -142,24 +144,46 @@ func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 }
 
 // Accept is the sole acceptance point. Under one lock it verifies the current
-// endpoint equals the expected runtime, is active, and has a sink, then enqueues the
-// exact bytes into that endpoint and returns a ReceiptID — atomically. A concurrent
-// Activate/Deactivate cannot interleave. Returns ok=false (no bytes accepted) when
-// the runtime was replaced, removed, or has no sink.
+// endpoint equals the expected runtime, is active, and has capacity, then appends the
+// exact bytes into the generation-owned queue and returns a ReceiptID — a bounded,
+// non-blocking, in-memory operation. Queue-full or a replaced/removed/no-channel
+// generation returns ok=false and writes nothing. No external I/O occurs here.
 func (g *RuntimeDeliveryGate) Accept(sessionID string, expected RuntimeRef, payload []byte) (receiptID string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	e := g.sessions[sessionID]
-	if e == nil || !e.active || !e.runtime.equal(expected) || e.sink == nil {
+	if e == nil || !e.active || !e.runtime.equal(expected) || e.capacity == 0 {
 		return "", false
 	}
-	return e.sink.Enqueue(payload), true
+	if len(e.queue) >= e.capacity {
+		return "", false // fail closed
+	}
+	cp := append([]byte(nil), payload...)
+	e.queue = append(e.queue, cp)
+	e.seq++
+	return e.nonce + "-" + strconv.Itoa(e.seq), true
+}
+
+// Drain returns and clears the session endpoint's accepted payloads under a brief
+// lock. The caller performs any external/provider I/O AFTER this returns (outside the
+// lock), so a slow drain never holds the transition gate.
+func (g *RuntimeDeliveryGate) Drain(sessionID string) [][]byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := g.sessions[sessionID]
+	if e == nil || len(e.queue) == 0 {
+		return nil
+	}
+	out := e.queue
+	e.queue = nil
+	return out
 }
 
 // gatedApprovalDelivery is the production boundary: it accepts ONLY through the
-// generation-owned gate. With no sink registered (no provider channel) it returns
-// `unavailable` and writes no bytes; when a sink exists, an accepted receipt is
-// created only after the daemon-owned acceptance, carrying the delivered-payload digest.
+// generation-owned gate. With capacity 0 (no provider channel) it returns
+// `unavailable` and writes no bytes; when a bounded endpoint exists, an accepted
+// receipt is created only after the daemon-owned acceptance, carrying the
+// delivered-payload digest.
 type gatedApprovalDelivery struct {
 	gate *RuntimeDeliveryGate
 }
