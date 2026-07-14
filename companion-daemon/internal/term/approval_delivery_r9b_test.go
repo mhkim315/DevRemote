@@ -78,23 +78,49 @@ func TestDeliveryGate_ProductionTelemetryPathActivation(t *testing.T) {
 		`{"timestamp":"2026-07-06T13:30:11.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","approval_id":"appr-2"}}`,
 	})
 	s1cPoll(svc, sess, sid, "codex")
-	h2, _ := gateCurrentHandle(gate, sid)
+	h2, count2 := gateCurrentHandle(gate, sid)
 	if h2 == "" || h2 == h1 {
 		t.Fatalf("launch-generation change must produce exactly one new handle: %q→%q", h1, h2)
 	}
+	// No endpoint/order leak: the empty old generation is reclaimed net-zero, and the
+	// old handle is gone (not merely retired alongside the new one).
+	if count2 != count1 {
+		t.Errorf("replacement leaked endpoints: %d→%d (want net-zero)", count1, count2)
+	}
+	gate.mu.Lock()
+	if gate.endpoints[h1] != nil {
+		t.Errorf("old generation %q not reclaimed after replacement", h1)
+	}
+	if len(gate.order) != count2 {
+		t.Errorf("order slice leaked: len(order)=%d, endpoints=%d", len(gate.order), count2)
+	}
+	gate.mu.Unlock()
 
 	// Next poll at the SAME generation (no new content) makes no further replacement.
 	s1cPoll(svc, sess, sid, "codex")
-	h3, _ := gateCurrentHandle(gate, sid)
-	if h3 != h2 {
-		t.Fatalf("same-generation poll must not replace the handle: %q→%q", h2, h3)
+	h3, count3 := gateCurrentHandle(gate, sid)
+	if h3 != h2 || count3 != count2 {
+		t.Fatalf("same-generation poll must not replace/leak: handle %q→%q, endpoints %d→%d", h2, h3, count2, count3)
 	}
 
-	// Correlation loss (launch binding removed) deactivates acceptance on the next poll.
+	// Correlation loss (launch binding removed) deactivates acceptance on the next poll:
+	// no current handle, the old endpoint is inactive, and a direct Accept now fails.
 	transcript.RemoveLaunch(sid)
 	s1cPoll(svc, sess, sid, "codex")
-	if h4, _ := gateCurrentHandle(gate, sid); h4 != "" {
-		t.Errorf("correlation loss must deactivate the endpoint, still current=%q", h4)
+	h4, _ := gateCurrentHandle(gate, sid)
+	if h4 != "" {
+		t.Errorf("correlation loss must clear the current handle, still current=%q", h4)
+	}
+	gate.mu.Lock()
+	if e := gate.endpoints[h3]; e != nil && e.active {
+		t.Errorf("old endpoint %q must be inactive after correlation loss", h3)
+	}
+	gate.mu.Unlock()
+	// Acceptance is genuinely disabled (not merely unmapped): a fully-canonical request
+	// for this session is rejected. (This is a deactivation assertion, not production
+	// activation evidence — B1's activation proof is the processSession path above.)
+	if _, _, ok := gate.Accept(gateReq(sid, "a1", "k1", dig("d"), RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 3, StreamGen: 0}, []byte("x"))); ok {
+		t.Error("Accept must fail after correlation-loss deactivation")
 	}
 }
 
@@ -111,8 +137,8 @@ func TestDeliveryGate_CapacityAllActiveFailsUnchanged(t *testing.T) {
 		}
 	}
 	before := snapshotGate(g)
-	if before.endpoints != maxGateEndpoints {
-		t.Fatalf("precondition: %d active endpoints, want %d", before.endpoints, maxGateEndpoints)
+	if len(before.endpoints) != maxGateEndpoints {
+		t.Fatalf("precondition: %d active endpoints, want %d", len(before.endpoints), maxGateEndpoints)
 	}
 	h, ok := g.Activate("codex:overflow", rt, 0)
 	if ok || h != "" {
@@ -142,12 +168,12 @@ func TestDeliveryGate_CapacityRetiredNonEmptyFailsBeforeDrain(t *testing.T) {
 		}
 	}
 	before := snapshotGate(g)
-	if before.endpoints != maxGateEndpoints {
-		t.Fatalf("precondition endpoints=%d, want %d", before.endpoints, maxGateEndpoints)
+	if len(before.endpoints) != maxGateEndpoints {
+		t.Fatalf("precondition endpoints=%d, want %d", len(before.endpoints), maxGateEndpoints)
 	}
-	if before.perQueue[hKeep] != 1 || before.perEndpoint[hKeep] == 0 {
+	if before.endpoints[hKeep].queueLen != 1 || before.endpoints[hKeep].queuedBytes == 0 {
 		t.Fatalf("precondition: keep must hold 1 item with bytes, got queue=%d bytes=%d",
-			before.perQueue[hKeep], before.perEndpoint[hKeep])
+			before.endpoints[hKeep].queueLen, before.endpoints[hKeep].queuedBytes)
 	}
 	// The only retired endpoint is non-empty → no safe victim → extra activation fails.
 	if h, ok := g.Activate("codex:extra", rt, 0); ok || h != "" {
@@ -270,8 +296,16 @@ func TestDeliveryGate_DeterministicAcceptVsReplacementInterleaving(t *testing.T)
 	if g.endpoints[hA] != nil {
 		t.Errorf("empty retired A must be reclaimed (removed) at the contested point: %+v", g.endpoints[hA])
 	}
-	if e := g.endpoints[hB]; e == nil || !e.active || len(e.queue) != 0 || e.queuedBytes != 0 {
-		t.Errorf("B must be the current, active, empty endpoint: %+v", e)
+	if e := g.endpoints[hB]; e == nil || !e.active || len(e.queue) != 0 || e.queuedBytes != 0 || e.seq != 0 {
+		t.Errorf("B must be the current, active, empty, seq-0 endpoint: %+v", e)
+	}
+	// Endpoint count and order sequence at the contested point: exactly one endpoint
+	// (B), and order holds only hB — A left no residue.
+	if len(g.endpoints) != 1 {
+		t.Errorf("endpoint count at contested point = %d, want 1 (A reclaimed)", len(g.endpoints))
+	}
+	if len(g.order) != 1 || g.order[0] != hB {
+		t.Errorf("order at contested point = %v, want [%s]", g.order, hB)
 	}
 	if g.totalBytes != 0 {
 		t.Errorf("no bytes must be accounted at the contested point, got %d", g.totalBytes)

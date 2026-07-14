@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"devremote/companion-daemon/internal/mux"
 )
@@ -133,6 +135,11 @@ func validSessionID(s string) bool {
 	if len(s) == 0 || len(s) > maxSessionIDLen {
 		return false
 	}
+	// R10: SessionRef.Validate permits Unicode in the local id but does not reject
+	// invalid UTF-8. Require well-formed UTF-8 before any storage/comparison.
+	if !utf8.ValidString(s) {
+		return false
+	}
 	ref := mux.ParseSessionID(s)
 	if ref.Adapter == "" || ref.LocalID == "" {
 		return false
@@ -158,9 +165,14 @@ func validAdapterID(s string) bool {
 // validVersion enforces one bounded ASCII version grammar (R9-A: `[A-Za-z0-9]
 // [A-Za-z0-9._-]{0,63}`). The first byte must be alphanumeric; the remainder may add
 // dot/underscore/dash. Slash, backslash, control characters, whitespace and
-// traversal-shaped values (which require a leading dot or a separator) are rejected.
+// traversal-shaped values are rejected. R10: any ".." run is rejected explicitly, so
+// a value whose first byte is alphanumeric but which still embeds a traversal marker
+// (e.g. "1..2") cannot pass.
 func validVersion(v string) bool {
 	if len(v) == 0 || len(v) > maxVersionLen {
+		return false
+	}
+	if strings.Contains(v, "..") {
 		return false
 	}
 	for i := 0; i < len(v); i++ {
@@ -189,12 +201,49 @@ func validGateBindingMeta(req ApprovalDeliveryRequest) bool {
 		validClaimToken(req.ClaimToken)
 }
 
-// gateItemFixedCharge is a CONSERVATIVE, repository-owned fixed per-item accounting
-// charge. It is NOT an exact byte count: it covers the derived ReceiptID (nonce hex
-// 32 + '-' + up to ~10 seq digits) plus struct/bookkeeping headroom. It is named and
-// accounted separately from the exact retained variable bytes so no estimate is ever
-// called "exact".
-const gateItemFixedCharge = 64
+// gateItemFixedCharge is a CONSERVATIVE upper bound (in bytes) on the fixed per-item
+// overhead that is NOT already counted as retained variable content by
+// exactRetainedVariableBytes. Because Accept deep-clones every retained string
+// (strings.Clone → an exact-length backing array), the retained heap for the string
+// CONTENT equals its len (counted variably); this charge covers everything else the
+// retained AcceptedDelivery holds. Worst case on 64-bit Go:
+//
+//	9 string headers (ApprovalID, SessionID, ActionDigest, PayloadDigest,
+//	  IdempotencyKey, Runtime.Adapter, Runtime.Version, ClaimToken, ReceiptID) 9×16 = 144
+//	1 payload slice header                                                          =  24
+//	RuntimeRef LaunchGen(int64)+StreamGen(int)                                       =  16
+//	ReceiptID CONTENT: nonce(32 hex) + '-' + ≤20 seq digits                         ≤  53
+//	                                                                          subtotal = 237
+//
+// Rounded up to 320 to conservatively absorb struct alignment, the queue backing-slice
+// element and the map entry. This charge OVER-counts real fixed overhead; it never
+// under-counts, so charged item bytes are a genuine conservative heap bound after the
+// deep clone. No estimate is called "exact".
+const gateItemFixedCharge = 320
+
+// cloneRuntimeRef returns a RuntimeRef whose string fields have their own bounded
+// backing arrays (strings.Clone), so retaining it cannot pin a caller's large backing
+// storage.
+func cloneRuntimeRef(rt RuntimeRef) RuntimeRef {
+	return RuntimeRef{
+		Adapter:   strings.Clone(rt.Adapter),
+		Version:   strings.Clone(rt.Version),
+		LaunchGen: rt.LaunchGen,
+		StreamGen: rt.StreamGen,
+	}
+}
+
+// cloneBinding deep-clones every retained string of a binding into bounded allocations.
+func cloneBinding(b ApprovalExecutionBinding) ApprovalExecutionBinding {
+	return ApprovalExecutionBinding{
+		ApprovalID:     strings.Clone(b.ApprovalID),
+		SessionID:      strings.Clone(b.SessionID),
+		Runtime:        cloneRuntimeRef(b.Runtime),
+		ActionDigest:   strings.Clone(b.ActionDigest),
+		PayloadDigest:  strings.Clone(b.PayloadDigest),
+		IdempotencyKey: strings.Clone(b.IdempotencyKey),
+	}
+}
 
 // exactRetainedVariableBytes returns the EXACT number of retained variable-length
 // bytes: the payload plus every stored metadata string (approval, session, both
@@ -368,9 +417,12 @@ func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, capacity
 	if victim != "" {
 		g.removeLocked(victim)
 	}
-	e := &genEndpoint{id: id, sessionID: sessionID, runtime: rt, active: true, capacity: effCap, nonce: nonce}
+	// R10: clone the retained identity so the endpoint (and the current-map KEY) cannot
+	// pin a caller's large backing string via a short substring.
+	csid := strings.Clone(sessionID)
+	e := &genEndpoint{id: id, sessionID: csid, runtime: cloneRuntimeRef(rt), active: true, capacity: effCap, nonce: nonce}
 	g.endpoints[id] = e
-	g.current[sessionID] = id
+	g.current[csid] = id
 	g.order = append(g.order, id)
 	return id, true
 }
@@ -488,8 +540,12 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	}
 	e.seq++
 	rid := e.nonce + "-" + strconv.Itoa(e.seq)
+	// R10: the QUEUED item retains its strings for the endpoint's lifetime. Deep-clone
+	// every retained string (and defensively copy the payload) so a short but valid
+	// substring cannot pin a caller's multi-MB backing array in the bounded queue. The
+	// returned receipt is transient (not queued), so it may carry the caller's binding.
 	item := AcceptedDelivery{
-		Binding: req.Binding, ClaimToken: req.ClaimToken, ReceiptID: rid,
+		Binding: cloneBinding(req.Binding), ClaimToken: strings.Clone(req.ClaimToken), ReceiptID: rid,
 		Payload: append([]byte(nil), req.Payload...),
 	}
 	e.queue = append(e.queue, item)

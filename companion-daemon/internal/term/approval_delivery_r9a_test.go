@@ -2,7 +2,10 @@ package term
 
 import (
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
+	"unsafe"
 )
 
 // R9-A mandatory coverage: exact-limit / one-over bounds and canonical grammar for
@@ -15,49 +18,63 @@ func r9rt() RuntimeRef {
 	return RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 }
 
-// snapshotGate captures the full accounting state for unchanged-on-reject assertions.
+// endpointSnap captures a single endpoint's full identity + accounting content, not
+// just its existence, so a destructive delete+replace (which keeps counts equal but
+// changes the opaque id / ownership / accounting) is detected.
+type endpointSnap struct {
+	sessionID   string
+	active      bool
+	capacity    int
+	queueLen    int
+	queuedBytes int
+	seq         int
+	nonce       string
+	adapter     string
+	version     string
+	launchGen   int64
+	streamGen   int
+}
+
+// gateSnap is a DEEP snapshot of the gate: the exact current mapping (sid→id), the
+// order slice (handle sequence), every endpoint's content, and the global byte total.
 type gateSnap struct {
-	endpoints, current, order, totalBytes int
-	perEndpoint                           map[string]int // handle -> queuedBytes
-	perQueue                              map[string]int // handle -> len(queue)
-	perSeq                                map[string]int // handle -> seq
+	current    map[string]string
+	order      []string
+	endpoints  map[string]endpointSnap
+	totalBytes int
 }
 
 func snapshotGate(g *RuntimeDeliveryGate) gateSnap {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s := gateSnap{
-		endpoints: len(g.endpoints), current: len(g.current), order: len(g.order),
-		totalBytes:  g.totalBytes,
-		perEndpoint: map[string]int{}, perQueue: map[string]int{}, perSeq: map[string]int{},
+		current:    map[string]string{},
+		order:      append([]string(nil), g.order...),
+		endpoints:  map[string]endpointSnap{},
+		totalBytes: g.totalBytes,
+	}
+	for sid, id := range g.current {
+		s.current[sid] = id
 	}
 	for id, e := range g.endpoints {
-		s.perEndpoint[id] = e.queuedBytes
-		s.perQueue[id] = len(e.queue)
-		s.perSeq[id] = e.seq
+		s.endpoints[id] = endpointSnap{
+			sessionID: e.sessionID, active: e.active, capacity: e.capacity,
+			queueLen: len(e.queue), queuedBytes: e.queuedBytes, seq: e.seq, nonce: e.nonce,
+			adapter: e.runtime.Adapter, version: e.runtime.Version,
+			launchGen: e.runtime.LaunchGen, streamGen: e.runtime.StreamGen,
+		}
 	}
 	return s
 }
 
+// assertUnchanged requires the ENTIRE gate state — current mapping, order sequence,
+// per-endpoint identity/ownership/accounting, and global bytes — to be byte-for-byte
+// identical. Count-only equality is insufficient (blocker 4).
 func (want gateSnap) assertUnchanged(t *testing.T, g *RuntimeDeliveryGate, ctx string) {
 	t.Helper()
 	got := snapshotGate(g)
-	if got.endpoints != want.endpoints || got.current != want.current ||
-		got.order != want.order || got.totalBytes != want.totalBytes {
-		t.Errorf("%s: aggregate state changed: endpoints %d→%d current %d→%d order %d→%d bytes %d→%d",
-			ctx, want.endpoints, got.endpoints, want.current, got.current,
-			want.order, got.order, want.totalBytes, got.totalBytes)
-	}
-	for id, wb := range want.perEndpoint {
-		if got.perEndpoint[id] != wb {
-			t.Errorf("%s: endpoint %s queuedBytes %d→%d", ctx, id, wb, got.perEndpoint[id])
-		}
-		if got.perQueue[id] != want.perQueue[id] {
-			t.Errorf("%s: endpoint %s queue len %d→%d", ctx, id, want.perQueue[id], got.perQueue[id])
-		}
-		if got.perSeq[id] != want.perSeq[id] {
-			t.Errorf("%s: endpoint %s seq %d→%d", ctx, id, want.perSeq[id], got.perSeq[id])
-		}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("%s: gate state changed on a rejected operation:\n before=%+v\n after =%+v", ctx, want, got)
 	}
 }
 
@@ -215,7 +232,7 @@ func TestDeliveryGate_AggregateExhaustionReachesGlobalBound(t *testing.T) {
 	g := NewRuntimeDeliveryGate()
 	// Large, individually-valid items so charged is near the per-item cap; fixed-width
 	// session names keep the charged size constant across items.
-	payload := make([]byte, 3600)
+	payload := make([]byte, 3400)
 	c := chargedItemBytes(gateReq("codex:agg000", "aa", "kk", dig("d"), rt, payload))
 	if c > maxGateItemBytes {
 		t.Fatalf("probe item not individually valid: charged=%d", c)
@@ -282,5 +299,83 @@ func TestDeliveryGate_AcceptPayloadNonAliasing(t *testing.T) {
 	again := g.Drain(h)
 	if len(again) != 1 || string(again[0].Payload) != "second" {
 		t.Errorf("drained copy mutation leaked across items: %q", again[0].Payload)
+	}
+}
+
+// backingPtr returns the address of a string's backing array so a test can prove the
+// gate does NOT pin a caller's large backing storage via a short substring (blocker 1).
+func backingPtr(s string) uintptr {
+	if len(s) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(unsafe.StringData(s)))
+}
+
+// R10 blocker 1: a caller can pass a short but valid identity/token that is a substring
+// of a multi-megabyte backing string. Go strings share backing storage, so a naive gate
+// would pin the whole array through the queued item and the endpoint. Accept and
+// Activate must strings.Clone every retained string into a bounded allocation, so the
+// retained strings point at NEW backing arrays, independent of the caller's giant one.
+func TestDeliveryGate_RetainedStringsAreDeepCloned(t *testing.T) {
+	// Each field below is a SHORT but individually-valid substring of a distinct
+	// multi-megabyte backing array; retaining any of them naively would pin ~1 MiB.
+	const big = 1 << 20
+	sidBack := strings.Repeat("codex:s1", big/8) // 1 MiB, starts with a valid session id
+	sid := sidBack[:8]                           // "codex:s1"
+	ad := strings.Repeat("a", big)[:64]          // 64 lowercase hex
+	tok := strings.Repeat("c", big)[:32]         // 32 lowercase hex
+	appr := strings.Repeat("z", big)[:4]         // valid approval id
+	ver := strings.Repeat("1", big)[:5]          // "11111", valid version grammar
+
+	rt := RuntimeRef{Adapter: "codex", Version: ver, LaunchGen: 5, StreamGen: 2}
+	g := NewRuntimeDeliveryGate()
+	payload := []byte("p")
+	req := ApprovalDeliveryRequest{
+		ClaimToken: tok,
+		Binding: ApprovalExecutionBinding{
+			ApprovalID: appr, SessionID: sid, Runtime: rt,
+			ActionDigest: ad, PayloadDigest: payloadDigest(payload), IdempotencyKey: "k1",
+		},
+		Payload: payload,
+	}
+	h, ok := g.Activate(sid, rt, 4)
+	if !ok || h == "" {
+		t.Fatalf("activate: ok=%v", ok)
+	}
+	if _, _, ok := g.Accept(req); !ok {
+		t.Fatalf("accept of valid substring-backed request failed")
+	}
+
+	// The endpoint's retained sessionID/version and the queued item's strings must NOT
+	// share the caller's giant backing arrays.
+	g.mu.Lock()
+	e := g.endpoints[h]
+	if e == nil {
+		g.mu.Unlock()
+		t.Fatal("endpoint missing")
+	}
+	if backingPtr(e.sessionID) == backingPtr(sid) {
+		t.Error("endpoint sessionID still shares the caller's backing array")
+	}
+	if backingPtr(e.runtime.Version) == backingPtr(ver) {
+		t.Error("endpoint runtime.Version still shares the caller's backing array")
+	}
+	item := e.queue[0]
+	g.mu.Unlock()
+	if backingPtr(item.Binding.SessionID) == backingPtr(sid) {
+		t.Error("queued SessionID still shares the caller's backing array")
+	}
+	if backingPtr(item.Binding.ApprovalID) == backingPtr(appr) {
+		t.Error("queued ApprovalID still shares the caller's backing array")
+	}
+	if backingPtr(item.Binding.ActionDigest) == backingPtr(ad) {
+		t.Error("queued ActionDigest still shares the caller's backing array")
+	}
+	if backingPtr(item.ClaimToken) == backingPtr(tok) {
+		t.Error("queued ClaimToken still shares the caller's backing array")
+	}
+	// Content is preserved exactly (clone copies, never corrupts).
+	if item.Binding.SessionID != sid || item.ClaimToken != tok || item.Binding.Runtime.Version != ver {
+		t.Errorf("clone altered content: sid=%q tok(len)=%d ver=%q", item.Binding.SessionID, len(item.ClaimToken), item.Binding.Runtime.Version)
 	}
 }
