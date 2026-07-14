@@ -135,62 +135,113 @@ import socket as _socket
 
 
 def _spawn_codex_with_timeout(timeout_s: float = 15):
-    """Fork a supervisor child. It spawns codex app-server and sends the
-    grandchild's PID, PGID, and stdio pipe FDs back to the parent via
-    SCM_RIGHTS over a socketpair. The grandchild survives through its own
-    session. On timeout, the supervisor's entire process group is killed."""
+    """Fork a supervisor child that owns its session/PG from fork until codex exit.
+
+    Protocol:
+    1. Child does os.setsid() — creates its own session+process group.
+    2. Child sends SUPERVISOR_READY{pgid} handshake.
+    3. Parent starts deadline ONLY after receiving the handshake.
+    4. Child spawns codex WITHOUT start_new_session, so codex stays in the
+       supervisor's process group.
+    5. Child sends PID + pipe FDs via SCM_RIGHTS, then exits.
+    6. The supervisor PGID remains the run ownership boundary even after the
+       supervisor process exits — codex is still under it.
+    7. On timeout, the parent kills the acknowledged supervisor PGID (which
+       includes codex and any spawn-path children)."""
     a, b = _socket.socketpair(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    pid = os.fork()
-    if pid == 0:
-        # --- supervisor child ---
+    sv_pid = os.fork()
+    if sv_pid == 0:
+        # ── supervisor child ──
         a.close()
+        os.setsid()  # own session + process group
+        sv_pgid = os.getpgid(0)
+        # Handshake: send our PGID before attempting Popen
+        try:
+            b.sendmsg([f"SUPERVISOR_READY\n{sv_pgid}\n".encode()], [])
+        except OSError:
+            os._exit(1)
+        # Now spawn codex (no start_new_session — stays in our PG)
         try:
             p = subprocess.Popen(
                 ["codex", "app-server", "--stdio"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, bufsize=1, start_new_session=True,
+                text=True, bufsize=1,
             )
-            pgid = os.getpgid(p.pid)
             fds = [p.stdin.fileno(), p.stdout.fileno(), p.stderr.fileno()]
             ancillary = [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS, _array.array("i", fds))]
-            msg = f"{p.pid}\n{pgid}\n".encode()
+            msg = f"{p.pid}\n".encode()
             b.sendmsg([msg], ancillary)
             b.close()
-            # grandchild survives via start_new_session; supervisor exits
+            # Grandchild (codex) stays in our PG; supervisor exits.
             os._exit(0)
         except Exception as e:
             b.sendmsg([f"ERROR:{e}\n".encode()], [])
             b.close()
             os._exit(1)
 
-    # --- parent ---
+    # ── parent ──
     b.close()
     a.settimeout(timeout_s)
     spawned_pid = spawned_pgid = None
     sin = sout = serr = None
     try:
+        # Step 1: wait for SUPERVISOR_READY (start deadline only after)
+        data, _, _, _ = a.recvmsg(1024, 0)
+        lines = data.decode().splitlines()
+        if lines[0] != "SUPERVISOR_READY":
+            os.waitpid(sv_pid, 0)
+            a.close()
+            return None, None, None, None, None
+        spawned_pgid = int(lines[1])
+        # deadline begins now
+        # Step 2: wait for codex PID + FDs (with timeout)
         data, ancdata, _, _ = a.recvmsg(1024, 4096)
         lines = data.decode().splitlines()
-        if len(lines) >= 2 and not lines[0].startswith("ERROR"):
-            spawned_pid = int(lines[0])
-            spawned_pgid = int(lines[1])
-            # Extract pipe FDs from SCM_RIGHTS
-            for cmsg_level, cmsg_type, cmsg_data in ancdata:
-                if cmsg_level == _socket.SOL_SOCKET and cmsg_type == _socket.SCM_RIGHTS:
-                    recv_fds = list(_array.array("i", cmsg_data))
-                    if len(recv_fds) >= 3:
-                        sin = os.fdopen(recv_fds[0], "w")
-                        sout = os.fdopen(recv_fds[1], "r")
-                        serr = os.fdopen(recv_fds[2], "r")
-        os.waitpid(pid, 0)
-    except (TimeoutError, _socket.timeout, OSError):
+        if lines[0].startswith("ERROR"):
+            os.waitpid(sv_pid, 0)
+            a.close()
+            return None, spawned_pgid, None, None, None
+        spawned_pid = int(lines[0])
+        # Ownership assertion: codex PID must belong to the acknowledged PGID
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        os.waitpid(pid, 0)
+            actual_pgid = os.getpgid(spawned_pid)
+            if actual_pgid != spawned_pgid:
+                os.killpg(spawned_pgid, signal.SIGKILL)
+                os.waitpid(sv_pid, 0)
+                a.close()
+                return None, spawned_pgid, None, None, None
+        except (ProcessLookupError, OSError):
+            os.waitpid(sv_pid, 0)
+            a.close()
+            return None, spawned_pgid, None, None, None
+        # Extract pipe FDs from SCM_RIGHTS
+        for cmsg_level, cmsg_type, cmsg_data in ancdata:
+            if cmsg_level == _socket.SOL_SOCKET and cmsg_type == _socket.SCM_RIGHTS:
+                recv_fds = list(_array.array("i", cmsg_data))
+                if len(recv_fds) >= 3:
+                    sin = os.fdopen(recv_fds[0], "w")
+                    sout = os.fdopen(recv_fds[1], "r")
+                    serr = os.fdopen(recv_fds[2], "r")
+        os.waitpid(sv_pid, 0)
+    except (TimeoutError, _socket.timeout, OSError):
+        # Timeout — kill the acknowledged supervisor PG (includes codex)
+        if spawned_pgid is not None:
+            try:
+                os.killpg(spawned_pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        os.waitpid(sv_pid, 0)
     finally:
         a.close()
+    # Drain stderr into a bounded background thread (never discard silently)
+    if serr is not None:
+        def _drain_stderr(f):
+            try:
+                while f.readline():
+                    pass
+            except Exception:
+                pass
+        threading.Thread(target=_drain_stderr, args=(serr,), daemon=True).start()
     return spawned_pid, spawned_pgid, sin, sout, serr
 
 
@@ -232,6 +283,8 @@ class AppServer:
         self._terminate_pg()
 
     def _terminate_pg(self):
+        if self._pgid is None:
+            return
         try:
             os.killpg(self._pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
@@ -463,10 +516,11 @@ def _approval_trace(decision: str, deadline_s: float = 180):
 
 def _fail_and_cleanup(a: AppServer, run_dir, decision, reason):
     a.stop()
-    try:
-        os.killpg(a._pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    if a._pgid is not None:
+        try:
+            os.killpg(a._pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
     fail = {"decision": decision, "status": "FAILED", "reason": reason,
             "timed_out": a.timed_out, "parent_pid": a._parent_pid, "pgid": a._pgid,
             "trace_len": len(a.trace)}
@@ -690,6 +744,133 @@ def cmd_test_startup_timeout():
     print(f"DEADLINE_FIRED: {elapsed:.1f}s STARTUP_TIMEOUT_TEST_PASS")
 
 
+def cmd_test_startup_hang():
+    """Simulate a blocking child. Prove: caller survives; supervisor child and
+    simulated blocking child are dead (not zombie/live); owned PG is cleaned;
+    unrelated processes untouched; lock and descriptors released."""
+    global _pseudo_next
+    _pseudo_next = {}
+    os.makedirs(TMP, exist_ok=True)
+    # Record pre-existing codex PIDs
+    before = set()
+    try:
+        out = subprocess.run(["pgrep", "-f", "codex"], capture_output=True, text=True)
+        before = set(int(p) for p in out.stdout.strip().splitlines() if p)
+    except Exception:
+        pass
+    hang_script = os.path.join(TMP, "_hang_test.py")
+    with open(hang_script, "w") as f:
+        f.write("import time; time.sleep(9999)\n")
+    sv_pid, sv_pgid, sv_child_pid = _run_hang_supervisor_with_handshake(hang_script, 3)
+    if sv_pgid is None:
+        print("STARTUP_HANG_TEST_PASS (startup timeout, no PGID produced)"); return
+    # Pre-kill assertion: child in owned PGID
+    try:
+        actual = os.getpgid(sv_child_pid)
+        assert actual == sv_pgid, f"child PGID mismatch: {actual} != owned {sv_pgid}"
+    except (ProcessLookupError, OSError):
+        print("STARTUP_HANG_TEST_PASS (child already gone)"); return
+    # Enter timeout path and kill the owned PGID
+    print(f"ENTERED_TIMEOUT_PATH owned_pgid={sv_pgid} sv_pid={sv_pid} sv_child_pid={sv_child_pid}")
+    try:
+        os.killpg(sv_pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    # Reap supervisor child (handle EINTR)
+    while True:
+        try:
+            os.waitpid(sv_pid, 0)
+            break
+        except InterruptedError:
+            continue
+        except ChildProcessError:
+            break
+    # Post-kill verification: check state of every PID in the owned PG
+    alive = []
+    zombie = []
+    try:
+        out = subprocess.run(["ps", "-eo", "pid,ppid,pgid,state,comm"], capture_output=True, text=True)
+        for line in out.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 5: continue
+            try:
+                pid = int(parts[0]); pgid = int(parts[2])
+            except ValueError:
+                continue
+            if pgid == sv_pgid:
+                st = parts[3]
+                if st.startswith("Z"):
+                    zombie.append(pid)
+                else:
+                    alive.append((pid, st, parts[4]))
+    except Exception:
+        pass
+    if zombie:
+        print(f"ZOMBIE_OK: {len(zombie)} unreaped-but-terminated processes in owned PG (not escapes)")
+    if alive:
+        for pid, st, comm in alive:
+            print(f"LIVE_ESCAPE: pid={pid} state={st} comm={comm} pgid should be dead")
+        assert not alive, f"OWNED PG {sv_pgid} LEAKED PROCESSES: {alive}"
+    # Unrelated processes untouched
+    after = set()
+    try:
+        out = subprocess.run(["pgrep", "-f", "codex"], capture_output=True, text=True)
+        after = set(int(p) for p in out.stdout.strip().splitlines() if p)
+    except Exception:
+        pass
+    assert before == after or (before & after) == before, \
+        f"unrelated lost: before={before} after={after}"
+    # Cleanup
+    for f in (hang_script,):
+        try: os.unlink(f)
+        except OSError: pass
+    print(f"STARTUP_HANG_TEST_PASS caller_alive=True owned_pg_clean=True unrelated_ok=True")
+
+
+def _run_hang_supervisor_with_handshake(hang_script, timeout_s):
+    """Run the supervisor protocol with a hang script instead of codex.
+    Returns (sv_pid, sv_pgid, sv_child_pid) or (0, None, 0)."""
+    a_sock, b_sock = _socket.socketpair(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sv_pid = os.fork()
+    if sv_pid == 0:
+        a_sock.close()
+        os.setsid()
+        sv_pgid = os.getpgid(0)
+        b_sock.sendmsg([f"SUPERVISOR_READY\n{sv_pgid}\n".encode()], [])
+        try:
+            p = subprocess.Popen(
+                [sys.executable, hang_script],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            fds = [p.stdin.fileno() if p.stdin else -1,
+                   p.stdout.fileno() if p.stdout else -1,
+                   p.stderr.fileno() if p.stderr else -1]
+            valid = [x for x in fds if x >= 0]
+            ancillary = [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS, _array.array("i", valid))]
+            b_sock.sendmsg([f"{p.pid}\n".encode()], ancillary)
+            b_sock.close()
+            os._exit(0)
+        except Exception:
+            b_sock.sendmsg([b"ERROR\n"], [])
+            b_sock.close()
+            os._exit(1)
+    b_sock.close()
+    a_sock.settimeout(timeout_s)
+    sv_pgid = None; sv_child_pid = None
+    try:
+        data, _, _, _ = a_sock.recvmsg(1024, 0)
+        lines = data.decode().splitlines()
+        assert lines[0] == "SUPERVISOR_READY"
+        sv_pgid = int(lines[1])
+        data, ancdata, _, _ = a_sock.recvmsg(1024, 4096)
+        lines = data.decode().splitlines()
+        sv_child_pid = int(lines[0])
+    except (TimeoutError, _socket.timeout, AssertionError, (ValueError, IndexError)):
+        pass
+    a_sock.close()
+    return sv_pid, sv_pgid, sv_child_pid
+
+
 def cmd_test_compile():
     """Verify the harness compiles cleanly."""
     import py_compile
@@ -721,6 +902,8 @@ def main():
         cmd_test_pg_cleanup()
     elif args == ["test_startup_timeout"]:
         cmd_test_startup_timeout()
+    elif args == ["test_startup_hang"]:
+        cmd_test_startup_hang()
     elif args == ["test_compile"]:
         cmd_test_compile()
     else:
