@@ -1,6 +1,6 @@
 # A1 Approval Safety — Authoritative Planning Boundary
 
-Status: **PLAN ACCEPTED; REMEDIATION 3 `0ac1acf3` REJECTED — R4-A THROUGH R4-D REQUIRED; POSITIVE PROVIDER PATH BLOCKED**
+Status: **PLAN ACCEPTED; REMEDIATION 4 `5360ec61` REJECTED — R5-A THROUGH R5-D REQUIRED; POSITIVE PROVIDER PATH BLOCKED**
 
 Baseline reviewed: `ace458056699c26a323eea49d44f8dc1efdaded7`.
 Accepted S1.1 implementation ancestor:
@@ -22,9 +22,14 @@ linearization, retry, and log-redaction requirements open. Remediation 3 at
 reproduced incomplete requester-context claims, registry-disappearance delivery
 after cleanup, an unconstrained sink callback under the transition lock, and a
 secret-scan exclusion. The mandatory positive provider path also remains
-unavailable. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_4_HANDOFF.md` after reading
-`docs/A1_APPROVAL_SAFETY_REVERIFICATION_3.md`.
+unavailable. Remediation 4 at `5360ec617` fixed requester presence,
+registry-disappearance cleanup, callback-under-lock and the scan exclusion, but
+independent re-verification reproduced accepted-item loss across generation
+replacement, found that the queue stores only unbound bytes and has fail-open
+receipt/resource edges, and found that final report HEAD `d3aa0b09` fails the
+secret gate. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_5_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_4.md`.
 
 ## 1. Authority boundary
 

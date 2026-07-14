@@ -1,6 +1,11 @@
 # Next Session Handoff — A1 Approval Safety Remediation 4
 
-Status: **READY — R4-A THROUGH R4-D ONLY; R4-E REMAINS AN HONEST BLOCKER**
+Status: **SUPERSEDED — REMEDIATION 4 REJECTED; USE REMEDIATION 5 HANDOFF**
+
+Current execution authority is
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_5_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_4.md`. Preserve this document as reviewed
+history; do not execute it again.
 
 Risk class: **authority + concurrency + security-gate integrity**
 
