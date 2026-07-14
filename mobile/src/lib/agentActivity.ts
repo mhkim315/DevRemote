@@ -186,9 +186,10 @@ export function isConnectionStale(
   return false;
 }
 
-// sessionNeedsApproval decides the approval CTA from the approval store ONLY.
-// Agent activity (including a `waiting_approval` status) must NEVER create an
-// approval CTA — A1 owns approval authority.
-export function sessionNeedsApproval(approvals?: { status: string }[]): boolean {
-  return (approvals ?? []).some((a) => a.status === 'pending');
+// sessionNeedsApproval decides the approval attention flag from the approval store
+// ONLY. Agent activity (including a `waiting_approval` status) must NEVER create an
+// approval attention flag — A1 owns approval authority. It reads the safe DTO's
+// closed `state` field.
+export function sessionNeedsApproval(approvals?: { state: string }[]): boolean {
+  return (approvals ?? []).some((a) => a.state === 'pending');
 }

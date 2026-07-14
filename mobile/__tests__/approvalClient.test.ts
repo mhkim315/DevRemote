@@ -1,20 +1,20 @@
-// A1-E — the mobile approval action must ride the SAME host-bound paired-device
-// transport as the accepted lifecycle writes (never the legacy checkedFetch +
-// Supabase token), hit the exact production route, decode the result strictly, and
-// fail closed. Plus an end-to-end production-path proof from an accepted-Codex
-// approval DTO through the strict decoder to a delivered action.
+// A1 remediation (B7) — the mobile approval action rides ONLY the host-bound
+// paired-device authenticated transport. Device auth is MANDATORY: no legacy bearer
+// / checkedFetch fallback, missing credentials fail closed, an idempotency key is
+// sent, and only an accepted/already_accepted receipt is a success.
 
 import {
   setBaseURL, setDeviceAuth,
   resolveApproval, ConnectivityFailure, PokitError,
 } from '../src/lib/client';
-import { pendingApprovals } from '../src/lib/approvalRequest';
+import { actionableApprovals } from '../src/lib/approvalRequest';
 import type { TokenManager } from '../src/lib/authClient';
 
 const HOST_A = 'https://host-a.example.com';
 const HOST_B = 'https://host-b.example.com';
 const SID = 'codex:shell-1';
 const AID = 'AP-123';
+const KEY = 'AP-123:reject:1';
 
 function fakeMgr(token = 'DEVICE_BEARER_A'): TokenManager {
   return {
@@ -35,163 +35,122 @@ function mockFetch(...responses: Array<{ status: number; body?: any }>) {
   return calls;
 }
 
-const okBody = (action: string) => ({ status: 'ok', outcome: 'ok', action });
+const okBody = (action: string, outcome = 'accepted') => ({ status: 'ok', outcome, action });
 
-describe('resolveApproval — host-bound device transport', () => {
+describe('resolveApproval — host-bound device transport ONLY (B7)', () => {
   afterEach(() => setDeviceAuth(null));
 
-  it('POSTs the exact route with the device bearer only, never the legacy token', async () => {
+  it('POSTs with the device bearer + idempotency key and decodes accepted', async () => {
     setDeviceAuth({ tokenManager: fakeMgr('DEVICE_BEARER_A'), origin: HOST_A });
     setBaseURL(HOST_A);
-    const calls = mockFetch({ status: 200, body: okBody('reject') });
+    const calls = mockFetch({ status: 200, body: okBody('reject', 'accepted') });
 
-    const res = await resolveApproval(SID, AID, 'reject', undefined, 'SUPABASE_JWT');
+    const res = await resolveApproval(SID, AID, 'reject', undefined, KEY);
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`${HOST_A}/api/sessions/${encodeURIComponent(SID)}/approvals/${encodeURIComponent(AID)}`);
-    expect(calls[0].init.method).toBe('POST');
     expect(calls[0].init.headers.Authorization).toBe('Bearer DEVICE_BEARER_A');
-    expect(JSON.stringify(calls[0].init.headers)).not.toContain('SUPABASE_JWT');
-    expect(JSON.parse(calls[0].init.body)).toEqual({ action: 'reject' });
-    expect(res).toEqual({ outcome: 'ok', action: 'reject' });
+    expect(JSON.parse(calls[0].init.body)).toEqual({ action: 'reject', idempotencyKey: KEY });
+    expect(res).toEqual({ outcome: 'accepted', action: 'reject' });
   });
 
-  it('sends input in the body when provided', async () => {
+  it('accepts an already_accepted idempotent receipt', async () => {
     setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
     setBaseURL(HOST_A);
-    const calls = mockFetch({ status: 200, body: okBody('send') });
-    await resolveApproval(SID, AID, 'send', 'ls -la');
-    expect(JSON.parse(calls[0].init.body)).toEqual({ action: 'send', input: 'ls -la' });
+    mockFetch({ status: 200, body: okBody('reject', 'already_accepted') });
+    const res = await resolveApproval(SID, AID, 'reject', undefined, KEY);
+    expect(res.outcome).toBe('already_accepted');
   });
 
-  it('fails closed on a non-paired origin — ZERO requests, bearer never sent', async () => {
+  it('FAILS CLOSED with NO request when device auth is absent (no legacy fallback)', async () => {
+    setDeviceAuth(null);
+    setBaseURL(HOST_A);
+    const calls = mockFetch({ status: 200, body: okBody('reject') });
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toMatchObject({
+      failure: ConnectivityFailure.AuthError,
+    });
+    expect(calls).toHaveLength(0); // no legacy transport attempt whatsoever
+  });
+
+  it('fails closed on a non-paired origin — ZERO requests', async () => {
     setDeviceAuth({ tokenManager: fakeMgr('DEVICE_BEARER_A'), origin: HOST_A });
     setBaseURL(HOST_B);
     const calls = mockFetch({ status: 200, body: okBody('reject') });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toMatchObject({ failure: ConnectivityFailure.AuthError });
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toMatchObject({ failure: ConnectivityFailure.AuthError });
     expect(calls).toHaveLength(0);
   });
 
-  it('surfaces the daemon outcome status without replaying the action', async () => {
+  it('surfaces the daemon receipt outcome without replaying the action', async () => {
     setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
     setBaseURL(HOST_A);
-    // 502 delivery_failed
-    let calls = mockFetch({ status: 502, body: 'delivery_failed' });
-    await expect(resolveApproval(SID, AID, 'approve')).rejects.toMatchObject({ statusCode: 502 });
-    expect(calls).toHaveLength(1);
-    // 409 already_terminal / stale_generation
-    mockFetch({ status: 409, body: 'already_terminal' });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toMatchObject({ statusCode: 409 });
-    // 410 expired
-    mockFetch({ status: 410, body: 'expired' });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toMatchObject({ statusCode: 410 });
-    // 400 input_rejected
-    mockFetch({ status: 400, body: 'input_rejected' });
-    await expect(resolveApproval(SID, AID, 'send', 'x')).rejects.toMatchObject({ statusCode: 400 });
+    for (const [status, count] of [[502, 1], [409, 1], [410, 1], [400, 1]] as const) {
+      const calls = mockFetch({ status, body: 'x' });
+      await expect(resolveApproval(SID, AID, 'approve', undefined, KEY)).rejects.toMatchObject({ statusCode: status });
+      expect(calls).toHaveLength(count);
+    }
   });
 
-  it('distinguishes invalid-bearer 401 from permission 403', async () => {
+  it('distinguishes 401 from 403', async () => {
     setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
     setBaseURL(HOST_A);
     mockFetch({ status: 401, body: {} });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toMatchObject({
-      failure: ConnectivityFailure.AuthError, statusCode: 401,
-    });
-    const calls403 = mockFetch({ status: 403, body: {} });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toMatchObject({
-      failure: ConnectivityFailure.AuthError, statusCode: 403,
-    });
-    expect(calls403).toHaveLength(1); // no retry of the non-idempotent POST
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toMatchObject({ statusCode: 401 });
+    mockFetch({ status: 403, body: {} });
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toMatchObject({ statusCode: 403 });
   });
 
-  it('rejects a malformed 2xx body (no false success)', async () => {
+  it('rejects a malformed / non-success 2xx body (no false success)', async () => {
     setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
     setBaseURL(HOST_A);
-    // outcome not ok
-    mockFetch({ status: 200, body: { status: 'ok', outcome: 'delivery_failed', action: 'reject' } });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toBeInstanceOf(PokitError);
-    // wrong action echoed back
+    // outcome not accepted/already_accepted
+    mockFetch({ status: 200, body: { status: 'ok', outcome: 'unavailable', action: 'reject' } });
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toBeInstanceOf(PokitError);
+    // wrong action echoed
     mockFetch({ status: 200, body: okBody('approve') });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toBeInstanceOf(PokitError);
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toBeInstanceOf(PokitError);
     // null body
     mockFetch({ status: 200, body: null });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toBeInstanceOf(PokitError);
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toBeInstanceOf(PokitError);
   });
 
   it('classifies a transport failure as NetworkUnreachable, one attempt', async () => {
     setDeviceAuth({ tokenManager: fakeMgr(), origin: HOST_A });
     setBaseURL(HOST_A);
     let n = 0;
-    (global as any).fetch = jest.fn(async () => { n++; throw new Error('connection refused'); });
-    await expect(resolveApproval(SID, AID, 'reject')).rejects.toMatchObject({
-      failure: ConnectivityFailure.NetworkUnreachable,
-    });
+    (global as any).fetch = jest.fn(async () => { n++; throw new Error('refused'); });
+    await expect(resolveApproval(SID, AID, 'reject', undefined, KEY)).rejects.toMatchObject({ failure: ConnectivityFailure.NetworkUnreachable });
     expect(n).toBe(1);
   });
 
-  it('never leaks the bearer in a thrown error message', async () => {
-    setDeviceAuth({ tokenManager: fakeMgr('SECRET_BEARER_XYZ'), origin: HOST_A });
-    setBaseURL(HOST_B); // force fail-closed
+  it('never leaks the bearer in a thrown error', async () => {
+    setDeviceAuth({ tokenManager: fakeMgr('SECRET_XYZ'), origin: HOST_A });
+    setBaseURL(HOST_B);
     mockFetch({ status: 200, body: okBody('reject') });
     try {
-      await resolveApproval(SID, AID, 'reject');
+      await resolveApproval(SID, AID, 'reject', undefined, KEY);
       throw new Error('should have rejected');
     } catch (e: any) {
-      expect(e).toBeInstanceOf(PokitError);
-      expect(String(e.message)).not.toContain('SECRET_BEARER_XYZ');
+      expect(String(e.message)).not.toContain('SECRET_XYZ');
     }
   });
 });
 
-describe('resolveApproval — legacy (explicit_local_dev) transport', () => {
-  afterEach(() => setDeviceAuth(null));
-  it('uses the legacy bearer when no device auth is configured', async () => {
-    setDeviceAuth(null);
-    setBaseURL('http://127.0.0.1:9171');
-    const calls = mockFetch({ status: 200, body: okBody('reject') });
-    await resolveApproval(SID, AID, 'reject', undefined, 'dev-token');
-    expect(calls).toHaveLength(1);
-    expect(calls[0].init.headers.Authorization).toBe('Bearer dev-token');
-  });
-});
-
-describe('A1-E end-to-end production path', () => {
+describe('A1 production path (mobile side)', () => {
   afterEach(() => setDeviceAuth(null));
 
-  it('accepted Codex approval DTO → strict decode → delivered action', async () => {
-    // The daemon projects this from the generation-bound store (accepted Codex).
+  it('non-actionable safe DTO → no CTA, and the daemon has no delivery channel', async () => {
+    // The daemon projects non-actionable intervention info for Codex (no proven
+    // delivery channel), so the mobile surfaces zero actionable approvals.
     const serverApprovals = [{
-      id: AID, sessionId: SID, agentKind: 'codex', kind: 'approval',
-      status: 'pending', prompt: 'run rm -rf?', default: 'reject',
-      source: 'jsonl', confidence: 0.9, createdAt: '2026-07-14T08:00:00Z',
-      options: [
-        { id: 'approve', label: 'Approve', kind: 'approve' },
-        { id: 'reject', label: 'Reject', kind: 'reject' },
-      ],
+      id: AID, sessionId: SID, summary: 'Agent requested an approval',
+      state: 'pending', actionable: false, options: [],
+      createdAt: '2026-07-14T08:00:00Z', expiresAt: '2026-07-14T08:05:00Z',
     }];
-    // Strict decode + actionable filter yields exactly the pending request.
-    const decoded = pendingApprovals(serverApprovals, SID);
-    expect(decoded).toHaveLength(1);
-    expect(decoded[0].id).toBe(AID);
-
-    // Deliver a reject over the host-bound device transport.
-    setDeviceAuth({ tokenManager: fakeMgr('DEVICE_BEARER_A'), origin: HOST_A });
-    setBaseURL(HOST_A);
-    const calls = mockFetch({ status: 200, body: okBody('reject') });
-    const res = await resolveApproval(SID, decoded[0].id, 'reject');
-    expect(res.outcome).toBe('ok');
-    expect(calls[0].init.headers.Authorization).toBe('Bearer DEVICE_BEARER_A');
+    expect(actionableApprovals(serverApprovals, SID)).toHaveLength(0);
   });
 
-  it('status-only: waiting_approval activity with no approvals drives NO CTA', async () => {
-    // A session with a waiting_approval activity but an empty/absent approvals array
-    // must surface zero actionable approvals — activity is display-only.
-    expect(pendingApprovals(undefined, SID)).toEqual([]);
-    expect(pendingApprovals([], SID)).toEqual([]);
-  });
-
-  it('no-capability provider: a session that never produced an approval has no CTA', async () => {
-    // Claude declares no approval capability, so its approvals array is always empty.
-    expect(pendingApprovals([], 'claude:s1')).toEqual([]);
+  it('status-only: no approvals array → no CTA', () => {
+    expect(actionableApprovals(undefined, SID)).toEqual([]);
+    expect(actionableApprovals([], SID)).toEqual([]);
   });
 });

@@ -171,8 +171,8 @@ describe('isConnectionStale — poll failure or freshness expiry', () => {
 describe('agent activity NEVER drives approval or lifecycle actions', () => {
   it('approval CTA reads pending approvals only', () => {
     expect(sessionNeedsApproval([])).toBe(false);
-    expect(sessionNeedsApproval([{ status: 'approved' }])).toBe(false);
-    expect(sessionNeedsApproval([{ status: 'pending' }])).toBe(true);
+    expect(sessionNeedsApproval([{ state: 'approved' }])).toBe(false);
+    expect(sessionNeedsApproval([{ state: 'pending' }])).toBe(true);
   });
 
   it('lifecycle controls derive from lifecycle state only', () => {

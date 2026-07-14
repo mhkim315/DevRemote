@@ -4,7 +4,7 @@ import Svg, { Path } from 'react-native-svg';
 import { RUNNERS } from '../lib/runners';
 import { formatAgentKind, formatAgentStatus, isDegraded } from '../lib/agentDisplay';
 import { AgentActivity, deriveCardActivity, sessionNeedsApproval } from '../lib/agentActivity';
-import { AgentApproval } from '../lib/client';
+import { SafeApproval } from '../lib/client';
 
 export interface AgentEvent {
   id: string;
@@ -33,7 +33,7 @@ export interface SessionTelemetry {
   agentKind?: string;
   agentStatus?: string;
   agentConfidence?: number;
-  approvals?: AgentApproval[];
+  approvals?: SafeApproval[];
   // S1-D: advisory agent-activity dimension (validated at render), SEPARATE from
   // `state`/`lifecycleState`. Never drives lifecycle or approval actions.
   agentActivity?: AgentActivity;

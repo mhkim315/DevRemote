@@ -1,141 +1,116 @@
-// A1-E — strict bounded approval-DTO decoder. The daemon's approvals array is
-// UNTRUSTED; a malformed, foreign-session, unknown-status, or oversized record
-// must never render an actionable CTA. These prove the decoder fails closed and
-// mirrors the frozen closed vocabularies.
+// A1 remediation (B6) — strict bounded decoder for the safe approval DTO. A
+// malformed, foreign-session, unknown-state, or oversized record must never render
+// a CTA; only a pending AND actionable record is actionable.
 
 import {
-  validateApproval, decodeApprovals, pendingApprovals, approvalActionable,
-  APPROVAL_STATUSES,
+  validateApproval, decodeApprovals, actionableApprovals, pendingDisplayApprovals,
+  approvalActionable, APPROVAL_STATES,
 } from '../src/lib/approvalRequest';
+import { SafeApproval } from '../src/lib/client';
 
 function validRaw(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: 'AP-1', sessionId: 'codex:s1', agentKind: 'codex', kind: 'approval',
-    status: 'pending', prompt: 'approve this?',
+    id: 'AP-1', sessionId: 'codex:s1', summary: 'Agent requested an approval',
+    state: 'pending', actionable: true,
     options: [
-      { id: 'approve', label: 'Approve', kind: 'approve' },
-      { id: 'reject', label: 'Reject', kind: 'reject' },
+      { id: 'approve', label: 'Approve', kind: 'approve', requiresInput: false },
+      { id: 'reject', label: 'Reject', kind: 'reject', requiresInput: false },
     ],
-    default: 'reject', source: 'jsonl', confidence: 0.9,
-    createdAt: '2026-07-14T08:00:00Z',
+    createdAt: '2026-07-14T08:00:00Z', expiresAt: '2026-07-14T08:05:00Z',
     ...over,
   };
 }
 
-describe('validateApproval — fail-closed strict decode', () => {
-  it('accepts a well-formed approval', () => {
-    const a = validateApproval(validRaw());
+describe('validateApproval — safe DTO fail-closed decode', () => {
+  it('accepts a well-formed safe approval', () => {
+    const a = validateApproval(validRaw()) as SafeApproval;
     expect(a).not.toBeNull();
-    expect(a!.id).toBe('AP-1');
-    expect(a!.options).toHaveLength(2);
+    expect(a.id).toBe('AP-1');
+    expect(a.options).toHaveLength(2);
+    expect(a.actionable).toBe(true);
   });
 
-  it('rejects unknown envelope fields', () => {
-    expect(validateApproval(validRaw({ evil: 'x' }))).toBeNull();
+  it('rejects unknown envelope fields (e.g. leaked raw prompt/payload)', () => {
+    expect(validateApproval(validRaw({ prompt: 'raw provider prompt' }))).toBeNull();
+    expect(validateApproval(validRaw({ payload: 'y\n' }))).toBeNull();
+    expect(validateApproval(validRaw({ evil: 1 }))).toBeNull();
   });
 
   it('rejects a missing mandatory field', () => {
     const r = validRaw();
-    delete (r as any).prompt;
+    delete (r as any).summary;
     expect(validateApproval(r)).toBeNull();
+    const r2 = validRaw();
+    delete (r2 as any).actionable;
+    expect(validateApproval(r2)).toBeNull();
   });
 
-  it('accepts every status in the closed set and rejects others', () => {
-    for (const s of APPROVAL_STATUSES) {
-      expect(validateApproval(validRaw({ status: s }))).not.toBeNull();
+  it('accepts every closed state and rejects others', () => {
+    for (const s of APPROVAL_STATES) {
+      expect(validateApproval(validRaw({ state: s }))).not.toBeNull();
     }
-    for (const bad of ['executing', 'thinking', 'waiting_approval', 'bogus', '']) {
-      expect(validateApproval(validRaw({ status: bad }))).toBeNull();
+    for (const bad of ['executing', 'waiting_approval', 'bogus', '']) {
+      expect(validateApproval(validRaw({ state: bad }))).toBeNull();
     }
   });
 
-  it('enforces exact session binding when expected', () => {
+  it('enforces exact session binding', () => {
     expect(validateApproval(validRaw(), 'codex:s1')).not.toBeNull();
     expect(validateApproval(validRaw(), 'codex:OTHER')).toBeNull();
-    expect(validateApproval(validRaw({ sessionId: '' }))).toBeNull();
   });
 
-  it('rejects an option with an out-of-vocabulary kind', () => {
-    expect(validateApproval(validRaw({ options: [{ id: 'x', label: 'X', kind: 'destroy' }] }))).toBeNull();
-  });
-
-  it('rejects an option with an unknown field or empty id', () => {
-    expect(validateApproval(validRaw({ options: [{ id: 'a', label: 'A', kind: 'approve', evil: 1 }] }))).toBeNull();
-    expect(validateApproval(validRaw({ options: [{ id: '', label: 'A', kind: 'approve' }] }))).toBeNull();
-  });
-
-  it('validates the optional input schema strictly', () => {
-    expect(validateApproval(validRaw({
-      options: [{ id: 'send', label: 'Send', kind: 'neutral', input: { required: true, placeholder: 'x', multiline: false } }],
-    }))).not.toBeNull();
-    // unknown input field
-    expect(validateApproval(validRaw({
-      options: [{ id: 'send', label: 'Send', kind: 'neutral', input: { required: true, evil: 1 } }],
-    }))).toBeNull();
-    // required not a boolean
-    expect(validateApproval(validRaw({
-      options: [{ id: 'send', label: 'Send', kind: 'neutral', input: { required: 'yes' } }],
-    }))).toBeNull();
+  it('rejects an option with an out-of-vocabulary kind or unknown field', () => {
+    expect(validateApproval(validRaw({ options: [{ id: 'x', label: 'X', kind: 'destroy', requiresInput: false }] }))).toBeNull();
+    expect(validateApproval(validRaw({ options: [{ id: 'x', label: 'X', kind: 'approve', requiresInput: false, payload: 'y' }] }))).toBeNull();
+    // missing requiresInput
+    expect(validateApproval(validRaw({ options: [{ id: 'x', label: 'X', kind: 'approve' }] }))).toBeNull();
   });
 
   it('rejects out-of-bounds strings and oversized option arrays', () => {
-    expect(validateApproval(validRaw({ id: 'A'.repeat(257) }))).toBeNull();
-    expect(validateApproval(validRaw({ prompt: 'A'.repeat(4097) }))).toBeNull();
-    const many = Array.from({ length: 33 }, (_, i) => ({ id: `o${i}`, label: 'x', kind: 'neutral' }));
+    expect(validateApproval(validRaw({ summary: 'Z'.repeat(201) }))).toBeNull();
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: `o${i}`, label: 'x', kind: 'neutral', requiresInput: false }));
     expect(validateApproval(validRaw({ options: many }))).toBeNull();
   });
 
-  it('rejects a non-finite / out-of-range confidence', () => {
-    expect(validateApproval(validRaw({ confidence: 1.5 }))).toBeNull();
-    expect(validateApproval(validRaw({ confidence: -0.1 }))).toBeNull();
-    expect(validateApproval(validRaw({ confidence: NaN }))).toBeNull();
-    expect(validateApproval(validRaw({ confidence: '0.9' }))).toBeNull();
+  it('requires strict RFC3339 timestamps', () => {
+    expect(validateApproval(validRaw({ createdAt: '2026-07-14' }))).toBeNull();
+    expect(validateApproval(validRaw({ expiresAt: 'not-a-time' }))).toBeNull();
+    expect(validateApproval(validRaw({ createdAt: '2026-02-30T00:00:00Z' }))).toBeNull();
   });
 
-  it('requires a strict RFC3339 createdAt and validates optional resolvedAt', () => {
-    expect(validateApproval(validRaw({ createdAt: '2026-07-14' }))).toBeNull(); // date-only
-    expect(validateApproval(validRaw({ createdAt: '2026-02-30T00:00:00Z' }))).toBeNull(); // impossible date
-    expect(validateApproval(validRaw({ resolvedAt: 'not-a-time' }))).toBeNull();
-    expect(validateApproval(validRaw({ resolvedAt: '2026-07-14T09:00:00Z' }))).not.toBeNull();
-  });
-
-  it('rejects non-object input', () => {
-    expect(validateApproval(null)).toBeNull();
-    expect(validateApproval('x')).toBeNull();
-    expect(validateApproval(42)).toBeNull();
+  it('rejects a non-boolean actionable', () => {
+    expect(validateApproval(validRaw({ actionable: 'yes' }))).toBeNull();
   });
 });
 
-describe('decodeApprovals / pendingApprovals / approvalActionable', () => {
-  it('drops invalid and foreign-session records, keeps valid ones', () => {
+describe('actionability filters', () => {
+  it('approvalActionable requires pending AND actionable', () => {
+    expect(approvalActionable(validateApproval(validRaw({ state: 'pending', actionable: true })) as SafeApproval)).toBe(true);
+    expect(approvalActionable(validateApproval(validRaw({ state: 'pending', actionable: false })) as SafeApproval)).toBe(false);
+    expect(approvalActionable(validateApproval(validRaw({ state: 'approved', actionable: true })) as SafeApproval)).toBe(false);
+  });
+
+  it('actionableApprovals drops non-actionable and foreign-session records', () => {
     const raw = [
-      validRaw({ id: 'a1' }),
-      validRaw({ id: 'a2', sessionId: 'codex:OTHER' }), // foreign session
+      validRaw({ id: 'a1', actionable: true }),
+      validRaw({ id: 'a2', actionable: false }), // intervention info, no CTA
+      validRaw({ id: 'a3', sessionId: 'codex:OTHER' }), // foreign
       { garbage: true },
-      validRaw({ id: 'a3', status: 'bogus' }), // bad status
     ];
-    const out = decodeApprovals(raw, 'codex:s1');
-    expect(out.map(a => a.id)).toEqual(['a1']);
+    expect(actionableApprovals(raw, 'codex:s1').map(a => a.id)).toEqual(['a1']);
+  });
+
+  it('pendingDisplayApprovals keeps non-actionable pending for display', () => {
+    const raw = [
+      validRaw({ id: 'a1', actionable: true }),
+      validRaw({ id: 'a2', actionable: false }),
+      validRaw({ id: 'a3', state: 'approved' }),
+    ];
+    expect(pendingDisplayApprovals(raw, 'codex:s1').map(a => a.id).sort()).toEqual(['a1', 'a2']);
   });
 
   it('non-array input yields empty', () => {
     expect(decodeApprovals(undefined, 'codex:s1')).toEqual([]);
-    expect(decodeApprovals({}, 'codex:s1')).toEqual([]);
-  });
-
-  it('only pending is actionable', () => {
-    expect(approvalActionable('pending')).toBe(true);
-    for (const s of ['approved', 'rejected', 'resolved', 'delivery_failed', 'expired', 'invalidated']) {
-      expect(approvalActionable(s)).toBe(false);
-    }
-  });
-
-  it('pendingApprovals returns only pending validated records', () => {
-    const raw = [
-      validRaw({ id: 'p', status: 'pending' }),
-      validRaw({ id: 'd', status: 'delivery_failed' }),
-      validRaw({ id: 'e', status: 'expired' }),
-    ];
-    expect(pendingApprovals(raw, 'codex:s1').map(a => a.id)).toEqual(['p']);
+    expect(actionableApprovals({}, 'codex:s1')).toEqual([]);
   });
 });

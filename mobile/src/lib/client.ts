@@ -545,52 +545,46 @@ export async function sendDebugCommand(sessionID: string, command: string, token
   return res;
 }
 
-// --- Phase A9: Interaction Request Types and API ---
+// --- A1 approval safety: bounded safe DTO + host-bound authenticated action ---
 
-export interface InputSchema {
-  required: boolean;
-  placeholder?: string;
-  multiline?: boolean;
-}
-
-export interface InteractionOption {
+// SafeOption is the redacted option projection from the daemon (B6): a safe option
+// ID, a Pokit-owned label, the closed semantic kind, and bounded required-input
+// metadata only — never a payload or an arbitrary provider label.
+export interface SafeOption {
   id: string;
   label: string;
-  kind: string;     // semantic: "approve", "reject", "neutral", "open", "cancel"
-  payload?: string;
-  input?: InputSchema;
+  kind: string; // closed: approve|reject|neutral|open|cancel
+  requiresInput: boolean;
+  inputPlaceholder?: string;
 }
 
-export interface AgentApproval {
+// SafeApproval is the bounded, redacted approval DTO (B6). It carries no raw
+// provider prompt, payload, path, token, claim token, or digest material.
+export interface SafeApproval {
   id: string;
   sessionId: string;
-  agentKind: string;
-  kind: string;     // "approval" | "interaction" | "info"
-  status: string;   // "pending", "approved", "rejected"
-  prompt: string;
-  options: InteractionOption[];
-  default: string;
-  source: string;
-  confidence: number;
+  summary: string; // Pokit-owned bounded summary (never the raw provider prompt)
+  state: string; // closed: pending|approved|rejected|resolved|delivery_failed|expired|invalidated
+  actionable: boolean; // false ⇒ non-actionable intervention information (no buttons)
+  options: SafeOption[];
   createdAt: string;
-  resolvedAt?: string;
+  expiresAt: string;
 }
 
-// A1-E: the mobile approval action rides the SAME host-bound paired-device
-// transport (apiPost) as the accepted create/lifecycle writes — never the legacy
-// checkedFetch+Supabase-token path. apiPost is fail-closed on a non-paired origin
-// (zero requests, bearer never sent) and never replays a non-idempotent POST after
-// a 401. The daemon returns the frozen closed outcome vocabulary; a 2xx body is
-// strictly decoded so a malformed/foreign response is not a false success. Non-2xx
-// (400/404/409/410/502) surfaces as a PokitError carrying the status so the card
-// can message honestly (e.g. 502 delivery_failed, 409 already-resolved/stale, 410
-// expired) without replaying the action.
-export type ApprovalActionOutcome =
-  | 'ok' | 'not_found' | 'session_mismatch' | 'expired' | 'already_terminal'
-  | 'stale_generation' | 'unknown_action' | 'input_rejected' | 'delivery_failed';
+// A1 remediation (B7): the approval action rides ONLY the host-bound paired-device
+// authenticated transport. Device authentication is MANDATORY — there is no legacy
+// bearer / generic checkedFetch fallback. Missing device credentials, a non-paired
+// host, an invalid/revoked bearer, or insufficient permission all fail closed with
+// a visible error and never mutate anything. An idempotency key is sent so a manual
+// retry of the same decision is idempotent, and the closed receipt is strictly
+// decoded so no denial reads as success.
+export type ApprovalReceiptOutcome =
+  | 'accepted' | 'already_accepted' | 'stale_runtime' | 'runtime_mismatch'
+  | 'unavailable' | 'conflict' | 'rejected' | 'not_actionable' | 'unknown_action'
+  | 'not_found' | 'expired' | 'input_rejected' | 'unauthorized' | 'already_owned';
 
 export interface ApprovalActionResult {
-  outcome: ApprovalActionOutcome;
+  outcome: 'accepted' | 'already_accepted';
   action: string;
 }
 
@@ -598,27 +592,41 @@ export async function resolveApproval(
   sessionID: string,
   approvalID: string,
   action: string,
-  input?: string,
-  token?: string
+  input: string | undefined,
+  idempotencyKey: string,
 ): Promise<ApprovalActionResult> {
-  const body: Record<string, string> = { action };
+  // Device auth is mandatory: refuse to attempt the write over any legacy transport.
+  if (!hasDeviceAuth()) {
+    throw new PokitError(
+      'Device authentication required — pair this device to respond to approvals',
+      ConnectivityFailure.AuthError,
+      401,
+    );
+  }
+  const body: Record<string, string> = { action, idempotencyKey };
   if (input) body.input = input;
+  // apiPost only sends the device bearer to the paired origin (host-bound); with
+  // _deviceAuth set it never falls back to a legacy token.
   const res = await apiPost(
     `/api/sessions/${encodeURIComponent(sessionID)}/approvals/${encodeURIComponent(approvalID)}`,
     body,
-    token
   );
-  // apiPost already threw on any non-2xx; a 2xx must be the exact success shape.
   let parsed: any = null;
   try {
     parsed = await res.json();
   } catch {
     parsed = null;
   }
-  if (!parsed || parsed.status !== 'ok' || parsed.outcome !== 'ok' || parsed.action !== action) {
+  // Only an explicit accepted/already_accepted success shape is a success.
+  if (
+    !parsed ||
+    parsed.status !== 'ok' ||
+    parsed.action !== action ||
+    (parsed.outcome !== 'accepted' && parsed.outcome !== 'already_accepted')
+  ) {
     throw new PokitError('Malformed approval response', ConnectivityFailure.APIError, res.status || 0);
   }
-  return { outcome: 'ok', action };
+  return { outcome: parsed.outcome, action };
 }
 
 export async function registerPushToken(token: string, pushToken: string) {

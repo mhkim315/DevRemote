@@ -1,35 +1,54 @@
-import React, { useState } from 'react';
-import { resolveApproval, AgentApproval, InteractionOption } from '../lib/client';
+import React, { useState, useRef } from 'react';
+import { resolveApproval, SafeApproval } from '../lib/client';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
 interface Props {
   sessionId: string;
-  approval: AgentApproval;
-  token?: string;
+  approval: SafeApproval;
   onResolved: () => void;
 }
 
-export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) {
+// A stable-enough idempotency key per (approval, option) selection: generated once
+// and preserved across retries of the SAME decision so a manual retry is idempotent.
+// A new approval id (or option) produces a new key.
+function makeKey(approvalId: string, optionId: string, nonce: number): string {
+  return `${approvalId}:${optionId}:${nonce}`;
+}
+
+export function ApprovalCard({ sessionId, approval, onResolved }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Per-option input values keyed by option ID.
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
+  // Per-(option) idempotency keys, preserved across retries.
+  const keys = useRef<Record<string, string>>({});
+  const nonceRef = useRef<number>(1);
+
   const setOptionInput = (optId: string, value: string) => {
     setInputValues(prev => ({ ...prev, [optId]: value }));
   };
 
-  const handleAction = async (action: string, input?: string) => {
-    if (loading) return; // one exact request in flight at a time
+  const keyFor = (optionId: string): string => {
+    if (!keys.current[optionId]) {
+      keys.current[optionId] = makeKey(approval.id, optionId, nonceRef.current++);
+    }
+    return keys.current[optionId];
+  };
+
+  const handleAction = async (optionId: string, input?: string) => {
+    if (loading) return; // one exact request in flight
     setLoading(true);
     setError(null);
     try {
-      await resolveApproval(sessionId, approval.id, action, input, token);
+      await resolveApproval(sessionId, approval.id, optionId, input, keyFor(optionId));
+      // Local optimistic state only updates from an accepted server result.
       onResolved();
     } catch (e: any) {
-      // Honest per-outcome messaging from the daemon's status. Input is preserved
-      // (inputValues is untouched) so a recoverable failure does not lose typing.
+      // Honest per-outcome messaging; input and the idempotency key are preserved so
+      // a safe manual retry re-uses the same key (idempotent).
       const status = e?.statusCode;
-      if (status === 409) {
+      if (status === 401 || status === 403) {
+        setError('Device not authorized — pair this device');
+      } else if (status === 409) {
         setError('No longer current — refresh');
       } else if (status === 410) {
         setError('Approval expired');
@@ -37,32 +56,35 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
         setError("Couldn't deliver — resolve in the terminal");
       } else if (status === 400) {
         setError('Action not accepted');
-      } else if (status === 401 || status === 403) {
-        setError('Not authorized on this device');
       } else {
-        setError('Network error — tap to retry');
+        setError('Network error — tap an action to retry');
       }
     } finally {
       setLoading(false);
     }
   };
 
-  // Capability-aware: use server-provided options only.
-  // Never synthesize approve/reject client-side.
-  const options = approval.options || [];
+  // Non-actionable (unproven mapping / intervention info): display only, no buttons.
+  if (!approval.actionable) {
+    return (
+      <View style={styles.card}>
+        <View style={styles.header}>
+          <Text style={styles.title}>ATTENTION</Text>
+        </View>
+        <Text style={styles.prompt}>{approval.summary}</Text>
+        <Text style={styles.unavailableText}>Respond in the live terminal — no remote action is available.</Text>
+      </View>
+    );
+  }
 
-  const createdAt = approval.createdAt
-    ? new Date(approval.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '';
+  const options = approval.options || [];
 
   return (
     <View style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.title}>APPROVAL REQUIRED</Text>
-        {createdAt ? <Text style={styles.time}>{createdAt}</Text> : null}
       </View>
-      <Text style={styles.agentName}>Agent: {approval.agentKind || 'unknown'}</Text>
-      <Text style={styles.prompt}>{approval.prompt}</Text>
+      <Text style={styles.prompt}>{approval.summary}</Text>
 
       {error ? (
         <View style={styles.errorRow}>
@@ -82,17 +104,16 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
           {options.map(opt => {
             const kindStyle = getKindStyle(opt.kind);
             const optInput = inputValues[opt.id] || '';
-            const needsInput = opt.input?.required && !optInput.trim();
+            const needsInput = opt.requiresInput && !optInput.trim();
             return (
               <View key={opt.id} style={styles.optionRow}>
-                {opt.input && (
+                {opt.requiresInput && (
                   <TextInput
-                    style={[styles.inputField, opt.input.multiline && styles.inputMultiline]}
-                    placeholder={opt.input.placeholder || 'Enter text...'}
+                    style={styles.inputField}
+                    placeholder={opt.inputPlaceholder || 'Enter text...'}
                     placeholderTextColor="#8b949e"
                     value={optInput}
                     onChangeText={v => setOptionInput(opt.id, v)}
-                    multiline={opt.input.multiline}
                     editable={!loading}
                   />
                 )}
@@ -115,7 +136,6 @@ export function ApprovalCard({ sessionId, approval, token, onResolved }: Props) 
 }
 
 // getKindStyle returns visual style based on server-provided semantic kind.
-// Never infers meaning from option ID.
 function getKindStyle(kind: string): { btn: any; text: any } {
   switch (kind) {
     case 'approve':
@@ -154,16 +174,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  time: {
-    color: '#8b949e',
-    fontSize: 11,
-  },
-  agentName: {
-    color: '#ffffff',
-    fontSize: 12,
-    marginBottom: 12,
-    opacity: 0.8,
-  },
   prompt: {
     color: '#ffffff',
     fontSize: 14,
@@ -188,10 +198,6 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     borderWidth: 1,
     borderColor: '#0D2D45',
-  },
-  inputMultiline: {
-    minHeight: 60,
-    textAlignVertical: 'top',
   },
   buttonDisabled: {
     opacity: 0.4,
@@ -218,11 +224,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 12,
   },
-  buttonRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
-  },
   button: {
     paddingVertical: 8,
     paddingHorizontal: 16,
@@ -235,19 +236,5 @@ const styles = StyleSheet.create({
     color: '#8b949e',
     fontWeight: '700',
     fontSize: 13,
-  },
-  approveBtn: {
-    borderColor: '#39d353',
-    backgroundColor: '#39d353',
-  },
-  approveText: {
-    color: '#000000',
-  },
-  rejectBtn: {
-    borderColor: '#f85149',
-    backgroundColor: 'transparent',
-  },
-  rejectText: {
-    color: '#f85149',
   },
 });

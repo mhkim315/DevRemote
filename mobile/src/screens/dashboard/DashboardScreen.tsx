@@ -7,7 +7,7 @@ import { ApprovalCard } from '../../components/ApprovalCard';
 import { listSessions, createOrUpdateSession, ConnectivityFailure, PokitError } from '../../lib/client';
 import { createPollController } from '../../lib/sessionPoller';
 import { isConnectionStale } from '../../lib/agentActivity';
-import { pendingApprovals as pendingApprovalsFor } from '../../lib/approvalRequest';
+import { actionableApprovals } from '../../lib/approvalRequest';
 import { useConnection } from '../../lib/connection';
 import { isDegraded } from '../../lib/agentDisplay';
 
@@ -130,11 +130,11 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
   };
 
   // P1a: section grouping.
-  // A1-E: approvals are validated fail-closed and bound to their exact session
-  // before they can drive a CTA. A malformed, foreign-session, unknown-status, or
-  // non-pending record is dropped here — waiting_approval activity never adds one.
+  // A1 remediation: only VALIDATED, session-bound, pending AND actionable approvals
+  // drive a CTA. A malformed, foreign-session, non-pending, or non-actionable
+  // (unproven mapping / intervention-info) record renders no action buttons.
   const pendingApprovals = sessions.flatMap(s =>
-    pendingApprovalsFor(s.approvals, s.id).map(approval => ({ sessionId: s.id, approval }))
+    actionableApprovals(s.approvals, s.id).map(approval => ({ sessionId: s.id, approval }))
   );
 
   const sessionIdsWithPending = new Set(pendingApprovals.map(p => p.sessionId));
@@ -253,7 +253,6 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
                   key={`approval-${approval.id}`}
                   sessionId={sessionId}
                   approval={approval}
-                  token={token}
                   onResolved={fetchSessions}
                 />
               ))}
