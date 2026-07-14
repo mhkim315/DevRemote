@@ -219,11 +219,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit}
-	// A1: the production approval delivery boundary is `unavailable` — no accepted
-	// provider action-delivery channel exists, so no approval action can be
-	// delivered. Approvals are non-actionable intervention information (RuntimeOf is
-	// intentionally unwired; it is set when a proven provider action mapping exists).
-	h.ApprovalDelivery = term.NewUnavailableApprovalDelivery()
+	// A1 R3-C: the production approval delivery boundary is the generation-owned
+	// gate. No provider delivery channel is proven, so no sink is registered and the
+	// gate accepts nothing (returns `unavailable`, writes no bytes); the gate is wired
+	// into the real call graph (below, telemetry drives its activation/deactivation)
+	// so a future actionable path is linearized against runtime replacement. RuntimeOf
+	// stays unwired until a proven provider mapping exists.
+	deliveryGate := term.NewRuntimeDeliveryGate()
+	h.ApprovalDelivery = term.NewGatedApprovalDelivery(deliveryGate)
 
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()
@@ -323,6 +326,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		agentDetector = agent.NewTermAgentDetector()
 	}
 	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity, transcriptSvc)
+	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
 	lifecycle.SetStatusClearer(telemetry)

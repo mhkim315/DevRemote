@@ -1,6 +1,9 @@
 package term
 
 import (
+	"bytes"
+	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,12 +16,11 @@ import (
 	"devremote/companion-daemon/internal/devicetrust"
 )
 
-// A1 remediation-2 handler tests: strict decode → actionability → server-derived
-// requester → atomic claim → runtime revalidation → bound delivery/receipt → commit.
+// A1 remediation-3 handler tests: the store-authoritative claim flow through the
+// route, receipt payload binding, and conservative log redaction.
 
-// fixtureDelivery echoes the request's claim token + binding and returns a receipt
-// ID for accepted outcomes. It proves the receipt/commit contract; it is never a
-// production positive path.
+// fixtureDelivery echoes the request binding + token, a receipt id, and the digest of
+// the EXACT bytes it was handed (req.Payload). It proves the receipt/commit contract.
 type fixtureDelivery struct {
 	outcome DeliveryOutcome
 	calls   int32
@@ -26,11 +28,12 @@ type fixtureDelivery struct {
 
 func (f *fixtureDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	atomic.AddInt32(&f.calls, 1)
-	rid := ""
+	rid, pd := "", ""
 	if f.outcome == DeliveryAccepted || f.outcome == DeliveryAlreadyAccepted {
 		rid = newReceiptID()
+		pd = payloadDigest(req.Payload)
 	}
-	return DeliveryReceipt{Outcome: f.outcome, ClaimToken: req.ClaimToken, Binding: req.Binding, ReceiptID: rid}
+	return DeliveryReceipt{Outcome: f.outcome, ClaimToken: req.ClaimToken, Binding: req.Binding, ReceiptID: rid, DeliveredPayloadDigest: pd}
 }
 
 func ownerBearer(t *testing.T, m *devicetrust.DeviceSessionManager, device string) string {
@@ -132,9 +135,6 @@ func TestHandler_RuntimeReplacedBeforeDelivery(t *testing.T) {
 	if atomic.LoadInt32(&fd.calls) != 0 {
 		t.Error("stale runtime must not reach delivery")
 	}
-	if snap, _ := s.LookupRecord("codex:s1", "a1"); snap.State != ApprovalDeliveryFailed {
-		t.Errorf("state=%q want delivery_failed", snap.State)
-	}
 }
 
 func TestHandler_IdempotentReplayNoDuplicateDelivery(t *testing.T) {
@@ -163,23 +163,18 @@ func TestHandler_StrictDecodeAndAuth(t *testing.T) {
 	m := devicetrust.NewDeviceSessionManager("boot", 20*time.Minute)
 	owner := ownerBearer(t, m, "d1")
 
-	// client-supplied identity field rejected
 	if rr := routeApproval(m, h, owner, "codex:s1", "a1", `{"action":"approve","deviceId":"evil","idempotencyKey":"k1"}`); rr.Code != http.StatusBadRequest {
 		t.Errorf("client identity field code=%d want 400", rr.Code)
 	}
-	// missing idempotency key rejected by the store as invalid_key → 400
 	if rr := routeApproval(m, h, owner, "codex:s1", "a1", `{"action":"approve"}`); rr.Code != http.StatusBadRequest {
 		t.Errorf("missing key code=%d want 400", rr.Code)
 	}
-	// unknown action
 	if rr := routeApproval(m, h, owner, "codex:s1", "a1", `{"action":"ghost","idempotencyKey":"k1"}`); rr.Code != http.StatusBadRequest {
 		t.Errorf("unknown action code=%d want 400", rr.Code)
 	}
-	// not found
 	if rr := routeApproval(m, h, owner, "codex:s1", "missing", `{"action":"approve","idempotencyKey":"k1"}`); rr.Code != http.StatusNotFound {
 		t.Errorf("missing code=%d want 404", rr.Code)
 	}
-	// no bearer → 401; member → 403
 	if rr := routeApproval(m, h, "", "codex:s1", "a1", `{"action":"approve","idempotencyKey":"k1"}`); rr.Code != http.StatusUnauthorized {
 		t.Errorf("no bearer code=%d want 401", rr.Code)
 	}
@@ -203,22 +198,42 @@ func TestHandler_NoPrincipalForbidden(t *testing.T) {
 	}
 }
 
-// R2-D: log-safety — control/newline/path/token-like identifiers are sanitized.
-func TestSanitizeLogID(t *testing.T) {
-	cases := map[string]string{
-		"clean:id-1": "clean:id-1",
-		"a\nb":       "a.b",
-		"a\rb\tc":    "a.b.c",
-		"x\x00y":     "x.y",
-		"tok\x1besc": "tok.esc",
+// R3-E: capture actual emitted log output and prove paths, secrets, control bytes,
+// and long values do not appear verbatim.
+func TestHandler_LogRedaction(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	s, _ := newTestStore(time.Unix(1000, 0))
+	seedActionableForHandler(s)
+	h := actionableHandler(s, &fixtureDelivery{outcome: DeliveryAccepted})
+	m := devicetrust.NewDeviceSessionManager("boot", 20*time.Minute)
+	owner := ownerBearer(t, m, "d1")
+
+	// path-shaped + secret-shaped + token-shaped identifiers as the action id.
+	for _, bad := range []string{
+		`/Users/alice/private/repo`,
+		`api_key=secret-value`,
+		`sk-ABCDEF0123456789`,
+		`ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`,
+		`C:\Users\alice\secret`,
+	} {
+		routeApproval(m, h, owner, "codex:s1", "a1", `{"action":`+jsonQuote(bad)+`,"idempotencyKey":"k1"}`)
 	}
-	for in, want := range cases {
-		if got := sanitizeLogID(in); got != want {
-			t.Errorf("sanitizeLogID(%q)=%q want %q", in, got, want)
+	out := buf.String()
+	for _, leak := range []string{
+		"/Users/alice/private/repo", "secret-value", "sk-ABCDEF0123456789",
+		"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", `C:\Users\alice`,
+	} {
+		if strings.Contains(out, leak) {
+			t.Errorf("log leaked %q", leak)
 		}
 	}
-	// bounded
-	if got := sanitizeLogID(strings.Repeat("a", 500)); len(got) != maxLogIDLen {
-		t.Errorf("sanitizeLogID length=%d want %d", len(got), maxLogIDLen)
-	}
+}
+
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

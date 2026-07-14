@@ -6,24 +6,25 @@ import (
 	"sync"
 )
 
-// A1 remediation 2 (R2-C, supplement #3/#4) — approval-specific delivery boundary
-// and generation-bound delivery gate.
+// A1 remediation 3 (R3-B/R3-C) — approval-specific delivery boundary + generation-
+// owned delivery gate.
 //
-// A delivery request and its receipt carry the ONE immutable
-// ApprovalExecutionBinding the claim token owns; the receipt also has an opaque
-// ReceiptID. RecordDelivery compares every binding field and the claim token before
-// a success may commit. The generic CommandBroker remains removed from this path.
+// A delivery request and its receipt carry the ONE immutable ApprovalExecutionBinding
+// the claim token owns; the receipt also carries an opaque ReceiptID and the digest
+// of the EXACT bytes delivered. RecordDelivery compares every binding field, the claim
+// token, and the delivered-payload digest before a success may commit, so substituted
+// bytes cannot commit.
 //
-// Linearization: replacement/delete/unlink/termination and delivery share the
-// per-session RuntimeDeliveryGate. Delivery is accepted ONLY inside the gate, for
-// the exact current+active runtime generation, so an old generation accepts no
-// bytes after replacement begins, and no external I/O is performed while the store
-// mutex is held.
+// Delivery acceptance is linearized by the per-session RuntimeDeliveryGate: under one
+// gate lock the current generation-owned endpoint is verified AND the exact bytes are
+// enqueued into that endpoint (the acceptance point). Activation, launch/stream
+// replacement, correlation loss, delete, unlink, and termination take the SAME lock,
+// so a replacement cannot interleave between the check and the enqueue, and an old
+// generation accepts no bytes. No external I/O is performed while any lock is held.
 //
-// No accepted provider action-delivery channel exists today, so the production
-// boundary is `unavailableApprovalDelivery`, which accepts nothing and writes no
-// bytes. The gate + receipt semantics are proven with a controlled fixture; that
-// fixture is never used to claim a production positive path.
+// No accepted provider action-delivery channel exists, so production registers NO
+// sink; Accept fails and the production gated boundary returns `unavailable`, writing
+// no bytes. The gate/receipt semantics are proven with a controlled fixture sink.
 
 type DeliveryOutcome string
 
@@ -49,8 +50,20 @@ func deliverySucceeded(o DeliveryOutcome) bool {
 	return o == DeliveryAccepted || o == DeliveryAlreadyAccepted
 }
 
-// ApprovalDeliveryRequest carries the claim token, the immutable binding, and the
-// exact server-side payload. Every identity field lives in Binding.
+// deliveryProvesNonAcceptance reports whether an outcome proves the daemon boundary
+// accepted NOTHING (so a bounded manual retry is safe). An accepted/already_accepted
+// outcome is not a failure; every other closed outcome is an unambiguous non-acceptance.
+func deliveryProvesNonAcceptance(o DeliveryOutcome) bool {
+	switch o {
+	case DeliveryUnavailable, DeliveryStaleRuntime, DeliveryRuntimeMismatch, DeliveryRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// ApprovalDeliveryRequest carries the claim token, immutable binding, and the exact
+// server-computed payload bytes.
 type ApprovalDeliveryRequest struct {
 	ClaimToken string
 	Binding    ApprovalExecutionBinding
@@ -59,13 +72,13 @@ type ApprovalDeliveryRequest struct {
 
 // DeliveryReceipt is the immutable, fully-bound result of a delivery attempt.
 type DeliveryReceipt struct {
-	Outcome    DeliveryOutcome
-	ClaimToken string
-	Binding    ApprovalExecutionBinding
-	ReceiptID  string // opaque; present on an accepted receipt
+	Outcome                DeliveryOutcome
+	ClaimToken             string
+	Binding                ApprovalExecutionBinding
+	ReceiptID              string
+	DeliveredPayloadDigest string // digest of the EXACT bytes delivered
 }
 
-// ApprovalDelivery is the daemon-owned approval delivery boundary.
 type ApprovalDelivery interface {
 	Deliver(req ApprovalDeliveryRequest) DeliveryReceipt
 }
@@ -78,8 +91,7 @@ func newReceiptID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// unavailableApprovalDelivery is the production boundary: no accepted channel, no
-// bytes written, always `unavailable`.
+// unavailableApprovalDelivery is a no-channel boundary that accepts nothing.
 type unavailableApprovalDelivery struct{}
 
 func NewUnavailableApprovalDelivery() ApprovalDelivery { return unavailableApprovalDelivery{} }
@@ -88,54 +100,82 @@ func (unavailableApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Delivery
 	return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
 }
 
-// RuntimeDeliveryGate serializes approval delivery acceptance against runtime
-// replacement/removal per session. Replacement (SetActive) and removal (Deactivate)
-// take the SAME lock as AcceptDelivery, so a delivery cannot be accepted for a
-// generation that is being replaced, and an old generation accepts nothing once a
-// newer one is set active. It performs NO external I/O and holds NO store lock.
-type RuntimeDeliveryGate struct {
-	mu  sync.Mutex
-	cur map[string]gateEntry
+// DeliverySink is a generation-owned delivery endpoint. Enqueue is called UNDER the
+// gate lock — it must be fast (a bounded in-memory append) and perform NO external
+// I/O; the external drain targets this captured endpoint separately.
+type DeliverySink interface {
+	Enqueue(payload []byte) (receiptID string)
 }
 
-type gateEntry struct {
+// RuntimeDeliveryGate linearizes approval delivery acceptance against runtime
+// activation/replacement/deactivation per session.
+type RuntimeDeliveryGate struct {
+	mu       sync.Mutex
+	sessions map[string]*genEndpoint
+}
+
+type genEndpoint struct {
 	runtime RuntimeRef
 	active  bool
+	sink    DeliverySink
 }
 
 func NewRuntimeDeliveryGate() *RuntimeDeliveryGate {
-	return &RuntimeDeliveryGate{cur: make(map[string]gateEntry)}
+	return &RuntimeDeliveryGate{sessions: make(map[string]*genEndpoint)}
 }
 
-// SetActive marks rt the current active runtime generation for a session (called on
-// launch/replacement). It supersedes any prior generation.
-func (g *RuntimeDeliveryGate) SetActive(sessionID string, rt RuntimeRef) {
+// Activate installs rt as the current generation-owned endpoint for a session,
+// superseding any prior generation. sink is nil in production (no channel).
+func (g *RuntimeDeliveryGate) Activate(sessionID string, rt RuntimeRef, sink DeliverySink) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.cur[sessionID] = gateEntry{runtime: rt, active: true}
+	g.sessions[sessionID] = &genEndpoint{runtime: rt, active: true, sink: sink}
 }
 
-// Deactivate marks a session's runtime inactive (delete/unlink/termination). After
-// this, no delivery is accepted until a new generation is set active.
+// Deactivate marks a session's endpoint inactive (delete/unlink/termination).
 func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if e, ok := g.cur[sessionID]; ok {
+	if e, ok := g.sessions[sessionID]; ok {
 		e.active = false
-		g.cur[sessionID] = e
 	}
 }
 
-// AcceptDelivery atomically checks that the session's current runtime is exactly the
-// expected generation AND active, and (in the same critical section, without any
-// external I/O) accepts. Returns false if the runtime was replaced, removed, or is
-// not current — the linearization point.
-func (g *RuntimeDeliveryGate) AcceptDelivery(sessionID string, expected RuntimeRef) bool {
+// Accept is the sole acceptance point. Under one lock it verifies the current
+// endpoint equals the expected runtime, is active, and has a sink, then enqueues the
+// exact bytes into that endpoint and returns a ReceiptID — atomically. A concurrent
+// Activate/Deactivate cannot interleave. Returns ok=false (no bytes accepted) when
+// the runtime was replaced, removed, or has no sink.
+func (g *RuntimeDeliveryGate) Accept(sessionID string, expected RuntimeRef, payload []byte) (receiptID string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	e, ok := g.cur[sessionID]
-	if !ok || !e.active || !e.runtime.equal(expected) {
-		return false
+	e := g.sessions[sessionID]
+	if e == nil || !e.active || !e.runtime.equal(expected) || e.sink == nil {
+		return "", false
 	}
-	return true
+	return e.sink.Enqueue(payload), true
+}
+
+// gatedApprovalDelivery is the production boundary: it accepts ONLY through the
+// generation-owned gate. With no sink registered (no provider channel) it returns
+// `unavailable` and writes no bytes; when a sink exists, an accepted receipt is
+// created only after the daemon-owned acceptance, carrying the delivered-payload digest.
+type gatedApprovalDelivery struct {
+	gate *RuntimeDeliveryGate
+}
+
+// NewGatedApprovalDelivery wires the production delivery boundary to the gate.
+func NewGatedApprovalDelivery(gate *RuntimeDeliveryGate) ApprovalDelivery {
+	return gatedApprovalDelivery{gate: gate}
+}
+
+func (d gatedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
+	rid, ok := d.gate.Accept(req.Binding.SessionID, req.Binding.Runtime, req.Payload)
+	if !ok {
+		return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
+	}
+	return DeliveryReceipt{
+		Outcome: DeliveryAccepted, ClaimToken: req.ClaimToken, Binding: req.Binding,
+		ReceiptID: rid, DeliveredPayloadDigest: payloadDigest(req.Payload),
+	}
 }

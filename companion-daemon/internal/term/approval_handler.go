@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"unicode/utf8"
 
-	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/devicetrust"
 )
 
@@ -19,12 +18,12 @@ const (
 // HandleApprovalAction handles POST /api/sessions/<id>/approvals/<approvalId>.
 // Body: {"action":"<option-id>", "input":"<optional>", "idempotencyKey":"<key>"}.
 //
-// A1 remediation 2: the STORE is the authority boundary. The handler strictly
-// decodes, resolves the server-derived requester + runtime, and hands the store the
-// selected option ID + raw input; the store recomputes the digest, uses the stored
-// permission, and issues a claim token owning one immutable binding. Delivery and
-// commit carry that same binding; commit succeeds only on an accepted receipt whose
-// token and every binding field match, and only if the runtime was not superseded.
+// A1 R3: the STORE is the sole authority. The handler strictly decodes, resolves the
+// server-derived requester + runtime, and hands the store the selected option ID +
+// raw input; the store recomputes the digest AND the canonical payload, binds the
+// requester authorization context, and returns the claim + payload. The handler uses
+// the STORE's payload for delivery (never a snapshot rebuild); commit succeeds only
+// on an accepted receipt whose token, full binding, and delivered-payload digest match.
 func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -63,26 +62,16 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "not_found", http.StatusNotFound)
 		return
 	}
-
-	// Authoritative action ALWAYS requires a server-derived device principal.
 	principal := devicetrust.PrincipalFromContext(r.Context())
 	if principal == nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unauthorized", http.StatusForbidden)
 		return
 	}
 	requester := requesterFromPrincipal(principal)
-
 	if !snap.Actionable {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "not_actionable", http.StatusConflict)
 		return
 	}
-	selected := findOption(req.Action, snap.Options)
-	if selected == nil {
-		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unknown_action", http.StatusBadRequest)
-		return
-	}
-
-	// Current server-derived runtime (required for the atomic claim binding).
 	if h.RuntimeOf == nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unavailable", http.StatusServiceUnavailable)
 		return
@@ -93,12 +82,10 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// One atomic full-binding claim. The store recomputes the digest and uses the
-	// STORED permission; the handler passes NO digest and NO permission.
 	claim := h.Approvals.ClaimForExecution(ClaimRequest{
 		SessionID:      sessionID,
 		ApprovalID:     approvalID,
-		OptionID:       selected.ID,
+		OptionID:       req.Action,
 		Input:          req.Input,
 		Runtime:        runtime,
 		Requester:      requester,
@@ -106,7 +93,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	})
 	switch claim.Outcome {
 	case ClaimAlreadyAccepted:
-		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, selected.Kind, "already_accepted")
+		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, "", "already_accepted")
 		return
 	case ClaimGranted:
 		// proceed to delivery
@@ -116,8 +103,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Revalidate the runtime immediately before delivery; a replacement/removal
-	// between claim and delivery fails closed with NO terminal bytes.
+	// Revalidate the runtime immediately before delivery.
 	cur, ok := h.RuntimeOf(sessionID)
 	if !ok || !cur.equal(claim.Binding.Runtime) {
 		h.Approvals.RecordDelivery(DeliveryReceipt{Outcome: DeliveryStaleRuntime, ClaimToken: claim.Token, Binding: claim.Binding})
@@ -132,11 +118,11 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	receipt := delivery.Deliver(ApprovalDeliveryRequest{
 		ClaimToken: claim.Token,
 		Binding:    claim.Binding,
-		Payload:    serverPayloadFor(selected, req.Input),
+		Payload:    claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
 	})
 	commit := h.Approvals.RecordDelivery(receipt)
 	if commit.Committed {
-		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, selected.Kind, string(commit.Outcome))
+		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, commit.Kind, string(commit.Outcome))
 		return
 	}
 	code, oc := deliveryOutcomeHTTP(commit.Outcome)
@@ -151,26 +137,6 @@ func requesterFromPrincipal(p *devicetrust.Principal) RequesterContext {
 		BootID:          p.DeviceBootID,
 		Permissions:     append([]string(nil), p.Permissions...),
 	}
-}
-
-// serverPayloadFor returns the exact server-side delivery bytes. It NEVER
-// synthesizes a decision keystroke; only an explicit input-bearing action forwards
-// the user's literal input.
-func serverPayloadFor(opt *agent.InteractionOption, input string) []byte {
-	if opt.Input != nil && input != "" &&
-		(opt.Input.Placement == "as_payload" || opt.Input.Placement == "after_payload") {
-		return []byte(input + "\n")
-	}
-	return nil
-}
-
-func findOption(action string, options []agent.InteractionOption) *agent.InteractionOption {
-	for i, opt := range options {
-		if opt.ID == action {
-			return &options[i]
-		}
-	}
-	return nil
 }
 
 func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
@@ -193,6 +159,8 @@ func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
 		return http.StatusGone, "expired"
 	case ClaimAlreadyOwned:
 		return http.StatusConflict, "already_owned"
+	case ClaimRetryExhausted:
+		return http.StatusConflict, "retry_exhausted"
 	case ClaimStaleRuntime:
 		return http.StatusConflict, "stale_runtime"
 	case ClaimRuntimeMismatch:
@@ -223,22 +191,25 @@ func deliveryOutcomeHTTP(o DeliveryOutcome) (int, string) {
 	}
 }
 
-// sanitizeLogID bounds an identifier and strips control/newline bytes so an
-// attacker-influenced session/approval/action id cannot inject or leak into logs.
+// sanitizeLogID makes an attacker-influenced identifier log-safe: it strips control/
+// newline bytes, then applies the repository's conservative diagnostic redaction
+// (home paths, sk-/ghp_/xox/Bearer tokens, Authorization headers, key=value secrets),
+// and bounds the result. Identifiers are never logged verbatim.
 func sanitizeLogID(s string) string {
-	if len(s) > maxLogIDLen {
-		s = s[:maxLogIDLen]
-	}
 	b := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if c < 0x20 || c == 0x7f {
-			b = append(b, '.')
+			b = append(b, ' ')
 		} else {
 			b = append(b, c)
 		}
 	}
-	return string(b)
+	out := redactStr(string(b))
+	if len(out) > maxLogIDLen {
+		out = out[:maxLogIDLen]
+	}
+	return out
 }
 
 func (h *Handlers) writeApprovalSuccess(w http.ResponseWriter, sessionID, approvalID, action, kind, outcome string) {

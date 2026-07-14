@@ -4,20 +4,19 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"sort"
+	"unicode/utf8"
 )
 
-// A1 remediation 2 (R2-A/R2-B/R2-C) — execution-authority contract.
+// A1 remediation 3 — execution-authority contract.
 //
-// Execution authority is acquired ONLY through the store's atomic
-// ClaimForExecution, which is the COMPLETE authority boundary: it receives the
-// selected option ID and raw user input, loads the immutable stored approval,
-// recomputes the canonical ActionDigest itself, uses only the permission stored
-// with the approval, derives the requester from the authenticated server principal,
-// validates the full runtime and expiry, and transitions pending→executing in one
-// critical section. A caller-supplied digest is at most an optional consistency
-// assertion — never authority. The claim token owns exactly one immutable
-// ApprovalExecutionBinding that is carried, unchanged, through delivery, receipt,
-// and commit, where every field is compared.
+// The store is the sole authority: ClaimForExecution recomputes the canonical
+// ActionDigest AND the canonical delivery payload from the stored immutable option,
+// binds the exact server-derived requester authorization context, and issues a claim
+// token owning one immutable ApprovalExecutionBinding (approval, session, runtime,
+// action digest, payload digest, key). The idempotent-replay decision runs ONLY
+// behind the full current-authority checks. Delivery and the receipt carry the same
+// binding plus the delivered-payload digest, so substituted bytes cannot commit.
 
 const ActionSchemaVersion = "a1.action.v1"
 
@@ -26,9 +25,9 @@ const (
 	maxNormalizedInput   = 4096
 )
 
-// RequesterContext is the SERVER-DERIVED authenticated requester bound into a
-// claim. Every field originates from devicetrust.PrincipalFromContext — never the
-// client body.
+// RequesterContext is the SERVER-DERIVED authenticated requester handed to the
+// store. The store immediately canonicalizes it; nothing here comes from the client
+// body.
 type RequesterContext struct {
 	DeviceID        string
 	HostID          string
@@ -50,6 +49,41 @@ func (r RequesterContext) present() bool {
 	return r.DeviceID != "" && r.BearerSessionID != ""
 }
 
+// RequesterAuthContext is the IMMUTABLE canonical requester authorization identity
+// bound into the claim and ledger. The permission set is captured as a sorted,
+// domain-separated digest so a later request with a changed set (or a mutated caller
+// slice) does not match. No mutable caller slice is retained.
+type RequesterAuthContext struct {
+	DeviceID        string
+	HostID          string
+	BearerSessionID string
+	BootID          string
+	PermDigest      string
+}
+
+func canonicalRequesterAuth(r RequesterContext) RequesterAuthContext {
+	perms := append([]string(nil), r.Permissions...)
+	sort.Strings(perms)
+	h := sha256.New()
+	h.Write([]byte("a1.perms.v1\x00"))
+	for _, p := range perms {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(p)))
+		h.Write(n[:])
+		h.Write([]byte(p))
+	}
+	return RequesterAuthContext{
+		DeviceID: r.DeviceID, HostID: r.HostID, BearerSessionID: r.BearerSessionID,
+		BootID: r.BootID, PermDigest: hex.EncodeToString(h.Sum(nil)),
+	}
+}
+
+func (a RequesterAuthContext) equal(o RequesterAuthContext) bool {
+	return a.DeviceID == o.DeviceID && a.HostID == o.HostID &&
+		a.BearerSessionID == o.BearerSessionID && a.BootID == o.BootID &&
+		a.PermDigest == o.PermDigest
+}
+
 // RuntimeRef is the exact runtime identity an approval is bound to.
 type RuntimeRef struct {
 	Adapter   string
@@ -64,18 +98,16 @@ func (r RuntimeRef) equal(o RuntimeRef) bool {
 }
 
 // CanonicalAction is the exact, delivery-semantic representation of ONE selected
-// action. Only fields that change the delivered bytes/keys are included.
+// action.
 type CanonicalAction struct {
 	OptionID        string
 	Kind            string
 	SchemaVersion   string
-	InputType       string // "" (none) | "text"
-	InputPlacement  string // "" | as_payload | after_payload | metadata_only
+	InputType       string
+	InputPlacement  string
 	NormalizedInput string
 }
 
-// Digest is the canonical ActionDigest: SHA-256 over a length-framed encoding of
-// exactly the delivery-semantic fields.
 func (c CanonicalAction) Digest() string {
 	h := sha256.New()
 	for _, f := range []string{
@@ -89,23 +121,64 @@ func (c CanonicalAction) Digest() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// ApprovalExecutionBinding is the ONE immutable identity a claim token owns. It is
-// carried unchanged through the claim, the delivery request, the receipt, and the
-// commit; every field is compared before a success may commit. It contains the
-// ApprovalID, SessionID, adapter/provider/version + launch/stream generation
-// (Runtime), the recomputed ActionDigest, and the idempotency key.
+// validPlacement is the closed input-placement vocabulary. An unknown placement in
+// a stored option fails the claim closed.
+func validPlacement(p string) bool {
+	switch p {
+	case "", "as_payload", "after_payload", "metadata_only":
+		return true
+	default:
+		return false
+	}
+}
+
+// canonicalPayload is the ONLY delivery payload for a canonical action — computed by
+// the store, never by the handler from a display snapshot. Decision/no-input actions
+// carry no bytes (no blind Y/N). Only an explicit input-bearing placement forwards
+// the user's literal normalized input.
+func canonicalPayload(view *interactionOptionView, normalizedInput string) []byte {
+	if !view.hasInput {
+		return nil
+	}
+	switch view.placement {
+	case "as_payload", "after_payload":
+		if normalizedInput == "" {
+			return nil
+		}
+		return []byte(normalizedInput + "\n")
+	default:
+		return nil
+	}
+}
+
+// payloadDigest is a domain-separated digest of exact delivery bytes. A delivery
+// boundary reports the digest of what it actually delivered; commit requires it to
+// equal the claim's PayloadDigest, so substituted bytes cannot commit.
+func payloadDigest(p []byte) string {
+	h := sha256.New()
+	h.Write([]byte("a1.payload.v1\x00"))
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(p)))
+	h.Write(n[:])
+	h.Write(p)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ApprovalExecutionBinding is the ONE immutable identity a claim token owns, carried
+// unchanged through claim → delivery → receipt → commit; every field is compared.
 type ApprovalExecutionBinding struct {
 	ApprovalID     string
 	SessionID      string
 	Runtime        RuntimeRef
 	ActionDigest   string
+	PayloadDigest  string
 	IdempotencyKey string
 }
 
 func (b ApprovalExecutionBinding) equal(o ApprovalExecutionBinding) bool {
 	return b.ApprovalID == o.ApprovalID && b.SessionID == o.SessionID &&
 		b.Runtime.equal(o.Runtime) && b.ActionDigest == o.ActionDigest &&
-		b.IdempotencyKey == o.IdempotencyKey
+		b.PayloadDigest == o.PayloadDigest && b.IdempotencyKey == o.IdempotencyKey
 }
 
 // ClaimOutcome is the closed result vocabulary of ClaimForExecution.
@@ -120,20 +193,19 @@ const (
 	ClaimUnknownAction   ClaimOutcome = "unknown_action"
 	ClaimInvalidInput    ClaimOutcome = "invalid_input"
 	ClaimInvalidKey      ClaimOutcome = "invalid_key"
-	ClaimDigestMismatch  ClaimOutcome = "digest_mismatch" // optional caller assertion failed
+	ClaimDigestMismatch  ClaimOutcome = "digest_mismatch"
 	ClaimExpired         ClaimOutcome = "expired"
 	ClaimAlreadyOwned    ClaimOutcome = "already_owned"
 	ClaimStaleRuntime    ClaimOutcome = "stale_runtime"
 	ClaimRuntimeMismatch ClaimOutcome = "runtime_mismatch"
 	ClaimUnauthorized    ClaimOutcome = "unauthorized"
-	ClaimLedgerFull      ClaimOutcome = "ledger_full" // capacity fail-closed
+	ClaimLedgerFull      ClaimOutcome = "ledger_full"
+	ClaimRetryExhausted  ClaimOutcome = "retry_exhausted"
 )
 
 // ClaimRequest is one atomic execution-claim attempt. Runtime and Requester are
-// SERVER-DERIVED. The store recomputes the digest from OptionID + Input; AssertDigest
-// is an OPTIONAL consistency assertion only. There is intentionally no RequiredPerm:
-// the store always uses the permission stored with the approval, so a caller can
-// never weaken it.
+// SERVER-DERIVED; the store recomputes the digest and payload and uses the stored
+// permission. AssertDigest is an optional consistency check only.
 type ClaimRequest struct {
 	SessionID      string
 	ApprovalID     string
@@ -142,20 +214,18 @@ type ClaimRequest struct {
 	Runtime        RuntimeRef
 	Requester      RequesterContext
 	IdempotencyKey string
-	AssertDigest   string // optional; if non-empty must equal the store-computed digest
+	AssertDigest   string
 }
 
-// ClaimResult carries the outcome and, for ClaimGranted/ClaimAlreadyAccepted, the
-// immutable binding the token owns. Token is non-empty only for ClaimGranted and is
-// opaque, unforgeable, and never exposed in a public DTO.
+// ClaimResult carries the outcome and, for a granted/already_accepted claim, the
+// immutable binding and the canonical delivery payload the boundary must use.
 type ClaimResult struct {
 	Outcome ClaimOutcome
 	Token   string
 	Binding ApprovalExecutionBinding
+	Payload []byte
 }
 
-// validCanonicalKey enforces a bounded, non-empty, closed-grammar idempotency key
-// (ASCII alphanumerics and `._:-`). This keeps keys log-safe and unambiguous.
 func validCanonicalKey(k string) bool {
 	if k == "" || len(k) > maxIdempotencyKeyLen {
 		return false
@@ -171,8 +241,6 @@ func validCanonicalKey(k string) bool {
 	return true
 }
 
-// canonicalActionFromOption builds the canonical action from the STORED option plus
-// the normalized input — the store's authoritative digest source.
 func canonicalActionFromOption(opt *interactionOptionView, normalizedInput string) CanonicalAction {
 	inputType, placement := "", ""
 	if opt.hasInput {
@@ -180,21 +248,33 @@ func canonicalActionFromOption(opt *interactionOptionView, normalizedInput strin
 		placement = opt.placement
 	}
 	return CanonicalAction{
-		OptionID:        opt.id,
-		Kind:            opt.kind,
-		SchemaVersion:   ActionSchemaVersion,
-		InputType:       inputType,
-		InputPlacement:  placement,
-		NormalizedInput: normalizedInput,
+		OptionID: opt.id, Kind: opt.kind, SchemaVersion: ActionSchemaVersion,
+		InputType: inputType, InputPlacement: placement, NormalizedInput: normalizedInput,
 	}
 }
 
-// interactionOptionView is the immutable projection of a stored option the claim
-// uses to recompute the digest (id/kind/input schema only).
+// interactionOptionView is the immutable projection of a stored option used to
+// recompute the digest and payload.
 type interactionOptionView struct {
 	id        string
 	kind      string
 	hasInput  bool
 	required  bool
 	placement string
+}
+
+// validInput reports whether the normalized input is acceptable for the stored
+// option schema. Invalid UTF-8, oversize, or a no-input option carrying input all
+// fail closed.
+func validInput(view *interactionOptionView, input string) bool {
+	if len(input) > maxNormalizedInput || !utf8.ValidString(input) {
+		return false
+	}
+	if !view.hasInput && input != "" {
+		return false
+	}
+	if view.hasInput && view.required && input == "" {
+		return false
+	}
+	return true
 }

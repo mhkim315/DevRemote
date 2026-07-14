@@ -35,6 +35,12 @@ type TelemetryService struct {
 	// the advisory activity result separately from lifecycle/health.
 	statusStore *AgentStatusStore
 
+	// A1 R3-C: the per-session runtime delivery gate. Telemetry drives its
+	// activation/deactivation from the real lifecycle so approval delivery
+	// acceptance is linearized against launch/stream replacement, correlation loss,
+	// and delete/unlink/termination. nil in tests that do not exercise delivery.
+	deliveryGate *RuntimeDeliveryGate
+
 	mu       sync.Mutex
 	sessions map[string]*sessionStateData
 	done     chan struct{}
@@ -219,6 +225,9 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						if s.approvals != nil && prevPath != "" {
 							s.approvals.SupersedeRuntime(id, launchGen, a.streamGen, "stream generation changed")
 						}
+						if s.deliveryGate != nil && prevPath != "" {
+							s.deliveryGate.Deactivate(id)
+						}
 					}
 					a.appendRecords(rawLines)
 					records, acursor, overflowed := a.buildAdapterInput()
@@ -296,6 +305,18 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 								s.ingestApprovals(id, launchGen, a.streamGen, logRef.Agent, a.version, acceptedEvents)
 							default:
 								s.approvals.InvalidateSession(id, "correlation unavailable")
+							}
+						}
+						// A1 R3-C: keep the delivery gate's current runtime generation in
+						// sync with the correlated managed launch; a version conflict or
+						// lost correlation deactivates it. The production gate has no sink
+						// (no provider channel), so this establishes the linearized call
+						// graph without accepting any delivery.
+						if s.deliveryGate != nil {
+							if !a.versionConflict && corr == contract.CorrelationManagedLaunch {
+								s.deliveryGate.Activate(id, RuntimeRef{Adapter: logRef.Agent, Version: a.version, LaunchGen: launchGen, StreamGen: a.streamGen}, nil)
+							} else {
+								s.deliveryGate.Deactivate(id)
 							}
 						}
 					}
@@ -522,6 +543,10 @@ func acceptedAdapterFor(kind string) contract.AgentAdapter {
 	}
 }
 
+// SetDeliveryGate wires the production runtime delivery gate (A1 R3-C) so lifecycle
+// supersession drives delivery-acceptance linearization.
+func (s *TelemetryService) SetDeliveryGate(g *RuntimeDeliveryGate) { s.deliveryGate = g }
+
 // Clear removes all cached telemetry state for a session.
 func (s *TelemetryService) Clear(sessionID string) {
 	s.mu.Lock()
@@ -536,6 +561,10 @@ func (s *TelemetryService) Clear(sessionID string) {
 	// canonical id cannot inherit a prior pending request.
 	if s.approvals != nil {
 		s.approvals.Clear(sessionID)
+	}
+	// A1 R3-C: session delete/unlink deactivates the delivery gate generation.
+	if s.deliveryGate != nil {
+		s.deliveryGate.Deactivate(sessionID)
 	}
 }
 
@@ -588,6 +617,11 @@ func (s *TelemetryService) invalidateForLaunch(sessionID string, launchGen int64
 	// from the replaced launch cannot commit; the new launch begins with none.
 	if s.approvals != nil {
 		s.approvals.SupersedeRuntime(sessionID, launchGen, 0, "launch binding replaced")
+	}
+	// A1 R3-C: a launch replacement deactivates the old delivery generation so the
+	// old generation accepts no bytes.
+	if s.deliveryGate != nil {
+		s.deliveryGate.Deactivate(sessionID)
 	}
 }
 
