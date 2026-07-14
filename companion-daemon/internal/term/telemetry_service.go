@@ -480,7 +480,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 	// Phase A9: populate approvals from ApprovalStore.
 	for i := range res {
 		st := &res[i]
-		st.Approvals = s.approvals.List(st.ID)
+		st.Approvals = s.approvals.ListSafe(st.ID)
 	}
 	// S1-D: additive advisory agent-activity projection from the session-owned
 	// store. Separate from lifecycle (LifecycleState) and poll health (Stale); a

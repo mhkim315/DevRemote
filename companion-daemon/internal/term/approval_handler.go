@@ -11,210 +11,214 @@ import (
 )
 
 const (
-	// maxApprovalBodyBytes bounds the request body so a malicious/oversized POST
-	// cannot exhaust memory before decoding.
-	maxApprovalBodyBytes = 8 << 10 // 8 KiB
-	// maxApprovalInputBytes bounds the user-supplied input string.
+	maxApprovalBodyBytes  = 8 << 10 // 8 KiB
 	maxApprovalInputBytes = 4096
+	maxIdempotencyKeyLen  = 128
 )
 
 // HandleApprovalAction handles POST /api/sessions/<id>/approvals/<approvalId>.
-// Body: {"action":"<option-id>", "input":"<optional user input>"}.
+// Body: {"action":"<option-id>", "input":"<optional>", "idempotencyKey":"<key>"}.
 //
-// A1-C: the handler drives the generation-bound AuthoritativeApprovalStore through
-// the frozen lifecycle — validate the exact allowed option, atomically reserve the
-// pending request (at-most-once), deliver only the exact action, and commit the
-// resolution ONLY after delivery is durably accepted; a decision whose delivery
-// cannot be confirmed fails closed as delivery_failed and is never reported as a
-// success. Resolution status is derived from the option Kind, never the action ID.
-// (A1-D hardens this further: strict body bounds, and revalidation against live
-// runtime identity immediately before delivery.)
+// A1 remediation: an approval action is an AUTHORITATIVE, once-only execution.
+// The flow is strictly: strict-decode → display-only lookup → actionability gate
+// (B5) → server-derived requester (never client identity) → canonical action digest
+// (B2) → one atomic ClaimForExecution (B1) → runtime revalidation immediately
+// before delivery (B4) → dedicated approval delivery boundary + receipt (B3) →
+// commit ONLY on an accepted/already_accepted receipt bound to the exact claim
+// token and digest. There is no lookup→validate→reserve→deliver path and no generic
+// CommandBroker delivery. Every non-success fails closed and never returns HTTP 200.
 func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	sessionID := r.PathValue("id")
 	approvalID := r.PathValue("approvalId")
 	if sessionID == "" || approvalID == "" {
-		http.Error(w, "Invalid path: expected /api/sessions/<id>/approvals/<approvalId>", http.StatusBadRequest)
+		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
 	var req struct {
-		Action string `json:"action"`
-		Input  string `json:"input,omitempty"`
+		Action         string `json:"action"`
+		Input          string `json:"input,omitempty"`
+		IdempotencyKey string `json:"idempotencyKey,omitempty"`
 	}
-	// Strict bounded decode: cap the body, reject unknown fields, and reject
-	// trailing data after the single JSON object. Malformed/oversized bodies fail
-	// closed before any lookup.
 	r.Body = http.MaxBytesReader(w, r.Body, maxApprovalBodyBytes)
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
+	dec.DisallowUnknownFields() // reject unknown / client-supplied authority fields
 	if err := dec.Decode(&req); err != nil || req.Action == "" {
-		http.Error(w, "Invalid body: {\"action\":\"...\", \"input\":\"...\"} required", http.StatusBadRequest)
+		http.Error(w, "Invalid body", http.StatusBadRequest)
 		return
 	}
 	if dec.More() {
-		http.Error(w, "Invalid body: unexpected trailing data", http.StatusBadRequest)
+		http.Error(w, "Invalid body: trailing data", http.StatusBadRequest)
 		return
 	}
-	// Bound and validate the input string (oversize / malformed UTF-8 fail closed).
 	if len(req.Input) > maxApprovalInputBytes || !utf8.ValidString(req.Input) {
-		http.Error(w, string(OutcomeInputRejected), outcomeHTTPStatus(OutcomeInputRejected))
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
+		return
+	}
+	if len(req.IdempotencyKey) > maxIdempotencyKeyLen || (req.IdempotencyKey != "" && !utf8.ValidString(req.IdempotencyKey)) {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
 		return
 	}
 
-	// Look up the current authoritative request to validate the action against its
-	// exact allowed options BEFORE reserving. The reservation below re-checks state
-	// atomically, so a concurrent resolution between here and Reserve is caught.
+	// Display-only lookup (no execution authority).
 	snap, ok := h.Approvals.LookupRecord(sessionID, approvalID)
 	if !ok {
-		h.finishApproval(w, r, sessionID, approvalID, req.Action, "", OutcomeNotFound)
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "not_found", http.StatusNotFound)
 		return
 	}
 
-	// Bind the current authorization context. On the production (paired-device)
-	// route the request already passed RequirePrincipal(PermTerminalInput); this is
-	// defense-in-depth that the authenticated principal carries the exact permission
-	// the record was created under, so a legacy/arbitrary bearer or a downgraded
-	// device can never resolve it. The insecure-local dev route has no device
-	// principal and is gated separately by InsecureLocalOnly.
-	if !h.InsecureLocalOnly {
-		need := snap.RequiredPerm
-		if need == "" {
-			need = devicetrust.PermTerminalInput
-		}
-		p := devicetrust.PrincipalFromContext(r.Context())
-		if p == nil || !principalHasPerm(p, need) {
-			http.Error(w, "insufficient permissions", http.StatusForbidden)
-			return
-		}
+	// Server-derived requester. An authoritative action ALWAYS requires an
+	// authenticated device principal; there is no insecure-local bypass and no
+	// client-asserted identity. (The remote route also enforces PermTerminalInput via
+	// RequirePrincipal.)
+	principal := devicetrust.PrincipalFromContext(r.Context())
+	if principal == nil {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unauthorized", http.StatusForbidden)
+		return
+	}
+	requester := requesterFromPrincipal(principal)
+
+	// Actionability gate (B5): a non-actionable approval (no proven action mapping)
+	// exposes no execution path — no claim, no delivery, no terminal bytes.
+	if !snap.Actionable {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "not_actionable", http.StatusConflict)
+		return
 	}
 
 	selected := findOption(req.Action, snap.Options)
 	if selected == nil {
-		h.finishApproval(w, r, sessionID, approvalID, req.Action, "", OutcomeUnknownAction)
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unknown_action", http.StatusBadRequest)
 		return
 	}
-	// Input contract validation.
 	if req.Input != "" && selected.Input == nil {
-		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeInputRejected)
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
 		return
 	}
 	if selected.Input != nil && selected.Input.Required && req.Input == "" {
-		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeInputRejected)
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
 		return
 	}
 
-	// Revalidate runtime identity immediately before delivery: if the launch
-	// instance was replaced since the request was ingested, the request is no longer
-	// current authority. This closes the window between a launch replacement and the
-	// next telemetry poll's invalidation. Only meaningful for a managed launch
-	// (LaunchGen != 0) and when a resolver is wired.
-	if snap.LaunchGen != 0 && h.LaunchGenOf != nil {
-		curGen, ok := h.LaunchGenOf(sessionID)
-		if !ok || curGen != snap.LaunchGen {
-			h.Approvals.InvalidateSession(sessionID, "launch replaced before action")
-			h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeStaleGeneration)
-			return
-		}
-	}
+	// Canonical action digest (B2) — the execution-integrity value bound through the
+	// whole flow.
+	ca := canonicalActionFor(selected, req.Input)
+	digest := ca.Digest()
 
-	// Atomic at-most-once reservation (pending → executing). A concurrent second
-	// submit, an expired request, or an already-terminal/invalidated request is
-	// refused here without any delivery.
-	_, oc := h.Approvals.Reserve(sessionID, approvalID)
-	if oc != OutcomeOK {
-		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, oc)
+	// Current server-derived runtime. Required to bind the claim to the live runtime.
+	if h.RuntimeOf == nil {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	runtime, ok := h.RuntimeOf(sessionID)
+	if !ok {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
 
-	// Delivery. The resolution is committed ONLY after the required action is
-	// durably accepted by the owned delivery boundary.
-	needsCmd, requiresConfirmation := deliveryPlan(selected)
-	switch {
-	case requiresConfirmation:
-		// A decision that requires the agent to durably receive it. The terminal
-		// fallback cannot confirm the agent accepted it, so fail closed — never a
-		// false success. No command is synthesized.
-		h.Approvals.Fail(sessionID, approvalID)
-		h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeDeliveryFailed)
+	// One atomic full-binding claim (B1).
+	claim := h.Approvals.ClaimForExecution(ClaimRequest{
+		SessionID:      sessionID,
+		ApprovalID:     approvalID,
+		OptionID:       selected.ID,
+		Runtime:        runtime,
+		ActionDigest:   digest,
+		Requester:      requester,
+		RequiredPerm:   snap.RequiredPerm,
+		IdempotencyKey: req.IdempotencyKey,
+	})
+	switch claim.Outcome {
+	case ClaimAlreadyAccepted:
+		// Idempotent replay of an accepted key+digest: success, no re-delivery.
+		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, selected.Kind, "already_accepted")
 		return
-	case needsCmd:
-		// Fire-and-forget raw input the user explicitly chose to send. Enqueue into
-		// the owned delivery boundary; enqueue IS the accepted semantics for raw
-		// input (not a confirmation-required decision).
-		payload := inputPayload(selected, req.Input)
-		if payload != "" {
-			h.Cmds.Put(sessionID, []byte(payload))
-		}
-		h.Approvals.Commit(sessionID, approvalID, selected.Kind)
+	case ClaimGranted:
+		// proceed to delivery
 	default:
-		// A denial or a no-delivery action (reject/cancel/open/neutral-no-input):
-		// no terminal command is emitted (no-command-on-rejection) and the user's
-		// decision is recorded.
-		h.Approvals.Commit(sessionID, approvalID, selected.Kind)
-	}
-
-	h.finishApproval(w, r, sessionID, approvalID, req.Action, selected.Kind, OutcomeOK)
-}
-
-// finishApproval writes the response for an outcome and emits a privacy-safe audit
-// log (IDs + outcome codes only, never raw input or prompt).
-func (h *Handlers) finishApproval(w http.ResponseWriter, _ *http.Request, sessionID, approvalID, action, kind string, oc ActionOutcome) {
-	status := outcomeHTTPStatus(oc)
-	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s outcome=%s http=%d",
-		sessionID, approvalID, action, kind, oc, status)
-	if oc == OutcomeOK {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
-			"action":  action,
-			"outcome": string(oc),
-		})
+		code, oc := claimOutcomeHTTP(claim.Outcome)
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, oc, code)
 		return
 	}
-	http.Error(w, string(oc), status)
+
+	// B4 — revalidate the runtime immediately before delivery. A launch replacement,
+	// stream change, delete, or unlink between claim and delivery must NOT deliver to
+	// a wrong/absent runtime nor return success.
+	cur, ok := h.RuntimeOf(sessionID)
+	if !ok || !cur.equal(runtime) {
+		h.Approvals.RecordDelivery(sessionID, approvalID, claim.Token, DeliveryReceipt{
+			Outcome: DeliveryStaleRuntime, ApprovalID: approvalID, SessionID: sessionID, ActionDigest: digest, IdempotencyKey: req.IdempotencyKey,
+		})
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
+		return
+	}
+
+	// Dedicated approval delivery boundary (B3) — never CommandBroker.
+	delivery := h.ApprovalDelivery
+	if delivery == nil {
+		delivery = NewUnavailableApprovalDelivery()
+	}
+	receipt := delivery.Deliver(ApprovalDeliveryRequest{
+		ClaimToken:     claim.Token,
+		ApprovalID:     approvalID,
+		SessionID:      sessionID,
+		Runtime:        runtime,
+		ActionDigest:   digest,
+		IdempotencyKey: req.IdempotencyKey,
+		Payload:        serverPayloadFor(ca),
+	})
+	commit := h.Approvals.RecordDelivery(sessionID, approvalID, claim.Token, receipt)
+	if commit.Committed {
+		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, selected.Kind, string(commit.Outcome))
+		return
+	}
+	code, oc := deliveryOutcomeHTTP(commit.Outcome)
+	h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, oc, code)
 }
 
-// deliveryPlan classifies how an option is delivered. requiresConfirmation is true
-// for decision actions (approve) that need durable agent receipt the terminal
-// fallback cannot confirm — those fail closed. reject/cancel are denials that emit
-// no command. A neutral option carrying an explicit input contract is fire-and-
-// forget raw input (needsCmd). open and neutral-no-input resolve with no delivery.
-func deliveryPlan(opt *agent.InteractionOption) (needsCmd, requiresConfirmation bool) {
-	switch opt.Kind {
-	case "approve":
-		return false, true
-	case "reject", "cancel", "open":
-		return false, false
-	default: // neutral and any other kind
-		if opt.Input != nil {
-			return true, false
-		}
-		return false, false
+// requesterFromPrincipal derives the server-authenticated requester. Only
+// server-verified fields are used; nothing comes from the client body.
+func requesterFromPrincipal(p *devicetrust.Principal) RequesterContext {
+	return RequesterContext{
+		DeviceID:        p.DeviceID,
+		HostID:          p.HostID,
+		BearerSessionID: p.BearerSessionID,
+		BootID:          p.DeviceBootID,
+		Permissions:     append([]string(nil), p.Permissions...),
 	}
 }
 
-// inputPayload builds the terminal payload for a fire-and-forget input option from
-// the user's explicit input. It NEVER synthesizes a decision keystroke; it only
-// forwards the literal input the user chose to send, per the option's placement.
-func inputPayload(opt *agent.InteractionOption, input string) string {
-	if opt.Input == nil || input == "" {
-		return ""
+// canonicalActionFor builds the delivery-semantic canonical action from the stored
+// option and the user input. Display label/prompt and raw payload are never inputs.
+func canonicalActionFor(opt *agent.InteractionOption, input string) CanonicalAction {
+	inputType, placement := "", ""
+	if opt.Input != nil {
+		inputType = "text"
+		placement = opt.Input.Placement
 	}
-	switch opt.Input.Placement {
-	case "as_payload", "after_payload":
-		return input + "\n"
-	default: // metadata_only or unset: input is not injected into the terminal
-		return ""
+	return CanonicalAction{
+		OptionID:        opt.ID,
+		Kind:            opt.Kind,
+		SchemaVersion:   ActionSchemaVersion,
+		InputType:       inputType,
+		InputPlacement:  placement,
+		NormalizedInput: input,
 	}
 }
 
-// findOption returns the InteractionOption matching the given action ID.
+// serverPayloadFor returns the exact server-side delivery bytes for a canonical
+// action. It NEVER synthesizes a decision keystroke (no blind y/n). Only the user's
+// literal input for an explicit input-bearing action is forwarded; decision-only
+// actions carry no payload (there is no accepted decision-delivery channel).
+func serverPayloadFor(ca CanonicalAction) []byte {
+	if ca.InputType == "text" && (ca.InputPlacement == "as_payload" || ca.InputPlacement == "after_payload") && ca.NormalizedInput != "" {
+		return []byte(ca.NormalizedInput + "\n")
+	}
+	return nil
+}
+
 func findOption(action string, options []agent.InteractionOption) *agent.InteractionOption {
 	for i, opt := range options {
 		if opt.ID == action {
@@ -224,16 +228,61 @@ func findOption(action string, options []agent.InteractionOption) *agent.Interac
 	return nil
 }
 
-// principalHasPerm reports whether the authenticated device principal carries the
-// exact permission the approval record requires.
-func principalHasPerm(p *devicetrust.Principal, need string) bool {
-	if p == nil {
-		return false
+// claimOutcomeHTTP maps a non-granted claim outcome to an HTTP status + code. None
+// map to 2xx — a denied claim is never a success.
+func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
+	switch o {
+	case ClaimConflict:
+		return http.StatusConflict, "conflict"
+	case ClaimNotFound:
+		return http.StatusNotFound, "not_found"
+	case ClaimNotActionable:
+		return http.StatusConflict, "not_actionable"
+	case ClaimUnknownAction:
+		return http.StatusBadRequest, "unknown_action"
+	case ClaimExpired:
+		return http.StatusGone, "expired"
+	case ClaimAlreadyOwned:
+		return http.StatusConflict, "already_owned"
+	case ClaimStaleRuntime:
+		return http.StatusConflict, "stale_runtime"
+	case ClaimRuntimeMismatch:
+		return http.StatusConflict, "runtime_mismatch"
+	case ClaimUnauthorized:
+		return http.StatusForbidden, "unauthorized"
+	default:
+		return http.StatusInternalServerError, "error"
 	}
-	for _, perm := range p.Permissions {
-		if perm == need {
-			return true
-		}
+}
+
+// deliveryOutcomeHTTP maps a non-success delivery outcome to an HTTP status + code.
+func deliveryOutcomeHTTP(o DeliveryOutcome) (int, string) {
+	switch o {
+	case DeliveryStaleRuntime:
+		return http.StatusConflict, "stale_runtime"
+	case DeliveryRuntimeMismatch:
+		return http.StatusConflict, "runtime_mismatch"
+	case DeliveryConflict:
+		return http.StatusConflict, "conflict"
+	case DeliveryUnavailable:
+		return http.StatusBadGateway, "unavailable"
+	case DeliveryRejected:
+		return http.StatusBadGateway, "delivery_failed"
+	default:
+		return http.StatusBadGateway, "delivery_failed"
 	}
-	return false
+}
+
+func (h *Handlers) writeApprovalSuccess(w http.ResponseWriter, sessionID, approvalID, action, kind, outcome string) {
+	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s outcome=%s http=200",
+		sessionID, approvalID, action, kind, outcome)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": action, "outcome": outcome})
+}
+
+func (h *Handlers) writeApprovalOutcome(w http.ResponseWriter, sessionID, approvalID, action, outcome string, code int) {
+	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s outcome=%s http=%d",
+		sessionID, approvalID, action, outcome, code)
+	http.Error(w, outcome, code)
 }

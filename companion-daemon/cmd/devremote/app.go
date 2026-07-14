@@ -219,14 +219,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit}
-	// A1-D: revalidate approval runtime identity against the live launch instance.
-	h.LaunchGenOf = func(sessionID string) (int64, bool) {
-		lb := transcript.LookupLaunch(sessionID)
-		if lb == nil {
-			return 0, false
-		}
-		return lb.Generation, true
-	}
+	// A1: the production approval delivery boundary is `unavailable` — no accepted
+	// provider action-delivery channel exists, so no approval action can be
+	// delivered. Approvals are non-actionable intervention information (RuntimeOf is
+	// intentionally unwired; it is set when a proven provider action mapping exists).
+	h.ApprovalDelivery = term.NewUnavailableApprovalDelivery()
 
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()

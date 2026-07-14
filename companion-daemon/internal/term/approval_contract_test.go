@@ -117,32 +117,25 @@ func TestApprovalContract_PublicProjectionIsBoundedAndClosed(t *testing.T) {
 	}
 }
 
-func TestApprovalContract_OutcomeVocabularyClosedAndNeverFalselySucceeds(t *testing.T) {
-	all := []ActionOutcome{
-		OutcomeOK, OutcomeNotFound, OutcomeSessionMismatch, OutcomeExpired,
-		OutcomeAlreadyTerminal, OutcomeStaleGeneration, OutcomeUnknownAction,
-		OutcomeInputRejected, OutcomeDeliveryFailed,
+func TestDeliveryOutcome_ClosedAndOnlyAcceptedSucceeds(t *testing.T) {
+	all := []DeliveryOutcome{
+		DeliveryAccepted, DeliveryAlreadyAccepted, DeliveryStaleRuntime,
+		DeliveryRuntimeMismatch, DeliveryUnavailable, DeliveryConflict, DeliveryRejected,
 	}
-	if len(actionOutcomeValid) != len(all) {
-		t.Fatalf("outcome set size = %d, want %d", len(actionOutcomeValid), len(all))
+	if len(deliveryOutcomeValid) != len(all) {
+		t.Fatalf("delivery outcome set size = %d, want %d", len(deliveryOutcomeValid), len(all))
 	}
 	for _, o := range all {
-		if !IsValidActionOutcome(o) {
+		if !IsValidDeliveryOutcome(o) {
 			t.Errorf("outcome %q missing from closed set", o)
 		}
-		status := outcomeHTTPStatus(o)
-		// Only OutcomeOK may map to a 2xx success status. Every other outcome must
-		// be a non-2xx failure so no denial can read as execution.
-		is2xx := status >= 200 && status < 300
-		if (o == OutcomeOK) != is2xx {
-			t.Errorf("outcome %q → HTTP %d; only OutcomeOK may be 2xx", o, status)
+		// Only accepted/already_accepted permit a successful commit.
+		wantSuccess := o == DeliveryAccepted || o == DeliveryAlreadyAccepted
+		if deliverySucceeded(o) != wantSuccess {
+			t.Errorf("outcome %q success=%v want %v", o, deliverySucceeded(o), wantSuccess)
 		}
 	}
-	if IsValidActionOutcome("bogus") {
-		t.Error("unknown outcome accepted (must fail closed)")
-	}
-	// An unknown outcome must map to a server-error status, never success.
-	if s := outcomeHTTPStatus("bogus"); s < 500 {
-		t.Errorf("unknown outcome maps to HTTP %d, want >=500 (never success)", s)
+	if IsValidDeliveryOutcome("bogus") || deliverySucceeded("bogus") {
+		t.Error("unknown delivery outcome must be invalid and never succeed")
 	}
 }

@@ -93,10 +93,10 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Pending approvals.
+			// Pending approvals (counted from the bounded safe DTO — no raw fields).
 			if h.Approvals != nil {
-				for _, a := range h.Approvals.List(st.ID) {
-					if a.Status == "pending" {
+				for _, a := range h.Approvals.ListSafe(st.ID) {
+					if a.State == "pending" {
 						sd.PendingApprovals++
 					}
 				}

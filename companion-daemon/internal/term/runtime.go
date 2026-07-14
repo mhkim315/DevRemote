@@ -52,11 +52,16 @@ type Handlers struct {
 	HostIdentity *devicetrust.HostIdentity // M2.5-4: for ticket host binding
 	Audit        devicetrust.AuditLog      // M2.5-5: minimal local audit (nil ⇒ no audit)
 	Transcript   *transcript.Service       // T3: bounded session-isolated Transcript store + projectors
-	// A1-D: resolves the current launch-instance generation for a session so the
-	// approval action boundary can revalidate runtime identity immediately before
-	// delivery (catches a launch replacement racing an in-flight action). nil ⇒
-	// revalidation is skipped; wired to transcript.LookupLaunch in production.
-	LaunchGenOf func(sessionID string) (int64, bool)
+	// A1 remediation: RuntimeOf resolves the CURRENT server-derived runtime identity
+	// (adapter/provider version + launch/stream generation) for a session, used by
+	// the atomic claim and the pre-delivery runtime revalidation. nil ⇒ no runtime
+	// resolver: an actionable claim fails closed. Only actionable approvals reach it;
+	// production approvals are non-actionable today, so it is wired when a proven
+	// provider action mapping exists.
+	RuntimeOf func(sessionID string) (RuntimeRef, bool)
+	// ApprovalDelivery is the dedicated daemon-owned approval delivery boundary
+	// (never the generic CommandBroker). nil ⇒ the unavailable boundary.
+	ApprovalDelivery ApprovalDelivery
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

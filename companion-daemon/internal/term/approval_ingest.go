@@ -15,32 +15,17 @@ import (
 // event batch that already drives Transcript and status. Nothing on the terminal /
 // prompt / screen / process / legacy-parser side can manufacture an approval.
 
-// frozenApprovalOptions is the SEPARATELY FROZEN, exact per-provider mapping from
-// an accepted approval to its allowed decision options. Options are NEVER derived
-// from terminal input capability.
-//
-// Codex 0.144.1: a `waiting_for_approval` record identifies a decision the user
-// makes in Codex's own resolution channel; the accepted evidence (see
-// testdata/codex/approval_waiting.jsonl) exposes an approval_id and a later
-// provider-internal approval_resolved, but NO terminal keystroke that our owned
-// delivery boundary could send to durably resolve it. So the mapping surfaces the
-// real approve/reject decision (bound to the exact ApprovalID) with NO synthesized
-// terminal payload — there is deliberately no blind `y\n`/`n\n`. Because these are
-// decision actions requiring confirmation the terminal fallback cannot provide, the
-// action boundary (A1-D) fails them closed until a separately-accepted Codex
-// resolution channel exists; the approval is still shown so the user is informed
-// and can respond in the live terminal. Providers without a frozen mapping get no
-// options and are therefore not ingested (fail closed).
-func frozenApprovalOptions(provider string) []agent.InteractionOption {
-	switch provider {
-	case "codex":
-		return []agent.InteractionOption{
-			{ID: "approve", Label: "Approve", Kind: "approve"},
-			{ID: "reject", Label: "Reject", Kind: "reject"},
-		}
-	default:
-		return nil
-	}
+// provenActionMapping returns the frozen, controlled-fixture-proven action mapping
+// for a provider, and whether an actionable mapping exists. B5: an approval may
+// expose action buttons ONLY when controlled fixtures prove the exact provider
+// event → option/action ID → normalized input schema → terminal bytes/keys →
+// placement → supported version. NO such mapping exists today: Codex's log only
+// OBSERVES its own resolution and there is no verified resolution channel, and blind
+// terminal Y/N synthesis is prohibited. So every provider is non-actionable
+// intervention information (no options, no claim, no delivery) until a mapping is
+// separately proven with controlled redacted evidence.
+func provenActionMapping(provider string) (options []agent.InteractionOption, actionable bool) {
+	return nil, false
 }
 
 // hasApprovalCap reports whether an accepted adapter advertises the frozen
@@ -104,10 +89,12 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 		}
 	}
 
-	opts := frozenApprovalOptions(provider)
-	if len(opts) == 0 {
-		return // no frozen mapping → not actionable → not ingested
-	}
+	// B5: an actionable option set exists ONLY when a controlled fixture has proven
+	// this provider's exact evidence→action→delivery mapping. None exists today, so
+	// the approval is ingested as NON-ACTIONABLE intervention information: no options,
+	// no claim path, no delivery. It is still recorded (bound to the exact ApprovalID,
+	// provenance, and generation) so the user is honestly informed.
+	opts, actionable := provenActionMapping(provider)
 
 	items := make([]ApprovalIngestItem, 0, len(detected))
 	for _, a := range detected {
@@ -123,10 +110,11 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 		req.AgentKind = provider
 		req.Kind = "approval"
 		req.Options = opts
-		req.Default = "reject"
+		req.Default = ""
 		items = append(items, ApprovalIngestItem{
 			Approval:     req,
 			Provenance:   p,
+			Actionable:   actionable,
 			RequiredPerm: devicetrust.PermTerminalInput,
 		})
 	}

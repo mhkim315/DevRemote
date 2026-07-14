@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
@@ -25,18 +24,18 @@ type SessionTelemetry struct {
 	// working/waiting). Empty for sessions that are not Pokit-managed (external
 	// tmux/cmux/observe-only) — those have no managed lifecycle. Mobile gates
 	// Stop/Kill/Delete on this field, never on list presence/absence.
-	LifecycleState      string                `json:"lifecycleState,omitempty"`
-	Load                int                   `json:"load"`
-	Runner              string                `json:"runner"`
-	RunnerColor         string                `json:"runnerColor"`
-	Adapter             string                `json:"adapter"`
-	Capabilities        []string              `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
-	AdapterCapabilities []string              `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
-	Events              []models.AgentEvent   `json:"events"`
-	AgentKind           string                `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
-	AgentStatus         string                `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
-	AgentConfidence     float64               `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
-	Approvals           []agent.AgentApproval `json:"approvals,omitempty"`       // pending/resolved approvals (Phase A9+)
+	LifecycleState      string              `json:"lifecycleState,omitempty"`
+	Load                int                 `json:"load"`
+	Runner              string              `json:"runner"`
+	RunnerColor         string              `json:"runnerColor"`
+	Adapter             string              `json:"adapter"`
+	Capabilities        []string            `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
+	AdapterCapabilities []string            `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
+	Events              []models.AgentEvent `json:"events"`
+	AgentKind           string              `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
+	AgentStatus         string              `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
+	AgentConfidence     float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
+	Approvals           []SafeApprovalDTO   `json:"approvals,omitempty"`       // bounded, redacted safe approval DTOs (A1 B6)
 	// AgentActivity is the S1 additive, authenticated ADVISORY agent-activity
 	// projection sourced from the session-owned AgentStatusStore. It is kept
 	// SEPARATE from the daemon-authoritative lifecycle (LifecycleState) and from
