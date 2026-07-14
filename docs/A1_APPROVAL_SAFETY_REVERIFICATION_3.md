@@ -102,10 +102,11 @@ drain cannot hold the transition gate.
 
 ### R4-D — the secret gate was weakened to suppress a heading false positive
 
-`scripts/build-gate.sh` adds `grep -v "Risk-proportional"`. This excludes any
-secret-scan finding on a line containing that phrase. The sole current match is
-the heading in `docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`; the match is a
-short token-like substring spanning an ordinary word boundary, not a secret.
+`scripts/build-gate.sh` adds a `grep -v` exclusion keyed to the old section-five
+heading. This excludes any secret-scan finding on a line containing that phrase.
+The sole current match was the heading in
+`docs/EXECUTION_AGENT_TASK_PACKET_PROTOCOL.md`; the match is a short token-like
+substring spanning an ordinary word boundary, not a secret.
 
 Do not add content-based bypasses to a security gate for this. Remove the
 exclusion and eliminate the false positive without suppressing an arbitrary
@@ -140,7 +141,7 @@ reviewed and changed.
    queue full fails closed and provider I/O runs outside the transition lock.
 6. Deterministic contested-state tests remain non-vacuous and include a bypass
    negative control.
-7. The `Risk-proportional` secret-scan bypass is removed without weakening secret
+7. The heading-content secret-scan bypass is removed without weakening secret
    detection.
 8. Accepted R3-B, R3-D and R3-E behavior and all full gates remain green.
 9. Positive provider delivery remains an explicit release blocker if unavailable.

@@ -110,10 +110,10 @@ provider sink or claim a positive provider path in this packet.
 
 ### R4-D — restore secret-scan integrity
 
-Remove `grep -v "Risk-proportional"` from `scripts/build-gate.sh`. Resolve the
-heading substring false positive without a content-based scan bypass. The
-smallest safe choice is to reword that active protocol heading while preserving
-its meaning; do not rewrite historical acceptance reports.
+Remove the heading-content `grep -v` line added at `scripts/build-gate.sh:100`.
+Resolve the heading substring false positive without a content-based scan bypass.
+The smallest safe choice is the already-applied harmless rewording of that active
+protocol heading; do not rewrite historical acceptance reports.
 
 Add or run a focused negative control showing a secret-shaped value is still
 detected and a harmless heading does not fail the gate. Do not broaden exclusions
