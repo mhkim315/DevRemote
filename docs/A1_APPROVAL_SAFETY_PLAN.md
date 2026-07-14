@@ -1,6 +1,6 @@
 # A1 Approval Safety — Authoritative Planning Boundary
 
-Status: **PLAN ACCEPTED; REMEDIATION 2 `0521c382` REJECTED — R3-A THROUGH R3-E REQUIRED**
+Status: **PLAN ACCEPTED; REMEDIATION 3 `0ac1acf3` REJECTED — R4-A THROUGH R4-D REQUIRED; POSITIVE PROVIDER PATH BLOCKED**
 
 Baseline reviewed: `ace458056699c26a323eea49d44f8dc1efdaded7`.
 Accepted S1.1 implementation ancestor:
@@ -17,9 +17,14 @@ found that the claim, idempotency and receipt bindings remain bypassable and
 that no accepted production provider delivery channel exists. Remediation 2 at
 `0521c3828b9d78028f64f9479f8269f469050f85` fixed several store/DTO defects but
 left requester/idempotency replay, exact payload binding, delivery
-linearization, retry, and log-redaction requirements open. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_3_HANDOFF.md` after reading
-`docs/A1_APPROVAL_SAFETY_REVERIFICATION_2.md`.
+linearization, retry, and log-redaction requirements open. Remediation 3 at
+`0ac1acf38` closed several of those defects, but independent re-verification
+reproduced incomplete requester-context claims, registry-disappearance delivery
+after cleanup, an unconstrained sink callback under the transition lock, and a
+secret-scan exclusion. The mandatory positive provider path also remains
+unavailable. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_4_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_3.md`.
 
 ## 1. Authority boundary
 

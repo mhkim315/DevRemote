@@ -88,7 +88,7 @@ Each blocker must map to at least one test that would fail if the blocker were
 reintroduced. A helper-only test is insufficient when the requirement names a
 production caller, route, import chain, or component.
 
-## 5. Risk-proportional contract note
+## 5. Contract note proportional to risk
 
 The full discipline in this section is mandatory for authentication,
 authorization, approval or execution authority, runtime identity, lifecycle,

@@ -1,6 +1,11 @@
 # Next Session Handoff — A1 Approval Safety Remediation 3
 
-Status: **READY — R3-A THROUGH R3-E ONLY**
+Status: **SUPERSEDED — REMEDIATION 3 REJECTED; USE REMEDIATION 4 HANDOFF**
+
+Current execution authority is
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_4_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION_3.md`. Preserve this document as reviewed
+history; do not execute it again.
 
 Risk class: **authority + concurrency**
 
