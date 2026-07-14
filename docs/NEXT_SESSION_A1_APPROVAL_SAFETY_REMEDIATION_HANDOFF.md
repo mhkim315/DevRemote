@@ -1,6 +1,11 @@
 # Next Session Handoff — A1 Approval Safety Remediation
 
-Status: **READY — B1 THROUGH B8 ONLY**
+Status: **SUPERSEDED — B1-B8 REVIEWED; USE REMEDIATION 2 HANDOFF**
+
+The implementation produced from this handoff was independently rejected at
+`ed466094cd7a38d148d845d7057c63fe2019e1c9`. Continue only from
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_2_HANDOFF.md` after reading
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION.md`.
 
 This handoff targets a fresh Claude Code execution session backed by DeepSeek V4
 Pro. Preserve all accepted A1 work and fix only the independent verification

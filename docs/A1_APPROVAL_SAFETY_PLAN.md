@@ -1,6 +1,6 @@
 # A1 Approval Safety — Authoritative Planning Boundary
 
-Status: **PLAN ACCEPTED; IMPLEMENTATION REJECTED AT `3b56c4f` — B1-B8 REMEDIATION REQUIRED**
+Status: **PLAN ACCEPTED; REMEDIATION `ed466094` REJECTED — R2-A THROUGH R2-E REQUIRED**
 
 Baseline reviewed: `ace458056699c26a323eea49d44f8dc1efdaded7`.
 Accepted S1.1 implementation ancestor:
@@ -11,8 +11,12 @@ This document freezes A1 scope and acceptance after the independent
 `3b56c4f05d16653b5fd9c494d8f1682135701603` was independently rejected because
 it did not implement the frozen atomic claim, delivery receipt, action/
 idempotency, lifecycle-race, provider-actionability, DTO, auth, and acceptance-
-test boundaries. Execute only
-`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_HANDOFF.md`.
+test boundaries. The B1-B8 remediation at `ed466094cd7a38d148d845d7057c63fe2019e1c9`
+preserved the safe authority/DTO foundation, but independent re-verification
+found that the claim, idempotency and receipt bindings remain bypassable and
+that no accepted production provider delivery channel exists. Execute only
+`docs/NEXT_SESSION_A1_APPROVAL_SAFETY_REMEDIATION_2_HANDOFF.md` and read
+`docs/A1_APPROVAL_SAFETY_REVERIFICATION.md` first.
 
 ## 1. Authority boundary
 
