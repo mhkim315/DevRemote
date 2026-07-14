@@ -9,17 +9,21 @@ _PROBE_CMD = "date"
 
 # ── run-specific lock (at most one probe at a time) ──
 _lock_fd = None
+_lock_ident = None   # (st_dev, st_ino) of the lock file WE created
+_lock_token = None   # bounded owner token written into the lock file
 
 
 def _acquire_lock(run_id: str) -> bool:
-    global _lock_fd
+    global _lock_fd, _lock_ident, _lock_token
     os.makedirs(TMP, exist_ok=True)
     try:
         fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
     except FileExistsError:
         return False
     try:
-        os.write(fd, f"{run_id} pid={os.getpid()}\n".encode())
+        token = f"{run_id} pid={os.getpid()}"[:256]
+        os.write(fd, (token + "\n").encode())
+        st = os.fstat(fd)
     except OSError:
         # H0-B: never leave a half-created lock behind on an exception.
         try:
@@ -31,24 +35,45 @@ def _acquire_lock(run_id: str) -> bool:
                 pass
         raise
     _lock_fd = fd
+    # H0-R1: record the identity of the inode we own so release can prove
+    # the pathname still refers to OUR lock before unlinking it.
+    _lock_ident = (st.st_dev, st.st_ino)
+    _lock_token = token
     return True
 
 
 def _release_lock():
-    global _lock_fd
+    global _lock_fd, _lock_ident, _lock_token
     if _lock_fd is None:
         # H0-B ownership guard: we do not hold the lock, so we must never
         # unlink another run's live lock file.
         return
-    try:
-        os.close(_lock_fd)
-    except OSError:
-        pass
+    fd, ident = _lock_fd, _lock_ident
     _lock_fd = None
+    _lock_ident = None
+    _lock_token = None
+    # H0-R1: unlink the pathname ONLY when the fd identity (the inode we
+    # created at acquire) still matches the current pathname identity. If
+    # our path was deleted and replaced by a foreign lock, close our fd and
+    # leave the foreign lock untouched.
+    unlink_ok = False
     try:
-        os.unlink(_LOCK_PATH)
+        fd_st = os.fstat(fd)
+        cur_st = os.stat(_LOCK_PATH)
+        unlink_ok = (ident is not None
+                     and (fd_st.st_dev, fd_st.st_ino) == ident
+                     and (cur_st.st_dev, cur_st.st_ino) == ident)
+    except OSError:
+        unlink_ok = False  # path gone or fd unusable — nothing we may unlink
+    try:
+        os.close(fd)
     except OSError:
         pass
+    if unlink_ok:
+        try:
+            os.unlink(_LOCK_PATH)
+        except OSError:
+            pass
 
 
 def _with_run_lock(run_id: str, fn):
@@ -993,6 +1018,43 @@ def cmd_test_lock():
     print("LOCK_TEST_PASS")
 
 
+def cmd_test_lock_replacement():
+    """H0-R1 gate: after the held lock's pathname is deleted and replaced by
+    a foreign lock, _release_lock must close only its own fd and must NOT
+    unlink the foreign lock (fd identity vs pathname identity comparison)."""
+    os.makedirs(TMP, exist_ok=True)
+    if os.path.exists(_LOCK_PATH):
+        print("TEST REPLACEMENT FAIL: pre-existing lock — refusing to run"); sys.exit(1)
+    if not _acquire_lock("replacement_owner"):
+        print("TEST REPLACEMENT FAIL: acquire failed"); sys.exit(1)
+    own = os.fstat(_lock_fd)
+    os.unlink(_LOCK_PATH)  # simulate external deletion of OUR lock path
+    with open(_LOCK_PATH, "w") as f:
+        f.write("foreign-owner pid=0\n")  # foreign lock takes over the path
+    foreign = os.stat(_LOCK_PATH)
+    different = (own.st_dev, own.st_ino) != (foreign.st_dev, foreign.st_ino)
+    _release_lock()
+    survived = os.path.exists(_LOCK_PATH)
+    print(f"own_inode={own.st_ino} foreign_inode={foreign.st_ino} "
+          f"different={different} foreign_survived={survived}")
+    if not different:
+        print("TEST REPLACEMENT FAIL: inode did not change — vacuous scenario"); sys.exit(1)
+    if not survived:
+        print("TEST REPLACEMENT FAIL: foreign lock was deleted by release"); sys.exit(1)
+    with open(_LOCK_PATH) as f:
+        if f.readline().strip() != "foreign-owner pid=0":
+            print("TEST REPLACEMENT FAIL: foreign lock content changed"); sys.exit(1)
+    os.unlink(_LOCK_PATH)  # simulation created by this test; safe to remove
+    # Positive control: when the pathname still refers to OUR inode, a normal
+    # release must still unlink it (the fix is not "never unlink").
+    if not _acquire_lock("replacement_after"):
+        print("TEST REPLACEMENT FAIL: re-acquire after release failed"); sys.exit(1)
+    _release_lock()
+    if os.path.exists(_LOCK_PATH):
+        print("TEST REPLACEMENT FAIL: normal release did not unlink own lock"); sys.exit(1)
+    print("LOCK_REPLACEMENT_TEST_PASS foreign_preserved=True own_release_ok=True")
+
+
 def cmd_test_response_no_deadlock():
     """Gate 3: the 0f67833 recursive response deadlock. Phase 1 proves the
     known-bad control (send under the state lock) deadlocks — i.e. this test
@@ -1223,6 +1285,7 @@ def cmd_test_compile():
 _TEST_WALLCLOCK_S = {
     "test_compile": 30,
     "test_lock": 30,
+    "test_lock_replacement": 30,
     "test_response_no_deadlock": 60,
     "test_prehandoff_hang": 60,
     "test_pg_cleanup": 60,
@@ -1265,6 +1328,8 @@ def main():
         cmd_clean()
     elif args == ["test_lock"]:
         cmd_test_lock()
+    elif args == ["test_lock_replacement"]:
+        cmd_test_lock_replacement()
     elif args == ["test_response_no_deadlock"]:
         cmd_test_response_no_deadlock()
     elif args == ["test_prehandoff_hang"]:
