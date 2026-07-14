@@ -12,18 +12,17 @@ import (
 	"devremote/companion-daemon/internal/agent/contract"
 )
 
-// A1-B (+ R-A/R-B remediation) — generation-bound authoritative ApprovalStore.
+// A1-B (+ R2 remediation) — generation-bound authoritative ApprovalStore.
 //
-// This is the authoritative record + execution-authority boundary for agent
-// approvals. Each pending request is immutably bound to its runtime, provider,
-// generation, provenance, and allowed actions at ingest. Execution authority is
-// acquired ONLY through one atomic ClaimForExecution transition that validates the
-// entire binding in a single critical section and returns an unforgeable claim
-// token; delivery is recorded through RecordDelivery, and only an `accepted` /
-// `already_accepted` receipt bound to the exact claim token and ActionDigest may
-// commit a successful terminal state. There is no separate lookup→validate→mutate
-// authority path, no generic overwrite-queue delivery, and no second execution
-// owner under any race.
+// The store is the COMPLETE execution-authority boundary. ClaimForExecution recomputes
+// the canonical ActionDigest from the stored immutable option, uses only the stored
+// permission, derives requester identity from the server principal it is handed,
+// validates the full runtime and expiry, and transitions pending→executing atomically,
+// issuing an opaque claim token that owns exactly one immutable ApprovalExecutionBinding.
+// RecordDelivery commits a success ONLY for an accepted/already_accepted receipt whose
+// claim token AND every binding field match the executing record, and only when the
+// runtime has not been superseded. Idempotency is bound to the exact approval execution
+// (approval+session+runtime+digest+key+requester) and capacity fails closed.
 
 const (
 	authMaxApprovalsPerSession = 50
@@ -38,14 +37,10 @@ const (
 
 // ApprovalIngestItem is one authoritative approval request offered for ingestion.
 type ApprovalIngestItem struct {
-	Approval   agent.AgentApproval // must carry a non-empty ID and match the ingest session
-	Provenance contract.Provenance // authoritative provenance of the source event
-	// Actionable is true ONLY when a controlled fixture has proven this provider's
-	// exact evidence→action→delivery mapping (B5). No such mapping exists in
-	// production today, so production ingestion sets it false: the approval is
-	// non-actionable intervention information (no buttons, no claim, no delivery).
+	Approval     agent.AgentApproval
+	Provenance   contract.Provenance
 	Actionable   bool
-	RequiredPerm string // authorization context the action route must satisfy
+	RequiredPerm string
 }
 
 // ApprovalIngest is one generation-scoped ingestion for a single session.
@@ -58,7 +53,8 @@ type ApprovalIngest struct {
 	Items     []ApprovalIngestItem
 }
 
-// ApprovalSnapshot is an immutable value copy of a stored record for revalidation.
+// ApprovalSnapshot is an immutable value copy of a stored record for DISPLAY /
+// pre-validation only. It carries NO execution authority.
 type ApprovalSnapshot struct {
 	SessionID    string
 	ApprovalID   string
@@ -75,7 +71,6 @@ type ApprovalSnapshot struct {
 	ExpiresAt    time.Time
 }
 
-// BoundRuntime returns the runtime identity this record is bound to.
 func (s ApprovalSnapshot) BoundRuntime() RuntimeRef {
 	return RuntimeRef{Adapter: s.Provider, Version: s.Version, LaunchGen: s.LaunchGen, StreamGen: s.StreamGen}
 }
@@ -90,23 +85,27 @@ type approvalRecord struct {
 	provenance   contract.Provenance
 	requiredPerm string
 	actionable   bool
-	optionFprint string // ingest-dedup fingerprint of the option set (NOT execution authority)
+	optionFprint string
 	createdAt    time.Time
 	expiresAt    time.Time
 	resolvedAt   *time.Time
 
 	// execution-claim binding (set atomically by ClaimForExecution)
 	claimToken    string
-	claimDigest   string
-	claimKey      string
 	claimOptionID string
+	binding       ApprovalExecutionBinding
 	requester     RequesterContext
+	// superseded is set (under the store lock) when a runtime replacement,
+	// correlation loss, delete/unlink, or termination invalidates an EXECUTING claim.
+	// A superseded record can never commit a success — the linearization guard.
+	superseded bool
 }
 
-// idempotencyEntry records the digest and acceptance state for one idempotency key.
+// idempotencyEntry binds one idempotency key to the exact approval execution.
 type idempotencyEntry struct {
-	digest   string
-	accepted bool
+	binding         ApprovalExecutionBinding
+	requesterDevice string
+	accepted        bool
 }
 
 type sessionApprovals struct {
@@ -124,12 +123,8 @@ type AuthoritativeApprovalStore struct {
 	now      func() time.Time
 }
 
-// NewAuthoritativeApprovalStore builds an empty store with the production clock.
 func NewAuthoritativeApprovalStore() *AuthoritativeApprovalStore {
-	return &AuthoritativeApprovalStore{
-		sessions: make(map[string]*sessionApprovals),
-		now:      time.Now,
-	}
+	return &AuthoritativeApprovalStore{sessions: make(map[string]*sessionApprovals), now: time.Now}
 }
 
 func genNewer(launchA int64, streamA int, launchB int64, streamB int) bool {
@@ -139,10 +134,6 @@ func genNewer(launchA int64, streamA int, launchB int64, streamB int) bool {
 	return streamA > streamB
 }
 
-// optionSetFingerprint is an order-independent fingerprint of the option set used
-// ONLY to detect a same-generation duplicate approval ID whose contract changed. It
-// is NOT the execution ActionDigest (that is the per-selected-action CanonicalAction
-// digest computed at claim time).
 func optionSetFingerprint(kind, def string, options []agent.InteractionOption) string {
 	idx := make([]int, len(options))
 	for i := range idx {
@@ -195,8 +186,6 @@ func copyOptions(options []agent.InteractionOption) []agent.InteractionOption {
 	return out
 }
 
-// newClaimToken returns an opaque, unforgeable 128-bit token. It is not derivable
-// from the ApprovalID and never appears in a public DTO.
 func newClaimToken() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -205,9 +194,27 @@ func newClaimToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+func optionView(opt *agent.InteractionOption) interactionOptionView {
+	v := interactionOptionView{id: opt.ID, kind: opt.Kind}
+	if opt.Input != nil {
+		v.hasInput = true
+		v.required = opt.Input.Required
+		v.placement = opt.Input.Placement
+	}
+	return v
+}
+
+func findStoredOption(rec *approvalRecord, optionID string) *agent.InteractionOption {
+	for i := range rec.approval.Options {
+		if rec.approval.Options[i].ID == optionID {
+			return &rec.approval.Options[i]
+		}
+	}
+	return nil
+}
+
 // Ingest records the session's current-generation approval requests under the
-// generation rule (unchanged from A1-B), now also carrying the per-item
-// actionability decision.
+// generation rule; a newer generation supersedes prior pending AND executing authority.
 func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
 	if in.SessionID == "" || len(in.SessionID) > maxSessionIDLen {
 		return
@@ -229,7 +236,7 @@ func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
 			return
 		}
 		if genNewer(in.LaunchGen, in.StreamGen, sess.hwLaunch, sess.hwStream) {
-			s.invalidatePendingLocked(sess, "generation advanced")
+			s.supersedeLocked(sess, "generation advanced")
 			sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
 		}
 	} else {
@@ -255,9 +262,9 @@ func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
 				continue
 			}
 			if existing.optionFprint != fprint {
-				continue // changed action set for a live id: refuse the mutation
+				continue
 			}
-			continue // idempotent
+			continue
 		}
 		if len(sess.records) >= authMaxApprovalsPerSession {
 			s.evictOneLocked(sess)
@@ -293,30 +300,49 @@ func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
 	}
 }
 
-func (s *AuthoritativeApprovalStore) invalidatePendingLocked(sess *sessionApprovals, reason string) {
+// supersedeLocked invalidates pending records and marks executing records superseded
+// (their commit will fail). Caller holds mu.
+func (s *AuthoritativeApprovalStore) supersedeLocked(sess *sessionApprovals, reason string) {
 	now := s.now()
 	for _, rec := range sess.records {
-		if rec.state == ApprovalPending {
+		switch rec.state {
+		case ApprovalPending:
 			rec.state = ApprovalInvalidated
 			rec.resolvedAt = &now
+		case ApprovalExecuting:
+			rec.superseded = true
 		}
 	}
 }
 
-// InvalidateSession marks all pending requests invalidated (correlation loss).
-// Executing records are NOT force-committed here; the delivery boundary's runtime
-// revalidation (B4) rejects a stale in-flight delivery.
+// InvalidateSession supersedes all pending + executing authority for a session
+// (correlation loss / version conflict) without advancing generation.
 func (s *AuthoritativeApprovalStore) InvalidateSession(sessionID, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess := s.sessions[sessionID]; sess != nil {
-		s.invalidatePendingLocked(sess, reason)
+		s.supersedeLocked(sess, reason)
 	}
 }
 
-// Clear drops all records for a session on delete/unlink so a recreated session
-// cannot inherit prior authority; in-flight claim tokens for it become void (a
-// subsequent RecordDelivery finds no record → non-success).
+// SupersedeRuntime advances the session runtime high-water to (launchGen,streamGen)
+// and supersedes prior pending + executing authority. Used on launch replacement and
+// stream-generation change so an executing claim from an older runtime cannot commit.
+func (s *AuthoritativeApprovalStore) SupersedeRuntime(sessionID string, launchGen int64, streamGen int, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[sessionID]
+	if sess == nil {
+		return
+	}
+	if !sess.hwInitialized || genNewer(launchGen, streamGen, sess.hwLaunch, sess.hwStream) {
+		sess.hwLaunch, sess.hwStream = launchGen, streamGen
+		sess.hwInitialized = true
+	}
+	s.supersedeLocked(sess, reason)
+}
+
+// Clear drops all records for a session on delete/unlink; in-flight claims become void.
 func (s *AuthoritativeApprovalStore) Clear(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -331,18 +357,6 @@ func (s *AuthoritativeApprovalStore) expireLocked(rec *approvalRecord) {
 	}
 }
 
-func findStoredOption(rec *approvalRecord, optionID string) *agent.InteractionOption {
-	for i := range rec.approval.Options {
-		if rec.approval.Options[i].ID == optionID {
-			return &rec.approval.Options[i]
-		}
-	}
-	return nil
-}
-
-// LookupRecord returns an immutable snapshot for DISPLAY/pre-validation only. It
-// carries NO execution authority — execution is acquired solely via
-// ClaimForExecution.
 func (s *AuthoritativeApprovalStore) LookupRecord(sessionID, approvalID string) (ApprovalSnapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -376,16 +390,17 @@ func (s *AuthoritativeApprovalStore) snapshotLocked(rec *approvalRecord) Approva
 	}
 }
 
-// ClaimForExecution is the ONE atomic execution-authority transition. In a single
-// critical section it validates the entire binding — existence, exact session,
-// actionability, expiry, current state, idempotency, server-derived requester and
-// permission, current runtime (adapter/provider/version + launch/stream generation),
-// the selected option, and the caller-supplied canonical ActionDigest — and, only
-// on full success, transitions pending→executing and issues an opaque claim token.
-// It never leaves a check-before-claim window and never creates a second owner.
+// ClaimForExecution is the ONE atomic execution-authority transition. It recomputes
+// the canonical ActionDigest from the stored option internally, uses only the stored
+// permission, requires a bounded canonical idempotency key, binds the exact approval
+// execution, and issues an opaque claim token owning one immutable binding. A
+// caller-supplied AssertDigest is an optional consistency check only.
 func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimResult {
 	if req.SessionID == "" || req.ApprovalID == "" {
 		return ClaimResult{Outcome: ClaimNotFound}
+	}
+	if !validCanonicalKey(req.IdempotencyKey) {
+		return ClaimResult{Outcome: ClaimInvalidKey}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -400,108 +415,133 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	}
 	s.expireLocked(rec)
 
-	// Idempotency is evaluated first so a replay of an accepted or in-flight key is
-	// resolved without creating a second owner.
-	if req.IdempotencyKey != "" {
-		if led, ok := sess.idempotency[req.IdempotencyKey]; ok {
-			if led.digest != req.ActionDigest {
-				return ClaimResult{Outcome: ClaimConflict}
-			}
-			if led.accepted {
-				return ClaimResult{Outcome: ClaimAlreadyAccepted, Digest: req.ActionDigest}
-			}
-			// same key+digest, not yet accepted: the original claim owns it.
-			return ClaimResult{Outcome: ClaimAlreadyOwned}
-		}
-	}
-
 	if !rec.actionable {
 		return ClaimResult{Outcome: ClaimNotActionable}
 	}
+	opt := findStoredOption(rec, req.OptionID)
+	if opt == nil {
+		return ClaimResult{Outcome: ClaimUnknownAction}
+	}
+
+	// Normalize input per the STORED schema, then recompute the digest internally.
+	view := optionView(opt)
+	norm := req.Input
+	if len(norm) > maxNormalizedInput {
+		return ClaimResult{Outcome: ClaimInvalidInput}
+	}
+	if !view.hasInput && norm != "" {
+		return ClaimResult{Outcome: ClaimInvalidInput}
+	}
+	if view.hasInput && view.required && norm == "" {
+		return ClaimResult{Outcome: ClaimInvalidInput}
+	}
+	digest := canonicalActionFromOption(&view, norm).Digest()
+	if req.AssertDigest != "" && req.AssertDigest != digest {
+		return ClaimResult{Outcome: ClaimDigestMismatch}
+	}
+
+	bound := RuntimeRef{Adapter: rec.provider, Version: rec.version, LaunchGen: rec.launchGen, StreamGen: rec.streamGen}
+	binding := ApprovalExecutionBinding{
+		ApprovalID: req.ApprovalID, SessionID: req.SessionID, Runtime: bound,
+		ActionDigest: digest, IdempotencyKey: req.IdempotencyKey,
+	}
+
+	// Approval-bound idempotency: an existing key resolves ONLY for the exact same
+	// binding + requester; reuse against another approval/runtime/digest is a conflict.
+	if led, ok := sess.idempotency[req.IdempotencyKey]; ok {
+		if led.binding.equal(binding) && led.requesterDevice == req.Requester.DeviceID {
+			if led.accepted {
+				return ClaimResult{Outcome: ClaimAlreadyAccepted, Binding: binding}
+			}
+			return ClaimResult{Outcome: ClaimAlreadyOwned}
+		}
+		return ClaimResult{Outcome: ClaimConflict}
+	}
+
 	if rec.state == ApprovalExpired {
 		return ClaimResult{Outcome: ClaimExpired}
+	}
+	if rec.superseded {
+		return ClaimResult{Outcome: ClaimStaleRuntime}
 	}
 	if rec.state != ApprovalPending {
 		return ClaimResult{Outcome: ClaimAlreadyOwned}
 	}
-	// Server-derived requester + permission (client identity is never trusted).
-	need := req.RequiredPerm
-	if need == "" {
-		need = rec.requiredPerm
-	}
-	if !req.Requester.present() || (need != "" && !req.Requester.hasPermission(need)) {
+	// Requester + STORED permission only (no caller override).
+	if !req.Requester.present() || (rec.requiredPerm != "" && !req.Requester.hasPermission(rec.requiredPerm)) {
 		return ClaimResult{Outcome: ClaimUnauthorized}
 	}
-	// Runtime binding: adapter/provider/version first, then generation.
-	bound := RuntimeRef{Adapter: rec.provider, Version: rec.version, LaunchGen: rec.launchGen, StreamGen: rec.streamGen}
 	if req.Runtime.Adapter != bound.Adapter || req.Runtime.Version != bound.Version {
 		return ClaimResult{Outcome: ClaimRuntimeMismatch}
 	}
 	if req.Runtime.LaunchGen != bound.LaunchGen || req.Runtime.StreamGen != bound.StreamGen {
 		return ClaimResult{Outcome: ClaimStaleRuntime}
 	}
-	// The selected option must exist; its digest is the handler-computed canonical
-	// action digest bound through the whole flow.
-	if findStoredOption(rec, req.OptionID) == nil {
-		return ClaimResult{Outcome: ClaimUnknownAction}
+	// Capacity fail-closed: never grant a claim whose authority state cannot be recorded.
+	if len(sess.idempotency) >= authMaxIdempotencyKeys {
+		return ClaimResult{Outcome: ClaimLedgerFull}
 	}
-	if req.ActionDigest == "" {
-		return ClaimResult{Outcome: ClaimUnknownAction}
-	}
-
 	token := newClaimToken()
 	if token == "" {
-		return ClaimResult{Outcome: ClaimUnauthorized} // entropy failure fails closed
+		return ClaimResult{Outcome: ClaimUnauthorized}
 	}
 	rec.state = ApprovalExecuting
 	rec.claimToken = token
-	rec.claimDigest = req.ActionDigest
-	rec.claimKey = req.IdempotencyKey
 	rec.claimOptionID = req.OptionID
+	rec.binding = binding
 	rec.requester = req.Requester
-	if req.IdempotencyKey != "" {
-		if len(sess.idempotency) < authMaxIdempotencyKeys {
-			sess.idempotency[req.IdempotencyKey] = idempotencyEntry{digest: req.ActionDigest, accepted: false}
-		}
-	}
-	return ClaimResult{Outcome: ClaimGranted, Token: token, Digest: req.ActionDigest}
+	sess.idempotency[req.IdempotencyKey] = idempotencyEntry{binding: binding, requesterDevice: req.Requester.DeviceID, accepted: false}
+	return ClaimResult{Outcome: ClaimGranted, Token: token, Binding: binding}
 }
 
 // DeliveryCommit is the result of RecordDelivery.
 type DeliveryCommit struct {
 	Outcome   DeliveryOutcome
-	Committed bool          // true iff the approval transitioned to a successful terminal state
-	State     ApprovalState // resulting record state
-	Kind      string        // committed option kind (approve/reject/...) when Committed
+	Committed bool
+	State     ApprovalState
+	Kind      string
 }
 
-// RecordDelivery consumes a delivery receipt against the EXACT claim token and
-// ActionDigest and transitions the record. Only `accepted`/`already_accepted`
-// commit a successful terminal state (and mark the idempotency key accepted); every
-// other receipt, a missing record, a token/digest mismatch, or a non-executing
-// state yields a non-success (delivery_failed) and never a committed success.
-func (s *AuthoritativeApprovalStore) RecordDelivery(sessionID, approvalID, token string, receipt DeliveryReceipt) DeliveryCommit {
+// RecordDelivery consumes a fully-bound receipt. It commits a successful terminal
+// state ONLY when the receipt's claim token AND every binding field match the
+// executing record, the runtime has not been superseded, and the outcome is
+// accepted/already_accepted (with an opaque ReceiptID). Any mismatch, incompleteness,
+// supersession, or non-success fails closed (delivery_failed) — never a false success.
+func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt) DeliveryCommit {
+	b := receipt.Binding
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess := s.sessions[sessionID]
+	sess := s.sessions[b.SessionID]
 	if sess == nil {
 		return DeliveryCommit{Outcome: DeliveryUnavailable}
 	}
-	rec := sess.records[approvalID]
+	rec := sess.records[b.ApprovalID]
 	if rec == nil {
 		return DeliveryCommit{Outcome: DeliveryUnavailable}
 	}
-	if rec.state != ApprovalExecuting || rec.claimToken == "" || rec.claimToken != token {
+	if rec.state != ApprovalExecuting || rec.claimToken == "" {
 		return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
 	}
-	if rec.claimDigest != receipt.ActionDigest {
-		return DeliveryCommit{Outcome: DeliveryConflict, State: rec.state}
+	// Full receipt binding: claim ownership + every binding field.
+	if receipt.ClaimToken != rec.claimToken || !b.equal(rec.binding) {
+		return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
+	}
+	now := s.now()
+	// Runtime replacement / correlation loss / delete during delivery: fail closed.
+	if rec.superseded {
+		rec.state = ApprovalDeliveryFailed
+		rec.resolvedAt = &now
+		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
 	}
 	if !IsValidDeliveryOutcome(receipt.Outcome) {
 		receipt.Outcome = DeliveryRejected
 	}
-	now := s.now()
 	if deliverySucceeded(receipt.Outcome) {
+		if receipt.ReceiptID == "" {
+			rec.state = ApprovalDeliveryFailed
+			rec.resolvedAt = &now
+			return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
+		}
 		opt := findStoredOption(rec, rec.claimOptionID)
 		kind := ""
 		if opt != nil {
@@ -509,8 +549,9 @@ func (s *AuthoritativeApprovalStore) RecordDelivery(sessionID, approvalID, token
 		}
 		rec.state = terminalStateForKind(kind)
 		rec.resolvedAt = &now
-		if rec.claimKey != "" {
-			sess.idempotency[rec.claimKey] = idempotencyEntry{digest: rec.claimDigest, accepted: true}
+		if e, ok := sess.idempotency[rec.binding.IdempotencyKey]; ok {
+			e.accepted = true
+			sess.idempotency[rec.binding.IdempotencyKey] = e
 		}
 		return DeliveryCommit{Outcome: receipt.Outcome, Committed: true, State: rec.state, Kind: kind}
 	}
@@ -519,8 +560,6 @@ func (s *AuthoritativeApprovalStore) RecordDelivery(sessionID, approvalID, token
 	return DeliveryCommit{Outcome: receipt.Outcome, Committed: false, State: rec.state}
 }
 
-// List returns the public projection (unchanged internal type; see safe DTO for the
-// external boundary). Pending/executing always kept; terminal within the window.
 func (s *AuthoritativeApprovalStore) List(sessionID string) []agent.AgentApproval {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -528,24 +567,7 @@ func (s *AuthoritativeApprovalStore) List(sessionID string) []agent.AgentApprova
 	if sess == nil {
 		return nil
 	}
-	now := s.now()
-	recs := make([]*approvalRecord, 0, len(sess.records))
-	for _, rec := range sess.records {
-		s.expireLocked(rec)
-		if rec.state == ApprovalPending || rec.state == ApprovalExecuting {
-			recs = append(recs, rec)
-			continue
-		}
-		if rec.resolvedAt != nil && now.Sub(*rec.resolvedAt) < authApprovalExpiry {
-			recs = append(recs, rec)
-		}
-	}
-	sort.SliceStable(recs, func(a, b int) bool {
-		if !recs[a].createdAt.Equal(recs[b].createdAt) {
-			return recs[a].createdAt.After(recs[b].createdAt)
-		}
-		return recs[a].approval.ID < recs[b].approval.ID
-	})
+	recs := s.liveRecordsLocked(sess)
 	out := make([]agent.AgentApproval, 0, len(recs))
 	for _, rec := range recs {
 		pub := rec.approval
@@ -569,6 +591,15 @@ func (s *AuthoritativeApprovalStore) ListSafe(sessionID string) []SafeApprovalDT
 	if sess == nil {
 		return nil
 	}
+	recs := s.liveRecordsLocked(sess)
+	out := make([]SafeApprovalDTO, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, projectSafeApproval(rec))
+	}
+	return out
+}
+
+func (s *AuthoritativeApprovalStore) liveRecordsLocked(sess *sessionApprovals) []*approvalRecord {
 	now := s.now()
 	recs := make([]*approvalRecord, 0, len(sess.records))
 	for _, rec := range sess.records {
@@ -587,11 +618,7 @@ func (s *AuthoritativeApprovalStore) ListSafe(sessionID string) []SafeApprovalDT
 		}
 		return recs[a].approval.ID < recs[b].approval.ID
 	})
-	out := make([]SafeApprovalDTO, 0, len(recs))
-	for _, rec := range recs {
-		out = append(out, projectSafeApproval(rec))
-	}
-	return out
+	return recs
 }
 
 func (s *AuthoritativeApprovalStore) evictOneLocked(sess *sessionApprovals) {
@@ -633,7 +660,6 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() {
 	}
 }
 
-// Len reports the number of tracked sessions (test/introspection).
 func (s *AuthoritativeApprovalStore) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

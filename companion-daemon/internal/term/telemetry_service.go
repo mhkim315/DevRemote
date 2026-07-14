@@ -213,10 +213,11 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 						if s.statusStore != nil && prevPath != "" {
 							s.statusStore.Invalidate(id, launchGen, a.streamGen, "stream generation changed")
 						}
-						// A1-C: a stream-generation change invalidates prior pending
-						// approval authority immediately (the prior event stream is gone).
+						// A1 R2-C: a stream-generation change supersedes prior pending AND
+						// executing approval authority and advances the runtime high-water,
+						// so an in-flight claim from the old stream generation cannot commit.
 						if s.approvals != nil && prevPath != "" {
-							s.approvals.InvalidateSession(id, "stream generation changed")
+							s.approvals.SupersedeRuntime(id, launchGen, a.streamGen, "stream generation changed")
 						}
 					}
 					a.appendRecords(rawLines)
@@ -582,10 +583,11 @@ func (s *TelemetryService) invalidateForLaunch(sessionID string, launchGen int64
 	// rule, so this high-water rejects any prior-launch write regardless of its
 	// (higher) streamGen.
 	s.statusStore.Invalidate(sessionID, launchGen, 0, "launch binding replaced")
-	// A1-C: a launch replacement invalidates all prior pending approval authority;
-	// the new launch begins with none.
+	// A1 R2-C: a launch replacement supersedes all prior pending AND executing
+	// approval authority and advances the runtime high-water so an in-flight claim
+	// from the replaced launch cannot commit; the new launch begins with none.
 	if s.approvals != nil {
-		s.approvals.InvalidateSession(sessionID, "launch binding replaced")
+		s.approvals.SupersedeRuntime(sessionID, launchGen, 0, "launch binding replaced")
 	}
 }
 

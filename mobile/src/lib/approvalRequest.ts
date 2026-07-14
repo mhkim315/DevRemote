@@ -30,8 +30,16 @@ const MAX_PLACEHOLDER_LEN = 128;
 const MAX_OPTIONS = 8;
 const MAX_TS_LEN = 40;
 
-function boundedString(v: unknown, max: number): boolean {
-  return typeof v === 'string' && v.length <= max;
+// byteLen returns the UTF-8 byte length so mobile bounds match the backend's Go
+// len() (bytes), not JavaScript's UTF-16 .length. A multibyte string (Korean,
+// emoji, combining marks) that fits within a UTF-16 count but exceeds the backend
+// byte bound is correctly rejected.
+function byteLen(v: string): number {
+  return new TextEncoder().encode(v).length;
+}
+
+function boundedString(v: unknown, maxBytes: number): boolean {
+  return typeof v === 'string' && byteLen(v) <= maxBytes;
 }
 
 function validateSafeOption(raw: unknown): SafeOption | null {

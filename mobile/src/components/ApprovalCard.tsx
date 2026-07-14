@@ -10,9 +10,11 @@ interface Props {
 
 // A stable-enough idempotency key per (approval, option) selection: generated once
 // and preserved across retries of the SAME decision so a manual retry is idempotent.
-// A new approval id (or option) produces a new key.
+// It uses the closed canonical grammar the backend enforces ([A-Za-z0-9._:-]); any
+// other character in an id is replaced so the key is never rejected as malformed.
 function makeKey(approvalId: string, optionId: string, nonce: number): string {
-  return `${approvalId}:${optionId}:${nonce}`;
+  const safe = (s: string) => s.replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 40);
+  return `${safe(approvalId)}.${safe(optionId)}.${nonce}`;
 }
 
 export function ApprovalCard({ sessionId, approval, onResolved }: Props) {

@@ -81,6 +81,25 @@ describe('validateApproval — safe DTO fail-closed decode', () => {
   it('rejects a non-boolean actionable', () => {
     expect(validateApproval(validRaw({ actionable: 'yes' }))).toBeNull();
   });
+
+  // R2-D: bounds are UTF-8 BYTE counts (match the backend Go len()), not UTF-16 .length.
+  it('bounds multibyte summary by UTF-8 bytes', () => {
+    // Korean '가' is 3 UTF-8 bytes. 66 chars = 198 bytes (≤200 ok); 67 = 201 bytes (reject).
+    expect(validateApproval(validRaw({ summary: '가'.repeat(66) }))).not.toBeNull();
+    expect(validateApproval(validRaw({ summary: '가'.repeat(67) }))).toBeNull();
+    // Emoji '😀' is 4 UTF-8 bytes (UTF-16 length 2). 51 emoji = 204 bytes → reject.
+    expect(validateApproval(validRaw({ summary: '😀'.repeat(51) }))).toBeNull();
+    // Combining sequence 'é' (e + U+0301) is 3 UTF-8 bytes.
+    expect(validateApproval(validRaw({ summary: 'é'.repeat(66) }))).not.toBeNull();
+    expect(validateApproval(validRaw({ summary: 'é'.repeat(67) }))).toBeNull();
+  });
+
+  it('bounds a multibyte option label at the backend byte limit', () => {
+    // label limit is 64 bytes; but labels are Pokit-owned server-side. The decoder
+    // still enforces the byte bound on the received value.
+    const longLabel = '가'.repeat(22); // 66 bytes > 64 → reject
+    expect(validateApproval(validRaw({ options: [{ id: 'x', label: longLabel, kind: 'approve', requiresInput: false }] }))).toBeNull();
+  });
 });
 
 describe('actionability filters', () => {

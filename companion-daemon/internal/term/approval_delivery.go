@@ -1,35 +1,40 @@
 package term
 
-// A1 remediation (R-B / B3) — approval-specific delivery boundary.
-//
-// The generic CommandBroker (a session-level overwrite mailbox with no ApprovalID,
-// runtime identity, ActionDigest, idempotency key, or receipt) is NOT approval
-// delivery authority. Approval actions are delivered ONLY through this dedicated
-// boundary, whose request is bound to the exact claim token, approval, runtime,
-// action digest, idempotency key, and server-side payload, and which returns a
-// typed receipt. A generic command overwrite can neither satisfy nor be mistaken
-// for an approval delivery.
-//
-// No accepted provider action-delivery channel exists today (Codex's log only
-// OBSERVES its own resolution; there is no verified resolution protocol, and blind
-// terminal Y/N synthesis is prohibited). The production boundary is therefore
-// `unavailableApprovalDelivery`, which accepts nothing. The receipt semantics
-// (accepted / already_accepted / conflict / stale_runtime / runtime_mismatch /
-// rejected) are proven at the boundary contract level with a controlled fixture in
-// tests; that fixture is never used to claim a production provider path.
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"sync"
+)
 
-// DeliveryOutcome is the frozen closed receipt vocabulary. Only `accepted` and
-// `already_accepted` may transition an approval to a successful committed state.
+// A1 remediation 2 (R2-C, supplement #3/#4) — approval-specific delivery boundary
+// and generation-bound delivery gate.
+//
+// A delivery request and its receipt carry the ONE immutable
+// ApprovalExecutionBinding the claim token owns; the receipt also has an opaque
+// ReceiptID. RecordDelivery compares every binding field and the claim token before
+// a success may commit. The generic CommandBroker remains removed from this path.
+//
+// Linearization: replacement/delete/unlink/termination and delivery share the
+// per-session RuntimeDeliveryGate. Delivery is accepted ONLY inside the gate, for
+// the exact current+active runtime generation, so an old generation accepts no
+// bytes after replacement begins, and no external I/O is performed while the store
+// mutex is held.
+//
+// No accepted provider action-delivery channel exists today, so the production
+// boundary is `unavailableApprovalDelivery`, which accepts nothing and writes no
+// bytes. The gate + receipt semantics are proven with a controlled fixture; that
+// fixture is never used to claim a production positive path.
+
 type DeliveryOutcome string
 
 const (
-	DeliveryAccepted        DeliveryOutcome = "accepted"         // exact action accepted once by the owned boundary
-	DeliveryAlreadyAccepted DeliveryOutcome = "already_accepted" // same key+digest already accepted
-	DeliveryStaleRuntime    DeliveryOutcome = "stale_runtime"    // runtime generation moved since claim
-	DeliveryRuntimeMismatch DeliveryOutcome = "runtime_mismatch" // adapter/provider/version mismatch
-	DeliveryUnavailable     DeliveryOutcome = "unavailable"      // no accepted delivery channel for this runtime
-	DeliveryConflict        DeliveryOutcome = "conflict"         // same key previously used with a different digest
-	DeliveryRejected        DeliveryOutcome = "rejected"         // boundary refused the action
+	DeliveryAccepted        DeliveryOutcome = "accepted"
+	DeliveryAlreadyAccepted DeliveryOutcome = "already_accepted"
+	DeliveryStaleRuntime    DeliveryOutcome = "stale_runtime"
+	DeliveryRuntimeMismatch DeliveryOutcome = "runtime_mismatch"
+	DeliveryUnavailable     DeliveryOutcome = "unavailable"
+	DeliveryConflict        DeliveryOutcome = "conflict"
+	DeliveryRejected        DeliveryOutcome = "rejected"
 )
 
 var deliveryOutcomeValid = map[DeliveryOutcome]bool{
@@ -38,58 +43,99 @@ var deliveryOutcomeValid = map[DeliveryOutcome]bool{
 	DeliveryRejected: true,
 }
 
-// IsValidDeliveryOutcome reports membership in the closed receipt set.
 func IsValidDeliveryOutcome(o DeliveryOutcome) bool { return deliveryOutcomeValid[o] }
 
-// deliverySucceeded reports whether a receipt permits a successful committed state.
 func deliverySucceeded(o DeliveryOutcome) bool {
 	return o == DeliveryAccepted || o == DeliveryAlreadyAccepted
 }
 
-// ApprovalDeliveryRequest is the fully-bound request handed to the delivery
-// boundary. Every field is server-derived. Payload is the exact server-side bytes
-// to deliver; it is never sourced from or echoed to the public DTO.
+// ApprovalDeliveryRequest carries the claim token, the immutable binding, and the
+// exact server-side payload. Every identity field lives in Binding.
 type ApprovalDeliveryRequest struct {
-	ClaimToken     string
-	ApprovalID     string
-	SessionID      string
-	Runtime        RuntimeRef
-	ActionDigest   string
-	IdempotencyKey string
-	Payload        []byte
+	ClaimToken string
+	Binding    ApprovalExecutionBinding
+	Payload    []byte
 }
 
-// DeliveryReceipt is the immutable, bound result of a delivery attempt.
+// DeliveryReceipt is the immutable, fully-bound result of a delivery attempt.
 type DeliveryReceipt struct {
-	Outcome        DeliveryOutcome
-	ApprovalID     string
-	SessionID      string
-	ActionDigest   string
-	IdempotencyKey string
+	Outcome    DeliveryOutcome
+	ClaimToken string
+	Binding    ApprovalExecutionBinding
+	ReceiptID  string // opaque; present on an accepted receipt
 }
 
 // ApprovalDelivery is the daemon-owned approval delivery boundary.
 type ApprovalDelivery interface {
-	// Deliver attempts the exact bound action exactly once and returns a bound
-	// receipt. It never panics and never performs generic terminal writes.
 	Deliver(req ApprovalDeliveryRequest) DeliveryReceipt
 }
 
-// unavailableApprovalDelivery is the production boundary: no accepted provider
-// action-delivery channel exists, so every delivery is `unavailable`. It performs
-// NO terminal write. This is the honest state until a provider resolution channel
-// is separately verified with controlled evidence.
+func newReceiptID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// unavailableApprovalDelivery is the production boundary: no accepted channel, no
+// bytes written, always `unavailable`.
 type unavailableApprovalDelivery struct{}
 
-// NewUnavailableApprovalDelivery returns the production (no-channel) boundary.
 func NewUnavailableApprovalDelivery() ApprovalDelivery { return unavailableApprovalDelivery{} }
 
 func (unavailableApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
-	return DeliveryReceipt{
-		Outcome:        DeliveryUnavailable,
-		ApprovalID:     req.ApprovalID,
-		SessionID:      req.SessionID,
-		ActionDigest:   req.ActionDigest,
-		IdempotencyKey: req.IdempotencyKey,
+	return DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: req.ClaimToken, Binding: req.Binding}
+}
+
+// RuntimeDeliveryGate serializes approval delivery acceptance against runtime
+// replacement/removal per session. Replacement (SetActive) and removal (Deactivate)
+// take the SAME lock as AcceptDelivery, so a delivery cannot be accepted for a
+// generation that is being replaced, and an old generation accepts nothing once a
+// newer one is set active. It performs NO external I/O and holds NO store lock.
+type RuntimeDeliveryGate struct {
+	mu  sync.Mutex
+	cur map[string]gateEntry
+}
+
+type gateEntry struct {
+	runtime RuntimeRef
+	active  bool
+}
+
+func NewRuntimeDeliveryGate() *RuntimeDeliveryGate {
+	return &RuntimeDeliveryGate{cur: make(map[string]gateEntry)}
+}
+
+// SetActive marks rt the current active runtime generation for a session (called on
+// launch/replacement). It supersedes any prior generation.
+func (g *RuntimeDeliveryGate) SetActive(sessionID string, rt RuntimeRef) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cur[sessionID] = gateEntry{runtime: rt, active: true}
+}
+
+// Deactivate marks a session's runtime inactive (delete/unlink/termination). After
+// this, no delivery is accepted until a new generation is set active.
+func (g *RuntimeDeliveryGate) Deactivate(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if e, ok := g.cur[sessionID]; ok {
+		e.active = false
+		g.cur[sessionID] = e
 	}
+}
+
+// AcceptDelivery atomically checks that the session's current runtime is exactly the
+// expected generation AND active, and (in the same critical section, without any
+// external I/O) accepts. Returns false if the runtime was replaced, removed, or is
+// not current — the linearization point.
+func (g *RuntimeDeliveryGate) AcceptDelivery(sessionID string, expected RuntimeRef) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e, ok := g.cur[sessionID]
+	if !ok || !e.active || !e.runtime.equal(expected) {
+		return false
+	}
+	return true
 }

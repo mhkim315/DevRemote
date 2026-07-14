@@ -13,20 +13,18 @@ import (
 const (
 	maxApprovalBodyBytes  = 8 << 10 // 8 KiB
 	maxApprovalInputBytes = 4096
-	maxIdempotencyKeyLen  = 128
+	maxLogIDLen           = 128
 )
 
 // HandleApprovalAction handles POST /api/sessions/<id>/approvals/<approvalId>.
 // Body: {"action":"<option-id>", "input":"<optional>", "idempotencyKey":"<key>"}.
 //
-// A1 remediation: an approval action is an AUTHORITATIVE, once-only execution.
-// The flow is strictly: strict-decode → display-only lookup → actionability gate
-// (B5) → server-derived requester (never client identity) → canonical action digest
-// (B2) → one atomic ClaimForExecution (B1) → runtime revalidation immediately
-// before delivery (B4) → dedicated approval delivery boundary + receipt (B3) →
-// commit ONLY on an accepted/already_accepted receipt bound to the exact claim
-// token and digest. There is no lookup→validate→reserve→deliver path and no generic
-// CommandBroker delivery. Every non-success fails closed and never returns HTTP 200.
+// A1 remediation 2: the STORE is the authority boundary. The handler strictly
+// decodes, resolves the server-derived requester + runtime, and hands the store the
+// selected option ID + raw input; the store recomputes the digest, uses the stored
+// permission, and issues a claim token owning one immutable binding. Delivery and
+// commit carry that same binding; commit succeeds only on an accepted receipt whose
+// token and every binding field match, and only if the runtime was not superseded.
 func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -46,7 +44,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxApprovalBodyBytes)
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields() // reject unknown / client-supplied authority fields
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil || req.Action == "" {
 		http.Error(w, "Invalid body", http.StatusBadRequest)
 		return
@@ -59,22 +57,14 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
 		return
 	}
-	if len(req.IdempotencyKey) > maxIdempotencyKeyLen || (req.IdempotencyKey != "" && !utf8.ValidString(req.IdempotencyKey)) {
-		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
-		return
-	}
 
-	// Display-only lookup (no execution authority).
 	snap, ok := h.Approvals.LookupRecord(sessionID, approvalID)
 	if !ok {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "not_found", http.StatusNotFound)
 		return
 	}
 
-	// Server-derived requester. An authoritative action ALWAYS requires an
-	// authenticated device principal; there is no insecure-local bypass and no
-	// client-asserted identity. (The remote route also enforces PermTerminalInput via
-	// RequirePrincipal.)
+	// Authoritative action ALWAYS requires a server-derived device principal.
 	principal := devicetrust.PrincipalFromContext(r.Context())
 	if principal == nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unauthorized", http.StatusForbidden)
@@ -82,33 +72,17 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	}
 	requester := requesterFromPrincipal(principal)
 
-	// Actionability gate (B5): a non-actionable approval (no proven action mapping)
-	// exposes no execution path — no claim, no delivery, no terminal bytes.
 	if !snap.Actionable {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "not_actionable", http.StatusConflict)
 		return
 	}
-
 	selected := findOption(req.Action, snap.Options)
 	if selected == nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unknown_action", http.StatusBadRequest)
 		return
 	}
-	if req.Input != "" && selected.Input == nil {
-		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
-		return
-	}
-	if selected.Input != nil && selected.Input.Required && req.Input == "" {
-		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "input_rejected", http.StatusBadRequest)
-		return
-	}
 
-	// Canonical action digest (B2) — the execution-integrity value bound through the
-	// whole flow.
-	ca := canonicalActionFor(selected, req.Input)
-	digest := ca.Digest()
-
-	// Current server-derived runtime. Required to bind the claim to the live runtime.
+	// Current server-derived runtime (required for the atomic claim binding).
 	if h.RuntimeOf == nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "unavailable", http.StatusServiceUnavailable)
 		return
@@ -119,20 +93,19 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// One atomic full-binding claim (B1).
+	// One atomic full-binding claim. The store recomputes the digest and uses the
+	// STORED permission; the handler passes NO digest and NO permission.
 	claim := h.Approvals.ClaimForExecution(ClaimRequest{
 		SessionID:      sessionID,
 		ApprovalID:     approvalID,
 		OptionID:       selected.ID,
+		Input:          req.Input,
 		Runtime:        runtime,
-		ActionDigest:   digest,
 		Requester:      requester,
-		RequiredPerm:   snap.RequiredPerm,
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	switch claim.Outcome {
 	case ClaimAlreadyAccepted:
-		// Idempotent replay of an accepted key+digest: success, no re-delivery.
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, selected.Kind, "already_accepted")
 		return
 	case ClaimGranted:
@@ -143,33 +116,25 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// B4 — revalidate the runtime immediately before delivery. A launch replacement,
-	// stream change, delete, or unlink between claim and delivery must NOT deliver to
-	// a wrong/absent runtime nor return success.
+	// Revalidate the runtime immediately before delivery; a replacement/removal
+	// between claim and delivery fails closed with NO terminal bytes.
 	cur, ok := h.RuntimeOf(sessionID)
-	if !ok || !cur.equal(runtime) {
-		h.Approvals.RecordDelivery(sessionID, approvalID, claim.Token, DeliveryReceipt{
-			Outcome: DeliveryStaleRuntime, ApprovalID: approvalID, SessionID: sessionID, ActionDigest: digest, IdempotencyKey: req.IdempotencyKey,
-		})
+	if !ok || !cur.equal(claim.Binding.Runtime) {
+		h.Approvals.RecordDelivery(DeliveryReceipt{Outcome: DeliveryStaleRuntime, ClaimToken: claim.Token, Binding: claim.Binding})
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
 
-	// Dedicated approval delivery boundary (B3) — never CommandBroker.
 	delivery := h.ApprovalDelivery
 	if delivery == nil {
 		delivery = NewUnavailableApprovalDelivery()
 	}
 	receipt := delivery.Deliver(ApprovalDeliveryRequest{
-		ClaimToken:     claim.Token,
-		ApprovalID:     approvalID,
-		SessionID:      sessionID,
-		Runtime:        runtime,
-		ActionDigest:   digest,
-		IdempotencyKey: req.IdempotencyKey,
-		Payload:        serverPayloadFor(ca),
+		ClaimToken: claim.Token,
+		Binding:    claim.Binding,
+		Payload:    serverPayloadFor(selected, req.Input),
 	})
-	commit := h.Approvals.RecordDelivery(sessionID, approvalID, claim.Token, receipt)
+	commit := h.Approvals.RecordDelivery(receipt)
 	if commit.Committed {
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, selected.Kind, string(commit.Outcome))
 		return
@@ -178,8 +143,6 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, oc, code)
 }
 
-// requesterFromPrincipal derives the server-authenticated requester. Only
-// server-verified fields are used; nothing comes from the client body.
 func requesterFromPrincipal(p *devicetrust.Principal) RequesterContext {
 	return RequesterContext{
 		DeviceID:        p.DeviceID,
@@ -190,31 +153,13 @@ func requesterFromPrincipal(p *devicetrust.Principal) RequesterContext {
 	}
 }
 
-// canonicalActionFor builds the delivery-semantic canonical action from the stored
-// option and the user input. Display label/prompt and raw payload are never inputs.
-func canonicalActionFor(opt *agent.InteractionOption, input string) CanonicalAction {
-	inputType, placement := "", ""
-	if opt.Input != nil {
-		inputType = "text"
-		placement = opt.Input.Placement
-	}
-	return CanonicalAction{
-		OptionID:        opt.ID,
-		Kind:            opt.Kind,
-		SchemaVersion:   ActionSchemaVersion,
-		InputType:       inputType,
-		InputPlacement:  placement,
-		NormalizedInput: input,
-	}
-}
-
-// serverPayloadFor returns the exact server-side delivery bytes for a canonical
-// action. It NEVER synthesizes a decision keystroke (no blind y/n). Only the user's
-// literal input for an explicit input-bearing action is forwarded; decision-only
-// actions carry no payload (there is no accepted decision-delivery channel).
-func serverPayloadFor(ca CanonicalAction) []byte {
-	if ca.InputType == "text" && (ca.InputPlacement == "as_payload" || ca.InputPlacement == "after_payload") && ca.NormalizedInput != "" {
-		return []byte(ca.NormalizedInput + "\n")
+// serverPayloadFor returns the exact server-side delivery bytes. It NEVER
+// synthesizes a decision keystroke; only an explicit input-bearing action forwards
+// the user's literal input.
+func serverPayloadFor(opt *agent.InteractionOption, input string) []byte {
+	if opt.Input != nil && input != "" &&
+		(opt.Input.Placement == "as_payload" || opt.Input.Placement == "after_payload") {
+		return []byte(input + "\n")
 	}
 	return nil
 }
@@ -228,8 +173,6 @@ func findOption(action string, options []agent.InteractionOption) *agent.Interac
 	return nil
 }
 
-// claimOutcomeHTTP maps a non-granted claim outcome to an HTTP status + code. None
-// map to 2xx — a denied claim is never a success.
 func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
 	switch o {
 	case ClaimConflict:
@@ -240,6 +183,12 @@ func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
 		return http.StatusConflict, "not_actionable"
 	case ClaimUnknownAction:
 		return http.StatusBadRequest, "unknown_action"
+	case ClaimInvalidInput:
+		return http.StatusBadRequest, "input_rejected"
+	case ClaimInvalidKey:
+		return http.StatusBadRequest, "invalid_key"
+	case ClaimDigestMismatch:
+		return http.StatusBadRequest, "digest_mismatch"
 	case ClaimExpired:
 		return http.StatusGone, "expired"
 	case ClaimAlreadyOwned:
@@ -250,12 +199,13 @@ func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
 		return http.StatusConflict, "runtime_mismatch"
 	case ClaimUnauthorized:
 		return http.StatusForbidden, "unauthorized"
+	case ClaimLedgerFull:
+		return http.StatusServiceUnavailable, "ledger_full"
 	default:
 		return http.StatusInternalServerError, "error"
 	}
 }
 
-// deliveryOutcomeHTTP maps a non-success delivery outcome to an HTTP status + code.
 func deliveryOutcomeHTTP(o DeliveryOutcome) (int, string) {
 	switch o {
 	case DeliveryStaleRuntime:
@@ -273,9 +223,27 @@ func deliveryOutcomeHTTP(o DeliveryOutcome) (int, string) {
 	}
 }
 
+// sanitizeLogID bounds an identifier and strips control/newline bytes so an
+// attacker-influenced session/approval/action id cannot inject or leak into logs.
+func sanitizeLogID(s string) string {
+	if len(s) > maxLogIDLen {
+		s = s[:maxLogIDLen]
+	}
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7f {
+			b = append(b, '.')
+		} else {
+			b = append(b, c)
+		}
+	}
+	return string(b)
+}
+
 func (h *Handlers) writeApprovalSuccess(w http.ResponseWriter, sessionID, approvalID, action, kind, outcome string) {
 	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s kind=%s outcome=%s http=200",
-		sessionID, approvalID, action, kind, outcome)
+		sanitizeLogID(sessionID), sanitizeLogID(approvalID), sanitizeLogID(action), sanitizeLogID(kind), outcome)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": action, "outcome": outcome})
@@ -283,6 +251,6 @@ func (h *Handlers) writeApprovalSuccess(w http.ResponseWriter, sessionID, approv
 
 func (h *Handlers) writeApprovalOutcome(w http.ResponseWriter, sessionID, approvalID, action, outcome string, code int) {
 	log.Printf("APPROVAL ACTION: session=%s approval=%s action=%s outcome=%s http=%d",
-		sessionID, approvalID, action, outcome, code)
+		sanitizeLogID(sessionID), sanitizeLogID(approvalID), sanitizeLogID(action), outcome, code)
 	http.Error(w, outcome, code)
 }
