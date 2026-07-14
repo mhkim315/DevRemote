@@ -18,14 +18,25 @@ func r9rt() RuntimeRef {
 	return RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 }
 
-// endpointSnap captures a single endpoint's full identity + accounting content, not
-// just its existence, so a destructive delete+replace (which keeps counts equal but
-// changes the opaque id / ownership / accounting) is detected.
+// itemSnap is a defensive deep copy of one queued AcceptedDelivery. Payload is stored
+// as a string so it is an immutable copy (a later in-place mutation of the live queue's
+// payload bytes cannot alias it), and Binding/ClaimToken/ReceiptID are compared by
+// content via reflect.DeepEqual.
+type itemSnap struct {
+	binding    ApprovalExecutionBinding
+	claimToken string
+	receiptID  string
+	payload    string
+}
+
+// endpointSnap captures a single endpoint's full identity + accounting content AND the
+// full content of every queued item, not just its existence/length, so a destructive
+// delete+replace (equal count) or an in-place mutation of an existing queued item
+// (equal length/bytes) is detected.
 type endpointSnap struct {
 	sessionID   string
 	active      bool
 	capacity    int
-	queueLen    int
 	queuedBytes int
 	seq         int
 	nonce       string
@@ -33,10 +44,12 @@ type endpointSnap struct {
 	version     string
 	launchGen   int64
 	streamGen   int
+	queue       []itemSnap
 }
 
 // gateSnap is a DEEP snapshot of the gate: the exact current mapping (sid→id), the
-// order slice (handle sequence), every endpoint's content, and the global byte total.
+// order slice (handle sequence), every endpoint's content INCLUDING its queued items,
+// and the global byte total.
 type gateSnap struct {
 	current    map[string]string
 	order      []string
@@ -57,19 +70,31 @@ func snapshotGate(g *RuntimeDeliveryGate) gateSnap {
 		s.current[sid] = id
 	}
 	for id, e := range g.endpoints {
+		var q []itemSnap
+		for i := range e.queue {
+			it := e.queue[i]
+			q = append(q, itemSnap{
+				binding:    it.Binding,
+				claimToken: it.ClaimToken,
+				receiptID:  it.ReceiptID,
+				payload:    string(it.Payload), // immutable defensive copy
+			})
+		}
 		s.endpoints[id] = endpointSnap{
 			sessionID: e.sessionID, active: e.active, capacity: e.capacity,
-			queueLen: len(e.queue), queuedBytes: e.queuedBytes, seq: e.seq, nonce: e.nonce,
+			queuedBytes: e.queuedBytes, seq: e.seq, nonce: e.nonce,
 			adapter: e.runtime.Adapter, version: e.runtime.Version,
 			launchGen: e.runtime.LaunchGen, streamGen: e.runtime.StreamGen,
+			queue: q,
 		}
 	}
 	return s
 }
 
 // assertUnchanged requires the ENTIRE gate state — current mapping, order sequence,
-// per-endpoint identity/ownership/accounting, and global bytes — to be byte-for-byte
-// identical. Count-only equality is insufficient (blocker 4).
+// per-endpoint identity/ownership/accounting, and the full content of every queued
+// item (Binding, ClaimToken, ReceiptID, Payload) — to be byte-for-byte identical.
+// Count-only equality is insufficient (blockers 4 and R11-1).
 func (want gateSnap) assertUnchanged(t *testing.T, g *RuntimeDeliveryGate, ctx string) {
 	t.Helper()
 	got := snapshotGate(g)

@@ -78,42 +78,58 @@ func TestDeliveryGate_ProductionTelemetryPathActivation(t *testing.T) {
 		`{"timestamp":"2026-07-06T13:30:11.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","approval_id":"appr-2"}}`,
 	})
 	s1cPoll(svc, sess, sid, "codex")
-	h2, count2 := gateCurrentHandle(gate, sid)
+	h2, _ := gateCurrentHandle(gate, sid)
 	if h2 == "" || h2 == h1 {
 		t.Fatalf("launch-generation change must produce exactly one new handle: %q→%q", h1, h2)
 	}
-	// No endpoint/order leak: the empty old generation is reclaimed net-zero, and the
-	// old handle is gone (not merely retired alongside the new one).
-	if count2 != count1 {
-		t.Errorf("replacement leaked endpoints: %d→%d (want net-zero)", count1, count2)
-	}
+	// Exact ownership after replacement (blocker R11-2): the empty old generation is
+	// reclaimed net-zero, so order/current/endpoints hold EXACTLY the new handle h2 —
+	// a stale h1 left in order (equal length) must NOT pass.
 	gate.mu.Lock()
+	if len(gate.order) != 1 || gate.order[0] != h2 {
+		t.Errorf("order after replacement = %v, want exactly [%s]", gate.order, h2)
+	}
+	if len(gate.current) != 1 || gate.current[sid] != h2 {
+		t.Errorf("current after replacement = %v, want {%s:%s}", gate.current, sid, h2)
+	}
+	if len(gate.endpoints) != 1 || gate.endpoints[h2] == nil {
+		t.Errorf("endpoints after replacement have %d entries, want exactly {%s}", len(gate.endpoints), h2)
+	}
 	if gate.endpoints[h1] != nil {
 		t.Errorf("old generation %q not reclaimed after replacement", h1)
 	}
-	if len(gate.order) != count2 {
-		t.Errorf("order slice leaked: len(order)=%d, endpoints=%d", len(gate.order), count2)
+	gate.mu.Unlock()
+
+	// Next poll at the SAME generation (no new content) makes no further replacement and
+	// leaves the exact state intact.
+	s1cPoll(svc, sess, sid, "codex")
+	h3, _ := gateCurrentHandle(gate, sid)
+	if h3 != h2 {
+		t.Fatalf("same-generation poll must not replace the handle: %q→%q", h2, h3)
+	}
+	gate.mu.Lock()
+	if len(gate.order) != 1 || gate.order[0] != h2 || len(gate.endpoints) != 1 || gate.current[sid] != h2 {
+		t.Errorf("same-generation poll perturbed state: order=%v current=%v endpoints=%d", gate.order, gate.current, len(gate.endpoints))
 	}
 	gate.mu.Unlock()
 
-	// Next poll at the SAME generation (no new content) makes no further replacement.
-	s1cPoll(svc, sess, sid, "codex")
-	h3, count3 := gateCurrentHandle(gate, sid)
-	if h3 != h2 || count3 != count2 {
-		t.Fatalf("same-generation poll must not replace/leak: handle %q→%q, endpoints %d→%d", h2, h3, count2, count3)
-	}
-
-	// Correlation loss (launch binding removed) deactivates acceptance on the next poll:
-	// no current handle, the old endpoint is inactive, and a direct Accept now fails.
+	// Correlation loss (launch binding removed) deactivates acceptance on the next poll.
+	// Deactivate clears the current mapping and marks the endpoint inactive but RETAINS
+	// it (empty → future safe victim): assert the exact intended state.
 	transcript.RemoveLaunch(sid)
 	s1cPoll(svc, sess, sid, "codex")
-	h4, _ := gateCurrentHandle(gate, sid)
-	if h4 != "" {
-		t.Errorf("correlation loss must clear the current handle, still current=%q", h4)
-	}
 	gate.mu.Lock()
-	if e := gate.endpoints[h3]; e != nil && e.active {
-		t.Errorf("old endpoint %q must be inactive after correlation loss", h3)
+	if len(gate.current) != 0 {
+		t.Errorf("current after correlation loss = %v, want empty", gate.current)
+	}
+	if len(gate.order) != 1 || gate.order[0] != h2 {
+		t.Errorf("order after correlation loss = %v, want [%s] (endpoint retained)", gate.order, h2)
+	}
+	if len(gate.endpoints) != 1 {
+		t.Errorf("endpoints after correlation loss = %d, want exactly 1 (retained inactive)", len(gate.endpoints))
+	}
+	if e := gate.endpoints[h2]; e == nil || e.active {
+		t.Errorf("endpoint %q after correlation loss must be retained and inactive: %+v", h2, e)
 	}
 	gate.mu.Unlock()
 	// Acceptance is genuinely disabled (not merely unmapped): a fully-canonical request
@@ -171,9 +187,9 @@ func TestDeliveryGate_CapacityRetiredNonEmptyFailsBeforeDrain(t *testing.T) {
 	if len(before.endpoints) != maxGateEndpoints {
 		t.Fatalf("precondition endpoints=%d, want %d", len(before.endpoints), maxGateEndpoints)
 	}
-	if before.endpoints[hKeep].queueLen != 1 || before.endpoints[hKeep].queuedBytes == 0 {
+	if len(before.endpoints[hKeep].queue) != 1 || before.endpoints[hKeep].queuedBytes == 0 {
 		t.Fatalf("precondition: keep must hold 1 item with bytes, got queue=%d bytes=%d",
-			before.endpoints[hKeep].queueLen, before.endpoints[hKeep].queuedBytes)
+			len(before.endpoints[hKeep].queue), before.endpoints[hKeep].queuedBytes)
 	}
 	// The only retired endpoint is non-empty → no safe victim → extra activation fails.
 	if h, ok := g.Activate("codex:extra", rt, 0); ok || h != "" {
