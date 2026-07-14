@@ -100,6 +100,20 @@ def _canonical_json_digest(path: str) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# ── pre-startup orphan sweep: only codex app-server children, exact match ──
+def _kill_orphaned_app_servers():
+    try:
+        out = subprocess.run(["pgrep", "-f", "codex app-server"], capture_output=True, text=True)
+        for pid_str in out.stdout.strip().splitlines():
+            pid = int(pid_str)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+
 # ── ordered wire client with per-run process-group tracking, hard deadline,
 #    and owned cleanup only. write+flush+seq under ONE lock. ──
 class AppServer:
@@ -107,10 +121,11 @@ class AppServer:
         self._deadline_s = deadline_s
         self._started_at = time.time()
         self._timed_out = False
+        _kill_orphaned_app_servers()
         self.p = subprocess.Popen(
             ["codex", "app-server", "--stdio"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1, start_new_session=True,  # own process group
+            text=True, bufsize=1, start_new_session=True,
         )
         self._pgid = os.getpgid(self.p.pid)
         self._parent_pid = self.p.pid
