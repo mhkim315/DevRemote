@@ -1,6 +1,6 @@
 # A1.1 Codex Provider-Positive Path Plan
 
-Status: **INDEPENDENT PLAN ACCEPT — CP0 AUTHORIZED; PRODUCTION CAPACITY REMAINS ZERO**
+Status: **CP0 CONTINUE AUTHORIZED UNDER AMENDED SCOPE; PRODUCTION CAPACITY REMAINS ZERO**
 
 Date: 2026-07-14
 
@@ -16,6 +16,12 @@ Independent final review additionally removed adjacent path re-verification as a
 TOCTOU mitigation, froze `environmentId` to null/absent, classified best-effort
 `commandActions` as non-authoritative, and corrected WebSocket from “unsupported” to
 experimental/available-but-uncertified.
+
+CP0 live evidence at `042dddf` supersedes only the field-specific assumptions noted
+below: command approvals carry `environmentId:"local"`, `availableDecisions`, and a
+`proposedExecpolicyAmendment` without `--experimental`. Checkpoint review 1 accepts
+those fields only under the amended bounded/fingerprinted/non-actionable rules in §2,
+§5 and §6. It does not accept CP0 as complete.
 
 Repository: `https://github.com/mhkim315/DevRemote.git`
 
@@ -73,7 +79,8 @@ prove the resolution semantics before capacity may become non-zero.
 | Codex `PermissionRequest` hook | shipped, blocking; payload contract still incomplete for A1 | exact-version hook/schema exposes session/turn/tool fields and allow/deny response, but no external invocation ID or post-response acknowledgement | research/future only; non-actionable |
 | app-server v2 stdio | shipped but EXPERIMENTAL protocol surface (exact-version certification candidate; no stability/compat guarantee; `0.144.1` CLI marks `app-server` `[experimental]`) | initialization, thread/turn/item events, approval server requests and matching response IDs | selected candidate — `0.144.1` only; other versions non-actionable |
 | app-server WebSocket | experimental and available in the binary; uncertified for A1.1 | exact-version CLI help and official app-server README | excluded |
-| `additionalPermissions`, `availableDecisions`, permission amendments | experimental | protocol annotations/schema | excluded |
+| `availableDecisions`, `proposedExecpolicyAmendment` | present in the non-experimental `0.144.1` schema and live command request | provider advisory/proposal data; exact bounded canonical values are request-bound but never create Pokit actions | admitted internally; non-actionable except fixed `accept`/`decline` mapping |
+| `additionalPermissions`, applied permission/policy amendments | experimental or outside the initial action scope | protocol annotations/schema | excluded |
 | external peer attachment to an existing Codex TUI | unavailable/unverified | current TUI internally uses app-server, but no stable external peer-attach contract is documented | must not be claimed |
 | existing POKIT `pokit run codex` | managed lifecycle only for this purpose | CLI joins argv into a command string and local create can enter the legacy shell-command path; it is not the certified app-server client | remains non-actionable |
 | existing HTTP `codex` preset | recognized direct executable + launch binding | `term/profiles.go`, `term/create.go` | does not itself provide app-server approval delivery |
@@ -154,7 +161,9 @@ Certification is an exact tuple, not `provider == codex`:
 ```text
 provider                 codex
 provider version         0.144.1 exactly
-binary identity          regular-file digest bound to filesystem identity (device+inode), recorded at launch
+platform capability      OS + architecture + attestor kind/version
+artifact identity        opaque bounded digest over the complete certified launch chain
+process image identity   opaque bounded attestation produced by the platform verifier
 schema identity          per-file digests + deterministic manifest digest of the full generated schema bundle (generated WITHOUT --experimental)
 transport                local stdio JSONL
 launch profile           explicit codex_app_server managed profile
@@ -173,10 +182,10 @@ A digest recorded at certification and a later `spawn` of a path do not by thems
 prove the spawned bytes equal the verified bytes: the file can be replaced between hash
 and exec. CP0/CP1 must therefore:
 
-- verify the resolved artifact is a **regular file, not a symlink** (reject symlinks and
-  non-regular files);
-- bind the recorded **binary digest to the file's filesystem identity** (device + inode)
-  captured at verification;
+- verify every artifact in the actual launch chain and bind the complete chain to one
+  opaque artifact identity. The current npm distribution is a Node executable → JS
+  shim → vendored native executable chain; either attest all three or prove that the
+  vendored native binary can be launched directly with identical protocol/auth behavior;
 - guarantee the **verified artifact is the spawned artifact**. A path check immediately
   before `exec` is NOT sufficient and is not an accepted alternative. CP0 must prove an
   OS-supported mechanism that executes the same verified open file description, or a
@@ -193,7 +202,29 @@ and exec. CP0/CP1 must therefore:
   app-server connection epoch**, so any binary/schema/version drift or reconnection
   revokes certification (see the revocation list below).
 
-### 4.2 Certification lifetime
+### 4.2 Platform-neutral certification boundary
+
+No provider-neutral or Codex protocol contract may contain macOS-specific inode,
+Mach-O, code-signing, `/dev/fd`, POSIX signal, path or local IPC semantics. Define
+explicit internal boundaries with platform-neutral observable results:
+
+- `ProcessImageAttestor`: returns OS, architecture, attestor kind/version, opaque
+  artifact identity, opaque process-image attestation, certification result and a
+  bounded reason;
+- `ManagedRuntimeLauncher`: starts/stops the certified runtime and reports an opaque
+  process identity plus lifecycle result;
+- `ProviderTransport`: supplies ordered framed reads/writes, closure and connection
+  generation without exposing OS-specific pipe or handle types;
+- `ProviderPathCanonicalizer`: validates and canonicalizes provider path fields for the
+  certified OS tuple without imposing POSIX grammar on other platforms.
+
+The first CP0 target may be `darwin/arm64`; its verifier may internally use
+device/inode, open descriptors, Mach-O or code-signing evidence. Those details remain
+inside the macOS implementation and its evidence bundle. Windows is not implemented in
+A1.1, but must be certifiable later through the same observable interfaces with a
+separate OS/architecture/attestor tuple.
+
+### 4.3 Certification lifetime
 
 An arbitrary command, the current legacy local `pokit run codex`, a regular Codex TUI
 profile, an attached session, a native-log-only adapter or a heuristic signal never
@@ -214,10 +245,14 @@ Only stable `item/commandExecution/requestApproval` requests are included, with:
 - a valid outer JSON-RPC request ID;
 - non-empty `threadId`, `turnId` and `itemId`;
 - `approvalId == null` (exclude zsh-exec-bridge subcommand callbacks initially);
+- `environmentId == "local"` exactly for the certified initial runtime;
 - a matching command-execution `item/started` observed on the same connection,
   thread, turn and item;
 - bounded, valid command/cwd fields according to the pinned schema;
-- no experimental permission amendment or decision fields.
+- optional `availableDecisions` and `proposedExecpolicyAmendment` decoded and bounded
+  as exact request-bound provider data, but never mapped to additional Pokit actions;
+- no network approval context, applied policy amendment or other unsupported semantic
+  field.
 
 File changes, network-only permission requests, `request_permissions`, MCP
 elicitation, session-wide approvals and all unknown request types remain
@@ -276,30 +311,37 @@ Canonicalization has two distinct products:
      UTF-8);
    - build a Pokit **canonical representation** from the typed values (length-framing
      the method, request-ID type/value, thread/turn/item IDs, explicit null approval
-     ID, command, cwd and stable command-action fields), and digest THAT.
+     ID, exact environment ID, command, cwd and admitted request-bound advisory fields),
+     and digest THAT.
 
    Normal insignificant whitespace and JSON object key-ordering differences are NOT
    grounds for rejection, and the **original JSON serialization is never used as
    authority or as digest input** — only the typed, canonical representation is. Do not
    hash arbitrary display text.
 
-   Initial command-approval optional-field freeze (any deviation is non-actionable):
+   Initial command-approval field policy (any deviation is non-actionable):
    - `approvalId`: MUST be `null`;
-   - network context and policy amendments: `null`/absent;
+   - `environmentId`: MUST equal the exact string `"local"`; it changes execution
+     meaning and is included in the native authority fingerprint and certification
+     binding. Initialize-time `environmentId:null` is a different protocol phase;
+   - network context and applied network/policy amendments: `null`/absent;
    - any unsupported semantic field: `null`/absent;
    - `command`: null/empty is rejected (a command approval must carry a bounded
      non-empty command);
    - `cwd`: null/empty is rejected for the initial scope; it must be a bounded,
      normalized absolute path and is included in the internal authority fingerprint
      while remaining redacted from public display;
-   - `environmentId`: MUST be `null`/absent in the initial scope. A later non-null
-     environment changes execution meaning and requires a separately reviewed
-     fingerprint rule; it must never be silently ignored;
    - field roles are fixed — `command` and `cwd` are **authority + fingerprint**;
      `reason` and other free-form explanatory text are **display-only** and excluded
      from both fingerprints; `commandActions` is explicitly **best-effort display /
      corroborating evidence only**, is excluded from authority and the fingerprint,
      and cannot create or distinguish an actionable approval.
+   - `availableDecisions` and `proposedExecpolicyAmendment` are strictly decoded,
+     byte/item bounded, retained only in the internal native registry, and included in
+     the canonical native request fingerprint for duplicate/substitution conflict
+     detection. They never create a CTA or action option, are never copied into a
+     public DTO/log, and do not authorize `acceptForSession`, `cancel` or amendment
+     application. The only Pokit actions remain fixed `accept` and `decline`.
 2. **Selected action digest**, the existing `CanonicalAction.Digest()`. Use the
    fixed Pokit option ID, `a1.action.v1`, a fixed kind such as
    `provider_approval_decision`, and no free-form input. Allow and deny have
@@ -419,16 +461,20 @@ commit.
   independent A1.1 plan ACCEPT recorded.
 - Pin exact binary/source/schema and record classification, including that app-server
   is shipped-but-experimental and `0.144.1`-only (section 1/2).
-- Verify binary identity per section 4.1: regular file (not symlink), digest bound to
-  device+inode, and a spawn method that guarantees the verified artifact is the spawned
-  artifact. Generate the schema WITHOUT `--experimental` and record per-file digests +
-  the deterministic manifest digest.
+- Verify the complete launch-chain and actual process-image identity through the
+  platform-neutral contract in §4.1–§4.2. The macOS implementation details remain
+  internal. Generate the schema WITHOUT `--experimental`, commit the sorted relative-
+  path/per-file digest manifest, and record its deterministic manifest digest.
 - Run controlled redacted traces for allow, deny, cancel, timeout and duplicate
   response using a real `codex app-server` child.
 - Prove `serverRequest/resolved` ordering and consumption semantics.
-- Confirm the initial command-approval optional-field freeze holds in real traces
-  (`approvalId == null`; `environmentId == null`/absent; no network/policy amendment
-  or unsupported semantic fields; `commandActions` remains non-authoritative).
+- Confirm the initial command-approval field policy in real traces (`approvalId ==
+  null`; `environmentId == "local"`; admitted advisory/proposal fields are bounded and
+  request-bound but non-actionable; no network/applied-policy or unsupported semantic
+  field; `commandActions` remains non-authoritative).
+- Commit a redacted ordered wire trace with monotonic sequence, direction and message
+  type covering `item/started → requestApproval → response write → resolved → provider
+  outcome`. A hand-authored summary object does not prove ordering.
 - Prove a bounded real production path can start/resume a thread and start a turn.
 - Produce fixtures without prompts, secrets, repository paths or personal data.
 
@@ -441,8 +487,9 @@ production turn path cannot be proven. CP0 changes no production capacity.
   TOCTOU-hardened, verified-equals-spawned artifact method.
 - Implement bounded strict JSONL framing, one reader, one ordered writer,
   initialize/initialized handshake and connection epoch.
-- Bind SessionID, RuntimeRef, PID/start identity, and the binary/schema certification
-  tuple (section 4.1) into the launch binding and connection epoch.
+- Bind SessionID, RuntimeRef, opaque process identity, platform capability and the
+  binary/schema certification tuple (§4.1–§4.2) into the launch binding and connection
+  epoch. Do not expose OS-specific evidence in the provider-neutral contract.
 - Keep the existing Recorder/PTy paths untouched.
 
 ### CP2 — Codex request registry and safe ingestion, capacity zero
@@ -514,6 +561,10 @@ At minimum:
 - missing or conflicting JSON-RPC/thread/turn/item identity;
 - duplicate request ID with same and different content;
 - unsupported request kind, approvalId, action or experimental field;
+- non-local or missing approval-request environment ID; malformed/over-bound or
+  substituted available decisions and proposed amendment data;
+- incomplete launch-chain identity, wrong OS/architecture/attestor tuple, and a
+  verified-path/actual-process-image mismatch;
 - stale launch/stream/connection generation;
 - cross-session and cross-thread response;
 - modified command, cwd, native fingerprint, action digest or response decision;

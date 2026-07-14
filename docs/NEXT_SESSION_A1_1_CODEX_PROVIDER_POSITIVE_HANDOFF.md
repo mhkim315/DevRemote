@@ -1,6 +1,6 @@
 # Next Session Handoff — A1.1 Codex Provider-Positive Path
 
-Status: **INDEPENDENT PLAN ACCEPT — EXECUTE CP0 ONLY; CAPACITY MUST REMAIN ZERO**
+Status: **CP0 CONTINUE UNDER CHECKPOINT-1 AMENDMENT; CP1 UNAUTHORIZED; CAPACITY ZERO**
 
 Date: 2026-07-14
 
@@ -62,21 +62,21 @@ Read these documents before proposing or changing code:
 4. `docs/A1_APPROVAL_SAFETY_REVERIFICATION_11.md`;
 5. `docs/A1_CODEX_PROVIDER_POSITIVE_PATH_PLAN.md`;
 6. `docs/A1_1_PLAN_INDEPENDENT_VERIFICATION.md`;
-7. `docs/ROADMAP_AFTER_E10B.md`;
-8. this handoff.
+7. `docs/A1_1_CP0_EVIDENCE_REPORT.md`;
+8. `docs/A1_1_CP0_CHECKPOINT_REVIEW_1.md`;
+9. `docs/ROADMAP_AFTER_E10B.md`;
+10. this handoff.
 
 Then inspect the current production boundaries named in the plan rather than
 relying on earlier remediation summaries.
 
 ## 4. Immediate next action
 
-Independent A1.1 plan verification is recorded in
-`docs/A1_1_PLAN_INDEPENDENT_VERIFICATION.md`. The executor is authorized to perform
-**CP0 only** after syncing the canonical commit containing that verdict.
-
-CP0 begins with the required contract note and filled binding table, then the exact-
-version redacted evidence spike. CP0 changes no production capacity and does not
-authorize CP1. Stop BLOCKED if any CP0 hard gate cannot be proven.
+CP0 checkpoint 1 is reviewed in `docs/A1_1_CP0_CHECKPOINT_REVIEW_1.md`. The executor
+may continue **CP0 only** after syncing the canonical amendment. Before new evidence,
+correct the CP0 contract note/binding table to the amended field and platform-neutral
+rules. CP0 changes no production capacity and does not authorize CP1. Stop BLOCKED if
+any remaining hard gate cannot be proven.
 
 ## 5. Frozen authority boundary
 
@@ -147,18 +147,20 @@ CP0 changes no production capacity. It must use a real, exact supported Codex
 binary and pinned schema/source evidence to prove all of the following:
 
 - local stdio app-server initialization and lifecycle;
-- TOCTOU-hardened binary identity (regular file, not symlink; digest bound to
-  device+inode; verified artifact == spawned artifact) and a schema bundle generated
-  WITHOUT `--experimental` with per-file digests + a deterministic manifest digest
-  (plan §4.1). Adjacent path re-verification is not sufficient; the actual process
-  image must be bound to the verified digest;
+- complete launch-chain and actual process-image identity through the platform-neutral
+  attestor/launcher contract. macOS filesystem/process evidence stays inside the
+  `darwin/arm64` implementation. Adjacent path re-verification is not sufficient;
+- a schema bundle generated WITHOUT `--experimental`, plus the committed sorted
+  relative-path/per-file digest manifest and its deterministic manifest digest;
 - stable native request ID plus thread/turn/item identity;
-- exact command-approval request shape for the initial supported request, including
-  the optional-field freeze (`approvalId == null`, `environmentId == null`/absent;
-  no network/policy amendment or unsupported semantic fields; `commandActions` is
-  display/corroboration only) (plan §6);
+- exact command-approval request shape for the initial supported request:
+  `approvalId == null`, `environmentId == "local"`, admitted advisory/proposal fields
+  bounded and fingerprinted but non-actionable, and `commandActions` display/
+  corroboration only (plan §6);
 - allow-once and deny response shape;
-- ordering and meaning of matching `serverRequest/resolved`;
+- a committed redacted ordered trace with monotonic sequence and direction covering
+  `item/started → requestApproval → response write → serverRequest/resolved → provider
+  outcome`, proving the ordering and meaning of matching resolution;
 - provider cancellation, timeout, duplicate response and child cleanup behavior;
 - a bounded real product path that starts/resumes a thread and starts a turn without
   creating a terminal replacement or generic Task/Dispatch API.
@@ -183,9 +185,11 @@ provider:          codex
 provider version:  0.144.1 exactly (shipped-but-experimental app-server; no other version)
 transport:         local app-server v2 stdio JSONL
 profile:           explicit managed codex_app_server profile
-binary identity:   regular-file digest bound to device+inode; verified == spawned
+platform tuple:    OS + architecture + attestor kind/version
+artifact identity: opaque complete-launch-chain identity
+process identity:  opaque actual-process-image attestation
 schema identity:   per-file digests + deterministic manifest digest (no --experimental)
-request:           normal commandExecution requestApproval (approvalId == null)
+request:           normal commandExecution requestApproval (approvalId null; environmentId local)
 actions:           allow_once and deny
 ```
 
@@ -213,7 +217,10 @@ Do not begin or redesign:
 - Task, Dispatch, worker acknowledgement/completion, O1 or O2;
 - terminal UI, PTY prompt parsing, generic send-text/send-key approval;
 - automatic approval policy;
-- cloud relay, WebSocket app-server, ConPTY, Windows or SSH expansion.
+- cloud relay, WebSocket app-server, ConPTY, Windows or SSH implementation expansion.
+
+Platform-neutral attestor/launcher/transport/path interfaces are required by A1.1;
+implementing a Windows backend is not.
 
 ## 11. Optional A1.2 boundary
 
@@ -231,6 +238,12 @@ the frozen A1 core.
 Run only focused checks during a packet. Run the full repository gate once on the
 frozen final implementation tree and again only if a later commit changes that tree.
 Do not run parallel full gates or leave background test processes alive.
+
+Do not add a broad Bash permission to `settings.json`. If the safety classifier blocks
+the controlled spike, first propose one exact harness executable/command prefix, its
+dedicated temporary directory, fixed harmless command and named outputs. It must not
+authorize arbitrary shell evaluation or pass credentials/user prompts in argv. Wait
+for explicit user approval of that exact rule before changing settings.
 
 Use dedicated caches under `/tmp`, record their paths and remove only caches created
 for this work after verification. Check for runaway `go`, `node`, `jest`,

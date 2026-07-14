@@ -2,6 +2,11 @@
 
 Verdict: **ACCEPT — CP0 ONLY**
 
+Historical note: CP0 live evidence at `042dddf` superseded the field-specific
+assumptions that approval-request `environmentId` would be null and that proposal/
+decision fields would be absent. `docs/A1_1_CP0_CHECKPOINT_REVIEW_1.md` records the
+amended decision. The CP0-only authorization and all other boundaries remain valid.
+
 Date: 2026-07-14
 
 Reviewed baseline: `809b11b82805d55b45b1f04e343a4f82241cc42c`
