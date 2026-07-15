@@ -95,5 +95,5 @@ the CP0 evidence boundary for the final independent review.
 ## 5. Review marker
 
 ```text
-REVIEW REQUEST: A1.1 CP0 Production Entry + Runtime Replacement — <implementation SHA>
+REVIEW REQUEST: A1.1 CP0 Production Entry + Runtime Replacement — e1f73e695bb027139a8fb41ca87d6623a60fa3ce
 ```
