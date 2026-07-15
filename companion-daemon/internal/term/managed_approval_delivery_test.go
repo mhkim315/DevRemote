@@ -197,6 +197,23 @@ func (s *deliverySession) armPending(t *testing.T, idToken, approvalID string) {
 	s.rt.turnMu.Unlock()
 }
 
+// waitWritten waits (bounded) until the provider recorded exactly n response
+// writes — recording happens on the script goroutine after the daemon's write
+// returns, so an assertion immediately after the write races the recorder.
+func (s *deliverySession) waitWritten(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.written.count() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("provider never recorded %d writes (have %d)", n, s.written.count())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := s.written.count(); got != n {
+		t.Fatalf("want exactly %d writes, got %d", n, got)
+	}
+}
+
 func acceptBytes(idToken string) []byte {
 	return []byte(`{"jsonrpc":"2.0","id":` + idToken + `,"result":{"decision":"accept"}}`)
 }
@@ -239,6 +256,25 @@ func ingestActionable(t *testing.T, store *AuthoritativeApprovalStore, sessionID
 
 func boundManagedRT() RuntimeRef {
 	return RuntimeRef{Adapter: codexAppServerAdapter, Version: certifiedCodexAuthorityVersion, LaunchGen: 1, StreamGen: 0}
+}
+
+// resolveAtWrittenMark wires the boundary's barrier so the provider's
+// resolved is injected and pump-routed deterministically AFTER the written
+// mark — the CP0 accept ordering. (An inline auto-resolve races the written
+// mark on the in-process pipe rendezvous: the fake provider can emit resolved
+// the instant the write syscall returns, which the production semantics
+// correctly classify as the ambiguous during-write outcome. Real pipes
+// decouple write-return from provider processing; the barrier restores that
+// ordering deterministically.)
+func (s *deliverySession) resolveAtWrittenMark(t *testing.T, d *CodexManagedApprovalDelivery, idToken string) {
+	t.Helper()
+	d.barrier = func(stage string) {
+		if stage != "post-written-mark" {
+			return
+		}
+		s.inject(t, resolvedLine(idToken))
+		s.sync(t)
+	}
 }
 
 func mustClaim(t *testing.T, store *AuthoritativeApprovalStore, sessionID, approvalID, optionID, key string) ClaimResult {
@@ -401,13 +437,14 @@ func TestDeliveryMaterial_NeverInPublicDTOs(t *testing.T) {
 // boundary writes EXACTLY the claim bytes once, the provider resolves, the
 // receipt is accepted and the store commits approved.
 func TestCodexDelivery_WriteThenExactResolvedCommits(t *testing.T) {
-	s := newDeliverySession(t, true)
+	s := newDeliverySession(t, false)
 	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
 	s.armPending(t, "7", "codexas-1-7")
 	c := mustClaim(t, s.store, s.id, "codexas-1-7", "allow_once", "k1")
 
 	d := NewCodexManagedApprovalDelivery(s.managed)
 	d.timeout = 5 * time.Second
+	s.resolveAtWrittenMark(t, d, "7")
 	receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
 	if receipt.Outcome != DeliveryAccepted || receipt.ReceiptID == "" {
 		t.Fatalf("delivery must be accepted: %+v", receipt)
@@ -432,12 +469,13 @@ func TestCodexDelivery_WriteThenExactResolvedCommits(t *testing.T) {
 // TestCodexDelivery_DenyPathCommitsRejected: the deny option carries the
 // decline bytes and commits rejected.
 func TestCodexDelivery_DenyPathCommitsRejected(t *testing.T) {
-	s := newDeliverySession(t, true)
+	s := newDeliverySession(t, false)
 	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
 	s.armPending(t, "7", "codexas-1-7")
 	c := mustClaim(t, s.store, s.id, "codexas-1-7", "deny", "k1")
 	d := NewCodexManagedApprovalDelivery(s.managed)
 	d.timeout = 5 * time.Second
+	s.resolveAtWrittenMark(t, d, "7")
 	receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
 	if receipt.Outcome != DeliveryAccepted {
 		t.Fatalf("deny delivery must be accepted: %+v", receipt)
@@ -551,24 +589,26 @@ func TestCodexDelivery_DuplicateArmConflicts(t *testing.T) {
 
 	d := NewCodexManagedApprovalDelivery(s.managed)
 	d.timeout = 5 * time.Second
+	markReached := make(chan struct{})
+	release := make(chan struct{})
+	d.barrier = func(stage string) {
+		if stage != "post-written-mark" {
+			return
+		}
+		close(markReached)
+		<-release
+	}
 	first := make(chan DeliveryReceipt, 1)
 	go func() { first <- d.Deliver(req) }()
 
-	// Deterministic: wait until the first write reached the provider.
-	deadline := time.Now().Add(5 * time.Second)
-	for s.written.count() < 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("first delivery never wrote")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	// Deterministic: the first delivery holds at the written mark.
+	<-markReached
 	second := d.Deliver(req)
 	if second.Outcome != DeliveryConflict {
 		t.Fatalf("duplicate arm must conflict: %+v", second)
 	}
-	if s.written.count() != 1 {
-		t.Fatalf("duplicate must add zero writes")
-	}
+	s.waitWritten(t, 1) // duplicate added zero writes
+	close(release)
 	s.inject(t, resolvedLine("7"))
 	receipt := <-first
 	if receipt.Outcome != DeliveryAccepted {
@@ -702,28 +742,30 @@ func TestCodexDelivery_MalformedResolvedInertNonVacuous(t *testing.T) {
 
 	d := NewCodexManagedApprovalDelivery(s.managed)
 	d.timeout = 10 * time.Second
+	markReached := make(chan struct{})
+	d.barrier = func(stage string) {
+		if stage == "post-written-mark" {
+			close(markReached)
+		}
+	}
 	done := make(chan DeliveryReceipt, 1)
 	go func() {
 		done <- d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for s.written.count() < 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("delivery never wrote")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	// Deterministic: the waiter is armed AND marked written before any
+	// malformed variant is offered.
+	<-markReached
 
 	oversizedParams := `{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7,"` +
 		"p" + `":"` + string(bytes.Repeat([]byte("x"), maxResolvedParamsBytes)) + `"}}`
 	variants := []string{
-		`{"method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                                       // missing jsonrpc
-		`{"jsonrpc":"1.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                       // wrong jsonrpc
-		`{"jsonrpc":"2.0","method":"serverRequest/resolved","extra":1,"params":{"threadId":"` + apprTestThread + `","requestId":7}}`,             // unknown top-level field
-		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7,"why":"x"}}`,             // unknown params field
+		`{"method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                                                     // missing jsonrpc
+		`{"jsonrpc":"1.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                                     // wrong jsonrpc
+		`{"jsonrpc":"2.0","method":"serverRequest/resolved","extra":1,"params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                           // unknown top-level field
+		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7,"why":"x"}}`,                           // unknown params field
 		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","threadId":"` + apprTestThread + `","requestId":7}}`, // duplicate key
-		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"thread-OTHER","requestId":7}}`,                                 // wrong thread
-		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":"7"}}`,                     // string id
+		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"thread-OTHER","requestId":7}}`,                                               // wrong thread
+		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":"7"}}`,                                   // string id
 		oversizedParams, // params over bound
 	}
 	for _, v := range variants {
@@ -767,5 +809,277 @@ func TestCodexDelivery_ProductionActionabilityStillOff(t *testing.T) {
 	})
 	if claim.Outcome != ClaimNotActionable {
 		t.Fatalf("production record must not be claimable: %s", claim.Outcome)
+	}
+}
+
+// ── P2A-R1 blocker 1: write-claim linearization ──
+
+// TestCodexDelivery_KnownBadCheckThenWriteControl reproduces the
+// PRE-REMEDIATION race as a known-bad control: the old sequence checked the
+// waiter under respMu, released the lock, and then wrote. A resolved routed
+// in that window left the old code writing provider bytes for an
+// already-resolved request. This control proves the interleaving is real and
+// that the test harness can catch it; the production path under the same
+// interleaving performs ZERO writes (TestCodexDelivery_ResolvedInArmWindowSkipsWrite)
+// or fails ambiguously without retry (TestCodexDelivery_ResolvedDuringWriteClaim).
+func TestCodexDelivery_KnownBadCheckThenWriteControl(t *testing.T) {
+	s := newDeliverySession(t, false)
+	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
+	s.armPending(t, "7", "codexas-1-7")
+	c := mustClaim(t, s.store, s.id, "codexas-1-7", "allow_once", "k1")
+
+	// Arm a waiter exactly like Deliver does.
+	w := &approvalResponseWaiter{idToken: "7", state: waiterStateArmed, ch: make(chan approvalWaiterOutcome, 1)}
+	s.rt.respMu.Lock()
+	s.rt.respWaiters[7] = w
+	s.rt.respMu.Unlock()
+
+	// KNOWN-BAD: check-then-write without claiming the write.
+	s.rt.respMu.Lock()
+	stillArmed := s.rt.respWaiters[7] == w
+	s.rt.respMu.Unlock()
+	if !stillArmed {
+		t.Fatalf("control setup broken")
+	}
+	// The contested window: the provider resolves NOW and the pump fully
+	// processes it (waiter consumed as pre-write).
+	s.inject(t, resolvedLine("7"))
+	s.sync(t)
+	select {
+	case out := <-w.ch:
+		if out != waiterResolvedPreWrite {
+			t.Fatalf("control: want pre-write outcome, got %v", out)
+		}
+	default:
+		t.Fatalf("control: resolved was not routed to the waiter")
+	}
+	// The old algorithm now writes because stillArmed was observed true.
+	if err := s.rt.writeRawResponse(c.Payload); err != nil {
+		t.Fatalf("control write: %v", err)
+	}
+	s.waitWritten(t, 1) // ⇒ provider bytes written for an already-resolved request
+}
+
+// TestCodexDelivery_ResolvedDuringWriteClaim: a resolved routed AFTER the
+// write claim but BEFORE the written mark (deterministic barrier) yields the
+// ambiguous non-retryable conflict — the single write happened, it is never
+// reported as success, and a manual retry (which could duplicate the write)
+// is impossible.
+func TestCodexDelivery_ResolvedDuringWriteClaim(t *testing.T) {
+	s := newDeliverySession(t, false)
+	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
+	s.armPending(t, "7", "codexas-1-7")
+	c := mustClaim(t, s.store, s.id, "codexas-1-7", "allow_once", "k1")
+
+	d := NewCodexManagedApprovalDelivery(s.managed)
+	d.timeout = 5 * time.Second
+	d.barrier = func(stage string) {
+		if stage != "post-write-claim" {
+			return
+		}
+		s.inject(t, resolvedLine("7"))
+		s.sync(t)
+	}
+	receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
+	if receipt.Outcome != DeliveryConflict {
+		t.Fatalf("during-write resolution must be the ambiguous conflict: %+v", receipt)
+	}
+	s.waitWritten(t, 1) // exactly the one claimed write
+	commit := s.store.RecordDelivery(receipt)
+	if commit.Committed || commit.State != ApprovalDeliveryFailed {
+		t.Fatalf("during-write resolution must not commit: %+v", commit)
+	}
+	// Non-retryable: a retry could otherwise write a second time.
+	retry := s.store.ClaimForExecution(ClaimRequest{
+		SessionID: s.id, ApprovalID: "codexas-1-7", OptionID: "allow_once",
+		Runtime: boundManagedRT(), Requester: completeRequester(), IdempotencyKey: "k1",
+	})
+	if retry.Outcome != ClaimRetryExhausted {
+		t.Fatalf("during-write ambiguity must not be retryable: %s", retry.Outcome)
+	}
+	if s.written.count() != 1 {
+		t.Fatalf("no path may produce a duplicate write")
+	}
+}
+
+// TestCodexDelivery_ExitInWriteClaimWindow: stop/kill races the SAME state
+// transitions — an exit during the claimed write fails the delivery with
+// stale_runtime and never commits.
+func TestCodexDelivery_ExitInWriteClaimWindow(t *testing.T) {
+	s := newDeliverySession(t, false)
+	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
+	s.armPending(t, "7", "codexas-1-7")
+	c := mustClaim(t, s.store, s.id, "codexas-1-7", "allow_once", "k1")
+
+	d := NewCodexManagedApprovalDelivery(s.managed)
+	d.timeout = 5 * time.Second
+	d.barrier = func(stage string) {
+		if stage != "post-write-claim" {
+			return
+		}
+		if err := s.managed.Kill(s.id, 1); err != nil {
+			t.Errorf("kill: %v", err)
+		}
+	}
+	receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
+	if receipt.Outcome != DeliveryStaleRuntime {
+		t.Fatalf("exit during claimed write must be stale_runtime: %+v", receipt)
+	}
+	if commit := s.store.RecordDelivery(receipt); commit.Committed {
+		t.Fatalf("exit during claimed write must not commit: %+v", commit)
+	}
+}
+
+// ── P2A-R1 blocker 2: exact action↔response semantic coupling ──
+
+// ingestActionableCustom ingests one actionable record with caller-provided
+// delivery material (test-arranged adversarial ingest shapes).
+func ingestActionableCustom(t *testing.T, store *AuthoritativeApprovalStore, sessionID, approvalID string, mats []ApprovalDeliveryMaterial) {
+	t.Helper()
+	ok := store.IngestObserved(ApprovalIngest{
+		SessionID: sessionID, LaunchGen: 1, StreamGen: 0,
+		Provider: codexAppServerAdapter, Version: certifiedCodexAuthorityVersion,
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: approvalID, SessionID: sessionID, AgentKind: codexAppServerAdapter,
+				Kind: "approval", Options: certifiedOptions(), Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance: contract.ProvenanceProviderProtocol, Actionable: true,
+			RequiredPerm:     devicetrust.PermTerminalInput,
+			DeliveryMaterial: mats,
+		}},
+	})
+	if !ok {
+		t.Fatalf("custom actionable ingest must be admitted (bounds-valid material)")
+	}
+}
+
+// TestCodexDelivery_ResponseSemanticsRejectedPreWrite: a swapped
+// option↔response ingest, a non-certified schema identity, an extra result
+// field, an unknown/amendment/cancel decision, a non-object result, and a
+// missing decision are all rejected BEFORE the wire with zero writes.
+func TestCodexDelivery_ResponseSemanticsRejectedPreWrite(t *testing.T) {
+	s := newDeliverySession(t, true) // auto-resolve would fire IF a write leaked
+	d := NewCodexManagedApprovalDelivery(s.managed)
+	d.timeout = 2 * time.Second
+
+	cases := []struct {
+		name     string
+		option   string
+		material []ApprovalDeliveryMaterial
+	}{
+		{"swapped option/response", "allow_once", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: declineBytes("%TOK%")},
+			{OptionID: "deny", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: acceptBytes("%TOK%")},
+		}},
+		{"non-certified schema", "allow_once", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: "codex.appserver.decision.v0", ResponseBytes: acceptBytes("%TOK%")},
+			{OptionID: "deny", SchemaVersion: "codex.appserver.decision.v0", ResponseBytes: declineBytes("%TOK%")},
+		}},
+		{"extra result field", "allow_once", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: []byte(`{"jsonrpc":"2.0","id":%TOK%,"result":{"decision":"accept","extra":1}}`)},
+			{OptionID: "deny", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: declineBytes("%TOK%")},
+		}},
+		{"amendment decision", "allow_once", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: []byte(`{"jsonrpc":"2.0","id":%TOK%,"result":{"decision":"acceptWithExecpolicyAmendment"}}`)},
+			{OptionID: "deny", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: declineBytes("%TOK%")},
+		}},
+		{"cancel decision", "deny", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: acceptBytes("%TOK%")},
+			{OptionID: "deny", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: []byte(`{"jsonrpc":"2.0","id":%TOK%,"result":{"decision":"cancel"}}`)},
+		}},
+		{"non-object result", "allow_once", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: []byte(`{"jsonrpc":"2.0","id":%TOK%,"result":"accept"}`)},
+			{OptionID: "deny", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: declineBytes("%TOK%")},
+		}},
+		{"missing decision", "allow_once", []ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: []byte(`{"jsonrpc":"2.0","id":%TOK%,"result":{}}`)},
+			{OptionID: "deny", SchemaVersion: codexDecisionSchemaV1, ResponseBytes: declineBytes("%TOK%")},
+		}},
+	}
+	for i, tc := range cases {
+		tok := strconv.Itoa(100 + i)
+		approvalID := "codexas-1-" + tok
+		mats := make([]ApprovalDeliveryMaterial, len(tc.material))
+		for j, m := range tc.material {
+			mats[j] = ApprovalDeliveryMaterial{OptionID: m.OptionID, SchemaVersion: m.SchemaVersion,
+				ResponseBytes: bytes.ReplaceAll(m.ResponseBytes, []byte("%TOK%"), []byte(tok))}
+		}
+		ingestActionableCustom(t, s.store, s.id, approvalID, mats)
+		s.armPending(t, tok, approvalID)
+		c := mustClaim(t, s.store, s.id, approvalID, tc.option, "k-"+tok)
+		receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
+		if receipt.Outcome != DeliveryRejected {
+			t.Fatalf("%s: must reject pre-write, got %+v", tc.name, receipt)
+		}
+		if commit := s.store.RecordDelivery(receipt); commit.Committed {
+			t.Fatalf("%s: must not commit", tc.name)
+		}
+	}
+	if s.written.count() != 0 {
+		t.Fatalf("no semantic-mismatch case may reach the wire: %d writes", s.written.count())
+	}
+}
+
+// TestCodexDelivery_TamperedBindingOptionRejected: mutating the binding's
+// internal OptionID after claim fails BOTH the boundary mapping check (before
+// the wire) and the store commit comparison.
+func TestCodexDelivery_TamperedBindingOptionRejected(t *testing.T) {
+	s := newDeliverySession(t, false)
+	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
+	s.armPending(t, "7", "codexas-1-7")
+	c := mustClaim(t, s.store, s.id, "codexas-1-7", "allow_once", "k1")
+
+	tampered := c.Binding
+	tampered.OptionID = "deny" // claim selected allow_once
+	d := NewCodexManagedApprovalDelivery(s.managed)
+	receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: tampered, Payload: c.Payload})
+	if receipt.Outcome != DeliveryRejected || s.written.count() != 0 {
+		t.Fatalf("tampered option must reject pre-write: %+v", receipt)
+	}
+	// A forged ACCEPTED receipt carrying the tampered binding cannot commit.
+	forged := DeliveryReceipt{
+		Outcome: DeliveryAccepted, ClaimToken: c.Token, Binding: tampered,
+		ReceiptID: "r1", DeliveredPayloadDigest: c.Binding.PayloadDigest,
+	}
+	if commit := s.store.RecordDelivery(forged); commit.Committed {
+		t.Fatalf("tampered binding must not commit")
+	}
+	// Control: the untampered binding still succeeds end-to-end.
+	d.timeout = 5 * time.Second
+	s.resolveAtWrittenMark(t, d, "7")
+	receipt = d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload})
+	if receipt.Outcome != DeliveryAccepted {
+		t.Fatalf("control delivery must succeed: %+v", receipt)
+	}
+	if commit := s.store.RecordDelivery(receipt); !commit.Committed || commit.State != ApprovalApproved {
+		t.Fatalf("control commit must be approved: %+v", commit)
+	}
+}
+
+// TestCodexDelivery_BindingSchemaTamperRejected: mutating the binding's
+// internal DeliverySchema after claim fails the boundary check and the store
+// commit comparison.
+func TestCodexDelivery_BindingSchemaTamperRejected(t *testing.T) {
+	s := newDeliverySession(t, false)
+	ingestActionable(t, s.store, s.id, "codexas-1-7", "7")
+	s.armPending(t, "7", "codexas-1-7")
+	c := mustClaim(t, s.store, s.id, "codexas-1-7", "allow_once", "k1")
+	if c.Binding.DeliverySchema != codexDecisionSchemaV1 || c.Binding.OptionID != "allow_once" {
+		t.Fatalf("claim must bind the selected option and certified schema: %+v", c.Binding)
+	}
+	tampered := c.Binding
+	tampered.DeliverySchema = "codex.appserver.decision.v0"
+	d := NewCodexManagedApprovalDelivery(s.managed)
+	receipt := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: tampered, Payload: c.Payload})
+	if receipt.Outcome != DeliveryRejected || s.written.count() != 0 {
+		t.Fatalf("tampered schema must reject pre-write: %+v", receipt)
+	}
+	forged := DeliveryReceipt{
+		Outcome: DeliveryAccepted, ClaimToken: c.Token, Binding: tampered,
+		ReceiptID: "r1", DeliveredPayloadDigest: c.Binding.PayloadDigest,
+	}
+	if commit := s.store.RecordDelivery(forged); commit.Committed {
+		t.Fatalf("tampered schema binding must not commit")
 	}
 }

@@ -201,6 +201,11 @@ func payloadDigest(p []byte) string {
 
 // ApprovalExecutionBinding is the ONE immutable identity a claim token owns, carried
 // unchanged through claim → delivery → receipt → commit; every field is compared.
+// SP1 P2A-R1: OptionID (the store-selected action identity) and DeliverySchema (the
+// delivery material's schema identity, empty without material) are INTERNAL binding
+// fields set by the store at claim time, compared everywhere, readable by the
+// certified delivery boundary for exact action↔response semantic coupling, and never
+// projected into any public/mobile DTO.
 type ApprovalExecutionBinding struct {
 	ApprovalID     string
 	SessionID      string
@@ -208,12 +213,15 @@ type ApprovalExecutionBinding struct {
 	ActionDigest   string
 	PayloadDigest  string
 	IdempotencyKey string
+	OptionID       string
+	DeliverySchema string
 }
 
 func (b ApprovalExecutionBinding) equal(o ApprovalExecutionBinding) bool {
 	return b.ApprovalID == o.ApprovalID && b.SessionID == o.SessionID &&
 		b.Runtime.equal(o.Runtime) && b.ActionDigest == o.ActionDigest &&
-		b.PayloadDigest == o.PayloadDigest && b.IdempotencyKey == o.IdempotencyKey
+		b.PayloadDigest == o.PayloadDigest && b.IdempotencyKey == o.IdempotencyKey &&
+		b.OptionID == o.OptionID && b.DeliverySchema == o.DeliverySchema
 }
 
 // ClaimOutcome is the closed result vocabulary of ClaimForExecution.

@@ -571,6 +571,11 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	binding := ApprovalExecutionBinding{
 		ApprovalID: req.ApprovalID, SessionID: req.SessionID, Runtime: bound,
 		ActionDigest: digest, PayloadDigest: pdigest, IdempotencyKey: req.IdempotencyKey,
+		// SP1 P2A-R1: the store binds the SELECTED option identity and the
+		// material's schema identity so the certified boundary can enforce
+		// exact action↔response semantics and commit compares them.
+		OptionID:       opt.ID,
+		DeliverySchema: action.DeliverySchemaVersion,
 	}
 	auth := canonicalRequesterAuth(req.Requester)
 

@@ -190,7 +190,10 @@ func validVersion(v string) bool {
 
 // validGateBindingMeta validates EVERY variable-length canonical field before
 // the gate retains it. A non-canonical digest/token/key or an over-length session/
-// approval/version/adapter rejects the request before any mutation.
+// approval/version/adapter rejects the request before any mutation. The SP1 P2A-R1
+// binding fields are bounds-checked here (they may be empty on the legacy gate
+// path; the certified Codex boundary separately REQUIRES a certified OptionID and
+// schema identity).
 func validGateBindingMeta(req ApprovalDeliveryRequest) bool {
 	b := req.Binding
 	return b.ApprovalID != "" && b.SessionID != "" && b.ActionDigest != "" && b.PayloadDigest != "" &&
@@ -198,7 +201,8 @@ func validGateBindingMeta(req ApprovalDeliveryRequest) bool {
 		validSessionID(b.SessionID) && validApprovalID(b.ApprovalID) &&
 		validAdapterID(b.Runtime.Adapter) && validVersion(b.Runtime.Version) &&
 		isHex64(b.ActionDigest) && isHex64(b.PayloadDigest) &&
-		validClaimToken(req.ClaimToken)
+		validClaimToken(req.ClaimToken) &&
+		len(b.OptionID) <= authMaxOptionField && len(b.DeliverySchema) <= maxDeliverySchemaVerBytes
 }
 
 // gateItemFixedCharge is a CONSERVATIVE upper bound (in bytes) on the fixed per-item
@@ -208,12 +212,13 @@ func validGateBindingMeta(req ApprovalDeliveryRequest) bool {
 // CONTENT equals its len (counted variably); this charge covers everything else the
 // retained AcceptedDelivery holds. Worst case on 64-bit Go:
 //
-//	9 string headers (ApprovalID, SessionID, ActionDigest, PayloadDigest,
-//	  IdempotencyKey, Runtime.Adapter, Runtime.Version, ClaimToken, ReceiptID) 9×16 = 144
+//	11 string headers (ApprovalID, SessionID, ActionDigest, PayloadDigest,
+//	  IdempotencyKey, Runtime.Adapter, Runtime.Version, OptionID,
+//	  DeliverySchema, ClaimToken, ReceiptID) 11×16 = 176
 //	1 payload slice header                                                          =  24
 //	RuntimeRef LaunchGen(int64)+StreamGen(int)                                       =  16
 //	ReceiptID CONTENT: nonce(32 hex) + '-' + ≤20 seq digits                         ≤  53
-//	                                                                          subtotal = 237
+//	                                                                          subtotal = 269
 //
 // Rounded up to 320 to conservatively absorb struct alignment, the queue backing-slice
 // element and the map entry. This charge OVER-counts real fixed overhead; it never
@@ -242,19 +247,22 @@ func cloneBinding(b ApprovalExecutionBinding) ApprovalExecutionBinding {
 		ActionDigest:   strings.Clone(b.ActionDigest),
 		PayloadDigest:  strings.Clone(b.PayloadDigest),
 		IdempotencyKey: strings.Clone(b.IdempotencyKey),
+		OptionID:       strings.Clone(b.OptionID),
+		DeliverySchema: strings.Clone(b.DeliverySchema),
 	}
 }
 
 // exactRetainedVariableBytes returns the EXACT number of retained variable-length
 // bytes: the payload plus every stored metadata string (approval, session, both
-// digests, idempotency key, runtime adapter/version, claim token). It excludes the
-// conservative fixed charge.
+// digests, idempotency key, runtime adapter/version, claim token, option id,
+// delivery schema). It excludes the conservative fixed charge.
 func exactRetainedVariableBytes(req ApprovalDeliveryRequest) int {
 	return len(req.Payload) +
 		len(req.Binding.ApprovalID) + len(req.Binding.SessionID) +
 		len(req.Binding.ActionDigest) + len(req.Binding.PayloadDigest) +
 		len(req.Binding.IdempotencyKey) + len(req.Binding.Runtime.Adapter) +
 		len(req.Binding.Runtime.Version) +
+		len(req.Binding.OptionID) + len(req.Binding.DeliverySchema) +
 		len(req.ClaimToken)
 }
 
@@ -263,9 +271,9 @@ func exactRetainedVariableBytes(req ApprovalDeliveryRequest) int {
 //	exact retained variable bytes + conservative fixed charge.
 //
 // Overflow safety (no checked-add needed): payload ≤ maxGateItemBytes (4096) and the
-// eight identity/digest/token fields are each individually bounded by their validators
-// (512+256+64+64+128+64+64+32 = 1184), so exactRetainedVariableBytes < 5280 and
-// chargedItemBytes < 5344 for any request that reaches accounting. The running
+// ten identity/digest/token fields are each individually bounded by their validators
+// (512+256+64+64+128+64+64+512+64+32 = 1760), so exactRetainedVariableBytes < 5856 and
+// chargedItemBytes < 5920 for any request that reaches accounting. The running
 // g.totalBytes is bounded by maxGateTotalQueuedBytes (2 MiB); g.totalBytes +
 // chargedItemBytes < 2 MiB + 6 KiB, far below math.MaxInt32.
 func chargedItemBytes(req ApprovalDeliveryRequest) int {

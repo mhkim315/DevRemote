@@ -174,3 +174,51 @@ transition and is not claimed here.
 Focused race-enabled checkpoint: `go build ./...`, `go vet ./...`,
 `go test -race ./internal/term ./cmd/devremote -count=1`, new suites
 `-count=20`. Full repository gate remains reserved for P3 finalization.
+
+## 10. R1 amendments (reviewer blockers on fcd702d, both remediated)
+
+1. **Write-claim linearization**: the waiter is now a closed state machine
+   `armed → write_claimed → written`, with EVERY transition — the pump's
+   resolved routing, the deliverer's write claim and written mark, and the
+   exit close — happening under the ONE respMu linearization point, while no
+   lock is held across the external write.
+   - A resolved that wins the claim race (state `armed`) makes the write
+     UNPERFORMED: zero provider bytes (the old check-then-write window is
+     gone).
+   - A resolved routed while the write is claimed (state `write_claimed`) is
+     the new `waiterResolvedDuringWrite` outcome: the single write happened,
+     the receipt is the ambiguous non-retryable `conflict`, so a bounded
+     manual retry — which could duplicate the write — is impossible
+     (`retry_exhausted` proven).
+   - The written mark set-window (write returned, mark pending) routes as
+     during-write: a possible success is reported as ambiguous failure, never
+     the reverse.
+   - Stop/kill/exit race the SAME transitions via the respMu-owned close.
+   - Evidence: `TestCodexDelivery_KnownBadCheckThenWriteControl` reproduces
+     the pre-remediation race against the real structures (write lands after
+     the resolved consumed the waiter) — proving the harness catches the
+     defect; barrier tests at `post-arm` (zero writes) and `post-write-claim`
+     (one write, ambiguous, non-retryable; exit variant → stale_runtime).
+   - Test determinism note: on the in-process pipe the fake provider's
+     inline auto-resolve is a rendezvous with the write syscall, so it can
+     race the written mark — which the production semantics CORRECTLY
+     classify as during-write ambiguity. Happy-path tests therefore inject
+     the resolved at the `post-written-mark` barrier (the real-pipe ordering,
+     where write-return precedes provider processing), keeping the ambiguous
+     classification intact in production while making every test outcome
+     deterministic (proven stable at 100 repetitions under -race).
+2. **Exact action↔response semantic coupling**: the immutable
+   `ApprovalExecutionBinding` gains INTERNAL fields `OptionID` (store-selected
+   action identity) and `DeliverySchema` (material schema identity), set by
+   the store at claim time, compared by `equal` through claim → delivery →
+   receipt → commit, cloned/bounded/accounted at the legacy gate, and never
+   projected into any public/mobile DTO. The Codex boundary now
+   strict-decodes the response to EXACTLY
+   `{jsonrpc:"2.0", id:<integer>, result:{"decision":<string>}}` (no unknown
+   or extra fields, no duplicate keys) and admits ONLY the certified mapping
+   `allow_once → accept` / `deny → decline` under the certified schema
+   identity `codex.appserver.decision.v1` — a swapped option↔response ingest,
+   a non-certified schema, an extra result field, an unknown/amendment/cancel
+   decision, or a tampered binding option/schema is rejected BEFORE the wire
+   with zero writes, and a forged accepted receipt carrying a tampered
+   binding cannot commit.

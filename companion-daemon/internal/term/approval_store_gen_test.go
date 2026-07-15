@@ -856,7 +856,7 @@ func TestRetry_BoundedManualRetryAfterNonAcceptance(t *testing.T) {
 	if c.Outcome != ClaimGranted {
 		t.Fatalf("retry 1=%q want granted", c.Outcome)
 	}
-	if !c.Binding.equal((ApprovalExecutionBinding{ApprovalID: "a1", SessionID: "codex:s1", Runtime: boundRT(), ActionDigest: c.Binding.ActionDigest, PayloadDigest: c.Binding.PayloadDigest, IdempotencyKey: key})) {
+	if !c.Binding.equal((ApprovalExecutionBinding{ApprovalID: "a1", SessionID: "codex:s1", Runtime: boundRT(), ActionDigest: c.Binding.ActionDigest, PayloadDigest: c.Binding.PayloadDigest, IdempotencyKey: key, OptionID: "approve"})) {
 		t.Error("retry did not preserve the binding key")
 	}
 	fail(c)
