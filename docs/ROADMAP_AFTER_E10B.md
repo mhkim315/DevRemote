@@ -146,9 +146,12 @@ T3  Transcript Integration                    ACCEPT 9ad6f834f (bounded semantic
 S1  Rich Agent Runtime Status Model           ACCEPT b6504bd7d (S1-A..E; final marker 70ef5df; freshness/epoch/gen high-water; full gate PASS)
 S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runtime identity/replay; atomic bounded non-bypassable registry)
 A1  Approval Safety Core                      FROZEN after independent R11 ACCEPT (implementation 2e70512; R11 evidence d5a965c; report 997a697; provider-positive path absent)
-A1.1 Codex Provider-Positive Path             CP0 IN PROGRESS / AMENDED CHECKPOINT 1 / BLOCKING N1 (app-server stdio candidate; capacity stays zero through CP4; real allow+deny E2E required)
+A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native runtime slices; provider-positive approval remains SP1
+SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
+SP0.5 Managed I/O and Lifecycle               AUTHORIZED (local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
+SP1 Native Approval                           PLANNED after independent SP0.5 ACCEPT (real Codex request/response/consumption; completes A1.1 provider-positive requirement)
 A1.2 Claude Approval Extension                OPTIONAL FOLLOW-UP (not automatically an N1 prerequisite; separate evidence and authorization required)
-N1  Notifications                             BLOCKED until independent A1.1 ACCEPT
+N1  Notifications                             BLOCKED until independent SP1/A1.1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
@@ -173,7 +176,9 @@ M3-auth-1B
 → S1 status
 → S1.1 runtime status hardening
 → A1 approval safety core
-→ A1.1 Codex provider-positive path
+→ SP0 native managed runtime
+→ SP0.5 managed I/O and lifecycle
+→ SP1 native approval / A1.1 provider-positive completion
 → N1 notifications
 → O1 deterministic broker
 → O2 developer-verifier loop
