@@ -130,6 +130,10 @@ type codexManagedRuntime struct {
 	writeMu   sync.Mutex
 	nextID    int64
 	threadID  string
+	// observer is a NARROW test seam (nil in production): called once per
+	// pumped provider message that carries a method, so deterministic tests
+	// can prove a crafted message was consumed WITHOUT affecting status.
+	observer func(method string)
 }
 
 func newCodexManagedRuntime(proc managedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
@@ -268,6 +272,9 @@ func (rt *codexManagedRuntime) pump() {
 		if method == "" {
 			continue
 		}
+		if rt.observer != nil {
+			rt.observer(method)
+		}
 		params, _ := m["params"].(map[string]any)
 		tid, _ := params["threadId"].(string)
 		if tid != rt.threadID {
@@ -305,6 +312,10 @@ type ManagedCodexService struct {
 	mu       sync.Mutex
 	gen      int64
 	runtimes map[string]*codexManagedRuntime
+
+	// pumpObserver is a NARROW test seam (nil in production) copied onto each
+	// runtime before its pump starts.
+	pumpObserver func(sessionID, method string)
 }
 
 // NewManagedCodexService creates the service. launcher nil means the
@@ -382,6 +393,10 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	s.runtimes[id] = rt
 	s.mu.Unlock()
 
+	if s.pumpObserver != nil {
+		obs := s.pumpObserver
+		rt.observer = func(method string) { obs(id, method) }
+	}
 	go rt.pump()
 	return id, nil
 }
