@@ -1,9 +1,9 @@
 # SP0 Native Managed Runtime — Evidence Report
 
-Status: **SP0 P1–P3 + R1 remediation DELIVERED — resubmitted for independent
-review. SP0.5 / SP1 / Cleanup / A1.1 provider-positive delivery / N1 / O1 / O2
-NOT started. Approval capacity ZERO; `provenActionMapping` empty; frozen A1
-contracts untouched.**
+Status: **SP0 P1–P3 + R1 + R2 remediation DELIVERED — resubmitted for
+independent review. SP0.5 / SP1 / Cleanup / A1.1 provider-positive delivery /
+N1 / O1 / O2 NOT started. Approval capacity ZERO; `provenActionMapping` empty;
+frozen A1 contracts untouched.**
 
 Date: 2026-07-15. Executor: Claude Code, canonical checkout
 `/Users/mhk/Documents/codex/DevRemote`, branch `feature/phase10-multi-adapter`.
@@ -12,7 +12,7 @@ Date: 2026-07-15. Executor: Claude Code, canonical checkout
 - Accepted-evidence ancestry `42429c8acd4c2840a93e1ab11c53f8e21c34bc19`: PASS
 - Contract note: `docs/SP0_NATIVE_RUNTIME_CONTRACT_NOTE.md` (`e8c97c2`)
 - Implementation commits: `73b9a5b` (P1), `2b04033` (P2), `654ee8c` (P3),
-  `8dcd876b4d4274005c0aee2c10dca145dbcd7953` (R1 remediation — final)
+  `8dcd876` (R1), `2b35f524dc339c24d7c3d5ee4284c967300836c3` (R2 — final)
 - Authoritative handoff: `docs/NEXT_EXECUTOR_SP0_NATIVE_RUNTIME_HANDOFF.md`
 
 ## 1. Certified production path (handoff §1)
@@ -192,10 +192,44 @@ duplication); the §4 live proof remains the recorded production-positive
 evidence and the remediation did not alter the pinned launch pipeline's
 happy path (P1/P2/P3 focused suites re-run green).
 
+## 9a. Remediation round R2 (remaining blocker, fixed)
+
+Reviewer verdict on `98f2ca5`: REJECT, one remaining blocker — Shutdown could
+return while a spawned-but-unpublished child was still alive (the R1 test even
+released the create barrier only AFTER Shutdown returned). Fixed in
+implementation commit `2b35f524dc339c24d7c3d5ee4284c967300836c3`
+(`fix(SP0-R2)`):
+
+- **Service-owned in-flight lease** (`inflightCreate`) registered BEFORE
+  verify/spawn; every create exit path releases it. The spawned child is
+  handed to the lease before the post-spawn window, so Shutdown's lease
+  cancellation kills it directly — verify/launch/handshake receive shutdown
+  cancellation without depending on the create goroutine resuming or on the
+  30s handshake watchdog.
+- **Shutdown drains**: one closing transition under `s.mu` (closing + lease
+  snapshot + runtime snapshot), registry closed, every lease cancelled, every
+  published child killed, then a ctx-bounded wait until every published child
+  is reaped AND the lease set is empty. A nil Shutdown return now guarantees:
+  no POKIT-spawned child alive, zero in-flight creates, empty runtime map,
+  closed registry (asserted by `assertDrainedShutdownState`).
+- **Tests in the reviewer-required order**:
+  `TestManagedCreate_ShutdownRace_PostSpawn` and `_PostRegister` now park the
+  create at the barrier, call Shutdown, assert the child is killed AND
+  Shutdown has NOT returned, resume the create, verify the rollback, and only
+  then observe Shutdown return clean.
+  `TestManagedShutdown_BoundedWhenCreateNeverResumes`: a pathologically stuck
+  create cannot block Shutdown past its ctx — Shutdown returns an honest
+  drain error and the child is still killed.
+- Non-vacuous: under the R1 code, both race tests fail at "shutdown returned
+  while a create was still in flight".
+
+The live Codex turn was again NOT re-run (unchanged happy-path pipeline; §4
+live proof remains the production-positive evidence).
+
 ## 10. Final gate (frozen remediation HEAD)
 
 Run once on frozen implementation HEAD
-`8dcd876b4d4274005c0aee2c10dca145dbcd7953` via `sh scripts/build-gate.sh`:
+`2b35f524dc339c24d7c3d5ee4284c967300836c3` via `sh scripts/build-gate.sh`:
 
 ```text
 --- Backend ---  go build OK / go vet OK / go test -race OK / git diff --check OK
@@ -210,5 +244,5 @@ This report commit is docs-only on top of that verified tree.
 ## 11. Review marker
 
 ```text
-REVIEW REQUEST: SP0 Native Managed Runtime — 8dcd876b4d4274005c0aee2c10dca145dbcd7953
+REVIEW REQUEST: SP0 Native Managed Runtime — 2b35f524dc339c24d7c3d5ee4284c967300836c3
 ```
