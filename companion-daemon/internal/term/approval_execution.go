@@ -23,7 +23,23 @@ const ActionSchemaVersion = "a1.action.v1"
 const (
 	maxIdempotencyKeyLen = 128
 	maxNormalizedInput   = 4096
+	// SP1 P2A — bounds of the optional per-option delivery material.
+	maxDeliveryMaterialBytes  = 4096
+	maxDeliverySchemaVerBytes = 64
 )
+
+// ApprovalDeliveryMaterial is daemon-generated immutable delivery material
+// for ONE certified option (SP1 §4): the selected action identity, its
+// response schema version, and the EXACT bounded provider response bytes the
+// delivery boundary must write verbatim. It is supplied at ingestion,
+// defensively copied by the store, folded into the canonical action and
+// payload digests, returned by ClaimForExecution, and NEVER projected into
+// any public/mobile DTO.
+type ApprovalDeliveryMaterial struct {
+	OptionID      string
+	SchemaVersion string
+	ResponseBytes []byte
+}
 
 // RequesterContext is the SERVER-DERIVED authenticated requester handed to the
 // store. The store immediately canonicalizes it; nothing here comes from the client
@@ -110,7 +126,9 @@ func (r RuntimeRef) equal(o RuntimeRef) bool {
 }
 
 // CanonicalAction is the exact, delivery-semantic representation of ONE selected
-// action.
+// action. SP1 P2A: when the stored option carries delivery material, its schema
+// version and exact-bytes digest are part of the action identity — a record
+// differing only in material yields a different ActionDigest.
 type CanonicalAction struct {
 	OptionID        string
 	Kind            string
@@ -118,12 +136,17 @@ type CanonicalAction struct {
 	InputType       string
 	InputPlacement  string
 	NormalizedInput string
+	// DeliverySchemaVersion / DeliveryPayloadDigest are empty for options
+	// without delivery material (frozen legacy behavior unchanged).
+	DeliverySchemaVersion string
+	DeliveryPayloadDigest string
 }
 
 func (c CanonicalAction) Digest() string {
 	h := sha256.New()
 	for _, f := range []string{
 		c.SchemaVersion, c.OptionID, c.Kind, c.InputType, c.InputPlacement, c.NormalizedInput,
+		c.DeliverySchemaVersion, c.DeliveryPayloadDigest,
 	} {
 		var n [8]byte
 		binary.BigEndian.PutUint64(n[:], uint64(len(f)))

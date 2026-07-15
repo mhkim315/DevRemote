@@ -64,6 +64,12 @@ const (
 	maxApprovalParamsBytes  = 16 << 10 // raw params object
 	maxDecisionElementBytes = 4 << 10  // one availableDecisions element
 	maxAmendmentMarkerBytes = 4 << 10  // raw proposedExecpolicyAmendment field
+
+	// SP1 P2A: bounds of the serverRequest/resolved notification. A resolved
+	// failing any bound or strict check is inert for BOTH the delivery router
+	// and the P1 display-invalidation path.
+	maxResolvedMessageBytes = 4096
+	maxResolvedParamsBytes  = 1024
 )
 
 // certifiedDecisionFingerprint is the exact ordered availableDecisions tag
@@ -450,22 +456,35 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 	}
 }
 
-// observeApprovalResolved handles a provider-side resolution: the matching
-// pending entry is removed and the SAME record is marked invalidated so an
-// already-resolved intervention is never displayed as a current request. P1
-// has no consumption authority: this never commits a success, never writes
-// anything, and never touches any OTHER record. A resolved for an unknown or
-// foreign request, a foreign thread, a token mismatch, or an uncertified
-// message shape is inert.
+// observeApprovalResolved handles a provider-side resolution. P2A ordering:
+// an EXACT resolved is first offered to the pump-owned delivery router (an
+// armed waiter for that native id consumes it as the write/observe-order
+// witness); otherwise the P1 display path runs — the matching pending entry
+// is removed and the SAME record is marked invalidated so an
+// already-resolved intervention is never displayed as a current request.
+// The P1 path never commits a success, never writes anything, and never
+// touches any OTHER record. A resolved failing the byte bounds, the strict
+// closed-field decode (jsonrpc=="2.0" REQUIRED), the thread binding, or the
+// integer id grammar is inert for BOTH paths.
 func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
+	if len(raw) > maxResolvedMessageBytes {
+		return
+	}
 	top, ok := decodeStrictObject(raw, resolvedTopLevelFields)
 	if !ok {
+		return
+	}
+	if v, sok := strictBoundedString(top["jsonrpc"], 8); !sok || v != "2.0" {
 		return
 	}
 	if m, sok := strictBoundedString(top["method"], 128); !sok || m != codexResolvedMethod {
 		return
 	}
-	params, ok := decodeStrictObject(top["params"], resolvedParamsFields)
+	paramsRaw := top["params"]
+	if len(paramsRaw) == 0 || len(paramsRaw) > maxResolvedParamsBytes {
+		return
+	}
+	params, ok := decodeStrictObject(paramsRaw, resolvedParamsFields)
 	if !ok {
 		return
 	}
@@ -475,6 +494,19 @@ func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
 	}
 	token, idInt, ok := parseNativeReqID(params["requestId"])
 	if !ok {
+		return
+	}
+	// P2A: delivery router first — an armed waiter for this exact native id
+	// consumes the resolved (success only if the exact write already
+	// happened). The consumed provider request is over: drop its pending
+	// entry WITHOUT invalidating the record (commit authority stays with the
+	// store via RecordDelivery).
+	if rt.routeResolvedToWaiter(idInt, token) {
+		rt.turnMu.Lock()
+		if pend, exists := rt.pendingApprovals[idInt]; exists && pend.idToken == token {
+			delete(rt.pendingApprovals, idInt)
+		}
+		rt.turnMu.Unlock()
 		return
 	}
 	rt.turnMu.Lock()

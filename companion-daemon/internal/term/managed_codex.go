@@ -165,6 +165,12 @@ type codexManagedRuntime struct {
 	approvalRejects  int
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
+	// SP1-P2A: pump-owned bounded pending-response waiters keyed by the exact
+	// native request id. respMu is independent of turnMu (never nested); the
+	// pump is the only router; respClosed rejects arming after exit.
+	respMu      sync.Mutex
+	respClosed  bool
+	respWaiters map[int64]*approvalResponseWaiter
 	// observer is a NARROW test seam (nil in production): called once per
 	// pumped provider message that carries a method, so deterministic tests
 	// can prove a crafted message was consumed WITHOUT affecting status.
@@ -175,7 +181,8 @@ func newCodexManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessio
 	sc := bufio.NewScanner(proc.Stdout())
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{}),
-		pendingApprovals: make(map[int64]pendingProviderRequest)}
+		pendingApprovals: make(map[int64]pendingProviderRequest),
+		respWaiters:      make(map[int64]*approvalResponseWaiter)}
 }
 
 // send writes one JSON-RPC object as a JSONL line.
@@ -430,6 +437,9 @@ func (rt *codexManagedRuntime) pump() {
 	rt.turnClosed = true
 	rt.pendingApprovals = make(map[int64]pendingProviderRequest)
 	rt.turnMu.Unlock()
+	// SP1-P2A: child exit deterministically fails every armed delivery waiter
+	// and rejects all future arming — a late resolved can never commit.
+	rt.closeResponseWaiters()
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
 	// SP1-P1: child exit invalidates the session's (non-actionable) approval
 	// records — a dead runtime leaves no pending approval display behind.

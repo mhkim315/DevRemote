@@ -43,6 +43,11 @@ type ApprovalIngestItem struct {
 	Provenance   contract.Provenance
 	Actionable   bool
 	RequiredPerm string
+	// DeliveryMaterial (SP1 P2A, optional) supplies daemon-generated immutable
+	// delivery material per certified option. Allowed only on an actionable
+	// item; any invalid entry rejects the WHOLE item. Production managed
+	// ingestion supplies none (non-actionable observation).
+	DeliveryMaterial []ApprovalDeliveryMaterial
 }
 
 // ApprovalIngest is one generation-scoped ingestion for a single session.
@@ -87,9 +92,12 @@ type approvalRecord struct {
 	requiredPerm string
 	actionable   bool
 	optionFprint string
-	createdAt    time.Time
-	expiresAt    time.Time
-	resolvedAt   *time.Time
+	// delivery holds the defensively-copied per-option delivery material
+	// (SP1 P2A). Internal only — never projected into any DTO.
+	delivery   map[string]storedDeliveryMaterial
+	createdAt  time.Time
+	expiresAt  time.Time
+	resolvedAt *time.Time
 
 	claimToken    string
 	claimOptionID string
@@ -97,6 +105,13 @@ type approvalRecord struct {
 	auth          RequesterAuthContext
 	retries       int
 	superseded    bool
+}
+
+// storedDeliveryMaterial is the store-owned immutable copy of one option's
+// delivery material.
+type storedDeliveryMaterial struct {
+	schemaVersion string
+	bytes         []byte
 }
 
 // idempotencyEntry binds one idempotency key to the exact approval execution and the
@@ -193,6 +208,66 @@ func newClaimToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+// validateDeliveryMaterial validates and defensively copies the OPTIONAL
+// per-option delivery material of one ingest item (SP1 P2A). ok=false rejects
+// the whole item: material on a non-actionable item, an unknown or duplicate
+// option ID, an empty/oversized schema version, or empty/oversized response
+// bytes all fail closed.
+func validateDeliveryMaterial(item ApprovalIngestItem, opts []agent.InteractionOption) (map[string]storedDeliveryMaterial, bool) {
+	if len(item.DeliveryMaterial) == 0 {
+		return nil, true
+	}
+	if !item.Actionable {
+		return nil, false
+	}
+	known := make(map[string]bool, len(opts))
+	for _, o := range opts {
+		known[o.ID] = true
+	}
+	out := make(map[string]storedDeliveryMaterial, len(item.DeliveryMaterial))
+	for _, m := range item.DeliveryMaterial {
+		if m.OptionID == "" || !known[m.OptionID] {
+			return nil, false
+		}
+		if _, dup := out[m.OptionID]; dup {
+			return nil, false
+		}
+		if m.SchemaVersion == "" || len(m.SchemaVersion) > maxDeliverySchemaVerBytes {
+			return nil, false
+		}
+		if len(m.ResponseBytes) == 0 || len(m.ResponseBytes) > maxDeliveryMaterialBytes {
+			return nil, false
+		}
+		out[m.OptionID] = storedDeliveryMaterial{
+			schemaVersion: m.SchemaVersion,
+			bytes:         append([]byte(nil), m.ResponseBytes...),
+		}
+	}
+	return out, true
+}
+
+// materialFingerprint folds the stored delivery material into the record's
+// option-set fingerprint: a same-ID re-offer with different material is not
+// the same request. Empty material contributes the empty string, so records
+// without material keep their frozen fingerprints.
+func materialFingerprint(mats map[string]storedDeliveryMaterial) string {
+	if len(mats) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(mats))
+	for id := range mats {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	h := sha256.New()
+	h.Write([]byte("a1.material.v1\x00"))
+	for _, id := range ids {
+		m := mats[id]
+		h.Write([]byte("id:" + id + "\x1fsv:" + m.schemaVersion + "\x1fpd:" + payloadDigest(m.bytes) + "\x00"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func optionView(opt *agent.InteractionOption) interactionOptionView {
 	v := interactionOptionView{id: opt.ID, kind: opt.Kind}
 	if opt.Input != nil {
@@ -274,7 +349,12 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 		if !contract.ApprovalAuthoritative(item.Provenance) {
 			continue
 		}
-		fprint := optionSetFingerprint(a.Kind, a.Default, a.Options)
+		copied := copyOptions(a.Options)
+		delivery, mok := validateDeliveryMaterial(item, copied)
+		if !mok {
+			continue // invalid delivery material rejects the whole item
+		}
+		fprint := optionSetFingerprint(a.Kind, a.Default, a.Options) + materialFingerprint(delivery)
 		if existing, ok := sess.records[a.ID]; ok {
 			if existing.state != ApprovalPending {
 				continue
@@ -297,7 +377,7 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 				AgentKind:  boundStr(a.AgentKind, authMaxOptionField),
 				Kind:       boundStr(a.Kind, authMaxOptionField),
 				Prompt:     boundStr(a.Prompt, authMaxPromptLen),
-				Options:    copyOptions(a.Options),
+				Options:    copied,
 				Default:    boundStr(a.Default, authMaxOptionField),
 				Source:     a.Source,
 				Confidence: a.Confidence,
@@ -311,6 +391,7 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 			requiredPerm: boundStr(item.RequiredPerm, authMaxOptionField),
 			actionable:   item.Actionable,
 			optionFprint: fprint,
+			delivery:     delivery,
 			createdAt:    now,
 			expiresAt:    now.Add(authApprovalExpiry),
 		}
@@ -468,8 +549,20 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	if !validPlacement(view.placement) || !validInput(&view, req.Input) {
 		return ClaimResult{Outcome: ClaimInvalidInput}
 	}
-	digest := canonicalActionFromOption(&view, req.Input).Digest()
-	payload := canonicalPayload(&view, req.Input)
+	// SP1 P2A: an option with stored delivery material yields the EXACT stored
+	// bytes as the claim payload, and the material's delivery-semantic fields
+	// are folded into the canonical action digest. Options without material
+	// keep the frozen legacy payload behavior byte-for-byte.
+	action := canonicalActionFromOption(&view, req.Input)
+	var payload []byte
+	if mat, ok := rec.delivery[opt.ID]; ok {
+		action.DeliverySchemaVersion = mat.schemaVersion
+		action.DeliveryPayloadDigest = payloadDigest(mat.bytes)
+		payload = append([]byte(nil), mat.bytes...)
+	} else {
+		payload = canonicalPayload(&view, req.Input)
+	}
+	digest := action.Digest()
 	pdigest := payloadDigest(payload)
 	if req.AssertDigest != "" && req.AssertDigest != digest {
 		return ClaimResult{Outcome: ClaimDigestMismatch}
