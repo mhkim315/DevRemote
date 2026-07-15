@@ -170,3 +170,48 @@ after independent P1 acceptance.
 Focused race-enabled checkpoint (per handoff §4): `go build ./...`,
 `go vet ./...`, `go test -race ./internal/term -count=1` plus targeted new
 tests; the full repository gate runs at P3 finalization only.
+
+## 10. R1 amendments (reviewer blockers on 6c4389b, all remediated)
+
+1. **Strict decoder**: the projection now uses a token-level strict object
+   decoder (`decodeStrictObject`) with a CLOSED field allowlist at BOTH the
+   envelope (`jsonrpc`/`id`/`method`/`params`, `jsonrpc` must be exactly
+   `"2.0"`) and params (`threadId`/`turnId`/`itemId`/`command`/`cwd`/
+   `environmentId`/`availableDecisions`/`proposedExecpolicyAmendment`)
+   levels. Unknown fields, duplicate JSON keys, non-objects and trailing
+   content reject. `command`, `cwd` and `proposedExecpolicyAmendment` are
+   accepted ONLY as allowlisted, byte-bounded, uninterpreted raw fields
+   (`command`/`cwd` are required by the certified shape; the amendment field
+   is optional and survives only as a boolean presence marker). The object
+   decision element goes through a single-key token walk (`singleObjectKey`)
+   that rejects a second or duplicate key. `serverRequest/resolved` uses the
+   same strict decode (`jsonrpc`/`method`/`params`; `threadId`/`requestId`).
+2. **Individual byte bounds** (each rejects the whole request with zero
+   state): whole message 24 KiB (first check, outer rampart), params 16 KiB,
+   decision element 4 KiB, amendment marker source 4 KiB. One-under admits /
+   one-over rejects is proven per bound; because the strict envelope
+   allowlist caps reachable message size at envelope + params bound, the
+   params-at-bound case IS the largest reachable message (asserted under the
+   message bound) and the message one-over case necessarily also exceeds the
+   params bound — the assertion there is total rejection.
+3. **Pending/store atomicity**: turn binding, duplicate, capacity, store
+   admission and arming are ONE turnMu critical section (lock order turnMu →
+   store.mu; the store never calls back). The pending entry is armed ONLY
+   after the store admitted the record via the narrow additive
+   `IngestObserved` (identical admission rules to `Ingest`, reports
+   new-record admission; no claim/delivery semantics). A nil sink or a store
+   refusal (stale generation, capacity, validation) arms nothing — private
+   pending state and the store record cannot diverge.
+4. **Per-record invalidation on provider resolution / turn completion**: the
+   narrow additive `InvalidateRecord(sessionID, approvalID)` applies the
+   frozen legal pending→invalidated transition to exactly ONE record — never
+   a success state, never another record, never a high-water change. Called
+   for the exact-matched pending entry on `serverRequest/resolved` and for a
+   completed turn's pending entries, so an intervention the provider no
+   longer holds open is never displayed as current. Exit still invalidates
+   the whole session; Delete still clears it.
+5. **Production composition proof**: `TestSP1P1_CompositionRequestToSafeDTO`
+   (cmd/devremote) drives the certified request through `NewAppWithDeps`'s
+   real wiring (app.go `SetApprovalStore`) and reads the single
+   non-actionable, zero-option safe DTO back over the authenticated
+   `GET /api/sessions` route, with a provider-byte leak scan on the response.

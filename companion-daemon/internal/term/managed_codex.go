@@ -377,15 +377,23 @@ func (rt *codexManagedRuntime) pump() {
 		case "turn/completed":
 			// Only the EXACT current turn's completion returns us to idle;
 			// a stale/duplicate/wrong-turn completion is inert. Completion
-			// also drops the turn's pending approval observations (SP1-P1).
+			// also drops the turn's pending approval observations and
+			// invalidates ONLY their display records (SP1-P1): a request the
+			// provider no longer holds open is never shown as current.
+			var staleApprovals []string
 			rt.turnMu.Lock()
 			match := rt.turnActive && turnID != "" && turnID == rt.currentTurn
 			if match {
 				rt.turnActive = false
 				rt.currentTurn = ""
-				rt.clearPendingForTurnLocked(turnID)
+				staleApprovals = rt.clearPendingForTurnLocked(turnID)
 			}
 			rt.turnMu.Unlock()
+			if rt.approvals != nil {
+				for _, aid := range staleApprovals {
+					rt.approvals.InvalidateRecord(rt.sessionID, aid)
+				}
+			}
 			if match {
 				rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusCompleted)
 				rt.appendEvent(ManagedEventCompleted, "")

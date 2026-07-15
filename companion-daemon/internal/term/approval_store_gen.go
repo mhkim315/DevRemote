@@ -215,8 +215,27 @@ func findStoredOption(rec *approvalRecord, optionID string) *agent.InteractionOp
 // Ingest records the session's current-generation approval requests under the
 // generation rule; a newer generation supersedes prior pending AND executing authority.
 func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
+	s.ingest(in)
+}
+
+// IngestObserved is a NARROW SP1-P1 additive entry for single-item
+// NON-ACTIONABLE observation ingest: it applies EXACTLY the same admission
+// rules as Ingest and reports whether the item was admitted as a NEW record,
+// so an observer can keep its private state and the store record as one
+// outcome. It grants no claim, delivery, or actionability semantics.
+func (s *AuthoritativeApprovalStore) IngestObserved(in ApprovalIngest) bool {
+	if len(in.Items) != 1 {
+		return false
+	}
+	return s.ingest(in) == 1
+}
+
+// ingest applies the generation rule and admission checks, returning the
+// number of items admitted as NEW records (an idempotent re-offer of an
+// existing record is NOT counted).
+func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	if in.SessionID == "" || len(in.SessionID) > maxSessionIDLen {
-		return
+		return 0
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -296,7 +315,33 @@ func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
 			expiresAt:    now.Add(authApprovalExpiry),
 		}
 		sess.records[a.ID] = rec
+		admitted++
 	}
+	return admitted
+}
+
+// InvalidateRecord is a NARROW SP1-P1 additive display-safety transition: it
+// marks ONE pending record invalidated (provider-side resolution observed, or
+// its turn completed) so an already-resolved intervention is never presented
+// as a current request. It uses the frozen legal pending→invalidated
+// transition, never records a success, never touches any other record, and
+// never advances the generation high-water. A missing or non-pending record
+// is left unchanged.
+func (s *AuthoritativeApprovalStore) InvalidateRecord(sessionID, approvalID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[sessionID]
+	if sess == nil {
+		return false
+	}
+	rec := sess.records[approvalID]
+	if rec == nil || rec.state != ApprovalPending {
+		return false
+	}
+	now := s.now()
+	rec.state = ApprovalInvalidated
+	rec.resolvedAt = &now
+	return true
 }
 
 func (s *AuthoritativeApprovalStore) supersedeLocked(sess *sessionApprovals, reason string) {

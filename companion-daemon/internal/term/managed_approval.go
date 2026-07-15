@@ -3,14 +3,17 @@
 // NON-ACTIONABLE ONLY.
 //
 // The single event pump is the only caller. A request that passes EVERY
-// certification check (lossless bounded top-level JSON-RPC id, exact
-// session/epoch/thread/turn/item binding, pinned authority version, exact
-// environment and decision-tag fingerprint) arms one bounded PRIVATE
-// runtime-owned pending record and ingests one non-actionable ApprovalStore
-// record with zero options. Anything else is rejected with ZERO state: no
+// certification check (strict field-allowlist decode with duplicate-key
+// rejection, individual byte bounds, lossless bounded top-level JSON-RPC id,
+// exact session/epoch/thread/turn/item binding, pinned authority version,
+// exact environment and decision-tag fingerprint) arms one bounded PRIVATE
+// runtime-owned pending record AND ingests one non-actionable ApprovalStore
+// record with zero options as ONE outcome: if the store does not admit the
+// record, nothing is armed. Anything else is rejected with ZERO state: no
 // pending entry, no store record, no provider write, no log of provider
-// payload. Raw command, CWD, prompt and amendment bodies are never decoded,
-// stored, logged, or projected into any DTO.
+// payload. `command`, `cwd` and `proposedExecpolicyAmendment` are accepted
+// ONLY as allowlisted, byte-bounded, uninterpreted raw fields — their content
+// is never decoded, stored, logged, or projected into any DTO.
 //
 // P1 explicitly does NOT implement delivery material, provider response
 // writes, resolved-consumption commit, actionable options, gate capacity, or
@@ -18,7 +21,9 @@
 package term
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 
@@ -50,6 +55,15 @@ const (
 	// maxPendingApprovals bounds the private per-runtime pending-request
 	// state. Exhaustion fails closed: the request creates NO state.
 	maxPendingApprovals = 4
+
+	// Individual byte bounds (each rejects the whole request with ZERO state).
+	// The message bound is the outer rampart checked first on the raw line;
+	// with the strict top-level allowlist, the largest reachable certified
+	// message is envelope + params bound, well under it.
+	maxApprovalMessageBytes = 24 << 10 // whole approval JSONL message
+	maxApprovalParamsBytes  = 16 << 10 // raw params object
+	maxDecisionElementBytes = 4 << 10  // one availableDecisions element
+	maxAmendmentMarkerBytes = 4 << 10  // raw proposedExecpolicyAmendment field
 )
 
 // certifiedDecisionFingerprint is the exact ordered availableDecisions tag
@@ -58,6 +72,26 @@ const (
 // deviation (different tags, order, count, or element shape) rejects the
 // request.
 var certifiedDecisionFingerprint = [3]string{"accept", "acceptWithExecpolicyAmendment", "cancel"}
+
+// approvalTopLevelFields is the CLOSED top-level field allowlist of the
+// certified approval request envelope.
+var approvalTopLevelFields = map[string]bool{
+	"jsonrpc": true, "id": true, "method": true, "params": true,
+}
+
+// approvalParamsFields is the CLOSED params allowlist of the certified
+// request. `command`, `cwd` and `proposedExecpolicyAmendment` are accepted as
+// raw, byte-bounded, UNINTERPRETED fields only.
+var approvalParamsFields = map[string]bool{
+	"threadId": true, "turnId": true, "itemId": true,
+	"command": true, "cwd": true, "environmentId": true,
+	"availableDecisions": true, "proposedExecpolicyAmendment": true,
+}
+
+// resolvedTopLevelFields / resolvedParamsFields are the closed shape of the
+// serverRequest/resolved notification (CP0 evidence: threadId + requestId).
+var resolvedTopLevelFields = map[string]bool{"jsonrpc": true, "method": true, "params": true}
+var resolvedParamsFields = map[string]bool{"threadId": true, "requestId": true}
 
 // pendingProviderRequest is the bounded PRIVATE runtime-owned record of one
 // exactly-certified observed provider approval request. It is owned by the
@@ -76,33 +110,64 @@ type pendingProviderRequest struct {
 	observedAt          time.Time
 }
 
-// codexApprovalEnvelope decodes ONLY the JSON-RPC envelope fields the
-// projection needs. ID is captured as the exact raw token (json.RawMessage)
-// so the native identity is handled without floating-point conversion.
-type codexApprovalEnvelope struct {
-	ID     json.RawMessage `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
+// decodeStrictObject decodes raw as EXACTLY one JSON object admitting only
+// allowlisted keys, rejecting unknown fields, duplicate keys, non-object
+// input, and trailing content. Values are returned as raw messages — the
+// caller decides which are interpreted; everything else stays opaque.
+func decodeStrictObject(raw []byte, allowed map[string]bool) (map[string]json.RawMessage, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, false
+	}
+	out := make(map[string]json.RawMessage, len(allowed))
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, false
+		}
+		if !allowed[key] {
+			return nil, false // unknown field → reject
+		}
+		if _, dup := out[key]; dup {
+			return nil, false // duplicate key → reject
+		}
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return nil, false
+		}
+		out[key] = val
+	}
+	if _, err := dec.Token(); err != nil { // consume '}'
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF { // trailing content → reject
+		return nil, false
+	}
+	return out, true
 }
 
-// codexApprovalParams is the strict structural projection of the certified
-// params subset. `command`, `cwd` and every other field are DELIBERATELY not
-// decoded — they must never be read, stored, or logged. A known field with
-// the wrong JSON type fails the decode and rejects the request.
-type codexApprovalParams struct {
-	ThreadID           string            `json:"threadId"`
-	TurnID             string            `json:"turnId"`
-	ItemID             string            `json:"itemId"`
-	EnvironmentID      string            `json:"environmentId"`
-	AvailableDecisions []json.RawMessage `json:"availableDecisions"`
-}
-
-// codexResolvedParams is the strict projection of serverRequest/resolved.
-// RequestID is kept as the exact raw token for lossless comparison with the
-// stored pending id token.
-type codexResolvedParams struct {
-	ThreadID  string          `json:"threadId"`
-	RequestID json.RawMessage `json:"requestId"`
+// strictBoundedString decodes raw as a JSON string that is non-empty and at
+// most maxLen bytes.
+func strictBoundedString(raw json.RawMessage, maxLen int) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	if s == "" || len(s) > maxLen {
+		return "", false
+	}
+	return s, true
 }
 
 // parseNativeReqID validates and losslessly captures the top-level JSON-RPC
@@ -131,17 +196,61 @@ func parseNativeReqID(raw json.RawMessage) (token string, id int64, ok bool) {
 	return tok, n, true
 }
 
+// singleObjectKey decodes raw as a JSON object with EXACTLY one key and
+// returns that key. A second pair (including a duplicate of the same key),
+// a non-object, or trailing content rejects. The value is skipped opaquely —
+// never interpreted.
+func singleObjectKey(raw json.RawMessage) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return "", false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return "", false
+	}
+	if !dec.More() {
+		return "", false // empty object: no tag
+	}
+	kt, err := dec.Token()
+	if err != nil {
+		return "", false
+	}
+	key, ok := kt.(string)
+	if !ok {
+		return "", false
+	}
+	var val json.RawMessage
+	if err := dec.Decode(&val); err != nil {
+		return "", false
+	}
+	if dec.More() {
+		return "", false // second key (incl. duplicate) → reject
+	}
+	if _, err := dec.Token(); err != nil { // consume '}'
+		return "", false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", false
+	}
+	return key, true
+}
+
 // decisionTags extracts the bounded certification tags from
 // availableDecisions. A string element is its own tag; a single-key object
 // element contributes its KEY only (the payload is never decoded beyond the
-// key and never stored — only a boolean presence marker survives). Any other
-// element shape, an over-long tag, or an over-long list rejects.
+// key and never stored — only a boolean presence marker survives). Each raw
+// element is individually byte-bounded. Any other element shape, an
+// over-long element/tag, or an over-long list rejects.
 func decisionTags(raw []json.RawMessage) (tags []string, hasAmendmentPayload bool, ok bool) {
 	if len(raw) == 0 || len(raw) > maxDecisionCount {
 		return nil, false, false
 	}
 	tags = make([]string, 0, len(raw))
 	for _, el := range raw {
+		if len(el) == 0 || len(el) > maxDecisionElementBytes {
+			return nil, false, false
+		}
 		var s string
 		if err := json.Unmarshal(el, &s); err == nil {
 			if s == "" || len(s) > maxDecisionTagLen {
@@ -150,18 +259,13 @@ func decisionTags(raw []json.RawMessage) (tags []string, hasAmendmentPayload boo
 			tags = append(tags, s)
 			continue
 		}
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(el, &obj); err != nil || len(obj) != 1 {
+		key, kok := singleObjectKey(el)
+		if !kok || key == "" || len(key) > maxDecisionTagLen {
 			return nil, false, false
 		}
-		for k := range obj {
-			if k == "" || len(k) > maxDecisionTagLen {
-				return nil, false, false
-			}
-			tags = append(tags, k)
-			if k == certifiedDecisionFingerprint[1] {
-				hasAmendmentPayload = true
-			}
+		tags = append(tags, key)
+		if key == certifiedDecisionFingerprint[1] {
+			hasAmendmentPayload = true
 		}
 	}
 	return tags, hasAmendmentPayload, true
@@ -189,93 +293,119 @@ func codexApprovalID(epoch int64, idToken string) string {
 
 // observeApprovalRequest is the P1 projection. Called ONLY by the pump with
 // the raw JSONL line (valid until the pump's next read). Every rejection is
-// total: no pending entry, no store record, no log of provider content.
+// total: no pending entry, no store record, no log of provider content. A
+// certified request produces the pending entry AND the non-actionable store
+// record as ONE outcome — if the store does not admit the record (missing
+// sink, stale generation, capacity, validation), nothing is armed.
 func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
-	var env codexApprovalEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil || env.Method != codexApprovalMethod {
+	// Whole-message bound: the first check, on the raw line itself.
+	if len(raw) > maxApprovalMessageBytes {
 		rt.rejectApproval()
 		return
 	}
-	// Top-level JSON-RPC id is the provider request identity. params.id can
-	// never substitute for it: only env.ID is consulted.
-	idToken, idInt, ok := parseNativeReqID(env.ID)
+	top, ok := decodeStrictObject(raw, approvalTopLevelFields)
 	if !ok {
 		rt.rejectApproval()
 		return
 	}
-	if len(env.Params) == 0 {
+	if v, sok := strictBoundedString(top["jsonrpc"], 8); !sok || v != "2.0" {
 		rt.rejectApproval()
 		return
 	}
-	var p codexApprovalParams
-	if err := json.Unmarshal(env.Params, &p); err != nil {
+	if m, sok := strictBoundedString(top["method"], 128); !sok || m != codexApprovalMethod {
 		rt.rejectApproval()
 		return
 	}
-	if p.ThreadID == "" || len(p.ThreadID) > maxApprovalParamIDLen ||
-		p.TurnID == "" || len(p.TurnID) > maxApprovalParamIDLen ||
-		p.ItemID == "" || len(p.ItemID) > maxApprovalParamIDLen {
+	// Top-level JSON-RPC id is the provider request identity. params.id can
+	// never substitute for it: only the envelope id is consulted.
+	idToken, idInt, ok := parseNativeReqID(top["id"])
+	if !ok {
 		rt.rejectApproval()
 		return
 	}
-	if p.EnvironmentID != certifiedEnvironmentID {
+	paramsRaw := top["params"]
+	if len(paramsRaw) == 0 || len(paramsRaw) > maxApprovalParamsBytes {
 		rt.rejectApproval()
 		return
 	}
-	tags, hasAmendment, ok := decisionTags(p.AvailableDecisions)
+	params, ok := decodeStrictObject(paramsRaw, approvalParamsFields)
+	if !ok {
+		rt.rejectApproval()
+		return
+	}
+	threadID, ok1 := strictBoundedString(params["threadId"], maxApprovalParamIDLen)
+	turnID, ok2 := strictBoundedString(params["turnId"], maxApprovalParamIDLen)
+	itemID, ok3 := strictBoundedString(params["itemId"], maxApprovalParamIDLen)
+	if !ok1 || !ok2 || !ok3 {
+		rt.rejectApproval()
+		return
+	}
+	if env, sok := strictBoundedString(params["environmentId"], 64); !sok || env != certifiedEnvironmentID {
+		rt.rejectApproval()
+		return
+	}
+	// command and cwd are REQUIRED by the certified shape but accepted only
+	// as opaque raw fields — never decoded, stored, or logged.
+	if len(params["command"]) == 0 || len(params["cwd"]) == 0 {
+		rt.rejectApproval()
+		return
+	}
+	// proposedExecpolicyAmendment is optional; if present it is byte-bounded
+	// and kept ONLY as a boolean presence marker.
+	amendmentField := params["proposedExecpolicyAmendment"]
+	if len(amendmentField) > maxAmendmentMarkerBytes {
+		rt.rejectApproval()
+		return
+	}
+	var decisionsRaw []json.RawMessage
+	if dr := params["availableDecisions"]; len(dr) == 0 || json.Unmarshal(dr, &decisionsRaw) != nil {
+		rt.rejectApproval()
+		return
+	}
+	tags, hasAmendment, ok := decisionTags(decisionsRaw)
 	if !ok || !fingerprintCertified(tags) {
 		rt.rejectApproval()
 		return
 	}
+	hasAmendment = hasAmendment || len(amendmentField) > 0
 	// Exact pinned authority version (grammar-valid, separate from display).
 	if rt.authorityVersion != certifiedCodexAuthorityVersion || !validVersion(rt.authorityVersion) {
 		rt.rejectApproval()
 		return
 	}
 	// Exact thread binding (defense in depth; the pump gates threadId too).
-	if p.ThreadID != rt.threadID {
+	if threadID != rt.threadID {
 		rt.rejectApproval()
 		return
 	}
 
 	approvalID := codexApprovalID(rt.epoch, idToken)
 
-	// Linearization point: turn binding + duplicate + capacity + arming are
-	// ONE critical section under turnMu (the same lock that owns the exact
-	// current-turn identity), so a closing runtime or a completed turn can
-	// never race an arm.
+	// Linearization point: turn binding + duplicate + capacity + store
+	// admission + arming are ONE critical section under turnMu (the same lock
+	// that owns the exact current-turn identity). Lock order is turnMu →
+	// store.mu; the store never calls back into the runtime. The pending
+	// entry is armed ONLY after the store admitted the record, so private
+	// pending state and the store record cannot diverge.
 	rt.turnMu.Lock()
-	if rt.turnClosed || !rt.turnActive || rt.currentTurn == "" || p.TurnID != rt.currentTurn {
+	defer rt.turnMu.Unlock()
+	if rt.turnClosed || !rt.turnActive || rt.currentTurn == "" || turnID != rt.currentTurn {
 		rt.approvalRejects++
-		rt.turnMu.Unlock()
 		return
 	}
 	if _, dup := rt.pendingApprovals[idInt]; dup {
 		// Duplicate native request id: never a second authority record.
 		rt.approvalRejects++
-		rt.turnMu.Unlock()
 		return
 	}
 	if len(rt.pendingApprovals) >= maxPendingApprovals {
 		// Bounded-state exhaustion fails closed.
 		rt.approvalRejects++
-		rt.turnMu.Unlock()
 		return
 	}
-	rt.pendingApprovals[idInt] = pendingProviderRequest{
-		idToken:             idToken,
-		idInt:               idInt,
-		threadID:            p.ThreadID,
-		turnID:              p.TurnID,
-		itemID:              p.ItemID,
-		approvalID:          approvalID,
-		hasAmendmentPayload: hasAmendment,
-		observedAt:          time.Now(),
-	}
-	sink := rt.approvals
-	rt.turnMu.Unlock()
-
-	if sink == nil {
+	if rt.approvals == nil {
+		// No admitted store record is possible → nothing may be armed.
+		rt.approvalRejects++
 		return
 	}
 	// Safe NON-ACTIONABLE store record: zero options, no prompt text, no
@@ -283,7 +413,7 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 	// mechanical origin vocabulary is closed, so the structured JSONL stdio
 	// protocol records as SourceJSONL. Actionability stays false — the frozen
 	// store never upgrades it later.
-	sink.Ingest(ApprovalIngest{
+	admitted := rt.approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
 		StreamGen: 0,
@@ -303,47 +433,75 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 			RequiredPerm: devicetrust.PermTerminalInput,
 		}},
 	})
+	if !admitted {
+		// Store refusal (stale generation / capacity / validation): zero state.
+		rt.approvalRejects++
+		return
+	}
+	rt.pendingApprovals[idInt] = pendingProviderRequest{
+		idToken:             idToken,
+		idInt:               idInt,
+		threadID:            threadID,
+		turnID:              turnID,
+		itemID:              itemID,
+		approvalID:          approvalID,
+		hasAmendmentPayload: hasAmendment,
+		observedAt:          time.Now(),
+	}
 }
 
-// observeApprovalResolved removes the matching pending entry when the
-// provider reports its own resolution. P1 has no consumption authority: this
-// never commits, resolves, or writes anything — the store record ages out
-// under the frozen TTL / session invalidation. A resolved for an unknown or
-// foreign request, a foreign thread, or a token mismatch is inert.
+// observeApprovalResolved handles a provider-side resolution: the matching
+// pending entry is removed and the SAME record is marked invalidated so an
+// already-resolved intervention is never displayed as a current request. P1
+// has no consumption authority: this never commits a success, never writes
+// anything, and never touches any OTHER record. A resolved for an unknown or
+// foreign request, a foreign thread, a token mismatch, or an uncertified
+// message shape is inert.
 func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
-	var env struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil || env.Method != codexResolvedMethod || len(env.Params) == 0 {
+	top, ok := decodeStrictObject(raw, resolvedTopLevelFields)
+	if !ok {
 		return
 	}
-	var p codexResolvedParams
-	if err := json.Unmarshal(env.Params, &p); err != nil {
+	if m, sok := strictBoundedString(top["method"], 128); !sok || m != codexResolvedMethod {
 		return
 	}
-	if p.ThreadID != rt.threadID {
+	params, ok := decodeStrictObject(top["params"], resolvedParamsFields)
+	if !ok {
 		return
 	}
-	token, idInt, ok := parseNativeReqID(p.RequestID)
+	threadID, sok := strictBoundedString(params["threadId"], maxApprovalParamIDLen)
+	if !sok || threadID != rt.threadID {
+		return
+	}
+	token, idInt, ok := parseNativeReqID(params["requestId"])
 	if !ok {
 		return
 	}
 	rt.turnMu.Lock()
+	approvalID := ""
 	if pend, exists := rt.pendingApprovals[idInt]; exists && pend.idToken == token {
 		delete(rt.pendingApprovals, idInt)
+		approvalID = pend.approvalID
 	}
+	sink := rt.approvals
 	rt.turnMu.Unlock()
+	if approvalID != "" && sink != nil {
+		sink.InvalidateRecord(rt.sessionID, approvalID)
+	}
 }
 
-// clearPendingForTurnLocked drops pending entries bound to the completed
-// turn. Caller holds turnMu.
-func (rt *codexManagedRuntime) clearPendingForTurnLocked(turnID string) {
+// clearPendingForTurnLocked drops pending entries bound to the completed turn
+// and returns their approval IDs so the caller can invalidate the matching
+// display records. Caller holds turnMu.
+func (rt *codexManagedRuntime) clearPendingForTurnLocked(turnID string) []string {
+	var ids []string
 	for id, pend := range rt.pendingApprovals {
 		if pend.turnID == turnID {
+			ids = append(ids, pend.approvalID)
 			delete(rt.pendingApprovals, id)
 		}
 	}
+	return ids
 }
 
 // rejectApproval counts one totally-rejected observation (no state, no log of
