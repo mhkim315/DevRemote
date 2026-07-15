@@ -1,6 +1,6 @@
 # SP0.5 Managed I/O and Lifecycle — Evidence Report
 
-Status: **SP0.5 A–C + R1 + R2 remediation DELIVERED — resubmitted for
+Status: **SP0.5 A–C + R1 + R2 + R3 remediation DELIVERED — resubmitted for
 independent review. SP1 / Cleanup NOT started. Approval capacity ZERO;
 `waiting_approval` display-only; frozen A1 contracts and the accepted SP0 core
 (owned registry, native authority, pinned runtime, process lease) untouched in
@@ -13,7 +13,8 @@ Date: 2026-07-15. Executor: Claude Code, canonical checkout
 - Accepted SP0 implementation ancestry `2b35f524…`: PASS; CP0 `42429c8…`: PASS
 - Contract note: `docs/SP0_5_MANAGED_IO_CONTRACT_NOTE.md` (`4e1f099`)
 - Implementation commits: `9a77bab` (A), `4ecff55` (B), `5d45c9c` (C),
-  `e38877f` (R1), `efd0e80b4a443ca90fd34fc2858cb6e175f68296` (R2 — final)
+  `e38877f` (R1), `efd0e80` (R2),
+  `4f9241ff263c39029a28fe3d83712f4dc4da354a` (R3 — final)
 - Authoritative handoff: `docs/NEXT_EXECUTOR_SP0_5_MANAGED_IO_LIFECYCLE_HANDOFF.md`
 
 ## 1. Packet A — local structured I/O (`9a77bab`)
@@ -188,10 +189,36 @@ unmount → late response inert; hung bootstrap/poll deadline →
 real outstanding fetch == 1; close aborts in-flight; invalid bootstrap DTO
 fail-closed. No live provider turn re-run (mobile-only remediation).
 
+## 4c. Remediation round R3 (hung bearer refresh vs deadline, fixed)
+
+Reviewer verdict on `f039cf0`: REJECT, one remaining path —
+`authenticatedFetch` awaits `getValidToken()` BEFORE the abortable HTTP
+stage, so a hung challenge/verify refresh ignored the AbortSignal and pinned
+the poller's await past the deadline, leaving a positive `working` status
+current. Fixed in implementation commit
+`4f9241ff263c39029a28fe3d83712f4dc4da354a` (`fix(SP0.5-R3)`):
+
+- `raceWithAbort`: the poller tick and the controller bootstrap race the
+  fetcher against the abort signal — the deadline (or close) LOGICALLY
+  completes the await regardless of the fetcher's abort cooperation. The
+  per-request `AbortController` is still threaded through, so the plain HTTP
+  stage remains really cancelled; the shared token refresh stays singleflight
+  in the TokenManager (untouched). A late settlement of the abandoned promise
+  lands on an already-rejected race — never decoded, applied, or committed.
+- Signal-IGNORING token-refresh fake tests (reviewer-required): deadline
+  completes the tick and freshness expiry marks the previously positive
+  status unavailable/non-current; repeated deadline ticks share exactly ONE
+  real auth refresh and are never pinned; the poller closes cleanly while the
+  refresh is hung; late auth completion after deadline/close commits nothing;
+  a fresh working status is invalidated at freshness expiry under the hang;
+  the controller bootstrap deadline completes against a hung status fetcher.
+
+Mobile-only remediation; no live provider turn re-run.
+
 ## 5. Final gate (frozen remediation HEAD)
 
 Run once on frozen implementation HEAD
-`efd0e80b4a443ca90fd34fc2858cb6e175f68296` via `sh scripts/build-gate.sh`:
+`4f9241ff263c39029a28fe3d83712f4dc4da354a` via `sh scripts/build-gate.sh`:
 
 ```text
 --- Backend ---  go build OK / go vet OK / go test -race OK / git diff --check OK
@@ -206,5 +233,5 @@ This report commit is docs-only on top of that verified tree.
 ## 6. Review marker
 
 ```text
-REVIEW REQUEST: SP0.5 Managed I/O and Lifecycle — efd0e80b4a443ca90fd34fc2858cb6e175f68296
+REVIEW REQUEST: SP0.5 Managed I/O and Lifecycle — 4f9241ff263c39029a28fe3d83712f4dc4da354a
 ```
