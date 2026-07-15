@@ -225,6 +225,32 @@ export interface ManagedPollerOptions {
 // network request, not just a wrapper promise.
 export type ManagedEventsFetcher = (cursor: number, signal: AbortSignal) => Promise<unknown>;
 
+// raceWithAbort settles with the fetcher, OR rejects the moment the signal
+// aborts — EVEN IF the underlying fetcher ignores the signal. This is the
+// SP0.5-R3 guarantee: a request that hangs BEFORE the abortable HTTP stage
+// (e.g. a stuck bearer challenge/verify refresh inside authenticatedFetch)
+// cannot pin the poller/controller past its deadline. The AbortController is
+// still passed through so the plain HTTP stage is REALLY cancelled; the
+// shared token refresh stays singleflight in the TokenManager. A late
+// completion of the abandoned promise settles an already-rejected race — its
+// value can never be decoded, applied, or committed.
+function raceWithAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error('managed request aborted'));
+    if (signal.aborted) {
+      onAbort();
+      // Swallow the abandoned promise's eventual settlement.
+      p.catch(() => {});
+      return;
+    }
+    signal.addEventListener('abort', onAbort);
+    p.then(
+      (v) => { signal.removeEventListener('abort', onAbort); resolve(v); },
+      () => { signal.removeEventListener('abort', onAbort); reject(new Error('managed request failed')); },
+    );
+  });
+}
+
 // ManagedSessionPoller drives the bounded event polling with: one request in
 // flight at a time (enforced against the REAL request via AbortController), a
 // per-request deadline that aborts the underlying fetch, and freshness expiry
@@ -265,9 +291,11 @@ export class ManagedSessionPoller {
   }
 
   // tick runs at most one bounded request; overlapping ticks are skipped
-  // (one-in-flight). The deadline ABORTS the underlying request, so at most
-  // one network request ever exists per poller even across repeated
-  // timeouts. Every failure path re-evaluates freshness.
+  // (one-in-flight). The deadline ABORTS the underlying request AND the tick
+  // completes logically via raceWithAbort even when the fetcher hangs in a
+  // pre-HTTP stage that ignores the signal (hung bearer refresh) — so
+  // freshness expiry can never be bypassed. Every failure path re-evaluates
+  // freshness.
   async tick(): Promise<void> {
     if (this.closed || this.inFlight) return;
     this.inFlight = true;
@@ -275,7 +303,7 @@ export class ManagedSessionPoller {
     this.activeReq = req;
     const deadline = setTimeout(() => req.abort(), this.deadlineMs);
     try {
-      const raw = await this.fetchEvents(this.feed.getCursor(), req.signal);
+      const raw = await raceWithAbort(this.fetchEvents(this.feed.getCursor(), req.signal), req.signal);
       const decoded = decodeManagedEventsResponse(raw);
       if (!decoded || !this.feed.apply(decoded)) {
         this.noteFailure();
@@ -364,7 +392,9 @@ export class ManagedSessionController {
     const deadline = setTimeout(() => req.abort(), this.deadlineMs);
     let st: any;
     try {
-      st = await this.deps.fetchStatus(req.signal);
+      // raceWithAbort: the deadline/close completes this await even when the
+      // status fetcher hangs before its abortable HTTP stage.
+      st = await raceWithAbort(this.deps.fetchStatus(req.signal), req.signal);
     } catch {
       clearTimeout(deadline);
       this.bootstrapReq = null;
