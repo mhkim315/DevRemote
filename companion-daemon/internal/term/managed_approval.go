@@ -85,12 +85,17 @@ var approvalTopLevelFields = map[string]bool{
 }
 
 // approvalParamsFields is the CLOSED params allowlist of the certified
-// request. `command`, `cwd` and `proposedExecpolicyAmendment` are accepted as
-// raw, byte-bounded, UNINTERPRETED fields only.
+// request, corrected against the LIVE pinned-0.144.1 wire capture (SP1 P3):
+// the real request also carries `startedAtMs` and `commandActions`.
+// `command`, `cwd`, `commandActions`, `proposedExecpolicyAmendment` and
+// `startedAtMs` are accepted as raw, byte-bounded, UNINTERPRETED fields only
+// (commandActions is display/corroboration material per the amended CP0 plan
+// — never authority, never stored, never projected).
 var approvalParamsFields = map[string]bool{
 	"threadId": true, "turnId": true, "itemId": true,
 	"command": true, "cwd": true, "environmentId": true,
 	"availableDecisions": true, "proposedExecpolicyAmendment": true,
+	"startedAtMs": true, "commandActions": true,
 }
 
 // resolvedTopLevelFields / resolvedParamsFields are the closed shape of the
@@ -173,6 +178,18 @@ func strictBoundedString(raw json.RawMessage, maxLen int) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// optionalExactJSONRPC validates the envelope's jsonrpc member against the
+// LIVE pinned-0.144.1 wire (SP1 P3 capture): the real app-server OMITS
+// "jsonrpc" on server requests and notifications, so absence is the certified
+// shape; when present it must be exactly "2.0".
+func optionalExactJSONRPC(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	v, ok := strictBoundedString(raw, 8)
+	return ok && v == "2.0"
 }
 
 // parseNativeReqID validates and losslessly captures the top-level JSON-RPC
@@ -313,7 +330,9 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 		rt.rejectApproval()
 		return
 	}
-	if v, sok := strictBoundedString(top["jsonrpc"], 8); !sok || v != "2.0" {
+	// LIVE-certified envelope: jsonrpc is absent on the pinned 0.144.1
+	// server request; if present it must be exactly "2.0".
+	if !optionalExactJSONRPC(top["jsonrpc"]) {
 		rt.rejectApproval()
 		return
 	}
@@ -485,7 +504,9 @@ func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
 	if !ok {
 		return
 	}
-	if v, sok := strictBoundedString(top["jsonrpc"], 8); !sok || v != "2.0" {
+	// LIVE-certified envelope: jsonrpc is absent on the pinned 0.144.1
+	// resolved notification; if present it must be exactly "2.0".
+	if !optionalExactJSONRPC(top["jsonrpc"]) {
 		return
 	}
 	if m, sok := strictBoundedString(top["method"], 128); !sok || m != codexResolvedMethod {

@@ -306,7 +306,6 @@ func TestManagedApproval_MalformedFieldsRejected(t *testing.T) {
 		{"int64 overflow id", base(`9999999999999999999`, goodParams("local", goodDecisions))},
 		{"unknown top-level field", `{"jsonrpc":"2.0","id":10,"method":"item/commandExecution/requestApproval","extra":1,"params":` + goodParams("local", goodDecisions) + `}`},
 		{"duplicate top-level id", `{"jsonrpc":"2.0","id":10,"id":11,"method":"item/commandExecution/requestApproval","params":` + goodParams("local", goodDecisions) + `}`},
-		{"missing jsonrpc", `{"id":10,"method":"item/commandExecution/requestApproval","params":` + goodParams("local", goodDecisions) + `}`},
 		{"wrong jsonrpc", `{"jsonrpc":"1.0","id":10,"method":"item/commandExecution/requestApproval","params":` + goodParams("local", goodDecisions) + `}`},
 		{"unknown params field", base(`11`, `{"threadId":"`+apprTestThread+`","turnId":"`+apprTestTurn+`","itemId":"i","command":["x"],"cwd":"/w","environmentId":"local","reason":"why","availableDecisions":`+goodDecisions+`}`)},
 		{"duplicate params key", base(`11`, `{"threadId":"`+apprTestThread+`","turnId":"`+apprTestTurn+`","turnId":"`+apprTestTurn+`","itemId":"i","command":["x"],"cwd":"/w","environmentId":"local","availableDecisions":`+goodDecisions+`}`)},
@@ -784,5 +783,50 @@ func TestManagedApproval_NoProviderBytesInDTOsOrLogs(t *testing.T) {
 		if bytes.Contains(surfaces, []byte(secret)) {
 			t.Fatalf("provider material %q leaked into a public surface or log", secret)
 		}
+	}
+}
+
+// TestManagedApproval_LiveWireShapeAdmitted pins the EXACT lines captured
+// from the live pinned-0.144.1 app-server during SP1-P3 (paths/ids
+// substituted): the real server request and resolved notification carry NO
+// jsonrpc member, the request additionally carries startedAtMs and
+// commandActions, its native id starts at 0, and the amendment payload is an
+// array. The certified projection must admit both — and their content fields
+// must still never leak.
+func TestManagedApproval_LiveWireShapeAdmitted(t *testing.T) {
+	s := newApprovalSession(t)
+	raw := `{"method":"item/commandExecution/requestApproval","id":0,"params":{` +
+		`"threadId":"` + apprTestThread + `","turnId":"` + apprTestTurn + `",` +
+		`"itemId":"exec-b02b3c0d-3adf-4ba4-8e00-0dbf97403627","startedAtMs":1784115559140,` +
+		`"environmentId":"local","command":"/bin/zsh -lc '/bin/sh -c \"` + apprSecretCmd + `\"'",` +
+		`"cwd":"` + apprSecretCWD + `",` +
+		`"commandActions":[{"type":"unknown","command":"/bin/sh -c \"` + apprSecretCmd + `\""}],` +
+		`"proposedExecpolicyAmendment":["/bin/sh","-c","` + apprSecretAmendment + `"],` +
+		`"availableDecisions":["accept",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["/bin/sh","-c","` + apprSecretAmendment + `"]}},"cancel"]}}`
+	s.injectRaw(t, raw)
+	s.sync(t)
+	got := waitForSafeApprovals(t, s.store, s.id, 1)
+	if got[0].ID != "codexas-1-0" || got[0].Actionable {
+		t.Fatalf("live shape must be admitted as the non-actionable observation: %+v", got)
+	}
+	pending, rejects := s.snapshot()
+	if len(pending) != 1 || rejects != 0 || pending[0].idToken != "0" || !pending[0].hasAmendmentPayload {
+		t.Fatalf("live shape must arm exactly one pending record: %+v rejects=%d", pending, rejects)
+	}
+	b, _ := json.Marshal(s.store.ListSafe(s.id))
+	for _, secret := range []string{apprSecretCmd, apprSecretCWD, apprSecretAmendment, "commandActions", "startedAtMs"} {
+		if bytes.Contains(b, []byte(secret)) {
+			t.Fatalf("live-shape field %q leaked into the safe DTO", secret)
+		}
+	}
+	// The live resolved shape (no jsonrpc) must route: it consumes the
+	// pending observation and invalidates the record.
+	s.injectRaw(t, `{"method":"serverRequest/resolved","params":{"threadId":"`+apprTestThread+`","requestId":0}}`)
+	s.sync(t)
+	if pending, _ := s.snapshot(); len(pending) != 0 {
+		t.Fatalf("live resolved shape must consume the pending record: %+v", pending)
+	}
+	if dto := safeApprovalByID(t, s.store, s.id, "codexas-1-0"); dto.State != string(ApprovalInvalidated) {
+		t.Fatalf("live resolved shape must invalidate the record: %+v", dto)
 	}
 }

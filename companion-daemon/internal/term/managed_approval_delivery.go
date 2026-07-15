@@ -154,15 +154,17 @@ func (rt *codexManagedRuntime) writeRawResponse(b []byte) error {
 }
 
 // payloadDecisionEnvelope strictly decodes the daemon-generated response
-// payload: EXACTLY {jsonrpc:"2.0", id:<integer>, result:{"decision":<string>}}
-// with no unknown or extra fields at either level and no duplicate keys. It
-// returns the exact top-level id token and the decision string.
+// payload: EXACTLY {id:<integer>, result:{"decision":<string>}} with an
+// optional jsonrpc member that, when present, must be "2.0" (the LIVE-proven
+// consumed response shape carries no jsonrpc), no unknown or extra fields at
+// either level and no duplicate keys. It returns the exact top-level id token
+// and the decision string.
 func payloadDecisionEnvelope(payload []byte) (idToken, decision string, ok bool) {
 	top, tok0 := decodeStrictObject(payload, map[string]bool{"jsonrpc": true, "id": true, "result": true})
 	if !tok0 {
 		return "", "", false
 	}
-	if v, sok := strictBoundedString(top["jsonrpc"], 8); !sok || v != "2.0" {
+	if !optionalExactJSONRPC(top["jsonrpc"]) {
 		return "", "", false
 	}
 	tok, _, iok := parseNativeReqID(top["id"])

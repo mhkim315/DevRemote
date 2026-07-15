@@ -243,12 +243,14 @@ func (s *deliverySession) waitWritten(t *testing.T, n int) {
 	}
 }
 
+// acceptBytes/declineBytes are the production response material (the
+// CP0/SP1-P3-live proven consumed shape, no jsonrpc member).
 func acceptBytes(idToken string) []byte {
-	return []byte(`{"jsonrpc":"2.0","id":` + idToken + `,"result":{"decision":"accept"}}`)
+	return codexDecisionResponse(idToken, "accept")
 }
 
 func declineBytes(idToken string) []byte {
-	return []byte(`{"jsonrpc":"2.0","id":` + idToken + `,"result":{"decision":"decline"}}`)
+	return codexDecisionResponse(idToken, "decline")
 }
 
 func certifiedOptions() []agent.InteractionOption {
@@ -788,7 +790,6 @@ func TestCodexDelivery_MalformedResolvedInertNonVacuous(t *testing.T) {
 	oversizedParams := `{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7,"` +
 		"p" + `":"` + string(bytes.Repeat([]byte("x"), maxResolvedParamsBytes)) + `"}}`
 	variants := []string{
-		`{"method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                                                     // missing jsonrpc
 		`{"jsonrpc":"1.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                                     // wrong jsonrpc
 		`{"jsonrpc":"2.0","method":"serverRequest/resolved","extra":1,"params":{"threadId":"` + apprTestThread + `","requestId":7}}`,                           // unknown top-level field
 		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + apprTestThread + `","requestId":7,"why":"x"}}`,                           // unknown params field

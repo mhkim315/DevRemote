@@ -29,9 +29,11 @@ func codexCertifiedOptions() []agent.InteractionOption {
 
 // codexDecisionResponse builds the EXACT daemon-generated provider response
 // bytes for one certified decision, echoing the preserved native id token
-// with the same JSON type and value (CP0-proven response shape).
+// with the same JSON type and value. The shape is the CP0- and SP1-P3-LIVE
+// proven CONSUMED response: {"id":N,"result":{"decision":"..."}} — the pinned
+// 0.144.1 wire carries no jsonrpc member on either direction.
 func codexDecisionResponse(idToken, decision string) []byte {
-	return []byte(`{"jsonrpc":"2.0","id":` + idToken + `,"result":{"decision":"` + decision + `"}}`)
+	return []byte(`{"id":` + idToken + `,"result":{"decision":"` + decision + `"}}`)
 }
 
 // codexDeliveryMaterialFor generates the immutable per-option delivery

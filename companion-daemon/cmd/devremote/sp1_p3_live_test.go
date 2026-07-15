@@ -216,8 +216,23 @@ func (l *sp1LiveFixture) drainTurn(t *testing.T, sessionID, action string, keyPr
 	}
 }
 
-func sp1LivePrompt() string {
-	return "Run exactly this one shell command and nothing else: echo ok > " + sp1LiveProbeFile + " . After the command finishes (or is denied), reply DONE and stop. Do not try any other command."
+// sp1LivePrompt is the CP0-proven approval-forcing recipe: under the
+// untrusted policy + read-only sandbox the model runs the command WITHOUT
+// requesting escalation, which yields item/commandExecution/requestApproval.
+// (A "run this and stop" phrasing makes the model request escalated
+// permissions, which the 0.144.1 router auto-rejects under UnlessTrusted —
+// observed live before this wording was pinned.)
+func sp1LivePrompt(probeAbs string) string {
+	return `Use your shell tool now to run exactly this one command (it writes a file): /bin/sh -c "date > ` + probeAbs + `". Do not explain.`
+}
+
+func sp1PromptBody(t *testing.T, epoch int64, text string) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"epoch": epoch, "text": text})
+	if err != nil {
+		t.Fatalf("marshal prompt: %v", err)
+	}
+	return string(b)
 }
 
 // TestSP1P3_LiveAcceptAndDeny is the mandatory P3 closure evidence.
@@ -234,8 +249,9 @@ func TestSP1P3_LiveAcceptAndDeny(t *testing.T) {
 	}
 	defer os.RemoveAll(acceptCWD)
 	acceptID := l.createCodexSession(t, acceptCWD)
+	acceptProbe := filepath.Join(acceptCWD, sp1LiveProbeFile)
 	code, body := l.f.doJSON(t, "POST", "/api/managed-sessions/"+acceptID+"/prompt", l.token,
-		`{"epoch":1,"text":"`+sp1LivePrompt()+`"}`)
+		sp1PromptBody(t, 1, sp1LivePrompt(acceptProbe)))
 	if code != http.StatusOK {
 		t.Fatalf("accept prompt: code=%d body=%s", code, body)
 	}
@@ -243,8 +259,9 @@ func TestSP1P3_LiveAcceptAndDeny(t *testing.T) {
 	if len(appr.Options) != 2 || appr.Options[0].ID != "allow_once" || appr.Options[1].ID != "deny" {
 		t.Fatalf("live DTO must expose exactly the certified options: %+v", appr)
 	}
-	// DTO privacy on the LIVE authenticated read.
-	for _, secret := range []string{"echo ok", sp1LiveProbeFile, "availableDecisions", "requestApproval", "jsonrpc", "/tmp/sp1live", "decision"} {
+	// DTO privacy on the LIVE authenticated read: the real command line, cwd,
+	// probe path, decision/schema material and raw JSON-RPC must be absent.
+	for _, secret := range []string{sp1LiveProbeFile, "/bin/sh", "sp1live-", "availableDecisions", "requestApproval", "jsonrpc", "decision", "commandActions", "startedAtMs"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("provider material %q leaked into the live /api/sessions body", secret)
 		}
@@ -262,7 +279,7 @@ func TestSP1P3_LiveAcceptAndDeny(t *testing.T) {
 		t.Fatalf("a new key on the resolved record must be refused, got 200 %s", oc)
 	}
 	l.drainTurn(t, acceptID, "allow_once", "sp1-live-accept")
-	if _, err := os.Stat(filepath.Join(acceptCWD, sp1LiveProbeFile)); err != nil {
+	if _, err := os.Stat(acceptProbe); err != nil {
 		t.Fatalf("approved command must have EXECUTED (probe file missing): %v", err)
 	}
 	t.Logf("SP1-LIVE accept: probe file exists (command executed)")
@@ -274,8 +291,9 @@ func TestSP1P3_LiveAcceptAndDeny(t *testing.T) {
 	}
 	defer os.RemoveAll(denyCWD)
 	denyID := l.createCodexSession(t, denyCWD)
+	denyProbe := filepath.Join(denyCWD, sp1LiveProbeFile)
 	code, body = l.f.doJSON(t, "POST", "/api/managed-sessions/"+denyID+"/prompt", l.token,
-		`{"epoch":2,"text":"`+sp1LivePrompt()+`"}`)
+		sp1PromptBody(t, 2, sp1LivePrompt(denyProbe)))
 	if code != http.StatusOK {
 		t.Fatalf("deny prompt: code=%d body=%s", code, body)
 	}
@@ -289,7 +307,7 @@ func TestSP1P3_LiveAcceptAndDeny(t *testing.T) {
 	}
 	t.Logf("SP1-LIVE deny: resolved-after-written commit (rejected)")
 	l.drainTurn(t, denyID, "deny", "sp1-live-deny")
-	if _, err := os.Stat(filepath.Join(denyCWD, sp1LiveProbeFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(denyProbe); !os.IsNotExist(err) {
 		t.Fatalf("denied command must NOT have executed (probe file present, err=%v)", err)
 	}
 	t.Logf("SP1-LIVE deny: probe file absent (command not executed)")
