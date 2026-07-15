@@ -148,8 +148,8 @@ S1.1 Runtime Status Hardening                 ACCEPT 02c8385 (exact winner/runti
 A1  Approval Safety Core                      FROZEN after independent R11 ACCEPT (implementation 2e70512; R11 evidence d5a965c; report 997a697; provider-positive path absent)
 A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native runtime slices; provider-positive approval remains SP1
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
-SP0.5 Managed I/O and Lifecycle               AUTHORIZED (local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
-SP1 Native Approval                           PLANNED after independent SP0.5 ACCEPT (real Codex request/response/consumption; completes A1.1 provider-positive requirement)
+SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
+SP1 Native Approval                           STAGED after SP0.5 ACCEPT: P1 observation -> P2A exact delivery/consumption -> P2B atomic actionability -> P3 authenticated live proof; independent stop gate after every packet
 A1.2 Claude Approval Extension                OPTIONAL FOLLOW-UP (not automatically an N1 prerequisite; separate evidence and authorization required)
 N1  Notifications                             BLOCKED until independent SP1/A1.1 ACCEPT
 O1  Deterministic Broker                      PLANNED after N1
@@ -187,6 +187,13 @@ M3-auth-1B
 A1.2 is deliberately outside the critical sequence. If later authorized, it is a
 Claude-specific extension review and implementation, not a reason to delay N1 after
 A1.1 acceptance and not a generic provider SDK.
+
+SP1 is governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and
+`docs/NEXT_EXECUTOR_SP1_NATIVE_APPROVAL_HANDOFF.md`. Queue admission is not provider
+consumption; production actionability remains disabled until the P2A delivery
+boundary is proven and P2B installs capability atomically for the exact current
+runtime. P1 is observation-only. Each packet stops for independent verification;
+only the final P3/full-contract review can unblock N1.
 
 M3-auth-1B/M3-auth-2B positions and iOS/auth scope are unchanged by this
 sequencing update; their existing status text above remains authoritative. R1

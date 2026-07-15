@@ -1,200 +1,213 @@
-# SP1 Native Approval — Pre-Implementation Contract Note (Authority)
+# SP1 Native Approval — Corrected Authority Contract
 
-Status: pre-implementation note (protocol §5 full discipline). Baseline
-`62652633eb56577f0308973f7581ac94498f19fe`; accepted SP0.5 core (managed
-runtime, lifecycle, event/IO surface) and frozen A1 safety core (store, gate,
-binding, handler, DTO) untouched in shape. Authoritative handoff: none
-(reviewer directly authorized SP1 after SP0.5 ACCEPT).
+Status: **AUTHORITATIVE PLAN; IMPLEMENTATION NOT STARTED**
 
-Risk class: **authority + concurrency** — execution-authority claim, delivery,
-commit, and resolved-consumption boundary.
+Baseline: `62652633eb56577f0308973f7581ac94498f19fe` (independently accepted
+SP0.5 report HEAD). This note supersedes the incorrect first draft in
+`a41ebc2e49e6579a8d255441a42a681465f93ddd`.
 
-## 1. Owners
+SP1 is authority and concurrency work. Each implementation packet stops for
+independent verification. An intermediate checkpoint is permission to begin the
+next packet, not SP1 acceptance.
 
-- **Approval observation**: `codexManagedRuntime.pump` — the ONLY native-event
-  consumer (unchanged sole stdout reader). It projects the exact
-  `item/commandExecution/requestApproval` into a provider-neutral
-  `ApprovalIngest` and writes it into the `AuthoritativeApprovalStore`.
-- **Ingestion / claim / commit**: `AuthoritativeApprovalStore` (frozen A1
-  core — unchanged).
-- **Delivery**: a NEW `codexApprovalDelivery` implementing the frozen
-  `ApprovalDelivery` interface: writes the store-derived canonical payload
-  (a server-generated `{"result":{"decision":"accept"}}` JSON-RPC response)
-  through the owned app-server transport, and reads the `serverRequest/resolved`
-  notification to prove consumption.
-- **Mobile actions**: the existing `HandleApprovalAction` handler +
-  `RuntimeDeliveryGate` + `AuthoritativeApprovalStore` (frozen chain — the
-  SP1 delivery bridge feeds it exactly the same store-generated
-  approval/binding/payload path that the handler already drives, but with a
-  REAL provider-connected sink behind the gate, capacity activated for the
-  exact certified tuple).
-- **ApprovalDecision**: server-derived canonical decision payload (`accept`
-  or `decline`); the response JSON is constructed by the daemon, never by
-  the mobile client. The mobile client selects only the option ID; the store
-  recomputes the digest and payload.
+## 1. Frozen boundary and owners
 
-## 2. Exact provider approval shape (CP0 evidence, frozen)
+- `codexManagedRuntime.pump` remains the only app-server stdout reader.
+- `AuthoritativeApprovalStore` remains the sole owner of ingestion, claim,
+  requester authority, idempotency, expiry, supersession and commit.
+- `HandleApprovalAction` remains the only mobile approval-write entry.
+- Codex-specific code may project a provider request and deliver a certified
+  provider response. It may not create a second claim, ledger or approval store.
+- `waiting_approval`, PTY text, screen content, JSONL fallback and generic terminal
+  input never create actionable authority.
+- Production capacity remains zero until the complete exact-response and
+  resolved-consumption path is installed for the current certified runtime.
 
-`item/commandExecution/requestApproval` notification structure (pinned 0.144.1):
+## 2. Correct provider wire identity
 
-```json
-{
-  "method": "item/commandExecution/requestApproval",
-  "params": {
-    "id": <int, outer JSON-RPC request id>,
-    "threadId": "<string>",
-    "turnId": "<string>",
-    "itemId": "<string>",
-    "item": { "command": "<field present, always redacted>" },
-    "environmentId": "local",
-    "availableDecisions": [{"label":"Accept","tag":"accept"},{"label":"Decline","tag":"decline"}],
-    "proposedExecpolicyAmendment": "<field present in real evidence, may be null; kept as bounded INTERNAL provider data>"
-  }
-}
-```
+For pinned Codex `0.144.1`, `item/commandExecution/requestApproval` is a JSON-RPC
+server request. Its provider request identity is the **top-level JSON-RPC `id`**,
+not `params.id`. The following structured fields are also required:
 
-Observe-only (non-actionable for now): `proposedExecpolicyAmendment`.
-Actionable: `accept`, `decline` mapped to `allow_once` / `deny` canonical
-actions (frozen A1 vocabulary). `cancel` and `acceptWithExecpolicyAmendment`
-are NOT actionable and are excluded from the interaction option set.
+- top-level `id`;
+- `params.threadId`;
+- `params.turnId`;
+- `params.itemId`;
+- `params.environmentId`, exactly `"local"`;
+- bounded `params.availableDecisions` tags;
+- current POKIT `SessionID` and managed epoch.
 
-Provider response:
-```json
-{"jsonrpc":"2.0","id":<match outer request id>,"result":{"decision":"accept"}}
-```
-Written **strictly after claim**; the store owns the canonical payload. The
-response goes through `rt.send` on the exact app-server transport — no second
-process, no PTY wrapper.
+The native JSON-RPC ID must be decoded without floating-point conversion, bounded,
+stored internally, and echoed with the same JSON type and value in the response.
+The public `ApprovalID` is a canonical bounded internal string derived from that
+identity, but it is not a substitute for the preserved native response ID.
 
-Consumption proof: `serverRequest/resolved {requestId,threadId}` arriving
-**after** our write — the `requestId` must equal the outer request id we
-responded to. Resolution before our write is provider-side resolution, NOT
-delivery success. Duplicate same-id responses are silently ignored by the
-provider (CP0 finding — POKIT claim/ordering is the sole duplicate defense).
-Late post-cancel responses are silently ignored.
+The accepted CP0 evidence shows the advisory decision tags `accept`,
+`acceptWithExecpolicyAmendment`, and `cancel`. It does **not** show an
+`availableDecisions` list of `[accept, decline]`. CP0 separately proves that a
+daemon response with `decision:"decline"` is resolved and prevents the command.
+Therefore:
 
-## 3. Ingestion binding (pump → AuthoritativeApprovalStore)
+- `availableDecisions` is a bounded certification fingerprint, not action authority;
+- the initial certified actions are `allow_once -> accept` and `deny -> decline`,
+  based on schema plus the live CP0 accept/decline consumption evidence;
+- `acceptWithExecpolicyAmendment` and `cancel` remain non-actionable;
+- an unknown/missing field, tag set, response decision or provider version makes
+  the request non-actionable.
 
-The pump observes `item/commandExecution/requestApproval` on the bound thread:
+Raw command, CWD, prompt, exec-policy amendment body and arbitrary provider payload
+are never stored in the public approval DTO. Amendment presence may be kept only as
+a bounded internal marker.
 
-- `AgentApproval.ID` = `params.id` (outer JSON-RPC request id, as string)
-- `SessionID` = runtime's `codex_app_server:<local>` canonical id
-- `Kind` = `"approval"`
-- `Options` = `[{ID:"allow_once",Kind:"allow_once",Label:"Accept"},
-  {ID:"deny",Kind:"deny",Label:"Decline"}]` — FIXED set for Codex; input
-  is no-input (payload-only); the existing `allow_onceActionDigest` test
-  constant already covers `allow_once`
-- `environmentId`: required EXACTLY `"local"` — any other value or absent →
-  non-actionable (recorded for fingerprint; ingestion withheld)
-- `availableDecisions`: presence required with exactly `[accept,decline]`
-  tags (order-insensitive) — mismatch → non-actionable
-- `proposedExecpolicyAmendment`: recorded as bounded presence marker only
-  (non-null → metadata field `amendment_present:true`), never forwarded to
-  the action set or the client DTO
-- `commandActions`: always REDACTED (`<REDACTED-CMD>`) per CP0; present in
-  the provider payload but NEVER exposed
-- `ApprovalIngest`: `Provider="codex"`, `Version="codex-cli 0.144.1"`,
-  `LaunchGen=rt.epoch`, `StreamGen=0`, `Provenance=contract.Runtime`,
-  `Actionable` = the field-gating rules above AND capacity-zero → false
-  (SP1 activates capacity for the certified tuple in P2)
+## 3. Immutable binding
 
-Runtime identity for `ApprovalIngest`: `RuntimeOf(sessionID)` resolves
-`RuntimeRef{Adapter:"codex_app_server", Version:"codex-cli-0.144.1",
-LaunchGen:epoch, StreamGen:0}` — evidence-exact from SP0/SP0.5.
+The complete provider-positive binding is:
 
-The **exact** agent-kind/status from the existing telemetry path are NOT used
-for the managed session (managed session identity is provider-protocol-native,
-not agent-detection-derived). The managed session already writes
-`AgentKind:"codex"` on the session row — the approval is ingested directly,
-so it shares that session identity.
+| Field | Created/read | Stored | Compared/used | Invalidated/tested |
+|---|---|---|---|---|
+| SessionID | managed registry | approval record and claim | handler, runtime resolver, delivery | delete/stop/kill/epoch change |
+| RuntimeRef | managed record | approval record and binding | claim and pre-write revalidation | replacement/exit |
+| provider/version | pinned managed config | RuntimeRef | ingest, claim, delivery certification | mismatch/unsupported version |
+| native request ID | top-level JSON-RPC `id` | private provider request record | exact response ID and resolved requestId | duplicate/cancel/timeout |
+| thread/turn/item | structured params | private provider request record | active request and consumption correlation | turn completion/replacement |
+| canonical action | stored option plus internal certified mapping | claim binding | ActionDigest and delivery material selection | action substitution tests |
+| exact provider response bytes | daemon-generated only | private immutable delivery material | PayloadDigest, write, receipt | byte substitution tests |
+| requester context/key/token | authenticated server/store | existing A1 binding and ledger | claim, replay and commit | auth/replay tests |
 
-## 4. Delivery bridge linearization (P2)
+One authoritative canonical version string must be used in the managed record,
+`ApprovalIngest`, `RuntimeRef`, gate and receipt. The current display value
+`"codex-cli 0.144.1"` is not accepted by the gate's version grammar. SP1 must use a
+grammar-valid authority value such as `"0.144.1"`; a display version, if retained,
+is separate and never compared as authority.
 
-One delivery attempt per claim token + immutable binding. At most one
-provider write (`rt.send`) per deliver call — never retried.
+## 4. Required minimal A1-core extension
 
-1. Store `ClaimForExecution` grants a claim token + canonical payload (the
-   store's own `{"result":{"decision":"X"}}`).
-2. **Pre-write revalidation**: `RuntimeOf(sessionID)` must still equal the
-   binding's `RuntimeRef` (same adapter + version + LaunchGen) — stale
-   runtime → `DeliverStaleRuntime` without a provider write.
-3. Write the store's canonical payload through `rt.send`.
-4. Await `serverRequest/resolved {requestId == binding.ApprovalID}` —
-   bounded (CP0: observed within seconds; SP1 uses a 10s subject-to-review
-   bound). The `requestId` must be the exact outer JSON-RPC request id we
-   wrote to (== `binding.ApprovalID`). A `resolved` with a different id, a
-   resolved that arrived BEFORE step 3, or no resolved within the bound
-   all fail closed.
-5. `RecordDelivery` with the outcome — committed only when `resolved`
-   appeared strictly after the write with the matching id.
+The frozen core currently computes an empty canonical payload for no-input decision
+options. An `ApprovalDelivery` consequently receives no readable selected action and
+no exact Codex response bytes. A digest must never be reversed or used as an action
+lookup.
 
-Capacity: activated ONLY for the exact certified tuple
-`(codex_app_server, codex-cli-0.144.1, epoch==current)` — the gate
-`Activate` is called with capacity 1 (bounded single-item queue) when the
-pump observes the first actionable approval for a sprint. Superseded when
-`Stop/Kill` terminates the runtime (`Deactivate`). Capacity zero for every
-other provider, version, and epoch. `provenActionMapping` stays empty (P2
-does not wire a public mapping — the store's record IS the binding).
+SP1 may make one narrow provider-neutral internal extension:
 
-## 5. Mobile action path (P3, unchanged handler chain)
+- ingestion supplies, for each certified option, daemon-generated immutable
+  delivery material (selected action identity, schema version and exact bounded
+  response bytes);
+- the store defensively copies it and includes all delivery-semantic fields in the
+  canonical action and payload digests;
+- `ClaimForExecution` returns the exact stored bytes;
+- the same payload digest is carried through delivery receipt and commit;
+- none of this material appears in public/mobile DTOs.
 
-The existing `HandleApprovalAction` handler remains the single mobile action
-entry:
-- `h.RuntimeOf` resolves from the managed service (new wiring in `NewAppWithDeps` — replaces the nil `RuntimeOf` that SP0/SP0.5 left unwired)
-- The gate endpoint is activated with capacity 1 when an actionable approval
-  is observed (the P2 activation).
-- The handler's claim → delivery → commit chain is already correct and
-  provider-neutral — SP1 only wires the codex-specific `RuntimeOf` and
-  connected gate sink. The store already computes the canonical payload; the
-  delivery bridge feeds it through the real provider transport.
+This does not authorize generic commands or introduce a provider SDK. It only makes
+the existing claim -> delivery -> receipt contract capable of carrying an exact
+server-generated provider response.
 
-## 6. Duplicate / stale / timeout / cancel semantics
+## 5. Delivery and consumption linearization
 
-- **Duplicate same-id response** (provider ignores second): POKIT's own
-  response is idempotent — `RecordDelivery` already enforces the claim-id
-  match under `{claimToken, binding}`; the idempotency ledger prevents
-  double-commit. The delivery bridge makes at most one write per claim
-  (no-retry).
-- **Stale RuntimeRef**: `RuntimeOf` revalidation before every write +
-  `RecordDelivery`'s built-in superseded detection are two layers.
-- **Timeout**: no `resolved` within the delivery bound → `DeliveryUnavailable`
-  outcome, record delivery-failed, retryable (bounded).
-- **Cancel**: `turn/interrupt` BEFORE our response write makes the turn
-  terminal (`turn/completed` arrives with provider-side resolution —
-  NOT our success). The delivery bridge sends no response for a turn that
-  has already terminated.
-- **Natural child exit**: the delivery bound is tied to the pump — when the
-  pump closes (exited), any outstanding await on `serverRequest/resolved`
-  fails (EOF). Deliver fails closed; the store record is delivery-failed.
+Queue admission alone is not delivery success. The existing
+`RuntimeDeliveryGate.Accept` returns `accepted` after bounded queue insertion, before
+Codex consumption, so `NewGatedApprovalDelivery` must not be used unchanged as the
+SP1 success boundary.
 
-## 7. Reconnect / daemon restart
+The handler-facing `ApprovalDelivery.Deliver` may return `DeliveryAccepted` only
+after this sequence:
 
-Approval delivery state is ephemeral (in-memory gate, in-memory delivery
-await, no persistence). Daemon restart = all pending approvals lost (the
-record stays delivery-failed; a new launch-generation invalidates it via
-`SupersedeRuntime`). This is acceptable for SP1 — approval persistence and
-restart recovery belong to later work (N1 notifications / orchestration).
+1. the store grants the exact claim and payload;
+2. the current RuntimeRef is revalidated;
+3. a bounded per-runtime pending-response entry is armed for the exact native
+   request identity;
+4. the sole pump writes the exact response through the owned app-server transport;
+5. the sole pump observes a matching `serverRequest/resolved` strictly after the
+   write and routes it to that pending entry;
+6. the delivery returns a fully bound receipt and the store commits it.
 
-## 8. Capacity
+The pending table/channel is bounded and epoch-owned. It has one linearization point
+for claim ownership, one write at most, and deterministic cancellation. A resolved
+event seen before arming/write, a different request/thread, timeout, duplicate,
+provider cancellation, process exit, stop, kill, delete or epoch replacement cannot
+produce success. No component other than the pump may read provider stdout.
 
-- Ingest: `authMaxApprovalsPerSession` per session (50, frozen)
-- Gate: endpoint capacity = 1 (one item queued at a time)
-- Exactly ONE certified tuple (provider="codex", version="codex-cli-0.144.1",
-  LaunchGen matching the current runtime) — gate activation is session-scoped,
-  capacity 1
-- `provenActionMapping` stays empty — the A1 store IS the authority
+If the current gate cannot enforce this lifecycle, isolate it as internal admission
+or replace the smallest unsafe boundary. Do not report gate queue insertion as
+provider acceptance.
 
-## 9. Public DTO allowlist
+## 6. Actionability and activation
 
-Managed event DTO: adds kind `approval_required {approvalId, promptSummary,
-options by ID only (label/kind/no payload)}` — bounded, no raw request body,
-no paths, no tokens. The existing `/api/sessions` approval DTO and the mobile
-`HandleApprovalAction` endpoint are used unchanged (the handler already
-strips raw data).
+`Actionable` is immutable in an ingested approval record. Increasing gate capacity
+does not upgrade a record created with `Actionable=false`.
 
-## 10. Explicit non-goals
+- P1 may observe and ingest only non-actionable records with no action options.
+- P2 may create actionable records only for **new** requests after the certified
+  delivery boundary and current-runtime endpoint have been installed successfully.
+- Installing delivery capability and enabling actionable ingestion must be one
+  production-owned transition for that session/epoch. On failure both remain off.
+- Old non-actionable records are never upgraded in place.
+- Every other provider, version and epoch remains capacity zero/non-actionable.
 
-Notifications (N1), multi-option input forwarding, arbitrary approval
-commands, `acceptWithExecpolicyAmendment`, `cancel` actionable, persistence/
-restart-recovery, Claude/Windows, provider SDK generalization, Cleanup
-(tmux/cmux removal).
+## 7. Restart and invalidation
+
+ApprovalStore, pending response state and delivery endpoints are in memory. A daemon
+restart restores no pending, executing or delivered authority and no old approval
+record. A new managed epoch starts empty and non-actionable until a new structured
+provider request is observed through a currently certified boundary.
+
+Stop, kill, delete, natural exit and runtime replacement cancel pending delivery
+waiters, deactivate actionability before further provider writes and prevent a late
+resolved event from committing.
+
+## 8. Public/mobile boundary
+
+Use the existing ApprovalStore-backed safe approval DTO and
+`HandleApprovalAction`. A managed event may contain a bounded display-only approval
+reference, but it must not create a second approval DTO, action list or CTA authority.
+The mobile client sends only option ID, bounded optional input and idempotency key
+over the existing host-bound authenticated transport.
+
+## 9. Staged implementation and stop gates
+
+### P1 — Structured observation, non-actionable only
+
+- strict top-level JSON-RPC ID preservation and params projection;
+- bounded epoch-owned pending provider-request record;
+- exact field/version/fingerprint gating;
+- safe non-actionable ApprovalStore ingestion with no options;
+- capacity remains zero, no provider response write, no mobile CTA.
+
+Stop after a focused race-enabled checkpoint and independent P1 verification.
+
+### P2A — Exact delivery material and certified boundary
+
+- implement the minimal internal A1-core extension in section 4;
+- implement the pump-owned resolved router and Codex delivery boundary;
+- prove exact write-before-resolved, payload substitution rejection, timeout,
+  duplicate, cancel, exit and replacement interleavings with deterministic barriers;
+- do not enable production actionability yet.
+
+Stop after independent P2A verification.
+
+### P2B — Atomic capability activation
+
+- install the exact current-runtime delivery endpoint and actionable-ingest switch as
+  one production-owned transition;
+- only newly observed certified requests receive `allow_once` and `deny` options;
+- wire managed `RuntimeOf`; prove no old record upgrade and no queue-only commit;
+- retain capacity zero on every mismatch or partial installation.
+
+Stop after independent P2B verification.
+
+### P3 — Authenticated mobile and live production proof
+
+- consume only the existing safe ApprovalStore DTO/action API;
+- prove authenticated allow-once and deny using real `pokit run codex` managed turns;
+- prove exact provider consumption, command execution/non-execution, duplicate tap,
+  stale epoch, deletion and DTO privacy;
+- run the authoritative full repository gate on a frozen final HEAD and write the
+  final evidence report.
+
+Only independent P3/full-contract review may ACCEPT SP1/A1.1 and unblock N1.
+
+## 10. Non-goals
+
+No N1, Claude/A1.2, generic provider SDK, Task/Dispatch, worker protocol,
+Executor-Verifier, automatic policy, PTY/screen approval, generic terminal input,
+tmux/cmux cleanup, persistence, Windows expansion or terminal UI redesign.
