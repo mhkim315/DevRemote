@@ -150,8 +150,8 @@ A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native 
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
-A1.2 Claude Approval Extension                BLOCKED (C0H: headless hook never fires; C0R: permission-prompt tool accepted but exact identity/consumption unproven)
-N1  Notifications                             AWAITING explicit product decision to defer blocked A1.2; no Claude approval authority dependency may be inferred
+A1.2 Claude Approval Extension                C0D EVIDENCE AUTHORIZED (C0H/C0R remain BLOCKED; stable PreToolUse defer/resume exact-ID research only)
+N1  Notifications                             BLOCKED pending independent C0D verdict and A1.2 accept-or-explicit-defer decision
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
@@ -179,18 +179,20 @@ M3-auth-1B
 → SP0 native managed runtime
 → SP0.5 managed I/O and lifecycle
 → SP1 native approval / A1.1 provider-positive completion
-→ A1.2 Claude approval research (BLOCKED; explicit defer decision required)
+→ A1.2 Claude approval C0D deferred-tool research
 → N1 notifications
 → O1 deterministic broker
 → O2 developer-verifier loop
 ```
 
-A1.2 was authorized before N1 on 2026-07-15 and completed both bounded research
-gates without weakening approval authority. C0H found that the stable
+A1.2 was authorized before N1 on 2026-07-15 and completed two bounded negative
+research gates without weakening approval authority. C0H found that the stable
 `PermissionRequest` hook does not fire headless. C0R separately proved that 2.1.209
 accepts `--permission-prompt-tool`, but did not prove exact invocation identity or an
-authoritative consumed-decision join. A1.2 is therefore closed BLOCKED. N1 may begin
-only after an explicit product decision defers Claude actionable approval.
+authoritative consumed-decision join. A third official surface is now authorized as
+C0D evidence only: `PreToolUse` defer/resume exposes `tool_use_id` and a documented
+matching post-tool result candidate. No production implementation is authorized until
+that exact identity and consumption lifecycle is independently proven.
 
 SP1 is governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and
 `docs/NEXT_EXECUTOR_SP1_NATIVE_APPROVAL_HANDOFF.md`. Queue admission is not provider
@@ -609,9 +611,12 @@ wire evidence, cleanup/failure traces and the bounded production entry path open
 A1.2 retains two independent negative findings: C0H BLOCKED for the headless
 `PermissionRequest` hook and C0R BLOCKED for `--permission-prompt-tool`. The latter
 surface exists in 2.1.209, but exact request identity and consumed-decision authority
-remain unproven. No C1/C2/C3 implementation is authorized. Future Agent SDK,
-Channels, terminal-only, or POKIT-owned-runtime options require separate architecture
-decisions; interactive terminal input is not native approval authority.
+remain unproven. C0D is a separate stable `PreToolUse` defer/resume research packet;
+it must prove same-`tool_use_id` resume and allow/deny consumption, and must fail
+closed for multiple tool calls. No C1/C2/C3 or C1D/C2D/C3D implementation is
+authorized. Future Agent SDK, Channels, terminal-only, or POKIT-owned-runtime options
+remain separate architecture decisions; interactive terminal input is not native
+approval authority.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,
