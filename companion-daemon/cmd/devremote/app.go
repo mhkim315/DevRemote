@@ -29,6 +29,7 @@ type Config struct {
 	InsecureLocalOnly    bool
 	EnableLocalPTY       bool // Phase 6: default-off feature flag
 	EnableAgentDetection bool // Phase A5: default-off agent detection bridge
+	EnableManagedCodex   bool // SP0: default-off native managed Codex runtime
 }
 
 // ── Test seam interfaces ──
@@ -97,6 +98,7 @@ type App struct {
 	activity           *term.ActivityBuffer   // E10b: IPC replay
 	transcriptSvc      *transcript.Service    // T3: Transcript integration
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
+	managed            *term.ManagedCodexService // SP0: native managed Codex runtime (nil unless enabled)
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
 	authHandler        *devicetrust.AuthHandler               // M2.5-3
@@ -184,6 +186,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
 	lifecycle := term.NewLifecycleService(reg, activity, transcriptSvc)
+
+	// SP0: native managed Codex runtime — default-off. The service owns the
+	// pinned launcher, the owned-session registry, and every managed child.
+	// Identity verification runs fail-closed per create, not at boot.
+	var managed *term.ManagedCodexService
+	if cfg.EnableManagedCodex {
+		managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil)
+	}
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
 	// configured yet (first run without pairing) the endpoints return an error.
@@ -347,6 +357,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		activity:      activity,
 		transcriptSvc: transcriptSvc,
 		lifecycle:     lifecycle,
+		managed:       managed,
 		authHandler:   authH,
 		sessionMgr:    sessionMgr,
 		wsTickets:     wsTickets,
@@ -473,6 +484,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// SP0: stop the managed Codex children (kill + bounded reap). The owned
+	// registry is closed first inside Shutdown so late pump events are inert.
+	if a.managed != nil {
+		log.Println("Shutdown: stopping managed codex runtimes...")
+		if err := a.managed.Shutdown(ctx); err != nil {
+			log.Printf("Managed codex shutdown error: %v", err)
+			errs = append(errs, fmt.Errorf("managed codex: %w", err))
+		}
+	}
+
 	// 4. Signal tunnel and wait for exit. Ignore os.ErrProcessDone
 	// (process already exited between the check and the signal).
 	if a.tunnel != nil {
@@ -530,7 +551,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity, a.lifecycle)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity, a.lifecycle, a.managed)
 }
 
 func (a *App) startTunnel() tunnelResource {

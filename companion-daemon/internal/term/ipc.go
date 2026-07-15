@@ -30,11 +30,12 @@ type IPCServer struct {
 	telemetry *TelemetryService
 	activity  *ActivityBuffer
 	lifecycle *LifecycleService
+	managed   *ManagedCodexService // SP0: nil unless EnableManagedCodex
 }
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService) (*IPCServer, error) {
 	// If a socket file already exists, only remove it when it is stale. If a
 	// live daemon is still listening on it, refuse: otherwise a duplicate
 	// daemon start would delete the running daemon's socket and then fail on
@@ -72,6 +73,7 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 		telemetry: telemetry,
 		activity:  activity,
 		lifecycle: lifecycle,
+		managed:   managed,
 	}
 
 	go srv.serve()
@@ -90,7 +92,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity, s.lifecycle)
+		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity, s.lifecycle, s.managed)
 	}
 }
 
@@ -113,7 +115,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -143,6 +145,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			ProfileID  string          `json:"profileId"`
 			Executable string          `json:"executable"`
 			Args       []string        `json:"args"`
+			Detach     bool            `json:"detach"` // SP0: structured detached launch
 			// pair-start / pair-approve / pair-reject (M2.5-2)
 			Duration       int    `json:"duration"`
 			PhoneSignature []byte `json:"phoneSignature,omitempty"`
@@ -186,6 +189,25 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			// local processes and is NOT forwarded through the tunnel, so this
 			// path may run the legacy command string or custom argv that HTTP
 			// refuses.
+			// SP0: conflicting launch inputs fail closed BEFORE any dispatch —
+			// a request may select exactly one of profile, executable, command.
+			if err := validateLaunchInputExclusivity(req.ProfileID, req.Executable, req.Command); err != nil {
+				json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			// SP0: the recognized detached Codex profile launches the POKIT-owned
+			// native app-server runtime (no PTY, no shell). Only reachable when
+			// the composition root enabled the managed service; otherwise the
+			// request falls through to the legacy controlled_pty profile branch.
+			if req.ProfileID == "codex" && req.Detach && managed != nil {
+				id, merr := managed.CreateDetached(req.CWD)
+				if merr != nil {
+					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
+				} else {
+					json.NewEncoder(conn).Encode(map[string]string{"id": id, "state": string(LifecycleRunning)})
+				}
+				return
+			}
 			id, state, cerr := createLocalControlled(context.Background(), reg, activity, lifecycle, localCreateSpec{
 				ProfileID:  req.ProfileID,
 				Name:       req.Name,

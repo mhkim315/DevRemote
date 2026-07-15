@@ -41,6 +41,7 @@ func main() {
 	insecureLocalOnly := flag.Bool("insecure-local-only", false, "Disable authentication (DANGEROUS)")
 	enableLocalPTY := flag.Bool("enable-localpty", false, "Enable LocalPTY adapter (experimental)")
 	enableAgentDetection := flag.Bool("enable-agent-detection", false, "Enable agent detection bridge (experimental)")
+	enableManagedCodex := flag.Bool("enable-managed-codex", false, "Enable native managed Codex runtime (SP0, experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -54,6 +55,7 @@ func main() {
 		InsecureLocalOnly:    *insecureLocalOnly,
 		EnableLocalPTY:       *enableLocalPTY,
 		EnableAgentDetection: *enableAgentDetection,
+		EnableManagedCodex:   *enableManagedCodex,
 	})
 }
 

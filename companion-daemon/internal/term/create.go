@@ -146,10 +146,35 @@ type localCreateSpec struct {
 	Command    json.RawMessage // strict: a JSON string, or absent
 }
 
+// validateLaunchInputExclusivity fails closed when a create request selects
+// more than one launch source. A real profile id (non-empty, non-"custom"),
+// a custom executable, and a legacy command string are mutually exclusive —
+// ambiguous input is never silently resolved by precedence. ("custom" is a
+// marker for the executable path, not a profile selection.)
+func validateLaunchInputExclusivity(profileID, executable string, command json.RawMessage) error {
+	selected := 0
+	if profileID != "" && profileID != "custom" {
+		selected++
+	}
+	if executable != "" {
+		selected++
+	}
+	if len(command) > 0 {
+		selected++
+	}
+	if selected > 1 {
+		return fmt.Errorf("conflicting launch inputs: profile, executable, and command are mutually exclusive")
+	}
+	return nil
+}
+
 // toOptions validates the spec and resolves it to CreateOptions. Malformed
 // input (e.g. a non-string command) is rejected — it is never coerced into a
 // default shell.
 func (spec localCreateSpec) toOptions() (mux.CreateOptions, error) {
+	if err := validateLaunchInputExclusivity(spec.ProfileID, spec.Executable, spec.Command); err != nil {
+		return mux.CreateOptions{}, err
+	}
 	if err := validateCWD(spec.CWD); err != nil {
 		return mux.CreateOptions{}, err
 	}

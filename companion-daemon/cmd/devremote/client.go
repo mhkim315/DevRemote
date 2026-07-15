@@ -57,27 +57,53 @@ func drainStdin(d time.Duration) {
 	}
 }
 
-// createViaSocket creates a controlled_pty session over the daemon's 0600 Unix
-// socket — the privileged local channel. Arbitrary command execution is only
-// available here, never over the tunnel-reachable HTTP API. Returns the
+// buildRunCreateRequest maps parsed `pokit run` arguments to the IPC create
+// request body. SP0: the recognized detached Codex form (`pokit run --detach
+// codex`, exactly one token) is sent as a STRUCTURED profile request — never a
+// joined command string. Every other form keeps the legacy command string.
+func buildRunCreateRequest(commandArgs []string, cwd string, detach bool) map[string]interface{} {
+	if detach && len(commandArgs) == 1 && commandArgs[0] == "codex" {
+		return map[string]interface{}{
+			"version":   1,
+			"operation": "create",
+			"profileId": "codex",
+			"cwd":       cwd,
+			"detach":    true,
+		}
+	}
+	return map[string]interface{}{
+		"version":   1,
+		"operation": "create",
+		"command":   strings.Join(commandArgs, " "),
+		"cwd":       cwd,
+	}
+}
+
+// createViaSocket creates a session over the daemon's 0600 Unix socket — the
+// privileged local channel. Arbitrary command execution is only available
+// here, never over the tunnel-reachable HTTP API. Returns the
 // daemon-generated canonical session ID.
-func createViaSocket(command, cwd string) (string, error) {
-	return createViaSocketAt("/tmp/pokit.sock", command, cwd)
+func createViaSocket(body map[string]interface{}) (string, error) {
+	return createRequestViaSocketAt("/tmp/pokit.sock", body)
 }
 
 func createViaSocketAt(socketPath, command, cwd string) (string, error) {
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	body, _ := json.Marshal(map[string]interface{}{
+	return createRequestViaSocketAt(socketPath, map[string]interface{}{
 		"version":   1,
 		"operation": "create",
 		"command":   command,
 		"cwd":       cwd,
 	})
-	if _, err := conn.Write(append(body, '\n')); err != nil {
+}
+
+func createRequestViaSocketAt(socketPath string, body map[string]interface{}) (string, error) {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	payload, _ := json.Marshal(body)
+	if _, err := conn.Write(append(payload, '\n')); err != nil {
 		return "", err
 	}
 	buf := make([]byte, 8192)
@@ -130,8 +156,6 @@ func runClient(args []string) {
 		os.Exit(1)
 	}
 
-	command := strings.Join(commandArgs, " ")
-
 	// Preflight: for an attached run, the daemon IPC socket must exist. The
 	// HTTP API can be alive while the IPC listener is not (e.g. a duplicate
 	// daemon start deleted the socket), and without this check we would
@@ -154,8 +178,9 @@ func runClient(args []string) {
 	}
 
 	// Create over the privileged 0600 Unix socket (not HTTP): the daemon runs
-	// arbitrary commands only through this local channel.
-	sessionID, err := createViaSocket(command, cwd)
+	// arbitrary commands only through this local channel. Recognized detached
+	// profiles are sent structurally (SP0); everything else as a command string.
+	sessionID, err := createViaSocket(buildRunCreateRequest(commandArgs, cwd, detach))
 	if err != nil {
 		log.Fatalf("Failed to create session via local socket: %v\nIs the daemon running? Try: pokit daemon --insecure-local-only", err)
 	}
