@@ -1,6 +1,7 @@
 package term
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -35,9 +36,9 @@ func TestRuntimeDeliveryGate_StaleGenerationRefused(t *testing.T) {
 		Binding: ApprovalExecutionBinding{
 			ApprovalID: "approval1", SessionID: "codex:devremote-session",
 			Runtime: ref1, ActionDigest: allowOnceActionDigest,
-			PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik-1",
+			PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik.1",
 		},
-		ClaimToken: "claimtok1",
+		ClaimToken: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}
 	receipt1, _, ok1 := gate.Accept(req1)
 	if !ok1 || receipt1.Outcome != DeliveryAccepted {
@@ -58,9 +59,9 @@ func TestRuntimeDeliveryGate_StaleGenerationRefused(t *testing.T) {
 		Binding: ApprovalExecutionBinding{
 			ApprovalID: "approval2", SessionID: "codex:devremote-session",
 			Runtime: ref1, ActionDigest: allowOnceActionDigest,
-			PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik-2",
+			PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik.2",
 		},
-		ClaimToken: "claimtok2",
+		ClaimToken: "cccccccccccccccccccccccccccccccc",
 	}
 	_, _, ok = gate.Accept(reqStale)
 	if ok {
@@ -73,9 +74,9 @@ func TestRuntimeDeliveryGate_StaleGenerationRefused(t *testing.T) {
 		Binding: ApprovalExecutionBinding{
 			ApprovalID: "approval3", SessionID: "codex:devremote-session",
 			Runtime: ref2, ActionDigest: allowOnceActionDigest,
-			PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik-3",
+			PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik.3",
 		},
-		ClaimToken: "claimtok3",
+		ClaimToken: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 	}
 	receipt3, _, okCurrent := gate.Accept(reqCurrent)
 	if !okCurrent || receipt3.Outcome != DeliveryAccepted {
@@ -98,7 +99,9 @@ func TestRuntimeDeliveryGate_ReplaceMidFlight_StaleRejected(t *testing.T) {
 
 	ready := make(chan struct{})
 	goDone := make(chan struct{})
+	doneOnce := sync.OnceFunc(func() { close(goDone) })
 	var acceptOK bool
+	var acceptMu sync.Mutex
 
 	gate.acceptEntryHook = func() {
 		close(ready)
@@ -106,17 +109,19 @@ func TestRuntimeDeliveryGate_ReplaceMidFlight_StaleRejected(t *testing.T) {
 	}
 
 	go func() {
-		defer close(goDone)
+		defer doneOnce()
 		req := ApprovalDeliveryRequest{
 			Binding: ApprovalExecutionBinding{
 				ApprovalID: "approvalA", SessionID: "codex:devremote-session",
 				Runtime: ref1, ActionDigest: allowOnceActionDigest,
-				PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik-A",
+				PayloadDigest: emptyPayloadDigest, IdempotencyKey: "ik.A",
 			},
-			ClaimToken: "claimtokA",
+			ClaimToken: "11111111111111111111111111111111",
 		}
-		_, _, ok := gate.Accept(req)
-		acceptOK = ok
+		_, _, accepted := gate.Accept(req)
+		acceptMu.Lock()
+		acceptOK = accepted
+		acceptMu.Unlock()
 	}()
 
 	<-ready
@@ -124,11 +129,14 @@ func TestRuntimeDeliveryGate_ReplaceMidFlight_StaleRejected(t *testing.T) {
 	if !ok {
 		t.Fatal("replacement activation failed")
 	}
-	close(goDone)
+	doneOnce()
 	<-goDone
 	gate.acceptEntryHook = nil
 
-	if acceptOK {
+	acceptMu.Lock()
+	accepted := acceptOK
+	acceptMu.Unlock()
+	if accepted {
 		t.Fatal("REPLACE-MID-FLIGHT NOT REJECTED: stale-gen Accept succeeded")
 	}
 	t.Log("REPLACE_MID_FLIGHT_STALE_REJECTED ok")

@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -234,6 +233,9 @@ func (r *CodexAppServerRuntime) Ref() RuntimeRef {
 
 // entryPathRecord is an append-only observation tuple recording WHAT was
 // observed on the provider connection WITHOUT making it actionable.
+// It is defined for future use (Packet A gate #7 entry-path observation sink)
+// but not yet consumed in CP0; the zero-capacity entry path records
+// observations without feeding A1 delivery.
 type entryPathRecord struct {
 	Runtime  RuntimeRef
 	Epoch    string
@@ -241,59 +243,3 @@ type entryPathRecord struct {
 	TurnID   string
 	ReqID    any
 }
-
-// An entryPathSink receives non-actionable observation records.
-type entryPathSink struct {
-	mu  sync.Mutex
-	log []entryPathRecord
-}
-
-func newEntryPathSink() *entryPathSink { return &entryPathSink{} }
-
-func (s *entryPathSink) record(rt RuntimeRef, ep, tid, tuid string, rid any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.log = append(s.log, entryPathRecord{rt, ep, tid, tuid, rid})
-}
-func (s *entryPathSink) count() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.log) }
-func (s *entryPathSink) reset()     { s.mu.Lock(); defer s.mu.Unlock(); s.log = nil }
-
-// ── Stale-generation refusal (deterministic test — no process) ──
-
-// WriteClaimAgainstGate returns whether a write with the given RuntimeRef
-// would be accepted by the gate. The gate's CompareEntry method does NOT
-// require a running child — the generation comparison is purely structural.
-// This exists so the replacement tests can exercise the write linearization
-// point without spawning a real app-server process.
-func (r *CodexAppServerRuntime) WriteClaimAgainstGate(target RuntimeRef) bool {
-	cur := r.Ref()
-	return cur.equal(target)
-}
-
-// LatestGeneration returns the current (post-replace) generation for
-// deterministic test assertions.
-func (r *CodexAppServerRuntime) LatestGeneration() int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.gen
-}
-
-// ── Test-only helpers ──
-
-// testSeamReplaceKill is a NARROW test seam: set to true and Replace() will
-// Skip the actual process kill (test-only). False in production.
-var testSeamReplaceKill = false
-
-func (r *CodexAppServerRuntime) setTestSeamReplaceKill(v bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if v {
-		atomic.StoreInt32(&testSeamReplaceKillInternal, 1)
-	} else {
-		atomic.StoreInt32(&testSeamReplaceKillInternal, 0)
-	}
-}
-
-var testSeamReplaceKillInternal int32
-
-func replaceShouldSkipKill() bool { return atomic.LoadInt32(&testSeamReplaceKillInternal) == 1 }
