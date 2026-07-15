@@ -1,0 +1,13 @@
+===life===
+DEFER pid=42084 t=1784125324
+RESUME pid=42125 t=1784125325
+MISMATCH tool_use_id want=FAKE_TUID_00000000000000000000000 got=call_00_FslbQHFqVsw4fOFZt6cW1589
+RESUME pid=42193 t=1784125327
+MISMATCH tool_use_id want=FAKE_TUID_00000000000000000000000 got=call_00_kdsnMT4mXjDvh4VFojcs2893
+===deferred===
+{"session_id": "d653a208-68da-4742-8c2f-7d49b6741269", "tool_use_id": "call_00_FslbQHFqVsw4fOFZt6cW1589", "tool_name": "Bash", "input_sha256_16": "577b9c4e6bb61915"}===posttool===
+NO-POSTTOOL
+===probe===
+PROBE-ABSENT
+===permission_denials count===
+1

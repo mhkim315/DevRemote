@@ -1,0 +1,6 @@
+The C0D artifacts committed at 10b20ae contained raw provider material
+(commands, home paths, transcript paths, thinking stream) that violated
+the C0D privacy contract. They are tombstoned here; this R1 commit
+replaces them with bounded structural projections only.
+
+See: docs/A1_2_C0D_R1_DEFER_EVIDENCE_REPORT.md
