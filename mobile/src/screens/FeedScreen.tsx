@@ -17,6 +17,7 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { EventBubble } from '../components/EventBubble';
 import { SessionTelemetry } from '../components/AgentCard';
+import ManagedSessionView from '../components/ManagedSessionView';
 
 interface Props {
   onBack: () => void;
@@ -46,7 +47,17 @@ const NORMAL_MACROS: { label: string; chars: number[] }[] = [
 
 
 
-export default function FeedScreen({onBack, session, token, authCtx}: Props) {
+// SP0.5-B: native managed sessions (codex_app_server adapter — an adapter
+// namespace branch, never agentKind inference) have NO PTY/terminal. They get
+// the dedicated bounded managed view instead of the legacy terminal screen.
+export default function FeedScreen(props: Props) {
+  if (props.session.startsWith('codex_app_server:')) {
+    return <ManagedSessionView session={props.session} token={props.token} onBack={props.onBack} />;
+  }
+  return <LegacyFeedScreen {...props} />;
+}
+
+function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');

@@ -348,6 +348,35 @@ export async function deleteSessionHistory(id: string, token?: string): Promise<
   return parseLifecycleResult(id, 'delete', await res.json());
 }
 
+// SP0.5-B — native managed session surface. The managed session is
+// JSON-RPC-native (no PTY): reads and prompt writes go through the dedicated
+// bounded endpoints, never /term/ws. Responses are decoded fail-closed by
+// managedSession.decodeManagedEventsResponse at the call site.
+
+// getManagedStatus reads the bounded native-status DTO (including the exact
+// launch epoch) that every subsequent managed read/write binds to.
+export async function getManagedStatus(id: string, token?: string): Promise<unknown> {
+  const res = await apiGet(`/api/sessions/${encodeURIComponent(id)}/native-status`, token);
+  return res.json();
+}
+
+// getManagedEvents reads the bounded snapshot + events after `cursor` for the
+// exact session epoch. Returns the raw untrusted JSON for strict decoding.
+export async function getManagedEvents(id: string, epoch: number, cursor: number, token?: string): Promise<unknown> {
+  const res = await apiGet(
+    `/api/managed-sessions/${encodeURIComponent(id)}/events?epoch=${encodeURIComponent(String(epoch))}&cursor=${encodeURIComponent(String(cursor))}`,
+    token,
+  );
+  return res.json();
+}
+
+// postManagedPrompt submits ONE bounded prompt to the managed session. The
+// daemon enforces bounds, exact epoch binding, and one-active-turn (409 on
+// conflict); a rejected prompt is never replayed.
+export async function postManagedPrompt(id: string, epoch: number, text: string, token?: string): Promise<void> {
+  await apiWrite('POST', `/api/managed-sessions/${encodeURIComponent(id)}/prompt`, { epoch, text }, token);
+}
+
 // createOrUpdateSession is the LEGACY create path. M3a's New Session flow no
 // longer calls it; it remains only for the edit/color presentation path.
 export async function createOrUpdateSession(id: string, runner: string, color: string, token?: string) {

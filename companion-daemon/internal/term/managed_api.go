@@ -9,6 +9,7 @@ package term
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +87,119 @@ func (h *Handlers) HandleManagedSessions(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+// ManagedEventsResponse is the SP0.5-B authenticated read DTO: a bounded
+// snapshot of the session followed by monotonic events strictly after the
+// presented cursor. Field set is closed.
+type ManagedEventsResponse struct {
+	ContractVersion string                 `json:"contractVersion"`
+	Session         ManagedNativeStatusDTO `json:"session"`
+	Events          []ManagedEvent         `json:"events"`
+	NextCursor      uint64                 `json:"nextCursor"`
+}
+
+// HandleManagedSessionEvents serves
+// GET /api/managed-sessions/{id}/events?cursor=N&epoch=E from the owned
+// registry + event store ONLY. Wrong session, wrong epoch, cursor ahead of
+// the newest event, closed store, or malformed parameters fail closed.
+// Re-reading the same cursor is idempotent.
+func (h *Handlers) HandleManagedSessionEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.Managed == nil {
+		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
+		return
+	}
+	id := r.PathValue("id")
+	rec, ok := h.Managed.Registry().Get(id)
+	if !ok {
+		http.Error(w, "managed session not found", http.StatusNotFound)
+		return
+	}
+	epoch, err := strconv.ParseInt(r.URL.Query().Get("epoch"), 10, 64)
+	if err != nil {
+		http.Error(w, "epoch is required", http.StatusBadRequest)
+		return
+	}
+	if epoch != rec.Epoch {
+		http.Error(w, "stale session epoch", http.StatusConflict)
+		return
+	}
+	cursor := uint64(0)
+	if cs := r.URL.Query().Get("cursor"); cs != "" {
+		cursor, err = strconv.ParseUint(cs, 10, 64)
+		if err != nil {
+			http.Error(w, "malformed cursor", http.StatusBadRequest)
+			return
+		}
+	}
+	store, storeEpoch, ok := h.Managed.eventStoreFor(id)
+	if !ok || storeEpoch != rec.Epoch {
+		http.Error(w, "managed session not found", http.StatusNotFound)
+		return
+	}
+	events, rerr := store.readAfter(cursor, 128)
+	if rerr != nil {
+		http.Error(w, rerr.Error(), http.StatusConflict)
+		return
+	}
+	next := cursor
+	for _, ev := range events {
+		if ev.Seq > next {
+			next = ev.Seq
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ManagedEventsResponse{
+		ContractVersion: managedEventContractVersion,
+		Session:         managedNativeStatusDTO(rec),
+		Events:          events,
+		NextCursor:      next,
+	})
+}
+
+// managedPromptRequest is the SP0.5-B input body. Unknown fields fail closed;
+// the server derives device/host/permission identity — the body carries only
+// the bounded text and the exact epoch binding.
+type managedPromptRequest struct {
+	Epoch int64  `json:"epoch"`
+	Text  string `json:"text"`
+}
+
+// HandleManagedSessionPrompt serves POST /api/managed-sessions/{id}/prompt.
+// Auth is applied by the router (terminal input permission in remote mode).
+// Delivery goes ONLY through ManagedCodexService.SubmitPrompt — every bound,
+// binding, and one-active-turn failure is fail-closed with zero provider
+// writes.
+func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.Managed == nil {
+		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
+		return
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, managedPromptMaxBytes+1024))
+	dec.DisallowUnknownFields()
+	var req managedPromptRequest
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "malformed prompt body", http.StatusBadRequest)
+		return
+	}
+	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text); err != nil {
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
 // appendManagedRows appends managed-session rows built directly from the

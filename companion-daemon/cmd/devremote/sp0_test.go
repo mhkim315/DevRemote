@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,35 @@ func TestManagedNativeStatusRoute_Authenticated(t *testing.T) {
 	resp4.Body.Close()
 	if resp4.StatusCode != http.StatusOK {
 		t.Fatalf("authenticated managed list = %d, want 200", resp4.StatusCode)
+	}
+
+	// SP0.5-B routes: anonymous events read and prompt write are rejected in
+	// remote mode; the dev token reaches the handlers in local mode.
+	resp5, err := http.Get(remoteSrv.URL + "/api/managed-sessions/codex_app_server:x/events?epoch=1&cursor=0")
+	if err != nil {
+		t.Fatalf("anon events get: %v", err)
+	}
+	resp5.Body.Close()
+	if resp5.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("remote anonymous events = %d, want 401", resp5.StatusCode)
+	}
+	resp6, err := http.Post(remoteSrv.URL+"/api/managed-sessions/codex_app_server:x/prompt", "application/json", strings.NewReader(`{"epoch":1,"text":"hi"}`))
+	if err != nil {
+		t.Fatalf("anon prompt post: %v", err)
+	}
+	resp6.Body.Close()
+	if resp6.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("remote anonymous prompt = %d, want 401", resp6.StatusCode)
+	}
+	reqEv, _ := http.NewRequest("GET", localSrv.URL+"/api/managed-sessions/codex_app_server:x/events?epoch=1&cursor=0", nil)
+	reqEv.Header.Set("Authorization", "Bearer dev-token")
+	resp7, err := http.DefaultClient.Do(reqEv)
+	if err != nil {
+		t.Fatalf("auth events get: %v", err)
+	}
+	resp7.Body.Close()
+	if resp7.StatusCode != http.StatusNotFound {
+		t.Fatalf("authenticated events for unknown id = %d, want 404", resp7.StatusCode)
 	}
 }
 
