@@ -1,1 +1,2 @@
-{"eventType": "result.permission_denials", "session_id": "1f7fe68a-1110-4d0b-8491-c69d95ae02ca", "denied": {"tool_name": "Bash", "tool_use_id": "call_00_VFAdzEnaac3gm3jHKWsW4183", "tool_input": {"command": "echo ok > /tmp/c0d-r5-deny.txt", "description": "Write \"ok\" to /tmp/c0d-r5-deny.txt"}}}
+{"eventType": "result.permission_denials", "session_id": "1f7fe68a-1110-4d0b-8491-c69d95ae02ca", "denied": {"tool_name": "Bash", "tool_use_id": "call_00_VFAdzEnaac3gm3jHKWsW4183", "input_sha256": "972b025e558d860000288edc9d917f4e8992f702eba5a61d8f22100b605c7b0f"}}
+
