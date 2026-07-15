@@ -1,9 +1,9 @@
 # SP0.5 Managed I/O and Lifecycle — Evidence Report
 
-Status: **SP0.5 A–C DELIVERED — submitted for independent review. SP1 /
-Cleanup NOT started. Approval capacity ZERO; `waiting_approval` display-only;
-frozen A1 contracts and the accepted SP0 core (owned registry, native
-authority, pinned runtime, process lease) untouched in shape.**
+Status: **SP0.5 A–C + R1 remediation DELIVERED — resubmitted for independent
+review. SP1 / Cleanup NOT started. Approval capacity ZERO; `waiting_approval`
+display-only; frozen A1 contracts and the accepted SP0 core (owned registry,
+native authority, pinned runtime, process lease) untouched in shape.**
 
 Date: 2026-07-15. Executor: Claude Code, canonical checkout
 `/Users/mhk/Documents/codex/DevRemote`, branch `feature/phase10-multi-adapter`.
@@ -11,8 +11,8 @@ Date: 2026-07-15. Executor: Claude Code, canonical checkout
 - Handoff baseline: `3e535974288cbf2afc2894c89ff0d640cabdab47`
 - Accepted SP0 implementation ancestry `2b35f524…`: PASS; CP0 `42429c8…`: PASS
 - Contract note: `docs/SP0_5_MANAGED_IO_CONTRACT_NOTE.md` (`4e1f099`)
-- Implementation commits: `9a77bab` (A), `4ecff55` (B),
-  `5d45c9ca54b5acf102f611c1d0473258e5df63fe` (C — final)
+- Implementation commits: `9a77bab` (A), `4ecff55` (B), `5d45c9c` (C),
+  `e38877f2b2110a198c71d57af56c6c17e2ff07b0` (R1 — final)
 - Authoritative handoff: `docs/NEXT_EXECUTOR_SP0_5_MANAGED_IO_LIFECYCLE_HANDOFF.md`
 
 ## 1. Packet A — local structured I/O (`9a77bab`)
@@ -108,10 +108,58 @@ The only interface additions are the handoff-allowed ones: the versioned
 managed event DTO, `Term()` on the existing narrow process seam, and the
 Codex-specific projection isolated in the pump.
 
-## 5. Final gate (frozen implementation HEAD)
+## 4a. Remediation round R1 (reviewer blockers 1–4, all fixed)
 
-Run once on frozen `5d45c9ca54b5acf102f611c1d0473258e5df63fe` via
-`sh scripts/build-gate.sh`:
+Reviewer verdict on `ce9add6`: REJECT with four blockers. All fixed in
+implementation commit `e38877f2b2110a198c71d57af56c6c17e2ff07b0`
+(`fix(SP0.5-R1)`):
+
+1. **Mobile polling kept stale status current** — new `ManagedSessionPoller`
+   (production controller consumed by `ManagedSessionView`): one request in
+   flight, per-request deadline, freshness expiry → `unavailable`/
+   non-current (history preserved, rendered as stale); only a NEW fresh
+   snapshot restores current; `close()` rejects post-unmount commits.
+   Fake-timer tests cover one-in-flight, deadline release, failure-past-
+   freshness invalidation, reconnect restore, and closed-poller inertness.
+2. **Byte bounds diverged from the contract** — backend `boundUTF8`
+   truncates on UTF-8 rune boundaries (multibyte never split; exact bound
+   reachable, proven); mobile validates UTF-8 BYTES via `utf8ByteLength` —
+   the reviewer counterexample (`'😀'.repeat(2048)` = 4096 UTF-16 units /
+   8192 bytes) is rejected while exact ASCII (4096) and multibyte (1024
+   emoji) bounds pass; `ManagedSessionFeed` capped at 256 with an explicit
+   leading gap marker (long-poll accumulation test).
+3. **one-active-turn not bound to turn identity** — the runtime now binds
+   the claim to the EXACT provider turn id taken from the turn/start
+   RESPONSE via JSON-RPC id correlation (no first-come adoption); working/
+   completed/assistant projections all require exact current-turn equality;
+   an error response releases the claim; fakes upgraded to the schema-exact
+   payload shape (`params.turn.id` / `params.turnId`). Deterministic
+   interleaving test reproduces the reviewer scenario (late duplicate
+   completion of turn A during turn B → claim held, status working, third
+   prompt conflicts) with a known-bad control (the exact id releases), plus
+   ghost started/completed fabrication tests.
+4. **Missing paired-device production-route evidence** — the remote fixture
+   now injects a deterministic managed service (exported narrow
+   `ManagedLauncher`/`ManagedProcess` seam + `NewManagedCodexServiceForTest`
+   + `Dependencies.Managed`; the composition root still always builds the
+   pinned production service). With REAL challenge/verify bearers on the
+   real remote router: owner reads list/events and prompts (exactly one
+   provider write); read-only member reads but prompt → 403 with ZERO
+   provider writes; legacy dev token → 401; a bearer minted by another
+   host → 401; the projected assistant output is readable by the paired
+   member. The host-bound mobile transport is proven to drive the same
+   routes (URL/method/body) and to refuse non-paired hosts. Trust-boundary
+   hardening: REST prompt/lifecycle decoders reject trailing JSON; the
+   local attach input line is Scanner-bounded.
+
+No live provider turn was re-run (the A live proof stands; R1 did not
+change the pinned launch pipeline's happy path — full deterministic suites
+re-run green).
+
+## 5. Final gate (frozen remediation HEAD)
+
+Run once on frozen implementation HEAD
+`e38877f2b2110a198c71d57af56c6c17e2ff07b0` via `sh scripts/build-gate.sh`:
 
 ```text
 --- Backend ---  go build OK / go vet OK / go test -race OK / git diff --check OK
@@ -126,5 +174,5 @@ This report commit is docs-only on top of that verified tree.
 ## 6. Review marker
 
 ```text
-REVIEW REQUEST: SP0.5 Managed I/O and Lifecycle — 5d45c9ca54b5acf102f611c1d0473258e5df63fe
+REVIEW REQUEST: SP0.5 Managed I/O and Lifecycle — e38877f2b2110a198c71d57af56c6c17e2ff07b0
 ```
