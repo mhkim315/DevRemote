@@ -273,6 +273,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 		serveMux.HandleFunc("GET /api/sessions/{id}/native-status", h.AuthMiddleware(h.HandleManagedNativeStatus))
+		serveMux.HandleFunc("GET /api/managed-sessions", h.AuthMiddleware(h.HandleManagedSessions))
 		serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
@@ -307,6 +308,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleApprovalAction, devicetrust.PermTerminalInput))
 		serveMux.HandleFunc("GET /api/sessions/{id}/native-status",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedNativeStatus, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("GET /api/managed-sessions",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessions, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("GET /api/v2/links",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/v2/links",
@@ -447,7 +450,8 @@ func (a *App) Run(ctx context.Context) error {
 	return errors.Join(serveErr, shutdownErr)
 }
 
-// Shutdown stops all resources in order: HTTP → telemetry → watcher → tunnel → IPC.
+// Shutdown stops all resources in order: HTTP → telemetry → watcher → tunnel
+// → IPC (stop accepting) → managed codex children.
 // Resources are cleaned up even if earlier steps fail.
 // Errors are joined so the caller can inspect each cause with errors.Is / errors.As.
 func (a *App) Shutdown(ctx context.Context) error {
@@ -487,16 +491,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// SP0: stop the managed Codex children (kill + bounded reap). The owned
-	// registry is closed first inside Shutdown so late pump events are inert.
-	if a.managed != nil {
-		log.Println("Shutdown: stopping managed codex runtimes...")
-		if err := a.managed.Shutdown(ctx); err != nil {
-			log.Printf("Managed codex shutdown error: %v", err)
-			errs = append(errs, fmt.Errorf("managed codex: %w", err))
-		}
-	}
-
 	// 4. Signal tunnel and wait for exit. Ignore os.ErrProcessDone
 	// (process already exited between the check and the signal).
 	if a.tunnel != nil {
@@ -514,7 +508,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 5. Close IPC and remove socket.
+	// 5. Close IPC and remove socket. This stops accepting new local create
+	// requests BEFORE the managed runtimes are stopped (step 6); a handler
+	// goroutine already past accept fails closed on the service's closing
+	// state before it can spawn.
 	if a.ipc != nil {
 		log.Println("Shutdown: closing IPC server...")
 		if err := a.ipc.Close(); err != nil {
@@ -530,6 +527,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("ipc remove: %w", err))
 		} else {
 			log.Println("Shutdown: IPC socket removed")
+		}
+	}
+
+	// 6. SP0: stop the managed Codex children (kill + bounded reap) AFTER the
+	// IPC listener stopped accepting. Shutdown's closing transition makes any
+	// still-in-flight create fail closed and roll back its own child.
+	if a.managed != nil {
+		log.Println("Shutdown: stopping managed codex runtimes...")
+		if err := a.managed.Shutdown(ctx); err != nil {
+			log.Printf("Managed codex shutdown error: %v", err)
+			errs = append(errs, fmt.Errorf("managed codex: %w", err))
 		}
 	}
 

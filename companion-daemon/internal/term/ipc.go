@@ -195,11 +195,17 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 				json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
 				return
 			}
-			// SP0: the recognized detached Codex profile launches the POKIT-owned
-			// native app-server runtime (no PTY, no shell). Only reachable when
-			// the composition root enabled the managed service; otherwise the
-			// request falls through to the legacy controlled_pty profile branch.
-			if req.ProfileID == "codex" && req.Detach && managed != nil {
+			// SP0: the recognized detached Codex profile is a MANAGED-ONLY
+			// request. With the feature enabled it launches the POKIT-owned
+			// native app-server runtime (no PTY, no shell). With the feature
+			// disabled it fails closed — the same structured request must
+			// never silently fall back to the legacy controlled_pty authority
+			// model (no child, no session, no launcher).
+			if req.ProfileID == "codex" && req.Detach {
+				if managed == nil {
+					json.NewEncoder(conn).Encode(map[string]string{"error": "managed codex runtime unavailable: daemon started without --enable-managed-codex"})
+					return
+				}
 				id, merr := managed.CreateDetached(req.CWD)
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})

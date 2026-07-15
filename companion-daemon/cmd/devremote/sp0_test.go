@@ -77,6 +77,27 @@ func TestManagedNativeStatusRoute_Authenticated(t *testing.T) {
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Fatalf("authenticated status = %d, want 404 for unknown id", resp2.StatusCode)
 	}
+
+	// Dedicated managed list route: 401 anonymous in remote mode, 200 with
+	// dev token in insecure-local mode.
+	resp3, err := http.Get(remoteSrv.URL + "/api/managed-sessions")
+	if err != nil {
+		t.Fatalf("anon list get: %v", err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("remote anonymous managed list = %d, want 401", resp3.StatusCode)
+	}
+	reqList, _ := http.NewRequest("GET", localSrv.URL+"/api/managed-sessions", nil)
+	reqList.Header.Set("Authorization", "Bearer dev-token")
+	resp4, err := http.DefaultClient.Do(reqList)
+	if err != nil {
+		t.Fatalf("auth list get: %v", err)
+	}
+	resp4.Body.Close()
+	if resp4.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated managed list = %d, want 200", resp4.StatusCode)
+	}
 }
 
 // TestNewAppWithDeps_ManagedCodexFlag: the production composition root

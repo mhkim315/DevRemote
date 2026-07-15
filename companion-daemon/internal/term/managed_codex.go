@@ -310,12 +310,23 @@ type ManagedCodexService struct {
 	reg              *ManagedSessionRegistry
 
 	mu       sync.Mutex
+	closing  bool // set once by Shutdown; new/in-flight creates fail closed
 	gen      int64
 	runtimes map[string]*codexManagedRuntime
 
 	// pumpObserver is a NARROW test seam (nil in production) copied onto each
 	// runtime before its pump starts.
 	pumpObserver func(sessionID, method string)
+	// createBarrier is a NARROW test seam (nil in production) invoked at
+	// named points inside CreateDetached so deterministic tests can pause a
+	// create and race it against Shutdown.
+	createBarrier func(stage string)
+}
+
+func (s *ManagedCodexService) barrier(stage string) {
+	if s.createBarrier != nil {
+		s.createBarrier(stage)
+	}
 }
 
 // NewManagedCodexService creates the service. launcher nil means the
@@ -343,10 +354,24 @@ func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg 
 // start the single server-derived certification turn → start the event pump.
 // Every failure before the pump kills and reaps the child and leaves no
 // visible session.
+//
+// Linearization with Shutdown: s.mu guarding {closing, runtimes} is the single
+// transition point. The spawned child handle is PUBLISHED into s.runtimes in
+// the same critical section that re-checks closing, before any post-spawn I/O
+// — so either Shutdown's snapshot owns the child, or this create observes
+// closing and rolls its own child back. No lock is held across external I/O.
 func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
 	}
+	// Fail closed before any spawn once shutdown has begun.
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return "", fmt.Errorf("managed codex service is shutting down")
+	}
+	s.mu.Unlock()
+
 	if err := s.verify(); err != nil {
 		return "", fmt.Errorf("managed codex verify: %w", err)
 	}
@@ -354,20 +379,43 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("managed codex launch: %w", err)
 	}
-
-	s.mu.Lock()
-	s.gen++
-	epoch := s.gen
-	s.mu.Unlock()
-
-	rt := newCodexManagedRuntime(proc, epoch, s.reg)
-	if err := rt.handshake(cwd, s.handshakeTimeout); err != nil {
-		rt.stop()
-		return "", fmt.Errorf("managed codex handshake: %w", err)
-	}
+	s.barrier("post-spawn")
 
 	id := fmt.Sprintf("%s:%s", codexAppServerAdapter, genLocalID("codex-app"))
+	s.mu.Lock()
+	if s.closing {
+		// Shutdown won the race while we were spawning: the snapshot cannot
+		// see this child, so we own the rollback.
+		s.mu.Unlock()
+		_ = proc.Kill()
+		_ = proc.Wait()
+		return "", fmt.Errorf("managed codex service is shutting down")
+	}
+	s.gen++
+	epoch := s.gen
+	rt := newCodexManagedRuntime(proc, epoch, s.reg)
 	rt.sessionID = id
+	s.runtimes[id] = rt // published: from here Shutdown always finds the child
+	s.mu.Unlock()
+
+	// fail rolls back a published create: unpublish, drop any registered
+	// record, kill + reap. Safe against a concurrent Shutdown (delete/Remove
+	// are no-ops on already-cleared state; Kill/Wait are idempotent).
+	fail := func(stage string, ferr error, registered bool) (string, error) {
+		s.mu.Lock()
+		delete(s.runtimes, id)
+		s.mu.Unlock()
+		if registered {
+			s.reg.Remove(id)
+		}
+		rt.stop()
+		return "", fmt.Errorf("managed codex %s: %w", stage, ferr)
+	}
+
+	if err := rt.handshake(cwd, s.handshakeTimeout); err != nil {
+		return fail("handshake", err, false)
+	}
+
 	rec := ManagedSessionRecord{
 		SessionID: id,
 		Provider:  "codex",
@@ -379,19 +427,13 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 		CreatedAt: time.Now(),
 	}
 	if err := s.reg.Register(rec); err != nil {
-		rt.stop()
-		return "", fmt.Errorf("managed codex register: %w", err)
+		return fail("register", err, false)
 	}
+	s.barrier("post-register")
 
 	if err := rt.startCertificationTurn(); err != nil {
-		s.reg.Remove(id)
-		rt.stop()
-		return "", fmt.Errorf("managed codex turn start: %w", err)
+		return fail("turn start", err, true)
 	}
-
-	s.mu.Lock()
-	s.runtimes[id] = rt
-	s.mu.Unlock()
 
 	if s.pumpObserver != nil {
 		obs := s.pumpObserver
@@ -401,17 +443,24 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	return id, nil
 }
 
-// Shutdown closes the registry first (late pump events are rejected), then
-// kills every owned child and reaps them with the caller's bounded deadline.
+// Shutdown performs the single closing transition: under s.mu it sets closing
+// (new and in-flight creates fail closed before/at publication) and snapshots
+// every published child. It then closes the registry (late pump events and
+// late registrations are rejected) and kills + reaps every owned child with
+// the caller's bounded deadline. The composition root stops IPC accepting
+// BEFORE calling this, so no new create requests arrive; any handler goroutine
+// already past accept is covered by the closing state.
 func (s *ManagedCodexService) Shutdown(ctx context.Context) error {
-	s.reg.Close()
 	s.mu.Lock()
+	s.closing = true
 	rts := make([]*codexManagedRuntime, 0, len(s.runtimes))
 	for _, rt := range s.runtimes {
 		rts = append(rts, rt)
 	}
 	s.runtimes = make(map[string]*codexManagedRuntime)
 	s.mu.Unlock()
+
+	s.reg.Close()
 
 	for _, rt := range rts {
 		_ = rt.proc.Kill()

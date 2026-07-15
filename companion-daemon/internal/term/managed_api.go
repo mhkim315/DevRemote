@@ -64,6 +64,30 @@ func (h *Handlers) HandleManagedNativeStatus(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
 }
 
+// HandleManagedSessions serves GET /api/managed-sessions ENTIRELY from the
+// owned registry: it never touches mux.Registry, adapter discovery, or the
+// telemetry snapshot, so a hanging or failing tmux/cmux refresh can never
+// block or influence it. This is the SP0-certified managed list surface;
+// managed rows appended to /api/sessions are a coexistence convenience that
+// shares the legacy snapshot's availability.
+func (h *Handlers) HandleManagedSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.Managed == nil {
+		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
+		return
+	}
+	recs := h.Managed.Registry().List()
+	out := make([]ManagedNativeStatusDTO, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, managedNativeStatusDTO(rec))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
 // appendManagedRows appends managed-session rows built directly from the
 // owned registry to the /api/sessions response. Managed identity is
 // authoritative: any snapshot row that collides with a managed canonical ID
