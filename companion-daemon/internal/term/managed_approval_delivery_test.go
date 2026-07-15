@@ -104,7 +104,10 @@ type deliverySession struct {
 	probes      int
 }
 
-func newDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
+// buildDeliverySession constructs the launcher/store/service/recorder WITHOUT
+// wiring the store or launching a session, so callers choose the P1
+// observation wiring (SetApprovalStore) or the P2B activation transition.
+func buildDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
 	t.Helper()
 	s := &deliverySession{written: &rawLines{}}
 	if autoResolve {
@@ -138,10 +141,14 @@ func newDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
 	}}
 	s.store = NewAuthoritativeApprovalStore()
 	s.managed = newTestManagedService(s.launcher)
-	s.managed.SetApprovalStore(s.store)
 	s.rec = newPumpRecorder()
 	s.managed.pumpObserver = s.rec.observe
+	return s
+}
 
+// launchTurn creates the managed session and starts one bound turn.
+func (s *deliverySession) launchTurn(t *testing.T) {
+	t.Helper()
 	id, err := s.managed.CreateAttached("")
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -158,7 +165,27 @@ func newDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
 		t.Fatalf("runtime not published")
 	}
 	t.Cleanup(func() { _ = s.managed.Kill(id, 1) })
+}
+
+func newDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
+	t.Helper()
+	s := buildDeliverySession(t, autoResolve)
+	s.managed.SetApprovalStore(s.store)
+	s.launchTurn(t)
 	return s
+}
+
+// newActivatedDeliverySession performs the SP1-P2B production activation
+// transition BEFORE the first runtime and returns the installed endpoints.
+func newActivatedDeliverySession(t *testing.T, autoResolve bool) (*deliverySession, *CodexManagedApprovalDelivery, func(string) (RuntimeRef, bool)) {
+	t.Helper()
+	s := buildDeliverySession(t, autoResolve)
+	delivery, runtimeOf, err := s.managed.InstallApprovalExecution(s.store)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	s.launchTurn(t)
+	return s, delivery.(*CodexManagedApprovalDelivery), runtimeOf
 }
 
 // inject writes one raw provider line into the runtime's stdout.

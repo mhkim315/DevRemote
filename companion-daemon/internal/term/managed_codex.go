@@ -165,6 +165,12 @@ type codexManagedRuntime struct {
 	approvalRejects  int
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
+	// actionableActive (SP1-P2B) is the runtime's activation state, copied
+	// once from the service at create time — an ACTIVE runtime ingests newly
+	// observed certified requests as actionable with certified options and
+	// delivery material; an inactive runtime keeps the frozen P1
+	// non-actionable observation.
+	actionableActive bool
 	// SP1-P2A: pump-owned bounded pending-response waiters keyed by the exact
 	// native request id. respMu is independent of turnMu (never nested); the
 	// pump is the only router; respClosed rejects arming after exit.
@@ -564,6 +570,10 @@ type ManagedCodexService struct {
 	// approvals is the SP1-P1 non-actionable ingest sink, wired once by the
 	// composition root before any create (nil ⇒ observation only).
 	approvals *AuthoritativeApprovalStore
+	// actionable is the SP1-P2B activation state: set ONLY by the single
+	// InstallApprovalExecution transition (before the first runtime), copied
+	// per-runtime at create, never toggled mid-life.
+	actionable bool
 
 	// pumpObserver is a NARROW test seam (nil in production) copied onto each
 	// runtime before its pump starts.
@@ -880,9 +890,11 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	rt.sessionID = id
 	rt.events = newManagedEventStore(id, epoch)
 	// SP1-P1: copy the observation sink + pinned authority version onto the
-	// runtime before its pump can start.
+	// runtime before its pump can start. SP1-P2B: the activation state is
+	// bound to the session/epoch at birth and never toggled mid-life.
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
+	rt.actionableActive = s.actionable
 	s.runtimes[id] = rt // published: from here Shutdown always finds the child
 	s.mu.Unlock()
 

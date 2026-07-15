@@ -1,23 +1,22 @@
-// Package term — SP1-P1: strict structured observation of the pinned Codex
-// app-server approval request (`item/commandExecution/requestApproval`),
-// NON-ACTIONABLE ONLY.
+// Package term — SP1: strict structured observation of the pinned Codex
+// app-server approval request (`item/commandExecution/requestApproval`).
 //
 // The single event pump is the only caller. A request that passes EVERY
 // certification check (strict field-allowlist decode with duplicate-key
 // rejection, individual byte bounds, lossless bounded top-level JSON-RPC id,
 // exact session/epoch/thread/turn/item binding, pinned authority version,
 // exact environment and decision-tag fingerprint) arms one bounded PRIVATE
-// runtime-owned pending record AND ingests one non-actionable ApprovalStore
-// record with zero options as ONE outcome: if the store does not admit the
-// record, nothing is armed. Anything else is rejected with ZERO state: no
-// pending entry, no store record, no provider write, no log of provider
-// payload. `command`, `cwd` and `proposedExecpolicyAmendment` are accepted
-// ONLY as allowlisted, byte-bounded, uninterpreted raw fields — their content
-// is never decoded, stored, logged, or projected into any DTO.
-//
-// P1 explicitly does NOT implement delivery material, provider response
-// writes, resolved-consumption commit, actionable options, gate capacity, or
-// RuntimeOf wiring (P2A/P2B/P3 of docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md).
+// runtime-owned pending record AND ingests one ApprovalStore record as ONE
+// outcome: if the store does not admit the record, nothing is armed.
+// SP1-P2B: on a runtime whose epoch was created AFTER the single
+// InstallApprovalExecution transition, the record is ACTIONABLE with exactly
+// the certified options and daemon-generated delivery material; on any other
+// runtime it is the frozen P1 non-actionable zero-option observation.
+// Anything else is rejected with ZERO state: no pending entry, no store
+// record, no provider write, no log of provider payload. `command`, `cwd`
+// and `proposedExecpolicyAmendment` are accepted ONLY as allowlisted,
+// byte-bounded, uninterpreted raw fields — their content is never decoded,
+// stored, logged, or projected into any DTO.
 package term
 
 import (
@@ -414,11 +413,21 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 		rt.approvalRejects++
 		return
 	}
-	// Safe NON-ACTIONABLE store record: zero options, no prompt text, no
-	// provider payload. Provenance is the versioned provider protocol; the
-	// mechanical origin vocabulary is closed, so the structured JSONL stdio
-	// protocol records as SourceJSONL. Actionability stays false — the frozen
-	// store never upgrades it later.
+	// SP1-P2B: an ACTIVE runtime (activation installed before its epoch)
+	// ingests the newly observed certified request as ACTIONABLE with exactly
+	// the two certified options and daemon-generated delivery material
+	// echoing the preserved native id token. An inactive runtime keeps the
+	// frozen P1 non-actionable zero-option observation. Actionability is
+	// immutable in the store — no record is ever upgraded later.
+	var options []agent.InteractionOption
+	var material []ApprovalDeliveryMaterial
+	if rt.actionableActive {
+		options = codexCertifiedOptions()
+		material = codexDeliveryMaterialFor(idToken)
+	}
+	// Safe store record: no prompt text, no provider payload. Provenance is
+	// the versioned provider protocol; the mechanical origin vocabulary is
+	// closed, so the structured JSONL stdio protocol records as SourceJSONL.
 	admitted := rt.approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
@@ -431,12 +440,14 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 				SessionID:  rt.sessionID,
 				AgentKind:  codexAppServerAdapter,
 				Kind:       "approval",
+				Options:    options,
 				Source:     agent.SourceJSONL,
 				Confidence: 1,
 			},
-			Provenance:   contract.ProvenanceProviderProtocol,
-			Actionable:   false,
-			RequiredPerm: devicetrust.PermTerminalInput,
+			Provenance:       contract.ProvenanceProviderProtocol,
+			Actionable:       rt.actionableActive,
+			RequiredPerm:     devicetrust.PermTerminalInput,
+			DeliveryMaterial: material,
 		}},
 	})
 	if !admitted {

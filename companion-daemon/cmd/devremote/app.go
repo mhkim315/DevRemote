@@ -240,14 +240,30 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed}
-	// A1 R3-C: the production approval delivery boundary is the generation-owned
-	// gate. No provider delivery channel is proven, so no sink is registered and the
-	// gate accepts nothing (returns `unavailable`, writes no bytes); the gate is wired
-	// into the real call graph (below, telemetry drives its activation/deactivation)
-	// so a future actionable path is linearized against runtime replacement. RuntimeOf
-	// stays unwired until a proven provider mapping exists.
+	// A1 R3-C: the default approval delivery boundary is the generation-owned
+	// gate. No generic provider delivery channel is proven, so no sink is
+	// registered and the gate accepts nothing (returns `unavailable`, writes no
+	// bytes); the gate is wired into the real call graph (below, telemetry drives
+	// its activation/deactivation) so a future actionable path is linearized
+	// against runtime replacement.
 	deliveryGate := term.NewRuntimeDeliveryGate()
-	h.ApprovalDelivery = term.NewGatedApprovalDelivery(deliveryGate)
+	gateDelivery := term.NewGatedApprovalDelivery(deliveryGate)
+	h.ApprovalDelivery = gateDelivery
+	// SP1-P2B: the ONE production-owned activation transition for the managed
+	// Codex runtime. On success the certified delivery boundary and the
+	// current-runtime resolver are wired together with actionable ingestion
+	// (which the install enabled atomically); on ANY failure everything stays
+	// off — the capacity-0 gate remains the only delivery boundary, RuntimeOf
+	// stays unwired, and managed ingestion remains the accepted P1
+	// non-actionable observation.
+	if managed != nil {
+		if codexDelivery, runtimeOf, err := managed.InstallApprovalExecution(approvals); err == nil {
+			h.ApprovalDelivery = term.NewDispatchingApprovalDelivery(codexDelivery, gateDelivery)
+			h.RuntimeOf = runtimeOf
+		} else {
+			log.Printf("Managed approval execution not installed (observation only): %v", err)
+		}
+	}
 
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()
