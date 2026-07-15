@@ -150,8 +150,8 @@ A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native 
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
-A1.2 Claude Approval Extension                C0D EVIDENCE AUTHORIZED (C0H/C0R remain BLOCKED; stable PreToolUse defer/resume exact-ID research only)
-N1  Notifications                             BLOCKED pending independent C0D verdict and A1.2 accept-or-explicit-defer decision
+A1.2 Claude Approval Extension                C0D ACCEPT e42d4c5; C1D observation-only AUTHORIZED; C2D/C3D blocked pending staged review
+N1  Notifications                             BLOCKED pending independent final A1.2 acceptance or explicit product deferral
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
@@ -179,20 +179,23 @@ M3-auth-1B
 → SP0 native managed runtime
 → SP0.5 managed I/O and lifecycle
 → SP1 native approval / A1.1 provider-positive completion
-→ A1.2 Claude approval C0D deferred-tool research
+→ A1.2 Claude approval C1D → C2D → C3D
 → N1 notifications
 → O1 deterministic broker
 → O2 developer-verifier loop
 ```
 
-A1.2 was authorized before N1 on 2026-07-15 and completed two bounded negative
-research gates without weakening approval authority. C0H found that the stable
+A1.2 was authorized before N1 on 2026-07-15 and retains two bounded negative
+findings without weakening approval authority. C0H found that the stable
 `PermissionRequest` hook does not fire headless. C0R separately proved that 2.1.209
-accepts `--permission-prompt-tool`, but did not prove exact invocation identity or an
-authoritative consumed-decision join. A third official surface is now authorized as
-C0D evidence only: `PreToolUse` defer/resume exposes `tool_use_id` and a documented
-matching post-tool result candidate. No production implementation is authorized until
-that exact identity and consumption lifecycle is independently proven.
+accepts `--permission-prompt-tool`, but lacks exact invocation identity and an
+authoritative consumed-decision join. C0D independently proved and received ACCEPT
+at `e42d4c5`: the stable `PreToolUse` defer/resume lifecycle preserves exact
+session/tool-use/input identity; matching PostToolUse proves allow consumption and
+matching permission_denials proves deny consumption; deterministic replay admits one
+resume owner. The production track is now staged C1D observation-only, C2D delivery
+proof with actionability still off, then C3D atomic activation/mobile/live evidence.
+Each packet stops for independent review.
 
 SP1 is governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and
 `docs/NEXT_EXECUTOR_SP1_NATIVE_APPROVAL_HANDOFF.md`. Queue admission is not provider
@@ -609,14 +612,14 @@ platform-neutral certification interface; and leaves process-image identity, ord
 wire evidence, cleanup/failure traces and the bounded production entry path open.
 
 A1.2 retains two independent negative findings: C0H BLOCKED for the headless
-`PermissionRequest` hook and C0R BLOCKED for `--permission-prompt-tool`. The latter
-surface exists in 2.1.209, but exact request identity and consumed-decision authority
-remain unproven. C0D is a separate stable `PreToolUse` defer/resume research packet;
-it must prove same-`tool_use_id` resume and allow/deny consumption, and must fail
-closed for multiple tool calls. No C1/C2/C3 or C1D/C2D/C3D implementation is
-authorized. Future Agent SDK, Channels, terminal-only, or POKIT-owned-runtime options
-remain separate architecture decisions; interactive terminal input is not native
-approval authority.
+`PermissionRequest` hook and C0R BLOCKED for `--permission-prompt-tool`. C0D is a
+separate accepted stable `PreToolUse` defer/resume finding at `e42d4c5`; it proves
+same-`tool_use_id` resume, exact allow/deny consumption and one replay winner for the
+pinned 2.1.209 surface. C1D is now authorized only for direct managed launch, private
+hook/defer joining and non-actionable observation. C2D/C3D remain unauthorized until
+their preceding packet receives independent ACCEPT. Future Agent SDK, Channels,
+terminal-only, or POKIT-owned-runtime options remain separate architecture decisions;
+interactive terminal input is not native approval authority.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,

@@ -1,188 +1,266 @@
-# A1.2 Claude Approval Extension — Deferred Tool Research Plan
+# A1.2 Claude Approval Extension — Production Implementation Plan
 
-Status: **C0D EVIDENCE AUTHORIZED — NO PRODUCTION IMPLEMENTATION OR
-ACTIONABILITY**
+Status: **C0D ACCEPT — C1D AUTHORIZED ONLY — C2D/C3D NOT AUTHORIZED**
 
-Frozen baseline: SP1/A1.1 accepted at `2b940a6` with implementation `dd6d05c`.
-The provider-neutral A1 core and Codex provider-positive path remain unchanged.
+Accepted research evidence: `e42d4c570e64462ce813861017cc635e338e68bf`.
+Frozen provider-neutral A1 core and accepted Codex SP1 baseline:
+`2b940a6fce6e878ffa0da17b5df4d39438af144d` (implementation `dd6d05c`).
 
-## 1. Independent research outcomes
-
-Both findings are authoritative and independent:
+## 1. Historical findings remain independent
 
 1. **C0H BLOCKED** — the stable `PermissionRequest` hook did not fire in
    headless `claude -p`. Static permission rules handled allow/deny instead.
-   Evidence: `docs/A1_2_C0_CLAUDE_EVIDENCE_REPORT.md`.
-2. **C0R BLOCKED** — exact Claude Code 2.1.209 accepted
-   `--permission-prompt-tool` and connected the isolated MCP server, correcting
-   the earlier `--help` inference. However, an exact invocation identity and
-   authoritative consumed-decision join were not proven. Evidence:
-   `docs/A1_2_C0R_PERMISSION_PROMPT_TOOL_REPORT.md`.
+2. **C0R BLOCKED** — Claude Code 2.1.209 accepted
+   `--permission-prompt-tool`, but its MCP request lacked an exact invocation
+   identity and an authoritative consumed-decision join.
+3. **C0D ACCEPT** — exact Claude Code 2.1.209 proved a different official
+   lifecycle: `PreToolUse` defer/resume preserves the exact `session_id`,
+   `tool_use_id`, tool name and canonical input digest. Allow is consumed by a
+   matching `PostToolUse`; deny is consumed by a matching provider
+   `permission_denials` result. Deterministic replay evidence admitted exactly
+   one resume and rejected the duplicate.
 
-C0R does not remediate, supersede or weaken C0H.
+C0D does not remediate or weaken C0H/C0R. Only the deferred-tool lifecycle is
+eligible for implementation.
 
-## 2. New independent checkpoint: C0D
+## 2. Scope and product claim
 
-Current official Claude Code documentation exposes a third, structurally different
-surface: a `PreToolUse` hook in non-interactive `-p` mode may return
-`permissionDecision: "defer"`. Claude Code then exits with
-`stop_reason: "tool_deferred"` and a bounded `deferred_tool_use` carrying the exact
-provider `id`, tool name and input. Resuming the exact session replays the same tool
-call through `PreToolUse`; successful execution is subsequently reported through
-`PostToolUse` or `PostToolUseFailure`, which also carries `tool_use_id`.
+A1.2 adds one certified Claude approval path to the existing POKIT-managed
+runtime. It does not create a generic hook SDK or generic provider framework.
 
-This is **C0D**, a new research checkpoint. It is not remediation or reinterpretation
-of C0H or C0R. Exact Claude Code 2.1.209 contains the documented deferred-tool paths,
-but no live provider trace has yet certified their identity and lifecycle behavior.
+The first supported tuple is deliberately narrow:
 
-Official reference: <https://code.claude.com/docs/en/hooks>.
+- provider: Claude Code;
+- exact certified version: 2.1.209;
+- mode: POKIT-owned headless managed invocation;
+- request surface: `PreToolUse` returning `defer`;
+- actions: `allow_once` and `deny` only;
+- supported request: one structurally certified tool invocation at a time;
+- consumption: matching provider-native `PostToolUse`/tool result for allow,
+  or matching `permission_denials` result for deny.
 
-### 2.1 C0D candidate authority binding
+Interactive PTY prompts, terminal text, JSONL inference, `waiting_approval`,
+process names, CWD, timing and FIFO are never approval authority.
 
-| Field | Required authoritative source |
+## 3. Frozen authority ownership
+
+The provider-neutral A1 core remains the sole owner of authentication,
+ApprovalID, requester context, canonical ActionDigest, idempotency, atomic
+claim, delivery receipt validation, commit, expiry and supersession.
+
+Claude-specific production code owns only:
+
+- direct launch of the certified Claude executable with isolated hook settings;
+- strict receipt of one structured `PreToolUse` invocation;
+- exact join to the provider's `tool_deferred` result;
+- exact-session resume and one-shot decision delivery to the repeated hook;
+- routing matching allow/deny consumption evidence back to A1 delivery;
+- provider-specific cancellation, timeout and process cleanup.
+
+Codex-specific request/response schemas and `serverRequest/resolved` semantics
+must not be reused. Shared code may be extracted only when both accepted
+provider contracts require the same provider-neutral behavior.
+
+## 4. Immutable Claude request binding
+
+Every actionable Claude approval is bound to all fields below.
+
+| Field | Canonical authority |
 | --- | --- |
-| provider artifact | exact pinned executable version and digest |
-| Claude session ID | initial structured result and exact `--resume` target |
-| tool invocation ID | `PreToolUse.tool_use_id` and `deferred_tool_use.id` |
-| tool name and input | full bounded `PreToolUse` input, strict type-specific canonicalization |
-| runtime ownership | exact probe-owned Claude process/session; no attached runtime |
-| decision | stored `allow_once` or `deny`, bound to session + tool-use ID + input digest |
-| consumption witness | matching `PostToolUse`/`PostToolUseFailure.tool_use_id`, or a separately proven exact denial result carrying the same ID |
+| ApprovalID | daemon-generated A1 identity; never the provider tool-use ID |
+| POKIT SessionID | managed-session registry |
+| RuntimeRef | adapter `claude_headless`, version `2.1.209`, current managed-service epoch as LaunchGeneration, StreamGeneration zero |
+| provider artifact | certified version plus platform capability tuple and opaque artifact identity |
+| Claude session ID | structured provider result and exact resume target |
+| tool invocation ID | identical `PreToolUse.tool_use_id`, `deferred_tool_use.id`, and consumed result ID |
+| tool name | strict bounded `PreToolUse.tool_name` |
+| tool input | provider-specific canonical bytes kept private; bounded digest enters the binding |
+| action | stored `allow_once` or `deny`; never caller-derived |
+| delivery schema | exact `claude.pretooluse.decision.v1` identity |
+| resume attempt | daemon-generated one-shot nonce internal to the delivery transaction |
+| requester/idempotency | server-derived authenticated context and canonical A1 key |
 
-MCP IDs, transcript ordering, command equality, timing, terminal output, PID alone,
-FIFO and single-flight assumptions remain non-authoritative.
+PID alone, a resume command, MCP IDs, command equality or event order cannot
+substitute for any binding field.
 
-### 2.2 C0D state model
+The initial macOS certification may use a macOS launcher/attestor, but no common
+contract may expose inode, Mach-O, code-signing, path or IPC details. The common
+observable tuple is `{OS, arch, attestor kind/version, opaque artifact identity,
+opaque process-image attestation, certification result/reason}` so a later
+Windows implementation can certify the same contract independently.
+
+## 5. Production lifecycle and linearization
 
 ```text
-observed PreToolUse(ID)
-  → defer
-  → provider result tool_deferred(session, ID, name, input)
-  → external decision bound to exact session + ID + digest
-  → resume exact session
-  → repeated PreToolUse(same ID)
-  → allow_once → exact execution → PostToolUse/PostToolUseFailure(same ID)
-  → deny       → exact provider denial result(same ID) and zero execution
+managed Claude epoch created
+  → initial process emits PreToolUse(binding)
+  → private hook bridge validates and records observation
+  → hook returns defer
+  → provider emits tool_deferred(same session, same ID, same input)
+  → C1D may create non-actionable bounded observation
+
+C3D actionable path only:
+  → A1 Store creates pending Approval with exact binding/options
+  → authenticated mobile decision
+  → A1 ClaimForExecution atomically grants one claim token
+  → Claude delivery atomically reserves one resume attempt for that claim
+  → exact session resumed under current RuntimeRef
+  → repeated PreToolUse must match the full binding
+  → one-shot bridge consumes stored allow_once/deny
+  → allow: matching PostToolUse/tool result for the same ID
+     deny: matching permission_denials result for the same ID
+  → bound DeliveryReceipt accepted by A1
+  → approval committed delivered
 ```
 
-Any missing/mismatched ID, changed input, stale session/runtime, duplicate decision,
-ambiguous resume, unsupported tool, timeout, cancellation, process exit or multi-tool
-turn must fail closed.
+The Claude delivery reservation is the provider-specific linearization point.
+It must serialize duplicate taps, resume attempts, stop/delete, runtime
+replacement and provider cancellation. It must not hold internal state locks
+across process spawn, hook IPC or provider I/O.
 
-### 2.3 Mandatory C0D evidence
+Queue admission, hook response write, process exit, a side effect, or absence of
+execution is not success. Only the matching provider-native result after the
+exact decision was consumed may produce `accepted`/`already_accepted`.
 
-C0D is a research/evidence packet only. Against exact pinned 2.1.209, prove:
+## 6. Closed failure behavior
 
-1. user-controlled ambient authentication is present without copying credentials;
-2. direct headless launch with isolated session settings and a `PreToolUse` hook;
-3. initial `PreToolUse.tool_use_id` equals `deferred_tool_use.id`;
-4. exact session resume re-fires `PreToolUse` with the same ID and unchanged canonical
-   input;
-5. allow-once yields one execution and a `PostToolUse` or `PostToolUseFailure` with
-   the same ID;
-6. deny yields zero execution and a stable provider-native result linked to the same
-   ID;
-7. duplicate resume/decision cannot execute twice;
-8. wrong ID, wrong session, modified input, delayed decision, timeout, stop/delete,
-   Claude exit and runtime replacement cannot execute;
-9. two distinct sequential requests retain distinct IDs;
-10. parallel/batched or multiple tool calls are rejected/non-actionable because the
-    documented defer contract supports only a single tool call per turn;
-11. malformed hook output, hook timeout and hook crash fail closed;
-12. committed evidence is bounded and excludes raw prompts, commands, secrets, home
-    paths, transcript paths and authentication material.
+- Missing or changed session/ID/name/input digest: zero decision delivery.
+- Unsupported version/artifact/platform tuple: non-actionable.
+- Multi-tool, batched, parallel or ambiguous deferred results: non-actionable.
+- Duplicate resume: exactly one owner; later attempts conflict/replay-block.
+- Timeout, hook crash, malformed hook output or IPC disconnect: non-success.
+- Stop, delete, exit or runtime replacement: revoke the pending bridge entry and
+  defeat any stale completion.
+- Provider-side cancellation/resolution before claim: zero resume.
+- Ambiguous outcome after decision delivery: delivery failure, never automatic
+  retransmission.
+- Daemon restart: no pending or executing Claude authority is restored in A1.2;
+  recovery may be unknown/non-actionable only.
+- Capacity exhaustion: reject before mutating canonical state.
 
-Use deterministic barriers for resume/termination and duplicate interleavings. A
-side effect corroborates execution but is not the authority witness.
+The frozen A1 manual-retry/idempotency rules remain authoritative. A retry never
+creates a second provider execution owner.
 
-### 2.4 C0D decision
+## 7. C1D — Managed launch and non-actionable observation
 
-- **C0D PROCEED** only if exact ID continuity and authoritative allow and deny
-  consumption are proven without heuristics.
-- **C0D PROCEED WITH CONTRACT CHANGES** only if the single-tool limitation remains
-  fail-closed and every supported invocation is still targeted and consumed exactly.
-- **C0D BLOCKED** if deny consumption, ID continuity, replay safety or fail-closed
-  multi-tool behavior is ambiguous.
+**Authorized first implementation packet.** C1D must not enable mobile actions,
+certified options, delivery capacity or A1 claims.
 
-Passing C0D does not authorize production code. It authorizes a separate reviewed
-implementation plan with bounded C1D/C2D/C3D packets.
+Required production work:
 
-## 3. Current product consequence
+1. Add a provider-specific `ManagedClaudeService` (name may differ) beside, not
+   inside, `ManagedCodexService`.
+2. Route the real structured `pokit run claude` preset to a direct executable
+   launch; no `bash -c`, command string, attached session or observer discovery.
+3. Verify the certified version/artifact through an OS-neutral launcher/attestor
+   seam. PATH lookup alone is availability, not certification.
+4. Launch with session-isolated hook settings. Never mutate user, project or
+   managed Claude settings and never copy authentication material.
+5. Provide a daemon-owned private local hook bridge with an unguessable
+   per-runtime capability. It accepts only strict, bounded `PreToolUse` fields
+   and initially returns `defer` only.
+6. The sole managed provider pump must join the hook observation to the exact
+   structured `tool_deferred` result and publish a bounded **non-actionable**
+   intervention record with zero options.
+7. Own bounded pending observations and clean them on timeout, exit, stop,
+   delete and epoch replacement.
 
-Stock Claude Code headless approval is unsupported under POKIT's exact-authority
-contract. Claude managed observation and prompt submission must not be represented
-as actionable approval support. `waiting_approval`, terminal/PTY text, prompt
-matching, process name, CWD, transcript order and generic input remain display or
-I/O only and never approval authority.
+C1D acceptance evidence:
 
-No C1/C2/C3 or C1D/C2D/C3D, mobile CTA, actionability capacity, A1 store
-change or production Claude delivery boundary is authorized. Interactive key
-injection is not native approval authority.
+- real `pokit run claude` production entry reaches the managed service;
+- direct argv launch of exact 2.1.209, isolated settings and ambient auth;
+- exact SessionID/RuntimeRef/session/tool-use/name/input-digest join;
+- unknown fields, oversized input, wrong version, mismatched result, duplicate
+  ID, multi-tool and capacity exhaustion fail closed;
+- terminal/PTY/JSONL/observer evidence cannot create or overwrite the record;
+- provider payload, prompt, command, paths, hook secret and input source material
+  do not enter public DTOs or logs;
+- zero actionable options, zero ClaimForExecution, zero provider resume and zero
+  mobile CTA;
+- focused build/vet/race tests plus one bounded live defer observation.
 
-## 4. Exact missing contract
+Commit C1D and stop for independent verification. C2D remains unauthorized.
 
-C0D must close the following contract through a stable official interface before
-any implementation plan is authorized:
+## 8. C2D — Exact decision delivery and consumption routing
 
-- provider-issued request/invocation identity;
-- exact SessionID/runtime generation and Claude session/turn/tool binding;
-- bounded full canonical input;
-- exact allow-once or deny targeting;
-- a provider-native result carrying the same identity and proving consumption;
-- fail-closed timeout, cancellation, replay, replacement and restart behavior.
+**Not authorized until independent C1D ACCEPT.** Production actionability remains
+off throughout C2D.
 
-MCP transport IDs, timestamps, command equality, terminal output, FIFO and
-single-flight assumptions do not satisfy this contract.
+C2D builds the Claude-specific `ApprovalDelivery` boundary and proves it with
+controlled production-composition tests:
 
-## 5. Future architecture options — only if C0D blocks
+- only the concretely C0D-certified `Bash` tool shape is a candidate in the first
+  slice; every other tool remains non-actionable until separately certified;
+- immutable option mapping: `allow_once → allow`, `deny → deny`;
+- canonical private delivery material and schema identity;
+- atomic one-shot resume reservation bound to claim token, RuntimeRef, Claude
+  session, tool-use ID and input digest;
+- exact repeated-hook validation and one-shot decision consumption;
+- allow witness routing from matching PostToolUse/tool result;
+- deny witness routing from matching permission_denials result;
+- bound receipt only after the matching result;
+- deterministic duplicate, replacement, stop/delete, timeout, malformed output,
+  provider cancellation and result-before/while/after-decision interleavings;
+- no lock across external I/O and no generic terminal or delivery-gate queue as
+  success authority.
 
-### 5.1 Claude Agent SDK
+C2D must also freeze a safe review projection for every candidate tool. It must be
+bounded, deterministic and sufficient for the user to distinguish the exact action
+whose digest is claimed, while excluding secrets, unsafe paths and arbitrary raw
+provider payload. Truncation or redaction that can hide behavior makes the request
+non-actionable. If the frozen public A1 DTO cannot represent a safe review for the
+certified Bash input without violating its privacy contract, stop BLOCKED before
+C3D rather than weakening either contract.
 
-- Authentication/billing: may use supported Claude authentication modes, but exact
-  subscription versus API billing must be verified for the chosen SDK deployment.
-- Feature retention: closer to Claude Code's programmatic engine, but not guaranteed
-  to preserve every stock CLI/TUI feature or release cadence.
-- Identity: current public `canUseTool` contract documents tool name/input and
-  cancellation, not an invocation ID; exact consumed-decision proof remains a gate.
-- Cost/scope: medium-to-high; replaces the shell-provider boundary and requires a
-  separately accepted architecture plan.
+No handler, mobile CTA or new actionable record is enabled in C2D.
 
-### 5.2 Channels permission relay
+## 9. C3D — Atomic activation, mobile path and live acceptance
 
-- Authentication/billing: Claude.ai authentication; exact plan eligibility must be
-  certified.
-- Feature retention: stock Claude Code integration, but Channels is research preview.
-- Identity: supplies a request ID, but the published permission request exposes a
-  truncated input preview and custom development channels require explicit unsafe
-  enablement. This is insufficient for canonical review today.
-- Cost/scope: medium; adds a notification/channel product and preview dependency.
+**Not authorized until independent C2D ACCEPT.** C3D is the only packet that may
+activate Claude actionability.
 
-### 5.3 Interactive PTY / terminal-only operation
+One production-owned install transition must atomically bind:
 
-- Authentication/billing and features: retains the user's normal Claude Code
-  experience and subscription.
-- Identity/consumption: terminal prompts and key delivery do not provide exact native
-  request identity or consumed-decision proof.
-- Cost/scope: low for manual operation, but it must stay non-actionable and cannot
-  close A1.2.
+- the canonical A1 store;
+- the certified Claude service/version/platform tuple;
+- actionable ingestion for subsequently created runtimes only;
+- current RuntimeRef resolution;
+- Claude delivery dispatch;
+- the existing authenticated mobile approval handler and safe DTO.
 
-### 5.4 POKIT-owned generic runtime using Claude models
+The transition is all-or-nothing. Existing non-actionable records are never
+upgraded. Uninstall, failed install, partial wiring or unsupported tuples leave
+Claude capacity zero.
 
-- Authentication/billing: normally direct model API/provider billing rather than the
-  stock Claude Code subscription; must be a deliberate product decision.
-- Feature retention: does not automatically inherit latest Claude Code tools,
-  policies, hooks, memory or UX.
-- Identity/consumption: POKIT can design an exact protocol because it owns the worker
-  runtime, but this is a new agent product, not a Claude Code adapter.
-- Cost/scope: highest; affects runtime, tools, sandbox, workspace and orchestration.
+Final live evidence requires two fresh managed Claude sessions or invocations:
 
-## 6. Roadmap boundary
+1. allow-once: mobile-authenticated claim, exact resume, matching consumed result,
+   exactly one harmless execution and committed receipt;
+2. deny: mobile-authenticated claim, exact resume, matching denial result, zero
+   execution and committed receipt.
 
-A1.2 is reopened only for C0D evidence. N1 remains blocked until C0D receives an
-independent verdict and either the resulting Claude path is accepted or the product
-owner explicitly defers Claude actionable approval. C0D must not be called remediation
-of either failed surface.
+Also prove duplicate tap, stale epoch, replacement, timeout, stop/delete, daemon
+restart, unsupported version and cross-session/request substitution negatives.
+Run backend build/vet/full race, mobile TypeScript/Jest, Android/native gate when
+available, invariant/secret scan, final-SHA ancestry/equality/clean checks, and
+independent final A1.2 review.
 
-Explicit exclusions remain: no Agent SDK migration, Channels implementation,
-interactive approval injection, generic provider SDK, N1 implementation, O1/O2,
-observer cleanup, Windows/SSH expansion or cloud relay redesign in this track.
+## 10. Explicit non-goals
+
+- C0H/C0R implementation or reinterpretation;
+- generic provider/hook/plugin SDK;
+- Claude Agent SDK or Channels;
+- interactive PTY/key injection approval;
+- automatic approval policy or allow-always;
+- multiple parallel tool approvals;
+- Task/Dispatch, N1, O1/O2 or Executor-Verifier;
+- observer cleanup, tmux/cmux deletion, CLI redesign or cloud relay;
+- persistence of pending approval authority across daemon restart;
+- Windows implementation in this track (only the OS-neutral seam is required).
+
+## 11. Final A1.2 acceptance gate
+
+A1.2 remains incomplete until C1D, C2D and C3D are independently accepted and the
+real provider-positive allow and deny paths pass end to end. Until then Claude
+managed observation may be shown as non-actionable information only and N1 remains
+blocked under the current product sequencing decision.
