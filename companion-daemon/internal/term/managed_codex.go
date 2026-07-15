@@ -39,10 +39,10 @@ const (
 
 // ── Narrow OS process seam ──
 
-// managedProcess is the narrow process handle. OS-specific details stay inside
+// ManagedProcess is the narrow process handle. OS-specific details stay inside
 // the launcher implementation; callers see only stdio, kill/reap, and an
 // opaque identity token.
-type managedProcess interface {
+type ManagedProcess interface {
 	Stdin() io.Writer
 	Stdout() io.Reader
 	Term() error // graceful group TERM (Stop's first phase)
@@ -51,11 +51,11 @@ type managedProcess interface {
 	OpaqueID() string
 }
 
-// managedLauncher is the narrow process-launch seam (injectable for
+// ManagedLauncher is the narrow process-launch seam (injectable for
 // deterministic tests). Launch must exec exe with argv directly — never a
 // shell, never a command string.
-type managedLauncher interface {
-	Launch(exe string, argv []string) (managedProcess, error)
+type ManagedLauncher interface {
+	Launch(exe string, argv []string) (ManagedProcess, error)
 }
 
 // execLauncher is the production launcher: direct exec of the given
@@ -72,7 +72,7 @@ type execProcess struct {
 	waitErr  error
 }
 
-func (execLauncher) Launch(exe string, argv []string) (managedProcess, error) {
+func (execLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
 	cmd := exec.Command(exe, argv...)
 	// Own process group so Kill reliably takes the child and any descendants.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -135,7 +135,7 @@ func (p *execProcess) OpaqueID() string {
 type codexManagedRuntime struct {
 	sessionID string
 	epoch     int64
-	proc      managedProcess
+	proc      ManagedProcess
 	reg       *ManagedSessionRegistry
 	scanner   *bufio.Scanner
 	writeMu   sync.Mutex
@@ -148,9 +148,11 @@ type codexManagedRuntime struct {
 	// under the lock; the provider write happens after release; a failed
 	// write rolls the claim back. The pump clears the claim on turn
 	// completion or child exit.
-	turnMu     sync.Mutex
-	turnActive bool
-	turnClosed bool // child exited / session stopped: no further prompts
+	turnMu      sync.Mutex
+	turnActive  bool
+	turnClosed  bool   // child exited / session stopped: no further prompts
+	currentTurn string // provider turnId bound to the active invocation ("" = none)
+	pendingReq  int64  // JSON-RPC id of the outstanding turn/start (0 = none)
 	// exited is closed at the end of the pump (child EOF + MarkExited + reap
 	// started) so lifecycle operations can wait deterministically.
 	exited chan struct{}
@@ -160,7 +162,7 @@ type codexManagedRuntime struct {
 	observer func(method string)
 }
 
-func newCodexManagedRuntime(proc managedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
+func newCodexManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
 	sc := bufio.NewScanner(proc.Stdout())
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{})}
@@ -273,8 +275,10 @@ func (rt *codexManagedRuntime) handshake(cwd string, timeout time.Duration) erro
 func (rt *codexManagedRuntime) startCertificationTurn() error {
 	rt.turnMu.Lock()
 	rt.turnActive = true
+	rt.currentTurn = ""
 	rt.nextID++
 	id := rt.nextID
+	rt.pendingReq = id
 	rt.turnMu.Unlock()
 	return rt.send(map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": "turn/start",
@@ -286,12 +290,29 @@ func (rt *codexManagedRuntime) startCertificationTurn() error {
 	})
 }
 
+// turnIDOf extracts the provider turn identity from a notification's params.
+// Turn lifecycle events carry it as params.turn.id; item events carry it as a
+// top-level params.turnId (per the pinned 0.144.1 schema). Returns "" when
+// absent.
+func turnIDOf(params map[string]any) string {
+	if turn, ok := params["turn"].(map[string]any); ok {
+		if id, _ := turn["id"].(string); id != "" {
+			return id
+		}
+	}
+	if id, _ := params["turnId"].(string); id != "" {
+		return id
+	}
+	return ""
+}
+
 // pump is the production event pump: it maps exact native notifications for
-// the bound thread onto registry status transitions and the bounded event
-// projection (SP0.5 structural allowlist — never raw JSON-RPC). Unknown
-// methods, unmatched threads, and response objects are ignored — they can
-// never fabricate a known status. On child EOF/error it marks the record
-// exited and reaps the child.
+// the bound thread AND the exact current turn onto registry status
+// transitions and the bounded event projection (SP0.5 structural allowlist —
+// never raw JSON-RPC). Unknown methods, unmatched threads, and stale/
+// duplicate/wrong-turn completions are ignored — they can never fabricate a
+// known status or release the active turn. On child EOF/error it marks the
+// record exited and reaps the child.
 func (rt *codexManagedRuntime) pump() {
 	for {
 		m, err := rt.readNext()
@@ -300,6 +321,23 @@ func (rt *codexManagedRuntime) pump() {
 		}
 		method, _ := m["method"].(string)
 		if method == "" {
+			// Response objects: the turn/start response carries the provider
+			// turn identity (result.turn.id) — the EXACT binding for the
+			// invocation we claimed (JSON-RPC id correlation). An error
+			// response releases the claim so the session is not stuck.
+			if got, ok := m["id"].(float64); ok {
+				rt.turnMu.Lock()
+				if rt.pendingReq != 0 && int64(got) == rt.pendingReq {
+					rt.pendingReq = 0
+					if errObj, hasErr := m["error"]; hasErr && errObj != nil {
+						rt.turnActive = false
+						rt.currentTurn = ""
+					} else if res, ok := m["result"].(map[string]any); ok {
+						rt.currentTurn = turnIDOf(res)
+					}
+				}
+				rt.turnMu.Unlock()
+			}
 			continue
 		}
 		if rt.observer != nil {
@@ -310,30 +348,54 @@ func (rt *codexManagedRuntime) pump() {
 		if tid != rt.threadID {
 			continue
 		}
+		turnID := turnIDOf(params)
 		switch method {
 		case "turn/started":
-			rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusWorking)
-			rt.appendEvent(ManagedEventWorking, "")
-		case "turn/completed":
-			rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusCompleted)
+			// Only the EXACT turn bound at turn/start-response time can enter
+			// working. A ghost/foreign/late turn/started is inert — there is
+			// no first-come adoption.
 			rt.turnMu.Lock()
-			rt.turnActive = false
+			match := rt.turnActive && turnID != "" && turnID == rt.currentTurn
 			rt.turnMu.Unlock()
-			rt.appendEvent(ManagedEventCompleted, "")
+			if match {
+				rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusWorking)
+				rt.appendEvent(ManagedEventWorking, "")
+			}
+		case "turn/completed":
+			// Only the EXACT current turn's completion returns us to idle;
+			// a stale/duplicate/wrong-turn completion is inert.
+			rt.turnMu.Lock()
+			match := rt.turnActive && turnID != "" && turnID == rt.currentTurn
+			if match {
+				rt.turnActive = false
+				rt.currentTurn = ""
+			}
+			rt.turnMu.Unlock()
+			if match {
+				rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusCompleted)
+				rt.appendEvent(ManagedEventCompleted, "")
+			}
 		case "item/completed":
 			// Structural allowlist: only the verified assistant message text
-			// (schema: ThreadItem variant agentMessage) is projected, byte
-			// bounded. All other item variants stay internal.
+			// of the EXACT current turn is projected, byte bounded. All other
+			// item variants and wrong-turn items stay internal.
+			rt.turnMu.Lock()
+			cur := rt.currentTurn
+			rt.turnMu.Unlock()
+			if turnID == "" || turnID != cur {
+				continue
+			}
 			item, _ := params["item"].(map[string]any)
 			if it, _ := item["type"].(string); it == "agentMessage" {
 				if text, _ := item["text"].(string); text != "" {
-					rt.appendEvent(ManagedEventAssistant, text)
+					rt.appendEvent(ManagedEventAssistant, boundUTF8(text, managedEventTextMax))
 				}
 			}
 		}
 	}
 	rt.turnMu.Lock()
 	rt.turnActive = false
+	rt.currentTurn = ""
 	rt.turnClosed = true
 	rt.turnMu.Unlock()
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
@@ -363,8 +425,10 @@ func (rt *codexManagedRuntime) submitPrompt(text string) error {
 		return fmt.Errorf("turn already active")
 	}
 	rt.turnActive = true
+	rt.currentTurn = "" // bound below from the provider's turn/start response
 	rt.nextID++
 	id := rt.nextID
+	rt.pendingReq = id
 	rt.turnMu.Unlock()
 
 	err := rt.send(map[string]any{
@@ -378,6 +442,7 @@ func (rt *codexManagedRuntime) submitPrompt(text string) error {
 	if err != nil {
 		rt.turnMu.Lock()
 		rt.turnActive = false
+		rt.pendingReq = 0
 		rt.turnMu.Unlock()
 		return fmt.Errorf("prompt delivery: %w", err)
 	}
@@ -396,13 +461,13 @@ func (rt *codexManagedRuntime) stop() {
 // (b) wait until every in-flight create has rolled back or published.
 type inflightCreate struct {
 	mu        sync.Mutex
-	proc      managedProcess // nil until spawned
+	proc      ManagedProcess // nil until spawned
 	cancelled bool
 }
 
 // setProc hands the spawned child to the lease. Returns false when the lease
 // was already cancelled by Shutdown — the caller then owns the rollback.
-func (c *inflightCreate) setProc(p managedProcess) bool {
+func (c *inflightCreate) setProc(p ManagedProcess) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cancelled {
@@ -438,7 +503,7 @@ func (c *inflightCreate) cancel() {
 // production composition root behind Config.EnableManagedCodex.
 type ManagedCodexService struct {
 	cfg              CodexAppServerEntryConfig
-	launcher         managedLauncher
+	launcher         ManagedLauncher
 	verify           func() error // fail-closed identity check before every spawn
 	handshakeTimeout time.Duration
 	reg              *ManagedSessionRegistry
@@ -468,7 +533,7 @@ func (s *ManagedCodexService) barrier(stage string) {
 // NewManagedCodexService creates the service. launcher nil means the
 // production execLauncher. Identity verification runs per create, not here,
 // so daemon boot never executes the provider.
-func NewManagedCodexService(cfg CodexAppServerEntryConfig, launcher managedLauncher) *ManagedCodexService {
+func NewManagedCodexService(cfg CodexAppServerEntryConfig, launcher ManagedLauncher) *ManagedCodexService {
 	if launcher == nil {
 		launcher = execLauncher{}
 	}
@@ -505,6 +570,22 @@ func (s *ManagedCodexService) endLease(lease *inflightCreate) {
 	delete(s.leases, lease)
 	s.mu.Unlock()
 	s.leaseCond.Broadcast()
+}
+
+// NewManagedCodexServiceForTest builds a service with an injected launcher
+// and verifier override — the deterministic-test seam for production-route
+// tests that must not execute the pinned provider binary. Never called by the
+// composition root (which always uses NewManagedCodexService + the fail-closed
+// pinned Verify).
+func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error) *ManagedCodexService {
+	s := NewManagedCodexService(CodexAppServerEntryConfig{
+		Bin:     "/pinned/test/node_modules/.bin/codex",
+		Version: "codex-cli 0.144.1",
+	}, launcher)
+	if verify != nil {
+		s.verify = verify
+	}
+	return s
 }
 
 // Registry exposes the owned-session registry for the read-only REST surface.

@@ -64,6 +64,10 @@ type Dependencies struct {
 	StartWatcher        func() (watcherResource, error)
 	StartIPC            func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error)
 	StartTunnel         func() tunnelResource
+	// Managed injects a pre-built managed Codex service (deterministic-test
+	// seam: a fake ManagedLauncher instead of the pinned production spawn).
+	// nil ⇒ the production service is constructed when EnableManagedCodex.
+	Managed *term.ManagedCodexService
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -192,7 +196,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// Identity verification runs fail-closed per create, not at boot.
 	var managed *term.ManagedCodexService
 	if cfg.EnableManagedCodex {
-		managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil)
+		if deps.Managed != nil {
+			managed = deps.Managed
+		} else {
+			managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil)
+		}
 	}
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is

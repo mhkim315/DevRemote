@@ -47,7 +47,22 @@ const RESPONSE_FIELDS = new Set(['contractVersion', 'session', 'events', 'nextCu
 export const MANAGED_EVENT_KINDS = new Set(['assistant', 'working', 'completed', 'exited', 'gap']);
 // Closed native status vocabulary (daemon ManagedNativeStatus values).
 const NATIVE_STATUSES = new Set(['idle', 'working', 'completed', 'exited']);
-const MAX_EVENT_TEXT = 4096;
+// The daemon bound is BYTES (UTF-8), not UTF-16 code units.
+const MAX_EVENT_TEXT_BYTES = 4096;
+// Mobile-side feed capacity mirrors the daemon ring; older events are dropped
+// behind an explicit gap marker, never silently.
+export const MANAGED_FEED_CAP = 256;
+
+// utf8ByteLength counts the UTF-8 encoded size of s (dependency-free; RN
+// runtimes do not uniformly ship TextEncoder).
+export function utf8ByteLength(s: string): number {
+  let bytes = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -88,7 +103,7 @@ function decodeEvent(v: unknown): ManagedEvent | null {
   ) {
     return null;
   }
-  if (e.text !== undefined && (typeof e.text !== 'string' || e.text.length > MAX_EVENT_TEXT)) {
+  if (e.text !== undefined && (typeof e.text !== 'string' || utf8ByteLength(e.text) > MAX_EVENT_TEXT_BYTES)) {
     return null;
   }
   return e as unknown as ManagedEvent;
@@ -131,6 +146,7 @@ export class ManagedSessionFeed {
   private epoch = 0;
   private cursor = 0;
   private events: ManagedEvent[] = [];
+  private dropped = false; // events were evicted: surface an explicit gap
   private closed = false;
 
   constructor(sessionId: string) {
@@ -146,8 +162,21 @@ export class ManagedSessionFeed {
     return this.cursor;
   }
 
+  // getEvents returns the bounded feed; when older events were evicted a
+  // synthetic gap marker leads the list so the history is never silently
+  // presented as complete.
   getEvents(): ManagedEvent[] {
-    return this.events.slice();
+    if (!this.dropped || this.events.length === 0) return this.events.slice();
+    const first = this.events[0];
+    const gap: ManagedEvent = {
+      contractVersion: MANAGED_CONTRACT_VERSION,
+      sessionId: this.sessionId,
+      epoch: this.epoch,
+      seq: first.seq - 1,
+      kind: 'gap',
+      observedAt: first.observedAt,
+    };
+    return [gap, ...this.events];
   }
 
   // apply commits one decoded response. Returns false (no mutation) for a
@@ -164,8 +193,106 @@ export class ManagedSessionFeed {
       if (ev.seq <= this.cursor) continue; // replay-idempotent
       this.events.push(ev);
       this.cursor = ev.seq;
+      if (ev.kind === 'gap') this.dropped = true;
+    }
+    if (this.events.length > MANAGED_FEED_CAP) {
+      this.events.splice(0, this.events.length - MANAGED_FEED_CAP);
+      this.dropped = true;
     }
     if (resp.nextCursor > this.cursor) this.cursor = resp.nextCursor;
     return true;
+  }
+}
+
+// ── SP0.5-R1 blocker 1: staleness-safe polling controller ──
+
+export interface ManagedPollerState {
+  // status is the last FRESH native status, or 'unavailable' once freshness
+  // expired — a dead daemon or broken transport can never keep a positive
+  // status looking current.
+  status: string;
+  current: boolean;
+  events: ManagedEvent[];
+}
+
+export interface ManagedPollerOptions {
+  deadlineMs?: number;  // per-request deadline
+  freshnessMs?: number; // max age of the last fresh response before non-current
+}
+
+// ManagedSessionPoller drives the bounded event polling with: one request in
+// flight at a time, a per-request deadline, and freshness expiry — on
+// failure/timeout past the freshness window the status becomes
+// 'unavailable' (non-current) until a NEW fresh snapshot restores it.
+export class ManagedSessionPoller {
+  private readonly feed: ManagedSessionFeed;
+  private readonly fetchEvents: (cursor: number) => Promise<unknown>;
+  private readonly onUpdate: (state: ManagedPollerState) => void;
+  private readonly now: () => number;
+  private readonly deadlineMs: number;
+  private readonly freshnessMs: number;
+  private inFlight = false;
+  private closed = false;
+  private lastFreshAt = 0;
+  private lastStatus = '';
+
+  constructor(
+    sessionId: string,
+    fetchEvents: (cursor: number) => Promise<unknown>,
+    onUpdate: (state: ManagedPollerState) => void,
+    opts?: ManagedPollerOptions & { now?: () => number },
+  ) {
+    this.feed = new ManagedSessionFeed(sessionId);
+    this.fetchEvents = fetchEvents;
+    this.onUpdate = onUpdate;
+    this.now = opts?.now ?? (() => Date.now());
+    this.deadlineMs = opts?.deadlineMs ?? 5000;
+    this.freshnessMs = opts?.freshnessMs ?? 6000;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.feed.close();
+  }
+
+  // tick runs at most one bounded request; overlapping ticks are skipped
+  // (one-in-flight). Every failure path re-evaluates freshness.
+  async tick(): Promise<void> {
+    if (this.closed || this.inFlight) return;
+    this.inFlight = true;
+    try {
+      const raw = await this.withDeadline(this.fetchEvents(this.feed.getCursor()));
+      const decoded = decodeManagedEventsResponse(raw);
+      if (!decoded || !this.feed.apply(decoded)) {
+        this.noteFailure();
+        return;
+      }
+      this.lastFreshAt = this.now();
+      this.lastStatus = decoded.session.nativeStatus;
+      if (!this.closed) {
+        this.onUpdate({ status: this.lastStatus, current: true, events: this.feed.getEvents() });
+      }
+    } catch {
+      this.noteFailure();
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private noteFailure(): void {
+    if (this.closed) return;
+    if (this.lastFreshAt === 0 || this.now() - this.lastFreshAt > this.freshnessMs) {
+      this.onUpdate({ status: 'unavailable', current: false, events: this.feed.getEvents() });
+    }
+  }
+
+  private withDeadline(p: Promise<unknown>): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('managed poll deadline')), this.deadlineMs);
+      p.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
   }
 }

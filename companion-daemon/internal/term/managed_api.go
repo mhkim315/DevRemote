@@ -8,6 +8,8 @@ package term
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +17,20 @@ import (
 
 	"devremote/companion-daemon/internal/models"
 )
+
+// decodeStrictJSONBody decodes EXACTLY one bounded JSON object: unknown
+// fields and any trailing content after the object fail closed.
+func decodeStrictJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("trailing content after JSON body")
+	}
+	return nil
+}
 
 // ManagedNativeStatusDTO is the bounded managed-session read DTO. Field set
 // is closed: identity + native semantic status only. The opaque ProcessID,
@@ -183,10 +199,8 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
 		return
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, managedPromptMaxBytes+1024))
-	dec.DisallowUnknownFields()
 	var req managedPromptRequest
-	if err := dec.Decode(&req); err != nil {
+	if err := decodeStrictJSONBody(w, r, managedPromptMaxBytes+1024, &req); err != nil {
 		http.Error(w, "malformed prompt body", http.StatusBadRequest)
 		return
 	}
@@ -217,6 +231,10 @@ func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request
 	dec.DisallowUnknownFields()
 	var req managedLifecycleRequest
 	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "malformed lifecycle body", http.StatusBadRequest)
+		return
+	}
+	if _, err := dec.Token(); err != io.EOF {
 		http.Error(w, "malformed lifecycle body", http.StatusBadRequest)
 		return
 	}

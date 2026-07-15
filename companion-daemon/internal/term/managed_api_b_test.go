@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ── SP0.5-B: authenticated managed event read + prompt write ──
@@ -160,6 +161,23 @@ func TestManagedEventsAPI_OverflowGapAndTextBound(t *testing.T) {
 	tail, _ := store.readAfter(store.newest()-1, 0)
 	if len(tail) != 1 || len(tail[0].Text) != managedEventTextMax {
 		t.Fatalf("text bound: got %d bytes", len(tail[0].Text))
+	}
+
+	// Multi-byte truncation preserves UTF-8 boundaries: a 4-byte emoji
+	// straddling the cut is dropped whole, never split.
+	emoji := strings.Repeat("😀", managedEventTextMax/4+10) // > 4096 bytes
+	store.append(ManagedEventAssistant, emoji)
+	tail2, _ := store.readAfter(store.newest()-1, 0)
+	got := tail2[0].Text
+	if len(got) > managedEventTextMax {
+		t.Fatalf("multibyte bound exceeded: %d bytes", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("multibyte truncation split a UTF-8 sequence")
+	}
+	if len(got) != managedEventTextMax {
+		// 4096 % 4 == 0, so the exact bound is reachable without a split.
+		t.Fatalf("multibyte bound = %d, want exactly %d", len(got), managedEventTextMax)
 	}
 }
 

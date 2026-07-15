@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -65,12 +66,23 @@ func newManagedEventStore(sessionID string, epoch int64) *managedEventStore {
 	}
 }
 
+// boundUTF8 truncates s to at most max BYTES without splitting a multi-byte
+// UTF-8 sequence (the cut backs off to the previous rune start).
+func boundUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // append projects one bounded event into the ring and wakes subscribers.
 // Appends on a closed store are inert.
 func (st *managedEventStore) append(kind ManagedEventKind, text string) {
-	if len(text) > managedEventTextMax {
-		text = text[:managedEventTextMax]
-	}
+	text = boundUTF8(text, managedEventTextMax)
 	st.mu.Lock()
 	if st.closed {
 		st.mu.Unlock()

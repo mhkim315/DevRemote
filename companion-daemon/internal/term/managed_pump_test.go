@@ -33,20 +33,30 @@ func (r *pumpRecorder) observe(_ string, method string) {
 
 func (r *pumpRecorder) waitFor(t *testing.T, method string) {
 	t.Helper()
+	r.waitForCount(t, method, 1)
+}
+
+// waitForCount blocks until the pump has consumed at least n messages with
+// the given method (bounded).
+func (r *pumpRecorder) waitForCount(t *testing.T, method string, n int) {
+	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
+		count := 0
 		r.mu.Lock()
 		for _, m := range r.seen {
 			if m == method {
-				r.mu.Unlock()
-				return
+				count++
 			}
 		}
 		r.mu.Unlock()
+		if count >= n {
+			return
+		}
 		select {
 		case <-r.cond:
 		case <-deadline:
-			t.Fatalf("pump never consumed %q", method)
+			t.Fatalf("pump consumed %d/%d of %q", count, n, method)
 		}
 	}
 }
@@ -81,15 +91,16 @@ func TestManagedPump_NativeEventsDriveWorkingThenCompleted(t *testing.T) {
 		case "thread/start":
 			out(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"threadId": tid}})
 		case "turn/start":
-			out(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
-			out(map[string]any{"jsonrpc": "2.0", "method": "turn/started", "params": map[string]any{"threadId": tid, "turnId": "turn-1"}})
+			out(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"turn": map[string]any{"id": "turn-1"}}})
+			out(map[string]any{"jsonrpc": "2.0", "method": "turn/started", "params": map[string]any{"threadId": tid, "turn": map[string]any{"id": "turn-1"}}})
 			// Adversarial mid-turn noise, all of which must be inert:
 			out(map[string]any{"jsonrpc": "2.0", "method": "thread/status/changed", "params": map[string]any{"threadId": tid, "status": "completed"}})
 			out(map[string]any{"jsonrpc": "2.0", "method": "managed/status", "params": map[string]any{"threadId": tid, "status": "exited"}})
-			out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": "thread-OTHER"}})
+			out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": "thread-OTHER", "turn": map[string]any{"id": "turn-1"}}})
+			out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": tid, "turn": map[string]any{"id": "turn-STALE"}}})
 			go func() {
 				<-completeGate
-				out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": tid}})
+				out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": tid, "turn": map[string]any{"id": "turn-1"}}})
 			}()
 		}
 	}}
@@ -108,7 +119,7 @@ func TestManagedPump_NativeEventsDriveWorkingThenCompleted(t *testing.T) {
 	// none of them changed the status (non-vacuous: the events were read).
 	rec.waitFor(t, "thread/status/changed")
 	rec.waitFor(t, "managed/status")
-	rec.waitFor(t, "turn/completed") // the unmatched-thread one
+	rec.waitFor(t, "turn/completed") // the unmatched-thread / stale-turn ones
 	if got, _ := managed.Registry().Get(id); got.NativeStatus != ManagedStatusWorking {
 		t.Fatalf("crafted events changed status to %s", got.NativeStatus)
 	}

@@ -15,7 +15,7 @@ import (
 
 // ── Deterministic fake launcher / process / app-server script ──
 
-// fakeManagedProc is an in-memory managedProcess: the runtime's stdin/stdout
+// fakeManagedProc is an in-memory ManagedProcess: the runtime's stdin/stdout
 // are pipe-connected to a scripted fake app-server.
 type fakeManagedProc struct {
 	stdinR  *io.PipeReader // script side reads what the runtime writes
@@ -122,7 +122,7 @@ type fakeLauncher struct {
 	procs      []*fakeManagedProc
 }
 
-func (l *fakeLauncher) Launch(exe string, argv []string) (managedProcess, error) {
+func (l *fakeLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
@@ -147,7 +147,7 @@ func (l *fakeLauncher) callCount() int {
 // newTestManagedService builds a service with an injected launcher and a
 // no-op verifier (verify fail-closure is tested separately with a failing
 // verifier — the production verifier would exec the pinned binary).
-func newTestManagedService(l managedLauncher) *ManagedCodexService {
+func newTestManagedService(l ManagedLauncher) *ManagedCodexService {
 	s := NewManagedCodexService(CodexAppServerEntryConfig{
 		Bin:     "/pinned/toolchain/node_modules/.bin/codex",
 		Version: "codex-cli 0.144.1",

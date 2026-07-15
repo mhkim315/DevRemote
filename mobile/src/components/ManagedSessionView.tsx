@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { getManagedStatus, getManagedEvents, postManagedPrompt } from '../lib/client';
 import {
-  decodeManagedEventsResponse, ManagedSessionFeed, ManagedEvent,
+  ManagedSessionPoller, ManagedPollerState, ManagedEvent,
 } from '../lib/managedSession';
 
 interface Props {
@@ -23,52 +23,49 @@ const POLL_MS = 1500;
 export default function ManagedSessionView({ session, token, onBack }: Props) {
   const [events, setEvents] = useState<ManagedEvent[]>([]);
   const [status, setStatus] = useState('…');
+  const [statusCurrent, setStatusCurrent] = useState(false);
   const [error, setError] = useState('');
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
-  const feedRef = useRef<ManagedSessionFeed | null>(null);
+  const pollerRef = useRef<ManagedSessionPoller | null>(null);
   const epochRef = useRef(0);
   const scrollRef = useRef<ScrollView | null>(null);
 
   useEffect(() => {
-    // One feed per mounted session: close() on unmount/session-switch makes
-    // every late poll response a rejected stale commit.
-    const feed = new ManagedSessionFeed(session);
-    feedRef.current = feed;
+    // One poller per mounted session: one-in-flight, per-request deadline,
+    // freshness expiry → non-current 'unavailable'; close() on unmount makes
+    // every late response a rejected stale commit.
     let timer: ReturnType<typeof setInterval> | null = null;
-
-    const poll = async () => {
-      try {
-        const raw = await getManagedEvents(session, epochRef.current, feed.getCursor(), token);
-        const decoded = decodeManagedEventsResponse(raw);
-        if (!decoded) return; // fail-closed: invalid data is never rendered
-        if (!feed.apply(decoded)) return; // stale session/epoch: never committed
-        setEvents(feed.getEvents());
-        setStatus(decoded.session.nativeStatus);
-      } catch {
-        // Poll errors are transient display-only; the daemon stays authoritative.
-      }
-    };
+    let poller: ManagedSessionPoller | null = null;
 
     (async () => {
       try {
         const st: any = await getManagedStatus(session, token);
-        if (feed !== feedRef.current) return; // unmounted while resolving
-        if (!st || typeof st.launchGen !== 'number' || st.launchGen < 1) {
-          setError('Managed session unavailable.');
+        if (pollerRef.current !== null || !st || typeof st.launchGen !== 'number' || st.launchGen < 1) {
+          if (!st || typeof st.launchGen !== 'number') setError('Managed session unavailable.');
           return;
         }
         epochRef.current = st.launchGen;
-        setStatus(String(st.nativeStatus || '…'));
-        await poll();
-        timer = setInterval(poll, POLL_MS);
+        poller = new ManagedSessionPoller(
+          session,
+          (cursor) => getManagedEvents(session, epochRef.current, cursor, token),
+          (state: ManagedPollerState) => {
+            setEvents(state.events);
+            setStatus(state.status);
+            setStatusCurrent(state.current);
+          },
+        );
+        pollerRef.current = poller;
+        void poller.tick();
+        timer = setInterval(() => { void poller!.tick(); }, POLL_MS);
       } catch {
         setError('Managed session unavailable.');
       }
     })();
 
     return () => {
-      feed.close();
+      if (poller) poller.close();
+      pollerRef.current = null;
       if (timer) clearInterval(timer);
     };
   }, [session, token]);
@@ -97,7 +94,9 @@ export default function ManagedSessionView({ session, token, onBack }: Props) {
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack}><Text style={styles.back}>‹ Back</Text></TouchableOpacity>
         <Text style={styles.title}>Native Managed Session · Codex</Text>
-        <Text style={styles.status}>{status}</Text>
+        <Text style={statusCurrent ? styles.status : styles.statusStale}>
+          {statusCurrent ? status : `${status === 'unavailable' ? 'unavailable' : status} (stale)`}
+        </Text>
       </View>
       <Text style={styles.note}>JSON-RPC native session — bounded output, no terminal.</Text>
       <ScrollView
@@ -151,6 +150,7 @@ const styles = StyleSheet.create({
   back: { color: '#58a6ff', fontSize: 16, marginRight: 8 },
   title: { color: '#e6edf3', fontWeight: '600', flex: 1 },
   status: { color: '#8b949e', fontSize: 12 },
+  statusStale: { color: '#f0883e', fontSize: 12 },
   note: { color: '#8b949e', fontSize: 11, paddingHorizontal: 12, paddingBottom: 6 },
   feed: { flex: 1, paddingHorizontal: 12 },
   assistant: { color: '#e6edf3', fontSize: 14, marginBottom: 6 },

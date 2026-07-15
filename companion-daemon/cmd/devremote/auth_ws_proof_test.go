@@ -51,6 +51,12 @@ type remoteFixture struct {
 // newRemoteFixture builds a real remote-mode App with a persistent host
 // identity and device registry, then serves its real handler over httptest.
 func newRemoteFixture(t *testing.T, ticketCfg *devicetrust.WSTicketStoreConfig, sessionCfg *devicetrust.DeviceSessionManagerConfig) *remoteFixture {
+	return newRemoteFixtureWith(t, ticketCfg, sessionCfg, nil)
+}
+
+// newRemoteFixtureWith additionally lets a test mutate the Config/Dependencies
+// before construction (e.g. enable the managed runtime with a fake launcher).
+func newRemoteFixtureWith(t *testing.T, ticketCfg *devicetrust.WSTicketStoreConfig, sessionCfg *devicetrust.DeviceSessionManagerConfig, mutate func(*Config, *Dependencies)) *remoteFixture {
 	t.Helper()
 	dir := t.TempDir()
 	id, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
@@ -68,7 +74,11 @@ func newRemoteFixture(t *testing.T, ticketCfg *devicetrust.WSTicketStoreConfig, 
 	if sessionCfg != nil {
 		deps.DeviceSessionConfig = sessionCfg
 	}
-	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
+	cfg := Config{InsecureLocalOnly: false}
+	if mutate != nil {
+		mutate(&cfg, &deps)
+	}
+	app, err := NewAppWithDeps(cfg, deps)
 	if err != nil {
 		t.Fatalf("NewAppWithDeps: %v", err)
 	}

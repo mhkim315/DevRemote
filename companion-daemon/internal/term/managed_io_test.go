@@ -3,6 +3,7 @@ package term
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -47,23 +48,30 @@ func (s *interactiveAppServer) handler() scriptHandler {
 		case "turn/start":
 			s.mu.Lock()
 			s.turns = append(s.turns, params)
+			n := len(s.turns)
 			hold := s.hold
 			s.hold = nil
 			reply := s.reply
 			s.mu.Unlock()
-			out(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
-			out(map[string]any{"jsonrpc": "2.0", "method": "turn/started", "params": map[string]any{"threadId": s.threadID, "turnId": "turn-i"}})
+			// Schema-exact (pinned 0.144.1): turn lifecycle notifications
+			// nest the identity as params.turn.id; item notifications carry
+			// a top-level params.turnId.
+			turnID := fmt.Sprintf("turn-%d", n)
+			out(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"turn": map[string]any{"id": turnID}}})
+			out(map[string]any{"jsonrpc": "2.0", "method": "turn/started", "params": map[string]any{
+				"threadId": s.threadID, "turn": map[string]any{"id": turnID}}})
 			go func() {
 				if hold != nil {
 					<-hold
 				}
 				if reply != "" {
 					out(map[string]any{"jsonrpc": "2.0", "method": "item/completed", "params": map[string]any{
-						"threadId": s.threadID, "turnId": "turn-i",
+						"threadId": s.threadID, "turnId": turnID,
 						"item": map[string]any{"type": "agentMessage", "id": "item-i", "text": reply},
 					}})
 				}
-				out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": s.threadID}})
+				out(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{
+					"threadId": s.threadID, "turn": map[string]any{"id": turnID}}})
 			}()
 		}
 	}
@@ -233,7 +241,7 @@ func TestManagedAttach_PromptDrivesExactTurnStart(t *testing.T) {
 	// Privacy: the prompt is never echoed back on the public stream, and no
 	// raw JSON-RPC fields leak into it.
 	for _, line := range c.raw {
-		for _, leak := range []string{"what is the answer", "jsonrpc", "threadId", "turn-i", "item-i"} {
+		for _, leak := range []string{"what is the answer", "jsonrpc", "threadId", "turn-1", "item-i"} {
 			if strings.Contains(line, leak) {
 				t.Fatalf("attach stream leaks %q: %s", leak, line)
 			}

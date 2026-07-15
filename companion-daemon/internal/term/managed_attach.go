@@ -95,13 +95,13 @@ func handleManagedAttach(conn net.Conn, reader *bufio.Reader, managed *ManagedCo
 	}()
 	defer close(writerStop)
 
-	// Reader: bounded prompt lines. EOF/close detaches the viewer only.
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return
-		}
-		line = strings.TrimSpace(line)
+	// Reader: bounded prompt lines (a line beyond the prompt bound + framing
+	// margin fails the connection closed instead of growing unbounded). EOF/
+	// close detaches the viewer only.
+	sc := bufio.NewScanner(reader)
+	sc.Buffer(make([]byte, 4096), managedPromptMaxBytes+1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
@@ -113,5 +113,8 @@ func handleManagedAttach(conn net.Conn, reader *bufio.Reader, managed *ManagedCo
 		if perr := managed.SubmitPrompt(sessionID, epoch, in.Prompt); perr != nil {
 			_ = writeLine(map[string]string{"error": perr.Error()})
 		}
+	}
+	if sc.Err() != nil {
+		_ = writeLine(map[string]string{"error": "input line exceeds bound"})
 	}
 }
