@@ -276,6 +276,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("GET /api/managed-sessions", h.AuthMiddleware(h.HandleManagedSessions))
 		serveMux.HandleFunc("GET /api/managed-sessions/{id}/events", h.AuthMiddleware(h.HandleManagedSessionEvents))
 		serveMux.HandleFunc("POST /api/managed-sessions/{id}/prompt", h.AuthMiddleware(h.HandleManagedSessionPrompt))
+		serveMux.HandleFunc("POST /api/managed-sessions/{id}/stop", h.AuthMiddleware(h.HandleManagedSessionStop))
+		serveMux.HandleFunc("POST /api/managed-sessions/{id}/kill", h.AuthMiddleware(h.HandleManagedSessionKill))
+		serveMux.HandleFunc("DELETE /api/managed-sessions/{id}", h.AuthMiddleware(h.HandleManagedSessionDelete))
 		serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
@@ -316,6 +319,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionEvents, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/managed-sessions/{id}/prompt",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionPrompt, devicetrust.PermTerminalInput))
+		serveMux.HandleFunc("POST /api/managed-sessions/{id}/stop",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionStop, devicetrust.PermSessionsStop))
+		serveMux.HandleFunc("POST /api/managed-sessions/{id}/kill",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionKill, devicetrust.PermSessionsKill))
+		serveMux.HandleFunc("DELETE /api/managed-sessions/{id}",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionDelete, devicetrust.PermHistoryDelete))
 		serveMux.HandleFunc("GET /api/v2/links",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/v2/links",

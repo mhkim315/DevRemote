@@ -23,9 +23,12 @@ type fakeManagedProc struct {
 	stdoutR *io.PipeReader // runtime side reads what the script writes
 	stdoutW *io.PipeWriter
 
-	killOnce sync.Once
-	killed   chan struct{}
-	done     chan struct{} // script finished
+	ignoreTerm bool // simulate a child that ignores SIGTERM (escalation test)
+	termOnce   sync.Once
+	termed     chan struct{}
+	killOnce   sync.Once
+	killed     chan struct{}
+	done       chan struct{} // script finished
 }
 
 func newFakeManagedProc() *fakeManagedProc {
@@ -34,12 +37,20 @@ func newFakeManagedProc() *fakeManagedProc {
 	return &fakeManagedProc{
 		stdinR: stdinR, stdinW: stdinW,
 		stdoutR: stdoutR, stdoutW: stdoutW,
-		killed: make(chan struct{}), done: make(chan struct{}),
+		termed: make(chan struct{}), killed: make(chan struct{}), done: make(chan struct{}),
 	}
 }
 
 func (p *fakeManagedProc) Stdin() io.Writer  { return p.stdinW }
 func (p *fakeManagedProc) Stdout() io.Reader { return p.stdoutR }
+
+func (p *fakeManagedProc) Term() error {
+	p.termOnce.Do(func() { close(p.termed) })
+	if p.ignoreTerm {
+		return nil // child ignores the graceful signal
+	}
+	return p.Kill() // graceful child: exits on TERM
+}
 
 func (p *fakeManagedProc) Kill() error {
 	p.killOnce.Do(func() {
@@ -101,13 +112,14 @@ func happyAppServer(threadID string) scriptHandler {
 
 // fakeLauncher records the exact executable + argv of every Launch call.
 type fakeLauncher struct {
-	mu      sync.Mutex
-	calls   int
-	exe     string
-	argv    []string
-	err     error
-	handler scriptHandler
-	procs   []*fakeManagedProc
+	mu         sync.Mutex
+	calls      int
+	exe        string
+	argv       []string
+	err        error
+	ignoreTerm bool // new procs simulate a TERM-ignoring child
+	handler    scriptHandler
+	procs      []*fakeManagedProc
 }
 
 func (l *fakeLauncher) Launch(exe string, argv []string) (managedProcess, error) {
@@ -120,6 +132,7 @@ func (l *fakeLauncher) Launch(exe string, argv []string) (managedProcess, error)
 		return nil, l.err
 	}
 	p := newFakeManagedProc()
+	p.ignoreTerm = l.ignoreTerm
 	l.procs = append(l.procs, p)
 	runAppServerScript(p, l.handler)
 	return p, nil

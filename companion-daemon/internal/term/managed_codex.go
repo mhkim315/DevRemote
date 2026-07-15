@@ -45,6 +45,7 @@ const (
 type managedProcess interface {
 	Stdin() io.Writer
 	Stdout() io.Reader
+	Term() error // graceful group TERM (Stop's first phase)
 	Kill() error
 	Wait() error // reap; safe to call more than once
 	OpaqueID() string
@@ -91,6 +92,16 @@ func (execLauncher) Launch(exe string, argv []string) (managedProcess, error) {
 
 func (p *execProcess) Stdin() io.Writer  { return p.stdin }
 func (p *execProcess) Stdout() io.Reader { return p.stdout }
+
+func (p *execProcess) Term() error {
+	if p.cmd.Process == nil {
+		return nil
+	}
+	if err := syscall.Kill(-p.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		return p.cmd.Process.Signal(syscall.SIGTERM)
+	}
+	return nil
+}
 
 func (p *execProcess) Kill() error {
 	if p.cmd.Process == nil {
@@ -140,6 +151,9 @@ type codexManagedRuntime struct {
 	turnMu     sync.Mutex
 	turnActive bool
 	turnClosed bool // child exited / session stopped: no further prompts
+	// exited is closed at the end of the pump (child EOF + MarkExited + reap
+	// started) so lifecycle operations can wait deterministically.
+	exited chan struct{}
 	// observer is a NARROW test seam (nil in production): called once per
 	// pumped provider message that carries a method, so deterministic tests
 	// can prove a crafted message was consumed WITHOUT affecting status.
@@ -149,7 +163,7 @@ type codexManagedRuntime struct {
 func newCodexManagedRuntime(proc managedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
 	sc := bufio.NewScanner(proc.Stdout())
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc}
+	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{})}
 }
 
 // send writes one JSON-RPC object as a JSONL line.
@@ -324,6 +338,7 @@ func (rt *codexManagedRuntime) pump() {
 	rt.turnMu.Unlock()
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
 	rt.appendEvent(ManagedEventExited, "")
+	close(rt.exited)
 	_ = rt.proc.Wait() // reap
 }
 
@@ -529,6 +544,122 @@ func (s *ManagedCodexService) eventStoreFor(sessionID string) (*managedEventStor
 		return nil, 0, false
 	}
 	return rt.events, rt.epoch, true
+}
+
+const managedStopGraceful = 2 * time.Second
+
+// lifecycleRuntime resolves and epoch-binds a runtime for a lifecycle op.
+func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64) (*codexManagedRuntime, error) {
+	s.mu.Lock()
+	rt := s.runtimes[sessionID]
+	s.mu.Unlock()
+	if rt == nil {
+		return nil, fmt.Errorf("managed session not found")
+	}
+	if rt.epoch != epoch {
+		return nil, fmt.Errorf("stale session epoch")
+	}
+	return rt, nil
+}
+
+// closeInput permanently rejects new prompts (Stop/Kill first phase).
+func (rt *codexManagedRuntime) closeInput() {
+	rt.turnMu.Lock()
+	rt.turnClosed = true
+	rt.turnMu.Unlock()
+}
+
+// awaitExit waits for the pump to observe child exit, bounded.
+func (rt *codexManagedRuntime) awaitExit(d time.Duration) bool {
+	select {
+	case <-rt.exited:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// Stop gracefully terminates a managed session: input closed, group TERM,
+// bounded wait, then KILL; reaped; the record is non-current (exited) when
+// Stop returns. Idempotent: stopping an already-terminal session succeeds
+// without touching the process again.
+func (s *ManagedCodexService) Stop(sessionID string, epoch int64) error {
+	rt, err := s.lifecycleRuntime(sessionID, epoch)
+	if err != nil {
+		return err
+	}
+	rec, ok := s.reg.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("managed session not found")
+	}
+	if rec.Exited {
+		return nil // already terminal — idempotent success
+	}
+	rt.closeInput()
+	_ = rt.proc.Term()
+	if !rt.awaitExit(managedStopGraceful) {
+		_ = rt.proc.Kill()
+		if !rt.awaitExit(managedStopGraceful) {
+			// The pump did not observe exit in the bound — mark non-current
+			// directly so a stopped session can never look live (honest
+			// escalation; the pump's late MarkExited is then a no-op).
+			s.reg.MarkExited(sessionID, epoch)
+			return fmt.Errorf("managed session stop: child did not exit within the bound")
+		}
+	}
+	_ = rt.proc.Wait()
+	return nil
+}
+
+// Kill force-terminates a managed session's process group and reaps it. The
+// record is non-current when Kill returns. Idempotent on terminal sessions.
+func (s *ManagedCodexService) Kill(sessionID string, epoch int64) error {
+	rt, err := s.lifecycleRuntime(sessionID, epoch)
+	if err != nil {
+		return err
+	}
+	rec, ok := s.reg.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("managed session not found")
+	}
+	if rec.Exited {
+		return nil
+	}
+	rt.closeInput()
+	_ = rt.proc.Kill()
+	if !rt.awaitExit(managedStopGraceful) {
+		s.reg.MarkExited(sessionID, epoch)
+		return fmt.Errorf("managed session kill: child did not exit within the bound")
+	}
+	_ = rt.proc.Wait()
+	return nil
+}
+
+// Delete removes a TERMINAL managed session: the registry record and the
+// bounded output/status data are dropped and the event store is closed —
+// later native events and prompts are inert. Deleting a non-terminal session
+// fails closed; deleting a deleted session reports not-found without side
+// effects.
+func (s *ManagedCodexService) Delete(sessionID string, epoch int64) error {
+	rec, ok := s.reg.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("managed session not found")
+	}
+	if rec.Epoch != epoch {
+		return fmt.Errorf("stale session epoch")
+	}
+	if !rec.Exited {
+		return fmt.Errorf("managed session is not terminal: stop or kill it first")
+	}
+	s.mu.Lock()
+	rt := s.runtimes[sessionID]
+	delete(s.runtimes, sessionID)
+	s.mu.Unlock()
+	if rt != nil && rt.events != nil {
+		rt.events.close()
+	}
+	s.reg.Remove(sessionID)
+	return nil
 }
 
 // CreateDetached is the production managed launch: verify pinned identity →

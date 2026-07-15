@@ -202,6 +202,69 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
+// managedLifecycleRequest is the SP0.5-C lifecycle body: the exact epoch
+// binding only. Unknown fields fail closed.
+type managedLifecycleRequest struct {
+	Epoch int64 `json:"epoch"`
+}
+
+func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64) error) {
+	if h.Managed == nil {
+		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
+		return
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	dec.DisallowUnknownFields()
+	var req managedLifecycleRequest
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "malformed lifecycle body", http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	if err := op(id, req.Epoch); err != nil {
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	// Bounded post-op state: the record for stop/kill; a tombstone for delete.
+	w.Header().Set("Content-Type", "application/json")
+	if rec, ok := h.Managed.Registry().Get(id); ok {
+		json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "deleted"})
+}
+
+// HandleManagedSessionStop — POST /api/managed-sessions/{id}/stop {epoch}.
+func (h *Handlers) HandleManagedSessionStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.handleManagedLifecycle(w, r, h.Managed.Stop)
+}
+
+// HandleManagedSessionKill — POST /api/managed-sessions/{id}/kill {epoch}.
+func (h *Handlers) HandleManagedSessionKill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.handleManagedLifecycle(w, r, h.Managed.Kill)
+}
+
+// HandleManagedSessionDelete — DELETE /api/managed-sessions/{id} {epoch}.
+func (h *Handlers) HandleManagedSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.handleManagedLifecycle(w, r, h.Managed.Delete)
+}
+
 // appendManagedRows appends managed-session rows built directly from the
 // owned registry to the /api/sessions response. Managed identity is
 // authoritative: any snapshot row that collides with a managed canonical ID
