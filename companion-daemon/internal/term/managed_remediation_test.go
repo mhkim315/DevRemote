@@ -82,9 +82,35 @@ func runtimesLen(s *ManagedCodexService) int {
 	return len(s.runtimes)
 }
 
-// TestManagedCreate_ShutdownRace_PostSpawn: shutdown wins between spawn and
-// publication — the create observes closing, kills + reaps its OWN child,
-// returns fail-closed, and leaves no record and no runtime.
+func leasesLen(s *ManagedCodexService) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.leases)
+}
+
+// assertDrainedShutdownState asserts the Shutdown success postconditions:
+// no in-flight create, empty runtime map, closed registry, no records.
+func assertDrainedShutdownState(t *testing.T, managed *ManagedCodexService) {
+	t.Helper()
+	if n := leasesLen(managed); n != 0 {
+		t.Fatalf("%d in-flight creates after shutdown returned", n)
+	}
+	if n := runtimesLen(managed); n != 0 {
+		t.Fatalf("runtime map has %d entries after shutdown returned", n)
+	}
+	if n := len(managed.Registry().List()); n != 0 {
+		t.Fatalf("registry has %d records after shutdown returned", n)
+	}
+	if managed.Registry().Register(testRecord("codex_app_server:post", 99)) == nil {
+		t.Fatal("registry not closed after shutdown returned")
+	}
+}
+
+// TestManagedCreate_ShutdownRace_PostSpawn: a create parked between spawn and
+// publication holds an open in-flight lease. Shutdown must (a) NOT return
+// while that lease is open, (b) cancel-kill the spawned child even before the
+// create resumes, and (c) return only after the create rolled back — so a
+// successful Shutdown never leaves a POKIT-spawned child alive.
 func TestManagedCreate_ShutdownRace_PostSpawn(t *testing.T) {
 	fl := &fakeLauncher{handler: happyAppServer("thread-R1")}
 	managed := newTestManagedService(fl)
@@ -105,34 +131,46 @@ func TestManagedCreate_ShutdownRace_PostSpawn(t *testing.T) {
 	}()
 	<-reached // the child exists, but is not yet published
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := managed.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-	close(release) // resume the create
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- managed.Shutdown(ctx) }()
 
+	// The lease cancel must kill the unpublished child WITHOUT waiting for
+	// the create goroutine to resume.
+	select {
+	case <-fl.procs[0].killed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not cancel the spawned-but-unpublished child")
+	}
+	// Shutdown must NOT have returned: the in-flight create is still open.
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown returned (%v) while a create was still in flight", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release) // resume the create — it must roll back and fail closed
 	err := <-errCh
 	if err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("create err = %v, want fail-closed shutting-down", err)
 	}
+	// Only now may Shutdown return, and it must return clean.
 	select {
-	case <-fl.procs[0].killed:
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("in-flight child survived daemon shutdown")
+		t.Fatal("shutdown did not return after the in-flight create drained")
 	}
-	if n := len(managed.Registry().List()); n != 0 {
-		t.Fatalf("registry has %d records after raced create", n)
-	}
-	if n := runtimesLen(managed); n != 0 {
-		t.Fatalf("runtime map has %d entries after raced create", n)
-	}
+	assertDrainedShutdownState(t, managed)
 }
 
-// TestManagedCreate_ShutdownRace_PostRegister: shutdown wins after the record
-// is registered and the child is published — the snapshot MUST own the child
-// (killed + reaped), the resumed create fails closed and rolls the record
-// back, and nothing stays current.
+// TestManagedCreate_ShutdownRace_PostRegister: shutdown races a create whose
+// child is registered and published — the snapshot owns the child (killed
+// immediately), Shutdown still waits for the create's lease, and the resumed
+// create rolls the record back before Shutdown returns.
 func TestManagedCreate_ShutdownRace_PostRegister(t *testing.T) {
 	fl := &fakeLauncher{handler: happyAppServer("thread-R2")}
 	managed := newTestManagedService(fl)
@@ -153,16 +191,23 @@ func TestManagedCreate_ShutdownRace_PostRegister(t *testing.T) {
 	}()
 	<-reached // registered + published, certification turn not yet started
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := managed.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-	// Shutdown's snapshot owned the published child: already killed + reaped.
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- managed.Shutdown(ctx) }()
+
+	// Shutdown's snapshot owns the published child: killed without waiting
+	// for the create to resume.
 	select {
 	case <-fl.procs[0].killed:
-	default:
-		t.Fatal("published child not found by shutdown snapshot")
+	case <-time.After(2 * time.Second):
+		t.Fatal("published child not killed by shutdown snapshot")
+	}
+	// But Shutdown must still be waiting on the open lease.
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown returned (%v) while a create was still in flight", err)
+	case <-time.After(150 * time.Millisecond):
 	}
 
 	close(release) // resume: turn/start write must fail on the dead child
@@ -170,12 +215,47 @@ func TestManagedCreate_ShutdownRace_PostRegister(t *testing.T) {
 	if err == nil {
 		t.Fatal("create succeeded across shutdown")
 	}
-	if n := len(managed.Registry().List()); n != 0 {
-		t.Fatalf("registry has %d records after raced create (record not rolled back)", n)
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not return after the in-flight create drained")
 	}
-	if n := runtimesLen(managed); n != 0 {
-		t.Fatalf("runtime map has %d entries after raced create", n)
+	assertDrainedShutdownState(t, managed)
+}
+
+// TestManagedShutdown_BoundedWhenCreateNeverResumes: a pathologically stuck
+// create cannot block shutdown forever — the ctx bound expires with an error
+// (honest partial: the child is killed but the caller learns the drain did
+// not complete).
+func TestManagedShutdown_BoundedWhenCreateNeverResumes(t *testing.T) {
+	fl := &fakeLauncher{handler: happyAppServer("thread-R4")}
+	managed := newTestManagedService(fl)
+
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	managed.createBarrier = func(stage string) {
+		if stage == "post-spawn" {
+			close(reached)
+			<-release
+		}
 	}
+	go func() { _, _ = managed.CreateDetached("") }()
+	<-reached
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := managed.Shutdown(ctx); err == nil {
+		t.Fatal("shutdown reported clean drain while a create was stuck")
+	}
+	select {
+	case <-fl.procs[0].killed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stuck create's child not killed")
+	}
+	close(release)
 }
 
 // TestManagedCreate_AfterShutdown_FailsBeforeSpawn: once shutdown began, a

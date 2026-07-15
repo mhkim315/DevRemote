@@ -297,6 +297,47 @@ func (rt *codexManagedRuntime) stop() {
 	_ = rt.proc.Wait()
 }
 
+// inflightCreate is a service-owned lease for one CreateDetached call. It is
+// registered BEFORE verify/spawn and released on every create exit path, so
+// Shutdown can (a) cancel the lease's child even before publication and
+// (b) wait until every in-flight create has rolled back or published.
+type inflightCreate struct {
+	mu        sync.Mutex
+	proc      managedProcess // nil until spawned
+	cancelled bool
+}
+
+// setProc hands the spawned child to the lease. Returns false when the lease
+// was already cancelled by Shutdown — the caller then owns the rollback.
+func (c *inflightCreate) setProc(p managedProcess) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancelled {
+		return false
+	}
+	c.proc = p
+	return true
+}
+
+func (c *inflightCreate) isCancelled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cancelled
+}
+
+// cancel marks the lease cancelled and kills its child if one was spawned.
+// Reaping stays with the create's own rollback path (or with Shutdown's
+// bounded wait for published children).
+func (c *inflightCreate) cancel() {
+	c.mu.Lock()
+	p := c.proc
+	c.cancelled = true
+	c.mu.Unlock()
+	if p != nil {
+		_ = p.Kill()
+	}
+}
+
 // ── Service (composition-root owned) ──
 
 // ManagedCodexService owns the launcher, the owned-session registry, the
@@ -309,10 +350,12 @@ type ManagedCodexService struct {
 	handshakeTimeout time.Duration
 	reg              *ManagedSessionRegistry
 
-	mu       sync.Mutex
-	closing  bool // set once by Shutdown; new/in-flight creates fail closed
-	gen      int64
-	runtimes map[string]*codexManagedRuntime
+	mu        sync.Mutex
+	closing   bool // set once by Shutdown; new/in-flight creates fail closed
+	leases    map[*inflightCreate]struct{}
+	leaseCond *sync.Cond // broadcast on every lease release (guards: mu)
+	gen       int64
+	runtimes  map[string]*codexManagedRuntime
 
 	// pumpObserver is a NARROW test seam (nil in production) copied onto each
 	// runtime before its pump starts.
@@ -336,14 +379,39 @@ func NewManagedCodexService(cfg CodexAppServerEntryConfig, launcher managedLaunc
 	if launcher == nil {
 		launcher = execLauncher{}
 	}
-	return &ManagedCodexService{
+	s := &ManagedCodexService{
 		cfg:              cfg,
 		launcher:         launcher,
 		verify:           cfg.Verify,
 		handshakeTimeout: managedHandshakeTimeout,
 		reg:              NewManagedSessionRegistry(maxManagedSessions),
+		leases:           make(map[*inflightCreate]struct{}),
 		runtimes:         make(map[string]*codexManagedRuntime),
 	}
+	s.leaseCond = sync.NewCond(&s.mu)
+	return s
+}
+
+// beginLease registers an in-flight create BEFORE verify/spawn. Fails closed
+// once shutdown has begun.
+func (s *ManagedCodexService) beginLease() (*inflightCreate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return nil, fmt.Errorf("managed codex service is shutting down")
+	}
+	lease := &inflightCreate{}
+	s.leases[lease] = struct{}{}
+	return lease, nil
+}
+
+// endLease releases an in-flight create on every exit path and wakes a
+// waiting Shutdown.
+func (s *ManagedCodexService) endLease(lease *inflightCreate) {
+	s.mu.Lock()
+	delete(s.leases, lease)
+	s.mu.Unlock()
+	s.leaseCond.Broadcast()
 }
 
 // Registry exposes the owned-session registry for the read-only REST surface.
@@ -355,37 +423,50 @@ func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg 
 // Every failure before the pump kills and reaps the child and leaves no
 // visible session.
 //
-// Linearization with Shutdown: s.mu guarding {closing, runtimes} is the single
-// transition point. The spawned child handle is PUBLISHED into s.runtimes in
-// the same critical section that re-checks closing, before any post-spawn I/O
-// — so either Shutdown's snapshot owns the child, or this create observes
-// closing and rolls its own child back. No lock is held across external I/O.
+// Linearization with Shutdown: a service-owned in-flight lease is registered
+// BEFORE verify/spawn, and s.mu guarding {closing, leases, runtimes} is the
+// single transition point. Shutdown cancels every lease (killing a spawned
+// child even before publication) and waits — bounded by the caller's ctx —
+// until every in-flight create has rolled back or published. No lock is held
+// across external I/O.
 func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
 	}
-	// Fail closed before any spawn once shutdown has begun.
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		return "", fmt.Errorf("managed codex service is shutting down")
+	// In-flight lease before any external I/O; fail closed once shutdown began.
+	lease, err := s.beginLease()
+	if err != nil {
+		return "", err
 	}
-	s.mu.Unlock()
+	defer s.endLease(lease)
 
 	if err := s.verify(); err != nil {
 		return "", fmt.Errorf("managed codex verify: %w", err)
 	}
+	// Shutdown cancellation received during verify: never spawn.
+	if lease.isCancelled() {
+		return "", fmt.Errorf("managed codex service is shutting down")
+	}
 	proc, err := s.launcher.Launch(s.cfg.Bin, []string{"app-server", "--stdio"})
 	if err != nil {
 		return "", fmt.Errorf("managed codex launch: %w", err)
+	}
+	// Hand the child to the lease: from here Shutdown can kill it directly.
+	if !lease.setProc(proc) {
+		// Shutdown cancelled the lease while we were spawning — we own the
+		// rollback of this never-visible child.
+		_ = proc.Kill()
+		_ = proc.Wait()
+		return "", fmt.Errorf("managed codex service is shutting down")
 	}
 	s.barrier("post-spawn")
 
 	id := fmt.Sprintf("%s:%s", codexAppServerAdapter, genLocalID("codex-app"))
 	s.mu.Lock()
 	if s.closing {
-		// Shutdown won the race while we were spawning: the snapshot cannot
-		// see this child, so we own the rollback.
+		// Shutdown won the race while we were spawning: it may not have seen
+		// the child in the runtime map, but our open lease keeps Shutdown
+		// waiting until this rollback completes.
 		s.mu.Unlock()
 		_ = proc.Kill()
 		_ = proc.Wait()
@@ -444,15 +525,23 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 }
 
 // Shutdown performs the single closing transition: under s.mu it sets closing
-// (new and in-flight creates fail closed before/at publication) and snapshots
-// every published child. It then closes the registry (late pump events and
-// late registrations are rejected) and kills + reaps every owned child with
-// the caller's bounded deadline. The composition root stops IPC accepting
-// BEFORE calling this, so no new create requests arrive; any handler goroutine
-// already past accept is covered by the closing state.
+// (new creates fail closed at the lease boundary), snapshots every published
+// child, and collects the open in-flight leases. It then closes the registry
+// (late pump events and late registrations are rejected), cancels every lease
+// — killing a spawned child even before publication — kills every published
+// child, and waits, bounded by ctx, until (a) every published child is reaped
+// AND (b) every in-flight create has rolled back or failed closed (lease
+// count zero). On a nil return: no POKIT-spawned child survives, the runtime
+// map and lease set are empty, and the registry is closed. The composition
+// root stops IPC accepting BEFORE calling this; a handler goroutine already
+// past accept is drained by the lease wait.
 func (s *ManagedCodexService) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.closing = true
+	leases := make([]*inflightCreate, 0, len(s.leases))
+	for l := range s.leases {
+		leases = append(leases, l)
+	}
 	rts := make([]*codexManagedRuntime, 0, len(s.runtimes))
 	for _, rt := range s.runtimes {
 		rts = append(rts, rt)
@@ -462,20 +551,31 @@ func (s *ManagedCodexService) Shutdown(ctx context.Context) error {
 
 	s.reg.Close()
 
+	for _, l := range leases {
+		l.cancel() // kills spawned-but-unpublished children; marks the rest
+	}
 	for _, rt := range rts {
 		_ = rt.proc.Kill()
 	}
+
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for _, rt := range rts {
-			_ = rt.proc.Wait()
+			_ = rt.proc.Wait() // reap published children
 		}
-		close(done)
+		// Drain in-flight creates: each rolls back (kill+reap its own child)
+		// or fails closed, then releases its lease.
+		s.mu.Lock()
+		for len(s.leases) > 0 {
+			s.leaseCond.Wait()
+		}
+		s.mu.Unlock()
 	}()
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("managed codex shutdown reap: %w", ctx.Err())
+		return fmt.Errorf("managed codex shutdown drain: %w", ctx.Err())
 	}
 }
