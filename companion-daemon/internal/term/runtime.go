@@ -62,6 +62,10 @@ type Handlers struct {
 	// ApprovalDelivery is the dedicated daemon-owned approval delivery boundary
 	// (never the generic CommandBroker). nil ⇒ the unavailable boundary.
 	ApprovalDelivery ApprovalDelivery
+	// Managed is the SP0 native managed-session service (nil unless
+	// EnableManagedCodex). REST reads managed rows/status DIRECTLY from its
+	// owned registry — never through adapter discovery or telemetry.
+	Managed *ManagedCodexService
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

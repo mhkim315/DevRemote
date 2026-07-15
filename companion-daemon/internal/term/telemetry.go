@@ -339,12 +339,12 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.Telemetry != nil {
 		snapshot := mergeLifecycleState(h.Telemetry.Snapshot(reg), h.Lifecycle, reg)
-		json.NewEncoder(w).Encode(snapshot)
+		json.NewEncoder(w).Encode(appendManagedRows(snapshot, h.Managed))
 		return
 	}
 	// Fallback without telemetry service (e.g. tests).
 	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.Events, h.AgentDetector), h.Lifecycle, reg)
-	json.NewEncoder(w).Encode(res)
+	json.NewEncoder(w).Encode(appendManagedRows(res, h.Managed))
 }
 
 // normalizeEventType maps legacy parser types + summary hints to common AgentEventType.

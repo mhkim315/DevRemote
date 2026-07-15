@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -34,6 +36,46 @@ func TestBuildRunCreateRequest_DetachCodexStructured(t *testing.T) {
 	}
 	if _, hasProfile := multi["profileId"]; hasProfile {
 		t.Fatalf("multi-token request must not carry profileId: %v", multi)
+	}
+}
+
+// TestManagedNativeStatusRoute_Authenticated: the SP0 read route is wired
+// behind production auth. In remote mode an anonymous request is rejected by
+// the device-principal gate; in insecure-local mode the dev token reaches the
+// handler (404 for an unknown managed id — not an auth error).
+func TestManagedNativeStatusRoute_Authenticated(t *testing.T) {
+	// Remote (production) mode: device bearer required.
+	remote, err := NewAppWithDeps(Config{EnableManagedCodex: true}, testDeps())
+	if err != nil {
+		t.Fatalf("NewAppWithDeps(remote): %v", err)
+	}
+	remoteSrv := httptest.NewServer(remote.server.Handler)
+	defer remoteSrv.Close()
+	resp, err := http.Get(remoteSrv.URL + "/api/sessions/codex_app_server:x/native-status")
+	if err != nil {
+		t.Fatalf("anon get: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("remote anonymous status = %d, want 401", resp.StatusCode)
+	}
+
+	// Insecure-local mode: dev token reaches the handler.
+	local, err := NewAppWithDeps(Config{InsecureLocalOnly: true, EnableManagedCodex: true}, testDeps())
+	if err != nil {
+		t.Fatalf("NewAppWithDeps(local): %v", err)
+	}
+	localSrv := httptest.NewServer(local.server.Handler)
+	defer localSrv.Close()
+	req, _ := http.NewRequest("GET", localSrv.URL+"/api/sessions/codex_app_server:x/native-status", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("auth get: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("authenticated status = %d, want 404 for unknown id", resp2.StatusCode)
 	}
 }
 

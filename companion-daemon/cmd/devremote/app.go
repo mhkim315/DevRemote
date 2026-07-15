@@ -228,7 +228,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
-		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit}
+		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed}
 	// A1 R3-C: the production approval delivery boundary is the generation-owned
 	// gate. No provider delivery channel is proven, so no sink is registered and the
 	// gate accepts nothing (returns `unavailable`, writes no bytes); the gate is wired
@@ -272,6 +272,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
 		serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
+		serveMux.HandleFunc("GET /api/sessions/{id}/native-status", h.AuthMiddleware(h.HandleManagedNativeStatus))
 		serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
@@ -304,6 +305,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, term.HandleSessionProfiles, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleApprovalAction, devicetrust.PermTerminalInput))
+		serveMux.HandleFunc("GET /api/sessions/{id}/native-status",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedNativeStatus, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("GET /api/v2/links",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/v2/links",
