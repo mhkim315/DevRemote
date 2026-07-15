@@ -201,6 +201,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		} else {
 			managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil)
 		}
+		// SP1-P1: wire the approval store as the NON-ACTIONABLE observation
+		// sink (records with zero options; capacity stays zero; no CTA).
+		managed.SetApprovalStore(approvals)
 	}
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is

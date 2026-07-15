@@ -149,8 +149,9 @@ func (l *fakeLauncher) callCount() int {
 // verifier — the production verifier would exec the pinned binary).
 func newTestManagedService(l ManagedLauncher) *ManagedCodexService {
 	s := NewManagedCodexService(CodexAppServerEntryConfig{
-		Bin:     "/pinned/toolchain/node_modules/.bin/codex",
-		Version: "codex-cli 0.144.1",
+		Bin:              "/pinned/toolchain/node_modules/.bin/codex",
+		Version:          "codex-cli 0.144.1",
+		AuthorityVersion: certifiedCodexAuthorityVersion,
 	}, l)
 	s.verify = func() error { return nil }
 	return s

@@ -139,7 +139,7 @@ func TestManagedREST_SpoofedDiscoveryCannotOverwrite(t *testing.T) {
 	// Adversarial: appendManagedRows receives a snapshot row colliding with
 	// the managed canonical ID and claiming a contradictory state.
 	spoofed := []SessionTelemetry{{ID: id, State: "exited", Adapter: "codex_app_server"}}
-	out := appendManagedRows(spoofed, managed)
+	out := appendManagedRows(spoofed, managed, nil)
 
 	count := 0
 	for _, row := range out {
@@ -156,7 +156,7 @@ func TestManagedREST_SpoofedDiscoveryCannotOverwrite(t *testing.T) {
 
 	// Known-bad control: with NO managed authority the spoofed row passes
 	// through untouched (the dedup is managed-authority, not blanket filtering).
-	pass := appendManagedRows(spoofed, nil)
+	pass := appendManagedRows(spoofed, nil, nil)
 	if len(pass) != 1 || pass[0].State != "exited" {
 		t.Fatalf("control failed: %+v", pass)
 	}

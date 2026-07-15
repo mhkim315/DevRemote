@@ -156,6 +156,15 @@ type codexManagedRuntime struct {
 	// exited is closed at the end of the pump (child EOF + MarkExited + reap
 	// started) so lifecycle operations can wait deterministically.
 	exited chan struct{}
+	// SP1-P1: bounded PRIVATE pending provider approval requests, owned by the
+	// pump under turnMu; approvalRejects counts totally-rejected observations
+	// (internal diagnostics only). approvals is the non-actionable ingest sink
+	// (nil ⇒ observation only); authorityVersion is the pinned grammar-valid
+	// canonical version, never the display string.
+	pendingApprovals map[int64]pendingProviderRequest
+	approvalRejects  int
+	approvals        *AuthoritativeApprovalStore
+	authorityVersion string
 	// observer is a NARROW test seam (nil in production): called once per
 	// pumped provider message that carries a method, so deterministic tests
 	// can prove a crafted message was consumed WITHOUT affecting status.
@@ -165,7 +174,8 @@ type codexManagedRuntime struct {
 func newCodexManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
 	sc := bufio.NewScanner(proc.Stdout())
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{})}
+	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{}),
+		pendingApprovals: make(map[int64]pendingProviderRequest)}
 }
 
 // send writes one JSON-RPC object as a JSONL line.
@@ -180,9 +190,12 @@ func (rt *codexManagedRuntime) send(obj map[string]any) error {
 	return err
 }
 
-// readNext returns the next parseable JSON object from the child's stdout.
-// Malformed lines are skipped — they can never influence status.
-func (rt *codexManagedRuntime) readNext() (map[string]any, error) {
+// readNext returns the next parseable JSON object from the child's stdout,
+// plus the raw line it was decoded from. The raw slice aliases the scanner
+// buffer and is valid ONLY until the next readNext call — a consumer that
+// retains anything must copy. Malformed lines are skipped — they can never
+// influence status.
+func (rt *codexManagedRuntime) readNext() (map[string]any, []byte, error) {
 	for rt.scanner.Scan() {
 		line := bytes.TrimSpace(rt.scanner.Bytes())
 		if len(line) == 0 {
@@ -192,19 +205,19 @@ func (rt *codexManagedRuntime) readNext() (map[string]any, error) {
 		if err := json.Unmarshal(line, &m); err != nil {
 			continue
 		}
-		return m, nil
+		return m, line, nil
 	}
 	if err := rt.scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return nil, io.EOF
+	return nil, nil, io.EOF
 }
 
 // awaitResult reads until the response for the given request id arrives.
 // A JSON-RPC error response fails the call.
 func (rt *codexManagedRuntime) awaitResult(id int64) (map[string]any, error) {
 	for {
-		m, err := rt.readNext()
+		m, _, err := rt.readNext()
 		if err != nil {
 			return nil, err
 		}
@@ -315,7 +328,7 @@ func turnIDOf(params map[string]any) string {
 // record exited and reaps the child.
 func (rt *codexManagedRuntime) pump() {
 	for {
-		m, err := rt.readNext()
+		m, raw, err := rt.readNext()
 		if err != nil {
 			break
 		}
@@ -363,12 +376,14 @@ func (rt *codexManagedRuntime) pump() {
 			}
 		case "turn/completed":
 			// Only the EXACT current turn's completion returns us to idle;
-			// a stale/duplicate/wrong-turn completion is inert.
+			// a stale/duplicate/wrong-turn completion is inert. Completion
+			// also drops the turn's pending approval observations (SP1-P1).
 			rt.turnMu.Lock()
 			match := rt.turnActive && turnID != "" && turnID == rt.currentTurn
 			if match {
 				rt.turnActive = false
 				rt.currentTurn = ""
+				rt.clearPendingForTurnLocked(turnID)
 			}
 			rt.turnMu.Unlock()
 			if match {
@@ -391,14 +406,28 @@ func (rt *codexManagedRuntime) pump() {
 					rt.appendEvent(ManagedEventAssistant, boundUTF8(text, managedEventTextMax))
 				}
 			}
+		case codexApprovalMethod:
+			// SP1-P1: strict structured NON-ACTIONABLE observation. The raw
+			// line (not the float64 map) carries the lossless top-level id.
+			rt.observeApprovalRequest(raw)
+		case codexResolvedMethod:
+			// SP1-P1: provider-side resolution drops the pending observation
+			// only — no commit, no success, no provider write.
+			rt.observeApprovalResolved(raw)
 		}
 	}
 	rt.turnMu.Lock()
 	rt.turnActive = false
 	rt.currentTurn = ""
 	rt.turnClosed = true
+	rt.pendingApprovals = make(map[int64]pendingProviderRequest)
 	rt.turnMu.Unlock()
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
+	// SP1-P1: child exit invalidates the session's (non-actionable) approval
+	// records — a dead runtime leaves no pending approval display behind.
+	if rt.approvals != nil {
+		rt.approvals.InvalidateSession(rt.sessionID, "managed child exited")
+	}
 	rt.appendEvent(ManagedEventExited, "")
 	close(rt.exited)
 	_ = rt.proc.Wait() // reap
@@ -514,6 +543,9 @@ type ManagedCodexService struct {
 	leaseCond *sync.Cond // broadcast on every lease release (guards: mu)
 	gen       int64
 	runtimes  map[string]*codexManagedRuntime
+	// approvals is the SP1-P1 non-actionable ingest sink, wired once by the
+	// composition root before any create (nil ⇒ observation only).
+	approvals *AuthoritativeApprovalStore
 
 	// pumpObserver is a NARROW test seam (nil in production) copied onto each
 	// runtime before its pump starts.
@@ -579,8 +611,9 @@ func (s *ManagedCodexService) endLease(lease *inflightCreate) {
 // pinned Verify).
 func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error) *ManagedCodexService {
 	s := NewManagedCodexService(CodexAppServerEntryConfig{
-		Bin:     "/pinned/test/node_modules/.bin/codex",
-		Version: "codex-cli 0.144.1",
+		Bin:              "/pinned/test/node_modules/.bin/codex",
+		Version:          "codex-cli 0.144.1",
+		AuthorityVersion: certifiedCodexAuthorityVersion,
 	}, launcher)
 	if verify != nil {
 		s.verify = verify
@@ -590,6 +623,16 @@ func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error
 
 // Registry exposes the owned-session registry for the read-only REST surface.
 func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg }
+
+// SetApprovalStore wires the authoritative approval store as the SP1-P1
+// NON-ACTIONABLE observation sink. Called once by the composition root before
+// any create. It grants no delivery capacity, no options, and no CTA — every
+// ingested record is Actionable=false with zero options.
+func (s *ManagedCodexService) SetApprovalStore(store *AuthoritativeApprovalStore) {
+	s.mu.Lock()
+	s.approvals = store
+	s.mu.Unlock()
+}
 
 // SubmitPrompt is the ONLY prompt entry (local IPC and mobile REST). It
 // validates bounds, binds exact SessionID + current epoch against the live
@@ -735,11 +778,16 @@ func (s *ManagedCodexService) Delete(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
 	delete(s.runtimes, sessionID)
+	approvals := s.approvals
 	s.mu.Unlock()
 	if rt != nil && rt.events != nil {
 		rt.events.close()
 	}
 	s.reg.Remove(sessionID)
+	// SP1-P1: the session's approval records are dropped with the session.
+	if approvals != nil {
+		approvals.Clear(sessionID)
+	}
 	return nil
 }
 
@@ -813,6 +861,10 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	rt := newCodexManagedRuntime(proc, epoch, s.reg)
 	rt.sessionID = id
 	rt.events = newManagedEventStore(id, epoch)
+	// SP1-P1: copy the observation sink + pinned authority version onto the
+	// runtime before its pump can start.
+	rt.approvals = s.approvals
+	rt.authorityVersion = s.cfg.AuthorityVersion
 	s.runtimes[id] = rt // published: from here Shutdown always finds the child
 	s.mu.Unlock()
 

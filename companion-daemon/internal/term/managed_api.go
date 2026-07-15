@@ -287,8 +287,10 @@ func (h *Handlers) HandleManagedSessionDelete(w http.ResponseWriter, r *http.Req
 // owned registry to the /api/sessions response. Managed identity is
 // authoritative: any snapshot row that collides with a managed canonical ID
 // (e.g. a spoofed discovery adapter) is dropped so contradictory observer
-// evidence can never overwrite or shadow the managed status.
-func appendManagedRows(snapshot []SessionTelemetry, managed *ManagedCodexService) []SessionTelemetry {
+// evidence can never overwrite or shadow the managed status. SP1-P1: managed
+// rows carry the existing bounded SafeApprovalDTO projection (non-actionable,
+// zero options) — no second approval DTO or CTA surface is created.
+func appendManagedRows(snapshot []SessionTelemetry, managed *ManagedCodexService, approvals *AuthoritativeApprovalStore) []SessionTelemetry {
 	if managed == nil {
 		return snapshot
 	}
@@ -309,6 +311,10 @@ func appendManagedRows(snapshot []SessionTelemetry, managed *ManagedCodexService
 		out = append(out, row)
 	}
 	for _, rec := range recs {
+		var safe []SafeApprovalDTO
+		if approvals != nil {
+			safe = approvals.ListSafe(rec.SessionID)
+		}
 		out = append(out, SessionTelemetry{
 			ID:          rec.SessionID,
 			DisplayID:   strings.TrimPrefix(rec.SessionID, codexAppServerAdapter+":"),
@@ -319,6 +325,7 @@ func appendManagedRows(snapshot []SessionTelemetry, managed *ManagedCodexService
 			AgentKind:   rec.Provider,
 			AgentStatus: string(rec.NativeStatus),
 			Events:      []models.AgentEvent{},
+			Approvals:   safe,
 		})
 	}
 	return out

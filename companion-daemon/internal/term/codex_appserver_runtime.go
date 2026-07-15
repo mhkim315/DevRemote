@@ -17,12 +17,16 @@ import (
 
 // CodexAppServerEntryConfig holds the pinned provider identity.
 type CodexAppServerEntryConfig struct {
-	Bin        string
-	Version    string
-	ShimPath   string
-	ShimSHA    string
-	NativePath string
-	NativeSHA  string
+	Bin     string
+	Version string // display version string (e.g. "codex-cli 0.144.1"); NEVER authority
+	// AuthorityVersion is the ONE grammar-valid canonical version used as
+	// runtime/approval authority (SP1 §3). It is compared exactly against the
+	// certified value; the display Version is never compared as authority.
+	AuthorityVersion string
+	ShimPath         string
+	ShimSHA          string
+	NativePath       string
+	NativeSHA        string
 }
 
 // PinnedConfig0x144 returns the CP0-accepted pinned identity for the exact
@@ -32,12 +36,13 @@ func PinnedConfig0x144() CodexAppServerEntryConfig {
 	home, _ := os.UserHomeDir()
 	p := filepath.Join(home, ".pokit-cp0-toolchain")
 	return CodexAppServerEntryConfig{
-		Bin:        filepath.Join(p, "node_modules", ".bin", "codex"),
-		Version:    "codex-cli 0.144.1",
-		ShimPath:   filepath.Join(p, "node_modules", "@openai", "codex", "bin", "codex.js"),
-		ShimSHA:    "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
-		NativePath: filepath.Join(p, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex"),
-		NativeSHA:  "29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a",
+		Bin:              filepath.Join(p, "node_modules", ".bin", "codex"),
+		Version:          "codex-cli 0.144.1",
+		AuthorityVersion: certifiedCodexAuthorityVersion,
+		ShimPath:         filepath.Join(p, "node_modules", "@openai", "codex", "bin", "codex.js"),
+		ShimSHA:          "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+		NativePath:       filepath.Join(p, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex"),
+		NativeSHA:        "29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a",
 	}
 }
 
