@@ -170,7 +170,9 @@ func (s *deliverySession) launchTurn(t *testing.T) {
 func newDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
 	t.Helper()
 	s := buildDeliverySession(t, autoResolve)
-	s.managed.SetApprovalStore(s.store)
+	if err := s.managed.SetApprovalStore(s.store); err != nil {
+		t.Fatalf("set approval store: %v", err)
+	}
 	s.launchTurn(t)
 	return s
 }

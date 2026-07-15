@@ -201,9 +201,16 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		} else {
 			managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil)
 		}
-		// SP1-P1: wire the approval store as the NON-ACTIONABLE observation
-		// sink (records with zero options; capacity stays zero; no CTA).
-		managed.SetApprovalStore(approvals)
+		// SP1-P1/P2B-R1: configure the ONE canonical approval store. The store
+		// is immutable after configuration/installation/first runtime; a
+		// service whose store cannot be owned by this composition (a foreign
+		// pre-configured store, a pre-existing runtime, a pre-installed
+		// activation) is refused — the App is NOT built, so a diverging
+		// handler/ingest store pair or an unowned actionable capability can
+		// never run.
+		if err := managed.SetApprovalStore(approvals); err != nil {
+			return nil, fmt.Errorf("managed approval store: %w", err)
+		}
 	}
 
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
@@ -252,14 +259,18 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// SP1-P2B: the ONE production-owned activation transition for the managed
 	// Codex runtime. On success the certified delivery boundary and the
 	// current-runtime resolver are wired together with actionable ingestion
-	// (which the install enabled atomically); on ANY failure everything stays
-	// off — the capacity-0 gate remains the only delivery boundary, RuntimeOf
-	// stays unwired, and managed ingestion remains the accepted P1
-	// non-actionable observation.
+	// (which the install enabled atomically). P2B-R1: an install failure is
+	// tolerated ONLY when the service is provably observation-only (store
+	// canonically owned above, activation off) — e.g. a non-certified
+	// authority version, whose observation path also rejects everything. If
+	// the service reports an installed activation this composition does not
+	// own, the App is NOT built.
 	if managed != nil {
 		if codexDelivery, runtimeOf, err := managed.InstallApprovalExecution(approvals); err == nil {
 			h.ApprovalDelivery = term.NewDispatchingApprovalDelivery(codexDelivery, gateDelivery)
 			h.RuntimeOf = runtimeOf
+		} else if managed.ApprovalExecutionInstalled() {
+			return nil, fmt.Errorf("managed approval execution: unowned activation: %w", err)
 		} else {
 			log.Printf("Managed approval execution not installed (observation only): %v", err)
 		}

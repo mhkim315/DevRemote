@@ -128,3 +128,35 @@ item.
 Focused race-enabled checkpoint: `go build ./...`, `go vet ./...`,
 `go test -race ./internal/term ./cmd/devremote -count=1`, new/updated
 suites `-count=20`.
+
+## 8. R1 amendments (reviewer blocker on 4dd2a7d, remediated)
+
+**Blocker**: `SetApprovalStore` could replace the store at any time, and a
+pre-installed injected service surviving an install error could mint
+actionable records without handler authority (partial activation via store
+divergence). Remediation:
+
+1. **Canonical-store immutability**: `SetApprovalStore` now returns an error
+   and refuses any change after a store is configured (a DIFFERENT store is
+   never accepted; the same store is an idempotent no-op), after the
+   activation installed, after the first runtime/generation exists, and
+   after shutdown began. `InstallApprovalExecution` additionally requires the
+   configured store to be the SAME canonical store it installs — the handler
+   store, the runtime ingest store, and the installed delivery authority can
+   never diverge. All transitions share the service mutex: concurrent
+   configure/install races admit exactly ONE winner (proven under -race).
+2. **Composition fail-fast**: `NewAppWithDeps` FAILS (no App is built) when
+   the managed service cannot be canonically owned — a configure error
+   (foreign store, pre-existing runtime, pre-installed activation) or an
+   install error on a service that reports an installed activation. The
+   observation-only log fallback remains ONLY for the provably-safe case:
+   store canonically owned, activation off (e.g. a non-certified authority
+   version, whose observation path also rejects everything — proven
+   completely off: zero records, zero claims, zero writes, RuntimeOf false).
+3. **Evidence**: pre-created-runtime / foreign-configured / foreign-installed
+   `deps.Managed` each fail App creation (fresh service control builds);
+   store replacement refused after install and after any runtime, with
+   records continuing to land ONLY in the canonical store; concurrent
+   configure/install single-winner ownership; a rejected second install
+   leaves the first activation fully working and the rejected store empty;
+   the degraded (uncertified-version) service is completely off.

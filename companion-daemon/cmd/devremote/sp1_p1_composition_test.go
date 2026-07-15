@@ -205,77 +205,59 @@ func TestSP1P1_CompositionRequestToSafeDTO(t *testing.T) {
 	}
 }
 
-// TestSP2B_InstallFailureFallsBackToObservation: when the atomic activation
-// transition fails (a runtime already existed before NewAppWithDeps could
-// install), the composition root keeps BOTH capabilities off — the certified
-// request yields a NON-actionable zero-option record and the authenticated
-// action POST fails closed with zero provider response writes.
-func TestSP2B_InstallFailureFallsBackToObservation(t *testing.T) {
-	fl := &sp1FakeLauncher{}
-	f := newRemoteFixtureWith(t, nil, nil, func(cfg *Config, deps *Dependencies) {
-		cfg.EnableManagedCodex = true
+// TestSP2B_UnownedManagedServiceFailsAppCreation (P2B-R1): the composition
+// root REFUSES to build the App when the injected managed service cannot be
+// canonically owned — a pre-existing runtime (store frozen), a foreign
+// pre-configured store, or a foreign pre-installed activation. No App means
+// no route, no actionable DTO, no claim, and no provider write can ever be
+// produced by the unowned state.
+func TestSP2B_UnownedManagedServiceFailsAppCreation(t *testing.T) {
+	build := func(mutateSvc func(svc *term.ManagedCodexService)) error {
+		fl := &sp1FakeLauncher{}
 		svc := term.NewManagedCodexServiceForTest(fl, func() error { return nil })
-		// A runtime created BEFORE the app's activation transition forces
-		// InstallApprovalExecution to fail (activation must precede the
-		// first epoch).
+		mutateSvc(svc)
+		deps := testDeps()
+		deps.Managed = svc
+		app, err := NewAppWithDeps(Config{EnableManagedCodex: true}, deps)
+		if err == nil && app != nil {
+			t.Cleanup(func() { _ = app })
+		}
+		return err
+	}
+
+	// (a) A runtime created before the app: the store is frozen and can
+	// never be configured — the App must not be built.
+	if err := build(func(svc *term.ManagedCodexService) {
 		if _, err := svc.CreateAttached(""); err != nil {
 			t.Fatalf("pre-create: %v", err)
 		}
-		deps.Managed = svc
-	})
-	ownerPriv, ownerID := f.pairDevice(t, "owner-phone")
-	ownerToken := f.token(t, ownerID, ownerPriv)
+	}); err == nil {
+		t.Fatalf("pre-created runtime must fail App creation")
+	}
 
-	// A session created AFTER the (failed) activation: it has the P1
-	// observation sink but NO actionable capability.
-	sessionID, err := f.app.managed.CreateAttached("")
-	if err != nil {
-		t.Fatalf("managed create: %v", err)
+	// (b) A foreign pre-configured store: the app's canonical store cannot
+	// replace it — the App must not be built.
+	if err := build(func(svc *term.ManagedCodexService) {
+		if serr := svc.SetApprovalStore(term.NewApprovalStore()); serr != nil {
+			t.Fatalf("foreign configure: %v", serr)
+		}
+	}); err == nil {
+		t.Fatalf("foreign pre-configured store must fail App creation")
 	}
-	code, body := f.doJSON(t, "POST", "/api/managed-sessions/"+sessionID+"/prompt", ownerToken, `{"epoch":2,"text":"build it"}`)
-	if code != http.StatusOK {
-		t.Fatalf("prompt: code=%d body=%s", code, body)
+
+	// (c) A foreign pre-installed activation: the app neither owns the store
+	// nor the actionable capability — the App must not be built.
+	if err := build(func(svc *term.ManagedCodexService) {
+		if _, _, ierr := svc.InstallApprovalExecution(term.NewApprovalStore()); ierr != nil {
+			t.Fatalf("foreign install: %v", ierr)
+		}
+	}); err == nil {
+		t.Fatalf("foreign pre-installed activation must fail App creation")
 	}
-	type sessionRow struct {
-		ID        string `json:"id"`
-		Approvals []struct {
-			ID         string `json:"id"`
-			Actionable bool   `json:"actionable"`
-			Options    []any  `json:"options"`
-		} `json:"approvals"`
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		code, raw := f.getAll(t, "/api/sessions", ownerToken)
-		if code != http.StatusOK {
-			t.Fatalf("GET /api/sessions code=%d", code)
-		}
-		var rows []sessionRow
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			t.Fatalf("decode sessions: %v", err)
-		}
-		found := false
-		for _, row := range rows {
-			if row.ID != sessionID || len(row.Approvals) == 0 {
-				continue
-			}
-			found = true
-			a := row.Approvals[0]
-			if a.Actionable || len(a.Options) != 0 {
-				t.Fatalf("failed install must leave the record non-actionable: %+v", row.Approvals)
-			}
-			// The authenticated action POST fails closed (409 not_actionable).
-			code, body := f.doJSON(t, "POST", "/api/sessions/"+sessionID+"/approvals/"+a.ID, ownerToken, `{"action":"allow_once","idempotencyKey":"k1"}`)
-			if code != http.StatusConflict {
-				t.Fatalf("action on non-actionable record: code=%d body=%s", code, body)
-			}
-		}
-		if found {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("approval never appeared for %s", sessionID)
-		}
-		time.Sleep(10 * time.Millisecond)
+
+	// Control: a fresh service builds successfully with the activation
+	// installed (proven end-to-end by TestSP1P1_CompositionRequestToSafeDTO).
+	if err := build(func(*term.ManagedCodexService) {}); err != nil {
+		t.Fatalf("fresh service must build: %v", err)
 	}
 }

@@ -77,7 +77,9 @@ func newApprovalSessionWith(t *testing.T, store *AuthoritativeApprovalStore) *ap
 	}}
 	managed := newTestManagedService(fl)
 	if store != nil {
-		managed.SetApprovalStore(store)
+		if err := managed.SetApprovalStore(store); err != nil {
+			t.Fatalf("set approval store: %v", err)
+		}
 	}
 	rec := newPumpRecorder()
 	managed.pumpObserver = rec.observe
@@ -482,7 +484,9 @@ func TestManagedApproval_WrongAuthorityVersionRejected(t *testing.T) {
 			AuthorityVersion: version,
 		}, fl)
 		managed.verify = func() error { return nil }
-		managed.SetApprovalStore(store)
+		if err := managed.SetApprovalStore(store); err != nil {
+			t.Fatalf("set approval store: %v", err)
+		}
 		rec := newPumpRecorder()
 		managed.pumpObserver = rec.observe
 

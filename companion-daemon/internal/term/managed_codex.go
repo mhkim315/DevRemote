@@ -652,14 +652,47 @@ func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error
 // Registry exposes the owned-session registry for the read-only REST surface.
 func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg }
 
-// SetApprovalStore wires the authoritative approval store as the SP1-P1
-// NON-ACTIONABLE observation sink. Called once by the composition root before
-// any create. It grants no delivery capacity, no options, and no CTA — every
-// ingested record is Actionable=false with zero options.
-func (s *ManagedCodexService) SetApprovalStore(store *AuthoritativeApprovalStore) {
+// SetApprovalStore configures the authoritative approval store as the SP1-P1
+// NON-ACTIONABLE observation sink. The store is IMMUTABLE once configured
+// (P2B-R1): the ONE canonical store is fixed by the first successful
+// configuration or installation, before any runtime exists. Replacement is
+// refused after a store is configured, after activation, after the first
+// runtime/generation, and after shutdown began — so the handler store, the
+// runtime ingest store, and the installed delivery authority can never
+// diverge. Re-configuring the SAME store is an idempotent no-op. It grants no
+// delivery capacity, no options, and no CTA by itself.
+func (s *ManagedCodexService) SetApprovalStore(store *AuthoritativeApprovalStore) error {
+	if store == nil {
+		return fmt.Errorf("approval store configure: nil store")
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return fmt.Errorf("approval store configure: service is shutting down")
+	}
+	if s.approvals == store {
+		return nil // idempotent
+	}
+	if s.actionable {
+		return fmt.Errorf("approval store configure: approval execution is installed; the store is immutable")
+	}
+	if s.gen != 0 || len(s.runtimes) != 0 {
+		return fmt.Errorf("approval store configure: a managed runtime already exists; the store is immutable")
+	}
+	if s.approvals != nil {
+		return fmt.Errorf("approval store configure: a different approval store is already configured")
+	}
 	s.approvals = store
-	s.mu.Unlock()
+	return nil
+}
+
+// ApprovalExecutionInstalled reports whether the atomic activation transition
+// has completed. The composition root uses it to distinguish a provably
+// observation-only fallback from a pre-activated service it does not own.
+func (s *ManagedCodexService) ApprovalExecutionInstalled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.actionable
 }
 
 // SubmitPrompt is the ONLY prompt entry (local IPC and mobile REST). It

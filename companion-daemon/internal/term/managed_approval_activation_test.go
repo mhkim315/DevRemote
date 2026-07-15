@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -306,5 +307,166 @@ func TestActivation_DispatcherRoutesByAdapter(t *testing.T) {
 	}
 	if s.written.count() != 0 {
 		t.Fatalf("no dispatcher probe may reach the wire")
+	}
+}
+
+// ── P2B-R1: canonical-store immutability ──
+
+// TestActivation_StoreImmutableAfterInstall: once installed, the store can
+// never be replaced — observation and execution keep the ONE canonical store,
+// and records keep landing in it.
+func TestActivation_StoreImmutableAfterInstall(t *testing.T) {
+	s, _, _ := newActivatedDeliverySession(t, false)
+	other := NewAuthoritativeApprovalStore()
+	if err := s.managed.SetApprovalStore(other); err == nil {
+		t.Fatalf("store replacement after install must be refused")
+	}
+	// Idempotent re-configuration of the SAME store stays a no-op success.
+	if err := s.managed.SetApprovalStore(s.store); err != nil {
+		t.Fatalf("same-store reconfigure must be idempotent: %v", err)
+	}
+	s.inject(t, certifiedApprovalRaw("7", apprTestTurn, "item-4"))
+	s.sync(t)
+	if got := waitForSafeApprovals(t, s.store, s.id, 1); !got[0].Actionable {
+		t.Fatalf("record must land actionable in the canonical store: %+v", got)
+	}
+	if got := other.ListSafe(s.id); len(got) != 0 {
+		t.Fatalf("the rejected store must stay empty: %+v", got)
+	}
+}
+
+// TestActivation_StoreImmutableAfterRuntime: once ANY runtime exists, the
+// store can never be configured or replaced.
+func TestActivation_StoreImmutableAfterRuntime(t *testing.T) {
+	s := newDeliverySession(t, false) // P1 observation wiring + one runtime
+	if err := s.managed.SetApprovalStore(NewAuthoritativeApprovalStore()); err == nil {
+		t.Fatalf("store replacement after a runtime must be refused")
+	}
+	// A service with NO store and an existing runtime can never gain one.
+	bare := buildDeliverySession(t, false)
+	bare.launchTurn(t)
+	if err := bare.managed.SetApprovalStore(NewAuthoritativeApprovalStore()); err == nil {
+		t.Fatalf("store configuration after a runtime must be refused")
+	}
+}
+
+// TestActivation_ConcurrentConfigureInstallSingleWinner: racing
+// configurations and installations (each with a DISTINCT store) admit exactly
+// ONE winner; the service ends owning exactly the winner's store, and
+// actionability is on only when an installation won.
+func TestActivation_ConcurrentConfigureInstallSingleWinner(t *testing.T) {
+	s := buildDeliverySession(t, false)
+	const n = 8
+	stores := make([]*AuthoritativeApprovalStore, n)
+	for i := range stores {
+		stores[i] = NewAuthoritativeApprovalStore()
+	}
+	results := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				results[i] = s.managed.SetApprovalStore(stores[i])
+			} else {
+				_, _, results[i] = s.managed.InstallApprovalExecution(stores[i])
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	winners := 0
+	winner := -1
+	for i, err := range results {
+		if err == nil {
+			winners++
+			winner = i
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("exactly one configure/install may win, got %d", winners)
+	}
+	s.managed.mu.Lock()
+	got, actionable := s.managed.approvals, s.managed.actionable
+	s.managed.mu.Unlock()
+	if got != stores[winner] {
+		t.Fatalf("the service must own exactly the winner's store")
+	}
+	if wantActionable := winner%2 == 1; actionable != wantActionable {
+		t.Fatalf("actionable=%v, want %v (winner op %d)", actionable, wantActionable, winner)
+	}
+}
+
+// TestActivation_DoubleInstallLeavesFirstIntact: a rejected second install
+// (even with a different store) changes nothing — the first activation keeps
+// working end-to-end on the original canonical store.
+func TestActivation_DoubleInstallLeavesFirstIntact(t *testing.T) {
+	s, _, runtimeOf := newActivatedDeliverySession(t, false)
+	other := NewAuthoritativeApprovalStore()
+	if _, _, err := s.managed.InstallApprovalExecution(other); err == nil {
+		t.Fatalf("second install must fail")
+	}
+	if !s.managed.ApprovalExecutionInstalled() {
+		t.Fatalf("first activation must remain installed")
+	}
+	if _, ok := runtimeOf(s.id); !ok {
+		t.Fatalf("first activation's RuntimeOf must keep resolving")
+	}
+	s.inject(t, certifiedApprovalRaw("7", apprTestTurn, "item-4"))
+	s.sync(t)
+	if got := waitForSafeApprovals(t, s.store, s.id, 1); !got[0].Actionable {
+		t.Fatalf("ingest must keep using the original activation: %+v", got)
+	}
+	if got := other.ListSafe(s.id); len(got) != 0 {
+		t.Fatalf("the rejected install's store must stay empty: %+v", got)
+	}
+}
+
+// TestActivation_DegradedServiceIsCompletelyOff: a service whose install
+// failed (non-certified authority version) and whose observation ALSO
+// rejects the uncertified version produces zero records, zero claims, zero
+// provider writes.
+func TestActivation_DegradedServiceIsCompletelyOff(t *testing.T) {
+	s := buildDeliverySession(t, false)
+	bad := NewManagedCodexService(CodexAppServerEntryConfig{
+		Bin: "/pinned/toolchain/node_modules/.bin/codex", Version: "codex-cli 0.144.4",
+		AuthorityVersion: "0.144.4",
+	}, s.launcher)
+	bad.verify = func() error { return nil }
+	if err := bad.SetApprovalStore(s.store); err != nil {
+		t.Fatalf("configure on a fresh service must succeed: %v", err)
+	}
+	if _, _, err := bad.InstallApprovalExecution(s.store); err == nil {
+		t.Fatalf("uncertified authority version must fail install")
+	}
+	if bad.ApprovalExecutionInstalled() {
+		t.Fatalf("failed install must leave activation off")
+	}
+	rec := newPumpRecorder()
+	bad.pumpObserver = rec.observe
+	id, err := bad.CreateAttached("")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = bad.Kill(id, 1) })
+	if err := bad.SubmitPrompt(id, 1, "run"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	waitForStatus(t, bad.Registry(), id, ManagedStatusWorking)
+	sess := &deliverySession{managed: bad, store: s.store, launcher: s.launcher, rec: rec, id: id, written: s.written}
+	sess.inject(t, certifiedApprovalRaw("7", apprTestTurn, "item-4"))
+	sess.sync(t)
+	if got := s.store.ListSafe(id); len(got) != 0 {
+		t.Fatalf("degraded service must create zero records: %+v", got)
+	}
+	if _, ok := bad.RuntimeOf(id); ok {
+		t.Fatalf("degraded service RuntimeOf must be off")
+	}
+	if s.written.count() != 0 {
+		t.Fatalf("degraded service must write nothing")
 	}
 }

@@ -76,6 +76,12 @@ func (s *ManagedCodexService) InstallApprovalExecution(store *AuthoritativeAppro
 	if s.actionable {
 		return nil, nil, fmt.Errorf("approval execution install: already installed")
 	}
+	// P2B-R1: the configured observation store and the installed execution
+	// store must be the SAME canonical store — a diverging handler/ingest
+	// store pair can never exist.
+	if s.approvals != nil && s.approvals != store {
+		return nil, nil, fmt.Errorf("approval execution install: a different approval store is already configured")
+	}
 	s.approvals = store
 	s.actionable = true
 	return NewCodexManagedApprovalDelivery(s), s.RuntimeOf, nil
