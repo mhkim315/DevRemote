@@ -1,9 +1,10 @@
 # SP0.5 Managed I/O and Lifecycle — Evidence Report
 
-Status: **SP0.5 A–C + R1 remediation DELIVERED — resubmitted for independent
-review. SP1 / Cleanup NOT started. Approval capacity ZERO; `waiting_approval`
-display-only; frozen A1 contracts and the accepted SP0 core (owned registry,
-native authority, pinned runtime, process lease) untouched in shape.**
+Status: **SP0.5 A–C + R1 + R2 remediation DELIVERED — resubmitted for
+independent review. SP1 / Cleanup NOT started. Approval capacity ZERO;
+`waiting_approval` display-only; frozen A1 contracts and the accepted SP0 core
+(owned registry, native authority, pinned runtime, process lease) untouched in
+shape.**
 
 Date: 2026-07-15. Executor: Claude Code, canonical checkout
 `/Users/mhk/Documents/codex/DevRemote`, branch `feature/phase10-multi-adapter`.
@@ -12,7 +13,7 @@ Date: 2026-07-15. Executor: Claude Code, canonical checkout
 - Accepted SP0 implementation ancestry `2b35f524…`: PASS; CP0 `42429c8…`: PASS
 - Contract note: `docs/SP0_5_MANAGED_IO_CONTRACT_NOTE.md` (`4e1f099`)
 - Implementation commits: `9a77bab` (A), `4ecff55` (B), `5d45c9c` (C),
-  `e38877f2b2110a198c71d57af56c6c17e2ff07b0` (R1 — final)
+  `e38877f` (R1), `efd0e80b4a443ca90fd34fc2858cb6e175f68296` (R2 — final)
 - Authoritative handoff: `docs/NEXT_EXECUTOR_SP0_5_MANAGED_IO_LIFECYCLE_HANDOFF.md`
 
 ## 1. Packet A — local structured I/O (`9a77bab`)
@@ -156,10 +157,41 @@ No live provider turn was re-run (the A live proof stands; R1 did not
 change the pinned launch pipeline's happy path — full deterministic suites
 re-run green).
 
+## 4b. Remediation round R2 (remaining mobile-polling blocker, fixed)
+
+Reviewer verdict on `194209c`: REJECT, two remaining interleavings. Fixed in
+implementation commit `efd0e80b4a443ca90fd34fc2858cb6e175f68296`
+(`fix(SP0.5-R2)`):
+
+1. **Bootstrap race** — a late `getManagedStatus` response from a previous
+   session/unmount could reinstall a poller+timer. New
+   `ManagedSessionController` owns the whole per-session lifecycle: bounded
+   bootstrap whose deadline ABORTS the real request; `closed` re-checked
+   after every await BEFORE any install; poller construction and the poll
+   timer behind an injectable scheduler. One controller instance per mounted
+   session IS the generation — no shared mutable slot exists for a stale
+   response to reclaim. `close()` (unmount/switch) aborts the in-flight
+   bootstrap, closes the poller, cancels the timer, and suppresses even the
+   error banner. `ManagedSessionView` rewired to the controller.
+2. **Real request cancellation** — `AbortSignal` threaded
+   `getManagedStatus`/`getManagedEvents` → `apiGet` → `authenticatedFetch`/
+   `checkedFetch`. The poller allocates one `AbortController` per tick; the
+   deadline aborts the REAL request (not a wrapper) and `close()` aborts the
+   outstanding one — at most ONE real request per poller across repeated
+   timeouts (counted at a fetch fake that models real fetch by rejecting on
+   abort).
+
+Reviewer-required deterministic tests, all green: A-bootstrap-pending →
+switch-to-B → A late response inert while B proceeds; bootstrap-pending →
+unmount → late response inert; hung bootstrap/poll deadline →
+`signal.aborted` asserted on the underlying request; repeated timeouts → max
+real outstanding fetch == 1; close aborts in-flight; invalid bootstrap DTO
+fail-closed. No live provider turn re-run (mobile-only remediation).
+
 ## 5. Final gate (frozen remediation HEAD)
 
 Run once on frozen implementation HEAD
-`e38877f2b2110a198c71d57af56c6c17e2ff07b0` via `sh scripts/build-gate.sh`:
+`efd0e80b4a443ca90fd34fc2858cb6e175f68296` via `sh scripts/build-gate.sh`:
 
 ```text
 --- Backend ---  go build OK / go vet OK / go test -race OK / git diff --check OK
@@ -174,5 +206,5 @@ This report commit is docs-only on top of that verified tree.
 ## 6. Review marker
 
 ```text
-REVIEW REQUEST: SP0.5 Managed I/O and Lifecycle — e38877f2b2110a198c71d57af56c6c17e2ff07b0
+REVIEW REQUEST: SP0.5 Managed I/O and Lifecycle — efd0e80b4a443ca90fd34fc2858cb6e175f68296
 ```
