@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,19 +58,29 @@ func drainStdin(d time.Duration) {
 	}
 }
 
+// managedCodexRun reports whether the parsed `pokit run` args are EXACTLY the
+// recognized Codex profile token (SP0.5 managed-only invocation).
+func managedCodexRun(commandArgs []string) bool {
+	return len(commandArgs) == 1 && commandArgs[0] == "codex"
+}
+
 // buildRunCreateRequest maps parsed `pokit run` arguments to the IPC create
-// request body. SP0: the recognized detached Codex form (`pokit run --detach
-// codex`, exactly one token) is sent as a STRUCTURED profile request — never a
-// joined command string. Every other form keeps the legacy command string.
+// request body. SP0/SP0.5: the recognized Codex invocation (exactly one
+// token) is ALWAYS sent as a STRUCTURED profile request — never a joined
+// command string — detached or not. Every other form keeps the legacy
+// command string.
 func buildRunCreateRequest(commandArgs []string, cwd string, detach bool) map[string]interface{} {
-	if detach && len(commandArgs) == 1 && commandArgs[0] == "codex" {
-		return map[string]interface{}{
+	if managedCodexRun(commandArgs) {
+		req := map[string]interface{}{
 			"version":   1,
 			"operation": "create",
 			"profileId": "codex",
 			"cwd":       cwd,
-			"detach":    true,
 		}
+		if detach {
+			req["detach"] = true
+		}
+		return req
 	}
 	return map[string]interface{}{
 		"version":   1,
@@ -192,8 +203,89 @@ func runClient(args []string) {
 		return
 	}
 
+	// SP0.5: the managed Codex session has no PTY — attach through the
+	// bounded structured line client, not the recorder subscriber.
+	if managedCodexRun(commandArgs) {
+		attachManagedSession(sessionID)
+		return
+	}
+
 	// E10b: attach local terminal as subscriber via Unix socket.
 	attachLocalTerminal(sessionID)
+}
+
+// attachManagedSession is the thin line-oriented local client for a managed
+// native session: projected bounded events print to stdout; each stdin line
+// is one prompt; Ctrl-D detaches the viewer WITHOUT stopping the session. No
+// raw mode, no keymap changes, no terminal emulation.
+func attachManagedSession(sessionID string) {
+	conn, err := net.Dial("unix", "/tmp/pokit.sock")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nERROR: could not attach — daemon IPC socket unavailable: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Session %s keeps running; use mobile/web or 'pokit run --detach codex' next time.\n", sessionID)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	req, _ := json.Marshal(map[string]interface{}{
+		"version":   1,
+		"operation": "managed-attach",
+		"sessionId": sessionID,
+	})
+	if _, err := conn.Write(append(req, '\n')); err != nil {
+		log.Fatalf("attach write: %v", err)
+	}
+
+	fmt.Println("Attached to managed Codex session. Type a prompt and press Enter; Ctrl-D detaches (session keeps running).")
+
+	// Daemon → stdout: projected bounded events.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(conn)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			var ev struct {
+				Kind  string `json:"kind"`
+				Text  string `json:"text"`
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(sc.Bytes(), &ev) != nil {
+				continue
+			}
+			switch {
+			case ev.Error != "":
+				fmt.Fprintf(os.Stderr, "! %s\n", ev.Error)
+			case ev.Kind == "assistant":
+				fmt.Println(ev.Text)
+			case ev.Kind == "working":
+				fmt.Println("… working")
+			case ev.Kind == "completed":
+				fmt.Println("· idle")
+			case ev.Kind == "exited":
+				fmt.Println("× session exited")
+			case ev.Kind == "gap":
+				fmt.Println("~ some earlier output was dropped (bounded history)")
+			}
+		}
+	}()
+
+	// stdin lines → prompts. EOF (Ctrl-D) detaches the viewer only.
+	in := bufio.NewScanner(os.Stdin)
+	in.Buffer(make([]byte, 64*1024), 1024*1024)
+	for in.Scan() {
+		line := strings.TrimSpace(in.Text())
+		if line == "" {
+			continue
+		}
+		payload, _ := json.Marshal(map[string]string{"prompt": line})
+		if _, err := conn.Write(append(payload, '\n')); err != nil {
+			break
+		}
+	}
+	conn.Close()
+	<-done
+	fmt.Println("Detached. The managed session keeps running.")
 }
 
 // attachLocalTerminal connects to the daemon Unix socket and bridges

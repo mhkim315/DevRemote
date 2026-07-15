@@ -130,6 +130,16 @@ type codexManagedRuntime struct {
 	writeMu   sync.Mutex
 	nextID    int64
 	threadID  string
+	// events is the per-session bounded projection store (SP0.5). The pump
+	// is its only producer.
+	events *managedEventStore
+	// turnMu guards the SP0.5 one-active-turn input state. The claim is taken
+	// under the lock; the provider write happens after release; a failed
+	// write rolls the claim back. The pump clears the claim on turn
+	// completion or child exit.
+	turnMu     sync.Mutex
+	turnActive bool
+	turnClosed bool // child exited / session stopped: no further prompts
 	// observer is a NARROW test seam (nil in production): called once per
 	// pumped provider message that carries a method, so deterministic tests
 	// can prove a crafted message was consumed WITHOUT affecting status.
@@ -245,10 +255,15 @@ func (rt *codexManagedRuntime) handshake(cwd string, timeout time.Duration) erro
 
 // startCertificationTurn sends the single bounded server-derived turn. The
 // input is the fixed constant — closed vocabulary, no caller-supplied text.
+// It claims the one-active-turn state so a concurrent prompt conflicts.
 func (rt *codexManagedRuntime) startCertificationTurn() error {
+	rt.turnMu.Lock()
+	rt.turnActive = true
 	rt.nextID++
+	id := rt.nextID
+	rt.turnMu.Unlock()
 	return rt.send(map[string]any{
-		"jsonrpc": "2.0", "id": rt.nextID, "method": "turn/start",
+		"jsonrpc": "2.0", "id": id, "method": "turn/start",
 		"params": map[string]any{
 			"threadId":       rt.threadID,
 			"input":          []map[string]any{{"type": "text", "text": certificationPrompt}},
@@ -258,10 +273,11 @@ func (rt *codexManagedRuntime) startCertificationTurn() error {
 }
 
 // pump is the production event pump: it maps exact native notifications for
-// the bound thread onto registry status transitions. Unknown methods,
-// unmatched threads, and response objects are ignored — they can never
-// fabricate a known status. On child EOF/error it marks the record exited and
-// reaps the child.
+// the bound thread onto registry status transitions and the bounded event
+// projection (SP0.5 structural allowlist — never raw JSON-RPC). Unknown
+// methods, unmatched threads, and response objects are ignored — they can
+// never fabricate a known status. On child EOF/error it marks the record
+// exited and reaps the child.
 func (rt *codexManagedRuntime) pump() {
 	for {
 		m, err := rt.readNext()
@@ -283,12 +299,74 @@ func (rt *codexManagedRuntime) pump() {
 		switch method {
 		case "turn/started":
 			rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusWorking)
+			rt.appendEvent(ManagedEventWorking, "")
 		case "turn/completed":
 			rt.reg.UpdateNativeStatus(rt.sessionID, rt.epoch, ManagedStatusCompleted)
+			rt.turnMu.Lock()
+			rt.turnActive = false
+			rt.turnMu.Unlock()
+			rt.appendEvent(ManagedEventCompleted, "")
+		case "item/completed":
+			// Structural allowlist: only the verified assistant message text
+			// (schema: ThreadItem variant agentMessage) is projected, byte
+			// bounded. All other item variants stay internal.
+			item, _ := params["item"].(map[string]any)
+			if it, _ := item["type"].(string); it == "agentMessage" {
+				if text, _ := item["text"].(string); text != "" {
+					rt.appendEvent(ManagedEventAssistant, text)
+				}
+			}
 		}
 	}
+	rt.turnMu.Lock()
+	rt.turnActive = false
+	rt.turnClosed = true
+	rt.turnMu.Unlock()
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
+	rt.appendEvent(ManagedEventExited, "")
 	_ = rt.proc.Wait() // reap
+}
+
+func (rt *codexManagedRuntime) appendEvent(kind ManagedEventKind, text string) {
+	if rt.events != nil {
+		rt.events.append(kind, text)
+	}
+}
+
+// submitPrompt claims the single active turn and delivers one bounded prompt
+// through the owned transport. Claim under lock, provider write after
+// release, claim rollback on write failure. A concurrent prompt conflicts
+// with ZERO provider write.
+func (rt *codexManagedRuntime) submitPrompt(text string) error {
+	rt.turnMu.Lock()
+	if rt.turnClosed {
+		rt.turnMu.Unlock()
+		return fmt.Errorf("managed session closed")
+	}
+	if rt.turnActive {
+		rt.turnMu.Unlock()
+		return fmt.Errorf("turn already active")
+	}
+	rt.turnActive = true
+	rt.nextID++
+	id := rt.nextID
+	rt.turnMu.Unlock()
+
+	err := rt.send(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "turn/start",
+		"params": map[string]any{
+			"threadId":       rt.threadID,
+			"input":          []map[string]any{{"type": "text", "text": text}},
+			"approvalPolicy": "untrusted",
+		},
+	})
+	if err != nil {
+		rt.turnMu.Lock()
+		rt.turnActive = false
+		rt.turnMu.Unlock()
+		return fmt.Errorf("prompt delivery: %w", err)
+	}
+	return nil
 }
 
 // stop kills and reaps the owned child. Safe to call on any failure path.
@@ -417,6 +495,42 @@ func (s *ManagedCodexService) endLease(lease *inflightCreate) {
 // Registry exposes the owned-session registry for the read-only REST surface.
 func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg }
 
+// SubmitPrompt is the ONLY prompt entry (local IPC and mobile REST). It
+// validates bounds, binds exact SessionID + current epoch against the live
+// runtime and the owned registry, enforces one-active-turn, and delivers the
+// prompt only through the owned app-server transport. Every failure is
+// fail-closed with ZERO provider write.
+func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text string) error {
+	if err := validateManagedPrompt(text); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	rt := s.runtimes[sessionID]
+	s.mu.Unlock()
+	if rt == nil {
+		return fmt.Errorf("managed session not found")
+	}
+	if rt.epoch != epoch {
+		return fmt.Errorf("stale session epoch")
+	}
+	rec, ok := s.reg.Get(sessionID)
+	if !ok || rec.Exited {
+		return fmt.Errorf("managed session closed")
+	}
+	return rt.submitPrompt(text)
+}
+
+// eventStoreFor resolves a session's projection store and current epoch.
+func (s *ManagedCodexService) eventStoreFor(sessionID string) (*managedEventStore, int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rt := s.runtimes[sessionID]
+	if rt == nil || rt.events == nil {
+		return nil, 0, false
+	}
+	return rt.events, rt.epoch, true
+}
+
 // CreateDetached is the production managed launch: verify pinned identity →
 // direct spawn with the exact app-server argv → bounded handshake → register →
 // start the single server-derived certification turn → start the event pump.
@@ -430,6 +544,16 @@ func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg 
 // until every in-flight create has rolled back or published. No lock is held
 // across external I/O.
 func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
+	return s.create(cwd, true)
+}
+
+// CreateAttached creates a managed session with NO automatic turn (SP0.5
+// interactive path): prompts arrive one-at-a-time through SubmitPrompt.
+func (s *ManagedCodexService) CreateAttached(cwd string) (string, error) {
+	return s.create(cwd, false)
+}
+
+func (s *ManagedCodexService) create(cwd string, certification bool) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
 	}
@@ -476,12 +600,14 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	epoch := s.gen
 	rt := newCodexManagedRuntime(proc, epoch, s.reg)
 	rt.sessionID = id
+	rt.events = newManagedEventStore(id, epoch)
 	s.runtimes[id] = rt // published: from here Shutdown always finds the child
 	s.mu.Unlock()
 
 	// fail rolls back a published create: unpublish, drop any registered
-	// record, kill + reap. Safe against a concurrent Shutdown (delete/Remove
-	// are no-ops on already-cleared state; Kill/Wait are idempotent).
+	// record, close the event store, kill + reap. Safe against a concurrent
+	// Shutdown (delete/Remove are no-ops on already-cleared state; Kill/Wait
+	// are idempotent).
 	fail := func(stage string, ferr error, registered bool) (string, error) {
 		s.mu.Lock()
 		delete(s.runtimes, id)
@@ -489,6 +615,7 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 		if registered {
 			s.reg.Remove(id)
 		}
+		rt.events.close()
 		rt.stop()
 		return "", fmt.Errorf("managed codex %s: %w", stage, ferr)
 	}
@@ -512,8 +639,10 @@ func (s *ManagedCodexService) CreateDetached(cwd string) (string, error) {
 	}
 	s.barrier("post-register")
 
-	if err := rt.startCertificationTurn(); err != nil {
-		return fail("turn start", err, true)
+	if certification {
+		if err := rt.startCertificationTurn(); err != nil {
+			return fail("turn start", err, true)
+		}
 	}
 
 	if s.pumpObserver != nil {
@@ -555,6 +684,7 @@ func (s *ManagedCodexService) Shutdown(ctx context.Context) error {
 		l.cancel() // kills spawned-but-unpublished children; marks the rest
 	}
 	for _, rt := range rts {
+		rt.events.close()
 		_ = rt.proc.Kill()
 	}
 

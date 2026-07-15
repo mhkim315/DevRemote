@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -146,6 +147,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			Executable string          `json:"executable"`
 			Args       []string        `json:"args"`
 			Detach     bool            `json:"detach"` // SP0: structured detached launch
+			Cursor     uint64          `json:"cursor"` // SP0.5: managed-attach event cursor
 			// pair-start / pair-approve / pair-reject (M2.5-2)
 			Duration       int    `json:"duration"`
 			PhoneSignature []byte `json:"phoneSignature,omitempty"`
@@ -153,7 +155,8 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			DeviceID string `json:"deviceId"`
 			Limit    int    `json:"limit"`
 		}
-		if err := json.NewDecoder(reader).Decode(&req); err != nil {
+		dec := json.NewDecoder(reader)
+		if err := dec.Decode(&req); err != nil {
 			conn.Write([]byte(fmt.Sprintf("error decoding json: %v\n", err)))
 			return
 		}
@@ -195,23 +198,35 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 				json.NewEncoder(conn).Encode(map[string]string{"error": err.Error()})
 				return
 			}
-			// SP0: the recognized detached Codex profile is a MANAGED-ONLY
-			// request. With the feature enabled it launches the POKIT-owned
-			// native app-server runtime (no PTY, no shell). With the feature
-			// disabled it fails closed — the same structured request must
-			// never silently fall back to the legacy controlled_pty authority
-			// model (no child, no session, no launcher).
-			if req.ProfileID == "codex" && req.Detach {
+			// SP0/SP0.5: the recognized Codex profile is a MANAGED-ONLY
+			// request — detached keeps the SP0 certification-turn launch,
+			// non-detached creates a prompt-driven interactive session. With
+			// the feature disabled it fails closed: the same structured
+			// request must never silently fall back to the legacy
+			// controlled_pty authority model (no child, no session, no
+			// launcher). The exact legacy command-string invocation of codex
+			// is likewise removed rather than shell-executed.
+			if req.ProfileID == "codex" {
 				if managed == nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": "managed codex runtime unavailable: daemon started without --enable-managed-codex"})
 					return
 				}
-				id, merr := managed.CreateDetached(req.CWD)
+				var id string
+				var merr error
+				if req.Detach {
+					id, merr = managed.CreateDetached(req.CWD)
+				} else {
+					id, merr = managed.CreateAttached(req.CWD)
+				}
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
 				} else {
 					json.NewEncoder(conn).Encode(map[string]string{"id": id, "state": string(LifecycleRunning)})
 				}
+				return
+			}
+			if legacyCodexCommand(req.Command) {
+				json.NewEncoder(conn).Encode(map[string]string{"error": "the codex command string is no longer executed via shell: use the structured codex profile (managed runtime)"})
 				return
 			}
 			id, state, cerr := createLocalControlled(context.Background(), reg, activity, lifecycle, localCreateSpec{
@@ -227,6 +242,14 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			} else {
 				json.NewEncoder(conn).Encode(map[string]string{"id": id, "state": string(state)})
 			}
+		} else if req.Operation == "managed-attach" {
+			// SP0.5: bounded structured local attach to a managed session.
+			// The JSON decoder may have buffered bytes past the request line
+			// (kernel socket writes coalesce) — recover them, or early prompt
+			// lines would be silently swallowed.
+			attachReader := bufio.NewReader(io.MultiReader(dec.Buffered(), reader))
+			handleManagedAttach(conn, attachReader, managed, req.SessionID, req.Cursor)
+			return
 		} else if req.Operation == "pair-start" {
 			handlePairOp(conn, req.Operation, req.Duration, nil)
 			return

@@ -146,6 +146,20 @@ type localCreateSpec struct {
 	Command    json.RawMessage // strict: a JSON string, or absent
 }
 
+// legacyCodexCommand reports whether a legacy command string is EXACTLY the
+// recognized codex invocation. SP0.5 removes its shell fallback: the managed
+// structured profile is the only launch path for codex.
+func legacyCodexCommand(command json.RawMessage) bool {
+	if len(command) == 0 {
+		return false
+	}
+	var s string
+	if json.Unmarshal(command, &s) != nil {
+		return false
+	}
+	return strings.TrimSpace(s) == "codex"
+}
+
 // validateLaunchInputExclusivity fails closed when a create request selects
 // more than one launch source. A real profile id (non-empty, non-"custom"),
 // a custom executable, and a legacy command string are mutually exclusive —

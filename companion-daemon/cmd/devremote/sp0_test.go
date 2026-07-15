@@ -8,25 +8,29 @@ import (
 
 // ── SP0-P1: CLI structured request + production composition ──
 
-// TestBuildRunCreateRequest_DetachCodexStructured: `pokit run --detach codex`
-// (exactly the recognized profile token) is sent as a structured profile
-// request with NO command string. All other forms keep the legacy shape.
-func TestBuildRunCreateRequest_DetachCodexStructured(t *testing.T) {
+// TestBuildRunCreateRequest_CodexAlwaysStructured: the recognized Codex
+// invocation (exactly one token) is ALWAYS a structured profile request —
+// detached or not (SP0.5 removes the command-string fallback for it). All
+// other forms keep the legacy command shape.
+func TestBuildRunCreateRequest_CodexAlwaysStructured(t *testing.T) {
 	got := buildRunCreateRequest([]string{"codex"}, "/tmp", true)
 	if got["profileId"] != "codex" || got["detach"] != true || got["operation"] != "create" {
-		t.Fatalf("structured request = %v", got)
+		t.Fatalf("structured detached request = %v", got)
 	}
 	if _, hasCmd := got["command"]; hasCmd {
 		t.Fatalf("structured request must not carry a command string: %v", got)
 	}
 
-	// Non-detach codex keeps the legacy command form (interactive attach path).
-	legacy := buildRunCreateRequest([]string{"codex"}, "", false)
-	if legacy["command"] != "codex" {
-		t.Fatalf("legacy request = %v, want command form", legacy)
+	// SP0.5: non-detach codex is ALSO structured (interactive managed path).
+	interactive := buildRunCreateRequest([]string{"codex"}, "", false)
+	if interactive["profileId"] != "codex" {
+		t.Fatalf("interactive request = %v, want structured profile form", interactive)
 	}
-	if _, hasProfile := legacy["profileId"]; hasProfile {
-		t.Fatalf("legacy request must not carry profileId: %v", legacy)
+	if _, hasCmd := interactive["command"]; hasCmd {
+		t.Fatalf("interactive request must not carry a command string: %v", interactive)
+	}
+	if _, hasDetach := interactive["detach"]; hasDetach {
+		t.Fatalf("interactive request must not claim detach: %v", interactive)
 	}
 
 	// Extra tokens are NOT the recognized profile — legacy form.
