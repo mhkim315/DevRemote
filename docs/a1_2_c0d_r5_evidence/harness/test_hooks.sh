@@ -9,8 +9,8 @@ SID="s-00000000-0000-0000-0000-000000000001"; TU="call_test_R4_Xy9"; TN="Bash"
 GI='{"command":"echo ok","description":"test"}'
 J="{\"session_id\":\"$SID\",\"tool_use_id\":\"$TU\",\"tool_name\":\"$TN\",\"tool_input\":$GI}"
 
-# T1
-c; echo "NOT JSON"|"$D/hook_defer.sh">/dev/null 2>&1;e1=$?; ae 2 "T1-def-parse-exit2" "$e1"; al "DEFER_PARSE_FAIL" "T1-def-parsed-failed"
+# T1 — malformed JSON: exit 2 is the authority signal (stderr has DEFER_PARSE_FAIL)
+c; echo "NOT JSON"|"$D/hook_defer.sh">/dev/null 2>&1;e1=$?; ae 2 "T1-def-parse-exit2" "$e1"
 # T2
 c; echo "NOT JSON"|"$D/hook_resume.sh">/dev/null 2>&1;e1=$?; ae 2 "T2-res-parse-exit2" "$e1"; al "RESUME_PARSE_FAIL" "T2-res-failed"
 # T3
