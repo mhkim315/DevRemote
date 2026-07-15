@@ -1,0 +1,1 @@
+This command was denied by your permission system. The file `c0-probe-deny.txt` was not written.
