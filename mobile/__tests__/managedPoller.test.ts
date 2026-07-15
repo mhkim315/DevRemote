@@ -74,11 +74,25 @@ describe('ManagedSessionPoller (blocker 1)', () => {
 
   function harness(opts?: { deadlineMs?: number; freshnessMs?: number }) {
     const updates: ManagedPollerState[] = [];
-    let pending: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+    const pending: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+    const signals: AbortSignal[] = [];
     let calls = 0;
-    const fetchEvents = () => {
+    let outstanding = 0;
+    let maxOutstanding = 0;
+    // Models real fetch: the promise REJECTS when its signal aborts.
+    const fetchEvents = (_cursor: number, signal: AbortSignal) => {
       calls++;
-      return new Promise<unknown>((resolve, reject) => pending.push({ resolve, reject }));
+      outstanding++;
+      maxOutstanding = Math.max(maxOutstanding, outstanding);
+      signals.push(signal);
+      return new Promise<unknown>((resolve, reject) => {
+        const settle = <T,>(fn: (v: T) => void) => (v: T) => { outstanding--; fn(v); };
+        pending.push({ resolve: settle(resolve), reject: settle(reject) });
+        signal.addEventListener('abort', () => {
+          const req = pending.shift();
+          if (req) req.reject(new Error('aborted'));
+        });
+      });
     };
     const poller = new ManagedSessionPoller(SESSION, fetchEvents, (s) => updates.push(s), {
       deadlineMs: opts?.deadlineMs ?? 1000,
@@ -86,8 +100,10 @@ describe('ManagedSessionPoller (blocker 1)', () => {
       now: () => Date.now(),
     });
     return {
-      poller, updates,
+      poller, updates, signals,
       callCount: () => calls,
+      maxOutstanding: () => maxOutstanding,
+      outstanding: () => outstanding,
       resolveNext: (v: unknown) => pending.shift()!.resolve(v),
       rejectNext: () => pending.shift()!.reject(new Error('network')),
     };
@@ -128,16 +144,41 @@ describe('ManagedSessionPoller (blocker 1)', () => {
     expect(last.events.length).toBe(1); // history preserved, just non-current
   });
 
-  it('deadline expiry invalidates a hung request', async () => {
+  it('deadline expiry ABORTS the underlying hung request', async () => {
     const h = harness({ deadlineMs: 500, freshnessMs: 300 });
     const t = h.poller.tick();
+    expect(h.signals[0].aborted).toBe(false);
     jest.advanceTimersByTime(600); // request hangs past the deadline
     await t;
+    // The REAL request was cancelled, not just a wrapper promise.
+    expect(h.signals[0].aborted).toBe(true);
+    expect(h.outstanding()).toBe(0);
     const last = h.updates[h.updates.length - 1];
     expect(last).toMatchObject({ status: 'unavailable', current: false });
     // The hung request no longer blocks new ticks (in-flight released).
     void h.poller.tick();
     expect(h.callCount()).toBe(2);
+  });
+
+  it('keeps at most ONE real outstanding request across repeated timeouts', async () => {
+    const h = harness({ deadlineMs: 500, freshnessMs: 100 });
+    for (let i = 0; i < 5; i++) {
+      const t = h.poller.tick();
+      jest.advanceTimersByTime(600); // every request times out and is aborted
+      await t;
+    }
+    expect(h.callCount()).toBe(5);
+    expect(h.maxOutstanding()).toBe(1); // aborted before the next tick starts
+    expect(h.outstanding()).toBe(0);
+  });
+
+  it('close() aborts the in-flight request', async () => {
+    const h = harness();
+    const t = h.poller.tick();
+    h.poller.close();
+    await t;
+    expect(h.signals[0].aborted).toBe(true);
+    expect(h.outstanding()).toBe(0);
   });
 
   it('only a NEW fresh snapshot restores current after reconnect', async () => {

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { getManagedStatus, getManagedEvents, postManagedPrompt } from '../lib/client';
 import {
-  ManagedSessionPoller, ManagedPollerState, ManagedEvent,
+  ManagedSessionController, ManagedPollerState, ManagedEvent,
 } from '../lib/managedSession';
 
 interface Props {
@@ -27,56 +27,44 @@ export default function ManagedSessionView({ session, token, onBack }: Props) {
   const [error, setError] = useState('');
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
-  const pollerRef = useRef<ManagedSessionPoller | null>(null);
-  const epochRef = useRef(0);
+  const ctrlRef = useRef<ManagedSessionController | null>(null);
   const scrollRef = useRef<ScrollView | null>(null);
 
   useEffect(() => {
-    // One poller per mounted session: one-in-flight, per-request deadline,
-    // freshness expiry → non-current 'unavailable'; close() on unmount makes
-    // every late response a rejected stale commit.
-    let timer: ReturnType<typeof setInterval> | null = null;
-    let poller: ManagedSessionPoller | null = null;
-
-    (async () => {
-      try {
-        const st: any = await getManagedStatus(session, token);
-        if (pollerRef.current !== null || !st || typeof st.launchGen !== 'number' || st.launchGen < 1) {
-          if (!st || typeof st.launchGen !== 'number') setError('Managed session unavailable.');
-          return;
-        }
-        epochRef.current = st.launchGen;
-        poller = new ManagedSessionPoller(
-          session,
-          (cursor) => getManagedEvents(session, epochRef.current, cursor, token),
-          (state: ManagedPollerState) => {
-            setEvents(state.events);
-            setStatus(state.status);
-            setStatusCurrent(state.current);
-          },
-        );
-        pollerRef.current = poller;
-        void poller.tick();
-        timer = setInterval(() => { void poller!.tick(); }, POLL_MS);
-      } catch {
-        setError('Managed session unavailable.');
-      }
-    })();
-
+    // One controller per mounted session — the generation. close() on
+    // unmount/session-switch ABORTS the real in-flight bootstrap/poll
+    // requests and guarantees a late bootstrap response installs no poller,
+    // no timer, and commits no state (SP0.5-R2).
+    const ctrl = new ManagedSessionController(
+      session,
+      {
+        fetchStatus: (signal) => getManagedStatus(session, token, signal),
+        fetchEvents: (epoch, cursor, signal) => getManagedEvents(session, epoch, cursor, token, signal),
+        onUpdate: (state: ManagedPollerState) => {
+          setEvents(state.events);
+          setStatus(state.status);
+          setStatusCurrent(state.current);
+        },
+        onError: (message) => setError(message),
+      },
+      { pollMs: POLL_MS },
+    );
+    ctrlRef.current = ctrl;
+    void ctrl.start();
     return () => {
-      if (poller) poller.close();
-      pollerRef.current = null;
-      if (timer) clearInterval(timer);
+      ctrl.close();
+      if (ctrlRef.current === ctrl) ctrlRef.current = null;
     };
   }, [session, token]);
 
   const send = async () => {
     const text = prompt.trim();
-    if (!text || sending || epochRef.current < 1) return;
+    const epoch = ctrlRef.current?.getEpoch() ?? 0;
+    if (!text || sending || epoch < 1) return;
     setSending(true);
     setError('');
     try {
-      await postManagedPrompt(session, epochRef.current, text, token);
+      await postManagedPrompt(session, epoch, text, token);
       setPrompt('');
     } catch (e: any) {
       if (e && e.statusCode === 409) {

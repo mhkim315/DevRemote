@@ -42,8 +42,9 @@ export function hasDeviceAuth(): boolean {
 // apiGet centralises read authentication: the host-bound device bearer when a
 // paired device is active (and only for the paired origin), otherwise the
 // legacy token. Errors are normalised to PokitError so callers keep the same
-// connectivity classification.
-async function apiGet(path: string, legacyToken?: string): Promise<Response> {
+// connectivity classification. An optional AbortSignal REALLY cancels the
+// underlying request (SP0.5-R2: deadline/unmount/session-switch abort).
+async function apiGet(path: string, legacyToken?: string, signal?: AbortSignal): Promise<Response> {
   if (_deviceAuth) {
     // Host-bound fail-closed: the device bearer is transmitted ONLY to the
     // exact paired origin. A userinfo/query/fragment/path variant or a
@@ -59,7 +60,7 @@ async function apiGet(path: string, legacyToken?: string): Promise<Response> {
     const url = `${_baseURL}${path}`;
     let res: Response;
     try {
-      res = await authenticatedFetch(url, undefined, _deviceAuth.tokenManager);
+      res = await authenticatedFetch(url, signal ? { signal } : undefined, _deviceAuth.tokenManager);
     } catch (e: any) {
       if (e && e.code === 'network_error') {
         throw new PokitError('Daemon unreachable: ' + (e.message || 'request failed'), ConnectivityFailure.NetworkUnreachable);
@@ -72,7 +73,7 @@ async function apiGet(path: string, legacyToken?: string): Promise<Response> {
     }
     return res;
   }
-  return checkedFetch(`${_baseURL}${path}`, { headers: authHeaders(legacyToken) });
+  return checkedFetch(`${_baseURL}${path}`, { headers: authHeaders(legacyToken), signal });
 }
 
 // apiWrite centralises non-idempotent WRITE authentication (POST/DELETE) with
@@ -354,18 +355,21 @@ export async function deleteSessionHistory(id: string, token?: string): Promise<
 // managedSession.decodeManagedEventsResponse at the call site.
 
 // getManagedStatus reads the bounded native-status DTO (including the exact
-// launch epoch) that every subsequent managed read/write binds to.
-export async function getManagedStatus(id: string, token?: string): Promise<unknown> {
-  const res = await apiGet(`/api/sessions/${encodeURIComponent(id)}/native-status`, token);
+// launch epoch) that every subsequent managed read/write binds to. The signal
+// REALLY aborts the request (bootstrap deadline / unmount / session switch).
+export async function getManagedStatus(id: string, token?: string, signal?: AbortSignal): Promise<unknown> {
+  const res = await apiGet(`/api/sessions/${encodeURIComponent(id)}/native-status`, token, signal);
   return res.json();
 }
 
 // getManagedEvents reads the bounded snapshot + events after `cursor` for the
 // exact session epoch. Returns the raw untrusted JSON for strict decoding.
-export async function getManagedEvents(id: string, epoch: number, cursor: number, token?: string): Promise<unknown> {
+// The signal REALLY aborts the request (poll deadline / unmount).
+export async function getManagedEvents(id: string, epoch: number, cursor: number, token?: string, signal?: AbortSignal): Promise<unknown> {
   const res = await apiGet(
     `/api/managed-sessions/${encodeURIComponent(id)}/events?epoch=${encodeURIComponent(String(epoch))}&cursor=${encodeURIComponent(String(cursor))}`,
     token,
+    signal,
   );
   return res.json();
 }

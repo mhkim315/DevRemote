@@ -204,7 +204,7 @@ export class ManagedSessionFeed {
   }
 }
 
-// ── SP0.5-R1 blocker 1: staleness-safe polling controller ──
+// ── SP0.5-R1/R2 blocker 1: staleness-safe polling with REAL cancellation ──
 
 export interface ManagedPollerState {
   // status is the last FRESH native status, or 'unavailable' once freshness
@@ -220,25 +220,32 @@ export interface ManagedPollerOptions {
   freshnessMs?: number; // max age of the last fresh response before non-current
 }
 
+// ManagedEventsFetcher performs one bounded events request. The signal MUST
+// be forwarded to the underlying HTTP request — deadline/close abort the real
+// network request, not just a wrapper promise.
+export type ManagedEventsFetcher = (cursor: number, signal: AbortSignal) => Promise<unknown>;
+
 // ManagedSessionPoller drives the bounded event polling with: one request in
-// flight at a time, a per-request deadline, and freshness expiry — on
-// failure/timeout past the freshness window the status becomes
+// flight at a time (enforced against the REAL request via AbortController), a
+// per-request deadline that aborts the underlying fetch, and freshness expiry
+// — on failure/timeout past the freshness window the status becomes
 // 'unavailable' (non-current) until a NEW fresh snapshot restores it.
 export class ManagedSessionPoller {
   private readonly feed: ManagedSessionFeed;
-  private readonly fetchEvents: (cursor: number) => Promise<unknown>;
+  private readonly fetchEvents: ManagedEventsFetcher;
   private readonly onUpdate: (state: ManagedPollerState) => void;
   private readonly now: () => number;
   private readonly deadlineMs: number;
   private readonly freshnessMs: number;
   private inFlight = false;
+  private activeReq: AbortController | null = null;
   private closed = false;
   private lastFreshAt = 0;
   private lastStatus = '';
 
   constructor(
     sessionId: string,
-    fetchEvents: (cursor: number) => Promise<unknown>,
+    fetchEvents: ManagedEventsFetcher,
     onUpdate: (state: ManagedPollerState) => void,
     opts?: ManagedPollerOptions & { now?: () => number },
   ) {
@@ -253,15 +260,22 @@ export class ManagedSessionPoller {
   close(): void {
     this.closed = true;
     this.feed.close();
+    // Abort the REAL outstanding request, if any.
+    this.activeReq?.abort();
   }
 
   // tick runs at most one bounded request; overlapping ticks are skipped
-  // (one-in-flight). Every failure path re-evaluates freshness.
+  // (one-in-flight). The deadline ABORTS the underlying request, so at most
+  // one network request ever exists per poller even across repeated
+  // timeouts. Every failure path re-evaluates freshness.
   async tick(): Promise<void> {
     if (this.closed || this.inFlight) return;
     this.inFlight = true;
+    const req = new AbortController();
+    this.activeReq = req;
+    const deadline = setTimeout(() => req.abort(), this.deadlineMs);
     try {
-      const raw = await this.withDeadline(this.fetchEvents(this.feed.getCursor()));
+      const raw = await this.fetchEvents(this.feed.getCursor(), req.signal);
       const decoded = decodeManagedEventsResponse(raw);
       if (!decoded || !this.feed.apply(decoded)) {
         this.noteFailure();
@@ -275,6 +289,8 @@ export class ManagedSessionPoller {
     } catch {
       this.noteFailure();
     } finally {
+      clearTimeout(deadline);
+      this.activeReq = null;
       this.inFlight = false;
     }
   }
@@ -285,14 +301,113 @@ export class ManagedSessionPoller {
       this.onUpdate({ status: 'unavailable', current: false, events: this.feed.getEvents() });
     }
   }
+}
 
-  private withDeadline(p: Promise<unknown>): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('managed poll deadline')), this.deadlineMs);
-      p.then(
-        (v) => { clearTimeout(timer); resolve(v); },
-        (e) => { clearTimeout(timer); reject(e); },
-      );
-    });
+// ── SP0.5-R2 blocker: generation-guarded bootstrap + timer install ──
+
+// ManagedStatusFetcher performs the bootstrap native-status request; the
+// signal MUST reach the underlying HTTP request.
+export type ManagedStatusFetcher = (signal: AbortSignal) => Promise<unknown>;
+
+export interface ManagedControllerDeps {
+  fetchStatus: ManagedStatusFetcher;
+  fetchEvents: (epoch: number, cursor: number, signal: AbortSignal) => Promise<unknown>;
+  onUpdate: (state: ManagedPollerState) => void;
+  onError: (message: string) => void;
+  // schedule/cancel are injectable for deterministic tests; production uses
+  // setInterval/clearInterval.
+  schedule?: (fn: () => void, ms: number) => unknown;
+  cancelSchedule?: (handle: unknown) => void;
+  now?: () => number;
+}
+
+export interface ManagedControllerOptions extends ManagedPollerOptions {
+  pollMs?: number;
+}
+
+// ManagedSessionController owns the WHOLE per-session lifecycle: the bounded
+// bootstrap status request, poller construction, and the poll timer. close()
+// (unmount or session switch) aborts the REAL in-flight bootstrap request and
+// guarantees a late bootstrap response installs NOTHING — no poller, no
+// timer, no state update. One controller instance per mounted session is the
+// generation: there is no shared mutable slot a stale response could reclaim.
+export class ManagedSessionController {
+  readonly sessionId: string;
+  private readonly deps: ManagedControllerDeps;
+  private readonly pollMs: number;
+  private readonly deadlineMs: number;
+  private readonly freshnessMs: number;
+  private closed = false;
+  private bootstrapReq: AbortController | null = null;
+  private poller: ManagedSessionPoller | null = null;
+  private timerHandle: unknown = null;
+  private epoch = 0;
+
+  constructor(sessionId: string, deps: ManagedControllerDeps, opts?: ManagedControllerOptions) {
+    this.sessionId = sessionId;
+    this.deps = deps;
+    this.pollMs = opts?.pollMs ?? 1500;
+    this.deadlineMs = opts?.deadlineMs ?? 5000;
+    this.freshnessMs = opts?.freshnessMs ?? 6000;
+  }
+
+  getEpoch(): number {
+    return this.epoch;
+  }
+
+  // start performs the generation-guarded bootstrap. Every step after an
+  // await re-checks closed BEFORE installing anything.
+  async start(): Promise<void> {
+    if (this.closed) return;
+    const req = new AbortController();
+    this.bootstrapReq = req;
+    const deadline = setTimeout(() => req.abort(), this.deadlineMs);
+    let st: any;
+    try {
+      st = await this.deps.fetchStatus(req.signal);
+    } catch {
+      clearTimeout(deadline);
+      this.bootstrapReq = null;
+      if (!this.closed) this.deps.onError('Managed session unavailable.');
+      return;
+    }
+    clearTimeout(deadline);
+    this.bootstrapReq = null;
+    if (this.closed) return; // late response after switch/unmount: inert
+    if (!st || typeof st.launchGen !== 'number' || !Number.isInteger(st.launchGen) || st.launchGen < 1) {
+      this.deps.onError('Managed session unavailable.');
+      return;
+    }
+    this.epoch = st.launchGen;
+    const poller = new ManagedSessionPoller(
+      this.sessionId,
+      (cursor, signal) => this.deps.fetchEvents(this.epoch, cursor, signal),
+      this.deps.onUpdate,
+      { deadlineMs: this.deadlineMs, freshnessMs: this.freshnessMs, now: this.deps.now },
+    );
+    if (this.closed) {
+      // closed between the check above and here (synchronous close cannot,
+      // but keep the install atomic against any future await insertion).
+      poller.close();
+      return;
+    }
+    this.poller = poller;
+    void poller.tick();
+    const schedule = this.deps.schedule ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
+    this.timerHandle = schedule(() => void poller.tick(), this.pollMs);
+  }
+
+  // close aborts the real in-flight bootstrap request, closes the poller
+  // (aborting its real request too), and cancels the timer. Idempotent.
+  close(): void {
+    this.closed = true;
+    this.bootstrapReq?.abort();
+    this.bootstrapReq = null;
+    this.poller?.close();
+    if (this.timerHandle !== null) {
+      const cancel = this.deps.cancelSchedule ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>));
+      cancel(this.timerHandle);
+      this.timerHandle = null;
+    }
   }
 }
