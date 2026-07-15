@@ -1,8 +1,9 @@
 # SP0 Native Managed Runtime — Evidence Report
 
-Status: **SP0 P1–P3 DELIVERED — submitted for independent review. SP0.5 / SP1 /
-Cleanup / A1.1 provider-positive delivery / N1 / O1 / O2 NOT started. Approval
-capacity ZERO; `provenActionMapping` empty; frozen A1 contracts untouched.**
+Status: **SP0 P1–P3 + R1 remediation DELIVERED — resubmitted for independent
+review. SP0.5 / SP1 / Cleanup / A1.1 provider-positive delivery / N1 / O1 / O2
+NOT started. Approval capacity ZERO; `provenActionMapping` empty; frozen A1
+contracts untouched.**
 
 Date: 2026-07-15. Executor: Claude Code, canonical checkout
 `/Users/mhk/Documents/codex/DevRemote`, branch `feature/phase10-multi-adapter`.
@@ -10,7 +11,8 @@ Date: 2026-07-15. Executor: Claude Code, canonical checkout
 - Start remote HEAD: `1fc0e5a3e2055dca0944d13d5e02118c35ce2977` (handoff commit)
 - Accepted-evidence ancestry `42429c8acd4c2840a93e1ab11c53f8e21c34bc19`: PASS
 - Contract note: `docs/SP0_NATIVE_RUNTIME_CONTRACT_NOTE.md` (`e8c97c2`)
-- Implementation commits: `73b9a5b` (P1), `2b04033` (P2), `654ee8c` (P3)
+- Implementation commits: `73b9a5b` (P1), `2b04033` (P2), `654ee8c` (P3),
+  `8dcd876b4d4274005c0aee2c10dca145dbcd7953` (R1 remediation — final)
 - Authoritative handoff: `docs/NEXT_EXECUTOR_SP0_NATIVE_RUNTIME_HANDOFF.md`
 
 ## 1. Certified production path (handoff §1)
@@ -141,18 +143,72 @@ planned, fail-safe direction). ProcessID never appears in any DTO or log.
   reach `turn/start` in SP0. If a provider ever emitted `requestApproval` on
   this path, SP0 records nothing actionable and never responds (capacity zero).
 
-## 9. Final gate
+## 9. Remediation round R1 (reviewer blockers, all fixed)
 
-Run once on frozen HEAD (this report commit), results recorded below the
-marker in the final push message: `go build`, `go vet`, `go test -race ./...`,
-`git diff --check`, mobile `tsc --noEmit`, vendor-branch + ID-inference
-invariant scans, secret scan.
+Reviewer verdict on `8ecbb70`: REJECT with three production-path blockers.
+All fixed in implementation commit
+`8dcd876b4d4274005c0aee2c10dca145dbcd7953` (`fix(SP0-R1)`):
 
-## 10. Review marker
+1. **Silent legacy fallback when managed disabled** — the structured
+   `profileId=codex && detach` request now fails closed with an explicit
+   `managed codex runtime unavailable` error when the service is nil
+   (`internal/term/ipc.go`): no child, no session, no launcher, never the
+   controlled_pty authority model. Paired production IPC tests:
+   `TestManagedIPCCreate_DisabledFailsClosed_NoLegacyFallback` (exact error,
+   empty response id, empty mux registry) and
+   `TestManagedIPCCreate_EnabledUsesManagedRuntime`.
+2. **CreateDetached vs Shutdown not linearized** — single closing transition:
+   `s.mu` guarding `{closing, runtimes}` is the one linearization point. The
+   spawned child is published into the runtime map in the SAME critical
+   section that re-checks `closing`, BEFORE any post-spawn I/O — so either
+   Shutdown's snapshot owns the child (kills + reaps it) or the create
+   observes `closing` and rolls back its own child. New creates after
+   shutdown fail closed before verify/spawn. No lock is held across external
+   I/O. `App.Shutdown` ordering fixed: IPC stops accepting (step 5) BEFORE
+   managed shutdown (step 6); an in-flight handler past accept is covered by
+   the closing state. Deterministic barrier tests (narrow `createBarrier`
+   seam, nil in production): `TestManagedCreate_ShutdownRace_PostSpawn`
+   (unpublished window → create rolls back own child),
+   `TestManagedCreate_ShutdownRace_PostRegister` (published window →
+   shutdown snapshot owns the child; resumed create fails and removes the
+   record), `TestManagedCreate_AfterShutdown_FailsBeforeSpawn` (launcher
+   never invoked). Non-vacuous: under the previous ordering the post-spawn
+   test returns a register-time error instead of the fail-closed message and
+   the post-register test's child is absent from the shutdown snapshot.
+3. **REST list dependent on observer discovery** — new
+   `GET /api/managed-sessions` served ENTIRELY from the owned registry
+   (`HandleManagedSessions`), wired in both auth modes with sessions:read.
+   It never touches `mux.Registry`, discovery, or telemetry. This is the
+   SP0-certified managed list; managed rows appended to `/api/sessions`
+   remain a coexistence convenience sharing the legacy snapshot's
+   availability. Negative test `TestManagedREST_BoundedWhileDiscoveryHangs`:
+   tmux/cmux `ListSessions` BLOCKED on a barrier (hang, not error) while a
+   concurrent observer call occupies discovery — managed list/get/create all
+   complete within the bound, and a later discovery success does not change
+   the managed status.
+
+The R1 live Codex turn was NOT re-run (reviewer direction: avoid cost and
+duplication); the §4 live proof remains the recorded production-positive
+evidence and the remediation did not alter the pinned launch pipeline's
+happy path (P1/P2/P3 focused suites re-run green).
+
+## 10. Final gate (frozen remediation HEAD)
+
+Run once on frozen implementation HEAD
+`8dcd876b4d4274005c0aee2c10dca145dbcd7953` via `sh scripts/build-gate.sh`:
 
 ```text
-REVIEW REQUEST: SP0 Native Managed Runtime — <FINAL-HEAD-SHA>
+--- Backend ---  go build OK / go vet OK / go test -race OK / git diff --check OK
+--- Mobile ---   npm run typecheck OK / npm test OK / android kotlin compile OK
+--- Invariants --- vendor branch scan OK / ID inference scan OK
+--- Security --- secret scan OK
+=== ALL GATES PASSED ===
 ```
 
-(The exact full SHA is stated in the executor's final report; this document is
-part of that frozen tree.)
+This report commit is docs-only on top of that verified tree.
+
+## 11. Review marker
+
+```text
+REVIEW REQUEST: SP0 Native Managed Runtime — 8dcd876b4d4274005c0aee2c10dca145dbcd7953
+```
