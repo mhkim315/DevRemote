@@ -149,9 +149,9 @@ A1  Approval Safety Core                      FROZEN after independent R11 ACCEP
 A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native runtime slices; provider-positive approval remains SP1
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
-SP1 Native Approval                           STAGED after SP0.5 ACCEPT: P1 observation -> P2A exact delivery/consumption -> P2B atomic actionability -> P3 authenticated live proof; independent stop gate after every packet
-A1.2 Claude Approval Extension                OPTIONAL FOLLOW-UP (not automatically an N1 prerequisite; separate evidence and authorization required)
-N1  Notifications                             BLOCKED until independent SP1/A1.1 ACCEPT
+SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
+A1.2 Claude Approval Extension                C0 EVIDENCE AUTHORIZED (stable PermissionRequest exact-invocation/consumption proof first; no actionability until staged acceptance)
+N1  Notifications                             BLOCKED by current product sequencing until independent A1.2 ACCEPT or an explicit A1.2 BLOCKED/defer decision
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
@@ -179,14 +179,17 @@ M3-auth-1B
 → SP0 native managed runtime
 → SP0.5 managed I/O and lifecycle
 → SP1 native approval / A1.1 provider-positive completion
+→ A1.2 Claude approval extension
 → N1 notifications
 → O1 deterministic broker
 → O2 developer-verifier loop
 ```
 
-A1.2 is deliberately outside the critical sequence. If later authorized, it is a
-Claude-specific extension review and implementation, not a reason to delay N1 after
-A1.1 acceptance and not a generic provider SDK.
+A1.2 was previously optional, but the product owner authorized the Claude extension
+before N1 on 2026-07-15. It remains a Claude-specific staged extension, not a generic
+provider SDK. C0 is a one-day evidence gate; if the stable provider surface cannot
+prove exact invocation and consumption, the track stops BLOCKED and the product owner
+may explicitly defer it rather than weakening approval authority.
 
 SP1 is governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and
 `docs/NEXT_EXECUTOR_SP1_NATIVE_APPROVAL_HANDOFF.md`. Queue admission is not provider
@@ -602,10 +605,11 @@ allow/decline followed by matching resolved notifications, but did not complete 
 platform-neutral certification interface; and leaves process-image identity, ordered
 wire evidence, cleanup/failure traces and the bounded production entry path open.
 
-A1.2 is only a possible later Claude-specific extension. It must first prove exact
-hook invocation identity, one-response ownership and provider consumption. It must
-not modify the frozen A1 core or extract a speculative generic plugin SDK, and it is
-not automatically an N1 prerequisite.
+A1.2 is now authorized before N1 under the current product sequence. It must first
+prove exact hook invocation identity, one-response ownership and provider consumption
+in the bounded C0 evidence packet. It must not modify the frozen A1 core or extract a
+speculative generic plugin SDK. N1 begins after independent A1.2 acceptance or an
+explicit product decision to defer an honestly BLOCKED Claude provider surface.
 
 Authority boundary: `waiting_approval` status is display-only. Approval authority
 must come from ApprovalStore state bound to exact session ID, approval ID,
