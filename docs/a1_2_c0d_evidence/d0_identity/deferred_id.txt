@@ -1,4 +1,0 @@
-88a5178c-164c-4e26-af61-29da8a48e20c
-call_00_QIJDDcGpqr4bIOtmsi7f8436
-Bash
-{"command": "echo C0D-ok > /Users/mhk/.claude/jobs/55602f4b/tmp/c0d/work-d0b/c0d-probe.txt", "description": "Write probe marker file"}
