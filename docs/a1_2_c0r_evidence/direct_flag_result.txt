@@ -1,0 +1,20 @@
+Evidence type: bounded structural projection of the direct invocation
+Executable: ~/.local/share/claude/versions/2.1.209
+Version: 2.1.209 (Claude Code)
+SHA-256: 59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c
+Architecture: Mach-O 64-bit executable arm64
+Flag parser result: ACCEPTED
+MCP server status: connected
+MCP protocol version: 2025-11-25
+MCP calls observed: initialize, notifications/initialized, tools/list
+Permission tools/call observed: NO
+Provider turn result: authentication_failed
+Process exit code: 1
+stdout: 2955 bytes of stream-json init/authentication-failure records
+stderr: 0 bytes
+stdout terminal result: Not logged in; login required
+Provider side effect marker: absent
+Ambient auth status after run: loggedIn=false, authMethod=none
+
+Session UUIDs, absolute home paths, memory paths, prompt text, and unrelated
+customization names were deliberately omitted from this committed projection.

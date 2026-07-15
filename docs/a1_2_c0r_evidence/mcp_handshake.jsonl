@@ -1,0 +1,5 @@
+{"direction":"in","message":{"id":0,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{"elicitation":{},"roots":{"listChanged":true}},"clientInfo":{"description":"Anthropic's agentic coding tool","name":"claude-code","title":"Claude Code","version":"2.1.209","websiteUrl":"https://claude.com/claude-code"},"protocolVersion":"2025-11-25"}}}
+{"direction":"out","message":{"id":0,"jsonrpc":"2.0","result":{"capabilities":{"tools":{}},"protocolVersion":"2025-11-25","serverInfo":{"name":"pokit-c0r-probe","version":"1"}}}}
+{"direction":"in","message":{"jsonrpc":"2.0","method":"notifications/initialized"}}
+{"direction":"in","message":{"id":1,"jsonrpc":"2.0","method":"tools/list"}}
+{"direction":"out","message":{"id":1,"jsonrpc":"2.0","result":{"tools":[{"description":"C0R isolated permission decision probe","inputSchema":{"additionalProperties":true,"type":"object"},"name":"permission_prompt"}]}}}
