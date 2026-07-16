@@ -121,9 +121,18 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	cwdMarker := cwd                 // CWD
 	// Hook token: extract the bridge URL from hook.sh.
 	// Format: #!/bin/sh\ncurl -s -X POST -d @- '<URL>'\n
-	hookScript, _ := os.ReadFile(filepath.Join(hookDir, "hook.sh"))
+	hookScript, err := os.ReadFile(filepath.Join(hookDir, "hook.sh"))
+	if err != nil {
+		t.Fatalf("cannot read hook script: %v", err)
+	}
 	hookToken := extractHookURL(string(hookScript))
-	t.Logf("hook token: %.40s...", hookToken)
+	if hookToken == "" {
+		t.Fatal("hook token extraction failed — empty URL")
+	}
+	if !strings.HasPrefix(hookToken, "http://127.0.0.1:") || !strings.Contains(hookToken, "/hook?token=") {
+		t.Fatalf("hook token: unexpected URL structure")
+	}
+	t.Logf("hook token length: %d", len(hookToken))
 
 	// Provider payload marker: appears in stream-json deferred_tool_use.input.
 	payloadMarker := "c1d-probe-ok"
