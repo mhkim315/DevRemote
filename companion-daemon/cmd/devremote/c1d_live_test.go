@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -23,8 +26,14 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 	const expectedDigest = "59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c"
 	if digest != expectedDigest {
-		t.Fatalf("POKIT_CLAUDE_DIGEST mismatch: got %s, want %s", digest, expectedDigest)
+		t.Fatalf("digest mismatch")
 	}
+
+	// Capture the production daemon log sink (Go log package → stderr).
+	var logBuf bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(io.MultiWriter(origWriter, &logBuf))
+	defer log.SetOutput(origWriter)
 
 	cfg := term.PinnedClaudeConfigWithDigest(digest)
 	cfg.Bin = cfg.PinnedPath
@@ -35,12 +44,18 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		t.Fatalf("SetApprovalStore: %v", err)
 	}
 
-	dir, err := os.MkdirTemp("/tmp", "c1d-live")
+	ipcDir, err := os.MkdirTemp("/tmp", "c1d-ipc")
 	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
+		t.Fatalf("mkdtemp ipc: %v", err)
 	}
-	defer os.RemoveAll(dir)
-	sock := filepath.Join(dir, "d.sock")
+	defer os.RemoveAll(ipcDir)
+	sock := filepath.Join(ipcDir, "d.sock")
+
+	cwd, err := os.MkdirTemp("/tmp", "c1d-cwd")
+	if err != nil {
+		t.Fatalf("mkdtemp cwd: %v", err)
+	}
+	defer os.RemoveAll(cwd)
 
 	reg, _ := mux.NewRegistry()
 	ipc, err := term.StartIPCServer(sock, reg, nil, nil, nil, nil, nil, nil, svc)
@@ -50,7 +65,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	defer ipc.Close()
 	defer os.Remove(sock)
 
-	body := buildRunCreateRequest([]string{"claude"}, dir, true)
+	body := buildRunCreateRequest([]string{"claude"}, cwd, true)
 	payload, _ := json.Marshal(body)
 
 	conn, err := net.Dial("unix", sock)
@@ -69,7 +84,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 
 	var created map[string]string
 	if err := json.Unmarshal([]byte(line), &created); err != nil {
-		t.Fatalf("decode response %q: %v", line, err)
+		t.Fatalf("decode response: %v", err)
 	}
 	if created["error"] != "" {
 		t.Fatalf("create error: %s", created["error"])
@@ -78,34 +93,45 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	if !strings.HasPrefix(id, "claude_headless:") {
 		t.Fatalf("unexpected session ID: %s", id)
 	}
-	t.Logf("C1D-LIVE created: %s", id)
+	t.Logf("created: %s", id)
 
 	rec, ok := svc.Registry().Get(id)
 	if !ok {
-		t.Fatal("session not in registry")
+		t.Fatal("not in registry")
 	}
 	if rec.Provider != "claude" || rec.Version != "2.1.209" || rec.Epoch != 1 {
 		t.Errorf("binding: provider=%s version=%s epoch=%d", rec.Provider, rec.Version, rec.Epoch)
 	}
 	if rec.CertifiedDigest != expectedDigest {
-		t.Errorf("digest: got %s want %s", rec.CertifiedDigest, expectedDigest)
+		t.Errorf("digest mismatch")
 	}
 
-	// Production artifacts recorded during launch.
 	hookDir := rec.HookDir
 	pid := rec.PID
-	t.Logf("C1D-LIVE artifacts: hookDir=%s pid=%d", hookDir, pid)
-	if hookDir == "" {
-		t.Fatal("hookDir not recorded — observability seam missing")
+	t.Logf("artifacts: hookDir=%s pid=%d", hookDir, pid)
+	if hookDir == "" || pid <= 0 {
+		t.Fatal("observability seam: hookDir or PID missing")
 	}
-	if pid <= 0 {
-		t.Fatal("PID not recorded — observability seam missing")
+	if _, err := os.Stat(hookDir); err != nil {
+		t.Errorf("hook dir missing during runtime: %v", err)
 	}
 
-	// Hook directory must exist during runtime.
-	if _, err := os.Stat(hookDir); err != nil {
-		t.Errorf("hook dir not found during runtime: %v", err)
+	// ── Unique per-run privacy markers ──
+	cmdMarker := "echo c1d-probe-ok" // raw command + tool input
+	cwdMarker := cwd                 // CWD
+	// Hook token: the bridge URL from hook.sh.
+	hookScript, _ := os.ReadFile(filepath.Join(hookDir, "hook.sh"))
+	hookToken := strings.TrimSpace(string(hookScript))
+	t.Logf("hook token length: %d", len(hookToken))
+
+	// Provider payload marker: appears in stream-json deferred_tool_use.input.
+	payloadMarker := "c1d-probe-ok"
+
+	allMarkers := []string{cmdMarker, cwdMarker}
+	if len(hookToken) > 0 {
+		allMarkers = append(allMarkers, hookToken)
 	}
+	// Note: payloadMarker is same as cmdMarker (both contain c1d-probe-ok).
 
 	// Bounded poll for exactly one observation.
 	deadline := time.Now().Add(60 * time.Second)
@@ -121,43 +147,41 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("timed out waiting for exactly 1 observation")
+		t.Fatal("timed out waiting for observation")
 	}
-	t.Logf("C1D-LIVE observation: id=%s options=%d state=%s", obs.ID, len(obs.Options), obs.State)
+	t.Logf("observation: id=%s options=%d state=%s", obs.ID, len(obs.Options), obs.State)
 
 	if len(obs.Options) != 0 {
-		t.Errorf("non-actionable: got %d options, want 0", len(obs.Options))
+		t.Errorf("non-actionable: got %d options", len(obs.Options))
 	}
 
-	// ── POKIT public log evidence privacy ──
-	// ListSafe + List DTOs are the daemon's public API surface.
-	// Unique markers: certification prompt "echo c1d-probe-ok" (command) and
-	// temp dir path (CWD). Neither must appear in public DTOs.
+	// ── Privacy: markers must not appear in any public surface ──
+
+	// IPC create response.
+	if strings.Contains(line, cmdMarker) || strings.Contains(line, cwdMarker) {
+		t.Error("marker in IPC create response")
+	}
+
+	// ListSafe DTO.
 	dtoJSON, _ := json.Marshal(obs)
 	dtoStr := string(dtoJSON)
-	for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
-		if strings.Contains(dtoStr, secret) {
-			t.Errorf("credential in ListSafe DTO: %s", secret)
+	for _, m := range allMarkers {
+		if strings.Contains(dtoStr, m) {
+			t.Errorf("marker in ListSafe DTO: %.40s...", m)
 		}
 	}
-	if strings.Contains(dtoStr, "echo c1d-probe-ok") {
-		t.Error("command marker in ListSafe DTO")
+	// CTA, claim, delivery must be absent.
+	if strings.Contains(dtoStr, "claim_token") || strings.Contains(dtoStr, "delivery") {
+		t.Error("CTA/claim/delivery material in DTO")
 	}
-	if strings.Contains(dtoStr, dir) {
-		t.Error("CWD marker in ListSafe DTO")
-	}
+
+	// List DTO.
 	for _, a := range store.List(id) {
-		listJSON, _ := json.Marshal(a)
-		listStr := string(listJSON)
-		if strings.Contains(listStr, "echo c1d-probe-ok") {
-			t.Error("command marker in List DTO")
-		}
-		if strings.Contains(listStr, dir) {
-			t.Error("CWD marker in List DTO")
-		}
-		for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
-			if strings.Contains(listStr, secret) {
-				t.Errorf("credential in List DTO: %s", secret)
+		j, _ := json.Marshal(a)
+		s := string(j)
+		for _, m := range allMarkers {
+			if strings.Contains(s, m) {
+				t.Errorf("marker in List DTO: %.40s...", m)
 			}
 		}
 	}
@@ -179,14 +203,27 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 
 	// Hook directory: must be removed by terminate().
 	if _, err := os.Stat(hookDir); !os.IsNotExist(err) {
-		t.Errorf("hook dir not removed after shutdown: %s", hookDir)
+		t.Errorf("hook dir not removed: %s", hookDir)
 	}
 
-	// Child process: must be reaped.
-	if proc, err := os.FindProcess(pid); err == nil {
+	// Direct PID: must not be alive.
+	proc, findErr := os.FindProcess(pid)
+	if findErr == nil {
 		if proc.Signal(syscall.Signal(0)) == nil {
-			t.Errorf("child PID %d still alive after shutdown", pid)
+			t.Errorf("PID %d still alive", pid)
 		}
+	}
+
+	// Process group: must be gone (ESRCH = no such process).
+	if err := syscall.Kill(-pid, syscall.Signal(0)); err == nil {
+		t.Errorf("process group %d still exists after reap", pid)
+	} else if err != syscall.ESRCH {
+		t.Logf("pg kill result (non-ESRCH, pid may be repurposed): %v", err)
+	}
+
+	// Production wait/reap: registry confirms exited.
+	if r, ok := svc.Registry().Get(id); !ok || !r.Exited {
+		t.Error("child not marked exited — wait/reap incomplete")
 	}
 
 	// Socket.
@@ -194,18 +231,32 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		t.Errorf("socket not removable: %v", err)
 	}
 
-	// Registry: child must be marked exited.
-	if r, ok := svc.Registry().Get(id); !ok || !r.Exited {
-		t.Error("child not exited in registry after shutdown")
-	}
-
 	// No live records.
 	for _, s := range store.ListSafe(id) {
 		if s.State == string(term.ApprovalPending) || s.State == string(term.ApprovalExecuting) {
-			t.Errorf("live record after stop: id=%s state=%s", s.ID, s.State)
+			t.Errorf("live record after stop: %s", s.ID)
 		}
 	}
 
-	t.Logf("C1D-LIVE PASS: provider=%s version=%s epoch=%d digest=%s",
-		rec.Provider, rec.Version, rec.Epoch, rec.CertifiedDigest)
+	// ── Daemon log privacy ──
+	logStr := logBuf.String()
+	for _, m := range allMarkers {
+		if strings.Contains(logStr, m) {
+			t.Errorf("marker in daemon log: %.40s...", m)
+		}
+	}
+	for _, m := range []string{cmdMarker, payloadMarker, cwdMarker} {
+		if strings.Contains(logStr, m) {
+			t.Errorf("marker in daemon log: %s", m)
+		}
+	}
+
+	// Also check captured log for credential material.
+	for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
+		if strings.Contains(logStr, secret) {
+			t.Errorf("credential in daemon log: %s", secret)
+		}
+	}
+
+	t.Logf("PASS: provider=%s version=%s epoch=%d", rec.Provider, rec.Version, rec.Epoch)
 }
