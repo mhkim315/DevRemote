@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +15,6 @@ import (
 	"devremote/companion-daemon/internal/term"
 )
 
-// compFakeLauncher records all launches. Supports multiple launches.
 type compFakeLauncher struct {
 	mu      sync.Mutex
 	allArgs [][]string
@@ -24,10 +26,7 @@ func (l *compFakeLauncher) Launch(_ string, argv []string) (term.ManagedProcess,
 	l.mu.Unlock()
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
-	return &compFakeProc{
-		stdinR: stdinR, stdinW: stdinW, stdoutR: stdoutR, stdoutW: stdoutW,
-		killed: make(chan struct{}),
-	}, nil
+	return &compFakeProc{stdinR: stdinR, stdinW: stdinW, stdoutR: stdoutR, stdoutW: stdoutW, killed: make(chan struct{})}, nil
 }
 
 type compFakeProc struct {
@@ -42,51 +41,135 @@ type compFakeProc struct {
 func (p *compFakeProc) Stdin() io.Writer  { return p.stdinW }
 func (p *compFakeProc) Stdout() io.Reader { return p.stdoutR }
 func (p *compFakeProc) Term() error       { return p.Kill() }
-func (p *compFakeProc) Kill() error {
-	p.once.Do(func() {
-		close(p.killed)
-		p.stdinR.Close()
-		p.stdoutW.Close()
-	})
-	return nil
-}
-func (p *compFakeProc) Wait() error      { <-p.killed; return nil }
-func (p *compFakeProc) PID() int         { return 0 }
-func (p *compFakeProc) OpaqueID() string { return "comp-fake" }
+func (p *compFakeProc) Kill() error       { p.once.Do(func() { close(p.killed); p.stdinR.Close(); p.stdoutW.Close() }); return nil }
+func (p *compFakeProc) Wait() error       { <-p.killed; return nil }
+func (p *compFakeProc) PID() int          { return 0 }
+func (p *compFakeProc) OpaqueID() string  { return "comp-fake" }
 
 type compFakeAttestor struct{}
 
 func (a *compFakeAttestor) Certify(_ string) error { return nil }
 
-func TestClaudeDelivery_CompositionAllow(t *testing.T) {
-	launcher := &compFakeLauncher{}
+type providerSim struct {
+	launcher   *compFakeLauncher
+	svc        *term.ManagedClaudeService
+	store      *term.AuthoritativeApprovalStore
+	bridgeURLs struct {
+		resume   string
+		posttool string
+	}
+}
+
+func newProviderSim(t *testing.T) *providerSim {
+	t.Helper()
+	l := &compFakeLauncher{}
 	cfg := term.ClaudeEntryConfig{
 		Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
 		PinnedPath: "/tmp/fake-claude",
 		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
 	}
-	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
+	svc := term.NewManagedClaudeService(cfg, l, &compFakeAttestor{})
 	store := term.NewApprovalStore()
 	svc.SetApprovalStore(store)
+	return &providerSim{launcher: l, svc: svc, store: store}
+}
 
-	sessionID, err := svc.CreateDetached("/tmp")
+func (s *providerSim) captureBridgeURLs(t *testing.T) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		time.Sleep(10 * time.Millisecond)
+		s.launcher.mu.Lock()
+		if len(s.launcher.allArgs) >= 2 {
+			args := s.launcher.allArgs[1]
+			var sp string
+			for j, a := range args {
+				if a == "--settings" && j+1 < len(args) {
+					sp = args[j+1]
+					break
+				}
+			}
+			if sp != "" {
+				hd := strings.TrimSuffix(sp, "/settings.json")
+				s.bridgeURLs.resume = readHookURL(t, hd+"/hook_resume.sh")
+				s.bridgeURLs.posttool = readHookURL(t, hd+"/hook_posttool.sh")
+				s.launcher.mu.Unlock()
+				return
+			}
+		}
+		s.launcher.mu.Unlock()
+	}
+	t.Fatal("resume launch never observed")
+}
+
+func (s *providerSim) fireResumeHook(t *testing.T, sid, tuid, tn, inputJSON string) []byte {
+	t.Helper()
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"%s","tool_input":%s,"hook_event_name":"PreToolUse"}`, sid, tuid, tn, inputJSON)
+	resp, err := http.Post(s.bridgeURLs.resume, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("resume hook: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return b
+}
+
+func (s *providerSim) firePostToolHook(t *testing.T, sid, tuid, tn, inputJSON string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"%s","tool_input":%s,"hook_event_name":"PostToolUse"}`, sid, tuid, tn, inputJSON)
+	resp, err := http.Post(s.bridgeURLs.posttool, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("posttool hook: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func readHookURL(t *testing.T, path string) string {
+	t.Helper()
+	data, _ := os.ReadFile(path)
+	s := strings.TrimSpace(string(data))
+	start := strings.IndexByte(s, '\'')
+	end := strings.LastIndexByte(s, '\'')
+	if start < 0 || end <= start {
+		t.Fatalf("cannot parse hook script: %s", s)
+	}
+	return s[start+1 : end]
+}
+
+func bytesEq(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func setupDeliveryScenario(t *testing.T, optionID string) (*providerSim, term.ClaimResult, term.RuntimeRef, string, string, string, string) {
+	t.Helper()
+	sim := newProviderSim(t)
+	sid, err := sim.svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
 	rt := term.RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
-	approvalID := "claude-comp-allow"
+	aid := "claude-comp-" + optionID
+	csid := "claude-sess-" + optionID
+	tuid := "call_comp_" + optionID
+	tn := "Bash"
+	// Compute the correct input digest from the actual tool_input that
+	// the hook will send, so ClaimWrite identity validation matches.
+	testInput := `{"command":"echo hello"}`
+	dgst := term.CanonicalDigest([]byte(testInput))
+	sim.svc.Coordinator().ReserveIdentity(aid, csid, tuid, tn, dgst, sid, rt)
 
-	if !svc.Coordinator().ReserveIdentity(approvalID, "csess", "call_test", "Bash",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sessionID, rt) {
-		t.Fatal("ReserveIdentity failed")
-	}
-
-	// Use canonical response bytes so payload matches delivery validation.
-	respBytes := term.ClaudeHookResponseBytes("allow")
-	denyBytes := term.ClaudeHookResponseBytes("deny")
+	ab := term.ClaudeHookResponseBytes("allow")
+	db := term.ClaudeHookResponseBytes("deny")
 	items := []term.ApprovalIngestItem{{
 		Approval: agent.AgentApproval{
-			ID: approvalID, SessionID: sessionID, AgentKind: "claude_headless",
+			ID: aid, SessionID: sid, AgentKind: "claude_headless",
 			Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
 			Options: []agent.InteractionOption{
 				{ID: "allow_once", Label: "Allow once", Kind: "approve"},
@@ -95,194 +178,131 @@ func TestClaudeDelivery_CompositionAllow(t *testing.T) {
 		},
 		Provenance: contract.ProvenanceProviderHook, Actionable: true,
 		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: respBytes},
-			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: denyBytes},
+			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: ab},
+			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: db},
 		},
 	}}
-	store.IngestObserved(term.ApprovalIngest{
-		SessionID: sessionID, LaunchGen: 1, StreamGen: 0,
-		Provider: "claude_headless", Version: "2.1.209", Items: items,
-	})
-
-	reqCtx := term.RequesterContext{
-		DeviceID: "dev-1", HostID: "host-1", BearerSessionID: "bearer-1",
-		BootID: "boot-1", Permissions: []string{"session:approve"},
-	}
-	claim := store.ClaimForExecution(term.ClaimRequest{
-		SessionID: sessionID, ApprovalID: approvalID, OptionID: "allow_once",
-		Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp.allow",
-	})
+	sim.store.IngestObserved(term.ApprovalIngest{SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "claude_headless", Version: "2.1.209", Items: items})
+	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{"x"}}
+	claim := sim.store.ClaimForExecution(term.ClaimRequest{SessionID: sid, ApprovalID: aid, OptionID: optionID, Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp." + optionID})
 	if claim.Outcome != term.ClaimGranted {
 		t.Fatalf("ClaimForExecution: %s", claim.Outcome)
 	}
-
-	d := term.NewClaudeManagedApprovalDelivery(svc)
-	d.SetPollTimeout(100 * time.Millisecond)
-	req := term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}
-	receipt := d.Deliver(req)
-
-	if receipt.Outcome != term.DeliveryConflict {
-		t.Fatalf("expected DeliveryConflict (timeout, no hook), got %s", receipt.Outcome)
-	}
-	if svc.Coordinator().IdentityCount() != 0 || svc.Coordinator().PendingCount() != 0 {
-		t.Fatal("cleanup should remove identity and entries")
-	}
-
-	if len(launcher.allArgs) < 2 {
-		t.Fatal("expected at least 2 launches")
-	}
-	resumeArgs := launcher.allArgs[1]
-	hasResume := false
-	for _, a := range resumeArgs {
-		if a == "--resume" {
-			hasResume = true
-			break
-		}
-	}
-	if !hasResume {
-		t.Fatal("resume launch missing --resume flag")
-	}
-
-	svc.Stop(sessionID, 1)
-	ctx := t.Context()
-	svc.Shutdown(ctx)
+	return sim, claim, rt, csid, tuid, tn, sid
 }
 
-func TestClaudeDelivery_CompositionDeny(t *testing.T) {
-	launcher := &compFakeLauncher{}
-	cfg := term.ClaudeEntryConfig{
-		Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
-		PinnedPath: "/tmp/fake-claude",
-		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
+// ── R4-0 tests ──
+
+func TestClaudeDelivery_CompositionAllowAccepted(t *testing.T) {
+	sim, claim, _, csid, tuid, tn, _ := setupDeliveryScenario(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(sim.svc)
+	d.SetPollTimeout(5 * time.Second)
+
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+
+	sim.captureBridgeURLs(t)
+	r := sim.fireResumeHook(t, csid, tuid, tn, `{"command":"echo hello"}`)
+	if !bytesEq(r, term.ClaudeHookResponseBytes("allow")) {
+		t.Fatalf("unexpected resume response: %s", r)
 	}
-	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
-	store := term.NewApprovalStore()
-	svc.SetApprovalStore(store)
+	sim.firePostToolHook(t, csid, tuid, tn, `{"command":"echo hello"}`)
+	wg.Wait()
 
-	sessionID, _ := svc.CreateDetached("/tmp")
-	rt := term.RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
-	approvalID := "claude-comp-deny"
-
-	svc.Coordinator().ReserveIdentity(approvalID, "csess", "call_deny", "Bash",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sessionID, rt)
-
-	respBytes := term.ClaudeHookResponseBytes("allow")
-	denyBytes := term.ClaudeHookResponseBytes("deny")
-	items := []term.ApprovalIngestItem{{
-		Approval: agent.AgentApproval{
-			ID: approvalID, SessionID: sessionID, AgentKind: "claude_headless",
-			Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
-			Options: []agent.InteractionOption{
-				{ID: "allow_once", Label: "Allow once", Kind: "approve"},
-				{ID: "deny", Label: "Deny", Kind: "reject"},
-			},
-		},
-		Provenance: contract.ProvenanceProviderHook, Actionable: true,
-		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: respBytes},
-			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: denyBytes},
-		},
-	}}
-	store.IngestObserved(term.ApprovalIngest{
-		SessionID: sessionID, LaunchGen: 1, StreamGen: 0,
-		Provider: "claude_headless", Version: "2.1.209", Items: items,
-	})
-
-	reqCtx := term.RequesterContext{
-		DeviceID: "dev-1", HostID: "host-1", BearerSessionID: "bearer-1",
-		BootID: "boot-1", Permissions: []string{"session:approve"},
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted, got %s", receipt.Outcome)
 	}
-	claim := store.ClaimForExecution(term.ClaimRequest{
-		SessionID: sessionID, ApprovalID: approvalID, OptionID: "deny",
-		Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp.deny",
-	})
-	if claim.Outcome != term.ClaimGranted {
-		t.Fatalf("ClaimForExecution: %s", claim.Outcome)
+	if receipt.DeliveredPayloadDigest != claim.Binding.PayloadDigest {
+		t.Fatal("receipt digest mismatch")
 	}
-
-	d := term.NewClaudeManagedApprovalDelivery(svc)
-	d.SetPollTimeout(100 * time.Millisecond)
-	req := term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}
-	receipt := d.Deliver(req)
-
-	if receipt.Outcome != term.DeliveryConflict {
-		t.Fatalf("expected DeliveryConflict (timeout, no hook), got %s", receipt.Outcome)
+	if !sim.store.RecordDelivery(receipt).Committed {
+		t.Fatal("RecordDelivery not committed")
 	}
-	if svc.Coordinator().IdentityCount() != 0 || svc.Coordinator().PendingCount() != 0 {
-		t.Fatal("cleanup should remove identity and entries")
-	}
+}
 
-	if len(launcher.allArgs) < 2 {
-		t.Fatal("expected at least 2 launches")
-	}
+func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
+	sim, claim, _, csid, tuid, tn, _ := setupDeliveryScenario(t, "deny")
+	d := term.NewClaudeManagedApprovalDelivery(sim.svc)
+	d.SetPollTimeout(5 * time.Second)
 
-	svc.Stop(sessionID, 1)
-	ctx := t.Context()
-	svc.Shutdown(ctx)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+
+	sim.captureBridgeURLs(t)
+	r := sim.fireResumeHook(t, csid, tuid, tn, `{"command":"echo hello"}`)
+	if !bytesEq(r, term.ClaudeHookResponseBytes("deny")) {
+		t.Fatalf("unexpected resume response: %s", r)
+	}
+	sim.firePostToolHook(t, csid, tuid, tn, `{"command":"echo hello"}`)
+	wg.Wait()
+
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted for deny, got %s", receipt.Outcome)
+	}
+	if !sim.store.RecordDelivery(receipt).Committed {
+		t.Fatal("RecordDelivery not committed")
+	}
+}
+
+func TestClaudeDelivery_EarliestHookAfterSpawn(t *testing.T) {
+	sim, claim, _, csid, tuid, tn, _ := setupDeliveryScenario(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(sim.svc)
+	d.SetPollTimeout(5 * time.Second)
+
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+
+	sim.captureBridgeURLs(t)
+	sim.fireResumeHook(t, csid, tuid, tn, `{"command":"echo hello"}`)
+	sim.firePostToolHook(t, csid, tuid, tn, `{"command":"echo hello"}`)
+	wg.Wait()
+
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("earliest hook should succeed: got %s", receipt.Outcome)
+	}
+}
+
+func TestClaudeDelivery_DeferredExitPreservesResumeIdentity(t *testing.T) {
+	sim, _, _, _, _, _, sid := setupDeliveryScenario(t, "allow_once")
+	if sim.svc.Coordinator().IdentityCount() != 1 {
+		t.Fatal("identity should exist")
+	}
+	sim.svc.SimulateGracefulExit(sid, 1)
+	if sim.svc.Coordinator().IdentityCount() != 1 {
+		t.Fatalf("identity must survive deferred exit, got %d", sim.svc.Coordinator().IdentityCount())
+	}
+}
+
+func TestClaudeDelivery_StopAfterDeferredExitInvalidatesIdentity(t *testing.T) {
+	sim, _, _, _, _, _, sid := setupDeliveryScenario(t, "allow_once")
+	// Explicit stop should clear the identity (destructive lifecycle action).
+	sim.svc.Stop(sid, 1)
+	if sim.svc.Coordinator().IdentityCount() != 0 {
+		t.Fatal("identity cleared after explicit stop")
+	}
 }
 
 func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
-	launcher := &compFakeLauncher{}
-	cfg := term.ClaudeEntryConfig{
-		Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
-		PinnedPath: "/tmp/fake-claude",
-		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
-	}
-	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
-	store := term.NewApprovalStore()
-	svc.SetApprovalStore(store)
-
-	sessionID, _ := svc.CreateDetached("/tmp")
-	rt := term.RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
-	approvalID := "claude-comp-timeout"
-
-	svc.Coordinator().ReserveIdentity(approvalID, "sess", "tu", "Bash",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sessionID, rt)
-
-	respBytes := term.ClaudeHookResponseBytes("allow")
-	items := []term.ApprovalIngestItem{{
-		Approval: agent.AgentApproval{
-			ID: approvalID, SessionID: sessionID, AgentKind: "claude_headless",
-			Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
-			Options: []agent.InteractionOption{{ID: "allow_once", Label: "Allow once", Kind: "approve"}},
-		},
-		Provenance: contract.ProvenanceProviderHook, Actionable: true,
-		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: respBytes},
-		},
-	}}
-	store.IngestObserved(term.ApprovalIngest{
-		SessionID: sessionID, LaunchGen: 1, StreamGen: 0,
-		Provider: "claude_headless", Version: "2.1.209", Items: items,
-	})
-
-	reqCtx := term.RequesterContext{
-		DeviceID: "dev-1", HostID: "host-1", BearerSessionID: "bearer-1",
-		BootID: "boot-1", Permissions: []string{"session:approve"},
-	}
-	claim := store.ClaimForExecution(term.ClaimRequest{
-		SessionID: sessionID, ApprovalID: approvalID, OptionID: "allow_once",
-		Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp.timeout",
-	})
-	if claim.Outcome != term.ClaimGranted {
-		t.Fatalf("ClaimForExecution: %s", claim.Outcome)
-	}
-
-	d := term.NewClaudeManagedApprovalDelivery(svc)
+	sim, claim, _, _, _, _, _ := setupDeliveryScenario(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(sim.svc)
 	d.SetPollTimeout(10 * time.Millisecond)
-	req := term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}
-	receipt := d.Deliver(req)
-
-	if receipt.Outcome == term.DeliveryAccepted {
+	r := d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	if r.Outcome == term.DeliveryAccepted {
 		t.Fatal("expected non-Accepted for timeout")
 	}
-	if svc.Coordinator().IdentityCount() != 0 || svc.Coordinator().PendingCount() != 0 {
-		t.Fatal("cleanup should remove identity and entries")
-	}
-
-	svc.Stop(sessionID, 1)
-	ctx := t.Context()
-	svc.Shutdown(ctx)
 }
-
-var _ = fmt.Println

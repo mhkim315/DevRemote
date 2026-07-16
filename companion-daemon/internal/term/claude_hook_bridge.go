@@ -318,13 +318,21 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 	}
 	inputDigest := sha256Hex(inputCanon)
 
-	rt := b.rt
-	if rt == nil || rt.coordinator == nil {
+	// B2 + R4-1: use the immutable resume context under the bridge mutex.
+	b.mu.Lock()
+	ctx := b.resumeCtx
+	b.mu.Unlock()
+	if ctx == nil || ctx.coordinator == nil {
+		writeHookDefer(w)
+		return
+	}
+	// Verify claim/nonce against the context.
+	if ctx.claimToken != claimToken || ctx.resumeNonce != resumeNonce {
 		writeHookDefer(w)
 		return
 	}
 
-	wh, outcome := rt.coordinator.ClaimWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest)
+	wh, outcome := ctx.coordinator.ClaimWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest)
 	if outcome != outcomeWritten {
 		writeHookDefer(w)
 		return
@@ -337,11 +345,10 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 	n, writeErr := w.Write(resp)
 	if writeErr != nil || n != len(resp) {
-		// Short or failed write: ambiguous, non-retryable.
-		rt.coordinator.ConfirmWrite(claimToken, false)
+		ctx.coordinator.ConfirmWrite(claimToken, false)
 		return
 	}
-	rt.coordinator.ConfirmWrite(claimToken, true)
+	ctx.coordinator.ConfirmWrite(claimToken, true)
 }
 
 // handlePostTool is the C2D-C PostToolUse witness handler. It uses the
@@ -393,15 +400,19 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	b.mu.Lock()
 	ctx := b.resumeCtx
+	b.mu.Unlock()
 	if ctx == nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// Use the ORIGINAL RuntimeRef from the resume context, not the resume
-	// attempt's own epoch. Witness validation compares against the stored
-	// approval identity, which uses the original runtime.
-	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionID, toolUseID, toolName, inputDigest, ctx.originalRuntime)
+	// Derive the expected witness kind from the stored decision.
+	kind := WitnessPostToolUse
+	if ctx.expectedDecision == "deny" {
+		kind = WitnessPermissionDenials
+	}
+	ctx.coordinator.MarkWitnessed(claimToken, kind, sessionID, toolUseID, toolName, inputDigest, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }
 

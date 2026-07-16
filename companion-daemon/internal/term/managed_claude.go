@@ -79,6 +79,7 @@ type claudeManagedRuntime struct {
 	terminated          bool        // set by terminate()
 	ingestGen           int64       // bumped by terminate()
 	atomicTerminated    atomic.Bool // lock-free read for pre-ingest check
+	deferredExit        bool        // B4: set before terminate() to preserve coordinator identity
 	pendingObservations map[string]*claudePendingObservation
 	activeApprovals     []activeApproval
 	rejects             int
@@ -306,7 +307,14 @@ func (rt *claudeManagedRuntime) genApprovalToken() (string, error) {
 
 // pump reads Claude's stream-json stdout.
 func (rt *claudeManagedRuntime) pump() {
-	defer rt.terminate()
+	// B4: expected deferred exit must preserve the coordinator identity.
+	// Set deferredExit before terminate() so the coordinator is NOT cleared.
+	defer func() {
+		rt.turnMu.Lock()
+		rt.deferredExit = true
+		rt.turnMu.Unlock()
+		rt.terminate()
+	}()
 
 	staleTicker := time.NewTicker(30 * time.Second)
 	defer staleTicker.Stop()
@@ -403,7 +411,7 @@ func (rt *claudeManagedRuntime) terminate() {
 
 		// Invalidate coordinator BEFORE external I/O so reservation
 		// and termination are linearized under the coordinator mutex.
-		if rt.coordinator != nil {
+		if rt.coordinator != nil && !rt.deferredExit {
 			rt.coordinator.ClearRuntime(rt.sessionID, rt.epoch)
 		}
 
@@ -1015,6 +1023,27 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	return nil
 }
 
+// SimulateGracefulExit marks the runtime as having exited expectedly
+// (after tool_deferred) and calls terminate. This preserves coordinator
+// identities so the mobile claim/resume flow can use them. Exposed for
+// composition tests; must not be used in production.
+func (s *ManagedClaudeService) SimulateGracefulExit(sessionID string, epoch int64) error {
+	s.mu.Lock()
+	rt := s.runtimes[sessionID]
+	s.mu.Unlock()
+	if rt == nil {
+		return fmt.Errorf("managed claude session not found")
+	}
+	if rt.epoch != epoch {
+		return fmt.Errorf("stale session epoch")
+	}
+	rt.turnMu.Lock()
+	rt.deferredExit = true
+	rt.turnMu.Unlock()
+	rt.terminate()
+	return nil
+}
+
 func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -1070,4 +1099,14 @@ func sha256Hex(data []byte) string {
 	h := sha256.New()
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// CanonicalDigest computes the SHA-256 digest of canonical JSON for
+// use in tests and composition. Exported for cmd/devremote tests.
+func CanonicalDigest(raw []byte) string {
+	canon, err := canonicalJSON(json.RawMessage(raw))
+	if err != nil {
+		return ""
+	}
+	return sha256Hex(canon)
 }
