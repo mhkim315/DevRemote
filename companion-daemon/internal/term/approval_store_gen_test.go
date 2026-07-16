@@ -942,7 +942,7 @@ func TestClaimDelivery_RaceChurn(t *testing.T) {
 // creating any Approval record.
 func TestInstallRuntimeGeneration_CreatesSessionWithoutRecord(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
-	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated")
+if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated"); err != nil { t.Fatal(err) }
 
 	// Session must exist with the correct high-water.
 	if s.Len() != 1 {
@@ -967,7 +967,7 @@ func TestInstallRuntimeGeneration_RejectsLateStreamGen0(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
 
 	// Install metadata high-water at StreamGen=1 (simulating terminate).
-	s.InstallRuntimeGeneration("claude_headless:s1", 7, 1, "terminated")
+if err := s.InstallRuntimeGeneration("claude_headless:s1", 7, 1, "terminated"); err != nil { t.Fatal(err) }
 
 	// A late observation at StreamGen=0 must be rejected.
 	admitted := s.IngestObserved(ApprovalIngest{
@@ -1116,7 +1116,7 @@ func TestInstallRuntimeGeneration_SupersedesRecords(t *testing.T) {
 	})
 
 	// InstallRuntimeGeneration at a higher generation.
-	s.InstallRuntimeGeneration("codex:s1", 1, 1, "terminated")
+if err := s.InstallRuntimeGeneration("codex:s1", 1, 1, "terminated"); err != nil { t.Fatal(err) }
 
 	// The pending record must be invalidated.
 	snap, ok := s.LookupRecord("codex:s1", "a1")
@@ -1133,13 +1133,13 @@ func TestInstallRuntimeGeneration_SupersedesRecords(t *testing.T) {
 // does not supersede or change state beyond the first call.
 func TestInstallRuntimeGeneration_IdempotentSameGeneration(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
-	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated")
+if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated"); err != nil { t.Fatal(err) }
 	if s.Len() != 1 {
 		t.Fatalf("expected 1 session, got %d", s.Len())
 	}
 	// Same generation: no-op for hw. supersedeLocked runs (gen matches,
 	// not newer, so no supersede).
-	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again")
+if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again"); err != nil { t.Fatal(err) }
 	if s.Len() != 1 {
 		t.Fatalf("expected still 1 session, got %d", s.Len())
 	}
@@ -1153,7 +1153,7 @@ func TestInstallRuntimeGeneration_IdempotentSameGeneration(t *testing.T) {
 		}},
 	})
 	// Older generation InstallRuntimeGeneration must NOT supersede.
-	s.InstallRuntimeGeneration("codex:s1", 4, 0, "old-gen")
+if err := s.InstallRuntimeGeneration("codex:s1", 4, 0, "old-gen"); err != nil { t.Fatal(err) }
 	snap, ok := s.LookupRecord("codex:s1", "a1")
 	if !ok {
 		t.Fatal("record lost after older-gen InstallRuntimeGeneration (should be no-op)")
@@ -1179,7 +1179,7 @@ func TestInstallRuntimeGeneration_OlderGenDoesNotSupersedeCurrentApprovals(t *te
 	})
 
 	// Old runtime at gen (5, 1) terminates — must NOT supersede gen 10 records.
-	s.InstallRuntimeGeneration("codex:s1", 5, 1, "old-terminated")
+if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "old-terminated"); err != nil { t.Fatal(err) }
 
 	snap, ok := s.LookupRecord("codex:s1", "a-new")
 	if !ok {
@@ -1202,7 +1202,7 @@ func TestEvictOldestSession_SkipsLiveAuthority(t *testing.T) {
 	// Fill sessions so eviction pressure exists.
 	for i := 0; i < authMaxApprovalSessions-1; i++ {
 		sid := fmt.Sprintf("filler:s%d", i)
-		s.InstallRuntimeGeneration(sid, 1, 0, "filler")
+		if err := s.InstallRuntimeGeneration(sid, 1, 0, "filler"); err != nil { t.Fatal(err) }
 	}
 
 	// Create a session with a pending approval record.
@@ -1215,7 +1215,7 @@ func TestEvictOldestSession_SkipsLiveAuthority(t *testing.T) {
 	})
 
 	// Now trigger eviction by creating one more session (hits the limit).
-	s.InstallRuntimeGeneration("codex:new", 1, 0, "new")
+if err := s.InstallRuntimeGeneration("codex:new", 1, 0, "new"); err != nil { t.Fatal(err) }
 
 	// The live session must survive.
 	safe := s.ListSafe("codex:live")
@@ -1356,5 +1356,129 @@ func TestIngest_NewerGenSupersedesAtCapacity(t *testing.T) {
 		if dto.State == string(ApprovalPending) || dto.State == string(ApprovalExecuting) {
 			t.Fatalf("live record in ListSafe after newer gen superseded: id=%s state=%v", dto.ID, dto.State)
 		}
+	}
+}
+
+// TestInstallRuntimeGeneration_CapacityExhaustedFailClosed verifies that
+// when all 1024 session slots contain live authority, the 1025th installation
+// returns an error and Store size does not increase.
+func TestInstallRuntimeGeneration_CapacityExhaustedFailClosed(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Fill all session slots with live (pending) authority.
+	for i := 0; i < authMaxApprovalSessions; i++ {
+		sid := fmt.Sprintf("live:s%d", i)
+		s.Ingest(ApprovalIngest{
+			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+			Items: []ApprovalIngestItem{{
+				Approval:   agent.AgentApproval{ID: fmt.Sprintf("a%d", i), SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
+				Provenance: contract.ProvenanceNativeLog,
+			}},
+		})
+	}
+	if s.Len() != authMaxApprovalSessions {
+		t.Fatalf("expected %d sessions, got %d", authMaxApprovalSessions, s.Len())
+	}
+
+	// The 1025th session must be rejected — no safe victim exists.
+	err := s.InstallRuntimeGeneration("codex:overflow", 1, 0, "test")
+	if err == nil {
+		t.Fatal("expected capacity error, got nil")
+	}
+	if s.Len() != authMaxApprovalSessions {
+		t.Fatalf("capacity exhausted: expected %d sessions, got %d (size increased)",
+			authMaxApprovalSessions, s.Len())
+	}
+}
+
+// TestEvictOldestSession_DeliveryFailedRetryNotVictim verifies that a session
+// with a delivery_failed record that still has retries remaining is not
+// selected as an eviction victim.
+func TestEvictOldestSession_DeliveryFailedRetryNotVictim(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Create a session with a delivery_failed record that has retries.
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:retry", LaunchGen: 5, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "a1", SessionID: "codex:retry", Kind: "approval", Options: []agent.InteractionOption{actOpt("approve", "approve", nil)}},
+			Provenance: contract.ProvenanceNativeLog, Actionable: true, RequiredPerm: "terminal:input",
+		}},
+	})
+	// Claim and fail delivery (retries=1, still < maxManualRetries=2).
+	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 0}
+	c := s.ClaimForExecution(claimReq("codex:retry", "a1", "approve", "", rt, reqCtx(), "k1"))
+	if c.Outcome != ClaimGranted {
+		t.Fatalf("claim: %v", c.Outcome)
+	}
+	s.RecordDelivery(DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: c.Token, Binding: c.Binding})
+
+	// Fill remaining slots with fillers that have NO live authority.
+	for i := 0; i < authMaxApprovalSessions-2; i++ {
+		sid := fmt.Sprintf("filler:s%d", i)
+		s.InstallRuntimeGeneration(sid, 1, 0, "filler")
+	}
+
+	// Now trigger eviction by adding one more session.
+	err := s.InstallRuntimeGeneration("codex:new", 1, 0, "new")
+	if err != nil {
+		// All fillers are empty, so one should be evicted. The retry session
+		// must NOT be the victim.
+		t.Fatalf("unexpected capacity error (should have evicted a filler): %v", err)
+	}
+
+	// The delivery_failed session with retries must still exist.
+	snap, ok := s.LookupRecord("codex:retry", "a1")
+	if !ok {
+		t.Fatal("delivery_failed session was evicted despite retries remaining")
+	}
+	if snap.State != ApprovalDeliveryFailed {
+		t.Fatalf("retry record state changed: %v", snap.State)
+	}
+}
+
+// TestIngest_MalformedDeliveryDoesNotAdvanceGeneration verifies that a
+// higher-generation item with authoritative provenance but malformed
+// delivery material does NOT supersede existing approvals.
+func TestIngest_MalformedDeliveryDoesNotAdvanceGeneration(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Seed a valid record at gen (1, 0).
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "valid", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+
+	// Attempt to ingest at gen (2, 0) with malformed delivery material
+	// (delivery material on a non-actionable item is invalid).
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 2, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{ID: "bad-delivery", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			// Authoritative provenance, but malformed delivery (material on non-actionable).
+			Provenance:       contract.ProvenanceProviderHook,
+			Actionable:       false,
+			DeliveryMaterial: []ApprovalDeliveryMaterial{{OptionID: "x", SchemaVersion: "v1", ResponseBytes: []byte("y")}},
+		}},
+	})
+	if admitted {
+		t.Fatal("malformed delivery item should not be admitted")
+	}
+
+	// The gen-1 record must still be pending — malformed higher-gen delivery
+	// must not supersede existing authority.
+	snap, ok := s.LookupRecord("codex:s1", "valid")
+	if !ok {
+		t.Fatal("valid record disappeared after malformed higher-gen ingest")
+	}
+	if snap.State != ApprovalPending {
+		t.Fatalf("valid record superseded by malformed delivery ingest: state=%v", snap.State)
+	}
+	// LaunchGen must still be at the original generation.
+	if snap.LaunchGen != 1 {
+		t.Fatalf("generation advanced by malformed ingest: launchGen=%d", snap.LaunchGen)
 	}
 }

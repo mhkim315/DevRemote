@@ -48,9 +48,13 @@ func (c ClaudeEntryConfig) Verify() error {
 }
 
 // extractVersion returns the first whitespace-delimited token from a version
-// string like "2.1.209 (Claude Code)".
+// string like "2.1.209 (Claude Code)". Returns "" on empty input.
 func extractVersion(raw string) string {
-	return strings.Fields(strings.TrimSpace(raw))[0]
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 type ClaudeAttestor interface {

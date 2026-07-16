@@ -373,7 +373,7 @@ func (rt *claudeManagedRuntime) terminate() {
 			// is rejected. InstallRuntimeGeneration creates NO
 			// Approval record — it is the single Store-owned
 			// metadata transition for termination.
-			approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
+			_ = approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)

@@ -1,6 +1,7 @@
 package term
 
 import (
+	"fmt"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -359,15 +360,17 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 		if !contract.ApprovalAuthoritative(item.Provenance) {
 			continue
 		}
-		// Item is structurally valid — a newer generation must supersede
-		// old authority even if this specific item cannot be admitted.
-		hasAuthoritativeItem = true
 
 		copied := copyOptions(a.Options)
 		delivery, mok := validateDeliveryMaterial(item, copied)
 		if !mok {
 			continue // invalid delivery material rejects the whole item
 		}
+		// Item is structurally valid (provenance + delivery passed).
+		// A newer generation must supersede old authority even if
+		// this specific item cannot be admitted.
+		hasAuthoritativeItem = true
+
 		fprint := optionSetFingerprint(a.Kind, a.Default, a.Options) + materialFingerprint(delivery)
 		if sess != nil {
 			if existing, ok := sess.records[a.ID]; ok {
@@ -528,13 +531,15 @@ func (s *AuthoritativeApprovalStore) SupersedeRuntime(sessionID string, launchGe
 // generation is actually newer than the current high-water. An older or
 // equal generation that does not advance the high-water is a complete
 // no-op — it must not supersede current-generation authority.
-func (s *AuthoritativeApprovalStore) InstallRuntimeGeneration(sessionID string, launchGen int64, streamGen int, reason string) {
+func (s *AuthoritativeApprovalStore) InstallRuntimeGeneration(sessionID string, launchGen int64, streamGen int, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess := s.sessions[sessionID]
 	if sess == nil {
 		if len(s.sessions) >= authMaxApprovalSessions {
-			s.evictOldestSessionLocked()
+			if !s.evictOldestSessionLocked() {
+				return fmt.Errorf("approval session capacity exhausted")
+			}
 		}
 		sess = &sessionApprovals{records: make(map[string]*approvalRecord), idempotency: make(map[string]idempotencyEntry)}
 		s.sessions[sessionID] = sess
@@ -544,7 +549,7 @@ func (s *AuthoritativeApprovalStore) InstallRuntimeGeneration(sessionID string, 
 		sess.hwInitialized = true
 		s.supersedeLocked(sess, reason)
 	}
-	// older or equal generation: complete no-op — must not supersede current authority.
+	return nil
 }
 
 // Clear drops all records for a session on delete/unlink.
@@ -875,11 +880,15 @@ func (s *AuthoritativeApprovalStore) evictOneLocked(sess *sessionApprovals) {
 	var victimTerminal bool
 	first := true
 	for id, rec := range sess.records {
-		terminal := IsTerminalApprovalState(rec.state)
-		// Never evict pending or executing records — they hold live authority.
-		if !terminal {
+		// Never evict pending or executing records.
+		if rec.state == ApprovalPending || rec.state == ApprovalExecuting {
 			continue
 		}
+		// Never evict delivery_failed records that still have retries.
+		if rec.state == ApprovalDeliveryFailed && rec.retries < maxManualRetries {
+			continue
+		}
+		terminal := IsTerminalApprovalState(rec.state)
 		better := first ||
 			(terminal && !victimTerminal) ||
 			(terminal == victimTerminal && (rec.createdAt.Before(vt) || (rec.createdAt.Equal(vt) && id < victim)))
@@ -892,12 +901,14 @@ func (s *AuthoritativeApprovalStore) evictOneLocked(sess *sessionApprovals) {
 	}
 }
 
-func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() {
+// evictOldestSessionLocked removes the oldest session with no live authority.
+// Returns false when no safe victim exists (all sessions hold live authority).
+func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() bool {
 	var victim string
 	var vt time.Time
 	first := true
 	for id, sess := range s.sessions {
-		// Never evict a session that holds live (pending or executing) authority.
+		// Never evict a session that holds live authority.
 		if sessionHasLiveAuthority(sess) {
 			continue
 		}
@@ -913,15 +924,21 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() {
 	}
 	if victim != "" {
 		delete(s.sessions, victim)
+		return true
 	}
+	return false
 }
 
-// sessionHasLiveAuthority reports whether a session holds any record that is
-// pending or executing — those records represent live approval authority that
-// must not be evicted by capacity pressure.
+// sessionHasLiveAuthority reports whether a session holds any record with live
+// approval authority that must not be evicted by capacity pressure. This
+// includes pending, executing, and delivery_failed records that still have
+// bounded retries remaining.
 func sessionHasLiveAuthority(sess *sessionApprovals) bool {
 	for _, rec := range sess.records {
 		if rec.state == ApprovalPending || rec.state == ApprovalExecuting {
+			return true
+		}
+		if rec.state == ApprovalDeliveryFailed && rec.retries < maxManualRetries {
 			return true
 		}
 	}
