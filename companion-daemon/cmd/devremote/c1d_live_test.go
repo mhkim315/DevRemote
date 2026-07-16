@@ -152,9 +152,14 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 			t.Errorf("live record after stop: id=%s state=%s", s.ID, st)
 		}
 	}
+	// Log privacy: List() output must not contain certification prompt.
 	for _, a := range store.List(id) {
 		if a.Status == "pending" || a.Status == "executing" {
 			t.Errorf("live approval after stop: id=%s status=%s", a.ID, a.Status)
+		}
+		listJSON, _ := json.Marshal(a)
+		if strings.Contains(string(listJSON), "echo c1d-probe-ok") {
+			t.Error("certification command leaked into List output")
 		}
 	}
 
@@ -167,13 +172,17 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	defer cancel2()
 	ipc.Wait(ctx2)
 
-	// Cleanup: socket must be removable, temp dir must be cleanable.
+	// Cleanup assertions.
 	if err := os.Remove(sock); err != nil {
-		t.Errorf("socket cleanup: %v", err)
+		t.Errorf("socket not removable after shutdown: %v", err)
 	}
-	// RemoveAll cleans hook dirs; verify no stale children via registry.
-	if entries, _ := os.ReadDir(dir); len(entries) > 1 {
-		t.Logf("temp dir entries after cleanup: %d", len(entries))
+	if entries, _ := os.ReadDir(dir); len(entries) > 0 {
+		t.Errorf("temp dir not empty after cleanup: %d entries remain", len(entries))
+	}
+
+	// After shutdown, the child must be fully reaped.
+	if r, ok := svc.Registry().Get(id); ok && !r.Exited {
+		t.Error("child still running after shutdown")
 	}
 
 	t.Logf("C1D-LIVE PASS: provider=%s version=%s epoch=%d digest=%s",
