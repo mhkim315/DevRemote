@@ -1,5 +1,10 @@
 # A1.2 C2D-C R6-A2 Exact Deny Authority Handoff
 
+> **Superseded:** implementation `5455e2de50a0a468299eee3e38eb8fc2a4166842`
+> still substituted the stored context digest for missing provider evidence and
+> failed the PostToolUse negative test. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A3_HANDOFF.md`.
+
 Status: **R6-A REJECTED — IMPLEMENT R6-A2 ONLY — R6-B/C2D-D/C3D PROHIBITED**  
 Reviewed implementation: `bffeef9214add0622358a5428a05a2402db576b1`  
 Accepted prerequisite: C2D-B `27bd45162feb6bdf6fec52fa44192208c8276e32`  

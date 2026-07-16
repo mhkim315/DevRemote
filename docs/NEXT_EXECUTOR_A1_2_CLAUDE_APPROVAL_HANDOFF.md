@@ -164,11 +164,12 @@ the same checkpoint.
 > section without changing the frozen C2D authority contract.
 >
 > The earlier remediations remain historical. Implementation
-> R6-A implementation `bffeef9214add0622358a5428a05a2402db576b1` still
-> discovered claim/runtime/digest through a partial coordinator lookup and left
-> the PostToolUse false-deny path open. The current authoritative executor packet
-> is `NEXT_EXECUTOR_A1_2_C2D_C_R6_A2_HANDOFF.md`. Execute R6-A2 only and stop for
-> independent review before lifecycle slice R6-B.
+> R6-A2 implementation `5455e2de50a0a468299eee3e38eb8fc2a4166842`
+> removed the partial coordinator scan but still substituted the stored context
+> digest for missing provider evidence and left PostToolUse false-deny open. The
+> current authoritative packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A3_HANDOFF.md`. Execute R6-A3 only and stop before
+> lifecycle slice R6-B.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:
