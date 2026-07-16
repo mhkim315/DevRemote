@@ -1,8 +1,8 @@
 # A1.2 C1D — Managed Claude Observation Evidence Report
 
-Status: **C1D R11-F1 IMPLEMENTED — F2 BLOCKED (environment) — AWAITING ACCEPTANCE**
+Status: **C1D R11-F1 IMPLEMENTED — F2 PASS (live proof) — AWAITING ACCEPTANCE**
 
-Implementation SHA: `3e3ed584377ad38199088a74aa5ff625fa582378`
+Implementation SHA: `51d76ea99b2589891950b7daca8044d5dbfba42e`
 Accepted C0D evidence: `e42d4c570e64462ce813861017cc635e338e68bf`
 Accepted SP1/Codex baseline: `2b940a6fce6e878ffa0da17b5df4d39438af144d`
 R11 handoff SHA: `7267080df88d385d5c86273b3f79a1d964e7765c`
@@ -120,32 +120,73 @@ fail-closed when the service is absent.
 zero delivery material. No ClaimForExecution, CTA, or action handler wiring
 exists in C1D.
 
-## 4. F2: Live production proof — BLOCKED
+## 4. R11-F1 review blockers — all fixed
+
+### Blocker 1: Older-gen termination no-op — FIXED
+
+`InstallRuntimeGeneration` now only calls `supersedeLocked` when
+`genNewer(incoming, current)` is true. An older or equal generation
+is a complete no-op.
+
+Test: `TestInstallRuntimeGeneration_OlderGenDoesNotSupersedeCurrentApprovals`
+— seeds a record at gen (10, 0), then calls InstallRuntimeGeneration at
+gen (5, 1). Verifies the gen-10 record remains `ApprovalPending`.
+
+### Blocker 2: Capacity eviction preserves live authority — FIXED
+
+`evictOldestSessionLocked` skips sessions with pending/executing records
+(via new `sessionHasLiveAuthority` helper). `evictOneLocked` only considers
+terminal records as eviction victims.
+
+Tests:
+- `TestEvictOldestSession_SkipsLiveAuthority` — live session survives
+  session-count eviction pressure
+- `TestEvictOneLocked_PreservesPendingRecords` — all-pending session at
+  capacity survives record eviction
+
+### Blocker 3: Newer gen supersession independent of item admission — FIXED
+
+`ingest()` now tracks `hasAuthoritativeItem` separately from `pending`
+admission. A structurally valid newer generation supersedes old records
+even when specific items fail duplicate-ID or capacity checks.
+
+Tests:
+- `TestIngest_NewerGenSupersedesWithDuplicateIDs` — duplicate ID at
+  newer gen still invalidates old-gen records
+- `TestIngest_NewerGenSupersedesAtCapacity` — capacity-full newer gen
+  still invalidates all old-gen records
+
+## 5. F2: Live production proof — PASS
 
 ```text
-Environment: macOS arm64, claude 2.1.210 (not 2.1.209)
-Pinned path: ~/.local/share/claude/versions/2.1.209/claude (does not exist)
-Actual binary: ~/.local/bin/claude (version 2.1.210)
-POKIT_CLAUDE_DIGEST: NOT SET
+Environment: macOS arm64
+Binary: /Users/mhk/.local/share/claude/versions/2.1.209
+Version: 2.1.209 (Claude Code)
+SHA-256: 59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c
 ```
 
-The live production proof (`TestClaudeStartIPCServerIntegration`) requires:
-- Exact Claude Code 2.1.209 at the pinned path
-- `POKIT_CLAUDE_DIGEST` set to the verified SHA-256
-- Ambient authentication for a harmless bounded provider turn
+`TestClaudeStartIPCServerIntegration` — PASS (12.62s):
 
-Installed version is 2.1.210, pinned 2.1.209 is not available. Per the handoff
-section 4: "If pinned 2.1.209, ambient authentication or a harmless bounded
-provider turn is unavailable, report C1D BLOCKED. Do not substitute fixtures,
-fake launchers or a skipped test."
+```text
+IPC Server listening on /tmp/pokit-c1d-test-*.sock
+created session: claude_headless:claude-* state=running via IPC socket
+session: provider=claude version=2.1.209 epoch=1 digest=59d2de...
+approvals: 1  ← exactly one non-actionable observation
+post-stop approvals: 1  ← resolution window
+PASS
+```
 
-**F2 status: BLOCKED** — awaiting 2.1.209 binary availability.
+Full production path proven:
+1. `pokit run claude` structured request → IPC socket ✓
+2. `StartIPCServer` → `ManagedClaudeService.CreateDetached` ✓
+3. Attestor: version check (2.1.209) + path match + SHA-256 digest ✓
+4. Direct launch: `--verbose --settings <isolated> --setting-sources "" -p <prompt>` ✓
+5. Private hook bridge: `PreToolUse` → `defer` → `tool_deferred` join ✓
+6. `AuthoritativeApprovalStore.IngestObserved`: exactly 1 non-actionable record ✓
+7. Zero options, zero delivery material, zero CTA/claim path ✓
+8. Stop → cleanup: hook dir removed, child reaped, socket gone ✓
 
-The existing test `TestClaudeStartIPCServerIntegration` correctly SKIPs when
-`POKIT_CLAUDE_DIGEST` is not set and will exercise the full production path
-when the environment is available.
-
-## 5. Gate results
+## 6. Gate results
 
 ```text
 === Backend ===
@@ -161,22 +202,23 @@ Secret scan (production paths)        PASS (no new secrets)
 === Frozen regressions ===
 Claude race tests (10x)               PASS
 A1/SP1 regression tests               PASS
+=== Live proof ===
+TestClaudeStartIPCServerIntegration   PASS (12.62s, 1 observation)
 === Mobile ===
 npx tsc --noEmit                      NOT RUN (no mobile changes)
 ```
 
-## 6. Test counts
+## 7. Test counts
 
-| Package | Tests |
-| --- | --- |
-| `internal/term` | 45 (2 skipped: live proof, integration) |
-| `internal/agent` | all contracts |
-| `internal/agent/adapters/claude/v2_1_202` | PASS |
-| `internal/agent/adapters/codex/v0_144_1` | PASS |
-| `internal/agent/contract` | PASS |
-| `internal/mux` | PASS |
-| `cmd/devremote` | PASS |
-| Remaining packages | PASS |
+| Category | Count | Status |
+| --- | --- | --- |
+| New F1 counterexample tests | 5 | PASS |
+| Existing F1 Store tests | 6 | PASS |
+| Claude-specific tests | 39 | PASS |
+| Claude race tests (10x) | 390 | PASS |
+| Live IPC-to-Store proof | 1 | PASS |
+| A1/SP1 frozen regressions | all | PASS |
+| Total packages | 12 | PASS |
 
 ## 7. C1D non-goals (unchanged)
 
@@ -194,4 +236,4 @@ npx tsc --noEmit                      NOT RUN (no mobile changes)
 - `SafeApprovalDTO`: zero options, zero delivery material
 - `ListSafe` returns only bounded, redacted projections
 
-REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `3e3ed584377ad38199088a74aa5ff625fa582378`
+REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `51d76ea99b2589891950b7daca8044d5dbfba42e`
