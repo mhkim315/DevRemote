@@ -1,5 +1,9 @@
 # A1.2 C2D-C R6-A6 Safe Denial Wire Probe Handoff
 
+> **Superseded after v2 review:** commits `98fe899` and `23dc740` are
+> rejected. Do not execute either probe. The current packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A7_FRESH_AGENT_HANDOFF.md`.
+
 Status: **A5 ROLLBACK VERIFIED — A5 PROBE REJECTED — EVIDENCE ONLY**
 Verified rollback: `39ba76e` restores the relevant production/test files to
 `7ad9239b9e73fb1be713b201416c1b3fe4ded473`

@@ -165,10 +165,11 @@ the same checkpoint.
 >
 > The earlier remediations remain historical. Implementation
 > Rejected production commit `317a4eb7e6d5ed812cf55a8d221e43e7d588a517`
-> was correctly rolled back at `39ba76e`, but probe `1b18015` does not perform
-> resume→deny and leaks raw hook data outside its temp directory. The current
+> was correctly rolled back at `39ba76e`. Probe iterations `1b18015`,
+> `98fe899`, and `23dc740` are rejected: the latest still uses a mismatched,
+> pre-created side-effect marker and vacuous negative controls. The current
 > authoritative packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A6_SAFE_PROBE_HANDOFF.md`. Collect safe evidence
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A7_FRESH_AGENT_HANDOFF.md`. Collect safe evidence
 > only and stop before R6-B.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
