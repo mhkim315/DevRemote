@@ -205,7 +205,10 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 	resumeURL, _ := captureBridgeURLs(t, l)
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) { t.Fatalf("resume response: %s", r) }
-	denialJSON := `{"type":"result","stop_reason":"end_turn","session_id":"` + csid + `","permission_denials":[{"tool_name":"Bash","tool_use_id":"` + tuid + `"}]}` + "\n"
+	// R6-B: the denial event must carry the evidence-shape entry {tool_use_id,
+	// tool_name, tool_input} with raw tool_input. The digest recomputed from
+	// this tool_input must equal the digest stored at observation.
+	denialJSON := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo hello"}}]}` + "\n"
 	// Wait for resume writer via channel (race-free).
 	select {
 	case <-l.resumeWCh:
@@ -301,3 +304,86 @@ func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 	if svc.Coordinator().IdentityCount() != 0 { t.Fatal("not cleared after delete") }
 }
 func bytesEq(a, b []byte) bool { if len(a)!=len(b) { return false }; for i := range a { if a[i]!=b[i] { return false } }; return true }
+
+// ── R6-B adversarial deny tests ──
+
+func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
+	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(2 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	resumeURL, _ := captureBridgeURLs(t, l)
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
+		t.Fatalf("resume response: %s", r)
+	}
+	// CE-1 (known-bad): the event carries the correct session/tool identity but
+	// a mutated tool_input whose canonical digest does NOT equal the stored one.
+	// If the decoder passed ctx.inputDigest, MarkWitnessed would accept this.
+	// The recomputed digest from {"command":"echo EVIL"} ≠ the stored digest
+	// for {"command":"echo hello"}, so this must produce non-success.
+	mutatedDenial := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo EVIL"}}]}` + "\n"
+	select {
+	case <-l.resumeWCh:
+	case <-time.After(time.Second):
+		t.Fatal("resume writer not ready")
+	}
+	l.resumeW.Write([]byte(mutatedDenial))
+	wg.Wait()
+	if receipt.Outcome == term.DeliveryAccepted {
+		t.Fatal("mutated tool_input must not witness — decoder recomputation is the enforcing boundary")
+	}
+}
+
+func TestClaudeDelivery_DenyWithoutToolInputFailsClosed(t *testing.T) {
+	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(2 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	resumeURL, _ := captureBridgeURLs(t, l)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	// CE-2: old-style minimal event without tool_input — fails closed (no
+	// witness). The pre-R6-B fixture this replaces could never have witnessed
+	// on the real wire.
+	oldStyle := `{"type":"result","stop_reason":"end_turn","session_id":"` + csid + `","permission_denials":[{"tool_name":"Bash","tool_use_id":"` + tuid + `"}]}` + "\n"
+	select {
+	case <-l.resumeWCh:
+	case <-time.After(time.Second):
+		t.Fatal("resume writer not ready")
+	}
+	l.resumeW.Write([]byte(oldStyle))
+	wg.Wait()
+	if receipt.Outcome == term.DeliveryAccepted {
+		t.Fatal("denial without tool_input must be malformed and fail closed")
+	}
+}
+
+func TestClaudeDelivery_DenyUnknownEntryFieldFailsClosed(t *testing.T) {
+	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(2 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	resumeURL, _ := captureBridgeURLs(t, l)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	// CE-3: unknown entry field "extra_field" — malformed, fail closed.
+	unknownField := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo hello"},"extra_field":"evil"}]}` + "\n"
+	select {
+	case <-l.resumeWCh:
+	case <-time.After(time.Second):
+		t.Fatal("resume writer not ready")
+	}
+	l.resumeW.Write([]byte(unknownField))
+	wg.Wait()
+	if receipt.Outcome == term.DeliveryAccepted {
+		t.Fatal("denial with unknown entry field must be malformed")
+	}
+}

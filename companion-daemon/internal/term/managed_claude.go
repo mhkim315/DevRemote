@@ -93,6 +93,12 @@ type claudeManagedRuntime struct {
 	// ManagedClaudeService; nil when the service is not configured.
 	coordinator *claudeResumeCoordinator
 
+	// R6-B: immutable resume-attempt context. Set exactly once in
+	// ResumeForApproval BEFORE pump() starts (happens-before via the go
+	// statement); nil for C1D observation runtimes, which therefore can
+	// never produce a deny witness. The pump is the only reader.
+	resumeCtx *resumeContext
+
 	observer       func(stage string)
 	preIngestHook  func() // test seam: before Store ingest
 	postIngestHook func() // test seam: after Store ingest, before active append
@@ -156,43 +162,238 @@ type streamDeferred struct {
 	} `json:"deferred_tool_use"`
 }
 
-type streamDenial struct {
-	Type              string `json:"type"`
-	StopReason        string `json:"stop_reason"`
-	SessionID         string `json:"session_id"`
-	PermissionDenials []struct {
-		ToolName  string `json:"tool_name"`
-		ToolUseID string `json:"tool_use_id"`
-	} `json:"permission_denials"`
+// ── R6-B denial decoder ──
+//
+// The deny witness wire contract is frozen by the accepted R6-A7 evidence
+// (docs/A1_2_C2D_C_R6_A7_EVIDENCE_REPORT.md §5, projections
+// docs/a1_2_c2d_c_r6a7_projection_run_{a,b}.json): the denial-carrying
+// result event has ~20 top-level fields of which only type, session_id and
+// permission_denials are witness authority; each denial entry is exactly
+// {tool_use_id, tool_name, tool_input} with RAW tool input and NO provider
+// digest field. The digest is recomputed here from the event's own
+// tool_input with the same canonicalizer used at PreToolUse observation
+// (contract P1); the raw input never escapes the decoder (P4).
+
+const (
+	maxDenialLineBytes = 1 << 20 // scanner max token size
+	maxDenialEntries   = 16
+)
+
+// streamDenialEntry is one strictly decoded permission_denials entry. The
+// raw tool_input is reduced to its recomputed canonical digest inside the
+// decoder and never leaves it.
+type streamDenialEntry struct {
+	ToolUseID   string
+	ToolName    string
+	InputDigest string // recomputed from the event's raw tool_input
 }
 
-func strictDenialDecode(raw []byte) (*streamDenial, bool) {
-	if len(raw) == 0 || len(raw) > 65536 {
-		return nil, false
+type streamDenial struct {
+	SessionID string
+	Entries   []streamDenialEntry
+}
+
+// denialDecodeOutcome is the closed decode vocabulary. A detected denial
+// that fails strict decoding is denialMalformed and MUST fail closed —
+// never skipped (contract P6).
+type denialDecodeOutcome int
+
+const (
+	denialNotDenial denialDecodeOutcome = iota
+	denialOK
+	denialMalformed
+)
+
+// detectDenialResult reports whether a line is denial-shaped: a JSON object
+// with type=="result" carrying a permission_denials member.
+func detectDenialResult(raw []byte) bool {
+	if len(raw) == 0 || len(raw) > maxDenialLineBytes {
+		return false
+	}
+	var probe struct {
+		Type              string          `json:"type"`
+		PermissionDenials json.RawMessage `json:"permission_denials"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.Type == "result" && len(probe.PermissionDenials) > 0
+}
+
+// decodeDenialResult strictly decodes a detected denial-shaped line.
+//
+// Authority fields (session_id, permission_denials) are token-walked and
+// accepted exactly once each; a duplicate authority key is malformed.
+// Unknown top-level fields are advisory per the frozen wire contract and
+// are skipped as opaque JSON without interpretation.
+func decodeDenialResult(raw []byte) (*streamDenial, denialDecodeOutcome) {
+	if !detectDenialResult(raw) {
+		return nil, denialNotDenial
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var d streamDenial
-	if err := dec.Decode(&d); err != nil {
-		return nil, false
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, denialMalformed
 	}
-	// Reject trailing data.
-	var trailing json.RawMessage
-	if dec.Decode(&trailing) != io.EOF {
-		return nil, false
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, denialMalformed
 	}
-	if d.Type != "result" || d.SessionID == "" || len(d.SessionID) > 1024 {
-		return nil, false
-	}
-	if len(d.PermissionDenials) == 0 || len(d.PermissionDenials) > 16 {
-		return nil, false
-	}
-	for _, pd := range d.PermissionDenials {
-		if pd.ToolName == "" || len(pd.ToolName) > 256 || pd.ToolUseID == "" || len(pd.ToolUseID) > 256 {
-			return nil, false
+	var sessionID string
+	var seenSession, seenDenials bool
+	var entries []streamDenialEntry
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, denialMalformed
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, denialMalformed
+		}
+		switch key {
+		case "session_id":
+			if seenSession {
+				return nil, denialMalformed
+			}
+			seenSession = true
+			var v json.RawMessage
+			if err := dec.Decode(&v); err != nil {
+				return nil, denialMalformed
+			}
+			s, ok := strictBoundedString(v, maxCoordinatorSessionID)
+			if !ok || !validCoordinatorToken(s, maxCoordinatorSessionID) {
+				return nil, denialMalformed
+			}
+			sessionID = s
+		case "permission_denials":
+			if seenDenials {
+				return nil, denialMalformed
+			}
+			seenDenials = true
+			es, ok := decodeDenialEntries(dec)
+			if !ok {
+				return nil, denialMalformed
+			}
+			entries = es
+		default:
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return nil, denialMalformed
+			}
 		}
 	}
-	return &d, true
+	if _, err := dec.Token(); err != nil { // consume '}'
+		return nil, denialMalformed
+	}
+	if _, err := dec.Token(); err != io.EOF { // trailing content
+		return nil, denialMalformed
+	}
+	if !seenSession || !seenDenials {
+		return nil, denialMalformed
+	}
+	return &streamDenial{SessionID: sessionID, Entries: entries}, denialOK
+}
+
+func decodeDenialEntries(dec *json.Decoder) ([]streamDenialEntry, bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return nil, false
+	}
+	var out []streamDenialEntry
+	for dec.More() {
+		if len(out) >= maxDenialEntries {
+			return nil, false
+		}
+		e, ok := decodeDenialEntry(dec)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, e)
+	}
+	if _, err := dec.Token(); err != nil { // consume ']'
+		return nil, false
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// decodeDenialEntry decodes one entry against the CLOSED allowlist frozen
+// by the R6-A7 evidence: exactly {tool_use_id, tool_name, tool_input}, all
+// present, no unknown or duplicate fields. The raw tool_input is bounded,
+// canonicalized and digested here; the bytes never escape (P4).
+func decodeDenialEntry(dec *json.Decoder) (streamDenialEntry, bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return streamDenialEntry{}, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return streamDenialEntry{}, false
+	}
+	var e streamDenialEntry
+	var seenID, seenName, seenInput bool
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return streamDenialEntry{}, false
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return streamDenialEntry{}, false
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return streamDenialEntry{}, false
+		}
+		switch key {
+		case "tool_use_id":
+			if seenID {
+				return streamDenialEntry{}, false
+			}
+			seenID = true
+			s, ok := strictBoundedString(v, maxCoordinatorToolID)
+			if !ok || !validCoordinatorToken(s, maxCoordinatorToolID) {
+				return streamDenialEntry{}, false
+			}
+			e.ToolUseID = s
+		case "tool_name":
+			if seenName {
+				return streamDenialEntry{}, false
+			}
+			seenName = true
+			s, ok := strictBoundedString(v, maxCoordinatorToolName)
+			if !ok || !validCoordinatorToken(s, maxCoordinatorToolName) {
+				return streamDenialEntry{}, false
+			}
+			e.ToolName = s
+		case "tool_input":
+			if seenInput {
+				return streamDenialEntry{}, false
+			}
+			seenInput = true
+			if len(v) == 0 {
+				return streamDenialEntry{}, false
+			}
+			canon, err := canonicalJSON(v)
+			if err != nil || len(canon) > maxToolInputBytes {
+				return streamDenialEntry{}, false
+			}
+			e.InputDigest = sha256Hex(canon)
+		default:
+			return streamDenialEntry{}, false // unknown entry field
+		}
+	}
+	if _, err := dec.Token(); err != nil { // consume '}'
+		return streamDenialEntry{}, false
+	}
+	if !seenID || !seenName || !seenInput {
+		return streamDenialEntry{}, false
+	}
+	return e, true
 }
 
 // joinDeferred matches a tool_deferred result against a pending observation.
@@ -402,36 +603,62 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 		rt.joinDeferred(&event)
 		return
 	}
-	if d, ok := strictDenialDecode(line); ok {
+	switch d, outcome := decodeDenialResult(line); outcome {
+	case denialOK:
 		rt.routeDenial(d)
+	case denialMalformed:
+		// R6-B P6: a denial-shaped line that fails strict decoding is
+		// never skipped. The active resume entry (if any) is cancelled.
+		rt.failClosedDenial()
 	}
 }
 
+// failClosedDenial cancels the active resume entry after a malformed or
+// cross-bound denial-shaped event. A C1D observation runtime has no resume
+// context and nothing to cancel.
+func (rt *claudeManagedRuntime) failClosedDenial() {
+	ctx := rt.resumeCtx
+	if ctx == nil || ctx.coordinator == nil {
+		return
+	}
+	ctx.coordinator.CancelEntry(ctx.claimToken)
+}
+
+// routeDenial validates one strictly decoded denial event against the
+// runtime-owned immutable resume context and routes the witness.
+//
+// R6-B P1: the digest handed to MarkWitnessed is the one recomputed from
+// the event's own raw tool_input by the decoder — never ctx.inputDigest.
+// MarkWitnessed then requires it to equal the digest captured at the
+// original PreToolUse observation, plus the full session/tool identity and
+// the original RuntimeRef, in state decisionWritten only.
 func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
-	if rt.coordinator == nil || rt.bridge == nil {
+	ctx := rt.resumeCtx
+	if ctx == nil || ctx.coordinator == nil {
+		return // C1D observation runtime: never a witness source
+	}
+	var match *streamDenialEntry
+	for i := range d.Entries {
+		if d.Entries[i].ToolUseID != ctx.toolUseID {
+			continue // denials of model retries carry other tool_use_ids
+		}
+		if match != nil {
+			// Duplicate bound tool_use_id: ambiguous, fail closed.
+			rt.failClosedDenial()
+			return
+		}
+		match = &d.Entries[i]
+	}
+	if match == nil {
+		return // not our witness
+	}
+	if d.SessionID != ctx.claudeSessionID || match.ToolName != ctx.toolName {
+		// Cross-binding anomaly on a bound tool_use_id: fail closed.
+		rt.failClosedDenial()
 		return
 	}
-	// R6-A3: read the immutable resume context under the bridge mutex.
-	rt.bridge.mu.Lock()
-	ctx := rt.bridge.resumeCtx
-	rt.bridge.mu.Unlock()
-	if ctx == nil {
-		return
-	}
-	for _, pd := range d.PermissionDenials {
-		if pd.ToolName == "" || pd.ToolUseID == "" || d.SessionID == "" {
-			continue
-		}
-		if d.SessionID != ctx.claudeSessionID || pd.ToolUseID != ctx.toolUseID || pd.ToolName != ctx.toolName {
-			continue
-		}
-		// R6-A3: input digest is from the coordinator-stored identity,
-		// validated at observation time by joinDeferred. The denial event
-		// does not carry tool_input (per C0D evidence); the stored digest
-		// is the only authoritative source.
-		rt.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
-			d.SessionID, pd.ToolUseID, pd.ToolName, ctx.inputDigest, ctx.originalRuntime)
-	}
+	ctx.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
+		d.SessionID, match.ToolUseID, match.ToolName, match.InputDigest, ctx.originalRuntime)
 }
 
 func (rt *claudeManagedRuntime) clearStaleObservations() {
@@ -892,6 +1119,9 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	rt.cwd = cwd
 	rt.coordinator = s.coordinator
 	rt.authorityVersion = s.cfg.AuthorityVersion
+	// R6-B: the pump reads the runtime-owned immutable context, not the
+	// bridge (closes the R6-A3 finding). Set before pump() starts.
+	rt.resumeCtx = ctx
 	s.mu.Unlock()
 
 	go rt.pump()

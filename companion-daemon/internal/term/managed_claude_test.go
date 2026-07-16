@@ -1657,3 +1657,348 @@ func TestC2DB_PostIngestTerminationClearsIdentity(t *testing.T) {
 	// Wait for terminate to complete.
 	<-rt.exited
 }
+
+// ── R6-B denial decoder tests ──
+
+func TestDenialDecode_EvidenceShapedEventAccepted(t *testing.T) {
+	// CE-10: a full evidence-shaped event with 20 advisory top-level fields
+	// (shapes from the R6-A7 projections) must decode successfully.
+	json := `{"type":"result","session_id":"abc-123","permission_denials":[{"tool_use_id":"call_00_Test","tool_name":"Bash","tool_input":{"command":"touch marker-a"}}],"subtype":"success","is_error":false,"result":"denied","stop_reason":"end_turn","num_turns":2,"duration_ms":1234,"duration_api_ms":567,"ttft_ms":100,"ttft_stream_ms":80,"total_cost_usd":0.01,"usage":{"input_tokens":50},"modelUsage":{"input_tokens":50},"fast_mode_state":"off","api_error_status":null,"time_to_request_ms":2000,"uuid":"bbbb","terminal_reason":"end_turn"}`
+	d, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialOK {
+		t.Fatalf("evidence-shaped event must decode: got %d", outcome)
+	}
+	if d.SessionID != "abc-123" {
+		t.Fatalf("session_id: %s", d.SessionID)
+	}
+	if len(d.Entries) != 1 {
+		t.Fatalf("entries: %d", len(d.Entries))
+	}
+	e := d.Entries[0]
+	if e.ToolUseID != "call_00_Test" || e.ToolName != "Bash" ||
+		e.InputDigest != sha256Hex([]byte(`{"command":"touch marker-a"}`)) {
+		t.Fatalf("entry: %+v", e)
+	}
+}
+
+func TestDenialDecode_MissingToolInputIsMalformed(t *testing.T) {
+	// CE-2: the pre-R6-B fixture shape — no tool_input in entry.
+	oldStyle := `{"type":"result","stop_reason":"end_turn","session_id":"abc","permission_denials":[{"tool_name":"Bash","tool_use_id":"call_01"}]}`
+	_, outcome := decodeDenialResult([]byte(oldStyle))
+	if outcome != denialMalformed {
+		t.Fatalf("missing tool_input must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_UnknownEntryFieldIsMalformed(t *testing.T) {
+	// CE-3: entry carries an extra field not in the closed allowlist.
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"},"extra":"no"}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("unknown entry field must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_DuplicateSessionIDKeyIsMalformed(t *testing.T) {
+	// CE-9: duplicate authority key at the top level.
+	json := `{"type":"result","session_id":"abc","session_id":"def","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("duplicate session_id must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_DuplicatePermissionDenialsKeyIsMalformed(t *testing.T) {
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"}}],"permission_denials":null}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("duplicate permission_denials must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_DuplicateTUIDInEntryIsMalformed(t *testing.T) {
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_use_id":"call_02","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("duplicate tool_use_id in entry must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_MultipleRetryEntriesWithCorrectTUID(t *testing.T) {
+	// Model retries produce additional denial entries with different tuids.
+	// The decoder must accept all of them; ambiguity is checked in routeDenial.
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_retry_1","tool_name":"Bash","tool_input":{"c":"x"}},{"tool_use_id":"call_original","tool_name":"Bash","tool_input":{"c":"x"}},{"tool_use_id":"call_retry_2","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	d, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialOK {
+		t.Fatalf("retry entries must decode, got %d", outcome)
+	}
+	if len(d.Entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(d.Entries))
+	}
+}
+
+func TestDenialDecode_OversizedSessionIDRejected(t *testing.T) {
+	long := make([]byte, 300)
+	for i := range long {
+		long[i] = 'a'
+	}
+	json := `{"type":"result","session_id":"` + string(long) + `","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("oversized session_id must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_EmptyEntriesIsMalformed(t *testing.T) {
+	json := `{"type":"result","session_id":"abc","permission_denials":[]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("empty permission_denials must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_TooManyEntriesIsMalformed(t *testing.T) {
+	entries := ""
+	for i := 0; i < maxDenialEntries+1; i++ {
+		if i > 0 {
+			entries += ","
+		}
+		entries += `{"tool_use_id":"c_` + string(rune('a'+i%26)) + `","tool_name":"Bash","tool_input":{"c":"x"}}`
+	}
+	json := `{"type":"result","session_id":"abc","permission_denials":[` + entries + `]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("too many entries must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_OversizedToolInputIsMalformed(t *testing.T) {
+	// CE-8: tool_input whose canonical form exceeds maxToolInputBytes.
+	big := make([]byte, maxToolInputBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":"` + string(big) + `"}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("oversized tool_input must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_NonDenialEventsAreNotDenial(t *testing.T) {
+	system := `{"type":"system","subtype":"init"}`
+	_, outcome := decodeDenialResult([]byte(system))
+	if outcome != denialNotDenial {
+		t.Fatalf("system event must not be denial, got %d", outcome)
+	}
+	resultEnd := `{"type":"result","stop_reason":"end_turn","session_id":"abc"}`
+	_, outcome = decodeDenialResult([]byte(resultEnd))
+	if outcome != denialNotDenial {
+		t.Fatalf("end_turn without permission_denials must not be denial, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_MissingPermissionDenialsIsNotDenial(t *testing.T) {
+	json := `{"type":"result","session_id":"abc","subtype":"success"}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialNotDenial {
+		t.Fatalf("result without permission_denials must not be denial, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_NonObjectTopLevelIsNotDenial(t *testing.T) {
+	_, outcome := decodeDenialResult([]byte(`"just a string"`))
+	if outcome != denialNotDenial {
+		t.Fatalf("non-object must not be denial, got %d", outcome)
+	}
+}
+
+// ── R6-B denial binding tests (processLine + routeDenial + failClosedDenial) ──
+
+// advanceToDecisionWritten is a test helper that reserves identity and entry,
+// then claims and confirms the write, returning the entry in state decisionWritten.
+// toolInputJSON is the JSON value for tool_input (e.g. `{"command":"x"}`); the
+// correct canonical digest is computed from it so MarkWitnessed can match.
+func advanceToDecisionWritten(t *testing.T, c *claudeResumeCoordinator, toolInputJSON string) (ResumeHandle, string, string, string, string, RuntimeRef) {
+	t.Helper()
+	aid := "claude-test"
+	sid := "claude-sess-1"
+	tuid := "call_00_Test"
+	tn := "Bash"
+	dig := sha256Hex([]byte(toolInputJSON))
+	psid := "claude_headless:claude-test"
+	rt := testRuntimeRef()
+	if !c.ReserveIdentity(aid, sid, tuid, tn, dig, psid, rt) {
+		t.Fatal("ReserveIdentity failed")
+	}
+	binding := testBinding(aid, psid)
+	binding.OptionID = "deny"
+	binding.DeliverySchema = claudeDecisionSchemaV1
+	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	if !ok {
+		t.Fatal("ReserveEntry failed")
+	}
+	if _, o := c.ClaimWrite(handle.ClaimToken, handle.ResumeNonce, sid, tuid, tn, dig); o != outcomeWritten {
+		t.Fatalf("ClaimWrite: %d", o)
+	}
+	if o := c.ConfirmWrite(handle.ClaimToken, true); o != outcomeWritten {
+		t.Fatalf("ConfirmWrite: %d", o)
+	}
+	return handle, sid, tuid, tn, dig, rt
+}
+
+func TestDenialBinding_EvidenceEventWitnessed(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
+	runtime := &claudeManagedRuntime{
+		coordinator: c,
+		resumeCtx: &resumeContext{
+			coordinator:     c,
+			claimToken:      handle.ClaimToken,
+			claudeSessionID: sid,
+			toolUseID:       tuid,
+			toolName:        tn,
+			originalRuntime: rt,
+		},
+	}
+	denialJSON := `{"type":"result","session_id":"` + sid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"x"}}],"subtype":"success"}`
+	runtime.processLine([]byte(denialJSON))
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalWitnessed {
+			t.Fatalf("expected witnessed, got %d", result.Outcome)
+		}
+	default:
+		t.Fatal("terminal result not published")
+	}
+}
+
+func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	handle, sid, tuid, tn, dig, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
+	runtime := &claudeManagedRuntime{
+		coordinator: c,
+		resumeCtx: &resumeContext{
+			coordinator:     c,
+			claimToken:      handle.ClaimToken,
+			claudeSessionID: sid,
+			toolUseID:       tuid,
+			toolName:        tn,
+			originalRuntime: rt,
+		},
+	}
+	// CE-1: mutated tool_input — recomputed digest ≠ stored digest.
+	mutated := `{"type":"result","session_id":"` + sid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"EVIL_MUTATED"}}]}`
+	runtime.processLine([]byte(mutated))
+	// MarkWitnessed should NOT be called because the recomputed digest mismatches.
+	// The entry remains in decisionWritten — verify no witness was published.
+	select {
+	case <-handle.Completion:
+		t.Fatal("entry must not complete on mutated input (digest mismatch)")
+	default:
+	}
+	// Known-bad control: calling MarkWitnessed directly with the STORED digest
+	// accepts. This proves the decoder's recomputation is the enforcing boundary.
+	c2 := NewClaudeResumeCoordinator()
+	handle2, sid2, tuid2, tn2, _, rt2 := advanceToDecisionWritten(t, c2, `{"command":"x"}`)
+	// Use the stored digest dig (parameter) — not a recomputed one.
+	_, _, ok := c2.MarkWitnessed(handle2.ClaimToken, WitnessPermissionDenials,
+		sid2, tuid2, tn2, dig, rt2)
+	if !ok {
+		t.Fatal("known-bad: MarkWitnessed with stored digest must accept — proves decoder recomputation is the only defense")
+	}
+	// The stored digest matches the stored entry, so the known-bad succeeds.
+}
+
+func TestDenialBinding_DuplicateBoundTUIDCancels(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
+	runtime := &claudeManagedRuntime{
+		coordinator: c,
+		resumeCtx: &resumeContext{
+			coordinator:     c,
+			claimToken:      handle.ClaimToken,
+			claudeSessionID: sid,
+			toolUseID:       tuid,
+			toolName:        tn,
+			originalRuntime: rt,
+		},
+	}
+	// CE-4: two entries with the same tool_use_id.
+	dup := `{"type":"result","session_id":"` + sid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"c":"x"}},{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	runtime.processLine([]byte(dup))
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome == TerminalWitnessed {
+			t.Fatal("duplicate bound tuid must not witness")
+		}
+	default:
+		t.Fatal("entry must be cancelled, completion not signaled")
+	}
+}
+
+func TestDenialBinding_WrongSessionAnomalyCancels(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
+	runtime := &claudeManagedRuntime{
+		coordinator: c,
+		resumeCtx: &resumeContext{
+			coordinator:     c,
+			claimToken:      handle.ClaimToken,
+			claudeSessionID: sid,
+			toolUseID:       tuid,
+			toolName:        tn,
+			originalRuntime: rt,
+		},
+	}
+	// CE-5: matching tool_use_id, wrong session_id.
+	ev := `{"type":"result","session_id":"sess-WRONG","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	runtime.processLine([]byte(ev))
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome == TerminalWitnessed {
+			t.Fatal("wrong session must not witness")
+		}
+	default:
+		t.Fatal("entry must be cancelled")
+	}
+}
+
+func TestDenialBinding_MalformedLineCancelsActiveEntry(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
+	runtime := &claudeManagedRuntime{
+		coordinator: c,
+		resumeCtx: &resumeContext{
+			coordinator:     c,
+			claimToken:      handle.ClaimToken,
+			claudeSessionID: sid,
+			toolUseID:       tuid,
+			toolName:        tn,
+			originalRuntime: rt,
+		},
+	}
+	// Old-style entry without tool_input — malformed.
+	runtime.processLine([]byte(`{"type":"result","session_id":"abc","permission_denials":[{"tool_name":"Bash","tool_use_id":"call_01"}]}`))
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome == TerminalWitnessed {
+			t.Fatal("malformed denial must not witness")
+		}
+	default:
+		t.Fatal("entry must be cancelled on malformed denial")
+	}
+}
+
+func TestDenialBinding_C1DRuntimeWithNoResumeCtxDoesNotWitness(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	rt := &claudeManagedRuntime{
+		coordinator: c,
+		resumeCtx:   nil, // C1D observation runtime
+	}
+	rt.processLine([]byte(`{"type":"result","session_id":"x","permission_denials":[{"tool_use_id":"y","tool_name":"Bash","tool_input":{"c":"z"}}]}`))
+	// Verify no entries were created or altered — C1D runtimes have no resumeCtx.
+	if c.PendingCount() != 0 || c.EntryCount() != 0 {
+		t.Fatal("C1D runtime must never create coordinator entries")
+	}
+}
