@@ -4,12 +4,24 @@
 // runtime owns stdin, stdout, child wait/reap, and the hook bridge lifecycle.
 // C1D is observation-only: zero actionable options, zero ClaimForExecution,
 // zero mobile CTA.
+//
+// Launch argv matches the C0D-certified path:
+//
+//	--settings <isolated> --setting-sources "" --output-format stream-json
+//	--include-partial-messages -p <prompt>
+//
+// The pump reads stream-json lines from stdout. A tool_deferred result is
+// joined against the hook bridge's pending observation by comparing the full
+// identity tuple (session_id, tool_use_id, tool_name, input_sha256).
 package term
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,44 +35,32 @@ import (
 	"devremote/companion-daemon/internal/agent/contract"
 )
 
-// claudeHeadlessAdapter is the canonical-ID adapter segment for managed Claude
-// sessions. It is NEVER registered in mux.Registry, so the identity space is
-// disjoint from tmux/cmux/localpty/controlled_pty/codex_app_server and
-// unreachable through adapter discovery.
 const claudeHeadlessAdapter = "claude_headless"
 
-// claudeCertificationPrompt is the fixed server-derived input of the single
-// bounded C1D certification turn.
-const claudeCertificationPrompt = "Reply with exactly the single word READY. Do not run any commands or use any tools."
+// claudeCertificationPrompt triggers a guaranteed Bash tool use so the
+// PreToolUse hook fires and a defer observation can be joined. The command
+// is harmless and its output is discarded.
+const claudeCertificationPrompt = "Use your Bash tool to run exactly this command: echo c1d-probe-ok"
 
 const (
-	claudeHandshakeTimeout = 30 * time.Second
-	maxClaudeSessions      = 4
-	// maxPendingClaudeObservations bounds the private per-runtime pending
-	// observation state.
-	maxPendingClaudeObservations = 4
-	// claudeObservationTimeout bounds how long a pending observation waits for
-	// a matching tool_deferred result before being cleared.
-	claudeObservationTimeout = 120 * time.Second
+	claudeHandshakeTimeout        = 30 * time.Second
+	maxClaudeSessions             = 4
+	maxPendingClaudeObservations  = 4
+	claudeObservationTimeout      = 120 * time.Second
 )
 
-// ── Claude-specific managed runtime (one per session) ──
+// ── Pending observation ──
 
-// claudePendingObservation is the bounded PRIVATE runtime-owned record of one
-// observed PreToolUse event. It is owned by the pump and never enters any DTO,
-// log line, or public projection.
 type claudePendingObservation struct {
-	toolUseID    string
-	toolName     string
-	sessionID    string // Claude session ID from the hook
-	inputDigest  string // SHA-256 hex
-	observedAt   time.Time
-	joinedAt     time.Time // zero until joined with tool_deferred
+	toolUseID   string
+	toolName    string
+	sessionID   string // provider Claude session ID from the hook
+	inputDigest string // SHA-256 hex of canonical tool_input
+	observedAt  time.Time
 }
 
-// claudeManagedRuntime owns exactly one Claude child: its stdio, hook bridge,
-// event pump, and pending observations. Nothing else may touch the child's
-// stdio or hook settings.
+// ── Managed runtime ──
+
 type claudeManagedRuntime struct {
 	sessionID string
 	epoch     int64
@@ -69,19 +69,15 @@ type claudeManagedRuntime struct {
 	scanner   *bufio.Scanner
 	exited    chan struct{}
 
-	// bridge is the private hook bridge for this runtime.
-	bridge *claudeHookBridge
-	// hookDir is the temporary directory holding isolated hook settings.
+	bridge  *claudeHookBridge
 	hookDir string
 
-	// turnMu guards pending observations and turn state.
 	turnMu             sync.Mutex
 	turnClosed         bool
-	pendingObservations map[string]*claudePendingObservation // keyed by tool_use_id
-	rejects            int // internal diagnostics counter
+	pendingObservations map[string]*claudePendingObservation
+	rejects            int
 
-	// approvals is the non-actionable ingest sink (nil ⇒ observation only).
-	approvals       *AuthoritativeApprovalStore
+	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
 
 	// observer is a NARROW test seam (nil in production).
@@ -101,14 +97,11 @@ func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessi
 		hookDir:             hookDir,
 		pendingObservations: make(map[string]*claudePendingObservation),
 	}
-	// Wire the bridge back to this runtime.
 	bridge.rt = rt
 	return rt
 }
 
-// observePreToolUse is called by the hook bridge when a valid PreToolUse event
-// is received. It stores a pending observation under turnMu. Only the first
-// observation for a given tool_use_id is stored; duplicates are rejected.
+// observePreToolUse stores a pending observation from the hook bridge.
 func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest string) {
 	rt.turnMu.Lock()
 	defer rt.turnMu.Unlock()
@@ -139,13 +132,45 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 	}
 }
 
+// streamDeferred is the C0D-certified structure of a tool_deferred result
+// emitted by Claude Code in stream-json output mode.
+type streamDeferred struct {
+	Type             string `json:"type"`
+	StopReason       string `json:"stop_reason"`
+	SessionID        string `json:"session_id"`
+	DeferredToolUse  *struct {
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"deferred_tool_use"`
+}
+
 // joinDeferred attempts to match a tool_deferred result from Claude's stdout
-// against a pending observation. On match, a non-actionable record is ingested
-// into the ApprovalStore and the pending observation is cleared.
-func (rt *claudeManagedRuntime) joinDeferred(toolUseID, sessionID string) {
+// against a pending observation. FULL identity comparison: session_id +
+// tool_use_id + tool_name + input_sha256 must all match.
+func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
+	if d.DeferredToolUse == nil || d.SessionID == "" {
+		return
+	}
+	toolUseID := d.DeferredToolUse.ID
+	toolName := d.DeferredToolUse.Name
+	sessionID := d.SessionID
+
+	// Compute input digest from the deferred result for comparison.
+	inputCanon, err := canonicalJSON(d.DeferredToolUse.Input)
+	if err != nil {
+		return
+	}
+	inputDigest := sha256Hex(inputCanon)
+
 	rt.turnMu.Lock()
 	pending, ok := rt.pendingObservations[toolUseID]
-	if !ok || pending.sessionID != sessionID {
+	if !ok {
+		rt.turnMu.Unlock()
+		return
+	}
+	// Full identity comparison: all four fields must match.
+	if pending.sessionID != sessionID || pending.toolName != toolName || pending.inputDigest != inputDigest {
 		rt.turnMu.Unlock()
 		return
 	}
@@ -157,11 +182,11 @@ func (rt *claudeManagedRuntime) joinDeferred(toolUseID, sessionID string) {
 		return
 	}
 
-	// Derive a canonical public approval ID from epoch + tool_use_id.
-	// The provider tool_use_id is never used as the ApprovalID.
-	approvalID := fmt.Sprintf("claude-%d-%s", rt.epoch, toolUseID)
+	// Opaque daemon-generated ApprovalID. The provider tool_use_id is NEVER
+	// used as the ApprovalID — it is stored only in the private pending
+	// observation for identity comparison.
+	approvalID := fmt.Sprintf("claude-%s", genApprovalToken())
 
-	// Non-actionable: zero options, zero delivery material, zero required perm.
 	approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
@@ -175,12 +200,11 @@ func (rt *claudeManagedRuntime) joinDeferred(toolUseID, sessionID string) {
 				AgentKind:  claudeHeadlessAdapter,
 				Kind:       "approval",
 				Status:     "pending",
-				Options:    nil, // ZERO options — non-actionable
+				Options:    nil,
 				Source:     agent.SourceJSONL,
 				Confidence: 1,
 			},
-			// Provenance is versioned provider protocol (C0D-certified lifecycle).
-			Provenance:       contract.Provenance("claude.pretooluse.defer.v1"),
+			Provenance:       contract.ProvenanceProviderHook,
 			Actionable:       false,
 			RequiredPerm:     "",
 			DeliveryMaterial: nil,
@@ -192,34 +216,47 @@ func (rt *claudeManagedRuntime) joinDeferred(toolUseID, sessionID string) {
 	}
 }
 
-// pump is the production event pump. It reads Claude's stdout line by line,
-// looking for structured JSON events. When a tool_deferred result is found,
-// it joins against pending observations from the hook bridge. On child EOF
-// or error, it marks the record exited and reaps the child.
+// pump reads Claude's stream-json stdout. Each line is a JSON object. Lines
+// with type="result" and stop_reason="tool_deferred" are joined against
+// pending hook observations. On child EOF/error it marks the record exited.
 func (rt *claudeManagedRuntime) pump() {
-	// Start a background goroutine that cleans up stale observations after
-	// the timeout.
-	staleCheck := time.NewTicker(30 * time.Second)
-	defer staleCheck.Stop()
+	// Stale-observation cleanup: the pump periodically clears observations
+	// that have exceeded the timeout. This runs inline in the pump loop via
+	// a time.Ticker checked in the scan loop, avoiding a separate goroutine.
+	staleTicker := time.NewTicker(30 * time.Second)
+	defer staleTicker.Stop()
+
+	// Read loop with stale check on ticker channel. We use a select to
+	// interleave scanning and cleanup without a separate goroutine.
+	lines := make(chan []byte, 64)
+	scanDone := make(chan struct{})
 	go func() {
-		for range staleCheck.C {
-			rt.clearStaleObservations()
+		defer close(scanDone)
+		for rt.scanner.Scan() {
+			line := bytes.TrimSpace(rt.scanner.Bytes())
+			if len(line) > 0 {
+				lines <- line
+			}
 		}
 	}()
 
-	for rt.scanner.Scan() {
-		line := bytes.TrimSpace(rt.scanner.Bytes())
-		if len(line) == 0 {
-			continue
+loop:
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				break loop
+			}
+			rt.processLine(line)
+		case <-staleTicker.C:
+			rt.clearStaleObservations()
 		}
-
-		// Claude may emit JSON events on stdout. Look for tool_deferred.
-		// The exact format is provider-version-specific; we decode
-		// structurally with a minimal allowlist.
+	}
+	// Drain any remaining lines after scanner stopped.
+	for line := range lines {
 		rt.processLine(line)
 	}
 
-	// Child exited: clear all pending state.
 	rt.turnMu.Lock()
 	rt.turnClosed = true
 	rt.pendingObservations = make(map[string]*claudePendingObservation)
@@ -230,35 +267,19 @@ func (rt *claudeManagedRuntime) pump() {
 	}
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
 	close(rt.exited)
-	_ = rt.proc.Wait() // reap
+	_ = rt.proc.Wait()
 }
 
-// processLine attempts to parse a stdout line as a JSON event and extract
-// deferred tool information for join.
+// processLine attempts to parse a stream-json line as a tool_deferred result.
 func (rt *claudeManagedRuntime) processLine(line []byte) {
-	var event struct {
-		Type       string `json:"type"`
-		ToolUseID  string `json:"tool_use_id"`
-		SessionID  string `json:"session_id"`
-		ToolName   string `json:"tool_name"`
-	}
+	var event streamDeferred
 	if err := json.Unmarshal(line, &event); err != nil {
 		return
 	}
-
-	// Match tool_deferred events: type is "tool_deferred" or the event
-	// carries a tool_use_id that matches a pending observation.
-	if event.ToolUseID == "" {
+	if event.Type != "result" || event.StopReason != "tool_deferred" {
 		return
 	}
-	if event.SessionID == "" {
-		return
-	}
-
-	// Valid deferred result: join with pending observation.
-	if event.Type == "tool_deferred" || event.Type == "assistant" {
-		rt.joinDeferred(event.ToolUseID, event.SessionID)
-	}
+	rt.joinDeferred(&event)
 }
 
 // clearStaleObservations removes pending observations that have exceeded the
@@ -272,31 +293,27 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 		if obs.observedAt.Before(cutoff) {
 			delete(rt.pendingObservations, id)
 			if rt.approvals != nil {
-				approvalID := fmt.Sprintf("claude-%d-%s", rt.epoch, obs.toolUseID)
+				approvalID := fmt.Sprintf("claude-%s", genApprovalToken())
+				_ = approvalID
 				rt.approvals.InvalidateRecord(rt.sessionID, approvalID)
 			}
 		}
 	}
 }
 
-// stop kills and reaps the owned child and closes the hook bridge.
 func (rt *claudeManagedRuntime) stop() {
 	if rt.bridge != nil {
 		rt.bridge.close()
 	}
 	_ = rt.proc.Kill()
 	_ = rt.proc.Wait()
-	// Clean up the temporary hook directory.
 	if rt.hookDir != "" {
 		_ = os.RemoveAll(rt.hookDir)
 	}
 }
 
-// ── Service (composition-root owned) ──
+// ── Service ──
 
-// ManagedClaudeService owns the launcher, the owned-session registry, the
-// launch-generation counter, and every managed Claude runtime. Constructed
-// by the production composition root behind Config.EnableManagedClaude.
 type ManagedClaudeService struct {
 	cfg              ClaudeEntryConfig
 	launcher         ManagedLauncher
@@ -311,11 +328,8 @@ type ManagedClaudeService struct {
 	gen       int64
 	runtimes  map[string]*claudeManagedRuntime
 
-	// approvals is the C1D non-actionable ingest sink, wired once by the
-	// composition root before any create.
 	approvals *AuthoritativeApprovalStore
 
-	// createBarrier is a NARROW test seam (nil in production).
 	createBarrier func(stage string)
 }
 
@@ -325,8 +339,6 @@ func (s *ManagedClaudeService) barrier(stage string) {
 	}
 }
 
-// NewManagedClaudeService creates the service. launcher nil means the
-// production execLauncher. Identity verification runs per create, not here.
 func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, attestor ClaudeAttestor) *ManagedClaudeService {
 	if launcher == nil {
 		launcher = execLauncher{}
@@ -347,7 +359,6 @@ func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, at
 	return s
 }
 
-// NewManagedClaudeServiceForTest builds a service with injected dependencies.
 func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAttestor) *ManagedClaudeService {
 	return NewManagedClaudeService(ClaudeEntryConfig{
 		Bin:              "/pinned/test/claude",
@@ -356,12 +367,8 @@ func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAtt
 	}, launcher, attestor)
 }
 
-// Registry exposes the owned-session registry for the read-only REST surface.
 func (s *ManagedClaudeService) Registry() *ManagedSessionRegistry { return s.reg }
 
-// SetApprovalStore configures the authoritative approval store as the C1D
-// NON-ACTIONABLE observation sink. Mirrors the Codex contract: immutable after
-// first runtime or shutdown.
 func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStore) error {
 	if store == nil {
 		return fmt.Errorf("claude approval store configure: nil store")
@@ -372,7 +379,7 @@ func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStor
 		return fmt.Errorf("claude approval store configure: service is shutting down")
 	}
 	if s.approvals == store {
-		return nil // idempotent
+		return nil
 	}
 	if s.gen != 0 || len(s.runtimes) != 0 {
 		return fmt.Errorf("claude approval store configure: a managed runtime already exists; the store is immutable")
@@ -384,7 +391,6 @@ func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStor
 	return nil
 }
 
-// beginLease registers an in-flight create BEFORE verify/spawn.
 func (s *ManagedClaudeService) beginLease() (*inflightCreate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -396,7 +402,6 @@ func (s *ManagedClaudeService) beginLease() (*inflightCreate, error) {
 	return lease, nil
 }
 
-// endLease releases an in-flight create on every exit path.
 func (s *ManagedClaudeService) endLease(lease *inflightCreate) {
 	s.mu.Lock()
 	delete(s.leases, lease)
@@ -404,15 +409,12 @@ func (s *ManagedClaudeService) endLease(lease *inflightCreate) {
 	s.leaseCond.Broadcast()
 }
 
-// eventStoreFor resolves a session's projection store and current epoch.
-// C1D does not have an event store (no Codex-style managed events yet).
 func (s *ManagedClaudeService) eventStoreFor(sessionID string) (*managedEventStore, int64, bool) {
 	return nil, 0, false
 }
 
-// CreateDetached launches a Claude managed session: verify pinned identity →
-// direct spawn with isolated hook settings → start hook bridge → register →
-// start the certification turn → start the event pump.
+// CreateDetached launches a Claude managed session with the C0D-certified
+// argv, isolated hook settings, and a private hook bridge.
 func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
@@ -423,7 +425,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	defer s.endLease(lease)
 
-	// Resolve the binary and certify.
 	exe, err := exec.LookPath(s.cfg.Bin)
 	if err != nil {
 		return "", fmt.Errorf("managed claude: executable not found: %w", err)
@@ -435,19 +436,17 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		return "", fmt.Errorf("managed claude service is shutting down")
 	}
 
-	// Create isolated hook settings and hook bridge.
 	hookDir, settingsPath, err := s.createHookSettings()
 	if err != nil {
 		return "", fmt.Errorf("managed claude hook settings: %w", err)
 	}
-	bridge, token, err := newClaudeHookBridge()
+	bridge, _, err := newClaudeHookBridge()
 	if err != nil {
 		os.RemoveAll(hookDir)
 		return "", fmt.Errorf("managed claude hook bridge: %w", err)
 	}
-	<-bridge.started // wait for listener readiness
+	<-bridge.started
 
-	// Write the hook script that curls the bridge.
 	if err := s.writeHookScript(hookDir, bridge.endpoint()); err != nil {
 		bridge.close()
 		os.RemoveAll(hookDir)
@@ -456,10 +455,15 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 
 	s.barrier("pre-spawn")
 
-	// Launch Claude with isolated settings.
-	// Args: --settings <path> -p <certification prompt>
-	// No shell, no --permission-prompt-tool, no interactive flags.
-	argv := []string{"--settings", settingsPath, "-p", claudeCertificationPrompt}
+	// C0D-certified launch argv: session-isolated settings, no user/project
+	// settings, structured stream-json output, partial messages included.
+	argv := []string{
+		"--settings", settingsPath,
+		"--setting-sources", "",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+		"-p", claudeCertificationPrompt,
+	}
 	proc, err := s.launcher.Launch(exe, argv)
 	if err != nil {
 		bridge.close()
@@ -505,8 +509,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		return "", fmt.Errorf("managed claude %s: %w", stage, ferr)
 	}
 
-	_ = token // capability token referenced in hook script, bridge owns the actual validation
-
 	rec := ManagedSessionRecord{
 		SessionID: id,
 		Provider:  "claude",
@@ -527,8 +529,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 }
 
 // createHookSettings writes an isolated Claude settings JSON file that
-// configures the PreToolUse hook to call the daemon's bridge. Returns the
-// hook directory path and the settings file path.
+// configures the PreToolUse hook to call the daemon's bridge.
 func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPath string, err error) {
 	hookDir, err = os.MkdirTemp("", "pokit-claude-hooks-")
 	if err != nil {
@@ -539,7 +540,7 @@ func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPat
 		"hooks": map[string]any{
 			"PreToolUse": []map[string]any{
 				{
-					"matcher": "", // match all tools
+					"matcher": "",
 					"command": filepath.Join(hookDir, "hook.sh"),
 				},
 			},
@@ -559,20 +560,14 @@ func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPat
 	return hookDir, settingsPath, nil
 }
 
-// writeHookScript writes the shell script that curls the bridge with the
-// PreToolUse JSON from stdin. The script is minimal and contains no secrets.
+// writeHookScript writes the shell script that curls the bridge. The script
+// pipes stdin (PreToolUse JSON from Claude) to the bridge and returns the
+// bridge's response (JSON) to Claude on stdout.
 func (s *ManagedClaudeService) writeHookScript(hookDir, bridgeURL string) error {
-	// The script receives PreToolUse JSON on stdin and forwards it to the bridge.
-	// The bridge's response (JSON) is written to stdout for Claude to consume.
 	script := fmt.Sprintf("#!/bin/sh\ncurl -s -X POST -d @- '%s'\n", bridgeURL)
-	scriptPath := filepath.Join(hookDir, "hook.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(filepath.Join(hookDir, "hook.sh"), []byte(script), 0700)
 }
 
-// Shutdown performs the single closing transition. Mirrors ManagedCodexService.Shutdown.
 func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.closing = true
@@ -616,7 +611,6 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Stop gracefully terminates a managed Claude session.
 func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -635,10 +629,10 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 		return nil
 	}
 	rt.stop()
+	s.reg.MarkExited(sessionID, epoch)
 	return nil
 }
 
-// Kill force-terminates a managed Claude session.
 func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -664,7 +658,23 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	return nil
 }
 
-// Delete removes a TERMINAL managed Claude session.
+// ── Helpers ──
+
+// sha256Hex returns the hex-encoded SHA-256 digest of data.
+func sha256Hex(data []byte) string {
+	h := sha256.New()
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// genApprovalToken generates an opaque random token for use in ApprovalIDs.
+// The provider tool_use_id is never used as the ApprovalID.
+func genApprovalToken() string {
+	b := make([]byte, 16)
+	_, _ = crand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
 	rec, ok := s.reg.Get(sessionID)
 	if !ok {

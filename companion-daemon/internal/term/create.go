@@ -64,6 +64,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 	}
 
 	// C1D: route claude profile to the managed Claude service when enabled.
+	// Uses canonical claude_headless adapter identity, not controlled_pty.
 	if req.ProfileID == "claude" && h.ManagedClaude != nil {
 		cwd := req.CWD
 		if cwd == "" {
@@ -73,15 +74,15 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
+			json.NewEncoder(w).Encode(SessionLifecycle{Adapter: claudeHeadlessAdapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 			return
 		}
 		if h.Lifecycle != nil {
-			h.Lifecycle.Register(id, adapter, req.ProfileID, req.Name, nil)
+			h.Lifecycle.Register(id, claudeHeadlessAdapter, req.ProfileID, req.Name, nil)
 		}
 		writeLifecycle(w, SessionLifecycle{
 			ID:        id,
-			Adapter:   adapter,
+			Adapter:   claudeHeadlessAdapter,
 			ProfileID: req.ProfileID,
 			Name:      req.Name,
 			State:     LifecycleRunning,

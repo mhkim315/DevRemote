@@ -101,7 +101,7 @@ type attachClient struct {
 func newAttachClient(t *testing.T, managed *ManagedCodexService, sessionID string) *attachClient {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
-	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, managed)
+	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, managed, nil)
 	req, _ := json.Marshal(map[string]any{"version": 1, "operation": "managed-attach", "sessionId": sessionID})
 	if _, err := clientConn.Write(append(req, '\n')); err != nil {
 		t.Fatalf("attach write: %v", err)
@@ -378,7 +378,7 @@ func TestManagedAttach_CoalescedRequestAndPrompt(t *testing.T) {
 	id := resp["id"]
 
 	clientConn, serverConn := net.Pipe()
-	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, managed)
+	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, managed, nil)
 	attach, _ := json.Marshal(map[string]any{"version": 1, "operation": "managed-attach", "sessionId": id})
 	prompt, _ := json.Marshal(map[string]string{"prompt": "early prompt"})
 	// ONE write carrying both lines — the decoder buffers past the request.

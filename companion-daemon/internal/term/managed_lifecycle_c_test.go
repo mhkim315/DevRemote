@@ -430,7 +430,7 @@ func TestManagedLifecycleAPI_FailClosedAndIdempotent(t *testing.T) {
 func newAttachClientAt(t *testing.T, managed *ManagedCodexService, sessionID string, cursor uint64) *attachClient {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
-	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, managed)
+	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, managed, nil)
 	req, _ := json.Marshal(map[string]any{
 		"version": 1, "operation": "managed-attach", "sessionId": sessionID, "cursor": cursor,
 	})

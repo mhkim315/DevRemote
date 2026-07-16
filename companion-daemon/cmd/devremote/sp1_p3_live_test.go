@@ -72,7 +72,7 @@ func newSP1LiveFixture(t *testing.T) *sp1LiveFixture {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "d.sock")
-	ipc, err := term.StartIPCServer(sock, f.app.registry, f.app.events, f.app.links, nil, f.app.activity, f.app.lifecycle, f.app.managed)
+	ipc, err := term.StartIPCServer(sock, f.app.registry, f.app.events, f.app.links, nil, f.app.activity, f.app.lifecycle, f.app.managed, nil)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}

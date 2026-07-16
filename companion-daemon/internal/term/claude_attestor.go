@@ -1,32 +1,35 @@
 // Package term — C1D: OS-neutral Claude version/artifact certification seam.
-// The attestor verifies the exact pinned Claude Code version before any managed
-// spawn. PATH lookup alone is availability, not certification — the attestor
-// must confirm the executable reports the exact pinned version string.
+// The attestor verifies the exact pinned Claude Code version AND artifact
+// identity before any managed spawn. PATH lookup alone is not certification.
+//
+// The production attestor checks:
+// 1. The executable reports the exact pinned version string via --version.
+// 2. The resolved binary path matches an optional pinned path.
+//
+// Platform-specific artifact attestation (code-signing, cdhash) is deferred
+// to the OS-specific attester implementation behind the ClaudeAttestor
+// interface; the production default performs version + path checks.
 package term
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
-// ClaudeEntryConfig holds the pinned Claude provider identity for the managed
-// runtime. It is deliberately simpler than CodexAppServerEntryConfig: Claude is
-// a single binary with no shim/native split.
+// ClaudeEntryConfig holds the pinned Claude provider identity.
 type ClaudeEntryConfig struct {
-	// Bin is the path to the claude executable (resolved via PATH or absolute).
-	Bin string
-	// Version is the display version string reported by `claude --version`.
-	// This is matched exactly — substring or prefix match is not certification.
-	Version string
-	// AuthorityVersion is the ONE grammar-valid canonical version used as
-	// runtime/approval authority. It is compared exactly; the display Version
-	// is never compared as authority.
-	AuthorityVersion string
+	Bin              string
+	Version          string // e.g. "2.1.209" — exact match required
+	AuthorityVersion string // canonical authority version string
+	PinnedPath       string // optional: absolute path the resolved binary must match (empty = skip)
 }
 
-// PinnedClaudeConfig returns the C0D-accepted pinned identity for the exact
-// Claude Code 2.1.209 install. The version string matches the C0D evidence.
+// PinnedClaudeConfig returns the C0D-accepted pinned identity for Claude
+// Code 2.1.209. The PinnedPath is empty by default (resolved via PATH);
+// set it to pin to a specific installation.
 func PinnedClaudeConfig() ClaudeEntryConfig {
 	return ClaudeEntryConfig{
 		Bin:              "claude",
@@ -35,9 +38,7 @@ func PinnedClaudeConfig() ClaudeEntryConfig {
 	}
 }
 
-// Verify checks that the executable at Bin exists, executes, and reports the
-// exact pinned Version string. It returns a descriptive error on any mismatch.
-// Never PATH lookup — the Bin must already be resolved.
+// Verify checks the executable reports the exact pinned version string.
 func (c ClaudeEntryConfig) Verify() error {
 	vs, err := exec.Command(c.Bin, "--version").CombinedOutput()
 	if err != nil {
@@ -50,20 +51,22 @@ func (c ClaudeEntryConfig) Verify() error {
 	return nil
 }
 
-// ClaudeAttestor is the OS-neutral certification seam. The production
-// implementation checks the pinned version string; tests inject a fake.
+// ClaudeAttestor is the OS-neutral certification seam.
 type ClaudeAttestor interface {
 	// Certify verifies that the candidate executable matches the pinned
 	// identity. Returns nil if certified; a descriptive error otherwise.
+	// The exe parameter is the resolved absolute path (via LookPath or
+	// equivalent).
 	Certify(exe string) error
 }
 
-// productionClaudeAttestor verifies the exact pinned version.
+// productionClaudeAttestor performs version + optional path verification.
 type productionClaudeAttestor struct {
 	cfg ClaudeEntryConfig
 }
 
 func (a productionClaudeAttestor) Certify(exe string) error {
+	// 1. Version check.
 	vs, err := exec.Command(exe, "--version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("claude certify: %w", err)
@@ -71,6 +74,26 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 	if got := strings.TrimSpace(string(vs)); got != a.cfg.Version {
 		return fmt.Errorf("claude certify: version mismatch: want %q, got %q", a.cfg.Version, got)
 	}
+
+	// 2. Pinned path check (when configured).
+	if a.cfg.PinnedPath != "" {
+		resolved, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return fmt.Errorf("claude certify: realpath: %w", err)
+		}
+		want, err := filepath.EvalSymlinks(a.cfg.PinnedPath)
+		if err != nil {
+			return fmt.Errorf("claude certify: pinned realpath: %w", err)
+		}
+		if resolved != want {
+			return fmt.Errorf("claude certify: path mismatch: resolved %q, pinned %q", resolved, want)
+		}
+		// Verify the pinned file is a regular file.
+		if fi, err := os.Stat(resolved); err != nil || fi.IsDir() {
+			return fmt.Errorf("claude certify: pinned path is not a regular executable")
+		}
+	}
+
 	return nil
 }
 

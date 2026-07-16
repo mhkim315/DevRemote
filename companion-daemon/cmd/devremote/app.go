@@ -656,7 +656,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity, a.lifecycle, a.managed)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {

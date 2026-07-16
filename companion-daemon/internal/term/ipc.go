@@ -31,12 +31,13 @@ type IPCServer struct {
 	telemetry *TelemetryService
 	activity  *ActivityBuffer
 	lifecycle *LifecycleService
-	managed   *ManagedCodexService // SP0: nil unless EnableManagedCodex
+	managed       *ManagedCodexService  // SP0: nil unless EnableManagedCodex
+	managedClaude *ManagedClaudeService // C1D: nil unless EnableManagedClaude
 }
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
 	// If a socket file already exists, only remove it when it is stale. If a
 	// live daemon is still listening on it, refuse: otherwise a duplicate
 	// daemon start would delete the running daemon's socket and then fail on
@@ -74,7 +75,8 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 		telemetry: telemetry,
 		activity:  activity,
 		lifecycle: lifecycle,
-		managed:   managed,
+		managed:       managed,
+		managedClaude: managedClaude,
 	}
 
 	go srv.serve()
@@ -93,7 +95,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity, s.lifecycle, s.managed)
+		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity, s.lifecycle, s.managed, s.managedClaude)
 	}
 }
 
@@ -116,7 +118,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -218,6 +220,22 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 				} else {
 					id, merr = managed.CreateAttached(req.CWD)
 				}
+				if merr != nil {
+					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
+				} else {
+					json.NewEncoder(conn).Encode(map[string]string{"id": id, "state": string(LifecycleRunning)})
+				}
+				return
+			}
+			// C1D: the recognized Claude profile is a MANAGED-ONLY request.
+			// With the feature disabled it fails closed: the same structured
+			// request must never silently fall back to controlled_pty.
+			if req.ProfileID == "claude" {
+				if managedClaude == nil {
+					json.NewEncoder(conn).Encode(map[string]string{"error": "managed claude runtime unavailable: daemon started without --enable-managed-claude"})
+					return
+				}
+				id, merr := managedClaude.CreateDetached(req.CWD)
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
 				} else {
