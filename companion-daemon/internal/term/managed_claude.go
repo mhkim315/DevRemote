@@ -382,8 +382,9 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 		if staleStore != nil {
 			staleStore.InvalidateRecord(sessionID, aid)
 		}
+		// B2: use ClearForApproval so any reserved entry is also cancelled.
 		if staleCoord != nil {
-			staleCoord.RemoveIdentity(aid)
+			staleCoord.ClearForApproval(aid)
 		}
 	}
 	if staleCoord != nil {
@@ -393,6 +394,19 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 
 func (rt *claudeManagedRuntime) terminate() {
 	rt.exitOnce.Do(func() {
+		// B4: set the lock-free barrier FIRST, before any I/O, so
+		// in-flight joinDeferred calls see it. Then invalidate the
+		// coordinator atomically BEFORE bridge close and process
+		// Kill/Wait — the gap between Kill and Wait is where
+		// ReserveEntry could otherwise succeed against a dead process.
+		rt.atomicTerminated.Store(true)
+
+		// Invalidate coordinator BEFORE external I/O so reservation
+		// and termination are linearized under the coordinator mutex.
+		if rt.coordinator != nil {
+			rt.coordinator.ClearRuntime(rt.sessionID, rt.epoch)
+		}
+
 		if rt.bridge != nil {
 			rt.bridge.close()
 		}
@@ -405,7 +419,6 @@ func (rt *claudeManagedRuntime) terminate() {
 		rt.turnMu.Lock()
 		rt.terminated = true
 		rt.ingestGen++
-		rt.atomicTerminated.Store(true) // invalidate any in-flight join
 		rt.turnClosed = true
 		rt.pendingObservations = make(map[string]*claudePendingObservation)
 		expired := rt.activeApprovals
@@ -423,11 +436,6 @@ func (rt *claudeManagedRuntime) terminate() {
 			// Approval record — it is the single Store-owned
 			// metadata transition for termination.
 			_ = approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
-		}
-		// C2D-B: invalidate all coordinator identities and entries for this
-		// runtime atomically under the coordinator mutex.
-		if rt.coordinator != nil {
-			rt.coordinator.ClearRuntime(rt.sessionID, rt.epoch)
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)

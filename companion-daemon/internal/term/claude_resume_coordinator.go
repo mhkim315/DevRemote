@@ -175,7 +175,8 @@ type resumeEntry struct {
 	inputDigest    string
 	decision       string
 	runtime        RuntimeRef
-	pokitSessionID string // POKIT compound session ID from binding
+	pokitSessionID string                    // POKIT compound session ID from binding
+	binding        ApprovalExecutionBinding  // full defensive copy for witness→receipt binding
 	state          resumeState
 	createdAt      time.Time
 	ch             chan resumeOutcome // buffered 1
@@ -281,16 +282,35 @@ func generateCoordNonce() string {
 	return hex.EncodeToString(b[:])
 }
 
+// cloneBindingCopy returns a defensive copy of an ApprovalExecutionBinding
+// with all string fields cloned so the coordinator does not pin caller memory.
+func cloneBindingCopy(b ApprovalExecutionBinding) ApprovalExecutionBinding {
+	return ApprovalExecutionBinding{
+		ApprovalID:     b.ApprovalID,
+		SessionID:      b.SessionID,
+		Runtime:        cloneRuntimeRef(b.Runtime),
+		ActionDigest:   b.ActionDigest,
+		PayloadDigest:  b.PayloadDigest,
+		IdempotencyKey: b.IdempotencyKey,
+		OptionID:       b.OptionID,
+		DeliverySchema: b.DeliverySchema,
+	}
+}
+
 // ReserveEntry creates a coordinator entry from an identity and the
 // store-issued ApprovalExecutionBinding. It validates the binding,
 // derives the Claude-native decision from OptionID + DeliverySchema,
 // and returns an opaque ResumeHandle.
 //
-// The runtime in the binding MUST exactly match the stored identity's
-// runtime. A stale epoch, wrong adapter, or cross-session binding is
-// rejected.
+// The runtime MUST exactly match the stored identity's runtime and
+// POKIT session ID. A stale epoch, wrong adapter, or cross-session
+// binding is rejected. The full binding is preserved defensively so
+// claim→write→witness→receipt carries the same identity.
 func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding ApprovalExecutionBinding) (ResumeHandle, bool) {
 	if !validCoordinatorClaimToken(claimToken) {
+		return ResumeHandle{}, false
+	}
+	if !validApprovalID(binding.ApprovalID) || !validSessionID(binding.SessionID) {
 		return ResumeHandle{}, false
 	}
 
@@ -314,8 +334,8 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 	if !ok {
 		return ResumeHandle{}, false
 	}
-	// Runtime must match exactly — no cross-runtime or stale-epoch claims.
-	if !id.runtime.equal(binding.Runtime) {
+	// B1: full identity comparison — runtime AND POKIT session must match.
+	if !id.runtime.equal(binding.Runtime) || id.pokitSessionID != binding.SessionID {
 		return ResumeHandle{}, false
 	}
 	if _, dup := c.entries[claimToken]; dup {
@@ -336,6 +356,7 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 		decision:       decision,
 		runtime:        id.runtime,
 		pokitSessionID: binding.SessionID,
+		binding:        cloneBindingCopy(binding),
 		state:          stateDecisionReserved,
 		createdAt:      clockNow(),
 		ch:             make(chan resumeOutcome, 1),
@@ -384,12 +405,13 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 //
 // If writeOK is true: transitions writeClaimed → decisionWritten and
 // signals the waiter.
-// If writeOK is false: transitions writeClaimed → terminal (the write
-// failed; the caller may not retry because the provider may have
-// received partial bytes).
+// If writeOK is false: transitions writeClaimed → terminal with
+// outcomeAmbiguous. The write was claimed but not confirmed — partial
+// bytes may have reached the provider. The caller must NOT retry.
 //
-// Returns outcomeWritten on successful confirmation, outcomeStale if the
-// entry was invalidated concurrently.
+// Returns outcomeWritten on successful confirmation, outcomeAmbiguous
+// if the entry was invalidated concurrently or the write was reported
+// as failed (non-retryable in both cases).
 func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) resumeOutcome {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -397,17 +419,19 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	entry, ok := c.entries[claimToken]
 	if !ok || entry.state != stateWriteClaimed {
 		// Invalidated concurrently (terminate, cancel, close, timeout).
-		return outcomeStale
+		// The write may or may not have reached the provider — ambiguous.
+		return outcomeAmbiguous
 	}
 	if writeOK {
 		entry.state = stateDecisionWritten
 		entry.ch <- outcomeWritten
 		return outcomeWritten
 	}
+	// Write failed: ambiguous because partial bytes may have been sent.
 	entry.state = stateTerminal
-	entry.ch <- outcomeCancelled
+	entry.ch <- outcomeAmbiguous
 	delete(c.entries, claimToken)
-	return outcomeWritten // caller sees "written" for the decision they chose
+	return outcomeAmbiguous
 }
 
 // CancelEntry cancels an active entry. If the entry is still reserved, it
@@ -509,18 +533,60 @@ func (c *claudeResumeCoordinator) Close() {
 }
 
 // clearStaleEntries removes entries that have exceeded the entry timeout.
+// Reserved entries time out. Write-claimed entries (write in flight past
+// the deadline) are also cleaned up as ambiguous. Decision-written entries
+// (witness never arrived) are cleaned up as ambiguous after a longer
+// witness timeout.
 func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	cutoff := now.Add(-coordinatorEntryTimeout)
+	entryCutoff := now.Add(-coordinatorEntryTimeout)
+	// Witness timeout is longer: once written, the provider has more time
+	// to produce the consumption witness.
+	witnessCutoff := now.Add(-2 * coordinatorEntryTimeout)
+
 	for claimToken, entry := range c.entries {
-		if entry.state == stateDecisionReserved && entry.createdAt.Before(cutoff) {
-			entry.state = stateTerminal
-			entry.ch <- outcomeTimeout
-			delete(c.entries, claimToken)
+		switch entry.state {
+		case stateDecisionReserved:
+			if entry.createdAt.Before(entryCutoff) {
+				entry.state = stateTerminal
+				entry.ch <- outcomeTimeout
+				delete(c.entries, claimToken)
+			}
+		case stateWriteClaimed:
+			if entry.createdAt.Before(entryCutoff) {
+				entry.state = stateTerminal
+				entry.ch <- outcomeAmbiguous
+				delete(c.entries, claimToken)
+			}
+		case stateDecisionWritten:
+			if entry.createdAt.Before(witnessCutoff) {
+				entry.state = stateTerminal
+				// ConfirmWrite already sent outcomeWritten; the channel
+				// is full. Just clean up without blocking.
+				delete(c.entries, claimToken)
+			}
 		}
 	}
+}
+
+// MarkWitnessed is called by C2D-C after a consumption witness (PostToolUse
+// or permission_denials) is observed. It cleans up the entry so capacity
+// is not permanently consumed. Idempotent for unknown or already-terminal
+// entries.
+func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[claimToken]
+	if !ok {
+		return
+	}
+	if entry.state == stateDecisionWritten {
+		entry.state = stateTerminal
+		// The channel already received outcomeWritten from ConfirmWrite.
+	}
+	delete(c.entries, claimToken)
 }
 
 // ── Test helpers ──

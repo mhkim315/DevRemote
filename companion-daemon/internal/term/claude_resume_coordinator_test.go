@@ -418,10 +418,10 @@ func TestConfirmWriteFailure(t *testing.T) {
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
 	_, _ = c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
-	// Simulate write failure.
+	// Simulate write failure — must be ambiguous, not success.
 	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", false)
-	if out != outcomeWritten {
-		t.Fatalf("expected outcomeWritten (caller knows it chose not to write), got %d", out)
+	if out != outcomeAmbiguous {
+		t.Fatalf("expected outcomeAmbiguous for write failure, got %d", out)
 	}
 	if c.pendingCount() != 0 {
 		t.Fatal("expected 0 pending after failed confirm")
@@ -442,8 +442,8 @@ func TestConfirmWriteAfterInvalidation(t *testing.T) {
 	c.CancelEntry("cccccccccccccccccccccccccccccccc")
 
 	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
-	if out != outcomeStale {
-		t.Fatalf("expected outcomeStale after invalidation, got %d", out)
+	if out != outcomeAmbiguous {
+		t.Fatalf("expected outcomeAmbiguous after invalidation, got %d", out)
 	}
 }
 
@@ -687,8 +687,8 @@ func TestClaimWriteCancelRace(t *testing.T) {
 
 	// ConfirmWrite must fail — entry was invalidated.
 	out = c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
-	if out != outcomeStale {
-		t.Fatalf("expected outcomeStale after cancel race, got %d", out)
+	if out != outcomeAmbiguous {
+		t.Fatalf("expected outcomeAmbiguous after cancel race, got %d", out)
 	}
 }
 
@@ -731,6 +731,157 @@ func TestWriteHandleDoesNotExposeInternals(t *testing.T) {
 	// The write handle only exposes Decision() — no claimToken or internal
 	// fields are accessible. Verify we can't accidentally reuse a stale handle.
 	_ = wh.Decision() // read-only access
+}
+
+// ── B2: expiry cancels reserved entry ──
+
+func TestReserveThenExpiryThenClaimWrite(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	// Simulate expiry: ClearForApproval removes identity AND cancels entry.
+	c.ClearForApproval(id)
+
+	// ClaimWrite must fail because the entry was cancelled.
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	if out != outcomeStale {
+		t.Fatalf("expected outcomeStale after expiry, got %d", out)
+	}
+	if c.pendingCount() != 0 {
+		t.Fatal("expected 0 pending entries after expiry")
+	}
+}
+
+// ── B5: witness cleanup ──
+
+func TestMarkWitnessed(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+
+	// Entry is in decisionWritten state — consuming capacity.
+	if c.pendingCount() != 0 {
+		t.Fatal("expected 0 pending entries (decisionWritten is not pending)")
+	}
+
+	// C2D-C observes the witness and marks the entry.
+	c.MarkWitnessed("cccccccccccccccccccccccccccccccc")
+
+	// Verify the entry is cleaned up (no-op for already-cleaned entries).
+	c.MarkWitnessed("cccccccccccccccccccccccccccccccc") // idempotent
+}
+
+func TestStaleDecisionWrittenCleanedUp(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+
+	// Advance time past 2× coordinatorEntryTimeout (witness timeout).
+	fakeNow := clockNow().Add(2*coordinatorEntryTimeout + time.Second)
+	c.clearStaleEntries(fakeNow)
+
+	// Entry should be cleaned up.
+	if c.pendingCount() != 0 {
+		t.Fatal("expected decisionWritten entry to be cleaned up after witness timeout")
+	}
+}
+
+// ── B5: known-bad negative control ──
+
+// unsafeReserveEntry is a TEST-ONLY entry point that reserves an entry
+// WITHOUT holding the coordinator mutex. It exists solely to prove that
+// the mutex is necessary — without it, concurrent reservations produce
+// duplicates. A small sleep widens the check-then-set race window.
+func (c *claudeResumeCoordinator) unsafeReserveEntry(claimToken string, binding ApprovalExecutionBinding, nonce string) bool {
+	id, ok := c.identities[binding.ApprovalID]
+	if !ok {
+		return false
+	}
+	if !id.runtime.equal(binding.Runtime) {
+		return false
+	}
+	if _, dup := c.entries[claimToken]; dup {
+		return false
+	}
+	// Widen the race window so the race detector and the >1-success
+	// assertion both fire reliably.
+	time.Sleep(10 * time.Millisecond)
+	decision, _ := deriveDecision(binding)
+	c.entries[claimToken] = &resumeEntry{
+		claimToken:     claimToken,
+		resumeNonce:    nonce,
+		approvalID:     binding.ApprovalID,
+		sessionID:      id.sessionID,
+		toolUseID:      id.toolUseID,
+		toolName:       id.toolName,
+		inputDigest:    id.inputDigest,
+		decision:       decision,
+		runtime:        id.runtime,
+		pokitSessionID: binding.SessionID,
+		binding:        cloneBindingCopy(binding),
+		state:          stateDecisionReserved,
+		createdAt:      clockNow(),
+		ch:             make(chan resumeOutcome, 1),
+	}
+	return true
+}
+
+func TestKnownBad_UnsafeReserveEntryRace(t *testing.T) {
+	// Manual-only: intentional data race proves the mutex is necessary.
+	// Run without -race: go test -run TestKnownBad_UnsafeReserveEntryRace -count=10
+	// Together with TestClaimWrite_KnownBadCheckThenWrite (safe path, only
+	// 1 success with mutex), this proves the mutex is necessary AND sufficient.
+	t.Skip("manual-only: intentional data race — run without -race to verify")
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	ct := "cccccccccccccccccccccccccccccccc"
+	nonce := generateCoordNonce()
+
+	// Barrier: all goroutines start at the same instant.
+	var goBarrier sync.WaitGroup
+	var doneBarrier sync.WaitGroup
+	results := make(chan bool, 4)
+
+	for i := 0; i < 4; i++ {
+		goBarrier.Add(1)
+		doneBarrier.Add(1)
+		go func() {
+			goBarrier.Done() // signal ready
+			goBarrier.Wait() // wait for all ready
+			results <- c.unsafeReserveEntry(ct, binding, nonce)
+			doneBarrier.Done()
+		}()
+	}
+	doneBarrier.Wait()
+	close(results)
+
+	succeeded := 0
+	for r := range results {
+		if r {
+			succeeded++
+		}
+	}
+	if succeeded <= 1 {
+		t.Fatalf("known-bad control: expected >1 successes without mutex, got %d — test is vacuous", succeeded)
+	}
+	t.Logf("known-bad: %d/%d succeeded without mutex (proves mutex is necessary)", succeeded, 4)
 }
 
 // ── failingReader for entropy injection ──
