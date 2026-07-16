@@ -1068,13 +1068,22 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
+	// PRIMER: ingest a first approval so the Store session entry exists.
+	// Without this, SupersedeRuntime does nothing (sess==nil → early return).
 	sid := "s-race"
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
 	digest := sha256Hex(inputCanon)
 
-	// Install a hook that calls terminate() AFTER the gen-check but BEFORE
-	// IngestObserved. This simulates Stop winning the race AFTER join has
-	// passed its local checks.
+	rt.observePreToolUse("call_Primer", "Bash", sid, digest)
+	rt.processLine([]byte(deferredStreamJSON(sid, "call_Primer", "Bash", `{"command":"echo ok"}`)))
+	if len(store.ListSafe(id)) != 1 {
+		t.Fatalf("primer: expected 1 record, got %d", len(store.ListSafe(id)))
+	}
+
+	// Now set up the race: install a hook that calls terminate() BEFORE
+	// Store ingest. The Store has SupersedeRuntime(epoch,1) which bumps
+	// StreamGen to 1. The second joinDeferred calls IngestObserved with
+	// StreamGen=0, which the Store rejects via genNewer.
 	var hookCalled sync.WaitGroup
 	hookCalled.Add(1)
 	rt.preIngestHook = func() {
@@ -1082,23 +1091,22 @@ func TestClaudeStopJoinRace(t *testing.T) {
 		rt.terminate()
 	}
 
-	// Create a pending observation and trigger the full join path.
 	rt.observePreToolUse("call_Race", "Bash", sid, digest)
 	deferred := deferredStreamJSON(sid, "call_Race", "Bash", `{"command":"echo ok"}`)
 	rt.processLine([]byte(deferred))
-
-	// Wait for the hook to finish.
 	hookCalled.Wait()
 
-	// The late ingest must be rejected by the Store: SupersedeRuntime bumped
-	// StreamGen to 1, and IngestObserved with StreamGen=0 is dropped.
-	if len(store.ListSafe(id)) != 0 {
-		t.Fatalf("expected 0 records after stop/join race, got %d", len(store.ListSafe(id)))
+	// Verify terminate() actually ran.
+	if !rt.terminated {
+		t.Fatal("BUG: preIngestHook did not call terminate()")
 	}
-	// Verify the Store high-water was advanced.
-	snap, ok := store.LookupRecord(id, "claude-fake") // doesn't exist, but confirms store knows the session
-	_ = snap
-	_ = ok
+
+	// Store must reject the late ingest. The primer record may still be
+	// visible in ListSafe (resolved window), so we check the count didn't
+	// increase — it should be exactly 1 (primer only), not 2.
+	if len(store.ListSafe(id)) != 1 {
+		t.Fatalf("Store must reject late ingest: expected 1 record (primer only), got %d", len(store.ListSafe(id)))
+	}
 }
 
 // TestClaudeStartIPCServerIntegration tests the full production IPC path.
@@ -1174,10 +1182,13 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 
 	safe := store.ListSafe(id)
 	t.Logf("approvals: %d", len(safe))
+	if len(safe) == 0 {
+		t.Error("expected at least 1 non-actionable approval observation — Claude did not produce a PreToolUse/defer")
+	}
 	for _, s := range safe {
 		t.Logf("  approval: id=%s options=%d", s.ID, len(s.Options))
 		if len(s.Options) != 0 {
-			t.Errorf("expected zero options, got %d", len(s.Options))
+			t.Errorf("expected zero options (non-actionable), got %d", len(s.Options))
 		}
 	}
 

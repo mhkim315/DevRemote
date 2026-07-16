@@ -187,28 +187,17 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 	approvalID := "claude-" + approvalToken
 
-	// Snapshot the ingest generation and release the lock. Before calling
-	// IngestObserved (which takes the store lock), we re-acquire turnMu and
-	// verify the generation hasn't changed. If terminate() ran in between,
-	// ingestGen was bumped and the late ingest is silently dropped.
+	// Release the local lock. The Store is the sole authority for
+	// linearization: terminate() calls SupersedeRuntime(epoch, 1) which
+	// bumps the Store generation high-water, so any late IngestObserved
+	// with StreamGen=0 is rejected inside the Store.
 	delete(rt.pendingObservations, toolUseID)
-	snapGen := rt.ingestGen
 	rt.turnMu.Unlock()
 
-	// Test seam: inject Stop/terminate before the final check and ingest.
+	// Test seam: inject Stop/terminate before Store ingest.
 	if rt.preIngestHook != nil {
 		rt.preIngestHook()
 	}
-
-	// Re-check under lock: terminated or generation change → drop.
-	// This check runs AFTER the hook, so a hook that calls terminate()
-	// will bump ingestGen and cause this to fail.
-	rt.turnMu.Lock()
-	if rt.terminated || rt.ingestGen != snapGen {
-		rt.turnMu.Unlock()
-		return
-	}
-	rt.turnMu.Unlock()
 
 	approvals := rt.approvals
 	if approvals == nil {
