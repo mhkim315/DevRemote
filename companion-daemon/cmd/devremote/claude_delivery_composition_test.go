@@ -205,8 +205,7 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 	resumeURL, _ := captureBridgeURLs(t, l)
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) { t.Fatalf("resume response: %s", r) }
-	dgst := term.CanonicalDigest([]byte(`{"command":"echo hello"}`))
-	denialJSON := `{"type":"result","stop_reason":"end_turn","session_id":"` + csid + `","permission_denials":[{"tool_name":"Bash","tool_use_id":"` + tuid + `","input_sha256":"` + dgst + `"}]}` + "\n"
+	denialJSON := `{"type":"result","stop_reason":"end_turn","session_id":"` + csid + `","permission_denials":[{"tool_name":"Bash","tool_use_id":"` + tuid + `"}]}` + "\n"
 	// Wait for resume writer via channel (race-free).
 	select {
 	case <-l.resumeWCh:

@@ -161,9 +161,8 @@ type streamDenial struct {
 	StopReason        string `json:"stop_reason"`
 	SessionID         string `json:"session_id"`
 	PermissionDenials []struct {
-		ToolName    string `json:"tool_name"`
-		ToolUseID   string `json:"tool_use_id"`
-		InputSha256 string `json:"input_sha256"`
+		ToolName  string `json:"tool_name"`
+		ToolUseID string `json:"tool_use_id"`
 	} `json:"permission_denials"`
 }
 
@@ -177,6 +176,7 @@ func strictDenialDecode(raw []byte) (*streamDenial, bool) {
 	if err := dec.Decode(&d); err != nil {
 		return nil, false
 	}
+	// Reject trailing data.
 	var trailing json.RawMessage
 	if dec.Decode(&trailing) != io.EOF {
 		return nil, false
@@ -189,9 +189,6 @@ func strictDenialDecode(raw []byte) (*streamDenial, bool) {
 	}
 	for _, pd := range d.PermissionDenials {
 		if pd.ToolName == "" || len(pd.ToolName) > 256 || pd.ToolUseID == "" || len(pd.ToolUseID) > 256 {
-			return nil, false
-		}
-		if pd.InputSha256 != "" && !validCoordinatorDigest(pd.InputSha256) {
 			return nil, false
 		}
 	}
@@ -428,17 +425,12 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 		if d.SessionID != ctx.claudeSessionID || pd.ToolUseID != ctx.toolUseID || pd.ToolName != ctx.toolName {
 			continue
 		}
-		// R6-A4: verify the denial event's input_sha256 matches the
-		// coordinator-stored digest. If the event carries a digest,
-		// require it. If absent (older Claude versions), use stored.
-		witnessDigest := pd.InputSha256
-		if witnessDigest == "" {
-			witnessDigest = ctx.inputDigest
-		} else if witnessDigest != ctx.inputDigest {
-			continue // digest mismatch — denial is for wrong input
-		}
+		// R6-A3: input digest is from the coordinator-stored identity,
+		// validated at observation time by joinDeferred. The denial event
+		// does not carry tool_input (per C0D evidence); the stored digest
+		// is the only authoritative source.
 		rt.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
-			d.SessionID, pd.ToolUseID, pd.ToolName, witnessDigest, ctx.originalRuntime)
+			d.SessionID, pd.ToolUseID, pd.ToolName, ctx.inputDigest, ctx.originalRuntime)
 	}
 }
 
