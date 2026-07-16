@@ -167,11 +167,21 @@ type streamDenial struct {
 }
 
 func strictDenialDecode(raw []byte) (*streamDenial, bool) {
-	var d streamDenial
-	if err := json.Unmarshal(raw, &d); err != nil {
+	if len(raw) == 0 || len(raw) > 65536 {
 		return nil, false
 	}
-	if d.Type != "result" || d.SessionID == "" {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var d streamDenial
+	if err := dec.Decode(&d); err != nil {
+		return nil, false
+	}
+	// Reject trailing data.
+	var trailing json.RawMessage
+	if dec.Decode(&trailing) != io.EOF {
+		return nil, false
+	}
+	if d.Type != "result" || d.SessionID == "" || len(d.SessionID) > 1024 {
 		return nil, false
 	}
 	if len(d.PermissionDenials) == 0 || len(d.PermissionDenials) > 16 {
@@ -405,7 +415,13 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 		if pd.ToolName == "" || pd.ToolUseID == "" || d.SessionID == "" {
 			continue
 		}
-		rt.coordinator.MarkWitnessedByToolUse(d.SessionID, pd.ToolUseID, pd.ToolName, WitnessPermissionDenials)
+		// Look up the claim token for the matching coordinator entry,
+		// then call the full-binding MarkWitnessed.
+		ct, dig, rtRef, ok := rt.coordinator.LookupClaimToken(d.SessionID, pd.ToolUseID, pd.ToolName)
+		if !ok {
+			continue
+		}
+		rt.coordinator.MarkWitnessed(ct, WitnessPermissionDenials, d.SessionID, pd.ToolUseID, pd.ToolName, dig, rtRef)
 	}
 }
 

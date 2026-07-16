@@ -705,30 +705,23 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	return entry.binding, respDigest, true
 }
 
-// MarkWitnessedByToolUse finds a decisionWritten entry by session+tool
-// identity and delegates to the full-binding MarkWitnessed. Only matches
-// entries with decision=="deny" and kind==WitnessPermissionDenials.
-func (c *claudeResumeCoordinator) MarkWitnessedByToolUse(sessionID, toolUseID, toolName string, kind WitnessKind) {
+
+
+// LookupClaimToken finds the claim token for a decisionWritten entry
+// matching the given session and tool identity. Used by the pump's
+// deny decoder to route via the full-binding MarkWitnessed.
+func (c *claudeResumeCoordinator) LookupClaimToken(sessionID, toolUseID, toolName string) (claimToken string, inputDigest string, rt RuntimeRef, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for ct, entry := range c.entries {
 		if entry.state != stateDecisionWritten {
 			continue
 		}
-		if entry.sessionID != sessionID || entry.toolUseID != toolUseID || entry.toolName != toolName {
-			continue
+		if entry.sessionID == sessionID && entry.toolUseID == toolUseID && entry.toolName == toolName && entry.decision == "deny" {
+			return ct, entry.inputDigest, entry.runtime, true
 		}
-		if entry.decision != "deny" || kind != WitnessPermissionDenials {
-			continue
-		}
-		// Delegate to full-binding MarkWitnessed with the entry's stored identity.
-		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-		delete(c.entries, ct)
-		delete(c.identities, entry.approvalID)
-		return
 	}
+	return "", "", RuntimeRef{}, false
 }
 
 // ── Test helpers ──
