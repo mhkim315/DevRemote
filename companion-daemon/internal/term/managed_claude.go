@@ -166,6 +166,25 @@ type streamDenial struct {
 	} `json:"permission_denials"`
 }
 
+func strictDenialDecode(raw []byte) (*streamDenial, bool) {
+	var d streamDenial
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return nil, false
+	}
+	if d.Type != "result" || d.SessionID == "" {
+		return nil, false
+	}
+	if len(d.PermissionDenials) == 0 || len(d.PermissionDenials) > 16 {
+		return nil, false
+	}
+	for _, pd := range d.PermissionDenials {
+		if pd.ToolName == "" || len(pd.ToolName) > 256 || pd.ToolUseID == "" || len(pd.ToolUseID) > 256 {
+			return nil, false
+		}
+	}
+	return &d, true
+}
+
 // joinDeferred matches a tool_deferred result against a pending observation.
 // On match, ingests a non-actionable record. Capacity is checked against
 // maxActiveApprovals; store admission failure rolls back the active entry.
@@ -245,10 +264,6 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
-	rt.turnMu.Lock()
-	rt.joinedDeferred = true
-	rt.turnMu.Unlock()
-
 	admitted := approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
@@ -279,6 +294,11 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		}
 		return
 	}
+
+	// R5-B: mark joined only after successful Store admission.
+	rt.turnMu.Lock()
+	rt.joinedDeferred = true
+	rt.turnMu.Unlock()
 
 	// Test seam: inject terminate BETWEEN Store admission and active append.
 	if rt.postIngestHook != nil {
@@ -372,9 +392,8 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 		rt.joinDeferred(&event)
 		return
 	}
-	var denial streamDenial
-	if err := json.Unmarshal(line, &denial); err == nil && denial.Type == "result" && len(denial.PermissionDenials) > 0 {
-		rt.routeDenial(&denial)
+	if d, ok := strictDenialDecode(line); ok {
+		rt.routeDenial(d)
 	}
 }
 

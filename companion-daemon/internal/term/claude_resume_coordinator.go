@@ -705,8 +705,9 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	return entry.binding, respDigest, true
 }
 
-// MarkWitnessedByToolUse looks up a coordinator entry by session and tool_use_id
-// and marks it witnessed. Used by the pump's permission_denials decoder.
+// MarkWitnessedByToolUse finds a decisionWritten entry by session+tool
+// identity and delegates to the full-binding MarkWitnessed. Only matches
+// entries with decision=="deny" and kind==WitnessPermissionDenials.
 func (c *claudeResumeCoordinator) MarkWitnessedByToolUse(sessionID, toolUseID, toolName string, kind WitnessKind) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -714,14 +715,19 @@ func (c *claudeResumeCoordinator) MarkWitnessedByToolUse(sessionID, toolUseID, t
 		if entry.state != stateDecisionWritten {
 			continue
 		}
-		if entry.sessionID == sessionID && entry.toolUseID == toolUseID && entry.toolName == toolName && entry.decision == "deny" {
-			respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-			entry.state = stateTerminal
-			entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-			delete(c.entries, ct)
-			delete(c.identities, entry.approvalID)
-			return
+		if entry.sessionID != sessionID || entry.toolUseID != toolUseID || entry.toolName != toolName {
+			continue
 		}
+		if entry.decision != "deny" || kind != WitnessPermissionDenials {
+			continue
+		}
+		// Delegate to full-binding MarkWitnessed with the entry's stored identity.
+		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
+		entry.state = stateTerminal
+		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
+		delete(c.entries, ct)
+		delete(c.identities, entry.approvalID)
+		return
 	}
 }
 
