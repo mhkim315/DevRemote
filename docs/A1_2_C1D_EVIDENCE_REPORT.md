@@ -1,6 +1,6 @@
 # A1.2 C1D — Managed Claude Observation Evidence Report
 
-Status: **C1D ACCEPTED — AWAITING FINAL EVIDENCE REVIEW**
+Status: **C1D IMPLEMENTED — AWAITING INDEPENDENT ACCEPTANCE**
 
 Implementation SHA: `176731e8068980c3fabc57c1aba94e7c73467e6d`
 Accepted C0D evidence: `e42d4c570e64462ce813861017cc635e338e68bf`
@@ -57,7 +57,7 @@ hook dir cleanup.
 
 `TestC1D_LiveProductionProof` in `cmd/devremote/c1d_live_test.go`:
 
-- Uses `buildRunCreateRequest(["claude"])` → `createRequestViaSocketAt`
+- Uses `buildRunCreateRequest(["claude"])` → `json.Marshal` → `net.Dial` Unix socket (same serializer as `createRequestViaSocketAt` internal path)
 - Pinned binary: `/Users/mhk/.local/share/claude/versions/2.1.209`
 - SHA-256: `59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c`
 - Bounded polling: 500ms intervals, 60s deadline
