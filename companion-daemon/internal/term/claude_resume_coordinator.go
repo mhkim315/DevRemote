@@ -626,7 +626,7 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 // stored decision: allow→PostToolUse, deny→PermissionDenials. Unknown
 // kinds are rejected. Early, wrong, duplicate, mismatched, or stale
 // witnesses leave the entry unchanged.
-func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID string) (ApprovalExecutionBinding, bool) {
+func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID, toolName, inputDigest string, rt RuntimeRef) (ApprovalExecutionBinding, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -653,7 +653,12 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 		delete(c.entries, claimToken)
 		return ApprovalExecutionBinding{}, false
 	}
-	if entry.sessionID != sessionID || entry.toolUseID != toolUseID {
+	// B2: full provider identity must match stored entry.
+	if entry.sessionID != sessionID || entry.toolUseID != toolUseID ||
+		entry.toolName != toolName || entry.inputDigest != inputDigest {
+		return ApprovalExecutionBinding{}, false
+	}
+	if !entry.runtime.equal(rt) {
 		return ApprovalExecutionBinding{}, false
 	}
 

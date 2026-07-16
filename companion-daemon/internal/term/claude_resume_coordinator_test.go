@@ -768,33 +768,49 @@ func TestMarkWitnessed(t *testing.T) {
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
-	// Verify entry exists before witness.
 	if c.entryCount() != 1 {
 		t.Fatalf("expected 1 entry before witness, got %d", c.entryCount())
 	}
 
-	// C2D-C observes the witness and marks the entry.
-	retBinding, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid)
+	retBinding, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if !ok {
 		t.Fatal("expected MarkWitnessed to succeed")
 	}
 	if !retBinding.equal(binding) {
 		t.Fatal("returned binding should match stored binding")
 	}
-
-	// Verify entry is removed.
 	if c.entryCount() != 0 {
 		t.Fatalf("expected 0 entries after witness, got %d", c.entryCount())
 	}
 
-	// Idempotent — second call with same or different witness returns false.
-	_, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid)
+	// Idempotent — second call returns false.
+	_, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected idempotent MarkWitnessed to return false")
 	}
-	_, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, tuid)
+}
+
+func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
+	// B2: test wrong-kind on a SEPARATE alive entry (not the one already consumed).
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+
+	// Create a DENY entry and advance it to decisionWritten.
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	binding.OptionID = "deny"
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+
+	// Wrong kind: DENY entry receives WitnessPostToolUse.
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
-		t.Fatal("expected wrong-witness-kind to return false")
+		t.Fatal("expected wrong-kind witness to fail on alive deny entry")
+	}
+	if c.entryCount() != 1 {
+		t.Fatal("entry should survive wrong-kind witness")
 	}
 }
 
@@ -804,13 +820,11 @@ func TestMarkWitnessedWrongState(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-
-	// Still reserved — witness not accepted.
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid)
+	_ = handle
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for reserved entry")
 	}
-	_ = handle
 }
 
 func TestMarkWitnessedWrongSession(t *testing.T) {
@@ -819,13 +833,10 @@ func TestMarkWitnessedWrongSession(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-
-	// Wrong session — witness not accepted, entry preserved.
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid)
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong session")
 	}
@@ -840,69 +851,152 @@ func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-
-	// Wrong tool_use_id — witness not accepted.
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid")
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid", tn, dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong tool_use_id")
 	}
 }
 
-func TestStaleDecisionWrittenCleanedUp(t *testing.T) {
+func TestMarkWitnessedWrongToolName(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, "WrongTool", dig, rt)
+	if ok {
+		t.Fatal("expected MarkWitnessed to fail for wrong tool name")
+	}
+	if c.entryCount() != 1 {
+		t.Fatal("entry should still exist after rejected witness")
+	}
+}
 
+func TestMarkWitnessedWrongInputDigest(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rt)
+	if ok {
+		t.Fatal("expected MarkWitnessed to fail for wrong input digest")
+	}
+}
+
+func TestMarkWitnessedWrongRuntime(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+	wrongRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 99, StreamGen: 0}
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, wrongRT)
+	if ok {
+		t.Fatal("expected MarkWitnessed to fail for wrong RuntimeRef")
+	}
+}
+
+// ── B3: direct deadline tests ──
+
+func TestConfirmWriteExpiredWriteClaim(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_ = wh
+
+	// Advance past the write-claim deadline.
+	orig := clockNow
+	clockNow = func() time.Time { return time.Now().Add(coordinatorEntryTimeout + time.Second) }
+	defer func() { clockNow = orig }()
+
+	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	if out != outcomeAmbiguous {
+		t.Fatalf("expected outcomeAmbiguous for expired write claim, got %d", out)
+	}
+	if c.entryCount() != 0 {
+		t.Fatal("entry should be removed after expired ConfirmWrite")
+	}
+}
+
+func TestMarkWitnessedExpiredWitness(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
-	// B2: verify entry actually exists before cleanup (non-vacuous).
-	if c.entryCount() != 1 {
-		t.Fatalf("expected 1 entry before cleanup, got %d", c.entryCount())
+	// Advance past the witness deadline (2× coordinatorEntryTimeout).
+	orig := clockNow
+	clockNow = func() time.Time { return time.Now().Add(2*coordinatorEntryTimeout + time.Second) }
+	defer func() { clockNow = orig }()
+
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if ok {
+		t.Fatal("expected expired witness to fail")
 	}
-
-	// Advance time past 2× coordinatorEntryTimeout (witness timeout).
-	fakeNow := clockNow().Add(2*coordinatorEntryTimeout + time.Second)
-	c.clearStaleEntries(fakeNow)
-
-	// B2: verify entry is actually removed (non-vacuous — was 1, now 0).
 	if c.entryCount() != 0 {
-		t.Fatalf("expected 0 entries after witness timeout, got %d", c.entryCount())
+		t.Fatal("entry should be removed after expired witness")
 	}
 }
 
-func TestClaimWriteExpiredEntry(t *testing.T) {
-	// B2: prove that a late hook (past the reservation deadline) gets zero
-	// decision delivery.
+func TestConfirmWriteJustBeforeDeadline(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_ = wh
 
-	// Advance time past the entry timeout.
-	fakeNow := clockNow().Add(coordinatorEntryTimeout + time.Second)
-	// Replace clockNow temporarily (same pattern as managed_claude.go).
-	origClock := clockNow
-	clockNow = func() time.Time { return fakeNow }
-	defer func() { clockNow = origClock }()
+	// Just before deadline — succeeds.
+	orig := clockNow
+	clockNow = func() time.Time { return time.Now().Add(coordinatorEntryTimeout - time.Second) }
+	defer func() { clockNow = orig }()
 
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
-	if out != outcomeStale {
-		t.Fatalf("expected outcomeStale for expired entry, got %d", out)
-	}
-	if c.entryCount() != 0 {
-		t.Fatal("entry should be removed after expired ClaimWrite")
+	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	if out != outcomeWritten {
+		t.Fatalf("expected outcomeWritten just before deadline, got %d", out)
 	}
 }
 
+func TestConfirmWriteJustAfterDeadline(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_ = wh
+
+	// Just after deadline — fails.
+	orig := clockNow
+	clockNow = func() time.Time { return time.Now().Add(coordinatorEntryTimeout + time.Second) }
+	defer func() { clockNow = orig }()
+
+	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	if out != outcomeAmbiguous {
+		t.Fatalf("expected outcomeAmbiguous just after deadline, got %d", out)
+	}
+}
 
 // ── failingReader for entropy injection ──
 
