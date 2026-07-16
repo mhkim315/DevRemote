@@ -2,7 +2,7 @@
 
 Status: **C1D IMPLEMENTED — AWAITING INDEPENDENT ACCEPTANCE**
 
-Implementation SHA: `176731e8068980c3fabc57c1aba94e7c73467e6d`
+Implementation SHA: `4794ce7c7eb16f4b33ac570a6a1cd7798e62ce04`
 Accepted C0D evidence: `e42d4c570e64462ce813861017cc635e338e68bf`
 Accepted SP1/Codex baseline: `2b940a6fce6e878ffa0da17b5df4d39438af144d`
 R11 handoff SHA: `7267080df88d385d5c86273b3f79a1d964e7765c`
@@ -62,15 +62,15 @@ hook dir cleanup.
 - SHA-256: `59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c`
 - Bounded polling: 500ms intervals, 60s deadline
 
-Result (2026-07-16, exact frozen HEAD `65e6e13`):
+Result (2026-07-16, exact frozen HEAD `4794ce7`):
 ```text
 created: claude_headless:claude-*
-artifacts: hookDir=$TMPDIR/pokit-claude-hooks-* pid=45284
-hook token: http://127.0.0.1:*/hook?token=...
+artifacts: hookDir=$TMPDIR/pokit-claude-hooks-* pid=62499
+hook token length: 98
 observation: id=claude-* options=0 state=pending
 PASS: provider=claude version=2.1.209 epoch=1
 ```
-Time: 10.21s. Exactly 1 non-actionable observation.
+Time: 10.65s. Exactly 1 non-actionable observation.
 
 Assertions verified:
 - Provider: `claude`, Version: `2.1.209`, Epoch: `1`
@@ -142,4 +142,4 @@ npx tsc --noEmit                       NOT RUN (no mobile changes)
 - C0H/C0R: remain BLOCKED
 - N1, O1/O2, Agent SDK, Channels: NOT in scope
 
-REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `176731e8068980c3fabc57c1aba94e7c73467e6d`
+REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `4794ce7c7eb16f4b33ac570a6a1cd7798e62ce04`
