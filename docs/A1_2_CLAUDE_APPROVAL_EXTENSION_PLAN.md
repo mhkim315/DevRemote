@@ -84,10 +84,22 @@ PID alone, a resume command, MCP IDs, command equality or event order cannot
 substitute for any binding field.
 
 The initial macOS certification may use a macOS launcher/attestor, but no common
-contract may expose inode, Mach-O, code-signing, path or IPC details. The common
-observable tuple is `{OS, arch, attestor kind/version, opaque artifact identity,
-opaque process-image attestation, certification result/reason}` so a later
-Windows implementation can certify the same contract independently.
+contract may depend on macOS-specific paths, code-signing or process APIs. The
+staged requirement is deliberately narrow:
+
+- **C1D observation-only:** exact version, canonical real path and configured
+  SHA-256 artifact digest checked immediately before direct spawn are sufficient.
+  The runtime record may preserve that certified pre-launch digest, but must not
+  call it process-image attestation.
+- **C2D:** remains non-actionable and does not expand this requirement.
+- **C3D before actionability:** prove a platform-specific spawned-process identity
+  or obtain an explicit independent contract decision accepting an equivalent
+  non-reusable launch binding. The provider-neutral observable tuple remains
+  `{OS, arch, attestor kind/version, opaque artifact identity, opaque
+  process-image attestation or approved equivalent, certification result/reason}`.
+
+This staging prevents C1D from becoming a code-signing project while preserving
+the same certifiable boundary for a later Windows implementation.
 
 ## 5. Production lifecycle and linearization
 

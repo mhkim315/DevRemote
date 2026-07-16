@@ -1,6 +1,16 @@
 # Next Executor Handoff — A1.2 C1D Managed Claude Observation
 
-Status: **START C1D ONLY — ACTIONABILITY ZERO — STOP FOR REVIEW**
+Status: **C1D R7 FINALIZATION ONLY — ACTIONABILITY ZERO — C2D/C3D PROHIBITED**
+
+Current reviewed implementation baseline:
+`6be7ea37f2a6481f1cca2dadaeb2a90a33142894`.
+
+Before further work, read
+`docs/A1_2_C1D_R7_INDEPENDENT_REVIEW_AND_FINALIZATION.md`. It supersedes the
+open-ended implementation language in this handoff for the next packet. Do not
+repeat R2–R7 checks or redesign already-closed boundaries. The only authorized
+work is the two-interleaving Store finalization and one bounded production proof
+defined there.
 
 ## 1. Canonical repository
 
