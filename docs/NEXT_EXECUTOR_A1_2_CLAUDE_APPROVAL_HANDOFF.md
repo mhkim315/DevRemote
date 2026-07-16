@@ -156,6 +156,13 @@ the same checkpoint.
 
 ## 6. C2D-C — uninstalled Claude ApprovalDelivery and consumption routing
 
+> **Current status:** the implementation at
+> `cf877aaa64460b1e996d8756464ffb1ce41eb36a` is independently rejected. Before
+> any C2D-D work, execute the bounded remediation packet in
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_HANDOFF.md`. Its real-write,
+> fail-closed cleanup, and non-vacuous A1 composition requirements amend this
+> section without changing the frozen C2D authority contract.
+
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:
 
