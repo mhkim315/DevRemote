@@ -1,16 +1,16 @@
 # Next Executor Handoff — A1.2 C1D Managed Claude Observation
 
-Status: **C1D R7 FINALIZATION ONLY — ACTIONABILITY ZERO — C2D/C3D PROHIBITED**
+Status: **C1D R11 REMEDIATION ONLY — ACTIONABILITY ZERO — C2D/C3D PROHIBITED**
 
-Current reviewed implementation baseline:
-`6be7ea37f2a6481f1cca2dadaeb2a90a33142894`.
+Current rejected implementation baseline:
+`b7de9909b855ea2b32c38b63c87a8d5fa40fe185`.
 
 Before further work, read
-`docs/A1_2_C1D_R7_INDEPENDENT_REVIEW_AND_FINALIZATION.md`. It supersedes the
-open-ended implementation language in this handoff for the next packet. Do not
-repeat R2–R7 checks or redesign already-closed boundaries. The only authorized
-work is the two-interleaving Store finalization and one bounded production proof
-defined there.
+`docs/A1_2_C1D_R11_REJECT_AND_NEXT_EXECUTOR_HANDOFF.md`. It supersedes all
+earlier remediation packets for the next session. Do not repeat R2–R11 work or
+redesign already-closed boundaries. The only authorized work is the Store
+metadata/high-water correction, the exact CLI production proof, and the final
+evidence/gate repair defined there.
 
 ## 1. Canonical repository
 
