@@ -1,5 +1,9 @@
 # A1.2 C2D-C Remediation 5 Handoff
 
+> **Superseded:** implementation `a4f41ae6ecbce69bf80f19078e1e7301bceefed3`
+> did not close the claimed deny-authority blockers. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_6_HANDOFF.md` and execute R6-A only.
+
 Status: **C2D-C REJECTED — deny witness and deferred-lifecycle authority are unsound**  
 Reviewed implementation: `cdea8bd30059d72c2e4bcf1b33979318a3147f75`  
 Accepted prerequisite: C2D-B `27bd45162feb6bdf6fec52fa44192208c8276e32`  
