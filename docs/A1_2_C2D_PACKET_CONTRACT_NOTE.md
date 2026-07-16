@@ -1,6 +1,6 @@
 # A1.2 C2D — Packet Contract and Binding Table
 
-Status: **C2D-A DRAFT — NOT IMPLEMENTED — ACTIONABILITY ZERO**
+Status: **C2D-A AMENDED FOR RE-VERIFICATION — NOT IMPLEMENTED — ACTIONABILITY ZERO**
 
 C2D-A is the mandatory pre-implementation authority note required by
 `NEXT_EXECUTOR_A1_2_CLAUDE_APPROVAL_HANDOFF.md` §4. It documents the complete
@@ -23,11 +23,18 @@ owner. It is the only component that may:
 - issue a claim token owning one `ApprovalExecutionBinding`;
 - record a delivery receipt and commit `approved`/`rejected`.
 
-Claude-specific production code (C2D-B/C) is a **delivery boundary only**. It
+Claude-specific C2D code (C2D-B/C) is a **delivery boundary only**. It
 receives a fully-bound claim from the store, delivers one decision through a
 one-shot resume, routes the provider-native consumption witness back to the
 store via a `DeliveryReceipt`, and never reconstructs provider identity,
 options, digests, or authorization from its own state.
+
+**C2D is controlled-composition work, not production activation.** C1D's
+production `joinDeferred` path remains `Actionable=false`, with no options or
+delivery material, throughout C2D. Test-only composition may create actionable
+records to exercise the frozen A1 claim/delivery contract. Production
+actionability, mobile CTA wiring, and non-zero delivery capacity remain C3D
+work after independent C2D acceptance.
 
 ### Canonical stored inputs (created at ingestion)
 
@@ -40,21 +47,32 @@ options, digests, or authorization from its own state.
 | LaunchGen (epoch) | `ManagedClaudeService.gen` (monotonic) | `approvalRecord.launchGen` |
 | StreamGen (always `0` for Claude) | hard-coded in `joinDeferred` | `approvalRecord.streamGen` |
 | Provenance (`provider_hook`) | hard-coded `contract.ProvenanceProviderHook` | `approvalRecord.provenance` |
-| Actionable | `false` in C1D; must become `true` in C2D/C3D | `approvalRecord.actionable` |
-| Options | `nil` in C1D; C2D supplies `[{id: "allow_once", kind: "approve"}, {id: "deny", kind: "reject"}]` | `approvalRecord.approval.Options` |
-| DeliveryMaterial | `nil` in C1D; C2D supplies per-option `ApprovalDeliveryMaterial{OptionID, SchemaVersion, ResponseBytes}` | `approvalRecord.delivery` |
-| RequiredPerm | `""` in C1D; C2D supplies the stored permission string | `approvalRecord.requiredPerm` |
-| Claude session_id | `claudePendingObservation.sessionID` (from `PreToolUse.session_id`) | bound at observation time, matched at deferred join, NOT stored in the record directly — available in runtime state for resume |
-| tool_use_id | `claudePendingObservation.toolUseID` (from `PreToolUse.tool_use_id`) | bound at observation time, matched at deferred join, NOT in the record — available in runtime state |
-| tool_name | `claudePendingObservation.toolName` (from `PreToolUse.tool_name`) | bound at observation time, matched at deferred join |
-| input_digest | SHA-256 of canonical JSON of `PreToolUse.tool_input` | bound at observation time, matched at deferred join |
+| Actionable | `false` in the production C1D/C2D path; controlled C2D tests may construct `true` | `approvalRecord.actionable` |
+| Options | `nil` in production C1D/C2D; controlled C2D composition supplies `[{id: "allow_once", kind: "approve"}, {id: "deny", kind: "reject"}]` | `approvalRecord.approval.Options` |
+| DeliveryMaterial | `nil` in production C1D/C2D; controlled C2D composition supplies per-option `ApprovalDeliveryMaterial{OptionID, SchemaVersion, ResponseBytes}` | `approvalRecord.delivery` |
+| RequiredPerm | `""` in production C1D/C2D; controlled C2D composition supplies the frozen stored permission | `approvalRecord.requiredPerm` |
+| Claude session_id | `claudePendingObservation.sessionID` from `PreToolUse.session_id` | C2D-B immutable private identity record keyed by `ApprovalID` + `RuntimeRef` |
+| tool_use_id | `claudePendingObservation.toolUseID` from `PreToolUse.tool_use_id` | same private identity record; never reconstructed from output ordering |
+| tool_name | `claudePendingObservation.toolName` from `PreToolUse.tool_name` | same private identity record |
+| input_digest | SHA-256 of canonical JSON of `PreToolUse.tool_input` | same private identity record |
 
-### C2D delivery-only inputs (not stored, supplied at claim time)
+Current C1D deletes `claudePendingObservation` at deferred join and retains only
+`ApprovalID` and expiry in `activeApproval`. Therefore C2D-B MUST add the private
+identity record above before any delivery implementation. It is not optional
+runtime data and cannot be recovered from stream order, command equality, or
+provider output. The record is created from the already matched four-field C1D
+observation, defensively copied, bounded, and installed under the coordinator
+mutex before Store admission. Failed Store admission removes the reservation;
+successful admission publishes the ApprovalID association. Termination or
+replacement invalidates the reservation under that same mutex. No actionable
+claim may resolve an ApprovalID lacking this exact private record.
+
+### C2D claim outputs and authenticated inputs
 
 | Input | Supplied by |
 |---|---|
 | ClaimToken (32 hex chars) | `AuthoritativeApprovalStore.ClaimForExecution` |
-| ApprovalExecutionBinding (all 8 fields) | `AuthoritativeApprovalStore.ClaimForExecution` |
+| ApprovalExecutionBinding (all 8 fields) | `AuthoritativeApprovalStore.ClaimForExecution`; stored in `approvalRecord.binding` and the idempotency ledger after grant |
 | Canonical delivery payload bytes | `AuthoritativeApprovalStore.ClaimForExecution` |
 | RequesterAuthContext | `canonicalRequesterAuth(RequesterContext)` from authenticated principal |
 
@@ -88,28 +106,29 @@ through claim → delivery → receipt → commit. Every field is compared by
 ### 2.2 Claude-specific runtime binding (C2D-B private coordinator)
 
 These fields bridge the A1 binding to the concrete Claude resume target. They
-are created/validated inside the C2D-B coordinator and never enter the
-provider-neutral store.
+are retained in a bounded immutable C2D-B private identity record keyed by
+`ApprovalID` and exact `RuntimeRef`; they never enter the provider-neutral
+Store or a public DTO.
 
-| # | Field | Created at | Validated at | Compared at | Invalidation |
+| # | Field | Created at | Stored in | Compared at | Invalidation |
 |---|---|---|---|---|---|
-| C1 | Claude `session_id` | `PreToolUse.session_id` from hook bridge | `joinDeferred` (must match pending observation) | resume coordinator entry (must match repeated PreToolUse) | epoch replacement, stop, delete, exit, timeout |
-| C2 | `tool_use_id` | `PreToolUse.tool_use_id` from hook bridge | `joinDeferred` (must match pending observation) | resume coordinator entry + repeated PreToolUse (must match) | epoch replacement, stop, delete, exit, timeout |
-| C3 | `tool_name` | `PreToolUse.tool_name` from hook bridge | `joinDeferred` (must match pending observation) | resume coordinator entry + repeated PreToolUse (must match; first slice only `Bash`) | epoch replacement, stop, delete, exit, timeout |
-| C4 | `input_digest` | SHA-256 of canonical JSON of `PreToolUse.tool_input` | `joinDeferred` (must match pending observation) | resume coordinator entry + repeated PreToolUse (must match) | epoch replacement, stop, delete, exit, timeout |
+| C1 | Claude `session_id` | `PreToolUse.session_id` from hook bridge | immutable private identity record | deferred join, reservation, repeated PreToolUse, allow/deny witness | epoch replacement, stop, delete, exit, timeout |
+| C2 | `tool_use_id` | `PreToolUse.tool_use_id` from hook bridge | immutable private identity record | deferred join, reservation, repeated PreToolUse, PostToolUse hook/deny projection | epoch replacement, stop, delete, exit, timeout |
+| C3 | `tool_name` | `PreToolUse.tool_name` from hook bridge | immutable private identity record | deferred join, reservation, repeated PreToolUse, witness (first slice only `Bash`) | epoch replacement, stop, delete, exit, timeout |
+| C4 | `input_digest` | SHA-256 of canonical JSON of `PreToolUse.tool_input` | immutable private identity record | deferred join, reservation, repeated PreToolUse; deny projection also binds its digest | epoch replacement, stop, delete, exit, timeout |
 | C5 | Hook capability token (98 hex chars) | `newClaudeHookBridge` → `rand.Read(32)` → hex | `handleHook` (must match query param) | resume coordinator (must match the runtime's active bridge) | bridge close, terminate |
 | C6 | Resume nonce | C2D-B: `rand.Read(16)` → hex, per-claim | C2D-B coordinator (must match entry, exactly one owner) | repeated PreToolUse hook (must match) | claim completion, timeout, cancellation |
-| C7 | Resumed process identity | `execLauncherWithDir.LaunchInDir` for the resume invocation | C2D-B coordinator (epoch + authority version must match claim) | witness routing (stream-json output of the resumed process) | process exit, kill |
+| C7 | Resumed process identity | `execLauncherWithDir.LaunchInDir` for the resume invocation | C2D-B coordinator (epoch + authority version must match claim) | deny-result routing and the separately authenticated PostToolUse hook route | process exit, kill |
 
 ### 2.3 Delivery receipt binding
 
 | # | Field | Created at | Compared at | Notes |
 |---|---|---|---|---|
-| R1 | `ReceiptID` | C2D-C: `newDeliveryReceiptID()` → `"cdxr-" + hex` (NOT `"cdxr-"` for Claude — use provider-specific prefix) | `RecordDelivery` (must be non-empty for accepted) | entropy failure → `DeliveryConflict` (ambiguous, non-retryable) |
+| R1 | `ReceiptID` | C2D-C: `newClaudeDeliveryReceiptID()` → `"cldr-" + hex` | `RecordDelivery` (must be non-empty for accepted) | provider-specific opaque ID; entropy failure → `DeliveryConflict` (ambiguous, non-retryable) |
 | R2 | `DeliveredPayloadDigest` | `payloadDigest(delivered bytes)` | `RecordDelivery` (must equal `Binding.PayloadDigest`) | substituted bytes cannot commit |
 | R3 | `ClaimToken` | copied from `DeliveryReceipt.ClaimToken` | `RecordDelivery` (must equal stored `rec.claimToken`) | claim ownership |
 | R4 | `Binding` (all 8 fields) | copied from `DeliveryReceipt.Binding` | `RecordDelivery` (every field compared by `equal`) | full binding identity |
-| R5 | Provider consumption witness identity | C2D-C: structured from Claude stream-json output | `RecordDelivery` (NOT compared by the store — the C2D boundary proves it before returning `accepted`) | allow: PostToolUse with matching `tool_use_id`; deny: `permission_denials` entry with matching `tool_use_id` + `tool_name` |
+| R5 | Provider consumption witness identity | C2D-C: allow from the production-owned authenticated PostToolUse hook; deny from bounded `permission_denials` projection | `RecordDelivery` (NOT compared by the store — the C2D boundary proves it before returning `accepted`) | both require exact private identity + runtime match; stdout ordering alone is insufficient |
 
 ## 3. Provider state machine and linearization
 
@@ -129,8 +148,9 @@ INITIAL LAUNCH (C1D, already implemented):
     → Claude process exits (end_turn after defer)
 
 C2D/C3D ACTIONABLE PATH:
-  [C1D observation above, but with Actionable=true, Options, DeliveryMaterial]
-  → A1 Store creates pending Approval
+  [controlled C2D composition only: the matched private identity is retained,
+   and the test fixture creates Actionable=true + Options + DeliveryMaterial]
+  → A1 Store creates pending Approval (production C2D remains non-actionable)
   → mobile authenticated decision (allow_once / deny)
   → A1 ClaimForExecution → claim token + ApprovalExecutionBinding + payload
 
@@ -146,8 +166,9 @@ C2D/C3D ACTIONABLE PATH:
     → state: repeated_pretooluse_matched → decision_written_once
 
   C2D-C WITNESS ROUTING:
-    → allow: Claude executes tool → PostToolUse with same tool_use_id
-            → coordinator observes PostToolUse result
+    → allow: Claude executes tool → production-owned PostToolUse hook fires
+              with the same session_id + tool_use_id
+            → authenticated hook route validates the exact private identity
             → state: allow_witness → terminal
     → deny:  Claude emits permission_denials with same tool_use_id
             → coordinator observes permission_denials
@@ -157,8 +178,9 @@ C2D/C3D ACTIONABLE PATH:
 
 ### 3.2 Shared linearization point
 
-The **C2D-B resume coordinator entry creation** is the ONE provider-specific
-linearization point. Under a single mutex:
+The **C2D-B coordinator mutex** is the ONE provider-specific linearization
+domain. Reservation, provider state transitions, and runtime invalidation all
+linearize under it. Under that mutex, reservation:
 
 1. Check: runtime exists, epoch matches, authority version matches, not terminated.
 2. Check: no existing reservation for the same claim token (exactly one owner).
@@ -168,8 +190,19 @@ linearization point. Under a single mutex:
 6. Return the nonce (or fail closed if any check fails).
 
 All subsequent state transitions (resume_started, repeated_pretooluse_matched,
-decision_written_once, allow_witness, deny_witness, terminal) happen UNDER THE
-SAME MUTEX. No lock is held across process spawn, hook IPC, or provider I/O.
+decision_written_once, allow_witness, deny_witness, terminal) and every
+stop/delete/exit/epoch-replacement invalidation happen UNDER THE SAME MUTEX.
+`atomicTerminated` is an early hint only; a check of it is not authority and
+cannot replace the coordinator transition. No lock is held across process
+spawn, hook IPC, provider I/O, Store calls, or process wait.
+
+Lock ordering is: runtime lifecycle code snapshots the affected RuntimeRef,
+releases `turnMu`, then enters the coordinator invalidation transition. The
+coordinator never acquires `turnMu` while holding its mutex. External I/O uses a
+generation-bound reservation snapshot; after I/O, completion must reacquire the
+coordinator mutex and prove that the same entry, claim token, nonce, RuntimeRef,
+and non-invalidated state are still current. A stale completion cannot publish
+a witness or accepted receipt.
 
 The repeated PreToolUse hook handler must:
 
@@ -216,23 +249,29 @@ paths with deterministic replay.
 
 ### 4.1 Allow witness
 
-**Definition**: A `PostToolUse` stream-json result with a `tool_use_id` field
-that exactly equals the bound `tool_use_id`, observed strictly AFTER the resume
-hook delivered `allow` and the decision was written.
+**Definition**: an invocation of the separately configured, production-owned
+and capability-authenticated `PostToolUse` hook whose `session_id` and
+`tool_use_id` exactly equal the private identity record, observed strictly AFTER
+the resume PreToolUse hook delivered `allow` and the decision was written.
 
-**C0D evidence**: R3 live probe — `PostToolUse` with matching `tool_use_id`
-after `allow` decision. The tool executed and produced a result.
+**C0D evidence**: R3 live probe used
+`docs/a1_2_c0d_r5_evidence/harness/hook_posttool.sh`; it did not establish that
+the resumed process stdout stream contains a PostToolUse event. The hook
+received matching `tool_use_id` after the allow decision and tool execution.
 
 **C2D acceptance criteria**:
-- The stream-json output of the resumed Claude process contains an event with
-  `type: "result"` (or equivalent `PostToolUse` structure).
-- The event's `tool_use_id` equals the coordinator entry's `toolUseID`.
-- The event was observed AFTER `decision_written_once` (strict ordering).
-- The tool result exists (Claude executed the command).
+- The resumed invocation uses the isolated settings that install both the
+  PreToolUse decision hook and the PostToolUse witness hook.
+- The PostToolUse route is authenticated to the exact bridge/runtime and strict
+  decodes a closed, bounded schema.
+- Its `session_id` and `tool_use_id` equal the immutable private identity.
+- It is accepted only after `decision_written_once` for the same coordinator
+  entry; its hook input proves the provider executed that invocation.
 
-**Rejection**: PostToolUse with a different `tool_use_id`, PostToolUse observed
-before the decision was written, tool result absent (Claude didn't execute),
-PostToolUse from a different Claude session.
+**Rejection**: missing/invalid capability, PostToolUse with a different
+session/tool identity, witness before the decision write, duplicate/late hook,
+or hook from an invalidated runtime. Stream-json ordering, command equality,
+process exit, or side effects cannot substitute for this hook witness.
 
 ### 4.2 Deny witness
 
@@ -302,26 +341,35 @@ When the managed Claude runtime exits (via `terminate()`):
 
 1. `terminate()` sets `atomicTerminated = true`, `turnClosed = true`, clears
    `pendingObservations`, and calls `InstallRuntimeGeneration(epoch, 1, "terminated")`.
-2. The C2D-B coordinator must check `atomicTerminated` before every state
-   transition (same pattern as `joinDeferred` pre-ingest check).
-3. Any active coordinator entries for this runtime are invalidated
-   (`runtime_stopped`).
+2. After releasing `turnMu`, lifecycle code invokes the coordinator's exact
+   RuntimeRef invalidation transition. That transition linearizes under the
+   coordinator mutex with reservation and witness publication.
+3. Any active private identity/reservation entries for this runtime transition
+   to `runtime_stopped`; subsequent hook calls deliver zero decision and stale
+   external-I/O completion cannot publish a receipt.
 4. The Store's `InstallRuntimeGeneration(StreamGen=1)` ensures any late
    `IngestObserved(StreamGen=0)` is rejected.
+
+Checking `atomicTerminated` before a transition remains a useful fast-path but
+is not a correctness boundary: check-then-act without the shared coordinator
+transition is prohibited.
 
 ### 5.4 Stop/Delete
 
 - **Stop**: `ManagedClaudeService.Stop` calls `rt.terminate()` → same as Exit.
 - **Kill**: `ManagedClaudeService.Kill` calls `rt.terminate()` → same as Exit.
 - **Delete**: `ManagedClaudeService.Delete` requires `rec.Exited`; then calls
-  `approvals.Clear(sessionID)` which removes ALL records and tombstones.
+  coordinator cleanup and `approvals.Clear(sessionID)`, which removes all
+  in-memory records and tombstones.
 
 ### 5.5 Epoch replacement
 
 If a new Claude runtime is created for the same session ID (new epoch), the
 Store's `supersedeLocked` invalidates pending records and marks executing/
-delivery_failed records as superseded. The C2D-B coordinator must check
-`rt.epoch` against the binding's `LaunchGen` before every state transition.
+delivery_failed records as superseded. Runtime publication/replacement must
+also invalidate the prior RuntimeRef under the coordinator mutex before the new
+runtime can reserve a decision. Per-transition epoch checks supplement, but do
+not replace, this linearized invalidation.
 
 ### 5.6 Daemon restart
 
@@ -330,15 +378,15 @@ The C2D-B coordinator is an in-memory structure. On restart:
 
 - Pending observations are gone (the Claude process is dead).
 - Coordinator entries are gone.
-- The Store persists only tombstones and committed records.
-- Any `ApprovalExecuting` record that was in-flight becomes stale (the claim
-  token is lost). A mobile retry with the same idempotency key will get
-  `ClaimAlreadyOwned` → recoverable only via the frozen bounded manual retry.
+- `AuthoritativeApprovalStore` is in-memory; approval records, tombstones,
+  claim tokens, committed records, and the idempotency ledger are all gone.
+- An old ApprovalID/idempotency key has no authority after restart and resolves
+  as not found/unavailable. It cannot return `already_accepted` or be retried.
+- A new managed runtime must observe a fresh provider request and create a new
+  Approval before any decision is possible.
 
-This is acceptable because the mobile client can retry with the same
-idempotency key, and the store's idempotency ledger will either grant a new
-claim (if the record is still `ApprovalExecuting` and within retry budget) or
-return `already_accepted` (if the original delivery committed before restart).
+Persisting or recovering pending/executing authority is explicitly outside
+C2D. Restart zero-state is the required fail-closed behavior.
 
 ## 6. Capacity behavior and adversarial counterexamples
 
@@ -430,12 +478,15 @@ hook delivery → `DeliveryStaleRuntime`.
 **Invariant**: Capacity failure must reject before mutating canonical state.
 
 **Counterexample**: Fill the coordinator to capacity, then attempt one more
-claim delivery. The reservation must fail with `DeliveryUnavailable` and the
-Store record must remain in `ApprovalExecuting` (re-claimable).
+claim delivery. Reservation must fail before coordinator mutation. Because the
+A1 claim already owns the Store record, the delivery boundary must return a
+bound `DeliveryUnavailable` receipt and call `RecordDelivery`, moving the record
+to `ApprovalDeliveryFailed` before bounded manual retry is possible.
 
 **Test**: Fill coordinator entries, attempt one more delivery →
-`DeliveryUnavailable`, then retry claim → `ClaimAlreadyOwned` (original claim
-still valid).
+`DeliveryUnavailable`; before `RecordDelivery`, replay is `ClaimAlreadyOwned`;
+after `RecordDelivery`, same-key/same-binding/auth retry is `ClaimGranted` within
+the frozen retry budget. Coordinator capacity and entries remain unchanged.
 
 #### CE-7: Duplicate resume nonce
 
@@ -455,14 +506,40 @@ returns `defer`, coordinator state stays `decision_written_once`.
 **Invariant**: After daemon restart, no pending coordinator entry survives.
 
 **Counterexample**: Claim, create coordinator entry, kill the daemon (not
-graceful shutdown), restart. The coordinator is gone. A new claim with the same
-idempotency key must get `ClaimAlreadyOwned` (the record is `ApprovalExecuting`
-with the old, now-stale claim token), and a manual retry must be possible within
-the bounded retry budget.
+graceful shutdown), restart. Both coordinator and in-memory A1 Store are new and
+empty. Replaying the old ApprovalID/key must not recreate or resolve authority.
 
-**Test**: Claim, simulate daemon kill (drop in-memory state), attempt same
-idempotency key → `ClaimAlreadyOwned`, then retry with same key →
-`ClaimGranted` (manual retry).
+**Test**: Claim, simulate daemon kill by reconstructing both service and Store,
+attempt old ApprovalID/key → not found/unavailable and zero provider write. A
+fresh runtime + fresh provider request creates a distinct ApprovalID before a
+new claim can be granted.
+
+#### CE-9: Orphan Approval without provider identity
+
+**Invariant**: An ApprovalID without the immutable Claude identity record can
+never target a provider invocation.
+
+**Counterexample**: Create an actionable controlled-composition Store record,
+then remove or substitute its private identity association before delivery.
+The coordinator must reject before resume spawn and write zero decision.
+
+**Test**: Valid A1 claim + missing/mismatched private identity →
+`DeliveryRejected` or `DeliveryStaleRuntime`, zero process spawn, zero hook
+write, bound non-success receipt recorded.
+
+#### CE-10: False allow witness from process output
+
+**Invariant**: Provider stdout or a fabricated PostToolUse-shaped JSON object is
+not an allow consumption witness.
+
+**Counterexample**: After decision write, inject matching `tool_use_id` text or
+a PostToolUse-shaped event into resumed stdout without invoking the
+capability-authenticated PostToolUse hook.
+
+**Test**: stdout injection produces no `allow_witness`; missing/wrong-capability,
+wrong-session, early, duplicate, and post-invalidation PostToolUse hooks all
+produce non-success. Only the exact authenticated hook transition can publish
+the allow witness.
 
 ## 7. Public/private data classification
 
@@ -497,7 +574,7 @@ idempotency key → `ClaimAlreadyOwned`, then retry with same key →
 | `Actionable` boolean | Display gating |
 | Options (`allow_once` / `deny` labels) | Static action labels |
 | Tool name (e.g. `Bash`) | Certified tool identity — needed for safe review projection |
-| Safe review projection (§8) | Bounded, deterministic, secret-free description of the action |
+| Safe review projection (§7.3) | Only a verifier-certified complete canonical representation; otherwise omitted and non-actionable |
 
 ### 7.3 Safe review projection (C2D-D)
 
@@ -506,7 +583,8 @@ the action whose digest is claimed. For the certified `Bash` tool, the
 projection must:
 
 - Identify the tool as `Bash` (the certified tool name).
-- Show a bounded, deterministic, secret-free description of the command.
+- Show a complete, bounded, deterministic canonical command representation for
+  a verifier-certified subset, or show no CTA.
 - NOT show the raw tool input (may contain secrets, tokens, paths).
 - NOT show the hook capability token, claim token, or delivery payload.
 - NOT show the Claude session_id or other internal identities.
@@ -515,13 +593,17 @@ If truncation or redaction could hide execution meaning (e.g., a very long
 command truncated to show only the harmless prefix), the request is
 non-actionable. The safe review projection must be fail-closed.
 
-**Feasibility assessment**: The `Bash` tool input is `{command: <string>,
-description: <string>}`. The `description` field (when present) is a
-human-written summary of the command. If the description is bounded, printable
-ASCII, and free of secrets, it is a safe projection. If the description is
-absent or contains secrets, a bounded truncation of the command with secret
-redaction may be acceptable. **This must be finalized in C2D-D after the exact
-PreToolUse input schema is confirmed from live C1D observations.**
+**Feasibility assessment**: not yet proven. A provider/model-supplied
+`description` is advisory and can misrepresent the command; it is never review
+authority. Truncation, path elision, or secret redaction can change or conceal
+execution meaning and therefore cannot produce an actionable projection.
+
+C2D-D may certify only a strict subset for which the complete canonical command
+and every execution-relevant argument fit the frozen public bounds without
+loss, secret/path disclosure, or ambiguous normalization. If it cannot do so,
+all Bash observations remain non-actionable and C2D reports BLOCKED rather than
+weakening the display contract. A digest without the full reviewable action is
+also insufficient.
 
 ## 8. Explicit non-goals
 
@@ -545,7 +627,8 @@ PreToolUse input schema is confirmed from live C1D observations.**
    hook bridge, not through terminal input.
 
 7. **Terminal prompt parsing, synthetic keys, or side-effect authority**: Only the
-   hook bridge + stream-json consumption witnesses are authoritative.
+   hook bridge, authenticated PostToolUse hook (allow), and exact deny projection
+   are authoritative.
 
 8. **Persistence of pending authority across daemon restart**: No coordinator entry
    or pending observation survives restart.
@@ -574,10 +657,11 @@ PreToolUse input schema is confirmed from live C1D observations.**
 | **C2D-A** (this note) | Contract and code-path audit | This document — binding table, state machine, witnesses, counterexamples, data classification |
 | **C2D-B** | Private one-shot resume coordinator | Claude-specific in-memory coordinator with the §3.2 state machine and §5 failure modes |
 | **C2D-C** | Uninstalled Claude ApprovalDelivery | `ApprovalDelivery` implementation using C2D-B coordinator, with C0D witness routing, returning `DeliveryReceipt` |
-| **C2D-D** | Safe review projection + final evidence | Frozen Bash-safe review projection, controlled composition tests, updated evidence report |
+| **C2D-D** | Safe review feasibility + final evidence | Either a verifier-certified complete bounded Bash subset, or an honest BLOCKED result; controlled composition tests and updated evidence report |
 
 Each checkpoint requires independent verification before the next begins.
-C3D remains prohibited until independent C2D acceptance.
+C2D-B remains prohibited until this amended C2D-A contract is independently
+accepted. C3D remains prohibited until independent C2D acceptance.
 
 ## 10. Code-path audit: C1D → C2D delta
 
@@ -592,7 +676,10 @@ C3D remains prohibited until independent C2D acceptance.
 
 ### 10.2 What C2D-B must add (next checkpoint)
 
-1. **Resume coordinator struct**: bounded map of active resume entries with mutex.
+1. **Private identity + resume coordinator**: bounded immutable identity records
+   keyed by ApprovalID + exact RuntimeRef, and bounded active resume entries
+   under one mutex. Modify deferred join to retain the four matched provider
+   fields; failed admission and lifecycle invalidation remove them.
 2. **Resume hook mode**: extend `claudeHookBridge` or create a parallel resume
    bridge that can return `allow`/`deny` instead of only `defer`.
 3. **Repeated PreToolUse validation**: validate session_id, tool_use_id, tool_name,
@@ -601,7 +688,8 @@ C3D remains prohibited until independent C2D acceptance.
    hooks for the same tool_use_id return `defer`.
 5. **Claude resume spawn**: `--resume <session_id>` with the same isolated settings
    and a resume hook script.
-6. **Coordinator cleanup**: on timeout, exit, stop, delete, epoch replacement.
+6. **Coordinator cleanup**: stop/delete/exit/epoch replacement share the
+   coordinator linearization point; timeout and cancellation are terminal.
 7. **Deterministic tests**: all adversarial counterexamples from §6.2, plus state
    inspection after reservation, during resume, after write, after witness routing.
 
@@ -613,8 +701,9 @@ C3D remains prohibited until independent C2D acceptance.
    validates `certifiedActionDecision[OptionID]` exists, resolves the live runtime,
    delegates to C2D-B coordinator, waits for consumption witness, returns
    `DeliveryReceipt`.
-3. **Witness routing**: parse stream-json output of resumed Claude process for
-   PostToolUse (allow) or permission_denials (deny) with matching tool_use_id.
+3. **Witness routing**: allow uses the authenticated production-owned
+   PostToolUse hook; deny parses the bounded permission_denials projection. Both
+   require exact private invocation and RuntimeRef identity.
 4. **Controlled production-composition tests**: wire the delivery boundary with
    the frozen A1 store and redacted C0D fixtures. Prove all interleavings
    (duplicate decision, allow-vs-deny, stop/delete, epoch replacement, timeout,
@@ -629,8 +718,8 @@ C3D remains prohibited until independent C2D acceptance.
 companion-daemon/internal/term/
   managed_claude.go           # C1D: READ-ONLY (add coordinator field + resume mode)
   managed_claude_test.go      # C1D: ADD C2D-B coordinator tests
-  claude_hook_bridge.go       # C1D: EXTEND (resume mode, non-defer responses)
-  claude_hook_bridge_test.go  # NEW: resume hook tests
+  claude_hook_bridge.go       # C1D: EXTEND (resume decision + PostToolUse witness modes)
+  claude_hook_bridge_test.go  # NEW: resume and PostToolUse hook tests
   claude_resume_coordinator.go       # NEW: C2D-B coordinator
   claude_resume_coordinator_test.go  # NEW: C2D-B tests
   claude_approval_delivery.go        # NEW: C2D-C delivery boundary
@@ -657,18 +746,40 @@ No mobile, Codex, or provider-neutral A1 files are modified.
   match→decision→witness).
 - [ ] The shared linearization point in §3.2 is a single mutex; no lock is held
   across process spawn, hook IPC, or provider I/O.
-- [ ] C0D allow and deny witnesses (§4) are defined concretely with exact
-  stream-json structures.
+- [ ] C0D allow and deny witnesses (§4) preserve their proven asymmetric
+  sources: authenticated PostToolUse hook for allow, bounded
+  permission_denials projection for deny.
 - [ ] Non-witnesses (§4.3) are explicitly rejected.
 - [ ] Every failure mode in §5 has a defined terminal state and recovery path.
 - [ ] Every adversarial counterexample in §6.2 targets one invariant and has a
   concrete test scenario.
 - [ ] Public/private data classification (§7) covers every field in the binding
   tables.
-- [ ] Safe review projection (§7.3) is feasible for `Bash` and fail-closed.
+- [ ] Safe review projection (§7.3) never trusts provider description or lossy
+  truncation/redaction; unproven reviewability remains non-actionable.
 - [ ] Explicit non-goals (§8) match the frozen C0D/C1D boundaries and the plan's
   hard exclusions.
 - [ ] Code-path audit (§10) identifies every file that C2D will touch and
   confirms no mobile, Codex, or provider-neutral files are modified.
 - [ ] The contract does not depend on macOS-specific attestation beyond what
   C1D already provides (pinned digest + realpath check).
+
+## 12. C2D-A independent-review amendments
+
+This revision closes the material mismatches found at
+`7cd68e99909ac9aa361987f2af7a47e1bbf86ad2`:
+
+1. Requires a bounded immutable private Claude identity record because C1D
+   currently deletes pending identity after deferred join.
+2. Restores the evidence-proven asymmetric witnesses: authenticated PostToolUse
+   hook for allow and permission_denials projection for deny.
+3. Corrects restart semantics to an empty in-memory Store with no restored
+   approval or idempotency authority.
+4. Places reservation and lifecycle invalidation in one coordinator
+   linearization domain; atomic flags are hints, not authority.
+5. Corrects capacity failure to flow through a bound non-success receipt and
+   `RecordDelivery` before bounded retry.
+6. Prohibits provider description and lossy truncation/redaction from creating
+   actionable review evidence.
+7. Keeps production C2D non-actionable; only controlled composition may exercise
+   the delivery contract before C3D.
