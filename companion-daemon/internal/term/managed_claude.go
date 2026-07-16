@@ -357,7 +357,9 @@ func (rt *claudeManagedRuntime) terminate() {
 			for _, aa := range expired {
 				approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
 			}
-			approvals.InvalidateSession(rt.sessionID, "managed claude child exited")
+			// Advance Store generation high-water. StreamGen 1 > 0
+			// blocks any late IngestObserved(StreamGen=0) in the Store.
+			approvals.SupersedeRuntime(rt.sessionID, rt.epoch, 1, "managed claude child exited")
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)
