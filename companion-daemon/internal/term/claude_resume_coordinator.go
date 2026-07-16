@@ -707,23 +707,6 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 
 
 
-// LookupClaimToken finds the claim token for a decisionWritten entry
-// matching the given session and tool identity. Used by the pump's
-// deny decoder to route via the full-binding MarkWitnessed.
-func (c *claudeResumeCoordinator) LookupClaimToken(sessionID, toolUseID, toolName string) (claimToken string, inputDigest string, rt RuntimeRef, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for ct, entry := range c.entries {
-		if entry.state != stateDecisionWritten {
-			continue
-		}
-		if entry.sessionID == sessionID && entry.toolUseID == toolUseID && entry.toolName == toolName && entry.decision == "deny" {
-			return ct, entry.inputDigest, entry.runtime, true
-		}
-	}
-	return "", "", RuntimeRef{}, false
-}
-
 // ── Test helpers ──
 
 func (c *claudeResumeCoordinator) pendingCount() int {

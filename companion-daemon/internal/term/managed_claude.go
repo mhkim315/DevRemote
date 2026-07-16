@@ -408,20 +408,22 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 }
 
 func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
-	if rt.coordinator == nil {
+	if rt.coordinator == nil || rt.bridge == nil {
+		return
+	}
+	ctx := rt.bridge.resumeCtx
+	if ctx == nil {
 		return
 	}
 	for _, pd := range d.PermissionDenials {
 		if pd.ToolName == "" || pd.ToolUseID == "" || d.SessionID == "" {
 			continue
 		}
-		// Look up the claim token for the matching coordinator entry,
-		// then call the full-binding MarkWitnessed.
-		ct, dig, rtRef, ok := rt.coordinator.LookupClaimToken(d.SessionID, pd.ToolUseID, pd.ToolName)
-		if !ok {
+		if d.SessionID != ctx.claudeSessionID || pd.ToolUseID != ctx.toolUseID || pd.ToolName != ctx.toolName {
 			continue
 		}
-		rt.coordinator.MarkWitnessed(ct, WitnessPermissionDenials, d.SessionID, pd.ToolUseID, pd.ToolName, dig, rtRef)
+		rt.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
+			d.SessionID, pd.ToolUseID, pd.ToolName, ctx.inputDigest, ctx.originalRuntime)
 	}
 }
 
