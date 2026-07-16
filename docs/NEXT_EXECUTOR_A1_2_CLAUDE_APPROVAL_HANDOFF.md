@@ -162,6 +162,10 @@ the same checkpoint.
 > `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_HANDOFF.md`. Its real-write,
 > fail-closed cleanup, and non-vacuous A1 composition requirements amend this
 > section without changing the frozen C2D authority contract.
+>
+> The first remediation at `08be1ad3711cb0549e157413ea8ba4cef5798834` is also
+> rejected. The current authoritative executor packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_2_HANDOFF.md`.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:

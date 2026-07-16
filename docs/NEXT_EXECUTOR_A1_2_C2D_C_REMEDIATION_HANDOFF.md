@@ -6,6 +6,12 @@ Accepted prerequisite: C2D-B `27bd45162feb6bdf6fec52fa44192208c8276e32`
 Canonical repository: `/Users/mhk/Documents/codex/DevRemote`  
 Branch: `feature/phase10-multi-adapter`
 
+> **Superseding execution packet:** the first remediation implementation at
+> `08be1ad3711cb0549e157413ea8ba4cef5798834` was also rejected. Continue from
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_2_HANDOFF.md`, which corrects the missing
+> resume/hook ownership model, exact response-byte binding, terminal cleanup,
+> and production-shaped composition proof.
+
 This packet is intentionally narrower than C2D-D. Repair the uninstalled Claude
 delivery boundary and its controlled composition proof only. Do not start safe
 review projection, production activation, mobile work, C3D, N1, O1/O2, observer
