@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -75,8 +76,9 @@ type claudeManagedRuntime struct {
 
 	turnMu             sync.Mutex
 	turnClosed         bool
-	terminated         bool   // set by terminate()
-	ingestGen          int64  // bumped by terminate(); late ingests check this
+	terminated         bool        // set by terminate()
+	ingestGen          int64       // bumped by terminate()
+	atomicTerminated   atomic.Bool // lock-free read for pre-ingest check
 	pendingObservations map[string]*claudePendingObservation
 	activeApprovals    []activeApproval
 	rejects            int
@@ -85,7 +87,7 @@ type claudeManagedRuntime struct {
 	authorityVersion string
 
 	observer      func(stage string)
-	preIngestHook func() // test seam: called after gen-check, before IngestObserved
+	preIngestHook func() // test seam
 }
 
 func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry, bridge *claudeHookBridge, hookDir string) *claudeManagedRuntime {
@@ -187,16 +189,19 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 	approvalID := "claude-" + approvalToken
 
-	// Release the local lock. The Store is the sole authority for
-	// linearization: terminate() calls SupersedeRuntime(epoch, 1) which
-	// bumps the Store generation high-water, so any late IngestObserved
-	// with StreamGen=0 is rejected inside the Store.
 	delete(rt.pendingObservations, toolUseID)
 	rt.turnMu.Unlock()
 
 	// Test seam: inject Stop/terminate before Store ingest.
 	if rt.preIngestHook != nil {
 		rt.preIngestHook()
+	}
+
+	// Lock-free pre-ingest check: if terminate() ran (possibly from the
+	// hook above), drop immediately. Covers the forward race where the
+	// Store has no prior session.
+	if rt.atomicTerminated.Load() {
+		return
 	}
 
 	approvals := rt.approvals
@@ -228,14 +233,24 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		}},
 	})
 
-	// Only track if store admitted the record. Store rejection → rollback.
-	if admitted {
-		rt.turnMu.Lock()
+	if !admitted {
+		return
+	}
+
+	// Post-ingest check: if terminate() ran during IngestObserved, clean
+	// up the just-ingested record. This handles the reverse race.
+	rt.turnMu.Lock()
+	term2 := rt.terminated
+	if !term2 {
 		rt.activeApprovals = append(rt.activeApprovals, activeApproval{
 			approvalID: approvalID,
 			expiresAt:  clockNow().Add(claudeObservationTimeout),
 		})
-		rt.turnMu.Unlock()
+	}
+	rt.turnMu.Unlock()
+
+	if term2 && approvals != nil {
+		approvals.InvalidateRecord(rt.sessionID, approvalID)
 	}
 
 	if rt.observer != nil {
@@ -334,7 +349,8 @@ func (rt *claudeManagedRuntime) terminate() {
 
 		rt.turnMu.Lock()
 		rt.terminated = true
-		rt.ingestGen++ // invalidate any in-flight join
+		rt.ingestGen++
+		rt.atomicTerminated.Store(true) // invalidate any in-flight join
 		rt.turnClosed = true
 		rt.pendingObservations = make(map[string]*claudePendingObservation)
 		expired := rt.activeApprovals

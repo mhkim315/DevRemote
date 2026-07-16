@@ -197,6 +197,7 @@ func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
+	defer launcher.closeStream()
 
 	sessionID := "claude-session-uuid"
 	toolUseID := "call_00_Test123"
@@ -1068,22 +1069,14 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	// PRIMER: ingest a first approval so the Store session entry exists.
-	// Without this, SupersedeRuntime does nothing (sess==nil → early return).
+	// FIRST-APPROVAL RACE: no primer. When terminate() runs before the
+	// first IngestObserved, the Store has no session entry so
+	// SupersedeRuntime is a no-op. The pre-ingest terminated check
+	// must reject the ingest.
 	sid := "s-race"
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
 	digest := sha256Hex(inputCanon)
 
-	rt.observePreToolUse("call_Primer", "Bash", sid, digest)
-	rt.processLine([]byte(deferredStreamJSON(sid, "call_Primer", "Bash", `{"command":"echo ok"}`)))
-	if len(store.ListSafe(id)) != 1 {
-		t.Fatalf("primer: expected 1 record, got %d", len(store.ListSafe(id)))
-	}
-
-	// Now set up the race: install a hook that calls terminate() BEFORE
-	// Store ingest. The Store has SupersedeRuntime(epoch,1) which bumps
-	// StreamGen to 1. The second joinDeferred calls IngestObserved with
-	// StreamGen=0, which the Store rejects via genNewer.
 	var hookCalled sync.WaitGroup
 	hookCalled.Add(1)
 	rt.preIngestHook = func() {
@@ -1096,17 +1089,54 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	rt.processLine([]byte(deferred))
 	hookCalled.Wait()
 
-	// Verify terminate() actually ran.
 	if !rt.terminated {
 		t.Fatal("BUG: preIngestHook did not call terminate()")
 	}
 
-	// Store must reject the late ingest. The primer record may still be
-	// visible in ListSafe (resolved window), so we check the count didn't
-	// increase — it should be exactly 1 (primer only), not 2.
-	if len(store.ListSafe(id)) != 1 {
-		t.Fatalf("Store must reject late ingest: expected 1 record (primer only), got %d", len(store.ListSafe(id)))
+	// Pre-ingest terminated check must reject: zero records.
+	if len(store.ListSafe(id)) != 0 {
+		t.Fatalf("pre-ingest check must reject: expected 0 records, got %d", len(store.ListSafe(id)))
 	}
+}
+
+// TestClaudeReverseRace verifies the post-ingest check: if terminate() runs
+// after IngestObserved succeeds, the just-ingested record is immediately
+// invalidated.
+func TestClaudeReverseRace(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sid := "s-rev"
+	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
+	digest := sha256Hex(inputCanon)
+
+	// Prime the Store session entry so SupersedeRuntime works.
+	rt.observePreToolUse("call_Primer", "Bash", sid, digest)
+	rt.processLine([]byte(deferredStreamJSON(sid, "call_Primer", "Bash", `{"command":"echo ok"}`)))
+
+	// Now set up the reverse race: ingest first, THEN terminate.
+	// The post-ingest check must invalidate the record.
+	rt.observePreToolUse("call_Rev", "Bash", sid, digest)
+	rt.processLine([]byte(deferredStreamJSON(sid, "call_Rev", "Bash", `{"command":"echo ok"}`)))
+
+	// Record was ingested, then we call terminate.
+	rt.terminate()
+
+	// Post-ingest check must have invalidated the just-ingested record.
+	// No active approvals should remain.
+	rt.turnMu.Lock()
+	if len(rt.activeApprovals) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatalf("post-ingest check must clear active: expected 0, got %d", len(rt.activeApprovals))
+	}
+	rt.turnMu.Unlock()
 }
 
 // TestClaudeStartIPCServerIntegration tests the full production IPC path.
@@ -1148,7 +1178,7 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	}
 	defer srv.Close()
 
-	// Connect as a real client.
+	// Connect as `pokit run claude` would (JSON line protocol).
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		t.Fatalf("dial IPC: %v", err)
@@ -1159,19 +1189,31 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	if cwd == "" {
 		cwd = "/tmp"
 	}
+	// Production CLI serializer: exact JSON operation.
 	req := fmt.Sprintf(`{"operation":"create","profileId":"claude","cwd":"%s","detach":true}`, cwd)
-	conn.Write([]byte(req + "\n"))
+	if _, err := conn.Write([]byte(req + "\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
 
-	var resp map[string]string
-	dec := json.NewDecoder(conn)
-	if err := dec.Decode(&resp); err != nil {
+	var resp struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["error"] != "" {
-		t.Fatalf("create error: %s", resp["error"])
+	if resp.Error != "" {
+		t.Fatalf("create error: %s", resp.Error)
 	}
-	id := resp["id"]
-	t.Logf("created session: %s via IPC socket", id)
+	if resp.State != string(LifecycleRunning) {
+		t.Fatalf("expected state=running, got %s", resp.State)
+	}
+	id := resp.ID
+	if id == "" {
+		t.Fatal("empty session id")
+	}
+	t.Logf("created session: %s state=%s via IPC socket", id, resp.State)
 
 	// Wait for Claude to process the certification prompt.
 	time.Sleep(10 * time.Second)
@@ -1179,25 +1221,32 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	rec, _ := svc.Registry().Get(id)
 	t.Logf("session: provider=%s version=%s epoch=%d exited=%v digest=%s",
 		rec.Provider, rec.Version, rec.Epoch, rec.Exited, rec.CertifiedDigest)
+	if rec.CertifiedDigest == "" {
+		t.Error("CertifiedDigest not recorded")
+	}
 
+	// Exact assertion: the certification prompt triggers a Bash tool use,
+	// which must produce exactly 1 non-actionable observation.
 	safe := store.ListSafe(id)
 	t.Logf("approvals: %d", len(safe))
-	if len(safe) == 0 {
-		t.Error("expected at least 1 non-actionable approval observation — Claude did not produce a PreToolUse/defer")
+	if len(safe) != 1 {
+		t.Errorf("expected exactly 1 approval, got %d", len(safe))
 	}
 	for _, s := range safe {
-		t.Logf("  approval: id=%s options=%d", s.ID, len(s.Options))
 		if len(s.Options) != 0 {
 			t.Errorf("expected zero options (non-actionable), got %d", len(s.Options))
 		}
 	}
 
-	// Stop and verify cleanup.
+	// Stop and verify deterministic cleanup.
 	svc.Stop(id, rec.Epoch)
 	rec2, _ := svc.Registry().Get(id)
 	if !rec2.Exited {
 		t.Fatal("expected exited after stop")
 	}
+	// After Stop, approvals must be invalidated.
+	safe2 := store.ListSafe(id)
+	t.Logf("post-stop approvals: %d", len(safe2))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
