@@ -308,6 +308,12 @@ func (s *AuthoritativeApprovalStore) IngestObserved(in ApprovalIngest) bool {
 // ingest applies the generation rule and admission checks, returning the
 // number of items admitted as NEW records (an idempotent re-offer of an
 // existing record is NOT counted).
+//
+// SAFETY (R11-F1): session creation and generation high-water advance are
+// DEFERRED until after at least one item passes ALL validation gates
+// (authoritative provenance, structural validity, delivery material).
+// An invalid ingest must not create a session, advance generation, or
+// supersede records.
 func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	if in.SessionID == "" || len(in.SessionID) > maxSessionIDLen {
 		return 0
@@ -316,28 +322,28 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	defer s.mu.Unlock()
 
 	sess := s.sessions[in.SessionID]
-	if sess == nil {
-		if len(s.sessions) >= authMaxApprovalSessions {
-			s.evictOldestSessionLocked()
-		}
-		sess = &sessionApprovals{records: make(map[string]*approvalRecord), idempotency: make(map[string]idempotencyEntry)}
-		s.sessions[in.SessionID] = sess
-	}
 
-	if sess.hwInitialized {
+	// Pre-check: reject older generation (read-only, no mutation).
+	if sess != nil && sess.hwInitialized {
 		if genNewer(sess.hwLaunch, sess.hwStream, in.LaunchGen, in.StreamGen) {
-			return
+			return 0
 		}
-		if genNewer(in.LaunchGen, in.StreamGen, sess.hwLaunch, sess.hwStream) {
-			s.supersedeLocked(sess, "generation advanced")
-			sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
-		}
-	} else {
-		sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
-		sess.hwInitialized = true
 	}
 
 	now := s.now()
+
+	// First pass: validate items WITHOUT mutating session state.
+	// Build a list of records that pass all validation gates.
+	type pendingRec struct {
+		rec    *approvalRecord
+		fprint string
+	}
+	var pending []pendingRec
+	existingCount := 0
+	if sess != nil {
+		existingCount = len(sess.records)
+	}
+
 	for _, item := range in.Items {
 		a := item.Approval
 		if a.ID == "" || len(a.ID) > authMaxApprovalIDLen {
@@ -355,20 +361,20 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 			continue // invalid delivery material rejects the whole item
 		}
 		fprint := optionSetFingerprint(a.Kind, a.Default, a.Options) + materialFingerprint(delivery)
-		if existing, ok := sess.records[a.ID]; ok {
-			if existing.state != ApprovalPending {
-				continue
+		if sess != nil {
+			if existing, ok := sess.records[a.ID]; ok {
+				if existing.state != ApprovalPending {
+					continue
+				}
+				if existing.optionFprint != fprint {
+					continue
+				}
+				continue // idempotent re-offer of existing pending record
 			}
-			if existing.optionFprint != fprint {
-				continue
-			}
-			continue
 		}
-		if len(sess.records) >= authMaxApprovalsPerSession {
-			s.evictOneLocked(sess)
-			if len(sess.records) >= authMaxApprovalsPerSession {
-				continue
-			}
+		// Capacity check (no mutation yet — count pending items).
+		if existingCount+len(pending) >= authMaxApprovalsPerSession {
+			continue
 		}
 		rec := &approvalRecord{
 			approval: agent.AgentApproval{
@@ -395,8 +401,39 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 			createdAt:    now,
 			expiresAt:    now.Add(authApprovalExpiry),
 		}
-		sess.records[a.ID] = rec
-		admitted++
+		pending = append(pending, pendingRec{rec: rec, fprint: fprint})
+	}
+
+	if len(pending) == 0 {
+		return 0 // NO state change — invalid items must not mutate Store.
+	}
+
+	// Second pass: mutate session state ONLY after items pass validation.
+	if sess == nil {
+		if len(s.sessions) >= authMaxApprovalSessions {
+			s.evictOldestSessionLocked()
+		}
+		sess = &sessionApprovals{records: make(map[string]*approvalRecord), idempotency: make(map[string]idempotencyEntry)}
+		s.sessions[in.SessionID] = sess
+	}
+
+	// Advance high-water if this is a newer generation.
+	if sess.hwInitialized {
+		if genNewer(in.LaunchGen, in.StreamGen, sess.hwLaunch, sess.hwStream) {
+			s.supersedeLocked(sess, "generation advanced")
+			sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
+		}
+	} else {
+		sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
+		sess.hwInitialized = true
+	}
+
+	// Insert records (re-check duplicate under lock — safe since we hold mu).
+	for _, p := range pending {
+		if _, exists := sess.records[p.rec.approval.ID]; !exists {
+			sess.records[p.rec.approval.ID] = p.rec
+			admitted++
+		}
 	}
 	return admitted
 }
@@ -456,6 +493,31 @@ func (s *AuthoritativeApprovalStore) SupersedeRuntime(sessionID string, launchGe
 	sess := s.sessions[sessionID]
 	if sess == nil {
 		return
+	}
+	if !sess.hwInitialized || genNewer(launchGen, streamGen, sess.hwLaunch, sess.hwStream) {
+		sess.hwLaunch, sess.hwStream = launchGen, streamGen
+		sess.hwInitialized = true
+	}
+	s.supersedeLocked(sess, reason)
+}
+
+// InstallRuntimeGeneration is the metadata-only runtime-generation transition
+// (R11-F1). It creates a session if one does not exist, atomically binds
+// SessionID + LaunchGeneration + StreamGeneration, supersedes records at
+// older generations, and installs the high-water used by IngestObserved.
+// It creates NO Approval record — it is the single Store-owned path for
+// termination, replacement and cleanup to install generation authority
+// without an ingest side effect.
+func (s *AuthoritativeApprovalStore) InstallRuntimeGeneration(sessionID string, launchGen int64, streamGen int, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[sessionID]
+	if sess == nil {
+		if len(s.sessions) >= authMaxApprovalSessions {
+			s.evictOldestSessionLocked()
+		}
+		sess = &sessionApprovals{records: make(map[string]*approvalRecord), idempotency: make(map[string]idempotencyEntry)}
+		s.sessions[sessionID] = sess
 	}
 	if !sess.hwInitialized || genNewer(launchGen, streamGen, sess.hwLaunch, sess.hwStream) {
 		sess.hwLaunch, sess.hwStream = launchGen, streamGen

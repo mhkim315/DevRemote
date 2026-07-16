@@ -934,3 +934,218 @@ func TestClaimDelivery_RaceChurn(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// ── R11-F1: metadata-only Store generation authority ──
+
+// TestInstallRuntimeGeneration_CreatesSessionWithoutRecord verifies that
+// InstallRuntimeGeneration creates a session and sets the high-water WITHOUT
+// creating any Approval record.
+func TestInstallRuntimeGeneration_CreatesSessionWithoutRecord(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated")
+
+	// Session must exist with the correct high-water.
+	if s.Len() != 1 {
+		t.Fatalf("expected 1 session, got %d", s.Len())
+	}
+	// ListSafe must return zero records (no Approval record was created).
+	safe := s.ListSafe("codex:s1")
+	if len(safe) != 0 {
+		t.Fatalf("expected 0 records, got %d: %+v", len(safe), safe)
+	}
+	// List must also return zero records.
+	pub := s.List("codex:s1")
+	if len(pub) != 0 {
+		t.Fatalf("expected 0 public records, got %d", len(pub))
+	}
+}
+
+// TestInstallRuntimeGeneration_RejectsLateStreamGen0 verifies that after
+// InstallRuntimeGeneration sets hw=(epoch, 1), a late IngestObserved at
+// StreamGen=0 is rejected by the Store's genNewer check.
+func TestInstallRuntimeGeneration_RejectsLateStreamGen0(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Install metadata high-water at StreamGen=1 (simulating terminate).
+	s.InstallRuntimeGeneration("claude_headless:s1", 7, 1, "terminated")
+
+	// A late observation at StreamGen=0 must be rejected.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "claude_headless:s1",
+		LaunchGen: 7,
+		StreamGen: 0,
+		Provider:  "claude_headless",
+		Version:   "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID:        "claude-late",
+				SessionID: "claude_headless:s1",
+				AgentKind: "claude_headless",
+				Kind:      "approval",
+				Source:    agent.SourceJSONL,
+			},
+			Provenance: contract.ProvenanceProviderHook,
+		}},
+	})
+	if admitted {
+		t.Fatal("late StreamGen=0 ingest must be rejected after InstallRuntimeGeneration(StreamGen=1)")
+	}
+	// No records in the session.
+	if len(s.ListSafe("claude_headless:s1")) != 0 {
+		t.Fatal("expected 0 records after rejected late ingest")
+	}
+}
+
+// TestInvalidIngestObserved_NoStoreMutation is the non-vacuous negative test
+// for the R11-F1 counterexample. An IngestObserved with non-authoritative
+// provenance must NOT create a session, advance generation, or supersede
+// records.
+func TestInvalidIngestObserved_NoStoreMutation(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Attempt to ingest with a non-authoritative provenance (the old
+	// "c1d_internal" pattern). This must NOT create any state.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "claude_headless:s-bad",
+		LaunchGen: 1,
+		StreamGen: 0,
+		Provider:  "claude_headless",
+		Version:   "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID:         "_c1d_hw_",
+				SessionID:  "claude_headless:s-bad",
+				AgentKind:  "claude_headless",
+				Kind:       "approval",
+				Source:     agent.SourceJSONL,
+				Confidence: 1,
+			},
+			Provenance: "c1d_internal", // NOT in approvalAuthoritative set
+		}},
+	})
+	if admitted {
+		t.Fatal("non-authoritative provenance must NOT admit an item")
+	}
+
+	// Session must NOT exist — invalid ingest creates no session.
+	if s.Len() != 0 {
+		t.Fatalf("invalid ingest created a session: Len=%d", s.Len())
+	}
+
+	// ListSafe on a non-existent session must return nil (not an empty slice
+	// from a created session).
+	safe := s.ListSafe("claude_headless:s-bad")
+	if safe != nil {
+		t.Fatalf("expected nil ListSafe for non-existent session, got %v", safe)
+	}
+}
+
+// TestInvalidIngestObserved_DoesNotAdvanceHighWater proves that a valid
+// ingest followed by an invalid ingest does NOT advance the high-water
+// (the invalid ingest is a no-op).
+func TestInvalidIngestObserved_DoesNotAdvanceHighWater(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// First: a valid ingest creates the session and sets hw=(1, 0).
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:s1",
+		LaunchGen: 1,
+		StreamGen: 0,
+		Provider:  "codex",
+		Version:   "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID:        "valid-1",
+				SessionID: "codex:s1",
+				Kind:      "approval",
+				Source:    agent.SourceJSONL,
+			},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	if !admitted {
+		t.Fatal("valid ingest should be admitted")
+	}
+
+	// Now attempt an invalid ingest with a HIGHER generation. It must NOT
+	// advance the high-water because the item fails provenance validation.
+	admitted2 := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:s1",
+		LaunchGen: 2, // higher generation
+		StreamGen: 0,
+		Provider:  "codex",
+		Version:   "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID:        "_fake_",
+				SessionID: "codex:s1",
+				Kind:      "approval",
+				Source:    agent.SourceJSONL,
+			},
+			Provenance: "c1d_internal", // non-authoritative
+		}},
+	})
+	if admitted2 {
+		t.Fatal("invalid high-gen ingest must not admit")
+	}
+
+	// The original valid record must still be present (not superseded by
+	// the invalid high-gen ingest).
+	snap, ok := s.LookupRecord("codex:s1", "valid-1")
+	if !ok {
+		t.Fatal("valid record lost after invalid high-gen ingest")
+	}
+	if snap.State != ApprovalPending {
+		t.Fatalf("valid record superseded by invalid ingest: state=%v", snap.State)
+	}
+}
+
+// TestInstallRuntimeGeneration_SupersedesRecords verifies that
+// InstallRuntimeGeneration invalidates pending records when advancing
+// the high-water.
+func TestInstallRuntimeGeneration_SupersedesRecords(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Seed a valid record at gen (1, 0).
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "a1", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+
+	// InstallRuntimeGeneration at a higher generation.
+	s.InstallRuntimeGeneration("codex:s1", 1, 1, "terminated")
+
+	// The pending record must be invalidated.
+	snap, ok := s.LookupRecord("codex:s1", "a1")
+	if !ok {
+		t.Fatal("record missing after InstallRuntimeGeneration")
+	}
+	if snap.State != ApprovalInvalidated {
+		t.Fatalf("expected invalidated, got %v", snap.State)
+	}
+}
+
+// TestInstallRuntimeGeneration_IdempotentSameGeneration verifies that
+// calling InstallRuntimeGeneration with the same or older generation
+// does not re-supersede or change state beyond the first call.
+func TestInstallRuntimeGeneration_IdempotentSameGeneration(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated")
+	if s.Len() != 1 {
+		t.Fatalf("expected 1 session, got %d", s.Len())
+	}
+	// Same generation: no-op for hw, but supersedeLocked still runs.
+	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again")
+	if s.Len() != 1 {
+		t.Fatalf("expected still 1 session, got %d", s.Len())
+	}
+	// Older generation: hw unchanged, supersedeLocked still runs.
+	s.InstallRuntimeGeneration("codex:s1", 4, 0, "old-gen")
+	safe := s.ListSafe("codex:s1")
+	if len(safe) != 0 {
+		t.Fatalf("expected 0 records, got %d", len(safe))
+	}
+}

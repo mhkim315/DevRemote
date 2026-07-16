@@ -368,29 +368,12 @@ func (rt *claudeManagedRuntime) terminate() {
 			for _, aa := range expired {
 				approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
 			}
-			// Create Store session at StreamGen=1 so late
-			// IngestObserved(StreamGen=0) is rejected. Use
-			// non-authoritative provenance so no phantom record
-			// is created — the Store creates the session metadata
-			// but skips the item, setting hwStream=1 atomically.
-			approvals.IngestObserved(ApprovalIngest{
-				SessionID: rt.sessionID,
-				LaunchGen: rt.epoch,
-				StreamGen: 1,
-				Provider:  claudeHeadlessAdapter,
-				Version:   rt.authorityVersion,
-				Items: []ApprovalIngestItem{{
-					Approval: agent.AgentApproval{
-						ID:         "_c1d_hw_",
-						SessionID:  rt.sessionID,
-						AgentKind:  claudeHeadlessAdapter,
-						Kind:       "approval",
-						Source:     agent.SourceJSONL,
-						Confidence: 1,
-					},
-					Provenance: "c1d_internal",
-				}},
-			})
+			// R11-F1: install metadata-only Store high-water at
+			// StreamGen=1 so a late IngestObserved(StreamGen=0)
+			// is rejected. InstallRuntimeGeneration creates NO
+			// Approval record — it is the single Store-owned
+			// metadata transition for termination.
+			approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)
