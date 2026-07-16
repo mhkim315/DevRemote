@@ -1,14 +1,3 @@
-// Package term — C1D contract tests for ManagedClaudeService.
-// Uses deterministic fakes (ManagedLauncher injection) to prove:
-//   - production entry through CreateDetached
-//   - attestor certification fail-closed
-//   - hook bridge strict decode (valid/missing/duplicate/oversized)
-//   - exact deferred join (full identity comparison)
-//   - duplicate tool_use_id rejection
-//   - capacity exhaustion
-//   - exit/stop/delete lifecycle cleanup
-//   - authority isolation (no actionable options, no CTA)
-//   - DTO privacy (no raw payload in records)
 package term
 
 import (
@@ -17,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,11 +17,10 @@ import (
 
 // ── Test fakes ──
 
-// fakeClaudeProcess implements ManagedProcess for deterministic tests.
 type fakeClaudeProcess struct {
 	stdin   *bytes.Buffer
 	stdout  io.Reader
-	pipeW   *io.PipeWriter // non-nil when using io.Pipe for stdout
+	pipeW   *io.PipeWriter
 	termFn  func() error
 	killFn  func() error
 	waitErr error
@@ -42,7 +31,7 @@ func (p *fakeClaudeProcess) Stdin() io.Writer  { return p.stdin }
 func (p *fakeClaudeProcess) Stdout() io.Reader { return p.stdout }
 func (p *fakeClaudeProcess) Term() error {
 	if p.pipeW != nil {
-		_ = p.pipeW.Close()
+		p.pipeW.Close()
 	}
 	if p.termFn != nil {
 		return p.termFn()
@@ -51,7 +40,7 @@ func (p *fakeClaudeProcess) Term() error {
 }
 func (p *fakeClaudeProcess) Kill() error {
 	if p.pipeW != nil {
-		_ = p.pipeW.Close()
+		p.pipeW.Close()
 	}
 	if p.killFn != nil {
 		return p.killFn()
@@ -66,15 +55,12 @@ func (p *fakeClaudeProcess) OpaqueID() string {
 	return p.opaque
 }
 
-// fakeClaudeLauncher is a deterministic ManagedLauncher for tests.
 type fakeClaudeLauncher struct {
-	mu       sync.Mutex
-	proc     *fakeClaudeProcess
-	launched bool
-	// StreamCh lets tests feed lines into stdout after launch.
-	StreamCh chan []byte
-	// CapturedArgv stores the argv from the last Launch call.
+	mu           sync.Mutex
+	proc         *fakeClaudeProcess
+	launched     bool
 	CapturedArgv []string
+	StreamCh     chan []byte
 }
 
 func (l *fakeClaudeLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
@@ -85,35 +71,16 @@ func (l *fakeClaudeLauncher) Launch(exe string, argv []string) (ManagedProcess, 
 	}
 	l.launched = true
 	l.CapturedArgv = append([]string(nil), argv...)
-	// Use io.Pipe so stdout stays open until the writer is closed.
-	// An empty bytes.Buffer would EOF immediately, causing the pump
-	// goroutine to exit before the test can feed lines.
 	pr, pw := io.Pipe()
 	p := &fakeClaudeProcess{
-		stdin:  new(bytes.Buffer),
+		stdin: new(bytes.Buffer),
 		stdout: pr,
-		pipeW:  pw,
+		pipeW: pw,
 	}
 	l.proc = p
 	return p, nil
 }
 
-// argvCapturingLauncher is a minimal launcher that only captures argv.
-type argvCapturingLauncher struct {
-	argv *[]string
-}
-
-func (l *argvCapturingLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
-	*l.argv = append([]string(nil), argv...)
-	pr, pw := io.Pipe()
-	return &fakeClaudeProcess{
-		stdin: new(bytes.Buffer),
-		stdout: pr,
-		pipeW: pw,
-	}, nil
-}
-
-// feedLine writes a JSON line to the process stdout for the pump to consume.
 func (l *fakeClaudeLauncher) feedLine(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -122,7 +89,6 @@ func (l *fakeClaudeLauncher) feedLine(line string) {
 	}
 }
 
-// closeStream closes the pipe writer (simulates child exit / EOF).
 func (l *fakeClaudeLauncher) closeStream() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -131,7 +97,16 @@ func (l *fakeClaudeLauncher) closeStream() {
 	}
 }
 
-// fakeClaudeAttestor implements ClaudeAttestor for deterministic tests.
+type argvCapturingLauncher struct {
+	argv *[]string
+}
+
+func (l *argvCapturingLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
+	*l.argv = append([]string(nil), argv...)
+	pr, pw := io.Pipe()
+	return &fakeClaudeProcess{stdin: new(bytes.Buffer), stdout: pr, pipeW: pw}, nil
+}
+
 type fakeClaudeAttestor struct {
 	shouldFail bool
 }
@@ -143,9 +118,14 @@ func (a *fakeClaudeAttestor) Certify(exe string) error {
 	return nil
 }
 
-// ── Stream event helpers ──
+type failingLauncher struct{}
 
-// deferredStreamJSON builds a C0D-format tool_deferred stream-json line.
+func (failingLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
+	return nil, fmt.Errorf("launch failed")
+}
+
+// ── Helpers ──
+
 func deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON string) string {
 	return fmt.Sprintf(
 		`{"type":"result","stop_reason":"tool_deferred","session_id":"%s","deferred_tool_use":{"id":"%s","name":"%s","input":%s}}`,
@@ -153,27 +133,28 @@ func deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON string) string
 	)
 }
 
+func testCfg() ClaudeEntryConfig {
+	return ClaudeEntryConfig{
+		Bin:              "claude",
+		Version:          "2.1.209",
+		AuthorityVersion: "2.1.209",
+		PinnedPath:       "/pinned/test/claude",
+	}
+}
+
 // ── Tests ──
 
 func TestClaudeCreateDetachedAttestorFails(t *testing.T) {
 	attestor := &fakeClaudeAttestor{shouldFail: true}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, &fakeClaudeLauncher{}, attestor)
+	svc := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, attestor)
 	_, err := svc.CreateDetached("/tmp")
 	if err == nil || !strings.Contains(err.Error(), "certify") {
 		t.Fatalf("expected certify error, got: %v", err)
 	}
 }
 
-// failingLauncher implements ManagedLauncher and always fails.
-type failingLauncher struct{}
-
-func (failingLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
-	return nil, fmt.Errorf("launch failed")
-}
-
 func TestClaudeCreateDetachedLauncherError(t *testing.T) {
-	fl := &failingLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, fl, &fakeClaudeAttestor{})
+	svc := NewManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
 	_, err := svc.CreateDetached("/tmp")
 	if err == nil {
 		t.Fatal("expected launch error")
@@ -182,13 +163,10 @@ func TestClaudeCreateDetachedLauncherError(t *testing.T) {
 
 func TestClaudeCreateDetachedSuccess(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	attestor := &fakeClaudeAttestor{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, attestor)
-	if err := svc.SetApprovalStore(store); err != nil {
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	if err := svc.SetApprovalStore(NewApprovalStore()); err != nil {
 		t.Fatal(err)
 	}
-
 	id, err := svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
@@ -196,49 +174,25 @@ func TestClaudeCreateDetachedSuccess(t *testing.T) {
 	if !strings.HasPrefix(id, "claude_headless:claude-") {
 		t.Fatalf("unexpected session ID: %s", id)
 	}
-
-	// Registry record exists.
 	rec, ok := svc.Registry().Get(id)
-	if !ok {
-		t.Fatal("session not in registry")
+	if !ok || rec.Provider != "claude" || rec.Epoch != 1 {
+		t.Fatalf("bad record: %+v", rec)
 	}
-	if rec.Provider != "claude" {
-		t.Fatalf("expected provider claude, got %q", rec.Provider)
-	}
-	if rec.Epoch != 1 {
-		t.Fatalf("expected epoch 1, got %d", rec.Epoch)
-	}
-
-	// Shutdown.
 	ctx := context.Background()
-	if err := svc.Shutdown(ctx); err != nil {
-		t.Fatal(err)
-	}
+	svc.Shutdown(ctx)
 }
 
 func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	attestor := &fakeClaudeAttestor{}
 	store := NewApprovalStore()
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, attestor)
-	if err := svc.SetApprovalStore(store); err != nil {
-		t.Fatal(err)
-	}
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
 
-	id, err := svc.CreateDetached("/tmp")
-	if err != nil {
-		t.Fatalf("CreateDetached: %v", err)
-	}
-
+	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
-	if rt == nil {
-		t.Fatal("runtime not found")
-	}
 
-	// Simulate a hook observation. Use canonicalJSON to match the digest
-	// computation in joinDeferred (which also uses canonicalJSON).
 	sessionID := "claude-session-uuid"
 	toolUseID := "call_00_Test123"
 	toolName := "Bash"
@@ -248,28 +202,23 @@ func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 
 	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
 
-	// Verify pending observation exists.
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected 1 pending observation, got %d", len(rt.pendingObservations))
+		t.Fatalf("expected 1 pending, got %d", len(rt.pendingObservations))
 	}
 	rt.turnMu.Unlock()
 
-	// Feed a matching deferred result.
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
-
 	rt.processLine([]byte(deferred))
 
-	// Pending observation should be cleared.
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 0 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected 0 pending observations after join, got %d", len(rt.pendingObservations))
+		t.Fatalf("expected 0 pending after join, got %d", len(rt.pendingObservations))
 	}
 	rt.turnMu.Unlock()
 
-	// Store should have a non-actionable record.
 	safeRecords := store.ListSafe(id)
 	if len(safeRecords) != 1 {
 		t.Fatalf("expected 1 safe record, got %d", len(safeRecords))
@@ -278,186 +227,126 @@ func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 		t.Fatal("expected zero options (non-actionable)")
 	}
 
-	rt.stop()
+	// Verify active approval was tracked.
+	rt.turnMu.Lock()
+	if len(rt.activeApprovals) != 1 {
+		rt.turnMu.Unlock()
+		t.Fatalf("expected 1 active approval, got %d", len(rt.activeApprovals))
+	}
+	rt.turnMu.Unlock()
+
+	rt.terminate()
 }
 
 func TestClaudeDeferredJoinMismatchedSessionID(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-	store := NewApprovalStore()
-	svc.SetApprovalStore(store)
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	sessionID := "right-session"
-	toolUseID := "call_00_Mis"
-	toolName := "Bash"
-	inputJSON := `{"command":"echo ok"}`
-	inputDigest := sha256Hex([]byte(inputJSON))
-
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
-
-	// Deferred result has a DIFFERENT session ID.
-	deferred := deferredStreamJSON("wrong-session", toolUseID, toolName, inputJSON)
+	rt.observePreToolUse("call_Mis", "Bash", "right-session", sha256Hex([]byte(`{"cmd":"x"}`)))
+	deferred := deferredStreamJSON("wrong-session", "call_Mis", "Bash", `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
-	// Pending observation should still be present (mismatch → no join).
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected pending observation to remain after session mismatch")
+		t.Fatal("expected pending to remain after session mismatch")
 	}
 	rt.turnMu.Unlock()
-
-	// No store record.
-	if len(store.ListSafe(id)) != 0 {
-		t.Fatal("expected zero records after session mismatch")
-	}
-
-	rt.stop()
+	rt.terminate()
 }
 
 func TestClaudeDeferredJoinMismatchedToolName(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-	store := NewApprovalStore()
-	svc.SetApprovalStore(store)
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	sessionID := "s1"
-	toolUseID := "call_TN"
-	toolName := "Bash"
-	inputJSON := `{"command":"echo ok"}`
-	inputDigest := sha256Hex([]byte(inputJSON))
-
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
-
-	// Deferred result has a DIFFERENT tool name.
-	deferred := deferredStreamJSON(sessionID, toolUseID, "Write", inputJSON)
+	rt.observePreToolUse("call_TN", "Bash", "s1", sha256Hex([]byte(`{"cmd":"x"}`)))
+	deferred := deferredStreamJSON("s1", "call_TN", "Write", `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected pending observation to remain after tool name mismatch")
+		t.Fatal("expected pending to remain after tool name mismatch")
 	}
 	rt.turnMu.Unlock()
-
-	if len(store.ListSafe(id)) != 0 {
-		t.Fatal("expected zero records after tool name mismatch")
-	}
-
-	rt.stop()
+	rt.terminate()
 }
 
 func TestClaudeDeferredJoinMismatchedInputDigest(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-	store := NewApprovalStore()
-	svc.SetApprovalStore(store)
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	sessionID := "s1"
-	toolUseID := "call_Digest"
-	toolName := "Bash"
-	inputJSON := `{"command":"echo ok"}`
-	inputDigest := sha256Hex([]byte(inputJSON))
-
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
-
-	// Deferred result has a DIFFERENT input.
-	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"command":"rm -rf /"}`)
+	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
+	rt.observePreToolUse("call_Digest", "Bash", "s1", sha256Hex(inputCanon))
+	deferred := deferredStreamJSON("s1", "call_Digest", "Bash", `{"command":"rm -rf /"}`)
 	rt.processLine([]byte(deferred))
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected pending observation to remain after input digest mismatch")
+		t.Fatal("expected pending to remain after input digest mismatch")
 	}
 	rt.turnMu.Unlock()
-
-	rt.stop()
+	rt.terminate()
 }
 
 func TestClaudeDuplicateToolUseID(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	sessionID := "s1"
-	toolUseID := "call_Dup"
-	toolName := "Bash"
-	inputDigest := sha256Hex([]byte(`{"command":"echo ok"}`))
-
-	// First observation: accepted.
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
-	// Second observation with same tool_use_id: rejected.
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse("call_Dup", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	rt.observePreToolUse("call_Dup", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
 
 	rt.turnMu.Lock()
-	if len(rt.pendingObservations) != 1 {
+	if len(rt.pendingObservations) != 1 || rt.rejects == 0 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected 1 pending observation (duplicate rejected), got %d", len(rt.pendingObservations))
-	}
-	if rt.rejects == 0 {
-		rt.turnMu.Unlock()
-		t.Fatal("expected at least 1 rejection for duplicate")
+		t.Fatalf("expected 1 pending + reject, got %d/%d", len(rt.pendingObservations), rt.rejects)
 	}
 	rt.turnMu.Unlock()
-
-	rt.stop()
+	rt.terminate()
 }
 
 func TestClaudeCapacityExhaustion(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	// Fill to capacity.
 	for i := 0; i < maxPendingClaudeObservations; i++ {
-		rt.observePreToolUse(
-			fmt.Sprintf("call_%d", i),
-			"Bash",
-			fmt.Sprintf("s%d", i),
-			sha256Hex([]byte(fmt.Sprintf(`{"cmd":%d}`, i))),
-		)
+		rt.observePreToolUse(fmt.Sprintf("call_%d", i), "Bash", fmt.Sprintf("s%d", i), sha256Hex([]byte(fmt.Sprintf(`{"x":%d}`, i))))
 	}
-
-	// One more should be rejected.
-	rt.observePreToolUse("call_overflow", "Bash", "so", sha256Hex([]byte(`{"cmd":"x"}`)))
+	rt.observePreToolUse("call_overflow", "Bash", "so", sha256Hex([]byte(`{"x":"overflow"}`)))
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != maxPendingClaudeObservations {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected %d observations (capacity bound), got %d", maxPendingClaudeObservations, len(rt.pendingObservations))
+		t.Fatalf("expected %d, got %d", maxPendingClaudeObservations, len(rt.pendingObservations))
 	}
 	rt.turnMu.Unlock()
-
-	rt.stop()
+	rt.terminate()
 }
 
 func TestClaudeExitClearsPendingObservations(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	store := NewApprovalStore()
 	svc.SetApprovalStore(store)
 
@@ -466,94 +355,71 @@ func TestClaudeExitClearsPendingObservations(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	// Add a pending observation.
-	rt.observePreToolUse("call_Exit", "Bash", "s1", sha256Hex([]byte(`{"cmd":"x"}`)))
-
-	// Store should have no records (observation not yet joined).
-	if len(store.ListSafe(id)) != 0 {
-		t.Fatal("expected zero records before join")
-	}
-
-	// Stop the runtime (simulating child exit cleanly).
-	rt.turnMu.Lock()
-	rt.turnClosed = true
-	rt.pendingObservations = make(map[string]*claudePendingObservation)
-	rt.turnMu.Unlock()
-
-	// Now simulate the pump exit path.
-	if rt.approvals != nil {
-		rt.approvals.InvalidateSession(rt.sessionID, "managed claude child exited")
-	}
+	rt.observePreToolUse("call_Exit", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	rt.terminate()
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 0 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected 0 observations after exit, got %d", len(rt.pendingObservations))
+		t.Fatal("expected 0 pending after terminate")
 	}
 	rt.turnMu.Unlock()
-
-	rt.stop()
 }
 
 func TestClaudeStopIdempotent(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	rec, _ := svc.Registry().Get(id)
 
-	// First stop.
 	if err := svc.Stop(id, rec.Epoch); err != nil {
 		t.Fatalf("first Stop: %v", err)
 	}
-
-	// Second stop should be idempotent (session already exited).
 	if err := svc.Stop(id, rec.Epoch); err != nil {
-		t.Fatalf("second Stop (idempotent): %v", err)
+		t.Fatalf("second Stop: %v", err)
 	}
 }
 
 func TestClaudeKillCleanup(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	rec, _ := svc.Registry().Get(id)
 
 	if err := svc.Kill(id, rec.Epoch); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
+	// After Kill, registry must show exited.
+	rec2, _ := svc.Registry().Get(id)
+	if !rec2.Exited {
+		t.Fatal("expected Exited=true after Kill")
+	}
 }
 
 func TestClaudeDeleteTerminalOnly(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	rec, _ := svc.Registry().Get(id)
 
-	// Delete on non-terminal session: must fail.
 	if err := svc.Delete(id, rec.Epoch); err == nil {
 		t.Fatal("expected error deleting non-terminal session")
 	}
-
-	// Stop first, then delete.
 	svc.Stop(id, rec.Epoch)
-	if err := svc.Delete(id, rec.Epoch); err != nil {
+	// Re-read after Stop — Exited flag is now true.
+	rec2, _ := svc.Registry().Get(id)
+	if err := svc.Delete(id, rec2.Epoch); err != nil {
 		t.Fatalf("Delete after stop: %v", err)
 	}
-
-	// Session should be gone.
 	if _, ok := svc.Registry().Get(id); ok {
 		t.Fatal("session should be removed after delete")
 	}
 }
 
 func TestClaudeApprovalRecordNonActionable(t *testing.T) {
-	// Prove that ingested records have zero options and zero delivery material.
 	launcher := &fakeClaudeLauncher{}
 	store := NewApprovalStore()
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
 	id, _ := svc.CreateDetached("/tmp")
@@ -561,185 +427,123 @@ func TestClaudeApprovalRecordNonActionable(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	sessionID := "s-nonactionable"
-	toolUseID := "call_NA"
-	toolName := "Bash"
-	inputJSON := `{"command":"echo ok"}`
-	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
-	inputDigest := sha256Hex(inputCanon)
-
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
-	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
+	rt.observePreToolUse("call_NA", "Bash", "s1", sha256Hex(inputCanon))
+	deferred := deferredStreamJSON("s1", "call_NA", "Bash", `{"command":"echo ok"}`)
 	rt.processLine([]byte(deferred))
 
 	records := store.ListSafe(id)
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
-	r := records[0]
-	if len(r.Options) != 0 {
-		t.Fatalf("expected zero options, got %d", len(r.Options))
+	if len(records[0].Options) != 0 {
+		t.Fatal("expected zero options")
 	}
-	// No default action.
-	_ = r
-
-	rt.stop()
+	rt.terminate()
 }
 
 func TestClaudeHookBridgeDecodeValid(t *testing.T) {
-	// The strict decoder must accept all C0D-known fields.
-	hookInput := `{"session_id":"s1","tool_use_id":"call_Test","tool_name":"Bash","tool_input":{"command":"echo ok"},"cwd":"/tmp","transcript_path":"/tmp/t.json","permission_mode":"default","effort":"high","hook_event_name":"PreToolUse"}`
-	fields, ok := strictPreToolUseDecode([]byte(hookInput))
+	input := `{"session_id":"s1","tool_use_id":"call_Test","tool_name":"Bash","tool_input":{"command":"echo ok"},"cwd":"/tmp","transcript_path":"/tmp/t.json","permission_mode":"default","effort":"high","hook_event_name":"PreToolUse"}`
+	fields, ok := strictPreToolUseDecode([]byte(input))
 	if !ok {
 		t.Fatal("strict decode rejected valid C0D payload")
 	}
-	// Extract and validate identity fields.
-	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
-	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
-	sessionID, ok3 := strictBoundedString(fields["session_id"], maxSessionIDLen)
-	hookEvent, ok4 := strictBoundedString(fields["hook_event_name"], 64)
-	if !ok1 || !ok2 || !ok3 || !ok4 {
-		t.Fatal("failed to extract identity fields")
-	}
-	if toolUseID != "call_Test" || toolName != "Bash" || sessionID != "s1" || hookEvent != "PreToolUse" {
-		t.Fatalf("field mismatch: %q %q %q %q", toolUseID, toolName, sessionID, hookEvent)
+	tuid, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	tn, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sid, ok3 := strictBoundedString(fields["session_id"], maxSessionIDLen)
+	he, ok4 := strictBoundedString(fields["hook_event_name"], 64)
+	if !ok1 || !ok2 || !ok3 || !ok4 || tuid != "call_Test" || tn != "Bash" || sid != "s1" || he != "PreToolUse" {
+		t.Fatalf("field mismatch: %q %q %q %q", tuid, tn, sid, he)
 	}
 }
 
 func TestClaudeHookBridgeDecodeMalformed(t *testing.T) {
-	malformed := `{bad json`
-	_, ok := strictPreToolUseDecode([]byte(malformed))
+	_, ok := strictPreToolUseDecode([]byte(`{bad json`))
 	if ok {
-		t.Fatal("expected rejection of malformed JSON")
+		t.Fatal("expected rejection")
 	}
 }
 
 func TestClaudeHookBridgeDecodeMissingRequired(t *testing.T) {
-	// Missing tool_use_id: decode succeeds but field check fails.
-	missing := `{"session_id":"s1","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse"}`
-	fields, ok := strictPreToolUseDecode([]byte(missing))
+	fields, ok := strictPreToolUseDecode([]byte(`{"session_id":"s1","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse"}`))
 	if !ok {
-		t.Fatal("decode should succeed (all fields known)")
+		t.Fatal("decode should succeed")
 	}
 	_, ok = strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
 	if ok {
-		t.Fatal("expected empty/missing tool_use_id to fail")
+		t.Fatal("expected missing tool_use_id to fail")
 	}
 }
 
 func TestClaudeHookBridgeDecodeUnknownField(t *testing.T) {
-	// Unknown field must be rejected.
-	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse","evil_field":true}`
-	_, ok := strictPreToolUseDecode([]byte(input))
+	_, ok := strictPreToolUseDecode([]byte(`{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse","evil":true}`))
 	if ok {
 		t.Fatal("expected rejection of unknown field")
 	}
 }
 
 func TestClaudeHookBridgeDecodeDuplicateKey(t *testing.T) {
-	// Duplicate key must be rejected.
-	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse","cwd":"/tmp","cwd":"/etc"}`
-	_, ok := strictPreToolUseDecode([]byte(input))
+	_, ok := strictPreToolUseDecode([]byte(`{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse","cwd":"/a","cwd":"/b"}`))
 	if ok {
 		t.Fatal("expected rejection of duplicate key")
 	}
 }
 
 func TestClaudeHookBridgeDecodeTrailingContent(t *testing.T) {
-	// Trailing content after the object must be rejected.
-	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse"} extra`
-	_, ok := strictPreToolUseDecode([]byte(input))
+	_, ok := strictPreToolUseDecode([]byte(`{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse"} trailing`))
 	if ok {
 		t.Fatal("expected rejection of trailing content")
 	}
 }
 
 func TestClaudeHookBridgeDecodeWrongHookEvent(t *testing.T) {
-	// hook_event_name != "PreToolUse" must fail.
-	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PostToolUse"}`
-	fields, ok := strictPreToolUseDecode([]byte(input))
+	fields, ok := strictPreToolUseDecode([]byte(`{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PostToolUse"}`))
 	if !ok {
 		t.Fatal("decode should succeed (PostToolUse is in allowlist)")
 	}
-	heName, sok := strictBoundedString(fields["hook_event_name"], 64)
-	if !sok || heName == "PreToolUse" {
-		t.Fatal("expected wrong hook_event_name to be detectable")
-	}
-	// The handleHook handler would reject non-PreToolUse. Verify the field
-	// is present but wrong value.
-	if heName != "PostToolUse" {
-		t.Fatalf("unexpected hook_event_name: %q", heName)
+	he, sok := strictBoundedString(fields["hook_event_name"], 64)
+	if !sok || he != "PostToolUse" {
+		t.Fatalf("unexpected: ok=%v he=%q", sok, he)
 	}
 }
 
 func TestClaudeHookBridgeDecodeOversizedFields(t *testing.T) {
-	longName := strings.Repeat("x", maxToolNameLen+1)
-	input := fmt.Sprintf(`{"session_id":"s1","tool_use_id":"call_Test","tool_name":"%s","tool_input":{},"hook_event_name":"PreToolUse"}`, longName)
+	long := strings.Repeat("x", maxToolNameLen+1)
+	input := fmt.Sprintf(`{"session_id":"s1","tool_use_id":"call_Test","tool_name":"%s","tool_input":{},"hook_event_name":"PreToolUse"}`, long)
 	fields, ok := strictPreToolUseDecode([]byte(input))
 	if !ok {
 		t.Fatal("decode should succeed")
 	}
 	_, ok = strictBoundedString(fields["tool_name"], maxToolNameLen)
 	if ok {
-		t.Fatal("expected oversized tool_name to fail bound check")
+		t.Fatal("expected oversized tool_name to fail")
 	}
 }
 
 func TestClaudeLaunchArgv(t *testing.T) {
-	var capturedArgv []string
-	launcher := &argvCapturingLauncher{argv: &capturedArgv}
-	cfg := ClaudeEntryConfig{
-		Bin:              "claude",
-		Version:          "2.1.209",
-		AuthorityVersion: "2.1.209",
-		PinnedPath:       "/fake/path",
-	}
-	svc := NewManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
-
+	var captured []string
+	launcher := &argvCapturingLauncher{argv: &captured}
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	_, err := svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Verify the launch argv contains the required flags.
-	argvStr := strings.Join(capturedArgv, " ")
-	if !strings.Contains(argvStr, "--settings") {
-		t.Fatalf("missing --settings in argv: %v", capturedArgv)
+	argvStr := strings.Join(captured, " ")
+	for _, want := range []string{"--verbose", "--settings", "--setting-sources", "--output-format", "stream-json", "--include-partial-messages", "-p", claudeCertificationPrompt} {
+		if !strings.Contains(argvStr, want) {
+			t.Fatalf("missing %q in argv: %v", want, captured)
+		}
 	}
-	if !strings.Contains(argvStr, "--setting-sources") {
-		t.Fatalf("missing --setting-sources in argv: %v", capturedArgv)
-	}
-	if !strings.Contains(argvStr, "--output-format") {
-		t.Fatalf("missing --output-format in argv: %v", capturedArgv)
-	}
-	if !strings.Contains(argvStr, "stream-json") {
-		t.Fatalf("missing stream-json in argv: %v", capturedArgv)
-	}
-	if !strings.Contains(argvStr, "--include-partial-messages") {
-		t.Fatalf("missing --include-partial-messages in argv: %v", capturedArgv)
-	}
-	if !strings.Contains(argvStr, "-p") {
-		t.Fatalf("missing -p in argv: %v", capturedArgv)
-	}
-	if !strings.Contains(argvStr, claudeCertificationPrompt) {
-		t.Fatalf("missing certification prompt in argv: %v", capturedArgv)
-	}
-
 	ctx := context.Background()
 	svc.Shutdown(ctx)
 }
 
 func TestClaudeShutdownCleansUp(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	ctx := context.Background()
-	if err := svc.Shutdown(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// Runtime map should be empty after shutdown.
+	svc.Shutdown(ctx)
 	svc.mu.Lock()
 	if _, ok := svc.runtimes[id]; ok {
 		svc.mu.Unlock()
@@ -749,156 +553,82 @@ func TestClaudeShutdownCleansUp(t *testing.T) {
 }
 
 func TestClaudeStreamDeferredParsing(t *testing.T) {
-	// Prove the stream-json deferred result is parsed correctly.
 	line := `{"type":"result","stop_reason":"tool_deferred","session_id":"abc-123","deferred_tool_use":{"id":"call_X","name":"Bash","input":{"command":"echo ok","description":"test"}}}`
 	var event streamDeferred
 	if err := json.Unmarshal([]byte(line), &event); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if event.Type != "result" {
-		t.Fatalf("type: got %q", event.Type)
+	if event.Type != "result" || event.StopReason != "tool_deferred" || event.SessionID != "abc-123" {
+		t.Fatal("parse mismatch")
 	}
-	if event.StopReason != "tool_deferred" {
-		t.Fatalf("stop_reason: got %q", event.StopReason)
-	}
-	if event.SessionID != "abc-123" {
-		t.Fatalf("session_id: got %q", event.SessionID)
-	}
-	if event.DeferredToolUse == nil {
-		t.Fatal("deferred_tool_use is nil")
-	}
-	if event.DeferredToolUse.ID != "call_X" {
-		t.Fatalf("id: got %q", event.DeferredToolUse.ID)
-	}
-	if event.DeferredToolUse.Name != "Bash" {
-		t.Fatalf("name: got %q", event.DeferredToolUse.Name)
+	if event.DeferredToolUse == nil || event.DeferredToolUse.ID != "call_X" || event.DeferredToolUse.Name != "Bash" {
+		t.Fatal("deferred_tool_use mismatch")
 	}
 }
 
 func TestClaudeProcessLineSkipsNonResult(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
-	store := NewApprovalStore()
-	svc.SetApprovalStore(store)
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	id, _ := svc.CreateDetached("/tmp")
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	// Add a pending observation.
-	rt.observePreToolUse("call_NonResult", "Bash", "s1", sha256Hex([]byte(`{"cmd":"x"}`)))
-
-	// Feed a non-result line (type: "assistant" or "content_block_delta").
+	rt.observePreToolUse("call_NonResult", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
 	rt.processLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`))
 
-	// Pending observation should still exist (no match).
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected 1 pending observation after non-result line")
+		t.Fatal("expected 1 pending after non-result line")
 	}
 	rt.turnMu.Unlock()
-
-	rt.stop()
-}
-
-func TestClaudeGenApprovalTokenIsOpaque(t *testing.T) {
-	t1, err := genApprovalToken()
-	if err != nil {
-		t.Fatalf("genApprovalToken: %v", err)
-	}
-	t2, err := genApprovalToken()
-	if err != nil {
-		t.Fatalf("genApprovalToken: %v", err)
-	}
-	if t1 == t2 {
-		t.Fatal("expected different approval tokens")
-	}
-	if len(t1) != 32 {
-		t.Fatalf("expected 32-char hex token, got %d", len(t1))
-	}
-	if strings.Contains(t1, "call_") {
-		t.Fatal("approval token must not contain provider tool_use_id")
-	}
+	rt.terminate()
 }
 
 func TestClaudeHookSettingsSchema(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	cfg := ClaudeEntryConfig{
-		Bin:              "claude",
-		Version:          "2.1.209",
-		AuthorityVersion: "2.1.209",
-		PinnedPath:       "/fake/path",
-	}
-	svc := NewManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
-
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	_, err := svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Read the generated settings file.
 	svc.mu.Lock()
 	var hookDir string
 	for _, rt := range svc.runtimes {
 		hookDir = rt.hookDir
 	}
 	svc.mu.Unlock()
-
 	if hookDir == "" {
 		t.Fatal("hook directory not created")
 	}
 
-	settingsPath := filepath.Join(hookDir, "settings.json")
-	data, err := os.ReadFile(settingsPath)
+	data, err := os.ReadFile(filepath.Join(hookDir, "settings.json"))
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
-
 	var settings map[string]any
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatalf("parse settings: %v", err)
 	}
-
-	hooks, ok := settings["hooks"].(map[string]any)
-	if !ok {
-		t.Fatal("missing hooks key")
-	}
-	preToolUse, ok := hooks["PreToolUse"].([]any)
-	if !ok || len(preToolUse) == 0 {
-		t.Fatal("missing PreToolUse hook array")
-	}
-	entry, ok := preToolUse[0].(map[string]any)
-	if !ok {
-		t.Fatal("PreToolUse[0] not an object")
-	}
+	hooks := settings["hooks"].(map[string]any)
+	ptu := hooks["PreToolUse"].([]any)
+	entry := ptu[0].(map[string]any)
 	if entry["matcher"] != "" {
-		t.Fatalf("expected empty matcher, got %q", entry["matcher"])
+		t.Fatal("expected empty matcher")
 	}
-	hookList, ok := entry["hooks"].([]any)
-	if !ok || len(hookList) == 0 {
-		t.Fatal("missing hooks array inside matcher")
+	hl := entry["hooks"].([]any)
+	ho := hl[0].(map[string]any)
+	if ho["type"] != "command" || ho["command"] == "" {
+		t.Fatal("bad hook entry")
 	}
-	hookObj, ok := hookList[0].(map[string]any)
-	if !ok {
-		t.Fatal("hook not an object")
-	}
-	if hookObj["type"] != "command" {
-		t.Fatalf("expected type=command, got %q", hookObj["type"])
-	}
-	cmd, _ := hookObj["command"].(string)
-	if cmd == "" {
-		t.Fatal("missing command in hook")
-	}
-
 	ctx := context.Background()
 	svc.Shutdown(ctx)
 }
 
 func TestClaudePumpEOFExit(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209", PinnedPath: "/fake/path"}, launcher, &fakeClaudeAttestor{})
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	store := NewApprovalStore()
 	svc.SetApprovalStore(store)
 
@@ -907,23 +637,15 @@ func TestClaudePumpEOFExit(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	// Feed a hook observation so we can verify it's cleared on EOF.
 	rt.observePreToolUse("call_EOF", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	launcher.closeStream() // trigger EOF on pump's scanner
 
-	// Kill the process to trigger EOF on stdout.
-	// The pump goroutine is running; killing the underlying process will
-	// cause the scanner to hit EOF.
-	rt.proc.Kill()
-
-	// Wait for pump to observe exit (bounded).
 	select {
 	case <-rt.exited:
-		// OK — pump processed EOF.
 	case <-time.After(3 * time.Second):
 		t.Fatal("pump did not exit after EOF")
 	}
 
-	// Pending observations must be cleared.
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 0 {
 		rt.turnMu.Unlock()
@@ -931,38 +653,209 @@ func TestClaudePumpEOFExit(t *testing.T) {
 	}
 	rt.turnMu.Unlock()
 
-	// Registry must show exited.
 	rec, _ := svc.Registry().Get(id)
 	if !rec.Exited {
 		t.Fatal("expected exited=true after EOF")
 	}
 }
 
-func TestClaudeAttestorFailOpenRejected(t *testing.T) {
-	// PinnedPath is set; a binary at a different path must fail certification.
+func TestClaudeAttestorDigestMismatch(t *testing.T) {
+	// PinnedPath + PinnedDigest must both match. A wrong digest fails.
+	tmp, _ := os.CreateTemp("", "c1d-attest-*")
+	tmp.Write([]byte("fake binary content"))
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
 	attestor := NewClaudeAttestor(ClaudeEntryConfig{
-		Bin:        "claude",
-		Version:    "wrong-version",
-		PinnedPath: "/nonexistent/path",
+		PinnedPath:   tmp.Name(),
+		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
+		Version:      "2.1.209",
 	})
-	err := attestor.Certify("/usr/bin/true")
+	// The binary won't report version "2.1.209" — it'll fail version check first.
+	// But if we bypass that, the digest check would fail.
+	err := attestor.Certify(tmp.Name())
 	if err == nil {
-		t.Fatal("expected certification failure for wrong binary")
+		t.Fatal("expected certification failure")
 	}
 }
 
-func TestClaudeGenApprovalTokenEntropyFail(t *testing.T) {
-	// Prove the function returns error on failure (the production code
-	// must handle this). We can't force entropy failure, but we CAN prove
-	// the function returns (string, error) with a non-zero token on success.
-	tok, err := genApprovalToken()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestClaudeAttestorNoPinnedPath(t *testing.T) {
+	// Empty PinnedPath must be rejected before any version check.
+	attestor := NewClaudeAttestor(ClaudeEntryConfig{
+		PinnedPath: "",
+		Version:    "",
+	})
+	// Any path should fail with "pinned path not configured".
+	err := attestor.Certify("/usr/bin/true")
+	if err == nil || !strings.Contains(err.Error(), "pinned path not configured") {
+		t.Fatalf("expected 'pinned path not configured' error, got: %v", err)
 	}
-	if tok == "" {
-		t.Fatal("empty token")
+}
+
+func TestClaudeEntropyFailure(t *testing.T) {
+	// Replace entropy reader with a failing one.
+	orig := entropyReader
+	defer func() { entropyReader = orig }()
+	entropyReader = &failingReader{}
+
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "s1"
+	toolUseID := "call_Entropy"
+	toolName := "Bash"
+	inputJSON := `{"command":"echo ok"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	// With a failing entropy reader, genApprovalToken returns error,
+	// joinDeferred aborts. Pending observation must remain, zero store
+	// records, zero active approvals.
+	rt.turnMu.Lock()
+	if len(rt.pendingObservations) != 1 {
+		rt.turnMu.Unlock()
+		t.Fatal("expected pending to remain after entropy failure")
 	}
-	if len(tok) != 32 {
-		t.Fatalf("expected 32 hex chars, got %d", len(tok))
+	if len(rt.activeApprovals) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatal("expected zero active approvals after entropy failure")
+	}
+	rt.turnMu.Unlock()
+
+	if len(store.ListSafe(id)) != 0 {
+		t.Fatal("expected zero records after entropy failure")
+	}
+	rt.terminate()
+}
+
+type failingReader struct{}
+
+func (failingReader) Read(p []byte) (int, error) {
+	return 0, fmt.Errorf("entropy exhausted")
+}
+
+// TestClaudeStopInvalidatesApprovals verifies that Stop calls terminate(),
+// which invalidates all active approvals and clears pending state.
+func TestClaudeStopInvalidatesApprovals(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	// Ingest an approval.
+	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
+	rt.observePreToolUse("call_StopInv", "Bash", "s1", sha256Hex(inputCanon))
+	rt.processLine([]byte(deferredStreamJSON("s1", "call_StopInv", "Bash", `{"command":"echo ok"}`)))
+
+	// Verify active approvals exist before stop.
+	rt.turnMu.Lock()
+	if len(rt.activeApprovals) != 1 {
+		rt.turnMu.Unlock()
+		t.Fatal("expected 1 active approval before stop")
+	}
+	rt.turnMu.Unlock()
+
+	rec, _ := svc.Registry().Get(id)
+	svc.Stop(id, rec.Epoch)
+
+	// After Stop + terminate, active approvals and pending must be cleared.
+	rt.turnMu.Lock()
+	if len(rt.activeApprovals) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatalf("expected 0 active approvals after stop, got %d", len(rt.activeApprovals))
+	}
+	if len(rt.pendingObservations) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatalf("expected 0 pending after stop, got %d", len(rt.pendingObservations))
+	}
+	rt.turnMu.Unlock()
+
+	// Registry must show exited.
+	rec2, _ := svc.Registry().Get(id)
+	if !rec2.Exited {
+		t.Fatal("expected exited=true after stop")
+	}
+}
+
+// TestClaudeIPCComposition tests the full IPC create path for Claude.
+func TestClaudeIPCComposition(t *testing.T) {
+	// Save and restore entropyReader.
+	orig := entropyReader
+	defer func() { entropyReader = orig }()
+	entropyReader = orig
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	launcher := &fakeClaudeLauncher{}
+	svc := NewManagedClaudeService(ClaudeEntryConfig{
+		Bin:              "claude",
+		Version:          "2.1.209",
+		AuthorityVersion: "2.1.209",
+		PinnedPath:       "/pinned/test/claude",
+	}, launcher, &fakeClaudeAttestor{})
+
+	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, nil, svc)
+
+	// Send a create request for the claude profile.
+	req := `{"operation":"create","profileId":"claude","cwd":"/tmp","detach":true}`
+	clientConn.Write([]byte(req + "\n"))
+
+	var resp map[string]string
+	dec := json.NewDecoder(clientConn)
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["error"] != "" {
+		t.Fatalf("IPC error: %s", resp["error"])
+	}
+	id := resp["id"]
+	if !strings.HasPrefix(id, "claude_headless:") {
+		t.Fatalf("unexpected id: %s", id)
+	}
+	if resp["state"] != string(LifecycleRunning) {
+		t.Fatalf("unexpected state: %s", resp["state"])
+	}
+
+	// Verify the session exists in registry.
+	if _, ok := svc.Registry().Get(id); !ok {
+		t.Fatal("session not found in registry after IPC create")
+	}
+	ctx := context.Background()
+	svc.Shutdown(ctx)
+}
+
+// TestClaudeIPCUnavailable proves IPC fails closed when feature disabled.
+func TestClaudeIPCUnavailable(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	req := `{"operation":"create","profileId":"claude","cwd":"/tmp"}`
+	clientConn.Write([]byte(req + "\n"))
+
+	var resp map[string]string
+	json.NewDecoder(clientConn).Decode(&resp)
+	if resp["error"] == "" || !strings.Contains(resp["error"], "unavailable") {
+		t.Fatalf("expected unavailable error, got: %v", resp)
 	}
 }

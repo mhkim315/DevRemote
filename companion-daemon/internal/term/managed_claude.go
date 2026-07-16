@@ -1,18 +1,6 @@
 // Package term — C1D: structured detached launch of a POKIT-owned Claude Code
-// child. The daemon directly spawns the pinned certified executable with
-// session-isolated hook settings and a daemon-owned private hook bridge. The
-// runtime owns stdin, stdout, child wait/reap, and the hook bridge lifecycle.
-// C1D is observation-only: zero actionable options, zero ClaimForExecution,
-// zero mobile CTA.
-//
-// Launch argv matches the C0D-certified path:
-//
-//	--settings <isolated> --setting-sources "" --output-format stream-json
-//	--include-partial-messages -p <prompt>
-//
-// The pump reads stream-json lines from stdout. A tool_deferred result is
-// joined against the hook bridge's pending observation by comparing the full
-// identity tuple (session_id, tool_use_id, tool_name, input_sha256).
+// child. C1D is observation-only: zero actionable options, zero
+// ClaimForExecution, zero mobile CTA.
 package term
 
 import (
@@ -24,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,8 +26,6 @@ import (
 
 const claudeHeadlessAdapter = "claude_headless"
 
-// claudeCertificationPrompt triggers a guaranteed Bash tool use so the
-// PreToolUse hook fires and a defer observation can be joined.
 const claudeCertificationPrompt = "Use your Bash tool to run exactly this command: echo c1d-probe-ok"
 
 const (
@@ -51,12 +38,17 @@ const (
 // ── Pending observation ──
 
 type claudePendingObservation struct {
-	toolUseID   string
-	toolName    string
-	sessionID   string
+	toolUseID  string
+	toolName   string
+	sessionID  string
 	inputDigest string
-	observedAt  time.Time
-	approvalID  string // set on ingest so timeout invalidation targets the real record
+	observedAt time.Time
+}
+
+// activeApproval tracks a joined/ingested approval for timeout invalidation.
+type activeApproval struct {
+	approvalID string
+	expiresAt  time.Time
 }
 
 // ── Managed runtime ──
@@ -68,6 +60,7 @@ type claudeManagedRuntime struct {
 	reg       *ManagedSessionRegistry
 	scanner   *bufio.Scanner
 	exited    chan struct{}
+	exitOnce  sync.Once // guards close(rt.exited)
 
 	bridge  *claudeHookBridge
 	hookDir string
@@ -75,6 +68,7 @@ type claudeManagedRuntime struct {
 	turnMu             sync.Mutex
 	turnClosed         bool
 	pendingObservations map[string]*claudePendingObservation
+	activeApprovals    []activeApproval
 	rejects            int
 
 	approvals        *AuthoritativeApprovalStore
@@ -118,11 +112,11 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 	}
 
 	rt.pendingObservations[toolUseID] = &claudePendingObservation{
-		toolUseID:   toolUseID,
-		toolName:    toolName,
-		sessionID:   claudeSessionID,
+		toolUseID:  toolUseID,
+		toolName:   toolName,
+		sessionID:  claudeSessionID,
 		inputDigest: inputDigest,
-		observedAt:  time.Now(),
+		observedAt: time.Now(),
 	}
 
 	if rt.observer != nil {
@@ -142,9 +136,8 @@ type streamDeferred struct {
 }
 
 // joinDeferred matches a tool_deferred result against a pending observation.
-// Full identity comparison (4 fields). On match, ingests a non-actionable
-// record and stores the real approvalID in the pending entry so timeout
-// invalidation can target it.
+// On match, ingests a non-actionable record and tracks the approvalID with an
+// expiry so timeout invalidation can reach it.
 func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	if d.DeferredToolUse == nil || d.SessionID == "" {
 		return
@@ -170,19 +163,19 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
-	// Generate ApprovalID with entropy check. A failed read is a hard error:
-	// the observation is dropped (fail-closed).
-	approvalToken, err := genApprovalToken()
+	approvalToken, err := rt.genApprovalToken()
 	if err != nil {
 		rt.turnMu.Unlock()
 		return
 	}
 	approvalID := "claude-" + approvalToken
 
-	// Store the real approvalID on the pending entry BEFORE deleting it,
-	// so the timeout invalidation path can find the correct ID.
-	pending.approvalID = approvalID
 	delete(rt.pendingObservations, toolUseID)
+	// Track the ingested approval for timeout invalidation.
+	rt.activeApprovals = append(rt.activeApprovals, activeApproval{
+		approvalID: approvalID,
+		expiresAt:  time.Now().Add(claudeObservationTimeout),
+	})
 	approvals := rt.approvals
 	rt.turnMu.Unlock()
 
@@ -219,10 +212,19 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 }
 
-// pump reads Claude's stream-json stdout. The scanner goroutine feeds lines
-// into a channel; when the scanner exits (EOF), it closes the channel so the
-// consumer drains remaining lines and then runs the exit path.
+// genApprovalToken delegates to the service's entropy reader.
+func (rt *claudeManagedRuntime) genApprovalToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(entropyReader, b); err != nil {
+		return "", fmt.Errorf("approval token entropy: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// pump reads Claude's stream-json stdout.
 func (rt *claudeManagedRuntime) pump() {
+	defer rt.terminate() // guaranteed cleanup on any exit path
+
 	staleTicker := time.NewTicker(30 * time.Second)
 	defer staleTicker.Stop()
 
@@ -249,22 +251,9 @@ func (rt *claudeManagedRuntime) pump() {
 		}
 	}
 exit:
-	// Drain any remaining lines.
 	for line := range lines {
 		rt.processLine(line)
 	}
-
-	rt.turnMu.Lock()
-	rt.turnClosed = true
-	rt.pendingObservations = make(map[string]*claudePendingObservation)
-	rt.turnMu.Unlock()
-
-	if rt.approvals != nil {
-		rt.approvals.InvalidateSession(rt.sessionID, "managed claude child exited")
-	}
-	rt.reg.MarkExited(rt.sessionID, rt.epoch)
-	close(rt.exited)
-	_ = rt.proc.Wait()
 }
 
 func (rt *claudeManagedRuntime) processLine(line []byte) {
@@ -278,9 +267,8 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 	rt.joinDeferred(&event)
 }
 
-// clearStaleObservations removes pending observations that have exceeded the
-// timeout. Uses the stored approvalID so the correct store record is
-// invalidated.
+// clearStaleObservations removes expired pending observations AND expired
+// active approvals. Both are checked under turnMu.
 func (rt *claudeManagedRuntime) clearStaleObservations() {
 	rt.turnMu.Lock()
 	defer rt.turnMu.Unlock()
@@ -289,25 +277,62 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 	for id, obs := range rt.pendingObservations {
 		if obs.observedAt.Before(cutoff) {
 			delete(rt.pendingObservations, id)
-			if rt.approvals != nil && obs.approvalID != "" {
-				rt.approvals.InvalidateRecord(rt.sessionID, obs.approvalID)
-			}
 		}
 	}
+	// Expire joined approvals whose timeout has elapsed.
+	remaining := rt.activeApprovals[:0]
+	for _, aa := range rt.activeApprovals {
+		if time.Now().After(aa.expiresAt) {
+			if rt.approvals != nil {
+				rt.approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
+			}
+		} else {
+			remaining = append(remaining, aa)
+		}
+	}
+	rt.activeApprovals = remaining
+}
+
+// terminate is the SINGLE idempotent exit transition.
+func (rt *claudeManagedRuntime) terminate() {
+	rt.exitOnce.Do(func() {
+		if rt.bridge != nil {
+			rt.bridge.close()
+		}
+		_ = rt.proc.Kill()
+		_ = rt.proc.Wait()
+		if rt.hookDir != "" {
+			_ = os.RemoveAll(rt.hookDir)
+		}
+
+		rt.turnMu.Lock()
+		rt.turnClosed = true
+		rt.pendingObservations = make(map[string]*claudePendingObservation)
+		expired := rt.activeApprovals
+		rt.activeApprovals = nil
+		rt.turnMu.Unlock()
+
+		approvals := rt.approvals
+		if approvals != nil {
+			for _, aa := range expired {
+				approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
+			}
+			approvals.InvalidateSession(rt.sessionID, "managed claude child exited")
+		}
+		rt.reg.MarkExited(rt.sessionID, rt.epoch)
+		close(rt.exited)
+	})
 }
 
 func (rt *claudeManagedRuntime) stop() {
-	if rt.bridge != nil {
-		rt.bridge.close()
-	}
-	_ = rt.proc.Kill()
-	_ = rt.proc.Wait()
-	if rt.hookDir != "" {
-		_ = os.RemoveAll(rt.hookDir)
-	}
+	rt.terminate()
 }
 
 // ── Service ──
+
+// entropyReader is the entropy source for token generation. In production it
+// is crypto/rand.Reader. Tests may replace it with a failing reader.
+var entropyReader io.Reader = crand.Reader
 
 type ManagedClaudeService struct {
 	cfg              ClaudeEntryConfig
@@ -451,6 +476,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	s.barrier("pre-spawn")
 
 	argv := []string{
+		"--verbose",
 		"--settings", settingsPath,
 		"--setting-sources", "",
 		"--output-format", "stream-json",
@@ -498,7 +524,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		if registered {
 			s.reg.Remove(id)
 		}
-		rt.stop()
+		rt.terminate()
 		return "", fmt.Errorf("managed claude %s: %w", stage, ferr)
 	}
 
@@ -522,17 +548,13 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 }
 
 // createHookSettings writes an isolated Claude settings JSON file using the
-// C0D-certified hook schema:
-//
-//	{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"<path>"}]}]}}
+// C0D-certified hook schema.
 func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPath string, err error) {
 	hookDir, err = os.MkdirTemp("", "pokit-claude-hooks-")
 	if err != nil {
 		return "", "", err
 	}
 
-	// C0D-certified schema: each PreToolUse entry has matcher + hooks array
-	// with {type, command} objects.
 	settings := map[string]any{
 		"hooks": map[string]any{
 			"PreToolUse": []map[string]any{
@@ -589,7 +611,7 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 		l.cancel()
 	}
 	for _, rt := range rts {
-		_ = rt.proc.Kill()
+		rt.terminate()
 	}
 
 	done := make(chan struct{})
@@ -612,6 +634,9 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 	}
 }
 
+// Stop terminates the session deterministically. On return the bridge is
+// closed, the process is reaped, pending state is cleared, approvals are
+// invalidated, and the registry marks the session exited.
 func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -629,11 +654,11 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	if rec.Exited {
 		return nil
 	}
-	rt.stop()
-	s.reg.MarkExited(sessionID, epoch)
+	rt.terminate()
 	return nil
 }
 
+// Kill force-terminates deterministically. Same guarantees as Stop.
 func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -651,11 +676,7 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	if rec.Exited {
 		return nil
 	}
-	rt.turnMu.Lock()
-	rt.turnClosed = true
-	rt.turnMu.Unlock()
-	_ = rt.proc.Kill()
-	_ = rt.proc.Wait()
+	rt.terminate()
 	return nil
 }
 
@@ -671,16 +692,9 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
 		return fmt.Errorf("managed claude session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
-	rt := s.runtimes[sessionID]
 	delete(s.runtimes, sessionID)
 	approvals := s.approvals
 	s.mu.Unlock()
-	if rt != nil && rt.bridge != nil {
-		rt.bridge.close()
-	}
-	if rt != nil && rt.hookDir != "" {
-		_ = os.RemoveAll(rt.hookDir)
-	}
 	s.reg.Remove(sessionID)
 	if approvals != nil {
 		approvals.Clear(sessionID)
@@ -688,9 +702,8 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
 	return nil
 }
 
-// ── Helpers ──
+// ── Shared helpers ──
 
-// canonicalJSON re-marshals raw JSON with sorted keys for a stable digest.
 func canonicalJSON(raw json.RawMessage) ([]byte, error) {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -703,14 +716,4 @@ func sha256Hex(data []byte) string {
 	h := sha256.New()
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// genApprovalToken generates an opaque random token. Returns an error if
-// entropy read fails — the caller must abort (fail-closed).
-func genApprovalToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := crand.Read(b); err != nil {
-		return "", fmt.Errorf("approval token entropy: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }
