@@ -31,18 +31,19 @@ const (
 )
 
 // ManagedSessionRecord is the provider-neutral owned-session record. Identity
-// fields (SessionID, Provider, Version, Epoch, ProcessID, OS, Arch, CreatedAt)
-// are immutable after Register. ProcessID is an opaque launcher-derived token —
-// never parsed and never exposed in any DTO.
+// fields (SessionID, Provider, Version, Epoch, ProcessID, OS, Arch, CreatedAt,
+// CertifiedDigest) are immutable after Register. ProcessID is an opaque
+// launcher-derived token — never parsed and never exposed in any DTO.
 type ManagedSessionRecord struct {
-	SessionID string
-	Provider  string
-	Version   string
-	Epoch     int64 // runtime epoch == launch generation; status updates must match
-	ProcessID string
-	OS        string
-	Arch      string
-	CreatedAt time.Time
+	SessionID       string
+	Provider        string
+	Version         string
+	Epoch           int64
+	ProcessID       string
+	OS              string
+	Arch            string
+	CreatedAt       time.Time
+	CertifiedDigest string // hex-encoded SHA-256 of attested binary (C1D)
 
 	NativeStatus    ManagedNativeStatus
 	StatusChangedAt time.Time

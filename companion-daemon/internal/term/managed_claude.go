@@ -75,7 +75,8 @@ type claudeManagedRuntime struct {
 
 	turnMu             sync.Mutex
 	turnClosed         bool
-	terminated         bool // set by terminate(); late ingests are rejected
+	terminated         bool   // set by terminate()
+	ingestGen          int64  // bumped by terminate(); late ingests check this
 	pendingObservations map[string]*claudePendingObservation
 	activeApprovals    []activeApproval
 	rejects            int
@@ -83,7 +84,8 @@ type claudeManagedRuntime struct {
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
 
-	observer func(stage string)
+	observer      func(stage string)
+	preIngestHook func() // test seam: called after gen-check, before IngestObserved
 }
 
 func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry, bridge *claudeHookBridge, hookDir string) *claudeManagedRuntime {
@@ -185,17 +187,28 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 	approvalID := "claude-" + approvalToken
 
+	// Snapshot the ingest generation and release the lock. Before calling
+	// IngestObserved (which takes the store lock), we re-acquire turnMu and
+	// verify the generation hasn't changed. If terminate() ran in between,
+	// ingestGen was bumped and the late ingest is silently dropped.
 	delete(rt.pendingObservations, toolUseID)
+	snapGen := rt.ingestGen
 	rt.turnMu.Unlock()
 
-	// Re-check: if terminate() ran between unlock and here, the session is
-	// dead. Late ingests on a terminated session are silently dropped.
+	// Test seam: inject Stop/terminate before the final check and ingest.
+	if rt.preIngestHook != nil {
+		rt.preIngestHook()
+	}
+
+	// Re-check under lock: terminated or generation change → drop.
+	// This check runs AFTER the hook, so a hook that calls terminate()
+	// will bump ingestGen and cause this to fail.
 	rt.turnMu.Lock()
-	term := rt.terminated
-	rt.turnMu.Unlock()
-	if term {
+	if rt.terminated || rt.ingestGen != snapGen {
+		rt.turnMu.Unlock()
 		return
 	}
+	rt.turnMu.Unlock()
 
 	approvals := rt.approvals
 	if approvals == nil {
@@ -332,6 +345,7 @@ func (rt *claudeManagedRuntime) terminate() {
 
 		rt.turnMu.Lock()
 		rt.terminated = true
+		rt.ingestGen++ // invalidate any in-flight join
 		rt.turnClosed = true
 		rt.pendingObservations = make(map[string]*claudePendingObservation)
 		expired := rt.activeApprovals
@@ -551,14 +565,15 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 
 	rec := ManagedSessionRecord{
-		SessionID: id,
-		Provider:  "claude",
-		Version:   s.cfg.Version,
-		Epoch:     epoch,
-		ProcessID: proc.OpaqueID(),
-		OS:        goruntime.GOOS,
-		Arch:      goruntime.GOARCH,
-		CreatedAt: clockNow(),
+		SessionID:       id,
+		Provider:        "claude",
+		Version:         s.cfg.Version,
+		Epoch:           epoch,
+		ProcessID:       proc.OpaqueID(),
+		OS:              goruntime.GOOS,
+		Arch:            goruntime.GOARCH,
+		CreatedAt:       clockNow(),
+		CertifiedDigest: s.cfg.PinnedDigest,
 	}
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)

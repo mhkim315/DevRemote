@@ -769,11 +769,12 @@ func TestClaudeTimeoutExpiry(t *testing.T) {
 		rt.turnMu.Unlock()
 		t.Fatalf("expected 2 active, got %d", len(rt.activeApprovals))
 	}
+	aid1 := rt.activeApprovals[0].approvalID
 	aid2 := rt.activeApprovals[1].approvalID
 	rt.turnMu.Unlock()
 
-	// Advance past first expiry only (base + 120s). First expires at base+120s,
-	// second at base+1s+120s = base+121s.
+	// Advance past first expiry. First approval (created at base) expires
+	// at base+120s; second (created at base+1s) expires at base+121s.
 	clockNow = func() time.Time { return base.Add(120 * time.Second).Add(500 * time.Millisecond) }
 	rt.clearStaleObservations()
 
@@ -788,10 +789,22 @@ func TestClaudeTimeoutExpiry(t *testing.T) {
 	}
 	rt.turnMu.Unlock()
 
+	// Store: first record invalidated, second still pending.
+	s1, ok1 := store.LookupRecord(id, aid1)
+	s2, ok2 := store.LookupRecord(id, aid2)
+	if !ok1 || !ok2 {
+		t.Fatalf("store lookup after partial expiry: ok1=%v ok2=%v", ok1, ok2)
+	}
+	if s1.State != ApprovalInvalidated && s1.State != ApprovalExpired {
+		t.Fatalf("first record: expected invalidated/expired, got %v", s1.State)
+	}
+	if s2.State == ApprovalInvalidated || s2.State == ApprovalExpired {
+		t.Fatalf("second record: expected still pending, got %v", s2.State)
+	}
+
 	// Advance past second expiry.
 	clockNow = func() time.Time { return base.Add(122 * time.Second) }
 	rt.clearStaleObservations()
-
 	rt.turnMu.Lock()
 	if len(rt.activeApprovals) != 0 {
 		rt.turnMu.Unlock()
@@ -800,19 +813,16 @@ func TestClaudeTimeoutExpiry(t *testing.T) {
 	rt.turnMu.Unlock()
 
 	rt.terminate()
-	// After terminate, active approvals must be empty and runtime marked exited.
 	rt.turnMu.Lock()
 	if len(rt.activeApprovals) != 0 {
 		rt.turnMu.Unlock()
-		t.Fatalf("expected 0 active approvals after terminate, got %d", len(rt.activeApprovals))
+		t.Fatalf("expected 0 active after terminate, got %d", len(rt.activeApprovals))
 	}
 	rt.turnMu.Unlock()
 	rec, _ := svc.Registry().Get(id)
 	if !rec.Exited {
 		t.Fatal("expected exited after terminate")
 	}
-	// Store records persist for the expiry window (store-defined behavior).
-	// The active-approval slice being empty proves the invalidation path ran.
 }
 
 func TestClaudeActiveApprovalCapacity(t *testing.T) {
@@ -1032,7 +1042,8 @@ func TestClaudeIPCUnavailable(t *testing.T) {
 }
 
 // TestClaudeStopJoinRace verifies that a late join after Stop does not
-// create a record on a terminated session.
+// create a record. Uses preIngestHook to inject terminate between gen-check
+// and IngestObserved. This is a deterministic barrier test.
 func TestClaudeStopJoinRace(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	store := NewApprovalStore()
@@ -1048,40 +1059,27 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
 	digest := sha256Hex(inputCanon)
 
-	// Simulate: join passes identity check and unlocks, then Stop runs
-	// terminate(), then join continues with IngestObserved.
+	// Install a hook that calls terminate() after the gen-check but before
+	// IngestObserved. This simulates Stop winning the race.
+	var hookCalled sync.WaitGroup
+	hookCalled.Add(1)
+	rt.preIngestHook = func() {
+		hookCalled.Done()
+		rt.terminate()
+	}
+
+	// Create a pending observation and trigger the full join path.
 	rt.observePreToolUse("call_Race", "Bash", sid, digest)
+	deferred := deferredStreamJSON(sid, "call_Race", "Bash", `{"command":"echo ok"}`)
+	rt.processLine([]byte(deferred))
 
-	// We need to intercept between unlock and ingest. We'll call
-	// rt.terminate() manually between the two steps.
-	// The terminated flag check will reject the late ingest.
+	// Wait for the hook to finish.
+	hookCalled.Wait()
 
-	// Manually do the join steps up to the unlock:
-	rt.turnMu.Lock()
-	pending, ok := rt.pendingObservations["call_Race"]
-	if !ok {
-		rt.turnMu.Unlock()
-		t.Fatal("pending not found")
-	}
-	_ = pending
-	// Delete and unlock (simulating joinDeferred's critical section).
-	delete(rt.pendingObservations, "call_Race")
-	rt.turnMu.Unlock()
-
-	// Now Stop runs before ingest.
-	rt.terminate()
-
-	// Now try to complete the join — must be rejected.
-	rt.turnMu.Lock()
-	term := rt.terminated
-	rt.turnMu.Unlock()
-	if !term {
-		t.Fatal("expected terminated=true after terminate()")
-	}
-
-	// The terminated flag prevents ingest — no store records.
+	// The late ingest must be rejected: terminated=true AND ingestGen bumped.
+	// Store must have zero records.
 	if len(store.ListSafe(id)) != 0 {
-		t.Fatalf("expected 0 records after late join on terminated session, got %d", len(store.ListSafe(id)))
+		t.Fatalf("expected 0 records after stop/join race, got %d", len(store.ListSafe(id)))
 	}
 }
 
@@ -1089,7 +1087,11 @@ func TestClaudeStopJoinRace(t *testing.T) {
 // This requires a running StartIPCServer with the real production wiring.
 // It is skipped by default because it requires the real binary and attestor.
 func TestClaudeStartIPCServerIntegration(t *testing.T) {
-	t.Skip("requires real pinned Claude 2.1.209 binary with verified digest — run manually")
+	// Requires real pinned Claude 2.1.209 binary + POKIT_CLAUDE_DIGEST env.
+	digest := os.Getenv("POKIT_CLAUDE_DIGEST")
+	if digest == "" {
+		t.Skip("POKIT_CLAUDE_DIGEST not set — set it to the SHA-256 of the pinned claude binary to run this test")
+	}
 
 	// Set up entropy and clock.
 	origEntropy := entropyReader
@@ -1104,10 +1106,7 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
 		PinnedPath:       filepath.Join(os.Getenv("HOME"), ".local", "share", "claude", "versions", "2.1.209", "claude"),
-		PinnedDigest:     os.Getenv("POKIT_CLAUDE_DIGEST"), // must be set for this test
-	}
-	if cfg.PinnedDigest == "" {
-		t.Skip("POKIT_CLAUDE_DIGEST not set")
+		PinnedDigest:     digest,
 	}
 
 	svc := NewManagedClaudeService(cfg, nil, nil)
