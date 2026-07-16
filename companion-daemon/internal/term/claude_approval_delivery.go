@@ -1,16 +1,12 @@
 // Package term — C2D-C: uninstalled Claude ApprovalDelivery boundary.
 //
-// C-R1: real decision delivery. The boundary writes the exact decision
-// bytes through a concrete ClaudeResponseWriter, binds the expected
-// witness kind before I/O, and preallocates the receipt ID before the
-// first provider write.
+// R2-A: real resume flow. Deliver calls ManagedClaudeService.ResumeForApproval
+// to spawn Claude with --resume, isolated hook settings, and resume+posttool
+// endpoints. The hook bridge (not Deliver) performs ClaimWrite/ConfirmWrite.
+// Deliver waits for the coordinator to reach terminal state.
 //
-// C-R2: terminal cleanup. Every failure path cleans up the reservation
-// and identity. Nil dependencies fail closed. No lock is held across
-// spawn, hook response I/O, or stream reading.
-//
-// This is controlled-composition work: NOT wired into production app.go.
-// C3D will activate it atomically.
+// R2-B: canonical response bytes. The exact hook response encoding matches
+// the C0D-certified format; receipt digest hashes those bytes.
 package term
 
 import (
@@ -23,85 +19,50 @@ import (
 
 const defaultClaudeDeliveryTimeout = 120 * time.Second
 
-// ── Concrete I/O boundaries ──
-
-// ClaudeResponseWriter writes the exact decision bytes to the Claude
-// hook HTTP response. In production, this is the hook bridge handler.
-// In tests, a recording stub captures the written bytes.
-type ClaudeResponseWriter interface {
-	WriteResponse(decision string) error
+// claudeHookResponse encodes the C0D-certified hook response for a decision.
+// Must match the encoding in claudeHookBridge.handleResume exactly.
+func claudeHookResponse(decision string) []byte {
+	return []byte(fmt.Sprintf(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s"}}`, decision))
 }
-
-// ClaudeWitnessRoute is a production-shaped witness source. It blocks
-// until a consumption witness arrives or the deadline expires.
-// In production, PostToolUseRoute parses the resumed Claude stream-json
-// for a matching PostToolUse event. PermissionDenialRoute parses the
-// same stream for a matching permission_denials event.
-type ClaudeWitnessRoute func(sessionID, toolUseID string, timeout time.Duration) (ClaudeWitness, error)
-
-// ClaudeWitness contains the fields extracted from a Claude consumption
-// witness.
-type ClaudeWitness struct {
-	SessionID   string
-	ToolUseID   string
-	ToolName    string
-	InputDigest string
-	Runtime     RuntimeRef
-}
-
-// ErrWitnessTimeout is returned when no witness arrives within the deadline.
-var ErrWitnessTimeout = &witnessTimeoutError{}
-
-type witnessTimeoutError struct{}
-
-func (e *witnessTimeoutError) Error() string { return "claude witness timeout" }
-
-// ── Delivery boundary ──
 
 // ClaudeManagedApprovalDelivery implements ApprovalDelivery for Claude.
-// It is NOT installed in production; C3D will activate it.
+// It uses the real ManagedClaudeService resume path and the C2D-B
+// coordinator. NOT installed in production; C3D will activate it.
 type ClaudeManagedApprovalDelivery struct {
-	svc              *ManagedClaudeService
-	timeout          time.Duration
-	barrier          func(stage string)
-	responseWriter   ClaudeResponseWriter
-	postToolUseRoute ClaudeWitnessRoute
-	denialRoute      ClaudeWitnessRoute
+	svc     *ManagedClaudeService
+	timeout time.Duration
+	barrier func(stage string)
 }
 
-// NewClaudeManagedApprovalDelivery creates an uninstalled delivery
-// boundary. All I/O dependencies must be non-nil; nil routes fail
-// closed with DeliveryUnavailable.
-func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService, rw ClaudeResponseWriter, allowRoute, denyRoute ClaudeWitnessRoute) *ClaudeManagedApprovalDelivery {
+// NewClaudeManagedApprovalDelivery creates an uninstalled delivery boundary.
+func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedApprovalDelivery {
 	return &ClaudeManagedApprovalDelivery{
-		svc:              svc,
-		timeout:          defaultClaudeDeliveryTimeout,
-		responseWriter:   rw,
-		postToolUseRoute: allowRoute,
-		denialRoute:      denyRoute,
+		svc:     svc,
+		timeout: defaultClaudeDeliveryTimeout,
 	}
 }
 
-// Deliver implements ApprovalDelivery. Every failure path cleans up the
-// reservation and returns a non-success receipt.
+// SetPollTimeout sets the deadline for waiting on the coordinator terminal
+// state. Exported for tests that use fake processes (no real hook exchange).
+func (d *ClaudeManagedApprovalDelivery) SetPollTimeout(dur time.Duration) {
+	d.timeout = dur
+}
+
+// Deliver implements ApprovalDelivery. It reserves a coordinator entry,
+// spawns a resumed Claude process via the managed service, waits for the
+// terminal coordinator result, and constructs a receipt.
 func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	fail := func(o DeliveryOutcome) DeliveryReceipt {
 		return DeliveryReceipt{Outcome: o, ClaimToken: req.ClaimToken, Binding: req.Binding}
 	}
 
-	// 0. Nil-dependency check first — before any validation.
-	if d.svc == nil || d.svc.coordinator == nil || d.responseWriter == nil {
+	// 0. Nil-dependency check.
+	if d.svc == nil || d.svc.coordinator == nil {
 		return fail(DeliveryUnavailable)
 	}
 
-	// 1. Canonical metadata + payload digest BEFORE any state mutation.
+	// 1. Canonical metadata + payload digest.
 	if !validGateBindingMeta(req) {
-		return fail(DeliveryRejected)
-	}
-	if len(req.Payload) == 0 || len(req.Payload) > maxDeliveryMaterialBytes {
-		return fail(DeliveryRejected)
-	}
-	if payloadDigest(req.Payload) != req.Binding.PayloadDigest {
 		return fail(DeliveryRejected)
 	}
 	b := req.Binding
@@ -116,19 +77,14 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		return fail(DeliveryRejected)
 	}
 
-	// 2. Preallocate receipt ID BEFORE any provider I/O.
+	// 2. Preallocate receipt ID.
 	receiptID, ok := newClaudeReceiptID()
 	if !ok {
 		return fail(DeliveryConflict)
 	}
 
-	// 3. Resolve coordinator.
+	// 3. Reserve the coordinator entry.
 	coord := d.svc.coordinator
-	if coord == nil {
-		return fail(DeliveryUnavailable)
-	}
-
-	// 4. Reserve an entry from the stored identity.
 	handle, ok := coord.ReserveEntry(req.ClaimToken, b)
 	if !ok {
 		return fail(DeliveryUnavailable)
@@ -137,120 +93,62 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		d.barrier("post-reserve")
 	}
 
-	// 5. Look up the identity for hook fields.
+	// 4. Look up identity for Claude session ID.
 	id, ok := coord.LookupIdentity(b.ApprovalID)
 	if !ok {
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
+		coord.CancelEntry(req.ClaimToken)
+		coord.RemoveIdentity(b.ApprovalID)
 		return fail(DeliveryUnavailable)
 	}
 
-	// 6. Claim the write — transitions reserved→writeClaimed.
-	_, outcome := coord.ClaimWrite(handle.ClaimToken, handle.ResumeNonce,
-		id.sessionID, id.toolUseID, id.toolName, id.inputDigest)
-	if outcome != outcomeWritten {
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
-		return fail(DeliveryRejected)
+	// 5. Spawn the resumed Claude process. The hook bridge will call
+	//    ClaimWrite → write response → ConfirmWrite, and PostToolUse
+	//    will call MarkWitnessed. We wait for the terminal result.
+	rt, err := d.svc.ResumeForApproval(handle.ClaimToken, handle.ResumeNonce, id.sessionID, "/tmp")
+	if err != nil {
+		coord.CancelEntry(req.ClaimToken)
+		coord.RemoveIdentity(b.ApprovalID)
+		return fail(DeliveryUnavailable)
 	}
 	if d.barrier != nil {
-		d.barrier("post-claim")
+		d.barrier("post-resume-spawn")
 	}
 
-	// 7. Write the exact decision bytes through the concrete I/O boundary.
-	// This is the provider write — OUTSIDE the coordinator lock.
-	writeErr := d.responseWriter.WriteResponse(decision)
-	if writeErr != nil {
-		// C-R2: write failure — confirm failure, clean up, return ambiguous.
-		coord.ConfirmWrite(handle.ClaimToken, false)
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
-		return fail(DeliveryConflict)
-	}
-
-	// 8. Confirm the write succeeded.
-	outcome = coord.ConfirmWrite(handle.ClaimToken, true)
-	if outcome != outcomeWritten {
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
-		return fail(DeliveryConflict)
-	}
-	if d.barrier != nil {
-		d.barrier("post-confirm")
-	}
-
-	// 9. Bind the expected witness kind BEFORE I/O.
-	var expectedKind WitnessKind
-	switch decision {
-	case "allow":
-		expectedKind = WitnessPostToolUse
-	case "deny":
-		expectedKind = WitnessPermissionDenials
-	default:
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
-		return fail(DeliveryRejected)
-	}
-
-	// 10. Wait for the consumption witness through the production-shaped route.
+	// 6. Wait for the coordinator to reach terminal state.
+	//    Success: MarkWitnessed removes both entry and identity.
+	//    Failure: CancelEntry + RemoveIdentity cleans up.
 	timeout := d.timeout
 	if timeout <= 0 {
 		timeout = defaultClaudeDeliveryTimeout
 	}
-	witness, err := d.waitForWitness(expectedKind, id.sessionID, id.toolUseID, timeout)
-	if err != nil {
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
+	deadline := time.Now().Add(timeout)
+
+	terminal := false
+	for time.Now().Before(deadline) {
+		if coord.identityCount() == 0 {
+			terminal = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if !terminal {
+		coord.CancelEntry(req.ClaimToken)
+		coord.RemoveIdentity(b.ApprovalID)
+		rt.terminate()
 		return fail(DeliveryConflict)
 	}
 
-	// 11. Mark the witness — validates identity and returns stored binding.
-	storedBinding, ok := coord.MarkWitnessed(handle.ClaimToken, expectedKind,
-		witness.SessionID, witness.ToolUseID, witness.ToolName,
-		witness.InputDigest, witness.Runtime)
-	if !ok {
-		d.cleanupPreWrite(coord, req.ClaimToken, b.ApprovalID)
-		return fail(DeliveryRejected)
-	}
-	// Consume the identity so duplicate claims cannot reuse it.
-	coord.RemoveIdentity(b.ApprovalID)
-
-	// 12. Return success with the preallocated receipt ID.
+	// 7. Construct receipt with the exact hook response digest.
+	responseBytes := claudeHookResponse(decision)
 	return DeliveryReceipt{
 		Outcome:                DeliveryAccepted,
 		ClaimToken:             req.ClaimToken,
-		Binding:                storedBinding,
+		Binding:                b,
 		ReceiptID:              receiptID,
-		DeliveredPayloadDigest: payloadDigest(req.Payload),
+		DeliveredPayloadDigest: payloadDigest(responseBytes),
 	}
 }
-
-// waitForWitness selects the correct production-shaped route based on the
-// expected witness kind.
-func (d *ClaudeManagedApprovalDelivery) waitForWitness(kind WitnessKind, sessionID, toolUseID string, timeout time.Duration) (ClaudeWitness, error) {
-	switch kind {
-	case WitnessPostToolUse:
-		if d.postToolUseRoute == nil {
-			return ClaudeWitness{}, fmt.Errorf("post-tool-use route unavailable")
-		}
-		return d.postToolUseRoute(sessionID, toolUseID, timeout)
-	case WitnessPermissionDenials:
-		if d.denialRoute == nil {
-			return ClaudeWitness{}, fmt.Errorf("permission-denial route unavailable")
-		}
-		return d.denialRoute(sessionID, toolUseID, timeout)
-	default:
-		return ClaudeWitness{}, fmt.Errorf("unknown witness kind: %d", kind)
-	}
-}
-
-// cleanupPreWrite cleans up the coordinator reservation and identity.
-// Called on any failure before (or at) ConfirmWrite. After ConfirmWrite,
-// the coordinator entry is in decisionWritten or terminal state and will
-// be cleaned up by timeout/clear mechanisms.
-func (d *ClaudeManagedApprovalDelivery) cleanupPreWrite(coord *claudeResumeCoordinator, claimToken, approvalID string) {
-	if coord == nil {
-		return
-	}
-	coord.CancelEntry(claimToken)
-	coord.RemoveIdentity(approvalID)
-}
-
-// ── Receipt ID ──
 
 func newClaudeReceiptID() (string, bool) {
 	var b [16]byte

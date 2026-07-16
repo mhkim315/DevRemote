@@ -49,6 +49,9 @@ var certifiedClaudeDecision = map[string]string{
 
 const claudeDecisionSchemaV1 = "claude.pretooluse.decision.v1"
 
+// ClaudeDecisionSchemaV1 is the public accessor for the certified schema identity.
+func ClaudeDecisionSchemaV1() string { return claudeDecisionSchemaV1 }
+
 // deriveDecision validates the binding and returns the Claude-native
 // decision. Returns ("", false) for unknown options, wrong schema, wrong
 // adapter, or non-zero StreamGen.
@@ -475,9 +478,8 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	return outcomeAmbiguous
 }
 
-// CancelEntry cancels an active entry. If the entry is still reserved, it
-// transitions to terminal. If write-claimed (write in flight), it signals
-// ambiguous — the caller will discover the invalidation via ConfirmWrite.
+// CancelEntry cancels an active entry. Handles all non-terminal states:
+// reserved→cancelled, writeClaimed→ambiguous, decisionWritten→terminal.
 func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -492,12 +494,17 @@ func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 		entry.ch <- outcomeCancelled
 		delete(c.entries, claimToken)
 	case stateWriteClaimed:
-		// Ambiguous: the write handle has been issued but not confirmed.
 		entry.state = stateTerminal
 		entry.ch <- outcomeAmbiguous
 		delete(c.entries, claimToken)
+	case stateDecisionWritten:
+		// Post-write cancellation: entry reached decisionWritten but
+		// witness never arrived (timeout, stop, replacement). Clean
+		// up without blocking — the channel already has outcomeWritten.
+		entry.state = stateTerminal
+		delete(c.entries, claimToken)
 	default:
-		// Already terminal or written — no-op.
+		// Already terminal — no-op.
 	}
 }
 
@@ -665,6 +672,7 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	binding := entry.binding
 	entry.state = stateTerminal
 	delete(c.entries, claimToken)
+	delete(c.identities, entry.approvalID)
 	return binding, true
 }
 
@@ -682,14 +690,23 @@ func (c *claudeResumeCoordinator) pendingCount() int {
 	return n
 }
 
+// PendingCount is the exported accessor for tests.
+func (c *claudeResumeCoordinator) PendingCount() int { return c.pendingCount() }
+
 func (c *claudeResumeCoordinator) identityCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.identities)
 }
 
+// IdentityCount is the exported accessor for tests.
+func (c *claudeResumeCoordinator) IdentityCount() int { return c.identityCount() }
+
 func (c *claudeResumeCoordinator) entryCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
 }
+
+// EntryCount is the exported accessor for tests.
+func (c *claudeResumeCoordinator) EntryCount() int { return c.entryCount() }

@@ -509,6 +509,9 @@ func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAtt
 
 func (s *ManagedClaudeService) Registry() *ManagedSessionRegistry { return s.reg }
 
+// Coordinator returns the C2D-B resume coordinator. Exported for composition tests.
+func (s *ManagedClaudeService) Coordinator() *claudeResumeCoordinator { return s.coordinator }
+
 func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStore) error {
 	if store == nil {
 		return fmt.Errorf("claude approval store configure: nil store")
@@ -700,6 +703,165 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 
 	go rt.pump()
 	return id, nil
+}
+
+// ResumeForApproval launches Claude with --resume for an approved decision.
+// It creates a new bridge with /resume and /posttool endpoints, writes hook
+// scripts embedding the claim token and nonce, and spawns the pinned Claude
+// executable. The caller must already have reserved a coordinator entry.
+//
+// No lock is held across spawn or I/O. The caller is responsible for
+// cleaning up the returned runtime via terminate().
+func (s *ManagedClaudeService) ResumeForApproval(claimToken, nonce, claudeSessionID, cwd string) (*claudeManagedRuntime, error) {
+	if err := validateCWD(cwd); err != nil {
+		return nil, err
+	}
+	lease, err := s.beginLease()
+	if err != nil {
+		return nil, err
+	}
+	defer s.endLease(lease)
+
+	exe, err := exec.LookPath(s.cfg.Bin)
+	if err != nil {
+		return nil, fmt.Errorf("managed claude resume: executable not found: %w", err)
+	}
+	if err := s.attestor.Certify(exe); err != nil {
+		return nil, fmt.Errorf("managed claude resume certify: %w", err)
+	}
+	if lease.isCancelled() {
+		return nil, fmt.Errorf("managed claude service is shutting down")
+	}
+
+	// Create isolated hook directory with resume + posttool endpoints.
+	hookDir, settingsPath, err := s.createResumeHookSettings(claudeSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("managed claude resume hook settings: %w", err)
+	}
+	bridge, _, err := newClaudeHookBridge()
+	if err != nil {
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude resume bridge: %w", err)
+	}
+	<-bridge.started
+
+	resumeURL := bridge.resumeEndpoint(claimToken, nonce)
+	posttoolURL := bridge.posttoolEndpoint(claimToken)
+	if err := s.writeResumeHookScripts(hookDir, resumeURL, posttoolURL); err != nil {
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude resume hook script: %w", err)
+	}
+
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude service is shutting down")
+	}
+	s.gen++
+	epoch := s.gen
+	s.mu.Unlock()
+
+	argv := []string{
+		"--verbose",
+		"--resume", claudeSessionID,
+		"--settings", settingsPath,
+		"--setting-sources", "",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+	}
+	proc, err := launchWithDir(s.launcher, exe, argv, cwd)
+	if err != nil {
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude resume launch: %w", err)
+	}
+	if !lease.setProc(proc) {
+		_ = proc.Kill()
+		_ = proc.Wait()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude service is shutting down")
+	}
+
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		_ = proc.Kill()
+		_ = proc.Wait()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude service is shutting down")
+	}
+	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
+	rt.coordinator = s.coordinator
+	rt.authorityVersion = s.cfg.AuthorityVersion
+	s.mu.Unlock()
+
+	go rt.pump()
+	return rt, nil
+}
+
+// createResumeHookSettings creates settings.json with BOTH PreToolUse
+// (matcher "") AND PostToolUse hooks for the resumed session.
+func (s *ManagedClaudeService) createResumeHookSettings(_ string) (hookDir string, settingsPath string, err error) {
+	hookDir, err = os.MkdirTemp("", "pokit-claude-resume-")
+	if err != nil {
+		return "", "", err
+	}
+
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []map[string]any{
+				{
+					"matcher": "",
+					"hooks": []map[string]any{
+						{
+							"type":    "command",
+							"command": filepath.Join(hookDir, "hook_resume.sh"),
+						},
+					},
+				},
+			},
+			"PostToolUse": []map[string]any{
+				{
+					"matcher": "",
+					"hooks": []map[string]any{
+						{
+							"type":    "command",
+							"command": filepath.Join(hookDir, "hook_posttool.sh"),
+						},
+					},
+				},
+			},
+		},
+	}
+	settingsPath = filepath.Join(hookDir, "settings.json")
+	f, err := os.Create(settingsPath)
+	if err != nil {
+		os.RemoveAll(hookDir)
+		return "", "", err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(settings); err != nil {
+		os.RemoveAll(hookDir)
+		return "", "", err
+	}
+	return hookDir, settingsPath, nil
+}
+
+// writeResumeHookScripts writes the resume and posttool hook scripts.
+func (s *ManagedClaudeService) writeResumeHookScripts(hookDir, resumeURL, posttoolURL string) error {
+	resumeScript := fmt.Sprintf("#!/bin/sh\ncurl -s -X POST -d @- '%s'\n", resumeURL)
+	if err := os.WriteFile(filepath.Join(hookDir, "hook_resume.sh"), []byte(resumeScript), 0700); err != nil {
+		return err
+	}
+	posttoolScript := fmt.Sprintf("#!/bin/sh\ncurl -s -X POST -d @- '%s'\n", posttoolURL)
+	return os.WriteFile(filepath.Join(hookDir, "hook_posttool.sh"), []byte(posttoolScript), 0700)
 }
 
 // launchWithDir spawns the executable in the given directory. It tries

@@ -133,6 +133,8 @@ func newClaudeHookBridge() (*claudeHookBridge, string, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hook", bridge.handleHook)
+	mux.HandleFunc("/resume", bridge.handleResume)
+	mux.HandleFunc("/posttool", bridge.handlePostTool)
 	bridge.server = &http.Server{
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
@@ -150,6 +152,14 @@ func newClaudeHookBridge() (*claudeHookBridge, string, error) {
 
 func (b *claudeHookBridge) endpoint() string {
 	return fmt.Sprintf("http://127.0.0.1:%d/hook?token=%s", b.port, b.token)
+}
+
+func (b *claudeHookBridge) resumeEndpoint(claimToken, nonce string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/resume?token=%s&claim=%s&nonce=%s", b.port, b.token, claimToken, nonce)
+}
+
+func (b *claudeHookBridge) posttoolEndpoint(claimToken string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/posttool?token=%s&claim=%s", b.port, b.token, claimToken)
 }
 
 func (b *claudeHookBridge) close() {
@@ -223,6 +233,143 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 
 	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
 	writeHookDefer(w)
+}
+
+// handleResume is the C2D-C resume hook handler. It receives the repeated
+// PreToolUse when Claude resumes a deferred session. It validates the
+// nonce, calls ClaimWrite, encodes the C0D-certified response from
+// WriteHandle.Decision(), writes the HTTP response, and calls ConfirmWrite.
+func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeHookDefer(w)
+		return
+	}
+	if r.URL.Query().Get("token") != b.token {
+		writeHookDefer(w)
+		return
+	}
+	claimToken := r.URL.Query().Get("claim")
+	resumeNonce := r.URL.Query().Get("nonce")
+	if claimToken == "" || resumeNonce == "" {
+		writeHookDefer(w)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxPreToolUseBody+1))
+	if err != nil || len(body) > maxPreToolUseBody {
+		writeHookDefer(w)
+		return
+	}
+
+	fields, ok := strictPreToolUseDecode(body)
+	if !ok {
+		writeHookDefer(w)
+		return
+	}
+	if heName, sok := strictBoundedString(fields["hook_event_name"], 64); !sok || heName != "PreToolUse" {
+		writeHookDefer(w)
+		return
+	}
+
+	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sessionID, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
+	if !ok1 || !ok2 || !ok3 {
+		writeHookDefer(w)
+		return
+	}
+	if len(fields["tool_input"]) == 0 {
+		writeHookDefer(w)
+		return
+	}
+	inputCanon, err := canonicalJSON(fields["tool_input"])
+	if err != nil || len(inputCanon) > maxToolInputBytes {
+		writeHookDefer(w)
+		return
+	}
+	inputDigest := sha256Hex(inputCanon)
+
+	rt := b.rt
+	if rt == nil || rt.coordinator == nil {
+		writeHookDefer(w)
+		return
+	}
+
+	wh, outcome := rt.coordinator.ClaimWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest)
+	if outcome != outcomeWritten {
+		writeHookDefer(w)
+		return
+	}
+
+	// Encode the exact C0D-certified hook response.
+	decision := wh.Decision()
+	resp := fmt.Sprintf(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s"}}`, decision)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(resp))
+
+	rt.coordinator.ConfirmWrite(claimToken, true)
+}
+
+// handlePostTool is the C2D-C PostToolUse witness handler. It receives
+// PostToolUse events from the resumed Claude process and calls
+// MarkWitnessed.
+func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.URL.Query().Get("token") != b.token {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	claimToken := r.URL.Query().Get("claim")
+	if claimToken == "" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxPreToolUseBody+1))
+	if err != nil || len(body) > maxPreToolUseBody {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Strict decode PostToolUse fields.
+	fields, ok := strictPreToolUseDecode(body)
+	if !ok {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	heName, sok := strictBoundedString(fields["hook_event_name"], 64)
+	if !sok || heName != "PostToolUse" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sessionID, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
+	if !ok1 || !ok2 || !ok3 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	inputDigest := ""
+	if raw, ok := fields["tool_input"]; ok && len(raw) > 0 {
+		if canon, err := canonicalJSON(raw); err == nil && len(canon) <= maxToolInputBytes {
+			inputDigest = sha256Hex(canon)
+		}
+	}
+
+	rt := b.rt
+	if rt == nil || rt.coordinator == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	pokitRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0}
+	rt.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionID, toolUseID, toolName, inputDigest, pokitRT)
+	w.WriteHeader(http.StatusOK)
 }
 
 func writeHookDefer(w http.ResponseWriter) {
