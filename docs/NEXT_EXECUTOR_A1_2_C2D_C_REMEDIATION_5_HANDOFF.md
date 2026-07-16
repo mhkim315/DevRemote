@@ -38,6 +38,53 @@ Set the resume runtime's private POKIT session identity from the immutable
 `resumeContext` as part of the binding fix, but do not claim that this alone
 repairs pump I/O or deny routing.
 
+### Partial checkpoint `64a65af` — red evidence accepted, implementation rejected
+
+Checkpoint `64a65affbc3945b690fe844dfd9b15c7cc365388` usefully exposes the
+expected deny and lifecycle failures, but it is not a reviewable implementation
+checkpoint. Independent `-race` execution found a data race between
+`compFakeLauncher.Launch` appending `procs` without the mutex and the test
+reading `procs[1]`. It also confirms:
+
+- no production permission-denials decoder exists, so `processLine` ignores the
+  injected `stop_reason:end_turn` result and delivery times out;
+- `DenyPostToolUseCannotCommit` correctly fails against the still-present false
+  PostToolUse-as-denial implementation; this is red evidence, not a regression
+  to be weakened;
+- all-exit `deferredExit=true` remains, so exit without joined defer preserves
+  identity;
+- lifecycle tests create a second detached session, inject into `procs[0]`, and
+  Stop/Delete the second session. They do not exercise one exact session;
+- the tests hold `launcher.mu` across blocking `io.PipeWriter.Write` and use
+  sleeps, creating the reported hangs and violating the deterministic-barrier
+  requirement;
+- cwd lookup is mutable and fail-open: delivery re-reads `svc.runtimes` and
+  defaults to `/tmp`. Original cwd must instead be frozen with the joined
+  deferred identity; missing cwd is unavailable/rejected, never `/tmp`.
+
+The next implementation order is mandatory:
+
+1. Repair the test launcher first: allocate and publish each launch record under
+   one mutex, return its exact process handle over a buffered channel, never
+   hold the launcher mutex across pipe I/O, and provide explicit
+   frame-consumed/EOF/reaped barriers. Remove all polling sleeps.
+2. Split setup helpers:
+   - delivery composition may install the controlled Store/identity fixture;
+   - lifecycle tests must drive the production `/hook` observation and exact
+     `tool_deferred` stdout join for one returned POKIT session/process. Do not
+     call `ReserveIdentity` manually in lifecycle proof and do not create a
+     second session.
+3. Make the negative tests deterministically red/green with the fixed harness.
+4. Implement the strict denial decoder and route it from the exact resumed
+   runtime's `processLine` using an immutable resume context. The test frame must
+   include the actual bounded tool input needed to recompute the canonical
+   input digest; do not invent an `input_sha256` provider field.
+5. Fix logical deferred lifecycle and immutable cwd ownership.
+
+Do not proceed while `go test -race` reports any harness race. Do not report a
+named PASS merely because the corresponding red test still fails as expected;
+record expected-red and final-green states separately.
+
 ## 1. Preserve the real progress
 
 Do not rewrite the accepted structural work without a demonstrated dependency:
