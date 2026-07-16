@@ -1331,3 +1331,267 @@ func TestClaudeReservationRollback_SuccessfulTombstoneRetained(t *testing.T) {
 	ctx := context.Background()
 	svc.Shutdown(ctx)
 }
+
+// ── C2D-B integration tests ──
+
+func TestC2DB_IdentityPreservedAtJoin(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-session-uuid"
+	toolUseID := "call_00_C2DB_Test1"
+	toolName := "Bash"
+	inputJSON := `{"command":"echo hello","description":"test"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	// After join, the pending observation is gone but the identity is preserved.
+	rt.turnMu.Lock()
+	if len(rt.pendingObservations) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatal("expected 0 pending after join")
+	}
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	// Verify identity record exists in the coordinator.
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("expected identity record to be preserved")
+	}
+	if idRec.sessionID != sessionID || idRec.toolUseID != toolUseID ||
+		idRec.toolName != toolName || idRec.inputDigest != inputDigest {
+		t.Fatalf("identity record fields mismatch: %+v", idRec)
+	}
+
+	rt.terminate()
+}
+
+func TestC2DB_IdentityClearedOnTerminate(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-term"
+	toolUseID := "call_C2DB_Term"
+	toolName := "Bash"
+	inputDigest := sha256Hex([]byte(`{"cmd":"x"}`))
+
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"cmd":"x"}`)
+	rt.processLine([]byte(deferred))
+
+	// Capture approval ID before terminate.
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	// Verify identity exists.
+	if _, ok := svc.coordinator.LookupIdentity(approvalID); !ok {
+		t.Fatal("expected identity before terminate")
+	}
+
+	rt.terminate()
+
+	// After terminate, identity is cleared.
+	if _, ok := svc.coordinator.LookupIdentity(approvalID); ok {
+		t.Fatal("expected identity to be cleared after terminate")
+	}
+}
+
+func TestC2DB_IdentityClearedOnTimeout(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-timeout"
+	toolUseID := "call_C2DB_Timeout"
+	toolName := "Bash"
+	inputDigest := sha256Hex([]byte(`{"cmd":"x"}`))
+
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"cmd":"x"}`)
+	rt.processLine([]byte(deferred))
+
+	// Capture approval ID.
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	// Verify identity exists.
+	if _, ok := svc.coordinator.LookupIdentity(approvalID); !ok {
+		t.Fatal("expected identity before timeout")
+	}
+
+	// Expire the active approval by manipulating time.
+	rt.turnMu.Lock()
+	for i := range rt.activeApprovals {
+		rt.activeApprovals[i].expiresAt = clockNow().Add(-time.Second)
+	}
+	rt.turnMu.Unlock()
+	rt.clearStaleObservations()
+
+	// After timeout clear, identity is removed.
+	if _, ok := svc.coordinator.LookupIdentity(approvalID); ok {
+		t.Fatal("expected identity to be cleared after timeout")
+	}
+
+	rt.terminate()
+}
+
+func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-fullflow"
+	toolUseID := "call_C2DB_FullFlow"
+	toolName := "Bash"
+	inputJSON := `{"command":"echo hello","description":"test"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	// Step 1: Observe and join.
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	// Step 2: Get the identity from the coordinator.
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("expected identity record")
+	}
+
+	// Step 3: Reserve an entry (simulating mobile claim).
+	entry, ok := svc.coordinator.ReserveEntry("claim-token-fullflow", approvalID, "allow")
+	if !ok {
+		t.Fatal("expected ReserveEntry to succeed")
+	}
+	if entry.sessionID != sessionID || entry.toolUseID != toolUseID ||
+		entry.toolName != toolName || entry.inputDigest != inputDigest {
+		t.Fatal("entry fields mismatch — should match identity")
+	}
+	if entry.decision != "allow" {
+		t.Fatalf("expected decision allow, got %s", entry.decision)
+	}
+
+	// Step 4: Validate and write (simulating resume hook).
+	dec, out := svc.coordinator.ValidateAndWrite(
+		"claim-token-fullflow", entry.resumeNonce,
+		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest,
+	)
+	if out != outcomeWritten {
+		t.Fatalf("expected outcomeWritten, got %d", out)
+	}
+	if dec != "allow" {
+		t.Fatalf("expected allow, got %s", dec)
+	}
+
+	// Step 5: Verify entry is consumed.
+	if svc.coordinator.pendingCount() != 0 {
+		t.Fatal("expected 0 pending entries after write")
+	}
+
+	// Step 6: Verify duplicate write is blocked.
+	_, out = svc.coordinator.ValidateAndWrite(
+		"claim-token-fullflow", entry.resumeNonce,
+		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest,
+	)
+	if out != outcomeDuplicate {
+		t.Fatalf("expected outcomeDuplicate, got %d", out)
+	}
+
+	rt.terminate()
+}
+
+func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	rt.observePreToolUse("tu-1", "Bash", "sess-1", sha256Hex([]byte(`{"cmd":"x"}`)))
+	deferred := deferredStreamJSON("sess-1", "tu-1", "Bash", `{"cmd":"x"}`)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	// Reserve entry for allow.
+	entry, ok := svc.coordinator.ReserveEntry("claim-1", approvalID, "allow")
+	if !ok {
+		t.Fatal("expected ReserveEntry to succeed")
+	}
+
+	// Attempt to write with wrong toolUseID — must fail.
+	_, out := svc.coordinator.ValidateAndWrite("claim-1", entry.resumeNonce,
+		"sess-1", "wrong-tu", "Bash", sha256Hex([]byte(`{"cmd":"x"}`)))
+	if out != outcomeMismatch {
+		t.Fatalf("expected outcomeMismatch, got %d", out)
+	}
+
+	// Attempt to write with wrong inputDigest — must fail.
+	_, out = svc.coordinator.ValidateAndWrite("claim-1", entry.resumeNonce,
+		"sess-1", "tu-1", "Bash", "wrong-digest")
+	if out != outcomeMismatch {
+		t.Fatalf("expected outcomeMismatch for wrong digest, got %d", out)
+	}
+
+	// The entry should still be pending.
+	if svc.coordinator.pendingCount() != 1 {
+		t.Fatal("expected 1 pending after mismatches")
+	}
+
+	// Correct write should still work.
+	dec, out := svc.coordinator.ValidateAndWrite("claim-1", entry.resumeNonce,
+		"sess-1", "tu-1", "Bash", sha256Hex([]byte(`{"cmd":"x"}`)))
+	if out != outcomeWritten || dec != "allow" {
+		t.Fatalf("expected valid write to succeed after mismatches, got %d/%s", out, dec)
+	}
+
+	rt.terminate()
+}

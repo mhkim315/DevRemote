@@ -86,6 +86,10 @@ type claudeManagedRuntime struct {
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
 
+	// C2D-B: private one-shot resume coordinator. Set from the parent
+	// ManagedClaudeService; nil when the service is not configured.
+	coordinator *claudeResumeCoordinator
+
 	observer       func(stage string)
 	preIngestHook  func() // test seam: before Store ingest
 	postIngestHook func() // test seam: after Store ingest, before active append
@@ -190,6 +194,17 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 	approvalID := "claude-" + approvalToken
 
+	// C2D-B: preserve private identity before Store admission.
+	// Roll back on admission failure so the capacity is not leaked.
+	identityCreated := false
+	if rt.coordinator != nil {
+		if !rt.coordinator.ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest) {
+			rt.turnMu.Unlock()
+			return // capacity exhausted or duplicate
+		}
+		identityCreated = true
+	}
+
 	delete(rt.pendingObservations, toolUseID)
 	rt.turnMu.Unlock()
 
@@ -202,11 +217,17 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	// hook above), drop immediately. Covers the forward race where the
 	// Store has no prior session.
 	if rt.atomicTerminated.Load() {
+		if identityCreated {
+			rt.coordinator.RemoveIdentity(approvalID)
+		}
 		return
 	}
 
 	approvals := rt.approvals
 	if approvals == nil {
+		if identityCreated {
+			rt.coordinator.RemoveIdentity(approvalID)
+		}
 		return
 	}
 
@@ -235,6 +256,9 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	})
 
 	if !admitted {
+		if identityCreated {
+			rt.coordinator.RemoveIdentity(approvalID)
+		}
 		return
 	}
 
@@ -330,8 +354,10 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 		}
 	}
 	remaining := rt.activeApprovals[:0]
+	var expired []activeApproval
 	for _, aa := range rt.activeApprovals {
 		if now.After(aa.expiresAt) {
+			expired = append(expired, aa)
 			if rt.approvals != nil {
 				rt.approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
 			}
@@ -340,6 +366,14 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 		}
 	}
 	rt.activeApprovals = remaining
+
+	// C2D-B: remove stale identities and cancel expired coordinator entries.
+	if rt.coordinator != nil {
+		for _, aa := range expired {
+			rt.coordinator.ClearForApproval(aa.approvalID)
+		}
+		rt.coordinator.clearStaleEntries(now)
+	}
 }
 
 func (rt *claudeManagedRuntime) terminate() {
@@ -375,6 +409,12 @@ func (rt *claudeManagedRuntime) terminate() {
 			// metadata transition for termination.
 			_ = approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
 		}
+		// C2D-B: invalidate coordinator identities for all expired approvals.
+		if rt.coordinator != nil {
+			for _, aa := range expired {
+				rt.coordinator.ClearForApproval(aa.approvalID)
+			}
+		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)
 	})
@@ -400,6 +440,11 @@ type ManagedClaudeService struct {
 
 	approvals *AuthoritativeApprovalStore
 
+	// C2D-B: private one-shot resume coordinator. Identities survive
+	// individual Claude process exit. Built eagerly; no delivery path
+	// is active until C2D-C wires it.
+	coordinator *claudeResumeCoordinator
+
 	createBarrier func(stage string)
 }
 
@@ -424,6 +469,7 @@ func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, at
 		reg:              NewManagedSessionRegistry(maxClaudeSessions),
 		leases:           make(map[*inflightCreate]struct{}),
 		runtimes:         make(map[string]*claudeManagedRuntime),
+		coordinator:      NewClaudeResumeCoordinator(),
 	}
 	s.leaseCond = sync.NewCond(&s.mu)
 	return s
@@ -593,6 +639,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	rt.sessionID = id
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
+	rt.coordinator = s.coordinator
 	s.runtimes[id] = rt
 	s.mu.Unlock()
 
@@ -734,6 +781,11 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 	}
 	for _, rt := range rts {
 		rt.terminate()
+	}
+
+	// C2D-B: close coordinator after all runtimes are terminated.
+	if s.coordinator != nil {
+		s.coordinator.Close()
 	}
 
 	done := make(chan struct{})
