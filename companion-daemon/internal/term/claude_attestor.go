@@ -1,7 +1,7 @@
 // Package term — C1D: OS-neutral Claude version/artifact certification seam.
-// The attestor verifies the exact pinned Claude Code version AND artifact
-// identity (path + SHA-256 digest) before any managed spawn. PATH lookup
-// alone is not certification.
+// The attestor verifies the exact pinned Claude Code version, path, AND
+// SHA-256 artifact digest before any managed spawn. PATH lookup alone is not
+// certification. A missing PinnedDigest is a hard fail-closed error.
 package term
 
 import (
@@ -17,12 +17,13 @@ type ClaudeEntryConfig struct {
 	Bin              string
 	Version          string
 	AuthorityVersion string
-	PinnedPath       string // absolute path; resolved binary must match
-	PinnedDigest     string // hex-encoded SHA-256 of the binary at PinnedPath (empty = skip)
+	PinnedPath       string // mandatory: absolute path
+	PinnedDigest     string // mandatory: hex-encoded SHA-256
 }
 
-// PinnedClaudeConfig returns the C0D-accepted pinned identity. The digest is
-// left empty so the production binary can be attested at install time.
+// PinnedClaudeConfig returns the C0D-accepted pinned identity. The digest
+// field is empty by design — the caller MUST supply a verified digest before
+// use, or all Certify calls will fail closed.
 func PinnedClaudeConfig() ClaudeEntryConfig {
 	home, _ := os.UserHomeDir()
 	return ClaudeEntryConfig{
@@ -30,6 +31,7 @@ func PinnedClaudeConfig() ClaudeEntryConfig {
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
 		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", "2.1.209", "claude"),
+		PinnedDigest:     "", // caller MUST set before use
 	}
 }
 
@@ -47,18 +49,26 @@ func (c ClaudeEntryConfig) Verify() error {
 
 // ClaudeAttestor is the OS-neutral certification seam.
 type ClaudeAttestor interface {
-	// Certify verifies that the candidate executable matches the pinned
-	// identity (version + path + digest). Returns nil if certified.
 	Certify(exe string) error
 }
 
-// productionClaudeAttestor performs version + path + optional digest checks.
 type productionClaudeAttestor struct {
 	cfg ClaudeEntryConfig
 }
 
+// digestProvider computes SHA-256 of a file. Replaceable in tests.
+var digestProvider = fileDigest
+
 func (a productionClaudeAttestor) Certify(exe string) error {
-	// 1. Version check.
+	// 1. Config checks (no I/O, fail-closed before any exec).
+	if a.cfg.PinnedDigest == "" {
+		return fmt.Errorf("claude certify: pinned digest not configured — supply a verified SHA-256")
+	}
+	if a.cfg.PinnedPath == "" {
+		return fmt.Errorf("claude certify: pinned path not configured")
+	}
+
+	// 2. Version check.
 	vs, err := exec.Command(exe, "--version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("claude certify: %w", err)
@@ -67,10 +77,7 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 		return fmt.Errorf("claude certify: version mismatch: want %q, got %q", a.cfg.Version, got)
 	}
 
-	// 2. Pinned path check.
-	if a.cfg.PinnedPath == "" {
-		return fmt.Errorf("claude certify: pinned path not configured")
-	}
+	// 3. Path resolution.
 	resolved, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return fmt.Errorf("claude certify: realpath: %w", err)
@@ -85,17 +92,12 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 	if fi, err := os.Stat(resolved); err != nil || fi.IsDir() {
 		return fmt.Errorf("claude certify: pinned path is not a regular executable")
 	}
-
-	// 3. Digest check (when configured). A replaced binary with the same
-	// version string at the same path will still fail if the digest differs.
-	if a.cfg.PinnedDigest != "" {
-		actual, err := fileDigest(resolved)
-		if err != nil {
-			return fmt.Errorf("claude certify: digest read: %w", err)
-		}
-		if actual != a.cfg.PinnedDigest {
-			return fmt.Errorf("claude certify: digest mismatch: want %s, got %s", a.cfg.PinnedDigest, actual[:16])
-		}
+	actual, err := digestProvider(resolved)
+	if err != nil {
+		return fmt.Errorf("claude certify: digest read: %w", err)
+	}
+	if actual != a.cfg.PinnedDigest {
+		return fmt.Errorf("claude certify: digest mismatch: want %s, got %s", a.cfg.PinnedDigest, actual[:16])
 	}
 
 	return nil

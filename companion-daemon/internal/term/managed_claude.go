@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
@@ -32,20 +33,27 @@ const (
 	claudeHandshakeTimeout       = 30 * time.Second
 	maxClaudeSessions            = 4
 	maxPendingClaudeObservations = 4
+	maxActiveApprovals           = maxPendingClaudeObservations
 	claudeObservationTimeout     = 120 * time.Second
 )
+
+// ── Entropy and clock (injectable for tests) ──
+
+var entropyReader io.Reader = crand.Reader
+
+// clockNow returns the current time. Tests may replace it.
+var clockNow = time.Now
 
 // ── Pending observation ──
 
 type claudePendingObservation struct {
-	toolUseID  string
-	toolName   string
-	sessionID  string
+	toolUseID   string
+	toolName    string
+	sessionID   string
 	inputDigest string
-	observedAt time.Time
+	observedAt  time.Time
 }
 
-// activeApproval tracks a joined/ingested approval for timeout invalidation.
 type activeApproval struct {
 	approvalID string
 	expiresAt  time.Time
@@ -60,7 +68,7 @@ type claudeManagedRuntime struct {
 	reg       *ManagedSessionRegistry
 	scanner   *bufio.Scanner
 	exited    chan struct{}
-	exitOnce  sync.Once // guards close(rt.exited)
+	exitOnce  sync.Once
 
 	bridge  *claudeHookBridge
 	hookDir string
@@ -116,7 +124,7 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 		toolName:   toolName,
 		sessionID:  claudeSessionID,
 		inputDigest: inputDigest,
-		observedAt: time.Now(),
+		observedAt:  clockNow(),
 	}
 
 	if rt.observer != nil {
@@ -136,8 +144,8 @@ type streamDeferred struct {
 }
 
 // joinDeferred matches a tool_deferred result against a pending observation.
-// On match, ingests a non-actionable record and tracks the approvalID with an
-// expiry so timeout invalidation can reach it.
+// On match, ingests a non-actionable record. Capacity is checked against
+// maxActiveApprovals; store admission failure rolls back the active entry.
 func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	if d.DeferredToolUse == nil || d.SessionID == "" {
 		return
@@ -163,6 +171,12 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
+	// Capacity check: active approvals are bounded.
+	if len(rt.activeApprovals) >= maxActiveApprovals {
+		rt.turnMu.Unlock()
+		return
+	}
+
 	approvalToken, err := rt.genApprovalToken()
 	if err != nil {
 		rt.turnMu.Unlock()
@@ -171,11 +185,6 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	approvalID := "claude-" + approvalToken
 
 	delete(rt.pendingObservations, toolUseID)
-	// Track the ingested approval for timeout invalidation.
-	rt.activeApprovals = append(rt.activeApprovals, activeApproval{
-		approvalID: approvalID,
-		expiresAt:  time.Now().Add(claudeObservationTimeout),
-	})
 	approvals := rt.approvals
 	rt.turnMu.Unlock()
 
@@ -183,7 +192,7 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
-	approvals.IngestObserved(ApprovalIngest{
+	admitted := approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
 		StreamGen: 0,
@@ -207,12 +216,21 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		}},
 	})
 
+	// Only track if store admitted the record. Store rejection → rollback.
+	if admitted {
+		rt.turnMu.Lock()
+		rt.activeApprovals = append(rt.activeApprovals, activeApproval{
+			approvalID: approvalID,
+			expiresAt:  clockNow().Add(claudeObservationTimeout),
+		})
+		rt.turnMu.Unlock()
+	}
+
 	if rt.observer != nil {
 		rt.observer("deferred_joined")
 	}
 }
 
-// genApprovalToken delegates to the service's entropy reader.
 func (rt *claudeManagedRuntime) genApprovalToken() (string, error) {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(entropyReader, b); err != nil {
@@ -223,7 +241,7 @@ func (rt *claudeManagedRuntime) genApprovalToken() (string, error) {
 
 // pump reads Claude's stream-json stdout.
 func (rt *claudeManagedRuntime) pump() {
-	defer rt.terminate() // guaranteed cleanup on any exit path
+	defer rt.terminate()
 
 	staleTicker := time.NewTicker(30 * time.Second)
 	defer staleTicker.Stop()
@@ -267,22 +285,20 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 	rt.joinDeferred(&event)
 }
 
-// clearStaleObservations removes expired pending observations AND expired
-// active approvals. Both are checked under turnMu.
 func (rt *claudeManagedRuntime) clearStaleObservations() {
 	rt.turnMu.Lock()
 	defer rt.turnMu.Unlock()
 
-	cutoff := time.Now().Add(-claudeObservationTimeout)
+	now := clockNow()
+	cutoff := now.Add(-claudeObservationTimeout)
 	for id, obs := range rt.pendingObservations {
 		if obs.observedAt.Before(cutoff) {
 			delete(rt.pendingObservations, id)
 		}
 	}
-	// Expire joined approvals whose timeout has elapsed.
 	remaining := rt.activeApprovals[:0]
 	for _, aa := range rt.activeApprovals {
-		if time.Now().After(aa.expiresAt) {
+		if now.After(aa.expiresAt) {
 			if rt.approvals != nil {
 				rt.approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
 			}
@@ -293,7 +309,6 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 	rt.activeApprovals = remaining
 }
 
-// terminate is the SINGLE idempotent exit transition.
 func (rt *claudeManagedRuntime) terminate() {
 	rt.exitOnce.Do(func() {
 		if rt.bridge != nil {
@@ -324,15 +339,9 @@ func (rt *claudeManagedRuntime) terminate() {
 	})
 }
 
-func (rt *claudeManagedRuntime) stop() {
-	rt.terminate()
-}
+func (rt *claudeManagedRuntime) stop() { rt.terminate() }
 
 // ── Service ──
-
-// entropyReader is the entropy source for token generation. In production it
-// is crypto/rand.Reader. Tests may replace it with a failing reader.
-var entropyReader io.Reader = crand.Reader
 
 type ManagedClaudeService struct {
 	cfg              ClaudeEntryConfig
@@ -361,7 +370,7 @@ func (s *ManagedClaudeService) barrier(stage string) {
 
 func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, attestor ClaudeAttestor) *ManagedClaudeService {
 	if launcher == nil {
-		launcher = execLauncher{}
+		launcher = &execLauncher{}
 	}
 	if attestor == nil {
 		attestor = NewClaudeAttestor(cfg)
@@ -385,6 +394,7 @@ func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAtt
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
 		PinnedPath:       "/pinned/test/claude",
+		PinnedDigest:     "0000000000000000000000000000000000000000000000000000000000000000",
 	}, launcher, attestor)
 }
 
@@ -434,7 +444,8 @@ func (s *ManagedClaudeService) eventStoreFor(sessionID string) (*managedEventSto
 	return nil, 0, false
 }
 
-// CreateDetached launches a Claude managed session.
+// CreateDetached launches a Claude managed session. The child runs in the
+// requested cwd directory.
 func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
@@ -483,7 +494,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		"--include-partial-messages",
 		"-p", claudeCertificationPrompt,
 	}
-	proc, err := s.launcher.Launch(exe, argv)
+	proc, err := launchWithDir(s.launcher, exe, argv, cwd)
 	if err != nil {
 		bridge.close()
 		os.RemoveAll(hookDir)
@@ -536,7 +547,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		ProcessID: proc.OpaqueID(),
 		OS:        goruntime.GOOS,
 		Arch:      goruntime.GOARCH,
-		CreatedAt: time.Now(),
+		CreatedAt: clockNow(),
 	}
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)
@@ -547,8 +558,44 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	return id, nil
 }
 
-// createHookSettings writes an isolated Claude settings JSON file using the
-// C0D-certified hook schema.
+// launchWithDir spawns the executable in the given directory. It tries
+// cwdLauncher first, falling back to plain Launch if the launcher doesn't
+// support directory binding.
+func launchWithDir(l ManagedLauncher, exe string, argv []string, cwd string) (ManagedProcess, error) {
+	if cl, ok := l.(interface {
+		LaunchInDir(exe string, argv []string, cwd string) (ManagedProcess, error)
+	}); ok {
+		return cl.LaunchInDir(exe, argv, cwd)
+	}
+	// Fallback: use the plain Launch (tests that don't need cwd).
+	return l.Launch(exe, argv)
+}
+
+// execLauncherWithDir extends execLauncher with cwd support.
+type execLauncherWithDir struct{}
+
+func (execLauncherWithDir) Launch(exe string, argv []string) (ManagedProcess, error) {
+	return execLauncher{}.Launch(exe, argv)
+}
+
+func (execLauncherWithDir) LaunchInDir(exe string, argv []string, cwd string) (ManagedProcess, error) {
+	cmd := exec.Command(exe, argv...)
+	cmd.Dir = cwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &execProcess{cmd: cmd, stdin: stdin, stdout: stdout, started: clockNow()}, nil
+}
+
 func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPath string, err error) {
 	hookDir, err = os.MkdirTemp("", "pokit-claude-hooks-")
 	if err != nil {
@@ -634,9 +681,6 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Stop terminates the session deterministically. On return the bridge is
-// closed, the process is reaped, pending state is cleared, approvals are
-// invalidated, and the registry marks the session exited.
 func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -647,18 +691,15 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	if rt.epoch != epoch {
 		return fmt.Errorf("stale session epoch")
 	}
-	rec, ok := s.reg.Get(sessionID)
-	if !ok {
+	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
-	}
-	if rec.Exited {
+	} else if rec.Exited {
 		return nil
 	}
 	rt.terminate()
 	return nil
 }
 
-// Kill force-terminates deterministically. Same guarantees as Stop.
 func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
@@ -669,11 +710,9 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	if rt.epoch != epoch {
 		return fmt.Errorf("stale session epoch")
 	}
-	rec, ok := s.reg.Get(sessionID)
-	if !ok {
+	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
-	}
-	if rec.Exited {
+	} else if rec.Exited {
 		return nil
 	}
 	rt.terminate()
