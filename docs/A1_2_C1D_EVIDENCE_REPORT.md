@@ -2,7 +2,7 @@
 
 Status: **C1D IMPLEMENTED — AWAITING INDEPENDENT ACCEPTANCE**
 
-Implementation SHA: `4794ce7c7eb16f4b33ac570a6a1cd7798e62ce04`
+Implementation SHA: `4794ce7f42380c388c1a5614b4b2518bc1722870`
 Accepted C0D evidence: `e42d4c570e64462ce813861017cc635e338e68bf`
 Accepted SP1/Codex baseline: `2b940a6fce6e878ffa0da17b5df4d39438af144d`
 R11 handoff SHA: `7267080df88d385d5c86273b3f79a1d964e7765c`
@@ -142,4 +142,4 @@ npx tsc --noEmit                       NOT RUN (no mobile changes)
 - C0H/C0R: remain BLOCKED
 - N1, O1/O2, Agent SDK, Channels: NOT in scope
 
-REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `4794ce7c7eb16f4b33ac570a6a1cd7798e62ce04`
+REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `4794ce7f42380c388c1a5614b4b2518bc1722870`
