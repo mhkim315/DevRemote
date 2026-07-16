@@ -85,6 +85,73 @@ Do not proceed while `go test -race` reports any harness race. Do not report a
 named PASS merely because the corresponding red test still fails as expected;
 record expected-red and final-green states separately.
 
+### R5-A/B checkpoint `40e77d6` — progress preserved, authority still rejected
+
+Checkpoint `40e77d67e00f1171d821b6c2bcc5fcfd3ca5bf98` makes useful progress:
+
+- the selected focused race run no longer reports the prior launcher slice
+  race;
+- allow still traverses the real resume/PostToolUse path and commits;
+- a resumed stdout denial frame now reaches a production pump path;
+- exit without a joined defer now clears identity;
+- original session ID/cwd fields are carried into the resume runtime.
+
+Preserve those improvements. However, the current deny green is not authority
+safe and the following changes are mandatory before any review request:
+
+1. **Remove `MarkWitnessedByToolUse`.** It searches the coordinator map by only
+   session/tool ID, ignores its `kind` parameter, omits claim token, RuntimeRef,
+   input digest and resume-attempt ownership, and may select a conflicting map
+   entry. The resumed runtime must snapshot its immutable `resumeContext` and
+   call the existing full-binding `MarkWitnessed(claimToken,
+   WitnessPermissionDenials, sessionID, toolUseID, toolName, inputDigest,
+   originalRuntime)`.
+2. **Make denial decoding closed and bounded.** Plain `json.Unmarshal` into
+   `streamDenial` currently accepts unknown/duplicate fields, unbounded arrays
+   and strings, missing stop reason, and evidence without tool input/digest.
+   Add a dedicated strict decoder. Canonicalize the exact bounded provider
+   `tool_input` to recompute the input digest; the controlled frame must include
+   that input. Reject rather than skip malformed entries.
+3. **Fix PostToolUse immediately.** `handlePostTool` still derives witness kind
+   from expected decision. It must always route only `WitnessPostToolUse`, and
+   a deny entry must reject it. The currently failing
+   `DenyPostToolUseCannotCommit` is the required red counterexample.
+4. **Move `joinedDeferred=true` after successful Store admission and final
+   post-ingest termination check.** It is currently set before
+   `IngestObserved`; capacity/store rejection can therefore preserve authority
+   on exit despite no admitted record. Publish the joined/preserve state at the
+   same logical point as the admitted active identity, with rollback on every
+   failure.
+5. **Rewrite lifecycle proof around one production-created identity.** Current
+   setup manually calls `ReserveIdentity`, creates a second detached session,
+   injects deferred output into the first process, and Stop/Delete targets the
+   second session. Drive `/hook` PreToolUse and matching `tool_deferred` through
+   one exact session/process, observe Store/coordinator admission, close that
+   process, then Stop/Delete that same logical session.
+6. **Separate process exit from logical cleanup.** Remove the exported
+   `SimulateGracefulExit`. Stop/Delete must clear logical identity after the
+   initial process has already consumed `exitOnce`; do not rely on calling
+   `terminate()` a second time.
+7. **Freeze cwd at deferred identity creation.** Current delivery re-reads the
+   mutable runtime map and falls back to `/tmp`. Store the validated original
+   cwd privately with the joined identity. Missing/mismatched cwd returns
+   unavailable/rejected; never substitute `/tmp`.
+8. Replace remaining polling sleeps and the single shared `resumeW` with exact
+   per-launch records and named barriers before the repeated-count gate.
+
+Independent checkpoint reproduction:
+
+```text
+AllowAccepted                         PASS
+CompositionDenyAccepted               PASS, but unsafe incomplete binding
+DenyPostToolUseCannotCommit           FAIL (required blocker)
+ExitWithoutJoinedDeferredClears       PASS
+DeferredExitThenStop/DeleteClears     FAIL (fixture does not test one session)
+```
+
+Do not request independent acceptance until every line is green for the correct
+authority reason and `-race` passes the complete focused suite repeatedly.
+
 ## 1. Preserve the real progress
 
 Do not rewrite the accepted structural work without a demonstrated dependency:
