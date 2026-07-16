@@ -5,6 +5,14 @@ Date: 2026-07-17
 
 ## Current Status: BLOCKED — R5 remediation incomplete
 
+> **Independent review correction:** this is a docs-only checkpoint, not an
+> implementation checkpoint. The root-cause and shortcut recommendations below
+> were not accepted. Follow
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_5_HANDOFF.md`, including its section 0,
+> as the authoritative remediation instruction. In particular, do not bypass
+> production denial routing by calling the coordinator directly, and do not use
+> an EOF-immediate buffer as lifecycle/concurrency proof.
+
 ### Production Changes Made (R3-A/B/C)
 - Claim-owned terminal result (TerminalResult channel)
 - Canonical response bytes (claudeHookResponseBytes)

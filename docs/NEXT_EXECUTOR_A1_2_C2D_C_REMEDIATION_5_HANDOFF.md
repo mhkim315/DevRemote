@@ -9,6 +9,35 @@ This is the only active C2D-C executor packet. C2D-D/C3D and production
 actionability remain prohibited. Use the existing execution agent, but execute
 the slices below strictly in order and stop for independent review afterward.
 
+## 0. Status checkpoint `6d58deb` is not implementation evidence
+
+The docs-only checkpoint
+`6d58deb7f1b9471e2b754d2e0de33e9524ea92cd` honestly reports BLOCKED, but its
+diagnosis and proposed test shortcuts are not accepted:
+
+- it contains no production or test changes; the tree still has the R4 false
+  deny-positive test and does not contain the reported
+  `TestClaudeDelivery_DenyPostToolUseCannotCommit` test;
+- an empty resume-runtime `rt.sessionID` is a real binding defect, but it cannot
+  itself terminate `bufio.Scanner`: the scanner reads only `proc.Stdout()`;
+- `bytes.Buffer`/`strings.Reader` preload is not an adequate lifecycle harness:
+  it delivers immediate EOF and cannot prove the named write/witness/exit
+  interleavings;
+- calling `coordinator.MarkWitnessedByToolUse` directly from a composition test
+  is prohibited because it bypasses the required resumed-stdout decoder and
+  production routing boundary.
+
+Continue from the production baseline at `cdea8bd`, but first commit the R5-0
+tests and deterministic launcher harness. Use a per-launch process handle plus
+channels/barriers (or a channel-backed scripted reader) so the test can select
+the exact resumed process, publish one bounded frame, observe its consumption,
+and then close stdout at an explicit barrier. A correctly coordinated `io.Pipe`
+is also acceptable; an uncoordinated blocking write is not.
+
+Set the resume runtime's private POKIT session identity from the immutable
+`resumeContext` as part of the binding fix, but do not claim that this alone
+repairs pump I/O or deny routing.
+
 ## 1. Preserve the real progress
 
 Do not rewrite the accepted structural work without a demonstrated dependency:
