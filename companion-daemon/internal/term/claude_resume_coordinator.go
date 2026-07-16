@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -100,6 +101,28 @@ func validCoordinatorDecision(s string) bool { return s == "allow" || s == "deny
 // validCoordinatorClaimToken validates a claim token (reuses the existing
 // store-level validator: 32 hex chars).
 func validCoordinatorClaimToken(s string) bool { return validClaimToken(s) }
+
+// validCoordinatorBinding validates the full binding metadata using the
+// same canonical validators as ApprovalDelivery. This is the deepest
+// boundary — no field escapes validation.
+func validCoordinatorBinding(b ApprovalExecutionBinding) bool {
+	return b.ApprovalID != "" && b.SessionID != "" && b.ActionDigest != "" && b.PayloadDigest != "" &&
+		validCanonicalKey(b.IdempotencyKey) &&
+		validSessionID(b.SessionID) && validApprovalID(b.ApprovalID) &&
+		validAdapterID(b.Runtime.Adapter) && validVersion(b.Runtime.Version) &&
+		isHex64(b.ActionDigest) && isHex64(b.PayloadDigest) &&
+		len(b.OptionID) <= authMaxOptionField && len(b.DeliverySchema) <= maxDeliverySchemaVerBytes
+}
+
+// ── Witness identity ──
+
+// WitnessKind identifies the type of consumption witness observed by C2D-C.
+type WitnessKind int
+
+const (
+	WitnessPostToolUse       WitnessKind = iota + 1 // allow path
+	WitnessPermissionDenials                         // deny path
+)
 
 // ── Private identity record ──
 
@@ -190,6 +213,23 @@ type claudeResumeCoordinator struct {
 	identities map[string]*claudePrivateIdentity // ApprovalID → identity
 	entries    map[string]*resumeEntry           // claimToken → entry
 	closed     bool
+
+	// testDisableLock is a NARROW test seam. When true, Lock/Unlock are
+	// no-ops, allowing deterministic concurrent-reservation tests to
+	// demonstrate the mutex is necessary. Never set in production.
+	testDisableLock bool
+}
+
+func (c *claudeResumeCoordinator) lock() {
+	if !c.testDisableLock {
+		c.mu.Lock()
+	}
+}
+
+func (c *claudeResumeCoordinator) unlock() {
+	if !c.testDisableLock {
+		c.mu.Unlock()
+	}
 }
 
 // NewClaudeResumeCoordinator creates an empty coordinator.
@@ -218,8 +258,8 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 		return false
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	if c.closed {
 		return false
@@ -244,15 +284,15 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 
 // RemoveIdentity removes a private identity record. It is idempotent.
 func (c *claudeResumeCoordinator) RemoveIdentity(approvalID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 	delete(c.identities, approvalID)
 }
 
 // LookupIdentity returns a copy of the identity record, or false.
 func (c *claudeResumeCoordinator) LookupIdentity(approvalID string) (*claudePrivateIdentity, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 	id, ok := c.identities[approvalID]
 	if !ok {
 		return nil, false
@@ -283,17 +323,19 @@ func generateCoordNonce() string {
 }
 
 // cloneBindingCopy returns a defensive copy of an ApprovalExecutionBinding
-// with all string fields cloned so the coordinator does not pin caller memory.
+// with all string fields cloned via strings.Clone so the coordinator does
+// not pin caller memory. Every field gets an independent bounded backing
+// array; a short substring cannot pin a multi-MB caller buffer.
 func cloneBindingCopy(b ApprovalExecutionBinding) ApprovalExecutionBinding {
 	return ApprovalExecutionBinding{
-		ApprovalID:     b.ApprovalID,
-		SessionID:      b.SessionID,
+		ApprovalID:     strings.Clone(b.ApprovalID),
+		SessionID:      strings.Clone(b.SessionID),
 		Runtime:        cloneRuntimeRef(b.Runtime),
-		ActionDigest:   b.ActionDigest,
-		PayloadDigest:  b.PayloadDigest,
-		IdempotencyKey: b.IdempotencyKey,
-		OptionID:       b.OptionID,
-		DeliverySchema: b.DeliverySchema,
+		ActionDigest:   strings.Clone(b.ActionDigest),
+		PayloadDigest:  strings.Clone(b.PayloadDigest),
+		IdempotencyKey: strings.Clone(b.IdempotencyKey),
+		OptionID:       strings.Clone(b.OptionID),
+		DeliverySchema: strings.Clone(b.DeliverySchema),
 	}
 }
 
@@ -310,7 +352,7 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 	if !validCoordinatorClaimToken(claimToken) {
 		return ResumeHandle{}, false
 	}
-	if !validApprovalID(binding.ApprovalID) || !validSessionID(binding.SessionID) {
+	if !validCoordinatorBinding(binding) {
 		return ResumeHandle{}, false
 	}
 
@@ -324,8 +366,8 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 		return ResumeHandle{}, false
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	if c.closed {
 		return ResumeHandle{}, false
@@ -374,8 +416,8 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 // Returns (WriteHandle{}, outcomeDuplicate) if already claimed.
 // Returns (WriteHandle{}, outcomeStale) if not found or cancelled.
 func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest string) (WriteHandle, resumeOutcome) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	if c.closed {
 		return WriteHandle{}, outcomeStale
@@ -393,6 +435,13 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 	if entry.sessionID != sessionID || entry.toolUseID != toolUseID ||
 		entry.toolName != toolName || entry.inputDigest != inputDigest {
 		return WriteHandle{}, outcomeMismatch
+	}
+	// B2: reject late hooks — the entry must not be expired.
+	if clockNow().After(entry.createdAt.Add(coordinatorEntryTimeout)) {
+		entry.state = stateTerminal
+		entry.ch <- outcomeTimeout
+		delete(c.entries, claimToken)
+		return WriteHandle{}, outcomeStale
 	}
 
 	entry.state = stateWriteClaimed
@@ -413,8 +462,8 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 // if the entry was invalidated concurrently or the write was reported
 // as failed (non-retryable in both cases).
 func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) resumeOutcome {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	entry, ok := c.entries[claimToken]
 	if !ok || entry.state != stateWriteClaimed {
@@ -438,8 +487,8 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 // transitions to terminal. If write-claimed (write in flight), it signals
 // ambiguous — the caller will discover the invalidation via ConfirmWrite.
 func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	entry, ok := c.entries[claimToken]
 	if !ok {
@@ -463,8 +512,8 @@ func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 // ClearForApproval removes the identity and cancels any active entry for
 // the given approvalID.
 func (c *claudeResumeCoordinator) ClearForApproval(approvalID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	delete(c.identities, approvalID)
 	for claimToken, entry := range c.entries {
@@ -490,8 +539,8 @@ func (c *claudeResumeCoordinator) ClearForApproval(approvalID string) {
 // a specific (pokitSessionID, launchGen) pair. Used on terminate and epoch
 // replacement.
 func (c *claudeResumeCoordinator) ClearRuntime(pokitSessionID string, launchGen int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	for aid, id := range c.identities {
 		if id.pokitSessionID == pokitSessionID && id.runtime.LaunchGen == launchGen {
@@ -515,8 +564,8 @@ func (c *claudeResumeCoordinator) ClearRuntime(pokitSessionID string, launchGen 
 
 // Close cancels all active entries and marks the coordinator closed.
 func (c *claudeResumeCoordinator) Close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	c.closed = true
 	for claimToken, entry := range c.entries {
@@ -538,8 +587,8 @@ func (c *claudeResumeCoordinator) Close() {
 // (witness never arrived) are cleaned up as ambiguous after a longer
 // witness timeout.
 func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 
 	entryCutoff := now.Add(-coordinatorEntryTimeout)
 	// Witness timeout is longer: once written, the provider has more time
@@ -571,29 +620,39 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 	}
 }
 
-// MarkWitnessed is called by C2D-C after a consumption witness (PostToolUse
-// or permission_denials) is observed. It cleans up the entry so capacity
-// is not permanently consumed. Idempotent for unknown or already-terminal
-// entries.
-func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// MarkWitnessed is called by C2D-C after a consumption witness is observed.
+// It validates the witness identity against the stored entry and returns the
+// full stored ApprovalExecutionBinding for receipt construction.
+//
+// Only accepted in stateDecisionWritten. Early, wrong, duplicate, or stale
+// witnesses leave the entry unchanged and return (zero-value, false).
+//
+// For WitnessPostToolUse: sessionID and tool_use_id must match the stored entry.
+// For WitnessPermissionDenials: sessionID and tool_use_id must match.
+func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID string) (ApprovalExecutionBinding, bool) {
+	c.lock()
+	defer c.unlock()
+
 	entry, ok := c.entries[claimToken]
-	if !ok {
-		return
+	if !ok || entry.state != stateDecisionWritten {
+		return ApprovalExecutionBinding{}, false
 	}
-	if entry.state == stateDecisionWritten {
-		entry.state = stateTerminal
-		// The channel already received outcomeWritten from ConfirmWrite.
+	if entry.sessionID != sessionID || entry.toolUseID != toolUseID {
+		return ApprovalExecutionBinding{}, false
 	}
+
+	// Witness accepted. Return the stored binding for receipt construction.
+	binding := entry.binding
+	entry.state = stateTerminal
 	delete(c.entries, claimToken)
+	return binding, true
 }
 
 // ── Test helpers ──
 
 func (c *claudeResumeCoordinator) pendingCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 	n := 0
 	for _, e := range c.entries {
 		if e.state == stateDecisionReserved || e.state == stateWriteClaimed {
@@ -604,7 +663,13 @@ func (c *claudeResumeCoordinator) pendingCount() int {
 }
 
 func (c *claudeResumeCoordinator) identityCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lock()
+	defer c.unlock()
 	return len(c.identities)
+}
+
+func (c *claudeResumeCoordinator) entryCount() int {
+	c.lock()
+	defer c.unlock()
+	return len(c.entries)
 }

@@ -768,16 +768,88 @@ func TestMarkWitnessed(t *testing.T) {
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
-	// Entry is in decisionWritten state — consuming capacity.
-	if c.pendingCount() != 0 {
-		t.Fatal("expected 0 pending entries (decisionWritten is not pending)")
+	// Verify entry exists before witness.
+	if c.entryCount() != 1 {
+		t.Fatalf("expected 1 entry before witness, got %d", c.entryCount())
 	}
 
 	// C2D-C observes the witness and marks the entry.
-	c.MarkWitnessed("cccccccccccccccccccccccccccccccc")
+	retBinding, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid)
+	if !ok {
+		t.Fatal("expected MarkWitnessed to succeed")
+	}
+	if !retBinding.equal(binding) {
+		t.Fatal("returned binding should match stored binding")
+	}
 
-	// Verify the entry is cleaned up (no-op for already-cleaned entries).
-	c.MarkWitnessed("cccccccccccccccccccccccccccccccc") // idempotent
+	// Verify entry is removed.
+	if c.entryCount() != 0 {
+		t.Fatalf("expected 0 entries after witness, got %d", c.entryCount())
+	}
+
+	// Idempotent — second call with same or different witness returns false.
+	_, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid)
+	if ok {
+		t.Fatal("expected idempotent MarkWitnessed to return false")
+	}
+	_, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, tuid)
+	if ok {
+		t.Fatal("expected wrong-witness-kind to return false")
+	}
+}
+
+func TestMarkWitnessedWrongState(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	// Still reserved — witness not accepted.
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid)
+	if ok {
+		t.Fatal("expected MarkWitnessed to fail for reserved entry")
+	}
+	_ = handle
+}
+
+func TestMarkWitnessedWrongSession(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+
+	// Wrong session — witness not accepted, entry preserved.
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid)
+	if ok {
+		t.Fatal("expected MarkWitnessed to fail for wrong session")
+	}
+	if c.entryCount() != 1 {
+		t.Fatal("entry should still exist after rejected witness")
+	}
+}
+
+func TestMarkWitnessedWrongToolUseID(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	_ = wh
+
+	// Wrong tool_use_id — witness not accepted.
+	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid")
+	if ok {
+		t.Fatal("expected MarkWitnessed to fail for wrong tool_use_id")
+	}
 }
 
 func TestStaleDecisionWrittenCleanedUp(t *testing.T) {
@@ -791,22 +863,51 @@ func TestStaleDecisionWrittenCleanedUp(t *testing.T) {
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
+	// B2: verify entry actually exists before cleanup (non-vacuous).
+	if c.entryCount() != 1 {
+		t.Fatalf("expected 1 entry before cleanup, got %d", c.entryCount())
+	}
+
 	// Advance time past 2× coordinatorEntryTimeout (witness timeout).
 	fakeNow := clockNow().Add(2*coordinatorEntryTimeout + time.Second)
 	c.clearStaleEntries(fakeNow)
 
-	// Entry should be cleaned up.
-	if c.pendingCount() != 0 {
-		t.Fatal("expected decisionWritten entry to be cleaned up after witness timeout")
+	// B2: verify entry is actually removed (non-vacuous — was 1, now 0).
+	if c.entryCount() != 0 {
+		t.Fatalf("expected 0 entries after witness timeout, got %d", c.entryCount())
 	}
 }
 
-// ── B5: known-bad negative control ──
+func TestClaimWriteExpiredEntry(t *testing.T) {
+	// B2: prove that a late hook (past the reservation deadline) gets zero
+	// decision delivery.
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+
+	// Advance time past the entry timeout.
+	fakeNow := clockNow().Add(coordinatorEntryTimeout + time.Second)
+	// Replace clockNow temporarily (same pattern as managed_claude.go).
+	origClock := clockNow
+	clockNow = func() time.Time { return fakeNow }
+	defer func() { clockNow = origClock }()
+
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	if out != outcomeStale {
+		t.Fatalf("expected outcomeStale for expired entry, got %d", out)
+	}
+	if c.entryCount() != 0 {
+		t.Fatal("entry should be removed after expired ClaimWrite")
+	}
+}
 
 // unsafeReserveEntry is a TEST-ONLY entry point that reserves an entry
-// WITHOUT holding the coordinator mutex. It exists solely to prove that
-// the mutex is necessary — without it, concurrent reservations produce
-// duplicates. A small sleep widens the check-then-set race window.
+// WITHOUT holding the coordinator mutex. It exists solely to support the
+// known-bad negative control test (claude_resume_coordinator_knownbad_test.go,
+// built with !race). Barriers provide deterministic interleaving without
+// sleep or intentional data races.
 func (c *claudeResumeCoordinator) unsafeReserveEntry(claimToken string, binding ApprovalExecutionBinding, nonce string) bool {
 	id, ok := c.identities[binding.ApprovalID]
 	if !ok {
@@ -818,9 +919,6 @@ func (c *claudeResumeCoordinator) unsafeReserveEntry(claimToken string, binding 
 	if _, dup := c.entries[claimToken]; dup {
 		return false
 	}
-	// Widen the race window so the race detector and the >1-success
-	// assertion both fire reliably.
-	time.Sleep(10 * time.Millisecond)
 	decision, _ := deriveDecision(binding)
 	c.entries[claimToken] = &resumeEntry{
 		claimToken:     claimToken,
@@ -839,49 +937,6 @@ func (c *claudeResumeCoordinator) unsafeReserveEntry(claimToken string, binding 
 		ch:             make(chan resumeOutcome, 1),
 	}
 	return true
-}
-
-func TestKnownBad_UnsafeReserveEntryRace(t *testing.T) {
-	// Manual-only: intentional data race proves the mutex is necessary.
-	// Run without -race: go test -run TestKnownBad_UnsafeReserveEntryRace -count=10
-	// Together with TestClaimWrite_KnownBadCheckThenWrite (safe path, only
-	// 1 success with mutex), this proves the mutex is necessary AND sufficient.
-	t.Skip("manual-only: intentional data race — run without -race to verify")
-	c := NewClaudeResumeCoordinator()
-	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
-	binding := testBinding(id, psid)
-	ct := "cccccccccccccccccccccccccccccccc"
-	nonce := generateCoordNonce()
-
-	// Barrier: all goroutines start at the same instant.
-	var goBarrier sync.WaitGroup
-	var doneBarrier sync.WaitGroup
-	results := make(chan bool, 4)
-
-	for i := 0; i < 4; i++ {
-		goBarrier.Add(1)
-		doneBarrier.Add(1)
-		go func() {
-			goBarrier.Done() // signal ready
-			goBarrier.Wait() // wait for all ready
-			results <- c.unsafeReserveEntry(ct, binding, nonce)
-			doneBarrier.Done()
-		}()
-	}
-	doneBarrier.Wait()
-	close(results)
-
-	succeeded := 0
-	for r := range results {
-		if r {
-			succeeded++
-		}
-	}
-	if succeeded <= 1 {
-		t.Fatalf("known-bad control: expected >1 successes without mutex, got %d — test is vacuous", succeeded)
-	}
-	t.Logf("known-bad: %d/%d succeeded without mutex (proves mutex is necessary)", succeeded, 4)
 }
 
 // ── failingReader for entropy injection ──
