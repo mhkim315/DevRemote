@@ -368,10 +368,11 @@ func (rt *claudeManagedRuntime) terminate() {
 			for _, aa := range expired {
 				approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
 			}
-			// Ensure the Store session exists at StreamGen=1 so any
-			// late IngestObserved(StreamGen=0) is rejected. Use a
-			// sentinel ingest to create the session entry if it
-			// doesn't already exist (first-approval case).
+			// Create Store session at StreamGen=1 so late
+			// IngestObserved(StreamGen=0) is rejected. Use
+			// non-authoritative provenance so no phantom record
+			// is created — the Store creates the session metadata
+			// but skips the item, setting hwStream=1 atomically.
 			approvals.IngestObserved(ApprovalIngest{
 				SessionID: rt.sessionID,
 				LaunchGen: rt.epoch,
@@ -380,14 +381,14 @@ func (rt *claudeManagedRuntime) terminate() {
 				Version:   rt.authorityVersion,
 				Items: []ApprovalIngestItem{{
 					Approval: agent.AgentApproval{
-						ID:         "_c1d_term_sentinel_",
+						ID:         "_c1d_hw_",
 						SessionID:  rt.sessionID,
 						AgentKind:  claudeHeadlessAdapter,
 						Kind:       "approval",
 						Source:     agent.SourceJSONL,
 						Confidence: 1,
 					},
-					Provenance: contract.ProvenanceProviderHook,
+					Provenance: "c1d_internal",
 				}},
 			})
 		}

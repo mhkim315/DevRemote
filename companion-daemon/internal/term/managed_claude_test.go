@@ -1087,11 +1087,10 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	rt.processLine([]byte(deferred))
 	hookCalled.Wait()
 
-	// Store genNewer(sentinel StreamGen=1, ingest StreamGen=0) must reject
-	// the test approval. The sentinel itself is a pending record, so we
-	// expect exactly 1 record (the sentinel), not 2.
-	if len(store.ListSafe(id)) != 1 {
-		t.Fatalf("Store must reject test ingest: expected 1 (sentinel only), got %d", len(store.ListSafe(id)))
+	// Store genNewer(1,0) rejects. Non-authoritative sentinel creates
+	// no phantom record. Result: 0 records.
+	if len(store.ListSafe(id)) != 0 {
+		t.Fatalf("Store must reject: expected 0 records, got %d", len(store.ListSafe(id)))
 	}
 }
 
@@ -1129,11 +1128,12 @@ func TestClaudeReverseRace(t *testing.T) {
 	rt.processLine([]byte(deferredStreamJSON(sid, "call_Rev", "Bash", `{"command":"echo ok"}`)))
 	hookCalled.Wait()
 
-	// Post-ingest check must clear active approvals.
+	// Post-ingest check must clear active approvals. Store shows the
+	// primer (invalidated by terminate, may persist in resolution window).
 	rt.turnMu.Lock()
 	if len(rt.activeApprovals) != 0 {
 		rt.turnMu.Unlock()
-		t.Fatalf("post-ingest check must clear: expected 0, got %d", len(rt.activeApprovals))
+		t.Fatalf("post-ingest: expected 0 active, got %d", len(rt.activeApprovals))
 	}
 	rt.turnMu.Unlock()
 }
@@ -1254,3 +1254,4 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	defer cancel2()
 	srv.Wait(ctx2)
 }
+

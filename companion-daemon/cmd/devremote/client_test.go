@@ -69,6 +69,29 @@ func TestCreateViaSocket_PropagatesDaemonError(t *testing.T) {
 	}
 }
 
+func TestBuildRunCreateRequest_ClaudeProfile(t *testing.T) {
+	req := buildRunCreateRequest([]string{"claude"}, "/tmp", true)
+	if req["profileId"] != "claude" {
+		t.Fatalf("profileId = %v, want claude", req["profileId"])
+	}
+	if req["command"] != nil {
+		t.Fatalf("unexpected legacy command: %v", req["command"])
+	}
+	if req["detach"] != true {
+		t.Fatal("expected detach=true")
+	}
+}
+
+func TestBuildRunCreateRequest_LegacyFallback(t *testing.T) {
+	req := buildRunCreateRequest([]string{"bash", "-c", "echo hi"}, "/tmp", false)
+	if req["profileId"] != nil {
+		t.Fatalf("unexpected profileId for legacy: %v", req["profileId"])
+	}
+	if req["command"] != "bash -c echo hi" {
+		t.Fatalf("command = %v, want legacy string", req["command"])
+	}
+}
+
 func TestCreateViaSocket_MissingSocketErrors(t *testing.T) {
 	_, err := createViaSocketAt(filepath.Join(t.TempDir(), "nope.sock"), "echo hi", "")
 	if err == nil {
