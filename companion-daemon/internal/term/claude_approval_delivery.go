@@ -83,7 +83,14 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		return fail(DeliveryUnavailable)
 	}
 
-	// Build the immutable resume context.
+	// Build the immutable resume context with original cwd.
+	resumeCWD := "/tmp"
+	d.svc.mu.Lock()
+	if origRT, ok2 := d.svc.runtimes[b.SessionID]; ok2 && origRT.cwd != "" {
+		resumeCWD = origRT.cwd
+	}
+	d.svc.mu.Unlock()
+
 	ctx := &resumeContext{
 		coordinator:      coord,
 		claimToken:       handle.ClaimToken,
@@ -95,6 +102,7 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		toolName:         id.toolName,
 		inputDigest:      id.inputDigest,
 		expectedDecision: decision,
+		originalCWD:      resumeCWD,
 	}
 
 	// Spawn the resumed Claude process. The bridge runs ClaimWrite →

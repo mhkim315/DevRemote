@@ -70,6 +70,7 @@ type claudeManagedRuntime struct {
 	scanner   *bufio.Scanner
 	exited    chan struct{}
 	exitOnce  sync.Once
+	cwd       string // original validated cwd, bound for resume
 
 	bridge  *claudeHookBridge
 	hookDir string
@@ -670,6 +671,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
 	rt.sessionID = id
+	rt.cwd = cwd
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
 	rt.coordinator = s.coordinator
@@ -721,7 +723,10 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 // No lock is held across spawn or I/O. The caller is responsible for
 // cleaning up the returned runtime via terminate().
 func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resumeContext) (*claudeManagedRuntime, error) {
-	cwd := "/tmp"
+	cwd := ctx.originalCWD
+	if cwd == "" {
+		cwd = "/tmp"
+	}
 	if err := validateCWD(cwd); err != nil {
 		return nil, err
 	}
@@ -808,6 +813,8 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		return nil, fmt.Errorf("managed claude service is shutting down")
 	}
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
+	rt.sessionID = ctx.pokitSessionID
+	rt.cwd = cwd
 	rt.coordinator = s.coordinator
 	rt.authorityVersion = s.cfg.AuthorityVersion
 	s.mu.Unlock()

@@ -116,6 +116,7 @@ type resumeContext struct {
 	toolName         string
 	inputDigest      string
 	expectedDecision string // "allow" or "deny"
+	originalCWD      string // bound from original managed session
 }
 
 type claudeHookBridge struct {
