@@ -58,23 +58,28 @@ func drainStdin(d time.Duration) {
 	}
 }
 
-// managedCodexRun reports whether the parsed `pokit run` args are EXACTLY the
-// recognized Codex profile token (SP0.5 managed-only invocation).
-func managedCodexRun(commandArgs []string) bool {
-	return len(commandArgs) == 1 && commandArgs[0] == "codex"
+// managedProfileRun reports whether the parsed args are EXACTLY a recognized
+// managed profile token (codex or claude).
+func managedProfileRun(commandArgs []string) (profileID string, ok bool) {
+	if len(commandArgs) != 1 {
+		return "", false
+	}
+	switch commandArgs[0] {
+	case "codex", "claude":
+		return commandArgs[0], true
+	}
+	return "", false
 }
 
 // buildRunCreateRequest maps parsed `pokit run` arguments to the IPC create
-// request body. SP0/SP0.5: the recognized Codex invocation (exactly one
-// token) is ALWAYS sent as a STRUCTURED profile request — never a joined
-// command string — detached or not. Every other form keeps the legacy
-// command string.
+// request body. Recognized profiles (codex, claude) are sent as STRUCTURED
+// profile requests. Everything else uses the legacy command string.
 func buildRunCreateRequest(commandArgs []string, cwd string, detach bool) map[string]interface{} {
-	if managedCodexRun(commandArgs) {
+	if pid, ok := managedProfileRun(commandArgs); ok {
 		req := map[string]interface{}{
 			"version":   1,
 			"operation": "create",
-			"profileId": "codex",
+			"profileId": pid,
 			"cwd":       cwd,
 		}
 		if detach {
@@ -203,9 +208,9 @@ func runClient(args []string) {
 		return
 	}
 
-	// SP0.5: the managed Codex session has no PTY — attach through the
-	// bounded structured line client, not the recorder subscriber.
-	if managedCodexRun(commandArgs) {
+	// Managed sessions have no PTY — attach through the bounded
+	// structured line client, not the recorder subscriber.
+	if _, ok := managedProfileRun(commandArgs); ok {
 		attachManagedSession(sessionID)
 		return
 	}

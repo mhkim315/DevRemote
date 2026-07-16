@@ -86,8 +86,9 @@ type claudeManagedRuntime struct {
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
 
-	observer      func(stage string)
-	preIngestHook func() // test seam
+	observer       func(stage string)
+	preIngestHook  func() // test seam: before Store ingest
+	postIngestHook func() // test seam: after Store ingest, before active append
 }
 
 func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry, bridge *claudeHookBridge, hookDir string) *claudeManagedRuntime {
@@ -237,8 +238,13 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
-	// Post-ingest check: if terminate() ran during IngestObserved, clean
-	// up the just-ingested record. This handles the reverse race.
+	// Test seam: inject terminate BETWEEN Store admission and active append.
+	if rt.postIngestHook != nil {
+		rt.postIngestHook()
+	}
+
+	// Post-ingest check: if terminate() ran, clean up the just-ingested
+	// record. This handles the reverse race.
 	rt.turnMu.Lock()
 	term2 := rt.terminated
 	if !term2 {
@@ -362,9 +368,28 @@ func (rt *claudeManagedRuntime) terminate() {
 			for _, aa := range expired {
 				approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
 			}
-			// Advance Store generation high-water. StreamGen 1 > 0
-			// blocks any late IngestObserved(StreamGen=0) in the Store.
-			approvals.SupersedeRuntime(rt.sessionID, rt.epoch, 1, "managed claude child exited")
+			// Ensure the Store session exists at StreamGen=1 so any
+			// late IngestObserved(StreamGen=0) is rejected. Use a
+			// sentinel ingest to create the session entry if it
+			// doesn't already exist (first-approval case).
+			approvals.IngestObserved(ApprovalIngest{
+				SessionID: rt.sessionID,
+				LaunchGen: rt.epoch,
+				StreamGen: 1,
+				Provider:  claudeHeadlessAdapter,
+				Version:   rt.authorityVersion,
+				Items: []ApprovalIngestItem{{
+					Approval: agent.AgentApproval{
+						ID:         "_c1d_term_sentinel_",
+						SessionID:  rt.sessionID,
+						AgentKind:  claudeHeadlessAdapter,
+						Kind:       "approval",
+						Source:     agent.SourceJSONL,
+						Confidence: 1,
+					},
+					Provenance: contract.ProvenanceProviderHook,
+				}},
+			})
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)

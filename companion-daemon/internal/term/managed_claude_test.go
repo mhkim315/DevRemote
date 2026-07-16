@@ -1069,10 +1069,8 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	// FIRST-APPROVAL RACE: no primer. When terminate() runs before the
-	// first IngestObserved, the Store has no session entry so
-	// SupersedeRuntime is a no-op. The pre-ingest terminated check
-	// must reject the ingest.
+	// FORWARD RACE: terminate() sends sentinel(StreamGen=1), so
+	// IngestObserved(StreamGen=0) is rejected by Store genNewer.
 	sid := "s-race"
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
 	digest := sha256Hex(inputCanon)
@@ -1081,7 +1079,7 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	hookCalled.Add(1)
 	rt.preIngestHook = func() {
 		hookCalled.Done()
-		rt.terminate()
+		rt.terminate() // sentinel ingest bumps Store to StreamGen=1
 	}
 
 	rt.observePreToolUse("call_Race", "Bash", sid, digest)
@@ -1089,19 +1087,16 @@ func TestClaudeStopJoinRace(t *testing.T) {
 	rt.processLine([]byte(deferred))
 	hookCalled.Wait()
 
-	if !rt.terminated {
-		t.Fatal("BUG: preIngestHook did not call terminate()")
-	}
-
-	// Pre-ingest terminated check must reject: zero records.
-	if len(store.ListSafe(id)) != 0 {
-		t.Fatalf("pre-ingest check must reject: expected 0 records, got %d", len(store.ListSafe(id)))
+	// Store genNewer(sentinel StreamGen=1, ingest StreamGen=0) must reject
+	// the test approval. The sentinel itself is a pending record, so we
+	// expect exactly 1 record (the sentinel), not 2.
+	if len(store.ListSafe(id)) != 1 {
+		t.Fatalf("Store must reject test ingest: expected 1 (sentinel only), got %d", len(store.ListSafe(id)))
 	}
 }
 
-// TestClaudeReverseRace verifies the post-ingest check: if terminate() runs
-// after IngestObserved succeeds, the just-ingested record is immediately
-// invalidated.
+// TestClaudeReverseRace: terminate AFTER Store admission, BEFORE active
+// append. Uses postIngestHook barrier at the exact defect window.
 func TestClaudeReverseRace(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	store := NewApprovalStore()
@@ -1117,24 +1112,28 @@ func TestClaudeReverseRace(t *testing.T) {
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
 	digest := sha256Hex(inputCanon)
 
-	// Prime the Store session entry so SupersedeRuntime works.
+	// Prime so the test approval gets a fresh ID.
 	rt.observePreToolUse("call_Primer", "Bash", sid, digest)
 	rt.processLine([]byte(deferredStreamJSON(sid, "call_Primer", "Bash", `{"command":"echo ok"}`)))
 
-	// Now set up the reverse race: ingest first, THEN terminate.
-	// The post-ingest check must invalidate the record.
+	// Barrier at the exact defect window: between Store admission and
+	// active append. Terminate runs here and invalidates the record.
+	var hookCalled sync.WaitGroup
+	hookCalled.Add(1)
+	rt.postIngestHook = func() {
+		hookCalled.Done()
+		rt.terminate()
+	}
+
 	rt.observePreToolUse("call_Rev", "Bash", sid, digest)
 	rt.processLine([]byte(deferredStreamJSON(sid, "call_Rev", "Bash", `{"command":"echo ok"}`)))
+	hookCalled.Wait()
 
-	// Record was ingested, then we call terminate.
-	rt.terminate()
-
-	// Post-ingest check must have invalidated the just-ingested record.
-	// No active approvals should remain.
+	// Post-ingest check must clear active approvals.
 	rt.turnMu.Lock()
 	if len(rt.activeApprovals) != 0 {
 		rt.turnMu.Unlock()
-		t.Fatalf("post-ingest check must clear active: expected 0, got %d", len(rt.activeApprovals))
+		t.Fatalf("post-ingest check must clear: expected 0, got %d", len(rt.activeApprovals))
 	}
 	rt.turnMu.Unlock()
 }

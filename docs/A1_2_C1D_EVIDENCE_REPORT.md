@@ -5,28 +5,16 @@ Implementation SHA: TBD (pending final commit)
 Accepted C0D evidence: `e42d4c570e64462ce813861017cc635e338e68bf`
 Accepted SP1/Codex baseline: `2b940a6fce6e878ffa0da17b5df4d39438af144d`
 
-## 1. Production entry
+## 0. Production CLI path
 
-The `pokit run claude` CLI path is routed through the local 0600 Unix socket
-(`StartIPCServer`) to `ManagedClaudeService.CreateDetached`. The feature is
-gated behind `--enable-managed-claude` and `--claude-digest`. Without the
-digest, attestation fails closed.
+`pokit run claude` is now a recognized managed profile. The CLI serializer
+at `cmd/devremote/client.go` sends `{"operation":"create","profileId":"claude"}`
+as a structured request through the 0600 Unix socket. This is the same
+production path as `pokit run codex`. Previously `claude` was sent as a
+legacy command string.
 
-### IPC composition test
-
-`TestClaudeIPCComposition` — `handleIPCConnection` with `ManagedClaudeService`
-injected. Proves the JSON request `{"operation":"create","profileId":"claude"}`
-routes correctly and returns `claude_headless:<id>` with `state=running`.
-
-`TestClaudeIPCUnavailable` — proves IPC fails closed when `managedClaude` is
-nil (feature disabled).
-
-### Full integration test
-
-`TestClaudeStartIPCServerIntegration` — conditionally skipped, requires
-`POKIT_CLAUDE_DIGEST` and `POKIT_CLAUDE_CWD` env vars. Uses real
-`StartIPCServer` + Unix socket + production attestor. Asserts exact 1
-non-actionable approval with zero options.
+`TestClaudeIPCComposition` and `TestClaudeIPCUnavailable` prove correct
+routing and fail-closed behavior.
 
 ## 2. C0D-certified launch
 
@@ -73,14 +61,13 @@ a single-field mismatch prevents join.
 
 ## 6. Race protection
 
-`TestClaudeStopJoinRace` — **first-approval race**: terminate before any Store
-session exists. Pre-ingest `terminated` check rejects (no primer needed).
+`TestClaudeStopJoinRace` — **forward race**: terminate sends sentinel ingest
+at StreamGen=1 between atomic check and Store ingest. Store genNewer rejects
+the old StreamGen=0 ingest. Works even for first approval (no prior session).
 
-`TestClaudeReverseRace` — **post-ingest race**: ingest succeeds, then
-terminate. Post-ingest `terminated` check invalidates the just-ingested record.
-
-Store high-water (`SupersedeRuntime(epoch, 1)`) protects subsequent approvals
-where the Store session already exists.
+`TestClaudeReverseRace` — **reverse race**: terminate AFTER Store admission
+but BEFORE active append (postIngestHook barrier). Post-ingest check
+invalidates the just-ingested record, active slice remains empty.
 
 ## 7. Non-actionable proof
 
