@@ -66,6 +66,10 @@ type Handlers struct {
 	// EnableManagedCodex). REST reads managed rows/status DIRECTLY from its
 	// owned registry — never through adapter discovery or telemetry.
 	Managed *ManagedCodexService
+	// ManagedClaude is the C1D native managed Claude session service (nil unless
+	// EnableManagedClaude). REST reads managed Claude rows/status DIRECTLY from
+	// its owned registry.
+	ManagedClaude *ManagedClaudeService
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

@@ -61,45 +61,55 @@ func managedNativeStatusDTO(rec ManagedSessionRecord) ManagedNativeStatusDTO {
 }
 
 // HandleManagedNativeStatus serves GET /api/sessions/{id}/native-status from
-// the owned registry ONLY. Auth is applied by the router (AuthMiddleware in
-// insecure-local mode, device principal with sessions:read in remote mode).
+// the owned registries ONLY. Checks both managed Codex and managed Claude
+// registries. Auth is applied by the router.
 func (h *Handlers) HandleManagedNativeStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if h.Managed == nil {
-		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
-		return
+	id := r.PathValue("id")
+	// Check managed Codex registry.
+	if h.Managed != nil {
+		if rec, ok := h.Managed.Registry().Get(id); ok {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
+			return
+		}
 	}
-	rec, ok := h.Managed.Registry().Get(r.PathValue("id"))
-	if !ok {
-		http.Error(w, "managed session not found", http.StatusNotFound)
-		return
+	// Check managed Claude registry.
+	if h.ManagedClaude != nil {
+		if rec, ok := h.ManagedClaude.Registry().Get(id); ok {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
+			return
+		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
+	http.Error(w, "managed session not found", http.StatusNotFound)
 }
 
-// HandleManagedSessions serves GET /api/managed-sessions ENTIRELY from the
-// owned registry: it never touches mux.Registry, adapter discovery, or the
-// telemetry snapshot, so a hanging or failing tmux/cmux refresh can never
-// block or influence it. This is the SP0-certified managed list surface;
-// managed rows appended to /api/sessions are a coexistence convenience that
-// shares the legacy snapshot's availability.
+// HandleManagedSessions serves GET /api/managed-sessions from the owned
+// registries only: it never touches mux.Registry, adapter discovery, or the
+// telemetry snapshot. Returns combined results from both managed Codex and
+// managed Claude registries.
 func (h *Handlers) HandleManagedSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if h.Managed == nil {
-		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
-		return
+	var out []ManagedNativeStatusDTO
+	if h.Managed != nil {
+		for _, rec := range h.Managed.Registry().List() {
+			out = append(out, managedNativeStatusDTO(rec))
+		}
 	}
-	recs := h.Managed.Registry().List()
-	out := make([]ManagedNativeStatusDTO, 0, len(recs))
-	for _, rec := range recs {
-		out = append(out, managedNativeStatusDTO(rec))
+	if h.ManagedClaude != nil {
+		for _, rec := range h.ManagedClaude.Registry().List() {
+			out = append(out, managedNativeStatusDTO(rec))
+		}
+	}
+	if out == nil {
+		out = []ManagedNativeStatusDTO{}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
@@ -283,6 +293,69 @@ func (h *Handlers) HandleManagedSessionDelete(w http.ResponseWriter, r *http.Req
 	h.handleManagedLifecycle(w, r, h.Managed.Delete)
 }
 
+// ── C1D Claude managed-session lifecycle handlers ──
+
+// handleManagedClaudeLifecycle delegates lifecycle ops to the Claude service.
+func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64) error) {
+	if h.ManagedClaude == nil {
+		http.Error(w, "managed claude sessions not enabled", http.StatusNotFound)
+		return
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	dec.DisallowUnknownFields()
+	var req managedLifecycleRequest
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "malformed lifecycle body", http.StatusBadRequest)
+		return
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		http.Error(w, "malformed lifecycle body", http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	if err := op(id, req.Epoch); err != nil {
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if rec, ok := h.ManagedClaude.Registry().Get(id); ok {
+		json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "deleted"})
+}
+
+// HandleManagedClaudeSessionStop — POST /api/managed-claude-sessions/{id}/stop {epoch}.
+func (h *Handlers) HandleManagedClaudeSessionStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.handleManagedClaudeLifecycle(w, r, h.ManagedClaude.Stop)
+}
+
+// HandleManagedClaudeSessionKill — POST /api/managed-claude-sessions/{id}/kill {epoch}.
+func (h *Handlers) HandleManagedClaudeSessionKill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.handleManagedClaudeLifecycle(w, r, h.ManagedClaude.Kill)
+}
+
+// HandleManagedClaudeSessionDelete — DELETE /api/managed-claude-sessions/{id} {epoch}.
+func (h *Handlers) HandleManagedClaudeSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.handleManagedClaudeLifecycle(w, r, h.ManagedClaude.Delete)
+}
+
 // appendManagedRows appends managed-session rows built directly from the
 // owned registry to the /api/sessions response. Managed identity is
 // authoritative: any snapshot row that collides with a managed canonical ID
@@ -322,6 +395,50 @@ func appendManagedRows(snapshot []SessionTelemetry, managed *ManagedCodexService
 			Adapter:     codexAppServerAdapter,
 			Runner:      rec.Provider,
 			RunnerColor: "#58a6ff",
+			AgentKind:   rec.Provider,
+			AgentStatus: string(rec.NativeStatus),
+			Events:      []models.AgentEvent{},
+			Approvals:   safe,
+		})
+	}
+	return out
+}
+
+// appendClaudeManagedRows appends managed Claude session rows built directly
+// from the owned registry to the /api/sessions response. Same authoritative
+// contract as appendManagedRows: managed identity overrides any snapshot row
+// that collides with a managed canonical ID.
+func appendClaudeManagedRows(snapshot []SessionTelemetry, managed *ManagedClaudeService, approvals *AuthoritativeApprovalStore) []SessionTelemetry {
+	if managed == nil {
+		return snapshot
+	}
+	recs := managed.Registry().List()
+	if len(recs) == 0 {
+		return snapshot
+	}
+	managedIDs := make(map[string]struct{}, len(recs))
+	for _, rec := range recs {
+		managedIDs[rec.SessionID] = struct{}{}
+	}
+	out := make([]SessionTelemetry, 0, len(snapshot)+len(recs))
+	for _, row := range snapshot {
+		if _, collides := managedIDs[row.ID]; collides {
+			continue
+		}
+		out = append(out, row)
+	}
+	for _, rec := range recs {
+		var safe []SafeApprovalDTO
+		if approvals != nil {
+			safe = approvals.ListSafe(rec.SessionID)
+		}
+		out = append(out, SessionTelemetry{
+			ID:          rec.SessionID,
+			DisplayID:   strings.TrimPrefix(rec.SessionID, claudeHeadlessAdapter+":"),
+			State:       string(rec.NativeStatus),
+			Adapter:     claudeHeadlessAdapter,
+			Runner:      rec.Provider,
+			RunnerColor: "#f97316",
 			AgentKind:   rec.Provider,
 			AgentStatus: string(rec.NativeStatus),
 			Events:      []models.AgentEvent{},

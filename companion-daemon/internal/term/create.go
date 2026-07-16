@@ -62,6 +62,33 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	// C1D: route claude profile to the managed Claude service when enabled.
+	if req.ProfileID == "claude" && h.ManagedClaude != nil {
+		cwd := req.CWD
+		if cwd == "" {
+			cwd = "/"
+		}
+		id, err := h.ManagedClaude.CreateDetached(cwd)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
+			return
+		}
+		if h.Lifecycle != nil {
+			h.Lifecycle.Register(id, adapter, req.ProfileID, req.Name, nil)
+		}
+		writeLifecycle(w, SessionLifecycle{
+			ID:        id,
+			Adapter:   adapter,
+			ProfileID: req.ProfileID,
+			Name:      req.Name,
+			State:     LifecycleRunning,
+		})
+		return
+	}
+
 	exe, args, available, ok := ResolveProfile(req.ProfileID)
 	if !ok {
 		http.Error(w, "unknown profile", http.StatusBadRequest)

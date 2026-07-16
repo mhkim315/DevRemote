@@ -30,6 +30,7 @@ type Config struct {
 	EnableLocalPTY       bool // Phase 6: default-off feature flag
 	EnableAgentDetection bool // Phase A5: default-off agent detection bridge
 	EnableManagedCodex   bool // SP0: default-off native managed Codex runtime
+	EnableManagedClaude  bool // C1D: default-off native managed Claude runtime
 }
 
 // ── Test seam interfaces ──
@@ -68,6 +69,9 @@ type Dependencies struct {
 	// seam: a fake ManagedLauncher instead of the pinned production spawn).
 	// nil ⇒ the production service is constructed when EnableManagedCodex.
 	Managed *term.ManagedCodexService
+	// ManagedClaude injects a pre-built managed Claude service (test seam).
+	// nil ⇒ the production service is constructed when EnableManagedClaude.
+	ManagedClaude *term.ManagedClaudeService
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -103,6 +107,7 @@ type App struct {
 	transcriptSvc      *transcript.Service    // T3: Transcript integration
 	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
 	managed            *term.ManagedCodexService // SP0: native managed Codex runtime (nil unless enabled)
+	managedClaude      *term.ManagedClaudeService // C1D: native managed Claude runtime (nil unless enabled)
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
 	authHandler        *devicetrust.AuthHandler               // M2.5-3
@@ -213,6 +218,23 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		}
 	}
 
+	// C1D: native managed Claude runtime — default-off. The service owns the
+	// pinned launcher, the owned-session registry, and every managed Claude
+	// child. Identity verification runs fail-closed per create, not at boot.
+	var managedClaude *term.ManagedClaudeService
+	if cfg.EnableManagedClaude {
+		if deps.ManagedClaude != nil {
+			managedClaude = deps.ManagedClaude
+		} else {
+			managedClaude = term.NewManagedClaudeService(term.PinnedClaudeConfig(), nil, nil)
+		}
+		// C1D: configure the ONE canonical approval store as the non-actionable
+		// observation sink. Same immutability contract as Codex.
+		if err := managedClaude.SetApprovalStore(approvals); err != nil {
+			return nil, fmt.Errorf("managed claude approval store: %w", err)
+		}
+	}
+
 	// M2.5-3: device challenge auth. Feature-gated: if no device registry is
 	// configured yet (first run without pairing) the endpoints return an error.
 	bootID, err := devicetrust.NewBootID()
@@ -246,7 +268,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	challengeStore := devicetrust.NewChallengeStore()
 
 	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
-		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed}
+		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
 	// registered and the gate accepts nothing (returns `unavailable`, writes no
@@ -317,6 +339,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("POST /api/managed-sessions/{id}/stop", h.AuthMiddleware(h.HandleManagedSessionStop))
 		serveMux.HandleFunc("POST /api/managed-sessions/{id}/kill", h.AuthMiddleware(h.HandleManagedSessionKill))
 		serveMux.HandleFunc("DELETE /api/managed-sessions/{id}", h.AuthMiddleware(h.HandleManagedSessionDelete))
+		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/stop", h.AuthMiddleware(h.HandleManagedClaudeSessionStop))
+		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/kill", h.AuthMiddleware(h.HandleManagedClaudeSessionKill))
+		serveMux.HandleFunc("DELETE /api/managed-claude-sessions/{id}", h.AuthMiddleware(h.HandleManagedClaudeSessionDelete))
 		serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
@@ -365,6 +390,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionDelete, devicetrust.PermHistoryDelete))
 		serveMux.HandleFunc("GET /api/v2/links",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsRead))
+		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/stop",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionStop, devicetrust.PermSessionsStop))
+		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/kill",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionKill, devicetrust.PermSessionsKill))
+		serveMux.HandleFunc("DELETE /api/managed-claude-sessions/{id}",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionDelete, devicetrust.PermHistoryDelete))
 		serveMux.HandleFunc("POST /api/v2/links",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsCreate))
 		serveMux.HandleFunc("DELETE /api/v2/links",
@@ -417,6 +448,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		transcriptSvc: transcriptSvc,
 		lifecycle:     lifecycle,
 		managed:       managed,
+		managedClaude: managedClaude,
 		authHandler:   authH,
 		sessionMgr:    sessionMgr,
 		wsTickets:     wsTickets,
@@ -591,6 +623,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 		if err := a.managed.Shutdown(ctx); err != nil {
 			log.Printf("Managed codex shutdown error: %v", err)
 			errs = append(errs, fmt.Errorf("managed codex: %w", err))
+		}
+	}
+
+	// 7. C1D: stop the managed Claude children.
+	if a.managedClaude != nil {
+		log.Println("Shutdown: stopping managed claude runtimes...")
+		if err := a.managedClaude.Shutdown(ctx); err != nil {
+			log.Printf("Managed claude shutdown error: %v", err)
+			errs = append(errs, fmt.Errorf("managed claude: %w", err))
 		}
 	}
 
