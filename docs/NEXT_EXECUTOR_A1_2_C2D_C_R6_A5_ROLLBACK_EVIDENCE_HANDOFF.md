@@ -1,5 +1,10 @@
 # A1.2 C2D-C R6-A5 Rollback and Denial Evidence Handoff
 
+> **Partially superseded:** rollback `39ba76e` is verified, but probe
+> `1b18015ccc3109551550ba9c66e1d555447d5c18` cannot generate the required
+> resumed denial and leaks raw evidence outside its temp directory. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A6_SAFE_PROBE_HANDOFF.md` for evidence only.
+
 Status: **R6-A4 REJECTED — ROLLBACK, THEN EVIDENCE ONLY**  
 Rejected implementation: `317a4eb7e6d5ed812cf55a8d221e43e7d588a517`  
 Last preserved PostToolUse fix: `7ad9239b9e73fb1be713b201416c1b3fe4ded473`

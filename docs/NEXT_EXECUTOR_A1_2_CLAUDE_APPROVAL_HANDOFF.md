@@ -164,11 +164,12 @@ the same checkpoint.
 > section without changing the frozen C2D authority contract.
 >
 > The earlier remediations remain historical. Implementation
-> R6-A4 implementation `317a4eb7e6d5ed812cf55a8d221e43e7d588a517`
-> incorrectly treated a redacted `input_sha256` projection as a Claude wire
-> field and added a missing-field fallback. The current authoritative packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A5_ROLLBACK_EVIDENCE_HANDOFF.md`. Roll back that
-> commit, collect pinned wire-shape evidence only, and stop before R6-B.
+> Rejected production commit `317a4eb7e6d5ed812cf55a8d221e43e7d588a517`
+> was correctly rolled back at `39ba76e`, but probe `1b18015` does not perform
+> resume→deny and leaks raw hook data outside its temp directory. The current
+> authoritative packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A6_SAFE_PROBE_HANDOFF.md`. Collect safe evidence
+> only and stop before R6-B.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:
