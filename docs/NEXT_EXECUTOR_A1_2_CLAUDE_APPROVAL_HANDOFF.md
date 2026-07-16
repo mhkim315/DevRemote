@@ -1,27 +1,23 @@
-# Next Executor Handoff — A1.2 C1D Managed Claude Observation
+# Next Executor Handoff — A1.2 C2D Exact Claude Decision Delivery
 
-Status: **C1D R11 REMEDIATION ONLY — ACTIONABILITY ZERO — C2D/C3D PROHIBITED**
+Status: **C1D ACCEPTED — START C2D-A ONLY — ACTIONABILITY ZERO — C3D PROHIBITED**
 
-Current rejected implementation baseline:
-`b7de9909b855ea2b32c38b63c87a8d5fa40fe185`.
+This is the authoritative onboarding document for the next execution agent.
+Earlier C1D remediation handoffs are historical and must not be used as active
+instructions.
 
-Before further work, read
-`docs/A1_2_C1D_R11_REJECT_AND_NEXT_EXECUTOR_HANDOFF.md`. It supersedes all
-earlier remediation packets for the next session. Do not repeat R2–R11 work or
-redesign already-closed boundaries. The only authorized work is the Store
-metadata/high-water correction, the exact CLI production proof, and the final
-evidence/gate repair defined there.
-
-## 1. Canonical repository
+## 1. Canonical repository and accepted state
 
 - Remote: `https://github.com/mhkim315/DevRemote.git`
 - Branch: `feature/phase10-multi-adapter`
 - Canonical checkout: `/Users/mhk/Documents/codex/DevRemote`
 - Accepted C0D evidence: `e42d4c570e64462ce813861017cc635e338e68bf`
 - Accepted SP1/Codex baseline: `2b940a6fce6e878ffa0da17b5df4d39438af144d`
-- This plan/handoff commit must be the fetched remote HEAD before work begins.
+- Accepted C1D implementation: `4794ce7f42380c388c1a5614b4b2518bc1722870`
+- Accepted C1D report HEAD: `e9e661c550c0a78f8f6544f8db911bea9fd5cac1`
+- This handoff commit must be the fetched remote HEAD before work starts.
 
-Do not work from an Antigravity, scratch or duplicate checkout. At startup:
+Do not use an Antigravity, scratch, temporary, or duplicate checkout. Run:
 
 ```sh
 cd /Users/mhk/Documents/codex/DevRemote
@@ -33,147 +29,223 @@ git rev-parse HEAD
 git rev-parse origin/feature/phase10-multi-adapter
 git merge-base --is-ancestor e42d4c570e64462ce813861017cc635e338e68bf HEAD
 git merge-base --is-ancestor 2b940a6fce6e878ffa0da17b5df4d39438af144d HEAD
+git merge-base --is-ancestor 4794ce7f42380c388c1a5614b4b2518bc1722870 HEAD
+git merge-base --is-ancestor e9e661c550c0a78f8f6544f8db911bea9fd5cac1 HEAD
 git status --short
 ```
 
-Stop if HEAD differs from origin, either ancestry check fails, or the worktree is
-not clean. Never rewrite or force-push history.
+Stop if local and remote differ, an ancestry check fails, or the worktree is not
+clean. Never rewrite or force-push history.
 
 ## 2. Mandatory reading order
 
-1. `docs/A1_2_CLAUDE_APPROVAL_EXTENSION_PLAN.md` — authoritative plan;
+1. `docs/A1_2_CLAUDE_APPROVAL_EXTENSION_PLAN.md`;
 2. this handoff;
-3. `docs/A1_2_C0D_R5_DEFER_EVIDENCE_REPORT.md` and bounded R5 evidence;
-4. `docs/A1_2_C0_CLAUDE_EVIDENCE_REPORT.md` — C0H remains BLOCKED;
-5. `docs/A1_2_C0R_PERMISSION_PROMPT_TOOL_REPORT.md` — C0R remains BLOCKED;
+3. `docs/A1_2_C1D_INDEPENDENT_ACCEPTANCE.md`;
+4. `docs/A1_2_C1D_EVIDENCE_REPORT.md`;
+5. `docs/A1_2_C0D_R5_DEFER_EVIDENCE_REPORT.md` and its bounded evidence;
 6. `docs/SP1_NATIVE_APPROVAL_FINAL_ACCEPTANCE.md`;
-7. `companion-daemon/internal/term/managed_codex.go` for managed-runtime ownership,
-   not for Claude wire semantics;
-8. `managed_approval.go`, `managed_approval_delivery.go`, and
-   `managed_approval_activation.go` to understand the frozen Codex boundary;
-9. `approval_execution.go`, `approval_store_gen.go`, `approval_handler.go`, and
-   `approval_delivery.go` for the frozen provider-neutral authority core;
-10. `create.go`, `profiles.go`, `managed_registry.go`, `managed_api.go`, and app
-    composition in `cmd/devremote/app.go`.
+7. `companion-daemon/internal/term/managed_claude.go` and its tests;
+8. `managed_approval_delivery.go` for the accepted Codex delivery pattern only;
+9. `approval_execution.go`, `approval_store_gen.go`, `approval_delivery.go`, and
+   `approval_handler.go` for the frozen provider-neutral A1 authority core;
+10. production composition in `cmd/devremote/app.go`.
 
-Historical C0H/C0R reports are negative findings. Do not reuse their surfaces.
+C0H and C0R remain BLOCKED. Do not use `PermissionRequest` or
+`--permission-prompt-tool`. Codex `serverRequest/resolved` semantics are not
+Claude semantics.
 
-## 3. Authority-first packet note
+## 3. Frozen boundary
 
-Before changing production code, write and commit
-`docs/A1_2_C1D_PACKET_CONTRACT_NOTE.md` containing:
+C1D is accepted and must remain observation-only in production:
+
+- `provenActionMapping` remains empty for Claude;
+- Claude observations expose zero options and zero delivery material;
+- no Claude `ClaimForExecution` is reachable from a handler;
+- no Claude delivery is installed in `app.go`;
+- no mobile CTA or action route is enabled;
+- no production capacity is activated;
+- terminal text, PTY, screen, JSONL, prompt text and `waiting_approval` remain
+  non-authoritative.
+
+C2D may build and test an uninstalled provider-specific delivery boundary. Only
+C3D, after independent C2D acceptance, may atomically activate actionability.
+
+## 4. Mandatory authority note before implementation
+
+The only work immediately authorized is **C2D-A**. Before changing production
+code, create and commit `docs/A1_2_C2D_PACKET_CONTRACT_NOTE.md` containing:
 
 - authority owner and canonical stored inputs;
-- complete binding table showing creation, storage, comparison, invalidation and tests;
-- observation/defer state transitions and exact linearization points;
-- exact success evidence for C1D (observation only);
-- timeout, exit, stop/delete, replacement and capacity behavior;
-- adversarial mismatched-result, duplicate-ID and multi-tool counterexamples;
-- evidence/privacy projection;
-- explicit C1D non-goals.
+- complete immutable binding table showing where every field is created, stored,
+  compared, copied into delivery/receipt, invalidated and tested;
+- exact provider state machine and one shared linearization point;
+- exact C0D allow and deny consumed-decision witnesses;
+- timeout, cancellation, exit, stop/delete, replacement and restart behavior;
+- capacity behavior and one adversarial counterexample per critical invariant;
+- public/private data classification and safe-review feasibility;
+- explicit non-goals.
 
-Do not start implementation before this note is committed.
+At minimum the binding table must include:
 
-## 4. Authorized work: C1D only
+- A1 ApprovalID and opaque claim token;
+- POKIT SessionID;
+- `RuntimeRef{Adapter: claude_headless, Version: 2.1.209,
+  LaunchGen: epoch, StreamGen: 0}`;
+- exact Claude `session_id` and `tool_use_id`;
+- certified tool name (`Bash` only in this slice);
+- canonical private tool-input bytes and their digest;
+- stored option ID (`allow_once` or `deny`);
+- delivery schema `claude.pretooluse.decision.v1`;
+- A1 ActionDigest, PayloadDigest and idempotency key;
+- daemon-generated one-shot resume nonce;
+- provider consumption witness identity;
+- receipt ID and complete immutable receipt binding.
 
-Implement the smallest provider-specific managed Claude observation path:
-
-1. A `ManagedClaudeService` (or equivalent) that owns direct process launch,
-   provider stdout/result reading, process wait/reap and one runtime epoch.
-2. The real structured `pokit run claude` preset routes to this service. The
-   executable and argv are direct; no shell, command string, PTY inference,
-   observer discovery or legacy JSONL authority.
-3. Exact Claude Code 2.1.209 certification via an OS-neutral launcher/attestor seam.
-   PATH lookup alone is not certification. Keep macOS-specific process details
-   behind that seam; do not build Windows support.
-4. Session-isolated Claude hook settings using ambient user authentication. Never
-   copy credentials or change user/project/managed Claude settings.
-5. A daemon-owned private local hook bridge. Give each runtime an unguessable,
-   bounded capability and a private endpoint. Strictly decode only the certified
-   `PreToolUse` fields and return `defer`; unknown/duplicate/oversized fields fail
-   closed. Do not log the capability or raw payload.
-6. Join the hook observation to the structured `tool_deferred` result using exact
-   Claude session ID, tool-use ID, tool name and canonical input digest.
-7. Store only bounded private pending observations. If the join succeeds, expose a
-   safe **non-actionable** intervention record with no options. Clean it on timeout,
-   child exit, stop/delete and epoch replacement.
-
-Use canonical adapter identity `claude_headless`, authority version `2.1.209`, the
-managed epoch as LaunchGeneration and StreamGeneration zero. ApprovalID remains a
-daemon/A1 identity and must never be replaced with the provider tool-use ID.
-
-Prefer new Claude-specific files over conditional branches inside Codex protocol
-code. Extract only narrow provider-neutral process or registry helpers when both
-accepted runtimes need exactly the same contract.
-
-## 5. Required C1D tests
-
-Write failing tests first for the critical boundaries.
-
-- Production entry: real structured `pokit run claude` selects the managed Claude
-  service and direct argv; arbitrary command/custom/interactive paths do not.
-- Version/artifact: wrong, missing or changed certification fails before authority.
-- Hook bridge: missing capability, wrong runtime, duplicate/unknown fields, malformed
-  JSON, oversized input and invalid UTF-8 fail closed.
-- Identity: wrong session, tool-use ID, tool name or input digest cannot join.
-- Multiplicity: duplicate ID, two pending tools, batch/parallel ambiguity and bounded
-  capacity exhaustion create no actionable state.
-- Lifecycle: timeout, hook disconnect, child exit, stop/delete and replacement clear
-  pending state and reject late results.
-- Authority isolation: PTY, prompt, screen, JSONL, observer status and
-  `waiting_approval` produce zero Claude approvals.
-- Privacy: raw prompt, command, tool input, paths, hook capability, authentication
-  data and provider payload never enter DTOs or logs.
-- Composition: production store/registry/API path returns an observation with zero
-  options; ClaimForExecution, provider resume, delivery and mobile CTA are never
-  reached.
-- One bounded live probe proves exact production defer observation on pinned 2.1.209.
-
-Use deterministic channels/barriers for lifecycle races, never sleeps. Tests must
-inspect intermediate state and include known-bad or fault-injection controls where
-the result could otherwise be vacuous.
-
-## 6. Gates and checkpoint
-
-For C1D run:
-
-- `gofmt`/`git diff --check`;
-- focused `go build`, `go vet`, and `go test -race` for changed managed/runtime/API
-  packages;
-- relevant frozen A1/SP1 regression tests;
-- documentation/repository secret scan;
-- no mobile gate unless mobile code changes (mobile changes are not authorized).
-
-Freeze HEAD before the authoritative checkpoint gate. Commit implementation and a
-bounded C1D evidence report, push that exact verified tree, confirm local/remote
-equality and clean worktree, then stop with:
+Do not implement until the note demonstrates that no field is inferred from
+ordering, timing, command equality, terminal output or caller-supplied authority.
+Commit the note, push it, and stop with:
 
 ```text
-REVIEW REQUEST: A1.2 C1D Managed Claude Observation — <implementation SHA>
+REVIEW REQUEST: A1.2 C2D-A Contract and Code-Path Audit — <commit SHA>
 ```
 
-Do not begin C2D in the same session.
+Do not start C2D-B until the verifier approves C2D-A.
 
-## 7. Permanent prohibitions
+## 5. C2D-B — private one-shot resume coordinator
 
-- no action options, ClaimForExecution, decision delivery, resume-for-decision,
-  delivery capacity, mobile CTA or action handler wiring;
-- no use of `PermissionRequest` or `--permission-prompt-tool`;
-- no terminal prompt parsing, synthetic keys/Y/N, generic send-text or side-effect
-  authority;
-- no modification of accepted Codex semantics;
-- no generic provider SDK, Agent SDK, Channels, N1, O1/O2, observer cleanup,
-  tmux/cmux deletion, Windows implementation or cloud relay work.
+This section is context for the next approved checkpoint, not current authority.
 
-If exact direct launch, certified identity, private hook bridge or exact defer join
-cannot be proven on the production path, keep Claude non-actionable, report BLOCKED
-and stop. Never substitute a fixture-only path for production support.
+Implement the smallest Claude-specific private coordinator beside the C1D runtime.
+It must preserve the exact deferred invocation and serialize:
 
-## 8. Later packets — context only, not authorization
+```text
+observed_and_joined
+  → decision_reserved                 # one linearization point
+  → resume_started
+  → repeated_pretooluse_matched
+  → decision_written_once
+  → allow_witness | deny_witness
+  → terminal
+```
 
-- **C2D:** exact one-shot resume decision delivery plus matching provider-consumption
-  routing; still production-non-actionable.
-- **C3D:** atomic activation, existing authenticated mobile path, live allow/deny and
-  final full gates.
+Cancellation, timeout, exit, stop/delete, runtime replacement and provider-side
+resolution must transition to a non-success terminal state. A stale or duplicate
+operation must never regain ownership.
 
-Only an independent C1D ACCEPT may authorize a new C2D handoff.
+Requirements:
+
+- exactly one owner for one runtime/tool-use/claim/resume nonce;
+- exact full-binding validation before the repeated hook receives a decision;
+- `allow_once → allow` and `deny → deny` only;
+- zero decision for mismatched session, epoch, tool-use ID, tool name or input digest;
+- no lock held across process spawn, hook IPC or provider I/O;
+- no automatic retransmission after an ambiguous write;
+- no generic terminal input, command queue or `RuntimeDeliveryGate` acceptance as
+  Claude success evidence;
+- bounded entries and fail-closed exhaustion;
+- daemon restart restores no pending/executing authority.
+
+Use deterministic barriers/channels. The tests must inspect the state immediately
+after reservation, during resume, after write and after witness routing. Include a
+known-bad check-then-write or duplicate-owner control proving the tests are
+non-vacuous.
+
+Commit and stop for independent C2D-B verification. Do not continue to C2D-C in
+the same checkpoint.
+
+## 6. C2D-C — uninstalled Claude ApprovalDelivery and consumption routing
+
+After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
+may differ) that:
+
+- accepts only the frozen Claude RuntimeRef, tool shape, options and schema;
+- receives the provider-neutral immutable `ApprovalExecutionBinding` without
+  trusting a handler to reconstruct provider identity;
+- delivers the exact private decision through the C2D-B coordinator;
+- returns `accepted` only after a matching Claude-native witness:
+  - allow: matching `PostToolUse`/tool result for the same `tool_use_id`;
+  - deny: matching `permission_denials` entry for the same `tool_use_id` and input
+    digest;
+- returns a fully bound receipt with the same claim token, binding, payload digest,
+  idempotency key and a fresh bounded ReceiptID;
+- reports stale, mismatch, unavailable, conflict, rejected or ambiguous outcomes
+  honestly;
+- never treats queue admission, response write, process exit, side effects or
+  absence of execution as acceptance.
+
+Production composition must still not install this boundary. Controlled
+production-composition tests may exercise it with the frozen A1 store and exact
+redacted C0D fixtures. Do not substitute a fake provider witness for acceptance.
+
+Required interleavings include duplicate decision, allow-vs-deny, stop/delete,
+epoch replacement, timeout, malformed provider output, result before reservation,
+result during write, result after write, duplicate/late witness and cross-session
+substitution.
+
+Commit and stop for independent C2D-C verification.
+
+## 7. C2D-D — safe review projection and final C2D evidence
+
+After C2D-C approval, freeze the initial `Bash` review projection. It must be:
+
+- bounded and deterministic;
+- structurally derived from the certified input, not display text;
+- sufficient to distinguish the exact action whose digest is claimed;
+- free of secrets, raw provider payload, hook capability and unsafe absolute paths;
+- fail-closed when truncation or redaction could hide execution meaning.
+
+If the frozen public A1 DTO cannot safely and unambiguously represent the Bash
+action, report **C2D BLOCKED**. Do not weaken the DTO or enable a vague CTA.
+
+C2D final evidence must show the production code remains uninstalled and
+non-actionable while controlled composition proves exact allow/deny routing and
+all negative interleavings. Update a bounded C2D evidence report, freeze HEAD,
+run the final gates, push, and stop with:
+
+```text
+REVIEW REQUEST: A1.2 C2D Exact Claude Decision Delivery — <implementation SHA>
+```
+
+C3D remains prohibited until independent C2D acceptance.
+
+## 8. Required gates
+
+At each checkpoint:
+
+- `gofmt` and `git diff --check`;
+- focused build/vet/race for changed term and command packages;
+- repeated deterministic Claude delivery/concurrency tests;
+- frozen C1D and Codex SP1 regressions;
+- documentation and repository secret scan;
+- exact local/remote equality, ancestry and clean worktree.
+
+At the final C2D checkpoint, run the complete repository build gate including
+backend race, mobile TypeScript/Jest, Android Kotlin, invariants and secret scan.
+Mobile production code must remain unchanged in C2D.
+
+Do not run additional paid/live provider turns merely to validate internal state
+machinery. C0D already freezes the native lifecycle. A new bounded live probe is
+allowed only if a concrete C2D contract question cannot be resolved from accepted
+evidence and production-composition tests; document the reason before running it.
+
+Freeze HEAD before every authoritative gate. If the tree changes afterward, rerun
+the proportional gate on the new exact tree.
+
+## 9. Hard exclusions
+
+- no C3D activation or handler installation;
+- no mobile changes or CTA;
+- no modification of the frozen provider-neutral A1 state machine;
+- no Codex semantic changes;
+- no generic provider/plugin/hook SDK;
+- no Agent SDK, Channels, PermissionRequest or permission-prompt-tool path;
+- no terminal prompt parsing, synthetic keys, send-text or side-effect authority;
+- no multiple parallel Claude approvals in the first slice;
+- no N1, O1/O2, Executor-Verifier, tmux/cmux cleanup, CLI redesign, cloud relay or
+  Windows implementation.
+
+If exact identity, one-shot ownership, safe review, or matching consumed-decision
+evidence cannot be proven, leave Claude actionability disabled, report BLOCKED and
+stop. Never replace missing production authority with heuristics or fixture-only
+success.

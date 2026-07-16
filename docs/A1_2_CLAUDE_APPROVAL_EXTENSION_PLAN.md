@@ -1,10 +1,13 @@
 # A1.2 Claude Approval Extension — Production Implementation Plan
 
-Status: **C0D ACCEPT — C1D AUTHORIZED ONLY — C2D/C3D NOT AUTHORIZED**
+Status: **C0D ACCEPT — C1D ACCEPT — C2D AUTHORIZED IN STAGED CHECKPOINTS — C3D NOT AUTHORIZED**
 
 Accepted research evidence: `e42d4c570e64462ce813861017cc635e338e68bf`.
 Frozen provider-neutral A1 core and accepted Codex SP1 baseline:
 `2b940a6fce6e878ffa0da17b5df4d39438af144d` (implementation `dd6d05c`).
+
+Accepted C1D implementation: `4794ce7f42380c388c1a5614b4b2518bc1722870`.
+Accepted C1D evidence/report HEAD: `e9e661c550c0a78f8f6544f8db911bea9fd5cac1`.
 
 ## 1. Historical findings remain independent
 
@@ -155,8 +158,8 @@ creates a second provider execution owner.
 
 ## 7. C1D — Managed launch and non-actionable observation
 
-**Authorized first implementation packet.** C1D must not enable mobile actions,
-certified options, delivery capacity or A1 claims.
+**Independently accepted.** C1D does not enable mobile actions, certified options,
+delivery capacity or A1 claims.
 
 Required production work:
 
@@ -191,12 +194,14 @@ C1D acceptance evidence:
   mobile CTA;
 - focused build/vet/race tests plus one bounded live defer observation.
 
-Commit C1D and stop for independent verification. C2D remains unauthorized.
+C1D was independently accepted at the implementation and evidence SHAs recorded
+above. Its managed observation behavior is frozen while C2D is implemented.
 
 ## 8. C2D — Exact decision delivery and consumption routing
 
-**Not authorized until independent C1D ACCEPT.** Production actionability remains
-off throughout C2D.
+**Authorized only through the staged C2D checkpoints in the current executor
+handoff.** Production actionability remains off throughout C2D. Each checkpoint
+must stop for verification before the next one begins.
 
 C2D builds the Claude-specific `ApprovalDelivery` boundary and proves it with
 controlled production-composition tests:

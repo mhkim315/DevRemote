@@ -150,7 +150,7 @@ A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native 
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
-A1.2 Claude Approval Extension                C0D ACCEPT e42d4c5; C1D observation-only AUTHORIZED; C2D/C3D blocked pending staged review
+A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7 (report e9e661c); C2D-A contract/audit AUTHORIZED; C2D-B/C/D staged review; C3D blocked
 N1  Notifications                             BLOCKED pending independent final A1.2 acceptance or explicit product deferral
 O1  Deterministic Broker                      PLANNED after N1
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -193,9 +193,11 @@ authoritative consumed-decision join. C0D independently proved and received ACCE
 at `e42d4c5`: the stable `PreToolUse` defer/resume lifecycle preserves exact
 session/tool-use/input identity; matching PostToolUse proves allow consumption and
 matching permission_denials proves deny consumption; deterministic replay admits one
-resume owner. The production track is now staged C1D observation-only, C2D delivery
-proof with actionability still off, then C3D atomic activation/mobile/live evidence.
-Each packet stops for independent review.
+resume owner. C1D observation-only was independently accepted at `4794ce7` with
+report HEAD `e9e661c`. The production track now authorizes C2D-A contract/code-path
+audit only, followed by separately reviewed C2D-B/C/D delivery checkpoints with
+actionability still off, then C3D atomic activation/mobile/live evidence. Each
+checkpoint stops for independent review.
 
 SP1 is governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and
 `docs/NEXT_EXECUTOR_SP1_NATIVE_APPROVAL_HANDOFF.md`. Queue admission is not provider
@@ -615,9 +617,10 @@ A1.2 retains two independent negative findings: C0H BLOCKED for the headless
 `PermissionRequest` hook and C0R BLOCKED for `--permission-prompt-tool`. C0D is a
 separate accepted stable `PreToolUse` defer/resume finding at `e42d4c5`; it proves
 same-`tool_use_id` resume, exact allow/deny consumption and one replay winner for the
-pinned 2.1.209 surface. C1D is now authorized only for direct managed launch, private
-hook/defer joining and non-actionable observation. C2D/C3D remain unauthorized until
-their preceding packet receives independent ACCEPT. Future Agent SDK, Channels,
+pinned 2.1.209 surface. C1D direct managed launch, private hook/defer joining and
+non-actionable observation are accepted at `4794ce7`. C2D-A is authorized by the
+current handoff; C2D-B/C/D and C3D remain gated on their preceding independent
+review. Future Agent SDK, Channels,
 terminal-only, or POKIT-owned-runtime options remain separate architecture decisions;
 interactive terminal input is not native approval authority.
 
