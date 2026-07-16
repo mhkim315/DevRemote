@@ -3,8 +3,9 @@
 //
 // C1D drops four critical identity fields (Claude session_id, tool_use_id,
 // tool_name, input_digest) after joinDeferred matches a pending observation.
-// C2D-B preserves them in a private identity record so C2D-C can later
-// deliver a decision through an exact Claude resume.
+// C2D-B preserves them in a private identity record bound to the exact
+// POKIT RuntimeRef so C2D-C can later deliver a decision through an exact
+// Claude resume.
 //
 // The coordinator is owned by ManagedClaudeService so identities and entries
 // survive individual Claude process exit. All state transitions happen under
@@ -24,21 +25,94 @@ import (
 )
 
 const (
-	maxCoordinatorIdentities = 16
-	maxCoordinatorEntries    = 16
-	coordinatorEntryTimeout  = 120 * time.Second
+	maxCoordinatorIdentities  = 16
+	maxCoordinatorEntries     = 16
+	coordinatorEntryTimeout   = 120 * time.Second
+
+	// Input bounds.
+	maxCoordinatorSessionID   = 256
+	maxCoordinatorToolID      = 256
+	maxCoordinatorToolName    = 256
+	maxCoordinatorClaimToken  = 256
 )
+
+// ── Certified decision mapping ──
+
+// certifiedClaudeDecision maps the A1 store's OptionID to the Claude-native
+// decision string. Only allow_once/deny are certified; everything else is
+// rejected.
+var certifiedClaudeDecision = map[string]string{
+	"allow_once": "allow",
+	"deny":       "deny",
+}
+
+const claudeDecisionSchemaV1 = "claude.pretooluse.decision.v1"
+
+// deriveDecision validates the binding and returns the Claude-native
+// decision. Returns ("", false) for unknown options, wrong schema, wrong
+// adapter, or non-zero StreamGen.
+func deriveDecision(binding ApprovalExecutionBinding) (string, bool) {
+	if binding.Runtime.Adapter != claudeHeadlessAdapter || binding.Runtime.StreamGen != 0 {
+		return "", false
+	}
+	if binding.DeliverySchema != claudeDecisionSchemaV1 {
+		return "", false
+	}
+	dec, ok := certifiedClaudeDecision[binding.OptionID]
+	return dec, ok
+}
+
+// ── Input validation ──
+
+// validCoordinatorToken validates a variable-length identity token:
+// non-empty, ≤ maxLen, only printable non-space ASCII (0x21–0x7e).
+func validCoordinatorToken(s string, maxLen int) bool {
+	if len(s) == 0 || len(s) > maxLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// validCoordinatorDigest validates a SHA-256 hex digest: exactly 64
+// lowercase hex characters.
+func validCoordinatorDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// validCoordinatorDecision validates a decision token against the closed
+// Claude vocabulary.
+func validCoordinatorDecision(s string) bool { return s == "allow" || s == "deny" }
+
+// validCoordinatorClaimToken validates a claim token (reuses the existing
+// store-level validator: 32 hex chars).
+func validCoordinatorClaimToken(s string) bool { return validClaimToken(s) }
 
 // ── Private identity record ──
 
-// claudePrivateIdentity preserves the C0D-certified four-field binding that
-// C1D's joinDeferred currently drops. Created before Store admission and
-// rolled back on failure. Keyed by ApprovalID.
+// claudePrivateIdentity preserves the C0D-certified four-field binding plus
+// the exact POKIT RuntimeRef and POKIT session identifier. Created before
+// Store admission and rolled back on failure. Keyed by ApprovalID.
 type claudePrivateIdentity struct {
-	sessionID   string
-	toolUseID   string
-	toolName    string
-	inputDigest string
+	sessionID      string // Claude's internal session_id
+	toolUseID      string
+	toolName       string
+	inputDigest    string
+	runtime        RuntimeRef // {Adapter, Version, LaunchGen, StreamGen}
+	pokitSessionID string     // POKIT compound session ID (e.g. "claude_headless:claude-abc123")
 }
 
 // ── Resume state machine ──
@@ -47,50 +121,73 @@ type claudePrivateIdentity struct {
 type resumeState int
 
 const (
-	stateDecisionReserved resumeState = iota
-	stateTerminal
+	stateDecisionReserved resumeState = iota // claim granted, no hook has fired yet
+	stateWriteClaimed                        // hook validated, decision returned to caller; write in flight
+	stateDecisionWritten                     // write confirmed; waiting for consumption witness
+	stateTerminal                            // done (success, cancelled, timeout, or ambiguous)
 )
 
-// resumeOutcome is the closed outcome vocabulary for ValidateAndWrite.
+// resumeOutcome is the closed outcome vocabulary.
 type resumeOutcome int
 
 const (
-	outcomeWritten    resumeOutcome = iota + 1
-	outcomeCancelled
-	outcomeTimeout
-	outcomeMismatch
-	outcomeDuplicate
-	outcomeStale
+	outcomeWritten    resumeOutcome = iota + 1 // decision written and confirmed
+	outcomeCancelled                            // cancelled before write claimed
+	outcomeTimeout                              // entry expired
+	outcomeMismatch                             // hook fields don't match
+	outcomeDuplicate                            // already claimed/written
+	outcomeStale                                // entry not found or coordinator closed
+	outcomeAmbiguous                            // write was claimed but invalidation raced; non-retryable
 )
 
-// resumeEntry is one reserved claim-to-delivery lifecycle. It is created by
-// ReserveEntry when an authenticated mobile decision arrives, and consumed
-// by ValidateAndWrite when the resume hook delivers the decision.
+// ── Opaque handles ──
+
+// ResumeHandle is an opaque handle returned by ReserveEntry. It contains
+// only the fields the caller needs to embed in the resume hook script.
+// The internal state is never exposed.
+type ResumeHandle struct {
+	ClaimToken  string
+	ResumeNonce string
+}
+
+// WriteHandle is an opaque handle returned by ClaimWrite. It carries the
+// decision for the caller to write to the HTTP response. The caller must
+// call ConfirmWrite after the write completes (or fails).
+type WriteHandle struct {
+	claimToken string
+	decision   string
+}
+
+// Decision returns the Claude-native decision string to write.
+func (h WriteHandle) Decision() string { return h.decision }
+
+// ── Internal entry ──
+
+// resumeEntry is one reserved claim-to-delivery lifecycle. It is NOT
+// exposed to callers — only opaque handles are returned.
 type resumeEntry struct {
-	claimToken  string
-	resumeNonce string
-	approvalID  string
-	sessionID   string // Claude session_id (from identity)
-	toolUseID   string
-	toolName    string
-	inputDigest string
-	decision    string // "allow" or "deny" (provider-native)
-	state       resumeState
-	createdAt   time.Time
-	ch          chan resumeOutcome // buffered 1
+	claimToken     string
+	resumeNonce    string
+	approvalID     string
+	sessionID      string // Claude session_id
+	toolUseID      string
+	toolName       string
+	inputDigest    string
+	decision       string
+	runtime        RuntimeRef
+	pokitSessionID string // POKIT compound session ID from binding
+	state          resumeState
+	createdAt      time.Time
+	ch             chan resumeOutcome // buffered 1
 }
 
 // ── Coordinator ──
 
 // claudeResumeCoordinator is the C2D-B private one-shot resume coordinator.
-// It owns two bounded maps: identities (approvalID → claudePrivateIdentity)
-// and entries (claimToken → resumeEntry). All state transitions happen under
-// a single mutex. The coordinator is owned by ManagedClaudeService so
-// identities survive individual Claude process exit.
 type claudeResumeCoordinator struct {
 	mu         sync.Mutex
-	identities map[string]*claudePrivateIdentity
-	entries    map[string]*resumeEntry
+	identities map[string]*claudePrivateIdentity // ApprovalID → identity
+	entries    map[string]*resumeEntry           // claimToken → entry
 	closed     bool
 }
 
@@ -104,10 +201,22 @@ func NewClaudeResumeCoordinator() *claudeResumeCoordinator {
 
 // ── Identity lifecycle ──
 
-// ReserveIdentity creates a private identity record under the coordinator
-// mutex. Returns false if the approvalID already exists, the coordinator
-// is closed, or identity capacity is exhausted.
-func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest string) bool {
+// ReserveIdentity creates a private identity record bound to the exact
+// POKIT RuntimeRef. All string fields are validated; empty, over-size, or
+// non-printable values are rejected. Returns false if validation fails,
+// the approvalID already exists, the coordinator is closed, or capacity
+// is exhausted.
+func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest, pokitSessionID string, rt RuntimeRef) bool {
+	if !validCoordinatorToken(sessionID, maxCoordinatorSessionID) ||
+		!validCoordinatorToken(toolUseID, maxCoordinatorToolID) ||
+		!validCoordinatorToken(toolName, maxCoordinatorToolName) ||
+		!validCoordinatorDigest(inputDigest) {
+		return false
+	}
+	if !validAdapterID(rt.Adapter) || !validVersion(rt.Version) {
+		return false
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -122,24 +231,24 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 	}
 
 	c.identities[approvalID] = &claudePrivateIdentity{
-		sessionID:   sessionID,
-		toolUseID:   toolUseID,
-		toolName:    toolName,
-		inputDigest: inputDigest,
+		sessionID:      sessionID,
+		toolUseID:      toolUseID,
+		toolName:       toolName,
+		inputDigest:    inputDigest,
+		runtime:        rt,
+		pokitSessionID: pokitSessionID,
 	}
 	return true
 }
 
-// RemoveIdentity removes a private identity record. It is idempotent
-// (no-op for an unknown approvalID). Used for rollback on Store admission
-// failure and for expiry cleanup.
+// RemoveIdentity removes a private identity record. It is idempotent.
 func (c *claudeResumeCoordinator) RemoveIdentity(approvalID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.identities, approvalID)
 }
 
-// LookupIdentity returns a copy of the identity record, or false if not found.
+// LookupIdentity returns a copy of the identity record, or false.
 func (c *claudeResumeCoordinator) LookupIdentity(approvalID string) (*claudePrivateIdentity, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -148,114 +257,162 @@ func (c *claudeResumeCoordinator) LookupIdentity(approvalID string) (*claudePriv
 		return nil, false
 	}
 	return &claudePrivateIdentity{
-		sessionID:   id.sessionID,
-		toolUseID:   id.toolUseID,
-		toolName:    id.toolName,
-		inputDigest: id.inputDigest,
+		sessionID:      id.sessionID,
+		toolUseID:      id.toolUseID,
+		toolName:       id.toolName,
+		inputDigest:    id.inputDigest,
+		runtime:        id.runtime,
+		pokitSessionID: id.pokitSessionID,
 	}, true
 }
 
 // ── Entry lifecycle ──
 
-// generateNonce creates an opaque one-shot resume nonce, or returns an
-// empty string on entropy failure.
-func generateNonce() string {
+// entropyReader is injectable for tests (package-level, same pattern as
+// managed_claude.go).
+var coordEntropy io.Reader = rand.Reader
+
+// generateCoordNonce creates an opaque one-shot resume nonce.
+func generateCoordNonce() string {
 	var b [16]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
+	if _, err := io.ReadFull(coordEntropy, b[:]); err != nil {
 		return ""
 	}
 	return hex.EncodeToString(b[:])
 }
 
-// ReserveEntry creates a coordinator entry from a stored identity.
-// Returns the entry and true on success, or nil and false if the identity
-// is missing, the claim token is already reserved, the coordinator is
-// closed, or entry capacity is exhausted.
+// ReserveEntry creates a coordinator entry from an identity and the
+// store-issued ApprovalExecutionBinding. It validates the binding,
+// derives the Claude-native decision from OptionID + DeliverySchema,
+// and returns an opaque ResumeHandle.
 //
-// The returned entry carries an opaque resumeNonce that the caller must
-// embed in the resume hook script. The nonce is never exposed to the
-// mobile client.
-func (c *claudeResumeCoordinator) ReserveEntry(claimToken, approvalID, decision string) (*resumeEntry, bool) {
-	nonce := generateNonce()
+// The runtime in the binding MUST exactly match the stored identity's
+// runtime. A stale epoch, wrong adapter, or cross-session binding is
+// rejected.
+func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding ApprovalExecutionBinding) (ResumeHandle, bool) {
+	if !validCoordinatorClaimToken(claimToken) {
+		return ResumeHandle{}, false
+	}
+
+	decision, ok := deriveDecision(binding)
+	if !ok {
+		return ResumeHandle{}, false
+	}
+
+	nonce := generateCoordNonce()
 	if nonce == "" {
-		return nil, false
+		return ResumeHandle{}, false
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return nil, false
+		return ResumeHandle{}, false
 	}
-	id, ok := c.identities[approvalID]
+	id, ok := c.identities[binding.ApprovalID]
 	if !ok {
-		return nil, false
+		return ResumeHandle{}, false
+	}
+	// Runtime must match exactly — no cross-runtime or stale-epoch claims.
+	if !id.runtime.equal(binding.Runtime) {
+		return ResumeHandle{}, false
 	}
 	if _, dup := c.entries[claimToken]; dup {
-		return nil, false
+		return ResumeHandle{}, false
 	}
 	if len(c.entries) >= maxCoordinatorEntries {
-		return nil, false
+		return ResumeHandle{}, false
 	}
 
 	entry := &resumeEntry{
-		claimToken:  claimToken,
-		resumeNonce: nonce,
-		approvalID:  approvalID,
-		sessionID:   id.sessionID,
-		toolUseID:   id.toolUseID,
-		toolName:    id.toolName,
-		inputDigest: id.inputDigest,
-		decision:    decision,
-		state:       stateDecisionReserved,
-		createdAt:   clockNow(),
-		ch:          make(chan resumeOutcome, 1),
+		claimToken:     claimToken,
+		resumeNonce:    nonce,
+		approvalID:     binding.ApprovalID,
+		sessionID:      id.sessionID,
+		toolUseID:      id.toolUseID,
+		toolName:       id.toolName,
+		inputDigest:    id.inputDigest,
+		decision:       decision,
+		runtime:        id.runtime,
+		pokitSessionID: binding.SessionID,
+		state:          stateDecisionReserved,
+		createdAt:      clockNow(),
+		ch:             make(chan resumeOutcome, 1),
 	}
 	c.entries[claimToken] = entry
-	return entry, true
+	return ResumeHandle{ClaimToken: claimToken, ResumeNonce: nonce}, true
 }
 
-// ValidateAndWrite is the core hook validation. It receives the repeated
-// PreToolUse fields, validates them against the stored identity, and writes
-// the decision exactly once. It is called from the resume hook handler.
+// ClaimWrite transitions a reserved entry to write-claimed and returns a
+// WriteHandle with the decision string. The caller must write the HTTP
+// response OUTSIDE the coordinator lock, then call ConfirmWrite.
 //
-// Returns:
-//   - ("<decision>", outcomeWritten) — success, exactly one write
-//   - ("", outcomeMismatch) — any field doesn't match
-//   - ("", outcomeDuplicate) — decision was already written
-//   - ("", outcomeCancelled) — entry was cancelled
-//   - ("", outcomeStale) — entry doesn't exist or coordinator closed
-func (c *claudeResumeCoordinator) ValidateAndWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest string) (string, resumeOutcome) {
+// Returns (WriteHandle, outcomeWritten) on success.
+// Returns (WriteHandle{}, outcomeMismatch) on field mismatch.
+// Returns (WriteHandle{}, outcomeDuplicate) if already claimed.
+// Returns (WriteHandle{}, outcomeStale) if not found or cancelled.
+func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest string) (WriteHandle, resumeOutcome) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return "", outcomeStale
+		return WriteHandle{}, outcomeStale
 	}
 	entry, ok := c.entries[claimToken]
 	if !ok {
-		return "", outcomeStale
+		return WriteHandle{}, outcomeStale
 	}
 	if entry.resumeNonce != resumeNonce {
-		return "", outcomeMismatch
+		return WriteHandle{}, outcomeMismatch
 	}
 	if entry.state != stateDecisionReserved {
-		// Already written or already terminal.
-		return "", outcomeDuplicate
+		return WriteHandle{}, outcomeDuplicate
 	}
 	if entry.sessionID != sessionID || entry.toolUseID != toolUseID ||
 		entry.toolName != toolName || entry.inputDigest != inputDigest {
-		return "", outcomeMismatch
+		return WriteHandle{}, outcomeMismatch
 	}
 
-	entry.state = stateTerminal
-	entry.ch <- outcomeWritten
-	return entry.decision, outcomeWritten
+	entry.state = stateWriteClaimed
+	return WriteHandle{claimToken: claimToken, decision: entry.decision}, outcomeWritten
 }
 
-// CancelEntry cancels an active entry. If the entry is still in the
-// reserved state, it transitions to terminal and signals the waiter.
-// If already written or terminal, it is a no-op (idempotent).
+// ConfirmWrite confirms the outcome of an external HTTP write. It MUST be
+// called after ClaimWrite's returned decision has been written (or the
+// write has failed).
+//
+// If writeOK is true: transitions writeClaimed → decisionWritten and
+// signals the waiter.
+// If writeOK is false: transitions writeClaimed → terminal (the write
+// failed; the caller may not retry because the provider may have
+// received partial bytes).
+//
+// Returns outcomeWritten on successful confirmation, outcomeStale if the
+// entry was invalidated concurrently.
+func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) resumeOutcome {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entry, ok := c.entries[claimToken]
+	if !ok || entry.state != stateWriteClaimed {
+		// Invalidated concurrently (terminate, cancel, close, timeout).
+		return outcomeStale
+	}
+	if writeOK {
+		entry.state = stateDecisionWritten
+		entry.ch <- outcomeWritten
+		return outcomeWritten
+	}
+	entry.state = stateTerminal
+	entry.ch <- outcomeCancelled
+	delete(c.entries, claimToken)
+	return outcomeWritten // caller sees "written" for the decision they chose
+}
+
+// CancelEntry cancels an active entry. If the entry is still reserved, it
+// transitions to terminal. If write-claimed (write in flight), it signals
+// ambiguous — the caller will discover the invalidation via ConfirmWrite.
 func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -264,52 +421,94 @@ func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 	if !ok {
 		return
 	}
-	if entry.state != stateDecisionReserved {
-		return // already terminal
+	switch entry.state {
+	case stateDecisionReserved:
+		entry.state = stateTerminal
+		entry.ch <- outcomeCancelled
+		delete(c.entries, claimToken)
+	case stateWriteClaimed:
+		// Ambiguous: the write handle has been issued but not confirmed.
+		entry.state = stateTerminal
+		entry.ch <- outcomeAmbiguous
+		delete(c.entries, claimToken)
+	default:
+		// Already terminal or written — no-op.
 	}
-	entry.state = stateTerminal
-	entry.ch <- outcomeCancelled
 }
 
-// ClearForApproval removes the identity record and cancels any active entry
-// for the given approvalID. Used on terminate, stop, delete, and epoch
-// replacement.
+// ClearForApproval removes the identity and cancels any active entry for
+// the given approvalID.
 func (c *claudeResumeCoordinator) ClearForApproval(approvalID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	delete(c.identities, approvalID)
 	for claimToken, entry := range c.entries {
-		if entry.approvalID == approvalID && entry.state == stateDecisionReserved {
+		if entry.approvalID != approvalID {
+			continue
+		}
+		switch entry.state {
+		case stateDecisionReserved:
 			entry.state = stateTerminal
 			entry.ch <- outcomeCancelled
+			delete(c.entries, claimToken)
+		case stateWriteClaimed:
+			entry.state = stateTerminal
+			entry.ch <- outcomeAmbiguous
+			delete(c.entries, claimToken)
+		default:
+			delete(c.entries, claimToken)
 		}
-		// Clean up terminal entries for this approval.
-		if entry.approvalID == approvalID {
+	}
+}
+
+// ClearRuntime removes all identities and cancels all active entries for
+// a specific (pokitSessionID, launchGen) pair. Used on terminate and epoch
+// replacement.
+func (c *claudeResumeCoordinator) ClearRuntime(pokitSessionID string, launchGen int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for aid, id := range c.identities {
+		if id.pokitSessionID == pokitSessionID && id.runtime.LaunchGen == launchGen {
+			delete(c.identities, aid)
+		}
+	}
+	for claimToken, entry := range c.entries {
+		if entry.pokitSessionID == pokitSessionID && entry.runtime.LaunchGen == launchGen {
+			switch entry.state {
+			case stateDecisionReserved:
+				entry.state = stateTerminal
+				entry.ch <- outcomeCancelled
+			case stateWriteClaimed:
+				entry.state = stateTerminal
+				entry.ch <- outcomeAmbiguous
+			}
 			delete(c.entries, claimToken)
 		}
 	}
 }
 
 // Close cancels all active entries and marks the coordinator closed.
-// No new identities or entries can be created after close.
 func (c *claudeResumeCoordinator) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.closed = true
-	for _, entry := range c.entries {
-		if entry.state == stateDecisionReserved {
+	for claimToken, entry := range c.entries {
+		switch entry.state {
+		case stateDecisionReserved:
 			entry.state = stateTerminal
 			entry.ch <- outcomeCancelled
+		case stateWriteClaimed:
+			entry.state = stateTerminal
+			entry.ch <- outcomeAmbiguous
 		}
+		delete(c.entries, claimToken)
 	}
-	// Do not clear entries — drained waiters need to observe the outcome.
-	// The coordinator is gone when the service is destroyed.
 }
 
 // clearStaleEntries removes entries that have exceeded the entry timeout.
-// Called periodically (piggybacks on the runtime's clearStaleObservations).
 func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -324,22 +523,20 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 	}
 }
 
-// pendingCount returns the number of active (non-terminal) entries.
-// Exposed for test assertions.
+// ── Test helpers ──
+
 func (c *claudeResumeCoordinator) pendingCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := 0
 	for _, e := range c.entries {
-		if e.state != stateTerminal {
+		if e.state == stateDecisionReserved || e.state == stateWriteClaimed {
 			n++
 		}
 	}
 	return n
 }
 
-// identityCount returns the number of stored identities.
-// Exposed for test assertions.
 func (c *claudeResumeCoordinator) identityCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

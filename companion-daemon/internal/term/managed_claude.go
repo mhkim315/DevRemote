@@ -198,7 +198,8 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	// Roll back on admission failure so the capacity is not leaked.
 	identityCreated := false
 	if rt.coordinator != nil {
-		if !rt.coordinator.ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest) {
+		pokitRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0}
+		if !rt.coordinator.ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest, rt.sessionID, pokitRT) {
 			rt.turnMu.Unlock()
 			return // capacity exhausted or duplicate
 		}
@@ -279,8 +280,15 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 	rt.turnMu.Unlock()
 
-	if term2 && approvals != nil {
-		approvals.InvalidateRecord(rt.sessionID, approvalID)
+	if term2 {
+		if approvals != nil {
+			approvals.InvalidateRecord(rt.sessionID, approvalID)
+		}
+		// B2 fix: remove orphaned identity that was created before Store
+		// admission but never added to activeApprovals.
+		if identityCreated {
+			rt.coordinator.RemoveIdentity(approvalID)
+		}
 	}
 
 	if rt.observer != nil {
@@ -343,36 +351,43 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 }
 
 func (rt *claudeManagedRuntime) clearStaleObservations() {
-	rt.turnMu.Lock()
-	defer rt.turnMu.Unlock()
-
+	// C2D-A lock-order: collect targets under turnMu, then call Store and
+	// coordinator OUTSIDE the lock. The coordinator mutex is independent;
+	// holding turnMu across both violates the contract.
 	now := clockNow()
 	cutoff := now.Add(-claudeObservationTimeout)
+
+	rt.turnMu.Lock()
 	for id, obs := range rt.pendingObservations {
 		if obs.observedAt.Before(cutoff) {
 			delete(rt.pendingObservations, id)
 		}
 	}
 	remaining := rt.activeApprovals[:0]
-	var expired []activeApproval
+	var expiredIDs []string
 	for _, aa := range rt.activeApprovals {
 		if now.After(aa.expiresAt) {
-			expired = append(expired, aa)
-			if rt.approvals != nil {
-				rt.approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
-			}
+			expiredIDs = append(expiredIDs, aa.approvalID)
 		} else {
 			remaining = append(remaining, aa)
 		}
 	}
 	rt.activeApprovals = remaining
+	staleCoord := rt.coordinator
+	staleStore := rt.approvals
+	sessionID := rt.sessionID
+	rt.turnMu.Unlock()
 
-	// C2D-B: remove stale identities and cancel expired coordinator entries.
-	if rt.coordinator != nil {
-		for _, aa := range expired {
-			rt.coordinator.ClearForApproval(aa.approvalID)
+	for _, aid := range expiredIDs {
+		if staleStore != nil {
+			staleStore.InvalidateRecord(sessionID, aid)
 		}
-		rt.coordinator.clearStaleEntries(now)
+		if staleCoord != nil {
+			staleCoord.RemoveIdentity(aid)
+		}
+	}
+	if staleCoord != nil {
+		staleCoord.clearStaleEntries(now)
 	}
 }
 
@@ -409,11 +424,10 @@ func (rt *claudeManagedRuntime) terminate() {
 			// metadata transition for termination.
 			_ = approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
 		}
-		// C2D-B: invalidate coordinator identities for all expired approvals.
+		// C2D-B: invalidate all coordinator identities and entries for this
+		// runtime atomically under the coordinator mutex.
 		if rt.coordinator != nil {
-			for _, aa := range expired {
-				rt.coordinator.ClearForApproval(aa.approvalID)
-			}
+			rt.coordinator.ClearRuntime(rt.sessionID, rt.epoch)
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)

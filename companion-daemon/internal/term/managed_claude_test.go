@@ -934,12 +934,6 @@ func TestClaudeEntropyFailure(t *testing.T) {
 	rt.terminate()
 }
 
-type failingReader struct{}
-
-func (failingReader) Read(p []byte) (int, error) {
-	return 0, fmt.Errorf("entropy exhausted")
-}
-
 // TestClaudeStopInvalidatesApprovals verifies that Stop calls terminate(),
 // which invalidates all active approvals and clears pending state.
 func TestClaudeStopInvalidatesApprovals(t *testing.T) {
@@ -1366,7 +1360,7 @@ func TestC2DB_IdentityPreservedAtJoin(t *testing.T) {
 	approvalID := rt.activeApprovals[0].approvalID
 	rt.turnMu.Unlock()
 
-	// Verify identity record exists in the coordinator.
+	// Verify identity record exists in the coordinator with RuntimeRef binding.
 	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
 	if !ok {
 		t.Fatal("expected identity record to be preserved")
@@ -1374,6 +1368,13 @@ func TestC2DB_IdentityPreservedAtJoin(t *testing.T) {
 	if idRec.sessionID != sessionID || idRec.toolUseID != toolUseID ||
 		idRec.toolName != toolName || idRec.inputDigest != inputDigest {
 		t.Fatalf("identity record fields mismatch: %+v", idRec)
+	}
+	if idRec.pokitSessionID != id {
+		t.Fatalf("expected pokitSessionID %s, got %s", id, idRec.pokitSessionID)
+	}
+	expectedRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0}
+	if !idRec.runtime.equal(expectedRT) {
+		t.Fatalf("runtime mismatch: %+v vs %+v", idRec.runtime, expectedRT)
 	}
 
 	rt.terminate()
@@ -1412,7 +1413,7 @@ func TestC2DB_IdentityClearedOnTerminate(t *testing.T) {
 
 	rt.terminate()
 
-	// After terminate, identity is cleared.
+	// After terminate, identity is cleared (via ClearRuntime).
 	if _, ok := svc.coordinator.LookupIdentity(approvalID); ok {
 		t.Fatal("expected identity to be cleared after terminate")
 	}
@@ -1439,17 +1440,15 @@ func TestC2DB_IdentityClearedOnTimeout(t *testing.T) {
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
-	// Capture approval ID.
 	rt.turnMu.Lock()
 	approvalID := rt.activeApprovals[0].approvalID
 	rt.turnMu.Unlock()
 
-	// Verify identity exists.
 	if _, ok := svc.coordinator.LookupIdentity(approvalID); !ok {
 		t.Fatal("expected identity before timeout")
 	}
 
-	// Expire the active approval by manipulating time.
+	// Expire the active approval.
 	rt.turnMu.Lock()
 	for i := range rt.activeApprovals {
 		rt.activeApprovals[i].expiresAt = clockNow().Add(-time.Second)
@@ -1457,7 +1456,7 @@ func TestC2DB_IdentityClearedOnTimeout(t *testing.T) {
 	rt.turnMu.Unlock()
 	rt.clearStaleObservations()
 
-	// After timeout clear, identity is removed.
+	// Identity must be removed by the coordinator cleanup in clearStaleObservations.
 	if _, ok := svc.coordinator.LookupIdentity(approvalID); ok {
 		t.Fatal("expected identity to be cleared after timeout")
 	}
@@ -1489,7 +1488,7 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
 	rt.processLine([]byte(deferred))
 
-	// Step 2: Get the identity from the coordinator.
+	// Step 2: Get the approval ID and build a proper binding.
 	rt.turnMu.Lock()
 	approvalID := rt.activeApprovals[0].approvalID
 	rt.turnMu.Unlock()
@@ -1499,41 +1498,44 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 		t.Fatal("expected identity record")
 	}
 
-	// Step 3: Reserve an entry (simulating mobile claim).
-	entry, ok := svc.coordinator.ReserveEntry("claim-token-fullflow", approvalID, "allow")
+	// Step 3: Reserve an entry using the store-issued binding.
+	binding := ApprovalExecutionBinding{
+		ApprovalID:     approvalID,
+		SessionID:      id,
+		Runtime:        RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0},
+		ActionDigest:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PayloadDigest:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IdempotencyKey: "test.key.fullflow",
+		OptionID:       "allow_once",
+		DeliverySchema: claudeDecisionSchemaV1,
+	}
+	handle, ok := svc.coordinator.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	if !ok {
 		t.Fatal("expected ReserveEntry to succeed")
 	}
-	if entry.sessionID != sessionID || entry.toolUseID != toolUseID ||
-		entry.toolName != toolName || entry.inputDigest != inputDigest {
-		t.Fatal("entry fields mismatch — should match identity")
-	}
-	if entry.decision != "allow" {
-		t.Fatalf("expected decision allow, got %s", entry.decision)
-	}
 
-	// Step 4: Validate and write (simulating resume hook).
-	dec, out := svc.coordinator.ValidateAndWrite(
-		"claim-token-fullflow", entry.resumeNonce,
-		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest,
-	)
+	// Step 4: ClaimWrite (simulating resume hook).
+	wh, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
+		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest)
 	if out != outcomeWritten {
 		t.Fatalf("expected outcomeWritten, got %d", out)
 	}
-	if dec != "allow" {
-		t.Fatalf("expected allow, got %s", dec)
+	if wh.Decision() != "allow" {
+		t.Fatalf("expected allow, got %s", wh.Decision())
 	}
 
-	// Step 5: Verify entry is consumed.
+	// Step 5: ConfirmWrite.
+	out = svc.coordinator.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+	if out != outcomeWritten {
+		t.Fatalf("expected outcomeWritten from ConfirmWrite, got %d", out)
+	}
 	if svc.coordinator.pendingCount() != 0 {
-		t.Fatal("expected 0 pending entries after write")
+		t.Fatal("expected 0 pending entries after confirm")
 	}
 
-	// Step 6: Verify duplicate write is blocked.
-	_, out = svc.coordinator.ValidateAndWrite(
-		"claim-token-fullflow", entry.resumeNonce,
-		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest,
-	)
+	// Step 6: Duplicate ClaimWrite must fail.
+	_, out = svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
+		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest)
 	if out != outcomeDuplicate {
 		t.Fatalf("expected outcomeDuplicate, got %d", out)
 	}
@@ -1561,37 +1563,97 @@ func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
 	approvalID := rt.activeApprovals[0].approvalID
 	rt.turnMu.Unlock()
 
-	// Reserve entry for allow.
-	entry, ok := svc.coordinator.ReserveEntry("claim-1", approvalID, "allow")
+	binding := ApprovalExecutionBinding{
+		ApprovalID:     approvalID,
+		SessionID:      id,
+		Runtime:        RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0},
+		ActionDigest:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PayloadDigest:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		IdempotencyKey: "test.key.mismatch",
+		OptionID:       "allow_once",
+		DeliverySchema: claudeDecisionSchemaV1,
+	}
+	handle, ok := svc.coordinator.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	if !ok {
 		t.Fatal("expected ReserveEntry to succeed")
 	}
 
-	// Attempt to write with wrong toolUseID — must fail.
-	_, out := svc.coordinator.ValidateAndWrite("claim-1", entry.resumeNonce,
+	// Wrong toolUseID — must fail.
+	_, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
 		"sess-1", "wrong-tu", "Bash", sha256Hex([]byte(`{"cmd":"x"}`)))
 	if out != outcomeMismatch {
 		t.Fatalf("expected outcomeMismatch, got %d", out)
 	}
 
-	// Attempt to write with wrong inputDigest — must fail.
-	_, out = svc.coordinator.ValidateAndWrite("claim-1", entry.resumeNonce,
+	// Wrong digest — must fail.
+	_, out = svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
 		"sess-1", "tu-1", "Bash", "wrong-digest")
 	if out != outcomeMismatch {
 		t.Fatalf("expected outcomeMismatch for wrong digest, got %d", out)
 	}
 
-	// The entry should still be pending.
+	// Entry still pending.
 	if svc.coordinator.pendingCount() != 1 {
 		t.Fatal("expected 1 pending after mismatches")
 	}
 
 	// Correct write should still work.
-	dec, out := svc.coordinator.ValidateAndWrite("claim-1", entry.resumeNonce,
+	wh, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
 		"sess-1", "tu-1", "Bash", sha256Hex([]byte(`{"cmd":"x"}`)))
-	if out != outcomeWritten || dec != "allow" {
-		t.Fatalf("expected valid write to succeed after mismatches, got %d/%s", out, dec)
+	if out != outcomeWritten || wh.Decision() != "allow" {
+		t.Fatalf("expected valid write to succeed after mismatches, got %d/%s", out, wh.Decision())
 	}
 
 	rt.terminate()
+}
+
+func TestC2DB_PostIngestTerminationClearsIdentity(t *testing.T) {
+	// B2 fix: prove that identity is removed when postIngestHook triggers
+	// terminate between Store admission and active append.
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-orphan"
+	toolUseID := "call_C2DB_Orphan"
+	toolName := "Bash"
+	inputDigest := sha256Hex([]byte(`{"cmd":"x"}`))
+
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+
+	// Inject terminate via postIngestHook — this fires AFTER Store admission
+	// but BEFORE activeApprovals append.
+	rt.postIngestHook = func() {
+		rt.terminate()
+	}
+
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"cmd":"x"}`)
+	rt.processLine([]byte(deferred))
+
+	// The identity was created before Store admission. Even though terminate()
+	// ran during the post-ingest hook, the coordinator identity must be
+	// cleaned up (B2 fix). Since the record was ingested into the Store and
+	// then invalidated by terminate(), the identity should be removed.
+	//
+	// We retrieve the approvalID from the Store (it was ingested before the
+	// hook fired) and verify the coordinator does NOT have it.
+	records := store.ListSafe(id)
+	if len(records) != 1 {
+		t.Fatalf("expected 1 Store record, got %d", len(records))
+	}
+	approvalID := records[0].ID
+
+	if _, ok := svc.coordinator.LookupIdentity(approvalID); ok {
+		t.Fatal("B2 regression: identity should be cleared after post-ingest termination")
+	}
+
+	// Wait for terminate to complete.
+	<-rt.exited
 }
