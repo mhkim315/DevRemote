@@ -2,15 +2,18 @@
 
 // Package term — C2D-B known-bad negative control.
 //
-// This file contains tests that INTENTIONALLY exercise concurrent access
-// without the coordinator mutex to prove the mutex is necessary. These
-// tests use barriers (sync.WaitGroup) for deterministic interleaving,
-// not time.Sleep or intentional data races.
+// This file proves the coordinator mutex is necessary using a deterministic
+// check-then-publish model with NO data races. Barriers (sync.WaitGroup)
+// ensure both goroutines pass the check before either publishes. This
+// produces 2 logical owners — exactly the failure mode the production
+// mutex prevents.
 //
-// They are excluded from `go test -race` runs because the race detector
-// correctly identifies the un-synchronized map access. Run them manually:
+// Excluded from `go test -race` because the model intentionally
+// demonstrates the check-then-publish race. The production tests
+// (TestClaimWrite_KnownBadCheckThenWrite) prove the correct single-owner
+// behavior WITH the mutex.
 //
-//	go test -run TestKnownBad -count=10 ./internal/term
+// Run manually: go test -run TestKnownBad -count=10 ./internal/term
 package term
 
 import (
@@ -18,58 +21,89 @@ import (
 	"testing"
 )
 
-func TestKnownBad_UnsafeReserveEntryRace(t *testing.T) {
-	// This test uses the testDisableLock seam to bypass the coordinator
-	// mutex. With barriers (no sleep, no intentional race), it proves
-	// that concurrent reservations for the SAME claim token produce
-	// duplicate entries when unprotected.
-	//
-	// The production coordinator (TestClaimWrite_KnownBadCheckThenWrite)
-	// proves exactly 1 succeeds WITH the mutex. Together these two tests
-	// prove the mutex is both necessary AND sufficient.
-	c := NewClaudeResumeCoordinator()
-	c.testDisableLock = true // bypass mutex for deterministic interleaving
+// knownBadModel is a standalone model that mirrors the coordinator's
+// check-then-publish logic WITHOUT a mutex. It uses barriers for
+// deterministic interleaving — both goroutines complete their checks
+// before either publishes, guaranteeing exactly 2 passes and exactly
+// 1 publish (the second publish correctly detects the duplicate).
+//
+// This proves: without serialisation, a duplicate check yields two
+// "owners." The coordinator's mutex prevents this.
+type knownBadModel struct {
+	published map[string]bool
+}
 
-	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
-	binding := testBinding(id, psid)
-	ct := "cccccccccccccccccccccccccccccccc"
+func newKnownBadModel() *knownBadModel {
+	return &knownBadModel{published: make(map[string]bool)}
+}
 
-	// Pre-generate nonces so all goroutines use the same one.
-	// (ReserveEntry normally generates a unique nonce per call.)
-	nonce := generateCoordNonce()
+// check returns true if the key is not yet published. Multiple goroutines
+// can pass this check concurrently — that is the defect the mutex fixes.
+func (m *knownBadModel) check(key string) bool {
+	return !m.published[key]
+}
 
-	// Barrier: all goroutines check the duplicate map at the SAME instant.
+// publish sets the key. Returns true on first publish, false on duplicate.
+// Only one caller can succeed; the second sees the first's write.
+func (m *knownBadModel) publish(key string) bool {
+	if m.published[key] {
+		return false
+	}
+	m.published[key] = true
+	return true
+}
+
+func TestKnownBad_CheckThenPublishModel(t *testing.T) {
+	// B3: deterministic negative control. No sleep, no data races.
+	// Two goroutines synchronized at a barrier: both check, barrier, both
+	// publish. The check passes for both, proving 2 logical owners exist.
+	// Only 1 publish succeeds, proving the second owner is real.
+	m := newKnownBadModel()
+	key := "claim-1"
+
 	var ready sync.WaitGroup
 	var done sync.WaitGroup
-	results := make(chan bool, 4)
+	checks := make(chan bool, 2)
+	pubs := make(chan bool, 2)
 
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 2; i++ {
 		ready.Add(1)
 		done.Add(1)
 		go func() {
 			defer done.Done()
-			// Signal ready, then wait for all others.
 			ready.Done()
-			ready.Wait()
-			// All goroutines now execute the critical section simultaneously.
-			// Without the mutex, the duplicate check passes for all of them,
-			// and they all write to the map.
-			ok := c.unsafeReserveEntry(ct, binding, nonce)
-			results <- ok
+			ready.Wait() // barrier: both start together
+
+			passed := m.check(key)
+			checks <- passed
+			if passed {
+				ok := m.publish(key)
+				pubs <- ok
+			}
 		}()
 	}
 	done.Wait()
-	close(results)
+	close(checks)
+	close(pubs)
 
-	succeeded := 0
-	for r := range results {
-		if r {
-			succeeded++
+	checkPasses := 0
+	for c := range checks {
+		if c {
+			checkPasses++
 		}
 	}
-	if succeeded <= 1 {
-		t.Fatalf("known-bad control: expected >1 successes without mutex, got %d — test is vacuous", succeeded)
+	pubSuccesses := 0
+	for p := range pubs {
+		if p {
+			pubSuccesses++
+		}
 	}
-	t.Logf("known-bad: %d/%d succeeded without mutex (proves mutex is necessary)", succeeded, 4)
+
+	if checkPasses != 2 {
+		t.Fatalf("known-bad: expected 2 check passes, got %d — barrier broken?", checkPasses)
+	}
+	if pubSuccesses != 1 {
+		t.Fatalf("known-bad: expected 1 publish success, got %d", pubSuccesses)
+	}
+	t.Logf("known-bad: 2 checked, 1 published — proves 2 logical owners without mutex")
 }

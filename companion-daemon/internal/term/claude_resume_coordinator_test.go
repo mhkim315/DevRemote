@@ -903,41 +903,6 @@ func TestClaimWriteExpiredEntry(t *testing.T) {
 	}
 }
 
-// unsafeReserveEntry is a TEST-ONLY entry point that reserves an entry
-// WITHOUT holding the coordinator mutex. It exists solely to support the
-// known-bad negative control test (claude_resume_coordinator_knownbad_test.go,
-// built with !race). Barriers provide deterministic interleaving without
-// sleep or intentional data races.
-func (c *claudeResumeCoordinator) unsafeReserveEntry(claimToken string, binding ApprovalExecutionBinding, nonce string) bool {
-	id, ok := c.identities[binding.ApprovalID]
-	if !ok {
-		return false
-	}
-	if !id.runtime.equal(binding.Runtime) {
-		return false
-	}
-	if _, dup := c.entries[claimToken]; dup {
-		return false
-	}
-	decision, _ := deriveDecision(binding)
-	c.entries[claimToken] = &resumeEntry{
-		claimToken:     claimToken,
-		resumeNonce:    nonce,
-		approvalID:     binding.ApprovalID,
-		sessionID:      id.sessionID,
-		toolUseID:      id.toolUseID,
-		toolName:       id.toolName,
-		inputDigest:    id.inputDigest,
-		decision:       decision,
-		runtime:        id.runtime,
-		pokitSessionID: binding.SessionID,
-		binding:        cloneBindingCopy(binding),
-		state:          stateDecisionReserved,
-		createdAt:      clockNow(),
-		ch:             make(chan resumeOutcome, 1),
-	}
-	return true
-}
 
 // ── failingReader for entropy injection ──
 
