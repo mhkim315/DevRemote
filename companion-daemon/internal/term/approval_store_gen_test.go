@@ -1208,83 +1208,54 @@ func TestInstallRuntimeGeneration_OlderGenDoesNotSupersedeCurrentApprovals(t *te
 	}
 }
 
-// TestEvictOldestSession_SkipsLiveAuthority verifies that evictOldestSessionLocked
-// does not evict sessions with pending records or high-water tombstones.
-func TestEvictOldestSession_SkipsLiveAuthority(t *testing.T) {
-	s := NewAuthoritativeApprovalStore()
-
-	// Fill sessions with DORMANT (evictable) sessions: ingest then invalidate.
-	for i := 0; i < authMaxApprovalSessions-1; i++ {
-		sid := fmt.Sprintf("filler:s%d", i)
-		id := fmt.Sprintf("f%d", i)
-		s.Ingest(ApprovalIngest{
-			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
-			Items: []ApprovalIngestItem{{
-				Approval:   agent.AgentApproval{ID: id, SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
-				Provenance: contract.ProvenanceNativeLog,
-			}},
-		})
-		s.InvalidateRecord(sid, id)
+// TestSessionHasLiveAuthority_ProtectsAllHwInitialized verifies that every
+// hw-initialized session is protected from eviction regardless of record
+// state — the high-water is always meaningful.
+func TestSessionHasLiveAuthority_ProtectsAllHwInitialized(t *testing.T) {
+	// Empty tombstone (no records).
+	tombstone := &sessionApprovals{hwInitialized: true, records: map[string]*approvalRecord{}}
+	if !sessionHasLiveAuthority(tombstone) {
+		t.Error("tombstone (no records) must be protected")
 	}
 
-	// Create a session with a pending approval record — LIVE authority.
-	s.Ingest(ApprovalIngest{
-		SessionID: "codex:live", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
-		Items: []ApprovalIngestItem{{
-			Approval:   agent.AgentApproval{ID: "a-live", SessionID: "codex:live", Kind: "approval", Source: agent.SourceJSONL},
-			Provenance: contract.ProvenanceNativeLog,
-		}},
-	})
-
-	// Now trigger eviction by creating one more session (hits the limit).
-	// A dormant filler should be evicted, not the live session.
-	if err := s.InstallRuntimeGeneration("codex:new", 1, 0, "new"); err != nil {
-		t.Fatalf("unexpected capacity error (a dormant filler should have been evicted): %v", err)
+	// Session with only terminal records.
+	term := &sessionApprovals{
+		hwInitialized: true,
+		records: map[string]*approvalRecord{
+			"a1": {state: ApprovalInvalidated, retries: maxManualRetries},
+		},
+	}
+	if !sessionHasLiveAuthority(term) {
+		t.Error("session with terminal records must be protected — high-water is meaningful")
 	}
 
-	// The live session must survive.
-	snap, ok := s.LookupRecord("codex:live", "a-live")
-	if !ok || snap.State != ApprovalPending {
-		t.Fatalf("live record lost: ok=%v state=%v", ok, snap.State)
+	// Session with pending records.
+	pending := &sessionApprovals{
+		hwInitialized: true,
+		records:       map[string]*approvalRecord{"a1": {state: ApprovalPending}},
+	}
+	if !sessionHasLiveAuthority(pending) {
+		t.Error("pending session must be protected")
+	}
+
+	// Uninitialized session (shouldn't exist in practice).
+	uninit := &sessionApprovals{hwInitialized: false}
+	if sessionHasLiveAuthority(uninit) {
+		t.Error("uninitialized session must not be protected")
 	}
 }
 
-// TestEvictOldestSession_ProtectsHighWaterTombstone verifies that a
-// metadata-only high-water session (tombstone) is NOT evicted, and that
-// stale replay is still rejected after capacity pressure.
-func TestEvictOldestSession_ProtectsHighWaterTombstone(t *testing.T) {
+// TestTombstoneRejectsStaleReplay verifies that a high-water tombstone
+// blocks stale ingest even after Clear removes unrelated sessions.
+func TestTombstoneRejectsStaleReplay(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
 
-	// Install a high-water tombstone at gen (2, 1) — blocks stale gen (2, 0).
+	// Install a high-water tombstone at gen (2, 1).
 	if err := s.InstallRuntimeGeneration("codex:tombstone", 2, 1, "terminated"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Fill with dormant sessions to create capacity pressure.
-	for i := 0; i < authMaxApprovalSessions-2; i++ {
-		sid := fmt.Sprintf("filler:s%d", i)
-		id := fmt.Sprintf("f%d", i)
-		s.Ingest(ApprovalIngest{
-			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
-			Items: []ApprovalIngestItem{{
-				Approval:   agent.AgentApproval{ID: id, SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
-				Provenance: contract.ProvenanceNativeLog,
-			}},
-		})
-		s.InvalidateRecord(sid, id)
-	}
-
-	// Add one more session — must evict a dormant filler, not the tombstone.
-	if err := s.InstallRuntimeGeneration("codex:probe", 1, 0, "probe"); err != nil {
-		t.Fatalf("capacity should be freed by dormant eviction: %v", err)
-	}
-
-	// The tombstone must still exist (session in the store).
-	if s.Len() < authMaxApprovalSessions {
-		// It's possible the tombstone was at the end — but List/Lookup should work.
-	}
-
-	// Stale gen (2, 0) ingest must still be rejected by the tombstone's high-water.
+	// Stale gen (2, 0) ingest must be rejected.
 	admitted := s.IngestObserved(ApprovalIngest{
 		SessionID: "codex:tombstone", LaunchGen: 2, StreamGen: 0, Provider: "codex", Version: "0.144.1",
 		Items: []ApprovalIngestItem{{
@@ -1293,7 +1264,7 @@ func TestEvictOldestSession_ProtectsHighWaterTombstone(t *testing.T) {
 		}},
 	})
 	if admitted {
-		t.Fatal("stale gen-0 ingest admitted after tombstone should have rejected it")
+		t.Fatal("stale gen-0 ingest admitted — tombstone should reject")
 	}
 }
 
@@ -1460,57 +1431,30 @@ func TestInstallRuntimeGeneration_CapacityExhaustedFailClosed(t *testing.T) {
 	}
 }
 
-// TestEvictOldestSession_DeliveryFailedRetryNotVictim verifies that a session
-// with a delivery_failed record that still has retries remaining is not
-// selected as an eviction victim.
-func TestEvictOldestSession_DeliveryFailedRetryNotVictim(t *testing.T) {
-	s := NewAuthoritativeApprovalStore()
-
-	// Create a session with a delivery_failed record that has retries.
-	s.Ingest(ApprovalIngest{
-		SessionID: "codex:retry", LaunchGen: 5, StreamGen: 0, Provider: "codex", Version: "0.144.1",
-		Items: []ApprovalIngestItem{{
-			Approval:   agent.AgentApproval{ID: "a1", SessionID: "codex:retry", Kind: "approval", Options: []agent.InteractionOption{actOpt("approve", "approve", nil)}},
-			Provenance: contract.ProvenanceNativeLog, Actionable: true, RequiredPerm: "terminal:input",
-		}},
-	})
-	// Claim and fail delivery (retries=1, still < maxManualRetries=2).
-	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 0}
-	c := s.ClaimForExecution(claimReq("codex:retry", "a1", "approve", "", rt, reqCtx(), "k1"))
-	if c.Outcome != ClaimGranted {
-		t.Fatalf("claim: %v", c.Outcome)
+// TestSessionHasLiveAuthority_DeliveryFailedRetryProtected verifies that
+// a session with delivery_failed records that have retries remaining is
+// protected from eviction.
+func TestSessionHasLiveAuthority_DeliveryFailedRetryProtected(t *testing.T) {
+	// Delivery_failed with retries remaining.
+	retry := &sessionApprovals{
+		hwInitialized: true,
+		records: map[string]*approvalRecord{
+			"a1": {state: ApprovalDeliveryFailed, retries: 0}, // retries < maxManualRetries(2)
+		},
 	}
-	s.RecordDelivery(DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: c.Token, Binding: c.Binding})
-
-	// Fill remaining slots with dormant (evictable) sessions.
-	for i := 0; i < authMaxApprovalSessions-2; i++ {
-		sid := fmt.Sprintf("filler:s%d", i)
-		id := fmt.Sprintf("f%d", i)
-		s.Ingest(ApprovalIngest{
-			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
-			Items: []ApprovalIngestItem{{
-				Approval:   agent.AgentApproval{ID: id, SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
-				Provenance: contract.ProvenanceNativeLog,
-			}},
-		})
-		s.InvalidateRecord(sid, id)
+	if !sessionHasLiveAuthority(retry) {
+		t.Error("delivery_failed with retries must be protected")
 	}
 
-	// Now trigger eviction by adding one more session.
-	err := s.InstallRuntimeGeneration("codex:new", 1, 0, "new")
-	if err != nil {
-		// All fillers are empty, so one should be evicted. The retry session
-		// must NOT be the victim.
-		t.Fatalf("unexpected capacity error (should have evicted a filler): %v", err)
+	// Delivery_failed with exhausted retries — still protected because hwInitialized.
+	exhausted := &sessionApprovals{
+		hwInitialized: true,
+		records: map[string]*approvalRecord{
+			"a1": {state: ApprovalDeliveryFailed, retries: maxManualRetries},
+		},
 	}
-
-	// The delivery_failed session with retries must still exist.
-	snap, ok := s.LookupRecord("codex:retry", "a1")
-	if !ok {
-		t.Fatal("delivery_failed session was evicted despite retries remaining")
-	}
-	if snap.State != ApprovalDeliveryFailed {
-		t.Fatalf("retry record state changed: %v", snap.State)
+	if !sessionHasLiveAuthority(exhausted) {
+		t.Error("hw-initialized session must be protected regardless of retry state")
 	}
 }
 

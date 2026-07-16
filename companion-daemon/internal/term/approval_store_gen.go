@@ -932,27 +932,11 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() bool {
 }
 
 // sessionHasLiveAuthority reports whether a session must not be evicted by
-// capacity pressure. This covers three cases:
-//  1. Live records: pending, executing, or delivery_failed with retries.
-//  2. High-water tombstones: hwInitialized with zero records — these exist
-//     solely to block stale replay and must not be evicted until explicit
-//     lifecycle cleanup (Clear/delete) proves the tombstone is no longer needed.
-//  3. Dormant sessions: hwInitialized with only terminal records (no retries)
-//     may be safely evicted — the high-water has been superseded.
+// capacity pressure. Every hwInitialized session is protected — the high-water
+// is always meaningful and blocks stale replay for its session ID. Only
+// explicit lifecycle cleanup (Clear/delete) may remove a session.
 func sessionHasLiveAuthority(sess *sessionApprovals) bool {
-	// High-water tombstone: metadata-only session that blocks stale replay.
-	if sess.hwInitialized && len(sess.records) == 0 {
-		return true
-	}
-	for _, rec := range sess.records {
-		if rec.state == ApprovalPending || rec.state == ApprovalExecuting {
-			return true
-		}
-		if rec.state == ApprovalDeliveryFailed && rec.retries < maxManualRetries {
-			return true
-		}
-	}
-	return false
+	return sess.hwInitialized
 }
 
 func (s *AuthoritativeApprovalStore) Len() int {

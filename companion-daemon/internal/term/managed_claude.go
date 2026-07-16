@@ -525,6 +525,29 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		return "", fmt.Errorf("managed claude hook script: %w", err)
 	}
 
+	// Reserve session ID and Store slot BEFORE child launch.
+	// Observation must not become reachable before authority is secured.
+	id := fmt.Sprintf("%s:%s", claudeHeadlessAdapter, genLocalID("claude"))
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return "", fmt.Errorf("managed claude service is shutting down")
+	}
+	s.gen++
+	epoch := s.gen
+	s.mu.Unlock()
+
+	// Reserve Store authority first — if this fails, never spawn.
+	if s.approvals != nil {
+		if err := s.approvals.InstallRuntimeGeneration(id, epoch, 0, "reserved"); err != nil {
+			bridge.close()
+			os.RemoveAll(hookDir)
+			return "", fmt.Errorf("managed claude reserve: %w", err)
+		}
+	}
+
 	s.barrier("pre-spawn")
 
 	argv := []string{
@@ -550,7 +573,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	s.barrier("post-spawn")
 
-	id := fmt.Sprintf("%s:%s", claudeHeadlessAdapter, genLocalID("claude"))
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
@@ -560,8 +582,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		os.RemoveAll(hookDir)
 		return "", fmt.Errorf("managed claude service is shutting down")
 	}
-	s.gen++
-	epoch := s.gen
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
 	rt.sessionID = id
 	rt.approvals = s.approvals
@@ -595,14 +615,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		return fail("register", err, false)
 	}
 	s.barrier("post-register")
-
-	// Reserve Store authority before observation becomes reachable.
-	// If the slot cannot be secured, fail launch closed.
-	if rt.approvals != nil {
-		if err := rt.approvals.InstallRuntimeGeneration(id, epoch, 0, "reserved"); err != nil {
-			return fail("reserve", err, true)
-		}
-	}
 
 	go rt.pump()
 	return id, nil

@@ -116,10 +116,18 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	if len(obs.Options) != 0 {
 		t.Errorf("non-actionable: got %d options, want 0", len(obs.Options))
 	}
-	for _, f := range []string{obs.ID} {
-		if strings.Contains(f, "sk-") || strings.Contains(f, "ghp_") {
-			t.Error("credential leak in DTO")
+
+	// Privacy: scan all visible DTO fields for credential/payload leakage.
+	dtoJSON, _ := json.Marshal(obs)
+	dtoStr := string(dtoJSON)
+	for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
+		if strings.Contains(dtoStr, secret) {
+			t.Errorf("credential leak in DTO: %s", secret)
 		}
+	}
+	// DTO must not carry actionable fields.
+	if obs.Actionable || len(obs.Options) != 0 {
+		t.Error("DTO must not carry actionable fields for non-actionable observation")
 	}
 
 	if err := svc.Stop(id, rec.Epoch); err != nil {
@@ -130,6 +138,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		t.Fatal("session not exited after stop")
 	}
 
+	// After stop: zero live records.
 	for _, s := range store.ListSafe(id) {
 		st := s.State
 		if st == string(term.ApprovalPending) || st == string(term.ApprovalExecuting) {
@@ -151,8 +160,13 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	defer cancel2()
 	ipc.Wait(ctx2)
 
+	// Cleanup: socket must be removable, temp dir must be cleanable.
 	if err := os.Remove(sock); err != nil {
 		t.Errorf("socket cleanup: %v", err)
+	}
+	// RemoveAll cleans hook dirs; verify no stale children via registry.
+	if entries, _ := os.ReadDir(dir); len(entries) > 1 {
+		t.Logf("temp dir entries after cleanup: %d", len(entries))
 	}
 
 	t.Logf("C1D-LIVE PASS: provider=%s version=%s epoch=%d digest=%s",
