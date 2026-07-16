@@ -75,6 +75,7 @@ type claudeManagedRuntime struct {
 
 	turnMu             sync.Mutex
 	turnClosed         bool
+	terminated         bool // set by terminate(); late ingests are rejected
 	pendingObservations map[string]*claudePendingObservation
 	activeApprovals    []activeApproval
 	rejects            int
@@ -185,9 +186,18 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	approvalID := "claude-" + approvalToken
 
 	delete(rt.pendingObservations, toolUseID)
-	approvals := rt.approvals
 	rt.turnMu.Unlock()
 
+	// Re-check: if terminate() ran between unlock and here, the session is
+	// dead. Late ingests on a terminated session are silently dropped.
+	rt.turnMu.Lock()
+	term := rt.terminated
+	rt.turnMu.Unlock()
+	if term {
+		return
+	}
+
+	approvals := rt.approvals
 	if approvals == nil {
 		return
 	}
@@ -321,6 +331,7 @@ func (rt *claudeManagedRuntime) terminate() {
 		}
 
 		rt.turnMu.Lock()
+		rt.terminated = true
 		rt.turnClosed = true
 		rt.pendingObservations = make(map[string]*claudePendingObservation)
 		expired := rt.activeApprovals
@@ -370,7 +381,7 @@ func (s *ManagedClaudeService) barrier(stage string) {
 
 func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, attestor ClaudeAttestor) *ManagedClaudeService {
 	if launcher == nil {
-		launcher = &execLauncher{}
+		launcher = &execLauncherWithDir{}
 	}
 	if attestor == nil {
 		attestor = NewClaudeAttestor(cfg)

@@ -29,8 +29,9 @@ type Config struct {
 	InsecureLocalOnly    bool
 	EnableLocalPTY       bool // Phase 6: default-off feature flag
 	EnableAgentDetection bool // Phase A5: default-off agent detection bridge
-	EnableManagedCodex   bool // SP0: default-off native managed Codex runtime
-	EnableManagedClaude  bool // C1D: default-off native managed Claude runtime
+	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
+	EnableManagedClaude  bool   // C1D: default-off native managed Claude runtime
+	ClaudeDigest         string // C1D: pre-verified SHA-256 of the pinned Claude binary
 }
 
 // ── Test seam interfaces ──
@@ -226,7 +227,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		if deps.ManagedClaude != nil {
 			managedClaude = deps.ManagedClaude
 		} else {
-			managedClaude = term.NewManagedClaudeService(term.PinnedClaudeConfig(), nil, nil)
+			cc := term.PinnedClaudeConfig()
+			if cfg.ClaudeDigest != "" {
+				cc = term.PinnedClaudeConfigWithDigest(cfg.ClaudeDigest)
+			}
+			managedClaude = term.NewManagedClaudeService(cc, nil, nil)
 		}
 		// C1D: configure the ONE canonical approval store as the non-actionable
 		// observation sink. Same immutability contract as Codex.

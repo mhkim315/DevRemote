@@ -1,7 +1,3 @@
-// Package term — C1D: OS-neutral Claude version/artifact certification seam.
-// The attestor verifies the exact pinned Claude Code version, path, AND
-// SHA-256 artifact digest before any managed spawn. PATH lookup alone is not
-// certification. A missing PinnedDigest is a hard fail-closed error.
 package term
 
 import (
@@ -17,13 +13,12 @@ type ClaudeEntryConfig struct {
 	Bin              string
 	Version          string
 	AuthorityVersion string
-	PinnedPath       string // mandatory: absolute path
-	PinnedDigest     string // mandatory: hex-encoded SHA-256
+	PinnedPath       string
+	PinnedDigest     string
 }
 
-// PinnedClaudeConfig returns the C0D-accepted pinned identity. The digest
-// field is empty by design — the caller MUST supply a verified digest before
-// use, or all Certify calls will fail closed.
+// PinnedClaudeConfig returns the default identity. PinnedDigest is empty;
+// the caller MUST set it via PinnedClaudeConfigWithDigest before use.
 func PinnedClaudeConfig() ClaudeEntryConfig {
 	home, _ := os.UserHomeDir()
 	return ClaudeEntryConfig{
@@ -31,11 +26,16 @@ func PinnedClaudeConfig() ClaudeEntryConfig {
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
 		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", "2.1.209", "claude"),
-		PinnedDigest:     "", // caller MUST set before use
 	}
 }
 
-// Verify checks the executable reports the exact pinned version string.
+// PinnedClaudeConfigWithDigest returns the config with the given digest.
+func PinnedClaudeConfigWithDigest(digest string) ClaudeEntryConfig {
+	c := PinnedClaudeConfig()
+	c.PinnedDigest = digest
+	return c
+}
+
 func (c ClaudeEntryConfig) Verify() error {
 	vs, err := exec.Command(c.Bin, "--version").CombinedOutput()
 	if err != nil {
@@ -47,20 +47,24 @@ func (c ClaudeEntryConfig) Verify() error {
 	return nil
 }
 
-// ClaudeAttestor is the OS-neutral certification seam.
 type ClaudeAttestor interface {
 	Certify(exe string) error
 }
+
+// versionRunner runs `exe --version`. Injectable for tests.
+var versionRunner = func(exe string) (string, error) {
+	out, err := exec.Command(exe, "--version").CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// digestProvider computes SHA-256 of a file. Injectable for tests.
+var digestProvider = fileDigest
 
 type productionClaudeAttestor struct {
 	cfg ClaudeEntryConfig
 }
 
-// digestProvider computes SHA-256 of a file. Replaceable in tests.
-var digestProvider = fileDigest
-
 func (a productionClaudeAttestor) Certify(exe string) error {
-	// 1. Config checks (no I/O, fail-closed before any exec).
 	if a.cfg.PinnedDigest == "" {
 		return fmt.Errorf("claude certify: pinned digest not configured — supply a verified SHA-256")
 	}
@@ -68,16 +72,14 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 		return fmt.Errorf("claude certify: pinned path not configured")
 	}
 
-	// 2. Version check.
-	vs, err := exec.Command(exe, "--version").CombinedOutput()
+	vs, err := versionRunner(exe)
 	if err != nil {
 		return fmt.Errorf("claude certify: %w", err)
 	}
-	if got := strings.TrimSpace(string(vs)); got != a.cfg.Version {
-		return fmt.Errorf("claude certify: version mismatch: want %q, got %q", a.cfg.Version, got)
+	if vs != a.cfg.Version {
+		return fmt.Errorf("claude certify: version mismatch: want %q, got %q", a.cfg.Version, vs)
 	}
 
-	// 3. Path resolution.
 	resolved, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return fmt.Errorf("claude certify: realpath: %w", err)
@@ -92,6 +94,7 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 	if fi, err := os.Stat(resolved); err != nil || fi.IsDir() {
 		return fmt.Errorf("claude certify: pinned path is not a regular executable")
 	}
+
 	actual, err := digestProvider(resolved)
 	if err != nil {
 		return fmt.Errorf("claude certify: digest read: %w", err)
@@ -103,7 +106,6 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 	return nil
 }
 
-// NewClaudeAttestor creates the production attestor for the pinned config.
 func NewClaudeAttestor(cfg ClaudeEntryConfig) ClaudeAttestor {
 	return productionClaudeAttestor{cfg: cfg}
 }
