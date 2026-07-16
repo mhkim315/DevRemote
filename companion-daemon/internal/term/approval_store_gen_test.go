@@ -1130,22 +1130,231 @@ func TestInstallRuntimeGeneration_SupersedesRecords(t *testing.T) {
 
 // TestInstallRuntimeGeneration_IdempotentSameGeneration verifies that
 // calling InstallRuntimeGeneration with the same or older generation
-// does not re-supersede or change state beyond the first call.
+// does not supersede or change state beyond the first call.
 func TestInstallRuntimeGeneration_IdempotentSameGeneration(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
 	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated")
 	if s.Len() != 1 {
 		t.Fatalf("expected 1 session, got %d", s.Len())
 	}
-	// Same generation: no-op for hw, but supersedeLocked still runs.
+	// Same generation: no-op for hw. supersedeLocked runs (gen matches,
+	// not newer, so no supersede).
 	s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again")
 	if s.Len() != 1 {
 		t.Fatalf("expected still 1 session, got %d", s.Len())
 	}
-	// Older generation: hw unchanged, supersedeLocked still runs.
+	// Older generation: complete no-op — must not supersede.
+	// First seed a record at the current gen.
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 5, StreamGen: 1, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "a1", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	// Older generation InstallRuntimeGeneration must NOT supersede.
 	s.InstallRuntimeGeneration("codex:s1", 4, 0, "old-gen")
-	safe := s.ListSafe("codex:s1")
-	if len(safe) != 0 {
-		t.Fatalf("expected 0 records, got %d", len(safe))
+	snap, ok := s.LookupRecord("codex:s1", "a1")
+	if !ok {
+		t.Fatal("record lost after older-gen InstallRuntimeGeneration (should be no-op)")
+	}
+	if snap.State != ApprovalPending {
+		t.Fatalf("older-gen superseded current record: state=%v", snap.State)
+	}
+}
+
+// TestInstallRuntimeGeneration_OlderGenDoesNotSupersedeCurrentApprovals is the
+// non-vacuous counterexample for R11-F1 blocker 1. An older runtime's
+// termination must not invalidate a newer runtime's pending approvals.
+func TestInstallRuntimeGeneration_OlderGenDoesNotSupersedeCurrentApprovals(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// New runtime at gen (10, 0) seeds a pending approval.
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 10, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "a-new", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+
+	// Old runtime at gen (5, 1) terminates — must NOT supersede gen 10 records.
+	s.InstallRuntimeGeneration("codex:s1", 5, 1, "old-terminated")
+
+	snap, ok := s.LookupRecord("codex:s1", "a-new")
+	if !ok {
+		t.Fatal("new-runtime record lost after old-gen termination")
+	}
+	if snap.State != ApprovalPending {
+		t.Fatalf("old-gen termination superseded current record: state=%v", snap.State)
+	}
+	// High-water must remain at the newer generation.
+	if snap.LaunchGen != 10 || snap.StreamGen != 0 {
+		t.Fatalf("hw shifted by old gen: launch=%d stream=%d", snap.LaunchGen, snap.StreamGen)
+	}
+}
+
+// TestEvictOldestSession_SkipsLiveAuthority verifies that evictOldestSessionLocked
+// does not evict sessions with pending or executing records (R11-F1 blocker 2).
+func TestEvictOldestSession_SkipsLiveAuthority(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Fill sessions so eviction pressure exists.
+	for i := 0; i < authMaxApprovalSessions-1; i++ {
+		sid := fmt.Sprintf("filler:s%d", i)
+		s.InstallRuntimeGeneration(sid, 1, 0, "filler")
+	}
+
+	// Create a session with a pending approval record.
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:live", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "a-live", SessionID: "codex:live", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+
+	// Now trigger eviction by creating one more session (hits the limit).
+	s.InstallRuntimeGeneration("codex:new", 1, 0, "new")
+
+	// The live session must survive.
+	safe := s.ListSafe("codex:live")
+	if len(safe) == 0 {
+		t.Fatal("live session was evicted — pending authority destroyed")
+	}
+	snap, ok := s.LookupRecord("codex:live", "a-live")
+	if !ok || snap.State != ApprovalPending {
+		t.Fatalf("live record lost or state changed: ok=%v state=%v", ok, snap.State)
+	}
+}
+
+// TestEvictOneLocked_PreservesPendingRecords verifies per-record eviction
+// only removes terminal records, never pending/executing.
+func TestEvictOneLocked_PreservesPendingRecords(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Seed exactly authMaxApprovalsPerSession all-pending records.
+	for i := 0; i < authMaxApprovalsPerSession; i++ {
+		admitted := s.IngestObserved(ApprovalIngest{
+			SessionID: "codex:s1", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+			Items: []ApprovalIngestItem{{
+				Approval:   agent.AgentApproval{ID: fmt.Sprintf("a%d", i), SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+				Provenance: contract.ProvenanceNativeLog,
+			}},
+		})
+		if !admitted {
+			t.Fatalf("record %d not admitted (capacity pre-check too aggressive?)", i)
+		}
+	}
+
+	// One more ingest at capacity: evictOneLocked fires but must find zero
+	// terminal victims. The new item is skipped, all pending records survive.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "overflow", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	if admitted {
+		t.Fatal("overflow item admitted despite capacity")
+	}
+
+	// All original records must still be present.
+	for i := 0; i < authMaxApprovalsPerSession; i++ {
+		snap, ok := s.LookupRecord("codex:s1", fmt.Sprintf("a%d", i))
+		if !ok || snap.State != ApprovalPending {
+			t.Fatalf("record a%d lost or state changed: ok=%v state=%v", i, ok, snap.State)
+		}
+	}
+}
+
+// TestIngest_NewerGenSupersedesWithDuplicateIDs verifies that a newer
+// generation supersedes old records even when all its items are duplicate
+// IDs (R11-F1 blocker 3).
+func TestIngest_NewerGenSupersedesWithDuplicateIDs(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Seed a record at gen (1, 0).
+	s.Ingest(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "dup1", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL, Options: []agent.InteractionOption{{ID: "opt1"}}},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+
+	// New runtime at gen (2, 0) re-offers the SAME approval ID with the SAME
+	// options (idempotent re-offer). Even though no NEW record is admitted,
+	// the older gen records must be superseded.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 2, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "dup1", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL, Options: []agent.InteractionOption{{ID: "opt1"}}},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	if admitted {
+		t.Fatal("duplicate idempotent re-offer should not admit a new record")
+	}
+
+	// The old gen record must be invalidated.
+	snap, ok := s.LookupRecord("codex:s1", "dup1")
+	if !ok {
+		t.Fatal("record disappeared — should be invalidated, not deleted")
+	}
+	if snap.State == ApprovalPending {
+		t.Fatal("old-gen record still pending after newer gen arrived with same ID")
+	}
+}
+
+// TestIngest_NewerGenSupersedesAtCapacity verifies that a newer generation
+// supersedes old records even when capacity prevents new item admission
+// (R11-F1 blocker 3).
+func TestIngest_NewerGenSupersedesAtCapacity(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Fill gen (1, 0) to capacity with pending records.
+	for i := 0; i < authMaxApprovalsPerSession; i++ {
+		s.Ingest(ApprovalIngest{
+			SessionID: "codex:s1", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+			Items: []ApprovalIngestItem{{
+				Approval:   agent.AgentApproval{ID: fmt.Sprintf("old%d", i), SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+				Provenance: contract.ProvenanceNativeLog,
+			}},
+		})
+	}
+
+	// New runtime at gen (2, 0) tries to add a new item but capacity is full.
+	// Even though the new item can't be admitted, the old gen records must be
+	// superseded because a structurally valid newer generation arrived.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:s1", LaunchGen: 2, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "new-item", SessionID: "codex:s1", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	if admitted {
+		t.Fatal("capacity-full should not admit new item")
+	}
+
+	// All old gen records must be invalidated (not pending).
+	for i := 0; i < authMaxApprovalsPerSession; i++ {
+		snap, ok := s.LookupRecord("codex:s1", fmt.Sprintf("old%d", i))
+		if !ok {
+			t.Fatalf("old%d disappeared", i)
+		}
+		if snap.State == ApprovalPending {
+			t.Fatalf("old%d still pending after newer gen arrived at capacity", i)
+		}
+	}
+
+	// ListSafe may return recently-resolved records in the resolution window,
+	// but none must be in a live state.
+	for _, dto := range s.ListSafe("codex:s1") {
+		if dto.State == string(ApprovalPending) || dto.State == string(ApprovalExecuting) {
+			t.Fatalf("live record in ListSafe after newer gen superseded: id=%s state=%v", dto.ID, dto.State)
+		}
 	}
 }

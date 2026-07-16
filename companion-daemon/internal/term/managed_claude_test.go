@@ -1155,27 +1155,23 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	entropyReader = origEntropy
 	clockNow = time.Now
 
-	// Build the production service.
-	cfg := ClaudeEntryConfig{
-		Bin:              "claude",
-		Version:          "2.1.209",
-		AuthorityVersion: "2.1.209",
-		PinnedPath:       filepath.Join(os.Getenv("HOME"), ".local", "share", "claude", "versions", "2.1.209", "claude"),
-		PinnedDigest:     digest,
-	}
+	// Build the production service using the pinned config.
+	cfg := PinnedClaudeConfigWithDigest(digest)
+	cfg.Bin = cfg.PinnedPath
 
 	svc := NewManagedClaudeService(cfg, nil, nil)
 	store := NewApprovalStore()
 	svc.SetApprovalStore(store)
 
 	// Start a real IPC server on a temp socket.
-	socketPath := filepath.Join(t.TempDir(), "pokit-c1d-test.sock")
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("pokit-c1d-test-%d.sock", time.Now().UnixNano()))
 	reg, _ := mux.NewRegistry()
 	srv, err := StartIPCServer(socketPath, reg, nil, nil, nil, nil, nil, nil, svc)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}
 	defer srv.Close()
+	defer os.Remove(socketPath)
 
 	// Connect as `pokit run claude` would (JSON line protocol).
 	conn, err := net.Dial("unix", socketPath)

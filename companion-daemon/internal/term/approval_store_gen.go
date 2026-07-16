@@ -333,7 +333,10 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	now := s.now()
 
 	// First pass: validate items WITHOUT mutating session state.
-	// Build a list of records that pass all validation gates.
+	// Track both (a) items that can be admitted as new records and
+	// (b) whether ANY item is structurally valid (authoritative provenance).
+	// A structurally valid newer generation must supersede old records even
+	// when specific items fail duplicate-ID or capacity checks (R11-F1 fix 3).
 	type pendingRec struct {
 		rec    *approvalRecord
 		fprint string
@@ -343,6 +346,7 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	if sess != nil {
 		existingCount = len(sess.records)
 	}
+	hasAuthoritativeItem := false
 
 	for _, item := range in.Items {
 		a := item.Approval
@@ -355,6 +359,10 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 		if !contract.ApprovalAuthoritative(item.Provenance) {
 			continue
 		}
+		// Item is structurally valid — a newer generation must supersede
+		// old authority even if this specific item cannot be admitted.
+		hasAuthoritativeItem = true
+
 		copied := copyOptions(a.Options)
 		delivery, mok := validateDeliveryMaterial(item, copied)
 		if !mok {
@@ -404,11 +412,16 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 		pending = append(pending, pendingRec{rec: rec, fprint: fprint})
 	}
 
-	if len(pending) == 0 {
-		return 0 // NO state change — invalid items must not mutate Store.
+	// Determine whether the generation should advance. A structurally valid
+	// item (authoritative provenance) gates the generation change; the
+	// generation advances even when admission fails for duplicate-ID or
+	// capacity reasons (R11-F1 fix 3). Without any authoritative item the
+	// entire ingest is a no-op (the original F1 fix).
+	if !hasAuthoritativeItem && len(pending) == 0 {
+		return 0 // no structural validity, no new records → no state change
 	}
 
-	// Second pass: mutate session state ONLY after items pass validation.
+	// Second pass: mutate session state.
 	if sess == nil {
 		if len(s.sessions) >= authMaxApprovalSessions {
 			s.evictOldestSessionLocked()
@@ -417,15 +430,17 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 		s.sessions[in.SessionID] = sess
 	}
 
-	// Advance high-water if this is a newer generation.
-	if sess.hwInitialized {
-		if genNewer(in.LaunchGen, in.StreamGen, sess.hwLaunch, sess.hwStream) {
-			s.supersedeLocked(sess, "generation advanced")
+	// Advance high-water + supersede if this is a structurally newer generation.
+	if hasAuthoritativeItem {
+		if sess.hwInitialized {
+			if genNewer(in.LaunchGen, in.StreamGen, sess.hwLaunch, sess.hwStream) {
+				s.supersedeLocked(sess, "generation advanced")
+				sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
+			}
+		} else {
 			sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
+			sess.hwInitialized = true
 		}
-	} else {
-		sess.hwLaunch, sess.hwStream = in.LaunchGen, in.StreamGen
-		sess.hwInitialized = true
 	}
 
 	// Insert records (re-check duplicate under lock — safe since we hold mu).
@@ -508,6 +523,11 @@ func (s *AuthoritativeApprovalStore) SupersedeRuntime(sessionID string, launchGe
 // It creates NO Approval record — it is the single Store-owned path for
 // termination, replacement and cleanup to install generation authority
 // without an ingest side effect.
+//
+// SAFETY (R11-F1 review): supersedeLocked is ONLY called when the incoming
+// generation is actually newer than the current high-water. An older or
+// equal generation that does not advance the high-water is a complete
+// no-op — it must not supersede current-generation authority.
 func (s *AuthoritativeApprovalStore) InstallRuntimeGeneration(sessionID string, launchGen int64, streamGen int, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -522,8 +542,9 @@ func (s *AuthoritativeApprovalStore) InstallRuntimeGeneration(sessionID string, 
 	if !sess.hwInitialized || genNewer(launchGen, streamGen, sess.hwLaunch, sess.hwStream) {
 		sess.hwLaunch, sess.hwStream = launchGen, streamGen
 		sess.hwInitialized = true
+		s.supersedeLocked(sess, reason)
 	}
-	s.supersedeLocked(sess, reason)
+	// older or equal generation: complete no-op — must not supersede current authority.
 }
 
 // Clear drops all records for a session on delete/unlink.
@@ -855,6 +876,10 @@ func (s *AuthoritativeApprovalStore) evictOneLocked(sess *sessionApprovals) {
 	first := true
 	for id, rec := range sess.records {
 		terminal := IsTerminalApprovalState(rec.state)
+		// Never evict pending or executing records — they hold live authority.
+		if !terminal {
+			continue
+		}
 		better := first ||
 			(terminal && !victimTerminal) ||
 			(terminal == victimTerminal && (rec.createdAt.Before(vt) || (rec.createdAt.Equal(vt) && id < victim)))
@@ -872,6 +897,10 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() {
 	var vt time.Time
 	first := true
 	for id, sess := range s.sessions {
+		// Never evict a session that holds live (pending or executing) authority.
+		if sessionHasLiveAuthority(sess) {
+			continue
+		}
 		var newest time.Time
 		for _, rec := range sess.records {
 			if rec.createdAt.After(newest) {
@@ -885,6 +914,18 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() {
 	if victim != "" {
 		delete(s.sessions, victim)
 	}
+}
+
+// sessionHasLiveAuthority reports whether a session holds any record that is
+// pending or executing — those records represent live approval authority that
+// must not be evicted by capacity pressure.
+func sessionHasLiveAuthority(sess *sessionApprovals) bool {
+	for _, rec := range sess.records {
+		if rec.state == ApprovalPending || rec.state == ApprovalExecuting {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AuthoritativeApprovalStore) Len() int {

@@ -25,7 +25,7 @@ func PinnedClaudeConfig() ClaudeEntryConfig {
 		Bin:              "claude",
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
-		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", "2.1.209", "claude"),
+		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", "2.1.209"),
 	}
 }
 
@@ -41,10 +41,16 @@ func (c ClaudeEntryConfig) Verify() error {
 	if err != nil {
 		return fmt.Errorf("claude execute: %w", err)
 	}
-	if got := strings.TrimSpace(string(vs)); got != c.Version {
+	if got := extractVersion(string(vs)); got != c.Version {
 		return fmt.Errorf("claude version mismatch: want %q, got %q", c.Version, got)
 	}
 	return nil
+}
+
+// extractVersion returns the first whitespace-delimited token from a version
+// string like "2.1.209 (Claude Code)".
+func extractVersion(raw string) string {
+	return strings.Fields(strings.TrimSpace(raw))[0]
 }
 
 type ClaudeAttestor interface {
@@ -76,7 +82,7 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 	if err != nil {
 		return fmt.Errorf("claude certify: %w", err)
 	}
-	if vs != a.cfg.Version {
+	if extractVersion(vs) != a.cfg.Version {
 		return fmt.Errorf("claude certify: version mismatch: want %q, got %q", a.cfg.Version, vs)
 	}
 
