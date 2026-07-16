@@ -122,7 +122,12 @@ defer_join_failed     resume_join_failed      identity_mismatch
 unexpected_tool_input no_denial_match         ambiguous_denial
 marker_violation      schema_invalid          projection_bounds_exceeded
 cleanup_failed        raw_delete_failed       provider_failed
+unstable_structure    unexpected_error
 ```
+
+`unstable_structure` covers the two live projections diverging after removing
+run-specific hashes. `unexpected_error` is the fail-closed catch-all for any
+exception not already classified; it never carries the exception value.
 
 Raw exception values never reach stdout or any committed artifact. Any
 failure, unstable structure, cleanup failure, or failed control causes a
