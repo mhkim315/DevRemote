@@ -1,8 +1,8 @@
 # A1.2 C2D-C R6-A6 Safe Denial Wire Probe Handoff
 
-Status: **A5 ROLLBACK VERIFIED — A5 PROBE REJECTED — EVIDENCE ONLY**  
+Status: **A5 ROLLBACK VERIFIED — A5 PROBE REJECTED — EVIDENCE ONLY**
 Verified rollback: `39ba76e` restores the relevant production/test files to
-`7ad9239b9e73fb1be713b201416c1b3fe4ded473`  
+`7ad9239b9e73fb1be713b201416c1b3fe4ded473`
 Rejected probe: `1b18015ccc3109551550ba9c66e1d555447d5c18`
 
 Do not modify production/mobile/A1 authority code. Do not start R6-B/C2D-D/C3D.
