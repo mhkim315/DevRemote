@@ -222,10 +222,11 @@ func detectDenialResult(raw []byte) bool {
 
 // decodeDenialResult strictly decodes a detected denial-shaped line.
 //
-// Authority fields (session_id, permission_denials) are token-walked and
-// accepted exactly once each; a duplicate authority key is malformed.
-// Unknown top-level fields are advisory per the frozen wire contract and
-// are skipped as opaque JSON without interpretation.
+// Authority fields (type, session_id, permission_denials) are token-walked
+// and accepted exactly once each; a duplicate authority key is malformed.
+// type must be present and equal "result". Unknown top-level fields are
+// advisory per the frozen wire contract and are skipped as opaque JSON
+// without interpretation.
 func decodeDenialResult(raw []byte) (*streamDenial, denialDecodeOutcome) {
 	if !detectDenialResult(raw) {
 		return nil, denialNotDenial
@@ -239,7 +240,7 @@ func decodeDenialResult(raw []byte) (*streamDenial, denialDecodeOutcome) {
 		return nil, denialMalformed
 	}
 	var sessionID string
-	var seenSession, seenDenials bool
+	var seenType, seenSession, seenDenials bool
 	var entries []streamDenialEntry
 	for dec.More() {
 		kt, err := dec.Token()
@@ -251,6 +252,19 @@ func decodeDenialResult(raw []byte) (*streamDenial, denialDecodeOutcome) {
 			return nil, denialMalformed
 		}
 		switch key {
+		case "type":
+			if seenType {
+				return nil, denialMalformed
+			}
+			seenType = true
+			var v json.RawMessage
+			if err := dec.Decode(&v); err != nil {
+				return nil, denialMalformed
+			}
+			s, ok := strictBoundedString(v, 64)
+			if !ok || s != "result" {
+				return nil, denialMalformed
+			}
 		case "session_id":
 			if seenSession {
 				return nil, denialMalformed
@@ -288,7 +302,7 @@ func decodeDenialResult(raw []byte) (*streamDenial, denialDecodeOutcome) {
 	if _, err := dec.Token(); err != io.EOF { // trailing content
 		return nil, denialMalformed
 	}
-	if !seenSession || !seenDenials {
+	if !seenType || !seenSession || !seenDenials {
 		return nil, denialMalformed
 	}
 	return &streamDenial{SessionID: sessionID, Entries: entries}, denialOK
@@ -375,7 +389,10 @@ func decodeDenialEntry(dec *json.Decoder) (streamDenialEntry, bool) {
 				return streamDenialEntry{}, false
 			}
 			seenInput = true
-			if len(v) == 0 {
+			// The frozen wire contract requires tool_input to be a JSON
+			// object. Reject non-object values (string, number, array,
+			// null) before canonicalization.
+			if len(v) == 0 || v[0] != '{' {
 				return streamDenialEntry{}, false
 			}
 			canon, err := canonicalJSON(v)
@@ -657,8 +674,15 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 		rt.failClosedDenial()
 		return
 	}
-	ctx.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
+	_, _, ok := ctx.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
 		d.SessionID, match.ToolUseID, match.ToolName, match.InputDigest, ctx.originalRuntime)
+	// Blocker 3 (R6-B-R1): a digest mismatch on a bound tool_use_id is a
+	// cross-binding anomaly â the event proved it does not carry the input
+	// the entry was reserved for. Fail closed so a subsequent well-formed
+	// denial cannot exploit the decisionWritten entry.
+	if !ok {
+		rt.failClosedDenial()
+	}
 }
 
 func (rt *claudeManagedRuntime) clearStaleObservations() {
@@ -822,6 +846,20 @@ func (s *ManagedClaudeService) Registry() *ManagedSessionRegistry { return s.reg
 
 // Coordinator returns the C2D-B resume coordinator. Exported for composition tests.
 func (s *ManagedClaudeService) Coordinator() *claudeResumeCoordinator { return s.coordinator }
+// ObserveForTest injects a pending observation on the runtime for the given
+// POKIT session. Exported for composition tests that must prove deferred-exit
+// identity survival without going through the full hook lifecycle.
+func (s *ManagedClaudeService) ObserveForTest(pokitSessionID, toolUseID, toolName, claudeSessionID, inputDigest string) bool {
+	s.mu.Lock()
+	rt, ok := s.runtimes[pokitSessionID]
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	rt.observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest)
+	return true
+}
+
 
 func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStore) error {
 	if store == nil {
@@ -1329,6 +1367,13 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
 	} else if rec.Exited {
+		// Deferred exit preserves coordinator identities. Clean them up.
+		s.mu.Lock()
+		coord := s.coordinator
+		s.mu.Unlock()
+		if coord != nil {
+			coord.ClearRuntime(sessionID, epoch)
+		}
 		return nil
 	}
 	rt.terminate()
@@ -1387,9 +1432,15 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
 		return fmt.Errorf("managed claude session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
+	rt := s.runtimes[sessionID]
 	delete(s.runtimes, sessionID)
 	approvals := s.approvals
+	coord := s.coordinator
 	s.mu.Unlock()
+	// Deferred exit preserves coordinator identities. Clean them up.
+	if rt != nil && coord != nil {
+		coord.ClearRuntime(sessionID, epoch)
+	}
 	s.reg.Remove(sessionID)
 	if approvals != nil {
 		approvals.Clear(sessionID)

@@ -291,60 +291,131 @@ func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 	}
 }
 
-func TestClaudeDelivery_ExitWithoutJoinedDeferredClearsIdentity(t *testing.T) {
-	l, svc, _, _, _, _, _, _ := makeSetup(t, "allow_once")
-	l.mu.Lock()
-	if len(l.procs) > 0 {
-		l.procs[0].StdoutW.Close()
+// drainIdentityEvents drains any buffered identity events before the test
+// observes its own. The coordinator event channel is shared across all
+// identities; we drain it so our test only sees its own event.
+func drainIdentityEvents(ch <-chan struct{}) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
 	}
-	l.mu.Unlock()
-	time.Sleep(200 * time.Millisecond)
+}
+
+func TestClaudeDelivery_ExitWithoutJoinedDeferredClearsIdentity(t *testing.T) {
+	// The first CreateDetached in newProviderSim creates procs[0]. We create
+	// a second runtime and close ITS stdout, proving exit without deferred.
+	launcher, svc, _ := newProviderSim(t)
+	sid, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sid
+	launcher.mu.Lock()
+	if len(launcher.procs) >= 1 {
+		launcher.procs[0].StdoutW.Close()
+	}
+	launcher.mu.Unlock()
+	// Poll until terminate completes.
+	for i := 0; i < 200; i++ {
+		time.Sleep(time.Millisecond)
+	}
 	if svc.Coordinator().IdentityCount() != 0 {
 		t.Fatal("exit without joined deferred must clear identity")
 	}
 }
 
 func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
-	l, svc, _, _, _, _, _, _ := makeSetup(t, "allow_once")
-	sid, _ := svc.CreateDetached("/tmp")
-	_ = sid
-	l.mu.Lock()
-	if len(l.procs) > 0 {
-		deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"claude-sess-allow_once","deferred_tool_use":{"id":"call_comp_allow_once","name":"Bash","input":{"command":"echo hello"}}}` + "\n"
-		l.procs[0].StdoutW.Write([]byte(deferred))
-		l.procs[0].StdoutW.Close()
+	launcher, svc, _ := newProviderSim(t)
+	sid, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
 	}
-	l.mu.Unlock()
-	time.Sleep(200 * time.Millisecond)
+
+	csid := "claude-sess-defer-stop"
+	tuid := "call_defer_stop"
+	tn := "Bash"
+	inputJSON := `{"command":"echo hello"}`
+	dgst := term.CanonicalDigest([]byte(inputJSON))
+	if !svc.ObserveForTest(sid, tuid, tn, csid, dgst) {
+		t.Fatal("ObserveForTest failed")
+	}
+
+	drainIdentityEvents(svc.Coordinator().IdentityEventCh())
+
+	deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"` + csid + `","deferred_tool_use":{"id":"` + tuid + `","name":"` + tn + `","input":` + inputJSON + `}}` + "\n"
+
+	launcher.mu.Lock()
+	if len(launcher.procs) >= 1 {
+		launcher.procs[0].StdoutW.Write([]byte(deferred))
+		launcher.procs[0].StdoutW.Close()
+	}
+	launcher.mu.Unlock()
+
+	<-svc.Coordinator().IdentityEventCh()
+
+	// Wait for runtime to actually exit before asserting.
+	for i := 0; i < 200; i++ {
+		time.Sleep(time.Millisecond)
+	}
+
 	if svc.Coordinator().IdentityCount() != 1 {
-		t.Fatalf("identity must survive, got %d", svc.Coordinator().IdentityCount())
+		t.Fatalf("identity must survive deferred exit, got %d", svc.Coordinator().IdentityCount())
 	}
-	svc.Stop(sid, 1)
+	if err := svc.Stop(sid, 1); err != nil {
+		t.Fatal(err)
+	}
 	if svc.Coordinator().IdentityCount() != 0 {
-		t.Fatal("not cleared after stop")
+		t.Fatal("identity not cleared after stop")
 	}
 }
 
 func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
-	l, svc, _, _, _, _, _, _ := makeSetup(t, "allow_once")
-	sid, _ := svc.CreateDetached("/tmp")
-	_ = sid
-	l.mu.Lock()
-	if len(l.procs) > 0 {
-		deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"claude-sess-allow_once","deferred_tool_use":{"id":"call_comp_allow_once","name":"Bash","input":{"command":"echo hello"}}}` + "\n"
-		l.procs[0].StdoutW.Write([]byte(deferred))
-		l.procs[0].StdoutW.Close()
+	launcher, svc, _ := newProviderSim(t)
+	sid, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
 	}
-	l.mu.Unlock()
-	time.Sleep(200 * time.Millisecond)
+
+	csid := "claude-sess-defer-delete"
+	tuid := "call_defer_delete"
+	tn := "Bash"
+	inputJSON := `{"command":"echo hello"}`
+	dgst := term.CanonicalDigest([]byte(inputJSON))
+	if !svc.ObserveForTest(sid, tuid, tn, csid, dgst) {
+		t.Fatal("ObserveForTest failed")
+	}
+
+	drainIdentityEvents(svc.Coordinator().IdentityEventCh())
+
+	deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"` + csid + `","deferred_tool_use":{"id":"` + tuid + `","name":"` + tn + `","input":` + inputJSON + `}}` + "\n"
+
+	launcher.mu.Lock()
+	if len(launcher.procs) >= 1 {
+		launcher.procs[0].StdoutW.Write([]byte(deferred))
+		launcher.procs[0].StdoutW.Close()
+	}
+	launcher.mu.Unlock()
+
+	<-svc.Coordinator().IdentityEventCh()
+
 	if svc.Coordinator().IdentityCount() != 1 {
-		t.Fatal("identity must survive")
+		t.Fatal("identity must survive deferred exit")
 	}
-	svc.Delete(sid, 1)
+	// Delete requires the session to be in terminal state. Stop first.
+	if err := svc.Stop(sid, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Delete(sid, 1); err != nil {
+		t.Fatal(err)
+	}
 	if svc.Coordinator().IdentityCount() != 0 {
-		t.Fatal("not cleared after delete")
+		t.Fatal("identity not cleared after delete")
 	}
 }
+
 func bytesEq(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

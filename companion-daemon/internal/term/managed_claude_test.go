@@ -1813,6 +1813,60 @@ func TestDenialDecode_NonObjectTopLevelIsNotDenial(t *testing.T) {
 	}
 }
 
+// R6-B-R1 negative decoder tests: type authority and tool_input object checks.
+
+func TestDenialDecode_DuplicateTypeKeyIsMalformed(t *testing.T) {
+	// A crafted event with "type":"system","type":"result" — the detection
+	// probe has last-wins semantics, but the strict token walker must reject
+	// the duplicate key.
+	json := `{"type":"system","type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("duplicate type key must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_TypeNotResultIsNotDenial(t *testing.T) {
+	// A result event with type != "result" is not a denial event.
+	// The detection probe checks type=="result" before the strict walker runs.
+	json := `{"type":"system","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialNotDenial {
+		t.Fatalf("type != result must be not-denial, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_MissingTypeIsMalformed(t *testing.T) {
+	// The detection probe only looks for type=="result". A missing type key
+	// means the probe returns false → denialNotDenial, but the strict walker
+	// should also reject. The probe's loose Unmarshal of a missing key
+	// leaves Type=="", which is not "result", so detectDenialResult already
+	// returns false. This test confirms the outcome is denialNotDenial.
+	json := `{"session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":{"c":"x"}}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialNotDenial {
+		t.Fatalf("missing type must be not-denial, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_ToolInputStringIsMalformed(t *testing.T) {
+	// Blocker 2: the frozen wire requires tool_input: object. A string
+	// value is malformed.
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":"just-a-string"}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("string tool_input must be malformed, got %d", outcome)
+	}
+}
+
+func TestDenialDecode_ToolInputNumberIsMalformed(t *testing.T) {
+	json := `{"type":"result","session_id":"abc","permission_denials":[{"tool_use_id":"call_01","tool_name":"Bash","tool_input":42}]}`
+	_, outcome := decodeDenialResult([]byte(json))
+	if outcome != denialMalformed {
+		t.Fatalf("numeric tool_input must be malformed, got %d", outcome)
+	}
+}
+
 // ── R6-B denial binding tests (processLine + routeDenial + failClosedDenial) ──
 
 // advanceToDecisionWritten is a test helper that reserves identity and entry,
@@ -1888,14 +1942,18 @@ func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
 		},
 	}
 	// CE-1: mutated tool_input — recomputed digest ≠ stored digest.
+	// R6-B-R1 Blocker 3: a digest mismatch on a bound tool_use_id is a
+	// cross-binding anomaly; the entry MUST be cancelled (fail closed).
 	mutated := `{"type":"result","session_id":"` + sid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"EVIL_MUTATED"}}]}`
 	runtime.processLine([]byte(mutated))
-	// MarkWitnessed should NOT be called because the recomputed digest mismatches.
-	// The entry remains in decisionWritten — verify no witness was published.
 	select {
-	case <-handle.Completion:
-		t.Fatal("entry must not complete on mutated input (digest mismatch)")
+	case result := <-handle.Completion:
+		if result.Outcome == TerminalWitnessed {
+			t.Fatal("mutated input must not witness — digest mismatch is a cross-binding anomaly")
+		}
+		// Non-witness outcome: entry was cancelled (fail closed).
 	default:
+		t.Fatal("mutated input must cancel entry immediately — completion must be signaled")
 	}
 	// Known-bad control: calling MarkWitnessed directly with the STORED digest
 	// accepts. This proves the decoder's recomputation is the enforcing boundary.

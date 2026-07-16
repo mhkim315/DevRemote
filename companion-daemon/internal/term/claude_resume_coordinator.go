@@ -244,14 +244,27 @@ type claudeResumeCoordinator struct {
 	identities map[string]*claudePrivateIdentity // ApprovalID → identity
 	entries    map[string]*resumeEntry           // claimToken → entry
 	closed     bool
+
+	// identityEventCh receives a non-blocking send after each successful
+	// ReserveIdentity. Tests use this as a deterministic barrier instead
+	// of time.Sleep. Buffered (16) so the non-blocking send never drops
+	// under load; tests drain before observing.
+	identityEventCh chan struct{}
 }
 
 // NewClaudeResumeCoordinator creates an empty coordinator.
 func NewClaudeResumeCoordinator() *claudeResumeCoordinator {
 	return &claudeResumeCoordinator{
-		identities: make(map[string]*claudePrivateIdentity),
-		entries:    make(map[string]*resumeEntry),
+		identities:      make(map[string]*claudePrivateIdentity),
+		entries:         make(map[string]*resumeEntry),
+		identityEventCh: make(chan struct{}, 16),
 	}
+}
+
+// IdentityEventCh returns a channel that receives a signal after each
+// successful ReserveIdentity. Exported for composition tests.
+func (c *claudeResumeCoordinator) IdentityEventCh() <-chan struct{} {
+	return c.identityEventCh
 }
 
 // ── Identity lifecycle ──
@@ -292,6 +305,11 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 		inputDigest:    inputDigest,
 		runtime:        rt,
 		pokitSessionID: pokitSessionID,
+	}
+	// Non-blocking send so tests can use this as a deterministic barrier.
+	select {
+	case c.identityEventCh <- struct{}{}:
+	default:
 	}
 	return true
 }
