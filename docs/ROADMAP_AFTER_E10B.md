@@ -151,8 +151,14 @@ SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6a
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
 A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7 (report e9e661c); C2D-A contract/audit AUTHORIZED; C2D-B/C/D staged review; C3D blocked
-N1  Notifications                             BLOCKED pending independent final A1.2 acceptance or explicit product deferral
-O1  Deterministic Broker                      PLANNED after N1
+PF  Post-Claude Accepted-State Freeze         BLOCKED pending independent final A1.2 C2D/C3D/mobile ACCEPT
+PA  Managed-Only Ownership Migration          BLOCKED pending PF ACCEPT
+PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA ACCEPT
+PC  Canonical Timeline + Shared Projections   BLOCKED pending PB ACCEPT
+N1  Notifications                             RESEQUENCED after PC ACCEPT
+PD  Common Contracts + Grok/ACP Research      BLOCKED pending PC ACCEPT
+PE  Navigator Readiness Contracts/Evaluation  BLOCKED pending PD ACCEPT
+O1  Deterministic Broker                      PLANNED after PE
 O2  Developer-Verifier Loop                   PLANNED after O1
 P1  Play Store / Distribution readiness
 ```
@@ -180,10 +186,25 @@ M3-auth-1B
 → SP0.5 managed I/O and lifecycle
 → SP1 native approval / A1.1 provider-positive completion
 → A1.2 Claude approval C1D → C2D → C3D
+→ PF accepted-state freeze
+→ PA managed-only ownership migration
+→ PB tmux/cmux/attach physical removal
+→ PC canonical timeline and shared projections
 → N1 notifications
+→ PD common contracts and Grok/ACP research
+→ PE Navigator readiness contracts/evaluation
 → O1 deterministic broker
 → O2 developer-verifier loop
 ```
+
+The authoritative conditional plan for PF through PE is
+`docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md`. It does not authorize
+work before final managed Claude C2D/C3D/mobile ACCEPT. PF must first record the
+final accepted Codex, Claude and mobile SHAs, live allow/deny/exit evidence and
+unskipped backend/mobile/Android gates. Managed runtimes may never be registered
+back into legacy `mux.Registry` as a compatibility path. Consumer migration
+precedes physical legacy deletion; Timeline follows legacy removal; Timeline is
+evidence only and never ApprovalAuthority.
 
 A1.2 was authorized before N1 on 2026-07-15 and retains two bounded negative
 findings without weakening approval authority. C0H found that the stable
