@@ -236,4 +236,4 @@ npx tsc --noEmit                      NOT RUN (no mobile changes)
 - `SafeApprovalDTO`: zero options, zero delivery material
 - `ListSafe` returns only bounded, redacted projections
 
-REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `07582490ec618bdf1135757362ef7e59a264e3c1`
+REVIEW REQUEST: A1.2 C1D Managed Claude Observation — `ed12f6bd37a175b28c4b8c2c847dc4b274b5c17e`
