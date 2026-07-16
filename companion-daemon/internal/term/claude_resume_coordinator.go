@@ -705,6 +705,26 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	return entry.binding, respDigest, true
 }
 
+// MarkWitnessedByToolUse looks up a coordinator entry by session and tool_use_id
+// and marks it witnessed. Used by the pump's permission_denials decoder.
+func (c *claudeResumeCoordinator) MarkWitnessedByToolUse(sessionID, toolUseID, toolName string, kind WitnessKind) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for ct, entry := range c.entries {
+		if entry.state != stateDecisionWritten {
+			continue
+		}
+		if entry.sessionID == sessionID && entry.toolUseID == toolUseID && entry.toolName == toolName && entry.decision == "deny" {
+			respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
+			delete(c.entries, ct)
+			delete(c.identities, entry.approvalID)
+			return
+		}
+	}
+}
+
 // ── Test helpers ──
 
 func (c *claudeResumeCoordinator) pendingCount() int {

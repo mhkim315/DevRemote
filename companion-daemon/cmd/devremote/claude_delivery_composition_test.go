@@ -15,9 +15,11 @@ import (
 )
 
 type compFakeLauncher struct {
-	mu      sync.Mutex
-	allArgs [][]string
-	procs   []*compPipeProc
+	mu        sync.Mutex
+	allArgs   [][]string
+	procs     []*compPipeProc
+	resumeW   *io.PipeWriter
+	resumeWCh chan struct{}
 }
 
 type compPipeProc struct {
@@ -42,11 +44,18 @@ func (p *compPipeProc) OpaqueID() string { return "comp-fake" }
 func (l *compFakeLauncher) Launch(_ string, argv []string) (term.ManagedProcess, error) {
 	l.mu.Lock()
 	l.allArgs = append(l.allArgs, append([]string(nil), argv...))
+	isResume := len(l.allArgs) >= 2
 	l.mu.Unlock()
 	_, sw := io.Pipe()
 	pr, pw := io.Pipe()
 	p := &compPipeProc{StdinW: sw, StdoutR: pr, StdoutW: pw, killCh: make(chan struct{})}
+	l.mu.Lock()
 	l.procs = append(l.procs, p)
+	if isResume && l.resumeWCh != nil {
+		l.resumeW = pw
+		close(l.resumeWCh)
+	}
+	l.mu.Unlock()
 	return p, nil
 }
 
@@ -65,6 +74,7 @@ func newProviderSim(t *testing.T) (*compFakeLauncher, *term.ManagedClaudeService
 	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
 	store := term.NewApprovalStore()
 	svc.SetApprovalStore(store)
+	launcher.resumeWCh = make(chan struct{})
 	return launcher, svc, store
 }
 
@@ -196,9 +206,13 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) { t.Fatalf("resume response: %s", r) }
 	denialJSON := `{"type":"result","stop_reason":"end_turn","session_id":"` + csid + `","permission_denials":[{"tool_name":"Bash","tool_use_id":"` + tuid + `"}]}` + "\n"
-	l.mu.Lock()
-	if len(l.procs) >= 2 { l.procs[1].StdoutW.Write([]byte(denialJSON)) }
-	l.mu.Unlock()
+	// Wait for resume writer via channel (race-free).
+	select {
+	case <-l.resumeWCh:
+	case <-time.After(time.Second):
+		t.Fatal("resume writer not ready")
+	}
+	l.resumeW.Write([]byte(denialJSON))
 	time.Sleep(100 * time.Millisecond)
 	wg.Wait()
 	if receipt.Outcome != term.DeliveryAccepted { t.Fatalf("expected accepted for deny, got %s", receipt.Outcome) }

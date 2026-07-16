@@ -81,6 +81,7 @@ type claudeManagedRuntime struct {
 	ingestGen           int64       // bumped by terminate()
 	atomicTerminated    atomic.Bool // lock-free read for pre-ingest check
 	deferredExit        bool        // B4: set before terminate() to preserve coordinator identity
+	joinedDeferred      bool        // R5-B: true only after exact tool_deferred join+ingest
 	pendingObservations map[string]*claudePendingObservation
 	activeApprovals     []activeApproval
 	rejects             int
@@ -153,6 +154,16 @@ type streamDeferred struct {
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 	} `json:"deferred_tool_use"`
+}
+
+type streamDenial struct {
+	Type              string `json:"type"`
+	StopReason        string `json:"stop_reason"`
+	SessionID         string `json:"session_id"`
+	PermissionDenials []struct {
+		ToolName  string `json:"tool_name"`
+		ToolUseID string `json:"tool_use_id"`
+	} `json:"permission_denials"`
 }
 
 // joinDeferred matches a tool_deferred result against a pending observation.
@@ -234,6 +245,10 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
+	rt.turnMu.Lock()
+	rt.joinedDeferred = true
+	rt.turnMu.Unlock()
+
 	admitted := approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
@@ -312,8 +327,11 @@ func (rt *claudeManagedRuntime) pump() {
 	// Set deferredExit before terminate() so the coordinator is NOT cleared.
 	defer func() {
 		rt.turnMu.Lock()
-		rt.deferredExit = true
+		deferred := rt.joinedDeferred
 		rt.turnMu.Unlock()
+		if deferred {
+			rt.deferredExit = true
+		}
 		rt.terminate()
 	}()
 
@@ -350,13 +368,26 @@ exit:
 
 func (rt *claudeManagedRuntime) processLine(line []byte) {
 	var event streamDeferred
-	if err := json.Unmarshal(line, &event); err != nil {
+	if err := json.Unmarshal(line, &event); err == nil && event.Type == "result" && event.StopReason == "tool_deferred" {
+		rt.joinDeferred(&event)
 		return
 	}
-	if event.Type != "result" || event.StopReason != "tool_deferred" {
+	var denial streamDenial
+	if err := json.Unmarshal(line, &denial); err == nil && denial.Type == "result" && len(denial.PermissionDenials) > 0 {
+		rt.routeDenial(&denial)
+	}
+}
+
+func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
+	if rt.coordinator == nil {
 		return
 	}
-	rt.joinDeferred(&event)
+	for _, pd := range d.PermissionDenials {
+		if pd.ToolName == "" || pd.ToolUseID == "" || d.SessionID == "" {
+			continue
+		}
+		rt.coordinator.MarkWitnessedByToolUse(d.SessionID, pd.ToolUseID, pd.ToolName, WitnessPermissionDenials)
+	}
 }
 
 func (rt *claudeManagedRuntime) clearStaleObservations() {
