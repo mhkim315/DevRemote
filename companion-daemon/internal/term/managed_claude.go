@@ -411,7 +411,10 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 	if rt.coordinator == nil || rt.bridge == nil {
 		return
 	}
+	// R6-A3: read the immutable resume context under the bridge mutex.
+	rt.bridge.mu.Lock()
 	ctx := rt.bridge.resumeCtx
+	rt.bridge.mu.Unlock()
 	if ctx == nil {
 		return
 	}
@@ -422,6 +425,10 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 		if d.SessionID != ctx.claudeSessionID || pd.ToolUseID != ctx.toolUseID || pd.ToolName != ctx.toolName {
 			continue
 		}
+		// R6-A3: input digest is from the coordinator-stored identity,
+		// validated at observation time by joinDeferred. The denial event
+		// does not carry tool_input (per C0D evidence); the stored digest
+		// is the only authoritative source.
 		rt.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
 			d.SessionID, pd.ToolUseID, pd.ToolName, ctx.inputDigest, ctx.originalRuntime)
 	}

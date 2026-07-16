@@ -408,12 +408,9 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// Derive the expected witness kind from the stored decision.
-	kind := WitnessPostToolUse
-	if ctx.expectedDecision == "deny" {
-		kind = WitnessPermissionDenials
-	}
-	ctx.coordinator.MarkWitnessed(claimToken, kind, sessionID, toolUseID, toolName, inputDigest, ctx.originalRuntime)
+	// R6-A3: PostToolUse ALWAYS proves allow only. Deny must come from
+	// the permission_denials stream decoder, never from this hook.
+	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionID, toolUseID, toolName, inputDigest, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }
 
