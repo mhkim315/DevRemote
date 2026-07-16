@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,10 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	digest := os.Getenv("POKIT_CLAUDE_DIGEST")
 	if digest == "" {
 		t.Skip("POKIT_CLAUDE_DIGEST not set")
+	}
+	const expectedDigest = "59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c"
+	if digest != expectedDigest {
+		t.Fatalf("POKIT_CLAUDE_DIGEST mismatch: got %s, want %s", digest, expectedDigest)
 	}
 
 	cfg := term.PinnedClaudeConfigWithDigest(digest)
@@ -69,19 +74,36 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		t.Fatalf("create error: %s", created["error"])
 	}
 	id := created["id"]
+	if !strings.HasPrefix(id, "claude_headless:") {
+		t.Fatalf("unexpected session ID: %s", id)
+	}
 	t.Logf("C1D-LIVE created: %s", id)
 
+	rec, ok := svc.Registry().Get(id)
+	if !ok {
+		t.Fatal("session not in registry")
+	}
+	if rec.Provider != "claude" {
+		t.Errorf("provider: got %q want claude", rec.Provider)
+	}
+	if rec.Version != "2.1.209" {
+		t.Errorf("version: got %q want 2.1.209", rec.Version)
+	}
+	if rec.Epoch != 1 {
+		t.Errorf("epoch: got %d want 1", rec.Epoch)
+	}
+	if rec.CertifiedDigest != expectedDigest {
+		t.Errorf("digest: got %s want %s", rec.CertifiedDigest, expectedDigest)
+	}
+
 	deadline := time.Now().Add(60 * time.Second)
+	var obs term.SafeApprovalDTO
 	var found bool
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		safe := store.ListSafe(id)
 		if len(safe) == 1 {
-			obs := safe[0]
-			t.Logf("C1D-LIVE observation: id=%s options=%d state=%s", obs.ID, len(obs.Options), obs.State)
-			if len(obs.Options) != 0 {
-				t.Errorf("non-actionable must have zero options, got %d", len(obs.Options))
-			}
+			obs = safe[0]
 			found = true
 			break
 		}
@@ -89,11 +111,17 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	if !found {
 		t.Fatal("timed out waiting for exactly 1 observation")
 	}
+	t.Logf("C1D-LIVE observation: id=%s options=%d state=%s", obs.ID, len(obs.Options), obs.State)
 
-	rec, ok := svc.Registry().Get(id)
-	if !ok {
-		t.Fatal("session disappeared before stop")
+	if len(obs.Options) != 0 {
+		t.Errorf("non-actionable: got %d options, want 0", len(obs.Options))
 	}
+	for _, f := range []string{obs.ID} {
+		if strings.Contains(f, "sk-") || strings.Contains(f, "ghp_") {
+			t.Error("credential leak in DTO")
+		}
+	}
+
 	if err := svc.Stop(id, rec.Epoch); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -103,8 +131,14 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 
 	for _, s := range store.ListSafe(id) {
-		if s.State == string(term.ApprovalPending) || s.State == string(term.ApprovalExecuting) {
-			t.Errorf("live record after stop: id=%s state=%s", s.ID, s.State)
+		st := s.State
+		if st == string(term.ApprovalPending) || st == string(term.ApprovalExecuting) {
+			t.Errorf("live record after stop: id=%s state=%s", s.ID, st)
+		}
+	}
+	for _, a := range store.List(id) {
+		if a.Status == "pending" || a.Status == "executing" {
+			t.Errorf("live approval after stop: id=%s status=%s", a.ID, a.Status)
 		}
 	}
 
@@ -121,5 +155,6 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		t.Errorf("socket cleanup: %v", err)
 	}
 
-	t.Logf("C1D-LIVE PASS")
+	t.Logf("C1D-LIVE PASS: provider=%s version=%s epoch=%d digest=%s",
+		rec.Provider, rec.Version, rec.Epoch, rec.CertifiedDigest)
 }

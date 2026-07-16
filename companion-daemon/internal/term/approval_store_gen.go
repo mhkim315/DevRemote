@@ -1,10 +1,10 @@
 package term
 
 import (
-	"fmt"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -427,7 +427,9 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	// Second pass: mutate session state.
 	if sess == nil {
 		if len(s.sessions) >= authMaxApprovalSessions {
-			s.evictOldestSessionLocked()
+			if !s.evictOldestSessionLocked() {
+				return 0 // capacity exhausted, no safe victim
+			}
 		}
 		sess = &sessionApprovals{records: make(map[string]*approvalRecord), idempotency: make(map[string]idempotencyEntry)}
 		s.sessions[in.SessionID] = sess
@@ -929,11 +931,19 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() bool {
 	return false
 }
 
-// sessionHasLiveAuthority reports whether a session holds any record with live
-// approval authority that must not be evicted by capacity pressure. This
-// includes pending, executing, and delivery_failed records that still have
-// bounded retries remaining.
+// sessionHasLiveAuthority reports whether a session must not be evicted by
+// capacity pressure. This covers three cases:
+//  1. Live records: pending, executing, or delivery_failed with retries.
+//  2. High-water tombstones: hwInitialized with zero records — these exist
+//     solely to block stale replay and must not be evicted until explicit
+//     lifecycle cleanup (Clear/delete) proves the tombstone is no longer needed.
+//  3. Dormant sessions: hwInitialized with only terminal records (no retries)
+//     may be safely evicted — the high-water has been superseded.
 func sessionHasLiveAuthority(sess *sessionApprovals) bool {
+	// High-water tombstone: metadata-only session that blocks stale replay.
+	if sess.hwInitialized && len(sess.records) == 0 {
+		return true
+	}
 	for _, rec := range sess.records {
 		if rec.state == ApprovalPending || rec.state == ApprovalExecuting {
 			return true

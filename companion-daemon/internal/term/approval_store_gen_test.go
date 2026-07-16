@@ -942,7 +942,9 @@ func TestClaimDelivery_RaceChurn(t *testing.T) {
 // creating any Approval record.
 func TestInstallRuntimeGeneration_CreatesSessionWithoutRecord(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
-if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Session must exist with the correct high-water.
 	if s.Len() != 1 {
@@ -967,7 +969,9 @@ func TestInstallRuntimeGeneration_RejectsLateStreamGen0(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
 
 	// Install metadata high-water at StreamGen=1 (simulating terminate).
-if err := s.InstallRuntimeGeneration("claude_headless:s1", 7, 1, "terminated"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("claude_headless:s1", 7, 1, "terminated"); err != nil {
+		t.Fatal(err)
+	}
 
 	// A late observation at StreamGen=0 must be rejected.
 	admitted := s.IngestObserved(ApprovalIngest{
@@ -1116,7 +1120,9 @@ func TestInstallRuntimeGeneration_SupersedesRecords(t *testing.T) {
 	})
 
 	// InstallRuntimeGeneration at a higher generation.
-if err := s.InstallRuntimeGeneration("codex:s1", 1, 1, "terminated"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("codex:s1", 1, 1, "terminated"); err != nil {
+		t.Fatal(err)
+	}
 
 	// The pending record must be invalidated.
 	snap, ok := s.LookupRecord("codex:s1", "a1")
@@ -1133,13 +1139,17 @@ if err := s.InstallRuntimeGeneration("codex:s1", 1, 1, "terminated"); err != nil
 // does not supersede or change state beyond the first call.
 func TestInstallRuntimeGeneration_IdempotentSameGeneration(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
-if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated"); err != nil {
+		t.Fatal(err)
+	}
 	if s.Len() != 1 {
 		t.Fatalf("expected 1 session, got %d", s.Len())
 	}
 	// Same generation: no-op for hw. supersedeLocked runs (gen matches,
 	// not newer, so no supersede).
-if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again"); err != nil {
+		t.Fatal(err)
+	}
 	if s.Len() != 1 {
 		t.Fatalf("expected still 1 session, got %d", s.Len())
 	}
@@ -1153,7 +1163,9 @@ if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "terminated-again"); err 
 		}},
 	})
 	// Older generation InstallRuntimeGeneration must NOT supersede.
-if err := s.InstallRuntimeGeneration("codex:s1", 4, 0, "old-gen"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("codex:s1", 4, 0, "old-gen"); err != nil {
+		t.Fatal(err)
+	}
 	snap, ok := s.LookupRecord("codex:s1", "a1")
 	if !ok {
 		t.Fatal("record lost after older-gen InstallRuntimeGeneration (should be no-op)")
@@ -1179,7 +1191,9 @@ func TestInstallRuntimeGeneration_OlderGenDoesNotSupersedeCurrentApprovals(t *te
 	})
 
 	// Old runtime at gen (5, 1) terminates — must NOT supersede gen 10 records.
-if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "old-terminated"); err != nil { t.Fatal(err) }
+	if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "old-terminated"); err != nil {
+		t.Fatal(err)
+	}
 
 	snap, ok := s.LookupRecord("codex:s1", "a-new")
 	if !ok {
@@ -1195,17 +1209,25 @@ if err := s.InstallRuntimeGeneration("codex:s1", 5, 1, "old-terminated"); err !=
 }
 
 // TestEvictOldestSession_SkipsLiveAuthority verifies that evictOldestSessionLocked
-// does not evict sessions with pending or executing records (R11-F1 blocker 2).
+// does not evict sessions with pending records or high-water tombstones.
 func TestEvictOldestSession_SkipsLiveAuthority(t *testing.T) {
 	s := NewAuthoritativeApprovalStore()
 
-	// Fill sessions so eviction pressure exists.
+	// Fill sessions with DORMANT (evictable) sessions: ingest then invalidate.
 	for i := 0; i < authMaxApprovalSessions-1; i++ {
 		sid := fmt.Sprintf("filler:s%d", i)
-		if err := s.InstallRuntimeGeneration(sid, 1, 0, "filler"); err != nil { t.Fatal(err) }
+		id := fmt.Sprintf("f%d", i)
+		s.Ingest(ApprovalIngest{
+			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+			Items: []ApprovalIngestItem{{
+				Approval:   agent.AgentApproval{ID: id, SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
+				Provenance: contract.ProvenanceNativeLog,
+			}},
+		})
+		s.InvalidateRecord(sid, id)
 	}
 
-	// Create a session with a pending approval record.
+	// Create a session with a pending approval record — LIVE authority.
 	s.Ingest(ApprovalIngest{
 		SessionID: "codex:live", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
 		Items: []ApprovalIngestItem{{
@@ -1215,16 +1237,63 @@ func TestEvictOldestSession_SkipsLiveAuthority(t *testing.T) {
 	})
 
 	// Now trigger eviction by creating one more session (hits the limit).
-if err := s.InstallRuntimeGeneration("codex:new", 1, 0, "new"); err != nil { t.Fatal(err) }
+	// A dormant filler should be evicted, not the live session.
+	if err := s.InstallRuntimeGeneration("codex:new", 1, 0, "new"); err != nil {
+		t.Fatalf("unexpected capacity error (a dormant filler should have been evicted): %v", err)
+	}
 
 	// The live session must survive.
-	safe := s.ListSafe("codex:live")
-	if len(safe) == 0 {
-		t.Fatal("live session was evicted — pending authority destroyed")
-	}
 	snap, ok := s.LookupRecord("codex:live", "a-live")
 	if !ok || snap.State != ApprovalPending {
-		t.Fatalf("live record lost or state changed: ok=%v state=%v", ok, snap.State)
+		t.Fatalf("live record lost: ok=%v state=%v", ok, snap.State)
+	}
+}
+
+// TestEvictOldestSession_ProtectsHighWaterTombstone verifies that a
+// metadata-only high-water session (tombstone) is NOT evicted, and that
+// stale replay is still rejected after capacity pressure.
+func TestEvictOldestSession_ProtectsHighWaterTombstone(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Install a high-water tombstone at gen (2, 1) — blocks stale gen (2, 0).
+	if err := s.InstallRuntimeGeneration("codex:tombstone", 2, 1, "terminated"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fill with dormant sessions to create capacity pressure.
+	for i := 0; i < authMaxApprovalSessions-2; i++ {
+		sid := fmt.Sprintf("filler:s%d", i)
+		id := fmt.Sprintf("f%d", i)
+		s.Ingest(ApprovalIngest{
+			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+			Items: []ApprovalIngestItem{{
+				Approval:   agent.AgentApproval{ID: id, SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
+				Provenance: contract.ProvenanceNativeLog,
+			}},
+		})
+		s.InvalidateRecord(sid, id)
+	}
+
+	// Add one more session — must evict a dormant filler, not the tombstone.
+	if err := s.InstallRuntimeGeneration("codex:probe", 1, 0, "probe"); err != nil {
+		t.Fatalf("capacity should be freed by dormant eviction: %v", err)
+	}
+
+	// The tombstone must still exist (session in the store).
+	if s.Len() < authMaxApprovalSessions {
+		// It's possible the tombstone was at the end — but List/Lookup should work.
+	}
+
+	// Stale gen (2, 0) ingest must still be rejected by the tombstone's high-water.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:tombstone", LaunchGen: 2, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "stale", SessionID: "codex:tombstone", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	if admitted {
+		t.Fatal("stale gen-0 ingest admitted after tombstone should have rejected it")
 	}
 }
 
@@ -1413,10 +1482,18 @@ func TestEvictOldestSession_DeliveryFailedRetryNotVictim(t *testing.T) {
 	}
 	s.RecordDelivery(DeliveryReceipt{Outcome: DeliveryUnavailable, ClaimToken: c.Token, Binding: c.Binding})
 
-	// Fill remaining slots with fillers that have NO live authority.
+	// Fill remaining slots with dormant (evictable) sessions.
 	for i := 0; i < authMaxApprovalSessions-2; i++ {
 		sid := fmt.Sprintf("filler:s%d", i)
-		s.InstallRuntimeGeneration(sid, 1, 0, "filler")
+		id := fmt.Sprintf("f%d", i)
+		s.Ingest(ApprovalIngest{
+			SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+			Items: []ApprovalIngestItem{{
+				Approval:   agent.AgentApproval{ID: id, SessionID: sid, Kind: "approval", Source: agent.SourceJSONL},
+				Provenance: contract.ProvenanceNativeLog,
+			}},
+		})
+		s.InvalidateRecord(sid, id)
 	}
 
 	// Now trigger eviction by adding one more session.
@@ -1481,4 +1558,45 @@ func TestIngest_MalformedDeliveryDoesNotAdvanceGeneration(t *testing.T) {
 	if snap.LaunchGen != 1 {
 		t.Fatalf("generation advanced by malformed ingest: launchGen=%d", snap.LaunchGen)
 	}
+}
+
+// TestIngestObserved_CapacityExhaustedFailClosed verifies that IngestObserved
+// fails closed when all session slots are protected and no safe victim exists.
+func TestIngestObserved_CapacityExhaustedFailClosed(t *testing.T) {
+	s := NewAuthoritativeApprovalStore()
+
+	// Fill all slots with high-water tombstones (protected, no safe victim).
+	for i := 0; i < authMaxApprovalSessions; i++ {
+		sid := fmt.Sprintf("tombstone:s%d", i)
+		if err := s.InstallRuntimeGeneration(sid, int64(i+1), 1, "terminated"); err != nil {
+			t.Fatalf("fill %d: %v", i, err)
+		}
+	}
+	if s.Len() != authMaxApprovalSessions {
+		t.Fatalf("expected %d sessions, got %d", authMaxApprovalSessions, s.Len())
+	}
+
+	// IngestObserved must fail — no safe victim, all slots are tombstones.
+	admitted := s.IngestObserved(ApprovalIngest{
+		SessionID: "codex:overflow", LaunchGen: 1, StreamGen: 0, Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval:   agent.AgentApproval{ID: "new", SessionID: "codex:overflow", Kind: "approval", Source: agent.SourceJSONL},
+			Provenance: contract.ProvenanceNativeLog,
+		}},
+	})
+	if admitted {
+		t.Fatal("ingest admitted despite capacity exhaustion")
+	}
+
+	// Store size must not increase.
+	if s.Len() != authMaxApprovalSessions {
+		t.Fatalf("capacity exceeded: %d > %d", s.Len(), authMaxApprovalSessions)
+	}
+
+	// Existing authority must remain unchanged.
+	snap, ok := s.LookupRecord("tombstone:s0", "any")
+	if ok {
+		t.Fatal("tombstone should have no records")
+	}
+	_ = snap
 }

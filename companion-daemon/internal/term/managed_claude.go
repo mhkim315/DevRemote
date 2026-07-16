@@ -74,14 +74,14 @@ type claudeManagedRuntime struct {
 	bridge  *claudeHookBridge
 	hookDir string
 
-	turnMu             sync.Mutex
-	turnClosed         bool
-	terminated         bool        // set by terminate()
-	ingestGen          int64       // bumped by terminate()
-	atomicTerminated   atomic.Bool // lock-free read for pre-ingest check
+	turnMu              sync.Mutex
+	turnClosed          bool
+	terminated          bool        // set by terminate()
+	ingestGen           int64       // bumped by terminate()
+	atomicTerminated    atomic.Bool // lock-free read for pre-ingest check
 	pendingObservations map[string]*claudePendingObservation
-	activeApprovals    []activeApproval
-	rejects            int
+	activeApprovals     []activeApproval
+	rejects             int
 
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
@@ -126,9 +126,9 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 	}
 
 	rt.pendingObservations[toolUseID] = &claudePendingObservation{
-		toolUseID:  toolUseID,
-		toolName:   toolName,
-		sessionID:  claudeSessionID,
+		toolUseID:   toolUseID,
+		toolName:    toolName,
+		sessionID:   claudeSessionID,
 		inputDigest: inputDigest,
 		observedAt:  clockNow(),
 	}
@@ -595,6 +595,14 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		return fail("register", err, false)
 	}
 	s.barrier("post-register")
+
+	// Reserve Store authority before observation becomes reachable.
+	// If the slot cannot be secured, fail launch closed.
+	if rt.approvals != nil {
+		if err := rt.approvals.InstallRuntimeGeneration(id, epoch, 0, "reserved"); err != nil {
+			return fail("reserve", err, true)
+		}
+	}
 
 	go rt.pump()
 	return id, nil
