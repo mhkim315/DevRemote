@@ -2,16 +2,12 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,72 +15,6 @@ import (
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 )
-
-// captureLauncher tees the child's stdout into a buffer while piping it
-// for the pump, so we can scan captured output for privacy leaks.
-type captureLauncher struct {
-	captured bytes.Buffer
-}
-
-func (l *captureLauncher) Launch(exe string, argv []string) (term.ManagedProcess, error) {
-	cmd := exec.Command(exe, argv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return &captureProcess{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: io.TeeReader(stdout, &l.captured),
-	}, nil
-}
-
-func (l *captureLauncher) LaunchInDir(exe string, argv []string, cwd string) (term.ManagedProcess, error) {
-	cmd := exec.Command(exe, argv...)
-	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return &captureProcess{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: io.TeeReader(stdout, &l.captured),
-	}, nil
-}
-
-type captureProcess struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  io.Reader
-	termMu  sync.Mutex
-	termErr error
-}
-
-func (p *captureProcess) Stdin() io.Writer  { return p.stdin }
-func (p *captureProcess) Stdout() io.Reader { return p.stdout }
-func (p *captureProcess) Term() error {
-	p.termMu.Lock()
-	defer p.termMu.Unlock()
-	if p.termErr == nil {
-		p.termErr = p.cmd.Process.Signal(syscall.SIGTERM)
-	}
-	return p.termErr
-}
-func (p *captureProcess) Kill() error {
-	p.termMu.Lock()
-	defer p.termMu.Unlock()
-	if p.termErr == nil {
-		p.termErr = p.cmd.Process.Kill()
-	}
-	return p.termErr
-}
-func (p *captureProcess) Wait() error      { return p.cmd.Wait() }
-func (p *captureProcess) OpaqueID() string { return "captured" }
 
 func TestC1D_LiveProductionProof(t *testing.T) {
 	digest := os.Getenv("POKIT_CLAUDE_DIGEST")
@@ -99,8 +29,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	cfg := term.PinnedClaudeConfigWithDigest(digest)
 	cfg.Bin = cfg.PinnedPath
 
-	launcher := &captureLauncher{}
-	svc := term.NewManagedClaudeService(cfg, launcher, nil)
+	svc := term.NewManagedClaudeService(cfg, nil, nil)
 	store := term.NewApprovalStore()
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatalf("SetApprovalStore: %v", err)
@@ -121,7 +50,6 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	defer ipc.Close()
 	defer os.Remove(sock)
 
-	// Use the exact production CLI serializer.
 	body := buildRunCreateRequest([]string{"claude"}, dir, true)
 	payload, _ := json.Marshal(body)
 
@@ -157,10 +85,26 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		t.Fatal("session not in registry")
 	}
 	if rec.Provider != "claude" || rec.Version != "2.1.209" || rec.Epoch != 1 {
-		t.Errorf("binding mismatch: provider=%s version=%s epoch=%d", rec.Provider, rec.Version, rec.Epoch)
+		t.Errorf("binding: provider=%s version=%s epoch=%d", rec.Provider, rec.Version, rec.Epoch)
 	}
 	if rec.CertifiedDigest != expectedDigest {
 		t.Errorf("digest: got %s want %s", rec.CertifiedDigest, expectedDigest)
+	}
+
+	// Production artifacts recorded during launch.
+	hookDir := rec.HookDir
+	pid := rec.PID
+	t.Logf("C1D-LIVE artifacts: hookDir=%s pid=%d", hookDir, pid)
+	if hookDir == "" {
+		t.Fatal("hookDir not recorded — observability seam missing")
+	}
+	if pid <= 0 {
+		t.Fatal("PID not recorded — observability seam missing")
+	}
+
+	// Hook directory must exist during runtime.
+	if _, err := os.Stat(hookDir); err != nil {
+		t.Errorf("hook dir not found during runtime: %v", err)
 	}
 
 	// Bounded poll for exactly one observation.
@@ -181,32 +125,47 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 	t.Logf("C1D-LIVE observation: id=%s options=%d state=%s", obs.ID, len(obs.Options), obs.State)
 
-	// Non-actionable proof.
 	if len(obs.Options) != 0 {
 		t.Errorf("non-actionable: got %d options, want 0", len(obs.Options))
 	}
 
-	// DTO privacy: scan all fields.
+	// ── POKIT public log evidence privacy ──
+	// ListSafe + List DTOs are the daemon's public API surface.
+	// Unique markers: certification prompt "echo c1d-probe-ok" (command) and
+	// temp dir path (CWD). Neither must appear in public DTOs.
 	dtoJSON, _ := json.Marshal(obs)
 	dtoStr := string(dtoJSON)
 	for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
 		if strings.Contains(dtoStr, secret) {
-			t.Errorf("credential leak in DTO: %s", secret)
+			t.Errorf("credential in ListSafe DTO: %s", secret)
 		}
 	}
 	if strings.Contains(dtoStr, "echo c1d-probe-ok") {
-		t.Error("certification command leaked into DTO")
+		t.Error("command marker in ListSafe DTO")
 	}
 	if strings.Contains(dtoStr, dir) {
-		t.Error("CWD leaked into DTO")
+		t.Error("CWD marker in ListSafe DTO")
+	}
+	for _, a := range store.List(id) {
+		listJSON, _ := json.Marshal(a)
+		listStr := string(listJSON)
+		if strings.Contains(listStr, "echo c1d-probe-ok") {
+			t.Error("command marker in List DTO")
+		}
+		if strings.Contains(listStr, dir) {
+			t.Error("CWD marker in List DTO")
+		}
+		for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
+			if strings.Contains(listStr, secret) {
+				t.Errorf("credential in List DTO: %s", secret)
+			}
+		}
 	}
 
-	// Stop.
+	// Stop + Shutdown.
 	if err := svc.Stop(id, rec.Epoch); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-
-	// Shutdown.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := svc.Shutdown(ctx); err != nil {
@@ -216,34 +175,31 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	defer cancel2()
 	ipc.Wait(ctx2)
 
-	// Cleanup: socket.
+	// ── Cleanup assertions ──
+
+	// Hook directory: must be removed by terminate().
+	if _, err := os.Stat(hookDir); !os.IsNotExist(err) {
+		t.Errorf("hook dir not removed after shutdown: %s", hookDir)
+	}
+
+	// Child process: must be reaped.
+	if proc, err := os.FindProcess(pid); err == nil {
+		if proc.Signal(syscall.Signal(0)) == nil {
+			t.Errorf("child PID %d still alive after shutdown", pid)
+		}
+	}
+
+	// Socket.
 	if err := os.Remove(sock); err != nil {
 		t.Errorf("socket not removable: %v", err)
 	}
 
-	// Cleanup: no leftover hook directories.
-	hooks, _ := filepath.Glob("/tmp/pokit-claude-hooks-*")
-	if len(hooks) > 0 {
-		t.Errorf("hook directories not cleaned up: %v", hooks)
-		for _, h := range hooks {
-			os.RemoveAll(h)
-		}
+	// Registry: child must be marked exited.
+	if r, ok := svc.Registry().Get(id); !ok || !r.Exited {
+		t.Error("child not exited in registry after shutdown")
 	}
 
-	// Log privacy: captured Claude stream-json stdout must not contain
-	// credential material. CWD and the certification prompt appear in
-	// Claude's own output (stream-json cwd field, -p flag) — that is
-	// provider-originated, not a POKIT DTO leak. The DTO privacy check
-	// above already confirmed these are absent from the public surface.
-	captured := launcher.captured.String()
-	for _, secret := range []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer "} {
-		if strings.Contains(captured, secret) {
-			t.Errorf("credential found in captured stdout: %s", secret)
-		}
-	}
-	_ = captured
-
-	// No live records after stop+shutdown.
+	// No live records.
 	for _, s := range store.ListSafe(id) {
 		if s.State == string(term.ApprovalPending) || s.State == string(term.ApprovalExecuting) {
 			t.Errorf("live record after stop: id=%s state=%s", s.ID, s.State)

@@ -621,6 +621,8 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		Arch:            goruntime.GOARCH,
 		CreatedAt:       clockNow(),
 		CertifiedDigest: s.cfg.PinnedDigest,
+		PID:             proc.PID(),
+		HookDir:         hookDir,
 	}
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)

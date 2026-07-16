@@ -44,6 +44,8 @@ type ManagedSessionRecord struct {
 	Arch            string
 	CreatedAt       time.Time
 	CertifiedDigest string // hex-encoded SHA-256 of attested binary (C1D)
+	PID             int    // OS process ID; never exposed in DTOs (test observability)
+	HookDir         string // hook directory path; never exposed in DTOs (test observability)
 
 	NativeStatus    ManagedNativeStatus
 	StatusChangedAt time.Time

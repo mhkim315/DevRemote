@@ -46,9 +46,10 @@ type ManagedProcess interface {
 	Stdin() io.Writer
 	Stdout() io.Reader
 	Term() error // graceful group TERM (Stop's first phase)
-	Kill() error
+	Kill() error // immediate group kill
 	Wait() error // reap; safe to call more than once
 	OpaqueID() string
+	PID() int // OS process ID; never exposed in DTOs
 }
 
 // ManagedLauncher is the narrow process-launch seam (injectable for
@@ -119,6 +120,7 @@ func (p *execProcess) Wait() error {
 	return p.waitErr
 }
 
+func (p *execProcess) PID() int { return p.cmd.Process.Pid }
 func (p *execProcess) OpaqueID() string {
 	pid := 0
 	if p.cmd.Process != nil {

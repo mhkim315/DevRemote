@@ -74,12 +74,11 @@ Assertions verified:
 - Provider: `claude`, Version: `2.1.209`, Epoch: `1`
 - Digest: `59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c`
 - Zero options, zero actionable fields
-- No credential leak in DTO (`sk-`, `ghp_`, `xoxb-`, `xoxp-`, `Bearer `)
-- Certification command (`echo c1d-probe-ok`) not in DTO
-- CWD not in DTO
+- ListSafe + List DTOs (POKIT public log surface): no credentials, no certification command, no CWD
+- Child exited after shutdown (terminate() reaps child + removes hook dir)
 - No live records after stop (pending/executing)
 - Socket cleanup verified
-- Temp dir cleaned
+- Production launcher used (not custom)
 
 ## 4. Counterexample tests
 

@@ -68,6 +68,7 @@ func (p *sp1FakeProc) Wait() error {
 	<-p.killed
 	return nil
 }
+func (p *sp1FakeProc) PID() int          { return 0 }
 func (p *sp1FakeProc) OpaqueID() string { return "sp1-fake-proc" }
 
 func (l *sp1FakeLauncher) Launch(_ string, _ []string) (term.ManagedProcess, error) {

@@ -50,6 +50,7 @@ func (p *fakeClaudeProcess) Kill() error {
 	return nil
 }
 func (p *fakeClaudeProcess) Wait() error { return p.waitErr }
+func (p *fakeClaudeProcess) PID() int    { return 0 }
 func (p *fakeClaudeProcess) OpaqueID() string {
 	if p.opaque == "" {
 		return "fake-claude-proc-1"

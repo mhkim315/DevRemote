@@ -29,6 +29,7 @@ type cmdFakeProc struct {
 
 func (p *cmdFakeProc) Stdin() io.Writer  { return p.stdinW }
 func (p *cmdFakeProc) Stdout() io.Reader { return p.stdoutR }
+func (p *cmdFakeProc) PID() int          { return 0 }
 func (p *cmdFakeProc) Term() error       { return p.Kill() }
 func (p *cmdFakeProc) Kill() error {
 	p.once.Do(func() {

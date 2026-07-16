@@ -69,6 +69,7 @@ func (p *fakeManagedProc) Wait() error {
 	return nil
 }
 
+func (p *fakeManagedProc) PID() int         { return 0 }
 func (p *fakeManagedProc) OpaqueID() string { return "fake-proc" }
 
 // scriptHandler decides the fake provider's reaction to one incoming request.
