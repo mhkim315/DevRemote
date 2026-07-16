@@ -163,11 +163,12 @@ the same checkpoint.
 > fail-closed cleanup, and non-vacuous A1 composition requirements amend this
 > section without changing the frozen C2D authority contract.
 >
-> The first remediation at `08be1ad3711cb0549e157413ea8ba4cef5798834` is also
-> rejected. The current authoritative executor packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_4_HANDOFF.md`. Remediation
-> `bc7145f529dc205e74a61c5c57bb000192d59e5e` added claim-owned completion but
-> still did not prove an accepted+committed allow or deny flow.
+> The earlier remediations remain historical. Implementation
+> `cdea8bd30059d72c2e4bcf1b33979318a3147f75` proved a real accepted allow
+> exchange, but was rejected because PostToolUse could be relabelled as denial
+> evidence and deferred-exit authority was not safely invalidated. The current
+> authoritative executor packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_5_HANDOFF.md`.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:

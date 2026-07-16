@@ -1,5 +1,9 @@
 # A1.2 C2D-C Remediation 4 Handoff
 
+> **Superseded:** implementation `cdea8bd30059d72c2e4bcf1b33979318a3147f75`
+> was independently rejected. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_5_HANDOFF.md` as the only active packet.
+
 Status: **C2D-C REJECTED — positive provider exchange still absent**  
 Reviewed implementation: `bc7145f529dc205e74a61c5c57bb000192d59e5e`  
 Previous verifier packet: `2a23fec0c10342b6a0e2d8575b824ffc87455b35`  
