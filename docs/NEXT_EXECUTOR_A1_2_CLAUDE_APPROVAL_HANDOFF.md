@@ -164,11 +164,11 @@ the same checkpoint.
 > section without changing the frozen C2D authority contract.
 >
 > The earlier remediations remain historical. Implementation
-> `a4f41ae6ecbce69bf80f19078e1e7301bceefed3` still used incomplete denial
-> binding and left the PostToolUse false-deny path open. The current
-> authoritative executor packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_6_HANDOFF.md`. Execute R6-A only and
-> stop for independent review before lifecycle slice R6-B.
+> R6-A implementation `bffeef9214add0622358a5428a05a2402db576b1` still
+> discovered claim/runtime/digest through a partial coordinator lookup and left
+> the PostToolUse false-deny path open. The current authoritative executor packet
+> is `NEXT_EXECUTOR_A1_2_C2D_C_R6_A2_HANDOFF.md`. Execute R6-A2 only and stop for
+> independent review before lifecycle slice R6-B.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:

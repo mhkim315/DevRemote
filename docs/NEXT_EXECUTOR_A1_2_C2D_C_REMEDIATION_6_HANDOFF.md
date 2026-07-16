@@ -1,5 +1,10 @@
 # A1.2 C2D-C Remediation 6 Handoff
 
+> **Superseded:** R6-A implementation
+> `bffeef9214add0622358a5428a05a2402db576b1` retained a partial-identity
+> coordinator lookup and failed its PostToolUse negative control. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A2_HANDOFF.md` as the only active packet.
+
 Status: **C2D-C REJECTED — START R6-A DENY AUTHORITY ONLY**  
 Reviewed implementation: `a4f41ae6ecbce69bf80f19078e1e7301bceefed3`  
 Accepted prerequisite: C2D-B `27bd45162feb6bdf6fec52fa44192208c8276e32`  
