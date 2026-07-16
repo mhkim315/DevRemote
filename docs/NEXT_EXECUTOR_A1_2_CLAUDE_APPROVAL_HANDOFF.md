@@ -164,12 +164,12 @@ the same checkpoint.
 > section without changing the frozen C2D authority contract.
 >
 > The earlier remediations remain historical. Implementation
-> R6-A2 implementation `5455e2de50a0a468299eee3e38eb8fc2a4166842`
-> removed the partial coordinator scan but still substituted the stored context
-> digest for missing provider evidence and left PostToolUse false-deny open. The
-> current authoritative packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A3_HANDOFF.md`. Execute R6-A3 only and stop before
-> lifecycle slice R6-B.
+> R6-A3 implementation `7ad9239b9e73fb1be713b201416c1b3fe4ded473`
+> fixed PostToolUse asymmetry, but the retained evidence and implementation
+> disagree on whether permission-denials contains tool input. The current
+> authoritative packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A4_EVIDENCE_HANDOFF.md`. Perform evidence
+> arbitration only; do not start R6-B.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:

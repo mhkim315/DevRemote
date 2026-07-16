@@ -1,5 +1,11 @@
 # A1.2 C2D-C R6-A3 Deny Evidence Handoff
 
+> **Superseded:** implementation `7ad9239b9e73fb1be713b201416c1b3fe4ded473`
+> fixed PostToolUse asymmetry but did not resolve whether denial input digest is
+> provider evidence or copied state. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A4_EVIDENCE_HANDOFF.md` for evidence arbitration
+> only.
+
 Status: **R6-A2 REJECTED — IMPLEMENT R6-A3 ONLY**  
 Reviewed implementation: `5455e2de50a0a468299eee3e38eb8fc2a4166842`  
 Current docs parent: `36192f79e425d95e72193bbc62d8703bac7a259c`  
