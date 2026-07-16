@@ -68,7 +68,7 @@ func newProviderSim(t *testing.T) (*compFakeLauncher, *term.ManagedClaudeService
 	launcher := &compFakeLauncher{}
 	cfg := term.ClaudeEntryConfig{
 		Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
-		PinnedPath: "/tmp/fake-claude",
+		PinnedPath:   "/tmp/fake-claude",
 		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
 	}
 	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
@@ -182,7 +182,10 @@ func TestClaudeDelivery_CompositionAllowAccepted(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	if !bytesEq(r, term.ClaudeHookResponseBytes("allow")) {
@@ -190,8 +193,12 @@ func TestClaudeDelivery_CompositionAllowAccepted(t *testing.T) {
 	}
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	wg.Wait()
-	if receipt.Outcome != term.DeliveryAccepted { t.Fatalf("expected accepted, got %s", receipt.Outcome) }
-	if !store.RecordDelivery(receipt).Committed { t.Fatal("not committed") }
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted, got %s", receipt.Outcome)
+	}
+	if !store.RecordDelivery(receipt).Committed {
+		t.Fatal("not committed")
+	}
 }
 
 func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
@@ -201,10 +208,15 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
-	if string(r) != string(term.ClaudeHookResponseBytes("deny")) { t.Fatalf("resume response: %s", r) }
+	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
+		t.Fatalf("resume response: %s", r)
+	}
 	// R6-B: the denial event must carry the evidence-shape entry {tool_use_id,
 	// tool_name, tool_input} with raw tool_input. The digest recomputed from
 	// this tool_input must equal the digest stored at observation.
@@ -218,8 +230,12 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 	l.resumeW.Write([]byte(denialJSON))
 	time.Sleep(100 * time.Millisecond)
 	wg.Wait()
-	if receipt.Outcome != term.DeliveryAccepted { t.Fatalf("expected accepted for deny, got %s", receipt.Outcome) }
-	if !store.RecordDelivery(receipt).Committed { t.Fatal("not committed") }
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted for deny, got %s", receipt.Outcome)
+	}
+	if !store.RecordDelivery(receipt).Committed {
+		t.Fatal("not committed")
+	}
 }
 
 func TestClaudeDelivery_DenyPostToolUseCannotCommit(t *testing.T) {
@@ -229,13 +245,20 @@ func TestClaudeDelivery_DenyPostToolUseCannotCommit(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	wg.Wait()
-	if receipt.Outcome == term.DeliveryAccepted { t.Fatal("PostToolUse after deny must not succeed") }
-	if store.RecordDelivery(receipt).Committed { t.Fatal("deny+PostToolUse must not commit") }
+	if receipt.Outcome == term.DeliveryAccepted {
+		t.Fatal("PostToolUse after deny must not succeed")
+	}
+	if store.RecordDelivery(receipt).Committed {
+		t.Fatal("deny+PostToolUse must not commit")
+	}
 }
 
 func TestClaudeDelivery_EarliestHookAfterSpawn(t *testing.T) {
@@ -245,12 +268,17 @@ func TestClaudeDelivery_EarliestHookAfterSpawn(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	wg.Wait()
-	if receipt.Outcome != term.DeliveryAccepted { t.Fatalf("got %s", receipt.Outcome) }
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("got %s", receipt.Outcome)
+	}
 }
 
 func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
@@ -258,16 +286,22 @@ func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 	d := term.NewClaudeManagedApprovalDelivery(svc)
 	d.SetPollTimeout(10 * time.Millisecond)
 	r := d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
-	if r.Outcome == term.DeliveryAccepted { t.Fatal("expected non-Accepted") }
+	if r.Outcome == term.DeliveryAccepted {
+		t.Fatal("expected non-Accepted")
+	}
 }
 
 func TestClaudeDelivery_ExitWithoutJoinedDeferredClearsIdentity(t *testing.T) {
 	l, svc, _, _, _, _, _, _ := makeSetup(t, "allow_once")
 	l.mu.Lock()
-	if len(l.procs) > 0 { l.procs[0].StdoutW.Close() }
+	if len(l.procs) > 0 {
+		l.procs[0].StdoutW.Close()
+	}
 	l.mu.Unlock()
 	time.Sleep(200 * time.Millisecond)
-	if svc.Coordinator().IdentityCount() != 0 { t.Fatal("exit without joined deferred must clear identity") }
+	if svc.Coordinator().IdentityCount() != 0 {
+		t.Fatal("exit without joined deferred must clear identity")
+	}
 }
 
 func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
@@ -282,9 +316,13 @@ func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 	}
 	l.mu.Unlock()
 	time.Sleep(200 * time.Millisecond)
-	if svc.Coordinator().IdentityCount() != 1 { t.Fatalf("identity must survive, got %d", svc.Coordinator().IdentityCount()) }
+	if svc.Coordinator().IdentityCount() != 1 {
+		t.Fatalf("identity must survive, got %d", svc.Coordinator().IdentityCount())
+	}
 	svc.Stop(sid, 1)
-	if svc.Coordinator().IdentityCount() != 0 { t.Fatal("not cleared after stop") }
+	if svc.Coordinator().IdentityCount() != 0 {
+		t.Fatal("not cleared after stop")
+	}
 }
 
 func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
@@ -299,11 +337,25 @@ func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 	}
 	l.mu.Unlock()
 	time.Sleep(200 * time.Millisecond)
-	if svc.Coordinator().IdentityCount() != 1 { t.Fatal("identity must survive") }
+	if svc.Coordinator().IdentityCount() != 1 {
+		t.Fatal("identity must survive")
+	}
 	svc.Delete(sid, 1)
-	if svc.Coordinator().IdentityCount() != 0 { t.Fatal("not cleared after delete") }
+	if svc.Coordinator().IdentityCount() != 0 {
+		t.Fatal("not cleared after delete")
+	}
 }
-func bytesEq(a, b []byte) bool { if len(a)!=len(b) { return false }; for i := range a { if a[i]!=b[i] { return false } }; return true }
+func bytesEq(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // ── R6-B adversarial deny tests ──
 
@@ -314,7 +366,10 @@ func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
@@ -345,7 +400,10 @@ func TestClaudeDelivery_DenyWithoutToolInputFailsClosed(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	// CE-2: old-style minimal event without tool_input — fails closed (no
@@ -371,7 +429,10 @@ func TestClaudeDelivery_DenyUnknownEntryFieldFailsClosed(t *testing.T) {
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}) }()
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
 	// CE-3: unknown entry field "extra_field" — malformed, fail closed.
