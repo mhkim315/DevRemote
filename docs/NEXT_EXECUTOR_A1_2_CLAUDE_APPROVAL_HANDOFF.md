@@ -164,12 +164,11 @@ the same checkpoint.
 > section without changing the frozen C2D authority contract.
 >
 > The earlier remediations remain historical. Implementation
-> R6-A3 implementation `7ad9239b9e73fb1be713b201416c1b3fe4ded473`
-> fixed PostToolUse asymmetry, but the retained evidence and implementation
-> disagree on whether permission-denials contains tool input. The current
-> authoritative packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A4_EVIDENCE_HANDOFF.md`. Perform evidence
-> arbitration only; do not start R6-B.
+> R6-A4 implementation `317a4eb7e6d5ed812cf55a8d221e43e7d588a517`
+> incorrectly treated a redacted `input_sha256` projection as a Claude wire
+> field and added a missing-field fallback. The current authoritative packet is
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A5_ROLLBACK_EVIDENCE_HANDOFF.md`. Roll back that
+> commit, collect pinned wire-shape evidence only, and stop before R6-B.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:

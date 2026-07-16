@@ -1,5 +1,10 @@
 # A1.2 C2D-C R6-A4 Denial Evidence Arbitration Handoff
 
+> **Superseded:** implementation `317a4eb7e6d5ed812cf55a8d221e43e7d588a517`
+> invented a production `input_sha256` wire field from a redacted projection and
+> added a fail-open fallback. Use
+> `NEXT_EXECUTOR_A1_2_C2D_C_R6_A5_ROLLBACK_EVIDENCE_HANDOFF.md`.
+
 Status: **R6-A3 REJECTED — RESEARCH/CONTRACT ARBITRATION ONLY**  
 Reviewed implementation: `7ad9239b9e73fb1be713b201416c1b3fe4ded473`  
 Current branch parent: `1f5a0cd931dd8c8b6fb7649b1dad19f3d925fa30`
