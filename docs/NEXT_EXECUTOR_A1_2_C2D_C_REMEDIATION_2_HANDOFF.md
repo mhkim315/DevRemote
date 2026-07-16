@@ -7,6 +7,11 @@ Accepted prerequisite: C2D-B `27bd45162feb6bdf6fec52fa44192208c8276e32`
 Canonical checkout: `/Users/mhk/Documents/codex/DevRemote`  
 Branch: `feature/phase10-multi-adapter`
 
+> **Superseded:** implementation `4e38933b698ede578e0be69454dfe829237c9e23`
+> was independently rejected because it inferred success from global identity
+> count and had no accepted+committed allow/deny composition. Continue only from
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_3_HANDOFF.md`.
+
 This is a replacement execution packet for the rejected C2D-C implementation.
 Complete all three packets below before requesting another independent review.
 Do not start C2D-D/C3D, mobile work, production activation, or a live model turn.
