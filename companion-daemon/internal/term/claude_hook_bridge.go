@@ -2,53 +2,103 @@
 // PreToolUse observation. Each managed Claude runtime gets an unguessable
 // per-runtime capability token and a private HTTP endpoint on localhost.
 //
-// Hook response format matches the C0D-certified shape:
+// The bridge uses a CLOSED allowlist of known PreToolUse fields. Unknown
+// fields, duplicate keys, and trailing content are rejected BEFORE any
+// observation is stored. The hook_event_name must equal "PreToolUse".
+//
+// Response format (C0D-certified):
 //
 //	{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer"}}
-//
-// The bridge strictly decodes the PreToolUse fields needed for identity binding
-// (session_id, tool_use_id, tool_name, tool_input) while accepting but not
-// rejecting additional fields present in the real provider payload (cwd,
-// transcript_path, prompt_id, permission_mode, effort, hook_event_name).
-// Unknown fields are ignored — only the binding fields are extracted.
 package term
 
 import (
+	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxPreToolUseBody     = 64 << 10
-	maxToolInputBytes     = 32 << 10
-	maxToolNameLen        = 128
-	maxClaudeSessionIDLen = 128
-	maxToolUseIDLen       = 128
-	capabilityTokenLen    = 32
+	maxPreToolUseBody  = 64 << 10
+	maxToolInputBytes  = 32 << 10
+	maxToolNameLen     = 128
+	maxClaudeSessionIDLen    = 128
+	maxToolUseIDLen    = 128
+	maxCWDLength       = 1024
+	capabilityTokenLen = 32
 )
 
-// hookDeferResponse is the C0D-certified defer response. It is the only
-// response C1D ever returns — the bridge never allows or denies.
+// hookDeferResponse is the C0D-certified defer response.
 const hookDeferResponse = `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer"}}`
 
-// claudePreToolUse is the minimal set of PreToolUse fields needed for identity
-// binding. The real provider payload may include additional fields (cwd,
-// transcript_path, prompt_id, permission_mode, effort, hook_event_name) which
-// are accepted but not decoded — only the binding fields are extracted.
-type claudePreToolUse struct {
-	SessionID string          `json:"session_id"`
-	ToolUseID string          `json:"tool_use_id"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
+// preToolUseAllowlist is the CLOSED set of fields accepted by the bridge.
+// Every field the real C0D provider emits is listed; anything else is
+// rejected. Fields not needed for identity binding are accepted but not
+// decoded beyond verifying they are valid JSON.
+var preToolUseAllowlist = map[string]bool{
+	"session_id":       true,
+	"tool_use_id":      true,
+	"tool_name":        true,
+	"tool_input":       true,
+	"hook_event_name":  true,
+	"cwd":              true,
+	"transcript_path":  true,
+	"prompt_id":        true,
+	"permission_mode":  true,
+	"effort":           true,
+}
+
+// strictPreToolUseDecode decodes raw JSON into a map, rejecting:
+//   - non-object input
+//   - unknown fields (not in preToolUseAllowlist)
+//   - duplicate keys
+//   - trailing content after the object
+//
+// Returns the decoded map keyed by field name, or false on any rejection.
+func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, false
+	}
+	out := make(map[string]json.RawMessage, len(preToolUseAllowlist))
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, false
+		}
+		if !preToolUseAllowlist[key] {
+			return nil, false // unknown field
+		}
+		if _, dup := out[key]; dup {
+			return nil, false // duplicate key
+		}
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return nil, false
+		}
+		out[key] = val
+	}
+	if _, err := dec.Token(); err != nil { // consume '}'
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF { // trailing content
+		return nil, false
+	}
+	return out, true
 }
 
 type claudeHookBridge struct {
@@ -113,11 +163,9 @@ func (b *claudeHookBridge) close() {
 	_ = b.server.Close()
 }
 
-// handleHook is the single bridge endpoint. It validates the capability token,
-// decodes the PreToolUse fields needed for identity binding, stores the
-// observation, and returns the C0D-certified defer response. Every failure
-// path still returns defer — the bridge never causes Claude to fail a tool
-// use; it simply does not create an observation.
+// handleHook validates the capability token, strictly decodes the PreToolUse
+// payload, validates hook_event_name == "PreToolUse", extracts identity fields,
+// stores the observation, and returns the C0D-certified defer response.
 func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeHookDefer(w)
@@ -134,47 +182,38 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode WITHOUT DisallowUnknownFields — the real provider payload carries
-	// additional fields (cwd, transcript_path, prompt_id, permission_mode,
-	// effort, hook_event_name) that we accept but do not decode.
-	dec := json.NewDecoder(strings.NewReader(string(body)))
-	var event claudePreToolUse
-	if err := dec.Decode(&event); err != nil {
-		writeHookDefer(w)
-		return
-	}
-	if dec.More() {
+	fields, ok := strictPreToolUseDecode(body)
+	if !ok {
 		writeHookDefer(w)
 		return
 	}
 
-	// Field bounds.
-	if event.ToolUseID == "" || len(event.ToolUseID) > maxToolUseIDLen {
-		writeHookDefer(w)
-		return
-	}
-	if event.ToolName == "" || len(event.ToolName) > maxToolNameLen {
-		writeHookDefer(w)
-		return
-	}
-	if event.SessionID == "" || len(event.SessionID) > maxClaudeSessionIDLen {
-		writeHookDefer(w)
-		return
-	}
-	if len(event.ToolInput) == 0 {
+	// Validate hook_event_name == "PreToolUse".
+	if heName, sok := strictBoundedString(fields["hook_event_name"], 64); !sok || heName != "PreToolUse" {
 		writeHookDefer(w)
 		return
 	}
 
-	// Canonical input digest: re-marshal tool_input with sorted keys for a
-	// stable hash matching the C0D evidence format.
-	inputCanonical, err := canonicalJSON(event.ToolInput)
-	if err != nil || len(inputCanonical) > maxToolInputBytes {
+	// Extract and validate identity fields.
+	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sessionID, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
+	if !ok1 || !ok2 || !ok3 {
 		writeHookDefer(w)
 		return
 	}
-	inputDigest := sha256.Sum256(inputCanonical)
-	inputDigestHex := hex.EncodeToString(inputDigest[:])
+	if len(fields["tool_input"]) == 0 {
+		writeHookDefer(w)
+		return
+	}
+
+	// Canonical input digest.
+	inputCanon, err := canonicalJSON(fields["tool_input"])
+	if err != nil || len(inputCanon) > maxToolInputBytes {
+		writeHookDefer(w)
+		return
+	}
+	inputDigest := sha256Hex(inputCanon)
 
 	rt := b.rt
 	if rt == nil {
@@ -182,17 +221,8 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt.observePreToolUse(event.ToolUseID, event.ToolName, event.SessionID, inputDigestHex)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
 	writeHookDefer(w)
-}
-
-// canonicalJSON re-marshals raw JSON with sorted keys for a stable digest.
-func canonicalJSON(raw json.RawMessage) ([]byte, error) {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, err
-	}
-	return json.Marshal(v) // encoding/json sorts map keys by default
 }
 
 func writeHookDefer(w http.ResponseWriter) {

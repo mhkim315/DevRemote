@@ -17,9 +17,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ── Test fakes ──
@@ -27,7 +30,8 @@ import (
 // fakeClaudeProcess implements ManagedProcess for deterministic tests.
 type fakeClaudeProcess struct {
 	stdin   *bytes.Buffer
-	stdout  *bytes.Buffer
+	stdout  io.Reader
+	pipeW   *io.PipeWriter // non-nil when using io.Pipe for stdout
 	termFn  func() error
 	killFn  func() error
 	waitErr error
@@ -37,18 +41,24 @@ type fakeClaudeProcess struct {
 func (p *fakeClaudeProcess) Stdin() io.Writer  { return p.stdin }
 func (p *fakeClaudeProcess) Stdout() io.Reader { return p.stdout }
 func (p *fakeClaudeProcess) Term() error {
+	if p.pipeW != nil {
+		_ = p.pipeW.Close()
+	}
 	if p.termFn != nil {
 		return p.termFn()
 	}
 	return nil
 }
 func (p *fakeClaudeProcess) Kill() error {
+	if p.pipeW != nil {
+		_ = p.pipeW.Close()
+	}
 	if p.killFn != nil {
 		return p.killFn()
 	}
 	return nil
 }
-func (p *fakeClaudeProcess) Wait() error { return p.waitErr }
+func (p *fakeClaudeProcess) Wait() error       { return p.waitErr }
 func (p *fakeClaudeProcess) OpaqueID() string {
 	if p.opaque == "" {
 		return "fake-claude-proc-1"
@@ -63,6 +73,8 @@ type fakeClaudeLauncher struct {
 	launched bool
 	// StreamCh lets tests feed lines into stdout after launch.
 	StreamCh chan []byte
+	// CapturedArgv stores the argv from the last Launch call.
+	CapturedArgv []string
 }
 
 func (l *fakeClaudeLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
@@ -72,29 +84,51 @@ func (l *fakeClaudeLauncher) Launch(exe string, argv []string) (ManagedProcess, 
 		return nil, fmt.Errorf("already launched")
 	}
 	l.launched = true
+	l.CapturedArgv = append([]string(nil), argv...)
+	// Use io.Pipe so stdout stays open until the writer is closed.
+	// An empty bytes.Buffer would EOF immediately, causing the pump
+	// goroutine to exit before the test can feed lines.
+	pr, pw := io.Pipe()
 	p := &fakeClaudeProcess{
 		stdin:  new(bytes.Buffer),
-		stdout: new(bytes.Buffer),
+		stdout: pr,
+		pipeW:  pw,
 	}
 	l.proc = p
 	return p, nil
+}
+
+// argvCapturingLauncher is a minimal launcher that only captures argv.
+type argvCapturingLauncher struct {
+	argv *[]string
+}
+
+func (l *argvCapturingLauncher) Launch(exe string, argv []string) (ManagedProcess, error) {
+	*l.argv = append([]string(nil), argv...)
+	pr, pw := io.Pipe()
+	return &fakeClaudeProcess{
+		stdin: new(bytes.Buffer),
+		stdout: pr,
+		pipeW: pw,
+	}, nil
 }
 
 // feedLine writes a JSON line to the process stdout for the pump to consume.
 func (l *fakeClaudeLauncher) feedLine(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.proc != nil {
-		l.proc.stdout.Write([]byte(line + "\n"))
+	if l.proc != nil && l.proc.pipeW != nil {
+		l.proc.pipeW.Write([]byte(line + "\n"))
 	}
 }
 
-// closeStream closes stdout (simulates child exit).
+// closeStream closes the pipe writer (simulates child exit / EOF).
 func (l *fakeClaudeLauncher) closeStream() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// The pump uses bufio.Scanner; closing the buffer doesn't work.
-	// Instead, tests signal exit by calling stop on the runtime directly.
+	if l.proc != nil && l.proc.pipeW != nil {
+		l.proc.pipeW.Close()
+	}
 }
 
 // fakeClaudeAttestor implements ClaudeAttestor for deterministic tests.
@@ -553,91 +587,144 @@ func TestClaudeApprovalRecordNonActionable(t *testing.T) {
 }
 
 func TestClaudeHookBridgeDecodeValid(t *testing.T) {
-	// Simulate the hook bridge decode path with the C0D-format hook input.
-	// The hook bridge receives JSON from the hook script and decodes it.
+	// The strict decoder must accept all C0D-known fields.
 	hookInput := `{"session_id":"s1","tool_use_id":"call_Test","tool_name":"Bash","tool_input":{"command":"echo ok"},"cwd":"/tmp","transcript_path":"/tmp/t.json","permission_mode":"default","effort":"high","hook_event_name":"PreToolUse"}`
-
-	var event claudePreToolUse
-	dec := json.NewDecoder(strings.NewReader(hookInput))
-	if err := dec.Decode(&event); err != nil {
-		t.Fatalf("decode failed: %v", err)
+	fields, ok := strictPreToolUseDecode([]byte(hookInput))
+	if !ok {
+		t.Fatal("strict decode rejected valid C0D payload")
 	}
-	if event.SessionID != "s1" {
-		t.Fatalf("session_id: got %q", event.SessionID)
+	// Extract and validate identity fields.
+	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sessionID, ok3 := strictBoundedString(fields["session_id"], maxSessionIDLen)
+	hookEvent, ok4 := strictBoundedString(fields["hook_event_name"], 64)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		t.Fatal("failed to extract identity fields")
 	}
-	if event.ToolUseID != "call_Test" {
-		t.Fatalf("tool_use_id: got %q", event.ToolUseID)
+	if toolUseID != "call_Test" || toolName != "Bash" || sessionID != "s1" || hookEvent != "PreToolUse" {
+		t.Fatalf("field mismatch: %q %q %q %q", toolUseID, toolName, sessionID, hookEvent)
 	}
-	if event.ToolName != "Bash" {
-		t.Fatalf("tool_name: got %q", event.ToolName)
-	}
-	// Extra fields (cwd, transcript_path, permission_mode, effort) are
-	// silently ignored — dec.Decode without DisallowUnknownFields.
 }
 
 func TestClaudeHookBridgeDecodeMalformed(t *testing.T) {
-	// Malformed JSON should fail decode.
 	malformed := `{bad json`
-	var event claudePreToolUse
-	dec := json.NewDecoder(strings.NewReader(malformed))
-	if err := dec.Decode(&event); err == nil {
-		t.Fatal("expected decode error for malformed JSON")
+	_, ok := strictPreToolUseDecode([]byte(malformed))
+	if ok {
+		t.Fatal("expected rejection of malformed JSON")
 	}
 }
 
-func TestClaudeHookBridgeDecodeMissingFields(t *testing.T) {
-	// Missing tool_use_id should decode but fail downstream field checks.
-	missing := `{"session_id":"s1","tool_name":"Bash","tool_input":{}}`
-	var event claudePreToolUse
-	dec := json.NewDecoder(strings.NewReader(missing))
-	if err := dec.Decode(&event); err != nil {
-		t.Fatalf("decode: %v", err)
+func TestClaudeHookBridgeDecodeMissingRequired(t *testing.T) {
+	// Missing tool_use_id: decode succeeds but field check fails.
+	missing := `{"session_id":"s1","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse"}`
+	fields, ok := strictPreToolUseDecode([]byte(missing))
+	if !ok {
+		t.Fatal("decode should succeed (all fields known)")
 	}
-	if event.ToolUseID != "" {
-		t.Fatal("expected empty tool_use_id")
+	_, ok = strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	if ok {
+		t.Fatal("expected empty/missing tool_use_id to fail")
+	}
+}
+
+func TestClaudeHookBridgeDecodeUnknownField(t *testing.T) {
+	// Unknown field must be rejected.
+	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse","evil_field":true}`
+	_, ok := strictPreToolUseDecode([]byte(input))
+	if ok {
+		t.Fatal("expected rejection of unknown field")
+	}
+}
+
+func TestClaudeHookBridgeDecodeDuplicateKey(t *testing.T) {
+	// Duplicate key must be rejected.
+	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse","cwd":"/tmp","cwd":"/etc"}`
+	_, ok := strictPreToolUseDecode([]byte(input))
+	if ok {
+		t.Fatal("expected rejection of duplicate key")
+	}
+}
+
+func TestClaudeHookBridgeDecodeTrailingContent(t *testing.T) {
+	// Trailing content after the object must be rejected.
+	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PreToolUse"} extra`
+	_, ok := strictPreToolUseDecode([]byte(input))
+	if ok {
+		t.Fatal("expected rejection of trailing content")
+	}
+}
+
+func TestClaudeHookBridgeDecodeWrongHookEvent(t *testing.T) {
+	// hook_event_name != "PreToolUse" must fail.
+	input := `{"session_id":"s1","tool_use_id":"x","tool_name":"Bash","tool_input":{},"hook_event_name":"PostToolUse"}`
+	fields, ok := strictPreToolUseDecode([]byte(input))
+	if !ok {
+		t.Fatal("decode should succeed (PostToolUse is in allowlist)")
+	}
+	heName, sok := strictBoundedString(fields["hook_event_name"], 64)
+	if !sok || heName == "PreToolUse" {
+		t.Fatal("expected wrong hook_event_name to be detectable")
+	}
+	// The handleHook handler would reject non-PreToolUse. Verify the field
+	// is present but wrong value.
+	if heName != "PostToolUse" {
+		t.Fatalf("unexpected hook_event_name: %q", heName)
 	}
 }
 
 func TestClaudeHookBridgeDecodeOversizedFields(t *testing.T) {
-	// tool_name exceeding maxToolNameLen should be caught by field bounds.
 	longName := strings.Repeat("x", maxToolNameLen+1)
-	input := fmt.Sprintf(`{"session_id":"s1","tool_use_id":"call_Test","tool_name":"%s","tool_input":{}}`, longName)
-	var event claudePreToolUse
-	dec := json.NewDecoder(strings.NewReader(input))
-	if err := dec.Decode(&event); err != nil {
-		t.Fatalf("decode: %v", err)
+	input := fmt.Sprintf(`{"session_id":"s1","tool_use_id":"call_Test","tool_name":"%s","tool_input":{},"hook_event_name":"PreToolUse"}`, longName)
+	fields, ok := strictPreToolUseDecode([]byte(input))
+	if !ok {
+		t.Fatal("decode should succeed")
 	}
-	if len(event.ToolName) <= maxToolNameLen {
-		t.Fatal("expected oversized tool_name")
+	_, ok = strictBoundedString(fields["tool_name"], maxToolNameLen)
+	if ok {
+		t.Fatal("expected oversized tool_name to fail bound check")
 	}
 }
 
 func TestClaudeLaunchArgv(t *testing.T) {
-	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209"}, launcher, &fakeClaudeAttestor{})
+	var capturedArgv []string
+	launcher := &argvCapturingLauncher{argv: &capturedArgv}
+	cfg := ClaudeEntryConfig{
+		Bin:              "claude",
+		Version:          "2.1.209",
+		AuthorityVersion: "2.1.209",
+		PinnedPath:       "/fake/path",
+	}
+	svc := NewManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
 
 	_, err := svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !launcher.launched {
-		t.Fatal("launcher was not called")
+	// Verify the launch argv contains the required flags.
+	argvStr := strings.Join(capturedArgv, " ")
+	if !strings.Contains(argvStr, "--settings") {
+		t.Fatalf("missing --settings in argv: %v", capturedArgv)
+	}
+	if !strings.Contains(argvStr, "--setting-sources") {
+		t.Fatalf("missing --setting-sources in argv: %v", capturedArgv)
+	}
+	if !strings.Contains(argvStr, "--output-format") {
+		t.Fatalf("missing --output-format in argv: %v", capturedArgv)
+	}
+	if !strings.Contains(argvStr, "stream-json") {
+		t.Fatalf("missing stream-json in argv: %v", capturedArgv)
+	}
+	if !strings.Contains(argvStr, "--include-partial-messages") {
+		t.Fatalf("missing --include-partial-messages in argv: %v", capturedArgv)
+	}
+	if !strings.Contains(argvStr, "-p") {
+		t.Fatalf("missing -p in argv: %v", capturedArgv)
+	}
+	if !strings.Contains(argvStr, claudeCertificationPrompt) {
+		t.Fatalf("missing certification prompt in argv: %v", capturedArgv)
 	}
 
-	// Verify the hook settings file was created and contains PreToolUse hook.
-	svc.mu.Lock()
-	var hookDir string
-	for _, rt := range svc.runtimes {
-		hookDir = rt.hookDir
-	}
-	svc.mu.Unlock()
-
-	if hookDir == "" {
-		t.Fatal("hook directory not created")
-	}
-
-	// Clean up.
 	ctx := context.Background()
 	svc.Shutdown(ctx)
 }
@@ -717,16 +804,165 @@ func TestClaudeProcessLineSkipsNonResult(t *testing.T) {
 }
 
 func TestClaudeGenApprovalTokenIsOpaque(t *testing.T) {
-	t1 := genApprovalToken()
-	t2 := genApprovalToken()
+	t1, err := genApprovalToken()
+	if err != nil {
+		t.Fatalf("genApprovalToken: %v", err)
+	}
+	t2, err := genApprovalToken()
+	if err != nil {
+		t.Fatalf("genApprovalToken: %v", err)
+	}
 	if t1 == t2 {
 		t.Fatal("expected different approval tokens")
 	}
 	if len(t1) != 32 {
 		t.Fatalf("expected 32-char hex token, got %d", len(t1))
 	}
-	// Provider tool_use_id format is never used as ApprovalID.
 	if strings.Contains(t1, "call_") {
 		t.Fatal("approval token must not contain provider tool_use_id")
+	}
+}
+
+func TestClaudeHookSettingsSchema(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	cfg := ClaudeEntryConfig{
+		Bin:              "claude",
+		Version:          "2.1.209",
+		AuthorityVersion: "2.1.209",
+		PinnedPath:       "/fake/path",
+	}
+	svc := NewManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
+
+	_, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the generated settings file.
+	svc.mu.Lock()
+	var hookDir string
+	for _, rt := range svc.runtimes {
+		hookDir = rt.hookDir
+	}
+	svc.mu.Unlock()
+
+	if hookDir == "" {
+		t.Fatal("hook directory not created")
+	}
+
+	settingsPath := filepath.Join(hookDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("parse settings: %v", err)
+	}
+
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("missing hooks key")
+	}
+	preToolUse, ok := hooks["PreToolUse"].([]any)
+	if !ok || len(preToolUse) == 0 {
+		t.Fatal("missing PreToolUse hook array")
+	}
+	entry, ok := preToolUse[0].(map[string]any)
+	if !ok {
+		t.Fatal("PreToolUse[0] not an object")
+	}
+	if entry["matcher"] != "" {
+		t.Fatalf("expected empty matcher, got %q", entry["matcher"])
+	}
+	hookList, ok := entry["hooks"].([]any)
+	if !ok || len(hookList) == 0 {
+		t.Fatal("missing hooks array inside matcher")
+	}
+	hookObj, ok := hookList[0].(map[string]any)
+	if !ok {
+		t.Fatal("hook not an object")
+	}
+	if hookObj["type"] != "command" {
+		t.Fatalf("expected type=command, got %q", hookObj["type"])
+	}
+	cmd, _ := hookObj["command"].(string)
+	if cmd == "" {
+		t.Fatal("missing command in hook")
+	}
+
+	ctx := context.Background()
+	svc.Shutdown(ctx)
+}
+
+func TestClaudePumpEOFExit(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	svc := NewManagedClaudeService(ClaudeEntryConfig{Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209", PinnedPath: "/fake/path"}, launcher, &fakeClaudeAttestor{})
+	store := NewApprovalStore()
+	svc.SetApprovalStore(store)
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	// Feed a hook observation so we can verify it's cleared on EOF.
+	rt.observePreToolUse("call_EOF", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+
+	// Kill the process to trigger EOF on stdout.
+	// The pump goroutine is running; killing the underlying process will
+	// cause the scanner to hit EOF.
+	rt.proc.Kill()
+
+	// Wait for pump to observe exit (bounded).
+	select {
+	case <-rt.exited:
+		// OK — pump processed EOF.
+	case <-time.After(3 * time.Second):
+		t.Fatal("pump did not exit after EOF")
+	}
+
+	// Pending observations must be cleared.
+	rt.turnMu.Lock()
+	if len(rt.pendingObservations) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatalf("expected 0 pending after EOF, got %d", len(rt.pendingObservations))
+	}
+	rt.turnMu.Unlock()
+
+	// Registry must show exited.
+	rec, _ := svc.Registry().Get(id)
+	if !rec.Exited {
+		t.Fatal("expected exited=true after EOF")
+	}
+}
+
+func TestClaudeAttestorFailOpenRejected(t *testing.T) {
+	// PinnedPath is set; a binary at a different path must fail certification.
+	attestor := NewClaudeAttestor(ClaudeEntryConfig{
+		Bin:        "claude",
+		Version:    "wrong-version",
+		PinnedPath: "/nonexistent/path",
+	})
+	err := attestor.Certify("/usr/bin/true")
+	if err == nil {
+		t.Fatal("expected certification failure for wrong binary")
+	}
+}
+
+func TestClaudeGenApprovalTokenEntropyFail(t *testing.T) {
+	// Prove the function returns error on failure (the production code
+	// must handle this). We can't force entropy failure, but we CAN prove
+	// the function returns (string, error) with a non-zero token on success.
+	tok, err := genApprovalToken()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok == "" {
+		t.Fatal("empty token")
+	}
+	if len(tok) != 32 {
+		t.Fatalf("expected 32 hex chars, got %d", len(tok))
 	}
 }

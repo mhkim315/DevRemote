@@ -38,15 +38,14 @@ import (
 const claudeHeadlessAdapter = "claude_headless"
 
 // claudeCertificationPrompt triggers a guaranteed Bash tool use so the
-// PreToolUse hook fires and a defer observation can be joined. The command
-// is harmless and its output is discarded.
+// PreToolUse hook fires and a defer observation can be joined.
 const claudeCertificationPrompt = "Use your Bash tool to run exactly this command: echo c1d-probe-ok"
 
 const (
-	claudeHandshakeTimeout        = 30 * time.Second
-	maxClaudeSessions             = 4
-	maxPendingClaudeObservations  = 4
-	claudeObservationTimeout      = 120 * time.Second
+	claudeHandshakeTimeout       = 30 * time.Second
+	maxClaudeSessions            = 4
+	maxPendingClaudeObservations = 4
+	claudeObservationTimeout     = 120 * time.Second
 )
 
 // ── Pending observation ──
@@ -54,9 +53,10 @@ const (
 type claudePendingObservation struct {
 	toolUseID   string
 	toolName    string
-	sessionID   string // provider Claude session ID from the hook
-	inputDigest string // SHA-256 hex of canonical tool_input
+	sessionID   string
+	inputDigest string
 	observedAt  time.Time
+	approvalID  string // set on ingest so timeout invalidation targets the real record
 }
 
 // ── Managed runtime ──
@@ -80,7 +80,6 @@ type claudeManagedRuntime struct {
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
 
-	// observer is a NARROW test seam (nil in production).
 	observer func(stage string)
 }
 
@@ -101,7 +100,6 @@ func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessi
 	return rt
 }
 
-// observePreToolUse stores a pending observation from the hook bridge.
 func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest string) {
 	rt.turnMu.Lock()
 	defer rt.turnMu.Unlock()
@@ -132,22 +130,21 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 	}
 }
 
-// streamDeferred is the C0D-certified structure of a tool_deferred result
-// emitted by Claude Code in stream-json output mode.
 type streamDeferred struct {
-	Type             string `json:"type"`
-	StopReason       string `json:"stop_reason"`
-	SessionID        string `json:"session_id"`
-	DeferredToolUse  *struct {
+	Type            string `json:"type"`
+	StopReason      string `json:"stop_reason"`
+	SessionID       string `json:"session_id"`
+	DeferredToolUse *struct {
 		ID    string          `json:"id"`
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 	} `json:"deferred_tool_use"`
 }
 
-// joinDeferred attempts to match a tool_deferred result from Claude's stdout
-// against a pending observation. FULL identity comparison: session_id +
-// tool_use_id + tool_name + input_sha256 must all match.
+// joinDeferred matches a tool_deferred result against a pending observation.
+// Full identity comparison (4 fields). On match, ingests a non-actionable
+// record and stores the real approvalID in the pending entry so timeout
+// invalidation can target it.
 func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	if d.DeferredToolUse == nil || d.SessionID == "" {
 		return
@@ -156,7 +153,6 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	toolName := d.DeferredToolUse.Name
 	sessionID := d.SessionID
 
-	// Compute input digest from the deferred result for comparison.
 	inputCanon, err := canonicalJSON(d.DeferredToolUse.Input)
 	if err != nil {
 		return
@@ -169,11 +165,23 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		rt.turnMu.Unlock()
 		return
 	}
-	// Full identity comparison: all four fields must match.
 	if pending.sessionID != sessionID || pending.toolName != toolName || pending.inputDigest != inputDigest {
 		rt.turnMu.Unlock()
 		return
 	}
+
+	// Generate ApprovalID with entropy check. A failed read is a hard error:
+	// the observation is dropped (fail-closed).
+	approvalToken, err := genApprovalToken()
+	if err != nil {
+		rt.turnMu.Unlock()
+		return
+	}
+	approvalID := "claude-" + approvalToken
+
+	// Store the real approvalID on the pending entry BEFORE deleting it,
+	// so the timeout invalidation path can find the correct ID.
+	pending.approvalID = approvalID
 	delete(rt.pendingObservations, toolUseID)
 	approvals := rt.approvals
 	rt.turnMu.Unlock()
@@ -181,11 +189,6 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	if approvals == nil {
 		return
 	}
-
-	// Opaque daemon-generated ApprovalID. The provider tool_use_id is NEVER
-	// used as the ApprovalID — it is stored only in the private pending
-	// observation for identity comparison.
-	approvalID := fmt.Sprintf("claude-%s", genApprovalToken())
 
 	approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
@@ -216,22 +219,16 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	}
 }
 
-// pump reads Claude's stream-json stdout. Each line is a JSON object. Lines
-// with type="result" and stop_reason="tool_deferred" are joined against
-// pending hook observations. On child EOF/error it marks the record exited.
+// pump reads Claude's stream-json stdout. The scanner goroutine feeds lines
+// into a channel; when the scanner exits (EOF), it closes the channel so the
+// consumer drains remaining lines and then runs the exit path.
 func (rt *claudeManagedRuntime) pump() {
-	// Stale-observation cleanup: the pump periodically clears observations
-	// that have exceeded the timeout. This runs inline in the pump loop via
-	// a time.Ticker checked in the scan loop, avoiding a separate goroutine.
 	staleTicker := time.NewTicker(30 * time.Second)
 	defer staleTicker.Stop()
 
-	// Read loop with stale check on ticker channel. We use a select to
-	// interleave scanning and cleanup without a separate goroutine.
 	lines := make(chan []byte, 64)
-	scanDone := make(chan struct{})
 	go func() {
-		defer close(scanDone)
+		defer close(lines)
 		for rt.scanner.Scan() {
 			line := bytes.TrimSpace(rt.scanner.Bytes())
 			if len(line) > 0 {
@@ -240,19 +237,19 @@ func (rt *claudeManagedRuntime) pump() {
 		}
 	}()
 
-loop:
 	for {
 		select {
 		case line, ok := <-lines:
 			if !ok {
-				break loop
+				goto exit
 			}
 			rt.processLine(line)
 		case <-staleTicker.C:
 			rt.clearStaleObservations()
 		}
 	}
-	// Drain any remaining lines after scanner stopped.
+exit:
+	// Drain any remaining lines.
 	for line := range lines {
 		rt.processLine(line)
 	}
@@ -270,7 +267,6 @@ loop:
 	_ = rt.proc.Wait()
 }
 
-// processLine attempts to parse a stream-json line as a tool_deferred result.
 func (rt *claudeManagedRuntime) processLine(line []byte) {
 	var event streamDeferred
 	if err := json.Unmarshal(line, &event); err != nil {
@@ -283,7 +279,8 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 }
 
 // clearStaleObservations removes pending observations that have exceeded the
-// timeout without a matching tool_deferred result.
+// timeout. Uses the stored approvalID so the correct store record is
+// invalidated.
 func (rt *claudeManagedRuntime) clearStaleObservations() {
 	rt.turnMu.Lock()
 	defer rt.turnMu.Unlock()
@@ -292,10 +289,8 @@ func (rt *claudeManagedRuntime) clearStaleObservations() {
 	for id, obs := range rt.pendingObservations {
 		if obs.observedAt.Before(cutoff) {
 			delete(rt.pendingObservations, id)
-			if rt.approvals != nil {
-				approvalID := fmt.Sprintf("claude-%s", genApprovalToken())
-				_ = approvalID
-				rt.approvals.InvalidateRecord(rt.sessionID, approvalID)
+			if rt.approvals != nil && obs.approvalID != "" {
+				rt.approvals.InvalidateRecord(rt.sessionID, obs.approvalID)
 			}
 		}
 	}
@@ -364,6 +359,7 @@ func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAtt
 		Bin:              "/pinned/test/claude",
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
+		PinnedPath:       "/pinned/test/claude",
 	}, launcher, attestor)
 }
 
@@ -413,8 +409,7 @@ func (s *ManagedClaudeService) eventStoreFor(sessionID string) (*managedEventSto
 	return nil, 0, false
 }
 
-// CreateDetached launches a Claude managed session with the C0D-certified
-// argv, isolated hook settings, and a private hook bridge.
+// CreateDetached launches a Claude managed session.
 func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
@@ -455,8 +450,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 
 	s.barrier("pre-spawn")
 
-	// C0D-certified launch argv: session-isolated settings, no user/project
-	// settings, structured stream-json output, partial messages included.
 	argv := []string{
 		"--settings", settingsPath,
 		"--setting-sources", "",
@@ -528,20 +521,29 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	return id, nil
 }
 
-// createHookSettings writes an isolated Claude settings JSON file that
-// configures the PreToolUse hook to call the daemon's bridge.
+// createHookSettings writes an isolated Claude settings JSON file using the
+// C0D-certified hook schema:
+//
+//	{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"<path>"}]}]}}
 func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPath string, err error) {
 	hookDir, err = os.MkdirTemp("", "pokit-claude-hooks-")
 	if err != nil {
 		return "", "", err
 	}
 
+	// C0D-certified schema: each PreToolUse entry has matcher + hooks array
+	// with {type, command} objects.
 	settings := map[string]any{
 		"hooks": map[string]any{
 			"PreToolUse": []map[string]any{
 				{
 					"matcher": "",
-					"command": filepath.Join(hookDir, "hook.sh"),
+					"hooks": []map[string]any{
+						{
+							"type":    "command",
+							"command": filepath.Join(hookDir, "hook.sh"),
+						},
+					},
 				},
 			},
 		},
@@ -553,16 +555,15 @@ func (s *ManagedClaudeService) createHookSettings() (hookDir string, settingsPat
 		return "", "", err
 	}
 	defer f.Close()
-	if err := json.NewEncoder(f).Encode(settings); err != nil {
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(settings); err != nil {
 		os.RemoveAll(hookDir)
 		return "", "", err
 	}
 	return hookDir, settingsPath, nil
 }
 
-// writeHookScript writes the shell script that curls the bridge. The script
-// pipes stdin (PreToolUse JSON from Claude) to the bridge and returns the
-// bridge's response (JSON) to Claude on stdout.
 func (s *ManagedClaudeService) writeHookScript(hookDir, bridgeURL string) error {
 	script := fmt.Sprintf("#!/bin/sh\ncurl -s -X POST -d @- '%s'\n", bridgeURL)
 	return os.WriteFile(filepath.Join(hookDir, "hook.sh"), []byte(script), 0700)
@@ -658,23 +659,6 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	return nil
 }
 
-// ── Helpers ──
-
-// sha256Hex returns the hex-encoded SHA-256 digest of data.
-func sha256Hex(data []byte) string {
-	h := sha256.New()
-	h.Write(data)
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// genApprovalToken generates an opaque random token for use in ApprovalIDs.
-// The provider tool_use_id is never used as the ApprovalID.
-func genApprovalToken() string {
-	b := make([]byte, 16)
-	_, _ = crand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
 	rec, ok := s.reg.Get(sessionID)
 	if !ok {
@@ -702,4 +686,31 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
 		approvals.Clear(sessionID)
 	}
 	return nil
+}
+
+// ── Helpers ──
+
+// canonicalJSON re-marshals raw JSON with sorted keys for a stable digest.
+func canonicalJSON(raw json.RawMessage) ([]byte, error) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
+}
+
+func sha256Hex(data []byte) string {
+	h := sha256.New()
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// genApprovalToken generates an opaque random token. Returns an error if
+// entropy read fails — the caller must abort (fail-closed).
+func genApprovalToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := crand.Read(b); err != nil {
+		return "", fmt.Errorf("approval token entropy: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }

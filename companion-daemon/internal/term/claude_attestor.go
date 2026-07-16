@@ -28,13 +28,15 @@ type ClaudeEntryConfig struct {
 }
 
 // PinnedClaudeConfig returns the C0D-accepted pinned identity for Claude
-// Code 2.1.209. The PinnedPath is empty by default (resolved via PATH);
-// set it to pin to a specific installation.
+// Code 2.1.209. The PinnedPath is the default npm global install location;
+// Certify requires the resolved binary to match this path.
 func PinnedClaudeConfig() ClaudeEntryConfig {
+	home, _ := os.UserHomeDir()
 	return ClaudeEntryConfig{
 		Bin:              "claude",
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
+		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", "2.1.209", "claude"),
 	}
 }
 
