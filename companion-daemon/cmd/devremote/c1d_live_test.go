@@ -119,10 +119,11 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	// ── Unique per-run privacy markers ──
 	cmdMarker := "echo c1d-probe-ok" // raw command + tool input
 	cwdMarker := cwd                 // CWD
-	// Hook token: the bridge URL from hook.sh.
+	// Hook token: extract the bridge URL from hook.sh.
+	// Format: #!/bin/sh\ncurl -s -X POST -d @- '<URL>'\n
 	hookScript, _ := os.ReadFile(filepath.Join(hookDir, "hook.sh"))
-	hookToken := strings.TrimSpace(string(hookScript))
-	t.Logf("hook token length: %d", len(hookToken))
+	hookToken := extractHookURL(string(hookScript))
+	t.Logf("hook token: %.40s...", hookToken)
 
 	// Provider payload marker: appears in stream-json deferred_tool_use.input.
 	payloadMarker := "c1d-probe-ok"
@@ -214,11 +215,9 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 		}
 	}
 
-	// Process group: must be gone (ESRCH = no such process).
-	if err := syscall.Kill(-pid, syscall.Signal(0)); err == nil {
-		t.Errorf("process group %d still exists after reap", pid)
-	} else if err != syscall.ESRCH {
-		t.Logf("pg kill result (non-ESRCH, pid may be repurposed): %v", err)
+	// Process group: only ESRCH proves the group is gone.
+	if err := syscall.Kill(-pid, syscall.Signal(0)); err != syscall.ESRCH {
+		t.Errorf("process group %d not cleanly reaped: err=%v (want ESRCH)", pid, err)
 	}
 
 	// Production wait/reap: registry confirms exited.
@@ -240,6 +239,10 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 
 	// ── Daemon log privacy ──
 	logStr := logBuf.String()
+	// Non-vacuous: prove the buffer actually captured daemon log output.
+	if !strings.Contains(logStr, "IPC Server listening") {
+		t.Error("log capture empty — daemon log sink not observed")
+	}
 	for _, m := range allMarkers {
 		if strings.Contains(logStr, m) {
 			t.Errorf("marker in daemon log: %.40s...", m)
@@ -259,4 +262,19 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 
 	t.Logf("PASS: provider=%s version=%s epoch=%d", rec.Provider, rec.Version, rec.Epoch)
+}
+
+// extractHookURL extracts the bridge URL from a hook script of the form:
+// #!/bin/sh\ncurl -s -X POST -d @- '<URL>'\n
+func extractHookURL(script string) string {
+	// Find the last single-quoted string on the curl line.
+	start := strings.LastIndex(script, "'")
+	if start < 0 {
+		return ""
+	}
+	end := strings.LastIndex(script[:start], "'")
+	if end < 0 {
+		return ""
+	}
+	return script[end+1 : start]
 }

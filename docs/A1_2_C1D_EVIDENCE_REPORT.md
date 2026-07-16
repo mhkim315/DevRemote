@@ -62,22 +62,31 @@ hook dir cleanup.
 - SHA-256: `59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c`
 - Bounded polling: 500ms intervals, 60s deadline
 
-Result (2026-07-16):
+Result (2026-07-16, exact frozen HEAD `65e6e13`):
 ```text
-C1D-LIVE created: claude_headless:claude-*
-C1D-LIVE observation: id=claude-* options=0 state=invalidated
-C1D-LIVE PASS: provider=claude version=2.1.209 epoch=1 digest=59d2de...
+created: claude_headless:claude-*
+artifacts: hookDir=$TMPDIR/pokit-claude-hooks-* pid=45284
+hook token: http://127.0.0.1:*/hook?token=...
+observation: id=claude-* options=0 state=pending
+PASS: provider=claude version=2.1.209 epoch=1
 ```
-Time: 10.85s. Exactly 1 non-actionable observation.
+Time: 10.21s. Exactly 1 non-actionable observation.
 
 Assertions verified:
 - Provider: `claude`, Version: `2.1.209`, Epoch: `1`
 - Digest: `59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502bb7ddc380c`
 - Zero options, zero actionable fields
-- ListSafe + List DTOs (POKIT public log surface): no credentials, no certification command, no CWD
-- Child exited after shutdown (terminate() reaps child + removes hook dir)
-- No live records after stop (pending/executing)
-- Socket cleanup verified
+- DTO privacy: no cmdMarker, cwdMarker, or hookToken in ListSafe/List DTOs
+- DTO privacy: no `claim_token` or `delivery` material
+- IPC privacy: no markers in create response
+- Daemon log privacy: no markers or credentials in captured `log` output
+- Log capture non-vacuous: "IPC Server listening" confirmed in buffer
+- Hook dir: specific runtime path removed after shutdown
+- Direct PID: `Signal(0)` fails
+- Process group: `syscall.Kill(-pid, 0)` returns `ESRCH`
+- Registry: `Exited` confirmed
+- Socket: removable after cleanup
+- No live records (pending/executing) after stop
 - Production launcher used (not custom)
 
 ## 4. Counterexample tests
