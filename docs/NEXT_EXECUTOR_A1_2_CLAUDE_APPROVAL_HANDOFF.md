@@ -165,9 +165,9 @@ the same checkpoint.
 >
 > The first remediation at `08be1ad3711cb0549e157413ea8ba4cef5798834` is also
 > rejected. The current authoritative executor packet is
-> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_3_HANDOFF.md`. The intermediate
-> remediation at `4e38933b698ede578e0be69454dfe829237c9e23` added hook paths but
-> did not prove an accepted+committed allow or deny flow.
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_4_HANDOFF.md`. Remediation
+> `bc7145f529dc205e74a61c5c57bb000192d59e5e` added claim-owned completion but
+> still did not prove an accepted+committed allow or deny flow.
 
 After C2D-B approval, implement an uninstalled `ApprovalDelivery` boundary (name
 may differ) that:

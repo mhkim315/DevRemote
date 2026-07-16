@@ -7,6 +7,11 @@ Accepted prerequisite: C2D-B `27bd45162feb6bdf6fec52fa44192208c8276e32`
 Canonical checkout: `/Users/mhk/Documents/codex/DevRemote`  
 Branch: `feature/phase10-multi-adapter`
 
+> **Superseded:** implementation `bc7145f529dc205e74a61c5c57bb000192d59e5e`
+> added claim-owned completion but again omitted the required accepted+committed
+> allow/deny composition. Continue only from
+> `NEXT_EXECUTOR_A1_2_C2D_C_REMEDIATION_4_HANDOFF.md`.
+
 This packet replaces the prior executor packet. Complete R3-A through R3-C in
 one implementation review request. C2D-D/C3D and production activation remain
 prohibited.
