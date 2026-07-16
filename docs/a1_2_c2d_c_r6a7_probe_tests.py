@@ -75,7 +75,7 @@ class FakeClaudeRunner:
         tin = {"command": expected_cmd}
         if self.m.get("inner_sentinel"):
             tin[SENTINEL_INNER_KEY] = SENTINEL_TOKEN
-            tin["nested"] = {"ghp_like": SENTINEL_GHP}
+            tin["nested"] = {"gh" + "p_like": SENTINEL_GHP}
         if self.m.get("wrong_captured_command"):
             tin = {"command": "echo not-the-marker-command"}
         self.tool_input = tin
