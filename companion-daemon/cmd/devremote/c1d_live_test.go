@@ -125,6 +125,13 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 			t.Errorf("credential leak in DTO: %s", secret)
 		}
 	}
+	// Non-vacuous: the certification prompt and CWD must not leak into DTO.
+	if strings.Contains(dtoStr, "echo c1d-probe-ok") {
+		t.Error("certification command leaked into DTO")
+	}
+	if strings.Contains(dtoStr, dir) {
+		t.Error("CWD leaked into DTO")
+	}
 	// DTO must not carry actionable fields.
 	if obs.Actionable || len(obs.Options) != 0 {
 		t.Error("DTO must not carry actionable fields for non-actionable observation")

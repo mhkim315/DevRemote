@@ -49,7 +49,7 @@ func (p *fakeClaudeProcess) Kill() error {
 	}
 	return nil
 }
-func (p *fakeClaudeProcess) Wait() error       { return p.waitErr }
+func (p *fakeClaudeProcess) Wait() error { return p.waitErr }
 func (p *fakeClaudeProcess) OpaqueID() string {
 	if p.opaque == "" {
 		return "fake-claude-proc-1"
@@ -75,9 +75,9 @@ func (l *fakeClaudeLauncher) Launch(exe string, argv []string) (ManagedProcess, 
 	l.CapturedArgv = append([]string(nil), argv...)
 	pr, pw := io.Pipe()
 	p := &fakeClaudeProcess{
-		stdin: new(bytes.Buffer),
+		stdin:  new(bytes.Buffer),
 		stdout: pr,
-		pipeW: pw,
+		pipeW:  pw,
 	}
 	l.proc = p
 	return p, nil
@@ -1251,3 +1251,82 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	srv.Wait(ctx2)
 }
 
+// TestClaudeReservationRollback_LauncherFailure verifies that a failed launch
+// after successful Store reservation rolls back the slot.
+func TestClaudeReservationRollback_LauncherFailure(t *testing.T) {
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
+	if err := svc.SetApprovalStore(store); err != nil {
+		t.Fatal(err)
+	}
+
+	before := store.Len()
+	_, err := svc.CreateDetached("/tmp")
+	if err == nil {
+		t.Fatal("expected launch error")
+	}
+	if !strings.Contains(err.Error(), "launch") {
+		t.Fatalf("expected launch error, got: %v", err)
+	}
+	// Store must be unchanged — reservation was rolled back.
+	if store.Len() != before {
+		t.Fatalf("Store Len: before=%d after=%d (rollback failed)", before, store.Len())
+	}
+}
+
+// TestClaudeReservationRollback_RepeatedFailureDoesNotExhaustCapacity verifies
+// that repeated launch failures do not permanently consume Store slots.
+func TestClaudeReservationRollback_RepeatedFailureDoesNotExhaustCapacity(t *testing.T) {
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
+	if err := svc.SetApprovalStore(store); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		_, err := svc.CreateDetached("/tmp")
+		if err == nil {
+			t.Fatal("expected launch error")
+		}
+	}
+	// After 10 failed launches, Store must still be empty.
+	if store.Len() != 0 {
+		t.Fatalf("Store leaked %d sessions after repeated failures", store.Len())
+	}
+}
+
+// TestClaudeReservationRollback_SuccessfulTombstoneRetained verifies that
+// a successful launch retains its Store slot (not rolled back).
+func TestClaudeReservationRollback_SuccessfulTombstoneRetained(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	if err := svc.SetApprovalStore(store); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatalf("CreateDetached: %v", err)
+	}
+	defer launcher.closeStream()
+
+	// Successful launch must retain the Store slot.
+	if store.Len() != 1 {
+		t.Fatalf("expected 1 session, got %d", store.Len())
+	}
+
+	// Terminate and verify tombstone persists.
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+	rt.terminate()
+
+	// Tombstone must still exist (Clear was NOT called).
+	if store.Len() != 1 {
+		t.Fatal("tombstone removed — successful reservation should persist")
+	}
+
+	ctx := context.Background()
+	svc.Shutdown(ctx)
+}

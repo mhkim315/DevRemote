@@ -548,6 +548,16 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		}
 	}
 
+	// Rollback helper: on any failure after reservation, clear the reserved
+	// Store slot so capacity is not permanently leaked.
+	rollback := func() {
+		if s.approvals != nil {
+			s.approvals.Clear(id)
+		}
+		bridge.close()
+		os.RemoveAll(hookDir)
+	}
+
 	s.barrier("pre-spawn")
 
 	argv := []string{
@@ -560,15 +570,13 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	proc, err := launchWithDir(s.launcher, exe, argv, cwd)
 	if err != nil {
-		bridge.close()
-		os.RemoveAll(hookDir)
+		rollback()
 		return "", fmt.Errorf("managed claude launch: %w", err)
 	}
 	if !lease.setProc(proc) {
-		bridge.close()
 		_ = proc.Kill()
 		_ = proc.Wait()
-		os.RemoveAll(hookDir)
+		rollback()
 		return "", fmt.Errorf("managed claude service is shutting down")
 	}
 	s.barrier("post-spawn")
@@ -576,10 +584,9 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		bridge.close()
 		_ = proc.Kill()
 		_ = proc.Wait()
-		os.RemoveAll(hookDir)
+		rollback()
 		return "", fmt.Errorf("managed claude service is shutting down")
 	}
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
@@ -597,6 +604,10 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 			s.reg.Remove(id)
 		}
 		rt.terminate()
+		// Roll back the reserved Store slot on failure after registration.
+		if s.approvals != nil {
+			s.approvals.Clear(id)
+		}
 		return "", fmt.Errorf("managed claude %s: %w", stage, ferr)
 	}
 
