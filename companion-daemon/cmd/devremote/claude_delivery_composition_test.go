@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -11,9 +12,7 @@ import (
 	"devremote/companion-daemon/internal/term"
 )
 
-// compFakeLauncher records all launches and supports multiple launches.
-// Each launch creates a pipe pair so the pump goroutine can read without
-// blocking.
+// compFakeLauncher records all launches. Supports multiple launches.
 type compFakeLauncher struct {
 	mu      sync.Mutex
 	allArgs [][]string
@@ -82,6 +81,9 @@ func TestClaudeDelivery_CompositionAllow(t *testing.T) {
 		t.Fatal("ReserveIdentity failed")
 	}
 
+	// Use canonical response bytes so payload matches delivery validation.
+	respBytes := term.ClaudeHookResponseBytes("allow")
+	denyBytes := term.ClaudeHookResponseBytes("deny")
 	items := []term.ApprovalIngestItem{{
 		Approval: agent.AgentApproval{
 			ID: approvalID, SessionID: sessionID, AgentKind: "claude_headless",
@@ -93,8 +95,8 @@ func TestClaudeDelivery_CompositionAllow(t *testing.T) {
 		},
 		Provenance: contract.ProvenanceProviderHook, Actionable: true,
 		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: []byte(`{"permissionDecision":"allow"}`)},
-			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: []byte(`{"permissionDecision":"deny"}`)},
+			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: respBytes},
+			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: denyBytes},
 		},
 	}}
 	store.IngestObserved(term.ApprovalIngest{
@@ -119,19 +121,15 @@ func TestClaudeDelivery_CompositionAllow(t *testing.T) {
 	req := term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload}
 	receipt := d.Deliver(req)
 
-	// With a fake launcher, the resume process never fires hooks, so the
-	// delivery times out. The key proof: full A1 chain works (ingest →
-	// claim → delivery) and cleanup removes coordinator state.
 	if receipt.Outcome != term.DeliveryConflict {
-		t.Fatalf("expected DeliveryConflict (timeout), got %s", receipt.Outcome)
+		t.Fatalf("expected DeliveryConflict (timeout, no hook), got %s", receipt.Outcome)
 	}
 	if svc.Coordinator().IdentityCount() != 0 || svc.Coordinator().PendingCount() != 0 {
 		t.Fatal("cleanup should remove identity and entries")
 	}
 
-	// Verify resume launch was attempted (second launch with --resume).
 	if len(launcher.allArgs) < 2 {
-		t.Fatal("expected at least 2 launches (CreateDetached + ResumeForApproval)")
+		t.Fatal("expected at least 2 launches")
 	}
 	resumeArgs := launcher.allArgs[1]
 	hasResume := false
@@ -168,6 +166,8 @@ func TestClaudeDelivery_CompositionDeny(t *testing.T) {
 	svc.Coordinator().ReserveIdentity(approvalID, "csess", "call_deny", "Bash",
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sessionID, rt)
 
+	respBytes := term.ClaudeHookResponseBytes("allow")
+	denyBytes := term.ClaudeHookResponseBytes("deny")
 	items := []term.ApprovalIngestItem{{
 		Approval: agent.AgentApproval{
 			ID: approvalID, SessionID: sessionID, AgentKind: "claude_headless",
@@ -179,8 +179,8 @@ func TestClaudeDelivery_CompositionDeny(t *testing.T) {
 		},
 		Provenance: contract.ProvenanceProviderHook, Actionable: true,
 		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: []byte(`{"permissionDecision":"allow"}`)},
-			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: []byte(`{"permissionDecision":"deny"}`)},
+			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: respBytes},
+			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: denyBytes},
 		},
 	}}
 	store.IngestObserved(term.ApprovalIngest{
@@ -206,7 +206,7 @@ func TestClaudeDelivery_CompositionDeny(t *testing.T) {
 	receipt := d.Deliver(req)
 
 	if receipt.Outcome != term.DeliveryConflict {
-		t.Fatalf("expected DeliveryConflict (timeout), got %s", receipt.Outcome)
+		t.Fatalf("expected DeliveryConflict (timeout, no hook), got %s", receipt.Outcome)
 	}
 	if svc.Coordinator().IdentityCount() != 0 || svc.Coordinator().PendingCount() != 0 {
 		t.Fatal("cleanup should remove identity and entries")
@@ -239,6 +239,7 @@ func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 	svc.Coordinator().ReserveIdentity(approvalID, "sess", "tu", "Bash",
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sessionID, rt)
 
+	respBytes := term.ClaudeHookResponseBytes("allow")
 	items := []term.ApprovalIngestItem{{
 		Approval: agent.AgentApproval{
 			ID: approvalID, SessionID: sessionID, AgentKind: "claude_headless",
@@ -247,7 +248,7 @@ func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 		},
 		Provenance: contract.ProvenanceProviderHook, Actionable: true,
 		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: []byte(`{"permissionDecision":"allow"}`)},
+			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: respBytes},
 		},
 	}}
 	store.IngestObserved(term.ApprovalIngest{
@@ -283,3 +284,5 @@ func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 	ctx := t.Context()
 	svc.Shutdown(ctx)
 }
+
+var _ = fmt.Println

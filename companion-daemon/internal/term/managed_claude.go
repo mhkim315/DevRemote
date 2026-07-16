@@ -712,7 +712,8 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 //
 // No lock is held across spawn or I/O. The caller is responsible for
 // cleaning up the returned runtime via terminate().
-func (s *ManagedClaudeService) ResumeForApproval(claimToken, nonce, claudeSessionID, cwd string) (*claudeManagedRuntime, error) {
+func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resumeContext) (*claudeManagedRuntime, error) {
+	cwd := "/tmp"
 	if err := validateCWD(cwd); err != nil {
 		return nil, err
 	}
@@ -734,7 +735,7 @@ func (s *ManagedClaudeService) ResumeForApproval(claimToken, nonce, claudeSessio
 	}
 
 	// Create isolated hook directory with resume + posttool endpoints.
-	hookDir, settingsPath, err := s.createResumeHookSettings(claudeSessionID)
+	hookDir, settingsPath, err := s.createResumeHookSettings(ctx.claudeSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("managed claude resume hook settings: %w", err)
 	}
@@ -745,8 +746,11 @@ func (s *ManagedClaudeService) ResumeForApproval(claimToken, nonce, claudeSessio
 	}
 	<-bridge.started
 
-	resumeURL := bridge.resumeEndpoint(claimToken, nonce)
-	posttoolURL := bridge.posttoolEndpoint(claimToken)
+	// Install the immutable resume context BEFORE process spawn.
+	bridge.installResumeContext(ctx)
+
+	resumeURL := bridge.resumeEndpoint(handle.ClaimToken, handle.ResumeNonce)
+	posttoolURL := bridge.posttoolEndpoint(handle.ClaimToken)
 	if err := s.writeResumeHookScripts(hookDir, resumeURL, posttoolURL); err != nil {
 		bridge.close()
 		os.RemoveAll(hookDir)
@@ -766,7 +770,7 @@ func (s *ManagedClaudeService) ResumeForApproval(claimToken, nonce, claudeSessio
 
 	argv := []string{
 		"--verbose",
-		"--resume", claudeSessionID,
+		"--resume", ctx.claudeSessionID,
 		"--settings", settingsPath,
 		"--setting-sources", "",
 		"--output-format", "stream-json",

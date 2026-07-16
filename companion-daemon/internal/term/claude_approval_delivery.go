@@ -1,67 +1,42 @@
 // Package term — C2D-C: uninstalled Claude ApprovalDelivery boundary.
 //
-// R2-A: real resume flow. Deliver calls ManagedClaudeService.ResumeForApproval
-// to spawn Claude with --resume, isolated hook settings, and resume+posttool
-// endpoints. The hook bridge (not Deliver) performs ClaimWrite/ConfirmWrite.
-// Deliver waits for the coordinator to reach terminal state.
+// R3-A: claim-owned terminal result. Deliver waits on the coordinator's
+// completion channel, not global identity counts.
 //
-// R2-B: canonical response bytes. The exact hook response encoding matches
-// the C0D-certified format; receipt digest hashes those bytes.
+// R3-B: canonical response bytes. Receipt digest matches the exact
+// C0D-certified hook response encoding.
 package term
 
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"time"
 )
 
 const defaultClaudeDeliveryTimeout = 120 * time.Second
 
-// claudeHookResponse encodes the C0D-certified hook response for a decision.
-// Must match the encoding in claudeHookBridge.handleResume exactly.
-func claudeHookResponse(decision string) []byte {
-	return []byte(fmt.Sprintf(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s"}}`, decision))
-}
-
 // ClaudeManagedApprovalDelivery implements ApprovalDelivery for Claude.
-// It uses the real ManagedClaudeService resume path and the C2D-B
-// coordinator. NOT installed in production; C3D will activate it.
 type ClaudeManagedApprovalDelivery struct {
 	svc     *ManagedClaudeService
 	timeout time.Duration
 	barrier func(stage string)
 }
 
-// NewClaudeManagedApprovalDelivery creates an uninstalled delivery boundary.
 func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedApprovalDelivery {
-	return &ClaudeManagedApprovalDelivery{
-		svc:     svc,
-		timeout: defaultClaudeDeliveryTimeout,
-	}
+	return &ClaudeManagedApprovalDelivery{svc: svc, timeout: defaultClaudeDeliveryTimeout}
 }
 
-// SetPollTimeout sets the deadline for waiting on the coordinator terminal
-// state. Exported for tests that use fake processes (no real hook exchange).
-func (d *ClaudeManagedApprovalDelivery) SetPollTimeout(dur time.Duration) {
-	d.timeout = dur
-}
+func (d *ClaudeManagedApprovalDelivery) SetPollTimeout(dur time.Duration) { d.timeout = dur }
 
-// Deliver implements ApprovalDelivery. It reserves a coordinator entry,
-// spawns a resumed Claude process via the managed service, waits for the
-// terminal coordinator result, and constructs a receipt.
 func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	fail := func(o DeliveryOutcome) DeliveryReceipt {
 		return DeliveryReceipt{Outcome: o, ClaimToken: req.ClaimToken, Binding: req.Binding}
 	}
 
-	// 0. Nil-dependency check.
 	if d.svc == nil || d.svc.coordinator == nil {
 		return fail(DeliveryUnavailable)
 	}
-
-	// 1. Canonical metadata + payload digest.
 	if !validGateBindingMeta(req) {
 		return fail(DeliveryRejected)
 	}
@@ -77,13 +52,21 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		return fail(DeliveryRejected)
 	}
 
-	// 2. Preallocate receipt ID.
+	// Verify payload matches the canonical response bytes.
+	expectedPayload := claudeHookResponseBytes(decision)
+	if len(req.Payload) == 0 || !bytesEqual(req.Payload, expectedPayload) {
+		return fail(DeliveryRejected)
+	}
+	if payloadDigest(req.Payload) != b.PayloadDigest {
+		return fail(DeliveryRejected)
+	}
+
+	// Preallocate receipt ID.
 	receiptID, ok := newClaudeReceiptID()
 	if !ok {
 		return fail(DeliveryConflict)
 	}
 
-	// 3. Reserve the coordinator entry.
 	coord := d.svc.coordinator
 	handle, ok := coord.ReserveEntry(req.ClaimToken, b)
 	if !ok {
@@ -93,7 +76,6 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		d.barrier("post-reserve")
 	}
 
-	// 4. Look up identity for Claude session ID.
 	id, ok := coord.LookupIdentity(b.ApprovalID)
 	if !ok {
 		coord.CancelEntry(req.ClaimToken)
@@ -101,52 +83,61 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		return fail(DeliveryUnavailable)
 	}
 
-	// 5. Spawn the resumed Claude process. The hook bridge will call
-	//    ClaimWrite → write response → ConfirmWrite, and PostToolUse
-	//    will call MarkWitnessed. We wait for the terminal result.
-	rt, err := d.svc.ResumeForApproval(handle.ClaimToken, handle.ResumeNonce, id.sessionID, "/tmp")
+	// Build the immutable resume context.
+	ctx := &resumeContext{
+		coordinator:      coord,
+		claimToken:       handle.ClaimToken,
+		resumeNonce:      handle.ResumeNonce,
+		originalRuntime:  b.Runtime,
+		pokitSessionID:   b.SessionID,
+		claudeSessionID:  id.sessionID,
+		toolUseID:        id.toolUseID,
+		toolName:         id.toolName,
+		inputDigest:      id.inputDigest,
+		expectedDecision: decision,
+	}
+
+	// Spawn the resumed Claude process. The bridge runs ClaimWrite →
+	// write response → ConfirmWrite, and PostToolUse → MarkWitnessed.
+	rt, err := d.svc.ResumeForApproval(handle, ctx)
 	if err != nil {
 		coord.CancelEntry(req.ClaimToken)
 		coord.RemoveIdentity(b.ApprovalID)
 		return fail(DeliveryUnavailable)
 	}
+	defer rt.terminate()
 	if d.barrier != nil {
 		d.barrier("post-resume-spawn")
 	}
 
-	// 6. Wait for the coordinator to reach terminal state.
-	//    Success: MarkWitnessed removes both entry and identity.
-	//    Failure: CancelEntry + RemoveIdentity cleans up.
+	// Wait for the claim-owned terminal result.
 	timeout := d.timeout
 	if timeout <= 0 {
 		timeout = defaultClaudeDeliveryTimeout
 	}
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
-	terminal := false
-	for time.Now().Before(deadline) {
-		if coord.identityCount() == 0 {
-			terminal = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if !terminal {
+	var result TerminalResult
+	select {
+	case result = <-handle.Completion:
+	case <-timer.C:
 		coord.CancelEntry(req.ClaimToken)
 		coord.RemoveIdentity(b.ApprovalID)
-		rt.terminate()
 		return fail(DeliveryConflict)
 	}
 
-	// 7. Construct receipt with the exact hook response digest.
-	responseBytes := claudeHookResponse(decision)
+	if result.Outcome != TerminalWitnessed {
+		return fail(DeliveryConflict)
+	}
+
+	// Construct receipt with the exact response digest.
 	return DeliveryReceipt{
 		Outcome:                DeliveryAccepted,
 		ClaimToken:             req.ClaimToken,
-		Binding:                b,
+		Binding:                result.Binding,
 		ReceiptID:              receiptID,
-		DeliveredPayloadDigest: payloadDigest(responseBytes),
+		DeliveredPayloadDigest: result.ExactResponseDigest,
 	}
 }
 
@@ -156,4 +147,16 @@ func newClaudeReceiptID() (string, bool) {
 		return "", false
 	}
 	return "cldr-" + hex.EncodeToString(b[:]), true
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

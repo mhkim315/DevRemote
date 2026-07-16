@@ -772,7 +772,7 @@ func TestMarkWitnessed(t *testing.T) {
 		t.Fatalf("expected 1 entry before witness, got %d", c.entryCount())
 	}
 
-	retBinding, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	retBinding, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if !ok {
 		t.Fatal("expected MarkWitnessed to succeed")
 	}
@@ -784,7 +784,7 @@ func TestMarkWitnessed(t *testing.T) {
 	}
 
 	// Idempotent — second call returns false.
-	_, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	_, _, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected idempotent MarkWitnessed to return false")
 	}
@@ -805,7 +805,7 @@ func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 	_ = wh
 
 	// Wrong kind: DENY entry receives WitnessPostToolUse.
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected wrong-kind witness to fail on alive deny entry")
 	}
@@ -821,7 +821,7 @@ func TestMarkWitnessedWrongState(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	_ = handle
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for reserved entry")
 	}
@@ -836,7 +836,7 @@ func TestMarkWitnessedWrongSession(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid, tn, dig, rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong session")
 	}
@@ -854,7 +854,7 @@ func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid", tn, dig, rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid", tn, dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong tool_use_id")
 	}
@@ -869,7 +869,7 @@ func TestMarkWitnessedWrongToolName(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, "WrongTool", dig, rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, "WrongTool", dig, rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong tool name")
 	}
@@ -887,7 +887,7 @@ func TestMarkWitnessedWrongInputDigest(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rt)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong input digest")
 	}
@@ -903,7 +903,7 @@ func TestMarkWitnessedWrongRuntime(t *testing.T) {
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	wrongRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 99, StreamGen: 0}
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, wrongRT)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, wrongRT)
 	if ok {
 		t.Fatal("expected MarkWitnessed to fail for wrong RuntimeRef")
 	}
@@ -949,7 +949,7 @@ func TestMarkWitnessedExpiredWitness(t *testing.T) {
 	clockNow = func() time.Time { return time.Now().Add(2*coordinatorEntryTimeout + time.Second) }
 	defer func() { clockNow = orig }()
 
-	_, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
 	if ok {
 		t.Fatal("expected expired witness to fail")
 	}

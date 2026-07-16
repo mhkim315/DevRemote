@@ -19,6 +19,7 @@ package term
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -51,6 +52,15 @@ const claudeDecisionSchemaV1 = "claude.pretooluse.decision.v1"
 
 // ClaudeDecisionSchemaV1 is the public accessor for the certified schema identity.
 func ClaudeDecisionSchemaV1() string { return claudeDecisionSchemaV1 }
+
+// claudeHookResponseBytes encodes the C0D-certified hook response for a decision.
+// This is the ONE canonical encoding; both the handler and the delivery must use it.
+func claudeHookResponseBytes(decision string) []byte {
+	return []byte(fmt.Sprintf(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s"}}`, decision))
+}
+
+// ClaudeHookResponseBytes is the exported accessor for composition tests.
+func ClaudeHookResponseBytes(decision string) []byte { return claudeHookResponseBytes(decision) }
 
 // deriveDecision validates the binding and returns the Claude-native
 // decision. Returns ("", false) for unknown options, wrong schema, wrong
@@ -147,38 +157,54 @@ type claudePrivateIdentity struct {
 type resumeState int
 
 const (
-	stateDecisionReserved resumeState = iota // claim granted, no hook has fired yet
-	stateWriteClaimed                        // hook validated, decision returned to caller; write in flight
-	stateDecisionWritten                     // write confirmed; waiting for consumption witness
-	stateTerminal                            // done (success, cancelled, timeout, or ambiguous)
+	stateDecisionReserved resumeState = iota
+	stateWriteClaimed
+	stateDecisionWritten
+	stateTerminal
 )
 
-// resumeOutcome is the closed outcome vocabulary.
-type resumeOutcome int
+// ── Claim-owned terminal result (R3-A) ──
+
+// TerminalOutcome is the closed result vocabulary for a single claim.
+type TerminalOutcome int
 
 const (
-	outcomeWritten    resumeOutcome = iota + 1 // decision written and confirmed
-	outcomeCancelled                            // cancelled before write claimed
-	outcomeTimeout                              // entry expired
-	outcomeMismatch                             // hook fields don't match
-	outcomeDuplicate                            // already claimed/written
-	outcomeStale                                // entry not found or coordinator closed
-	outcomeAmbiguous                            // write was claimed but invalidation raced; non-retryable
+	TerminalWitnessed         TerminalOutcome = iota + 1 // MarkWitnessed succeeded
+	TerminalCancelled                                     // CancelEntry or ClearForApproval
+	TerminalStaleRuntime                                  // ClearRuntime invalidated
+	TerminalAmbiguous                                     // response write failed or ambiguous
+	TerminalTimeout                                       // deadline exceeded
+	TerminalRejected                                      // claim/identity mismatch
 )
 
-// ── Opaque handles ──
+// TerminalResult is the claim-owned completion signal published exactly once.
+type TerminalResult struct {
+	Outcome             TerminalOutcome
+	Binding             ApprovalExecutionBinding // set only for TerminalWitnessed
+	ExactResponseDigest string                   // digest of exact written bytes
+}
 
-// ResumeHandle is an opaque handle returned by ReserveEntry. It contains
-// only the fields the caller needs to embed in the resume hook script.
-// The internal state is never exposed.
+// ResumeHandle is returned by ReserveEntry. It carries the opaque tokens
+// and a Completion channel that resolves to exactly one TerminalResult.
 type ResumeHandle struct {
 	ClaimToken  string
 	ResumeNonce string
+	Completion  <-chan TerminalResult
 }
 
-// WriteHandle is an opaque handle returned by ClaimWrite. It carries the
-// decision for the caller to write to the HTTP response. The caller must
-// call ConfirmWrite after the write completes (or fails).
+// resumeOutcome is the closed outcome vocabulary for ClaimWrite / ConfirmWrite.
+type resumeOutcome int
+
+const (
+	outcomeWritten    resumeOutcome = iota + 1
+	outcomeCancelled
+	outcomeTimeout
+	outcomeMismatch
+	outcomeDuplicate
+	outcomeStale
+	outcomeAmbiguous
+)
+
 type WriteHandle struct {
 	claimToken string
 	decision   string
@@ -207,7 +233,7 @@ type resumeEntry struct {
 	createdAt         time.Time // reservation time
 	writeClaimedAt    time.Time // ClaimWrite called
 	decisionWrittenAt time.Time // ConfirmWrite(true) called
-	ch                chan resumeOutcome // buffered 1
+	completion        chan TerminalResult // buffered 1; claim-owned terminal signal
 }
 
 // ── Coordinator ──
@@ -375,6 +401,7 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 		return ResumeHandle{}, false
 	}
 
+	ch := make(chan TerminalResult, 1)
 	entry := &resumeEntry{
 		claimToken:     claimToken,
 		resumeNonce:    nonce,
@@ -389,10 +416,10 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 		binding:        cloneBindingCopy(binding),
 		state:          stateDecisionReserved,
 		createdAt:      clockNow(),
-		ch:             make(chan resumeOutcome, 1),
+		completion:     ch,
 	}
 	c.entries[claimToken] = entry
-	return ResumeHandle{ClaimToken: claimToken, ResumeNonce: nonce}, true
+	return ResumeHandle{ClaimToken: claimToken, ResumeNonce: nonce, Completion: ch}, true
 }
 
 // ClaimWrite transitions a reserved entry to write-claimed and returns a
@@ -427,7 +454,7 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 	// B2: reject late hooks — the entry must not be expired.
 	if clockNow().After(entry.createdAt.Add(coordinatorEntryTimeout)) {
 		entry.state = stateTerminal
-		entry.ch <- outcomeTimeout
+		entry.completion <- TerminalResult{Outcome: TerminalTimeout}
 		delete(c.entries, claimToken)
 		return WriteHandle{}, outcomeStale
 	}
@@ -461,19 +488,20 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	// B2: late confirmation — the write took too long.
 	if clockNow().After(entry.writeClaimedAt.Add(coordinatorEntryTimeout)) {
 		entry.state = stateTerminal
-		entry.ch <- outcomeAmbiguous
+		entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
 		delete(c.entries, claimToken)
 		return outcomeAmbiguous
 	}
 	if writeOK {
 		entry.state = stateDecisionWritten
 		entry.decisionWrittenAt = clockNow()
-		entry.ch <- outcomeWritten
+		// R3-A: ConfirmWrite is intermediate, not terminal.
+		// Only MarkWitnessed publishes terminal success.
 		return outcomeWritten
 	}
 	// Write failed: ambiguous because partial bytes may have been sent.
 	entry.state = stateTerminal
-	entry.ch <- outcomeAmbiguous
+	entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
 	delete(c.entries, claimToken)
 	return outcomeAmbiguous
 }
@@ -491,20 +519,17 @@ func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 	switch entry.state {
 	case stateDecisionReserved:
 		entry.state = stateTerminal
-		entry.ch <- outcomeCancelled
+		entry.completion <- TerminalResult{Outcome: TerminalCancelled}
 		delete(c.entries, claimToken)
 	case stateWriteClaimed:
 		entry.state = stateTerminal
-		entry.ch <- outcomeAmbiguous
+		entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
 		delete(c.entries, claimToken)
 	case stateDecisionWritten:
-		// Post-write cancellation: entry reached decisionWritten but
-		// witness never arrived (timeout, stop, replacement). Clean
-		// up without blocking — the channel already has outcomeWritten.
 		entry.state = stateTerminal
+		entry.completion <- TerminalResult{Outcome: TerminalCancelled}
 		delete(c.entries, claimToken)
 	default:
-		// Already terminal — no-op.
 	}
 }
 
@@ -522,13 +547,14 @@ func (c *claudeResumeCoordinator) ClearForApproval(approvalID string) {
 		switch entry.state {
 		case stateDecisionReserved:
 			entry.state = stateTerminal
-			entry.ch <- outcomeCancelled
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
 			delete(c.entries, claimToken)
 		case stateWriteClaimed:
 			entry.state = stateTerminal
-			entry.ch <- outcomeAmbiguous
+			entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
 			delete(c.entries, claimToken)
-		default:
+		case stateDecisionWritten:
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
 			delete(c.entries, claimToken)
 		}
 	}
@@ -551,10 +577,12 @@ func (c *claudeResumeCoordinator) ClearRuntime(pokitSessionID string, launchGen 
 			switch entry.state {
 			case stateDecisionReserved:
 				entry.state = stateTerminal
-				entry.ch <- outcomeCancelled
+				entry.completion <- TerminalResult{Outcome: TerminalStaleRuntime}
 			case stateWriteClaimed:
 				entry.state = stateTerminal
-				entry.ch <- outcomeAmbiguous
+				entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
+			case stateDecisionWritten:
+				entry.completion <- TerminalResult{Outcome: TerminalStaleRuntime}
 			}
 			delete(c.entries, claimToken)
 		}
@@ -567,16 +595,18 @@ func (c *claudeResumeCoordinator) Close() {
 	defer c.mu.Unlock()
 
 	c.closed = true
-	for claimToken, entry := range c.entries {
+	for _, entry := range c.entries {
 		switch entry.state {
 		case stateDecisionReserved:
 			entry.state = stateTerminal
-			entry.ch <- outcomeCancelled
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
 		case stateWriteClaimed:
 			entry.state = stateTerminal
-			entry.ch <- outcomeAmbiguous
+			entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
+		case stateDecisionWritten:
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
 		}
-		delete(c.entries, claimToken)
+		delete(c.entries, entry.claimToken)
 	}
 }
 
@@ -599,7 +629,7 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 		case stateDecisionReserved:
 			if entry.createdAt.Before(entryCutoff) {
 				entry.state = stateTerminal
-				entry.ch <- outcomeTimeout
+				entry.completion <- TerminalResult{Outcome: TerminalTimeout}
 				delete(c.entries, claimToken)
 			}
 		case stateWriteClaimed:
@@ -609,7 +639,7 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 			}
 			if ref.Before(entryCutoff) {
 				entry.state = stateTerminal
-				entry.ch <- outcomeAmbiguous
+				entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
 				delete(c.entries, claimToken)
 			}
 		case stateDecisionWritten:
@@ -633,47 +663,46 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 // stored decision: allow→PostToolUse, deny→PermissionDenials. Unknown
 // kinds are rejected. Early, wrong, duplicate, mismatched, or stale
 // witnesses leave the entry unchanged.
-func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID, toolName, inputDigest string, rt RuntimeRef) (ApprovalExecutionBinding, bool) {
+func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID, toolName, inputDigest string, rt RuntimeRef) (ApprovalExecutionBinding, string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	entry, ok := c.entries[claimToken]
 	if !ok || entry.state != stateDecisionWritten {
-		return ApprovalExecutionBinding{}, false
+		return ApprovalExecutionBinding{}, "", false
 	}
-	// B1: witness kind must match the stored decision.
 	switch entry.decision {
 	case "allow":
 		if kind != WitnessPostToolUse {
-			return ApprovalExecutionBinding{}, false
+			return ApprovalExecutionBinding{}, "", false
 		}
 	case "deny":
 		if kind != WitnessPermissionDenials {
-			return ApprovalExecutionBinding{}, false
+			return ApprovalExecutionBinding{}, "", false
 		}
 	default:
-		return ApprovalExecutionBinding{}, false
+		return ApprovalExecutionBinding{}, "", false
 	}
-	// B2: late witness — deadline exceeded.
 	if clockNow().After(entry.decisionWrittenAt.Add(2 * coordinatorEntryTimeout)) {
 		entry.state = stateTerminal
 		delete(c.entries, claimToken)
-		return ApprovalExecutionBinding{}, false
+		return ApprovalExecutionBinding{}, "", false
 	}
-	// B2: full provider identity must match stored entry.
 	if entry.sessionID != sessionID || entry.toolUseID != toolUseID ||
 		entry.toolName != toolName || entry.inputDigest != inputDigest {
-		return ApprovalExecutionBinding{}, false
+		return ApprovalExecutionBinding{}, "", false
 	}
 	if !entry.runtime.equal(rt) {
-		return ApprovalExecutionBinding{}, false
+		return ApprovalExecutionBinding{}, "", false
 	}
 
-	binding := entry.binding
+	respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 	entry.state = stateTerminal
+	result := TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
+	entry.completion <- result
 	delete(c.entries, claimToken)
 	delete(c.identities, entry.approvalID)
-	return binding, true
+	return entry.binding, respDigest, true
 }
 
 // ── Test helpers ──

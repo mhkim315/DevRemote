@@ -101,12 +101,33 @@ func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
 	return out, true
 }
 
+// resumeContext is the immutable state installed in the bridge BEFORE the
+// resume process spawns. It carries the original approval target identity
+// and claim ownership. The resume process has its own epoch, but witness
+// validation uses the original RuntimeRef from this context.
+type resumeContext struct {
+	coordinator      *claudeResumeCoordinator
+	claimToken       string
+	resumeNonce      string
+	originalRuntime  RuntimeRef // the approval target, not the resume attempt
+	pokitSessionID   string
+	claudeSessionID  string
+	toolUseID        string
+	toolName         string
+	inputDigest      string
+	expectedDecision string // "allow" or "deny"
+}
+
 type claudeHookBridge struct {
 	token   string
 	port    int
 	server  *http.Server
 	rt      *claudeManagedRuntime
 	started chan struct{}
+
+	// resumeCtx is set before the resume process spawns. If nil, the
+	// bridge is in C1D observation mode (/hook only, always returns defer).
+	resumeCtx *resumeContext
 
 	mu       sync.Mutex
 	shutdown bool
@@ -160,6 +181,14 @@ func (b *claudeHookBridge) resumeEndpoint(claimToken, nonce string) string {
 
 func (b *claudeHookBridge) posttoolEndpoint(claimToken string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/posttool?token=%s&claim=%s", b.port, b.token, claimToken)
+}
+
+// installResumeContext sets the immutable resume context. Must be called
+// before the resume process is spawned. Nil context clears resume mode.
+func (b *claudeHookBridge) installResumeContext(ctx *resumeContext) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.resumeCtx = ctx
 }
 
 func (b *claudeHookBridge) close() {
@@ -301,19 +330,22 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Encode the exact C0D-certified hook response.
+	// Encode the exact C0D-certified hook response and write it.
 	decision := wh.Decision()
-	resp := fmt.Sprintf(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"%s"}}`, decision)
+	resp := claudeHookResponseBytes(decision)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(resp))
-
+	n, writeErr := w.Write(resp)
+	if writeErr != nil || n != len(resp) {
+		// Short or failed write: ambiguous, non-retryable.
+		rt.coordinator.ConfirmWrite(claimToken, false)
+		return
+	}
 	rt.coordinator.ConfirmWrite(claimToken, true)
 }
 
-// handlePostTool is the C2D-C PostToolUse witness handler. It receives
-// PostToolUse events from the resumed Claude process and calls
-// MarkWitnessed.
+// handlePostTool is the C2D-C PostToolUse witness handler. It uses the
+// ORIGINAL RuntimeRef from the resume context (not the resume epoch).
 func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusOK)
@@ -361,14 +393,15 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	rt := b.rt
-	if rt == nil || rt.coordinator == nil {
+	ctx := b.resumeCtx
+	if ctx == nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-
-	pokitRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0}
-	rt.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionID, toolUseID, toolName, inputDigest, pokitRT)
+	// Use the ORIGINAL RuntimeRef from the resume context, not the resume
+	// attempt's own epoch. Witness validation compares against the stored
+	// approval identity, which uses the original runtime.
+	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionID, toolUseID, toolName, inputDigest, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }
 
