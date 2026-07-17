@@ -570,11 +570,8 @@ func bytesEq(a, b []byte) bool {
 	return true
 }
 
-// ── P3 catalog composition tests ──
-
 // catalogMakeSetup creates a controlled actionable fixture with the catalog
 // probe command and the correct catalogActionID in the coordinator identity.
-// It checks every setup step so a silent failure cannot masquerade as evidence.
 func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedClaudeService, *term.AuthoritativeApprovalStore, term.ClaimResult, term.RuntimeRef, string, string, string) {
 	t.Helper()
 	launcher, svc, store := newProviderSim(t)
@@ -587,12 +584,9 @@ func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.M
 	csid := "claude-sess-cat-" + optionID
 	tuid := "call_comp_cat_" + optionID
 	dgst := term.CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
-
-	// Catalog-bearing identity reservation.
 	if !svc.Coordinator().ReserveIdentity(aid, csid, tuid, "Bash", dgst, "claude.bash.approval_probe.v1", sid, rt) {
 		t.Fatal("ReserveIdentity failed for catalog setup")
 	}
-
 	ab := term.ClaudeHookResponseBytes("allow")
 	db := term.ClaudeHookResponseBytes("deny")
 	admitted := store.IngestObserved(term.ApprovalIngest{
@@ -618,22 +612,6 @@ func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.M
 	if !admitted {
 		t.Fatal("IngestObserved failed for catalog setup")
 	}
-
-	// Verify DTO shows catalog summary BEFORE claim (setup invariant).
-	dtos := store.ListSafe(sid)
-	var found bool
-	for _, d := range dtos {
-		if d.ID == aid {
-			found = true
-			if d.Summary != "Run Claude approval verification probe" {
-				t.Fatalf("catalog setup: DTO summary = %q", d.Summary)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("catalog setup: approval not found in ListSafe")
-	}
-
 	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{"x"}}
 	claim := store.ClaimForExecution(term.ClaimRequest{SessionID: sid, ApprovalID: aid, OptionID: optionID, Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp.cat." + optionID})
 	if claim.Outcome != term.ClaimGranted {
@@ -663,59 +641,48 @@ func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("expected accepted, got %s", receipt.Outcome)
 	}
-	commit := store.RecordDelivery(receipt)
-	if !commit.Committed {
-		t.Fatalf("not committed: outcome=%s", commit.Outcome)
-	}
-	// Full binding: every field matches.
 	if receipt.ClaimToken != claim.Token {
-		t.Fatalf("receipt ClaimToken mismatch")
+		t.Fatal("receipt claim token mismatch")
+	}
+	if receipt.Binding != claim.Binding {
+		t.Fatalf("receipt binding mismatch: got=%+v want=%+v", receipt.Binding, claim.Binding)
 	}
 	if receipt.ReceiptID == "" {
-		t.Fatal("ReceiptID empty")
+		t.Fatal("receipt ID empty")
 	}
-	if receipt.DeliveredPayloadDigest == "" {
-		t.Fatal("DeliveredPayloadDigest empty")
+	if receipt.DeliveredPayloadDigest != claim.Binding.PayloadDigest {
+		t.Fatal("delivered payload digest mismatch")
 	}
-	b := receipt.Binding
-	if b.ApprovalID != claim.Binding.ApprovalID || b.SessionID != claim.Binding.SessionID {
-		t.Fatalf("binding ApprovalID/SessionID mismatch")
+	commit := store.RecordDelivery(receipt)
+	if !commit.Committed || commit.State != term.ApprovalApproved {
+		t.Fatalf("commit: Committed=%v State=%s", commit.Committed, commit.State)
 	}
-	if b.OptionID != "allow_once" || b.DeliverySchema != term.ClaudeDecisionSchemaV1() {
-		t.Fatalf("binding option/schema: %s/%s", b.OptionID, b.DeliverySchema)
+	dup := store.RecordDelivery(receipt)
+	if dup.Committed {
+		t.Fatalf("duplicate RecordDelivery committed: outcome=%s", dup.Outcome)
 	}
-	if b.Runtime.Adapter != "claude_headless" || b.Runtime.Version != "2.1.209" {
-		t.Fatalf("binding runtime: %+v", b.Runtime)
-	}
-	if b.ActionDigest == "" || b.PayloadDigest == "" {
-		t.Fatal("binding digest empty")
-	}
-	// Final DTO: terminal state + catalog summary + no raw payload.
 	dtos := store.ListSafe(claim.Binding.SessionID)
 	var found bool
 	for _, d := range dtos {
 		if d.ID == claim.Binding.ApprovalID {
 			found = true
-			if d.Summary != "Run Claude approval verification probe" {
-				t.Fatalf("final DTO summary = %q", d.Summary)
-			}
 			if d.State != "approved" {
-				t.Fatalf("final DTO state = %q, want approved", d.State)
+				t.Fatalf("DTO state = %q", d.State)
 			}
-			// DTO must never carry raw payload or command text.
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("DTO summary = %q", d.Summary)
+			}
 			dtoJSON, _ := json.Marshal(d)
 			if strings.Contains(string(dtoJSON), "echo pokitclaudeapprovalprobe") {
-				t.Fatal("raw command leaked into DTO JSON")
+				t.Fatal("raw command leaked into DTO")
+			}
+			if strings.Contains(string(dtoJSON), `"permissionDecision":"allow"`) {
+				t.Fatal("provider response payload leaked into DTO")
 			}
 		}
 	}
 	if !found {
 		t.Fatal("approval not found in final DTO")
-	}
-	// Duplicate RecordDelivery must not create a second commit.
-	dup := store.RecordDelivery(receipt)
-	if dup.Committed {
-		t.Fatalf("duplicate RecordDelivery must not commit again, got outcome=%s", dup.Outcome)
 	}
 }
 
@@ -735,8 +702,6 @@ func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
 		t.Fatalf("resume response: %s", r)
 	}
-	// Write denial witness deterministically via the resume pipe
-	// (same pattern as existing CompositionDenyAccepted test).
 	denialJSON := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"}}]}` + "\n"
 	select {
 	case <-l.resumeWCh:
@@ -748,46 +713,52 @@ func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("expected accepted for deny, got %s", receipt.Outcome)
 	}
+	if receipt.ClaimToken != claim.Token {
+		t.Fatal("deny receipt claim token mismatch")
+	}
+	if receipt.Binding != claim.Binding {
+		t.Fatalf("deny receipt binding mismatch: got=%+v want=%+v", receipt.Binding, claim.Binding)
+	}
+	if receipt.ReceiptID == "" {
+		t.Fatal("deny receipt ID empty")
+	}
+	if receipt.DeliveredPayloadDigest != claim.Binding.PayloadDigest {
+		t.Fatal("deny delivered payload digest mismatch")
+	}
 	commit := store.RecordDelivery(receipt)
-	if !commit.Committed {
-		t.Fatalf("deny not committed: outcome=%s", commit.Outcome)
+	if !commit.Committed || commit.State != term.ApprovalRejected {
+		t.Fatalf("deny commit: Committed=%v State=%s", commit.Committed, commit.State)
 	}
-	if receipt.ReceiptID == "" || receipt.DeliveredPayloadDigest == "" {
-		t.Fatal("deny receipt fields empty")
+	dup := store.RecordDelivery(receipt)
+	if dup.Committed {
+		t.Fatalf("deny duplicate RecordDelivery committed: outcome=%s", dup.Outcome)
 	}
-	b := receipt.Binding
-	if b.OptionID != "deny" || b.DeliverySchema != term.ClaudeDecisionSchemaV1() {
-		t.Fatalf("deny binding option/schema: %s/%s", b.OptionID, b.DeliverySchema)
-	}
-	if b.ApprovalID != claim.Binding.ApprovalID {
-		t.Fatal("deny ApprovalID mismatch")
-	}
-	// Final DTO: terminal state + catalog summary.
 	dtos := store.ListSafe(claim.Binding.SessionID)
 	var found bool
 	for _, d := range dtos {
 		if d.ID == claim.Binding.ApprovalID {
 			found = true
-			if d.Summary != "Run Claude approval verification probe" {
-				t.Fatalf("deny final DTO summary = %q", d.Summary)
-			}
 			if d.State != "rejected" {
-				t.Fatalf("deny final DTO state = %q, want rejected", d.State)
+				t.Fatalf("deny DTO state = %q", d.State)
+			}
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("deny DTO summary = %q", d.Summary)
+			}
+			dtoJSON, _ := json.Marshal(d)
+			if strings.Contains(string(dtoJSON), "echo pokitclaudeapprovalprobe") {
+				t.Fatal("raw command leaked into deny DTO")
+			}
+			if strings.Contains(string(dtoJSON), `"permissionDecision":"deny"`) {
+				t.Fatal("provider response payload leaked into deny DTO")
 			}
 		}
 	}
 	if !found {
 		t.Fatal("deny approval not found in final DTO")
 	}
-	// Duplicate must not commit again.
-	if store.RecordDelivery(receipt).Committed {
-		t.Fatal("duplicate deny RecordDelivery must not commit again")
-	}
 }
 
 func TestClaudeDelivery_CatalogDenyWrongWitnessFails(t *testing.T) {
-	// A catalog deny with a PostToolUse witness (wrong kind for deny)
-	// must not be accepted.
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
 	d.SetPollTimeout(2 * time.Second)
@@ -800,7 +771,6 @@ func TestClaudeDelivery_CatalogDenyWrongWitnessFails(t *testing.T) {
 	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
-	// Wrong witness: PostToolUse on a deny decision.
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	wg.Wait()
 	if receipt.Outcome == term.DeliveryAccepted {
@@ -810,8 +780,6 @@ func TestClaudeDelivery_CatalogDenyWrongWitnessFails(t *testing.T) {
 }
 
 func TestClaudeDelivery_CatalogAllowWrongWitnessFails(t *testing.T) {
-	// A catalog allow with a permission_denials witness (wrong kind for allow)
-	// must not be accepted.
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
 	d.SetPollTimeout(2 * time.Second)
@@ -824,7 +792,6 @@ func TestClaudeDelivery_CatalogAllowWrongWitnessFails(t *testing.T) {
 	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
-	// Wrong witness: permission_denials on an allow decision.
 	denialJSON := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"}}]}` + "\n"
 	select {
 	case <-l.resumeWCh:
@@ -840,7 +807,6 @@ func TestClaudeDelivery_CatalogAllowWrongWitnessFails(t *testing.T) {
 }
 
 func TestClaudeDelivery_CatalogTimeoutFails(t *testing.T) {
-	// Delivery with no witness must fail (timeout), even with catalog match.
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
 	d.SetPollTimeout(500 * time.Millisecond)
@@ -853,7 +819,6 @@ func TestClaudeDelivery_CatalogTimeoutFails(t *testing.T) {
 	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
 	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
-	// No witness — timeout.
 	wg.Wait()
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("timeout must not succeed")
@@ -863,8 +828,6 @@ func TestClaudeDelivery_CatalogTimeoutFails(t *testing.T) {
 }
 
 func TestClaudeDelivery_CatalogMutatedResumeInput(t *testing.T) {
-	// Catalog match at setup, but resume hook sends a DIFFERENT command.
-	// The coordinator must reject: claim binding (catalog probe) ≠ resume input.
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
 	d.SetPollTimeout(2 * time.Second)
@@ -875,37 +838,64 @@ func TestClaudeDelivery_CatalogMutatedResumeInput(t *testing.T) {
 		defer wg.Done()
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
-	resumeURL, _ := captureBridgeURLs(t, l)
-	// Mutated: different command from the catalog entry.
+	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo rm -rf"}`)
-	// The hook returns defer (mismatch), not allow.
 	if !bytesEq(r, term.ClaudeHookResponseBytes("defer")) {
 		t.Fatalf("mutated resume must return defer, got %s", r)
 	}
+	// Fire correct PostToolUse BEFORE delivery returns (bridge still open).
+	// The entry never reached decisionWritten so this is a no-op witness.
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	wg.Wait()
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("mutated resume input must not be accepted")
 	}
-	// Submit the non-accepted receipt to Store — must NOT commit.
 	commit := store.RecordDelivery(receipt)
-	if commit.Committed {
-		t.Fatalf("mutated receipt must not commit, got outcome=%s state=%s", commit.Outcome, commit.State)
+	if commit.Committed || commit.State != term.ApprovalDeliveryFailed {
+		t.Fatalf("mutated commit: Committed=%v State=%s", commit.Committed, commit.State)
 	}
-	// Second delivery attempt on same claim must not succeed.
+	dup := store.RecordDelivery(receipt)
+	if dup.Committed {
+		t.Fatalf("mutated duplicate commit: outcome=%s", dup.Outcome)
+	}
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	var found bool
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			found = true
+			if d.State != "delivery_failed" {
+				t.Fatalf("mutated DTO state = %q", d.State)
+			}
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("mutated DTO summary = %q", d.Summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("mutated approval not found in DTO")
+	}
+	// Second delivery attempt must not succeed.
 	receipt2 := d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	if receipt2.Outcome == term.DeliveryAccepted {
 		t.Fatal("second delivery on failed claim must not succeed")
 	}
-	_ = store
+	if store.RecordDelivery(receipt2).Committed {
+		t.Fatal("second receipt must not commit")
+	}
+	// DTO must remain delivery_failed.
+	dtos2 := store.ListSafe(claim.Binding.SessionID)
+	for _, d := range dtos2 {
+		if d.ID == claim.Binding.ApprovalID && d.State != "delivery_failed" {
+			t.Fatalf("DTO state changed to %q", d.State)
+		}
+	}
 }
 
 func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
-	// Claim → Stop runtime → delivery must fail (stale runtime).
-	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
+	l, svc, store, claim, _, _, _, _ := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
 	d.SetPollTimeout(2 * time.Second)
 
-	// Stop the runtime BEFORE delivery.
 	if err := svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -921,18 +911,28 @@ func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("stale runtime delivery must not be accepted")
 	}
-	// Submit non-accepted receipt to Store — must NOT commit.
 	commit := store.RecordDelivery(receipt)
-	if commit.Committed {
-		t.Fatalf("stale receipt must not commit, got outcome=%s state=%s", commit.Outcome, commit.State)
+	if commit.Committed || commit.State != term.ApprovalDeliveryFailed {
+		t.Fatalf("stale commit: Committed=%v State=%s", commit.Committed, commit.State)
 	}
-	// Duplicate submission must also not commit.
 	if store.RecordDelivery(receipt).Committed {
-		t.Fatal("duplicate stale RecordDelivery must not commit")
+		t.Fatal("stale duplicate RecordDelivery committed")
 	}
-	_ = store
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	var found bool
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			found = true
+			if d.State != "delivery_failed" {
+				t.Fatalf("stale DTO state = %q", d.State)
+			}
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("stale DTO summary = %q", d.Summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("stale approval not found in DTO")
+	}
 	_ = l
-	_ = csid
-	_ = tuid
-	_ = tn
 }
