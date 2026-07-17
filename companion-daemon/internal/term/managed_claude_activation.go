@@ -198,6 +198,10 @@ func (d claudeDispatchingApprovalDelivery) Deliver(req ApprovalDeliveryRequest) 
 	return d.fallback.Deliver(req)
 }
 
+// Claude returns the Claude-specific delivery embedded in this dispatcher.
+// Exported for composition tests that need to set a short poll timeout.
+func (d claudeDispatchingApprovalDelivery) Claude() ApprovalDelivery { return d.claude }
+
 // NewCombinedRuntimeResolver dispatches current-runtime resolution by the
 // canonical session-ID adapter prefix at the composition boundary. Sessions
 // of an unknown adapter — or of a provider whose resolver is not installed —

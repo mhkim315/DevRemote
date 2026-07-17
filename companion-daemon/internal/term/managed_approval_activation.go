@@ -123,6 +123,8 @@ func NewDispatchingApprovalDelivery(codex, fallback ApprovalDelivery) ApprovalDe
 	return dispatchingApprovalDelivery{codex: codex, fallback: fallback}
 }
 
+func (d dispatchingApprovalDelivery) Claude() ApprovalDelivery { return d.fallback }
+
 func (d dispatchingApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	if req.Binding.Runtime.Adapter == codexAppServerAdapter && d.codex != nil {
 		return d.codex.Deliver(req)
