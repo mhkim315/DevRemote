@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -662,23 +663,34 @@ func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("expected accepted, got %s", receipt.Outcome)
 	}
-	if !store.RecordDelivery(receipt).Committed {
-		t.Fatal("not committed")
+	commit := store.RecordDelivery(receipt)
+	if !commit.Committed {
+		t.Fatalf("not committed: outcome=%s", commit.Outcome)
 	}
-	// Exact binding: receipt must carry the same claim token, runtime, digest, option.
+	// Full binding: every field matches.
 	if receipt.ClaimToken != claim.Token {
 		t.Fatalf("receipt ClaimToken mismatch")
 	}
-	if receipt.Binding.ApprovalID != claim.Binding.ApprovalID {
-		t.Fatalf("receipt ApprovalID mismatch")
+	if receipt.ReceiptID == "" {
+		t.Fatal("ReceiptID empty")
 	}
-	if receipt.Binding.OptionID != "allow_once" {
-		t.Fatalf("receipt OptionID = %q", receipt.Binding.OptionID)
+	if receipt.DeliveredPayloadDigest == "" {
+		t.Fatal("DeliveredPayloadDigest empty")
 	}
-	if receipt.Binding.Runtime.Adapter != "claude_headless" {
-		t.Fatalf("receipt Runtime.Adapter = %q", receipt.Binding.Runtime.Adapter)
+	b := receipt.Binding
+	if b.ApprovalID != claim.Binding.ApprovalID || b.SessionID != claim.Binding.SessionID {
+		t.Fatalf("binding ApprovalID/SessionID mismatch")
 	}
-	// Final DTO: catalog summary preserved after commit.
+	if b.OptionID != "allow_once" || b.DeliverySchema != term.ClaudeDecisionSchemaV1() {
+		t.Fatalf("binding option/schema: %s/%s", b.OptionID, b.DeliverySchema)
+	}
+	if b.Runtime.Adapter != "claude_headless" || b.Runtime.Version != "2.1.209" {
+		t.Fatalf("binding runtime: %+v", b.Runtime)
+	}
+	if b.ActionDigest == "" || b.PayloadDigest == "" {
+		t.Fatal("binding digest empty")
+	}
+	// Final DTO: terminal state + catalog summary + no raw payload.
 	dtos := store.ListSafe(claim.Binding.SessionID)
 	var found bool
 	for _, d := range dtos {
@@ -686,6 +698,14 @@ func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
 			found = true
 			if d.Summary != "Run Claude approval verification probe" {
 				t.Fatalf("final DTO summary = %q", d.Summary)
+			}
+			if d.State != "approved" {
+				t.Fatalf("final DTO state = %q, want approved", d.State)
+			}
+			// DTO must never carry raw payload or command text.
+			dtoJSON, _ := json.Marshal(d)
+			if strings.Contains(string(dtoJSON), "echo pokitclaudeapprovalprobe") {
+				t.Fatal("raw command leaked into DTO JSON")
 			}
 		}
 	}
@@ -728,29 +748,40 @@ func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("expected accepted for deny, got %s", receipt.Outcome)
 	}
-	if !store.RecordDelivery(receipt).Committed {
-		t.Fatal("not committed")
+	commit := store.RecordDelivery(receipt)
+	if !commit.Committed {
+		t.Fatalf("deny not committed: outcome=%s", commit.Outcome)
 	}
-	// Exact binding on deny receipt.
-	if receipt.Binding.OptionID != "deny" {
-		t.Fatalf("receipt OptionID = %q", receipt.Binding.OptionID)
+	if receipt.ReceiptID == "" || receipt.DeliveredPayloadDigest == "" {
+		t.Fatal("deny receipt fields empty")
 	}
-	if receipt.Binding.Runtime.Adapter != "claude_headless" {
-		t.Fatalf("receipt Runtime.Adapter = %q", receipt.Binding.Runtime.Adapter)
+	b := receipt.Binding
+	if b.OptionID != "deny" || b.DeliverySchema != term.ClaudeDecisionSchemaV1() {
+		t.Fatalf("deny binding option/schema: %s/%s", b.OptionID, b.DeliverySchema)
 	}
-	// Final DTO: catalog summary preserved after deny commit.
+	if b.ApprovalID != claim.Binding.ApprovalID {
+		t.Fatal("deny ApprovalID mismatch")
+	}
+	// Final DTO: terminal state + catalog summary.
 	dtos := store.ListSafe(claim.Binding.SessionID)
 	var found bool
 	for _, d := range dtos {
 		if d.ID == claim.Binding.ApprovalID {
 			found = true
 			if d.Summary != "Run Claude approval verification probe" {
-				t.Fatalf("final deny DTO summary = %q", d.Summary)
+				t.Fatalf("deny final DTO summary = %q", d.Summary)
+			}
+			if d.State != "rejected" {
+				t.Fatalf("deny final DTO state = %q, want rejected", d.State)
 			}
 		}
 	}
 	if !found {
-		t.Fatal("approval not found in final deny DTO")
+		t.Fatal("deny approval not found in final DTO")
+	}
+	// Duplicate must not commit again.
+	if store.RecordDelivery(receipt).Committed {
+		t.Fatal("duplicate deny RecordDelivery must not commit again")
 	}
 }
 
@@ -855,6 +886,16 @@ func TestClaudeDelivery_CatalogMutatedResumeInput(t *testing.T) {
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("mutated resume input must not be accepted")
 	}
+	// Submit the non-accepted receipt to Store — must NOT commit.
+	commit := store.RecordDelivery(receipt)
+	if commit.Committed {
+		t.Fatalf("mutated receipt must not commit, got outcome=%s state=%s", commit.Outcome, commit.State)
+	}
+	// Second delivery attempt on same claim must not succeed.
+	receipt2 := d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	if receipt2.Outcome == term.DeliveryAccepted {
+		t.Fatal("second delivery on failed claim must not succeed")
+	}
 	_ = store
 }
 
@@ -865,7 +906,9 @@ func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
 	d.SetPollTimeout(2 * time.Second)
 
 	// Stop the runtime BEFORE delivery.
-	svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen)
+	if err := svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
 
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -874,10 +917,18 @@ func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
 		defer wg.Done()
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
-	// Wait for the delivery to fail — resume won't work on stopped runtime.
 	wg.Wait()
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("stale runtime delivery must not be accepted")
+	}
+	// Submit non-accepted receipt to Store — must NOT commit.
+	commit := store.RecordDelivery(receipt)
+	if commit.Committed {
+		t.Fatalf("stale receipt must not commit, got outcome=%s state=%s", commit.Outcome, commit.State)
+	}
+	// Duplicate submission must also not commit.
+	if store.RecordDelivery(receipt).Committed {
+		t.Fatal("duplicate stale RecordDelivery must not commit")
 	}
 	_ = store
 	_ = l
