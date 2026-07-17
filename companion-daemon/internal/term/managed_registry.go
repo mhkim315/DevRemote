@@ -76,6 +76,15 @@ func NewManagedSessionRegistry(max int) *ManagedSessionRegistry {
 	return &ManagedSessionRegistry{max: max, records: make(map[string]ManagedSessionRecord)}
 }
 
+// replaceForTest directly replaces the record for sessionID with the given
+// value. Test-only seam for RuntimeOf forged-record counterexamples. Not
+// for production use.
+func (r *ManagedSessionRegistry) replaceForTest(rec ManagedSessionRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records[rec.SessionID] = rec
+}
+
 // Register inserts a new record with status idle. Fails closed on a closed
 // registry, duplicate SessionID, or capacity exhaustion — existing records
 // are never replaced or mutated by a failed Register.

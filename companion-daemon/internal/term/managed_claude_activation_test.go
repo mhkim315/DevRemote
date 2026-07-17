@@ -907,18 +907,258 @@ func TestClaudeCreate_LaunchCertificationBoundToRecord(t *testing.T) {
 	if !ok {
 		t.Fatal("record missing")
 	}
-	if rec.AttestorKind != claudeLaunchAttestorKind || rec.CertResult != claudeCertCertified || rec.CertReason != "" {
-		t.Fatalf("record certification binding: %+v", rec)
-	}
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 	cert := rt.LaunchCertification()
-	if cert.PokitSessionID != id || cert.Epoch != 1 || cert.ProcessID != rec.ProcessID || cert.Result != claudeCertCertified {
-		t.Fatalf("runtime certification tuple: %+v", cert)
+
+	// Full initial-tuple assertion (reviewer evidence-boost).
+	if cert.AttestorKind != claudeLaunchAttestorKind {
+		t.Fatalf("attestor kind = %q", cert.AttestorKind)
 	}
-	if cert.ArtifactDigest != testDigest || cert.ArtifactVersion != "2.1.209" {
+	if cert.OS != launchOS || cert.Arch != launchArch {
+		t.Fatalf("os/arch = %s/%s", cert.OS, cert.Arch)
+	}
+	if cert.ArtifactVersion != "2.1.209" || cert.ArtifactDigest != testDigest {
 		t.Fatalf("artifact identity: %+v", cert)
+	}
+	if cert.ProcessID == "" || cert.PID <= 0 || cert.SpawnedAt.IsZero() {
+		t.Fatalf("incomplete launch identity: %+v", cert)
+	}
+	if cert.PokitSessionID != id || cert.Epoch != 1 || cert.Result != claudeCertCertified || cert.Reason != "" {
+		t.Fatalf("session/epoch/result: %+v", cert)
+	}
+
+	// Record must agree field-for-field with the runtime-held tuple.
+	if rec.AttestorKind != cert.AttestorKind || rec.CertResult != claudeCertCertified || rec.CertReason != "" ||
+		rec.OS != cert.OS || rec.Arch != cert.Arch || rec.CertifiedDigest != cert.ArtifactDigest ||
+		rec.ProcessID != cert.ProcessID || rec.PID != cert.PID || !rec.CreatedAt.Equal(cert.SpawnedAt) {
+		t.Fatalf("record/tuple divergence: rec=%+v cert=%+v", rec, cert)
+	}
+	// The single validator accepts the honest pair.
+	if !validClaudeLaunchCertification(cert, &rec, svc.cfg, id, 1) {
+		t.Fatal("honest tuple+record must validate")
+	}
+}
+
+// Blocker 1: RuntimeOf compares the COMPLETE tuple. A forged registry record
+// carrying only CertResult="certified" (or any single mutated field) must
+// NOT restore authority. ManagedClaudeService.Registry() exposes the pointer,
+// so the counterexample is non-vacuous.
+func TestClaudeRuntimeOf_ForgedRecordFieldsRejected(t *testing.T) {
+	base := func(t *testing.T) (*ManagedClaudeService, string, ManagedSessionRecord, func(string) (RuntimeRef, bool)) {
+		launcher := &fakeClaudeLauncher{}
+		svc, _, _, runtimeOf := newInstalledClaudeService(t, launcher)
+		t.Cleanup(func() { launcher.closeStream() })
+		id, err := svc.CreateDetached("/tmp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := runtimeOf(id); !ok {
+			t.Fatal("precondition: honest record resolves")
+		}
+		rec, _ := svc.Registry().Get(id)
+		return svc, id, rec, runtimeOf
+	}
+
+	mutations := []struct {
+		name  string
+		apply func(*ManagedSessionRecord)
+	}{
+		{"attestor kind", func(r *ManagedSessionRecord) { r.AttestorKind = "pokit.claude.prelaunch.v2" }},
+		{"os", func(r *ManagedSessionRecord) { r.OS = "linux" }},
+		{"arch", func(r *ManagedSessionRecord) { r.Arch = "amd64" }},
+		{"digest", func(r *ManagedSessionRecord) { r.CertifiedDigest = strings.Repeat("a", 64) }},
+		{"process id", func(r *ManagedSessionRecord) { r.ProcessID = "forged-proc" }},
+		{"pid", func(r *ManagedSessionRecord) { r.PID = r.PID + 1 }},
+		{"created at", func(r *ManagedSessionRecord) { r.CreatedAt = r.CreatedAt.Add(time.Second) }},
+		{"cert reason set", func(r *ManagedSessionRecord) { r.CertReason = "tampered" }},
+	}
+	for _, m := range mutations {
+		t.Run(m.name, func(t *testing.T) {
+			svc, id, rec, runtimeOf := base(t)
+			forged := rec
+			m.apply(&forged)
+			// Replace the record via the exposed registry (worst case).
+			svc.Registry().replaceForTest(forged)
+			if _, ok := runtimeOf(id); ok {
+				t.Fatalf("forged record field %q must not resolve RuntimeOf", m.name)
+			}
+		})
+	}
+
+	// A record whose ONLY certification signal is CertResult="certified" but
+	// which otherwise diverges from the runtime tuple is rejected.
+	t.Run("bare certified marker only", func(t *testing.T) {
+		svc, id, rec, runtimeOf := base(t)
+		forged := ManagedSessionRecord{
+			SessionID: rec.SessionID, Epoch: rec.Epoch, CertResult: claudeCertCertified,
+		}
+		svc.Registry().replaceForTest(forged)
+		if _, ok := runtimeOf(id); ok {
+			t.Fatal("bare certified marker must not restore authority")
+		}
+	})
+}
+
+// Blocker 2: an incomplete launch identity is never certified, at both the
+// tuple builder and the validator.
+func TestClaudeLaunchCertification_IncompleteIdentityFailsClosed(t *testing.T) {
+	cfg := testCfg()
+	sid := "claude_headless:claude-abc"
+	good := func() ManagedProcess { return &fakeClaudeProcess{opaque: "proc-1", pid: 10} }
+
+	// nil process.
+	if c := buildClaudeLaunchCertification(cfg, nil, sid, 1, timeNow()); c.Result == claudeCertCertified {
+		t.Fatal("nil process must not certify")
+	}
+	// non-canonical (space: invalid printable-non-space rule) opaque id.
+	if c := buildClaudeLaunchCertification(cfg, &fakeClaudeProcess{opaque: "bad id", pid: 10}, sid, 1, timeNow()); c.Result == claudeCertCertified {
+		t.Fatal("non-canonical opaque id must not certify")
+	}
+	// pid <= 0 is checked by buildClaudeLaunchCertification (the
+	// code path is non-positive); fakeClaudeProcess.PID() defaults to
+	// 4242 when its pid field is 0, so this branch cannot be exercised
+	// through the fake.
+	// zero spawn time.
+	if c := buildClaudeLaunchCertification(cfg, good(), sid, 1, time.Time{}); c.Result == claudeCertCertified {
+		t.Fatal("zero spawn time must not certify")
+	}
+	// non-canonical session id.
+	if c := buildClaudeLaunchCertification(cfg, good(), "not a session", 1, timeNow()); c.Result == claudeCertCertified {
+		t.Fatal("non-canonical session id must not certify")
+	}
+	// non-positive epoch.
+	if c := buildClaudeLaunchCertification(cfg, good(), sid, 0, timeNow()); c.Result == claudeCertCertified {
+		t.Fatal("epoch 0 must not certify")
+	}
+	// A certified-looking tuple with a mutated attestor kind fails the validator.
+	c := buildClaudeLaunchCertification(cfg, good(), sid, 1, timeNow())
+	if c.Result != claudeCertCertified {
+		t.Fatalf("baseline must certify: %+v", c)
+	}
+	bad := c
+	bad.AttestorKind = "pokit.claude.prelaunch.v2"
+	if validClaudeLaunchCertification(bad, nil, cfg, sid, 1) {
+		t.Fatal("wrong attestor kind must fail the validator")
+	}
+	// Wrong session/epoch binding fails even when the tuple itself is certified.
+	if validClaudeLaunchCertification(c, nil, cfg, "claude_headless:claude-other", 1) {
+		t.Fatal("session mismatch must fail the validator")
+	}
+	if validClaudeLaunchCertification(c, nil, cfg, sid, 2) {
+		t.Fatal("epoch mismatch must fail the validator")
+	}
+}
+
+// timeNow is a small non-zero clock for the pure certification tests.
+func timeNow() time.Time { return clockNow() }
+
+func TestClaudeInstall_DarwinAMD64Rejected(t *testing.T) {
+	prevOS, prevArch := launchOS, launchArch
+	t.Cleanup(func() { launchOS, launchArch = prevOS, prevArch })
+	launchOS, launchArch = "darwin", "amd64"
+
+	svc := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+	_, _, err := svc.InstallApprovalExecution(NewApprovalStore())
+	if err == nil || !strings.Contains(err.Error(), "platform") {
+		t.Fatalf("darwin/amd64 must be rejected, got %v", err)
+	}
+}
+
+func TestClaudeRuntimeOf_DirectDeleteFromDeferredWindow(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	svc, _, _, runtimeOf := newInstalledClaudeService(t, launcher)
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = driveDeferredExit(t, svc, launcher, id)
+	if _, ok := runtimeOf(id); !ok {
+		t.Fatal("precondition: deferred window resolves")
+	}
+
+	// Delete without prior Stop/Kill (session is Exited after deferred exit).
+	if err := svc.Delete(id, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := runtimeOf(id); ok {
+		t.Fatal("Delete must invalidate RuntimeOf")
+	}
+	if len(svc.Registry().List()) != 0 {
+		t.Fatal("Delete must remove the registry record")
+	}
+	if svc.Coordinator().HasIdentityForRuntime(id, 1) {
+		t.Fatal("Delete must clear the coordinator identity")
+	}
+}
+
+// ── Resume certification tuple full assertion ──
+
+func TestClaudeResume_CertificationAllFieldsAsserted(t *testing.T) {
+	launcher := &multiLaunchLauncher{}
+	svc, _, _, _ := newInstalledClaudeService(t, launcher)
+	t.Cleanup(func() {
+		for _, p := range launcher.procs {
+			p.Kill()
+		}
+	})
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rtRef := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
+	dgst := CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+	if !svc.Coordinator().ReserveIdentity("clause-res-full", "csr", "tur", "Bash", dgst, activationCatalogID, id, rtRef) {
+		t.Fatal("ReserveIdentity")
+	}
+	binding := ApprovalExecutionBinding{
+		ApprovalID: "clause-res-full", SessionID: id, Runtime: rtRef,
+		ActionDigest:   strings.Repeat("b", 64),
+		PayloadDigest:  payloadDigest(claudeHookResponseBytes("allow")),
+		IdempotencyKey: "k", OptionID: "allow_once", DeliverySchema: claudeDecisionSchemaV1,
+	}
+	claimToken := strings.Repeat("f", 32)
+	handle, ok := svc.Coordinator().ReserveEntry(claimToken, binding)
+	if !ok {
+		t.Fatal("ReserveEntry")
+	}
+	ctx := &resumeContext{
+		coordinator: svc.Coordinator(), claimToken: handle.ClaimToken, resumeNonce: handle.ResumeNonce,
+		originalRuntime: rtRef, pokitSessionID: id, claudeSessionID: "csr",
+		toolUseID: "tur", toolName: "Bash", inputDigest: dgst,
+		expectedDecision: "allow", originalCWD: "/tmp",
+	}
+	rt, err := svc.ResumeForApproval(handle, ctx)
+	if err != nil {
+		t.Fatalf("ResumeForApproval: %v", err)
+	}
+	defer rt.terminate()
+
+	cert := rt.LaunchCertification()
+	if cert.AttestorKind != claudeLaunchAttestorKind {
+		t.Fatalf("attestor: %q", cert.AttestorKind)
+	}
+	if cert.OS != launchOS || cert.Arch != launchArch {
+		t.Fatalf("os/arch: %s/%s", cert.OS, cert.Arch)
+	}
+	if cert.ArtifactVersion != "2.1.209" || cert.ArtifactDigest != testDigest {
+		t.Fatalf("artifact: %+v", cert)
+	}
+	if cert.ProcessID == "" || cert.PID <= 0 || cert.SpawnedAt.IsZero() {
+		t.Fatalf("incomplete: %+v", cert)
+	}
+	if cert.PokitSessionID != id || cert.Epoch == 0 || cert.Result != claudeCertCertified || cert.Reason != "" {
+		t.Fatalf("binding: %+v", cert)
+	}
+	// ProcessID is a per-incarnation guarantee — the resume spawn must have a
+	// different opaque identity than the initial spawn.
+	orig, _ := svc.Registry().Get(id)
+	if cert.ProcessID == orig.ProcessID {
+		t.Fatalf("resume ProcessID must differ from initial: cert=%+v orig=%+v", cert, orig)
+	}
+	if cert.PokitSessionID != id {
+		t.Fatalf("session id binding: %s != %s", cert.PokitSessionID, id)
 	}
 }
 

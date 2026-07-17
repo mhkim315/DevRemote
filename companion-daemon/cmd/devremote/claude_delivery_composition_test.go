@@ -39,8 +39,11 @@ func (p *compPipeProc) Kill() error {
 	p.once.Do(func() { close(p.killCh); p.StdinW.Close(); p.StdoutW.Close() })
 	return nil
 }
-func (p *compPipeProc) Wait() error      { <-p.killCh; return nil }
-func (p *compPipeProc) PID() int         { return 0 }
+func (p *compPipeProc) Wait() error { <-p.killCh; return nil }
+
+// PID returns a positive fake OS pid (the C3D §12 launch-certification
+// tuple requires a daemon-owned positive process id).
+func (p *compPipeProc) PID() int         { return 4242 }
 func (p *compPipeProc) OpaqueID() string { return "comp-fake" }
 
 func (l *compFakeLauncher) Launch(_ string, argv []string) (term.ManagedProcess, error) {

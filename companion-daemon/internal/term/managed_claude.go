@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1055,18 +1054,24 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	s.barrier("post-spawn")
 
 	// C3D §12: build the per-incarnation launch-certification tuple for THIS
-	// spawn. On an installed (actionable) service a non-certified incarnation
-	// fails the create closed; an observation-only service proceeds and the
-	// tuple records the honest result (RuntimeOf can never resolve it).
+	// spawn and re-verify it through the single launch-binding validator. On
+	// an installed (actionable) service a non-certified or incomplete
+	// incarnation fails the create closed; an observation-only service
+	// proceeds and the tuple records the honest result (RuntimeOf can never
+	// resolve it).
 	launchCert := buildClaudeLaunchCertification(s.cfg, proc, id, epoch, clockNow())
 	s.mu.Lock()
 	installed := s.actionable
 	s.mu.Unlock()
-	if installed && launchCert.Result != claudeCertCertified {
+	if installed && !validClaudeLaunchCertification(launchCert, nil, s.cfg, id, epoch) {
 		_ = proc.Kill()
 		_ = proc.Wait()
 		rollback()
-		return "", fmt.Errorf("managed claude launch certification: %s", launchCert.Reason)
+		reason := launchCert.Reason
+		if reason == "" {
+			reason = "launch binding invalid"
+		}
+		return "", fmt.Errorf("managed claude launch certification: %s", reason)
 	}
 
 	s.mu.Lock()
@@ -1106,22 +1111,25 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 
 	rec := ManagedSessionRecord{
-		SessionID:       id,
-		Provider:        "claude",
-		Version:         s.cfg.Version,
-		Epoch:           epoch,
-		ProcessID:       proc.OpaqueID(),
-		OS:              goruntime.GOOS,
-		Arch:            goruntime.GOARCH,
-		CreatedAt:       clockNow(),
-		CertifiedDigest: s.cfg.PinnedDigest,
-		PID:             proc.PID(),
+		SessionID: id,
+		Provider:  "claude",
+		Version:   s.cfg.Version,
+		Epoch:     epoch,
+		// C3D §12: every certification-bound identity field is copied from
+		// the ONE immutable launch tuple, so the registry record and the
+		// runtime-held tuple agree by construction and RuntimeOf's full
+		// comparison (validClaudeLaunchCertification) can detect any later
+		// record forgery or replacement.
+		ProcessID:       launchCert.ProcessID,
+		OS:              launchCert.OS,
+		Arch:            launchCert.Arch,
+		CreatedAt:       launchCert.SpawnedAt,
+		CertifiedDigest: launchCert.ArtifactDigest,
+		PID:             launchCert.PID,
 		HookDir:         hookDir,
-		// C3D §12: the initial launch's certification is bound into the
-		// immutable record; RuntimeOf resolves only a certified incarnation.
-		AttestorKind: launchCert.AttestorKind,
-		CertResult:   launchCert.Result,
-		CertReason:   launchCert.Reason,
+		AttestorKind:    launchCert.AttestorKind,
+		CertResult:      launchCert.Result,
+		CertReason:      launchCert.Reason,
 	}
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)
@@ -1221,17 +1229,23 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	}
 
 	// C3D §12: every resume incarnation gets its OWN launch-certification
-	// tuple (own epoch, own OpaqueID). A non-certified resume fails closed
-	// HERE — before the runtime is returned — so an uncertified incarnation
-	// can never reach the repeated-hook or witness stage. Witness authority
-	// still validates against the ORIGINAL RuntimeRef in ctx.
+	// tuple (own epoch, own OpaqueID), re-verified through the single
+	// launch-binding validator. A non-certified or incomplete resume fails
+	// closed HERE — before the runtime is returned — so an uncertified
+	// incarnation can never reach the repeated-hook or witness stage.
+	// Witness authority still validates against the ORIGINAL RuntimeRef in
+	// ctx.
 	launchCert := buildClaudeLaunchCertification(s.cfg, proc, ctx.pokitSessionID, epoch, clockNow())
-	if launchCert.Result != claudeCertCertified {
+	if !validClaudeLaunchCertification(launchCert, nil, s.cfg, ctx.pokitSessionID, epoch) {
 		_ = proc.Kill()
 		_ = proc.Wait()
 		bridge.close()
 		os.RemoveAll(hookDir)
-		return nil, fmt.Errorf("managed claude resume launch certification: %s", launchCert.Reason)
+		reason := launchCert.Reason
+		if reason == "" {
+			reason = "launch binding invalid"
+		}
+		return nil, fmt.Errorf("managed claude resume launch certification: %s", reason)
 	}
 
 	s.mu.Lock()

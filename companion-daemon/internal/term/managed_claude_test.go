@@ -30,6 +30,7 @@ type fakeClaudeProcess struct {
 	killFn  func() error
 	waitErr error
 	opaque  string
+	pid     int
 }
 
 func (p *fakeClaudeProcess) Stdin() io.Writer  { return p.stdin }
@@ -53,7 +54,15 @@ func (p *fakeClaudeProcess) Kill() error {
 	return nil
 }
 func (p *fakeClaudeProcess) Wait() error { return p.waitErr }
-func (p *fakeClaudeProcess) PID() int    { return 0 }
+
+// PID returns a positive fake OS pid: the C3D §12 launch-certification tuple
+// requires a daemon-owned positive process id, so fakes mirror that.
+func (p *fakeClaudeProcess) PID() int {
+	if p.pid > 0 {
+		return p.pid
+	}
+	return 4242
+}
 func (p *fakeClaudeProcess) OpaqueID() string {
 	if p.opaque == "" {
 		return "fake-claude-proc-1"

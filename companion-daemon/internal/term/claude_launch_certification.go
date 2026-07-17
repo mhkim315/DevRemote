@@ -93,8 +93,12 @@ type ClaudeLaunchCertification struct {
 // incarnation. The artifact digest/realpath/version verification itself
 // already ran fail-closed in ClaudeAttestor.Certify immediately before exec;
 // this binds that certified artifact identity to the concrete incarnation
-// and evaluates the closed platform membership. Any non-certified result
-// must fail the actionable create/resume closed at the call site.
+// and evaluates the closed platform membership PLUS the completeness of the
+// daemon-owned launch identity. An incomplete identity (missing process
+// handle, empty or non-canonical opaque ID, non-positive PID, zero spawn
+// time, non-canonical session ID, non-positive epoch) is NEVER certified.
+// Any non-certified result must fail the actionable create/resume closed at
+// the call site.
 func buildClaudeLaunchCertification(cfg ClaudeEntryConfig, proc ManagedProcess, pokitSessionID string, epoch int64, at time.Time) ClaudeLaunchCertification {
 	c := ClaudeLaunchCertification{
 		AttestorKind:    claudeLaunchAttestorKind,
@@ -102,13 +106,27 @@ func buildClaudeLaunchCertification(cfg ClaudeEntryConfig, proc ManagedProcess, 
 		Arch:            launchArch,
 		ArtifactVersion: cfg.Version,
 		ArtifactDigest:  cfg.PinnedDigest,
-		ProcessID:       proc.OpaqueID(),
-		PID:             proc.PID(),
 		SpawnedAt:       at,
 		PokitSessionID:  pokitSessionID,
 		Epoch:           epoch,
 	}
+	if proc != nil {
+		c.ProcessID = proc.OpaqueID()
+		c.PID = proc.PID()
+	}
 	switch {
+	case proc == nil:
+		c.Result, c.Reason = claudeCertFailed, "no process handle"
+	case !validCoordinatorToken(c.ProcessID, maxCoordinatorSessionID):
+		c.Result, c.Reason = claudeCertFailed, "launch identity missing or not canonical"
+	case c.PID <= 0:
+		c.Result, c.Reason = claudeCertFailed, "process id not positive"
+	case at.IsZero():
+		c.Result, c.Reason = claudeCertFailed, "spawn time missing"
+	case !validSessionID(pokitSessionID):
+		c.Result, c.Reason = claudeCertFailed, "session id not canonical"
+	case epoch <= 0:
+		c.Result, c.Reason = claudeCertFailed, "epoch not positive"
 	case !claudePlatformCertified(launchOS, launchArch):
 		c.Result, c.Reason = claudeCertFailed, "platform not certified"
 	case len(cfg.PinnedDigest) != 64 || !allHex(cfg.PinnedDigest):
@@ -119,4 +137,60 @@ func buildClaudeLaunchCertification(cfg ClaudeEntryConfig, proc ManagedProcess, 
 		c.Result = claudeCertCertified
 	}
 	return c
+}
+
+// validClaudeLaunchCertification is the SINGLE launch-binding validator
+// (C3D-A-R1 blocker 1). Create, resume and RuntimeOf all use it. It
+// re-verifies the COMPLETE tuple against the pinned config and the exact
+// session/epoch it claims to bind, and — when a registry record is supplied
+// (initial launches; resume incarnations have none) — requires full field
+// equality between the runtime-held immutable tuple and the record, so a
+// forged or replaced registry record carrying only CertResult "certified"
+// can never restore authority.
+func validClaudeLaunchCertification(cert ClaudeLaunchCertification, rec *ManagedSessionRecord, cfg ClaudeEntryConfig, pokitSessionID string, epoch int64) bool {
+	// Tuple completeness + certification result.
+	if cert.Result != claudeCertCertified || cert.Reason != "" {
+		return false
+	}
+	if cert.AttestorKind != claudeLaunchAttestorKind {
+		return false
+	}
+	if !claudePlatformCertified(cert.OS, cert.Arch) {
+		return false
+	}
+	if cert.ArtifactVersion != certifiedClaudeAuthorityVersion || cert.ArtifactVersion != cfg.Version {
+		return false
+	}
+	if len(cert.ArtifactDigest) != 64 || !allHex(cert.ArtifactDigest) || cert.ArtifactDigest != cfg.PinnedDigest {
+		return false
+	}
+	if !validCoordinatorToken(cert.ProcessID, maxCoordinatorSessionID) {
+		return false
+	}
+	if cert.PID <= 0 || cert.SpawnedAt.IsZero() {
+		return false
+	}
+	// Exact binding to the session/epoch the caller resolves for.
+	if !validSessionID(pokitSessionID) || cert.PokitSessionID != pokitSessionID {
+		return false
+	}
+	if epoch <= 0 || cert.Epoch != epoch {
+		return false
+	}
+	if rec == nil {
+		return true // resume incarnations carry no registry record
+	}
+	// Full record equality: every certification-bound field of the record
+	// must equal the runtime-held immutable tuple.
+	return rec.SessionID == cert.PokitSessionID &&
+		rec.Epoch == cert.Epoch &&
+		rec.AttestorKind == cert.AttestorKind &&
+		rec.CertResult == claudeCertCertified &&
+		rec.CertReason == "" &&
+		rec.OS == cert.OS &&
+		rec.Arch == cert.Arch &&
+		rec.CertifiedDigest == cert.ArtifactDigest &&
+		rec.ProcessID == cert.ProcessID &&
+		rec.PID == cert.PID &&
+		rec.CreatedAt.Equal(cert.SpawnedAt)
 }

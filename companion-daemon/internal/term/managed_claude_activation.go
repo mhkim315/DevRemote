@@ -129,11 +129,19 @@ func (s *ManagedClaudeService) ApprovalExecutionInstalled() bool {
 // coordinator identity is still alive). Everything else fails closed:
 // exit without join, timeout, stop/kill/delete, replacement and daemon
 // restart all leave no resolvable authority.
+//
+// C3D-A-R1: condition 5 is the SINGLE launch-binding validator over the
+// COMPLETE tuple — the runtime-held immutable launchCert, the registry
+// record and the pinned config must agree on every certification-bound
+// field (attestor kind, OS/arch, artifact version+digest, ProcessID, PID,
+// spawn time, session, epoch, result/reason). A forged or replaced registry
+// record that merely claims "certified" can never restore authority.
 func (s *ManagedClaudeService) RuntimeOf(sessionID string) (RuntimeRef, bool) {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
 	actionable := s.actionable
 	coord := s.coordinator
+	cfg := s.cfg
 	s.mu.Unlock()
 	if !actionable || rt == nil {
 		return RuntimeRef{}, false
@@ -142,8 +150,9 @@ func (s *ManagedClaudeService) RuntimeOf(sessionID string) (RuntimeRef, bool) {
 	if !ok || rec.Epoch != rt.epoch {
 		return RuntimeRef{}, false
 	}
-	// C3D §6 condition 5: only a certified launch incarnation resolves.
-	if rec.CertResult != claudeCertCertified {
+	// C3D §6 condition 5: full launch-binding validation (tuple + record +
+	// config), through the same validator create and resume use.
+	if !validClaudeLaunchCertification(rt.launchCert, &rec, cfg, sessionID, rt.epoch) {
 		return RuntimeRef{}, false
 	}
 	if rec.Exited {
