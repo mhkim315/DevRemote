@@ -81,7 +81,7 @@ func safeOptionLabel(kind string) string {
 // provider-neutral summary is used.
 func projectSafeApproval(rec *approvalRecord) SafeApprovalDTO {
 	summary := pokitApprovalSummary(rec.provider)
-	if rec.catalogActionID != "" {
+	if validCatalogBinding(rec.catalogActionID, rec.provider, rec.version) {
 		if cs := catalogSummary(rec.catalogActionID); cs != "" {
 			summary = cs
 		}

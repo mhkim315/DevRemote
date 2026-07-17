@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -3082,5 +3084,99 @@ func TestP2B_CatalogSummaryFunction(t *testing.T) {
 	}
 	if s := catalogSummary(""); s != "" {
 		t.Fatalf("empty catalogSummary = %q, want empty", s)
+	}
+}
+
+func TestP2B_ValidCatalogBinding(t *testing.T) {
+	// Valid: correct provider + version.
+	if !validCatalogBinding("claude.bash.approval_probe.v1", "claude_headless", "2.1.209") {
+		t.Fatal("valid tuple must return true")
+	}
+	// Wrong provider.
+	if validCatalogBinding("claude.bash.approval_probe.v1", "codex", "2.1.209") {
+		t.Fatal("wrong provider must return false")
+	}
+	// Wrong version.
+	if validCatalogBinding("claude.bash.approval_probe.v1", "claude_headless", "9.9.999") {
+		t.Fatal("wrong version must return false")
+	}
+	// Unknown ID.
+	if validCatalogBinding("nonexistent.v1", "claude_headless", "2.1.209") {
+		t.Fatal("unknown ID must return false")
+	}
+	// Empty ID is always valid.
+	if !validCatalogBinding("", "codex", "0.0.1") {
+		t.Fatal("empty ID must return true regardless of provider/version")
+	}
+}
+
+func TestP2B_ForgedCatalogID_StoreRejects(t *testing.T) {
+	// Direct Store ingest with forged catalog ID + wrong provider.
+	// The Store must normalize it to empty.
+	store := NewApprovalStore()
+	id := "claude_headless:claude-test-forged"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	admitted := store.IngestObserved(ApprovalIngest{
+		SessionID: id,
+		LaunchGen: 1,
+		StreamGen: 0,
+		Provider:  "codex", // wrong provider!
+		Version:   "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "forged-1", SessionID: id, AgentKind: "codex", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderProtocol,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1", // forged!
+		}},
+	})
+	if !admitted {
+		t.Fatal("ingest should be admitted")
+	}
+
+	dtos := store.ListSafe(id)
+	if len(dtos) != 1 {
+		t.Fatalf("expected 1 DTO, got %d", len(dtos))
+	}
+	// Must show generic summary, NOT the Claude catalog label.
+	if dtos[0].Summary == "Run Claude approval verification probe" {
+		t.Fatal("forged catalog ID with wrong provider must not show catalog label")
+	}
+	if dtos[0].Summary == "Run Claude approval verification probe" {
+		t.Fatalf("forged catalog must not show catalog label, got %q", dtos[0].Summary)
+	}
+}
+
+func TestP2B_ForgedCatalogID_WrongVersion(t *testing.T) {
+	store := NewApprovalStore()
+	id := "claude_headless:claude-test-wrongver"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	admitted := store.IngestObserved(ApprovalIngest{
+		SessionID: id,
+		LaunchGen: 1,
+		StreamGen: 0,
+		Provider:  "claude_headless",
+		Version:   "9.9.999", // wrong version!
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "wv-1", SessionID: id, AgentKind: "claude_headless", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+	if !admitted {
+		t.Fatal("ingest should be admitted")
+	}
+
+	dtos := store.ListSafe(id)
+	if dtos[0].Summary == "Run Claude approval verification probe" {
+		t.Fatal("catalog ID with wrong version must not show catalog label")
 	}
 }

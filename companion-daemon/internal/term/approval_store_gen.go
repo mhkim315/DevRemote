@@ -68,20 +68,19 @@ type ApprovalIngest struct {
 
 // ApprovalSnapshot is an immutable value copy for DISPLAY / pre-validation only.
 type ApprovalSnapshot struct {
-	SessionID       string
-	ApprovalID      string
-	Provider        string
-	Version         string
-	LaunchGen       int64
-	StreamGen       int
-	Provenance      contract.Provenance
-	State           ApprovalState
-	Actionable      bool
-	RequiredPerm    string
-	Options         []agent.InteractionOption
-	CatalogActionID string // C2D P2B: empty for non-catalog
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
+	SessionID    string
+	ApprovalID   string
+	Provider     string
+	Version      string
+	LaunchGen    int64
+	StreamGen    int
+	Provenance   contract.Provenance
+	State        ApprovalState
+	Actionable   bool
+	RequiredPerm string
+	Options      []agent.InteractionOption
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
 }
 
 func (s ApprovalSnapshot) BoundRuntime() RuntimeRef {
@@ -206,6 +205,16 @@ func copyOptions(options []agent.InteractionOption) []agent.InteractionOption {
 		})
 	}
 	return out
+}
+
+// boundCatalogID returns the catalogActionID only when it is valid for the
+// given provider and version. Otherwise returns empty string (non-catalog).
+// An empty input is passed through unchanged.
+func boundCatalogID(catalogActionID, provider, version string) string {
+	if !validCatalogBinding(catalogActionID, provider, version) {
+		return ""
+	}
+	return boundStr(catalogActionID, maxCoordinatorToolName)
 }
 
 func newClaimToken() string {
@@ -415,7 +424,7 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 			requiredPerm:    boundStr(item.RequiredPerm, authMaxOptionField),
 			actionable:      item.Actionable,
 			optionFprint:    fprint,
-			catalogActionID: boundStr(item.CatalogActionID, maxCoordinatorToolName),
+			catalogActionID: boundCatalogID(item.CatalogActionID, in.Provider, in.Version),
 			delivery:        delivery,
 			createdAt:       now,
 			expiresAt:       now.Add(authApprovalExpiry),
@@ -594,20 +603,19 @@ func (s *AuthoritativeApprovalStore) LookupRecord(sessionID, approvalID string) 
 
 func (s *AuthoritativeApprovalStore) snapshotLocked(rec *approvalRecord) ApprovalSnapshot {
 	return ApprovalSnapshot{
-		SessionID:       rec.approval.SessionID,
-		ApprovalID:      rec.approval.ID,
-		Provider:        rec.provider,
-		Version:         rec.version,
-		LaunchGen:       rec.launchGen,
-		StreamGen:       rec.streamGen,
-		Provenance:      rec.provenance,
-		State:           rec.state,
-		Actionable:      rec.actionable,
-		RequiredPerm:    rec.requiredPerm,
-		Options:         copyOptions(rec.approval.Options),
-		CatalogActionID: rec.catalogActionID,
-		CreatedAt:       rec.createdAt,
-		ExpiresAt:       rec.expiresAt,
+		SessionID:    rec.approval.SessionID,
+		ApprovalID:   rec.approval.ID,
+		Provider:     rec.provider,
+		Version:      rec.version,
+		LaunchGen:    rec.launchGen,
+		StreamGen:    rec.streamGen,
+		Provenance:   rec.provenance,
+		State:        rec.state,
+		Actionable:   rec.actionable,
+		RequiredPerm: rec.requiredPerm,
+		Options:      copyOptions(rec.approval.Options),
+		CreatedAt:    rec.createdAt,
+		ExpiresAt:    rec.expiresAt,
 	}
 }
 

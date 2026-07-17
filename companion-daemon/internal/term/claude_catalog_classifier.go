@@ -264,6 +264,21 @@ func selectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest strin
 	return catalogActionID
 }
 
+// validCatalogBinding reports whether a non-empty catalogActionID is
+// consistent with the given provider and version. Returns false when the
+// ID is unknown or the entry's Provider/Version do not match. An empty
+// catalogActionID is always valid (non-catalog observation).
+func validCatalogBinding(catalogActionID, provider, version string) bool {
+	if catalogActionID == "" {
+		return true
+	}
+	entry, found := lookupCatalogEntry(catalogActionID)
+	if !found {
+		return false
+	}
+	return entry.Provider == provider && entry.Version == version
+}
+
 // catalogSummary returns the Pokit-owned static summary for a catalog
 // action ID, or empty string if the ID is unknown. Used by the safe-DTO
 // projector (P2B) to select a display label without exposing raw provider text.
