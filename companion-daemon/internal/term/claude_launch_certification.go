@@ -181,8 +181,11 @@ func validClaudeLaunchCertification(cert ClaudeLaunchCertification, rec *Managed
 		return true // resume incarnations carry no registry record
 	}
 	// Full record equality: every certification-bound field of the record
-	// must equal the runtime-held immutable tuple.
-	return rec.SessionID == cert.PokitSessionID &&
+	// must equal the runtime-held immutable tuple. Provider and Version are
+	// explicit immutable identity fields of every ManagedSessionRecord.
+	return rec.Provider == "claude" &&
+		rec.Version == cert.ArtifactVersion &&
+		rec.SessionID == cert.PokitSessionID &&
 		rec.Epoch == cert.Epoch &&
 		rec.AttestorKind == cert.AttestorKind &&
 		rec.CertResult == claudeCertCertified &&

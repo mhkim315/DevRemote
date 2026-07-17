@@ -12,6 +12,7 @@ package term
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -972,6 +973,8 @@ func TestClaudeRuntimeOf_ForgedRecordFieldsRejected(t *testing.T) {
 		{"process id", func(r *ManagedSessionRecord) { r.ProcessID = "forged-proc" }},
 		{"pid", func(r *ManagedSessionRecord) { r.PID = r.PID + 1 }},
 		{"created at", func(r *ManagedSessionRecord) { r.CreatedAt = r.CreatedAt.Add(time.Second) }},
+		{"provider", func(r *ManagedSessionRecord) { r.Provider = "codex" }},
+		{"version", func(r *ManagedSessionRecord) { r.Version = "2.1.210" }},
 		{"cert reason set", func(r *ManagedSessionRecord) { r.CertReason = "tampered" }},
 	}
 	for _, m := range mutations {
@@ -1016,10 +1019,10 @@ func TestClaudeLaunchCertification_IncompleteIdentityFailsClosed(t *testing.T) {
 	if c := buildClaudeLaunchCertification(cfg, &fakeClaudeProcess{opaque: "bad id", pid: 10}, sid, 1, timeNow()); c.Result == claudeCertCertified {
 		t.Fatal("non-canonical opaque id must not certify")
 	}
-	// pid <= 0 is checked by buildClaudeLaunchCertification (the
-	// code path is non-positive); fakeClaudeProcess.PID() defaults to
-	// 4242 when its pid field is 0, so this branch cannot be exercised
-	// through the fake.
+	// pid <= 0: negPidProcess returns -1.
+	if c := buildClaudeLaunchCertification(cfg, negPidProcess{}, sid, 1, timeNow()); c.Result == claudeCertCertified {
+		t.Fatal("non-positive pid must not certify")
+	}
 	// zero spawn time.
 	if c := buildClaudeLaunchCertification(cfg, good(), sid, 1, time.Time{}); c.Result == claudeCertCertified {
 		t.Fatal("zero spawn time must not certify")
@@ -1053,6 +1056,18 @@ func TestClaudeLaunchCertification_IncompleteIdentityFailsClosed(t *testing.T) {
 
 // timeNow is a small non-zero clock for the pure certification tests.
 func timeNow() time.Time { return clockNow() }
+
+// negPidProcess is a ManagedProcess whose PID() returns -1, for exercising
+// the pid <= 0 code path in buildClaudeLaunchCertification.
+type negPidProcess struct{}
+
+func (negPidProcess) Stdin() io.Writer  { return nil }
+func (negPidProcess) Stdout() io.Reader { return nil }
+func (negPidProcess) Term() error       { return nil }
+func (negPidProcess) Kill() error       { return nil }
+func (negPidProcess) Wait() error       { return nil }
+func (negPidProcess) OpaqueID() string  { return "neg-pid-proc" }
+func (negPidProcess) PID() int          { return -1 }
 
 func TestClaudeInstall_DarwinAMD64Rejected(t *testing.T) {
 	prevOS, prevArch := launchOS, launchArch

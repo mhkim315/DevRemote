@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -947,4 +948,146 @@ func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
 		t.Fatal("stale approval not found in DTO")
 	}
 	_ = l
+}
+
+// ── C3D-A-R2: production NewAppWithDeps Claude composition ──
+
+const claudeCompDigest = "0000000000000000000000000000000000000000000000000000000000000000"
+
+func claudeAppConfig() Config {
+	return Config{
+		OwnerUUID:           "owner-claude-comp",
+		SupabaseProjectRef:  "localtest",
+		EnableManagedClaude: true,
+		ClaudeDigest:        claudeCompDigest,
+	}
+}
+
+// TestApp_ClaudeOnly_InstalledComposition proves the production root wires
+// Claude activation into the App-owned canonical store: handlers.RuntimeOf
+// resolves only Claude sessions, and handlers.ApprovalDelivery dispatches
+// to the Claude boundary (not the capacity-0 gate).
+// TestApp_ClaudeOnly_InstalledComposition proves the production root wires
+// Claude activation into the App-owned canonical store: handlers.RuntimeOf
+// resolves only Claude sessions, and handlers.ApprovalDelivery dispatches
+// to the Claude boundary (not the capacity-0 gate).
+func TestApp_ClaudeOnly_InstalledComposition(t *testing.T) {
+	// Build a bare service WITHOUT SetApprovalStore — the App owns the
+	// canonical store and configures it through the install transition.
+	launcher := &compFakeLauncher{resumeWCh: make(chan struct{})}
+	cfg := term.ClaudeEntryConfig{
+		Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
+		PinnedPath:   "/tmp/fake-claude",
+		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
+	t.Cleanup(func() {
+		for _, p := range launcher.procs {
+			p.Kill()
+		}
+		svc.Shutdown(context.Background())
+	})
+
+	app, err := NewAppWithDeps(claudeAppConfig(), Dependencies{ManagedClaude: svc})
+	if err != nil {
+		t.Fatalf("NewAppWithDeps: %v", err)
+	}
+	if app.managedClaude == nil || !app.managedClaude.ApprovalExecutionInstalled() {
+		t.Fatal("managedClaude must be installed by the App composition")
+	}
+	if app.handlers.ApprovalDelivery == nil || app.handlers.RuntimeOf == nil {
+		t.Fatal("handlers must carry delivery + resolver")
+	}
+
+	// RuntimeOf resolves only Claude-prefixed sessions.
+	id, err := app.managedClaude.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatalf("CreateDetached: %v", err)
+	}
+	ref, ok := app.handlers.RuntimeOf(id)
+	if !ok || ref.Adapter != "claude_headless" {
+		t.Fatalf("RuntimeOf must resolve a Claude session: ok=%v", ok)
+	}
+	if _, ok := app.handlers.RuntimeOf("codex_app_server:s1"); ok {
+		t.Fatal("must not resolve Codex sessions in Claude-only composition")
+	}
+	if _, ok := app.handlers.RuntimeOf("tmux:0"); ok {
+		t.Fatal("unknown adapters must not resolve")
+	}
+
+	// The canonical store is the SAME one the service is bound to. Inject
+	// an actionable record through the real store path and prove the claim
+	// + delivery flow works through the App-owned dispatch.
+	rtRef := term.RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
+	aid := "claude-appcomp-allow"
+	dgst := term.CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+	svc.Coordinator().ReserveIdentity(aid, "cs-app", "tu-app", "Bash", dgst,
+		"claude.bash.approval_probe.v1", id, rtRef)
+
+	ab := term.ClaudeHookResponseBytes("allow")
+	db := term.ClaudeHookResponseBytes("deny")
+	app.handlers.Approvals.IngestObserved(term.ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []term.ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: aid, SessionID: id, AgentKind: "claude_headless",
+				Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
+				Options: []agent.InteractionOption{
+					{ID: "allow_once", Label: "Allow once", Kind: "approve"},
+					{ID: "deny", Label: "Deny", Kind: "reject"},
+				},
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      true,
+			RequiredPerm:    devicetrust.PermTerminalInput,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+			DeliveryMaterial: []term.ApprovalDeliveryMaterial{
+				{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: ab},
+				{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: db},
+			},
+		}},
+	})
+	if c := app.handlers.Approvals.ClaimForExecution(term.ClaimRequest{
+		SessionID: id, ApprovalID: aid, OptionID: "allow_once",
+		Runtime:        rtRef,
+		Requester:      term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "bt", Permissions: []string{devicetrust.PermTerminalInput}},
+		IdempotencyKey: "appcomp.allow",
+	}); c.Outcome != term.ClaimGranted {
+		t.Fatalf("ClaimForExecution: %s", c.Outcome)
+	}
+
+	// Delivery through the production dispatch — the Claude boundary
+	// accepts a claude_headless binding (the capacity-0 gate would return
+	// unavailable).
+	receipt := app.handlers.ApprovalDelivery.Deliver(term.ApprovalDeliveryRequest{
+		ClaimToken: strings.Repeat("a", 32),
+		Binding: term.ApprovalExecutionBinding{
+			ApprovalID: aid, SessionID: id, Runtime: rtRef,
+			ActionDigest:   strings.Repeat("b", 64),
+			PayloadDigest:  term.CanonicalDigest(ab),
+			IdempotencyKey: "appcomp.deliver",
+			OptionID:       "allow_once",
+			DeliverySchema: term.ClaudeDecisionSchemaV1(),
+		},
+		Payload: ab,
+	})
+	if receipt.Outcome == term.DeliveryUnavailable {
+		t.Fatal("Claude binding must not hit the capacity-0 gate — production dispatch must route to Claude")
+	}
+
+	// Codex binding hits the fallback (capacity-0 gate, unavailable).
+	cr := app.handlers.ApprovalDelivery.Deliver(term.ApprovalDeliveryRequest{
+		ClaimToken: strings.Repeat("c", 32),
+		Binding: term.ApprovalExecutionBinding{
+			ApprovalID: "cx", SessionID: "codex_app_server:s1",
+			Runtime:        term.RuntimeRef{Adapter: "codex_app_server", Version: "0.144.1", LaunchGen: 1},
+			ActionDigest:   strings.Repeat("d", 64),
+			PayloadDigest:  strings.Repeat("e", 64),
+			IdempotencyKey: "appcomp.codex",
+		},
+	})
+	if cr.Outcome != term.DeliveryUnavailable {
+		t.Fatalf("Codex binding in Claude-only composition must be unavailable, got %s", cr.Outcome)
+	}
 }
