@@ -7,13 +7,18 @@
 package term
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/agent/contract"
+	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // ── item 1: actionable catalog record DTO — exact wire shape ──
@@ -321,9 +326,16 @@ func TestClaudeDTO_PrivacyStructuralAllowlist(t *testing.T) {
 	assertNoHex64(t, rawStr, "hex64 in DTO")
 }
 
-// ── item 17: waiting_approval display-only — the real store remains empty ──
+// ── item 17a: a non-catalog HOOK observation is non-actionable ──
+//
+// Drives the REAL hook bridge (PreToolUse + deferred stream join) with a
+// non-catalog command. The production classifier finds no catalog match, so
+// the Store admits exactly ONE record — non-actionable, zero options — and a
+// claim on it is rejected. This is the hook-path counterpart of item 2; the
+// status-only separation proof (no record AT ALL) is
+// TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority below.
 
-func TestClaudeDTO_WaitingApprovalCreatesNoRecord(t *testing.T) {
+func TestClaudeDTO_NonCatalogHookObservationIsNonActionable(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	store := NewApprovalStore()
 	cfg := testCfg()
@@ -376,8 +388,173 @@ func TestClaudeDTO_WaitingApprovalCreatesNoRecord(t *testing.T) {
 		t.Fatalf("non-catalog claim must be not_actionable, got %s", claim.Outcome)
 	}
 
-	// The generic summary and zero options prove:
-	//   (a) waiting_approval status alone created no authoritative Approval;
-	//   (b) no claim, no delivery, no provider write is possible from this
-	//       observation alone.
+	// The generic summary and zero options prove that a non-catalog hook
+	// observation is recorded as non-actionable intervention information:
+	// no claim, no delivery, no provider write is possible from it. (This
+	// path DOES create one Store record — the record-free status-only
+	// invariant is proven separately by the waiting_approval test below.)
+}
+
+// ── item 17b: waiting_approval runtime status ALONE — zero approval authority ──
+
+// claudeWaitSession is a registry session whose process evidence is a real
+// Claude CLI process, so the production detector and log resolver run the
+// Claude path.
+type claudeWaitSession struct{ id string }
+
+func (s *claudeWaitSession) ID() string          { return s.id }
+func (s *claudeWaitSession) Title() string       { return "Claude Code" }
+func (s *claudeWaitSession) AdapterName() string { return "controlled_pty" }
+func (s *claudeWaitSession) ProcessInfo(_ context.Context) (models.ProcessInfo, error) {
+	return models.ProcessInfo{PID: 1234, Command: "claude", CWD: "/Users/test/project"}, nil
+}
+
+// R4-B separation proof. The current production status path
+// (TelemetryService.processSession over a real Claude native log) projects
+// the runtime status waiting_approval from the permission-mode "ask"
+// observation. No provider approval request is emitted or ingested anywhere
+// on this path: the accepted Claude 2.1.202 adapter has no approval-detection
+// capability (DetectApproval is nil; permission-mode is NOT approval
+// evidence), and the legacy parser never creates approval authority
+// (telemetry_service.go A1-C). The invariant proven here: the status
+// projection is exactly "waiting_approval" while the canonical
+// AuthoritativeApprovalStore holds ZERO records, `ListSafe` is empty, the
+// serialized session DTO carries no approvals key, a FULLY-authorized claim
+// on a fabricated ApprovalID cannot resolve, and the live managed-launch
+// delivery endpoint holds zero queued items/bytes — no record, no claim, no
+// CTA, no delivery, no provider write can arise from the status alone.
+func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/claude.jsonl"
+	writeLines(t, logPath, []string{
+		`{"type":"user","version":"2.1.202","message":{"role":"user","content":"hi"},"sessionId":"s","uuid":"u0","timestamp":"2026-07-06T13:29:35.399Z"}`,
+		`{"type":"permission-mode","permissionMode":"ask","sessionId":"s"}`,
+	})
+	sid := "controlled_pty:clwait"
+
+	// Real production composition mirroring app.go: registry session,
+	// transcript service, canonical Store, detector, delivery gate.
+	ts := transcript.NewService(transcript.DefaultStoreConfig())
+	adapter := &stubRegAdapter{name: "controlled_pty"}
+	reg := mux.MustNewRegistry(adapter)
+	sess := &claudeWaitSession{id: "clwait"}
+	adapter.sessions = []mux.Session{sess}
+	events := NewMemoryEventStore()
+	store := NewApprovalStore()
+	detector := agent.NewTermAgentDetector()
+	svc := NewTelemetryService(reg, events, NewNopLinkStore(), nil,
+		detector, store, NewActivityBuffer(100), ts)
+	gate := NewRuntimeDeliveryGate()
+	svc.SetDeliveryGate(gate)
+	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
+		return LogRef{Path: logPath, Agent: "claude", Session: sid}, nil
+	})
+	svc.mu.Lock()
+	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle"}
+	svc.mu.Unlock()
+	transcript.RegisterFirstLaunch(transcript.LaunchSpec{
+		SessionID: sid, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})
+	defer transcript.RemoveLaunch(sid)
+
+	// ONE synchronous production poll — no sleeps, no fabricated state.
+	svc.processSession(context.Background(), sess,
+		map[string]models.ProcessInfo{sid: {PID: 1234, Command: "claude"}},
+		map[string]bool{"controlled_pty": false}, map[string]bool{})
+
+	// 1. The status projection through the production sessions API is
+	// EXACTLY waiting_approval.
+	h := &Handlers{Registry: reg, Events: events, Telemetry: svc,
+		AgentDetector: detector, Approvals: store}
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSessionsAPI(rec, req)
+	raw := rec.Body.String()
+	var sessions []SessionTelemetry
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	var row *SessionTelemetry
+	for i := range sessions {
+		if sessions[i].ID == sid {
+			row = &sessions[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("session %s not in API response: %s", sid, raw)
+	}
+	if row.AgentStatus != "waiting_approval" {
+		t.Fatalf("agentStatus = %q, want waiting_approval (raw=%s)", row.AgentStatus, raw)
+	}
+	if row.AgentKind != "claude" {
+		t.Fatalf("agentKind = %q, want claude", row.AgentKind)
+	}
+
+	// 2. The canonical Store holds ZERO records: internal count, ListSafe,
+	// and the serialized wire all agree. No S1 advisory record is fabricated
+	// either (the accepted adapter produced no status evidence).
+	if n := store.Len(); n != 0 {
+		t.Fatalf("AuthoritativeApprovalStore must hold zero records, got %d", n)
+	}
+	if l := store.ListSafe(sid); len(l) != 0 {
+		t.Fatalf("ListSafe must be empty, got %d", len(l))
+	}
+	if len(row.Approvals) != 0 {
+		t.Fatalf("DTO approvals must be empty, got %d", len(row.Approvals))
+	}
+	if strings.Contains(raw, `"approvals"`) {
+		t.Fatalf("wire must carry NO approvals key: %s", raw)
+	}
+	if strings.Contains(raw, `"agentActivity"`) {
+		t.Fatalf("status-only poll must not fabricate an S1 activity record: %s", raw)
+	}
+
+	// 3. A claim on a fabricated ApprovalID under a FULL permission set
+	// cannot resolve — proving resolution fails on record absence, not on a
+	// permission shortfall. (Route-level bearer authority is R4-A's proof;
+	// ClaimForExecution is the exact store boundary the route handler calls.)
+	claim := store.ClaimForExecution(ClaimRequest{
+		SessionID: sid, ApprovalID: "claude-fabricated-r4b", OptionID: "allow_once",
+		Runtime: RuntimeRef{Adapter: "claude", Version: "2.1.202", LaunchGen: 1, StreamGen: 0},
+		Requester: RequesterContext{DeviceID: "d1", HostID: "h1",
+			BearerSessionID: "b1", BootID: "bt1", Permissions: []string{claudeRequiredPerm}},
+		IdempotencyKey: "r4b.fabricated",
+	})
+	if claim.Outcome != ClaimNotFound {
+		t.Fatalf("fabricated ApprovalID claim outcome = %v, want not_found", claim.Outcome)
+	}
+	if n := store.Len(); n != 0 {
+		t.Fatalf("a failed claim must not create a record, store has %d", n)
+	}
+
+	// 4. Zero delivery / zero provider write: the managed-launch-correlated
+	// delivery endpoint EXISTS (runtime capacity is live), yet holds zero
+	// queued items and zero bytes, and drains empty.
+	gate.mu.Lock()
+	handle := gate.current[sid]
+	if handle == "" {
+		gate.mu.Unlock()
+		t.Fatal("managed-launch poll must activate the delivery endpoint")
+	}
+	e := gate.endpoints[handle]
+	if e == nil || !e.active || len(e.queue) != 0 || e.queuedBytes != 0 {
+		gate.mu.Unlock()
+		t.Fatalf("delivery endpoint must be active and EMPTY: %+v", e)
+	}
+	if gate.totalBytes != 0 {
+		gate.mu.Unlock()
+		t.Fatalf("gate byte accounting must be zero, got %d", gate.totalBytes)
+	}
+	gate.mu.Unlock()
+	if items := gate.Drain(handle); len(items) != 0 {
+		t.Fatalf("delivery endpoint drained %d items, want 0", len(items))
+	}
+
+	// 5. Mobile CTA connection: the produced wire has NO approvals key —
+	// exactly the input of the accepted named mobile test
+	// mobile/__tests__/approvalClient.test.ts
+	// "status-only: no approvals array → no CTA", which drives the
+	// production gate actionableApprovals(undefined, sid) === [] (and [] for
+	// an empty array). DashboardScreen builds CTAs ONLY from
+	// actionableApprovals(s.approvals, s.id); agentStatus is display-only
+	// (AgentCard legacy status text), never an action source.
 }

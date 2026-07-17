@@ -11,6 +11,7 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,108 @@ func (fx *claudeAppFixture) bearer(t *testing.T) string {
 	t.Helper()
 	priv, id := fx.pairDevice(t, "owner")
 	return fx.token(t, id, priv)
+}
+
+// seedNonActionableRecord ingests a second, NON-actionable observed record on
+// an existing session. Used as the current-host/current-boot positive control:
+// a valid principal reaches the handler and gets the deterministic 409
+// (not_actionable) without entering the delivery path.
+func (fx *claudeAppFixture) seedNonActionableRecord(t *testing.T, sid, aid string) {
+	t.Helper()
+	fx.store.IngestObserved(term.ApprovalIngest{
+		SessionID: sid, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []term.ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: aid, SessionID: sid, AgentKind: "claude_headless",
+				Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
+				Options: nil,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "",
+		}},
+	})
+}
+
+// launchCount returns how many processes the fake launcher has started. The
+// FIRST launch per fixture is CreateDetached; a claim that reaches delivery
+// starts a SECOND (resume) launch, so an unchanged count is the observable
+// zero-resume/zero-provider-delivery state.
+func launchCount(l *compFakeLauncher) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.allArgs)
+}
+
+// newRemoteFixtureInDir mirrors newRemoteFixtureWith but pins the host
+// identity/device registry directory, so two App incarnations can share ONE
+// persistent host identity and paired-device set while each owns its own
+// DeviceSessionManager and fresh random boot ID — the exact daemon-restart
+// shape the old-boot negative requires.
+func newRemoteFixtureInDir(t *testing.T, dir string, mutate func(*Config, *Dependencies)) *remoteFixture {
+	t.Helper()
+	id, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
+	if err != nil {
+		t.Fatalf("host identity: %v", err)
+	}
+	reg, err := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
+	if err != nil {
+		t.Fatalf("device registry: %v", err)
+	}
+	deps := testDeps()
+	cfg := Config{InsecureLocalOnly: false}
+	if mutate != nil {
+		mutate(&cfg, &deps)
+	}
+	app, err := NewAppWithDeps(cfg, deps)
+	if err != nil {
+		t.Fatalf("NewAppWithDeps: %v", err)
+	}
+	// Production late-wiring performed by App.Run(); replicate it exactly.
+	app.hostIdentity = id
+	app.deviceRegistry = reg
+	app.handlers.HostIdentity = id
+	app.authHandler.Identity = id
+	app.authHandler.Registry = reg
+
+	srv := httptest.NewServer(app.server.Handler)
+	t.Cleanup(srv.Close)
+	return &remoteFixture{app: app, srv: srv, id: id, reg: reg}
+}
+
+// newClaudeAppFixtureInDir is newClaudeAppFixture with the identity/registry
+// directory pinned (see newRemoteFixtureInDir).
+func newClaudeAppFixtureInDir(t *testing.T, dir string) *claudeAppFixture {
+	t.Helper()
+	launcher := &compFakeLauncher{resumeWCh: make(chan struct{})}
+	svc := term.NewManagedClaudeService(
+		term.ClaudeEntryConfig{
+			Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
+			PinnedPath:   "/tmp/fake-claude",
+			PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
+		},
+		launcher, &compFakeAttestor{},
+	)
+	t.Cleanup(func() {
+		for _, p := range launcher.procs {
+			p.Kill()
+		}
+	})
+	f := newRemoteFixtureInDir(t, dir, func(cfg *Config, deps *Dependencies) {
+		cfg.EnableManagedClaude = true
+		deps.ManagedClaude = svc
+	})
+	if !f.app.managedClaude.ApprovalExecutionInstalled() {
+		t.Fatal("App must install Claude activation")
+	}
+	store := f.app.handlers.Approvals
+	if store == nil {
+		t.Fatal("handlers.Approvals must be wired")
+	}
+	return &claudeAppFixture{
+		remoteFixture: f, launcher: launcher, svc: svc, store: store,
+	}
 }
 
 // captureResumeBridgeURLs polls for the second launch (resume) in the
@@ -285,7 +388,15 @@ func TestC3DB_ChangedOptionConflict(t *testing.T) {
 func TestC3DB_PrincipalNegativeMatrix(t *testing.T) {
 	fx := newClaudeAppFixture(t)
 	sid, aid, _ := fx.seedClaudeRecord(t)
+	nonActID := "claude-c3db-nonact-ctl"
+	fx.seedNonActionableRecord(t, sid, nonActID)
 	body := `{"action":"allow_once","idempotencyKey":"pri.k"}`
+
+	// Zero-delivery baseline: exactly the CreateDetached launch, the one
+	// reserved coordinator identity, and no resume entry.
+	launchesBefore := launchCount(fx.launcher)
+	identsBefore := fx.svc.Coordinator().IdentityCount()
+	entriesBefore := fx.svc.Coordinator().EntryCount()
 
 	// (a) Missing bearer.
 	req, _ := http.NewRequest(http.MethodPost,
@@ -298,8 +409,9 @@ func TestC3DB_PrincipalNegativeMatrix(t *testing.T) {
 		t.Fatalf("missing bearer: %d", resp.StatusCode)
 	}
 
-	// Claim owner role first so subsequent devices are members.
-	fx.bearer(t)
+	// Claim owner role first so subsequent devices are members. The owner
+	// bearer is the current-host/current-boot control principal below.
+	ownerTok := fx.bearer(t)
 
 	// (b) Member without PermTerminalInput.
 	memberPriv, memberID := fx.pairDevice(t, "member-noperm")
@@ -321,15 +433,125 @@ func TestC3DB_PrincipalNegativeMatrix(t *testing.T) {
 		t.Fatalf("revoked: want 401/403, got %d", code)
 	}
 
-	// (d) Boot mismatch is enforced by the host identity binding in the
-	// session. A daemon restart produces a new boot ID, invalidating all
-	// prior bearer sessions. The foreign-host case is structurally
-	// equivalent: any bearer minted by a different host identity fails
-	// RequirePrincipal at session verification.
-	// Zero delivery: record untouched.
-	snap, _ := fx.store.LookupRecord(sid, aid)
-	if snap.State != "pending" {
-		t.Fatalf("all principal negatives must leave record pending: %v", snap.State)
+	// (d) Foreign-host bearer: minted by a GENUINELY different App/host
+	// fixture (its own host identity, device registry, session manager and
+	// boot), POSTed to the TARGET App's registered approval route.
+	t.Run("foreign_host", func(t *testing.T) {
+		foreign := newRemoteFixture(t, nil, nil)
+		if foreign.id.HostID == fx.id.HostID {
+			t.Fatal("foreign fixture must have a different host identity")
+		}
+		foreignPriv, foreignID := foreign.pairDevice(t, "foreign-owner")
+		foreignTok := foreign.token(t, foreignID, foreignPriv)
+		if foreignTok == "" {
+			t.Fatal("foreign fixture must mint a real bearer")
+		}
+		// The foreign OWNER bearer is fully privileged ON ITS OWN HOST —
+		// the target must still reject it before any claim.
+		code, respBody := fx.doJSON(t, "POST",
+			"/api/sessions/"+sid+"/approvals/"+aid, foreignTok, body)
+		if code != http.StatusUnauthorized && code != http.StatusForbidden {
+			t.Fatalf("foreign-host bearer: want 401/403, got %d body=%s", code, respBody)
+		}
+
+		// Positive control: the current-host/current-boot owner bearer on the
+		// SAME route shape reaches the handler. The non-actionable record
+		// returns the deterministic 409 (not_actionable) without entering the
+		// 120-second delivery path.
+		ctlCode, ctlBody := fx.doJSON(t, "POST",
+			"/api/sessions/"+sid+"/approvals/"+nonActID, ownerTok,
+			`{"action":"allow_once","idempotencyKey":"pri.fh.ctl"}`)
+		if ctlCode != http.StatusConflict {
+			t.Fatalf("current-host control: want 409, got %d body=%s", ctlCode, ctlBody)
+		}
+		if !strings.Contains(ctlBody, "not_actionable") {
+			t.Fatalf("current-host control must reach the claim handler: %s", ctlBody)
+		}
+	})
+
+	// (e) Old-boot bearer: SAME persistent host identity and device
+	// registry, but the bearer was minted by a PRIOR App/session-manager
+	// incarnation (old boot ID). The current incarnation must reject it.
+	t.Run("old_boot", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Incarnation 1 (old boot): pair the owner device and mint a bearer.
+		oldApp := newRemoteFixtureInDir(t, dir, nil)
+		ownerPriv, ownerID := oldApp.pairDevice(t, "owner")
+		oldBootTok := oldApp.token(t, ownerID, ownerPriv)
+		if oldBootTok == "" {
+			t.Fatal("old incarnation must mint a real bearer")
+		}
+
+		// Incarnation 2 (current boot): same host.json/devices.json, fresh
+		// App, fresh DeviceSessionManager, fresh random boot ID.
+		cur := newClaudeAppFixtureInDir(t, dir)
+		if cur.id.HostID != oldApp.id.HostID {
+			t.Fatal("restart simulation must preserve the host identity")
+		}
+		if cur.app.sessionMgr.BootID() == oldApp.app.sessionMgr.BootID() {
+			t.Fatal("restart simulation must change the boot ID")
+		}
+		sid2, aid2, _ := cur.seedClaudeRecord(t)
+		nonActID2 := "claude-c3db-nonact-boot-ctl"
+		cur.seedNonActionableRecord(t, sid2, nonActID2)
+		launches2 := launchCount(cur.launcher)
+		idents2 := cur.svc.Coordinator().IdentityCount()
+
+		// The old-boot bearer against the CURRENT App's real approval route.
+		code, respBody := cur.doJSON(t, "POST",
+			"/api/sessions/"+sid2+"/approvals/"+aid2, oldBootTok, body)
+		if code != http.StatusUnauthorized && code != http.StatusForbidden {
+			t.Fatalf("old-boot bearer: want 401/403, got %d body=%s", code, respBody)
+		}
+
+		// Positive control: the SAME device re-authenticates against the
+		// CURRENT incarnation (current boot) and reaches the handler → 409
+		// on the non-actionable record, no delivery.
+		curTok := cur.token(t, ownerID, ownerPriv)
+		ctlCode, ctlBody := cur.doJSON(t, "POST",
+			"/api/sessions/"+sid2+"/approvals/"+nonActID2, curTok,
+			`{"action":"allow_once","idempotencyKey":"pri.boot.ctl"}`)
+		if ctlCode != http.StatusConflict {
+			t.Fatalf("current-boot control: want 409, got %d body=%s", ctlCode, ctlBody)
+		}
+		if !strings.Contains(ctlBody, "not_actionable") {
+			t.Fatalf("current-boot control must reach the claim handler: %s", ctlBody)
+		}
+
+		// Zero delivery on the current incarnation: record still pending,
+		// no resume launch, no new coordinator identity, no resume entry.
+		snap, ok := cur.store.LookupRecord(sid2, aid2)
+		if !ok || snap.State != "pending" {
+			t.Fatalf("old-boot negatives must leave record pending: ok=%v state=%v", ok, snap.State)
+		}
+		if got := launchCount(cur.launcher); got != launches2 {
+			t.Fatalf("old-boot negatives caused a launch: %d→%d (resume delivery)", launches2, got)
+		}
+		if got := cur.svc.Coordinator().IdentityCount(); got != idents2 {
+			t.Fatalf("coordinator identity count changed: %d→%d", idents2, got)
+		}
+		if got := cur.svc.Coordinator().EntryCount(); got != 0 {
+			t.Fatalf("coordinator gained a resume entry: %d", got)
+		}
+	})
+
+	// Zero delivery on the primary fixture across ALL negatives and the
+	// foreign-host control: the actionable record is untouched pending, the
+	// launcher never started a resume process, and the coordinator holds
+	// exactly its baseline identity set and zero resume entries.
+	snap, ok := fx.store.LookupRecord(sid, aid)
+	if !ok || snap.State != "pending" {
+		t.Fatalf("all principal negatives must leave record pending: ok=%v state=%v", ok, snap.State)
+	}
+	if got := launchCount(fx.launcher); got != launchesBefore {
+		t.Fatalf("principal negatives caused a launch: %d→%d (resume delivery)", launchesBefore, got)
+	}
+	if got := fx.svc.Coordinator().IdentityCount(); got != identsBefore {
+		t.Fatalf("coordinator identity count changed: %d→%d", identsBefore, got)
+	}
+	if got := fx.svc.Coordinator().EntryCount(); got != entriesBefore {
+		t.Fatalf("coordinator entry count changed: %d→%d", entriesBefore, got)
 	}
 }
 
@@ -407,7 +629,3 @@ func TestC3DB_ClientAuthorityFieldsRejected(t *testing.T) {
 		t.Fatalf("client-authority attempts must leave record pending: %v", snap.State)
 	}
 }
-
-// (e) Boot mismatch — replace session manager with a new boot. Old tokens
-// from the prior boot are rejected because the new manager has no record of
-// them.
