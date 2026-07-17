@@ -1,10 +1,11 @@
 # Next Executor Handoff — A1.2 C2D Exact Claude Decision Delivery
 
-Status: **C1D ACCEPTED — START C2D-A ONLY — ACTIONABILITY ZERO — C3D PROHIBITED**
+Status: **C2D-C R6-B ACCEPTED — FOLLOW THE C2D-D STAGED HANDOFF — ACTIONABILITY ZERO — C3D PROHIBITED**
 
-This is the authoritative onboarding document for the next execution agent.
-Earlier C1D remediation handoffs are historical and must not be used as active
-instructions.
+The active next-packet instructions are in
+`docs/NEXT_EXECUTOR_A1_2_C2D_D_STAGED_HANDOFF.md`. This document retains the
+frozen whole-C2D contract and exclusions; where packet sequencing differs, the
+new staged handoff controls. Earlier C1D remediation handoffs are historical.
 
 ## 1. Canonical repository and accepted state
 
@@ -15,6 +16,8 @@ instructions.
 - Accepted SP1/Codex baseline: `2b940a6fce6e878ffa0da17b5df4d39438af144d`
 - Accepted C1D implementation: `4794ce7f42380c388c1a5614b4b2518bc1722870`
 - Accepted C1D report HEAD: `e9e661c550c0a78f8f6544f8db911bea9fd5cac1`
+- Accepted C2D-C denial evidence: `dbf6e50feb316c5a2f0dd9728f9619efb11fa720`
+- Accepted C2D-C R6-B implementation: `48ce57d81781646fc1c6c7445b5900b58fd5cef3`
 - This handoff commit must be the fetched remote HEAD before work starts.
 
 Do not use an Antigravity, scratch, temporary, or duplicate checkout. Run:

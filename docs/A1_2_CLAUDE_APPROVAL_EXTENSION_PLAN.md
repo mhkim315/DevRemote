@@ -1,6 +1,6 @@
 # A1.2 Claude Approval Extension — Production Implementation Plan
 
-Status: **C0D ACCEPT — C1D ACCEPT — C2D AUTHORIZED IN STAGED CHECKPOINTS — C3D NOT AUTHORIZED**
+Status: **C0D/C1D ACCEPT — C2D-C R6-B ACCEPT — C2D-D STAGED — C3D NOT AUTHORIZED**
 
 Accepted research evidence: `e42d4c570e64462ce813861017cc635e338e68bf`.
 Frozen provider-neutral A1 core and accepted Codex SP1 baseline:
@@ -8,6 +8,13 @@ Frozen provider-neutral A1 core and accepted Codex SP1 baseline:
 
 Accepted C1D implementation: `4794ce7f42380c388c1a5614b4b2518bc1722870`.
 Accepted C1D evidence/report HEAD: `e9e661c550c0a78f8f6544f8db911bea9fd5cac1`.
+
+Accepted C2D-C denial evidence: `dbf6e50feb316c5a2f0dd9728f9619efb11fa720`.
+Accepted C2D-C R6-B implementation: `48ce57d81781646fc1c6c7445b5900b58fd5cef3`.
+The implementation-ready C2D-D sequence is frozen in
+`docs/NEXT_EXECUTOR_A1_2_C2D_D_STAGED_HANDOFF.md`: D1 contract decision, D2 pure
+projector, then D3 controlled final evidence. Each packet stops for independent
+review; C3D remains prohibited until final C2D acceptance.
 
 ## 1. Historical findings remain independent
 
