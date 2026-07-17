@@ -75,11 +75,21 @@ func safeOptionLabel(kind string) string {
 // Options are projected ONLY for an actionable record; a non-actionable record
 // (no proven action mapping) exposes an empty option set and Actionable=false, so
 // the client renders it as non-actionable intervention information with no buttons.
+//
+// P2B: when the record carries a non-empty catalogActionID, the summary is
+// selected from the Pokit-owned catalog label. Otherwise the generic
+// provider-neutral summary is used.
 func projectSafeApproval(rec *approvalRecord) SafeApprovalDTO {
+	summary := pokitApprovalSummary(rec.provider)
+	if rec.catalogActionID != "" {
+		if cs := catalogSummary(rec.catalogActionID); cs != "" {
+			summary = cs
+		}
+	}
 	dto := SafeApprovalDTO{
 		ID:         boundStr(rec.approval.ID, authMaxApprovalIDLen),
 		SessionID:  boundStr(rec.approval.SessionID, maxSessionIDLen),
-		Summary:    boundStr(pokitApprovalSummary(rec.provider), safeSummaryMaxLen),
+		Summary:    boundStr(summary, safeSummaryMaxLen),
 		State:      projectPublicStatus(rec.state),
 		Actionable: rec.actionable,
 		Options:    []SafeOptionDTO{},

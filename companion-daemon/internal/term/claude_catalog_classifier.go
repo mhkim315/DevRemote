@@ -264,6 +264,17 @@ func selectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest strin
 	return catalogActionID
 }
 
+// catalogSummary returns the Pokit-owned static summary for a catalog
+// action ID, or empty string if the ID is unknown. Used by the safe-DTO
+// projector (P2B) to select a display label without exposing raw provider text.
+func catalogSummary(catalogActionID string) string {
+	entry, found := lookupCatalogEntry(catalogActionID)
+	if !found {
+		return ""
+	}
+	return entry.Summary
+}
+
 // lookupCatalogEntry returns a value copy of the catalog entry for a given
 // action ID. The copy prevents callers from mutating the frozen compiled
 // catalog through a pointer. Returns false if not found.

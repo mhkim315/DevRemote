@@ -49,6 +49,11 @@ type ApprovalIngestItem struct {
 	// item; any invalid entry rejects the WHOLE item. Production managed
 	// ingestion supplies none (non-actionable observation).
 	DeliveryMaterial []ApprovalDeliveryMaterial
+	// CatalogActionID (C2D P2B) is the optional catalog action identifier
+	// set by the Claude provider boundary. Empty for non-catalog observations.
+	// Internal only — never projected directly into a DTO; used server-side
+	// to select the Pokit-owned static summary label.
+	CatalogActionID string
 }
 
 // ApprovalIngest is one generation-scoped ingestion for a single session.
@@ -63,19 +68,20 @@ type ApprovalIngest struct {
 
 // ApprovalSnapshot is an immutable value copy for DISPLAY / pre-validation only.
 type ApprovalSnapshot struct {
-	SessionID    string
-	ApprovalID   string
-	Provider     string
-	Version      string
-	LaunchGen    int64
-	StreamGen    int
-	Provenance   contract.Provenance
-	State        ApprovalState
-	Actionable   bool
-	RequiredPerm string
-	Options      []agent.InteractionOption
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
+	SessionID       string
+	ApprovalID      string
+	Provider        string
+	Version         string
+	LaunchGen       int64
+	StreamGen       int
+	Provenance      contract.Provenance
+	State           ApprovalState
+	Actionable      bool
+	RequiredPerm    string
+	Options         []agent.InteractionOption
+	CatalogActionID string // C2D P2B: empty for non-catalog
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
 }
 
 func (s ApprovalSnapshot) BoundRuntime() RuntimeRef {
@@ -83,16 +89,17 @@ func (s ApprovalSnapshot) BoundRuntime() RuntimeRef {
 }
 
 type approvalRecord struct {
-	approval     agent.AgentApproval
-	state        ApprovalState
-	provider     string
-	version      string
-	launchGen    int64
-	streamGen    int
-	provenance   contract.Provenance
-	requiredPerm string
-	actionable   bool
-	optionFprint string
+	approval        agent.AgentApproval
+	state           ApprovalState
+	provider        string
+	version         string
+	launchGen       int64
+	streamGen       int
+	provenance      contract.Provenance
+	requiredPerm    string
+	actionable      bool
+	optionFprint    string
+	catalogActionID string // C2D P2B: empty for non-catalog observations
 	// delivery holds the defensively-copied per-option delivery material
 	// (SP1 P2A). Internal only — never projected into any DTO.
 	delivery   map[string]storedDeliveryMaterial
@@ -399,18 +406,19 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 				Source:     a.Source,
 				Confidence: a.Confidence,
 			},
-			state:        ApprovalPending,
-			provider:     boundStr(in.Provider, maxVersionLen),
-			version:      boundStr(in.Version, maxVersionLen),
-			launchGen:    in.LaunchGen,
-			streamGen:    in.StreamGen,
-			provenance:   item.Provenance,
-			requiredPerm: boundStr(item.RequiredPerm, authMaxOptionField),
-			actionable:   item.Actionable,
-			optionFprint: fprint,
-			delivery:     delivery,
-			createdAt:    now,
-			expiresAt:    now.Add(authApprovalExpiry),
+			state:           ApprovalPending,
+			provider:        boundStr(in.Provider, maxVersionLen),
+			version:         boundStr(in.Version, maxVersionLen),
+			launchGen:       in.LaunchGen,
+			streamGen:       in.StreamGen,
+			provenance:      item.Provenance,
+			requiredPerm:    boundStr(item.RequiredPerm, authMaxOptionField),
+			actionable:      item.Actionable,
+			optionFprint:    fprint,
+			catalogActionID: boundStr(item.CatalogActionID, maxCoordinatorToolName),
+			delivery:        delivery,
+			createdAt:       now,
+			expiresAt:       now.Add(authApprovalExpiry),
 		}
 		pending = append(pending, pendingRec{rec: rec, fprint: fprint})
 	}
@@ -586,19 +594,20 @@ func (s *AuthoritativeApprovalStore) LookupRecord(sessionID, approvalID string) 
 
 func (s *AuthoritativeApprovalStore) snapshotLocked(rec *approvalRecord) ApprovalSnapshot {
 	return ApprovalSnapshot{
-		SessionID:    rec.approval.SessionID,
-		ApprovalID:   rec.approval.ID,
-		Provider:     rec.provider,
-		Version:      rec.version,
-		LaunchGen:    rec.launchGen,
-		StreamGen:    rec.streamGen,
-		Provenance:   rec.provenance,
-		State:        rec.state,
-		Actionable:   rec.actionable,
-		RequiredPerm: rec.requiredPerm,
-		Options:      copyOptions(rec.approval.Options),
-		CreatedAt:    rec.createdAt,
-		ExpiresAt:    rec.expiresAt,
+		SessionID:       rec.approval.SessionID,
+		ApprovalID:      rec.approval.ID,
+		Provider:        rec.provider,
+		Version:         rec.version,
+		LaunchGen:       rec.launchGen,
+		StreamGen:       rec.streamGen,
+		Provenance:      rec.provenance,
+		State:           rec.state,
+		Actionable:      rec.actionable,
+		RequiredPerm:    rec.requiredPerm,
+		Options:         copyOptions(rec.approval.Options),
+		CatalogActionID: rec.catalogActionID,
+		CreatedAt:       rec.createdAt,
+		ExpiresAt:       rec.expiresAt,
 	}
 }
 

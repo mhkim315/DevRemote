@@ -514,6 +514,7 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 			Provenance:       contract.ProvenanceProviderHook,
 			Actionable:       false,
 			RequiredPerm:     "",
+			CatalogActionID:  pending.catalogActionID,
 			DeliveryMaterial: nil,
 		}},
 	})

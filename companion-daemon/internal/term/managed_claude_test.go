@@ -2157,8 +2157,8 @@ func TestP2A_CatalogMatchViaRealHook(t *testing.T) {
 			// Summary must remain the generic provider-neutral text,
 			// NOT the catalog-specific label (which is P2B work).
 			if d.Summary == "Run Claude approval verification probe" {
-				if d.Summary != "Approval requested" {
-					t.Fatalf("summary must be generic, got %q", d.Summary)
+				if d.Summary != "Run Claude approval verification probe" {
+					t.Fatalf("catalog summary expected, got %q", d.Summary)
 				}
 			}
 		}
@@ -2904,8 +2904,8 @@ func TestP2A_SentinelsNeverInRetainedFields(t *testing.T) {
 	for _, d := range dtos {
 		if d.ID == approvalID {
 			dtoFound = true
-			if d.Summary != "Approval requested" {
-				t.Fatalf("summary must be generic, got %q", d.Summary)
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("catalog summary expected, got %q", d.Summary)
 			}
 			if d.Actionable {
 				t.Fatal("Actionable must be false")
@@ -2993,4 +2993,94 @@ func TestP2A_EpochReplacementClearsCatalogIdentity(t *testing.T) {
 	}
 
 	rt.terminate()
+}
+
+// ── P2B display metadata tests ──
+
+func TestP2B_CatalogSummaryInDTO(t *testing.T) {
+	svc, store, rt, id := p2aCreateRuntime(t)
+	_ = svc
+
+	sessionID := "claude-sess-p2b-dto"
+	toolUseID := "call_00_P2B_DTO"
+
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	dtos := store.ListSafe(id)
+	var dtoFound bool
+	for _, d := range dtos {
+		if d.ID == approvalID {
+			dtoFound = true
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("catalog summary not in DTO: got %q", d.Summary)
+			}
+			if d.Actionable {
+				t.Fatal("Actionable must remain false in P2B")
+			}
+			if len(d.Options) != 0 {
+				t.Fatalf("Options must remain empty in P2B, got %d", len(d.Options))
+			}
+		}
+	}
+	if !dtoFound {
+		t.Fatal("approval not found in ListSafe DTO")
+	}
+
+	_ = store
+	rt.terminate()
+}
+
+func TestP2B_NonCatalogKeepsGenericSummary(t *testing.T) {
+	svc, store, rt, id := p2aCreateRuntime(t)
+	_ = svc
+
+	sessionID := "claude-sess-p2b-generic"
+	toolUseID := "call_00_P2B_Generic"
+
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo arbitrary"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+	inputJSON := `{"command":"echo arbitrary"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	dtos := store.ListSafe(id)
+	var dtoFound bool
+	for _, d := range dtos {
+		if d.ID == approvalID {
+			dtoFound = true
+			if d.Summary != "Approval requested" {
+				t.Fatalf("non-catalog must keep generic summary, got %q", d.Summary)
+			}
+		}
+	}
+	if !dtoFound {
+		t.Fatal("approval not found in ListSafe DTO")
+	}
+
+	_ = store
+	rt.terminate()
+}
+
+func TestP2B_CatalogSummaryFunction(t *testing.T) {
+	if s := catalogSummary("claude.bash.approval_probe.v1"); s != "Run Claude approval verification probe" {
+		t.Fatalf("catalogSummary = %q", s)
+	}
+	if s := catalogSummary("nonexistent.v1"); s != "" {
+		t.Fatalf("unknown catalogSummary = %q, want empty", s)
+	}
+	if s := catalogSummary(""); s != "" {
+		t.Fatalf("empty catalogSummary = %q, want empty", s)
+	}
 }
