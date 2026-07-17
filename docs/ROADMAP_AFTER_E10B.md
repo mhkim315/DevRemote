@@ -150,7 +150,7 @@ A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native 
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
-A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7; C2D-C R6-B ACCEPT 48ce57d; arbitrary-command D1 REJECT/BLOCKED defeb9d; closed-catalog P1 ACCEPT f29e1b6; P2A authorized; C3D blocked
+A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7; C2D closed-catalog ACCEPT 9116040 (P1 f29e1b6 → P2A f93e81e → P2B d841a88 → P3 9116040); arbitrary-command D1 remains REJECTED defeb9d; C3D authorized in staged handoff, not started
 PF  Post-Claude Accepted-State Freeze         BLOCKED pending independent final A1.2 C2D/C3D/mobile ACCEPT
 PA  Managed-Only Ownership Migration          BLOCKED pending PF ACCEPT
 PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA ACCEPT

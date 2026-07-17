@@ -1,6 +1,6 @@
 # A1.2 Claude Approval Extension — Production Implementation Plan
 
-Status: **C0D/C1D ACCEPT — C2D-C R6-B ACCEPT — D1 REJECTED/BLOCKED — CLOSED-CATALOG P1 ACCEPT — P2A AUTHORIZED — C3D NOT AUTHORIZED**
+Status: **C0D/C1D ACCEPT — CLOSED-CATALOG C2D ACCEPT — D1 REMAINS REJECTED — C3D AUTHORIZED, NOT STARTED**
 
 Accepted research evidence: `e42d4c570e64462ce813861017cc635e338e68bf`.
 Frozen provider-neutral A1 core and accepted Codex SP1 baseline:
@@ -15,10 +15,9 @@ The arbitrary-command D1 proposal was rejected and the contradiction was recorde
 at `defeb9de2e73d8a821fc49a28a027529b05a60e3`. The planner-owned resolution is
 `docs/A1_2_C2D_D_PLANNER_CATALOG_AMENDMENT.md`: one server-owned catalog action,
 then independently reviewed P1 classifier, P2A private-identity wiring, P2B
-display-only metadata plumbing and P3 controlled final evidence. P1 is accepted at
-`f29e1b6dc776bc8f4799809b59accd7ceb755072`; the active executor document is
-`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_P2A_HANDOFF.md`. C3D remains prohibited until
-final C2D acceptance.
+display-only metadata plumbing and P3 controlled final evidence. C2D is accepted at
+`91160409c9fc7e41a0c60b1c97a6ec6a7c4cffb4`; the active executor document is
+`docs/NEXT_EXECUTOR_A1_2_C3D_PRODUCTION_ACTIVATION_HANDOFF.md`.
 
 ## 1. Historical findings remain independent
 
@@ -244,8 +243,11 @@ No handler, mobile CTA or new actionable record is enabled in C2D.
 
 ## 9. C3D — Atomic activation, mobile path and live acceptance
 
-**Not authorized until independent C2D ACCEPT.** C3D is the only packet that may
-activate Claude actionability.
+**Authorized after independent C2D ACCEPT at
+`91160409c9fc7e41a0c60b1c97a6ec6a7c4cffb4`.** The accepted boundary is recorded
+in `A1_2_C2D_CATALOG_FINAL_ACCEPTANCE.md`; execution must follow
+`NEXT_EXECUTOR_A1_2_C3D_PRODUCTION_ACTIVATION_HANDOFF.md`. C3D is the only packet
+that may activate Claude actionability.
 
 One production-owned install transition must atomically bind:
 
@@ -259,6 +261,12 @@ One production-owned install transition must atomically bind:
 The transition is all-or-nothing. Existing non-actionable records are never
 upgraded. Uninstall, failed install, partial wiring or unsupported tuples leave
 Claude capacity zero.
+
+Activation is limited to the exact one-entry closed catalog. A provider-wide
+`provenActionMapping("claude_headless")` switch is prohibited: provider/version
+alone cannot certify an action. The deepest Store admission boundary must reject
+forged actionable/catalog/options/material values and bind only daemon-recomputed
+material for the exact certified tuple.
 
 Final live evidence requires two fresh managed Claude sessions or invocations:
 

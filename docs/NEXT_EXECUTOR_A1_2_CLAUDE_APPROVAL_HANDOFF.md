@@ -1,11 +1,12 @@
 # Next Executor Handoff — A1.2 C2D Exact Claude Decision Delivery
 
-Status: **CLOSED-CATALOG P1 ACCEPTED — FOLLOW P2A HANDOFF — ACTIONABILITY ZERO — C3D PROHIBITED**
+Status: **HISTORICAL C2D HANDOFF — C2D ACCEPTED — SUPERSEDED BY C3D HANDOFF**
 
-The active next-packet instructions are in
-`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_P2A_HANDOFF.md`. The earlier D1 and P1
-handoffs are historical. This document retains the frozen whole-C2D authority and
-lifecycle exclusions.
+The active instructions are now in
+`docs/NEXT_EXECUTOR_A1_2_C3D_PRODUCTION_ACTIVATION_HANDOFF.md`. C2D received final
+independent ACCEPT at `91160409c9fc7e41a0c60b1c97a6ec6a7c4cffb4`. This document
+is retained only as historical C2D authority and lifecycle context; do not execute
+its old packet sequence.
 
 ## 1. Canonical repository and accepted state
 
