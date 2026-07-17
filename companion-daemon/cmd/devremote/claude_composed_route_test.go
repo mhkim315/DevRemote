@@ -86,10 +86,10 @@ func (fx *claudeAppFixture) seedClaudeRecord(t *testing.T) (sid, aid string, rtR
 					{ID: "deny", Label: "Deny", Kind: "reject"},
 				},
 			},
-			Provenance:       contract.ProvenanceProviderHook,
-			Actionable:       true,
-			RequiredPerm:     devicetrust.PermTerminalInput,
-			CatalogActionID:  "claude.bash.approval_probe.v1",
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      true,
+			RequiredPerm:    devicetrust.PermTerminalInput,
+			CatalogActionID: "claude.bash.approval_probe.v1",
 			DeliveryMaterial: []term.ApprovalDeliveryMaterial{
 				{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: ab},
 				{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: db},
@@ -407,3 +407,7 @@ func TestC3DB_ClientAuthorityFieldsRejected(t *testing.T) {
 		t.Fatalf("client-authority attempts must leave record pending: %v", snap.State)
 	}
 }
+
+// (e) Boot mismatch — replace session manager with a new boot. Old tokens
+// from the prior boot are rejected because the new manager has no record of
+// them.

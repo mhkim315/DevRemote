@@ -320,3 +320,64 @@ func TestClaudeDTO_PrivacyStructuralAllowlist(t *testing.T) {
 	// 64-hex digest assertion (SHA-256 digests, receipts, nonces).
 	assertNoHex64(t, rawStr, "hex64 in DTO")
 }
+
+// ── item 17: waiting_approval display-only — the real store remains empty ──
+
+func TestClaudeDTO_WaitingApprovalCreatesNoRecord(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	cfg := testCfg()
+	svc := NewManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	t.Cleanup(func() { launcher.closeStream() })
+
+	// Install activation — the runtime MUST be actionable-capable.
+	svc.InstallApprovalExecution(store)
+
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	// Drive a NON-CATALOG observation through the REAL hook bridge.
+	// The classifier returns no match → catalogActionID="" → actionable=false.
+	body := `{"session_id":"s-wait","tool_use_id":"call_wait","tool_name":"Bash","tool_input":{"command":"echo hello"},"hook_event_name":"PreToolUse"}`
+	postHook(t, rt, body)
+	rt.processLine([]byte(deferredStreamJSON("s-wait", "call_wait", "Bash", `{"command":"echo hello"}`)))
+
+	// The Store has exactly ONE record — non-actionable, no options.
+	dtos := store.ListSafe(id)
+	if len(dtos) != 1 {
+		t.Fatalf("expected 1 observation DTO, got %d", len(dtos))
+	}
+	dto := dtos[0]
+	if dto.Actionable || len(dto.Options) != 0 {
+		t.Fatalf("non-catalog observation must be non-actionable with zero options: %+v", dto)
+	}
+	if dto.State != "pending" {
+		t.Fatalf("state = %q", dto.State)
+	}
+	// The DTO carries the generic summary, not the catalog label.
+	if dto.Summary != "Approval requested" {
+		t.Fatalf("non-catalog DTO summary = %q", dto.Summary)
+	}
+
+	// A claim attempt is rejected: not_actionable.
+	claim := store.ClaimForExecution(ClaimRequest{
+		SessionID: id, ApprovalID: dto.ID, OptionID: "allow_once",
+		Runtime:        RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 1, StreamGen: 0},
+		Requester:      RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "bt", Permissions: []string{claudeRequiredPerm}},
+		IdempotencyKey: "wait.k",
+	})
+	if claim.Outcome != ClaimNotActionable {
+		t.Fatalf("non-catalog claim must be not_actionable, got %s", claim.Outcome)
+	}
+
+	// The generic summary and zero options prove:
+	//   (a) waiting_approval status alone created no authoritative Approval;
+	//   (b) no claim, no delivery, no provider write is possible from this
+	//       observation alone.
+}
