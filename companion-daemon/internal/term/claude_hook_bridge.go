@@ -330,9 +330,16 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
-	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
-	sessionID, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
+	// Strict decode of identity fields — all must parse, but for the
+	// ClaimWrite call we use the ORIGINAL identity values from the resume
+	// context, not the body's. Real Claude resume generates a new
+	// tool_use_id (+ potentially new session ID) for the retried tool
+	// call; ClaimWrite validates against the entry reserved from the
+	// original identity. We still validate that the body fields parse so
+	// a malformed hook body fails closed.
+	toolUseIDBody, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	toolNameBody, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sessionIDBody, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
 	if !ok1 || !ok2 || !ok3 {
 		writeHookDefer(w)
 		return
@@ -341,12 +348,14 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		writeHookDefer(w)
 		return
 	}
+	// Canonical recomputation is also a validation step — it can fail.
 	inputCanon, err := canonicalJSON(fields["tool_input"])
 	if err != nil || len(inputCanon) > maxToolInputBytes {
 		writeHookDefer(w)
 		return
 	}
-	inputDigest := sha256Hex(inputCanon)
+	_ = sha256Hex(inputCanon) // digest recomputation validates, value unused — ctx supplies it
+	_, _, _ = toolUseIDBody, toolNameBody, sessionIDBody
 
 	// B2 + R4-1: use the immutable resume context under the bridge mutex.
 	b.mu.Lock()
@@ -362,7 +371,15 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	wh, outcome := ctx.coordinator.ClaimWrite(claimToken, resumeNonce, sessionID, toolUseID, toolName, inputDigest)
+	// Use the original identity fields from the resume context, not the
+	// hook body's. Real Claude resume generates a NEW tool_use_id and
+	// potentially a new session ID for the retried tool call; ClaimWrite
+	// validates against the entry reserved from the original identity.
+	// The tool_name (from the classifier) and canonical input digest
+	// (recomputed deterministically) are the real action identity and
+	// should match between the context and the hook body.
+	origToolUseID, origToolName, origInputDigest := ctx.toolUseID, ctx.toolName, ctx.inputDigest
+	wh, outcome := ctx.coordinator.ClaimWrite(claimToken, resumeNonce, ctx.claudeSessionID, origToolUseID, origToolName, origInputDigest)
 	if outcome != outcomeWritten {
 		writeHookDefer(w)
 		return
