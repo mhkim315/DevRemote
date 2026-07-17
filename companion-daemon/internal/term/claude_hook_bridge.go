@@ -261,9 +261,8 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 	// discarded and only the digest survives.
 	catalogActionID := ""
 	if rt := b.rt; rt != nil {
-		if cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName); matched && classifierDigest == inputDigest {
-			catalogActionID = cid
-		}
+		cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName)
+			catalogActionID = selectCatalogActionID(cid, classifierDigest, inputDigest, matched)
 	}
 
 	rt := b.rt

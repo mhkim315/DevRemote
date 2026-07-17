@@ -249,6 +249,28 @@ func validateCatalog(entries []catalogEntry) error {
 	return nil
 }
 
+// selectCatalogActionID is the pure digest cross-check called by handleHook.
+// It returns the catalog action ID only when the classifier matched AND the
+// classifier's canonical digest equals the bridge's independently computed
+// canonical digest. This prevents a tampered classifier output from injecting
+// a false catalog ID.
+//
+// Exported for direct testing of the digest-mismatch boundary.
+func SelectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest string, matched bool) string {
+	if !matched || catalogActionID == "" {
+		return ""
+	}
+	if classifierDigest != bridgeDigest {
+		return ""
+	}
+	return catalogActionID
+}
+
+// selectCatalogActionID is the unexported alias used in production.
+func selectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest string, matched bool) string {
+	return SelectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest, matched)
+}
+
 // lookupCatalogEntry returns a value copy of the catalog entry for a given
 // action ID. The copy prevents callers from mutating the frozen compiled
 // catalog through a pointer. Returns false if not found.

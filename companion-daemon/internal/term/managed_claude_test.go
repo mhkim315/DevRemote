@@ -2593,58 +2593,67 @@ func TestP2A_DuplicateHookViaRealHook(t *testing.T) {
 	rt.terminate()
 }
 
-func TestP2A_DigestMismatchDoesNotStoreCatalogID(t *testing.T) {
-	// Prove that when the classifier digest does not equal the bridge
-	// digest, the catalog ID is NOT stored. The digest cross-check in
-	// handleHook prevents a tampered classifier from injecting a false
-	// catalog ID.
-	svc, _, rt, id := p2aCreateRuntime(t)
-	_ = id
+func TestP2A_SelectCatalogActionID(t *testing.T) {
+	// Test the pure digest-selection helper with all four boundary
+	// combinations. This is the same function handleHook calls.
+	probeDigest := sha256Hex([]byte("probe"))
+	otherDigest := sha256Hex([]byte("other"))
 
-	sessionID := "claude-sess-dig-mismatch"
-	toolUseID := "call_00_P2A_DigMis"
+	// 1. matched + same digest returns the exact catalog ID.
+	if got := SelectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, probeDigest, true); got != "claude.bash.approval_probe.v1" {
+		t.Fatalf("matched + same digest: got %q", got)
+	}
+	// 2. matched + different digest returns empty.
+	if got := SelectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, otherDigest, true); got != "" {
+		t.Fatalf("matched + different digest: got %q, want empty", got)
+	}
+	// 3. unmatched + same digest returns empty.
+	if got := SelectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, probeDigest, false); got != "" {
+		t.Fatalf("unmatched + same digest: got %q, want empty", got)
+	}
+	// 4. empty ID returns empty even when matched + same digest.
+	if got := SelectCatalogActionID("", probeDigest, probeDigest, true); got != "" {
+		t.Fatalf("empty ID + matched + same digest: got %q, want empty", got)
+	}
+	// 5. empty ID + unmatched + different digest returns empty.
+	if got := SelectCatalogActionID("", probeDigest, otherDigest, false); got != "" {
+		t.Fatalf("empty ID + unmatched + different digest: got %q, want empty", got)
+	}
+}
 
-	// Post a hook with the catalog command. The bridge computes inputDigest
-	// from canonicalJSON(tool_input). The classifier independently computes
-	// the same digest. They will match for an unmodified input.
+func TestP2A_RealHookDigestCrossCheckPreservesCatalogID(t *testing.T) {
+	// Confirm the real HTTP hook positive path still carries the ID
+	// through to deferred join — the selectCatalogActionID helper is
+	// integrated in handleHook.
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	if err := svc.SetApprovalStore(store); err != nil {
+		t.Fatalf("SetApprovalStore: %v", err)
+	}
+	defer launcher.closeStream()
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatalf("CreateDetached: %v", err)
+	}
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-dig-ok"
+	toolUseID := "call_00_P2A_DigOK"
 	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
 	postHook(t, rt, body)
-
-	// Join: this should work because digests match.
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
 	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
 	rt.processLine([]byte(deferred))
-
 	rt.turnMu.Lock()
-	if len(rt.pendingObservations) != 0 {
-		rt.turnMu.Unlock()
-		t.Fatal("expected 0 pending after join")
-	}
 	approvalID := rt.activeApprovals[0].approvalID
 	rt.turnMu.Unlock()
-
 	idRec, _ := svc.coordinator.LookupIdentity(approvalID)
 	if idRec.catalogActionID != "claude.bash.approval_probe.v1" {
-		t.Fatal("catalog ID must be stored when digests match")
+		t.Fatalf("real hook path: catalog ID not preserved, got %q", idRec.catalogActionID)
 	}
-
-	// Now test the negative case directly: if classifyCatalogAction
-	// were called with a DIFFERENT tool_input than the one the bridge
-	// digested, the classifier digest would differ from inputDigest.
-	// The hook handler (handleHook) cross-checks: matched && classifierDigest == inputDigest.
-	// Prove: classify the catalog tool_input — it matches.
-	cid, _, matched := classifyCatalogAction([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`), "claude_headless", "2.1.209", "Bash")
-	if !matched || cid != "claude.bash.approval_probe.v1" {
-		t.Fatal("expected catalog match for probe command")
-	}
-	// A non-catalog command produces no catalog ID (classifier rejects it).
-	// The bridge computes inputDigest from the ACTUAL hook body.
-	// If the classifier digest != bridge digest, the ID is rejected.
-	// This is proven by the digest cross-check in handleHook:
-	//   if matched && classifierDigest == inputDigest { catalogActionID = cid }
-	// The cross-check ensures a tampered input where digest differs from
-	// the bridge's computed digest cannot inject a catalog ID.
-
 	rt.terminate()
 }
 
@@ -2662,36 +2671,57 @@ func TestP2A_CapacityRejectionPreservesEmptyCatalogID(t *testing.T) {
 		rt.processLine([]byte(deferred))
 	}
 
-	// Now one more — capacity exhausted. The observation is stored but join
-	// fails, leaving a pending observation with no identity.
+	// Capture exact state before overflow attempt.
+	countBefore := svc.coordinator.IdentityCount()
+	// Collect existing identity keys.
+	knownIDs := make(map[string]bool)
+	for i := 0; i < maxActiveApprovals; i++ {
+		rt.turnMu.Lock()
+		if i < len(rt.activeApprovals) {
+			knownIDs[rt.activeApprovals[i].approvalID] = true
+		}
+		rt.turnMu.Unlock()
+	}
+
+	// One more — capacity exhausted.
 	sessionID := "sess-cap-overflow"
 	toolUseID := "call_cap_overflow"
 	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
 	postHook(t, rt, body)
 
-	// Pending observation has a catalog ID (from the hook).
+	// Pending observation has a catalog ID.
 	rt.turnMu.Lock()
 	obs := rt.pendingObservations[toolUseID]
-	if obs == nil {
+	if obs == nil || obs.catalogActionID != "claude.bash.approval_probe.v1" {
 		rt.turnMu.Unlock()
-		t.Fatal("pending observation expected")
-	}
-	if obs.catalogActionID != "claude.bash.approval_probe.v1" {
-		rt.turnMu.Unlock()
-		t.Fatalf("pending catalogActionID = %q", obs.catalogActionID)
+		t.Fatal("pending must carry catalog ID")
 	}
 	rt.turnMu.Unlock()
 
-	// Join will fail on capacity — no identity created.
+	// Join fails on capacity — no identity, no active approval created.
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
 	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
 	rt.processLine([]byte(deferred))
 
-	// Identity count must not have increased.
-	count := svc.coordinator.IdentityCount()
-	if count > maxActiveApprovals {
-		t.Fatalf("capacity rejection must not create identity: got %d, max %d", count, maxActiveApprovals)
+	// Exact: identity count unchanged.
+	if got := svc.coordinator.IdentityCount(); got != countBefore {
+		t.Fatalf("identity count changed: %d → %d", countBefore, got)
 	}
+	// Every prior identity still exists.
+	for aid := range knownIDs {
+		if _, ok := svc.coordinator.LookupIdentity(aid); !ok {
+			t.Fatalf("existing identity %s was removed by overflow rejection", aid)
+		}
+	}
+	// No Store record for the overflow attempt.
+	rt.turnMu.Lock()
+	for _, aa := range rt.activeApprovals {
+		if aa.approvalID == "sess-cap-overflow" {
+			rt.turnMu.Unlock()
+			t.Fatal("overflow created an active approval")
+		}
+	}
+	rt.turnMu.Unlock()
 	_ = store
 
 	rt.terminate()
@@ -2715,7 +2745,9 @@ func TestP2A_StopClearsCatalogIdentity(t *testing.T) {
 	}
 
 	// Stop must clear the identity via terminate() → ClearRuntime.
-	svc.Stop(id, rt.epoch)
+	if err := svc.Stop(id, rt.epoch); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
 	if svc.coordinator.IdentityCount() != 0 {
 		t.Fatalf("Stop must clear catalog identity: got %d", svc.coordinator.IdentityCount())
 	}
@@ -2738,7 +2770,9 @@ func TestP2A_KillClearsCatalogIdentity(t *testing.T) {
 		t.Fatalf("expected 1 identity, got %d", svc.coordinator.IdentityCount())
 	}
 
-	svc.Kill(id, rt.epoch)
+	if err := svc.Kill(id, rt.epoch); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
 	if svc.coordinator.IdentityCount() != 0 {
 		t.Fatalf("Kill must clear catalog identity: got %d", svc.coordinator.IdentityCount())
 	}
@@ -2765,6 +2799,11 @@ func TestP2A_DeleteClearsCatalogIdentity(t *testing.T) {
 	rt.terminate()
 	svc.WaitExited(id)
 
+	// The identity was already cleared by terminate() (required before Delete).
+	// Delete must not restore it and must succeed on a terminal session.
+	if svc.coordinator.IdentityCount() != 0 {
+		t.Fatal("identity must be 0 after terminate, before Delete")
+	}
 	if err := svc.Delete(id, rt.epoch); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -2774,10 +2813,11 @@ func TestP2A_DeleteClearsCatalogIdentity(t *testing.T) {
 }
 
 func TestP2A_ExitClearsCatalogIdentity(t *testing.T) {
-	// When Claude exits WITHOUT a deferred join (no tool_deferred was ever
-	// emitted), terminate() clears coordinator identities via ClearRuntime.
-	// This is distinct from the deferred-exit path where joinedDeferred=true
-	// preserves identities for the resume flow.
+	// No-join exit: the hook fires but tool_deferred never arrives.
+	// Pending catalog metadata is cleared and no identity is ever created.
+	// This is NOT a cleanup of a catalog-bearing identity — the identity
+	// was never created because joinDeferred is the sole creation point.
+	// It proves that pending metadata does not leak into the coordinator.
 	svc, _, rt, id := p2aCreateRuntime(t)
 
 	sessionID := "claude-sess-exit-nojoin"
@@ -2856,29 +2896,43 @@ func TestP2A_SentinelsNeverInRetainedFields(t *testing.T) {
 		}
 	}
 
-	// Verify the DTO summary is exactly the generic value — not the catalog label,
-	// not the raw command, not any sentinel.
+	// Verify the target DTO exists, then check exact values.
 	dtos := svc.approvals.ListSafe(id)
+	var dtoFound bool
 	for _, d := range dtos {
 		if d.ID == approvalID {
+			dtoFound = true
 			if d.Summary != "Approval requested" {
 				t.Fatalf("summary must be generic, got %q", d.Summary)
 			}
+			if d.Actionable {
+				t.Fatal("Actionable must be false")
+			}
+			if len(d.Options) != 0 {
+				t.Fatalf("Options must be empty, got %d", len(d.Options))
+			}
 		}
+	}
+	if !dtoFound {
+		t.Fatal("target approval not found in ListSafe DTO")
 	}
 
 	rt.terminate()
 }
 
 func TestP2A_StoreAdmissionFailureRollsBackIdentity(t *testing.T) {
-	svc, store, rt, _ := p2aCreateRuntime(t)
+	svc, store, rt, id := p2aCreateRuntime(t)
+	_ = store
 
-	// Remove the store to force admission failure.
-	svc.approvals = nil
-	rt.approvals = nil
+	// Cause IngestObserved to reject via generation mismatch.
+	// Install a higher StreamGen — the deferred join's IngestObserved
+	// call uses StreamGen=0, which will be rejected by the Store.
+	if err := store.InstallRuntimeGeneration(id, rt.epoch, 1, "test-mismatch"); err != nil {
+		t.Fatalf("InstallRuntimeGeneration: %v", err)
+	}
 
-	sessionID := "claude-sess-no-store"
-	toolUseID := "call_00_P2A_NoStore"
+	sessionID := "claude-sess-gen-mismatch"
+	toolUseID := "call_00_P2A_GenMis"
 
 	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
 	postHook(t, rt, body)
@@ -2887,7 +2941,7 @@ func TestP2A_StoreAdmissionFailureRollsBackIdentity(t *testing.T) {
 	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
 	rt.processLine([]byte(deferred))
 
-	// Store admission failed — identity must have been rolled back.
+	// Store admission failed due to generation mismatch — identity rolled back.
 	if svc.coordinator.IdentityCount() != 0 {
 		t.Fatalf("Store admission failure must roll back identity: got %d", svc.coordinator.IdentityCount())
 	}
@@ -2921,7 +2975,9 @@ func TestP2A_EpochReplacementClearsCatalogIdentity(t *testing.T) {
 		t.Fatalf("expected 1 identity, got %d", svc.coordinator.IdentityCount())
 	}
 
-	// Simulate epoch replacement: create a new runtime for the same session.
+	// ClearRuntime is the production-owned coordinator boundary for epoch
+	// invalidation. A full same-session replacement is not available at this
+	// layer; verify the deepest production-owned boundary directly.
 	svc.mu.Lock()
 	svc.gen++
 	newEpoch := svc.gen
