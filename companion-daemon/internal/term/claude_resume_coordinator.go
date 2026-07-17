@@ -143,12 +143,13 @@ const (
 // the exact POKIT RuntimeRef and POKIT session identifier. Created before
 // Store admission and rolled back on failure. Keyed by ApprovalID.
 type claudePrivateIdentity struct {
-	sessionID      string // Claude's internal session_id
-	toolUseID      string
-	toolName       string
-	inputDigest    string
-	runtime        RuntimeRef // {Adapter, Version, LaunchGen, StreamGen}
-	pokitSessionID string     // POKIT compound session ID (e.g. "claude_headless:claude-abc123")
+	sessionID       string // Claude's internal session_id
+	toolUseID       string
+	toolName        string
+	inputDigest     string
+	catalogActionID string // P2A: empty for non-catalog observations
+	runtime         RuntimeRef // {Adapter, Version, LaunchGen, StreamGen}
+	pokitSessionID  string     // POKIT compound session ID (e.g. "claude_headless:claude-abc123")
 }
 
 // ── Resume state machine ──
@@ -262,7 +263,11 @@ func NewClaudeResumeCoordinator() *claudeResumeCoordinator {
 // non-printable values are rejected. Returns false if validation fails,
 // the approvalID already exists, the coordinator is closed, or capacity
 // is exhausted.
-func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest, pokitSessionID string, rt RuntimeRef) bool {
+//
+// catalogActionID is empty for non-catalog observations. A non-empty
+// value is validated against the compiled catalog: the entry must exist
+// and its Provider/Version/ToolName must match rt.Adapter/rt.Version/toolName.
+func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest, catalogActionID, pokitSessionID string, rt RuntimeRef) bool {
 	if !validCoordinatorToken(sessionID, maxCoordinatorSessionID) ||
 		!validCoordinatorToken(toolUseID, maxCoordinatorToolID) ||
 		!validCoordinatorToken(toolName, maxCoordinatorToolName) ||
@@ -271,6 +276,19 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 	}
 	if !validAdapterID(rt.Adapter) || !validVersion(rt.Version) {
 		return false
+	}
+	// Validate non-empty catalog ID against the compiled catalog.
+	if catalogActionID != "" {
+		if !validCoordinatorToken(catalogActionID, maxCoordinatorToolName) {
+			return false
+		}
+		entry := lookupCatalogEntry(catalogActionID)
+		if entry == nil {
+			return false
+		}
+		if entry.Provider != rt.Adapter || entry.Version != rt.Version || entry.ToolName != toolName {
+			return false
+		}
 	}
 
 	c.mu.Lock()
@@ -287,12 +305,13 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 	}
 
 	c.identities[approvalID] = &claudePrivateIdentity{
-		sessionID:      sessionID,
-		toolUseID:      toolUseID,
-		toolName:       toolName,
-		inputDigest:    inputDigest,
-		runtime:        rt,
-		pokitSessionID: pokitSessionID,
+		sessionID:       sessionID,
+		toolUseID:       toolUseID,
+		toolName:        toolName,
+		inputDigest:     inputDigest,
+		catalogActionID: catalogActionID,
+		runtime:         rt,
+		pokitSessionID:  pokitSessionID,
 	}
 	return true
 }
@@ -304,7 +323,7 @@ func (c *claudeResumeCoordinator) RemoveIdentity(approvalID string) {
 	delete(c.identities, approvalID)
 }
 
-// LookupIdentity returns a copy of the identity record, or false.
+// LookupIdentity returns a defensive copy of the identity record, or false.
 func (c *claudeResumeCoordinator) LookupIdentity(approvalID string) (*claudePrivateIdentity, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -313,12 +332,13 @@ func (c *claudeResumeCoordinator) LookupIdentity(approvalID string) (*claudePriv
 		return nil, false
 	}
 	return &claudePrivateIdentity{
-		sessionID:      id.sessionID,
-		toolUseID:      id.toolUseID,
-		toolName:       id.toolName,
-		inputDigest:    id.inputDigest,
-		runtime:        id.runtime,
-		pokitSessionID: id.pokitSessionID,
+		sessionID:       id.sessionID,
+		toolUseID:       id.toolUseID,
+		toolName:        id.toolName,
+		inputDigest:     id.inputDigest,
+		catalogActionID: id.catalogActionID,
+		runtime:         id.runtime,
+		pokitSessionID:  id.pokitSessionID,
 	}, true
 }
 

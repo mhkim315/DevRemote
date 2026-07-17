@@ -148,7 +148,7 @@ func makeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedC
 	tuid := "call_comp_" + optionID
 	tn := "Bash"
 	dgst := term.CanonicalDigest([]byte(`{"command":"echo hello"}`))
-	svc.Coordinator().ReserveIdentity(aid, csid, tuid, tn, dgst, sid, rt)
+	svc.Coordinator().ReserveIdentity(aid, csid, tuid, tn, dgst, "", sid, rt)
 
 	ab := term.ClaudeHookResponseBytes("allow")
 	db := term.ClaudeHookResponseBytes("deny")

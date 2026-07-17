@@ -29,7 +29,7 @@ func TestClaudeDelivery_FullChain(t *testing.T) {
 	approvalID := "claude-test-del"
 
 	if !svc.Coordinator().ReserveIdentity(approvalID, "sess", "tu", "Bash",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", id, rt) {
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", id, rt) {
 		t.Fatal("ReserveIdentity")
 	}
 

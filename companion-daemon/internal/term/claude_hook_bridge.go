@@ -255,13 +255,24 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	inputDigest := sha256Hex(inputCanon)
 
+		// P2A: classify the tool_input against the frozen catalog.
+		// Classification occurs exactly once at the provider boundary while
+		// the raw bytes are still available; after this the raw input is
+		// discarded and only the digest survives.
+		catalogActionID := ""
+		if rt := b.rt; rt != nil {
+			if cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName); matched && classifierDigest == inputDigest {
+				catalogActionID = cid
+			}
+		}
+
 	rt := b.rt
 	if rt == nil {
 		writeHookDefer(w)
 		return
 	}
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, catalogActionID)
 	writeHookDefer(w)
 }
 

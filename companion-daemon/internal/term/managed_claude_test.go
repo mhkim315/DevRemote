@@ -207,7 +207,7 @@ func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
 	inputDigest := sha256Hex(inputCanon)
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 {
@@ -253,7 +253,7 @@ func TestClaudeDeferredJoinMismatchedSessionID(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("call_Mis", "Bash", "right-session", sha256Hex([]byte(`{"cmd":"x"}`)))
+	rt.observePreToolUse("call_Mis", "Bash", "right-session", sha256Hex([]byte(`{"cmd":"x"}`)), "")
 	deferred := deferredStreamJSON("wrong-session", "call_Mis", "Bash", `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
@@ -274,7 +274,7 @@ func TestClaudeDeferredJoinMismatchedToolName(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("call_TN", "Bash", "s1", sha256Hex([]byte(`{"cmd":"x"}`)))
+	rt.observePreToolUse("call_TN", "Bash", "s1", sha256Hex([]byte(`{"cmd":"x"}`)), "")
 	deferred := deferredStreamJSON("s1", "call_TN", "Write", `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
@@ -296,7 +296,7 @@ func TestClaudeDeferredJoinMismatchedInputDigest(t *testing.T) {
 	svc.mu.Unlock()
 
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
-	rt.observePreToolUse("call_Digest", "Bash", "s1", sha256Hex(inputCanon))
+	rt.observePreToolUse("call_Digest", "Bash", "s1", sha256Hex(inputCanon), "")
 	deferred := deferredStreamJSON("s1", "call_Digest", "Bash", `{"command":"rm -rf /"}`)
 	rt.processLine([]byte(deferred))
 
@@ -317,8 +317,8 @@ func TestClaudeDuplicateToolUseID(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("call_Dup", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
-	rt.observePreToolUse("call_Dup", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	rt.observePreToolUse("call_Dup", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)), "")
+	rt.observePreToolUse("call_Dup", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)), "")
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 1 || rt.rejects == 0 {
@@ -338,9 +338,9 @@ func TestClaudeCapacityExhaustion(t *testing.T) {
 	svc.mu.Unlock()
 
 	for i := 0; i < maxPendingClaudeObservations; i++ {
-		rt.observePreToolUse(fmt.Sprintf("call_%d", i), "Bash", fmt.Sprintf("s%d", i), sha256Hex([]byte(fmt.Sprintf(`{"x":%d}`, i))))
+		rt.observePreToolUse(fmt.Sprintf("call_%d", i), "Bash", fmt.Sprintf("s%d", i), sha256Hex([]byte(fmt.Sprintf(`{"x":%d}`, i))), "")
 	}
-	rt.observePreToolUse("call_overflow", "Bash", "so", sha256Hex([]byte(`{"x":"overflow"}`)))
+	rt.observePreToolUse("call_overflow", "Bash", "so", sha256Hex([]byte(`{"x":"overflow"}`)), "")
 
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != maxPendingClaudeObservations {
@@ -362,7 +362,7 @@ func TestClaudeExitClearsPendingObservations(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("call_Exit", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	rt.observePreToolUse("call_Exit", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)), "")
 	rt.terminate()
 
 	rt.turnMu.Lock()
@@ -435,7 +435,7 @@ func TestClaudeApprovalRecordNonActionable(t *testing.T) {
 	svc.mu.Unlock()
 
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
-	rt.observePreToolUse("call_NA", "Bash", "s1", sha256Hex(inputCanon))
+	rt.observePreToolUse("call_NA", "Bash", "s1", sha256Hex(inputCanon), "")
 	deferred := deferredStreamJSON("s1", "call_NA", "Bash", `{"command":"echo ok"}`)
 	rt.processLine([]byte(deferred))
 
@@ -581,7 +581,7 @@ func TestClaudeProcessLineSkipsNonResult(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("call_NonResult", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	rt.observePreToolUse("call_NonResult", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)), "")
 	rt.processLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`))
 
 	rt.turnMu.Lock()
@@ -644,7 +644,7 @@ func TestClaudePumpEOFExit(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("call_EOF", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)))
+	rt.observePreToolUse("call_EOF", "Bash", "s1", sha256Hex([]byte(`{"x":1}`)), "")
 	launcher.closeStream() // trigger EOF on pump's scanner
 
 	select {
@@ -758,12 +758,12 @@ func TestClaudeTimeoutExpiry(t *testing.T) {
 	digest := sha256Hex(inputCanon)
 
 	// First approval at base.
-	rt.observePreToolUse("call_T1", "Bash", sid1, digest)
+	rt.observePreToolUse("call_T1", "Bash", sid1, digest, "")
 	rt.processLine([]byte(deferredStreamJSON(sid1, "call_T1", "Bash", `{"command":"echo ok"}`)))
 
 	// Advance clock 1s, create second.
 	clockNow = func() time.Time { return base.Add(1 * time.Second) }
-	rt.observePreToolUse("call_T2", "Bash", sid1, digest)
+	rt.observePreToolUse("call_T2", "Bash", sid1, digest, "")
 	rt.processLine([]byte(deferredStreamJSON(sid1, "call_T2", "Bash", `{"command":"echo ok"}`)))
 
 	// Reset clock. Verify both active.
@@ -857,7 +857,7 @@ func TestClaudeActiveApprovalCapacity(t *testing.T) {
 	// Fill to capacity.
 	for i := 0; i < maxActiveApprovals; i++ {
 		tuid := fmt.Sprintf("call_C%d", i)
-		rt.observePreToolUse(tuid, "Bash", sid, digest)
+		rt.observePreToolUse(tuid, "Bash", sid, digest, "")
 		rt.processLine([]byte(deferredStreamJSON(sid, tuid, "Bash", `{"command":"echo ok"}`)))
 	}
 
@@ -869,7 +869,7 @@ func TestClaudeActiveApprovalCapacity(t *testing.T) {
 	rt.turnMu.Unlock()
 
 	// One more: capacity exhausted → rejected BEFORE ingest.
-	rt.observePreToolUse("call_Overflow", "Bash", sid, digest)
+	rt.observePreToolUse("call_Overflow", "Bash", sid, digest, "")
 	rt.processLine([]byte(deferredStreamJSON(sid, "call_Overflow", "Bash", `{"command":"echo ok"}`)))
 
 	rt.turnMu.Lock()
@@ -910,7 +910,7 @@ func TestClaudeEntropyFailure(t *testing.T) {
 	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
 	inputDigest := sha256Hex(inputCanon)
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
 	rt.processLine([]byte(deferred))
 
@@ -949,7 +949,7 @@ func TestClaudeStopInvalidatesApprovals(t *testing.T) {
 
 	// Ingest an approval.
 	inputCanon, _ := canonicalJSON(json.RawMessage(`{"command":"echo ok"}`))
-	rt.observePreToolUse("call_StopInv", "Bash", "s1", sha256Hex(inputCanon))
+	rt.observePreToolUse("call_StopInv", "Bash", "s1", sha256Hex(inputCanon), "")
 	rt.processLine([]byte(deferredStreamJSON("s1", "call_StopInv", "Bash", `{"command":"echo ok"}`)))
 
 	// Verify active approvals exist before stop.
@@ -1077,7 +1077,7 @@ func TestClaudeStopJoinRace(t *testing.T) {
 		rt.terminate() // sentinel ingest bumps Store to StreamGen=1
 	}
 
-	rt.observePreToolUse("call_Race", "Bash", sid, digest)
+	rt.observePreToolUse("call_Race", "Bash", sid, digest, "")
 	deferred := deferredStreamJSON(sid, "call_Race", "Bash", `{"command":"echo ok"}`)
 	rt.processLine([]byte(deferred))
 	hookCalled.Wait()
@@ -1107,7 +1107,7 @@ func TestClaudeReverseRace(t *testing.T) {
 	digest := sha256Hex(inputCanon)
 
 	// Prime so the test approval gets a fresh ID.
-	rt.observePreToolUse("call_Primer", "Bash", sid, digest)
+	rt.observePreToolUse("call_Primer", "Bash", sid, digest, "")
 	rt.processLine([]byte(deferredStreamJSON(sid, "call_Primer", "Bash", `{"command":"echo ok"}`)))
 
 	// Barrier at the exact defect window: between Store admission and
@@ -1119,7 +1119,7 @@ func TestClaudeReverseRace(t *testing.T) {
 		rt.terminate()
 	}
 
-	rt.observePreToolUse("call_Rev", "Bash", sid, digest)
+	rt.observePreToolUse("call_Rev", "Bash", sid, digest, "")
 	rt.processLine([]byte(deferredStreamJSON(sid, "call_Rev", "Bash", `{"command":"echo ok"}`)))
 	hookCalled.Wait()
 
@@ -1347,7 +1347,7 @@ func TestC2DB_IdentityPreservedAtJoin(t *testing.T) {
 	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
 	inputDigest := sha256Hex(inputCanon)
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
 	rt.processLine([]byte(deferred))
 
@@ -1397,7 +1397,7 @@ func TestC2DB_IdentityClearedOnTerminate(t *testing.T) {
 	toolName := "Bash"
 	inputDigest := sha256Hex([]byte(`{"cmd":"x"}`))
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
@@ -1436,7 +1436,7 @@ func TestC2DB_IdentityClearedOnTimeout(t *testing.T) {
 	toolName := "Bash"
 	inputDigest := sha256Hex([]byte(`{"cmd":"x"}`))
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
@@ -1484,7 +1484,7 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 	inputDigest := sha256Hex(inputCanon)
 
 	// Step 1: Observe and join.
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
 	rt.processLine([]byte(deferred))
 
@@ -1555,7 +1555,7 @@ func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
 
-	rt.observePreToolUse("tu-1", "Bash", "sess-1", sha256Hex([]byte(`{"cmd":"x"}`)))
+	rt.observePreToolUse("tu-1", "Bash", "sess-1", sha256Hex([]byte(`{"cmd":"x"}`)), "")
 	deferred := deferredStreamJSON("sess-1", "tu-1", "Bash", `{"cmd":"x"}`)
 	rt.processLine([]byte(deferred))
 
@@ -1626,7 +1626,7 @@ func TestC2DB_PostIngestTerminationClearsIdentity(t *testing.T) {
 	toolName := "Bash"
 	inputDigest := sha256Hex([]byte(`{"cmd":"x"}`))
 
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest)
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
 
 	// Inject terminate via postIngestHook — this fires AFTER Store admission
 	// but BEFORE activeApprovals append.
@@ -1882,7 +1882,7 @@ func advanceToDecisionWritten(t *testing.T, c *claudeResumeCoordinator, toolInpu
 	dig := sha256Hex([]byte(toolInputJSON))
 	psid := "claude_headless:claude-test"
 	rt := testRuntimeRef()
-	if !c.ReserveIdentity(aid, sid, tuid, tn, dig, psid, rt) {
+	if !c.ReserveIdentity(aid, sid, tuid, tn, dig, "", psid, rt) {
 		t.Fatal("ReserveIdentity failed")
 	}
 	binding := testBinding(aid, psid)
@@ -2059,4 +2059,298 @@ func TestDenialBinding_C1DRuntimeWithNoResumeCtxDoesNotWitness(t *testing.T) {
 	if c.PendingCount() != 0 || c.EntryCount() != 0 {
 		t.Fatal("C1D runtime must never create coordinator entries")
 	}
+}
+
+// ── P2A catalog wiring tests ──
+
+func TestP2A_CatalogIDFlowsToIdentity(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	// Simulate a catalog-matching PreToolUse observation.
+	sessionID := "claude-sess-catalog-match"
+	toolUseID := "call_00_P2A_CatalogMatch"
+	toolName := "Bash"
+	// This is the exact catalog command: echo pokitclaudeapprovalprobe
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	// Pass the catalog action ID as it would be set by the hook bridge.
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "claude.bash.approval_probe.v1")
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	// Verify pending observation is cleared.
+	rt.turnMu.Lock()
+	if len(rt.pendingObservations) != 0 {
+		rt.turnMu.Unlock()
+		t.Fatal("expected 0 pending after join")
+	}
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	// Catalog ID must be preserved in the coordinator identity.
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("expected identity record")
+	}
+	if idRec.catalogActionID != "claude.bash.approval_probe.v1" {
+		t.Fatalf("catalogActionID = %q, want claude.bash.approval_probe.v1", idRec.catalogActionID)
+	}
+	if idRec.sessionID != sessionID || idRec.toolUseID != toolUseID || idRec.toolName != toolName {
+		t.Fatalf("identity fields mismatch: %+v", idRec)
+	}
+
+	// Actionability must remain false.
+	snap, ok := store.LookupRecord(id, approvalID)
+	if !ok {
+		t.Fatal("Store record missing")
+	}
+	if snap.Actionable {
+		t.Fatal("actionable must remain false in P2A")
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_NonCatalogCommandEmptyID(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	// A non-catalog command — not matching the probe entry.
+	sessionID := "claude-sess-non-catalog"
+	toolUseID := "call_00_P2A_NonCatalog"
+	toolName := "Bash"
+	inputJSON := `{"command":"echo something else entirely"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	// Empty catalog action ID = non-catalog observation.
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("expected identity record for non-catalog observation")
+	}
+	if idRec.catalogActionID != "" {
+		t.Fatalf("catalogActionID = %q, want empty for non-catalog", idRec.catalogActionID)
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_CatalogIDNotReconstructableFromDigest(t *testing.T) {
+	// Prove that once the raw hook body is gone, the catalog identity cannot
+	// be reconstructed from the digest alone. The classifier must be called
+	// exactly once at the provider boundary.
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	// The digest alone gives no catalog identity.
+	cid, _, ok := classifyCatalogAction(nil, "claude_headless", "2.1.209", "Bash")
+	if ok || cid != "" {
+		t.Fatal("empty/nil input must not classify")
+	}
+
+	// With only the digest, the classifier cannot determine the catalog ID.
+	// There is no API that takes a digest and returns a catalog ID.
+	// The lookupCatalogEntry function takes a catalogActionID (not a digest)
+	// and returns an entry — it validates, not classifies.
+	entry := lookupCatalogEntry(inputDigest)
+	if entry != nil {
+		t.Fatal("digest must not resolve to a catalog entry")
+	}
+
+	_ = inputDigest // only the classifier with raw bytes can produce the ID
+}
+
+func TestP2A_IdentityLookupIsDefensiveCopy(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	_, sid, tuid, tn, dig, psid, rt := testIdentity()
+
+	// Reserve with a catalog ID.
+	if !c.ReserveIdentity("approval-1", sid, tuid, tn, dig, "claude.bash.approval_probe.v1", psid, rt) {
+		t.Fatal("ReserveIdentity failed")
+	}
+
+	copy1, ok := c.LookupIdentity("approval-1")
+	if !ok {
+		t.Fatal("lookup failed")
+	}
+	copy2, ok := c.LookupIdentity("approval-1")
+	if !ok {
+		t.Fatal("second lookup failed")
+	}
+
+	// The two copies must be distinct allocations.
+	if copy1 == copy2 {
+		t.Fatal("LookupIdentity must return distinct copies")
+	}
+
+	// Mutating one copy must not affect the internal record.
+	copy1.catalogActionID = "mutated.id"
+	copy3, ok := c.LookupIdentity("approval-1")
+	if !ok {
+		t.Fatal("third lookup failed")
+	}
+	if copy3.catalogActionID != "claude.bash.approval_probe.v1" {
+		t.Fatalf("mutation leaked: catalogActionID = %q", copy3.catalogActionID)
+	}
+}
+
+func TestP2A_RawCommandNeverInRetainedFields(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-privacy"
+	toolUseID := "call_00_P2A_Privacy"
+	toolName := "Bash"
+	// The catalog command with sentinel-like description.
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe","description":"secret-token /etc/passwd"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "claude.bash.approval_probe.v1")
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, _ := svc.coordinator.LookupIdentity(approvalID)
+
+	// The raw command and description must NOT appear in any retained field.
+	// Check all string fields of the identity record.
+	allFields := []string{
+		idRec.sessionID, idRec.toolUseID, idRec.toolName,
+		idRec.inputDigest, idRec.catalogActionID, idRec.pokitSessionID,
+		idRec.runtime.Adapter, idRec.runtime.Version,
+	}
+	for _, f := range allFields {
+		if f == "" {
+			continue
+		}
+		if containsSubstring(f, "echo pokitclaudeapprovalprobe") {
+			t.Fatalf("raw command leaked in identity field: %q", f)
+		}
+		if containsSubstring(f, "secret-token") || containsSubstring(f, "/etc/passwd") {
+			t.Fatalf("description sentinel leaked in identity field: %q", f)
+		}
+	}
+
+	// Also verify runtime fields don't carry the command.
+	rt.turnMu.Lock()
+	for _, obs := range rt.pendingObservations {
+		t.Fatalf("pending observation not cleaned up: %+v", obs)
+	}
+	rt.turnMu.Unlock()
+
+	rt.terminate()
+}
+
+func TestP2A_DuplicateHookDoesNotReplaceCatalogID(t *testing.T) {
+	launcher := &fakeClaudeLauncher{}
+	store := NewApprovalStore()
+	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc.SetApprovalStore(store)
+	defer launcher.closeStream()
+
+	id, _ := svc.CreateDetached("/tmp")
+	svc.mu.Lock()
+	rt := svc.runtimes[id]
+	svc.mu.Unlock()
+
+	sessionID := "claude-sess-dup"
+	toolUseID := "call_00_P2A_Duplicate"
+	toolName := "Bash"
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
+	inputDigest := sha256Hex(inputCanon)
+
+	// First observation with catalog match.
+	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "claude.bash.approval_probe.v1")
+
+	// Duplicate observation for the same toolUseID — must be rejected.
+	rt.observePreToolUse(toolUseID, toolName, "other-session", sha256Hex([]byte(`{"c":"x"}`)), "claude.bash.approval_probe.v1")
+
+	// Verify only one pending observation.
+	rt.turnMu.Lock()
+	if len(rt.pendingObservations) != 1 {
+		rt.turnMu.Unlock()
+		t.Fatalf("expected 1 pending after duplicate rejection, got %d", len(rt.pendingObservations))
+	}
+	obs := rt.pendingObservations[toolUseID]
+	if obs.catalogActionID != "claude.bash.approval_probe.v1" {
+		rt.turnMu.Unlock()
+		t.Fatalf("catalogActionID in pending = %q", obs.catalogActionID)
+	}
+	if obs.sessionID != sessionID {
+		rt.turnMu.Unlock()
+		t.Fatalf("duplicate hook replaced session: %q", obs.sessionID)
+	}
+	rt.turnMu.Unlock()
+
+	// Now join and verify the first identity is preserved.
+	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("identity not preserved")
+	}
+	if idRec.catalogActionID != "claude.bash.approval_probe.v1" {
+		t.Fatalf("catalogActionID = %q after duplicate rejection", idRec.catalogActionID)
+	}
+
+	rt.terminate()
+}
+
+func containsSubstring(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > len(sub) && containsSubstringSlow(s, sub))
+}
+
+func containsSubstringSlow(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

@@ -249,6 +249,18 @@ func validateCatalog(entries []catalogEntry) error {
 	return nil
 }
 
+// lookupCatalogEntry returns the catalog entry for a given action ID,
+// or nil if not found. Used by the coordinator to validate that a
+// non-empty catalogActionID carried in a private identity is genuine.
+func lookupCatalogEntry(catalogActionID string) *catalogEntry {
+	for i := range certifiedClaudeCatalog {
+		if certifiedClaudeCatalog[i].CatalogActionID == catalogActionID {
+			return &certifiedClaudeCatalog[i]
+		}
+	}
+	return nil
+}
+
 func init() {
 	if err := validateCatalog(certifiedClaudeCatalog); err != nil {
 		panic("certifiedClaudeCatalog: " + err.Error())

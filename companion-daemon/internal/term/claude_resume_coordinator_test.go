@@ -36,7 +36,7 @@ func TestReserveIdentity(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
-	ok := c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	ok := c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	if !ok {
 		t.Fatal("expected ReserveIdentity to succeed")
 	}
@@ -45,7 +45,7 @@ func TestReserveIdentity(t *testing.T) {
 	}
 
 	// Duplicate fails.
-	if c.ReserveIdentity(id, "s2", "t2", "Read", dig, psid, rt) {
+	if c.ReserveIdentity(id, "s2", "t2", "Read", dig, "", psid, rt) {
 		t.Fatal("expected duplicate ReserveIdentity to fail")
 	}
 
@@ -70,19 +70,19 @@ func TestReserveIdentityValidation(t *testing.T) {
 	_, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	// Empty sessionID.
-	if c.ReserveIdentity("id1", "", tuid, tn, dig, psid, rt) {
+	if c.ReserveIdentity("id1", "", tuid, tn, dig, "", psid, rt) {
 		t.Fatal("expected empty sessionID to fail")
 	}
 	// Non-hex digest.
-	if c.ReserveIdentity("id1", sid, tuid, tn, "not-hex", psid, rt) {
+	if c.ReserveIdentity("id1", sid, tuid, tn, "not-hex", "", psid, rt) {
 		t.Fatal("expected non-hex digest to fail")
 	}
 	// Short digest.
-	if c.ReserveIdentity("id1", sid, tuid, tn, "abc", psid, rt) {
+	if c.ReserveIdentity("id1", sid, tuid, tn, "abc", "", psid, rt) {
 		t.Fatal("expected short digest to fail")
 	}
 	// Non-printable toolName.
-	if c.ReserveIdentity("id1", sid, tuid, "Bad\nTool", dig, psid, rt) {
+	if c.ReserveIdentity("id1", sid, tuid, "Bad\nTool", dig, "", psid, rt) {
 		t.Fatal("expected non-printable toolName to fail")
 	}
 	// Oversize sessionID.
@@ -90,12 +90,12 @@ func TestReserveIdentityValidation(t *testing.T) {
 	for i := range big {
 		big[i] = 'x'
 	}
-	if c.ReserveIdentity("id1", string(big), tuid, tn, dig, psid, rt) {
+	if c.ReserveIdentity("id1", string(big), tuid, tn, dig, "", psid, rt) {
 		t.Fatal("expected oversize sessionID to fail")
 	}
 	// Invalid adapter.
 	badRT := RuntimeRef{Adapter: "not_valid!", Version: "1.0", LaunchGen: 1}
-	if c.ReserveIdentity("id1", sid, tuid, tn, dig, psid, badRT) {
+	if c.ReserveIdentity("id1", sid, tuid, tn, dig, "", psid, badRT) {
 		t.Fatal("expected invalid adapter to fail")
 	}
 }
@@ -106,7 +106,7 @@ func TestReserveIdentityCapacityExhausted(t *testing.T) {
 
 	for i := 0; i < maxCoordinatorIdentities; i++ {
 		aid := "claude-" + string(rune('a'+i%26)) + string(rune('0'+i/26)) + string(rune('A'+i%26))
-		if !c.ReserveIdentity(aid, sid, tuid, tn, dig, psid, rt) {
+		if !c.ReserveIdentity(aid, sid, tuid, tn, dig, "", psid, rt) {
 			t.Fatalf("expected ReserveIdentity #%d to succeed", i+1)
 		}
 	}
@@ -114,7 +114,7 @@ func TestReserveIdentityCapacityExhausted(t *testing.T) {
 		t.Fatalf("expected %d identities, got %d", maxCoordinatorIdentities, c.identityCount())
 	}
 
-	if c.ReserveIdentity("claude-overflow", sid, tuid, tn, dig, psid, rt) {
+	if c.ReserveIdentity("claude-overflow", sid, tuid, tn, dig, "", psid, rt) {
 		t.Fatal("expected capacity-exhausted ReserveIdentity to fail")
 	}
 }
@@ -123,7 +123,7 @@ func TestRemoveIdentity(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	if c.identityCount() != 1 {
 		t.Fatal("expected 1 identity")
 	}
@@ -141,7 +141,7 @@ func TestRemoveIdentity(t *testing.T) {
 func TestReserveEntry(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
@@ -171,7 +171,7 @@ func TestReserveEntryMissingIdentity(t *testing.T) {
 func TestReserveEntryInvalidClaimToken(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	_, ok := c.ReserveEntry("bad-token", binding)
@@ -183,7 +183,7 @@ func TestReserveEntryInvalidClaimToken(t *testing.T) {
 func TestReserveEntryWrongOptionID(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.OptionID = "cancel" // not certified
@@ -196,7 +196,7 @@ func TestReserveEntryWrongOptionID(t *testing.T) {
 func TestReserveEntryWrongSchema(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.DeliverySchema = "wrong.schema.v1"
@@ -209,7 +209,7 @@ func TestReserveEntryWrongSchema(t *testing.T) {
 func TestReserveEntryWrongAdapter(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.Runtime.Adapter = "codex_app_server" // not Claude
@@ -222,7 +222,7 @@ func TestReserveEntryWrongAdapter(t *testing.T) {
 func TestReserveEntryStaleEpoch(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.Runtime.LaunchGen = 99 // different epoch
@@ -235,7 +235,7 @@ func TestReserveEntryStaleEpoch(t *testing.T) {
 func TestReserveEntryDuplicateClaim(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
@@ -250,7 +250,7 @@ func TestReserveEntryCapacityExhausted_DistinctFromIdentityCapacity(t *testing.T
 	// Use ONE identity and fill entries to maxCoordinatorEntries.
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	hexDigit := func(b byte) byte {
@@ -289,7 +289,7 @@ func TestReserveEntryEntropyFailure(t *testing.T) {
 
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
@@ -303,7 +303,7 @@ func TestReserveEntryEntropyFailure(t *testing.T) {
 func TestClaimWriteSuccess(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -323,7 +323,7 @@ func TestClaimWriteSuccess(t *testing.T) {
 func TestClaimWriteDenyDecision(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
@@ -340,7 +340,7 @@ func TestClaimWriteDenyDecision(t *testing.T) {
 func TestClaimWriteWrongNonce(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	_, _ = c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -353,7 +353,7 @@ func TestClaimWriteWrongNonce(t *testing.T) {
 func TestClaimWriteWrongSessionID(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -366,7 +366,7 @@ func TestClaimWriteWrongSessionID(t *testing.T) {
 func TestClaimWriteAfterCancel(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -380,7 +380,7 @@ func TestClaimWriteAfterCancel(t *testing.T) {
 func TestClaimWriteAfterClose(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -396,7 +396,7 @@ func TestClaimWriteAfterClose(t *testing.T) {
 func TestConfirmWriteSuccess(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -413,7 +413,7 @@ func TestConfirmWriteSuccess(t *testing.T) {
 func TestConfirmWriteFailure(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -433,7 +433,7 @@ func TestConfirmWriteAfterInvalidation(t *testing.T) {
 	// ConfirmWrite returns outcomeStale.
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -455,7 +455,7 @@ func TestCloseCancelsAllEntries(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		aid := id + string(rune('0'+i))
-		c.ReserveIdentity(aid, sid, tuid, tn, dig, psid, rt)
+		c.ReserveIdentity(aid, sid, tuid, tn, dig, "", psid, rt)
 		binding := testBinding(aid, psid)
 		ct := "ccccccccccccccccccccccccccccccc" + string(rune('0'+i))
 		c.ReserveEntry(ct, binding)
@@ -473,7 +473,7 @@ func TestCloseCancelsAllEntries(t *testing.T) {
 func TestClearForApproval(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -491,8 +491,8 @@ func TestClearRuntime(t *testing.T) {
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	// Create two identities in the same runtime.
-	c.ReserveIdentity(id+"-1", sid, tuid, tn, dig, psid, rt)
-	c.ReserveIdentity(id+"-2", sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id+"-1", sid, tuid, tn, dig, "", psid, rt)
+	c.ReserveIdentity(id+"-2", sid, tuid, tn, dig, "", psid, rt)
 	binding1 := testBinding(id+"-1", psid)
 	binding2 := testBinding(id+"-2", psid)
 	c.ReserveEntry("ccccccccccccccccccccccccccccccc1", binding1)
@@ -512,12 +512,12 @@ func TestClearRuntimeDifferentSessionUnaffected(t *testing.T) {
 	id, sid, tuid, tn, dig, _, rt := testIdentity()
 
 	// Session A.
-	c.ReserveIdentity(id+"-A", sid, tuid, tn, dig, "claude_headless:claude-A", rt)
+	c.ReserveIdentity(id+"-A", sid, tuid, tn, dig, "", "claude_headless:claude-A", rt)
 	bindingA := testBinding(id+"-A", "claude_headless:claude-A")
 	c.ReserveEntry("0000000000000000000000000000000a", bindingA)
 
 	// Session B — different POKIT session, same launchGen.
-	c.ReserveIdentity(id+"-B", sid, tuid, tn, dig, "claude_headless:claude-B", rt)
+	c.ReserveIdentity(id+"-B", sid, tuid, tn, dig, "", "claude_headless:claude-B", rt)
 	bindingB := testBinding(id+"-B", "claude_headless:claude-B")
 	c.ReserveEntry("0000000000000000000000000000000b", bindingB)
 
@@ -539,7 +539,7 @@ func TestClearRuntimeDifferentSessionUnaffected(t *testing.T) {
 func TestClearStaleEntries(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -562,7 +562,7 @@ func TestClaimWrite_KnownBadCheckThenWrite(t *testing.T) {
 	// mutex is removed or the state check is racy).
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -605,7 +605,7 @@ func TestClaimWriteConcurrentDifferentClaims(t *testing.T) {
 
 	for i := 0; i < 8; i++ {
 		aid := id + string(rune('0'+i))
-		c.ReserveIdentity(aid, sid, tuid, tn, dig, psid, rt)
+		c.ReserveIdentity(aid, sid, tuid, tn, dig, "", psid, rt)
 	}
 
 	var wg sync.WaitGroup
@@ -639,7 +639,7 @@ func TestClaimWriteConcurrentDifferentClaims(t *testing.T) {
 func TestFullClaimWriteConfirmCycle(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 
 	// Step 1: Reserve.
@@ -671,7 +671,7 @@ func TestClaimWriteCancelRace(t *testing.T) {
 	// B2/B3: reserve entry, claim write, then cancel — confirm write fails.
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -699,7 +699,7 @@ func TestResumeHandleDoesNotExposeInternals(t *testing.T) {
 	// state through it.
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
@@ -719,7 +719,7 @@ func TestWriteHandleDoesNotExposeInternals(t *testing.T) {
 	// B4 fix: WriteHandle is opaque — decision is read-only.
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -738,7 +738,7 @@ func TestWriteHandleDoesNotExposeInternals(t *testing.T) {
 func TestReserveThenExpiryThenClaimWrite(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -760,7 +760,7 @@ func TestReserveThenExpiryThenClaimWrite(t *testing.T) {
 func TestMarkWitnessed(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
@@ -796,7 +796,7 @@ func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	// Create a DENY entry and advance it to decisionWritten.
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
@@ -817,7 +817,7 @@ func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 func TestMarkWitnessedWrongState(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	_ = handle
@@ -830,7 +830,7 @@ func TestMarkWitnessedWrongState(t *testing.T) {
 func TestMarkWitnessedWrongSession(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -848,7 +848,7 @@ func TestMarkWitnessedWrongSession(t *testing.T) {
 func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -863,7 +863,7 @@ func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 func TestMarkWitnessedWrongToolName(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -881,7 +881,7 @@ func TestMarkWitnessedWrongToolName(t *testing.T) {
 func TestMarkWitnessedWrongInputDigest(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -896,7 +896,7 @@ func TestMarkWitnessedWrongInputDigest(t *testing.T) {
 func TestMarkWitnessedWrongRuntime(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -914,7 +914,7 @@ func TestMarkWitnessedWrongRuntime(t *testing.T) {
 func TestConfirmWriteExpiredWriteClaim(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -937,7 +937,7 @@ func TestConfirmWriteExpiredWriteClaim(t *testing.T) {
 func TestMarkWitnessedExpiredWitness(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -961,7 +961,7 @@ func TestMarkWitnessedExpiredWitness(t *testing.T) {
 func TestConfirmWriteJustBeforeDeadline(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
@@ -981,7 +981,7 @@ func TestConfirmWriteJustBeforeDeadline(t *testing.T) {
 func TestConfirmWriteJustAfterDeadline(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
-	c.ReserveIdentity(id, sid, tuid, tn, dig, psid, rt)
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)

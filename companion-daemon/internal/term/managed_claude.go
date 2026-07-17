@@ -48,11 +48,12 @@ var clockNow = time.Now
 // ── Pending observation ──
 
 type claudePendingObservation struct {
-	toolUseID   string
-	toolName    string
-	sessionID   string
-	inputDigest string
-	observedAt  time.Time
+	toolUseID       string
+	toolName        string
+	sessionID       string
+	inputDigest     string
+	catalogActionID string // P2A: empty for non-catalog observations
+	observedAt      time.Time
 }
 
 type activeApproval struct {
@@ -121,7 +122,7 @@ func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessi
 	return rt
 }
 
-func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest string) {
+func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest, catalogActionID string) {
 	rt.turnMu.Lock()
 	defer rt.turnMu.Unlock()
 
@@ -139,11 +140,12 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 	}
 
 	rt.pendingObservations[toolUseID] = &claudePendingObservation{
-		toolUseID:   toolUseID,
-		toolName:    toolName,
-		sessionID:   claudeSessionID,
-		inputDigest: inputDigest,
-		observedAt:  clockNow(),
+		toolUseID:       toolUseID,
+		toolName:        toolName,
+		sessionID:       claudeSessionID,
+		inputDigest:     inputDigest,
+		catalogActionID: catalogActionID,
+		observedAt:      clockNow(),
 	}
 
 	if rt.observer != nil {
@@ -459,7 +461,7 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	identityCreated := false
 	if rt.coordinator != nil {
 		pokitRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: rt.authorityVersion, LaunchGen: rt.epoch, StreamGen: 0}
-		if !rt.coordinator.ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest, rt.sessionID, pokitRT) {
+		if !rt.coordinator.ReserveIdentity(approvalID, sessionID, toolUseID, toolName, inputDigest, pending.catalogActionID, rt.sessionID, pokitRT) {
 			rt.turnMu.Unlock()
 			return // capacity exhausted or duplicate
 		}
