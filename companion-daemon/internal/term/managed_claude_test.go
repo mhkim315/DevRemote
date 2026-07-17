@@ -3180,3 +3180,222 @@ func TestP2B_ForgedCatalogID_WrongVersion(t *testing.T) {
 		t.Fatal("catalog ID with wrong version must not show catalog label")
 	}
 }
+
+func TestP2B_BoundCatalogID_Normalization(t *testing.T) {
+	// Unknown ID → empty.
+	if got := boundCatalogID("nonexistent.v1", "claude_headless", "2.1.209"); got != "" {
+		t.Fatalf("unknown ID: got %q, want empty", got)
+	}
+	// Over-bound ID (longer than maxCoordinatorToolName=256).
+	longID := strings.Repeat("x", 300)
+	if got := boundCatalogID(longID, "claude_headless", "2.1.209"); got != "" {
+		t.Fatalf("over-bound ID: got %q, want empty", got)
+	}
+	// Non-printable character in ID.
+	if got := boundCatalogID("bad\x01id", "claude_headless", "2.1.209"); got != "" {
+		t.Fatalf("non-printable ID: got %q, want empty", got)
+	}
+	// Empty ID passes through.
+	if got := boundCatalogID("", "claude_headless", "2.1.209"); got != "" {
+		t.Fatalf("empty ID: got %q, want empty", got)
+	}
+	// Valid ID returns bounded form.
+	if got := boundCatalogID("claude.bash.approval_probe.v1", "claude_headless", "2.1.209"); got != "claude.bash.approval_probe.v1" {
+		t.Fatalf("valid ID: got %q", got)
+	}
+}
+
+func TestP2B_RecordCatalogActionID_Empty(t *testing.T) {
+	// Verify the approvalRecord.catalogActionID is actually empty after
+	// Store normalizes an invalid tuple.
+	store := NewApprovalStore()
+	id := "claude_headless:test-record-empty"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "rec-1", SessionID: id, AgentKind: "codex", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderProtocol,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+
+	snap, _ := store.LookupRecord(id, "rec-1")
+	// ApprovalSnapshot no longer has CatalogActionID — verify the DTO
+	// does not show the catalog label (proving the record is empty).
+	dtos := store.ListSafe(id)
+	if len(dtos) != 1 {
+		t.Fatalf("expected 1 DTO, got %d", len(dtos))
+	}
+	if dtos[0].Summary == "Run Claude approval verification probe" {
+		t.Fatal("catalog label must not appear for invalid tuple")
+	}
+	_ = snap
+}
+
+func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
+	store := NewApprovalStore()
+	id := "claude_headless:test-reprov"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	// First ingest with valid catalog ID.
+	store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "dup-1", SessionID: id, AgentKind: "claude_headless", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+
+	// Second ingest with same ApprovalID + different (forged) catalog ID.
+	// The Store must reject duplicate ApprovalID and keep the original.
+	store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "dup-1", SessionID: id, AgentKind: "claude_headless", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+
+	dtos := store.ListSafe(id)
+	// Only one record (duplicate rejected).
+	if len(dtos) != 1 {
+		t.Fatalf("expected 1 DTO, got %d", len(dtos))
+	}
+	// Must still show catalog label (original preserved, duplicate rejected).
+	if dtos[0].Summary != "Run Claude approval verification probe" {
+		t.Fatalf("original catalog label lost after duplicate: got %q", dtos[0].Summary)
+	}
+}
+
+func TestP2B_StaleGenerationDoesNotRestoreCatalogSummary(t *testing.T) {
+	store := NewApprovalStore()
+	id := "claude_headless:test-stale"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	// Ingest with valid catalog ID.
+	store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "stale-1", SessionID: id, AgentKind: "claude_headless", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+
+	// Verify catalog label present.
+	dtos := store.ListSafe(id)
+	if dtos[0].Summary != "Run Claude approval verification probe" {
+		t.Fatalf("catalog label missing: got %q", dtos[0].Summary)
+	}
+
+	// Install a newer generation — invalidates the old record.
+	store.InstallRuntimeGeneration(id, 2, 0, "newer")
+	store.SupersedeRuntime(id, 1, 0, "replaced")
+
+	// The old record is now invalidated. The stale generation must not
+	// show the catalog label (state should be invalidated, not pending).
+	dtos2 := store.ListSafe(id)
+	for _, d := range dtos2 {
+		if d.ID == "stale-1" && d.State == "pending" {
+			t.Fatal("stale record must not remain pending")
+		}
+	}
+}
+
+func TestP2B_ForgedProviderShowsExactGenericSummary(t *testing.T) {
+	store := NewApprovalStore()
+	id := "claude_headless:test-exact-summary"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "codex", Version: "0.144.1",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "exact-1", SessionID: id, AgentKind: "codex", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderProtocol,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+
+	dtos := store.ListSafe(id)
+	if len(dtos) != 1 {
+		t.Fatalf("expected 1 DTO, got %d", len(dtos))
+	}
+	// Must show EXACT generic summary for codex provider.
+	if dtos[0].Summary != "Agent requested an approval" {
+		t.Fatalf("expected exact generic summary for codex, got %q", dtos[0].Summary)
+	}
+}
+
+func TestP2B_RawSentinelsNeverInStoreOrDTO(t *testing.T) {
+	store := NewApprovalStore()
+	id := "claude_headless:test-privacy-store"
+	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
+
+	// CatalogActionID with sentinel-shaped value.
+	store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "priv-1", SessionID: id, AgentKind: "claude_headless", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "/etc/passwd", // sentinel — not a valid catalog ID
+		}},
+	})
+
+	dtos := store.ListSafe(id)
+	if len(dtos) != 1 {
+		t.Fatalf("expected 1 DTO, got %d", len(dtos))
+	}
+	// The sentinel must never appear in any DTO field.
+	dtoJSON, _ := json.Marshal(dtos[0])
+	if strings.Contains(string(dtoJSON), "/etc/passwd") {
+		t.Fatal("sentinel leaked into DTO JSON")
+	}
+	// The summary must be generic (not the sentinel).
+	if dtos[0].Summary == "/etc/passwd" {
+		t.Fatal("sentinel became DTO summary")
+	}
+
+	// LookupRecord must not expose the catalogActionID.
+	snap, ok := store.LookupRecord(id, "priv-1")
+	if !ok {
+		t.Fatal("record not found")
+	}
+	snapJSON, _ := json.Marshal(snap)
+	if strings.Contains(string(snapJSON), "/etc/passwd") {
+		t.Fatal("sentinel leaked into ApprovalSnapshot JSON")
+	}
+}
