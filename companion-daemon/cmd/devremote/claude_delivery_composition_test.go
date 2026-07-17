@@ -568,3 +568,157 @@ func bytesEq(a, b []byte) bool {
 	}
 	return true
 }
+
+// ── P3 catalog composition tests ──
+
+// catalogMakeSetup is like makeSetup but uses the catalog probe command
+// and validates the DTO shows the catalog summary after composition.
+func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedClaudeService, *term.AuthoritativeApprovalStore, term.ClaimResult, term.RuntimeRef, string, string, string) {
+	t.Helper()
+	launcher, svc, store := newProviderSim(t)
+	sid, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatalf("CreateDetached: %v", err)
+	}
+	rt := term.RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
+	aid := "claude-comp-cat-" + optionID
+	csid := "claude-sess-cat-" + optionID
+	tuid := "call_comp_cat_" + optionID
+	// Use the exact catalog probe command.
+	dgst := term.CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+	// Include catalogActionID in the identity.
+	svc.Coordinator().ReserveIdentity(aid, csid, tuid, "Bash", dgst, "", sid, rt)
+
+	ab := term.ClaudeHookResponseBytes("allow")
+	db := term.ClaudeHookResponseBytes("deny")
+	store.IngestObserved(term.ApprovalIngest{SessionID: sid, LaunchGen: 1, StreamGen: 0, Provider: "claude_headless", Version: "2.1.209", Items: []term.ApprovalIngestItem{{
+		Approval: agent.AgentApproval{
+			ID: aid, SessionID: sid, AgentKind: "claude_headless",
+			Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
+			Options: []agent.InteractionOption{
+				{ID: "allow_once", Label: "Allow once", Kind: "approve"},
+				{ID: "deny", Label: "Deny", Kind: "reject"},
+			},
+		},
+		Provenance:      contract.ProvenanceProviderHook,
+		Actionable:      true,
+		CatalogActionID: "claude.bash.approval_probe.v1",
+		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
+			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: ab},
+			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: db},
+		},
+	}}})
+	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{"x"}}
+	claim := store.ClaimForExecution(term.ClaimRequest{SessionID: sid, ApprovalID: aid, OptionID: optionID, Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp.cat." + optionID})
+	if claim.Outcome != term.ClaimGranted {
+		t.Fatalf("ClaimForExecution: %s", claim.Outcome)
+	}
+	return launcher, svc, store, claim, rt, csid, tuid, "Bash"
+}
+
+func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
+	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(5 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+	resumeURL, posttoolURL := captureBridgeURLs(t, l)
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
+	if !bytesEq(r, term.ClaudeHookResponseBytes("allow")) {
+		t.Fatalf("resume response: %s", r)
+	}
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
+	wg.Wait()
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted, got %s", receipt.Outcome)
+	}
+	if !store.RecordDelivery(receipt).Committed {
+		t.Fatal("not committed")
+	}
+	// P3: DTO must show the catalog summary for a catalog match.
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("catalog DTO summary = %q", d.Summary)
+			}
+		}
+	}
+}
+
+func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
+	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "deny")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(5 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+	resumeURL, _ := captureBridgeURLs(t, l)
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
+	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
+		t.Fatalf("resume response: %s", r)
+	}
+	denialJSON := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"}}]}` + "\n"
+	select {
+	case <-l.resumeWCh:
+	case <-time.After(time.Second):
+		t.Fatal("resume writer not ready")
+	}
+	l.resumeW.Write([]byte(denialJSON))
+	time.Sleep(100 * time.Millisecond)
+	wg.Wait()
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted for deny, got %s", receipt.Outcome)
+	}
+	if !store.RecordDelivery(receipt).Committed {
+		t.Fatal("not committed")
+	}
+	// P3: DTO must show catalog summary for deny path too.
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("catalog DTO summary = %q", d.Summary)
+			}
+		}
+	}
+}
+
+func TestClaudeDelivery_NonCatalogShowsGenericSummary(t *testing.T) {
+	// Use standard makeSetup (non-catalog command) — DTO must show generic.
+	l, svc, store, claim, _, csid, tuid, tn := makeSetup(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(5 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+	resumeURL, posttoolURL := captureBridgeURLs(t, l)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	wg.Wait()
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("expected accepted, got %s", receipt.Outcome)
+	}
+	// Non-catalog: summary must be generic, NOT the catalog label.
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			if d.Summary == "Run Claude approval verification probe" {
+				t.Fatal("non-catalog must not show catalog label")
+			}
+		}
+	}
+}
