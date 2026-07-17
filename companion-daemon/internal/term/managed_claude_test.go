@@ -3206,8 +3206,10 @@ func TestP2B_BoundCatalogID_Normalization(t *testing.T) {
 }
 
 func TestP2B_RecordCatalogActionID_Empty(t *testing.T) {
-	// Verify the approvalRecord.catalogActionID is actually empty after
-	// Store normalizes an invalid tuple.
+	// Verify the private approvalRecord.catalogActionID is actually empty
+	// after the Store normalizes an invalid {provider, version, ID} tuple.
+	// The DTO projector also validates the tuple, so a DTO-only check
+	// cannot distinguish Store normalization from projector rejection.
 	store := NewApprovalStore()
 	id := "claude_headless:test-record-empty"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
@@ -3226,17 +3228,29 @@ func TestP2B_RecordCatalogActionID_Empty(t *testing.T) {
 		}},
 	})
 
-	snap, _ := store.LookupRecord(id, "rec-1")
-	// ApprovalSnapshot no longer has CatalogActionID — verify the DTO
-	// does not show the catalog label (proving the record is empty).
-	dtos := store.ListSafe(id)
-	if len(dtos) != 1 {
-		t.Fatalf("expected 1 DTO, got %d", len(dtos))
+	// Inspect the private record directly under the store mutex.
+	store.mu.Lock()
+	sess := store.sessions[id]
+	if sess == nil {
+		store.mu.Unlock()
+		t.Fatal("session not found")
 	}
+	rec := sess.records["rec-1"]
+	if rec == nil {
+		store.mu.Unlock()
+		t.Fatal("record not found")
+	}
+	if rec.catalogActionID != "" {
+		store.mu.Unlock()
+		t.Fatalf("private catalogActionID must be empty after normalization, got %q", rec.catalogActionID)
+	}
+	store.mu.Unlock()
+
+	// DTO must also not show catalog label (defense in depth).
+	dtos := store.ListSafe(id)
 	if dtos[0].Summary == "Run Claude approval verification probe" {
 		t.Fatal("catalog label must not appear for invalid tuple")
 	}
-	_ = snap
 }
 
 func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
@@ -3244,7 +3258,7 @@ func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
 	id := "claude_headless:test-reprov"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
-	// First ingest with valid catalog ID.
+	// First ingest with EMPTY catalog ID (generic, non-catalog).
 	store.IngestObserved(ApprovalIngest{
 		SessionID: id, LaunchGen: 1, StreamGen: 0,
 		Provider: "claude_headless", Version: "2.1.209",
@@ -3255,12 +3269,20 @@ func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
 			},
 			Provenance:      contract.ProvenanceProviderHook,
 			Actionable:      false,
-			CatalogActionID: "claude.bash.approval_probe.v1",
+			CatalogActionID: "", // generic
 		}},
 	})
 
-	// Second ingest with same ApprovalID + different (forged) catalog ID.
-	// The Store must reject duplicate ApprovalID and keep the original.
+	// Verify private record is empty.
+	store.mu.Lock()
+	rec := store.sessions[id].records["dup-1"]
+	if rec == nil || rec.catalogActionID != "" {
+		store.mu.Unlock()
+		t.Fatalf("private catalogActionID must be empty, got %q", rec.catalogActionID)
+	}
+	store.mu.Unlock()
+
+	// Second ingest — same ApprovalID — must be rejected (duplicate).
 	store.IngestObserved(ApprovalIngest{
 		SessionID: id, LaunchGen: 1, StreamGen: 0,
 		Provider: "claude_headless", Version: "2.1.209",
@@ -3271,18 +3293,26 @@ func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
 			},
 			Provenance:      contract.ProvenanceProviderHook,
 			Actionable:      false,
-			CatalogActionID: "claude.bash.approval_probe.v1",
+			CatalogActionID: "claude.bash.approval_probe.v1", // attempt upgrade
 		}},
 	})
 
+	// Private record must still be empty — the duplicate was rejected.
+	store.mu.Lock()
+	rec2 := store.sessions[id].records["dup-1"]
+	empty := rec2 != nil && rec2.catalogActionID == ""
+	store.mu.Unlock()
+	if !empty {
+		t.Fatal("generic record must not be upgraded to catalog by duplicate re-offer")
+	}
+
+	// DTO must show generic summary (not upgraded).
 	dtos := store.ListSafe(id)
-	// Only one record (duplicate rejected).
 	if len(dtos) != 1 {
 		t.Fatalf("expected 1 DTO, got %d", len(dtos))
 	}
-	// Must still show catalog label (original preserved, duplicate rejected).
-	if dtos[0].Summary != "Run Claude approval verification probe" {
-		t.Fatalf("original catalog label lost after duplicate: got %q", dtos[0].Summary)
+	if dtos[0].Summary == "Run Claude approval verification probe" {
+		t.Fatal("generic record must not show catalog label after rejected duplicate")
 	}
 }
 
@@ -3291,7 +3321,7 @@ func TestP2B_StaleGenerationDoesNotRestoreCatalogSummary(t *testing.T) {
 	id := "claude_headless:test-stale"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
-	// Ingest with valid catalog ID.
+	// Ingest with valid catalog ID at generation 1.
 	store.IngestObserved(ApprovalIngest{
 		SessionID: id, LaunchGen: 1, StreamGen: 0,
 		Provider: "claude_headless", Version: "2.1.209",
@@ -3306,22 +3336,43 @@ func TestP2B_StaleGenerationDoesNotRestoreCatalogSummary(t *testing.T) {
 		}},
 	})
 
-	// Verify catalog label present.
-	dtos := store.ListSafe(id)
-	if dtos[0].Summary != "Run Claude approval verification probe" {
-		t.Fatalf("catalog label missing: got %q", dtos[0].Summary)
+	// Verify private record has catalog ID at gen 1.
+	store.mu.Lock()
+	rec := store.sessions[id].records["stale-1"]
+	if rec == nil || rec.catalogActionID != "claude.bash.approval_probe.v1" {
+		store.mu.Unlock()
+		t.Fatal("catalogActionID not stored at gen 1")
 	}
+	store.mu.Unlock()
 
-	// Install a newer generation — invalidates the old record.
+	// Advance to generation 2 and supersede gen 1.
 	store.InstallRuntimeGeneration(id, 2, 0, "newer")
 	store.SupersedeRuntime(id, 1, 0, "replaced")
 
-	// The old record is now invalidated. The stale generation must not
-	// show the catalog label (state should be invalidated, not pending).
-	dtos2 := store.ListSafe(id)
-	for _, d := range dtos2 {
-		if d.ID == "stale-1" && d.State == "pending" {
-			t.Fatal("stale record must not remain pending")
+	// Attempt ingest at the STALE generation 1 with catalog ID.
+	// This must be rejected — gen 1 is superseded.
+	admitted := store.IngestObserved(ApprovalIngest{
+		SessionID: id, LaunchGen: 1, StreamGen: 0,
+		Provider: "claude_headless", Version: "2.1.209",
+		Items: []ApprovalIngestItem{{
+			Approval: agent.AgentApproval{
+				ID: "stale-2", SessionID: id, AgentKind: "claude_headless", Kind: "approval",
+				Source: agent.SourceJSONL, Confidence: 1,
+			},
+			Provenance:      contract.ProvenanceProviderHook,
+			Actionable:      false,
+			CatalogActionID: "claude.bash.approval_probe.v1",
+		}},
+	})
+	if admitted {
+		t.Fatal("stale-generation ingest must be rejected")
+	}
+
+	// The stale-gen catalog ID must not appear in any DTO.
+	dtos := store.ListSafe(id)
+	for _, d := range dtos {
+		if d.Summary == "Run Claude approval verification probe" && d.State == "pending" {
+			t.Fatalf("stale-generation catalog label leaked into DTO: %s", d.ID)
 		}
 	}
 }
@@ -3389,7 +3440,16 @@ func TestP2B_RawSentinelsNeverInStoreOrDTO(t *testing.T) {
 		t.Fatal("sentinel became DTO summary")
 	}
 
-	// LookupRecord must not expose the catalogActionID.
+	// Private record must have empty catalogActionID (sentinel normalized).
+	store.mu.Lock()
+	rec := store.sessions[id].records["priv-1"]
+	normalized := rec != nil && rec.catalogActionID == ""
+	store.mu.Unlock()
+	if !normalized {
+		t.Fatal("sentinel must be normalized to empty in private record")
+	}
+
+	// LookupRecord must not expose the sentinel.
 	snap, ok := store.LookupRecord(id, "priv-1")
 	if !ok {
 		t.Fatal("record not found")
