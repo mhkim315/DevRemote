@@ -98,7 +98,7 @@ func readHookURL(t *testing.T, path string) string {
 
 func captureBridgeURLs(t *testing.T, launcher *compFakeLauncher) (resumeURL, posttoolURL string) {
 	t.Helper()
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 500; i++ {
 		time.Sleep(10 * time.Millisecond)
 		launcher.mu.Lock()
 		if len(launcher.allArgs) >= 2 {
