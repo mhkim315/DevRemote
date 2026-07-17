@@ -665,6 +665,38 @@ func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
 	if !store.RecordDelivery(receipt).Committed {
 		t.Fatal("not committed")
 	}
+	// Exact binding: receipt must carry the same claim token, runtime, digest, option.
+	if receipt.ClaimToken != claim.Token {
+		t.Fatalf("receipt ClaimToken mismatch")
+	}
+	if receipt.Binding.ApprovalID != claim.Binding.ApprovalID {
+		t.Fatalf("receipt ApprovalID mismatch")
+	}
+	if receipt.Binding.OptionID != "allow_once" {
+		t.Fatalf("receipt OptionID = %q", receipt.Binding.OptionID)
+	}
+	if receipt.Binding.Runtime.Adapter != "claude_headless" {
+		t.Fatalf("receipt Runtime.Adapter = %q", receipt.Binding.Runtime.Adapter)
+	}
+	// Final DTO: catalog summary preserved after commit.
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	var found bool
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			found = true
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("final DTO summary = %q", d.Summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("approval not found in final DTO")
+	}
+	// Duplicate RecordDelivery must not create a second commit.
+	dup := store.RecordDelivery(receipt)
+	if dup.Committed {
+		t.Fatalf("duplicate RecordDelivery must not commit again, got outcome=%s", dup.Outcome)
+	}
 }
 
 func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
@@ -698,6 +730,27 @@ func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
 	}
 	if !store.RecordDelivery(receipt).Committed {
 		t.Fatal("not committed")
+	}
+	// Exact binding on deny receipt.
+	if receipt.Binding.OptionID != "deny" {
+		t.Fatalf("receipt OptionID = %q", receipt.Binding.OptionID)
+	}
+	if receipt.Binding.Runtime.Adapter != "claude_headless" {
+		t.Fatalf("receipt Runtime.Adapter = %q", receipt.Binding.Runtime.Adapter)
+	}
+	// Final DTO: catalog summary preserved after deny commit.
+	dtos := store.ListSafe(claim.Binding.SessionID)
+	var found bool
+	for _, d := range dtos {
+		if d.ID == claim.Binding.ApprovalID {
+			found = true
+			if d.Summary != "Run Claude approval verification probe" {
+				t.Fatalf("final deny DTO summary = %q", d.Summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("approval not found in final deny DTO")
 	}
 }
 
@@ -776,4 +829,59 @@ func TestClaudeDelivery_CatalogTimeoutFails(t *testing.T) {
 	}
 	_ = store
 	_ = l
+}
+
+func TestClaudeDelivery_CatalogMutatedResumeInput(t *testing.T) {
+	// Catalog match at setup, but resume hook sends a DIFFERENT command.
+	// The coordinator must reject: claim binding (catalog probe) ≠ resume input.
+	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(2 * time.Second)
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+	resumeURL, _ := captureBridgeURLs(t, l)
+	// Mutated: different command from the catalog entry.
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo rm -rf"}`)
+	// The hook returns defer (mismatch), not allow.
+	if !bytesEq(r, term.ClaudeHookResponseBytes("defer")) {
+		t.Fatalf("mutated resume must return defer, got %s", r)
+	}
+	wg.Wait()
+	if receipt.Outcome == term.DeliveryAccepted {
+		t.Fatal("mutated resume input must not be accepted")
+	}
+	_ = store
+}
+
+func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
+	// Claim → Stop runtime → delivery must fail (stale runtime).
+	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
+	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetPollTimeout(2 * time.Second)
+
+	// Stop the runtime BEFORE delivery.
+	svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen)
+
+	var receipt term.DeliveryReceipt
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
+	}()
+	// Wait for the delivery to fail — resume won't work on stopped runtime.
+	wg.Wait()
+	if receipt.Outcome == term.DeliveryAccepted {
+		t.Fatal("stale runtime delivery must not be accepted")
+	}
+	_ = store
+	_ = l
+	_ = csid
+	_ = tuid
+	_ = tn
 }
