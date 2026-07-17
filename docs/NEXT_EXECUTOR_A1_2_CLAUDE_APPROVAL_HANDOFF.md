@@ -1,11 +1,11 @@
 # Next Executor Handoff — A1.2 C2D Exact Claude Decision Delivery
 
-Status: **C2D-C R6-B ACCEPTED — FOLLOW THE C2D-D STAGED HANDOFF — ACTIONABILITY ZERO — C3D PROHIBITED**
+Status: **C2D-C R6-B ACCEPTED — CLOSED-CATALOG P1 ONLY — ACTIONABILITY ZERO — C3D PROHIBITED**
 
 The active next-packet instructions are in
-`docs/NEXT_EXECUTOR_A1_2_C2D_D_STAGED_HANDOFF.md`. This document retains the
-frozen whole-C2D contract and exclusions; where packet sequencing differs, the
-new staged handoff controls. Earlier C1D remediation handoffs are historical.
+`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_HANDOFF.md`. The earlier D1 staged handoff
+correctly produced a fail-closed BLOCKED result and is now historical. This
+document retains the frozen whole-C2D authority and lifecycle exclusions.
 
 ## 1. Canonical repository and accepted state
 

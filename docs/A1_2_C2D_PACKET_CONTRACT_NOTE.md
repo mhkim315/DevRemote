@@ -578,6 +578,14 @@ the allow witness.
 
 ### 7.3 Safe review projection (C2D-D)
 
+**Planner amendment after D1 rejection:** the arbitrary-command interpretation of
+this section is rejected. For the first Claude slice, the canonical review
+representation may be an immutable server-owned catalog action ID with a unique
+POKIT-owned static label, as frozen in
+`docs/A1_2_C2D_D_PLANNER_CATALOG_AMENDMENT.md`. It is not a provider description,
+digest-only review or raw command projection. Commands outside the exact catalog
+remain non-actionable.
+
 The frozen public A1 DTO must carry enough information for the user to identify
 the action whose digest is claimed. For the certified `Bash` tool, the
 projection must:

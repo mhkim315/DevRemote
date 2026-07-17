@@ -1,11 +1,14 @@
 # Next Executor Handoff — A1.2 C2D-D Safe Review and Final Evidence
 
-Status: **R6-B ACCEPTED — START D1 ONLY — ACTIONABILITY ZERO — C3D PROHIBITED**
+Status: **SUPERSEDED AFTER D1 REJECTION — USE THE CLOSED-CATALOG HANDOFF**
 
-This is the active handoff for the remainder of C2D. It deliberately splits
-C2D-D into small checkpoints suited to the current executor: one contract
-decision, one pure implementation, and one composition/evidence packet. Do not
-combine packets or repair adjacent lifecycle/authority code while completing them.
+Active instructions moved to
+`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_HANDOFF.md`. This file remains as the
+historical handoff that correctly forced the D1 fail-closed decision.
+
+This was the handoff that split the rejected arbitrary-command path into review
+checkpoints. Its remaining D2/D3 instructions are no longer authorized. Follow the
+closed-catalog handoff instead.
 
 ## 1. Canonical start state
 

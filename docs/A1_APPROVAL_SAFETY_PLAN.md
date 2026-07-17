@@ -217,6 +217,12 @@ vocabularies, exact session binding, and unknown-field rejection. Display labels
 and placeholders are Pokit-owned or produced by an independently verified,
 bounded mapping; raw provider values are not passed through.
 
+Post-A1 clarification for provider-positive slices: a bounded internal action ID
+may select a unique, compiled POKIT-owned label when the provider request matches a
+closed server-owned catalog exactly. The action ID and label are display metadata
+only; they never create actionability or replace ApprovalAuthority. Raw commands,
+provider descriptions and arbitrary provider values remain prohibited.
+
 ## 8. Preserved A1-A through A1-E slices
 
 ### A1-A — authority audit and contract freeze

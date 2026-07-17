@@ -2,6 +2,12 @@
 
 Status: **C2D BLOCKED — D2 PROHIBITED — C3D PROHIBITED**
 
+Historical status note: this document correctly closed the rejected arbitrary-
+command design. The planning agent subsequently authorized a different, finite
+server-owned catalog design in
+`docs/A1_2_C2D_D_PLANNER_CATALOG_AMENDMENT.md`. That amendment does not overturn
+these findings; it authorizes only its P1 classifier packet.
+
 Parent: `docs/NEXT_EXECUTOR_A1_2_C2D_D_STAGED_HANDOFF.md` §3
 Rejected: `docs/A1_2_C2D_D1_PROJECTION_CONTRACT.md` (`5f99980`)
 

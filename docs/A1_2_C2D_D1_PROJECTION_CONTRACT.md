@@ -1,6 +1,11 @@
 # A1.2 C2D-D1 — Projection Contract Decision
 
-Status: **D1 CONTRACT — NOT IMPLEMENTED — INDEPENDENT REVIEW REQUIRED**
+Status: **REJECTED HISTORICAL PROPOSAL — DO NOT IMPLEMENT**
+
+Independent review rejected this proposal; the fail-closed record is
+`docs/A1_2_C2D_D1_R1_BLOCKED.md`. The later planner-owned replacement is
+`docs/A1_2_C2D_D_PLANNER_CATALOG_AMENDMENT.md`. The original text remains below
+only as audit history.
 
 Parent: `docs/NEXT_EXECUTOR_A1_2_C2D_D_STAGED_HANDOFF.md` §3
 Preceding contract: `docs/A1_2_C2D_PACKET_CONTRACT_NOTE.md` §7.3
