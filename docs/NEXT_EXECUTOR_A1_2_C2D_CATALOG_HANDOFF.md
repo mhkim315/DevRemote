@@ -1,6 +1,10 @@
 # Next Executor Handoff — A1.2 C2D Closed Catalog
 
-Status: **START P1 ONLY — P2/P3/C3D PROHIBITED — ACTIONABILITY ZERO**
+Status: **P1 ACCEPTED — FOLLOW THE P2A PRIVATE-IDENTITY HANDOFF**
+
+Active instructions moved to
+`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_P2A_HANDOFF.md`. The P1 instructions below
+remain as accepted audit history.
 
 This is the active handoff. The executor implements the planner-owned catalog
 contract; it does not choose a projection strategy or reopen the D1 decision.

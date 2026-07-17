@@ -87,9 +87,10 @@ record actionable by itself. C3D production composition is the only future owner
 allowed to combine a certified tuple, catalog match, exact provider identity and
 the already accepted A1 authority machinery into actionable ingestion.
 
-Catalog IDs, static summaries and exact commands must be unique within the compiled
-catalog. A build-time/unit invariant rejects duplicates so two actions can never
-share the same public label.
+Catalog IDs and static summaries must be unique, and the exact
+provider/version/tool/command tuple must be unique within the compiled catalog. A
+production-startup/unit invariant rejects duplicates so two actions can never share
+the same public label or concrete tuple.
 
 ## 5. Minimal additive internal seam
 
@@ -112,10 +113,12 @@ runtime generation, lifecycle, denial decoding or witness semantics.
 
 1. **P1 — strict classifier**: pure nested decoder and one-entry catalog with
    exhaustive focused tests. No store/coordinator/DTO changes.
-2. **P2 — bounded display metadata plumbing**: carry only the catalog ID through
-   private identity and internal approval storage; select the static summary.
-   Actionability and options remain off in production.
-3. **P3 — final controlled C2D composition**: prove catalog-match allow/deny and
+2. **P2A — private identity wiring**: classify at the real provider hook and carry
+   only the catalog ID through pending/coordinator identity. Store/DTO unchanged.
+3. **P2B — bounded display metadata plumbing**: carry only the catalog ID into
+   internal approval storage and select the static summary. Actionability and
+   options remain off in production.
+4. **P3 — final controlled C2D composition**: prove catalog-match allow/deny and
    all negative interleavings using accepted delivery/witness machinery while
    production installation remains off.
 

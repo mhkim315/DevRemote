@@ -150,7 +150,7 @@ A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native 
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
-A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7; C2D-C R6-B ACCEPT 48ce57d; arbitrary-command D1 REJECT/BLOCKED defeb9d; closed-catalog P1 authorized; C3D blocked
+A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7; C2D-C R6-B ACCEPT 48ce57d; arbitrary-command D1 REJECT/BLOCKED defeb9d; closed-catalog P1 ACCEPT f29e1b6; P2A authorized; C3D blocked
 PF  Post-Claude Accepted-State Freeze         BLOCKED pending independent final A1.2 C2D/C3D/mobile ACCEPT
 PA  Managed-Only Ownership Migration          BLOCKED pending PF ACCEPT
 PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA ACCEPT
@@ -642,8 +642,9 @@ pinned 2.1.209 surface. C1D direct managed launch, private hook/defer joining an
 non-actionable observation are accepted at `4794ce7`. C2D-C through R6-B is
 accepted at `48ce57d`. The arbitrary-command D1 path was rejected and formally
 blocked at `defeb9d`; the planner-approved replacement is one exact server-owned
-catalog action followed by independently reviewed P1 classifier, P2 display-only
-metadata plumbing and P3 controlled final evidence. C3D remains gated on final
+catalog action followed by independently reviewed P1 classifier, P2A private
+identity wiring, P2B display-only metadata and P3 controlled final evidence. P1 is
+accepted at `f29e1b6`; C3D remains gated on final
 C2D acceptance. Future Agent SDK, Channels,
 terminal-only, or POKIT-owned-runtime options remain separate architecture decisions;
 interactive terminal input is not native approval authority.

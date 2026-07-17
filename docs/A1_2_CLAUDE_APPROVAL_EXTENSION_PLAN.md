@@ -1,6 +1,6 @@
 # A1.2 Claude Approval Extension — Production Implementation Plan
 
-Status: **C0D/C1D ACCEPT — C2D-C R6-B ACCEPT — D1 REJECTED/BLOCKED — CLOSED-CATALOG P1 AUTHORIZED — C3D NOT AUTHORIZED**
+Status: **C0D/C1D ACCEPT — C2D-C R6-B ACCEPT — D1 REJECTED/BLOCKED — CLOSED-CATALOG P1 ACCEPT — P2A AUTHORIZED — C3D NOT AUTHORIZED**
 
 Accepted research evidence: `e42d4c570e64462ce813861017cc635e338e68bf`.
 Frozen provider-neutral A1 core and accepted Codex SP1 baseline:
@@ -14,9 +14,10 @@ Accepted C2D-C R6-B implementation: `48ce57d81781646fc1c6c7445b5900b58fd5cef3`.
 The arbitrary-command D1 proposal was rejected and the contradiction was recorded
 at `defeb9de2e73d8a821fc49a28a027529b05a60e3`. The planner-owned resolution is
 `docs/A1_2_C2D_D_PLANNER_CATALOG_AMENDMENT.md`: one server-owned catalog action,
-then independently reviewed P1 classifier, P2 display-only metadata plumbing and
-P3 controlled final evidence. The active executor document is
-`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_HANDOFF.md`. C3D remains prohibited until
+then independently reviewed P1 classifier, P2A private-identity wiring, P2B
+display-only metadata plumbing and P3 controlled final evidence. P1 is accepted at
+`f29e1b6dc776bc8f4799809b59accd7ceb755072`; the active executor document is
+`docs/NEXT_EXECUTOR_A1_2_C2D_CATALOG_P2A_HANDOFF.md`. C3D remains prohibited until
 final C2D acceptance.
 
 ## 1. Historical findings remain independent
