@@ -433,17 +433,21 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	toolUseID, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
-	toolName, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
-	sessionID, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
+	// Strict decode body fields — all must parse, but MarkWitnessed
+	// uses the original identity from the resume context (same reason
+	// as handleResume: unknown fields are benign for witness). A
+	// malformed body fails closed (200 to avoid error-display).
+	_, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	_, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	_, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
 	if !ok1 || !ok2 || !ok3 {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	inputDigest := ""
 	if raw, ok := fields["tool_input"]; ok && len(raw) > 0 {
-		if canon, err := canonicalJSON(raw); err == nil && len(canon) <= maxToolInputBytes {
-			inputDigest = sha256Hex(canon)
+		if _, err := canonicalJSON(raw); err != nil || len(raw) > maxToolInputBytes {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 	}
 
@@ -456,7 +460,11 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	}
 	// R6-A3: PostToolUse ALWAYS proves allow only. Deny must come from
 	// the permission_denials stream decoder, never from this hook.
-	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionID, toolUseID, toolName, inputDigest, ctx.originalRuntime)
+	// Use the original identity values from the resume context, not the
+	// hook body's, for the same reason as handleResume: the entry was
+	// reserved from the original identity and MarkWitnessed validates
+	// against it. A new tool_use_id on resume is discarded.
+	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, ctx.claudeSessionID, ctx.toolUseID, ctx.toolName, ctx.inputDigest, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }
 
