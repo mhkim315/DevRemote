@@ -262,7 +262,7 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 	catalogActionID := ""
 	if rt := b.rt; rt != nil {
 		cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName)
-			catalogActionID = selectCatalogActionID(cid, classifierDigest, inputDigest, matched)
+		catalogActionID = selectCatalogActionID(cid, classifierDigest, inputDigest, matched)
 	}
 
 	rt := b.rt

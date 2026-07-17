@@ -254,9 +254,7 @@ func validateCatalog(entries []catalogEntry) error {
 // classifier's canonical digest equals the bridge's independently computed
 // canonical digest. This prevents a tampered classifier output from injecting
 // a false catalog ID.
-//
-// Exported for direct testing of the digest-mismatch boundary.
-func SelectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest string, matched bool) string {
+func selectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest string, matched bool) string {
 	if !matched || catalogActionID == "" {
 		return ""
 	}
@@ -264,11 +262,6 @@ func SelectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest strin
 		return ""
 	}
 	return catalogActionID
-}
-
-// selectCatalogActionID is the unexported alias used in production.
-func selectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest string, matched bool) string {
-	return SelectCatalogActionID(catalogActionID, classifierDigest, bridgeDigest, matched)
 }
 
 // lookupCatalogEntry returns a value copy of the catalog entry for a given

@@ -2062,7 +2062,6 @@ func TestDenialBinding_C1DRuntimeWithNoResumeCtxDoesNotWitness(t *testing.T) {
 	}
 }
 
-
 // ── P2A catalog wiring tests ──
 
 // p2aCreateRuntime creates a working managed runtime for P2A tests.
@@ -2593,30 +2592,30 @@ func TestP2A_DuplicateHookViaRealHook(t *testing.T) {
 	rt.terminate()
 }
 
-func TestP2A_SelectCatalogActionID(t *testing.T) {
+func TestP2A_selectCatalogActionID(t *testing.T) {
 	// Test the pure digest-selection helper with all four boundary
 	// combinations. This is the same function handleHook calls.
 	probeDigest := sha256Hex([]byte("probe"))
 	otherDigest := sha256Hex([]byte("other"))
 
 	// 1. matched + same digest returns the exact catalog ID.
-	if got := SelectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, probeDigest, true); got != "claude.bash.approval_probe.v1" {
+	if got := selectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, probeDigest, true); got != "claude.bash.approval_probe.v1" {
 		t.Fatalf("matched + same digest: got %q", got)
 	}
 	// 2. matched + different digest returns empty.
-	if got := SelectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, otherDigest, true); got != "" {
+	if got := selectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, otherDigest, true); got != "" {
 		t.Fatalf("matched + different digest: got %q, want empty", got)
 	}
 	// 3. unmatched + same digest returns empty.
-	if got := SelectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, probeDigest, false); got != "" {
+	if got := selectCatalogActionID("claude.bash.approval_probe.v1", probeDigest, probeDigest, false); got != "" {
 		t.Fatalf("unmatched + same digest: got %q, want empty", got)
 	}
 	// 4. empty ID returns empty even when matched + same digest.
-	if got := SelectCatalogActionID("", probeDigest, probeDigest, true); got != "" {
+	if got := selectCatalogActionID("", probeDigest, probeDigest, true); got != "" {
 		t.Fatalf("empty ID + matched + same digest: got %q, want empty", got)
 	}
 	// 5. empty ID + unmatched + different digest returns empty.
-	if got := SelectCatalogActionID("", probeDigest, otherDigest, false); got != "" {
+	if got := selectCatalogActionID("", probeDigest, otherDigest, false); got != "" {
 		t.Fatalf("empty ID + unmatched + different digest: got %q, want empty", got)
 	}
 }
@@ -2713,17 +2712,20 @@ func TestP2A_CapacityRejectionPreservesEmptyCatalogID(t *testing.T) {
 			t.Fatalf("existing identity %s was removed by overflow rejection", aid)
 		}
 	}
-	// No Store record for the overflow attempt.
+	// Exact active approval set unchanged by overflow rejection.
 	rt.turnMu.Lock()
+	if len(rt.activeApprovals) != maxActiveApprovals {
+		rt.turnMu.Unlock()
+		t.Fatalf("active approval count changed: %d", len(rt.activeApprovals))
+	}
 	for _, aa := range rt.activeApprovals {
-		if aa.approvalID == "sess-cap-overflow" {
+		if !knownIDs[aa.approvalID] {
 			rt.turnMu.Unlock()
-			t.Fatal("overflow created an active approval")
+			t.Fatalf("new active approval %s appeared after overflow rejection", aa.approvalID)
 		}
 	}
 	rt.turnMu.Unlock()
 	_ = store
-
 	rt.terminate()
 }
 
