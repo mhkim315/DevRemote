@@ -385,10 +385,15 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 			"/api/sessions/"+sid+"/approvals/"+dto.ID, tok,
 			`{"action":"`+action+`","idempotencyKey":"c3dc.live.`+run+`"}`)
 		if code != 200 {
+			// Record state: claim vs delivery failure.
+			if snap, ok := store.LookupRecord(sid, dto.ID); ok {
+				t.Logf("%s: record state after claim: %s (actionable=%v)", run, snap.State, snap.Actionable)
+			}
+			t.Logf("%s: coordinator identities=%d entries=%d", run,
+				fx.app.managedClaude.Coordinator().IdentityCount(),
+				fx.app.managedClaude.Coordinator().EntryCount())
 			// Dump structural projections AND the raw capture to the
 			// evidence dir so the stream format can be debugged.
-			// Raw bytes stay local (never committed); only
-			// projections enter the report.
 			for i, ln := range launcher.slice(launchFloor) {
 				diag := c3dcProject(run, "diag-"+itoa(i), ln.cap.bytes(), pseudo)
 				t.Logf("%s diag launch %d: lines=%d tokenHits=%d", run, i, len(diag.Lines), diag.ToolResultTokenHits)
