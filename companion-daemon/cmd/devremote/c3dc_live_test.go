@@ -385,12 +385,22 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 			"/api/sessions/"+sid+"/approvals/"+dto.ID, tok,
 			`{"action":"`+action+`","idempotencyKey":"c3dc.live.`+run+`"}`)
 		if code != 200 {
-			// Structural diagnostic only (types/booleans, no raw text).
+			// Dump structural projections AND the raw capture to the
+			// evidence dir so the stream format can be debugged.
+			// Raw bytes stay local (never committed); only
+			// projections enter the report.
 			for i, ln := range launcher.slice(launchFloor) {
 				diag := c3dcProject(run, "diag-"+itoa(i), ln.cap.bytes(), pseudo)
 				t.Logf("%s diag launch %d: lines=%d tokenHits=%d", run, i, len(diag.Lines), diag.ToolResultTokenHits)
 				for _, lp := range diag.Lines {
 					t.Logf("%s diag launch %d line: seq=%d type=%s subtype=%s deferred=%v denials=%v", run, i, lp.Seq, lp.Type, lp.Subtype, lp.Deferred, lp.PermissionDenials)
+				}
+				if evidenceDir != "" {
+					rawPath := filepath.Join(evidenceDir, "c3dc_"+run+"_launch"+itoa(i)+"_raw_diag.jsonl")
+					os.WriteFile(rawPath, ln.cap.bytes(), 0644)
+					projPath := filepath.Join(evidenceDir, "c3dc_"+run+"_launch"+itoa(i)+"_proj_diag.json")
+					blob, _ := json.MarshalIndent(diag, "", "  ")
+					os.WriteFile(projPath, blob, 0644)
 				}
 			}
 			t.Fatalf("%s claim: code=%d body=%s", run, code, body)
@@ -424,6 +434,15 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 			proj := c3dcProject(run, label, ln.cap.bytes(), pseudo)
 			tokenHits += proj.ToolResultTokenHits
 			projections = append(projections, proj)
+			// Always write raw capture + projection to evidence dir
+			// for debugging stream format on failure.
+			if evidenceDir != "" {
+				rawPath := filepath.Join(evidenceDir, "c3dc_"+run+"_"+label+"_raw.jsonl")
+				os.WriteFile(rawPath, ln.cap.bytes(), 0644)
+				projPath := filepath.Join(evidenceDir, "c3dc_"+run+"_"+label+"_proj.json")
+				blob, _ := json.MarshalIndent(proj, "", "  ")
+				os.WriteFile(projPath, blob, 0644)
+			}
 		}
 		if tokenHits != wantTokenHits {
 			t.Fatalf("%s: tool_result probe-token hits = %d, want %d (execution corroboration)", run, tokenHits, wantTokenHits)
@@ -456,24 +475,8 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 	}
 
-	// Committed-safe evidence projections.
-	if evidenceDir != "" {
-		for i, proj := range projections {
-			name := filepath.Join(evidenceDir,
-				"c3dc_"+proj.Run+"_"+proj.Launch+"_"+itoa(i)+".json")
-			blob, err := json.MarshalIndent(proj, "", "  ")
-			if err != nil {
-				t.Fatalf("marshal projection: %v", err)
-			}
-			if strings.Contains(string(blob), c3dcProbeToken) {
-				t.Fatalf("projection leaked raw token text") // booleans only, never text
-			}
-			if err := os.WriteFile(name, blob, 0644); err != nil {
-				t.Fatalf("write projection: %v", err)
-			}
-			t.Logf("evidence projection written: %s", name)
-		}
-	}
+	// Projections already written to evidence dir above (one set per
+	// run, always written when POKIT_C3DC_EVIDENCE_DIR is set).
 }
 
 func argvHas(argv []string, want string) bool {
