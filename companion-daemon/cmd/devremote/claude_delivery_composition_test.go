@@ -291,37 +291,68 @@ func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 	}
 }
 
-// drainIdentityEvents drains any buffered identity events before the test
-// observes its own. The coordinator event channel is shared across all
-// identities; we drain it so our test only sees its own event.
-func drainIdentityEvents(ch <-chan struct{}) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
+// captureInitialHookURL extracts the initial hook bridge URL from the hook script
+// written during the first CreateDetached. The launcher must have at least one
+// recorded launch.
+func captureInitialHookURL(t *testing.T, launcher *compFakeLauncher) string {
+	t.Helper()
+	launcher.mu.Lock()
+	if len(launcher.allArgs) < 1 {
+		launcher.mu.Unlock()
+		t.Fatal("initial launch never observed")
+	}
+	args := launcher.allArgs[0]
+	launcher.mu.Unlock()
+	for j, a := range args {
+		if a == "--settings" && j+1 < len(args) {
+			hd := strings.TrimSuffix(args[j+1], "/settings.json")
+			return readHookURL(t, hd+"/hook.sh")
 		}
 	}
+	t.Fatal("settings arg not found in initial launch")
+	return ""
+}
+
+// fireInitialHook POSTs a PreToolUse to the bridge's /hook endpoint,
+// simulating what the Claude hook command would do.
+func fireInitialHook(t *testing.T, url, sid, tuid, tn, inputJSON string) {
+	t.Helper()
+	body := `{"session_id":"` + sid + `","tool_use_id":"` + tuid + `","tool_name":"` + tn + `","tool_input":` + inputJSON + `,"hook_event_name":"PreToolUse"}`
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("initial hook: %v", err)
+	}
+	resp.Body.Close()
 }
 
 func TestClaudeDelivery_ExitWithoutJoinedDeferredClearsIdentity(t *testing.T) {
-	// The first CreateDetached in newProviderSim creates procs[0]. We create
-	// a second runtime and close ITS stdout, proving exit without deferred.
 	launcher, svc, _ := newProviderSim(t)
 	sid, err := svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = sid
+
+	// Create a pending observation via the real bridge /hook endpoint,
+	// then write a deferred event to join it, creating an identity.
+	hookURL := captureInitialHookURL(t, launcher)
+	csid := "claude-sess-nojoin"
+	tuid := "call_nojoin"
+	tn := "Bash"
+	inputJSON := `{"command":"echo hello"}`
+	fireInitialHook(t, hookURL, csid, tuid, tn, inputJSON)
+
+	// Write a deferred event that does NOT match (different tuid).
+	// joinDeferred won't fire, so the identity from ReserveIdentity
+	// in makeSetup path is never created.
+	deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"` + csid + `","deferred_tool_use":{"id":"call_WRONG","name":"Bash","input":{"command":"echo hello"}}}` + "\n"
 	launcher.mu.Lock()
 	if len(launcher.procs) >= 1 {
+		launcher.procs[0].StdoutW.Write([]byte(deferred))
 		launcher.procs[0].StdoutW.Close()
 	}
 	launcher.mu.Unlock()
-	// Poll until terminate completes.
-	for i := 0; i < 200; i++ {
-		time.Sleep(time.Millisecond)
-	}
+
+	svc.WaitExited(sid)
 	if svc.Coordinator().IdentityCount() != 0 {
 		t.Fatal("exit without joined deferred must clear identity")
 	}
@@ -334,19 +365,15 @@ func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	csid := "claude-sess-defer-stop"
-	tuid := "call_defer_stop"
+	hookURL := captureInitialHookURL(t, launcher)
+	csid := "claude-sess-stop"
+	tuid := "call_stop"
 	tn := "Bash"
 	inputJSON := `{"command":"echo hello"}`
-	dgst := term.CanonicalDigest([]byte(inputJSON))
-	if !svc.ObserveForTest(sid, tuid, tn, csid, dgst) {
-		t.Fatal("ObserveForTest failed")
-	}
+	fireInitialHook(t, hookURL, csid, tuid, tn, inputJSON)
 
-	drainIdentityEvents(svc.Coordinator().IdentityEventCh())
-
+	// Write a matching deferred event → joinDeferred fires → identity created.
 	deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"` + csid + `","deferred_tool_use":{"id":"` + tuid + `","name":"` + tn + `","input":` + inputJSON + `}}` + "\n"
-
 	launcher.mu.Lock()
 	if len(launcher.procs) >= 1 {
 		launcher.procs[0].StdoutW.Write([]byte(deferred))
@@ -354,12 +381,8 @@ func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 	}
 	launcher.mu.Unlock()
 
-	<-svc.Coordinator().IdentityEventCh()
-
-	// Wait for runtime to actually exit before asserting.
-	for i := 0; i < 200; i++ {
-		time.Sleep(time.Millisecond)
-	}
+	// Deterministic barrier: block until the runtime exits.
+	svc.WaitExited(sid)
 
 	if svc.Coordinator().IdentityCount() != 1 {
 		t.Fatalf("identity must survive deferred exit, got %d", svc.Coordinator().IdentityCount())
@@ -372,26 +395,21 @@ func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 	}
 }
 
-func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
+func TestClaudeDelivery_DeferredExitThenKillClearsIdentity(t *testing.T) {
 	launcher, svc, _ := newProviderSim(t)
 	sid, err := svc.CreateDetached("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	csid := "claude-sess-defer-delete"
-	tuid := "call_defer_delete"
+	hookURL := captureInitialHookURL(t, launcher)
+	csid := "claude-sess-kill"
+	tuid := "call_kill"
 	tn := "Bash"
 	inputJSON := `{"command":"echo hello"}`
-	dgst := term.CanonicalDigest([]byte(inputJSON))
-	if !svc.ObserveForTest(sid, tuid, tn, csid, dgst) {
-		t.Fatal("ObserveForTest failed")
-	}
-
-	drainIdentityEvents(svc.Coordinator().IdentityEventCh())
+	fireInitialHook(t, hookURL, csid, tuid, tn, inputJSON)
 
 	deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"` + csid + `","deferred_tool_use":{"id":"` + tuid + `","name":"` + tn + `","input":` + inputJSON + `}}` + "\n"
-
 	launcher.mu.Lock()
 	if len(launcher.procs) >= 1 {
 		launcher.procs[0].StdoutW.Write([]byte(deferred))
@@ -399,15 +417,48 @@ func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 	}
 	launcher.mu.Unlock()
 
-	<-svc.Coordinator().IdentityEventCh()
+	svc.WaitExited(sid)
+
+	if svc.Coordinator().IdentityCount() != 1 {
+		t.Fatalf("identity must survive deferred exit, got %d", svc.Coordinator().IdentityCount())
+	}
+	if err := svc.Kill(sid, 1); err != nil {
+		t.Fatal(err)
+	}
+	if svc.Coordinator().IdentityCount() != 0 {
+		t.Fatal("identity not cleared after kill")
+	}
+}
+
+func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
+	launcher, svc, _ := newProviderSim(t)
+	sid, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hookURL := captureInitialHookURL(t, launcher)
+	csid := "claude-sess-delete"
+	tuid := "call_delete"
+	tn := "Bash"
+	inputJSON := `{"command":"echo hello"}`
+	fireInitialHook(t, hookURL, csid, tuid, tn, inputJSON)
+
+	deferred := `{"type":"result","stop_reason":"tool_deferred","session_id":"` + csid + `","deferred_tool_use":{"id":"` + tuid + `","name":"` + tn + `","input":` + inputJSON + `}}` + "\n"
+	launcher.mu.Lock()
+	if len(launcher.procs) >= 1 {
+		launcher.procs[0].StdoutW.Write([]byte(deferred))
+		launcher.procs[0].StdoutW.Close()
+	}
+	launcher.mu.Unlock()
+
+	svc.WaitExited(sid)
 
 	if svc.Coordinator().IdentityCount() != 1 {
 		t.Fatal("identity must survive deferred exit")
 	}
-	// Delete requires the session to be in terminal state. Stop first.
-	if err := svc.Stop(sid, 1); err != nil {
-		t.Fatal(err)
-	}
+	// Delete requires Exited. The deferred exit already terminated the runtime.
+	// No Stop pre-call — proves Delete cleanup independently.
 	if err := svc.Delete(sid, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -415,20 +466,6 @@ func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 		t.Fatal("identity not cleared after delete")
 	}
 }
-
-func bytesEq(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// ── R6-B adversarial deny tests ──
 
 func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
@@ -518,4 +555,10 @@ func TestClaudeDelivery_DenyUnknownEntryFieldFailsClosed(t *testing.T) {
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("denial with unknown entry field must be malformed")
 	}
+}
+
+func bytesEq(a, b []byte) bool {
+	if len(a) != len(b) { return false }
+	for i := range a { if a[i] != b[i] { return false } }
+	return true
 }

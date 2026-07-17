@@ -80,7 +80,7 @@ type claudeManagedRuntime struct {
 	terminated          bool        // set by terminate()
 	ingestGen           int64       // bumped by terminate()
 	atomicTerminated    atomic.Bool // lock-free read for pre-ingest check
-	deferredExit        bool        // B4: set before terminate() to preserve coordinator identity
+	deferredExit        atomic.Bool // B4: set before terminate() to preserve coordinator identity
 	joinedDeferred      bool        // R5-B: true only after exact tool_deferred join+ingest
 	pendingObservations map[string]*claudePendingObservation
 	activeApprovals     []activeApproval
@@ -578,7 +578,7 @@ func (rt *claudeManagedRuntime) pump() {
 		deferred := rt.joinedDeferred
 		rt.turnMu.Unlock()
 		if deferred {
-			rt.deferredExit = true
+			rt.deferredExit.Store(true)
 		}
 		rt.terminate()
 	}()
@@ -738,7 +738,7 @@ func (rt *claudeManagedRuntime) terminate() {
 
 		// Invalidate coordinator BEFORE external I/O so reservation
 		// and termination are linearized under the coordinator mutex.
-		if rt.coordinator != nil && !rt.deferredExit {
+		if rt.coordinator != nil && !rt.deferredExit.Load() {
 			rt.coordinator.ClearRuntime(rt.sessionID, rt.epoch)
 		}
 
@@ -846,20 +846,17 @@ func (s *ManagedClaudeService) Registry() *ManagedSessionRegistry { return s.reg
 
 // Coordinator returns the C2D-B resume coordinator. Exported for composition tests.
 func (s *ManagedClaudeService) Coordinator() *claudeResumeCoordinator { return s.coordinator }
-// ObserveForTest injects a pending observation on the runtime for the given
-// POKIT session. Exported for composition tests that must prove deferred-exit
-// identity survival without going through the full hook lifecycle.
-func (s *ManagedClaudeService) ObserveForTest(pokitSessionID, toolUseID, toolName, claudeSessionID, inputDigest string) bool {
+
+// WaitExited blocks until the runtime for the given session exits.
+func (s *ManagedClaudeService) WaitExited(pokitSessionID string) {
 	s.mu.Lock()
 	rt, ok := s.runtimes[pokitSessionID]
 	s.mu.Unlock()
 	if !ok {
-		return false
+		return
 	}
-	rt.observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest)
-	return true
+	<-rt.exited
 }
-
 
 func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStore) error {
 	if store == nil {
@@ -1395,7 +1392,7 @@ func (s *ManagedClaudeService) SimulateGracefulExit(sessionID string, epoch int6
 		return fmt.Errorf("stale session epoch")
 	}
 	rt.turnMu.Lock()
-	rt.deferredExit = true
+	rt.deferredExit.Store(true)
 	rt.turnMu.Unlock()
 	rt.terminate()
 	return nil
@@ -1414,6 +1411,13 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
 	} else if rec.Exited {
+		// Deferred exit preserves coordinator identities. Clean them up.
+		s.mu.Lock()
+		coord := s.coordinator
+		s.mu.Unlock()
+		if coord != nil {
+			coord.ClearRuntime(sessionID, epoch)
+		}
 		return nil
 	}
 	rt.terminate()
