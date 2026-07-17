@@ -25,13 +25,13 @@ import (
 )
 
 const (
-	maxPreToolUseBody  = 64 << 10
-	maxToolInputBytes  = 32 << 10
-	maxToolNameLen     = 128
-	maxClaudeSessionIDLen    = 128
-	maxToolUseIDLen    = 128
-	maxCWDLength       = 1024
-	capabilityTokenLen = 32
+	maxPreToolUseBody     = 64 << 10
+	maxToolInputBytes     = 32 << 10
+	maxToolNameLen        = 128
+	maxClaudeSessionIDLen = 128
+	maxToolUseIDLen       = 128
+	maxCWDLength          = 1024
+	capabilityTokenLen    = 32
 )
 
 // hookDeferResponse is the C0D-certified defer response.
@@ -42,16 +42,16 @@ const hookDeferResponse = `{"hookSpecificOutput":{"hookEventName":"PreToolUse","
 // rejected. Fields not needed for identity binding are accepted but not
 // decoded beyond verifying they are valid JSON.
 var preToolUseAllowlist = map[string]bool{
-	"session_id":       true,
-	"tool_use_id":      true,
-	"tool_name":        true,
-	"tool_input":       true,
-	"hook_event_name":  true,
-	"cwd":              true,
-	"transcript_path":  true,
-	"prompt_id":        true,
-	"permission_mode":  true,
-	"effort":           true,
+	"session_id":      true,
+	"tool_use_id":     true,
+	"tool_name":       true,
+	"tool_input":      true,
+	"hook_event_name": true,
+	"cwd":             true,
+	"transcript_path": true,
+	"prompt_id":       true,
+	"permission_mode": true,
+	"effort":          true,
 }
 
 // strictPreToolUseDecode decodes raw JSON into a map, rejecting:
@@ -255,16 +255,16 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	inputDigest := sha256Hex(inputCanon)
 
-		// P2A: classify the tool_input against the frozen catalog.
-		// Classification occurs exactly once at the provider boundary while
-		// the raw bytes are still available; after this the raw input is
-		// discarded and only the digest survives.
-		catalogActionID := ""
-		if rt := b.rt; rt != nil {
-			if cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName); matched && classifierDigest == inputDigest {
-				catalogActionID = cid
-			}
+	// P2A: classify the tool_input against the frozen catalog.
+	// Classification occurs exactly once at the provider boundary while
+	// the raw bytes are still available; after this the raw input is
+	// discarded and only the digest survives.
+	catalogActionID := ""
+	if rt := b.rt; rt != nil {
+		if cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName); matched && classifierDigest == inputDigest {
+			catalogActionID = cid
 		}
+	}
 
 	rt := b.rt
 	if rt == nil {

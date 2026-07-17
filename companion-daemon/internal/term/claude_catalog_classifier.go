@@ -216,9 +216,9 @@ func classifyCatalogAction(toolInput []byte, provider, version, toolName string)
 // The function accepts an explicit slice so tests can inject known-bad
 // duplicates.
 func validateCatalog(entries []catalogEntry) error {
-	seenID := make(map[string]int)       // CatalogActionID → index
-	seenSummary := make(map[string]int)  // Summary → index
-	seenTuple := make(map[string]int)    // provider|version|tool|command → index
+	seenID := make(map[string]int)      // CatalogActionID → index
+	seenSummary := make(map[string]int) // Summary → index
+	seenTuple := make(map[string]int)   // provider|version|tool|command → index
 
 	for i := range entries {
 		e := &entries[i]
@@ -249,16 +249,16 @@ func validateCatalog(entries []catalogEntry) error {
 	return nil
 }
 
-// lookupCatalogEntry returns the catalog entry for a given action ID,
-// or nil if not found. Used by the coordinator to validate that a
-// non-empty catalogActionID carried in a private identity is genuine.
-func lookupCatalogEntry(catalogActionID string) *catalogEntry {
+// lookupCatalogEntry returns a value copy of the catalog entry for a given
+// action ID. The copy prevents callers from mutating the frozen compiled
+// catalog through a pointer. Returns false if not found.
+func lookupCatalogEntry(catalogActionID string) (catalogEntry, bool) {
 	for i := range certifiedClaudeCatalog {
 		if certifiedClaudeCatalog[i].CatalogActionID == catalogActionID {
-			return &certifiedClaudeCatalog[i]
+			return certifiedClaudeCatalog[i], true
 		}
 	}
-	return nil
+	return catalogEntry{}, false
 }
 
 func init() {

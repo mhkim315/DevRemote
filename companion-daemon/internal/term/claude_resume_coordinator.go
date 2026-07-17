@@ -27,15 +27,15 @@ import (
 )
 
 const (
-	maxCoordinatorIdentities  = 16
-	maxCoordinatorEntries     = 16
-	coordinatorEntryTimeout   = 120 * time.Second
+	maxCoordinatorIdentities = 16
+	maxCoordinatorEntries    = 16
+	coordinatorEntryTimeout  = 120 * time.Second
 
 	// Input bounds.
-	maxCoordinatorSessionID   = 256
-	maxCoordinatorToolID      = 256
-	maxCoordinatorToolName    = 256
-	maxCoordinatorClaimToken  = 256
+	maxCoordinatorSessionID  = 256
+	maxCoordinatorToolID     = 256
+	maxCoordinatorToolName   = 256
+	maxCoordinatorClaimToken = 256
 )
 
 // ── Certified decision mapping ──
@@ -134,7 +134,7 @@ type WitnessKind int
 
 const (
 	WitnessPostToolUse       WitnessKind = iota + 1 // allow path
-	WitnessPermissionDenials                         // deny path
+	WitnessPermissionDenials                        // deny path
 )
 
 // ── Private identity record ──
@@ -147,7 +147,7 @@ type claudePrivateIdentity struct {
 	toolUseID       string
 	toolName        string
 	inputDigest     string
-	catalogActionID string // P2A: empty for non-catalog observations
+	catalogActionID string     // P2A: empty for non-catalog observations
 	runtime         RuntimeRef // {Adapter, Version, LaunchGen, StreamGen}
 	pokitSessionID  string     // POKIT compound session ID (e.g. "claude_headless:claude-abc123")
 }
@@ -170,12 +170,12 @@ const (
 type TerminalOutcome int
 
 const (
-	TerminalWitnessed         TerminalOutcome = iota + 1 // MarkWitnessed succeeded
-	TerminalCancelled                                     // CancelEntry or ClearForApproval
-	TerminalStaleRuntime                                  // ClearRuntime invalidated
-	TerminalAmbiguous                                     // response write failed or ambiguous
-	TerminalTimeout                                       // deadline exceeded
-	TerminalRejected                                      // claim/identity mismatch
+	TerminalWitnessed    TerminalOutcome = iota + 1 // MarkWitnessed succeeded
+	TerminalCancelled                               // CancelEntry or ClearForApproval
+	TerminalStaleRuntime                            // ClearRuntime invalidated
+	TerminalAmbiguous                               // response write failed or ambiguous
+	TerminalTimeout                                 // deadline exceeded
+	TerminalRejected                                // claim/identity mismatch
 )
 
 // TerminalResult is the claim-owned completion signal published exactly once.
@@ -197,7 +197,7 @@ type ResumeHandle struct {
 type resumeOutcome int
 
 const (
-	outcomeWritten    resumeOutcome = iota + 1
+	outcomeWritten resumeOutcome = iota + 1
 	outcomeCancelled
 	outcomeTimeout
 	outcomeMismatch
@@ -219,21 +219,21 @@ func (h WriteHandle) Decision() string { return h.decision }
 // resumeEntry is one reserved claim-to-delivery lifecycle. It is NOT
 // exposed to callers — only opaque handles are returned.
 type resumeEntry struct {
-	claimToken     string
-	resumeNonce    string
-	approvalID     string
-	sessionID      string // Claude session_id
-	toolUseID      string
-	toolName       string
-	inputDigest    string
-	decision       string
-	runtime        RuntimeRef
-	pokitSessionID string                    // POKIT compound session ID from binding
-	binding           ApprovalExecutionBinding  // full defensive copy for witness→receipt binding
+	claimToken        string
+	resumeNonce       string
+	approvalID        string
+	sessionID         string // Claude session_id
+	toolUseID         string
+	toolName          string
+	inputDigest       string
+	decision          string
+	runtime           RuntimeRef
+	pokitSessionID    string                   // POKIT compound session ID from binding
+	binding           ApprovalExecutionBinding // full defensive copy for witness→receipt binding
 	state             resumeState
-	createdAt         time.Time // reservation time
-	writeClaimedAt    time.Time // ClaimWrite called
-	decisionWrittenAt time.Time // ConfirmWrite(true) called
+	createdAt         time.Time           // reservation time
+	writeClaimedAt    time.Time           // ClaimWrite called
+	decisionWrittenAt time.Time           // ConfirmWrite(true) called
 	completion        chan TerminalResult // buffered 1; claim-owned terminal signal
 }
 
@@ -254,7 +254,6 @@ func NewClaudeResumeCoordinator() *claudeResumeCoordinator {
 		entries:    make(map[string]*resumeEntry),
 	}
 }
-
 
 // ── Identity lifecycle ──
 
@@ -282,8 +281,8 @@ func (c *claudeResumeCoordinator) ReserveIdentity(approvalID, sessionID, toolUse
 		if !validCoordinatorToken(catalogActionID, maxCoordinatorToolName) {
 			return false
 		}
-		entry := lookupCatalogEntry(catalogActionID)
-		if entry == nil {
+		entry, found := lookupCatalogEntry(catalogActionID)
+		if !found {
 			return false
 		}
 		if entry.Provider != rt.Adapter || entry.Version != rt.Version || entry.ToolName != toolName {
@@ -725,8 +724,6 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	delete(c.identities, entry.approvalID)
 	return entry.binding, respDigest, true
 }
-
-
 
 // ── Test helpers ──
 

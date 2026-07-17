@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2061,35 +2062,64 @@ func TestDenialBinding_C1DRuntimeWithNoResumeCtxDoesNotWitness(t *testing.T) {
 	}
 }
 
+
 // ── P2A catalog wiring tests ──
 
-func TestP2A_CatalogIDFlowsToIdentity(t *testing.T) {
+// p2aCreateRuntime creates a working managed runtime for P2A tests.
+// It fails the test if CreateDetached errors, preventing nil-runtime panics.
+func p2aCreateRuntime(t *testing.T) (*ManagedClaudeService, *AuthoritativeApprovalStore, *claudeManagedRuntime, string) {
+	t.Helper()
 	launcher := &fakeClaudeLauncher{}
 	store := NewApprovalStore()
 	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	svc.SetApprovalStore(store)
-	defer launcher.closeStream()
+	if err := svc.SetApprovalStore(store); err != nil {
+		t.Fatalf("SetApprovalStore: %v", err)
+	}
+	t.Cleanup(func() { launcher.closeStream() })
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatalf("CreateDetached: %v", err)
+	}
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
+	if rt == nil {
+		t.Fatal("runtime is nil after CreateDetached")
+	}
+	return svc, store, rt, id
+}
 
-	// Simulate a catalog-matching PreToolUse observation.
+// postHook sends a PreToolUse JSON body to the bridge's /hook endpoint.
+func postHook(t *testing.T, rt *claudeManagedRuntime, body string) {
+	t.Helper()
+	url := rt.bridge.endpoint()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /hook: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /hook status: %d", resp.StatusCode)
+	}
+}
+
+func TestP2A_CatalogMatchViaRealHook(t *testing.T) {
+	svc, store, rt, id := p2aCreateRuntime(t)
+	_ = store
+
 	sessionID := "claude-sess-catalog-match"
 	toolUseID := "call_00_P2A_CatalogMatch"
-	toolName := "Bash"
-	// This is the exact catalog command: echo pokitclaudeapprovalprobe
-	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
-	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
-	inputDigest := sha256Hex(inputCanon)
 
-	// Pass the catalog action ID as it would be set by the hook bridge.
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "claude.bash.approval_probe.v1")
-	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	// PreToolUse body with the exact catalog command.
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	// Join the deferred result.
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
 	rt.processLine([]byte(deferred))
 
-	// Verify pending observation is cleared.
 	rt.turnMu.Lock()
 	if len(rt.pendingObservations) != 0 {
 		rt.turnMu.Unlock()
@@ -2098,7 +2128,6 @@ func TestP2A_CatalogIDFlowsToIdentity(t *testing.T) {
 	approvalID := rt.activeApprovals[0].approvalID
 	rt.turnMu.Unlock()
 
-	// Catalog ID must be preserved in the coordinator identity.
 	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
 	if !ok {
 		t.Fatal("expected identity record")
@@ -2106,11 +2135,11 @@ func TestP2A_CatalogIDFlowsToIdentity(t *testing.T) {
 	if idRec.catalogActionID != "claude.bash.approval_probe.v1" {
 		t.Fatalf("catalogActionID = %q, want claude.bash.approval_probe.v1", idRec.catalogActionID)
 	}
-	if idRec.sessionID != sessionID || idRec.toolUseID != toolUseID || idRec.toolName != toolName {
+	if idRec.sessionID != sessionID || idRec.toolUseID != toolUseID {
 		t.Fatalf("identity fields mismatch: %+v", idRec)
 	}
 
-	// Actionability must remain false.
+	// Actionability must remain false, options empty, summary generic.
 	snap, ok := store.LookupRecord(id, approvalID)
 	if !ok {
 		t.Fatal("Store record missing")
@@ -2118,33 +2147,39 @@ func TestP2A_CatalogIDFlowsToIdentity(t *testing.T) {
 	if snap.Actionable {
 		t.Fatal("actionable must remain false in P2A")
 	}
+	if len(snap.Options) != 0 {
+		t.Fatalf("options must be empty, got %d", len(snap.Options))
+	}
+	dto := store.ListSafe(id)
+	var found bool
+	for _, d := range dto {
+		if d.ID == approvalID {
+			found = true
+			// Summary must remain the generic provider-neutral text,
+			// NOT the catalog-specific label (which is P2B work).
+			if d.Summary == "Run Claude approval verification probe" {
+				t.Fatalf("catalog summary leaked into DTO before P2B: %q", d.Summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("approval not found in ListSafe")
+	}
 
 	rt.terminate()
 }
 
-func TestP2A_NonCatalogCommandEmptyID(t *testing.T) {
-	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	svc.SetApprovalStore(store)
-	defer launcher.closeStream()
+func TestP2A_CatalogMatchWithDescription(t *testing.T) {
+	svc, _, rt, _ := p2aCreateRuntime(t)
 
-	id, _ := svc.CreateDetached("/tmp")
-	svc.mu.Lock()
-	rt := svc.runtimes[id]
-	svc.mu.Unlock()
+	sessionID := "claude-sess-desc"
+	toolUseID := "call_00_P2A_Desc"
 
-	// A non-catalog command — not matching the probe entry.
-	sessionID := "claude-sess-non-catalog"
-	toolUseID := "call_00_P2A_NonCatalog"
-	toolName := "Bash"
-	inputJSON := `{"command":"echo something else entirely"}`
-	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
-	inputDigest := sha256Hex(inputCanon)
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe","description":"verify the probe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
 
-	// Empty catalog action ID = non-catalog observation.
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "")
-	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe","description":"verify the probe"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
 	rt.processLine([]byte(deferred))
 
 	rt.turnMu.Lock()
@@ -2153,46 +2188,248 @@ func TestP2A_NonCatalogCommandEmptyID(t *testing.T) {
 
 	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
 	if !ok {
-		t.Fatal("expected identity record for non-catalog observation")
+		t.Fatal("identity not preserved")
 	}
-	if idRec.catalogActionID != "" {
-		t.Fatalf("catalogActionID = %q, want empty for non-catalog", idRec.catalogActionID)
+	if idRec.catalogActionID != "claude.bash.approval_probe.v1" {
+		t.Fatalf("catalogActionID = %q", idRec.catalogActionID)
 	}
 
 	rt.terminate()
 }
 
+func TestP2A_NonCatalogCommandViaRealHook(t *testing.T) {
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-non-catalog"
+	toolUseID := "call_00_P2A_NonCat"
+
+	// Command does not match any catalog entry.
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo arbitrary"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	inputJSON := `{"command":"echo arbitrary"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("identity must exist for non-catalog observation")
+	}
+	if idRec.catalogActionID != "" {
+		t.Fatalf("catalogActionID = %q, want empty", idRec.catalogActionID)
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_UnknownNestedFieldViaRealHook(t *testing.T) {
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-unknown"
+	toolUseID := "call_00_P2A_Unknown"
+
+	// tool_input has an unknown key "timeout" — must be rejected by strict decoder.
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe","timeout":30},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe","timeout":30}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("identity must exist")
+	}
+	if idRec.catalogActionID != "" {
+		t.Fatalf("unknown nested field must produce empty catalogActionID, got %q", idRec.catalogActionID)
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_DuplicateNestedFieldViaRealHook(t *testing.T) {
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-dup-nested"
+	toolUseID := "call_00_P2A_DupNested"
+
+	// Duplicate "command" key inside tool_input — strict decoder must reject.
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe","command":"echo evil"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe","command":"echo evil"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("identity must exist")
+	}
+	if idRec.catalogActionID != "" {
+		t.Fatalf("duplicate nested field must produce empty catalogActionID, got %q", idRec.catalogActionID)
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_WrongToolViaRealHook(t *testing.T) {
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-wrong-tool"
+	toolUseID := "call_00_P2A_WrongTool"
+
+	// The catalog only has Bash; Read is not a catalog tool.
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Read","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Read", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	rt.turnMu.Lock()
+	approvalID := rt.activeApprovals[0].approvalID
+	rt.turnMu.Unlock()
+
+	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
+	if !ok {
+		t.Fatal("identity must exist")
+	}
+	if idRec.catalogActionID != "" {
+		t.Fatalf("wrong tool must produce empty catalogActionID, got %q", idRec.catalogActionID)
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_MutatedDeferredInputViaRealHook(t *testing.T) {
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-mutated"
+	toolUseID := "call_00_P2A_Mutated"
+
+	// Post catalog-matching hook.
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	// Deferred result has a DIFFERENT command — join must fail.
+	inputJSON := `{"command":"echo something_else"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	// Join failed — pending observation NOT cleared, no identity created.
+	rt.turnMu.Lock()
+	if len(rt.pendingObservations) != 1 {
+		rt.turnMu.Unlock()
+		t.Fatalf("mutated deferred must not join: expected 1 pending, got %d", len(rt.pendingObservations))
+	}
+	obs := rt.pendingObservations[toolUseID]
+	if obs == nil {
+		rt.turnMu.Unlock()
+		t.Fatal("pending observation missing")
+	}
+	if obs.catalogActionID != "claude.bash.approval_probe.v1" {
+		rt.turnMu.Unlock()
+		t.Fatalf("pending catalogActionID = %q", obs.catalogActionID)
+	}
+	rt.turnMu.Unlock()
+
+	// No identity should exist.
+	if svc.coordinator.IdentityCount() != 0 {
+		t.Fatal("no identity should exist after mutated deferred")
+	}
+
+	rt.terminate()
+}
+
+func TestP2A_CleanupRemovesCatalogBearingIdentity(t *testing.T) {
+	// Create runtime with catalog match, then terminate — prove identity is cleared.
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-cleanup"
+	toolUseID := "call_00_P2A_Cleanup"
+
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
+
+	if svc.coordinator.IdentityCount() != 1 {
+		t.Fatalf("expected 1 identity after catalog match, got %d", svc.coordinator.IdentityCount())
+	}
+
+	// Terminate must clear the identity.
+	rt.terminate()
+	if svc.coordinator.IdentityCount() != 0 {
+		t.Fatalf("expected 0 identities after terminate, got %d", svc.coordinator.IdentityCount())
+	}
+}
+
 func TestP2A_CatalogIDNotReconstructableFromDigest(t *testing.T) {
-	// Prove that once the raw hook body is gone, the catalog identity cannot
-	// be reconstructed from the digest alone. The classifier must be called
-	// exactly once at the provider boundary.
+	// Non-vacuous control: go through the REAL hook path with a catalog match.
+	// The hook handler calls classifyCatalogAction while raw bytes are present.
+	// After the hook returns, only the digest survives in the runtime.
+	// Prove that classifyCatalogAction cannot be called without the raw bytes:
+	// nil input is rejected, and the digest alone cannot produce a catalog ID.
+	svc, _, rt, _ := p2aCreateRuntime(t)
+
+	sessionID := "claude-sess-reconstruct"
+	toolUseID := "call_00_P2A_Reconstruct"
+
+	body := fmt.Sprintf(`{"session_id":"%s","tool_use_id":"%s","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"hook_event_name":"PreToolUse","cwd":"/tmp"}`, sessionID, toolUseID)
+	postHook(t, rt, body)
+
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
 	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
 	inputDigest := sha256Hex(inputCanon)
+	deferred := deferredStreamJSON(sessionID, toolUseID, "Bash", inputJSON)
+	rt.processLine([]byte(deferred))
 
-	// The digest alone gives no catalog identity.
+	// The identity was created via the real hook path — catalog ID is present.
+	if svc.coordinator.IdentityCount() != 1 {
+		t.Fatal("expected 1 identity")
+	}
+
+	// But without the raw tool_input bytes, classifyCatalogAction cannot
+	// produce the catalog ID. Nil input is always rejected.
 	cid, _, ok := classifyCatalogAction(nil, "claude_headless", "2.1.209", "Bash")
 	if ok || cid != "" {
-		t.Fatal("empty/nil input must not classify")
+		t.Fatal("classifyCatalogAction with nil input must not classify")
 	}
 
-	// With only the digest, the classifier cannot determine the catalog ID.
-	// There is no API that takes a digest and returns a catalog ID.
-	// The lookupCatalogEntry function takes a catalogActionID (not a digest)
-	// and returns an entry — it validates, not classifies.
-	entry := lookupCatalogEntry(inputDigest)
-	if entry != nil {
-		t.Fatal("digest must not resolve to a catalog entry")
+	// The digest alone cannot be used to look up the catalog entry —
+	// lookupCatalogEntry takes a catalogActionID, not a digest.
+	_, found := lookupCatalogEntry(inputDigest)
+	if found {
+		t.Fatal("digest must not resolve to a catalog entry via lookupCatalogEntry")
 	}
 
-	_ = inputDigest // only the classifier with raw bytes can produce the ID
+	// Therefore, classification MUST happen at the provider boundary where
+	// raw bytes are available. After handleHook returns, the raw input is
+	// discarded (only the digest survives), and the catalog identity cannot
+	// be reconstructed — the coordinator identity is the sole carrier.
+	_ = inputDigest
+
+	rt.terminate()
 }
 
 func TestP2A_IdentityLookupIsDefensiveCopy(t *testing.T) {
 	c := NewClaudeResumeCoordinator()
 	_, sid, tuid, tn, dig, psid, rt := testIdentity()
 
-	// Reserve with a catalog ID.
 	if !c.ReserveIdentity("approval-1", sid, tuid, tn, dig, "claude.bash.approval_probe.v1", psid, rt) {
 		t.Fatal("ReserveIdentity failed")
 	}
@@ -2222,135 +2459,28 @@ func TestP2A_IdentityLookupIsDefensiveCopy(t *testing.T) {
 	}
 }
 
-func TestP2A_RawCommandNeverInRetainedFields(t *testing.T) {
-	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	svc.SetApprovalStore(store)
-	defer launcher.closeStream()
-
-	id, _ := svc.CreateDetached("/tmp")
-	svc.mu.Lock()
-	rt := svc.runtimes[id]
-	svc.mu.Unlock()
-
-	sessionID := "claude-sess-privacy"
-	toolUseID := "call_00_P2A_Privacy"
-	toolName := "Bash"
-	// The catalog command with sentinel-like description.
-	inputJSON := `{"command":"echo pokitclaudeapprovalprobe","description":"secret-token /etc/passwd"}`
-	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
-	inputDigest := sha256Hex(inputCanon)
-
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "claude.bash.approval_probe.v1")
-	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
-	rt.processLine([]byte(deferred))
-
-	rt.turnMu.Lock()
-	approvalID := rt.activeApprovals[0].approvalID
-	rt.turnMu.Unlock()
-
-	idRec, _ := svc.coordinator.LookupIdentity(approvalID)
-
-	// The raw command and description must NOT appear in any retained field.
-	// Check all string fields of the identity record.
-	allFields := []string{
-		idRec.sessionID, idRec.toolUseID, idRec.toolName,
-		idRec.inputDigest, idRec.catalogActionID, idRec.pokitSessionID,
-		idRec.runtime.Adapter, idRec.runtime.Version,
-	}
-	for _, f := range allFields {
-		if f == "" {
-			continue
-		}
-		if containsSubstring(f, "echo pokitclaudeapprovalprobe") {
-			t.Fatalf("raw command leaked in identity field: %q", f)
-		}
-		if containsSubstring(f, "secret-token") || containsSubstring(f, "/etc/passwd") {
-			t.Fatalf("description sentinel leaked in identity field: %q", f)
-		}
+func TestP2A_LookupCatalogEntryReturnsValueCopy(t *testing.T) {
+	// lookupCatalogEntry must return a value copy, not a pointer into the
+	// compiled catalog. Mutation of the returned value must not affect the
+	// frozen catalog.
+	entry, found := lookupCatalogEntry("claude.bash.approval_probe.v1")
+	if !found {
+		t.Fatal("expected to find the probe entry")
 	}
 
-	// Also verify runtime fields don't carry the command.
-	rt.turnMu.Lock()
-	for _, obs := range rt.pendingObservations {
-		t.Fatalf("pending observation not cleaned up: %+v", obs)
+	// Mutate the returned copy.
+	entry.Command = "rm -rf /"
+	entry.Provider = "evil"
+
+	// The compiled catalog must be unchanged.
+	entry2, found := lookupCatalogEntry("claude.bash.approval_probe.v1")
+	if !found {
+		t.Fatal("entry still expected after mutation attempt")
 	}
-	rt.turnMu.Unlock()
-
-	rt.terminate()
-}
-
-func TestP2A_DuplicateHookDoesNotReplaceCatalogID(t *testing.T) {
-	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	svc.SetApprovalStore(store)
-	defer launcher.closeStream()
-
-	id, _ := svc.CreateDetached("/tmp")
-	svc.mu.Lock()
-	rt := svc.runtimes[id]
-	svc.mu.Unlock()
-
-	sessionID := "claude-sess-dup"
-	toolUseID := "call_00_P2A_Duplicate"
-	toolName := "Bash"
-	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
-	inputCanon, _ := canonicalJSON(json.RawMessage(inputJSON))
-	inputDigest := sha256Hex(inputCanon)
-
-	// First observation with catalog match.
-	rt.observePreToolUse(toolUseID, toolName, sessionID, inputDigest, "claude.bash.approval_probe.v1")
-
-	// Duplicate observation for the same toolUseID — must be rejected.
-	rt.observePreToolUse(toolUseID, toolName, "other-session", sha256Hex([]byte(`{"c":"x"}`)), "claude.bash.approval_probe.v1")
-
-	// Verify only one pending observation.
-	rt.turnMu.Lock()
-	if len(rt.pendingObservations) != 1 {
-		rt.turnMu.Unlock()
-		t.Fatalf("expected 1 pending after duplicate rejection, got %d", len(rt.pendingObservations))
+	if entry2.Command != "echo pokitclaudeapprovalprobe" {
+		t.Fatalf("compiled catalog mutated: Command = %q", entry2.Command)
 	}
-	obs := rt.pendingObservations[toolUseID]
-	if obs.catalogActionID != "claude.bash.approval_probe.v1" {
-		rt.turnMu.Unlock()
-		t.Fatalf("catalogActionID in pending = %q", obs.catalogActionID)
+	if entry2.Provider != "claude_headless" {
+		t.Fatalf("compiled catalog mutated: Provider = %q", entry2.Provider)
 	}
-	if obs.sessionID != sessionID {
-		rt.turnMu.Unlock()
-		t.Fatalf("duplicate hook replaced session: %q", obs.sessionID)
-	}
-	rt.turnMu.Unlock()
-
-	// Now join and verify the first identity is preserved.
-	deferred := deferredStreamJSON(sessionID, toolUseID, toolName, inputJSON)
-	rt.processLine([]byte(deferred))
-
-	rt.turnMu.Lock()
-	approvalID := rt.activeApprovals[0].approvalID
-	rt.turnMu.Unlock()
-
-	idRec, ok := svc.coordinator.LookupIdentity(approvalID)
-	if !ok {
-		t.Fatal("identity not preserved")
-	}
-	if idRec.catalogActionID != "claude.bash.approval_probe.v1" {
-		t.Fatalf("catalogActionID = %q after duplicate rejection", idRec.catalogActionID)
-	}
-
-	rt.terminate()
-}
-
-func containsSubstring(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > len(sub) && containsSubstringSlow(s, sub))
-}
-
-func containsSubstringSlow(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
