@@ -341,6 +341,20 @@ func (c *claudeResumeCoordinator) LookupIdentity(approvalID string) (*claudePriv
 	}, true
 }
 
+// HasIdentityForRuntime reports whether any private identity is bound to the
+// exact (pokitSessionID, launchGen) pair. Read-only; used by RuntimeOf for
+// the joined-deferred-exit claim window (C3D contract §6).
+func (c *claudeResumeCoordinator) HasIdentityForRuntime(pokitSessionID string, launchGen int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range c.identities {
+		if id.pokitSessionID == pokitSessionID && id.runtime.LaunchGen == launchGen {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Entry lifecycle ──
 
 // entropyReader is injectable for tests (package-level, same pattern as

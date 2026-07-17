@@ -128,9 +128,9 @@ var (
 	redactHomeRE = regexp.MustCompile(`(?i)(/Users/|/home/|\\Users\\)[^/\\]+`)
 
 	// API key / token patterns.
-	redactSkRE    = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
-	redactGhpRE   = regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`)
-	redactXoxRE   = regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`)
+	redactSkRE     = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
+	redactGhpRE    = regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`)
+	redactXoxRE    = regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`)
 	redactBearerRE = regexp.MustCompile(`(?i)\b[Bb]earer\s+[A-Za-z0-9._\-+=/]{8,}\b`)
 
 	// Named secret/value patterns: key=value, token=value, etc.

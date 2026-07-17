@@ -90,6 +90,17 @@ type claudeManagedRuntime struct {
 	approvals        *AuthoritativeApprovalStore
 	authorityVersion string
 
+	// actionableActive (C3D-A) is the runtime's activation state, copied
+	// from the service under s.mu at creation and never toggled mid-life.
+	// Only an ACTIVE runtime may ingest a catalog-matched deferred request
+	// as actionable; an inactive runtime keeps the frozen C1D
+	// non-actionable zero-option observation.
+	actionableActive bool
+
+	// launchCert (C3D §12) is the immutable per-incarnation launch
+	// certification tuple, set once before pump() starts.
+	launchCert ClaudeLaunchCertification
+
 	// C2D-B: private one-shot resume coordinator. Set from the parent
 	// ManagedClaudeService; nil when the service is not configured.
 	coordinator *claudeResumeCoordinator
@@ -494,6 +505,24 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		return
 	}
 
+	// C3D-A: an ACTIVE runtime ingests a catalog-matched deferred request as
+	// ACTIONABLE with exactly the two certified options and daemon-generated
+	// delivery material; the Store admission boundary independently
+	// re-verifies the exact tuple. Everything else (inactive runtime,
+	// non-catalog observation) keeps the frozen C1D non-actionable
+	// zero-option ingest. Actionability is immutable in the store — no
+	// record is ever upgraded later. actionableActive is set once before
+	// pump() starts (happens-before via the go statement), like resumeCtx.
+	actionable := rt.actionableActive && pending.catalogActionID != ""
+	var options []agent.InteractionOption
+	var material []ApprovalDeliveryMaterial
+	requiredPerm := ""
+	if actionable {
+		options = claudeCertifiedOptions()
+		material = claudeCertifiedDeliveryMaterial()
+		requiredPerm = claudeRequiredPerm
+	}
+
 	admitted := approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
@@ -507,15 +536,15 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 				AgentKind:  claudeHeadlessAdapter,
 				Kind:       "approval",
 				Status:     "pending",
-				Options:    nil,
+				Options:    options,
 				Source:     agent.SourceJSONL,
 				Confidence: 1,
 			},
 			Provenance:       contract.ProvenanceProviderHook,
-			Actionable:       false,
-			RequiredPerm:     "",
+			Actionable:       actionable,
+			RequiredPerm:     requiredPerm,
 			CatalogActionID:  pending.catalogActionID,
-			DeliveryMaterial: nil,
+			DeliveryMaterial: material,
 		}},
 	})
 
@@ -765,15 +794,28 @@ func (rt *claudeManagedRuntime) terminate() {
 
 		approvals := rt.approvals
 		if approvals != nil {
-			for _, aa := range expired {
-				approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
+			if rt.deferredExit.Load() {
+				// C3D §6: the expected joined-deferred exit IS the claim
+				// window of the C0D lifecycle (the initial process exits
+				// after tool_deferred; the decision is delivered to a
+				// --resume incarnation). The pending record and the
+				// coordinator identity are preserved together; the window
+				// is bounded by the store expiry, and explicit
+				// Stop/Kill/Delete or the consumption witness revokes it.
+				// The StreamGen=1 high-water is NOT installed here — a late
+				// same-generation ingest is already impossible (turnClosed,
+				// cleared observations, atomicTerminated).
+			} else {
+				for _, aa := range expired {
+					approvals.InvalidateRecord(rt.sessionID, aa.approvalID)
+				}
+				// R11-F1: install metadata-only Store high-water at
+				// StreamGen=1 so a late IngestObserved(StreamGen=0)
+				// is rejected. InstallRuntimeGeneration creates NO
+				// Approval record — it is the single Store-owned
+				// metadata transition for termination.
+				_ = approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
 			}
-			// R11-F1: install metadata-only Store high-water at
-			// StreamGen=1 so a late IngestObserved(StreamGen=0)
-			// is rejected. InstallRuntimeGeneration creates NO
-			// Approval record — it is the single Store-owned
-			// metadata transition for termination.
-			_ = approvals.InstallRuntimeGeneration(rt.sessionID, rt.epoch, 1, "terminated")
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
 		close(rt.exited)
@@ -781,6 +823,12 @@ func (rt *claudeManagedRuntime) terminate() {
 }
 
 func (rt *claudeManagedRuntime) stop() { rt.terminate() }
+
+// LaunchCertification returns the immutable per-incarnation launch
+// certification tuple (C3D §12). Exported for composition tests.
+func (rt *claudeManagedRuntime) LaunchCertification() ClaudeLaunchCertification {
+	return rt.launchCert
+}
 
 // ── Service ──
 
@@ -799,6 +847,11 @@ type ManagedClaudeService struct {
 	runtimes  map[string]*claudeManagedRuntime
 
 	approvals *AuthoritativeApprovalStore
+
+	// actionable is the C3D-A activation state: set ONLY by the single
+	// InstallApprovalExecution transition, before the first epoch, never
+	// toggled mid-life. Copied per-runtime at create time.
+	actionable bool
 
 	// C2D-B: private one-shot resume coordinator. Identities survive
 	// individual Claude process exit. Built eagerly; no delivery path
@@ -1001,6 +1054,21 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	s.barrier("post-spawn")
 
+	// C3D §12: build the per-incarnation launch-certification tuple for THIS
+	// spawn. On an installed (actionable) service a non-certified incarnation
+	// fails the create closed; an observation-only service proceeds and the
+	// tuple records the honest result (RuntimeOf can never resolve it).
+	launchCert := buildClaudeLaunchCertification(s.cfg, proc, id, epoch, clockNow())
+	s.mu.Lock()
+	installed := s.actionable
+	s.mu.Unlock()
+	if installed && launchCert.Result != claudeCertCertified {
+		_ = proc.Kill()
+		_ = proc.Wait()
+		rollback()
+		return "", fmt.Errorf("managed claude launch certification: %s", launchCert.Reason)
+	}
+
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
@@ -1015,6 +1083,10 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
 	rt.coordinator = s.coordinator
+	// C3D-A: activation state and launch certification are bound to the
+	// session/epoch at birth and never toggled mid-life.
+	rt.actionableActive = s.actionable
+	rt.launchCert = launchCert
 	s.runtimes[id] = rt
 	s.mu.Unlock()
 
@@ -1045,6 +1117,11 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		CertifiedDigest: s.cfg.PinnedDigest,
 		PID:             proc.PID(),
 		HookDir:         hookDir,
+		// C3D §12: the initial launch's certification is bound into the
+		// immutable record; RuntimeOf resolves only a certified incarnation.
+		AttestorKind: launchCert.AttestorKind,
+		CertResult:   launchCert.Result,
+		CertReason:   launchCert.Reason,
 	}
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)
@@ -1143,6 +1220,20 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		return nil, fmt.Errorf("managed claude service is shutting down")
 	}
 
+	// C3D §12: every resume incarnation gets its OWN launch-certification
+	// tuple (own epoch, own OpaqueID). A non-certified resume fails closed
+	// HERE — before the runtime is returned — so an uncertified incarnation
+	// can never reach the repeated-hook or witness stage. Witness authority
+	// still validates against the ORIGINAL RuntimeRef in ctx.
+	launchCert := buildClaudeLaunchCertification(s.cfg, proc, ctx.pokitSessionID, epoch, clockNow())
+	if launchCert.Result != claudeCertCertified {
+		_ = proc.Kill()
+		_ = proc.Wait()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude resume launch certification: %s", launchCert.Reason)
+	}
+
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
@@ -1157,6 +1248,9 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	rt.cwd = cwd
 	rt.coordinator = s.coordinator
 	rt.authorityVersion = s.cfg.AuthorityVersion
+	// C3D §12: the resume incarnation's certification is recorded with the
+	// delivery attempt's runtime.
+	rt.launchCert = launchCert
 	// R6-B: the pump reads the runtime-owned immutable context, not the
 	// bridge (closes the R6-A3 finding). Set before pump() starts.
 	rt.resumeCtx = ctx
@@ -1367,12 +1461,20 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
 	} else if rec.Exited {
-		// Deferred exit preserves coordinator identities. Clean them up.
+		// Deferred exit preserves the claim window (coordinator identities
+		// + pending record). Explicit Stop revokes both: identities are
+		// cleared and the Store high-water advances to StreamGen=1, which
+		// supersedes pending AND executing authority (a mid-delivery
+		// commit becomes stale).
 		s.mu.Lock()
 		coord := s.coordinator
+		approvals := s.approvals
 		s.mu.Unlock()
 		if coord != nil {
 			coord.ClearRuntime(sessionID, epoch)
+		}
+		if approvals != nil {
+			_ = approvals.InstallRuntimeGeneration(sessionID, epoch, 1, "stopped")
 		}
 		return nil
 	}
@@ -1414,12 +1516,17 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
 	} else if rec.Exited {
-		// Deferred exit preserves coordinator identities. Clean them up.
+		// Deferred exit preserves the claim window (coordinator identities
+		// + pending record). Explicit Kill revokes both, same as Stop.
 		s.mu.Lock()
 		coord := s.coordinator
+		approvals := s.approvals
 		s.mu.Unlock()
 		if coord != nil {
 			coord.ClearRuntime(sessionID, epoch)
+		}
+		if approvals != nil {
+			_ = approvals.InstallRuntimeGeneration(sessionID, epoch, 1, "killed")
 		}
 		return nil
 	}

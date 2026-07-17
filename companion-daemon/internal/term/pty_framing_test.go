@@ -81,8 +81,8 @@ type capturingSession struct {
 }
 
 func (s *capturingSession) ID() string          { return s.id }
-func (s *capturingSession) Title() string        { return s.id }
-func (s *capturingSession) AdapterName() string  { return "mock" }
+func (s *capturingSession) Title() string       { return s.id }
+func (s *capturingSession) AdapterName() string { return "mock" }
 func (s *capturingSession) OpenStream(_ context.Context) (mux.TerminalStream, error) {
 	return s.stream, nil
 }

@@ -150,22 +150,22 @@ func TestBridge_Codex_ThirdPollWithMoreEvents(t *testing.T) {
 		{Bytes: testCodexTaskStarted(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog},
 	}
 	r1, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: "", MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: "", MaxEvents: 500,
 	})
 
 	// Poll 2: add assistant.
 	base = append(base, contract.RawRecord{Bytes: testCodexAssistantMessage(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog})
 	r2, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: r1.NextCursor, MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: r1.NextCursor, MaxEvents: 500,
 	})
 
 	// Poll 3: add another task_started.
 	base = append(base, contract.RawRecord{Bytes: testCodexTaskStarted(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog})
 	r3, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: r2.NextCursor, MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: r2.NextCursor, MaxEvents: 500,
 	})
 	if err != nil {
 		t.Fatalf("third poll error: %v", err)
@@ -180,8 +180,8 @@ func TestBridge_Codex_ThirdPollWithMoreEvents(t *testing.T) {
 
 	// One-shot with all records must produce the same total events.
 	allAtOnce, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: "", MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: "", MaxEvents: 500,
 	})
 	if err != nil {
 		t.Fatalf("one-shot error: %v", err)
@@ -199,14 +199,14 @@ func TestBridge_Codex_ZeroEventsAcrossPolls(t *testing.T) {
 		{Bytes: testCodexTaskStarted(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog},
 	}
 	r1, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: "", MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: "", MaxEvents: 500,
 	})
 
 	// Same records, same cursor → zero new events.
 	r2, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: r1.NextCursor, MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: r1.NextCursor, MaxEvents: 500,
 	})
 	if err != nil {
 		t.Fatalf("second poll error: %v", err)
@@ -254,14 +254,14 @@ func TestBridge_Claude_SecondPollAppendsEvents(t *testing.T) {
 		{Bytes: testClaudeVersionRecord(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog},
 	}
 	r1, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: "", MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: "", MaxEvents: 500,
 	})
 
 	base = append(base, contract.RawRecord{Bytes: testClaudeAssistantRecord(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog})
 	r2, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
-		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records:   base, Cursor: r1.NextCursor, MaxEvents: 500,
+		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
+		Records: base, Cursor: r1.NextCursor, MaxEvents: 500,
 	})
 	if err != nil {
 		t.Fatalf("second poll error: %v", err)

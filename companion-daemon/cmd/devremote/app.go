@@ -27,8 +27,8 @@ type Config struct {
 	OwnerUUID            string
 	SupabaseProjectRef   string
 	InsecureLocalOnly    bool
-	EnableLocalPTY       bool // Phase 6: default-off feature flag
-	EnableAgentDetection bool // Phase A5: default-off agent detection bridge
+	EnableLocalPTY       bool   // Phase 6: default-off feature flag
+	EnableAgentDetection bool   // Phase A5: default-off agent detection bridge
 	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
 	EnableManagedClaude  bool   // C1D: default-off native managed Claude runtime
 	ClaudeDigest         string // C1D: pre-verified SHA-256 of the pinned Claude binary
@@ -102,12 +102,12 @@ type App struct {
 	ipcPath string
 
 	// Background resources owned by App for lifecycle control.
-	telemetry          *term.TelemetryService // telemetry sampling (owns state machine)
-	telemetryCtxCancel context.CancelFunc     // cancels telemetry context
-	activity           *term.ActivityBuffer   // E10b: IPC replay
-	transcriptSvc      *transcript.Service    // T3: Transcript integration
-	lifecycle          *term.LifecycleService // M2: Stop/Kill/Delete
-	managed            *term.ManagedCodexService // SP0: native managed Codex runtime (nil unless enabled)
+	telemetry          *term.TelemetryService     // telemetry sampling (owns state machine)
+	telemetryCtxCancel context.CancelFunc         // cancels telemetry context
+	activity           *term.ActivityBuffer       // E10b: IPC replay
+	transcriptSvc      *transcript.Service        // T3: Transcript integration
+	lifecycle          *term.LifecycleService     // M2: Stop/Kill/Delete
+	managed            *term.ManagedCodexService  // SP0: native managed Codex runtime (nil unless enabled)
 	managedClaude      *term.ManagedClaudeService // C1D: native managed Claude runtime (nil unless enabled)
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
@@ -292,15 +292,45 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// authority version, whose observation path also rejects everything. If
 	// the service reports an installed activation this composition does not
 	// own, the App is NOT built.
+	var codexDelivery term.ApprovalDelivery
+	var codexRuntimeOf func(string) (term.RuntimeRef, bool)
 	if managed != nil {
-		if codexDelivery, runtimeOf, err := managed.InstallApprovalExecution(approvals); err == nil {
-			h.ApprovalDelivery = term.NewDispatchingApprovalDelivery(codexDelivery, gateDelivery)
-			h.RuntimeOf = runtimeOf
+		if d, r, err := managed.InstallApprovalExecution(approvals); err == nil {
+			codexDelivery, codexRuntimeOf = d, r
 		} else if managed.ApprovalExecutionInstalled() {
 			return nil, fmt.Errorf("managed approval execution: unowned activation: %w", err)
 		} else {
 			log.Printf("Managed approval execution not installed (observation only): %v", err)
 		}
+	}
+	// C3D-A: the ONE production-owned activation transition for the managed
+	// Claude runtime, under the same tolerance rule. A failed install leaves
+	// the observation store binding in place (configured above) with
+	// actionability, Claude delivery and RuntimeOf all off.
+	var claudeDelivery term.ApprovalDelivery
+	var claudeRuntimeOf func(string) (term.RuntimeRef, bool)
+	if managedClaude != nil {
+		if d, r, err := managedClaude.InstallApprovalExecution(approvals); err == nil {
+			claudeDelivery, claudeRuntimeOf = d, r
+		} else if managedClaude.ApprovalExecutionInstalled() {
+			return nil, fmt.Errorf("managed claude approval execution: unowned activation: %w", err)
+		} else {
+			log.Printf("Managed claude approval execution not installed (observation only): %v", err)
+		}
+	}
+	// Composition-boundary dispatch (C3D contract §6): Claude occupies the
+	// FALLBACK slot of the accepted Codex dispatcher, so Codex routing is
+	// unchanged and unknown adapters still terminate at the capacity-0 gate.
+	delivery := term.ApprovalDelivery(gateDelivery)
+	if claudeDelivery != nil {
+		delivery = term.NewClaudeDispatchingApprovalDelivery(claudeDelivery, gateDelivery)
+	}
+	if codexDelivery != nil {
+		delivery = term.NewDispatchingApprovalDelivery(codexDelivery, delivery)
+	}
+	h.ApprovalDelivery = delivery
+	if codexRuntimeOf != nil || claudeRuntimeOf != nil {
+		h.RuntimeOf = term.NewCombinedRuntimeResolver(codexRuntimeOf, claudeRuntimeOf)
 	}
 
 	serveMux := http.NewServeMux()

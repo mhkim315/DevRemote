@@ -382,6 +382,17 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 		if !mok {
 			continue // invalid delivery material rejects the whole item
 		}
+		// C3D §4: provider-keyed actionable-admission policy. The deepest
+		// Store admission boundary re-verifies the exact certified catalog
+		// tuple and daemon-recomputed options/delivery material for every
+		// actionable claude_headless item — a forged Actionable, catalog ID,
+		// option, schema or material is rejected here even when a trusted
+		// internal caller supplies it. Rejection happens at the same stage as
+		// invalid delivery material: the item neither creates a session nor
+		// advances the generation high-water.
+		if !providerActionableAdmission(in, item, copied, delivery) {
+			continue
+		}
 		// Item is structurally valid (provenance + delivery passed).
 		// A newer generation must supersede old authority even if
 		// this specific item cannot be admitted.
@@ -954,6 +965,85 @@ func (s *AuthoritativeApprovalStore) evictOldestSessionLocked() bool {
 // explicit lifecycle cleanup (Clear/delete) may remove a session.
 func sessionHasLiveAuthority(sess *sessionApprovals) bool {
 	return sess.hwInitialized
+}
+
+// providerActionableAdmission is the C3D §4 provider-keyed actionable-
+// admission policy applied at the single Store admission site. It is a
+// data-driven policy lookup, not a branch inside claim/receipt authority.
+// Non-actionable items keep the frozen admission rules of every provider;
+// codex_app_server actionable admission is byte-for-byte the accepted SP1
+// behavior (no additional policy).
+func providerActionableAdmission(in ApprovalIngest, item ApprovalIngestItem, opts []agent.InteractionOption, delivery map[string]storedDeliveryMaterial) bool {
+	if !item.Actionable {
+		return true
+	}
+	switch in.Provider {
+	case claudeHeadlessAdapter:
+		return claudeActionableAdmission(in, item, opts, delivery)
+	default:
+		return true
+	}
+}
+
+// claudeActionableAdmission re-verifies the exact certified catalog tuple
+// and the daemon-recomputed options/delivery material for one actionable
+// claude_headless item (C3D contract §4). ALL of the following must hold —
+// otherwise the item is dropped fail-closed:
+//
+//  1. StreamGen is zero;
+//  2. the CatalogActionID resolves to a compiled catalog entry whose
+//     Provider/Version match the ingest exactly (this transitively pins the
+//     tool and the exact catalog command — the Store never needs raw bytes);
+//  3. the option set is EXACTLY the two certified options (IDs, labels,
+//     kinds; no input schema, no payload; order-insensitive);
+//  4. the delivery material is EXACTLY the two daemon-recomputed responses
+//     under the certified decision schema, byte-equal per option;
+//  5. the stored permission is exactly the terminal-input permission;
+//  6. the provenance is the provider hook.
+func claudeActionableAdmission(in ApprovalIngest, item ApprovalIngestItem, opts []agent.InteractionOption, delivery map[string]storedDeliveryMaterial) bool {
+	if in.StreamGen != 0 {
+		return false
+	}
+	entry, found := lookupCatalogEntry(item.CatalogActionID)
+	if !found || entry.Provider != in.Provider || entry.Version != in.Version {
+		return false
+	}
+	if item.RequiredPerm != claudeRequiredPerm {
+		return false
+	}
+	if item.Provenance != contract.ProvenanceProviderHook {
+		return false
+	}
+	if len(opts) != 2 {
+		return false
+	}
+	seen := make(map[string]bool, 2)
+	for i := range opts {
+		o := &opts[i]
+		if o.Input != nil || o.Payload != "" || seen[o.ID] {
+			return false
+		}
+		switch {
+		case o.ID == "allow_once" && o.Label == "Allow once" && o.Kind == "approve":
+		case o.ID == "deny" && o.Label == "Deny" && o.Kind == "reject":
+		default:
+			return false
+		}
+		seen[o.ID] = true
+	}
+	if len(delivery) != 2 {
+		return false
+	}
+	for optionID, decision := range certifiedClaudeDecision {
+		mat, ok := delivery[optionID]
+		if !ok || mat.schemaVersion != claudeDecisionSchemaV1 {
+			return false
+		}
+		if !bytesEqual(mat.bytes, claudeHookResponseBytes(decision)) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *AuthoritativeApprovalStore) Len() int {

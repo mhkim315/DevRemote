@@ -12,6 +12,7 @@ import (
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/agent/contract"
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/term"
 )
 
@@ -136,6 +137,11 @@ func firePostToolHook(t *testing.T, url, sid, tuid, tn, inputJSON string) {
 	resp.Body.Close()
 }
 
+// makeSetup creates a controlled actionable fixture. C3D-A migration: the
+// Store admission boundary now re-verifies the exact certified catalog tuple
+// for every actionable claude_headless item, so this setup uses the catalog
+// probe input and the certified permission. Every assertion of its eight
+// tests is unchanged.
 func makeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedClaudeService, *term.AuthoritativeApprovalStore, term.ClaimResult, term.RuntimeRef, string, string, string) {
 	t.Helper()
 	launcher, svc, store := newProviderSim(t)
@@ -148,8 +154,8 @@ func makeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedC
 	csid := "claude-sess-" + optionID
 	tuid := "call_comp_" + optionID
 	tn := "Bash"
-	dgst := term.CanonicalDigest([]byte(`{"command":"echo hello"}`))
-	svc.Coordinator().ReserveIdentity(aid, csid, tuid, tn, dgst, "", sid, rt)
+	dgst := term.CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+	svc.Coordinator().ReserveIdentity(aid, csid, tuid, tn, dgst, "claude.bash.approval_probe.v1", sid, rt)
 
 	ab := term.ClaudeHookResponseBytes("allow")
 	db := term.ClaudeHookResponseBytes("deny")
@@ -163,12 +169,14 @@ func makeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedC
 			},
 		},
 		Provenance: contract.ProvenanceProviderHook, Actionable: true,
+		RequiredPerm:    devicetrust.PermTerminalInput,
+		CatalogActionID: "claude.bash.approval_probe.v1",
 		DeliveryMaterial: []term.ApprovalDeliveryMaterial{
 			{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: ab},
 			{OptionID: "deny", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: db},
 		},
 	}}})
-	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{"x"}}
+	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{devicetrust.PermTerminalInput}}
 	claim := store.ClaimForExecution(term.ClaimRequest{SessionID: sid, ApprovalID: aid, OptionID: optionID, Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp." + optionID})
 	if claim.Outcome != term.ClaimGranted {
 		t.Fatalf("ClaimForExecution: %s", claim.Outcome)
@@ -188,11 +196,11 @@ func TestClaudeDelivery_CompositionAllowAccepted(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
-	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	if !bytesEq(r, term.ClaudeHookResponseBytes("allow")) {
 		t.Fatalf("resume response: %s", r)
 	}
-	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	wg.Wait()
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("expected accepted, got %s", receipt.Outcome)
@@ -214,14 +222,14 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
-	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
 		t.Fatalf("resume response: %s", r)
 	}
 	// R6-B: the denial event must carry the evidence-shape entry {tool_use_id,
 	// tool_name, tool_input} with raw tool_input. The digest recomputed from
 	// this tool_input must equal the digest stored at observation.
-	denialJSON := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo hello"}}]}` + "\n"
+	denialJSON := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"}}]}` + "\n"
 	// Wait for resume writer via channel (race-free).
 	select {
 	case <-l.resumeWCh:
@@ -251,8 +259,8 @@ func TestClaudeDelivery_DenyPostToolUseCannotCommit(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
-	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
-	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	wg.Wait()
 	if receipt.Outcome == term.DeliveryAccepted {
 		t.Fatal("PostToolUse after deny must not succeed")
@@ -274,8 +282,8 @@ func TestClaudeDelivery_EarliestHookAfterSpawn(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
-	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
-	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	wg.Wait()
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("got %s", receipt.Outcome)
@@ -480,7 +488,7 @@ func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
-	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	r := fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	if string(r) != string(term.ClaudeHookResponseBytes("deny")) {
 		t.Fatalf("resume response: %s", r)
 	}
@@ -488,7 +496,7 @@ func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
 	// a mutated tool_input whose canonical digest does NOT equal the stored one.
 	// If the decoder passed ctx.inputDigest, MarkWitnessed would accept this.
 	// The recomputed digest from {"command":"echo EVIL"} ≠ the stored digest
-	// for {"command":"echo hello"}, so this must produce non-success.
+	// for the catalog probe input, so this must produce non-success.
 	mutatedDenial := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo EVIL"}}]}` + "\n"
 	select {
 	case <-l.resumeWCh:
@@ -514,7 +522,7 @@ func TestClaudeDelivery_DenyWithoutToolInputFailsClosed(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
-	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	// CE-2: old-style minimal event without tool_input — fails closed (no
 	// witness). The pre-R6-B fixture this replaces could never have witnessed
 	// on the real wire.
@@ -543,9 +551,9 @@ func TestClaudeDelivery_DenyUnknownEntryFieldFailsClosed(t *testing.T) {
 		receipt = d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	}()
 	resumeURL, _ := captureBridgeURLs(t, l)
-	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo hello"}`)
+	fireResumeHook(t, resumeURL, csid, tuid, tn, `{"command":"echo pokitclaudeapprovalprobe"}`)
 	// CE-3: unknown entry field "extra_field" — malformed, fail closed.
-	unknownField := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo hello"},"extra_field":"evil"}]}` + "\n"
+	unknownField := `{"type":"result","session_id":"` + csid + `","permission_denials":[{"tool_use_id":"` + tuid + `","tool_name":"Bash","tool_input":{"command":"echo pokitclaudeapprovalprobe"},"extra_field":"evil"}]}` + "\n"
 	select {
 	case <-l.resumeWCh:
 	case <-time.After(time.Second):
@@ -602,6 +610,7 @@ func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.M
 			},
 			Provenance:      contract.ProvenanceProviderHook,
 			Actionable:      true,
+			RequiredPerm:    devicetrust.PermTerminalInput,
 			CatalogActionID: "claude.bash.approval_probe.v1",
 			DeliveryMaterial: []term.ApprovalDeliveryMaterial{
 				{OptionID: "allow_once", SchemaVersion: term.ClaudeDecisionSchemaV1(), ResponseBytes: ab},
@@ -612,7 +621,7 @@ func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.M
 	if !admitted {
 		t.Fatal("IngestObserved failed for catalog setup")
 	}
-	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{"x"}}
+	reqCtx := term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{devicetrust.PermTerminalInput}}
 	claim := store.ClaimForExecution(term.ClaimRequest{SessionID: sid, ApprovalID: aid, OptionID: optionID, Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "test.comp.cat." + optionID})
 	if claim.Outcome != term.ClaimGranted {
 		t.Fatalf("ClaimForExecution: %s", claim.Outcome)

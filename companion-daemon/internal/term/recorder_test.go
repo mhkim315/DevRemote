@@ -30,10 +30,10 @@ type testStream struct {
 	pw *io.PipeWriter
 }
 
-func (s *testStream) Read(p []byte) (int, error)   { return s.pr.Read(p) }
-func (s *testStream) Write(p []byte) (int, error)   { return s.pw.Write(p) }
-func (s *testStream) Close() error                  { s.pr.Close(); return nil }
-func (s *testStream) Resize(rows, cols int) error   { return nil }
+func (s *testStream) Read(p []byte) (int, error)  { return s.pr.Read(p) }
+func (s *testStream) Write(p []byte) (int, error) { return s.pw.Write(p) }
+func (s *testStream) Close() error                { s.pr.Close(); return nil }
+func (s *testStream) Resize(rows, cols int) error { return nil }
 
 // testSession implements mux.Session with StreamOpener.
 type testRecorderSession struct {

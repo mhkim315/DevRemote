@@ -2,6 +2,7 @@ package term
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -28,29 +29,30 @@ func TestClaudeDelivery_FullChain(t *testing.T) {
 	rt := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 1, StreamGen: 0}
 	approvalID := "claude-test-del"
 
+	// C3D-A fixture migration: the Store admission boundary now re-verifies
+	// the exact certified catalog tuple for every actionable claude_headless
+	// item, so the controlled setup uses the catalog probe input. The
+	// assertions below are unchanged.
+	probeDigest := CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
 	if !svc.Coordinator().ReserveIdentity(approvalID, "sess", "tu", "Bash",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", id, rt) {
+		probeDigest, "claude.bash.approval_probe.v1", id, rt) {
 		t.Fatal("ReserveIdentity")
 	}
 
-	// Canonical response bytes.
-	respBytes := claudeHookResponseBytes("allow")
 	items := []ApprovalIngestItem{{
 		Approval: agent.AgentApproval{
 			ID: approvalID, SessionID: id, AgentKind: claudeHeadlessAdapter,
 			Kind: "approval", Status: "pending", Source: agent.SourceJSONL, Confidence: 1,
-			Options: []agent.InteractionOption{
-				{ID: "allow_once", Label: "Allow", Kind: "approve"},
-			},
+			Options: claudeCertifiedOptions(),
 		},
 		Provenance: contract.ProvenanceProviderHook, Actionable: true,
-		DeliveryMaterial: []ApprovalDeliveryMaterial{
-			{OptionID: "allow_once", SchemaVersion: claudeDecisionSchemaV1, ResponseBytes: respBytes},
-		},
+		RequiredPerm:     claudeRequiredPerm,
+		CatalogActionID:  "claude.bash.approval_probe.v1",
+		DeliveryMaterial: claudeCertifiedDeliveryMaterial(),
 	}}
 	store.IngestObserved(ApprovalIngest{SessionID: id, LaunchGen: 1, StreamGen: 0, Provider: claudeHeadlessAdapter, Version: "2.1.209", Items: items})
 
-	reqCtx := RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{"x"}}
+	reqCtx := RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "b2", Permissions: []string{claudeRequiredPerm}}
 	claim := store.ClaimForExecution(ClaimRequest{SessionID: id, ApprovalID: approvalID, OptionID: "allow_once", Input: "", Runtime: rt, Requester: reqCtx, IdempotencyKey: "k"})
 	if claim.Outcome != ClaimGranted {
 		t.Fatalf("ClaimForExecution: %s", claim.Outcome)
@@ -81,7 +83,10 @@ type multiLaunchLauncher struct {
 
 func (l *multiLaunchLauncher) Launch(_ string, _ []string) (ManagedProcess, error) {
 	pr, pw := io.Pipe()
-	p := &fakeClaudeProcess{stdin: new(bytes.Buffer), stdout: pr, pipeW: pw}
+	// Unique per-incarnation opaque identity, mirroring the production
+	// launcher's per-spawn OpaqueID (C3D §12 tests rely on it).
+	p := &fakeClaudeProcess{stdin: new(bytes.Buffer), stdout: pr, pipeW: pw,
+		opaque: fmt.Sprintf("multi-proc-%d", len(l.procs)+1)}
 	l.procs = append(l.procs, p)
 	return p, nil
 }

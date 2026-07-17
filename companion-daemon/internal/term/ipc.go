@@ -21,16 +21,16 @@ import (
 // IPCServer owns a Unix domain socket listener and its accept goroutine.
 // Close stops the listener and Wait blocks until the goroutine has returned.
 type IPCServer struct {
-	listener  net.Listener
-	done      chan struct{}
-	closeOnce sync.Once
-	closeErr  error
-	reg       *mux.Registry
-	events    EventStore
-	links     LinkStore
-	telemetry *TelemetryService
-	activity  *ActivityBuffer
-	lifecycle *LifecycleService
+	listener      net.Listener
+	done          chan struct{}
+	closeOnce     sync.Once
+	closeErr      error
+	reg           *mux.Registry
+	events        EventStore
+	links         LinkStore
+	telemetry     *TelemetryService
+	activity      *ActivityBuffer
+	lifecycle     *LifecycleService
 	managed       *ManagedCodexService  // SP0: nil unless EnableManagedCodex
 	managedClaude *ManagedClaudeService // C1D: nil unless EnableManagedClaude
 }
@@ -67,14 +67,14 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 	log.Printf("IPC Server listening on %s", socketPath)
 
 	srv := &IPCServer{
-		listener:  listener,
-		done:      make(chan struct{}),
-		reg:       reg,
-		events:    events,
-		links:     links,
-		telemetry: telemetry,
-		activity:  activity,
-		lifecycle: lifecycle,
+		listener:      listener,
+		done:          make(chan struct{}),
+		reg:           reg,
+		events:        events,
+		links:         links,
+		telemetry:     telemetry,
+		activity:      activity,
+		lifecycle:     lifecycle,
 		managed:       managed,
 		managedClaude: managedClaude,
 	}

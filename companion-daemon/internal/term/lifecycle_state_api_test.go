@@ -37,8 +37,10 @@ func (a *lsAdapter) ListSessions(context.Context) ([]mux.Session, error) {
 	}
 	return out, nil
 }
-func (a *lsAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode { return mux.CaptureModeByteStream }
-func (a *lsAdapter) ManagedLifecycle() bool                          { return a.managed }
+func (a *lsAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
+	return mux.CaptureModeByteStream
+}
+func (a *lsAdapter) ManagedLifecycle() bool { return a.managed }
 
 // seedCatalog directly seeds a catalog row in a chosen lifecycle state so every
 // state (incl. failed, which the runtime only reaches on spawn error) is testable.

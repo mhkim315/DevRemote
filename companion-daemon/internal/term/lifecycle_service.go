@@ -57,11 +57,11 @@ func NewLifecycleService(reg *mux.Registry, activity *ActivityBuffer, transcript
 	return &LifecycleService{
 		reg:        reg,
 		transcript: transcriptSvc,
-		activity:  activity,
-		catalog:   NewSessionCatalog(),
-		graceful:  5 * time.Second,
-		killGrace: 2 * time.Second,
-		locks:     make(map[string]*sync.Mutex),
+		activity:   activity,
+		catalog:    NewSessionCatalog(),
+		graceful:   5 * time.Second,
+		killGrace:  2 * time.Second,
+		locks:      make(map[string]*sync.Mutex),
 	}
 }
 

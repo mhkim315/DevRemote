@@ -47,6 +47,13 @@ type ManagedSessionRecord struct {
 	PID             int    // OS process ID; never exposed in DTOs (test observability)
 	HookDir         string // hook directory path; never exposed in DTOs (test observability)
 
+	// C3D §12 launch-certification binding. Immutable after Register like the
+	// identity fields above; additive and zero-valued for providers without a
+	// launch-certification seam (e.g. Codex), whose behavior is unchanged.
+	AttestorKind string // compiled attestor kind/version that produced the result
+	CertResult   string // "certified" | "failed" (empty = no seam)
+	CertReason   string // exact failure reason; empty when certified
+
 	NativeStatus    ManagedNativeStatus
 	StatusChangedAt time.Time
 	Exited          bool

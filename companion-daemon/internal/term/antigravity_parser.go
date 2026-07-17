@@ -14,12 +14,12 @@ type AntigravityParser struct {
 }
 
 type antigravityRecord struct {
-	StepIndex int              `json:"step_index"`
-	Source    string           `json:"source"`
-	Type      string           `json:"type"`
-	Content   string           `json:"content"`
-	Thinking  string           `json:"thinking"`
-	CreatedAt string           `json:"created_at"`
+	StepIndex int                   `json:"step_index"`
+	Source    string                `json:"source"`
+	Type      string                `json:"type"`
+	Content   string                `json:"content"`
+	Thinking  string                `json:"thinking"`
+	CreatedAt string                `json:"created_at"`
 	ToolCalls []antigravityToolCall `json:"tool_calls"`
 }
 
