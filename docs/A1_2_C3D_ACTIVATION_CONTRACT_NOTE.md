@@ -1,11 +1,23 @@
 # A1.2 C3D — Production Activation Contract
 
-Status: **PRE-IMPLEMENTATION — NO CODE CHANGED — C3D-A PROHIBITED UNTIL THIS NOTE IS ACCEPTED**
+Status: **PRE-IMPLEMENTATION R1 — NO CODE CHANGED — C3D-A PROHIBITED UNTIL R1 IS ACCEPTED**
 
 Parent: `docs/NEXT_EXECUTOR_A1_2_C3D_PRODUCTION_ACTIVATION_HANDOFF.md`
 Accepted C2D: `91160409c9fc7e41a0c60b1c97a6ec6a7c4cffb4`
 (`docs/A1_2_C2D_CATALOG_FINAL_ACCEPTANCE.md`)
 Base HEAD for this note: `63d7042f9e28a240c39ecbc59beae67599b25a04`
+R0 of this note: `69124d830c27897751914fd0f84c8c46bf3a1667` — independent
+verdict: ACCEPT WITH REQUIRED CHANGES. R1 applies exactly the four required
+changes: (1) §12 no longer asks to accept the pre-launch digest check as the
+non-reusable launch binding — it freezes a per-incarnation launch
+certification tuple built from the existing launcher/registry identity,
+produced at the initial launch AND at every resume launch and bound to that
+RuntimeRef; (2) the platform precondition is the exact certified
+`darwin/arm64` tuple behind an explicit OS-neutral certification seam, not a
+bare GOOS check; (3) §1/§2 rollback wording is corrected — the observation
+store binding may remain after a failed install; only actionability, delivery
+and RuntimeOf stay off; (4) §8 separates witness AUTHORITY (PostToolUse /
+permission_denials) from stdout-marker corroboration.
 
 This note freezes the exact C3D activation design before any production code is
 written. C3D activates exactly one catalog action
@@ -38,12 +50,18 @@ func (s *ManagedClaudeService) InstallApprovalExecution(store *AuthoritativeAppr
   through `s.mu`, so exactly one of {install-then-create, create-then-install}
   is observable; the latter fails closed (precondition below).
 - **All-or-nothing:** any precondition failure returns an error with ZERO
-  state change — no store binding, no `actionable`, no returned delivery, no
-  returned resolver. `app.go` mirrors the accepted Codex tolerance rule
-  (`app.go:295-304`): on install failure with
-  `ApprovalExecutionInstalled() == false` the app runs observation-only (the
-  handler keeps the capacity-0 gate and `RuntimeOf` composition excludes
-  Claude); on an installed-but-unowned activation the App is NOT built.
+  activation state change — `s.actionable` stays false, no delivery and no
+  resolver are returned, and no ingest path becomes actionable. Precisely
+  because `app.go` calls `SetApprovalStore(approvals)` BEFORE the install,
+  the canonical observation-store binding MAY already exist and REMAINS in
+  place after a failed install; that is the accepted C1D observation-only
+  state, not a partial activation. `app.go` mirrors the accepted Codex
+  tolerance rule (`app.go:295-304`): on install failure with
+  `ApprovalExecutionInstalled() == false` the app runs observation-only —
+  the handler keeps the capacity-0 gate, `RuntimeOf` composition excludes
+  Claude, and every prior and subsequent Claude observation stays
+  non-actionable; on an installed-but-unowned activation the App is NOT
+  built.
 
 Preconditions verified under `s.mu` (each → distinct error, nothing mutated):
 
@@ -57,13 +75,18 @@ Preconditions verified under `s.mu` (each → distinct error, nothing mutated):
 5. `!s.actionable` — a second install is an error, never idempotent success;
 6. exact certified authority: `s.cfg.AuthorityVersion == "2.1.209"` and
    `validVersion` passes; `s.cfg.Version == "2.1.209"`;
-7. launch-certification completeness: `s.cfg.PinnedPath != ""` and
-   `s.cfg.PinnedDigest` is exactly 64 lowercase hex (the per-spawn
-   `productionClaudeAttestor.Certify` — version + realpath + SHA-256,
-   `claude_attestor.go:77` — stays fail-closed on every spawn and resume);
-8. supported platform tuple: `runtime.GOOS == "darwin"` (the only
-   C0D-certified platform). Any other OS fails install; observation still
-   works there.
+7. launch-certification seam configured and complete: `s.cfg.PinnedPath != ""`,
+   `s.cfg.PinnedDigest` is exactly 64 lowercase hex, and the compiled attestor
+   kind/version (§12) is the supported one. The per-spawn
+   `productionClaudeAttestor.Certify` (`claude_attestor.go:77`) stays
+   fail-closed on the initial spawn and on every resume spawn, and §12 binds
+   every spawn to a per-incarnation launch-certification tuple;
+8. supported platform tuple: `{runtime.GOOS, runtime.GOARCH}` must be a member
+   of the compiled closed set `certifiedClaudePlatforms`, whose single entry is
+   `{darwin, arm64}` — the exact C0D-certified OS/architecture. Any other
+   OS/arch combination fails install; observation still works there. Adding a
+   platform entry requires a separate contract review (same rule as adding a
+   catalog entry).
 
 On success it returns `(NewClaudeManagedApprovalDelivery(s), s.RuntimeOf, nil)`
 where both components are bound to the SAME service and therefore the same
@@ -83,8 +106,11 @@ never called by any production path; C3D-A adds no production caller.
   `SetApprovalStore` (`s.gen != 0 || len(s.runtimes) != 0` → error); install
   precondition 4 extends the same rule to activation.
 - Rollback: because the transition mutates nothing until all preconditions
-  pass under one lock, "rollback" is the absence of mutation. There is no
-  partially-installed state to unwind. The existing create-path rollbacks are
+  pass under one lock, "rollback" is the absence of activation mutation.
+  There is no partially-installed state to unwind. A store binding created
+  earlier by `SetApprovalStore` is NOT unwound by a failed install — it is the
+  frozen observation-only configuration and keeps working non-actionably.
+  The existing create-path rollbacks are
   unchanged: reserved Store slot cleared via `s.approvals.Clear(id)` on any
   post-reservation create failure (`managed_claude.go:973-979,1021-1034`),
   coordinator identity removed on failed Store admission
@@ -188,6 +214,7 @@ no provider branch). It is a data-driven policy keyed by `in.Provider`:
 | 16 | Requester auth | `devicetrust.PrincipalFromContext` → `requesterFromPrincipal` → `canonicalRequesterAuth` | claim `rec.auth`; ledger `auth` | `requesterAuthorized` (4 server-derived fields present + stored `PermTerminalInput`) on EVERY path incl. replay | never | — |
 | 17 | Receipt ID | `newClaudeReceiptID` `"cldr-"+32hex` pre-allocated in `Deliver` | `DeliveryReceipt.ReceiptID` | `RecordDelivery` requires non-empty on success | never | — |
 | 18 | Resume attempt | one coordinator entry per claim token (`ReserveEntry`), states reserved→writeClaimed→decisionWritten→terminal | coordinator entry | duplicate reserve → false; duplicate `ClaimWrite` → `outcomeDuplicate`; one-shot completion channel | never | cancel/timeout/ClearRuntime/witness |
+| 19 | Launch certification | §12 tuple at each spawn: attestor kind/version + OS/arch + artifact identity + `proc.OpaqueID()`/PID/SpawnedAt + SessionID/Epoch + result/reason | initial: immutable `ManagedSessionRecord` fields; resume: recorded with the delivery attempt | create/resume fail closed on non-certified result; `RuntimeOf` condition 5; install precondition §1.7-8 | never | per-incarnation — dies with its epoch |
 
 The chain is: hook classification (1×, raw bytes discarded) → pending
 observation → `ReserveIdentity` → Store admission (§4) → authenticated claim →
@@ -212,7 +239,11 @@ Resolve `{claude_headless, rt.authorityVersion, rt.epoch, 0}` iff ALL hold:
 4. EITHER `!rec.Exited` (live pre-defer window), OR
    `rec.Exited && rt.deferredExit && coordinator.HasIdentityForRuntime(sessionID, rt.epoch)`
    (the expected joined-deferred exit window — B4 semantics; a small new
-   read-only coordinator accessor).
+   read-only coordinator accessor);
+5. the epoch's launch-certification result (§12) is `certified` — an
+   uncertified incarnation can never resolve (creation already fails closed
+   on certification failure; this condition makes the binding independently
+   testable at the resolver).
 
 Invalidation matrix (each row = deterministic C3D-A test, §5 handoff item 6):
 
@@ -286,24 +317,27 @@ auth; owned temporary workspace as cwd; bounded/redacted stream captures):
    `PreToolUse` for the exact probe; classifier match; deferred join; pending
    actionable record with the static summary; authenticated device API claim
    `allow_once`; one resume spawn; repeated-hook `ClaimWrite` returns the
-   exact allow response bytes; **execution witness** = the matching
-   `PostToolUse` (same session/tool_use_id/name/recomputed digest) AND the
-   probe's stdout marker line `pokitclaudeapprovalprobe` present in the
-   bounded captured tool result — exactly once; receipt commit `approved`;
-   duplicate `RecordDelivery` non-commit; clean exit; no settings/auth
-   mutation outside the isolated hook dir.
+   exact allow response bytes; **success AUTHORITY = the matching
+   `PostToolUse`** (same session/tool_use_id/name/recomputed digest,
+   `MarkWitnessed`); **corroboration (non-authority)** = the probe's stdout
+   token `pokitclaudeapprovalprobe` present exactly once in the bounded
+   captured tool result, evidencing one harmless execution; receipt commit
+   `approved`; duplicate `RecordDelivery` non-commit; clean exit; no
+   settings/auth mutation outside the isolated hook dir.
 2. **deny** — same fresh setup; authenticated claim `deny`; exact deny
-   response bytes; **denial witness** = strictly decoded `permission_denials`
-   entry (raw entry input re-digested, equal to observation digest); ZERO
-   execution: no matching `PostToolUse` and the probe marker line absent from
-   the captured stream; receipt commit `rejected`; clean exit.
+   response bytes; **success AUTHORITY = the exact bound
+   `permission_denials` witness** (strictly decoded entry; raw entry input
+   re-digested, equal to the observation digest); **corroboration
+   (non-authority)** = no matching `PostToolUse` and the probe token absent
+   from the captured stream, evidencing zero execution; receipt commit
+   `rejected`; clean exit.
 
-The catalog command is an `echo` and cannot leave a filesystem marker; the
-marker is therefore the provider-native witness pair (PostToolUse presence /
-absence + probe stdout token presence / absence in the bounded capture). If
-review requires a filesystem side-effect marker instead, that requires a new
-catalog entry and is out of scope — this note treats the witness pair as the
-execution marker and asks the reviewer to confirm.
+Authority and corroboration are disjoint: only the provider-native witness
+routed through `MarkWitnessed` may produce `accepted`; stdout presence or
+absence can never create, substitute for, or veto a witness — it is recorded
+in the evidence report as execution corroboration only. The catalog command
+is an `echo` and leaves no filesystem marker; no new catalog entry or
+filesystem side effect is added for evidence purposes.
 
 Negative coverage stays deterministic (no live turns): duplicate tap
 (`already_accepted` / `conflict`), stale epoch, replacement, timeout,
@@ -377,32 +411,80 @@ no `SimulateGracefulExit` production use.
    catalog-ID-bearing item with one substituted material byte is equally
    dropped.
 
-## 12. Platform launch-binding decision (explicit reviewer decision requested)
+## 12. Non-reusable launch binding — per-incarnation certification tuple
 
-`A1_2_CLAUDE_APPROVAL_EXTENSION_PLAN.md` §4 requires, before actionability:
-"prove a platform-specific spawned-process identity or obtain an explicit
-independent contract decision accepting an equivalent non-reusable launch
-binding." What exists today (C1D-accepted): per-spawn pre-launch certification
-— `--version` equality, `EvalSymlinks` realpath pinning, SHA-256 digest of the
-resolved regular file (`claude_attestor.go:77-117`) — run fail-closed on the
-initial spawn AND on every resume spawn, plus install-time completeness checks
-(§1.7) and the darwin-only platform gate (§1.8). This note proposes accepting
-that as the equivalent non-reusable launch binding for the single
-harmless-probe catalog slice, on these grounds: the binding is Config-pinned
-per service instance (not reusable as a generic contract), both spawn sites
-re-certify immediately before exec of the SAME resolved path, and the slice's
-worst-case impact is bounded by the frozen catalog to one `echo`. If the
-reviewer instead requires a true post-spawn process-image attestation (e.g.
-`proc_pidpath` re-resolution + digest of the spawned PID's image on macOS),
-C3D-A will implement it behind the existing `ClaudeAttestor` seam before any
-actionable install — state the requirement in the review verdict.
+`A1_2_CLAUDE_APPROVAL_EXTENSION_PLAN.md` §4 requires, before actionability, a
+platform-specific spawned-process identity or an equivalent non-reusable
+launch binding. R0 asked to accept the bare pre-launch digest check; the
+verdict rejected that (the check certifies a FILE, not a launch incarnation).
+R1 freezes the following instead — built from identity the daemon already
+owns, no macOS code-signing work:
+
+**`ClaudeLaunchCertification`** — one tuple produced at EVERY spawn site
+(`CreateDetached` AND every `ResumeForApproval`), wrapped around the spawn:
+the existing pre-exec artifact certification plus the launcher-derived
+incarnation identity, evaluated through one OS-neutral seam.
+
+| Field | Source (exact, existing where noted) |
+|---|---|
+| Attestor kind/version | compiled constant `pokit.claude.prelaunch.v1` — the versioned identity of the attestor implementation |
+| OS / Arch | `runtime.GOOS` / `runtime.GOARCH`; must be a member of `certifiedClaudePlatforms` (§1.8, single entry `{darwin, arm64}`) |
+| Artifact identity | `cfg.Version` + `cfg.PinnedDigest` (64-hex), verified fail-closed by `productionClaudeAttestor.Certify` immediately before exec (`claude_attestor.go:77-117`) |
+| Opaque launch identity | `proc.OpaqueID()` — existing `"proc-<pid>-<spawnUnixNano>"` (`managed_codex.go:124`) |
+| PID / SpawnedAt | `proc.PID()`, `clockNow()` at spawn |
+| POKIT SessionID / Epoch | the session ID and the `s.gen` epoch allocated for THIS incarnation |
+| Result / Reason | `certified`, or the exact failure reason — any non-certified result fails the create/resume closed |
+
+- **Non-reusable:** the tuple is keyed by
+  `(PokitSessionID, Epoch, ProcessID)`. Epochs are unique per service
+  (`s.gen` is monotonic under `s.mu`) and `OpaqueID` embeds the incarnation's
+  PID and spawn timestamp, so a tuple from one incarnation can never certify
+  another incarnation, another session, or another epoch — and none of it is
+  reusable as a generic cross-provider contract.
+- **Initial-launch binding:** the tuple is bound into the immutable
+  `ManagedSessionRecord` identity (`ProcessID`, `OS`, `Arch`, `CreatedAt`,
+  `CertifiedDigest`, `PID` already exist and are immutable after `Register`,
+  `managed_registry.go:33`; C3D-A adds the attestor kind/version and
+  certification result/reason as equally immutable fields — additive,
+  zero-valued and inert for Codex records). `RuntimeOf` (§6) resolves only
+  when the CURRENT epoch's record carries a certified result, in both the
+  live and the joined-deferred windows.
+- **Resume-launch binding:** `ResumeForApproval` produces its OWN tuple for
+  its own epoch and `OpaqueID` before returning the runtime; `Deliver`
+  proceeds past the resume spawn only when that tuple is certified. Witness
+  AUTHORITY still validates against the ORIGINAL RuntimeRef (§5 row 3) — the
+  resume tuple identifies the delivery incarnation and is recorded with the
+  attempt; it never substitutes for the approval's bound runtime.
+- **OS-neutral certification seam:** the observable contract is exactly the
+  provider-neutral tuple `{OS, arch, attestor kind/version, opaque artifact
+  identity, opaque launch identity, certification result/reason}`
+  (extension plan §4). The macOS specifics — `--version` probe,
+  `EvalSymlinks` realpath pinning, file SHA-256 — live ONLY inside the
+  attestor/launcher implementations. A future Windows implementation supplies
+  the same observable tuple through the same seam; no common contract code
+  depends on macOS paths, code-signing, or process APIs.
+- **Explicitly not claimed:** this tuple is not process-image attestation (no
+  post-exec image digest, no code-signing evaluation) and is never called
+  that. It is the launch-incarnation binding the R0 verdict specified: exact
+  artifact/version certification + OS/arch + daemon-owned launch identity +
+  session/epoch binding + result/reason, generated per spawn and bound to
+  that incarnation's RuntimeRef.
 
 ## 13. C3D-A file plan (expected, subject to review)
 
 - `internal/term/managed_claude_activation.go` (new): install transition,
   `RuntimeOf`, Claude fallback dispatcher, combined resolver helper.
+- `internal/term/claude_attestor.go` (or a new
+  `claude_launch_certification.go`): §12 per-incarnation certification tuple,
+  the compiled attestor kind/version constant, and the closed
+  `certifiedClaudePlatforms` set — all behind the OS-neutral seam.
+- `internal/term/managed_registry.go`: additive immutable
+  certification-result/attestor-identity fields on `ManagedSessionRecord`
+  (zero-valued and inert for Codex records; no Codex behavior change).
 - `internal/term/managed_claude.go`: `actionableActive` copy in
-  `CreateDetached`; actionable branch in `joinDeferred` (§3).
+  `CreateDetached`; actionable branch in `joinDeferred` (§3); produce and
+  bind the §12 tuple at BOTH spawn sites (`CreateDetached`,
+  `ResumeForApproval`).
 - `internal/term/claude_resume_coordinator.go`: read-only
   `HasIdentityForRuntime`.
 - `internal/term/approval_store_gen.go`: §4 admission policy at the single
@@ -410,7 +492,8 @@ actionable install — state the requirement in the review verdict.
 - `cmd/devremote/app.go`: one owned composition step (§1) + combined
   `RuntimeOf` + dispatcher wiring.
 - Tests: new `*_activation_test.go` (install/§5 handoff items 1-6, KB-1,
-  KB-2, invalidation matrix), admission negatives, dispatcher routing, and the
+  KB-2, invalidation matrix, §12 certification binding + uncertified-spawn
+  fail-closed), admission negatives, dispatcher routing, and the
   §4 fixture migration in `claude_delivery_composition_test.go`.
   No live turn, no mobile change in C3D-A.
 
