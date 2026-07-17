@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // ── Golden tests ──
@@ -308,12 +309,47 @@ func TestStrictDecode_TrailingWhitespace(t *testing.T) {
 
 // ── UTF-8 ──
 
-func TestStrictDecode_InvalidUTF8Command(t *testing.T) {
-	// \xFF is never valid UTF-8.
-	raw := []byte(`{"command":"echo \xFF"}`)
+func TestStrictDecode_InvalidUTF8InRawBytes(t *testing.T) {
+	// Real 0xFF byte in the raw input before the JSON decoder sees it.
+	// utf8.Valid(raw) must reject before json.Decoder can substitute
+	// replacement characters.
+	raw := []byte(`{"command":"echo `)
+	raw = append(raw, 0xFF) // invalid UTF-8 byte inside a JSON string
+	raw = append(raw, []byte(`"}`)...)
+	if utf8.Valid(raw) {
+		t.Fatal("test setup: raw must be invalid UTF-8")
+	}
 	_, _, ok := strictDecodeToolInput(raw)
 	if ok {
-		t.Fatal("invalid UTF-8 command should reject")
+		t.Fatal("invalid UTF-8 in raw bytes must reject at the pre-decode gate")
+	}
+}
+
+func TestStrictDecode_ReplacementCharDoesNotMatchCatalog(t *testing.T) {
+	// If invalid UTF-8 slips past the pre-decode gate (defense in depth),
+	// Go's json.Unmarshal replaces ill-formed sequences with U+FFFD.
+	// A command containing U+FFFD can never match the catalog command,
+	// so classification is still fail-closed.
+	//
+	// Construct raw bytes with the actual UTF-8 encoding of U+FFFD
+	// (0xEF 0xBF 0xBD) inside the JSON string value.
+	raw := []byte(`{"command":"echo `)
+	raw = append(raw, 0xEF, 0xBF, 0xBD) // U+FFFD in UTF-8
+	raw = append(raw, []byte(`"}`)...)
+	if !utf8.Valid(raw) {
+		t.Fatal("test setup: raw must be valid UTF-8")
+	}
+	cmd, _, ok := strictDecodeToolInput(raw)
+	if !ok {
+		t.Fatal("replacement char command must decode successfully")
+	}
+	if cmd != "echo �" {
+		t.Fatalf("command = %q", cmd)
+	}
+	// Now prove it does NOT match the catalog.
+	_, _, ok = classifyCatalogAction(raw, "claude_headless", "2.1.209", "Bash")
+	if ok {
+		t.Fatal("command containing replacement char must not match catalog")
 	}
 }
 
@@ -424,16 +460,31 @@ func TestStrictDecode_WhitespaceOnlyCommand(t *testing.T) {
 
 // ── Byte bounds ──
 
-func TestStrictDecode_WithinMaxToolInputBytes(t *testing.T) {
-	// A valid catalog-matching input fits well within maxToolInputBytes.
-	// The outer rampart check must not reject it.
-	raw := []byte(`{"command":"echo pokitclaudeapprovalprobe"}`)
-	if len(raw) >= maxToolInputBytes {
-		t.Skip("maxToolInputBytes too small for minimal input")
+func TestStrictDecode_ExactlyMaxToolInputBytes(t *testing.T) {
+	// Construct a valid JSON object that is exactly maxToolInputBytes bytes.
+	// Use whitespace padding between the last value and the closing '}';
+	// json.Decoder skips whitespace between tokens, so the padding does not
+	// affect the decoded values.
+	prefix := []byte(`{"command":"echo pokitclaudeapprovalprobe"`)
+	suffix := []byte(`}`)
+	// Need enough padding to reach exactly maxToolInputBytes.
+	padding := maxToolInputBytes - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Skip("maxToolInputBytes too small")
+	}
+	raw := make([]byte, 0, maxToolInputBytes)
+	raw = append(raw, prefix...)
+	raw = append(raw, bytes.Repeat([]byte(" "), padding)...)
+	raw = append(raw, suffix...)
+	if len(raw) != maxToolInputBytes {
+		t.Fatalf("test setup: len=%d want=%d", len(raw), maxToolInputBytes)
+	}
+	if !utf8.Valid(raw) {
+		t.Fatal("test setup: must be valid UTF-8")
 	}
 	cmd, _, ok := strictDecodeToolInput(raw)
 	if !ok {
-		t.Fatal("within-bound input should succeed")
+		t.Fatal("exact-bound input should succeed")
 	}
 	if cmd != "echo pokitclaudeapprovalprobe" {
 		t.Fatalf("command = %q", cmd)
@@ -441,18 +492,17 @@ func TestStrictDecode_WithinMaxToolInputBytes(t *testing.T) {
 }
 
 func TestStrictDecode_OverMaxToolInputBytes(t *testing.T) {
-	// Construct an input one byte over the rampart.
-	// The description is padded to exceed maxToolInputBytes;
-	// this is rejected by the outer len check before any inner validation.
-	prefix := []byte(`{"command":"echo pokitclaudeapprovalprobe","description":"`)
-	suffix := []byte(`"}`)
-	needed := maxToolInputBytes + 1 - len(prefix) - len(suffix)
-	if needed < 1 {
+	// One byte over the outer rampart — rejected by the len check
+	// before any JSON decoding.
+	prefix := []byte(`{"command":"echo pokitclaudeapprovalprobe"`)
+	suffix := []byte(`}`)
+	padding := maxToolInputBytes + 1 - len(prefix) - len(suffix)
+	if padding < 1 {
 		t.Skip("maxToolInputBytes too small")
 	}
 	raw := make([]byte, 0, maxToolInputBytes+1)
 	raw = append(raw, prefix...)
-	raw = append(raw, bytes.Repeat([]byte("x"), needed)...)
+	raw = append(raw, bytes.Repeat([]byte(" "), padding)...)
 	raw = append(raw, suffix...)
 	if len(raw) <= maxToolInputBytes {
 		t.Fatalf("test setup: len=%d not over max=%d", len(raw), maxToolInputBytes)
@@ -516,26 +566,55 @@ func TestClassify_SentinelsNeverInOutput(t *testing.T) {
 	}
 }
 
-// ── Catalog summary lookup ──
-
-func TestCatalogSummary_Match(t *testing.T) {
-	s := catalogSummary("claude_headless", "2.1.209", "claude.bash.approval_probe.v1")
-	if s != "Run Claude approval verification probe" {
-		t.Fatalf("summary = %q", s)
-	}
-}
-
-func TestCatalogSummary_Mismatch(t *testing.T) {
-	s := catalogSummary("claude_headless", "2.1.209", "claude.bash.nonexistent.v1")
-	if s != "" {
-		t.Fatalf("expected empty summary for unknown ID, got %q", s)
-	}
-}
-
 // ── Catalog validation ──
 
-func TestValidateCatalog(t *testing.T) {
-	if err := validateCatalog(); err != nil {
+func TestValidateCatalog_ProductionEntry(t *testing.T) {
+	if err := validateCatalog(certifiedClaudeCatalog); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateCatalog_DuplicateCatalogActionID(t *testing.T) {
+	entries := []catalogEntry{
+		{CatalogActionID: "dup.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "a", Summary: "A"},
+		{CatalogActionID: "dup.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "b", Summary: "B"},
+	}
+	if err := validateCatalog(entries); err == nil {
+		t.Fatal("duplicate CatalogActionID must reject")
+	}
+}
+
+func TestValidateCatalog_DuplicateSummary(t *testing.T) {
+	entries := []catalogEntry{
+		{CatalogActionID: "a.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "a", Summary: "Same Label"},
+		{CatalogActionID: "b.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "b", Summary: "Same Label"},
+	}
+	if err := validateCatalog(entries); err == nil {
+		t.Fatal("duplicate Summary must reject")
+	}
+}
+
+func TestValidateCatalog_DuplicateTuple(t *testing.T) {
+	entries := []catalogEntry{
+		{CatalogActionID: "a.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "same", Summary: "A"},
+		{CatalogActionID: "b.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "same", Summary: "B"},
+	}
+	if err := validateCatalog(entries); err == nil {
+		t.Fatal("duplicate provider/version/tool/command tuple must reject")
+	}
+}
+
+func TestValidateCatalog_EmptyFields(t *testing.T) {
+	for _, entry := range []catalogEntry{
+		{Provider: "p", Version: "v", ToolName: "Bash", Command: "c", Summary: "S"},
+		{CatalogActionID: "id.v1", Version: "v", ToolName: "Bash", Command: "c", Summary: "S"},
+		{CatalogActionID: "id.v1", Provider: "p", ToolName: "Bash", Command: "c", Summary: "S"},
+		{CatalogActionID: "id.v1", Provider: "p", Version: "v", Command: "c", Summary: "S"},
+		{CatalogActionID: "id.v1", Provider: "p", Version: "v", ToolName: "Bash", Summary: "S"},
+		{CatalogActionID: "id.v1", Provider: "p", Version: "v", ToolName: "Bash", Command: "c"},
+	} {
+		if err := validateCatalog([]catalogEntry{entry}); err == nil {
+			t.Errorf("empty required field must reject: %+v", entry)
+		}
 	}
 }

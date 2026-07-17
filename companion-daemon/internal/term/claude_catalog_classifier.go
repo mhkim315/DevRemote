@@ -59,6 +59,11 @@ func strictDecodeToolInput(raw []byte) (command, description string, ok bool) {
 	if len(raw) == 0 || len(raw) > maxToolInputBytes {
 		return "", "", false
 	}
+	// Reject invalid UTF-8 before the JSON decoder can substitute
+	// replacement characters (U+FFFD) for ill-formed sequences.
+	if !utf8.Valid(raw) {
+		return "", "", false
+	}
 
 	dec := json.NewDecoder(bytes.NewReader(raw))
 
@@ -198,35 +203,54 @@ func classifyCatalogAction(toolInput []byte, provider, version, toolName string)
 	return "", "", false
 }
 
-// catalogSummary returns the Pokit-owned static summary for a catalog
-// action ID and provider/version tuple, or the generic fallback.
-func catalogSummary(provider, version, catalogActionID string) string {
-	for i := range certifiedClaudeCatalog {
-		e := &certifiedClaudeCatalog[i]
-		if e.Provider == provider && e.Version == version && e.CatalogActionID == catalogActionID {
-			return e.Summary
-		}
-	}
-	return "" // caller uses generic fallback
-}
+// validateCatalog reports whether a catalog slice satisfies every uniqueness
+// invariant required by the planner contract:
+//
+//   - CatalogActionID must be non-empty and unique.
+//   - Summary must be non-empty and unique (no two entries share the same
+//     public label).
+//   - The provider+version+tool+command tuple must be unique (no two
+//     entries resolve to the same concrete action).
+//   - No required field may be empty.
+//
+// The function accepts an explicit slice so tests can inject known-bad
+// duplicates.
+func validateCatalog(entries []catalogEntry) error {
+	seenID := make(map[string]int)       // CatalogActionID → index
+	seenSummary := make(map[string]int)  // Summary → index
+	seenTuple := make(map[string]int)    // provider|version|tool|command → index
 
-// validateCatalog reports whether the compiled catalog satisfies the
-// uniqueness invariant. Called from init() or tests.
-func validateCatalog() error {
-	seen := make(map[string]bool)
-	for i := range certifiedClaudeCatalog {
-		e := &certifiedClaudeCatalog[i]
+	for i := range entries {
+		e := &entries[i]
+
 		if e.CatalogActionID == "" {
 			return fmt.Errorf("catalog entry %d: empty CatalogActionID", i)
 		}
 		if e.Provider == "" || e.Version == "" || e.ToolName == "" || e.Command == "" || e.Summary == "" {
 			return fmt.Errorf("catalog entry %d: empty required field", i)
 		}
-		// CatalogActionID must be unique.
-		if seen[e.CatalogActionID] {
-			return fmt.Errorf("catalog entry %d: duplicate CatalogActionID %q", i, e.CatalogActionID)
+
+		if prev, dup := seenID[e.CatalogActionID]; dup {
+			return fmt.Errorf("catalog entry %d: duplicate CatalogActionID %q (first at %d)", i, e.CatalogActionID, prev)
 		}
-		seen[e.CatalogActionID] = true
+		seenID[e.CatalogActionID] = i
+
+		if prev, dup := seenSummary[e.Summary]; dup {
+			return fmt.Errorf("catalog entry %d: duplicate Summary %q (first at %d)", i, e.Summary, prev)
+		}
+		seenSummary[e.Summary] = i
+
+		tuple := e.Provider + "|" + e.Version + "|" + e.ToolName + "|" + e.Command
+		if prev, dup := seenTuple[tuple]; dup {
+			return fmt.Errorf("catalog entry %d: duplicate provider/version/tool/command tuple %q (first at %d)", i, tuple, prev)
+		}
+		seenTuple[tuple] = i
 	}
 	return nil
+}
+
+func init() {
+	if err := validateCatalog(certifiedClaudeCatalog); err != nil {
+		panic("certifiedClaudeCatalog: " + err.Error())
+	}
 }
