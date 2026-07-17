@@ -27,7 +27,15 @@ import (
 
 const claudeHeadlessAdapter = "claude_headless"
 
-const claudeCertificationPrompt = "Use your Bash tool to run exactly this command: echo c1d-probe-ok"
+// claudeCertificationPrompt elicits the ONE frozen catalog action
+// (claude.bash.approval_probe.v1). C3D-C: the certification turn IS the
+// live approval probe — CreateDetached has exactly one model turn, so this
+// prompt is the only production path that can produce the exact catalog
+// PreToolUse the accepted activation note §8 requires. The prompt shape is
+// the one proven to elicit the exact command on pinned 2.1.209 (C1D live
+// proof, R6-A7 probes). A deviated/refused command fails the classifier and
+// stays non-actionable — never coerced, always visible.
+const claudeCertificationPrompt = "Use your Bash tool to run exactly this command: echo pokitclaudeapprovalprobe"
 
 const (
 	claudeHandshakeTimeout       = 30 * time.Second

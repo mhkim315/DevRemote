@@ -117,8 +117,9 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 
 	// ── Unique per-run privacy markers ──
-	cmdMarker := "echo c1d-probe-ok" // raw command + tool input
-	cwdMarker := cwd                 // CWD
+	// C3D-C: the certification prompt now elicits the frozen catalog probe.
+	cmdMarker := "echo pokitclaudeapprovalprobe" // raw command + tool input
+	cwdMarker := cwd                             // CWD
 	// Hook token: extract the bridge URL from hook.sh.
 	// Format: #!/bin/sh\ncurl -s -X POST -d @- '<URL>'\n
 	hookScript, err := os.ReadFile(filepath.Join(hookDir, "hook.sh"))
@@ -135,13 +136,13 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	t.Logf("hook token length: %d", len(hookToken))
 
 	// Provider payload marker: appears in stream-json deferred_tool_use.input.
-	payloadMarker := "c1d-probe-ok"
+	payloadMarker := "pokitclaudeapprovalprobe"
 
 	allMarkers := []string{cmdMarker, cwdMarker}
 	if len(hookToken) > 0 {
 		allMarkers = append(allMarkers, hookToken)
 	}
-	// Note: payloadMarker is same as cmdMarker (both contain c1d-probe-ok).
+	// Note: payloadMarker is contained in cmdMarker (both carry the probe token).
 
 	// Bounded poll for exactly one observation.
 	deadline := time.Now().Add(60 * time.Second)
