@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { resolveApproval, SafeApproval } from '../lib/client';
+import { classifyApprovalError, resolveCallSucceeded } from '../lib/approvalError';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 
 interface Props {
@@ -41,26 +42,14 @@ export function ApprovalCard({ sessionId, approval, onResolved }: Props) {
     setLoading(true);
     setError(null);
     try {
-      await resolveApproval(sessionId, approval.id, optionId, input, keyFor(optionId));
-      // Local optimistic state only updates from an accepted server result.
-      onResolved();
-    } catch (e: any) {
-      // Honest per-outcome messaging; input and the idempotency key are preserved so
-      // a safe manual retry re-uses the same key (idempotent).
-      const status = e?.statusCode;
-      if (status === 401 || status === 403) {
-        setError('Device not authorized — pair this device');
-      } else if (status === 409) {
-        setError('No longer current — refresh');
-      } else if (status === 410) {
-        setError('Approval expired');
-      } else if (status === 502) {
-        setError("Couldn't deliver — resolve in the terminal");
-      } else if (status === 400) {
-        setError('Action not accepted');
+      const result = await resolveApproval(sessionId, approval.id, optionId, input, keyFor(optionId));
+      if (resolveCallSucceeded(result.outcome, optionId)) {
+        onResolved();
       } else {
-        setError('Network error — tap an action to retry');
+        setError('Unexpected server response');
       }
+    } catch (e: any) {
+      setError(classifyApprovalError(e?.statusCode));
     } finally {
       setLoading(false);
     }

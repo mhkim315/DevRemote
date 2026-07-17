@@ -1,111 +1,71 @@
 /**
- * C3D-B items 16-17 — ApprovalCard/Dashboard presentation boundary.
+ * C3D-B items 14-17 — ApprovalCard/Dashboard presentation boundary.
  *
- * These tests verify that the mobile error classifier and the CTA
- * eligibility rules produce honest user-visible outcomes without
- * requiring a full React Native render. The classified outcome and the
- * onResolved call signal are the contract the Dashboard uses to drive
- * ApprovalCard rendering.
- *
- * No production code is changed. The functions tested are small pure
- * helpers extracted from the existing ApprovalCard component.
+ * Tests import the real production functions extracted as pure helpers
+ * (src/lib/approvalError.ts) so there is no test-time duplicate. The
+ * existing strict decoder (validateApproval) and actionable gate
+ * (approvalActionable) are also tested from their production sources.
  */
-
 import {
   SafeApproval,
 } from '../src/lib/client';
+import {
+  classifyApprovalError,
+  resolveCallSucceeded,
+} from '../src/lib/approvalError';
 import {
   validateApproval,
   approvalActionable,
   APPROVAL_STATES,
 } from '../src/lib/approvalRequest';
 
-// ── extracted pure error classifier (modelled on ApprovalCard.handleAction) ──
+// ── item 16: production error classifier ──
 
-type ErrorMessage =
-  | 'not_authorized'
-  | 'no_longer_current'
-  | 'expired'
-  | 'delivery_failed'
-  | 'action_not_accepted'
-  | 'network_error';
-
-function classifyApprovalError(statusCode: number | undefined): ErrorMessage {
-  switch (statusCode) {
-    case 401:
-    case 403:
-      return 'not_authorized';
-    case 409:
-      return 'no_longer_current';
-    case 410:
-      return 'expired';
-    case 502:
-      return 'delivery_failed';
-    case 400:
-      return 'action_not_accepted';
-    default:
-      return 'network_error';
-  }
-}
-
-// ── extracted onResolved gate (called ONLY for accepted/already_accepted) ──
-
-function shouldCallOnResolved(
-  outcome: string | undefined,
-  action: string | undefined,
-): boolean {
-  return (
-    outcome === 'accepted' || outcome === 'already_accepted'
-  ) && !!action;
-}
-
-// ── item 16: error messages per status code ──
-
-describe('C3D-B item 16 — approval error classifier', () => {
-  it('400 → action_not_accepted', () => {
-    expect(classifyApprovalError(400)).toBe('action_not_accepted');
+describe('C3D-B item 16 — production error classifier', () => {
+  it('400 → Action not accepted', () => {
+    expect(classifyApprovalError(400)).toBe('Action not accepted');
   });
-  it('401/403 → not_authorized', () => {
-    expect(classifyApprovalError(401)).toBe('not_authorized');
-    expect(classifyApprovalError(403)).toBe('not_authorized');
+  it('401/403 → Device not authorized', () => {
+    expect(classifyApprovalError(401)).toContain('Device not authorized');
+    expect(classifyApprovalError(403)).toContain('Device not authorized');
   });
-  it('409 → no_longer_current', () => {
-    expect(classifyApprovalError(409)).toBe('no_longer_current');
+  it('409 → No longer current', () => {
+    expect(classifyApprovalError(409)).toBe('No longer current — refresh');
   });
-  it('410 → expired', () => {
-    expect(classifyApprovalError(410)).toBe('expired');
+  it('410 → Approval expired', () => {
+    expect(classifyApprovalError(410)).toBe('Approval expired');
   });
-  it('502 → delivery_failed', () => {
-    expect(classifyApprovalError(502)).toBe('delivery_failed');
+  it('502 → Couldn\'t deliver', () => {
+    expect(classifyApprovalError(502)).toContain("Couldn't deliver");
   });
-  it('other / undefined → network_error', () => {
-    expect(classifyApprovalError(undefined)).toBe('network_error');
-    expect(classifyApprovalError(500)).toBe('network_error');
-    expect(classifyApprovalError(0)).toBe('network_error');
+  it('other / undefined → Network error', () => {
+    expect(classifyApprovalError(undefined)).toContain('Network error');
+    expect(classifyApprovalError(500)).toContain('Network error');
+    expect(classifyApprovalError(0)).toContain('Network error');
   });
 });
 
-// ── item 16: onResolved call conditions ──
+// ── item 16: production onResolved gate ──
 
-describe('C3D-B item 16 — onResolved gate', () => {
+describe('C3D-B item 16 — production onResolved gate', () => {
   it('accepted → onResolved true', () => {
-    expect(shouldCallOnResolved('accepted', 'allow_once')).toBe(true);
+    expect(resolveCallSucceeded('accepted', 'allow_once')).toBe(true);
   });
   it('already_accepted → onResolved true', () => {
-    expect(shouldCallOnResolved('already_accepted', 'deny')).toBe(true);
+    expect(resolveCallSucceeded('already_accepted', 'deny')).toBe(true);
   });
-  it('malformed 2xx (no action) → onResolved false', () => {
-    expect(shouldCallOnResolved('accepted', undefined)).toBe(false);
-    expect(shouldCallOnResolved('accepted', '')).toBe(false);
+  it('malformed (no action) → onResolved false', () => {
+    expect(resolveCallSucceeded('accepted', undefined)).toBe(false);
+    expect(resolveCallSucceeded('accepted', '')).toBe(false);
   });
-  it('non-success outcome → onResolved false', () => {
-    expect(shouldCallOnResolved('conflict', 'allow_once')).toBe(false);
-    expect(shouldCallOnResolved('error', 'deny')).toBe(false);
-    expect(shouldCallOnResolved(undefined, 'allow_once')).toBe(false);
+  it('non-success → onResolved false', () => {
+    expect(resolveCallSucceeded('conflict' as any, 'allow_once')).toBe(false);
+    expect(resolveCallSucceeded('error' as any, 'deny')).toBe(false);
+    expect(resolveCallSucceeded(undefined, 'allow_once')).toBe(false);
   });
 });
 
-// ── item 14 (existing): validateApproval strictness ──
+// ── item 14: validateApproval strict decoder (production) ──
 
 describe('C3D-B item 14 — validateApproval strict decoder', () => {
   const validDTO: SafeApproval = {
@@ -153,7 +113,7 @@ describe('C3D-B item 14 — validateApproval strict decoder', () => {
   });
 });
 
-// ── item 15: approvalActionable gate ──
+// ── item 15: approvalActionable gate (production) ──
 
 describe('C3D-B item 15 — approvalActionable gate', () => {
   const base: SafeApproval = {
@@ -176,36 +136,36 @@ describe('C3D-B item 15 — approvalActionable gate', () => {
   }
 });
 
-// ── item 17: waiting_status and non-catalog → no CTA at presenter gate ──
+// ── item 17: waiting_approval / non-catalog CTA absence ──
 
 describe('C3D-B item 17 — waiting_approval / non-catalog CTA absence', () => {
-  const nonCatalogDTO: SafeApproval = {
-    id: 'nc1', sessionId: 'claude_headless:s1',
-    summary: 'Approval requested', // generic, not catalog
-    state: 'pending', actionable: false, options: [],
-    createdAt: '2026-07-17T00:00:00Z', expiresAt: '2026-07-17T00:05:00Z',
-  };
-
   it('non-catalog observation → actionable false + zero options → no CTA', () => {
-    expect(nonCatalogDTO.actionable).toBe(false);
-    expect(nonCatalogDTO.options).toHaveLength(0);
-    expect(approvalActionable(nonCatalogDTO)).toBe(false);
+    const dto = dummyDTO({ actionable: false, options: [] });
+    expect(approvalActionable(dto)).toBe(false);
   });
-
-  it('actionable record in delivery_failed → no CTA (not pending)', () => {
-    const df: SafeApproval = { ...nonCatalogDTO, state: 'delivery_failed', actionable: true };
-    expect(approvalActionable(df)).toBe(false);
+  it('delivery_failed → no CTA (not pending)', () => {
+    const dto = dummyDTO({ state: 'delivery_failed', actionable: true });
+    expect(approvalActionable(dto)).toBe(false);
   });
-
-  it('actionable record in pending → CTA allowed', () => {
-    const pend: SafeApproval = {
-      ...nonCatalogDTO,
+  it('expired → no CTA', () => {
+    const dto = dummyDTO({ state: 'expired', actionable: true });
+    expect(approvalActionable(dto)).toBe(false);
+  });
+  it('pending + actionable → CTA', () => {
+    const dto = dummyDTO({
       state: 'pending', actionable: true,
       options: [{ id: 'allow_once', label: 'Approve', kind: 'approve', requiresInput: false }],
-    };
-    expect(approvalActionable(pend)).toBe(true);
-    // BUT the Summary gate: non-catalog records carry the generic label,
-    // not the catalog probe label — the presenter uses Summary to
-    // distinguish, but CTA eligibility is only actionable + pending.
+    });
+    expect(approvalActionable(dto)).toBe(true);
   });
 });
+
+function dummyDTO(overrides: Partial<SafeApproval>): SafeApproval {
+  return {
+    id: 'x', sessionId: 's', summary: 'Approval requested',
+    state: 'pending', actionable: false, options: [],
+    createdAt: '2026-07-17T00:00:00Z',
+    expiresAt: '2026-07-17T00:05:00Z',
+    ...overrides,
+  };
+}
