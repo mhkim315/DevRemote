@@ -203,6 +203,23 @@ func (b *claudeHookBridge) close() {
 	_ = b.server.Close()
 }
 
+// getRT returns the current managed runtime pointer under the bridge mutex.
+func (b *claudeHookBridge) getRT() *claudeManagedRuntime {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.rt
+}
+
+// publishRuntime makes a FULLY-initialized runtime visible to the hook
+// handlers. Must be called after every identity/authority field of the
+// runtime is assigned; hooks that arrive before publication observe nil and
+// answer the safe defer.
+func (b *claudeHookBridge) publishRuntime(rt *claudeManagedRuntime) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rt = rt
+}
+
 // handleHook validates the capability token, strictly decodes the PreToolUse
 // payload, validates hook_event_name == "PreToolUse", extracts identity fields,
 // stores the observation, and returns the C0D-certified defer response.
@@ -258,14 +275,16 @@ func (b *claudeHookBridge) handleHook(w http.ResponseWriter, r *http.Request) {
 	// P2A: classify the tool_input against the frozen catalog.
 	// Classification occurs exactly once at the provider boundary while
 	// the raw bytes are still available; after this the raw input is
-	// discarded and only the digest survives.
+	// discarded and only the digest survives. getRT returns under the
+	// bridge mutex — the handler is safe against a runtime that was
+	// not yet published (nil) and against the one-time publication.
 	catalogActionID := ""
-	if rt := b.rt; rt != nil {
+	if rt := b.getRT(); rt != nil {
 		cid, classifierDigest, matched := classifyCatalogAction(fields["tool_input"], claudeHeadlessAdapter, rt.authorityVersion, toolName)
 		catalogActionID = selectCatalogActionID(cid, classifierDigest, inputDigest, matched)
 	}
 
-	rt := b.rt
+	rt := b.getRT()
 	if rt == nil {
 		writeHookDefer(w)
 		return

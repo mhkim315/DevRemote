@@ -371,11 +371,28 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 		t.Logf("%s: actionable catalog record observed (options=%d)", run, len(dto.Options))
 
+		// The accepted claim window is the JOINED-DEFERRED EXIT (activation
+		// note §6): wait for the initial process to finish exiting before
+		// claiming, exactly like a human mobile tap would. Resuming the
+		// same Claude session while the initial process still holds it
+		// fails the delivery closed (observed live as a non-witnessed
+		// terminal → 409 conflict) — safe, but not the §8 happy path.
+		svc.WaitExited(sid)
+		t.Logf("%s: initial process exited — joined-deferred claim window open", run)
+
 		// Authenticated claim through the composed production route.
 		code, body := fx.doJSON(t, "POST",
 			"/api/sessions/"+sid+"/approvals/"+dto.ID, tok,
 			`{"action":"`+action+`","idempotencyKey":"c3dc.live.`+run+`"}`)
 		if code != 200 {
+			// Structural diagnostic only (types/booleans, no raw text).
+			for i, ln := range launcher.slice(launchFloor) {
+				diag := c3dcProject(run, "diag-"+itoa(i), ln.cap.bytes(), pseudo)
+				t.Logf("%s diag launch %d: lines=%d tokenHits=%d", run, i, len(diag.Lines), diag.ToolResultTokenHits)
+				for _, lp := range diag.Lines {
+					t.Logf("%s diag launch %d line: seq=%d type=%s subtype=%s deferred=%v denials=%v", run, i, lp.Seq, lp.Type, lp.Subtype, lp.Deferred, lp.PermissionDenials)
+				}
+			}
 			t.Fatalf("%s claim: code=%d body=%s", run, code, body)
 		}
 		snap, ok := store.LookupRecord(sid, dto.ID)

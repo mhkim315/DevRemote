@@ -136,7 +136,13 @@ func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessi
 		hookDir:             hookDir,
 		pendingObservations: make(map[string]*claudePendingObservation),
 	}
-	bridge.rt = rt
+	// NOTE: the runtime is NOT published to the bridge here. The caller
+	// finishes assigning the runtime's identity/authority fields and then
+	// publishes via bridge.publishRuntime — a hook that arrives before
+	// publication sees nil and answers the safe defer (the accepted
+	// earliest-hook semantics). Publishing a half-initialized runtime to
+	// the concurrently-serving hook handlers is a data race (found by the
+	// C3D-C live run under -race).
 	return rt
 }
 
@@ -1101,6 +1107,11 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	rt.actionableActive = s.actionable
 	rt.launchCert = launchCert
 	s.runtimes[id] = rt
+	// Publish to the bridge after every identity/authority field is set so
+	// a hook handler that observes a non-nil rt through getRT() sees a
+	// fully-initialized runtime. Hooks that arrive before publication
+	// observe nil and answer the safe defer.
+	bridge.publishRuntime(rt)
 	s.mu.Unlock()
 
 	fail := func(stage string, ferr error, registered bool) (string, error) {
@@ -1276,6 +1287,8 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	// R6-B: the pump reads the runtime-owned immutable context, not the
 	// bridge (closes the R6-A3 finding). Set before pump() starts.
 	rt.resumeCtx = ctx
+	// Publish only after every field is set (see CreateDetached).
+	bridge.publishRuntime(rt)
 	s.mu.Unlock()
 
 	go rt.pump()
