@@ -13,6 +13,7 @@ package term
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -197,6 +198,10 @@ func (b *claudeHookBridge) installResumeContext(ctx *resumeContext) {
 	b.resumeCtx = ctx
 }
 
+// bridgeGracefulShutdown is the max time a bridge shutdown waits for
+// in-flight handlers (PostToolUse) to complete before forcing close.
+const bridgeGracefulShutdown = 3 * time.Second
+
 func (b *claudeHookBridge) close() {
 	b.mu.Lock()
 	if b.shutdown {
@@ -205,7 +210,14 @@ func (b *claudeHookBridge) close() {
 	}
 	b.shutdown = true
 	b.mu.Unlock()
-	_ = b.server.Close()
+	// Graceful shutdown: drain active handlers (e.g. PostToolUse writing
+	// its 200 response) before closing the listener. A hard Close would
+	// kill in-flight HTTP connections and cause client EOF — a real
+	// production race when delivery's rt.terminate() calls bridge.close()
+	// before the PostToolUse handler completes.
+	ctx, cancel := context.WithTimeout(context.Background(), bridgeGracefulShutdown)
+	defer cancel()
+	_ = b.server.Shutdown(ctx)
 }
 
 // getRT returns the current managed runtime pointer under the bridge mutex.
