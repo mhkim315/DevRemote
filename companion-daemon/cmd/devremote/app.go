@@ -333,6 +333,29 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		h.RuntimeOf = term.NewCombinedRuntimeResolver(codexRuntimeOf, claudeRuntimeOf)
 	}
 
+	// PA1: construct the read-only managed runtime catalog over the two
+	// accepted provider-owned registries. The catalog owns no store,
+	// cache, or mutation authority. It is the single read path for
+	// managed Get/List/RuntimeOf from this point forward.
+	var codexReg *term.ManagedSessionRegistry
+	var claudeReg *term.ManagedSessionRegistry
+	if managed != nil {
+		codexReg = managed.Registry()
+	}
+	if managedClaude != nil {
+		claudeReg = managedClaude.Registry()
+	}
+	if codexReg != nil || claudeReg != nil {
+		h.Catalog = term.NewManagedRuntimeCatalog(codexReg, claudeReg, codexRuntimeOf, claudeRuntimeOf)
+		// Catalog.RuntimeOf replaces the combined resolver for
+		// approval-runtime dispatch. The provider-specific RuntimeOf
+		// methods and their generation/certification validation
+		// remain unchanged.
+		if codexRuntimeOf != nil || claudeRuntimeOf != nil {
+			h.RuntimeOf = h.Catalog.RuntimeOf
+		}
+	}
+
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()
 	registerPush := func(w http.ResponseWriter, r *http.Request) {

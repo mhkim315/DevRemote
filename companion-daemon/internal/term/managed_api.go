@@ -61,25 +61,17 @@ func managedNativeStatusDTO(rec ManagedSessionRecord) ManagedNativeStatusDTO {
 }
 
 // HandleManagedNativeStatus serves GET /api/sessions/{id}/native-status from
-// the owned registries ONLY. Checks both managed Codex and managed Claude
-// registries. Auth is applied by the router.
+// the managed catalog ONLY. The catalog dispatches by canonical adapter prefix;
+// it never probes mux.Registry, discovery, or the legacy telemetry snapshot.
+// Auth is applied by the router.
 func (h *Handlers) HandleManagedNativeStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	id := r.PathValue("id")
-	// Check managed Codex registry.
-	if h.Managed != nil {
-		if rec, ok := h.Managed.Registry().Get(id); ok {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
-			return
-		}
-	}
-	// Check managed Claude registry.
-	if h.ManagedClaude != nil {
-		if rec, ok := h.ManagedClaude.Registry().Get(id); ok {
+	if h.Catalog != nil {
+		if rec, ok := h.Catalog.Get(id); ok {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(managedNativeStatusDTO(rec))
 			return
@@ -88,23 +80,18 @@ func (h *Handlers) HandleManagedNativeStatus(w http.ResponseWriter, r *http.Requ
 	http.Error(w, "managed session not found", http.StatusNotFound)
 }
 
-// HandleManagedSessions serves GET /api/managed-sessions from the owned
-// registries only: it never touches mux.Registry, adapter discovery, or the
-// telemetry snapshot. Returns combined results from both managed Codex and
-// managed Claude registries.
+// HandleManagedSessions serves GET /api/managed-sessions from the managed
+// catalog only: it never touches mux.Registry, adapter discovery, or the
+// telemetry snapshot. Returns combined results from both managed registries
+// through the catalog's deterministic merge.
 func (h *Handlers) HandleManagedSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var out []ManagedNativeStatusDTO
-	if h.Managed != nil {
-		for _, rec := range h.Managed.Registry().List() {
-			out = append(out, managedNativeStatusDTO(rec))
-		}
-	}
-	if h.ManagedClaude != nil {
-		for _, rec := range h.ManagedClaude.Registry().List() {
+	if h.Catalog != nil {
+		for _, rec := range h.Catalog.List() {
 			out = append(out, managedNativeStatusDTO(rec))
 		}
 	}

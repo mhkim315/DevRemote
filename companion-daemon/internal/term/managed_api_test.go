@@ -35,12 +35,31 @@ func createManagedForAPI(t *testing.T) (*ManagedCodexService, string) {
 	return managed, id
 }
 
+// catalogForAPI creates a ManagedRuntimeCatalog from one or both managed
+// services. nil services are skipped. RuntimeOf resolvers use the services'
+// own RuntimeOf methods when available.
+func catalogForAPI(codex *ManagedCodexService, claude *ManagedClaudeService) ManagedRuntimeCatalog {
+	var codexReg *ManagedSessionRegistry
+	var claudeReg *ManagedSessionRegistry
+	var codexRT func(string) (RuntimeRef, bool)
+	var claudeRT func(string) (RuntimeRef, bool)
+	if codex != nil {
+		codexReg = codex.Registry()
+		codexRT = codex.RuntimeOf
+	}
+	if claude != nil {
+		claudeReg = claude.Registry()
+		claudeRT = claude.RuntimeOf
+	}
+	return NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT)
+}
+
 // TestManagedREST_ListAndGet_FromOwnedRegistry: the authenticated list
 // endpoint carries the managed row sourced from the owned registry, and the
 // native-status endpoint retrieves the same session by canonical ID.
 func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 	managed, id := createManagedForAPI(t)
-	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed}
+	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	// List (production handler).
 	rec := httptest.NewRecorder()
@@ -99,7 +118,7 @@ func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 // identities, or process details.
 func TestManagedREST_DTOBounded(t *testing.T) {
 	managed, id := createManagedForAPI(t)
-	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed}
+	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	req := httptest.NewRequest("GET", "/api/sessions/x/native-status", nil)
 	req.SetPathValue("id", id)
@@ -170,7 +189,7 @@ func TestManagedREST_FailingDiscoveryIsolation(t *testing.T) {
 		failingAdapter{name: "tmux"},
 		failingAdapter{name: "cmux"},
 	)
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Managed: managed}
+	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	// List still serves the managed row despite failing discovery.
 	rec := httptest.NewRecorder()

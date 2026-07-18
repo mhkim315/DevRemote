@@ -310,7 +310,7 @@ func TestManagedREST_BoundedWhileDiscoveryHangs(t *testing.T) {
 	}()
 
 	managed, id := createManagedForAPI(t)
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Managed: managed}
+	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	type outcome struct {
 		listCode, statusCode int

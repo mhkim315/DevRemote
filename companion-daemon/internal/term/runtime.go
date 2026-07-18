@@ -62,6 +62,11 @@ type Handlers struct {
 	// ApprovalDelivery is the dedicated daemon-owned approval delivery boundary
 	// (never the generic CommandBroker). nil ⇒ the unavailable boundary.
 	ApprovalDelivery ApprovalDelivery
+	// Catalog is the PA1 read-only managed runtime catalog. It federates
+	// Get/List/RuntimeOf across the two accepted provider-owned registries
+	// without storing a merged copy or exposing mutation authority.
+	// nil ⇒ managed catalog reads return empty (no fallback to legacy).
+	Catalog ManagedRuntimeCatalog
 	// Managed is the SP0 native managed-session service (nil unless
 	// EnableManagedCodex). REST reads managed rows/status DIRECTLY from its
 	// owned registry — never through adapter discovery or telemetry.
