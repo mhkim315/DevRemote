@@ -35,7 +35,7 @@ No production code is modified in this phase.
 | `internal/transcript/launch_binding.go` | `bindLaunch`, `validateLaunch` | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
 | `internal/transcript/store.go` | `TranscriptStore`, `StoreEvent` | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
 | `internal/mux/registry.go` | `Register`, `CreateSession`, `TerminateSession`, `Adapter`, `Adapters`, `FindSession`, `InvalidateAdapter`, `Invalidate`, `Refresh`, `Sessions`, `Snapshot`, `FindSessionInCache` | physical deletion target | delete | Phase B | `rg -w "mux\.Registry" companion-daemon/internal/term` -> 0 matches |
-| `internal/mux/adapter.go` | `Adapter`, `TerminalStream`, `StreamOpener`, `InputWriter`, `ProcessProvider`, `HistoryReader`, `ScreenReader` | retained PTY primitive | TerminalTransport | A2 | `retained TerminalStream interfaces relocated before session.go deletion` |
+| `internal/mux/adapter.go` | `Adapter`, `TerminalStream`, `StreamOpener`, `InputWriter`, `ProcessProvider`, `HistoryReader`, `ScreenReader`, `SessionCreator`, `SessionTerminator` | retained PTY primitive | TerminalTransport | A2 | `retained TerminalStream interfaces relocated before session.go deletion` |
 | `internal/mux/session.go` | `NativeSession`, `ID`, `AdapterName`, `Read`, `Write`, `Resize`, `GetSize`, `Close` | retained PTY primitive | TerminalTransport | A2 | `retained TerminalStream interfaces relocated before session.go deletion` |
 | `internal/mux/id_parser.go` | `SessionRef`, `ParseSessionID`, `Canonical`, `ValidateAdapterName` | mixed public composition | provider-neutral identity | A2 | Canonical identity parser relocated to provider-neutral package; byte-for-byte meaning preserved. |
 | `internal/mux/controlled_pty_adapter.go` | `NewControlledPTYAdapter`, `ListSessions`, `CreateSession`, `TerminateSession` | legacy-only consumer | delete | A2 | `rg "NewControlledPTYAdapter" companion-daemon/internal/term` -> 0 matches |
@@ -58,10 +58,10 @@ The following accepted paths are explicitly NOT targets for legacy migration and
 
 | Unaffected Core System | Exact File / Symbol | Path Classification | Target Owner / Resolution | Migration Packet | Deletion Test / Criterion |
 | --- | --- | --- | --- | --- | --- |
-| `Approval RuntimeOf` | `internal/term/approval_store.go: RuntimeOf` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
-| `Codex/Claude delivery dispatch` | `internal/term/managed_codex.go`, `internal/term/claude_boundary.go` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
-| `claim/receipt/commit Store` | `internal/term/authoritative_approval_store.go`, `internal/term/approval_delivery.go` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
-| `provider-native consumption witness` | `internal/term/approval_delivery.go: verifyConsumption` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `Approval RuntimeOf` | `internal/term/approval_execution.go`: `RuntimeRef`<br>`internal/term/managed_codex.go`: `RuntimeOf`<br>`internal/term/managed_claude.go`: `RuntimeOf` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `Codex/Claude delivery dispatch` | `internal/term/managed_approval_delivery.go`<br>`internal/term/claude_approval_delivery.go` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `claim/receipt/commit Store` | `internal/term/approval_store_gen.go`: `AuthoritativeApprovalStore`, `ClaimForExecution`, `IssueReceipt`, `CommitReceipt` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `provider-native consumption witness` | `internal/term/claude_resume_coordinator.go`: `MarkWitnessed`, `WitnessKind`<br>`internal/term/managed_approval_delivery.go`: live CP0 accept/decline consumption evidence | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
 
 ## 3. Frozen Call-Site Requirements
 
