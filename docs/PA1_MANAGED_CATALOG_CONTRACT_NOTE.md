@@ -80,17 +80,22 @@ RuntimeOf(sessionID string) (RuntimeRef, bool)
 
 1. First, verify the session ID is valid and non-ambiguous via the **same
    path as `Get`** (adapter-prefix dispatch + cross-registry ambiguity
-   check + record validation). If `Get` would fail, `RuntimeOf` fails.
+   check + record validation including exact provider-origin binding).
+   If `Get` would fail, `RuntimeOf` fails.
 2. Delegate to the provider-specific `RuntimeOf` for the resolved adapter.
 3. Cross-validate the returned `RuntimeRef` against the catalog record:
-   `rt.Adapter` must equal the canonical adapter prefix, and
-   `rt.LaunchGen` must equal `rec.Epoch`. A mismatch is rejected.
+   `rt.Adapter` must equal the canonical adapter prefix,
+   `rt.LaunchGen` must equal `rec.Epoch`, and `rt.Version` must equal
+   the **certified authority version** from the provider's activation
+   configuration. No generic string normalization — each provider owns its
+   version policy through `AuthorityVersion()`.
 
 The provider-specific `RuntimeOf` methods remain unchanged — generation
 check, launch-certification validation, exited/deferred-exit handling, and
 all C3D contract conditions are preserved byte-for-byte. The catalog adds
 an authority-consistency check on top: the read boundary (`Get`) and the
-execution-authority boundary (`RuntimeOf`) must agree on identity.
+execution-authority boundary (`RuntimeOf`) must agree on identity,
+provider, version, adapter, and generation.
 
 ## 4. Lookup and collision behavior
 
@@ -112,8 +117,12 @@ copy nor the claude copy appears. This prevents provider-order bias
 is validated at read time against:
 - `mux.SessionRef.Validate()` — canonical ID with non-empty adapter
   and local ID, no control characters;
-- adapter prefix matches the expected registry origin;
-- non-empty `Provider`;
+- adapter prefix matches the expected registry origin (`codex_app_server`
+  for Codex registry, `claude_headless` for Claude registry);
+- **exact** `Provider` match against the registry origin: Codex records
+  must have `Provider == "codex"`; Claude records must have
+  `Provider == "claude"`. Case-mutated, whitespace-mutated,
+  cross-provider, and empty values are rejected;
 - non-empty `Version`.
 
 A record that fails validation is logged and excluded. This ensures
@@ -173,8 +182,9 @@ records.
    test bug or a future migration error). `Get` detects the duplicate by
    cross-checking the non-selected registry and returns `(zero, false)`.
 3. **Duplicate ID across registries**: The same `SessionID` appears in
-   both registries. `List` drops the duplicate entry whose adapter prefix
-   does not match the registry it came from, retaining one canonical row.
+   both registries. `List` **excludes all candidates** for the ambiguous
+   canonical ID — neither copy appears in the output. The catalog fails
+   closed rather than choosing by provider order.
 4. **Stale epoch**: A record's epoch changes after a runtime restart.
    `RuntimeOf` delegates to the provider's method, which compares the
    registry record's epoch against the runtime's epoch and rejects a

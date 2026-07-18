@@ -796,7 +796,15 @@ func TestCatalog_ProviderIdentityMutations(t *testing.T) {
 		SessionID: "claude_headless:case-mut", Provider: "Claude", Version: "2.1.209", Epoch: 1, CreatedAt: now,
 	})
 
-	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil, "0.144.1", "2.1.209")
+	// Inject resolvers that succeed for valid records so RuntimeOf failures
+	// can be attributed to provider validation, not nil resolvers.
+	codexRT := func(sid string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "codex_app_server", Version: "0.144.1", LaunchGen: 1}, true
+	}
+	claudeRT := func(sid string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1}, true
+	}
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT, "0.144.1", "2.1.209")
 
 	// Get: all mutated records return not found.
 	for _, sid := range []string{"codex_app_server:cross-prov", "codex_app_server:empty-prov", "claude_headless:cross-prov", "claude_headless:case-mut"} {
@@ -824,7 +832,18 @@ func TestCatalog_ProviderIdentityMutations(t *testing.T) {
 		}
 	}
 
-	// RuntimeOf: mutated records fail (Get path rejects them).
+	// RuntimeOf positive controls: valid records succeed with the same
+	// resolvers, proving resolvers are non-nil and functional.
+	if _, ok := cat.RuntimeOf(validCodex); !ok {
+		t.Error("RuntimeOf(valid codex) returned false with working resolver")
+	}
+	if _, ok := cat.RuntimeOf(validClaude); !ok {
+		t.Error("RuntimeOf(valid claude) returned false with working resolver")
+	}
+
+	// RuntimeOf negative controls: mutated records fail with the SAME
+	// resolvers. The failure is attributable to provider validation,
+	// not nil or broken resolvers.
 	for _, sid := range []string{"codex_app_server:cross-prov", "codex_app_server:empty-prov"} {
 		if _, ok := cat.RuntimeOf(sid); ok {
 			t.Errorf("RuntimeOf(%q) returned true for provider-mutated record", sid)
