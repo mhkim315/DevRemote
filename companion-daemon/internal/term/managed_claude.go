@@ -689,36 +689,20 @@ func (rt *claudeManagedRuntime) failClosedDenial() {
 // routeDenial validates one strictly decoded denial event against the
 // runtime-owned immutable resume context and routes the witness.
 //
-// R6-B P1 + R4: routeDenial passes the strictly decoded denial event to
-// the coordinator's MarkDenialWitness. Under one coordinator lock, the
-// operation selects exactly one entry matching the bound
-// ResumeAttemptIdentity's sessionID, toolUseID, toolName, and inputDigest,
-// then performs the witness transition. No two-step lookup-then-Mark.
+// R6-B P1 + R4: routeDenial passes the strictly decoded denial event and
+// the claim token to the coordinator's MarkDenialWitness. Under one
+// coordinator lock, the operation verifies exactly one denial entry matches
+// the bound ResumeAttemptIdentity, then performs the witness transition.
 func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 	ctx := rt.resumeCtx
 	if ctx == nil || ctx.coordinator == nil {
 		return // C1D observation runtime: never a witness source
 	}
-	// R4: find the denial entry matching the REAL resume identity.
-	// The bound attempt identity (set at ClaimWrite) carries the new
-	// tool_use_id and session_id. Original ctx.toolUseID is not used.
-	var match *streamDenialEntry
-	for i := range d.Entries {
-		// Accept the first denial entry — MarkDenialWitness will
-		// cross-check against the bound attempt identity under lock.
-		if match != nil {
-			// Multiple entries: ambiguous, cancel the claim.
-			rt.failClosedDenial()
-			return
-		}
-		match = &d.Entries[i]
-	}
-	if match == nil {
-		return // no denial entry to witness
-	}
+	// R4: pass all bounded denial entries + the claim token to the
+	// coordinator. The coordinator selects exactly one matching entry
+	// under one lock.
 	_, _, ok := ctx.coordinator.MarkDenialWitness(
-		d.SessionID, match.ToolUseID, match.ToolName, match.InputDigest,
-		ctx.originalRuntime)
+		ctx.claimToken, d.SessionID, d.Entries, ctx.originalRuntime)
 	if !ok {
 		rt.failClosedDenial()
 	}
@@ -1220,18 +1204,27 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	s.mu.Unlock()
 
 	// R4: coordinator-owned process pre-binding before spawn.
-	// Stores the expected launch generation independently so
-	// ClaimWrite can compare two independently stored values.
-	if ctx.coordinator != nil {
-		if !ctx.coordinator.BindResumeProcess(ctx.claimToken, ctx.resumeNonce, epoch) {
-			bridge.close()
-			os.RemoveAll(hookDir)
-			return nil, fmt.Errorf("managed claude resume process: coordinator pre-bind failed")
-		}
+	// The coordinator MUST be available for a resume to proceed;
+	// a nil coordinator means delivery was never wired.
+	if ctx.coordinator == nil {
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude resume process: coordinator not available")
+	}
+	if !ctx.coordinator.BindResumeProcess(ctx.claimToken, ctx.resumeNonce, epoch) {
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, fmt.Errorf("managed claude resume process: coordinator pre-bind failed")
 	}
 	// Place the same value in the immutable context for the bridge
 	// to pass to ClaimWrite.
 	ctx.resumeLaunchGen = epoch
+
+	// R4: pre-bind cleanup helper. ANY post-bind failure must cancel the
+	// entry so the delivery sees a terminal non-success.
+	cancelEntry := func() {
+		ctx.coordinator.CancelEntry(ctx.claimToken)
+	}
 
 	argv := []string{
 		"--verbose",
@@ -1245,6 +1238,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	if err != nil {
 		bridge.close()
 		os.RemoveAll(hookDir)
+		cancelEntry()
 		return nil, fmt.Errorf("managed claude resume launch: %w", err)
 	}
 	if !lease.setProc(proc) {
@@ -1252,6 +1246,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		_ = proc.Wait()
 		bridge.close()
 		os.RemoveAll(hookDir)
+		cancelEntry()
 		return nil, fmt.Errorf("managed claude service is shutting down")
 	}
 
@@ -1268,6 +1263,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		_ = proc.Wait()
 		bridge.close()
 		os.RemoveAll(hookDir)
+		cancelEntry()
 		reason := launchCert.Reason
 		if reason == "" {
 			reason = "launch binding invalid"
@@ -1282,6 +1278,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		_ = proc.Wait()
 		bridge.close()
 		os.RemoveAll(hookDir)
+		cancelEntry()
 		return nil, fmt.Errorf("managed claude service is shutting down")
 	}
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)

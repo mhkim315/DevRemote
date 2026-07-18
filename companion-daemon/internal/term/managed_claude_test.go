@@ -1522,6 +1522,9 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 		DeliverySchema: claudeDecisionSchemaV1,
 	}
 	handle, ok := svc.coordinator.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	if !svc.coordinator.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
+		t.Fatal("BindResumeProcess failed")
+	}
 	if !ok {
 		t.Fatal("expected ReserveEntry to succeed")
 	}
@@ -1586,6 +1589,9 @@ func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
 		DeliverySchema: claudeDecisionSchemaV1,
 	}
 	handle, ok := svc.coordinator.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	if !svc.coordinator.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
+		t.Fatal("BindResumeProcess failed")
+	}
 	if !ok {
 		t.Fatal("expected ReserveEntry to succeed")
 	}
@@ -1899,6 +1905,9 @@ func advanceToDecisionWritten(t *testing.T, c *claudeResumeCoordinator, toolInpu
 	binding.OptionID = "deny"
 	binding.DeliverySchema = claudeDecisionSchemaV1
 	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
+		t.Fatal("BindResumeProcess failed")
+	}
 	if !ok {
 		t.Fatal("ReserveEntry failed")
 	}

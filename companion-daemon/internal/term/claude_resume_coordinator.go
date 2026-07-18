@@ -440,10 +440,8 @@ func (c *claudeResumeCoordinator) BindResumeProcess(claimToken, resumeNonce stri
 	if !ok || entry.resumeNonce != resumeNonce || entry.state != stateDecisionReserved {
 		return false
 	}
-	// Accept first bind (expectedLaunchGen==0) or idempotent re-bind
-	// with the same generation. Reject a different generation already
-	// bound by a prior call.
-	if entry.expectedLaunchGen != 0 && entry.expectedLaunchGen != launchGen {
+	// R4: exactly-once. Reject if already bound.
+	if entry.expectedLaunchGen != 0 {
 		return false
 	}
 	entry.expectedLaunchGen = launchGen
@@ -550,18 +548,20 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 
 	switch entry.state {
 	case stateDecisionReserved:
-		// R4: independently validate the coordinator-owned expected
-		// launch generation (only when BindResumeProcess was called).
-		// Tests that call ClaimWrite directly without BindResumeProcess
-		// have expectedLaunchGen==0 and skip this check.
-		if entry.expectedLaunchGen != 0 &&
-			(entry.expectedLaunchGen != resumeLaunchGen) {
+		// R4: BindResumeProcess MUST have been called before ClaimWrite.
+		// The coordinator-owned expected generation must match exactly.
+		if entry.expectedLaunchGen == 0 || entry.expectedLaunchGen != resumeLaunchGen {
 			return WriteHandle{}, outcomeMismatch
 		}
-		// R4: independently validate toolName and inputDigest
-		// against the stored OriginalApprovalIdentity. This is
-		// authority — an internal caller that bypasses the bridge
-		// cannot forge an identity.
+		// R4: validate every new provider identity field at the
+		// deepest authority boundary. sessionID and toolUseID must
+		// be non-empty bounded tokens. toolName and inputDigest
+		// are independently compared against the stored
+		// OriginalApprovalIdentity.
+		if !validCoordinatorToken(sessionID, maxCoordinatorSessionID) ||
+			!validCoordinatorToken(toolUseID, maxCoordinatorToolID) {
+			return WriteHandle{}, outcomeMismatch
+		}
 		if entry.toolName != toolName || entry.inputDigest != inputDigest {
 			return WriteHandle{}, outcomeMismatch
 		}
@@ -582,10 +582,9 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 			resumeLaunchGen: resumeLaunchGen,
 			registeredAt:    clockNow(),
 		}
-		// Publish the bound identity on the entry so MarkWitnessed
-		// and MarkDenialWitness can validate against it.
-		entry.sessionID = sessionID
-		entry.toolUseID = toolUseID
+		// OriginalApprovalIdentity fields (entry.sessionID, entry.toolUseID)
+		// remain immutable. MarkWitnessed and MarkDenialWitness validate
+		// against entry.attempt (the bound ResumeAttemptIdentity).
 
 		entry.state = stateWriteClaimed
 		entry.writeClaimedAt = clockNow()
@@ -914,7 +913,8 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 			exactRespDigest: respDigest,
 		}
 		entry.state = stateWitnessPending
-		return entry.binding, respDigest, true
+		// R4: early witness stored, NOT terminal — zero binding/digest.
+		return ApprovalExecutionBinding{}, "", true
 
 	case stateWitnessPending:
 		// Already has an early witness.
@@ -950,52 +950,57 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 }
 
 // MarkDenialWitness is the single-lock coordinator operation for deny
-// witness. The pump passes a strictly decoded, bounded denial event. Under
-// one coordinator lock the operation selects exactly one entry matching the
-// bound ResumeAttemptIdentity and performs the same early- or normal-witness
-// transition as MarkWitnessed. Zero or multiple matches are non-success;
-// multiple matches cancel the claim as ambiguous.
-//
-// Returns the binding and response digest on success, or false.
-func (c *claudeResumeCoordinator) MarkDenialWitness(sessionID, toolUseID, toolName, inputDigest string, rt RuntimeRef) (ApprovalExecutionBinding, string, bool) {
+// witness. The pump passes the claim token and ALL bounded denial entries
+// from the strictly decoded denial event. Under one coordinator lock the
+// operation:
+//   1. Finds the entry by claimToken.
+//   2. Counts how many denial entries match the bound ResumeAttemptIdentity.
+//   3. Exactly one match → witness transition (same early/normal as MarkWitnessed).
+//   4. Zero matches → false. Multiple matches → cancel the entry as ambiguous.
+// Returns the binding and response digest on terminal success, or false.
+func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID string, denialEntries []streamDenialEntry, rt RuntimeRef) (ApprovalExecutionBinding, string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Find entries where the bound ResumeAttemptIdentity matches.
-	var matches []*resumeEntry
-	for _, entry := range c.entries {
-		if entry.attempt == nil {
-			continue
-		}
-		a := entry.attempt
-		if a.sessionID == sessionID && a.toolUseID == toolUseID &&
-			a.toolName == toolName && a.inputDigest == inputDigest &&
-			entry.runtime.equal(rt) {
-			matches = append(matches, entry)
+	entry, ok := c.entries[claimToken]
+	if !ok || entry.attempt == nil {
+		return ApprovalExecutionBinding{}, "", false
+	}
+	if entry.decision != "deny" {
+		return ApprovalExecutionBinding{}, "", false
+	}
+
+	a := entry.attempt
+
+	// Count denial entries matching the bound attempt identity.
+	var matches []streamDenialEntry
+	for _, e := range denialEntries {
+		if denialSessionID == a.sessionID &&
+			e.ToolUseID == a.toolUseID &&
+			e.ToolName == a.toolName &&
+			e.InputDigest == a.inputDigest {
+			matches = append(matches, e)
 		}
 	}
 
 	if len(matches) != 1 {
-		// Zero: no match. Multiple: ambiguous — cancel all of them.
-		for _, entry := range matches {
+		// Zero: no evidence this denial consumed OUR decision.
+		// Multiple: ambiguous — multiple entries for the same bound
+		// tool_use_id. Cancel the claim.
+		if len(matches) > 1 {
 			entry.earlyWitness = nil
 			entry.state = stateTerminal
 			select {
 			case entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}:
 			default:
 			}
-			delete(c.entries, entry.claimToken)
+			delete(c.entries, claimToken)
 			delete(c.identities, entry.approvalID)
 		}
 		return ApprovalExecutionBinding{}, "", false
 	}
 
-	entry := matches[0]
-
-	// Validate decision — deny only.
-	if entry.decision != "deny" {
-		return ApprovalExecutionBinding{}, "", false
-	}
+	match := matches[0]
 
 	switch entry.state {
 	case stateWriteClaimed:
@@ -1005,15 +1010,16 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(sessionID, toolUseID, toolNa
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.earlyWitness = &earlyWitnessArgs{
 			kind:            WitnessPermissionDenials,
-			sessionID:       sessionID,
-			toolUseID:       toolUseID,
-			toolName:        toolName,
-			inputDigest:     inputDigest,
+			sessionID:       denialSessionID,
+			toolUseID:       match.ToolUseID,
+			toolName:        match.ToolName,
+			inputDigest:     match.InputDigest,
 			runtime:         rt,
 			exactRespDigest: respDigest,
 		}
 		entry.state = stateWitnessPending
-		return entry.binding, respDigest, true
+		// R4: early witness stored, NOT terminal.
+		return ApprovalExecutionBinding{}, "", true
 
 	case stateWitnessPending:
 		if entry.earlyWitness == nil {
@@ -1023,7 +1029,7 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(sessionID, toolUseID, toolNa
 		if ew.kind != WitnessPermissionDenials {
 			return ApprovalExecutionBinding{}, "", false
 		}
-		if ew.sessionID == sessionID && ew.toolUseID == toolUseID {
+		if ew.sessionID == denialSessionID && ew.toolUseID == match.ToolUseID {
 			return ApprovalExecutionBinding{}, "", false // duplicate
 		}
 		return ApprovalExecutionBinding{}, "", false
@@ -1031,14 +1037,14 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(sessionID, toolUseID, toolNa
 	case stateDecisionWritten:
 		if clockNow().After(entry.decisionWrittenAt.Add(2 * coordinatorEntryTimeout)) {
 			entry.state = stateTerminal
-			delete(c.entries, entry.claimToken)
+			delete(c.entries, claimToken)
 			return ApprovalExecutionBinding{}, "", false
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.state = stateTerminal
 		result := TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
 		entry.completion <- result
-		delete(c.entries, entry.claimToken)
+		delete(c.entries, claimToken)
 		delete(c.identities, entry.approvalID)
 		return entry.binding, respDigest, true
 
