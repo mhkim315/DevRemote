@@ -194,4 +194,12 @@ func TestDrain_HungProcessTimeoutResult(t *testing.T) {
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("delivery must be accepted after drain timeout, got %s", receipt.Outcome)
 	}
+	// After delivery returns, the deferred terminate() has run.
+	// Entry and identity must be cleaned up (Kill+Wait each 1x).
+	if svc.Coordinator().EntryCount() != 0 {
+		t.Fatal("entry must be cleaned up after drain timeout")
+	}
+	if svc.Coordinator().IdentityCount() != 0 {
+		t.Fatal("identity must be cleaned up after delivery")
+	}
 }
