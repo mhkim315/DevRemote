@@ -153,8 +153,8 @@ SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940
 A1.2 Claude Approval Extension                ACCEPT 33cce5743 (C1D 4794ce7; C2D closed catalog 9116040; C3D-B/mobile 3ade9e3; final pinned live allow/deny C3D-C; arbitrary-command D1 remains REJECTED defeb9d)
 PF  Post-Claude Accepted-State Freeze         ACCEPT 07d5c8c5d (freeze ledger and rollback SHA cc86e3655 complete)
 PA0 Legacy Consumer Inventory/Ownership       ACCEPT d8e663c0c (exact consumer/symbol inventory, retained PTY boundary, executable deletion gates)
-PA1 Managed Catalog/Public Reads              READY — follow `NEXT_EXECUTOR_PA1_MANAGED_CATALOG_HANDOFF.md`; start clean at/after d8e663c, do not reuse interrupted broad WIP
-PA2 Managed Lifecycle/TerminalTransport       BLOCKED pending PA1 ACCEPT
+PA1 Managed Catalog/Public Reads              ACCEPT b377268f5 (implementation 95149ed; exact provider/version/generation binding; read-only catalog)
+PA2 Managed Lifecycle/TerminalTransport       READY — contract `PA2_LIFECYCLE_TRANSPORT_CONTRACT.md`; begin PA2a only, stop for independent review before PA2b
 PA3 Mobile/Transcript/Activity Cutover        BLOCKED pending PA2 ACCEPT
 PA4 Managed Authority-Isolation Gate          BLOCKED pending PA3 ACCEPT
 PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA4 ACCEPT
