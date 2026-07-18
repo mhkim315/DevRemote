@@ -1095,3 +1095,492 @@ func TestConfirmWriteJustAfterDeadline(t *testing.T) {
 type failingReader struct{}
 
 func (f *failingReader) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+// ── R4 adversarial tests (frozen amendment §8) ──
+
+// helper: reserve + pre-bind + write (the production path).
+func r4Setup(t *testing.T) (*claudeResumeCoordinator, ResumeHandle, string, string, string, string, RuntimeRef) {
+	t.Helper()
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
+	binding := testBinding(id, psid)
+	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	if !ok {
+		t.Fatal("ReserveEntry failed")
+	}
+	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
+		t.Fatal("BindResumeProcess failed")
+	}
+	return c, handle, sid, tuid, tn, dig, rt
+}
+
+// Test 3: Two resume hooks competing — exactly one identity registered.
+func TestR4_TwoResumeHooks_ExactlyOneIdentity(t *testing.T) {
+	c, handle, _, _, tn, dig, _ := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+	nonce := handle.ResumeNonce
+
+	// First ClaimWrite binds the identity.
+	_, out := c.ClaimWrite(tok, nonce, "sess-a", "tu-a", tn, dig, 1)
+	if out != outcomeWritten {
+		t.Fatalf("first bind: want outcomeWritten, got %d", out)
+	}
+
+	// Second ClaimWrite with DIFFERENT session/toolUseID → mismatch.
+	_, out = c.ClaimWrite(tok, nonce, "sess-b", "tu-b", tn, dig, 1)
+	if out != outcomeMismatch {
+		t.Fatalf("competing identity: want outcomeMismatch, got %d", out)
+	}
+
+	// Third ClaimWrite with SAME identity as first → duplicate.
+	_, out = c.ClaimWrite(tok, nonce, "sess-a", "tu-a", tn, dig, 1)
+	if out != outcomeDuplicate {
+		t.Fatalf("same identity replay: want outcomeDuplicate, got %d", out)
+	}
+}
+
+// Test 10: Different resume session ID after first bind → outcomeMismatch.
+func TestR4_DifferentSessionIDAfterFirstBind(t *testing.T) {
+	c, handle, _, tuid, tn, dig, _ := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	_, out := c.ClaimWrite(tok, handle.ResumeNonce, "sess-first", tuid, tn, dig, 1)
+	if out != outcomeWritten {
+		t.Fatalf("first bind: want outcomeWritten, got %d", out)
+	}
+	_, out = c.ClaimWrite(tok, handle.ResumeNonce, "different-sess", tuid, tn, dig, 1)
+	if out != outcomeMismatch {
+		t.Fatalf("want outcomeMismatch for diff session, got %d", out)
+	}
+}
+
+// Test 11: Wrong resume process generation → ClaimWrite rejects.
+func TestR4_WrongResumeProcessGeneration(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	// Bind with gen 5, but ClaimWrite with gen 3 → mismatch.
+	c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 5)
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 3)
+	if out != outcomeMismatch {
+		t.Fatalf("wrong generation: want outcomeMismatch, got %d", out)
+	}
+}
+
+// Test 22: Missing pre-bound resume generation → ClaimWrite unavailable.
+func TestR4_MissingPreBind_ClaimWriteUnavailable(t *testing.T) {
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
+	binding := testBinding(id, psid)
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	// NO BindResumeProcess → expectedLaunchGen==0 → ClaimWrite must reject.
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	if out != outcomeMismatch {
+		t.Fatalf("missing pre-bind: want outcomeMismatch, got %d", out)
+	}
+}
+
+// Test 4: PostToolUse with different toolUseID (not bound) → witness rejected.
+func TestR4_PostToolUse_WrongIdentity_Rejected(t *testing.T) {
+	c, handle, _, _, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	// Bind identity A.
+	c.ClaimWrite(tok, handle.ResumeNonce, "sess-a", "tu-bound", tn, dig, 1)
+	c.ConfirmWrite(tok, true)
+
+	// MarkWitnessed with DIFFERENT identity → rejected.
+	_, _, ok := c.MarkWitnessed(tok, WitnessPostToolUse, "sess-a", "tu-wrong", tn, dig, rt)
+	if ok {
+		t.Fatal("wrong toolUseID must be rejected")
+	}
+}
+
+// Test 5: Valid early PostToolUse (before ConfirmWrite) → stored, success after ConfirmWrite(true).
+func TestR4_EarlyPostToolUse_StoredThenCommitted(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	// Bind identity.
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	// Do NOT ConfirmWrite yet.
+
+	// Early witness (before ConfirmWrite).
+	binding, digest, ok := c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if !ok {
+		t.Fatal("early witness must be accepted")
+	}
+	// R4: early witness returns zero binding/digest (not terminal).
+	if binding.ApprovalID != "" || digest != "" {
+		t.Fatal("early witness must return zero binding/digest")
+	}
+
+	// ConfirmWrite(true) → commits the stored early witness.
+	out := c.ConfirmWrite(tok, true)
+	if out != outcomeWritten {
+		t.Fatalf("ConfirmWrite after early witness: want outcomeWritten, got %d", out)
+	}
+
+	// Entry must be terminal; completion must carry TerminalWitnessed.
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalWitnessed {
+			t.Fatalf("want TerminalWitnessed, got %d", result.Outcome)
+		}
+	default:
+		t.Fatal("completion must be available after ConfirmWrite with early witness")
+	}
+}
+
+// Test 6: Write failure then PostToolUse → no success (ambiguous terminal wipes early witness).
+func TestR4_WriteFailure_WipesEarlyWitness(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	// Early witness stored.
+	c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+
+	// Write FAILURE.
+	out := c.ConfirmWrite(tok, false)
+	if out != outcomeAmbiguous {
+		t.Fatalf("ConfirmWrite(false): want outcomeAmbiguous, got %d", out)
+	}
+
+	// Completion must be TerminalAmbiguous.
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalAmbiguous {
+			t.Fatalf("want TerminalAmbiguous, got %d", result.Outcome)
+		}
+	default:
+		t.Fatal("completion must be available after write failure")
+	}
+}
+
+// Test 8: Deny evidence matches new bound identity → witness accepted (deny commit).
+func TestR4_DenyEvidence_MatchesBoundIdentity(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4SetupForDeny(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	c.ConfirmWrite(tok, true)
+
+	// Denial entry matching the bound identity.
+	entries := []streamDenialEntry{{ToolUseID: tuid, ToolName: tn, InputDigest: dig}}
+	binding, digest, ok := c.MarkDenialWitness(tok, sid, entries, rt)
+	if !ok {
+		t.Fatal("denial witness matching bound identity must succeed")
+	}
+	if binding.ApprovalID == "" || digest == "" {
+		t.Fatal("terminal deny witness must return binding+digest")
+	}
+
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalWitnessed {
+			t.Fatalf("want TerminalWitnessed, got %d", result.Outcome)
+		}
+	default:
+		t.Fatal("completion must be available")
+	}
+}
+
+func r4SetupForDeny(t *testing.T) (*claudeResumeCoordinator, ResumeHandle, string, string, string, string, RuntimeRef) {
+	t.Helper()
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
+	binding := testBinding(id, psid)
+	binding.OptionID = "deny"
+	binding.DeliverySchema = claudeDecisionSchemaV1
+	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	if !ok {
+		t.Fatal("ReserveEntry for deny failed")
+	}
+	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
+		t.Fatal("BindResumeProcess failed")
+	}
+	return c, handle, sid, tuid, tn, dig, rt
+}
+
+// Test 9: Deny evidence with different identity → witness rejected.
+func TestR4_DenyEvidence_WrongIdentity_Rejected(t *testing.T) {
+	c, handle, _, tuid, tn, dig, rt := r4SetupForDeny(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, "sess-denial", tuid, tn, dig, 1)
+	c.ConfirmWrite(tok, true)
+
+	// Denial entry with DIFFERENT toolUseID → rejected.
+	entries := []streamDenialEntry{{ToolUseID: "wrong-tu", ToolName: tn, InputDigest: dig}}
+	_, _, ok := c.MarkDenialWitness(tok, "sess-denial", entries, rt)
+	if ok {
+		t.Fatal("denial with wrong identity must be rejected")
+	}
+}
+
+// Test 19: Ambiguous denial entries (duplicate bound tool_use_id) → cancel.
+func TestR4_AmbiguousDenialEntries_Cancel(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4SetupForDeny(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	c.ConfirmWrite(tok, true)
+
+	// Two denial entries with the same bound identity → ambiguous.
+	entries := []streamDenialEntry{
+		{ToolUseID: tuid, ToolName: tn, InputDigest: dig},
+		{ToolUseID: tuid, ToolName: tn, InputDigest: dig},
+	}
+	_, _, ok := c.MarkDenialWitness(tok, sid, entries, rt)
+	if ok {
+		t.Fatal("ambiguous denial entries must fail")
+	}
+	// Entry must be cancelled.
+	if c.EntryCount() != 0 {
+		t.Fatal("ambiguous denial must cancel the entry")
+	}
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalAmbiguous {
+			t.Fatalf("ambiguous denial: want TerminalAmbiguous, got %d", result.Outcome)
+		}
+	default:
+		t.Fatal("completion must be available")
+	}
+}
+
+// Test 14-18: witness_pending + all cleanup paths.
+func TestR4_WitnessPending_Stop_Cancelled(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	// Early witness → stateWitnessPending.
+	c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+
+	// Cancel (stop path).
+	c.CancelEntry(tok)
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalCancelled {
+			t.Fatalf("stop: want TerminalCancelled, got %d", result.Outcome)
+		}
+	default:
+		t.Fatal("completion must be available after stop")
+	}
+}
+
+func TestR4_WitnessPending_Delete_Cancelled(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+	id, _, _, _, _, _, _ := testIdentity()
+	c.entries[tok].approvalID = id // set approval ID for ClearForApproval
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+
+	// ClearForApproval (delete path).
+	c.ClearForApproval(id)
+	if c.EntryCount() != 0 {
+		t.Fatal("delete must remove the entry")
+	}
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalCancelled {
+			t.Fatalf("delete: want TerminalCancelled, got %d", result.Outcome)
+		}
+	default:
+	}
+}
+
+func TestR4_WitnessPending_Replacement_StaleRuntime(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+	psid := "claude_headless:claude-test"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+
+	// ClearRuntime (replacement path).
+	c.ClearRuntime(psid, rt.LaunchGen)
+	if c.EntryCount() != 0 {
+		t.Fatal("replacement must remove the entry")
+	}
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalStaleRuntime {
+			t.Fatalf("replacement: want TerminalStaleRuntime, got %d", result.Outcome)
+		}
+	default:
+	}
+}
+
+func TestR4_WitnessPending_Timeout_Ambiguous(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+
+	// Simulate timeout by advancing time beyond the entry cutoff.
+	c.mu.Lock()
+	e := c.entries[tok]
+	e.writeClaimedAt = e.writeClaimedAt.Add(-2 * coordinatorEntryTimeout)
+	c.mu.Unlock()
+	c.clearStaleEntries(clockNow())
+
+	if c.EntryCount() != 0 {
+		t.Fatal("timeout must remove the entry")
+	}
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalAmbiguous {
+			t.Fatalf("timeout: want TerminalAmbiguous, got %d", result.Outcome)
+		}
+	default:
+	}
+}
+
+func TestR4_WitnessPending_Close_Cancelled(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+
+	// Close.
+	c.Close()
+	select {
+	case result := <-handle.Completion:
+		if result.Outcome != TerminalCancelled {
+			t.Fatalf("close: want TerminalCancelled, got %d", result.Outcome)
+		}
+	default:
+	}
+}
+
+// Test 13: Same resume hook re-invocation (duplicate) → provider write exactly once.
+func TestR4_DuplicateHookReplay_WriteOnce(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, _ := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	// First bind.
+	wh1, out := c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	if out != outcomeWritten || wh1.Decision() == "" {
+		t.Fatal("first bind must succeed")
+	}
+	// Same identity replay → duplicate (no write).
+	_, out = c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	if out != outcomeDuplicate {
+		t.Fatalf("duplicate: want outcomeDuplicate, got %d", out)
+	}
+}
+
+// Test 21: Wrong early witness before ConfirmWrite → rejected without entering stateWitnessPending.
+func TestR4_WrongEarlyWitness_Rejected_StateUnchanged(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, rt := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	if c.pendingCount() != 1 {
+		t.Fatal("expected 1 pending after ClaimWrite")
+	}
+
+	// Wrong witness (different toolUseID).
+	_, _, ok := c.MarkWitnessed(tok, WitnessPostToolUse, "sess-wrong", "tu-wrong", tn, dig, rt)
+	if ok {
+		t.Fatal("wrong early witness must be rejected")
+	}
+	if c.pendingCount() != 1 {
+		t.Fatal("wrong witness must not change pending count")
+	}
+
+	// Correct witness still succeeds (first valid early witness).
+	_, _, ok = c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if !ok {
+		t.Fatal("correct early witness must succeed after wrong one was rejected")
+	}
+}
+
+// Test 12: Missing tool_input → bridge rejects (tested at coordinator: empty toolName/digest mismatch).
+func TestR4_MissingToolInput_Rejected(t *testing.T) {
+	c, handle, sid, tuid, tn, _, _ := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	// Empty digest → coordinator validates via inputDigest comparison.
+	// Bridge always computes and compares before calling ClaimWrite, but
+	// coordinator independently validates — empty digest fails.
+	_, out := c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, "", 1)
+	// Empty string is not a valid 64-char hex digest → mismatch.
+	if out != outcomeMismatch {
+		t.Fatalf("missing/empty inputDigest: want outcomeMismatch, got %d", out)
+	}
+}
+
+// Test 20: Cross-use: denial with original identity (not bound) → witness rejected.
+func TestR4_DenialCrossUse_OriginalIdentity_Rejected(t *testing.T) {
+	// Reserve identity and entry with ORIGINAL tuid (no bound attempt yet).
+	c := NewClaudeResumeCoordinator()
+	id, sid, tuid, tn, dig, psid, rt := testIdentity()
+	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
+	binding := testBinding(id, psid)
+	binding.OptionID = "deny"
+	binding.DeliverySchema = claudeDecisionSchemaV1
+	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1)
+	// ClaimWrite with NEW identity.
+	c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, "new-sess", "new-tu", tn, dig, 1)
+	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
+
+	// Deny with ORIGINAL tuid (not the bound one) → rejected.
+	entries := []streamDenialEntry{{ToolUseID: tuid, ToolName: tn, InputDigest: dig}}
+	_, _, ok := c.MarkDenialWitness("cccccccccccccccccccccccccccccccc", "new-sess", entries, rt)
+	if ok {
+		t.Fatal("denial with original identity must be rejected after new identity is bound")
+	}
+}
+
+// Test 1+2: Mutated input / different tool name → both coordinator rejection.
+func TestR4_MutatedInput_DifferentToolName_CoordinatorRejects(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, _ := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	// Mutated input (wrong digest) → coordinator rejects.
+	_, out := c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
+	if out != outcomeMismatch {
+		t.Fatalf("mutated input: want outcomeMismatch, got %d", out)
+	}
+
+	// Different tool name → coordinator rejects.
+	_, out = c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, "Read", dig, 1)
+	if out != outcomeMismatch {
+		t.Fatalf("different tool name: want outcomeMismatch, got %d", out)
+	}
+}
+
+// Test 7: Timeout/stop/replacement → ResumeAttemptIdentity removed, early witness wiped.
+func TestR4_StopWipesAttemptIdentity(t *testing.T) {
+	c, handle, sid, tuid, tn, dig, _ := r4Setup(t)
+	tok := "cccccccccccccccccccccccccccccccc"
+
+	c.ClaimWrite(tok, handle.ResumeNonce, sid, tuid, tn, dig, 1)
+	// Verify attempt is bound.
+	c.mu.Lock()
+	if c.entries[tok].attempt == nil {
+		c.mu.Unlock()
+		t.Fatal("attempt must be non-nil after ClaimWrite")
+	}
+	c.mu.Unlock()
+
+	// Cancel wipes the entry (and with it, the attempt).
+	c.CancelEntry(tok)
+	if c.EntryCount() != 0 {
+		t.Fatal("cancel must remove the entry")
+	}
+}
