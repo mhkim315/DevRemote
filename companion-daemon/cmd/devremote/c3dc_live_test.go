@@ -35,8 +35,9 @@ const c3dcPinnedDigest = "59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502
 const c3dcCaptureCap = 4 << 20 // 4 MiB per launch
 
 type c3dcCapture struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	Done chan struct{} // closed when tee reader observes EOF on the underlying pipe
 }
 
 func (c *c3dcCapture) Write(p []byte) (int, error) {
@@ -49,6 +50,8 @@ func (c *c3dcCapture) Write(p []byte) (int, error) {
 			c.buf.Write(p)
 		}
 	}
+	// Diagnostic: track write count for debugging TEE capture truncation.
+	_ = c // suppress unused warning when diag is removed
 	return len(p), nil // never backpressure the production pump
 }
 
@@ -58,6 +61,25 @@ func (c *c3dcCapture) bytes() []byte {
 	out := make([]byte, c.buf.Len())
 	copy(out, c.buf.Bytes())
 	return out
+}
+
+// eofTeeReader is io.TeeReader that closes Done when the source returns EOF.
+type eofTeeReader struct {
+	r    io.Reader
+	w    io.Writer
+	done chan struct{}
+	once sync.Once
+}
+
+func (t *eofTeeReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.w.Write(p[:n])
+	}
+	if err == io.EOF {
+		t.once.Do(func() { close(t.done) })
+	}
+	return n, err
 }
 
 // c3dcTeeProc replicates term's production execProcess exactly (direct exec,
@@ -125,7 +147,6 @@ type c3dcLaunch struct {
 	argv []string
 	cap  *c3dcCapture
 	pid  int
-	proc *c3dcTeeProc
 }
 
 type c3dcTeeLauncher struct {
@@ -157,15 +178,15 @@ func (l *c3dcTeeLauncher) LaunchInDir(exe string, argv []string, cwd string) (te
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	capture := &c3dcCapture{}
+	capture := &c3dcCapture{Done: make(chan struct{})}
 	p := &c3dcTeeProc{
 		cmd: cmd, stdin: stdin,
-		stdout:  io.TeeReader(stdout, capture),
+		stdout: &eofTeeReader{r: stdout, w: capture, done: capture.Done},
 		started: time.Now(),
 	}
 	l.mu.Lock()
 	l.launches = append(l.launches, &c3dcLaunch{
-		argv: append([]string(nil), argv...), cap: capture, pid: p.PID(), proc: p,
+		argv: append([]string(nil), argv...), cap: capture, pid: p.PID(),
 	})
 	l.mu.Unlock()
 	return p, nil
@@ -183,18 +204,6 @@ func (l *c3dcTeeLauncher) slice(from int) []*c3dcLaunch {
 	return append([]*c3dcLaunch(nil), l.launches[from:]...)
 }
 
-// waitAll blocks until all tracked processes have exited. Used as a
-// deterministic EOF barrier before reading the tee capture buffers.
-func (l *c3dcTeeLauncher) waitAll() {
-	l.mu.Lock()
-	launches := append([]*c3dcLaunch(nil), l.launches...)
-	l.mu.Unlock()
-	for _, ln := range launches {
-		if ln.proc != nil {
-			ln.proc.Wait()
-		}
-	}
-}
 
 // ── Redacted structural projection (committed-safe; no raw provider text) ──
 
@@ -440,12 +449,17 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 
 		// Corroboration (non-authority): probe token in EXECUTION output.
-		// Wait for all tracked processes to exit before reading the tee
-		// capture buffers. The pump goroutine drains stdout through the
-		// tee reader; Wait() ensures the process is reaped and the pipe
-		// is closed, so the capture has all bytes.
-		launcher.waitAll()
+		// Wait for the eofTeeReader to observe EOF on the underlying
+		// stdout pipe. The Done channel closes when the pump has fully
+		// drained the pipe; the capture buffer then has all bytes.
 		launches := launcher.slice(launchFloor)
+		for _, ln := range launches {
+			select {
+			case <-ln.cap.Done:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s: tee capture EOF timeout", run)
+			}
+		}
 		if len(launches) != 2 {
 			t.Fatalf("%s: expected exactly initial+resume launches, got %d", run, len(launches))
 		}
