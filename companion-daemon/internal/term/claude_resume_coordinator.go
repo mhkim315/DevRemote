@@ -971,13 +971,8 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 	if !ok || entry.attempt == nil {
 		return fail(WitnessStale)
 	}
-	// An allow decision has no deny witness to consume. The result
-	// line's empty permission_denials is NOT a consumption witness
-	// for allow — it's just the normal end-of-turn marker. Return
-	// success (no-op) so routeDenial does not cancel the entry
-	// before PostToolUse commits the real witness.
 	if entry.decision != "deny" {
-		return WitnessResult{Outcome: Witnessed}
+		return fail(WitnessMismatch)
 	}
 
 	a := entry.attempt

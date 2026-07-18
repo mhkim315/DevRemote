@@ -380,18 +380,43 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		svc.WaitExited(sid)
 		t.Logf("%s: initial process exited — joined-deferred claim window open", run)
 
+		// R4-R5 diagnostic: observe PostToolUse body structure.
+		postToolDiag := make(chan term.PostToolUseDiagnostic, 1)
+		svc.PostToolDiagHook = postToolDiag
+
 		// Authenticated claim through the composed production route.
 		code, body := fx.doJSON(t, "POST",
 			"/api/sessions/"+sid+"/approvals/"+dto.ID, tok,
 			`{"action":"`+action+`","idempotencyKey":"c3dc.live.`+run+`"}`)
+		// Drain PostToolUse diagnostic (non-blocking).
+		svc.PostToolDiagHook = nil // stop observing
+		var ptDiag *term.PostToolUseDiagnostic
+		select {
+		case d := <-postToolDiag:
+			ptDiag = &d
+		default:
+		}
+		if ptDiag != nil {
+			t.Logf("%s: PostToolUse diag: reached=%v sessionEq=%v toolUseEq=%v toolNameEq=%v hasInput=%v inputType=%s digestMatch=%v fields=%v",
+				run, ptDiag.EndpointReached, ptDiag.SessionIDEq, ptDiag.ToolUseIDEq, ptDiag.ToolNameEq,
+				ptDiag.HasToolInput, ptDiag.ToolInputType, ptDiag.DigestMatch, ptDiag.TopFields)
+		} else {
+			t.Logf("%s: PostToolUse diag: NOT CALLED (endpoint not reached)", run)
+		}
+
 		if code != 200 {
-			// Record state: claim vs delivery failure.
+			// Full diagnostic dump.
 			if snap, ok := store.LookupRecord(sid, dto.ID); ok {
-				t.Logf("%s: record state after claim: %s (actionable=%v)", run, snap.State, snap.Actionable)
+				t.Logf("%s: record state=%s actionable=%v", run, snap.State, snap.Actionable)
 			}
-			t.Logf("%s: coordinator identities=%d entries=%d", run,
-				fx.app.managedClaude.Coordinator().IdentityCount(),
-				fx.app.managedClaude.Coordinator().EntryCount())
+			coord := fx.app.managedClaude.Coordinator()
+			t.Logf("%s: coordinator identities=%d entries=%d pending=%d",
+				run, coord.IdentityCount(), coord.EntryCount(), coord.PendingCount())
+			// Dump coordinator identity IDs for cross-reference.
+			// The coordinator's internal maps aren't exported, but
+			// we can check HasIdentityForRuntime as a proxy.
+			t.Logf("%s: HasIdentityForRuntime(sid)=%v",
+				run, coord.HasIdentityForRuntime(sid, 1))
 			// Dump structural projections AND the raw capture to the
 			// evidence dir so the stream format can be debugged.
 			for i, ln := range launcher.slice(launchFloor) {

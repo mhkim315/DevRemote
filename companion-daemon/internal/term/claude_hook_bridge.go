@@ -138,6 +138,25 @@ type claudeHookBridge struct {
 
 	mu       sync.Mutex
 	shutdown bool
+
+	// R4-R5 diagnostic seam (test-only, nil in production): if non-nil,
+	// handlePostTool sends one PostToolUseDiagnostic before calling
+	// MarkWitnessed.
+	postToolDiag chan<- PostToolUseDiagnostic
+}
+
+// PostToolUseDiagnostic records structural facts about a PostToolUse
+// hook body observed by the bridge. Test-only; never contains raw text.
+type PostToolUseDiagnostic struct {
+	EndpointReached bool
+	TopFields       []string // field names present at top level
+	SessionIDEq     bool     // body session_id == ctx.claudeSessionID
+	ToolUseIDEq     bool     // body tool_use_id == ctx.toolUseID
+	ToolNameEq      bool     // body tool_name == ctx.toolName
+	HasToolInput    bool     // tool_input key is present
+	ToolInputType   string   // "string", "object", "absent"
+	DigestMatch     bool     // inputDigestBody == ctx.inputDigest (if present)
+	HTTPResult      int      // always 200 (we never fail the hook)
 }
 
 func newClaudeHookBridge() (*claudeHookBridge, string, error) {
@@ -465,8 +484,6 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		}
 		inputDigestBody = sha256Hex(canon)
 	}
-	// inputDigestBody stays "" if PostToolUse body has no tool_input.
-	// The ctx fallback is applied below, after ctx is resolved.
 
 	b.mu.Lock()
 	ctx := b.resumeCtx
@@ -480,14 +497,37 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	// R4: witness the REAL PostToolUse invocation's identity. The
 	// coordinator validates against the bound ResumeAttemptIdentity
 	// (created at ClaimWrite time).
-	//
-	// PostToolUse may not carry tool_input; if the body doesn't supply
-	// a digest, use the context's authoritative value (the input was
-	// already validated against the approved original action at
-	// ClaimWrite time by both bridge and coordinator).
-	if inputDigestBody == "" {
-		inputDigestBody = ctx.inputDigest
+
+	// R4-R5 diagnostic: record structural facts before witness.
+	if b.postToolDiag != nil {
+		diag := PostToolUseDiagnostic{
+			EndpointReached: true,
+			SessionIDEq:     sessionIDBody == ctx.claudeSessionID,
+			ToolUseIDEq:     toolUseIDBody == ctx.toolUseID,
+			ToolNameEq:      toolNameBody == ctx.toolName,
+			HTTPResult:      http.StatusOK,
+		}
+		diag.HasToolInput = fields["tool_input"] != nil
+		if diag.HasToolInput {
+			if len(fields["tool_input"]) > 0 && fields["tool_input"][0] == '{' {
+				diag.ToolInputType = "object"
+			} else {
+				diag.ToolInputType = "string"
+			}
+		} else {
+			diag.ToolInputType = "absent"
+		}
+		diag.DigestMatch = inputDigestBody != "" && inputDigestBody == ctx.inputDigest
+		// Collect top-level field names (closed vocabulary, no values).
+		for k := range fields {
+			diag.TopFields = append(diag.TopFields, k)
+		}
+		select {
+		case b.postToolDiag <- diag:
+		default:
+		}
 	}
+
 	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }
