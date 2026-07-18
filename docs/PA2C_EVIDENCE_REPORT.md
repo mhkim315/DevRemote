@@ -1,17 +1,71 @@
 # PA2c — Managed Lifecycle Ownership Evidence Report
 
-Status: **REVIEW REQUEST**
+Status: **REVIEW REQUEST** (R1 — remediation of the three rejection blockers)
 
-Implementation SHA: `5d655775e236dc2970472e155fa60b0e6a0b6356`
+Implementation SHA: `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` (R1, on top of rejected `5d655775e`)
 Evidence/report SHA: (this commit)
-Gate execution SHA: `5d655775e236dc2970472e155fa60b0e6a0b6356`
+Gate execution SHA: `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b`
+
+## 0. R1 remediation of the verifier blockers (rejected candidate `f23fbb7c31ac75720c905aa7662a7d4331787b1e`)
+
+**Blocker 1 — generation validated but process resolved late from mutable
+Registry.** Fixed: every owned generation is bound to an IMMUTABLE
+`mux.ManagedProcess` handle captured exactly once at creation
+(`OwnedPTYRuntime.captureHandle`, part of the spawn seam) and stored in the
+generation record. `beginStop`/`requestKill` CLAIM the handle under the store
+mutex at the decisive transition; the signal goes only to that captured
+handle. `managedProcess()` (action-time `FindSession`) is deleted; the arch
+gate pins `owned_pty_runtime.go` to exactly one `FindSession` call
+(creation-time capture). `finalize(id, gen)` transitions only the exact
+generation and skips spawn-seam registry cleanup when the generation is no
+longer current (`generationStillCurrent`), so a stale finalize cannot
+terminate a replacement's registry session.
+Test: `TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess`
+(deterministic: blocking old-handle signal; replacement registers gen2;
+replacement handle signal count asserted 0; old handle exactly 1; gen2 record
+running and registry untouched after the stale finalize).
+
+**Blocker 2 — lifecycle locks held across external I/O.** Fixed: the action
+lock + store mutex now cover ONLY the decisive transition + handle claim
+(`terminate`) and the terminal store transition (`finalize`);
+`TerminateGroup`, exit waits, and registry seam cleanup all run with no
+lifecycle lock held.
+Test: the same deterministic blocking-signal test proves a replacement's
+registration completes promptly (2s watchdog) WHILE the stale action is
+blocked inside `TerminateGroup`, and that the stale action cannot affect the
+replacement afterwards.
+
+**Blocker 3 — arbitrary owner errors + stale inferred from later catalog
+reread.** Fixed: closed typed vocabulary `LifecycleOutcome` (`accepted`,
+`already_terminal`, `stale_generation`, `not_found`, `not_terminal`,
+`unavailable`, `termination_failed`) in `lifecycle_outcome.go`.
+`ProviderLifecycleOwner` now RETURNS outcomes; the dispatcher maps them
+mechanically via `mapOutcome` (one arm per entry; unknown → fail closed
+`unavailable`); `classifyProviderErr` is deleted. The frozen provider
+services are adapted by `NewManagedProviderOwner`, which classifies a
+refusal from the provider-OWNED `ManagedSessionRegistry` record — the exact
+typed store the decisive comparison used — read immediately at the owner
+boundary; provider error strings are never parsed and the federated catalog
+is never reread for classification.
+Tests: `TestPA2c_R1_ProviderWrapper_StaleBeforePublication` (real
+`ManagedSessionRegistry` at epoch 7, federated catalog still serving epoch 6
+— replacement UNPUBLISHED — dispatch returns exactly
+`ErrLifecycleStaleGeneration`, zero signals to the replacement; plus typed
+classification of `not_found` and `already_terminal`);
+`TestPA2c_StaleGeneration_RejectedWithoutSignalingReplacement` now asserts
+the EXACT `ErrLifecycleStaleGeneration` (not merely non-nil) with the stale
+outcome produced before any publication.
+
+No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
+`Create`/`captureHandle`/`finalize` cleanup as documented.
 
 ## 1. Ancestry
 
 | Ancestor | SHA | Role |
 | --- | --- | --- |
-| PA2b final ACCEPT (rollback SHA) | `2897a9e0943656883a885e75b08513982de507b7` | accepted baseline; local==remote verified clean before work began |
-| PA2c implementation | `5d655775e236dc2970472e155fa60b0e6a0b6356` | this packet (16 files: 2 new, 1 deleted, 13 modified) |
+| PA2b final ACCEPT (rollback SHA) | `2897a9e0943656883a885e75b08513982de507b7` | accepted baseline |
+| PA2c initial candidate | `5d655775e236dc2970472e155fa60b0e6a0b6356` | REJECTED (blockers above) |
+| PA2c-R1 remediation | `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` | this candidate (6 files: 1 new, 5 modified; all other PA2c content preserved) |
 
 ## 2. Contract mapping (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c)
 
@@ -89,11 +143,12 @@ Gate execution SHA: `5d655775e236dc2970472e155fa60b0e6a0b6356`
 ## 5. Exact commands and results (at gate SHA)
 
 ```
-$ go test ./internal/term -run "TestPA2c" -count=1 -v      → 7/7 PASS
-$ go test ./internal/term ./cmd/devremote -count=1          → ok / ok
+$ go test ./internal/term -run "TestPA2c" -count=1 -v      → 8/8 PASS (R1: +2 new
+    deterministic tests; 1 provider-wrapper test replaces the onReject fake)
+$ go test ./internal/term ./cmd/devremote -count=1          → ok / ok (24.0s / 32.1s)
 $ go test -race ./... -count=1                              → exit 0, 12 packages ok
 $ go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=20
-    → ok (21.4s, 20/20 stable, race-clean)
+    → ok (21.2s, 20/20 stable, race-clean)
 ```
 
 Flake fixed during stabilization: `TestLifecycle_Stop_UnconfirmedTermination_Fails`
@@ -122,7 +177,7 @@ repetition gate; fixed with a unique per-run id.
 
 | Condition | Value |
 | --- | --- |
-| Implementation commit | `5d655775e236dc2970472e155fa60b0e6a0b6356` |
+| Implementation commits | `5d655775e` (initial, rejected) + `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` (R1 remediation) |
 | Evidence/report commit | this commit (docs only) |
 | Worktree at push | clean |
 | Local == Remote after push | verified in worker_done |
