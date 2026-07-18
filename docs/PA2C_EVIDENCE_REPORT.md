@@ -1,10 +1,55 @@
 # PA2c — Managed Lifecycle Ownership Evidence Report
 
-Status: **REVIEW REQUEST** (R1 — remediation of the three rejection blockers)
+Status: **REVIEW REQUEST** (R2 — remediation of the three R2 findings)
 
-Implementation SHA: `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` (R1, on top of rejected `5d655775e`)
+Implementation SHA: `f3c3ef77039f1b27219999fb578242759e0fb1b8` (R2, on top of rejected R1 `a632b4873`)
 Evidence/report SHA: (this commit)
-Gate execution SHA: `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b`
+Gate execution SHA: `f3c3ef77039f1b27219999fb578242759e0fb1b8`
+
+## 0-R2. Remediation of the R2 findings (rejected candidate `a632b487353d49bc501cb242ae1923bf5377f468`)
+
+**Finding 1 — Create published a running generation on nil handle capture.**
+Fixed: capture is MANDATORY (`captureHandle` returns an error; Create rolls
+the spawn back — TerminateSession + DeleteRecorder — and fails UNPUBLISHED).
+Test: `TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing` (streaming-but-
+handleless session: Create errors, owned store empty, exactly one rollback
+termination, no recorder retained). `fakeControlledSession` gained the
+ManagedProcess surface real controlled sessions have.
+
+**Finding 2 — unlocked check-then-act (`generationStillCurrent` →
+id-addressed `Registry.TerminateSession`).** Fixed: final cleanup is an
+immutable generation-bound `ownedCleanup` capability captured at creation
+(instance-guarded spawn-seam removal — a DIFFERENT live session instance
+under the id is never touched — plus `DeleteRecorderIfSame` for the exact
+captured Recorder). It is CLAIMED at most once, atomically with the
+generation-currency check inside `finalizeRecord` under the store mutex, and
+invoked outside all locks; `generationStillCurrent` is deleted. Losing
+convergers wait lock-free on the generation's `cleanupDone` channel so any
+converging action returns only after terminal cleanup landed; a stale
+finalizer claims nothing and receives no wait channel.
+Test: `TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated`
+(capability claimed while gen1 current; same-id replacement registered
+between claim and invocation; invocation terminates nothing, replacement
+session/record intact at gen2; second claim impossible).
+
+**Finding 3 — failed Stop/Kill + later `Exited` misclassified as
+already_terminal.** Fixed: `already_terminal`/`not_terminal` come ONLY from
+the authoritative PRE-call provider-registry read; a non-nil provider error
+is never success — post-call classification yields `stale_generation`/
+`not_found` on typed record movement, otherwise `termination_failed`
+(Stop/Kill) or `not_terminal` (Delete). HTTP mapping unchanged
+(termination_failed → 500; already_terminal → idempotent 200).
+Test: `TestPA2c_R2_CodexTimeout_MarkExitedThenError_IsTerminationFailed`
+(real Codex timeout shape — `MarkExited(sessionID, epoch)` then error →
+`termination_failed`; subsequent pre-call-exited Stop → `already_terminal`
+WITHOUT invoking the provider).
+
+Flake found and fixed during R2 stabilization: with the R1 action lock no
+longer held across cleanup I/O, `Stop` could return while the natural-exit
+watcher's claimed cleanup was still in flight
+(`TestLifecycle_Stop_RemovesAdapterSession`, ~4/20 under the combined 20×
+race batch); the `cleanupDone` convergence wait restores the completion
+ordering lock-free. 3 consecutive 20× race batches pass.
 
 ## 0. R1 remediation of the verifier blockers (rejected candidate `f23fbb7c31ac75720c905aa7662a7d4331787b1e`)
 
@@ -65,7 +110,8 @@ No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
 | --- | --- | --- |
 | PA2b final ACCEPT (rollback SHA) | `2897a9e0943656883a885e75b08513982de507b7` | accepted baseline |
 | PA2c initial candidate | `5d655775e236dc2970472e155fa60b0e6a0b6356` | REJECTED (blockers above) |
-| PA2c-R1 remediation | `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` | this candidate (6 files: 1 new, 5 modified; all other PA2c content preserved) |
+| PA2c-R1 remediation | `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` | REJECTED (R2 findings above) |
+| PA2c-R2 remediation | `f3c3ef77039f1b27219999fb578242759e0fb1b8` | this candidate (6 files; all accepted R1 fixes preserved) |
 
 ## 2. Contract mapping (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c)
 
@@ -144,12 +190,12 @@ No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
 ## 5. Exact commands and results (at gate SHA)
 
 ```
-$ go test ./internal/term -run "TestPA2c" -count=1 -v      → 8/8 PASS (R1: +2 new
-    deterministic tests; 1 provider-wrapper test replaces the onReject fake)
-$ go test ./internal/term ./cmd/devremote -count=1          → ok / ok (24.0s / 32.1s)
+$ go test ./internal/term -run "TestPA2c" -count=1 -v      → 11/11 PASS (R2: +3 new
+    deterministic tests)
+$ go test ./internal/term ./cmd/devremote -count=1          → ok / ok (24.3s / 32.6s)
 $ go test -race ./... -count=1                              → exit 0, 12 packages ok
 $ go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=20
-    → ok (21.2s, 20/20 stable, race-clean)
+    → ok / ok / ok (3 consecutive batches, 21.1–21.4s, race-clean)
 ```
 
 Flake fixed during stabilization: `TestLifecycle_Stop_UnconfirmedTermination_Fails`
