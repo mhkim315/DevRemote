@@ -579,6 +579,26 @@ func DeleteRecorder(sessionID string) {
 	}
 }
 
+// DeleteRecorderIfSame stops and removes the recorder for a session ONLY if
+// it is still the exact given instance (PA2c-R2 generation-bound final
+// cleanup: a replacement's recorder under a reused canonical id is never
+// removed by a stale finalizer). A nil rec never matches anything.
+func DeleteRecorderIfSame(sessionID string, rec *Recorder) {
+	if rec == nil {
+		return
+	}
+	recorderRegistry.mu.Lock()
+	r, ok := recorderRegistry.recorders[sessionID]
+	if !ok || r != rec {
+		recorderRegistry.mu.Unlock()
+		return
+	}
+	delete(recorderRegistry.recorders, sessionID)
+	delete(recorderRegistry.terminated, sessionID)
+	recorderRegistry.mu.Unlock()
+	r.Stop()
+}
+
 // WriteInput sends input to the PTY stream. Used for tmux stream-only input fallback.
 func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)

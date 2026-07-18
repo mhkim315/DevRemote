@@ -73,6 +73,10 @@ type fakeControlledSession struct {
 func (s *fakeControlledSession) ID() string          { return s.id }
 func (s *fakeControlledSession) AdapterName() string { return "controlled_pty" }
 func (s *fakeControlledSession) Title() string       { return s.id }
+
+// TerminateGroup: real controlled-PTY sessions are mux.ManagedProcess; the
+// PA2c-R2 mandatory handle capture requires the fake to expose it too.
+func (s *fakeControlledSession) TerminateGroup(bool) error { return nil }
 func (s *fakeControlledSession) OpenStream(ctx context.Context) (mux.TerminalStream, error) {
 	s.adapter.mu.Lock()
 	fail := s.adapter.openStreamErr

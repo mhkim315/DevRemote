@@ -82,7 +82,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	svc.OwnedPTY().killGrace = 50 * time.Millisecond
 	id := "controlled_pty:" + localID
 	EnsureRecorder(id, stuck, svc.activity) // recorder on a never-EOF stream
-	svc.OwnedPTY().register(id, "", "n", nil)
+	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
 	t.Cleanup(func() { DeleteRecorder(id) })
 
 	res, err := svc.Stop(context.Background(), id)

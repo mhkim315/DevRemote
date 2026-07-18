@@ -2,6 +2,7 @@ package term
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -43,6 +44,17 @@ type CatalogEntry struct {
 	// store lock — the linearization point). Not serialized: lifecycle
 	// generations are server-internal, never client-asserted.
 	Generation int64 `json:"-"`
+
+	// cleanup is the immutable generation-bound final-cleanup capability
+	// (ownedCleanup) captured at creation; claimed at most once by the
+	// winning finalizeRecord. Not serialized.
+	cleanup ownedCleanup
+
+	// cleanupDone closes when this generation's claimed cleanup capability
+	// has finished. Convergers that lose the claim (natural exit vs Stop vs
+	// Kill) wait on it — a channel wait, never a lock held across I/O — so
+	// an action returns only after the terminal cleanup landed.
+	cleanupDone chan struct{}
 
 	// handle is the IMMUTABLE process handle captured at creation and bound
 	// to exactly this generation. Lifecycle signalling uses ONLY this
@@ -104,59 +116,101 @@ func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 	return l
 }
 
+// ownedCleanup is the immutable, generation-bound final-cleanup capability
+// captured at creation (PA2c-R2). It removes exactly THIS generation's
+// spawn-seam registry entry (instance-guarded) and exactly THIS generation's
+// Recorder. It is claimed AT MOST ONCE, under the store mutex, by the
+// winning generation-guarded finalizeRecord — never selected by mutable
+// canonical-id lookup at cleanup time.
+type ownedCleanup func(ctx context.Context)
+
 // Create launches a controlled-PTY runtime through the temporary mux spawn
-// seam, proves its Recorder is ready, captures the IMMUTABLE process handle
-// for this exact launch, registers the generation-bound lifecycle record,
-// and starts the exactly-once exit watcher on the EXACT Recorder returned by
-// the spawn (closing the fast-exit race). Failure leaves no visible runtime.
+// seam, proves its Recorder is ready, captures the MANDATORY immutable
+// process handle and the generation-bound cleanup capability for this exact
+// launch, registers the generation-bound lifecycle record, and starts the
+// exactly-once exit watcher on the EXACT Recorder returned by the spawn
+// (closing the fast-exit race). Failure — including a failed handle capture
+// — rolls the spawn back and leaves no visible runtime: a running
+// generation is NEVER published without its exact process binding.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
 	canonicalID, rec, err := o.spawnControlled(ctx, opts)
 	if err != nil {
 		return "", err
 	}
-	// Capture the process handle ONCE, at creation (part of the spawn seam,
-	// before any lifecycle action and outside every lifecycle lock). This is
-	// the only Registry resolution the runtime's lifecycle will ever use.
-	handle := o.captureHandle(ctx, canonicalID)
-	gen := o.register(canonicalID, profileID, name, handle)
+	sess, handle, herr := o.captureHandle(ctx, canonicalID)
+	if herr != nil {
+		// PA2c-R2: handle capture is MANDATORY. Roll back the spawn exactly
+		// like a recorder-readiness failure — terminate the just-created
+		// runtime and drop its recorder — and fail creation unpublished.
+		ref := sessionid.ParseSessionID(canonicalID)
+		_ = o.reg.TerminateSession(ctx, ref.Adapter, ref.LocalID)
+		DeleteRecorder(canonicalID)
+		return "", fmt.Errorf("owned pty create: process handle capture failed: %w", herr)
+	}
+	cleanup := o.newCleanup(canonicalID, sess, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
 
-// captureHandle resolves the freshly-spawned session's process handle from
-// the spawn seam exactly once. nil when the session exposes no process
-// control (no signal will ever be sent for this generation).
-func (o *OwnedPTYRuntime) captureHandle(ctx context.Context, canonicalID string) mux.ManagedProcess {
+// captureHandle resolves the freshly-spawned session and its process handle
+// from the spawn seam exactly once, at creation. An error means the runtime
+// exposes no process control and MUST NOT be published as running.
+func (o *OwnedPTYRuntime) captureHandle(ctx context.Context, canonicalID string) (mux.Session, mux.ManagedProcess, error) {
 	if o.reg == nil {
-		return nil
+		return nil, nil, fmt.Errorf("no spawn seam registry")
 	}
 	sess, err := o.reg.FindSession(ctx, canonicalID)
 	if err != nil {
-		return nil
+		return nil, nil, fmt.Errorf("session not found after create: %w", err)
 	}
 	mp, ok := sess.(mux.ManagedProcess)
 	if !ok {
-		return nil
+		return nil, nil, fmt.Errorf("session exposes no process control")
 	}
-	return mp
+	return sess, mp, nil
+}
+
+// newCleanup builds the generation-bound final-cleanup capability. The
+// registry removal is INSTANCE-guarded against replacements: if the entry
+// visible under the canonical id is a DIFFERENT live session instance than
+// the one this generation spawned, a replacement owns the id and the
+// capability touches nothing. Otherwise (our own instance, or no live entry
+// visible — our exited runtime is filtered from listings) it removes this
+// generation's spawn-seam entry. Recorder removal is instance-guarded via
+// DeleteRecorderIfSame.
+func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *Recorder) ownedCleanup {
+	ref := sessionid.ParseSessionID(canonicalID)
+	return func(ctx context.Context) {
+		if o.reg != nil && sess != nil {
+			if cur, err := o.reg.FindSession(ctx, canonicalID); err == nil && cur != sess {
+				// A replacement's live entry occupies the id — never touch it.
+			} else {
+				_ = o.reg.TerminateSession(ctx, ref.Adapter, ref.LocalID)
+			}
+		}
+		DeleteRecorderIfSame(canonicalID, rec)
+	}
 }
 
 // register adds the running record under a fresh generation, bound to its
-// immutable process handle.
-func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess) int64 {
+// immutable process handle and cleanup capability.
+func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.nextGen++
 	gen := o.nextGen
 	o.entries[canonicalID] = &CatalogEntry{
-		ID:         canonicalID,
-		Adapter:    "controlled_pty",
-		ProfileID:  profileID,
-		Name:       name,
-		State:      LifecycleRunning,
-		StartedAt:  o.now(),
-		Generation: gen,
-		handle:     handle,
+		ID:          canonicalID,
+		Adapter:     "controlled_pty",
+		ProfileID:   profileID,
+		Name:        name,
+		State:       LifecycleRunning,
+		StartedAt:   o.now(),
+		Generation:  gen,
+		handle:      handle,
+		cleanup:     cleanup,
+		cleanupDone: make(chan struct{}),
 	}
 	return gen
 }
@@ -256,15 +310,24 @@ func (o *OwnedPTYRuntime) requestKill(id string, gen int64) (proceed bool, curre
 }
 
 // finalizeRecord records the terminal state exactly once for the EXACT
-// generation. Idempotent once terminal; a stale-generation finalize (the id
-// was replaced) is a no-op, so an old watcher can never terminate a newer
-// runtime record.
-func (o *OwnedPTYRuntime) finalizeRecord(id string, gen int64) bool {
+// generation and CLAIMS the generation's cleanup capability atomically with
+// the currency check (PA2c-R2: no unlocked check-then-act — the capability
+// is removed from the record under the store mutex, so it can be claimed at
+// most once and only while its generation was the current record). A
+// stale-generation finalize (the id was replaced) claims nothing.
+// The third return is the generation's cleanupDone channel: non-nil whenever
+// the EXACT generation exists in a terminal state (the losing converger
+// waits on it); nil for a stale/unknown generation (a stale finalizer must
+// never wait on — or touch — a replacement).
+func (o *OwnedPTYRuntime) finalizeRecord(id string, gen int64) (ownedCleanup, bool, chan struct{}) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e, ok := o.entries[id]
-	if !ok || e.Generation != gen || e.State.Terminal() {
-		return false
+	if !ok || e.Generation != gen {
+		return nil, false, nil
+	}
+	if e.State.Terminal() {
+		return nil, false, e.cleanupDone
 	}
 	if e.killRequested {
 		e.State = LifecycleKilled
@@ -273,7 +336,9 @@ func (o *OwnedPTYRuntime) finalizeRecord(id string, gen int64) bool {
 	}
 	t := o.now()
 	e.EndedAt = &t
-	return true
+	cl := e.cleanup
+	e.cleanup = nil
+	return cl, true, e.cleanupDone
 }
 
 // managedProcess intentionally does not exist: lifecycle actions never
@@ -380,37 +445,33 @@ func (o *OwnedPTYRuntime) awaitExit(id string, mp mux.ManagedProcess) bool {
 // records the terminal state. Natural exit (watchExit), Stop, and Kill all
 // converge here; the generation-guarded store transition makes the terminal
 // transition exactly-once, and a stale watcher cannot touch a replaced id.
-// The action lock covers ONLY the store transition — the spawn-seam registry
-// cleanup runs outside every lifecycle lock and only while this generation
-// is still the current record (a replacement's registry entry is never
-// terminated by a stale finalize).
+// The action lock covers ONLY the store transition. Final cleanup is the
+// generation-bound capability CLAIMED atomically inside finalizeRecord
+// (PA2c-R2) and invoked outside every lifecycle lock; it is instance-guarded
+// internally, so even a claimed capability racing a same-id replacement can
+// never terminate the replacement's registry entry or recorder. No mutable
+// id-based cleanup remains here.
 func (o *OwnedPTYRuntime) finalize(id string, gen int64) {
 	lock := o.lockFor(id)
 	lock.Lock()
-	finalized := o.finalizeRecord(id, gen)
+	cleanup, finalized, done := o.finalizeRecord(id, gen)
 	lock.Unlock()
-	if !finalized {
+	if finalized {
+		if cleanup != nil {
+			cleanup(context.Background())
+		}
+		close(done)
 		return
 	}
-	// Process is already dead (Recorder EOF) before the seam cleanup. Guard:
-	// the registry entry under this canonical id belongs to THIS generation
-	// only while no replacement has been registered; production ids are
-	// daemon-unique per launch, and the recheck keeps a seeded same-id
-	// replacement's registry entry out of reach of the stale cleanup.
-	if o.reg != nil && o.generationStillCurrent(id, gen) {
-		ref := sessionid.ParseSessionID(id)
-		_ = o.reg.TerminateSession(context.Background(), ref.Adapter, ref.LocalID)
+	if done != nil {
+		// The exact generation is terminal and the OTHER converger claimed
+		// the cleanup: wait (bounded, lock-free) for it to land so callers
+		// observe completed cleanup after any converging action returns.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	}
-	DeleteRecorder(id)
-}
-
-// generationStillCurrent reports whether the record for id is still exactly
-// the given generation.
-func (o *OwnedPTYRuntime) generationStillCurrent(id string, gen int64) bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	e, ok := o.entries[id]
-	return ok && e.Generation == gen
 }
 
 // Delete removes an ENDED runtime's record, history, and recorder
@@ -455,7 +516,10 @@ func (o *OwnedPTYRuntime) RegisterForTest(canonicalID, profileID, name string, r
 // process handle (deterministic replacement/signal tests). Returns the
 // allocated generation.
 func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name string, handle mux.ManagedProcess, rec *Recorder) int64 {
-	gen := o.register(canonicalID, profileID, name, handle)
+	// Test records carry a recorder-only cleanup (no captured spawn-seam
+	// session instance); it is still generation-claimed like production.
+	cleanup := func(context.Context) { DeleteRecorderIfSame(canonicalID, rec) }
+	gen := o.register(canonicalID, profileID, name, handle, cleanup)
 	o.watchExit(canonicalID, gen, rec)
 	return gen
 }

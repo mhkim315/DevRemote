@@ -202,13 +202,11 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	if currentSignals != 0 {
 		t.Fatalf("replacement runtime was signalled %d times by a stale dispatch", currentSignals)
 	}
-	// Typed classification also covers the remaining closed outcomes.
-	if oc := owner.(*managedProviderOwner).classify("codex_app_server:missing", 7, errors.New("x"), false); oc != OutcomeNotFound {
-		t.Fatalf("classify(unknown) = %s, want not_found", oc)
-	}
-	provReg.MarkExited(sid, 7)
-	if oc := owner.(*managedProviderOwner).classify(sid, 7, errors.New("x"), false); oc != OutcomeAlreadyTerminal {
-		t.Fatalf("classify(exited stop) = %s, want already_terminal", oc)
+	// Typed pre-call classification also covers the remaining closed
+	// outcomes without invoking the provider (R2: pre-call authoritative
+	// state only).
+	if oc := owner.Stop("codex_app_server:missing", 7); oc != OutcomeNotFound {
+		t.Fatalf("Stop(unknown) = %s, want not_found", oc)
 	}
 }
 
@@ -403,14 +401,17 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 	if _, err := os.Stat("catalog.go"); !os.IsNotExist(err) {
 		t.Error("internal/term/catalog.go still exists — SessionCatalog must be removed")
 	}
-	// R1: no Registry resolution inside the owned runtime's lifecycle action
-	// path — the only FindSession is the creation-time handle capture.
+	// R1: no Registry resolution inside the owned runtime's lifecycle ACTION
+	// path — exactly two FindSession calls exist: the creation-time handle
+	// capture and the instance-guard inside the generation-bound cleanup
+	// capability (both creation-bound; neither resolves a signal target at
+	// action time).
 	src, err := os.ReadFile("owned_pty_runtime.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(src), "FindSession"); n != 1 {
-		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want exactly 1 (creation-time capture only)", n)
+	if n := strings.Count(string(src), "FindSession"); n != 2 {
+		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want exactly 2 (creation-time capture + instance-guarded cleanup)", n)
 	}
 }
 
@@ -424,5 +425,194 @@ func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
 		if e.Adapter != "controlled_pty" {
 			t.Errorf("owned store row with adapter %q — provider rows must live only in ManagedRuntimeCatalog", e.Adapter)
 		}
+	}
+}
+
+// ── PA2c-R2 remediation tests ──
+
+// handlelessSession supports streaming (recorder readiness passes) but is NOT
+// a mux.ManagedProcess — modelling a spawn whose process control could not be
+// bound.
+type handlelessSession struct {
+	id     string
+	stream *fakeStream
+}
+
+func (s *handlelessSession) ID() string          { return s.id }
+func (s *handlelessSession) AdapterName() string { return "controlled_pty" }
+func (s *handlelessSession) Title() string       { return s.id }
+func (s *handlelessSession) OpenStream(context.Context) (mux.TerminalStream, error) {
+	return s.stream, nil
+}
+
+type handlelessAdapter struct {
+	mu         sync.Mutex
+	sessions   map[string]*handlelessSession
+	terminated []string
+}
+
+func (a *handlelessAdapter) Name() string { return "controlled_pty" }
+func (a *handlelessAdapter) ListSessions(context.Context) ([]mux.Session, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]mux.Session, 0, len(a.sessions))
+	for _, s := range a.sessions {
+		out = append(out, s)
+	}
+	return out, nil
+}
+func (a *handlelessAdapter) CreateSession(_ context.Context, opts mux.CreateOptions) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sessions[opts.Name] = &handlelessSession{id: opts.Name, stream: &fakeStream{closed: make(chan struct{})}}
+	return opts.Name, nil
+}
+func (a *handlelessAdapter) TerminateSession(_ context.Context, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.terminated = append(a.terminated, id)
+	delete(a.sessions, id)
+	return nil
+}
+func (a *handlelessAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
+	return mux.CaptureModeByteStream
+}
+func (a *handlelessAdapter) ManagedLifecycle() bool { return true }
+
+// R2 finding 1: creation MUST NOT publish a running generation without its
+// exact process handle — a failed capture rolls the spawn back unpublished.
+func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
+	adapter := &handlelessAdapter{sessions: map[string]*handlelessSession{}}
+	reg := mux.MustNewRegistry(adapter)
+	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+
+	local := genLocalID("nohandle")
+	_, err := owned.Create(context.Background(), mux.CreateOptions{Name: local}, "shell", "n")
+	if err == nil {
+		t.Fatal("Create published a running generation without a process handle")
+	}
+	if rows := owned.List(); len(rows) != 0 {
+		t.Fatalf("owned store has %d rows after failed capture, want 0 (unpublished)", len(rows))
+	}
+	// The spawn was rolled back: the runtime was terminated and its recorder
+	// dropped.
+	adapter.mu.Lock()
+	terminated := len(adapter.terminated)
+	adapter.mu.Unlock()
+	if terminated != 1 {
+		t.Fatalf("spawned runtime terminated %d times on rollback, want 1", terminated)
+	}
+	if GetRecorder("controlled_pty:"+local) != nil {
+		t.Fatal("recorder retained after rolled-back creation")
+	}
+}
+
+// R2 finding 2: the generation-bound cleanup capability, even when CLAIMED
+// while its generation was current and then raced by a same-id replacement
+// BETWEEN the claim (check) and the invocation (cleanup), can never
+// terminate the replacement's registry session or recorder: the capability
+// is instance-guarded, not id-addressed.
+func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
+	adapter := &lcAdapter{name: "controlled_pty", managed: true, sessions: map[string]*lcSession{}}
+	reg := mux.MustNewRegistry(adapter)
+	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+
+	const local = "claimrace"
+	const id = "controlled_pty:" + local
+
+	// Generation 1: capture its exact session instance into the capability.
+	adapter.add(local)
+	sessA, _, err := owned.captureHandle(context.Background(), id)
+	if err != nil {
+		t.Fatalf("capture gen1 session: %v", err)
+	}
+	cleanupA := owned.newCleanup(id, sessA, nil)
+	gen1 := owned.register(id, "", "old", nil, cleanupA)
+
+	// CLAIM the capability while gen1 is still current (the "check").
+	claimed, finalized, done := owned.finalizeRecord(id, gen1)
+	if !finalized || claimed == nil || done == nil {
+		t.Fatalf("finalizeRecord(current gen) = claimed=%v finalized=%v, want claim", claimed != nil, finalized)
+	}
+
+	// Replacement lands BETWEEN claim and cleanup: same canonical id, new
+	// session instance, new generation.
+	adapter.mu.Lock()
+	adapter.sessions[local] = &lcSession{id: local, adapter: "controlled_pty"}
+	adapter.mu.Unlock()
+	reg.InvalidateAdapter("controlled_pty")
+	gen2 := owned.register(id, "", "new", nil, func(context.Context) {})
+	if gen2 <= gen1 {
+		t.Fatalf("replacement generation not newer: %d then %d", gen1, gen2)
+	}
+
+	// Invoke the stale claimed capability: the instance guard must refuse to
+	// terminate the replacement's session.
+	claimed(context.Background())
+	adapter.mu.Lock()
+	terminated := len(adapter.terminated)
+	_, present := adapter.sessions[local]
+	adapter.mu.Unlock()
+	if terminated != 0 {
+		t.Fatalf("stale claimed cleanup terminated %d registry sessions of the replacement", terminated)
+	}
+	if !present {
+		t.Fatal("replacement registry session missing after stale cleanup")
+	}
+	if e, ok := owned.Get(id); !ok || e.Generation != gen2 || e.State != LifecycleRunning {
+		t.Fatalf("replacement record = %+v ok=%v, want running at gen %d", e, ok, gen2)
+	}
+	// And the capability can never be claimed twice; a stale generation gets
+	// no wait channel either (it must never wait on a replacement).
+	if cl, again, staleDone := owned.finalizeRecord(id, gen1); again || cl != nil || staleDone != nil {
+		t.Fatal("stale generation finalized/claimed/waited a second time")
+	}
+}
+
+// R2 finding 3: the real Codex-shaped timeout path — the frozen service
+// marks the record exited at the SAME generation and then returns an error —
+// must classify as termination_failed (HTTP 500), never as already_terminal
+// success. already_terminal is produced ONLY from authoritative PRE-call
+// state.
+func TestPA2c_R2_CodexTimeout_MarkExitedThenError_IsTerminationFailed(t *testing.T) {
+	provReg := NewManagedSessionRegistry(8)
+	const sid = "codex_app_server:t1"
+	if err := provReg.Register(ManagedSessionRecord{
+		SessionID: sid, Provider: "codex", Version: "0.144.1", Epoch: 7, ProcessID: "p1",
+	}); err != nil {
+		t.Fatalf("seed provider registry: %v", err)
+	}
+	calls := 0
+	stop := func(id string, epoch int64) error {
+		calls++
+		// Frozen ManagedCodexService.Stop timeout path: mark non-current so a
+		// stopped session can never look live, then report the failure.
+		provReg.MarkExited(id, epoch)
+		return errors.New("managed session stop: child did not exit within the bound")
+	}
+	owner := NewManagedProviderOwner(provReg, stop, stop, stop)
+
+	if oc := owner.Stop(sid, 7); oc != OutcomeTerminationFailed {
+		t.Fatalf("MarkExited-then-error Stop outcome = %s, want termination_failed", oc)
+	}
+	if calls != 1 {
+		t.Fatalf("provider called %d times, want 1", calls)
+	}
+
+	// Dispatcher/HTTP mapping stays contract-compliant: 500-class sentinel.
+	if err := mapOutcome(OutcomeTerminationFailed); err != ErrLifecycleTerminateFailed {
+		t.Fatalf("mapOutcome(termination_failed) = %v, want ErrLifecycleTerminateFailed", err)
+	}
+
+	// PRE-call authoritative state: the record is now genuinely exited, so a
+	// repeated Stop is already_terminal WITHOUT invoking the provider.
+	if oc := owner.Stop(sid, 7); oc != OutcomeAlreadyTerminal {
+		t.Fatalf("pre-call exited Stop outcome = %s, want already_terminal", oc)
+	}
+	if calls != 1 {
+		t.Fatalf("pre-call already_terminal invoked the provider (calls=%d), must not", calls)
+	}
+	if err := mapOutcome(OutcomeAlreadyTerminal); err != nil {
+		t.Fatalf("mapOutcome(already_terminal) = %v, want nil (idempotent success)", err)
 	}
 }

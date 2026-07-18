@@ -83,50 +83,64 @@ func NewManagedProviderOwner(
 	return &managedProviderOwner{reg: reg, stop: stop, kill: kill, del: del}
 }
 
-// classify maps a provider refusal to a typed outcome from the provider-owned
-// registry record. err is only checked for nil-ness — never parsed.
-func (p *managedProviderOwner) classify(id string, epoch int64, err error, isDelete bool) LifecycleOutcome {
-	if err == nil {
-		return OutcomeAccepted
-	}
-	if p.reg == nil {
+// act runs one generation-bound provider lifecycle call with typed
+// classification (PA2c-R2).
+//
+// PRE-CALL: idempotency and state outcomes come from the authoritative
+// provider-owned registry record read BEFORE the call — already_terminal and
+// not_terminal can ONLY be produced here. This is the only place a refusal
+// may be classified as success-shaped.
+//
+// POST-CALL: a non-nil provider error is NEVER success. It classifies from
+// the typed post-call record as stale_generation / not_found when the
+// record moved under the call, otherwise termination_failed (Stop/Kill) or
+// not_terminal (Delete). In particular the frozen Codex/Claude timeout path
+// — MarkExited(sessionID, epoch) followed by an error return — stays
+// termination_failed: the record shows Exited at the SAME generation after
+// the call, but termination was not confirmed, so it must not be reported
+// as already_terminal. err is only checked for nil-ness — never parsed.
+func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int64) error, isDelete bool) LifecycleOutcome {
+	if call == nil || p.reg == nil {
 		return OutcomeUnavailable
 	}
-	rec, ok := p.reg.Get(id)
+	pre, ok := p.reg.Get(id)
 	switch {
 	case !ok:
 		return OutcomeNotFound
-	case rec.Epoch != epoch:
-		// The provider's current generation differs from the dispatched one:
-		// the decisive comparison rejected a stale request. Classified from
-		// the provider-owned record, independent of any later publication.
+	case pre.Epoch != epoch:
 		return OutcomeStaleGeneration
-	case isDelete && !rec.Exited:
-		return OutcomeNotTerminal
-	case !isDelete && rec.Exited:
+	case !isDelete && pre.Exited:
+		// Authoritative PRE-call state: the exact generation is already
+		// terminal — idempotent success, no signal needed.
 		return OutcomeAlreadyTerminal
+	case isDelete && !pre.Exited:
+		return OutcomeNotTerminal
+	}
+	err := call(id, epoch)
+	if err == nil {
+		return OutcomeAccepted
+	}
+	post, ok := p.reg.Get(id)
+	switch {
+	case !ok:
+		return OutcomeNotFound
+	case post.Epoch != epoch:
+		return OutcomeStaleGeneration
+	case isDelete:
+		return OutcomeNotTerminal
 	default:
 		return OutcomeTerminationFailed
 	}
 }
 
 func (p *managedProviderOwner) Stop(id string, epoch int64) LifecycleOutcome {
-	if p.stop == nil {
-		return OutcomeUnavailable
-	}
-	return p.classify(id, epoch, p.stop(id, epoch), false)
+	return p.act(id, epoch, p.stop, false)
 }
 
 func (p *managedProviderOwner) Kill(id string, epoch int64) LifecycleOutcome {
-	if p.kill == nil {
-		return OutcomeUnavailable
-	}
-	return p.classify(id, epoch, p.kill(id, epoch), false)
+	return p.act(id, epoch, p.kill, false)
 }
 
 func (p *managedProviderOwner) Delete(id string, epoch int64) LifecycleOutcome {
-	if p.del == nil {
-		return OutcomeUnavailable
-	}
-	return p.classify(id, epoch, p.del(id, epoch), true)
+	return p.act(id, epoch, p.del, true)
 }
