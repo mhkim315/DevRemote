@@ -19,10 +19,6 @@ func main() {
 		runClient(os.Args[2:])
 		return
 	}
-	if len(os.Args) > 1 && (os.Args[1] == "link" || os.Args[1] == "unlink" || os.Args[1] == "links") {
-		runLinkerClient(os.Args[1], os.Args[2:])
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "devices" {
 		runDevicesClient(os.Args[2:])
 		return

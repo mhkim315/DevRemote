@@ -37,7 +37,6 @@ type Handlers struct {
 	Registry          *mux.Registry
 	Verifier          TokenVerifier               // may be nil if auth is not configured
 	Events            EventStore                  // agent event storage (never nil in production)
-	Links             LinkStore                   // session link storage (never nil in production)
 	Cmds              CommandBroker               // pending command storage (never nil in production)
 	Telemetry         *TelemetryService           // telemetry state (nil until wired)
 	AgentDetector     AgentDetector               // Phase A5: optional agent detector (nil if not wired)

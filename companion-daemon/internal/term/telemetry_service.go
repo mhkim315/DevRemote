@@ -22,7 +22,6 @@ import (
 type TelemetryService struct {
 	reg         *mux.Registry
 	events      EventStore
-	links       LinkStore
 	notifier    Notifier
 	detector    AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
 	approvals   *AuthoritativeApprovalStore              // A1: generation-bound approval store
@@ -47,7 +46,7 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, notifier Notifier, detector AgentDetector, approvals *AuthoritativeApprovalStore, activity *ActivityBuffer, transcriptSvc *transcript.Service) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, events EventStore, notifier Notifier, detector AgentDetector, approvals *AuthoritativeApprovalStore, activity *ActivityBuffer, transcriptSvc *transcript.Service) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
@@ -57,7 +56,6 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, links LinkStore, 
 	return &TelemetryService{
 		reg:         reg,
 		events:      events,
-		links:       links,
 		notifier:    notifier,
 		detector:    detector,
 		approvals:   approvals,
@@ -152,17 +150,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 	var logRef LogRef
 	var logErr error = fmt.Errorf("no log")
 
-	// 1. LinkedLogResolver
-	if s.links != nil {
-		if link, ok := GetLink(id, s.reg, s.links); ok && !link.Stale {
-			if link.Provider == "gemini-antigravity" {
-				res := &AntigravityResolver{}
-				logRef, logErr = res.ResolveLink(ctx, link.ExternalSessionID)
-			}
-		}
-	}
-
-	// 2. ProcessProvider
+	// 1. ProcessProvider (link-based resolver removed in PA2a)
 	if logErr != nil {
 		if info, ok := processSnapshots[id]; ok {
 			logRef, logErr = s.resolveLog(ctx, info)

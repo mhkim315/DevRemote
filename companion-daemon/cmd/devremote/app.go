@@ -58,7 +58,6 @@ type tunnelResource interface {
 type Dependencies struct {
 	Verifier            term.TokenVerifier // if nil, created from Config in NewAppWithDeps
 	Events              term.EventStore    // if nil, NewMemoryEventStore used
-	Links               term.LinkStore     // if nil, NewFileLinkStore used
 	Cmds                term.CommandBroker // if nil, NewCommandBroker used
 	DeviceSessionConfig *devicetrust.DeviceSessionManagerConfig
 	WSTicketConfig      *devicetrust.WSTicketStoreConfig
@@ -96,7 +95,6 @@ type App struct {
 	registry *mux.Registry
 	server   *http.Server
 	events   term.EventStore // agent event storage
-	links    term.LinkStore  // session link storage
 
 	// IPC path is owned by App so Shutdown can clean it up.
 	ipcPath string
@@ -167,19 +165,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if cmds == nil {
 		cmds = term.NewCommandBroker()
 	}
-	links := deps.Links
-	if links == nil {
-		var linkErr error
-		links, linkErr = term.NewFileLinkStore()
-		if linkErr != nil {
-			log.Printf("Failed to create link store: %v (links disabled)", linkErr)
-			links = term.NewNopLinkStore()
-		}
-	}
-	if err := term.LoadLinks(reg, links); err != nil {
-		log.Printf("Failed to load session links: %v", err)
-	}
-
 	// Phase A9: approval tracking.
 	approvals := term.NewApprovalStore()
 
@@ -272,7 +257,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	sessionMgr.SetOnRevoke(cb)
 	challengeStore := devicetrust.NewChallengeStore()
 
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Links: links, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
@@ -407,7 +392,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/stop", h.AuthMiddleware(h.HandleManagedClaudeSessionStop))
 		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/kill", h.AuthMiddleware(h.HandleManagedClaudeSessionKill))
 		serveMux.HandleFunc("DELETE /api/managed-claude-sessions/{id}", h.AuthMiddleware(h.HandleManagedClaudeSessionDelete))
-		serveMux.HandleFunc("/api/v2/links", h.AuthMiddleware(h.HandleLinksAPI))
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
 		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
 		serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
@@ -453,18 +437,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionKill, devicetrust.PermSessionsKill))
 		serveMux.HandleFunc("DELETE /api/managed-sessions/{id}",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedSessionDelete, devicetrust.PermHistoryDelete))
-		serveMux.HandleFunc("GET /api/v2/links",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/stop",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionStop, devicetrust.PermSessionsStop))
 		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/kill",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionKill, devicetrust.PermSessionsKill))
 		serveMux.HandleFunc("DELETE /api/managed-claude-sessions/{id}",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionDelete, devicetrust.PermHistoryDelete))
-		serveMux.HandleFunc("POST /api/v2/links",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermSessionsCreate))
-		serveMux.HandleFunc("DELETE /api/v2/links",
-			devicetrust.RequirePrincipal(sessionMgr, h.HandleLinksAPI, devicetrust.PermHistoryDelete))
 		serveMux.HandleFunc("GET /term/ws", h.HandleWSTicketAuth)
 		serveMux.HandleFunc("/term/size",
 			devicetrust.RequirePrincipal(sessionMgr, term.HandleTermSize, devicetrust.PermSessionsRead))
@@ -490,7 +468,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if cfg.EnableAgentDetection {
 		agentDetector = agent.NewTermAgentDetector()
 	}
-	telemetry := term.NewTelemetryService(reg, events, links, notifier, agentDetector, approvals, activity, transcriptSvc)
+	telemetry := term.NewTelemetryService(reg, events, notifier, agentDetector, approvals, activity, transcriptSvc)
 	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
@@ -507,7 +485,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		registry:      reg,
 		server:        &http.Server{Addr: addr, Handler: serveMux},
 		events:        events,
-		links:         links,
 		telemetry:     telemetry,
 		activity:      activity,
 		transcriptSvc: transcriptSvc,
@@ -721,7 +698,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.links, a.telemetry, a.activity, a.lifecycle, a.managed, a.managedClaude)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.telemetry, a.activity, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {

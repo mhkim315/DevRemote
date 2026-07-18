@@ -3,11 +3,8 @@ package term
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,7 +41,7 @@ func s1eCodexSvc(t *testing.T, sid string, pathPtr *string) (*TelemetryService, 
 	reg := mux.MustNewRegistry(adapter)
 	sess := &procSessMock{id: sid[len("controlled_pty:"):], adapter: "controlled_pty"}
 	adapter.sessions = []mux.Session{sess}
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: *pathPtr, Agent: "codex", Session: sid}, nil
@@ -149,7 +146,7 @@ func TestS1E_GenerationHighWaterRejectsLateWrite(t *testing.T) {
 func TestS1E_RegistryDisappearanceClears(t *testing.T) {
 	adapter := newLSAdapter("controlled_pty", true, "a", "b")
 	reg := mux.MustNewRegistry(adapter)
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(),
+	svc := NewTelemetryService(reg, NewMemoryEventStore(),
 		nil, nil, NewApprovalStore(), NewActivityBuffer(50), transcript.NewService(transcript.DefaultStoreConfig()))
 	seed := func(id string) {
 		svc.statusStore.Update(AgentStatusUpdate{SessionID: id, Generation: 1, Adapter: resolvingAdapter{},
@@ -180,42 +177,6 @@ func TestS1E_RegistryDisappearanceClears(t *testing.T) {
 	}
 }
 
-// E3: link and unlink through the production HandleLinksAPI owner clear the exact
-// canonical status record (the handler calls TelemetryService.Clear).
-func TestS1E_LinkUnlinkClearStatus(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		req  *http.Request
-	}{
-		{"link", httptest.NewRequest("POST", "/api/v2/links",
-			strings.NewReader(`{"sessionId":"controlled_pty:lnk","externalSessionId":"ext-1","provider":"gemini-antigravity"}`))},
-		{"unlink", httptest.NewRequest("DELETE", "/api/v2/links?session=controlled_pty:lnk", nil)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sid := "controlled_pty:lnk"
-			reg := mux.MustNewRegistry()
-			svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(),
-				nil, nil, NewApprovalStore(), NewActivityBuffer(50), transcript.NewService(transcript.DefaultStoreConfig()))
-			svc.statusStore.Update(AgentStatusUpdate{SessionID: sid, Generation: 1, Adapter: resolvingAdapter{},
-				Events: []agent.AgentEvent{ev(sid, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-			if _, _, ok := svc.statusStore.Current(sid); !ok {
-				t.Fatal("precondition: status must exist")
-			}
-			h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Links: NewNopLinkStore(), Telemetry: svc}
-			rr := httptest.NewRecorder()
-			h.HandleLinksAPI(rr, tc.req)
-			if rr.Code != http.StatusOK {
-				t.Fatalf("%s: status=%d (body=%s)", tc.name, rr.Code, rr.Body.String())
-			}
-			if _, _, ok := svc.statusStore.Current(sid); ok {
-				t.Errorf("%s via HandleLinksAPI did not clear the status record", tc.name)
-			}
-		})
-	}
-}
-
-// E4: the daemon's agentActivity DTO marshals to the exact golden wire shape the
-// production mobile validator decodes (frozen T0 version + full field set).
 func TestS1E_DTOGoldenShape(t *testing.T) {
 	dto := AgentActivityDTO{
 		ContractVersion: contract.ContractVersion,

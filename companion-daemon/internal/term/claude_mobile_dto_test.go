@@ -442,7 +442,7 @@ func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testi
 	events := NewMemoryEventStore()
 	store := NewApprovalStore()
 	detector := agent.NewTermAgentDetector()
-	svc := NewTelemetryService(reg, events, NewNopLinkStore(), nil,
+	svc := NewTelemetryService(reg, events, nil,
 		detector, store, NewActivityBuffer(100), ts)
 	gate := NewRuntimeDeliveryGate()
 	svc.SetDeliveryGate(gate)

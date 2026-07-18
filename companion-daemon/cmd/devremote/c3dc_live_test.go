@@ -182,7 +182,6 @@ func (l *c3dcTeeLauncher) slice(from int) []*c3dcLaunch {
 	return append([]*c3dcLaunch(nil), l.launches[from:]...)
 }
 
-
 // ── Redacted structural projection (committed-safe; no raw provider text) ──
 
 type c3dcLineProj struct {

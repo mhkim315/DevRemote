@@ -27,7 +27,6 @@ type IPCServer struct {
 	closeErr      error
 	reg           *mux.Registry
 	events        EventStore
-	links         LinkStore
 	telemetry     *TelemetryService
 	activity      *ActivityBuffer
 	lifecycle     *LifecycleService
@@ -37,7 +36,7 @@ type IPCServer struct {
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
 	// If a socket file already exists, only remove it when it is stale. If a
 	// live daemon is still listening on it, refuse: otherwise a duplicate
 	// daemon start would delete the running daemon's socket and then fail on
@@ -71,7 +70,6 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, lin
 		done:          make(chan struct{}),
 		reg:           reg,
 		events:        events,
-		links:         links,
 		telemetry:     telemetry,
 		activity:      activity,
 		lifecycle:     lifecycle,
@@ -95,7 +93,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.links, s.telemetry, s.activity, s.lifecycle, s.managed, s.managedClaude)
+		go handleIPCConnection(conn, s.reg, s.events, s.telemetry, s.activity, s.lifecycle, s.managed, s.managedClaude)
 	}
 }
 
@@ -118,7 +116,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, links LinkStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -136,11 +134,9 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 	if firstByte[0] == '{' {
 		// It's a JSON request
 		var req struct {
-			Version           int    `json:"version"`
-			Operation         string `json:"operation"`
-			SessionID         string `json:"sessionId"`
-			Provider          string `json:"provider"`
-			ExternalSessionID string `json:"externalSessionId"`
+			Version   int    `json:"version"`
+			Operation string `json:"operation"`
+			SessionID string `json:"sessionId"`
 			// create (privileged local launch — 0600 socket only)
 			Command    json.RawMessage `json:"command"`
 			CWD        string          `json:"cwd"`
@@ -163,33 +159,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, li
 			return
 		}
 
-		if req.Operation == "link" {
-			link := SessionLink{
-				SessionID:         req.SessionID,
-				Provider:          req.Provider,
-				ExternalSessionID: req.ExternalSessionID,
-			}
-			if err := LinkSession(link, reg, links, events); err != nil {
-				conn.Write([]byte(fmt.Sprintf("error linking: %v\n", err)))
-			} else {
-				if telemetry != nil {
-					telemetry.Clear(mux.MigrateLegacyID(link.SessionID))
-				}
-				conn.Write([]byte("linked\n"))
-			}
-		} else if req.Operation == "unlink" {
-			if err := UnlinkSession(req.SessionID, reg, links, events); err != nil {
-				conn.Write([]byte(fmt.Sprintf("error unlinking: %v\n", err)))
-			} else {
-				if telemetry != nil {
-					telemetry.Clear(mux.MigrateLegacyID(req.SessionID))
-				}
-				conn.Write([]byte("unlinked\n"))
-			}
-		} else if req.Operation == "links" {
-			allLinks := GetAllLinks(links)
-			json.NewEncoder(conn).Encode(allLinks)
-		} else if req.Operation == "create" {
+		if req.Operation == "create" {
 			// Privileged local launch. The 0600 socket is reachable only by
 			// local processes and is NOT forwarded through the tunnel, so this
 			// path may run the legacy command string or custom argv that HTTP

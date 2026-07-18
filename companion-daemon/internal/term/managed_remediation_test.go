@@ -19,7 +19,7 @@ import (
 func ipcRoundTripWith(t *testing.T, reg *mux.Registry, managed *ManagedCodexService, body map[string]any) map[string]string {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
-	go handleIPCConnection(serverConn, reg, nil, nil, nil, nil, nil, managed, nil)
+	go handleIPCConnection(serverConn, reg, nil, nil, nil, nil, managed, nil)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)

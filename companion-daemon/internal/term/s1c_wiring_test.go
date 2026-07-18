@@ -27,7 +27,7 @@ func s1cSvc(t *testing.T, agentKind, logPath, sid string) (*TelemetryService, *p
 	reg := mux.MustNewRegistry(adapter)
 	sess := &procSessMock{id: sid[len("controlled_pty:"):], adapter: "controlled_pty"}
 	adapter.sessions = []mux.Session{sess}
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: agentKind, Session: sid}, nil
@@ -247,7 +247,7 @@ func TestS1C_DeleteHandlerClearsStatus_NoInherit(t *testing.T) {
 	reg := mux.MustNewRegistry(managed)
 	life := NewLifecycleService(reg, NewActivityBuffer(50), nil)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	telem := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	telem := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 	life.SetStatusClearer(telem) // production wiring (mirrors app.go)
 

@@ -50,7 +50,6 @@ func TestProcessSession_AcceptedAdapterIndependent(t *testing.T) {
 	adapter := &stubRegAdapter{name: "controlled_pty"}
 	reg := mux.MustNewRegistry(adapter)
 	events := NewMemoryEventStore()
-	links := NewNopLinkStore()
 	approvals := NewApprovalStore()
 	activity := NewActivityBuffer(100)
 
@@ -62,7 +61,7 @@ func TestProcessSession_AcceptedAdapterIndependent(t *testing.T) {
 	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	svc := NewTelemetryService(
-		reg, events, links, nil, nil, approvals, activity, ts,
+		reg, events, nil, nil, approvals, activity, ts,
 	)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "codex", Session: sid}, nil
@@ -134,7 +133,7 @@ func TestProcessSession_VersionConflictNoSegments(t *testing.T) {
 	transcript.RegisterFirstLaunch(transcript.LaunchSpec{SessionID: sid, Provider: "codex", Adapter: "controlled_pty", Version: "0.144.1"})
 
 	svc := NewTelemetryService(
-		reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+		reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts,
 	)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {

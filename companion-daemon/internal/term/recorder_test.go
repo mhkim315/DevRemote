@@ -288,7 +288,7 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 	}
 
 	// Create TelemetryService with ActivityBuffer.
-	svc := NewTelemetryService(nil, nil, nil, nil, nil, nil, activity, nil)
+	svc := NewTelemetryService(nil, nil, nil, nil, nil, activity, nil)
 
 	// Call processSession — the production path that E8f2 added.
 	// This is the session-discovery trigger: no WebSocket, just daemon lifecycle.

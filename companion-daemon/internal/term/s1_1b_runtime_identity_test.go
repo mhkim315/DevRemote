@@ -144,7 +144,7 @@ func TestS11B_ProductionCorrelationUsesRuntimeIdentity(t *testing.T) {
 		reg := mux.MustNewRegistry(regAdapter)
 		sess := &procSessMock{id: "rid", adapter: "controlled_pty"}
 		regAdapter.sessions = []mux.Session{sess}
-		svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+		svc := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 			NewApprovalStore(), NewActivityBuffer(100), ts)
 		svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
 			return LogRef{Path: logPath, Agent: "codex", Session: sid}, nil
@@ -199,7 +199,7 @@ func TestS11B_ProductionAdapterMismatchNoStatus(t *testing.T) {
 	reg := mux.MustNewRegistry(regAdapter)
 	sess := &procSessMock{id: "mism", adapter: "tmux"}
 	regAdapter.sessions = []mux.Session{sess}
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "codex", Session: sid}, nil
@@ -232,7 +232,7 @@ func TestS11B_CreateRegisterReplaceWiring(t *testing.T) {
 	adapter := mux.NewControlledPTYAdapter()
 	reg := mux.MustNewRegistry(adapter)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	svc := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 
 	id, err := adapter.(mux.SessionCreator).CreateSession(context.Background(), mux.CreateOptions{

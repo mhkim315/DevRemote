@@ -28,7 +28,7 @@ func s1dSetup(t *testing.T) (*Handlers, *LifecycleService, *TelemetryService) {
 	life := NewLifecycleService(reg, NewActivityBuffer(50), nil)
 	seedCatalog(life, s1dSID, "controlled_pty", "s1", LifecycleRunning)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	telem := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	telem := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 	life.SetStatusClearer(telem) // production Delete → status clear wiring
 	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Telemetry: telem, Lifecycle: life}
@@ -232,7 +232,7 @@ func TestS1D_NoCrossSessionActivityLeak(t *testing.T) {
 	seedCatalog(life, "controlled_pty:s1", "controlled_pty", "s1", LifecycleRunning)
 	seedCatalog(life, "controlled_pty:s2", "controlled_pty", "s2", LifecycleRunning)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	telem := NewTelemetryService(reg, NewMemoryEventStore(), NewNopLinkStore(), nil, nil,
+	telem := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
 	life.SetStatusClearer(telem)
 	telem.statusStore.Update(AgentStatusUpdate{SessionID: "controlled_pty:s1", Generation: 1, Adapter: resolvingAdapter{},

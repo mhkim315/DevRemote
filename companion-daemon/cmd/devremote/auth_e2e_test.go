@@ -227,7 +227,7 @@ func TestRemoteRouteMatrix(t *testing.T) {
 	}
 
 	// Read-only member can observe product state.
-	for _, path := range []string{"/api/sessions", "/api/session-profiles", "/api/v2/links"} {
+	for _, path := range []string{"/api/sessions", "/api/session-profiles"} {
 		if code := authRequestStatus(t, srv.URL, http.MethodGet, path, memberTok, nil); code != http.StatusOK {
 			t.Errorf("member GET %s: %d want 200", path, code)
 		}
@@ -241,7 +241,6 @@ func TestRemoteRouteMatrix(t *testing.T) {
 		{http.MethodPost, "/api/sessions/controlled_pty:nope/kill", ""},
 		{http.MethodDelete, "/api/sessions/controlled_pty:nope", ""},
 		{http.MethodPost, "/api/sessions/s/approvals/a", `{}`},
-		{http.MethodPost, "/api/v2/links", `{}`},
 		{http.MethodPost, "/debug/cmd?session=missing", "x"},
 	} {
 		if code := authRequestStatus(t, srv.URL, tc.method, tc.path, memberTok, strings.NewReader(tc.body)); code != http.StatusForbidden {
@@ -258,7 +257,6 @@ func TestRemoteRouteMatrix(t *testing.T) {
 		{http.MethodPost, "/api/sessions/controlled_pty:nope/kill", ""},
 		{http.MethodDelete, "/api/sessions/controlled_pty:nope", ""},
 		{http.MethodPost, "/api/sessions/s/approvals/a", `{}`},
-		{http.MethodPost, "/api/v2/links", `{}`},
 		{http.MethodGet, "/term/size?session=missing", ""},
 		{http.MethodGet, "/term/?session=missing", ""},
 		{http.MethodGet, "/push/register?token=x", ""},
@@ -290,7 +288,6 @@ func TestLocalOnlyRouteMatrixPreserved(t *testing.T) {
 		want         int
 	}{
 		{http.MethodGet, "/api/session-profiles", http.StatusOK},
-		{http.MethodGet, "/api/v2/links", http.StatusOK},
 		{http.MethodGet, "/term/size?session=missing", http.StatusNotFound},
 		{http.MethodGet, "/term/?session=missing", http.StatusOK},
 		{http.MethodGet, "/push/register?token=x", http.StatusOK},
