@@ -19,10 +19,10 @@ const defaultClaudeDrainTimeout = 5 * time.Second
 
 // ClaudeManagedApprovalDelivery implements ApprovalDelivery for Claude.
 type ClaudeManagedApprovalDelivery struct {
-	svc         *ManagedClaudeService
-	timeout     time.Duration
+	svc          *ManagedClaudeService
+	timeout      time.Duration
 	drainTimeout time.Duration
-	barrier     func(stage string)
+	barrier      func(stage string)
 }
 
 func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedApprovalDelivery {
