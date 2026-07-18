@@ -53,6 +53,10 @@ var preToolUseAllowlist = map[string]bool{
 	"prompt_id":       true,
 	"permission_mode": true,
 	"effort":          true,
+	// PostToolUse-specific fields (accepted but not used for identity
+	// binding; tool_use_id/tool_name/tool_input carry the identity):
+	"tool_response": true, // the tool's stdout/stderr result
+	"duration_ms":   true, // hook execution timing
 }
 
 // strictPreToolUseDecode decodes raw JSON into a map, rejecting:
@@ -456,6 +460,16 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	}
 
 	// Strict decode PostToolUse fields.
+	// R4-R5: extract raw top-level keys before strict decode rejects
+	// unknown fields, so we can see the ACTUAL PostToolUse field names.
+	if b.postToolDiag != nil {
+		rawKeys := rawTopLevelKeys(body)
+		b.postToolDiag <- PostToolUseDiagnostic{
+			EndpointReached: true,
+			TopFields:       rawKeys,
+			HTTPResult:      http.StatusOK,
+		}
+	}
 	fields, ok := strictPreToolUseDecode(body)
 	if !ok {
 		w.WriteHeader(http.StatusOK)
@@ -498,38 +512,38 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	// coordinator validates against the bound ResumeAttemptIdentity
 	// (created at ClaimWrite time).
 
-	// R4-R5 diagnostic: record structural facts before witness.
-	if b.postToolDiag != nil {
-		diag := PostToolUseDiagnostic{
-			EndpointReached: true,
-			SessionIDEq:     sessionIDBody == ctx.claudeSessionID,
-			ToolUseIDEq:     toolUseIDBody == ctx.toolUseID,
-			ToolNameEq:      toolNameBody == ctx.toolName,
-			HTTPResult:      http.StatusOK,
-		}
-		diag.HasToolInput = fields["tool_input"] != nil
-		if diag.HasToolInput {
-			if len(fields["tool_input"]) > 0 && fields["tool_input"][0] == '{' {
-				diag.ToolInputType = "object"
-			} else {
-				diag.ToolInputType = "string"
-			}
-		} else {
-			diag.ToolInputType = "absent"
-		}
-		diag.DigestMatch = inputDigestBody != "" && inputDigestBody == ctx.inputDigest
-		// Collect top-level field names (closed vocabulary, no values).
-		for k := range fields {
-			diag.TopFields = append(diag.TopFields, k)
-		}
-		select {
-		case b.postToolDiag <- diag:
-		default:
-		}
-	}
-
 	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
+}
+
+// rawTopLevelKeys extracts top-level JSON keys without allowlist filtering.
+// Used only by the R4-R5 PostToolUse diagnostic. Never returns values.
+func rawTopLevelKeys(raw []byte) []string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil
+	}
+	var keys []string
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil
+		}
+		keys = append(keys, key)
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil
+		}
+	}
+	return keys
 }
 
 func writeHookDefer(w http.ResponseWriter) {
