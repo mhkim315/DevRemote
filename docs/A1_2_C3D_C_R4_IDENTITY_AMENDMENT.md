@@ -1,10 +1,11 @@
-# A1.2 C3D-C R4 — Identity Model Amendment (R1)
+# A1.2 C3D-C R4 — Identity Model Amendment (R2, verifier-frozen)
 
-Status: **PRE-IMPLEMENTATION — AWAITING REVIEW**
+Status: **ACCEPTED FOR R4-R2 THROUGH R4-R4 DETERMINISTIC IMPLEMENTATION**
 
 Parent: `docs/A1_2_C3D_C_LIVE_PACKET_CONTRACT_NOTE.md`
 Rejected midpoint: `314541267d645b6f1f6e275fb7151e40e5cec1b8`
 Rejected R0: `9cabfe39c5d73b6e4e729910fca82cd40c2838aa` (5 changes required)
+Reviewed R1: `91ce0dbf034718b8c54b94ab3433f81cb3783d42` (4 final changes applied here)
 Authority: `docs/A1_2_C3D_ACTIVATION_CONTRACT_NOTE.md` §8 (accepted R1 `98ca6d9`)
 
 ## 1. Live-confirmed contradiction (unchanged from R0)
@@ -68,16 +69,30 @@ first line of defense — a tampered hook body never reaches the coordinator.
 observability/convenience; the coordinator's validation is **authority**.
 An internal caller that bypasses the bridge cannot forge an identity.
 
-**Coordinator** (`ClaimWrite`): also validates `resumeLaunchGen ==
-ctx.resumeLaunchGen` (from the immutable resume context, set by
-`ResumeForApproval` before spawn). This binds the attempt to exactly the
-claim-owned resume process — a different process incarnation cannot
-impersonate the claim.
+**Coordinator-owned process pre-binding**: `ResumeForApproval` allocates the
+resume epoch, then calls a coordinator transition equivalent to
+`BindResumeProcess(claimToken, resumeNonce, resumeLaunchGen)` **before** the
+process is spawned or its hook bridge is published. The transition validates
+the existing reserved entry and stores the expected generation exactly once.
+It rejects a missing entry, wrong nonce, duplicate/different generation, stale
+runtime, or non-reserved state. Spawn/publication failure cancels the entry.
+
+**Coordinator** (`ClaimWrite`): validates the generation received from the
+immutable resume context against the independently stored expected generation
+created by `BindResumeProcess`. Comparing two values derived from the same
+caller context is prohibited. This binds the attempt to exactly the
+claim-owned resume process — another process incarnation cannot impersonate
+the claim even if it reaches an internal callable boundary.
 
 ### 3D. Registration is atomic one-time
 
 The first `ClaimWrite` that passes BOTH bridge and coordinator validation
-creates the `ResumeAttemptIdentity` on the entry. Rules:
+creates the `ResumeAttemptIdentity` on the entry. The new Claude `sessionID`
+has no provider-issued parent-ID join available before this hook: it is
+therefore accepted only as the first observed session ID from the
+claim-specific bridge whose token, nonce, and coordinator-owned resume process
+generation have all matched. It is not inferred from timing, command text, or
+FIFO ordering. Rules:
 
 - First `ClaimWrite` with valid identity → creates `ResumeAttemptIdentity`,
   transitions `stateDecisionReserved → stateWriteClaimed`.
@@ -101,14 +116,24 @@ tool_use_id, so the filter drops it. Deny witness can never reach
 
 ### Fixed
 
-After `ClaimWrite` binds the `ResumeAttemptIdentity`, `routeDenial` is
-updated to filter denial entries by **both** the original tool_use_id
-(safety gate: "is this denial about our tool category?") **and** the bound
-`ResumeAttemptIdentity` fields (exact match: "is this the specific resume
-invocation we bound?"). The bound identity's `sessionID`, `toolUseID`,
-`toolName`, and `inputDigest` must all match the denial entry. If no bound
-identity exists yet (pre-ClaimWrite), denial entries are held or rejected
-(same fail-closed semantics as early PostToolUse — see §5).
+After `ClaimWrite` binds the `ResumeAttemptIdentity`, `routeDenial` filters
+denial entries **only** by the bound attempt's `sessionID`, `toolUseID`,
+`toolName`, and `inputDigest`. The original and resume tool-use IDs are known
+to differ; requiring both is impossible and is prohibited. Tool category is
+already enforced by the bound `toolName` and input digest.
+
+The pump must not obtain a mutable/read-only attempt snapshot and later call a
+second authority operation. It passes the strictly decoded, bounded denial
+event to a coordinator operation equivalent to `MarkDenialWitness`; under one
+coordinator lock that operation requires exactly one entry matching the bound
+attempt, validates state/kind/runtime/deadline, and performs the same early- or
+normal-witness transition as `MarkWitnessed`. Zero or multiple matches are
+non-success, with multiple matches cancelling the claim as ambiguous.
+
+If no bound attempt exists yet (pre-`ClaimWrite`), a denial cannot prove
+consumption of this decision. It is not held for later association and does
+not become a witness. The entry is cancelled/fails closed according to its
+current pre-write state.
 
 `MarkWitnessed` for deny (`WitnessPermissionDenials`) validates against the
 bound `ResumeAttemptIdentity`, identical to the allow path.
@@ -135,9 +160,14 @@ reserved ──ClaimWrite──▶ write_claimed ──ConfirmWrite(true)──�
 ```
 
 Rules:
-- `MarkWitnessed` at `stateWriteClaimed` → stores the witness args
-  (kind, sessionID, toolUseID, toolName, inputDigest, runtime) in the
-  entry and transitions to `stateWitnessPending`. Does NOT send terminal.
+- Before any early witness is stored, `MarkWitnessed` validates the expected
+  witness kind for the selected decision, every field of the bound
+  `ResumeAttemptIdentity`, the original authoritative `RuntimeRef`, and the
+  witness deadline. A mismatched or expired witness returns false and leaves
+  `stateWriteClaimed` unchanged; it cannot occupy the pending slot.
+- `MarkWitnessed` at `stateWriteClaimed` with a fully valid witness → stores
+  the bounded witness args (kind, sessionID, toolUseID, toolName, inputDigest,
+  runtime) and transitions to `stateWitnessPending`. Does NOT send terminal.
 - `ConfirmWrite(true)` at `stateWitnessPending` → validates the stored
   early witness against the **ResumeAttemptIdentity** and commits
   `TerminalWitnessed` (terminal).
@@ -171,21 +201,25 @@ The early witness is wiped — it can never commit after cleanup.
 
 ## 6. Immutable resume context changes
 
-`resumeContext` gains one new field:
+`resumeContext` gains one new field, but it is not the authority owner:
 
 | Field | Source |
 |---|---|
 | `resumeLaunchGen` | Resume process epoch from `ResumeForApproval` |
 
-Set by `Deliver` → `ResumeForApproval` before spawn. The bridge passes it
-to `ClaimWrite`, which validates it against the stored identity.
+`ResumeForApproval` allocates the epoch, stores it first through the
+coordinator-owned `BindResumeProcess` transition, then places the same value in
+the immutable context before spawn. The bridge passes it to `ClaimWrite`,
+which compares it against the coordinator's independently stored expected
+generation.
 
 ## 7. Bridge changes (summary, implementation in R4-R3)
 
 ### `handleResume`
 1. Strict decode real body
 2. Recompute `inputDigestBody`
-3. Validate claim/nonce/`resumeLaunchGen` against context
+3. Validate claim/nonce against context; pass the immutable
+   `resumeLaunchGen` to the coordinator for comparison with its pre-bound value
 4. **Compare** `toolNameBody == ctx.toolName && inputDigestBody == ctx.inputDigest` (bridge-side validation)
 5. If mismatch → fail-closed defer
 6. If match → `ClaimWrite(claimToken, resumeNonce, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.resumeLaunchGen)`
@@ -198,9 +232,12 @@ to `ClaimWrite`, which validates it against the stored identity.
 4. `MarkWitnessed` validates against the bound `ResumeAttemptIdentity`
 
 ### `routeDenial` (in `managed_claude.go` pump)
-1. Filter denial entries by the bound `ResumeAttemptIdentity`'s
-   `sessionID`, `toolUseID`, `toolName`, `inputDigest` (exact match).
-   If no bound identity exists yet, fail closed.
+1. Strictly decode a bounded denial event and pass it to the coordinator.
+2. Under one coordinator lock, select exactly one entry matching the bound
+   `ResumeAttemptIdentity`'s `sessionID`, `toolUseID`, `toolName`, and
+   `inputDigest`, then perform the witness transition. Never gate on the
+   original tool-use ID and never use lookup-then-Mark TOCTOU. If no bound
+   identity exists yet, cancel/fail closed without retaining the event.
 
 ## 8. Required adversarial tests (expanded from R0)
 
@@ -210,12 +247,12 @@ to `ClaimWrite`, which validates it against the stored identity.
 | 2 | Different tool name on resume | 0 responses |
 | 3 | Two resume hooks competing | Exactly one identity registered; second is duplicate or mismatch |
 | 4 | PostToolUse with different toolUseID (not bound) | Witness rejected (no commit) |
-| 5 | Early PostToolUse (before ConfirmWrite) | Stored, one success after ConfirmWrite(true) |
+| 5 | Valid early PostToolUse (before ConfirmWrite) | Stored, one success after ConfirmWrite(true) |
 | 6 | Write failure then PostToolUse | No success (ambiguous terminal wipes early witness) |
 | 7 | Timeout/stop/replacement | ResumeAttemptIdentity removed, early witness wiped |
 | 8 | Deny evidence matches new bound identity | Witness accepted (deny commit) |
 | 9 | Deny evidence with different identity | Witness rejected |
-| 10 | Wrong resume session ID | `ClaimWrite` rejects (`outcomeMismatch`) |
+| 10 | Different resume session ID after first bind | Second `ClaimWrite` rejects (`outcomeMismatch`); the first ID is accepted only through the claim-specific token/nonce/pre-bound process generation |
 | 11 | Wrong resume process generation | `ClaimWrite` rejects |
 | 12 | Missing tool_input | Bridge rejects (fail-closed defer) |
 | 13 | Same resume hook re-invocation (duplicate) | Detected as duplicate; provider write exactly once |
@@ -226,9 +263,12 @@ to `ClaimWrite`, which validates it against the stored identity.
 | 18 | witness_pending + close | Terminal cancelled, early witness wiped |
 | 19 | Ambiguous denial entries (duplicate bound tool_use_id) | Fail-closed cancel |
 | 20 | Cross-use: denial with original identity (not bound) | Witness rejected |
+| 21 | Wrong early witness before ConfirmWrite | Rejected without entering `stateWitnessPending`; later correct witness may still succeed |
+| 22 | Missing pre-bound resume generation | Spawn/publication and `ClaimWrite` are unavailable; zero provider response |
 
 Tests 1-2 and 7 have existing catalog-test counterparts that were broken by
-the rejected substitution fix (R3). Tests 3-6, 8-20 are new.
+the rejected substitution fix (R3). Tests 3-6 and 8-22 are new or require
+explicit strengthening against this frozen model.
 
 ## 9. Non-goals (corrected from R0)
 
@@ -246,16 +286,29 @@ the rejected substitution fix (R3). Tests 3-6, 8-20 are new.
 ## 10. Implementation order
 
 1. **R4-R2**: Coordinator changes — `ResumeAttemptIdentity` struct,
-   `ClaimWrite` dual validation + one-time bind, `MarkWitnessed` against
-   bound identity, early-witness states, all cleanup paths, `routeDenial`
-   against bound identity. `resumeContext.resumeLaunchGen` field.
+   coordinator-owned `BindResumeProcess`, `ClaimWrite` dual validation +
+   one-time bind, `MarkWitnessed` against bound identity, early-witness states,
+   coordinator-owned bounded denial matching, all cleanup paths, and
+   `resumeContext.resumeLaunchGen` field.
 2. **R4-R3**: Bridge changes — `handleResume` compare-then-bind,
-   `handlePostTool` real body values.
-3. **R4-R4**: Adversarial deterministic tests (all 20).
-4. **R4-R5**: Full `-race` gate, focused adversarial tests ×5, then (and
-   only then) live allow/deny proof.
+   `handlePostTool` real body values; `routeDenial` selects only the bound
+   attempt identity.
+3. **R4-R4**: Adversarial deterministic tests (all 22), focused adversarial
+   tests ×5, and the full deterministic `-race` gate. Freeze HEAD and stop for
+   independent review.
+4. **R4-R5** (only after R4-R4 ACCEPT): live allow/deny proof, then the final
+   repository gate and evidence report on a frozen exact HEAD.
 
-## 11. Stop condition
+## 11. Current unsafe ancestry and implementation authorization
 
-Stop for independent review of this amendment. R4-R2 implementation is
-**not** authorized until this amendment is ACCEPTED.
+The rejected substitution changes `1f0ad68` and `85e8830` are committed
+ancestors of this branch; they were not stashed and are not accepted
+production behavior. Until R4-R3 replaces them, the Claude actionable/live
+path MUST NOT be run or represented as supported. R4-R2 and R4-R3 may be
+developed and tested deterministically, but must land as one reviewable
+authority repair before any live turn.
+
+This R2 amendment authorizes R4-R2 through R4-R4 deterministic
+implementation. Freeze HEAD and stop for independent review after all 22
+adversarial tests and the full deterministic `-race` gate pass. R4-R5 live
+proof remains prohibited until that review ACCEPT.
