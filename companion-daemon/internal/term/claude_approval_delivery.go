@@ -139,6 +139,15 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		return fail(DeliveryConflict)
 	}
 
+	// Allow the resume process to exit naturally within a bounded
+	// window. The witness is committed, but tool_result stdout may
+	// still be in-flight. Killing immediately (defer terminate) would
+	// truncate the pipe before capture buffers receive the full stream.
+	select {
+	case <-rt.exited:
+	case <-time.After(5 * time.Second):
+	}
+
 	// Construct receipt with the exact response digest.
 	return DeliveryReceipt{
 		Outcome:                DeliveryAccepted,

@@ -35,9 +35,8 @@ const c3dcPinnedDigest = "59d2de7f49db2f75d5c33bbb46a6b8f288ad24d40b61e30602a502
 const c3dcCaptureCap = 4 << 20 // 4 MiB per launch
 
 type c3dcCapture struct {
-	mu   sync.Mutex
-	buf  bytes.Buffer
-	Done chan struct{} // closed when tee reader observes EOF on the underlying pipe
+	mu  sync.Mutex
+	buf bytes.Buffer
 }
 
 func (c *c3dcCapture) Write(p []byte) (int, error) {
@@ -50,8 +49,6 @@ func (c *c3dcCapture) Write(p []byte) (int, error) {
 			c.buf.Write(p)
 		}
 	}
-	// Diagnostic: track write count for debugging TEE capture truncation.
-	_ = c // suppress unused warning when diag is removed
 	return len(p), nil // never backpressure the production pump
 }
 
@@ -61,25 +58,6 @@ func (c *c3dcCapture) bytes() []byte {
 	out := make([]byte, c.buf.Len())
 	copy(out, c.buf.Bytes())
 	return out
-}
-
-// eofTeeReader is io.TeeReader that closes Done when the source returns EOF.
-type eofTeeReader struct {
-	r    io.Reader
-	w    io.Writer
-	done chan struct{}
-	once sync.Once
-}
-
-func (t *eofTeeReader) Read(p []byte) (int, error) {
-	n, err := t.r.Read(p)
-	if n > 0 {
-		t.w.Write(p[:n])
-	}
-	if err == io.EOF {
-		t.once.Do(func() { close(t.done) })
-	}
-	return n, err
 }
 
 // c3dcTeeProc replicates term's production execProcess exactly (direct exec,
@@ -178,10 +156,10 @@ func (l *c3dcTeeLauncher) LaunchInDir(exe string, argv []string, cwd string) (te
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	capture := &c3dcCapture{Done: make(chan struct{})}
+	capture := &c3dcCapture{}
 	p := &c3dcTeeProc{
 		cmd: cmd, stdin: stdin,
-		stdout: &eofTeeReader{r: stdout, w: capture, done: capture.Done},
+		stdout:  io.TeeReader(stdout, capture),
 		started: time.Now(),
 	}
 	l.mu.Lock()
@@ -449,17 +427,11 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 
 		// Corroboration (non-authority): probe token in EXECUTION output.
-		// Wait for the eofTeeReader to observe EOF on the underlying
-		// stdout pipe. The Done channel closes when the pump has fully
-		// drained the pipe; the capture buffer then has all bytes.
+		// The delivery's natural-exit drain (5s bounded wait for <-rt.exited
+		// after witness commit, claude_approval_delivery.go) ensures the
+		// resume process stdout is fully drained through the tee reader
+		// before Deliver returns and the claim POST completes.
 		launches := launcher.slice(launchFloor)
-		for _, ln := range launches {
-			select {
-			case <-ln.cap.Done:
-			case <-time.After(30 * time.Second):
-				t.Fatalf("%s: tee capture EOF timeout", run)
-			}
-		}
 		if len(launches) != 2 {
 			t.Fatalf("%s: expected exactly initial+resume launches, got %d", run, len(launches))
 		}
