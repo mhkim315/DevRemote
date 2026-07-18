@@ -17,12 +17,17 @@ import (
 const defaultClaudeDeliveryTimeout = 120 * time.Second
 const defaultClaudeDrainTimeout = 5 * time.Second
 
+// drainWaiter waits for the resume process to exit naturally. Injected
+// for deterministic tests; production uses a real timer-based waiter.
+type drainWaiter func(exited <-chan struct{}, timeout time.Duration) bool
+
 // ClaudeManagedApprovalDelivery implements ApprovalDelivery for Claude.
 type ClaudeManagedApprovalDelivery struct {
-	svc          *ManagedClaudeService
-	timeout      time.Duration
+	svc         *ManagedClaudeService
+	timeout     time.Duration
 	drainTimeout time.Duration
-	barrier      func(stage string)
+	barrier     func(stage string)
+	drainWait   drainWaiter // nil means use production timer
 }
 
 func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedApprovalDelivery {
@@ -35,9 +40,24 @@ func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedA
 func (d *ClaudeManagedApprovalDelivery) SetPollTimeout(dur time.Duration) { d.timeout = dur }
 
 // SetDrainTimeout sets the post-witness natural-exit grace period.
-// Use 0 in deterministic tests with a fake process that closes rt.exited
-// immediately.
+// Use 0 in deterministic tests to skip the drain entirely.
 func (d *ClaudeManagedApprovalDelivery) SetDrainTimeout(dur time.Duration) { d.drainTimeout = dur }
+
+// SetDrainWaiter injects a custom drain wait function for deterministic
+// tests. Pass nil to restore production timer-based waiter.
+func (d *ClaudeManagedApprovalDelivery) SetDrainWaiter(w drainWaiter) { d.drainWait = w }
+
+// productionDrainWait is the default timer-based drain.
+func productionDrainWait(exited <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-exited:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	fail := func(o DeliveryOutcome) DeliveryReceipt {
@@ -152,13 +172,14 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 	// Allow the resume process to exit naturally within a bounded
 	// window. The witness is committed, but tool_result stdout may
 	// still be in-flight. Killing immediately (defer terminate) would
-	// truncate the pipe. Tests set drainTimeout=0 to skip the wait
-	// with fake processes that never exit naturally.
+	// truncate the pipe. Tests inject a channel-barrier drainWaiter
+	// or set drainTimeout=0 to skip.
 	if d.drainTimeout > 0 {
-		select {
-		case <-rt.exited:
-		case <-time.After(d.drainTimeout):
+		w := d.drainWait
+		if w == nil {
+			w = productionDrainWait
 		}
+		w(rt.exited, d.drainTimeout)
 	}
 
 	// Construct receipt with the exact response digest.

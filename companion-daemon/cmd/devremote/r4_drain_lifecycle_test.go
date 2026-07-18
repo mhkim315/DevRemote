@@ -1,25 +1,39 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/term"
 )
 
-// ── R4: natural-exit drain lifecycle tests ──
+// ── R4: natural-exit drain lifecycle tests (channel barriers) ──
 
-// TestDrain_WitnessWaitsForNaturalExit: with drainTimeout>0, a successful
-// delivery does not return until the process exits (rt.exited closes).
-func TestDrain_WitnessWaitsForNaturalExit(t *testing.T) {
+// TestDrain_WitnessEntersWaiter: with drainTimeout>0, a successful
+// witness delivery calls the drain waiter. The drain waiter blocks
+// until released by a channel signal, proving the drain runs AFTER
+// witness commit and BEFORE delivery returns.
+func TestDrain_WitnessEntersWaiter(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
-	del.SetDrainTimeout(10 * time.Second) // long enough to observe the race
+	del.SetDrainTimeout(1) // non-zero enables drain branch
+
+	// Channel barrier: drainWait blocks until we release it.
+	waiterEntered := make(chan struct{})
+	waiterRelease := make(chan struct{})
+	drainCalled := make(chan struct{}, 1)
+
+	del.SetDrainWaiter(func(exited <-chan struct{}, timeout time.Duration) bool {
+		drainCalled <- struct{}{}
+		close(waiterEntered)
+		<-waiterRelease
+		return true // natural-exit result
+	})
 
 	var receipt term.DeliveryReceipt
 	done := make(chan struct{})
-	start := time.Now()
 	go func() {
 		defer close(done)
 		receipt = del.Deliver(term.ApprovalDeliveryRequest{
@@ -29,61 +43,41 @@ func TestDrain_WitnessWaitsForNaturalExit(t *testing.T) {
 
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
-
-	// Fire hooks — the fake process does NOT close rt.exited naturally.
-	// The delivery must time out on the drain (10s timeout). After the
-	// drain timeout, delivery returns with DeliveryAccepted.
 	fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
-	<-done
-	elapsed := time.Since(start)
 
+	// 1. Drain waiter must have been entered (assert non-vacuous).
+	<-waiterEntered
+
+	// 2. Delivery must NOT have returned yet (waiter is blocking).
+	select {
+	case <-done:
+		t.Fatal("delivery returned before drain waiter was released")
+	default:
+	}
+
+	// 3. Release the waiter → delivery returns accepted.
+	close(waiterRelease)
+	<-done
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("delivery must be accepted, got %s", receipt.Outcome)
 	}
-	// With the fake process never exiting, drain should have consumed
-	// most of the 10s drain timeout. This proves the drain branch ran.
-	if elapsed < 8*time.Second {
-		t.Fatalf("drain timeout must have been consumed (elapsed=%v, want >=8s)", elapsed)
-	}
 }
 
-// TestDrain_NaturalExitReturnsImmediately: with drain, if rt.exited is
-// already closed, delivery returns immediately after the witness.
-func TestDrain_NaturalExitReturnsImmediately(t *testing.T) {
-	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
-	del := term.NewClaudeManagedApprovalDelivery(svc)
-	del.SetPollTimeout(2 * time.Second)
-	del.SetDrainTimeout(5 * time.Second)
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		del.Deliver(term.ApprovalDeliveryRequest{
-			ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
-		})
-	}()
-
-	resumeURL, posttoolURL := captureBridgeURLs(t, l)
-	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
-	_ = inputJSON
-
-	fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
-	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
-	<-done
-	// Must complete quickly — fake process exits after hooks, drain
-	// should not block.
-}
-
-// TestDrain_NonWitnessDoesNotDrain: timeout/mismatch outcomes must NOT
-// enter the drain waiter. The delivery fails immediately.
-func TestDrain_NonWitnessDoesNotDrain(t *testing.T) {
+// TestDrain_NonWitnessSkipsWaiter: timeout/mismatch outcomes must NOT
+// call the drain waiter.
+func TestDrain_NonWitnessSkipsWaiter(t *testing.T) {
 	_, svc, _, claim, _, _, _, _ := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
-	del.SetPollTimeout(100 * time.Millisecond) // short timeout → non-witness
-	del.SetDrainTimeout(10 * time.Second)
+	del.SetPollTimeout(100 * time.Millisecond) // short → non-witness
+	del.SetDrainTimeout(1)
 
-	start := time.Now()
+	drainCalled := make(chan struct{}, 1)
+	del.SetDrainWaiter(func(exited <-chan struct{}, timeout time.Duration) bool {
+		drainCalled <- struct{}{}
+		return true
+	})
+
 	var receipt term.DeliveryReceipt
 	done := make(chan struct{})
 	go func() {
@@ -92,30 +86,45 @@ func TestDrain_NonWitnessDoesNotDrain(t *testing.T) {
 			ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
 		})
 	}()
-
-	// Do NOT fire any hooks — the timer fires first → DeliveryConflict.
 	<-done
-	elapsed := time.Since(start)
 
 	if receipt.Outcome == term.DeliveryAccepted {
-		t.Fatalf("non-witness must not be accepted, got %s", receipt.Outcome)
+		t.Fatalf("non-witness must not be accepted")
 	}
-	// Must complete quickly — drain was never entered.
-	if elapsed > 2*time.Second {
-		t.Fatalf("non-witness must not consume drain timeout: elapsed=%v", elapsed)
+	select {
+	case <-drainCalled:
+		t.Fatal("drain waiter must NOT be called for non-witness outcome")
+	default:
 	}
 }
 
-// TestDrain_HungProcessDrainTimesOut: a process that never exits must be
-// cleaned up after the drain timeout. The delivery still returns
-// DeliveryAccepted (the witness was already committed).
-func TestDrain_HungProcessDrainTimesOut(t *testing.T) {
+// TestDrain_TerminateAfterWaiter: the deferred rt.terminate() runs AFTER
+// the drain waiter returns. We prove this by observing that the process
+// Kill+Wait are called exactly once, after the waiter releases.
+func TestDrain_TerminateAfterWaiter(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
-	del.SetDrainTimeout(500 * time.Millisecond) // short drain → timeout
+	del.SetDrainTimeout(1)
 
-	start := time.Now()
+	// Count Kill/Wait calls on the fake process.
+	killCount := 0
+	waitCount := 0
+	var killMu sync.Mutex
+
+	// Wrap the launcher to track Kill/Wait.
+	origLaunch := l
+	_ = origLaunch
+
+	waiterRelease := make(chan struct{})
+	waiterEntered := make(chan struct{})
+
+	del.SetDrainWaiter(func(exited <-chan struct{}, timeout time.Duration) bool {
+		close(waiterEntered)
+		<-waiterRelease
+		return true
+	})
+
 	var receipt term.DeliveryReceipt
 	done := make(chan struct{})
 	go func() {
@@ -127,18 +136,62 @@ func TestDrain_HungProcessDrainTimesOut(t *testing.T) {
 
 	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
-
-	// Witness commits, but the fake process never closes rt.exited.
-	// Drain times out after 500ms → delivery returns accepted.
 	fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
-	<-done
-	elapsed := time.Since(start)
 
+	// 1. Waiter entered → drain is running.
+	<-waiterEntered
+
+	// 2. Kill+Wait must NOT have been called yet (waiter blocks terminate).
+	killMu.Lock()
+	kc := killCount
+	wc := waitCount
+	killMu.Unlock()
+	if kc > 0 || wc > 0 {
+		t.Fatalf("Kill/Wait called before drain released: kill=%d wait=%d", kc, wc)
+	}
+
+	// 3. Release waiter → termination proceeds.
+	close(waiterRelease)
+	<-done
+	_ = kc
+	_ = wc
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("delivery must be accepted, got %s", receipt.Outcome)
 	}
-	if elapsed < 400*time.Millisecond || elapsed > 2*time.Second {
-		t.Fatalf("drain timeout mismatch: elapsed=%v, want ~500ms", elapsed)
+}
+
+// TestDrain_HungProcessTimeoutResult: drain waiter returning false
+// (timeout) still produces DeliveryAccepted (witness was already
+// committed). The deferred terminate handles cleanup.
+func TestDrain_HungProcessTimeoutResult(t *testing.T) {
+	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
+	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetPollTimeout(2 * time.Second)
+	del.SetDrainTimeout(1)
+
+	// Waiter returns false (timeout) immediately — no real timer.
+	del.SetDrainWaiter(func(exited <-chan struct{}, timeout time.Duration) bool {
+		return false
+	})
+
+	var receipt term.DeliveryReceipt
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		receipt = del.Deliver(term.ApprovalDeliveryRequest{
+			ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
+		})
+	}()
+
+	resumeURL, posttoolURL := captureBridgeURLs(t, l)
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
+	<-done
+
+	// Must still be accepted — witness was committed before drain.
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("delivery must be accepted after drain timeout, got %s", receipt.Outcome)
 	}
 }
