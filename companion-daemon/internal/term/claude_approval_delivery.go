@@ -23,11 +23,11 @@ type drainWaiter func(exited <-chan struct{}, timeout time.Duration) bool
 
 // ClaudeManagedApprovalDelivery implements ApprovalDelivery for Claude.
 type ClaudeManagedApprovalDelivery struct {
-	svc         *ManagedClaudeService
-	timeout     time.Duration
+	svc          *ManagedClaudeService
+	timeout      time.Duration
 	drainTimeout time.Duration
-	barrier     func(stage string)
-	drainWait   drainWaiter // nil means use production timer
+	barrier      func(stage string)
+	drainWait    drainWaiter // nil means use production timer
 }
 
 func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedApprovalDelivery {
