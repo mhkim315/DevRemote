@@ -37,15 +37,19 @@ type LifecycleResult struct {
 // (and a recreated id cannot inherit it). TelemetryService satisfies this.
 type StatusClearer interface{ Clear(sessionID string) }
 
-// ProviderLifecycleOwner is the generation-bound lifecycle surface of the
-// frozen provider services (ManagedCodexService / ManagedClaudeService both
-// satisfy it). The provider performs the DECISIVE generation comparison at
-// its own lifecycle lock — that is the linearization point; this dispatcher
-// only derives {SessionID, generation} server-side and routes.
+// ProviderLifecycleOwner is the generation-bound lifecycle surface of a
+// structured-provider owner, expressed in the CLOSED typed outcome
+// vocabulary (PA2c-R1). The owner performs the DECISIVE generation
+// comparison at its own lifecycle lock — that is the linearization point;
+// this dispatcher only derives {SessionID, generation} server-side, routes,
+// and maps the returned outcome mechanically. The frozen provider services
+// are adapted via NewManagedProviderOwner (lifecycle_outcome.go), which
+// classifies from the provider-owned registry record and never parses
+// provider error strings.
 type ProviderLifecycleOwner interface {
-	Stop(sessionID string, epoch int64) error
-	Kill(sessionID string, epoch int64) error
-	Delete(sessionID string, epoch int64) error
+	Stop(sessionID string, epoch int64) LifecycleOutcome
+	Kill(sessionID string, epoch int64) LifecycleOutcome
+	Delete(sessionID string, epoch int64) LifecycleOutcome
 }
 
 // LifecycleService is the PA2c lifecycle DISPATCHER. It owns no runtime,
@@ -136,28 +140,9 @@ func (s *LifecycleService) deriveEpoch(id string) (ManagedSessionRecord, error) 
 	return rec, nil
 }
 
-// classifyProviderErr maps a failed provider lifecycle call to a TYPED
-// outcome by re-reading the typed catalog state — never by parsing provider
-// error strings. dispatchedEpoch is the generation the dispatcher derived.
-func (s *LifecycleService) classifyProviderErr(id string, dispatchedEpoch int64, err error) error {
-	rec, ok := s.catalog.Get(id)
-	switch {
-	case !ok:
-		// The record disappeared (deleted concurrently) → not found.
-		return ErrLifecycleNotFound
-	case rec.Epoch != dispatchedEpoch:
-		// Replaced between derivation and the owner's decisive comparison.
-		// The stale request was rejected; the replacement is unaffected.
-		return ErrLifecycleStaleGeneration
-	case !rec.Exited:
-		// Same generation, still live, owner refused → could not confirm
-		// termination (Stop/Kill) or not terminal (Delete). The caller maps
-		// per-action below.
-		return err
-	default:
-		return err
-	}
-}
+// classifyProviderErr intentionally does not exist (PA2c-R1): the owner
+// boundary returns closed typed outcomes; nothing is inferred from provider
+// errors or from a later federated-catalog reread.
 
 // Stop gracefully terminates a managed session through its exact owner.
 func (s *LifecycleService) Stop(ctx context.Context, id string) (LifecycleResult, error) {
@@ -178,12 +163,8 @@ func (s *LifecycleService) Stop(ctx context.Context, id string) (LifecycleResult
 	if rec.Exited {
 		return LifecycleResult{SessionID: id, Action: "stop", State: LifecycleExited}, nil
 	}
-	if perr := owner.Stop(id, rec.Epoch); perr != nil {
-		cerr := s.classifyProviderErr(id, rec.Epoch, perr)
-		if cerr == perr {
-			cerr = ErrLifecycleTerminateFailed
-		}
-		return LifecycleResult{}, cerr
+	if merr := mapOutcome(owner.Stop(id, rec.Epoch)); merr != nil {
+		return LifecycleResult{}, merr
 	}
 	return LifecycleResult{SessionID: id, Action: "stop", State: LifecycleExited}, nil
 }
@@ -207,12 +188,8 @@ func (s *LifecycleService) Kill(ctx context.Context, id string) (LifecycleResult
 	if rec.Exited {
 		return LifecycleResult{SessionID: id, Action: "kill", State: LifecycleKilled}, nil
 	}
-	if perr := owner.Kill(id, rec.Epoch); perr != nil {
-		cerr := s.classifyProviderErr(id, rec.Epoch, perr)
-		if cerr == perr {
-			cerr = ErrLifecycleTerminateFailed
-		}
-		return LifecycleResult{}, cerr
+	if merr := mapOutcome(owner.Kill(id, rec.Epoch)); merr != nil {
+		return LifecycleResult{}, merr
 	}
 	return LifecycleResult{SessionID: id, Action: "kill", State: LifecycleKilled}, nil
 }
@@ -237,12 +214,8 @@ func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResu
 	if !rec.Exited {
 		return LifecycleResult{}, ErrLifecycleNotTerminal
 	}
-	if perr := owner.Delete(id, rec.Epoch); perr != nil {
-		cerr := s.classifyProviderErr(id, rec.Epoch, perr)
-		if cerr == perr {
-			cerr = ErrLifecycleNotTerminal
-		}
-		return LifecycleResult{}, cerr
+	if merr := mapOutcome(owner.Delete(id, rec.Epoch)); merr != nil {
+		return LifecycleResult{}, merr
 	}
 	// Daemon-owned projections for the deleted id (provider authority already
 	// recorded terminal acceptance above).

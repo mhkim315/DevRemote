@@ -2,11 +2,14 @@ package term
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,8 +18,9 @@ import (
 
 // ── PA2c focused tests (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c) ──
 
-// fakeProviderOwner records generation-bound lifecycle dispatches and can
-// simulate the provider's decisive stale-generation rejection.
+// fakeProviderOwner is a typed-outcome lifecycle owner performing the
+// decisive generation comparison itself (modelling the frozen provider's
+// lifecycle lock) and returning the CLOSED outcome vocabulary.
 type fakeProviderOwner struct {
 	mu           sync.Mutex
 	currentEpoch int64
@@ -25,16 +29,12 @@ type fakeProviderOwner struct {
 		ID     string
 		Epoch  int64
 	}
-	// signalsToCurrent counts terminations that would have reached the CURRENT
+	// signalsToCurrent counts terminations that reached the CURRENT
 	// (replacement) process — must stay zero for stale dispatches.
 	signalsToCurrent int
-	failWith         error
-	// onReject simulates the replacement publishing its record to the read
-	// path while the stale request was in flight.
-	onReject func()
 }
 
-func (f *fakeProviderOwner) record(action, id string, epoch int64) error {
+func (f *fakeProviderOwner) decide(action, id string, epoch int64) LifecycleOutcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, struct {
@@ -42,31 +42,23 @@ func (f *fakeProviderOwner) record(action, id string, epoch int64) error {
 		ID     string
 		Epoch  int64
 	}{action, id, epoch})
-	if f.failWith != nil {
-		return f.failWith
-	}
 	if epoch != f.currentEpoch {
-		// Provider's decisive comparison at its lifecycle lock: stale epoch is
-		// rejected WITHOUT touching the current process.
-		if f.onReject != nil {
-			f.onReject()
-		}
-		return errFakeStale
+		// Decisive comparison: stale generation rejected WITHOUT touching the
+		// current process, expressed as the typed outcome — no error strings.
+		return OutcomeStaleGeneration
 	}
 	f.signalsToCurrent++
-	return nil
+	return OutcomeAccepted
 }
 
-var errFakeStale = &fakeStaleErr{}
-
-type fakeStaleErr struct{}
-
-func (*fakeStaleErr) Error() string { return "stale session epoch" }
-
-func (f *fakeProviderOwner) Stop(id string, epoch int64) error { return f.record("stop", id, epoch) }
-func (f *fakeProviderOwner) Kill(id string, epoch int64) error { return f.record("kill", id, epoch) }
-func (f *fakeProviderOwner) Delete(id string, epoch int64) error {
-	return f.record("delete", id, epoch)
+func (f *fakeProviderOwner) Stop(id string, epoch int64) LifecycleOutcome {
+	return f.decide("stop", id, epoch)
+}
+func (f *fakeProviderOwner) Kill(id string, epoch int64) LifecycleOutcome {
+	return f.decide("kill", id, epoch)
+}
+func (f *fakeProviderOwner) Delete(id string, epoch int64) LifecycleOutcome {
+	return f.decide("delete", id, epoch)
 }
 
 // fakeManagedCatalog is a mutable ManagedRuntimeCatalog read path.
@@ -104,7 +96,7 @@ func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeP
 	return svc, codex, claude, cat
 }
 
-// Contract test 1: managed stop/kill/delete routes hit the provider services
+// Contract test 1: managed stop/kill/delete routes hit the provider owners
 // with the server-derived generation — never a legacy Registry.
 func TestPA2c_ProviderRoutes_DispatchWithDerivedEpoch(t *testing.T) {
 	svc, codex, claude, cat := pa2cDispatcher(t)
@@ -134,53 +126,182 @@ func TestPA2c_ProviderRoutes_DispatchWithDerivedEpoch(t *testing.T) {
 
 // Contract test 2 is TestLifecycle_DispatchTable_FailClosed (lifecycle_test.go).
 
-// Contract tests 3+6: a replacement between catalog lookup and dispatch is
-// rejected as stale by the owner's decisive comparison, mapped to the typed
-// stale-generation outcome WITHOUT provider error-string parsing, and the
-// replacement process receives no signal.
+// Contract tests 3+6 (R1 fixed): a replacement between catalog lookup and
+// dispatch is rejected by the owner's decisive comparison as the EXACT typed
+// stale-generation outcome — asserted precisely, deterministically, and
+// BEFORE the replacement publishes anywhere (the federated catalog still
+// serves the stale epoch when the outcome is produced). The replacement
+// process receives no signal.
 func TestPA2c_StaleGeneration_RejectedWithoutSignalingReplacement(t *testing.T) {
 	svc, codex, _, cat := pa2cDispatcher(t)
 	// Catalog serves epoch 6 (pre-replacement snapshot)...
 	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 6})
-	// ...but the provider's current runtime is epoch 7 (replacement won).
+	// ...but the provider's current runtime is epoch 7 (replacement won and
+	// has NOT been published to any read path).
 	codex.currentEpoch = 7
-	// After the owner rejects, the catalog read shows the replacement epoch —
-	// the dispatcher classifies from TYPED state, not the error string.
-	res, err := svc.Stop(context.Background(), "codex_app_server:c1")
-	// Classification happens on the post-failure catalog read: simulate the
-	// replacement being published there.
-	if err == nil {
-		t.Fatalf("stale stop unexpectedly succeeded: %+v", res)
-	}
-	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 7})
-	res2, err2 := svc.Stop(context.Background(), "codex_app_server:c1")
-	if err2 != nil || res2.State != LifecycleExited {
-		t.Fatalf("current-epoch stop after replacement = %+v err=%v", res2, err2)
-	}
-	if codex.signalsToCurrent != 1 {
-		t.Fatalf("signals to current process = %d, want exactly 1 (stale dispatch must not signal)", codex.signalsToCurrent)
-	}
-}
 
-// Contract tests 3+6 (typed classification): when the catalog already shows
-// the replacement epoch at classification time, the error is the typed
-// ErrLifecycleStaleGeneration.
-func TestPA2c_StaleGeneration_TypedOutcome(t *testing.T) {
-	svc, codex, _, cat := pa2cDispatcher(t)
-	// Catalog serves the pre-replacement epoch 6 at derivation time...
-	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 6})
-	codex.currentEpoch = 7
-	// ...and the provider's rejection races the replacement's publication into
-	// the read path (the exact contract interleaving).
-	codex.onReject = func() {
-		cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 7})
-	}
 	_, err := svc.Stop(context.Background(), "codex_app_server:c1")
 	if err != ErrLifecycleStaleGeneration {
-		t.Fatalf("err = %v, want typed ErrLifecycleStaleGeneration", err)
+		t.Fatalf("stale stop err = %v, want exact ErrLifecycleStaleGeneration (pre-publication)", err)
 	}
 	if codex.signalsToCurrent != 0 {
 		t.Fatalf("stale dispatch signalled the replacement process %d times", codex.signalsToCurrent)
+	}
+
+	// Once the replacement publishes, the same route dispatches cleanly to
+	// the current generation.
+	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 7})
+	res2, err2 := svc.Stop(context.Background(), "codex_app_server:c1")
+	if err2 != nil || res2.State != LifecycleExited {
+		t.Fatalf("current-epoch stop after publication = %+v err=%v", res2, err2)
+	}
+	if codex.signalsToCurrent != 1 {
+		t.Fatalf("signals to current process = %d, want exactly 1", codex.signalsToCurrent)
+	}
+}
+
+// R1 blocker 3: the PRODUCTION provider adapter (NewManagedProviderOwner over
+// a frozen-service-shaped call) classifies a stale rejection from the
+// provider-OWNED registry record — deterministically, before any replacement
+// publication to the federated catalog, and without reading the provider's
+// error string.
+func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
+	provReg := NewManagedSessionRegistry(8)
+	const sid = "codex_app_server:c1"
+	// The provider-owned registry holds the CURRENT (replacement) runtime at
+	// epoch 7.
+	if err := provReg.Register(ManagedSessionRecord{
+		SessionID: sid, Provider: "codex", Version: "0.144.1", Epoch: 7, ProcessID: "p1",
+	}); err != nil {
+		t.Fatalf("seed provider registry: %v", err)
+	}
+	// The frozen service surface rejects with an ARBITRARY error the wrapper
+	// must not parse.
+	var currentSignals int
+	stop := func(id string, epoch int64) error {
+		if epoch != 7 {
+			return fmt.Errorf("some opaque provider refusal text %d", epoch)
+		}
+		currentSignals++
+		return nil
+	}
+	owner := NewManagedProviderOwner(provReg, stop, stop, stop)
+
+	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
+	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil), NewActivityBuffer(10), nil)
+	cat := newFakeManagedCatalog()
+	// The FEDERATED catalog still serves the pre-replacement epoch 6 — the
+	// replacement has published nowhere outside the provider's own registry.
+	cat.put(ManagedSessionRecord{SessionID: sid, Provider: "codex", Version: "0.144.1", Epoch: 6})
+	svc.WireManagedOwners(cat, owner, nil)
+
+	_, err := svc.Stop(context.Background(), sid)
+	if err != ErrLifecycleStaleGeneration {
+		t.Fatalf("err = %v, want exact ErrLifecycleStaleGeneration from provider-owned registry classification", err)
+	}
+	if currentSignals != 0 {
+		t.Fatalf("replacement runtime was signalled %d times by a stale dispatch", currentSignals)
+	}
+	// Typed classification also covers the remaining closed outcomes.
+	if oc := owner.(*managedProviderOwner).classify("codex_app_server:missing", 7, errors.New("x"), false); oc != OutcomeNotFound {
+		t.Fatalf("classify(unknown) = %s, want not_found", oc)
+	}
+	provReg.MarkExited(sid, 7)
+	if oc := owner.(*managedProviderOwner).classify(sid, 7, errors.New("x"), false); oc != OutcomeAlreadyTerminal {
+		t.Fatalf("classify(exited stop) = %s, want already_terminal", oc)
+	}
+}
+
+// R1 blockers 1+2 (owned PTY): after beginStop claims the generation's
+// immutable handle, a same-id replacement can proceed WHILE the stale action
+// is blocked in signal delivery (no lifecycle lock across I/O), the
+// replacement's process is never signalled, and the stale finalize cannot
+// touch the replacement record or its registry session.
+type blockingHandle struct {
+	started  chan struct{} // closed when TerminateGroup begins blocking
+	release  chan struct{} // closed by the test to let the signal complete
+	signals  int32
+	mu       sync.Mutex
+	forceLog []bool
+}
+
+func (h *blockingHandle) TerminateGroup(force bool) error {
+	h.mu.Lock()
+	h.signals++
+	h.forceLog = append(h.forceLog, force)
+	h.mu.Unlock()
+	close(h.started)
+	<-h.release
+	return nil
+}
+
+type countingHandle struct{ signals atomic.Int32 }
+
+func (h *countingHandle) TerminateGroup(bool) error {
+	h.signals.Add(1)
+	return nil
+}
+
+func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testing.T) {
+	adapter := newLCAdapter("controlled_pty", true)
+	reg := mux.MustNewRegistry(adapter)
+	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	owned.graceful = 50 * time.Millisecond
+	owned.killGrace = 50 * time.Millisecond
+
+	const id = "controlled_pty:replace-1"
+	h1 := &blockingHandle{started: make(chan struct{}), release: make(chan struct{})}
+	h2 := &countingHandle{}
+	gen1 := owned.RegisterForTestWithHandle(id, "", "old", h1, nil)
+
+	// Stale Stop blocks inside h1.TerminateGroup — OUTSIDE every lock.
+	stopDone := make(chan error, 1)
+	go func() {
+		_, err := owned.Stop(context.Background(), id)
+		stopDone <- err
+	}()
+	<-h1.started
+
+	// The replacement proceeds promptly while the stale signal is blocked —
+	// this would deadlock if any lifecycle lock were held across the I/O.
+	regDone := make(chan int64, 1)
+	go func() {
+		regDone <- owned.RegisterForTestWithHandle(id, "", "new", h2, nil)
+	}()
+	var gen2 int64
+	select {
+	case gen2 = <-regDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement blocked behind a stale action's signal I/O — lifecycle lock held across TerminateGroup")
+	}
+	if gen2 <= gen1 {
+		t.Fatalf("replacement generation %d not newer than %d", gen2, gen1)
+	}
+
+	// Let the stale action finish: no recorder exists, so awaitExit succeeds
+	// and finalize targets gen1 — which is stale now, so it must be a no-op.
+	close(h1.release)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("stale stop returned %v (idempotent completion expected)", err)
+	}
+
+	// The replacement is untouched: still running at gen2, its process never
+	// signalled, its registry entry never terminated by the stale finalize.
+	e, ok := owned.Get(id)
+	if !ok || e.State != LifecycleRunning || e.Generation != gen2 {
+		t.Fatalf("replacement record = %+v ok=%v, want running at gen %d", e, ok, gen2)
+	}
+	if h2.signals.Load() != 0 {
+		t.Fatalf("replacement process signalled %d times by the stale action", h2.signals.Load())
+	}
+	if h1.signals != 1 {
+		t.Fatalf("captured old handle signalled %d times, want exactly 1", h1.signals)
+	}
+	adapter.mu.Lock()
+	terminated := len(adapter.terminated)
+	adapter.mu.Unlock()
+	if terminated != 0 {
+		t.Fatalf("stale finalize terminated %d registry sessions of the replacement", terminated)
 	}
 }
 
@@ -198,7 +319,7 @@ func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
 		t.Fatalf("generations not monotonic: %d then %d", gen1, gen2)
 	}
 	// The decisive store-lock comparison rejects the stale transition.
-	if proceed, _, found, stale := owned.beginStop(id, gen1); proceed || !found || !stale {
+	if proceed, _, found, stale, _ := owned.beginStop(id, gen1); proceed || !found || !stale {
 		t.Fatalf("beginStop(stale gen) = proceed=%v found=%v stale=%v, want rejected stale", proceed, found, stale)
 	}
 	// A stale finalize is a no-op: the replacement record stays running.
@@ -207,7 +328,7 @@ func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
 		t.Fatalf("record after stale finalize = %+v ok=%v, want running at gen2", e, ok)
 	}
 	// The current generation still transitions normally.
-	if proceed, _, _, stale := owned.beginStop(id, gen2); !proceed || stale {
+	if proceed, _, _, stale, _ := owned.beginStop(id, gen2); !proceed || stale {
 		t.Fatalf("beginStop(current gen) rejected")
 	}
 }
@@ -246,7 +367,8 @@ func TestPA2c_OwnedPTY_ExactlyOnceTerminalConvergence(t *testing.T) {
 
 // Contract tests 5+7 (architecture, static): the dispatcher has no
 // mux.Registry dependency; SessionCatalog no longer exists in production;
-// the legacy IsManaged/Register bypasses are gone.
+// the legacy IsManaged/Register bypasses are gone; lifecycle signalling
+// never resolves a process from the Registry at action time.
 func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 	// lifecycle_service.go must not import internal/mux (dispatch only).
 	f, err := parser.ParseFile(token.NewFileSet(), "lifecycle_service.go", nil, parser.ImportsOnly)
@@ -280,6 +402,15 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 	}
 	if _, err := os.Stat("catalog.go"); !os.IsNotExist(err) {
 		t.Error("internal/term/catalog.go still exists — SessionCatalog must be removed")
+	}
+	// R1: no Registry resolution inside the owned runtime's lifecycle action
+	// path — the only FindSession is the creation-time handle capture.
+	src, err := os.ReadFile("owned_pty_runtime.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(src), "FindSession"); n != 1 {
+		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want exactly 1 (creation-time capture only)", n)
 	}
 }
 

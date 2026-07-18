@@ -354,15 +354,17 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	// PA2c: wire the structured-provider lifecycle owners and the read-only
-	// catalog into the lifecycle dispatcher. Explicit nil checks keep a
-	// disabled provider a TRUE nil interface (never a typed-nil), so the
-	// dispatcher's unavailable guard fails closed.
+	// catalog into the lifecycle dispatcher. The frozen services are adapted
+	// to the closed typed outcome vocabulary via NewManagedProviderOwner
+	// (classification from the provider-owned registry record — no error
+	// strings). Explicit nil checks keep a disabled provider a TRUE nil
+	// interface (never a typed-nil), so the dispatcher fails closed.
 	var codexOwner, claudeOwner term.ProviderLifecycleOwner
 	if managed != nil {
-		codexOwner = managed
+		codexOwner = term.NewManagedProviderOwner(managed.Registry(), managed.Stop, managed.Kill, managed.Delete)
 	}
 	if managedClaude != nil {
-		claudeOwner = managedClaude
+		claudeOwner = term.NewManagedProviderOwner(managedClaude.Registry(), managedClaude.Stop, managedClaude.Kill, managedClaude.Delete)
 	}
 	lifecycle.WireManagedOwners(h.Catalog, codexOwner, claudeOwner)
 
