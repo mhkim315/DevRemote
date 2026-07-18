@@ -19,7 +19,7 @@ No production code is modified in this phase.
 | `internal/term/recorder.go` | Recorder/VT/replay/subscriber | retained PTY primitive | TerminalTransport | A2 | `Recorder direct readers other than its read loop → zero` |
 | `cmd/devremote/client.go` | `attachManagedSession`, `attachLocalTerminal`, linker CLI | mixed public composition | provider-specific transport | A2, A3 | `attachManagedSession` never opens raw PTY. Linker CLI fails/removed. |
 | `cmd/devremote/main.go` | `--enable-localpty` | legacy-only consumer | delete | Phase B | CLI flag deleted. |
-| `cmd/devremote/main.go` | `--enable-managed-codex`, `--enable-managed-claude` | mixed public composition | provider | Phase B | Flags retained as composition decision; always active in production. |
+| `cmd/devremote/main.go` | `--enable-managed-codex`, `--enable-managed-claude` | mixed public composition | provider | Phase B | Provider activation remains capability/certification gated. Whether CLI flags are removed is a PA1 composition decision. No unsupported provider becomes active by default. |
 | `cmd/devremote/app.go` | `registry` instantiation, `ControlledPTY` registration, REST/WS/link routes | mixed public composition | Catalog / TerminalTransport | A1, A2 | App struct loses `*mux.Registry` and `LinkStore`. IPC does not inject them. |
 | `internal/term/create.go` | `createControlledSession`, `startRecorder`, `managedProcessIdentity` | retained PTY primitive | Runtime / TerminalTransport | A1, A2 | Managed runtimes are created natively without legacy adapter registration. |
 | `internal/term/ipc.go` | `StartIPCServer`, `handleIPCConnection`, subscriber/attach routing | mixed public composition | Catalog / TerminalTransport | A1, A2 | IPC list uses Catalog; raw attach uses TerminalTransport; prompt uses structured transport. |
@@ -30,12 +30,15 @@ No production code is modified in this phase.
 | `internal/term/managed_api.go` | managed read handlers, `appendManagedRows`, `appendClaudeManagedRows` | managed-native production consumer | Catalog | A1 | Read-only Catalog serves managed lists; never falls through to `mux.Registry`. |
 | `internal/term/profiles.go` | `sessionProfile`, `builtinProfiles`, `ResolveProfile`, `ProfileLabel`, `HandleSessionProfiles` | managed-native production consumer | provider | A1 | Profiles map strictly to managed providers, bypassing legacy adapters. |
 | `internal/term/activity.go` | `ActivityBuffer` read/write paths | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Activity consumption routes do not touch legacy `TelemetryService`. |
-| `internal/term/transcript/` | Transcript REST handlers and package | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
-| `internal/mux/registry.go` | `Registry`, `Get`, `List`, `Add`, etc. | physical deletion target | delete | Phase B | Repository-wide forbidden-reference gate passes. |
-| `internal/mux/adapter.go` | `Adapter`, `TerminalStream`, `StreamOpener`, `InputWriter`, `ProcessProvider`, `HistoryReader`, `ScreenReader` | retained PTY primitive | TerminalTransport | A2 | `retained TerminalStream interfaces relocated before session.go deletion` |
+| `internal/transcript/api.go` | `HandleTranscript`, `HandleTranscriptStats` | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
+| `internal/transcript/service.go` | `FeedBytes`, `ProjectAgentEvents`, `AddSnapshotSegment`, `BuildResponse` | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
+| `internal/transcript/launch_binding.go` | launch binding | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
+| `internal/transcript/...` | source arbitration/store/queue | PTY/semantic projection boundary | PTY/semantic projection boundary | A3 | Package preserved and decoupled from legacy telemetry. |
+| `internal/mux/registry.go` | `Register`, `CreateSession`, `TerminateSession`, `Adapter`, `Adapters`, `FindSession`, `InvalidateAdapter`, `Invalidate`, `Refresh`, `Sessions`, `Snapshot`, `FindSessionInCache` | physical deletion target | delete | Phase B | Repository-wide forbidden-reference gate passes. |
+| `internal/mux/adapter.go` | `Adapter`, `SessionAdapter`, `TerminalStream`, `StreamOpener`, `InputWriter`, `ProcessProvider`, `HistoryReader`, `ScreenReader`, `TranscriptCaptureProvider` | retained PTY primitive | TerminalTransport | A2 | `retained TerminalStream interfaces relocated before session.go deletion` |
 | `internal/mux/session.go` | `NativeSession` | retained PTY primitive | TerminalTransport | A2 | `retained TerminalStream interfaces relocated before session.go deletion` |
 | `internal/mux/id_parser.go` | identity parsers | mixed public composition | provider-neutral identity | A2 | Canonical identity parser relocated to provider-neutral package; byte-for-byte meaning preserved. |
-| `internal/mux/controlled_pty_adapter.go` | process group termination, `OpenStream`, `WriteInput`, `ProcessInfo`, `ControlledPTY` | retained PTY primitive | TerminalTransport | A2 | Retained responsibilities migrated to pure TerminalTransport bound to process group. |
+| `internal/mux/controlled_pty_adapter.go` | `controlledPTYSession` → `StreamOpener` / `TerminalStream` / `InputWriter` / `ProcessProvider` → `create.go` / `ipc.go` / `pty.go` / `recorder.go` → `TerminalTransport` | retained PTY primitive | TerminalTransport | A2 | Retained responsibilities migrated to pure TerminalTransport bound to process group before adapter deletion. |
 | `internal/mux/adapter_capability.go` | `AdapterCapabilities`, `hasCap`, `ManagedLifecycleProvider`, `AdapterCapability` | physical deletion target | delete | Phase B | Repository-wide forbidden-reference gate passes. |
 | `internal/mux/tracker.go` | all symbols | physical deletion target | delete | Phase B | Repository-wide forbidden-reference gate passes. |
 | `internal/mux/transcript_capture.go` | all symbols | physical deletion target | delete | Phase B | Repository-wide forbidden-reference gate passes. |
@@ -45,13 +48,25 @@ No production code is modified in this phase.
 | `internal/mux/localpty_adapter.go` | `localpty:` ID, adapter | physical deletion target | delete | Phase B | `tmux/cmux/localpty ID acceptance → zero` |
 | `mobile/src/lib/lifecycle.ts` | history/screen fallback branches | legacy-only consumer | delete | A3 | Mobile client does not branch on external/best-effort capability. |
 | `mobile/src/screens/FeedScreen.tsx` | cmux warnings / read-only fallback | legacy-only consumer | delete | A3 | UI never renders cmux/best-effort warning states. |
-| `scripts/build-gate.sh` / fixtures | installation scripts, active test fixtures | legacy-only consumer | delete | Phase B | Build artifacts and scripts require no tmux/cmux executable or flags. |
+| `scripts/dev-setup.sh` | `--enable-localpty` guidance/flags | legacy-only consumer | delete | Phase B | Build artifacts and scripts require no tmux/cmux executable or flags. |
+| `scripts/install.sh` | `--enable-localpty` guidance/flags | legacy-only consumer | delete | Phase B | Build artifacts and scripts require no tmux/cmux executable or flags. |
 
-## 2. Frozen Call-Site Requirements
+## 2. Frozen-Unaffected Boundaries
+
+The following accepted paths are explicitly NOT targets for legacy migration and remain unchanged. They have no `mux` dependency and must not be modified by PA1:
+
+| Unaffected Core System | Path Classification | Target Owner / Resolution | Migration Packet | Deletion Test / Criterion |
+| --- | --- | --- | --- | --- |
+| `Approval RuntimeOf` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `Codex/Claude delivery dispatch` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `claim/receipt/commit Store` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+| `provider-native consumption witness` | frozen-unaffected | frozen-unaffected | none | unchanged/frozen, no mux dependency |
+
+## 3. Frozen Call-Site Requirements
 
 Rather than inventing new interfaces, the migration relies on the existing accepted `ManagedSessionRegistry` and `ManagedSessionRecord` contracts, and strictly separates raw PTY transport from structured provider transport.
 
-### 2.1 Managed Session Registry (Catalog)
+### 3.1 Managed Session Registry (Catalog)
 
 The independent registries are the singular authority for managed runtime state. Existing call sites require:
 
@@ -64,7 +79,7 @@ The independent registries are the singular authority for managed runtime state.
 
 **No combined store:** Provider-specific identity/generation data (e.g. Codex vs. Claude) remains correctly scoped within their respective accepted registries. The federated read-only `Catalog` simply queries both existing managed registries for `/api/sessions` lists without creating a new combined store.
 
-### 2.2 Transport and Authority Separation
+### 3.2 Transport and Authority Separation
 
 1. **Owned PTY TerminalTransport:**
    For raw byte boundary (legacy controlled_pty replacement), the system must preserve the single-reader Recorder, raw VT byte ingestion, resize, and byte-slice Replay/Subscribe.
@@ -75,13 +90,13 @@ The independent registries are the singular authority for managed runtime state.
 4. **ApprovalAuthority:**
    The existing `ApprovalAuthority` remains the singular source for approvals.
 
-## 3. Actionability Security Contract
+## 4. Actionability Security Contract
 
 All product sessions are managed; unsupported capabilities remain explicitly non-actionable and fail closed.
 
 Actionability is dynamically resolved based on current runtime state, provider certification, exact action mapping, and consumption evidence. A session being "managed" does not automatically make it actionable.
 
-## 4. Exit Criteria for PA0
+## 5. Exit Criteria for PA0
 - This document is independently accepted.
 - No production code has been modified.
 - PA1 may commence upon ACCEPT.
