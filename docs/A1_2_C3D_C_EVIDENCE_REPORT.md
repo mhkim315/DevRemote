@@ -85,9 +85,33 @@ PASS (27.04s)
 (`TestR4Bridge_*`) + 1 graceful shutdown test = 26 tests. All PASS
 ×5 `-race`.
 
-## 5. Final repository gate (frozen HEAD `8f40b0b`)
+## 5. Final repository gate (frozen HEAD `f19082f`)
 
-Pending — in progress.
+| Gate | Result |
+|---|---|
+| `go build ./...` | PASS |
+| `go vet ./...` | PASS |
+| `go test -race ./...` (full backend) | **0 failures** |
+| `tsc --noEmit` | PASS |
+| `jest --runInBand` | **34 suites / 447 tests PASS** |
+| `git diff --check` | PASS |
+| Canonical secret scan | PASS |
+| Ancestry (all prerequisite SHAs) | PASS |
+| Local == Remote | `f19082f9dfdd2576e82b6c20ce17e1e7d713581e` |
+| Worktree | clean |
+
+## 6. Known limitation: TEE capture truncation
+
+The resume process stdout tee capture (`eofTeeReader`) consistently
+receives only ~675 bytes of the ~44KB resume stream. The eofTeeReader's
+Done channel fires correctly (EOF observed on the underlying pipe), but
+the capture buffer does not hold the full stream. This affects only the
+CORROBORATION (probe token count) — the AUTHORITY witness (PostToolUse
+hook, `MarkWitnessed` → `TerminalWitnessed`) is verified independently
+by the live proof and commits correctly (200 accepted, state approved).
+
+The capture truncation is reproducible and deterministic; it does not
+interfere with authority-path verification.
 
 ## 6. Stop condition
 
