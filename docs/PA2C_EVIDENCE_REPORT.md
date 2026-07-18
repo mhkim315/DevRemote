@@ -88,10 +88,11 @@ No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
   store mutex in `beginStop`/`requestKill`/`finalizeRecord`. No lock is held
   across `TerminateGroup`, exit waits, or any I/O (signal + wait happen after
   unlock, matching the pre-PA2c structure).
-- **Typed outcomes, no provider error-string parsing**:
-  `classifyProviderErr` re-reads the typed catalog record (`Epoch`, `Exited`)
-  to produce `ErrLifecycleStaleGeneration` / `ErrLifecycleNotFound`, else maps
-  per-action to `ErrLifecycleTerminateFailed` / `ErrLifecycleNotTerminal`.
+- **Typed outcomes, no provider error-string parsing** (R1): owners return
+  the closed `LifecycleOutcome` vocabulary; `mapOutcome` translates
+  mechanically to the handler sentinels. Provider refusals are classified by
+  `NewManagedProviderOwner` from the provider-owned `ManagedSessionRegistry`
+  record at the owner boundary (`classifyProviderErr` deleted).
   HTTP mapping: 404 / 422 / 409 (not-terminal AND stale-generation) / 500.
   `lifecycle_handlers.go` is structurally unchanged apart from the one added
   typed 409 mapping.
