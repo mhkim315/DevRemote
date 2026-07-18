@@ -165,6 +165,30 @@ const (
 	stateTerminal
 )
 
+// ── R4: Witness outcome ──
+
+// WitnessOutcome is the closed result vocabulary for MarkWitnessed and
+// MarkDenialWitness. Only Witnessed is terminal success; Pending means
+// the witness is stored and awaiting ConfirmWrite (binding/digest are
+// zero). All other outcomes are non-success.
+type WitnessOutcome int
+
+const (
+	WitnessPending   WitnessOutcome = iota + 1 // early witness stored, not terminal
+	Witnessed                                   // terminal success (binding+digest returned)
+	WitnessMismatch                             // identity mismatch
+	WitnessDuplicate                            // same identity already witnessed
+	WitnessStale                                // entry not found or wrong state
+)
+
+// WitnessResult packs the witness outcome with optional binding/digest
+// (populated only for Witnessed).
+type WitnessResult struct {
+	Outcome WitnessOutcome
+	Binding ApprovalExecutionBinding
+	Digest  string
+}
+
 // ── R4: Resume attempt identity ──
 
 // ResumeAttemptIdentity is the real invocation identity observed in the
@@ -854,125 +878,104 @@ func (c *claudeResumeCoordinator) clearStaleEntries(now time.Time) {
 
 // MarkWitnessed is called by C2D-C after a consumption witness is observed.
 // R4: it validates against the bound ResumeAttemptIdentity, not the original
-// deferred identity. It handles early witnesses (before ConfirmWrite) by
-// storing them in stateWitnessPending.
-func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID, toolName, inputDigest string, rt RuntimeRef) (ApprovalExecutionBinding, string, bool) {
+// deferred identity. Returns a closed WitnessOutcome; only Witnessed carries
+// binding+digest. Pending means the witness is stored but not yet terminal
+// (awaiting ConfirmWrite).
+func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessKind, sessionID, toolUseID, toolName, inputDigest string, rt RuntimeRef) WitnessResult {
+	fail := func(o WitnessOutcome) WitnessResult { return WitnessResult{Outcome: o} }
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	entry, ok := c.entries[claimToken]
 	if !ok {
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessStale)
 	}
-
-	// R4: the entry must have a bound ResumeAttemptIdentity.
 	if entry.attempt == nil {
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessStale)
 	}
 
-	// Validate witness kind against decision.
 	switch entry.decision {
 	case "allow":
 		if kind != WitnessPostToolUse {
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessMismatch)
 		}
 	case "deny":
 		if kind != WitnessPermissionDenials {
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessMismatch)
 		}
 	default:
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessMismatch)
 	}
 
-	// R4: validate against the bound ResumeAttemptIdentity.
 	a := entry.attempt
 	if a.sessionID != sessionID || a.toolUseID != toolUseID ||
 		a.toolName != toolName || a.inputDigest != inputDigest {
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessMismatch)
 	}
 	if !entry.runtime.equal(rt) {
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessMismatch)
 	}
 
 	switch entry.state {
 	case stateWriteClaimed:
-		// R4: early witness — store fully-validated args, transition to
-		// witnessPending. ConfirmWrite(true) will commit it.
 		if clockNow().After(entry.writeClaimedAt.Add(2 * coordinatorEntryTimeout)) {
-			// Witness arrived too late.
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.earlyWitness = &earlyWitnessArgs{
-			kind:            kind,
-			sessionID:       sessionID,
-			toolUseID:       toolUseID,
-			toolName:        toolName,
-			inputDigest:     inputDigest,
-			runtime:         rt,
-			exactRespDigest: respDigest,
+			kind: kind, sessionID: sessionID, toolUseID: toolUseID,
+			toolName: toolName, inputDigest: inputDigest,
+			runtime: rt, exactRespDigest: respDigest,
 		}
 		entry.state = stateWitnessPending
-		// R4: early witness stored, NOT terminal — zero binding/digest.
-		return ApprovalExecutionBinding{}, "", true
+		return WitnessResult{Outcome: WitnessPending}
 
 	case stateWitnessPending:
-		// Already has an early witness.
 		if entry.earlyWitness == nil {
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessStale)
 		}
 		ew := entry.earlyWitness
 		if ew.sessionID == sessionID && ew.toolUseID == toolUseID &&
 			ew.toolName == toolName && ew.inputDigest == inputDigest &&
 			ew.kind == kind && ew.runtime.equal(rt) {
-			return ApprovalExecutionBinding{}, "", false // duplicate
+			return fail(WitnessDuplicate)
 		}
-		return ApprovalExecutionBinding{}, "", false // different identity
+		return fail(WitnessMismatch)
 
 	case stateDecisionWritten:
-		// R4: normal path — witness after ConfirmWrite.
 		if clockNow().After(entry.decisionWrittenAt.Add(2 * coordinatorEntryTimeout)) {
 			entry.state = stateTerminal
 			delete(c.entries, claimToken)
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.state = stateTerminal
-		result := TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-		entry.completion <- result
+		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
 		delete(c.entries, claimToken)
 		delete(c.identities, entry.approvalID)
-		return entry.binding, respDigest, true
+		return WitnessResult{Outcome: Witnessed, Binding: entry.binding, Digest: respDigest}
 
 	default:
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessStale)
 	}
 }
 
 // MarkDenialWitness is the single-lock coordinator operation for deny
-// witness. The pump passes the claim token and ALL bounded denial entries
-// from the strictly decoded denial event. Under one coordinator lock the
-// operation:
-//   1. Finds the entry by claimToken.
-//   2. Counts how many denial entries match the bound ResumeAttemptIdentity.
-//   3. Exactly one match → witness transition (same early/normal as MarkWitnessed).
-//   4. Zero matches → false. Multiple matches → cancel the entry as ambiguous.
-// Returns the binding and response digest on terminal success, or false.
-func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID string, denialEntries []streamDenialEntry, rt RuntimeRef) (ApprovalExecutionBinding, string, bool) {
+// witness. Returns a closed WitnessOutcome.
+func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID string, denialEntries []streamDenialEntry, rt RuntimeRef) WitnessResult {
+	fail := func(o WitnessOutcome) WitnessResult { return WitnessResult{Outcome: o} }
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	entry, ok := c.entries[claimToken]
 	if !ok || entry.attempt == nil {
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessStale)
 	}
 	if entry.decision != "deny" {
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessMismatch)
 	}
 
 	a := entry.attempt
-
-	// Count denial entries matching the bound attempt identity.
 	var matches []streamDenialEntry
 	for _, e := range denialEntries {
 		if denialSessionID == a.sessionID &&
@@ -984,9 +987,6 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 	}
 
 	if len(matches) != 1 {
-		// Zero: no evidence this denial consumed OUR decision.
-		// Multiple: ambiguous — multiple entries for the same bound
-		// tool_use_id. Cancel the claim.
 		if len(matches) > 1 {
 			entry.earlyWitness = nil
 			entry.state = stateTerminal
@@ -997,7 +997,7 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 			delete(c.entries, claimToken)
 			delete(c.identities, entry.approvalID)
 		}
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessMismatch)
 	}
 
 	match := matches[0]
@@ -1005,51 +1005,46 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 	switch entry.state {
 	case stateWriteClaimed:
 		if clockNow().After(entry.writeClaimedAt.Add(2 * coordinatorEntryTimeout)) {
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.earlyWitness = &earlyWitnessArgs{
-			kind:            WitnessPermissionDenials,
-			sessionID:       denialSessionID,
-			toolUseID:       match.ToolUseID,
-			toolName:        match.ToolName,
-			inputDigest:     match.InputDigest,
-			runtime:         rt,
-			exactRespDigest: respDigest,
+			kind: WitnessPermissionDenials,
+			sessionID: denialSessionID, toolUseID: match.ToolUseID,
+			toolName: match.ToolName, inputDigest: match.InputDigest,
+			runtime: rt, exactRespDigest: respDigest,
 		}
 		entry.state = stateWitnessPending
-		// R4: early witness stored, NOT terminal.
-		return ApprovalExecutionBinding{}, "", true
+		return WitnessResult{Outcome: WitnessPending}
 
 	case stateWitnessPending:
 		if entry.earlyWitness == nil {
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessStale)
 		}
 		ew := entry.earlyWitness
 		if ew.kind != WitnessPermissionDenials {
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessMismatch)
 		}
 		if ew.sessionID == denialSessionID && ew.toolUseID == match.ToolUseID {
-			return ApprovalExecutionBinding{}, "", false // duplicate
+			return fail(WitnessDuplicate)
 		}
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessMismatch)
 
 	case stateDecisionWritten:
 		if clockNow().After(entry.decisionWrittenAt.Add(2 * coordinatorEntryTimeout)) {
 			entry.state = stateTerminal
 			delete(c.entries, claimToken)
-			return ApprovalExecutionBinding{}, "", false
+			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.state = stateTerminal
-		result := TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-		entry.completion <- result
+		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
 		delete(c.entries, claimToken)
 		delete(c.identities, entry.approvalID)
-		return entry.binding, respDigest, true
+		return WitnessResult{Outcome: Witnessed, Binding: entry.binding, Digest: respDigest}
 
 	default:
-		return ApprovalExecutionBinding{}, "", false
+		return fail(WitnessStale)
 	}
 }
 

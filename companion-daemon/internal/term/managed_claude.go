@@ -701,9 +701,9 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 	// R4: pass all bounded denial entries + the claim token to the
 	// coordinator. The coordinator selects exactly one matching entry
 	// under one lock.
-	_, _, ok := ctx.coordinator.MarkDenialWitness(
+	result := ctx.coordinator.MarkDenialWitness(
 		ctx.claimToken, d.SessionID, d.Entries, ctx.originalRuntime)
-	if !ok {
+	if result.Outcome != Witnessed && result.Outcome != WitnessPending {
 		rt.failClosedDenial()
 	}
 }

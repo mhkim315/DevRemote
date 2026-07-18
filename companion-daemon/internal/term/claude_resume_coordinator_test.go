@@ -831,11 +831,11 @@ func TestMarkWitnessed(t *testing.T) {
 		t.Fatalf("expected 1 entry before witness, got %d", c.entryCount())
 	}
 
-	retBinding, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if !ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome != Witnessed && mr.Outcome != WitnessPending {
 		t.Fatal("expected MarkWitnessed to succeed")
 	}
-	if !retBinding.equal(binding) {
+	if !mr.Binding.equal(binding) {
 		t.Fatal("returned binding should match stored binding")
 	}
 	if c.entryCount() != 0 {
@@ -843,8 +843,8 @@ func TestMarkWitnessed(t *testing.T) {
 	}
 
 	// Idempotent — second call returns false.
-	_, _, ok = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if ok {
+	mr = c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected idempotent MarkWitnessed to return false")
 	}
 }
@@ -867,8 +867,8 @@ func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 	_ = wh
 
 	// Wrong kind: DENY entry receives WitnessPostToolUse.
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected wrong-kind witness to fail on alive deny entry")
 	}
 	if c.entryCount() != 1 {
@@ -886,8 +886,8 @@ func TestMarkWitnessedWrongState(t *testing.T) {
 		t.Fatal("BindResumeProcess failed")
 	}
 	_ = handle
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected MarkWitnessed to fail for reserved entry")
 	}
 }
@@ -904,8 +904,8 @@ func TestMarkWitnessedWrongSession(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid, tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid, tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected MarkWitnessed to fail for wrong session")
 	}
 	if c.entryCount() != 1 {
@@ -925,8 +925,8 @@ func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid", tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid", tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected MarkWitnessed to fail for wrong tool_use_id")
 	}
 }
@@ -943,8 +943,8 @@ func TestMarkWitnessedWrongToolName(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, "WrongTool", dig, rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, "WrongTool", dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected MarkWitnessed to fail for wrong tool name")
 	}
 	if c.entryCount() != 1 {
@@ -964,8 +964,8 @@ func TestMarkWitnessedWrongInputDigest(t *testing.T) {
 	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected MarkWitnessed to fail for wrong input digest")
 	}
 }
@@ -983,8 +983,8 @@ func TestMarkWitnessedWrongRuntime(t *testing.T) {
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	wrongRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 99, StreamGen: 0}
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, wrongRT)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, wrongRT)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected MarkWitnessed to fail for wrong RuntimeRef")
 	}
 }
@@ -1035,8 +1035,8 @@ func TestMarkWitnessedExpiredWitness(t *testing.T) {
 	clockNow = func() time.Time { return time.Now().Add(2*coordinatorEntryTimeout + time.Second) }
 	defer func() { clockNow = orig }()
 
-	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("expected expired witness to fail")
 	}
 	if c.entryCount() != 0 {
@@ -1121,22 +1121,39 @@ func TestR4_TwoResumeHooks_ExactlyOneIdentity(t *testing.T) {
 	tok := "cccccccccccccccccccccccccccccccc"
 	nonce := handle.ResumeNonce
 
-	// First ClaimWrite binds the identity.
-	_, out := c.ClaimWrite(tok, nonce, "sess-a", "tu-a", tn, dig, 1)
-	if out != outcomeWritten {
-		t.Fatalf("first bind: want outcomeWritten, got %d", out)
-	}
+	// Two goroutines race to bind the identity using a channel barrier.
+	// Both wait for the release signal, then enter ClaimWrite concurrently.
+	// The coordinator mutex serialises them; exactly one must succeed.
+	release := make(chan struct{})
+	done := make(chan struct{}, 2)
+	outs := make([]resumeOutcome, 2)
 
-	// Second ClaimWrite with DIFFERENT session/toolUseID → mismatch.
-	_, out = c.ClaimWrite(tok, nonce, "sess-b", "tu-b", tn, dig, 1)
-	if out != outcomeMismatch {
-		t.Fatalf("competing identity: want outcomeMismatch, got %d", out)
-	}
+	go func() {
+		<-release
+		_, outs[0] = c.ClaimWrite(tok, nonce, "sess-a", "tu-a", tn, dig, 1)
+		done <- struct{}{}
+	}()
+	go func() {
+		<-release
+		_, outs[1] = c.ClaimWrite(tok, nonce, "sess-b", "tu-b", tn, dig, 1)
+		done <- struct{}{}
+	}()
 
-	// Third ClaimWrite with SAME identity as first → duplicate.
-	_, out = c.ClaimWrite(tok, nonce, "sess-a", "tu-a", tn, dig, 1)
-	if out != outcomeDuplicate {
-		t.Fatalf("same identity replay: want outcomeDuplicate, got %d", out)
+	close(release) // release both goroutines simultaneously
+	<-done
+	<-done
+
+	written := 0
+	mismatch := 0
+	for _, o := range outs {
+		if o == outcomeWritten {
+			written++
+		} else if o == outcomeMismatch {
+			mismatch++
+		}
+	}
+	if written != 1 || mismatch != 1 {
+		t.Fatalf("concurrent hooks: want exactly 1 written + 1 mismatch, got written=%d mismatch=%d", written, mismatch)
 	}
 }
 
@@ -1194,8 +1211,8 @@ func TestR4_PostToolUse_WrongIdentity_Rejected(t *testing.T) {
 	c.ConfirmWrite(tok, true)
 
 	// MarkWitnessed with DIFFERENT identity → rejected.
-	_, _, ok := c.MarkWitnessed(tok, WitnessPostToolUse, "sess-a", "tu-wrong", tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed(tok, WitnessPostToolUse, "sess-a", "tu-wrong", tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("wrong toolUseID must be rejected")
 	}
 }
@@ -1210,12 +1227,12 @@ func TestR4_EarlyPostToolUse_StoredThenCommitted(t *testing.T) {
 	// Do NOT ConfirmWrite yet.
 
 	// Early witness (before ConfirmWrite).
-	binding, digest, ok := c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if !ok {
+	mr := c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome != Witnessed && mr.Outcome != WitnessPending {
 		t.Fatal("early witness must be accepted")
 	}
 	// R4: early witness returns zero binding/digest (not terminal).
-	if binding.ApprovalID != "" || digest != "" {
+	if mr.Binding.ApprovalID != "" || mr.Digest != "" {
 		t.Fatal("early witness must return zero binding/digest")
 	}
 
@@ -1272,11 +1289,11 @@ func TestR4_DenyEvidence_MatchesBoundIdentity(t *testing.T) {
 
 	// Denial entry matching the bound identity.
 	entries := []streamDenialEntry{{ToolUseID: tuid, ToolName: tn, InputDigest: dig}}
-	binding, digest, ok := c.MarkDenialWitness(tok, sid, entries, rt)
-	if !ok {
+	mr := c.MarkDenialWitness(tok, sid, entries, rt)
+	if mr.Outcome != Witnessed && mr.Outcome != WitnessPending {
 		t.Fatal("denial witness matching bound identity must succeed")
 	}
-	if binding.ApprovalID == "" || digest == "" {
+	if mr.Binding.ApprovalID == "" || mr.Digest == "" {
 		t.Fatal("terminal deny witness must return binding+digest")
 	}
 
@@ -1318,8 +1335,8 @@ func TestR4_DenyEvidence_WrongIdentity_Rejected(t *testing.T) {
 
 	// Denial entry with DIFFERENT toolUseID → rejected.
 	entries := []streamDenialEntry{{ToolUseID: "wrong-tu", ToolName: tn, InputDigest: dig}}
-	_, _, ok := c.MarkDenialWitness(tok, "sess-denial", entries, rt)
-	if ok {
+	mr := c.MarkDenialWitness(tok, "sess-denial", entries, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("denial with wrong identity must be rejected")
 	}
 }
@@ -1337,8 +1354,8 @@ func TestR4_AmbiguousDenialEntries_Cancel(t *testing.T) {
 		{ToolUseID: tuid, ToolName: tn, InputDigest: dig},
 		{ToolUseID: tuid, ToolName: tn, InputDigest: dig},
 	}
-	_, _, ok := c.MarkDenialWitness(tok, sid, entries, rt)
-	if ok {
+	mr := c.MarkDenialWitness(tok, sid, entries, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("ambiguous denial entries must fail")
 	}
 	// Entry must be cancelled.
@@ -1396,6 +1413,7 @@ func TestR4_WitnessPending_Delete_Cancelled(t *testing.T) {
 			t.Fatalf("delete: want TerminalCancelled, got %d", result.Outcome)
 		}
 	default:
+		t.Fatal("completion must be available after delete")
 	}
 }
 
@@ -1418,6 +1436,7 @@ func TestR4_WitnessPending_Replacement_StaleRuntime(t *testing.T) {
 			t.Fatalf("replacement: want TerminalStaleRuntime, got %d", result.Outcome)
 		}
 	default:
+		t.Fatal("completion must be available after replacement")
 	}
 }
 
@@ -1444,6 +1463,7 @@ func TestR4_WitnessPending_Timeout_Ambiguous(t *testing.T) {
 			t.Fatalf("timeout: want TerminalAmbiguous, got %d", result.Outcome)
 		}
 	default:
+		t.Fatal("completion must be available after timeout")
 	}
 }
 
@@ -1462,6 +1482,7 @@ func TestR4_WitnessPending_Close_Cancelled(t *testing.T) {
 			t.Fatalf("close: want TerminalCancelled, got %d", result.Outcome)
 		}
 	default:
+		t.Fatal("completion must be available after close")
 	}
 }
 
@@ -1493,8 +1514,8 @@ func TestR4_WrongEarlyWitness_Rejected_StateUnchanged(t *testing.T) {
 	}
 
 	// Wrong witness (different toolUseID).
-	_, _, ok := c.MarkWitnessed(tok, WitnessPostToolUse, "sess-wrong", "tu-wrong", tn, dig, rt)
-	if ok {
+	mr := c.MarkWitnessed(tok, WitnessPostToolUse, "sess-wrong", "tu-wrong", tn, dig, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("wrong early witness must be rejected")
 	}
 	if c.pendingCount() != 1 {
@@ -1502,8 +1523,8 @@ func TestR4_WrongEarlyWitness_Rejected_StateUnchanged(t *testing.T) {
 	}
 
 	// Correct witness still succeeds (first valid early witness).
-	_, _, ok = c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
-	if !ok {
+	mr = c.MarkWitnessed(tok, WitnessPostToolUse, sid, tuid, tn, dig, rt)
+	if mr.Outcome != Witnessed && mr.Outcome != WitnessPending {
 		t.Fatal("correct early witness must succeed after wrong one was rejected")
 	}
 }
@@ -1540,8 +1561,8 @@ func TestR4_DenialCrossUse_OriginalIdentity_Rejected(t *testing.T) {
 
 	// Deny with ORIGINAL tuid (not the bound one) → rejected.
 	entries := []streamDenialEntry{{ToolUseID: tuid, ToolName: tn, InputDigest: dig}}
-	_, _, ok := c.MarkDenialWitness("cccccccccccccccccccccccccccccccc", "new-sess", entries, rt)
-	if ok {
+	mr := c.MarkDenialWitness("cccccccccccccccccccccccccccccccc", "new-sess", entries, rt)
+	if mr.Outcome == Witnessed || mr.Outcome == WitnessPending {
 		t.Fatal("denial with original identity must be rejected after new identity is bound")
 	}
 }

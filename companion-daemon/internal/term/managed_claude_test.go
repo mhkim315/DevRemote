@@ -1979,9 +1979,9 @@ func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
 	c2 := NewClaudeResumeCoordinator()
 	handle2, sid2, tuid2, tn2, _, rt2 := advanceToDecisionWritten(t, c2, `{"command":"x"}`)
 	// Use the stored digest dig (parameter) — not a recomputed one.
-	_, _, ok := c2.MarkWitnessed(handle2.ClaimToken, WitnessPermissionDenials,
+	mr := c2.MarkWitnessed(handle2.ClaimToken, WitnessPermissionDenials,
 		sid2, tuid2, tn2, dig, rt2)
-	if !ok {
+	if mr.Outcome != Witnessed && mr.Outcome != WitnessPending {
 		t.Fatal("known-bad: MarkWitnessed with stored digest must accept — proves decoder recomputation is the only defense")
 	}
 	// The stored digest matches the stored entry, so the known-bad succeeds.
