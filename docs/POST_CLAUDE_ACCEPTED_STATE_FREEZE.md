@@ -7,7 +7,7 @@ This document contains the complete ledger required by section 1 of the POST_CLA
 ## 1. Frozen State and Repository HEADs
 
 - **Frozen implementation / rollback HEAD**: `cc86e36556754c0973f457ff202127fd282748bb`
-- **PF report HEAD** (current documentation commit): `b0457aa460187d199c729de785ed85289e2129e6`
+- **PF document commit**: The enclosing Git commit reported in the REVIEW REQUEST (intentionally not embedded to avoid self-referential SHA drift)
 - **Remote branch HEAD**: Equal to local HEAD (`feature/phase10-multi-adapter`)
 - **Worktree**: clean
 
@@ -38,7 +38,7 @@ All gates were successfully executed on the frozen implementation HEAD `cc86e365
 | Mobile Jest | `npm test -- --ci` | PASS |
 | Android native gate | `./gradlew :pokit-device-key:compileReleaseKotlin` | BUILD SUCCESSFUL (not skipped) |
 | Invariant scans | Vendor branch scan, ID inference scan | PASS |
-| Secret scan | `grep -rn "sk-[A-Za-z0-9]\|ghp_\|...` | PASS |
+| Secret scan | Canonical secret scan | PASS |
 
 ## 5. Ancestry Checks
 The following accepted SHAs are verified as ancestors of the frozen implementation HEAD `cc86e36556754c0973f457ff202127fd282748bb`:
