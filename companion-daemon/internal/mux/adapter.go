@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"devremote/companion-daemon/internal/models"
+	"devremote/companion-daemon/internal/sessionid"
 )
 
 // Sentinel errors for adapter operations. Handlers use errors.Is to distinguish
@@ -15,8 +16,10 @@ var (
 	ErrAdapterUnavailable = errors.New("adapter unavailable")
 	ErrUnsupported        = errors.New("operation not supported by adapter")
 	ErrTimeout            = errors.New("operation timed out")
-	ErrInvalidSessionID   = errors.New("invalid session ID")
-	ErrDuplicateAdapter   = errors.New("duplicate adapter name")
+	// ErrInvalidSessionID aliases the neutral sessionid sentinel (PA2b), so
+	// errors.Is matches identically through mux or sessionid.
+	ErrInvalidSessionID = sessionid.ErrInvalidSessionID
+	ErrDuplicateAdapter = errors.New("duplicate adapter name")
 )
 
 // Session represents an abstract terminal session that can be viewed and controlled remotely.

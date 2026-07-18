@@ -14,6 +14,7 @@ import (
 	"devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -478,7 +479,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 	if s.detector != nil {
 		for i := range res {
 			st := &res[i]
-			ref := mux.ParseSessionID(st.ID)
+			ref := sessionid.ParseSessionID(st.ID)
 			evidence := ProdDetectionEvidence{TermAdapter: ref.Adapter}
 			// Extract real process evidence from the session.
 			for _, sess := range sessions {

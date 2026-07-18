@@ -8,7 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 )
 
 // A1 remediation 5 — approval-specific delivery boundary + generation-owned delivery
@@ -140,7 +140,7 @@ func validSessionID(s string) bool {
 	if !utf8.ValidString(s) {
 		return false
 	}
-	ref := mux.ParseSessionID(s)
+	ref := sessionid.ParseSessionID(s)
 	if ref.Adapter == "" || ref.LocalID == "" {
 		return false
 	}
@@ -150,7 +150,7 @@ func validSessionID(s string) bool {
 	if ref.Validate() != nil {
 		return false
 	}
-	return mux.ValidateAdapterName(ref.Adapter) == nil
+	return sessionid.ValidateAdapterName(ref.Adapter) == nil
 }
 
 // validApprovalID is the store's bound: non-empty, max 256 chars.
@@ -159,7 +159,7 @@ func validApprovalID(s string) bool { return len(s) > 0 && len(s) <= authMaxAppr
 // validAdapterID validates a runtime adapter/provider identity with the existing
 // accepted adapter grammar (R9-A2), not length alone.
 func validAdapterID(s string) bool {
-	return len(s) > 0 && len(s) <= maxVersionLen && mux.ValidateAdapterName(s) == nil
+	return len(s) > 0 && len(s) <= maxVersionLen && sessionid.ValidateAdapterName(s) == nil
 }
 
 // validVersion enforces one bounded ASCII version grammar (R9-A: `[A-Za-z0-9]

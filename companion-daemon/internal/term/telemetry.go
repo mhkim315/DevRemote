@@ -11,6 +11,7 @@ import (
 
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 )
 
 // SessionTelemetry holds the calculated state of a session.
@@ -100,7 +101,7 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 		}
 		snapshot = append(snapshot, SessionTelemetry{
 			ID:             e.ID,
-			DisplayID:      mux.ParseSessionID(e.ID).LocalID,
+			DisplayID:      sessionid.ParseSessionID(e.ID).LocalID,
 			State:          "idle", // agent-activity neutral; lifecycle is below
 			LifecycleState: string(e.State),
 			Runner:         e.Name,
@@ -420,7 +421,7 @@ func buildSimpleSnapshotWithDetector(reg *mux.Registry, events EventStore, detec
 	}
 	for i := range result {
 		st := &result[i]
-		ref := mux.ParseSessionID(st.ID)
+		ref := sessionid.ParseSessionID(st.ID)
 		kind, status, confidence := detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, ProdDetectionEvidence{
 			TermAdapter: ref.Adapter,
 		})

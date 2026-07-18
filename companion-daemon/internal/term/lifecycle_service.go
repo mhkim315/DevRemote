@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -308,7 +309,7 @@ func (s *LifecycleService) finalize(id string) {
 		return
 	}
 	// Process is already dead (Recorder EOF) before we remove the registry entry.
-	ref := mux.ParseSessionID(id)
+	ref := sessionid.ParseSessionID(id)
 	_ = s.reg.TerminateSession(context.Background(), ref.Adapter, ref.LocalID)
 	DeleteRecorder(id)
 	s.catalog.finalize(id, nil)

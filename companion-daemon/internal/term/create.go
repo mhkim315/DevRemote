@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -289,7 +290,7 @@ func createControlledSession(ctx context.Context, reg *mux.Registry, activity *A
 	if err != nil {
 		return "", nil, err
 	}
-	canonicalID := mux.SessionRef{Adapter: "controlled_pty", LocalID: createdID}.Canonical()
+	canonicalID := sessionid.SessionRef{Adapter: "controlled_pty", LocalID: createdID}.Canonical()
 	rec, rerr := startRecorder(ctx, reg, activity, canonicalID)
 	if rerr != nil {
 		_ = reg.TerminateSession(ctx, "controlled_pty", createdID)

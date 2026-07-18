@@ -12,6 +12,7 @@ import (
 
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 	"github.com/gorilla/websocket"
 )
 
@@ -74,7 +75,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// LOCAL operation over the 0600 socket — never over the tunnel-reachable
 		// HTTP listener. Other adapters (tmux/cmux) keep their existing create
 		// behavior; they do not run an arbitrary shell for the caller.
-		ref := mux.ParseSessionID(req.ID)
+		ref := sessionid.ParseSessionID(req.ID)
 		if err := ref.Validate(); err != nil {
 			http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
 			return
@@ -98,7 +99,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
 			return
 		}
-		canonicalID := mux.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
+		canonicalID := sessionid.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
 		// Best-effort recorder start for external/streamable adapters; also
 		// drops the starter subscriber so no phantom viewer is retained.
 		_, _ = startRecorder(r.Context(), reg, h.Activity, canonicalID)
@@ -111,7 +112,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		if id != "" {
-			ref := mux.ParseSessionID(id)
+			ref := sessionid.ParseSessionID(id)
 			if err := ref.Validate(); err != nil {
 				http.Error(w, fmt.Sprintf("invalid session ID: %v", err), http.StatusBadRequest)
 				return

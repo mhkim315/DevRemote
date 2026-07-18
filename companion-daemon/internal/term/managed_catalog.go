@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"devremote/companion-daemon/internal/models"
-	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 )
 
 // ManagedRuntimeCatalog is the read-only federated view over managed
@@ -78,7 +78,7 @@ func NewManagedRuntimeCatalog(
 // malformed — it should never have been registered, and the catalog
 // must not expose it.
 func validateManagedRecord(rec *ManagedSessionRecord, expectAdapter string) error {
-	ref := mux.ParseSessionID(rec.SessionID)
+	ref := sessionid.ParseSessionID(rec.SessionID)
 	if err := ref.Validate(); err != nil {
 		return fmt.Errorf("invalid canonical session ID %q: %w", rec.SessionID, err)
 	}
@@ -106,7 +106,7 @@ func validateManagedRecord(rec *ManagedSessionRecord, expectAdapter string) erro
 // detect ambiguous duplicates (fail closed). Returned records are
 // validated; malformed stored records are not exposed.
 func (c *managedRuntimeCatalog) Get(sessionID string) (ManagedSessionRecord, bool) {
-	ref := mux.ParseSessionID(sessionID)
+	ref := sessionid.ParseSessionID(sessionID)
 	switch ref.Adapter {
 	case codexAppServerAdapter:
 		if c.codexReg == nil {
@@ -236,7 +236,7 @@ func (c *managedRuntimeCatalog) RuntimeOf(sessionID string) (RuntimeRef, bool) {
 		return RuntimeRef{}, false
 	}
 
-	ref := mux.ParseSessionID(sessionID)
+	ref := sessionid.ParseSessionID(sessionID)
 	var resolver func(string) (RuntimeRef, bool)
 	switch ref.Adapter {
 	case codexAppServerAdapter:
