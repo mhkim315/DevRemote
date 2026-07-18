@@ -307,7 +307,7 @@ func TestClaimWriteSuccess(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeWritten {
 		t.Fatalf("expected outcomeWritten, got %d", out)
 	}
@@ -328,7 +328,7 @@ func TestClaimWriteDenyDecision(t *testing.T) {
 	binding.OptionID = "deny"
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeWritten {
 		t.Fatalf("expected outcomeWritten, got %d", out)
 	}
@@ -344,7 +344,7 @@ func TestClaimWriteWrongNonce(t *testing.T) {
 	binding := testBinding(id, psid)
 	_, _ = c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", "wrong-nonce", sid, tuid, tn, dig)
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", "wrong-nonce", sid, tuid, tn, dig, 1)
 	if out != outcomeMismatch {
 		t.Fatalf("expected outcomeMismatch, got %d", out)
 	}
@@ -357,7 +357,14 @@ func TestClaimWriteWrongSessionID(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, "wrong-sess", tuid, tn, dig)
+	// R4: first ClaimWrite binds the resume attempt identity (sessionID
+	// is the first observed session from the claim-specific bridge).
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, "first-sess", tuid, tn, dig, 1)
+	if out != outcomeWritten {
+		t.Fatalf("first ClaimWrite must succeed (one-time bind), got %d", out)
+	}
+	// Second ClaimWrite with a different sessionID → outcomeMismatch.
+	_, out = c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, "wrong-sess", tuid, tn, dig, 1)
 	if out != outcomeMismatch {
 		t.Fatalf("expected outcomeMismatch, got %d", out)
 	}
@@ -371,7 +378,7 @@ func TestClaimWriteAfterCancel(t *testing.T) {
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
 	c.CancelEntry("cccccccccccccccccccccccccccccccc")
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeStale {
 		t.Fatalf("expected outcomeStale after cancel, got %d", out)
 	}
@@ -385,7 +392,7 @@ func TestClaimWriteAfterClose(t *testing.T) {
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
 	c.Close()
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeStale {
 		t.Fatalf("expected outcomeStale after close, got %d", out)
 	}
@@ -400,7 +407,7 @@ func TestConfirmWriteSuccess(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	_, _ = c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_, _ = c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	if out != outcomeWritten {
 		t.Fatalf("expected outcomeWritten from ConfirmWrite, got %d", out)
@@ -417,7 +424,7 @@ func TestConfirmWriteFailure(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	_, _ = c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_, _ = c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	// Simulate write failure — must be ambiguous, not success.
 	out := c.ConfirmWrite("cccccccccccccccccccccccccccccccc", false)
 	if out != outcomeAmbiguous {
@@ -437,7 +444,7 @@ func TestConfirmWriteAfterInvalidation(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	// Invalidate the entry (simulating terminate/close race).
 	c.CancelEntry("cccccccccccccccccccccccccccccccc")
 
@@ -572,7 +579,7 @@ func TestClaimWrite_KnownBadCheckThenWrite(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+			_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 			results <- out
 		}()
 	}
@@ -621,7 +628,7 @@ func TestClaimWriteConcurrentDifferentClaims(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			_, out := c.ClaimWrite("ccccccccccccccccccccccccccccccc"+string(rune('0'+idx)), handles[idx].ResumeNonce, sid, tuid, tn, dig)
+			_, out := c.ClaimWrite("ccccccccccccccccccccccccccccccc"+string(rune('0'+idx)), handles[idx].ResumeNonce, sid, tuid, tn, dig, 1)
 			oks[idx] = out == outcomeWritten
 		}(i)
 	}
@@ -652,7 +659,7 @@ func TestFullClaimWriteConfirmCycle(t *testing.T) {
 	}
 
 	// Step 2: ClaimWrite.
-	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeWritten || wh.Decision() != "allow" {
 		t.Fatalf("ClaimWrite failed: %d/%s", out, wh.Decision())
 	}
@@ -676,7 +683,7 @@ func TestClaimWriteCancelRace(t *testing.T) {
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
 	// Claim write succeeds.
-	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeWritten {
 		t.Fatalf("ClaimWrite failed: %d", out)
 	}
@@ -709,7 +716,7 @@ func TestResumeHandleDoesNotExposeInternals(t *testing.T) {
 	handleCopy := handle
 	handleCopy.ResumeNonce = "tampered"
 	// Original handle should still work.
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeWritten {
 		t.Fatalf("original handle should still work after copy mutation, got %d", out)
 	}
@@ -723,7 +730,7 @@ func TestWriteHandleDoesNotExposeInternals(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeWritten {
 		t.Fatalf("ClaimWrite failed: %d", out)
 	}
@@ -746,7 +753,7 @@ func TestReserveThenExpiryThenClaimWrite(t *testing.T) {
 	c.ClearForApproval(id)
 
 	// ClaimWrite must fail because the entry was cancelled.
-	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeStale {
 		t.Fatalf("expected outcomeStale after expiry, got %d", out)
 	}
@@ -764,7 +771,7 @@ func TestMarkWitnessed(t *testing.T) {
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
 
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
@@ -800,7 +807,7 @@ func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
@@ -833,7 +840,7 @@ func TestMarkWitnessedWrongSession(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, "wrong-session", tuid, tn, dig, rt)
@@ -851,7 +858,7 @@ func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPermissionDenials, sid, "wrong-tuid", tn, dig, rt)
@@ -866,7 +873,7 @@ func TestMarkWitnessedWrongToolName(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, "WrongTool", dig, rt)
@@ -884,7 +891,7 @@ func TestMarkWitnessedWrongInputDigest(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	_, _, ok := c.MarkWitnessed("cccccccccccccccccccccccccccccccc", WitnessPostToolUse, sid, tuid, tn, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rt)
@@ -899,7 +906,7 @@ func TestMarkWitnessedWrongRuntime(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 	wrongRT := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: 99, StreamGen: 0}
@@ -917,7 +924,7 @@ func TestConfirmWriteExpiredWriteClaim(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	_ = wh
 
 	// Advance past the write-claim deadline.
@@ -940,7 +947,7 @@ func TestMarkWitnessedExpiredWitness(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	c.ConfirmWrite("cccccccccccccccccccccccccccccccc", true)
 	_ = wh
 
@@ -964,7 +971,7 @@ func TestConfirmWriteJustBeforeDeadline(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	_ = wh
 
 	// Just before deadline — succeeds.
@@ -984,7 +991,7 @@ func TestConfirmWriteJustAfterDeadline(t *testing.T) {
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig)
+	wh, _ := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	_ = wh
 
 	// Just after deadline — fails.

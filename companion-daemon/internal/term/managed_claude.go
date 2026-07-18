@@ -689,42 +689,36 @@ func (rt *claudeManagedRuntime) failClosedDenial() {
 // routeDenial validates one strictly decoded denial event against the
 // runtime-owned immutable resume context and routes the witness.
 //
-// R6-B P1: the digest handed to MarkWitnessed is the one recomputed from
-// the event's own raw tool_input by the decoder — never ctx.inputDigest.
-// MarkWitnessed then requires it to equal the digest captured at the
-// original PreToolUse observation, plus the full session/tool identity and
-// the original RuntimeRef, in state decisionWritten only.
+// R6-B P1 + R4: routeDenial passes the strictly decoded denial event to
+// the coordinator's MarkDenialWitness. Under one coordinator lock, the
+// operation selects exactly one entry matching the bound
+// ResumeAttemptIdentity's sessionID, toolUseID, toolName, and inputDigest,
+// then performs the witness transition. No two-step lookup-then-Mark.
 func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 	ctx := rt.resumeCtx
 	if ctx == nil || ctx.coordinator == nil {
 		return // C1D observation runtime: never a witness source
 	}
+	// R4: find the denial entry matching the REAL resume identity.
+	// The bound attempt identity (set at ClaimWrite) carries the new
+	// tool_use_id and session_id. Original ctx.toolUseID is not used.
 	var match *streamDenialEntry
 	for i := range d.Entries {
-		if d.Entries[i].ToolUseID != ctx.toolUseID {
-			continue // denials of model retries carry other tool_use_ids
-		}
+		// Accept the first denial entry — MarkDenialWitness will
+		// cross-check against the bound attempt identity under lock.
 		if match != nil {
-			// Duplicate bound tool_use_id: ambiguous, fail closed.
+			// Multiple entries: ambiguous, cancel the claim.
 			rt.failClosedDenial()
 			return
 		}
 		match = &d.Entries[i]
 	}
 	if match == nil {
-		return // not our witness
+		return // no denial entry to witness
 	}
-	if d.SessionID != ctx.claudeSessionID || match.ToolName != ctx.toolName {
-		// Cross-binding anomaly on a bound tool_use_id: fail closed.
-		rt.failClosedDenial()
-		return
-	}
-	_, _, ok := ctx.coordinator.MarkWitnessed(ctx.claimToken, WitnessPermissionDenials,
-		d.SessionID, match.ToolUseID, match.ToolName, match.InputDigest, ctx.originalRuntime)
-	// Blocker 3 (R6-B-R1): a digest mismatch on a bound tool_use_id is a
-	// cross-binding anomaly â the event proved it does not carry the input
-	// the entry was reserved for. Fail closed so a subsequent well-formed
-	// denial cannot exploit the decisionWritten entry.
+	_, _, ok := ctx.coordinator.MarkDenialWitness(
+		d.SessionID, match.ToolUseID, match.ToolName, match.InputDigest,
+		ctx.originalRuntime)
 	if !ok {
 		rt.failClosedDenial()
 	}
@@ -1224,6 +1218,20 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	s.gen++
 	epoch := s.gen
 	s.mu.Unlock()
+
+	// R4: coordinator-owned process pre-binding before spawn.
+	// Stores the expected launch generation independently so
+	// ClaimWrite can compare two independently stored values.
+	if ctx.coordinator != nil {
+		if !ctx.coordinator.BindResumeProcess(ctx.claimToken, ctx.resumeNonce, epoch) {
+			bridge.close()
+			os.RemoveAll(hookDir)
+			return nil, fmt.Errorf("managed claude resume process: coordinator pre-bind failed")
+		}
+	}
+	// Place the same value in the immutable context for the bridge
+	// to pass to ClaimWrite.
+	ctx.resumeLaunchGen = epoch
 
 	argv := []string{
 		"--verbose",

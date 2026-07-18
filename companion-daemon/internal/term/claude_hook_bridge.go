@@ -105,6 +105,10 @@ func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
 // resume process spawns. It carries the original approval target identity
 // and claim ownership. The resume process has its own epoch, but witness
 // validation uses the original RuntimeRef from this context.
+//
+// R4: resumeLaunchGen is the coordinator-owned resume process epoch,
+// stored via BindResumeProcess before spawn and placed here so the bridge
+// can pass it to ClaimWrite for independent comparison.
 type resumeContext struct {
 	coordinator      *claudeResumeCoordinator
 	claimToken       string
@@ -117,6 +121,7 @@ type resumeContext struct {
 	inputDigest      string
 	expectedDecision string // "allow" or "deny"
 	originalCWD      string // bound from original managed session
+	resumeLaunchGen  int64  // R4: resume process epoch, independently stored by BindResumeProcess
 }
 
 type claudeHookBridge struct {
@@ -330,13 +335,7 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Strict decode of identity fields — all must parse, but for the
-	// ClaimWrite call we use the ORIGINAL identity values from the resume
-	// context, not the body's. Real Claude resume generates a new
-	// tool_use_id (+ potentially new session ID) for the retried tool
-	// call; ClaimWrite validates against the entry reserved from the
-	// original identity. We still validate that the body fields parse so
-	// a malformed hook body fails closed.
+	// Strict decode the real resume invocation's identity fields.
 	toolUseIDBody, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
 	toolNameBody, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
 	sessionIDBody, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
@@ -348,14 +347,12 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		writeHookDefer(w)
 		return
 	}
-	// Canonical recomputation is also a validation step — it can fail.
 	inputCanon, err := canonicalJSON(fields["tool_input"])
 	if err != nil || len(inputCanon) > maxToolInputBytes {
 		writeHookDefer(w)
 		return
 	}
-	_ = sha256Hex(inputCanon) // digest recomputation validates, value unused — ctx supplies it
-	_, _, _ = toolUseIDBody, toolNameBody, sessionIDBody
+	inputDigestBody := sha256Hex(inputCanon)
 
 	// B2 + R4-1: use the immutable resume context under the bridge mutex.
 	b.mu.Lock()
@@ -371,15 +368,18 @@ func (b *claudeHookBridge) handleResume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Use the original identity fields from the resume context, not the
-	// hook body's. Real Claude resume generates a NEW tool_use_id and
-	// potentially a new session ID for the retried tool call; ClaimWrite
-	// validates against the entry reserved from the original identity.
-	// The tool_name (from the classifier) and canonical input digest
-	// (recomputed deterministically) are the real action identity and
-	// should match between the context and the hook body.
-	origToolUseID, origToolName, origInputDigest := ctx.toolUseID, ctx.toolName, ctx.inputDigest
-	wh, outcome := ctx.coordinator.ClaimWrite(claimToken, resumeNonce, ctx.claudeSessionID, origToolUseID, origToolName, origInputDigest)
+	// R4: compare the real resume invocation's tool_name and canonical
+	// input digest against the original action. Only the exact same
+	// action may proceed.
+	if toolNameBody != ctx.toolName || inputDigestBody != ctx.inputDigest {
+		writeHookDefer(w)
+		return
+	}
+	// R4: bind the real resume identity to the claim token.
+	// ClaimWrite independently re-validates toolName/inputDigest
+	// against the stored OriginalApprovalIdentity AND the
+	// coordinator-owned expected launch generation.
+	wh, outcome := ctx.coordinator.ClaimWrite(claimToken, resumeNonce, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.resumeLaunchGen)
 	if outcome != outcomeWritten {
 		writeHookDefer(w)
 		return
@@ -433,22 +433,22 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Strict decode body fields — all must parse, but MarkWitnessed
-	// uses the original identity from the resume context (same reason
-	// as handleResume: unknown fields are benign for witness). A
-	// malformed body fails closed (200 to avoid error-display).
-	_, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
-	_, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
-	_, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
+	// Strict decode the real PostToolUse identity fields.
+	toolUseIDBody, ok1 := strictBoundedString(fields["tool_use_id"], maxToolUseIDLen)
+	toolNameBody, ok2 := strictBoundedString(fields["tool_name"], maxToolNameLen)
+	sessionIDBody, ok3 := strictBoundedString(fields["session_id"], maxClaudeSessionIDLen)
 	if !ok1 || !ok2 || !ok3 {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	inputDigestBody := ""
 	if raw, ok := fields["tool_input"]; ok && len(raw) > 0 {
-		if _, err := canonicalJSON(raw); err != nil || len(raw) > maxToolInputBytes {
+		canon, err := canonicalJSON(raw)
+		if err != nil || len(raw) > maxToolInputBytes {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		inputDigestBody = sha256Hex(canon)
 	}
 
 	b.mu.Lock()
@@ -460,11 +460,10 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	}
 	// R6-A3: PostToolUse ALWAYS proves allow only. Deny must come from
 	// the permission_denials stream decoder, never from this hook.
-	// Use the original identity values from the resume context, not the
-	// hook body's, for the same reason as handleResume: the entry was
-	// reserved from the original identity and MarkWitnessed validates
-	// against it. A new tool_use_id on resume is discarded.
-	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, ctx.claudeSessionID, ctx.toolUseID, ctx.toolName, ctx.inputDigest, ctx.originalRuntime)
+	// R4: witness the REAL PostToolUse invocation's identity. The
+	// coordinator validates against the bound ResumeAttemptIdentity
+	// (created at ClaimWrite time).
+	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }
 

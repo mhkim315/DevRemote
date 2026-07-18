@@ -1528,7 +1528,7 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 
 	// Step 4: ClaimWrite (simulating resume hook).
 	wh, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
-		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest)
+		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest, 1)
 	if out != outcomeWritten {
 		t.Fatalf("expected outcomeWritten, got %d", out)
 	}
@@ -1547,7 +1547,7 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 
 	// Step 6: Duplicate ClaimWrite must fail.
 	_, out = svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
-		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest)
+		idRec.sessionID, idRec.toolUseID, idRec.toolName, idRec.inputDigest, 1)
 	if out != outcomeDuplicate {
 		t.Fatalf("expected outcomeDuplicate, got %d", out)
 	}
@@ -1590,30 +1590,28 @@ func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
 		t.Fatal("expected ReserveEntry to succeed")
 	}
 
-	// Wrong toolUseID — must fail.
-	_, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
-		"sess-1", "wrong-tu", "Bash", sha256Hex([]byte(`{"cmd":"x"}`)))
-	if out != outcomeMismatch {
-		t.Fatalf("expected outcomeMismatch, got %d", out)
+	// R4: first ClaimWrite binds the ResumeAttemptIdentity.
+	// toolUseID is accepted as the new provider identity (one-time bind).
+	// toolName and inputDigest must match the original action.
+	correctDigest := sha256Hex([]byte(`{"cmd":"x"}`))
+	wh, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
+		"sess-1", "tu-1", "Bash", correctDigest, 1)
+	if out != outcomeWritten || wh.Decision() != "allow" {
+		t.Fatalf("expected first bind to succeed, got %d/%s", out, wh.Decision())
 	}
 
-	// Wrong digest — must fail.
+	// Wrong digest (different from bound attempt) — must fail.
 	_, out = svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
-		"sess-1", "tu-1", "Bash", "wrong-digest")
+		"sess-1", "tu-1", "Bash", "wrong-digest", 1)
 	if out != outcomeMismatch {
 		t.Fatalf("expected outcomeMismatch for wrong digest, got %d", out)
 	}
 
-	// Entry still pending.
-	if svc.coordinator.pendingCount() != 1 {
-		t.Fatal("expected 1 pending after mismatches")
-	}
-
-	// Correct write should still work.
-	wh, out := svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
-		"sess-1", "tu-1", "Bash", sha256Hex([]byte(`{"cmd":"x"}`)))
-	if out != outcomeWritten || wh.Decision() != "allow" {
-		t.Fatalf("expected valid write to succeed after mismatches, got %d/%s", out, wh.Decision())
+	// Same identity replay — must be duplicate.
+	_, out = svc.coordinator.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce,
+		"sess-1", "tu-1", "Bash", correctDigest, 1)
+	if out != outcomeDuplicate {
+		t.Fatalf("expected outcomeDuplicate for same identity, got %d", out)
 	}
 
 	rt.terminate()
@@ -1904,7 +1902,7 @@ func advanceToDecisionWritten(t *testing.T, c *claudeResumeCoordinator, toolInpu
 	if !ok {
 		t.Fatal("ReserveEntry failed")
 	}
-	if _, o := c.ClaimWrite(handle.ClaimToken, handle.ResumeNonce, sid, tuid, tn, dig); o != outcomeWritten {
+	if _, o := c.ClaimWrite(handle.ClaimToken, handle.ResumeNonce, sid, tuid, tn, dig, 1); o != outcomeWritten {
 		t.Fatalf("ClaimWrite: %d", o)
 	}
 	if o := c.ConfirmWrite(handle.ClaimToken, true); o != outcomeWritten {
