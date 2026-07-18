@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -874,18 +875,19 @@ func TestPA2a_LegacyLinkFileNotRead(t *testing.T) {
 		t.Fatalf("write sentinel: %v", err)
 	}
 
-	// Record pre-App file state.
+	// Record pre-App file state with inode identity.
 	preInfo, err := os.Stat(linkPath)
 	if err != nil {
 		t.Fatalf("stat before: %v", err)
 	}
+	preIno := inodeFromInfo(preInfo)
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
 
-	// Verify file untouched after NewApp.
+	// Verify file untouched after NewApp (bytes, size, mtime, mode, inode).
 	postInfo, err := os.Stat(linkPath)
 	if err != nil {
 		t.Fatalf("stat after: %v", err)
@@ -894,6 +896,7 @@ func TestPA2a_LegacyLinkFileNotRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read after: %v", err)
 	}
+	postIno := inodeFromInfo(postInfo)
 	if string(postBytes) != string(sentinel) {
 		t.Fatalf("links.json bytes changed: got %q want %q", postBytes, sentinel)
 	}
@@ -906,18 +909,68 @@ func TestPA2a_LegacyLinkFileNotRead(t *testing.T) {
 	if postInfo.Mode() != preInfo.Mode() {
 		t.Fatalf("links.json mode changed: %v -> %v", preInfo.Mode(), postInfo.Mode())
 	}
+	if postIno != preIno {
+		t.Fatalf("links.json inode changed: %d -> %d (file was replaced)", preIno, postIno)
+	}
 
-	// Shutdown and verify file still untouched.
+	// Shutdown and verify file still untouched (bytes, size, mtime, mode, inode).
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	app.Shutdown(ctx)
-	postShutdownBytes, err := os.ReadFile(linkPath)
+	postSDInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatalf("stat after shutdown: %v", err)
+	}
+	postSDBytes, err := os.ReadFile(linkPath)
 	if err != nil {
 		t.Fatalf("read after shutdown: %v", err)
 	}
-	if string(postShutdownBytes) != string(sentinel) {
-		t.Fatalf("links.json modified during shutdown: got %q want %q", postShutdownBytes, sentinel)
+	postSDIno := inodeFromInfo(postSDInfo)
+	if string(postSDBytes) != string(sentinel) {
+		t.Fatalf("links.json modified during shutdown: got %q want %q", postSDBytes, sentinel)
 	}
+	if postSDInfo.Size() != preInfo.Size() {
+		t.Fatalf("links.json size changed during shutdown: %d -> %d", preInfo.Size(), postSDInfo.Size())
+	}
+	if !postSDInfo.ModTime().Equal(preInfo.ModTime()) {
+		t.Fatalf("links.json mtime changed during shutdown: %v -> %v", preInfo.ModTime(), postSDInfo.ModTime())
+	}
+	if postSDInfo.Mode() != preInfo.Mode() {
+		t.Fatalf("links.json mode changed during shutdown: %v -> %v", preInfo.Mode(), postSDInfo.Mode())
+	}
+	if postSDIno != preIno {
+		t.Fatalf("links.json inode changed during shutdown: %d -> %d", preIno, postSDIno)
+	}
+}
+
+// TestPA2a_CLILinkCommandsRemoved verifies that link, unlink, and
+// links are no longer valid subcommands.
+func TestPA2a_CLILinkCommandsRemoved(t *testing.T) {
+	for _, cmd := range []string{"link", "unlink", "links"} {
+		if validSubcommands[cmd] {
+			t.Errorf("%q still in validSubcommands", cmd)
+		}
+		if dispatchSubcommand(cmd, nil) {
+			t.Errorf("dispatchSubcommand(%q) returned true", cmd)
+		}
+	}
+	for _, cmd := range []string{"xyz", "unknown-cmd"} {
+		if dispatchSubcommand(cmd, nil) {
+			t.Errorf("dispatchSubcommand(%q) returned true", cmd)
+		}
+	}
+	if !validSubcommands["daemon"] || !validSubcommands["run"] || !validSubcommands["pair"] {
+		t.Error("known subcommand missing from validSubcommands")
+	}
+}
+
+// inodeFromInfo extracts the inode from FileInfo. Returns 0 on platforms
+// where the inode is not accessible through the os package.
+func inodeFromInfo(fi os.FileInfo) uint64 {
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return stat.Ino
+	}
+	return 0
 }
 
 func listenFreeTCPOnAddr(addr string) (net.Listener, error) {

@@ -81,17 +81,20 @@ func TestPA2a_IPCLinkOperationsRemoved(t *testing.T) {
 		}
 		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		buf := make([]byte, 256)
-		n, _ := conn.Read(buf)
+		n, readErr := conn.Read(buf)
 		conn.Close()
-		// Must not get "linked", "unlinked", or a JSON array back.
-		response := string(buf[:n])
-		if strings.Contains(response, "linked") && !strings.Contains(response, "unlinked") {
-			if op == "link" && strings.TrimSpace(response) == "linked" {
-				t.Errorf("%q operation succeeded but should be removed", op)
+		if readErr != nil {
+			if strings.Contains(readErr.Error(), "timeout") || strings.Contains(readErr.Error(), "deadline") {
+				t.Errorf("%q: read timed out (handler may have blocked)", op)
+			} else {
+				t.Errorf("%q: read error: %v", op, readErr)
 			}
+			continue
 		}
-		if strings.Contains(response, "[{") {
-			t.Errorf("%q operation returned JSON array; link list should be removed", op)
+		response := string(buf[:n])
+		expected := "unknown operation\n"
+		if response != expected {
+			t.Errorf("%q: got %q, want %q", op, response, expected)
 		}
 	}
 }

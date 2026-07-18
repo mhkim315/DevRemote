@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,13 +51,9 @@ func TestPA2a_TelemetryNoLinkStore(t *testing.T) {
 	// proves the code path no longer depends on LinkStore.
 }
 
-// TestPA2a_TelemetryProcessFallback verifies that the process-based log
-// resolver path remains functional after LinkStore removal. The old
-// link-only Antigravity external log path is intentionally removed.
-
-// TestPA2a_TelemetryProcessFallback verifies that the process-based log
-// resolver path remains functional after LinkStore removal. The old
-// link-only Antigravity external log path is intentionally removed.
+// TestPA2a_TelemetryProcessFallback verifies that the production
+// logResolver defaults to nil (meaning ResolveAgentLog is used),
+// and that no LinkStore-dependent code path remains in resolveLog.
 func TestPA2a_TelemetryProcessFallback(t *testing.T) {
 	reg := mux.MustNewRegistry()
 	svc := NewTelemetryService(reg, NewMemoryEventStore(),
@@ -66,35 +63,76 @@ func TestPA2a_TelemetryProcessFallback(t *testing.T) {
 		t.Fatal("NewTelemetryService returned nil without LinkStore")
 	}
 
-	// Set an injectable resolver to prove the process-based path works
-	// without any link dependency.
-	svc.logResolver = func(p models.ProcessInfo) (LogRef, error) {
-		// Simulate the production ResolveAgentLog: identify agent from
-		// the process command/path without any link lookup.
-		return LogRef{Agent: "codex", Path: "/tmp/test-codex.log"}, nil
+	// The production logResolver defaults to nil, which causes
+	// resolveLog to call the production ResolveAgentLog function.
+	// No LinkStore is involved in this path — the old linked-log
+	// resolver block was deleted. Verified by: (1) this construction
+	// compiles without LinkStore, (2) the zero-reference gate proves
+	// GetLink/ResolveLink/link.Provider are absent from production code.
+	if svc.logResolver != nil {
+		t.Error("logResolver should default to nil (production ResolveAgentLog)")
 	}
 
-	// With a valid process snapshot, resolveLog must succeed.
+	// With a valid Codex-like process, resolveLog must NOT fail with
+	// a link-related error. The old error path would have been
+	// "no linked log" or similar; now the only failure is from
+	// ResolveAgentLog (e.g., process not found).
 	codexInfo := models.ProcessInfo{
 		PID:     12345,
 		CWD:     "/tmp",
 		Command: "node /pinned/toolchain/node_modules/.bin/codex app-server --stdio",
 	}
-	ref, err := svc.resolveLog(context.Background(), codexInfo)
+	_, err := svc.resolveLog(context.Background(), codexInfo)
+	// ResolveAgentLog may fail because the test PID doesn't exist,
+	// but it must NOT fail with a link-related error message.
 	if err != nil {
-		t.Fatalf("resolveLog for codex process: %v", err)
+		if strings.Contains(err.Error(), "link") || strings.Contains(err.Error(), "Link") {
+			t.Errorf("resolveLog error mentions link: %v — old link path may still be active", err)
+		}
 	}
-	if ref.Agent != "codex" {
-		t.Errorf("resolveLog agent = %q, want codex", ref.Agent)
-	}
-	if ref.Path == "" {
-		t.Error("resolveLog returned empty path")
-	}
+}
 
-	// The old link-only Antigravity external log path is intentionally
-	// removed. The linked-log resolver block (previously step 1 in
-	// processSession) is deleted from telemetry_service.go. No
-	// GetLink/ResolveLink call remains in the production code.
+// TestPA2a_TelemetryInjectedResolver proves the injectable logResolver
+// seam still works for unit testing, without any link dependency.
+func TestPA2a_TelemetryInjectedResolver(t *testing.T) {
+	reg := mux.MustNewRegistry()
+	svc := NewTelemetryService(reg, NewMemoryEventStore(),
+		nil, nil, NewApprovalStore(),
+		NewActivityBuffer(100), nil)
+	svc.logResolver = func(p models.ProcessInfo) (LogRef, error) {
+		return LogRef{Agent: "test-agent", Path: "/fake/path"}, nil
+	}
+	ref, err := svc.resolveLog(context.Background(), models.ProcessInfo{PID: 1})
+	if err != nil {
+		t.Fatalf("injected resolver: %v", err)
+	}
+	if ref.Agent != "test-agent" {
+		t.Errorf("injected resolver agent = %q, want test-agent", ref.Agent)
+	}
+}
+
+// TestPA2a_TelemetryAntigravityNotResolved proves that the old
+// link-only Antigravity external log path is no longer reachable.
+// Without a LinkStore, an unrecognizable process cannot be resolved
+// (no GetLink/ResolveLink fallback exists).
+func TestPA2a_TelemetryAntigravityNotResolved(t *testing.T) {
+	reg := mux.MustNewRegistry()
+	svc := NewTelemetryService(reg, NewMemoryEventStore(),
+		nil, nil, NewApprovalStore(),
+		NewActivityBuffer(100), nil)
+
+	// A process with an unrecognizable command fails to resolve.
+	// The old link path would have tried GetLink → ResolveLink for
+	// "gemini-antigravity" provider, but that code is deleted.
+	unknownInfo := models.ProcessInfo{
+		PID:     99999,
+		CWD:     "/tmp",
+		Command: "/usr/bin/unknown-process --flag",
+	}
+	_, err := svc.resolveLog(context.Background(), unknownInfo)
+	if err == nil {
+		t.Error("resolveLog for unknown process succeeded — old link path may still be active")
+	}
 }
 
 func TestEvaluateState(t *testing.T) {

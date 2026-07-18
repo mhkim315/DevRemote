@@ -10,25 +10,50 @@ import (
 	"os"
 )
 
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "pair" {
-		runPairClient(os.Args[2:])
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "run" {
-		runClient(os.Args[2:])
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "devices" {
-		runDevicesClient(os.Args[2:])
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "audit" {
-		runAuditClient(os.Args[2:])
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "hook" {
+// validSubcommands is the closed set of recognized subcommands. Unknown
+// subcommands fail with a nonzero exit rather than silently starting the
+// daemon. PA2a removed "link", "unlink", and "links" from this set.
+var validSubcommands = map[string]bool{
+	"pair":    true,
+	"run":     true,
+	"devices": true,
+	"audit":   true,
+	"hook":    true,
+	"daemon":  true,
+}
+
+// dispatchSubcommand routes recognized subcommands. Returns false when
+// the subcommand is unknown (caller must print an error and exit).
+// Extracted for testability.
+func dispatchSubcommand(cmd string, args []string) bool {
+	switch cmd {
+	case "pair":
+		runPairClient(args)
+		return true
+	case "run":
+		runClient(args)
+		return true
+	case "devices":
+		runDevicesClient(args)
+		return true
+	case "audit":
+		runAuditClient(args)
+		return true
+	case "hook":
 		printShellHook()
+		return true
+	default:
+		return false
+	}
+}
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] != "daemon" && !validSubcommands[os.Args[1]] {
+		log.Printf("unknown command: %s", os.Args[1])
+		os.Exit(1)
+	}
+	if len(os.Args) > 1 && os.Args[1] != "daemon" {
+		dispatchSubcommand(os.Args[1], os.Args[2:])
 		return
 	}
 
