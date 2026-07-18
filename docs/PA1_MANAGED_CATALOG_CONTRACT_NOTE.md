@@ -78,14 +78,19 @@ from the adapter-prefix-matched registry is retained.
 RuntimeOf(sessionID string) (RuntimeRef, bool)
 ```
 
-1. Parse the canonical session ID to extract the adapter prefix.
-2. If `codex_app_server`, delegate to `ManagedCodexService.RuntimeOf`.
-3. If `claude_headless`, delegate to `ManagedClaudeService.RuntimeOf`.
-4. Otherwise return `(zero, false)`.
+1. First, verify the session ID is valid and non-ambiguous via the **same
+   path as `Get`** (adapter-prefix dispatch + cross-registry ambiguity
+   check + record validation). If `Get` would fail, `RuntimeOf` fails.
+2. Delegate to the provider-specific `RuntimeOf` for the resolved adapter.
+3. Cross-validate the returned `RuntimeRef` against the catalog record:
+   `rt.Adapter` must equal the canonical adapter prefix, and
+   `rt.LaunchGen` must equal `rec.Epoch`. A mismatch is rejected.
 
 The provider-specific `RuntimeOf` methods remain unchanged — generation
 check, launch-certification validation, exited/deferred-exit handling, and
-all C3D contract conditions are preserved byte-for-byte.
+all C3D contract conditions are preserved byte-for-byte. The catalog adds
+an authority-consistency check on top: the read boundary (`Get`) and the
+execution-authority boundary (`RuntimeOf`) must agree on identity.
 
 ## 4. Lookup and collision behavior
 
@@ -93,11 +98,27 @@ all C3D contract conditions are preserved byte-for-byte.
 | --- | --- | --- |
 | ID in Codex registry only | record, true | included |
 | ID in Claude registry only | record, true | included |
-| ID in both registries | zero, false (fail closed) | adapter-prefix entry retained; duplicate dropped |
+| ID in both registries | zero, false (fail closed) | **both copies excluded** (fail closed) |
 | Unknown/malformed prefix | zero, false | excluded |
 | Pane-style ID (no adapter prefix) | zero, false | excluded |
 | Arbitrary attached ID | zero, false | excluded |
 | Registry closed/nil | zero, false | excluded from merge |
+
+**Ambiguous IDs are excluded entirely from List** — neither the codex
+copy nor the claude copy appears. This prevents provider-order bias
+(failing closed rather than silently choosing the first registry).
+
+**Stored-record validation**: Every record returned by `Get` or `List`
+is validated at read time against:
+- `mux.SessionRef.Validate()` — canonical ID with non-empty adapter
+  and local ID, no control characters;
+- adapter prefix matches the expected registry origin;
+- non-empty `Provider`;
+- non-empty `Version`.
+
+A record that fails validation is logged and excluded. This ensures
+malformed stored records (e.g. wrong adapter prefix in a registry,
+empty local ID, control characters) never reach a public consumer.
 
 ## 5. Deterministic list ordering
 

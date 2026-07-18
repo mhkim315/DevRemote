@@ -10,6 +10,7 @@
 package term
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -30,12 +31,13 @@ type ManagedRuntimeCatalog interface {
 
 	// List returns defensive copies of all records from both registries,
 	// sorted by CreatedAt ascending then SessionID ascending.
+	// Ambiguous IDs (present in both registries) are excluded entirely.
 	List() []ManagedSessionRecord
 
 	// RuntimeOf resolves the current runtime identity for sessionID by
 	// delegating to the accepted provider-specific RuntimeOf method.
-	// Uninstalled services, unknown adapters, and stale generations
-	// return (zero, false).
+	// Uninstalled services, unknown adapters, ambiguous IDs, and stale
+	// generations return (zero, false).
 	RuntimeOf(sessionID string) (RuntimeRef, bool)
 }
 
@@ -65,9 +67,31 @@ func NewManagedRuntimeCatalog(
 	}
 }
 
+// validateManagedRecord checks that a stored record conforms to the
+// canonical identity contract. A record that fails validation is
+// malformed — it should never have been registered, and the catalog
+// must not expose it.
+func validateManagedRecord(rec *ManagedSessionRecord, expectAdapter string) error {
+	ref := mux.ParseSessionID(rec.SessionID)
+	if err := ref.Validate(); err != nil {
+		return fmt.Errorf("invalid canonical session ID %q: %w", rec.SessionID, err)
+	}
+	if ref.Adapter != expectAdapter {
+		return fmt.Errorf("session ID adapter %q does not match registry origin %q", ref.Adapter, expectAdapter)
+	}
+	if rec.Provider == "" {
+		return fmt.Errorf("empty provider for session %q", rec.SessionID)
+	}
+	if rec.Version == "" {
+		return fmt.Errorf("empty version for session %q", rec.SessionID)
+	}
+	return nil
+}
+
 // Get selects the exact provider-owned registry from the canonical
 // session ID adapter prefix. It cross-checks the other registry to
-// detect ambiguous duplicates (fail closed).
+// detect ambiguous duplicates (fail closed). Returned records are
+// validated; malformed stored records are not exposed.
 func (c *managedRuntimeCatalog) Get(sessionID string) (ManagedSessionRecord, bool) {
 	ref := mux.ParseSessionID(sessionID)
 	switch ref.Adapter {
@@ -85,6 +109,10 @@ func (c *managedRuntimeCatalog) Get(sessionID string) (ManagedSessionRecord, boo
 				return ManagedSessionRecord{}, false
 			}
 		}
+		if err := validateManagedRecord(&rec, codexAppServerAdapter); err != nil {
+			log.Printf("managed catalog: Get skipping invalid codex record: %v", err)
+			return ManagedSessionRecord{}, false
+		}
 		return rec, true
 	case claudeHeadlessAdapter:
 		if c.claudeReg == nil {
@@ -100,6 +128,10 @@ func (c *managedRuntimeCatalog) Get(sessionID string) (ManagedSessionRecord, boo
 				return ManagedSessionRecord{}, false
 			}
 		}
+		if err := validateManagedRecord(&rec, claudeHeadlessAdapter); err != nil {
+			log.Printf("managed catalog: Get skipping invalid claude record: %v", err)
+			return ManagedSessionRecord{}, false
+		}
 		return rec, true
 	default:
 		return ManagedSessionRecord{}, false
@@ -107,34 +139,69 @@ func (c *managedRuntimeCatalog) Get(sessionID string) (ManagedSessionRecord, boo
 }
 
 // List merges both registries and returns defensive copies sorted by
-// CreatedAt then SessionID. Duplicate SessionIDs (should be impossible
-// due to distinct adapter prefixes) are logged and dropped; the first
-// occurrence wins.
+// CreatedAt then SessionID. Records that fail validation are skipped.
+// Ambiguous SessionIDs (present in both registries) are excluded
+// entirely — neither copy appears in the output, even if one copy is
+// malformed in its own registry.
 func (c *managedRuntimeCatalog) List() []ManagedSessionRecord {
-	var all []ManagedSessionRecord
+	type sourced struct {
+		rec    ManagedSessionRecord
+		origin string // "codex" or "claude"
+	}
+	var all []sourced
+
+	// First pass: collect every record with its origin. Do NOT filter
+	// malformed records yet — a malformed record in one registry may
+	// still be evidence of an ambiguous ID when the same ID appears
+	// (validly) in the other registry.
 	if c.codexReg != nil {
-		all = append(all, c.codexReg.List()...)
+		for _, rec := range c.codexReg.List() {
+			all = append(all, sourced{rec, "codex"})
+		}
 	}
 	if c.claudeReg != nil {
-		all = append(all, c.claudeReg.List()...)
-	}
-	if len(all) <= 1 {
-		if all == nil {
-			return []ManagedSessionRecord{}
+		for _, rec := range c.claudeReg.List() {
+			all = append(all, sourced{rec, "claude"})
 		}
-		return all
 	}
-	// Deduplicate: same SessionID in both registries → keep first, log.
-	seen := make(map[string]struct{}, len(all))
+	if len(all) == 0 {
+		return []ManagedSessionRecord{}
+	}
+
+	// Second pass: detect ambiguous SessionIDs (present in both origins).
+	codexIDs := make(map[string]struct{})
+	claudeIDs := make(map[string]struct{})
+	for _, s := range all {
+		if s.origin == "codex" {
+			codexIDs[s.rec.SessionID] = struct{}{}
+		} else {
+			claudeIDs[s.rec.SessionID] = struct{}{}
+		}
+	}
+
+	// Third pass: exclude ambiguous records, validate the rest.
 	deduped := make([]ManagedSessionRecord, 0, len(all))
-	for _, rec := range all {
-		if _, exists := seen[rec.SessionID]; exists {
-			log.Printf("managed catalog: duplicate session %q dropped from list merge", rec.SessionID)
+	for _, s := range all {
+		_, inCodex := codexIDs[s.rec.SessionID]
+		_, inClaude := claudeIDs[s.rec.SessionID]
+		if inCodex && inClaude {
+			log.Printf("managed catalog: ambiguous session %q dropped from list (found in both registries)", s.rec.SessionID)
 			continue
 		}
-		seen[rec.SessionID] = struct{}{}
-		deduped = append(deduped, rec)
+		expectAdapter := codexAppServerAdapter
+		if s.origin == "claude" {
+			expectAdapter = claudeHeadlessAdapter
+		}
+		if err := validateManagedRecord(&s.rec, expectAdapter); err != nil {
+			log.Printf("managed catalog: List skipping invalid %s record: %v", s.origin, err)
+			continue
+		}
+		deduped = append(deduped, s.rec)
 	}
+	if len(deduped) == 0 {
+		return []ManagedSessionRecord{}
+	}
+
 	sort.Slice(deduped, func(i, j int) bool {
 		if !deduped[i].CreatedAt.Equal(deduped[j].CreatedAt) {
 			return deduped[i].CreatedAt.Before(deduped[j].CreatedAt)
@@ -144,25 +211,47 @@ func (c *managedRuntimeCatalog) List() []ManagedSessionRecord {
 	return deduped
 }
 
-// RuntimeOf delegates to the accepted provider-specific RuntimeOf based
-// on the canonical session ID adapter prefix. Unknown adapters and nil
-// resolvers return (zero, false).
+// RuntimeOf resolves the current runtime identity for sessionID by
+// first verifying the ID is valid and non-ambiguous (same path as
+// Get), then delegating to the accepted provider-specific RuntimeOf.
+// The returned RuntimeRef is cross-validated against the catalog
+// record so the read boundary and execution-authority boundary agree.
 func (c *managedRuntimeCatalog) RuntimeOf(sessionID string) (RuntimeRef, bool) {
+	// Verify the ID is valid and non-ambiguous via the same path as Get.
+	rec, ok := c.Get(sessionID)
+	if !ok {
+		return RuntimeRef{}, false
+	}
+
 	ref := mux.ParseSessionID(sessionID)
+	var resolver func(string) (RuntimeRef, bool)
 	switch ref.Adapter {
 	case codexAppServerAdapter:
-		if c.codexRuntimeOf == nil {
-			return RuntimeRef{}, false
-		}
-		return c.codexRuntimeOf(sessionID)
+		resolver = c.codexRuntimeOf
 	case claudeHeadlessAdapter:
-		if c.claudeRuntimeOf == nil {
-			return RuntimeRef{}, false
-		}
-		return c.claudeRuntimeOf(sessionID)
+		resolver = c.claudeRuntimeOf
 	default:
 		return RuntimeRef{}, false
 	}
+	if resolver == nil {
+		return RuntimeRef{}, false
+	}
+
+	rt, rtOk := resolver(sessionID)
+	if !rtOk {
+		return RuntimeRef{}, false
+	}
+
+	// Cross-validate: the RuntimeRef must agree with the catalog record.
+	// Adapter must match the canonical prefix; LaunchGen must equal the
+	// record's epoch (generation). A mismatch means the provider resolver
+	// returned an identity inconsistent with the catalog binding.
+	if rt.Adapter != ref.Adapter || rt.LaunchGen != rec.Epoch {
+		log.Printf("managed catalog: RuntimeOf binding mismatch for %q: ref={Adapter=%s LaunchGen=%d} rec={adapter=%s epoch=%d}",
+			sessionID, rt.Adapter, rt.LaunchGen, ref.Adapter, rec.Epoch)
+		return RuntimeRef{}, false
+	}
+	return rt, true
 }
 
 // appendCatalogRows appends managed-session rows built from the catalog

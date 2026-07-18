@@ -1,6 +1,7 @@
 package term
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -174,23 +175,88 @@ func TestCatalog_Get_UnknownAndMalformedIDs(t *testing.T) {
 	}
 }
 
-// ── Test 4: duplicate/ambiguous ID fails closed ──
+// ── Test 3b: malformed stored records are filtered from Get/List ──
+
+func TestCatalog_MalformedRecordsFiltered(t *testing.T) {
+	// Register records that violate the canonical identity contract
+	// directly into raw registries, then verify the catalog filters them.
+	codexReg := NewManagedSessionRegistry(16)
+	claudeReg := NewManagedSessionRegistry(16)
+
+	now := time.Now()
+
+	malformed := []ManagedSessionRecord{
+		// Empty local ID (adapter with no local part = canonical parse gives empty LocalID).
+		{SessionID: "codex_app_server:", Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now},
+		// Wrong adapter prefix in Codex registry.
+		{SessionID: "claude_headless:wrong-origin", Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now},
+		// Empty provider.
+		{SessionID: "codex_app_server:no-provider", Provider: "", Version: "0.144.1", Epoch: 1, CreatedAt: now},
+		// Empty version.
+		{SessionID: "codex_app_server:no-version", Provider: "codex", Version: "", Epoch: 1, CreatedAt: now},
+	}
+	// Also register one valid record as a positive control.
+	validID := "codex_app_server:valid"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: validID, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+
+	// Register malformed records in codex registry.
+	for _, rec := range malformed {
+		_ = codexReg.Register(rec)
+	}
+
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil)
+
+	// Get: malformed IDs return not found.
+	for _, rec := range malformed {
+		if _, ok := cat.Get(rec.SessionID); ok {
+			t.Errorf("Get(%q) returned true for malformed record", rec.SessionID)
+		}
+	}
+	// Get: valid ID works.
+	if _, ok := cat.Get(validID); !ok {
+		t.Error("Get on valid ID failed")
+	}
+
+	// List: only the valid record appears.
+	records := cat.List()
+	if len(records) != 1 {
+		t.Fatalf("List: expected 1 valid record, got %d: %v", len(records), records)
+	}
+	if records[0].SessionID != validID {
+		t.Fatalf("List: expected %q, got %q", validID, records[0].SessionID)
+	}
+}
+
+// ── Test 4: duplicate/ambiguous ID fails closed (Get + List) ──
 
 func TestCatalog_Get_AmbiguousDuplicateFailsClosed(t *testing.T) {
 	// Use a raw constructor to put the same ID in both registries.
 	codexReg := NewManagedSessionRegistry(8)
 	claudeReg := NewManagedSessionRegistry(8)
 
-	// Register the SAME session ID with adapter prefix "codex_app_server"
-	// in BOTH registries — an adversarial condition.
+	now := time.Now()
 	dupID := "codex_app_server:ambiguous-1"
 	_ = codexReg.Register(ManagedSessionRecord{
 		SessionID: dupID, Provider: "codex", Version: "0.144.1", Epoch: 1,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
 	})
 	_ = claudeReg.Register(ManagedSessionRecord{
 		SessionID: dupID, Provider: "claude", Version: "2.1.209", Epoch: 1,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+	})
+
+	// Also register a clean non-duplicate ID in each registry.
+	cleanCodex := "codex_app_server:clean"
+	cleanClaude := "claude_headless:clean"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: cleanCodex, Provider: "codex", Version: "0.144.1", Epoch: 1,
+		CreatedAt: now,
+	})
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: cleanClaude, Provider: "claude", Version: "2.1.209", Epoch: 1,
+		CreatedAt: now,
 	})
 
 	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil)
@@ -200,29 +266,113 @@ func TestCatalog_Get_AmbiguousDuplicateFailsClosed(t *testing.T) {
 		t.Fatal("Get returned true for ambiguous duplicate ID — should fail closed")
 	}
 
-	// A non-duplicate ID in codex registry still works.
-	cleanID := "codex_app_server:clean"
-	_ = codexReg.Register(ManagedSessionRecord{
-		SessionID: cleanID, Provider: "codex", Version: "0.144.1", Epoch: 1,
-		CreatedAt: time.Now(),
-	})
-	rec, ok := cat.Get(cleanID)
-	if !ok {
-		t.Fatal("Get on clean codex ID failed after ambiguous duplicate was rejected")
+	// Get must succeed for clean IDs.
+	if rec, ok := cat.Get(cleanCodex); !ok || rec.SessionID != cleanCodex {
+		t.Fatalf("Get on clean codex ID failed: ok=%v rec=%+v", ok, rec)
 	}
-	if rec.SessionID != cleanID {
-		t.Fatalf("Get returned wrong record: %+v", rec)
+	if rec, ok := cat.Get(cleanClaude); !ok || rec.SessionID != cleanClaude {
+		t.Fatalf("Get on clean claude ID failed: ok=%v rec=%+v", ok, rec)
+	}
+
+	// List: ambiguous ID must be ENTIRELY EXCLUDED — neither copy appears.
+	records := cat.List()
+	for _, rec := range records {
+		if rec.SessionID == dupID {
+			t.Fatalf("List included ambiguous ID %q — should be excluded entirely", dupID)
+		}
+	}
+
+	// List: clean IDs must appear.
+	found := map[string]bool{}
+	for _, rec := range records {
+		found[rec.SessionID] = true
+	}
+	if !found[cleanCodex] {
+		t.Fatal("List missing clean codex ID")
+	}
+	if !found[cleanClaude] {
+		t.Fatal("List missing clean claude ID")
+	}
+	if len(records) != 2 {
+		t.Fatalf("List: expected 2 clean records, got %d: %v", len(records), records)
 	}
 }
 
-// ── Test 5: blocking legacy Registry cannot be invoked by managed paths ──
+// List ambiguous drop-both: when the same SessionID exists in both
+// registries, List must drop both copies — not silently choose one.
+func TestCatalog_List_AmbiguousDropBoth(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(8)
+	claudeReg := NewManagedSessionRegistry(8)
+	now := time.Now()
+
+	// Register the SAME canonical ID in both registries — an adversarial
+	// condition that should never happen in production (different adapter
+	// prefixes) but the catalog must handle safely.
+	dupID := "codex_app_server:dup"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: dupID, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	// Register in Claude registry too — this record has a mismatched adapter
+	// prefix (codex_app_server in claude registry), but the catalog must still
+	// detect the cross-registry duplicate and drop BOTH copies.
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: dupID, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+
+	// One clean record in each registry with correct adapter prefixes.
+	clean1 := "codex_app_server:c1"
+	clean2 := "claude_headless:c2"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: clean1, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: clean2, Provider: "claude", Version: "2.1.209", Epoch: 1, CreatedAt: now,
+	})
+
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil)
+	records := cat.List()
+
+	// Ambiguous must be absent — both copies dropped.
+	for _, rec := range records {
+		if rec.SessionID == dupID {
+			t.Fatalf("ambiguous ID %q leaked into List", dupID)
+		}
+	}
+	// Clean records present.
+	found := map[string]bool{}
+	for _, rec := range records {
+		found[rec.SessionID] = true
+	}
+	if !found[clean1] || !found[clean2] {
+		t.Fatalf("clean records missing: found=%v", found)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 clean records, got %d: %v", len(records), records)
+	}
+}
+
+// ── Test 5: blocking/failing legacy Registry cannot be invoked by managed paths ──
+
+// blockingAdapter blocks forever on ListSessions — if any managed path
+// accidentally calls it, the test hangs and fails via the go test timeout.
+type blockingAdapter struct{ name string }
+
+func (a blockingAdapter) Name() string { return a.name }
+func (a blockingAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
 
 func TestCatalog_LegacyRegistryIsolation(t *testing.T) {
-	// Create a legacy registry that panics on access.
-	reg := mux.MustNewRegistry()
+	// Build a legacy registry with a blocking adapter. Any access to
+	// registry.Sessions / registry.FindSession would hang.
+	reg := mux.MustNewRegistry(
+		blockingAdapter{name: "tmux"},
+		failingAdapter{name: "cmux"},
+	)
 	cat, managed, id := catalogWithCodex(t)
 
-	// Build a handler with BOTH catalog and legacy registry.
+	// Build a handler with BOTH catalog and a blocking legacy registry.
 	h := &Handlers{
 		Registry: reg,
 		Events:   NewMemoryEventStore(),
@@ -230,33 +380,56 @@ func TestCatalog_LegacyRegistryIsolation(t *testing.T) {
 		Catalog:  cat,
 	}
 
-	// managed list via catalog — must not touch legacy registry.
-	rec := httptest.NewRecorder()
-	h.HandleManagedSessions(rec, httptest.NewRequest("GET", "/api/managed-sessions", nil))
-	if rec.Code != 200 {
-		t.Fatalf("managed list: code=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), id) {
-		t.Fatal("managed list missing catalog row")
-	}
+	// Start a background goroutine that would trigger the blocking
+	// registry. If any managed path touches it, this will hang.
+	blockingDone := make(chan struct{})
+	go func() {
+		// This would block forever if called, but we never await it.
+		_ = reg.Sessions(context.Background())
+		close(blockingDone)
+	}()
 
-	// native-status via catalog — must not touch legacy registry.
-	req := httptest.NewRequest("GET", "/api/sessions/x/native-status", nil)
-	req.SetPathValue("id", id)
-	rec2 := httptest.NewRecorder()
-	h.HandleManagedNativeStatus(rec2, req)
-	if rec2.Code != 200 {
-		t.Fatalf("native-status: code=%d", rec2.Code)
-	}
+	// Use a deterministic barrier: managed paths must complete within a
+	// bounded time while the blocking goroutine is still pending.
+	done := make(chan struct{})
+	go func() {
+		// managed list via catalog — must not touch legacy registry.
+		rec := httptest.NewRecorder()
+		h.HandleManagedSessions(rec, httptest.NewRequest("GET", "/api/managed-sessions", nil))
+		if rec.Code != 200 {
+			t.Errorf("managed list: code=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), id) {
+			t.Error("managed list missing catalog row")
+		}
 
-	// /api/sessions via catalog append — must not fall through to legacy.
-	rec3 := httptest.NewRecorder()
-	h.HandleSessionsV2(rec3, httptest.NewRequest("GET", "/api/sessions", nil))
-	if rec3.Code != 200 {
-		t.Fatalf("sessions v2: code=%d", rec3.Code)
-	}
-	if !strings.Contains(rec3.Body.String(), id) {
-		t.Fatal("sessions v2 missing catalog row")
+		// native-status via catalog — must not touch legacy registry.
+		req := httptest.NewRequest("GET", "/api/sessions/x/native-status", nil)
+		req.SetPathValue("id", id)
+		rec2 := httptest.NewRecorder()
+		h.HandleManagedNativeStatus(rec2, req)
+		if rec2.Code != 200 {
+			t.Errorf("native-status: code=%d", rec2.Code)
+		}
+
+		// /api/sessions via catalog append — must not fall through to legacy.
+		rec3 := httptest.NewRecorder()
+		h.HandleSessionsV2(rec3, httptest.NewRequest("GET", "/api/sessions", nil))
+		if rec3.Code != 200 {
+			t.Errorf("sessions v2: code=%d", rec3.Code)
+		}
+		if !strings.Contains(rec3.Body.String(), id) {
+			t.Error("sessions v2 missing catalog row")
+		}
+		close(done)
+	}()
+
+	// Managed paths must complete within 2 seconds.
+	select {
+	case <-done:
+		// PASS — managed paths completed without touching blocking registry.
+	case <-time.After(2 * time.Second):
+		t.Fatal("managed list/get/status blocked — may have touched legacy registry")
 	}
 }
 
@@ -509,6 +682,83 @@ func TestAppendCatalogRows_EmptyCatalog(t *testing.T) {
 	out := appendCatalogRows(snapshot, cat, nil)
 	if len(out) != 1 || out[0].ID != "tmux:0" {
 		t.Fatalf("empty catalog should pass through: %+v", out)
+	}
+}
+
+// ── Test: RuntimeOf fails closed when ID is ambiguous ──
+
+func TestCatalog_RuntimeOf_AmbiguousFailsClosed(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(8)
+	claudeReg := NewManagedSessionRegistry(8)
+	now := time.Now()
+
+	dupID := "codex_app_server:rt-ambiguous"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: dupID, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	// Same ID in Claude registry — the adapter prefix is wrong for Claude,
+	// but the presence in both registries makes it ambiguous.
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: dupID, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+
+	// Stub resolvers: they would succeed if called, but RuntimeOf must
+	// reject the ambiguous ID before delegating.
+	codexRT := func(sid string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "codex_app_server", Version: "v", LaunchGen: 1}, true
+	}
+	claudeRT := func(sid string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "claude_headless", Version: "v", LaunchGen: 1}, true
+	}
+
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT)
+
+	// RuntimeOf must fail for the ambiguous ID (Get rejects it).
+	if _, ok := cat.RuntimeOf(dupID); ok {
+		t.Fatal("RuntimeOf returned true for ambiguous ID — should fail closed")
+	}
+
+	// A clean ID with a valid resolver still works.
+	cleanID := "codex_app_server:rt-clean"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: cleanID, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	ref, ok := cat.RuntimeOf(cleanID)
+	if !ok {
+		t.Fatal("RuntimeOf returned false for clean ID with valid resolver")
+	}
+	if ref.Adapter != "codex_app_server" {
+		t.Fatalf("RuntimeOf.Adapter = %q", ref.Adapter)
+	}
+}
+
+// ── Test: RuntimeOf rejects mismatched RuntimeRef binding ──
+
+func TestCatalog_RuntimeOf_BindingMismatch(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(8)
+	now := time.Now()
+	sid := "codex_app_server:binding-test"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: sid, Provider: "codex", Version: "0.144.1", Epoch: 3, CreatedAt: now,
+	})
+
+	// Resolver returns wrong LaunchGen (2 vs record epoch 3).
+	codexRT := func(s string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "codex_app_server", Version: "v", LaunchGen: 2}, true
+	}
+
+	cat := NewManagedRuntimeCatalog(codexReg, nil, codexRT, nil)
+	if _, ok := cat.RuntimeOf(sid); ok {
+		t.Fatal("RuntimeOf accepted mismatched LaunchGen")
+	}
+
+	// Resolver returns wrong Adapter.
+	codexRT2 := func(s string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "claude_headless", Version: "v", LaunchGen: 3}, true
+	}
+	cat2 := NewManagedRuntimeCatalog(codexReg, nil, codexRT2, nil)
+	if _, ok := cat2.RuntimeOf(sid); ok {
+		t.Fatal("RuntimeOf accepted mismatched Adapter")
 	}
 }
 

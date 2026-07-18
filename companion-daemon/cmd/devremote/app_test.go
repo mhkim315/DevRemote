@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -767,6 +768,75 @@ func TestPushNotifier_TokenRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestNewAppWithDeps_CatalogWiring proves that when managed Codex is
+// enabled the composition root installs Catalog on Handlers and wires
+// RuntimeOf to Catalog.RuntimeOf.
+func TestNewAppWithDeps_CatalogWiring(t *testing.T) {
+	// Create a fresh managed Codex service without pre-configuring the
+	// approval store — let NewAppWithDeps own the composition.
+	launcher := &fakeCodexLauncher{}
+	svc := term.NewManagedCodexService(term.CodexAppServerEntryConfig{
+		Bin:              "/pinned/toolchain/node_modules/.bin/codex",
+		Version:          "codex-cli 0.144.1",
+		AuthorityVersion: "0.144.1",
+	}, launcher)
+
+	cfg := Config{
+		InsecureLocalOnly:  true,
+		EnableManagedCodex: true,
+		OwnerUUID:          "test-owner",
+		SupabaseProjectRef: "test-ref",
+	}
+
+	app, err := NewAppWithDeps(cfg, Dependencies{
+		Managed: svc,
+		Links:   term.NewNopLinkStore(),
+		Events:  term.NewMemoryEventStore(),
+		Cmds:    term.NewCommandBroker(),
+	})
+	if err != nil {
+		t.Fatalf("NewAppWithDeps: %v", err)
+	}
+
+	// Catalog must be installed on Handlers.
+	if app.handlers == nil {
+		t.Fatal("handlers is nil")
+	}
+	if app.handlers.Catalog == nil {
+		t.Fatal("Catalog is nil — should be installed when managed codex is enabled")
+	}
+
+	// RuntimeOf must delegate to Catalog.RuntimeOf (same function pointer
+	// when the catalog owns the resolver). Both must return the same
+	// result for any lookup.
+	unknownID := "codex_app_server:nonexistent"
+	_, catOK := app.handlers.Catalog.RuntimeOf(unknownID)
+	if catOK {
+		t.Fatal("Catalog.RuntimeOf returned true for nonexistent ID")
+	}
+	_, rtOK := app.handlers.RuntimeOf(unknownID)
+	if rtOK {
+		t.Fatal("RuntimeOf returned true for nonexistent ID")
+	}
+}
+
+// fakeCodexLauncher is a minimal launcher for composition tests.
+type fakeCodexLauncher struct{}
+
+func (l *fakeCodexLauncher) Launch(exe string, argv []string) (term.ManagedProcess, error) {
+	return &fakeCodexProc{}, nil
+}
+
+type fakeCodexProc struct{}
+
+func (p *fakeCodexProc) Stdin() io.Writer  { return io.Discard }
+func (p *fakeCodexProc) Stdout() io.Reader { return strings.NewReader("") }
+func (p *fakeCodexProc) Term() error       { return nil }
+func (p *fakeCodexProc) Kill() error       { return nil }
+func (p *fakeCodexProc) Wait() error       { return nil }
+func (p *fakeCodexProc) OpaqueID() string  { return "fake-opaque-id" }
+func (p *fakeCodexProc) PID() int          { return 99999 }
 
 func listenFreeTCPOnAddr(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
