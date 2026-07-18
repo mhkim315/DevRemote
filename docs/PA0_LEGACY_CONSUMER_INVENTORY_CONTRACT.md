@@ -44,14 +44,14 @@ No production code is modified in this phase.
 | `internal/mux/tracker.go` | `TrackCmuxPanels` | physical deletion target | delete | Phase B | `rg "TrackCmuxPanels" companion-daemon/internal/mux` -> 0 matches |
 | `internal/mux/transcript_capture.go` | `TranscriptCaptureMode()` | physical deletion target | delete | Phase B | `rg "TranscriptCaptureMode" companion-daemon/internal/mux` -> 0 matches |
 | `internal/mux/cmux_delta.go` | `cmuxDeltaSnapshot`, `parseCmuxDelta` | physical deletion target | delete | Phase B | `rg "cmuxDeltaSnapshot" companion-daemon/internal/mux` -> 0 matches |
-| `internal/mux/tmux_adapter.go` | `NewTmuxAdapter`, `tmuxAdapter`, `tmuxSession`, `tmuxExecRunner`, `parseTmuxListSessionLine` | physical deletion target | delete | Phase B | `rg "tmuxAdapter" companion-daemon/internal/mux` -> 0 matches |
-| `internal/mux/cmux_adapter.go` | `NewCmuxAdapter`, `cmuxAdapter`, `cmuxSession`, `serialCommandRunner`, `execCommandRunner`, `logCmuxError` | physical deletion target | delete | Phase B | `rg "cmuxAdapter" companion-daemon/internal/mux` -> 0 matches |
+| `internal/mux/tmux_adapter.go` | `NewTmuxAdapter`, `tmuxAdapter`, `tmuxSession`, `tmuxExecRunner`, `parseTmuxListSessionLine`, `resolveTmuxTarget` | physical deletion target | delete | Phase B | `rg "tmuxAdapter" companion-daemon/internal/mux` -> 0 matches |
+| `internal/mux/cmux_adapter.go` | `NewCmuxAdapter`, `cmuxAdapter`, `cmuxSession`, `serialCommandRunner`, `execCommandRunner`, `logCmuxError`, `parseCmuxTop`, `mapAgentProcesses` | physical deletion target | delete | Phase B | `rg "cmuxAdapter" companion-daemon/internal/mux` -> 0 matches |
 | `internal/mux/localpty_adapter.go` | `NewLocalPTYAdapter`, `localptyAdapter`, `localptySession` | physical deletion target | delete | Phase B | `rg "localptyAdapter" companion-daemon/internal/mux` -> 0 matches |
 | `mobile/src/lib/lifecycle.ts` | history/screen fallback branches | legacy-only consumer | delete | A3 | Mobile client does not branch on external/best-effort capability. |
 | `mobile/src/screens/FeedScreen.tsx` | cmux warnings / read-only fallback | legacy-only consumer | delete | A3 | UI never renders cmux/best-effort warning states. |
 | `scripts/dev-setup.sh` | `--enable-localpty` | legacy-only consumer | delete | Phase B | `rg "--enable-localpty" scripts/dev-setup.sh` -> 0 matches |
 | `scripts/install.sh` | `--enable-localpty` | legacy-only consumer | delete | Phase B | `rg "--enable-localpty" scripts/install.sh` -> 0 matches |
-| `tests and fixtures` | `tmux_adapter_test.go`, `cmux_adapter_test.go`, `cmux_tree_parser_test.go`, `localpty_e2e_test.go`, `testdata/cmux` | legacy-only consumer | delete | Phase B | Tests and fixtures successfully removed from tree. |
+| `tests and fixtures` | `tmux_adapter_test.go`, `cmux_adapter_test.go`, `cmux_tree_parser_test.go`, `cmux_adapter_mock_test.go`, `cmux_delta_poc_test.go`, `cmux_forceflush_diag_test.go`, `cmux_top_test.go`, `localpty_adapter_test.go`, `localpty_e2e_test.go`, `testdata/cmux` | legacy-only consumer | delete | Phase B | Tests and fixtures successfully removed from tree. |
 | `docs/...` | Any active documentation mentioning tmux/cmux/localpty | legacy-only consumer | delete | Phase B | `rg "tmux|cmux|localpty" docs/` -> 0 matches (except for historical logs) |
 
 ## 2. Frozen-Unaffected Boundaries
