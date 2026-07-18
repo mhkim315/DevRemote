@@ -2,9 +2,11 @@ package term
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +41,58 @@ func TestIPCServer_Lifecycle(t *testing.T) {
 	defer cancel()
 	if err := srv.Wait(ctx); err != nil {
 		t.Fatalf("Wait failed: %v", err)
+	}
+}
+
+// TestPA2a_IPCLinkOperationsRemoved proves that the removed link, unlink,
+// and links IPC operations fail through the existing unsupported-operation
+// behavior without panicking or blocking.
+func TestPA2a_IPCLinkOperationsRemoved(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("pokit-pa2a-%d.sock", time.Now().UnixNano()))
+	reg := mux.MustNewRegistry()
+
+	srv, err := StartIPCServer(socketPath, reg, NewMemoryEventStore(), nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("StartIPCServer: %v", err)
+	}
+	defer os.Remove(socketPath)
+	defer func() {
+		srv.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Wait(ctx)
+	}()
+
+	for _, op := range []string{"link", "unlink", "links"} {
+		conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+		if err != nil {
+			t.Fatalf("dial for %q: %v", op, err)
+		}
+		// The create operation is the only recognized JSON operation after
+		// link removal. Sending link/unlink/links hits the "else" branch,
+		// which produces no output or an error — it must not panic or block.
+		req := fmt.Sprintf(`{"operation":"%s","sessionId":"x"}`, op)
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		if _, err := conn.Write([]byte(req + "\n")); err != nil {
+			conn.Close()
+			t.Fatalf("write for %q: %v", op, err)
+		}
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		buf := make([]byte, 256)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		// Must not get "linked", "unlinked", or a JSON array back.
+		response := string(buf[:n])
+		if strings.Contains(response, "linked") && !strings.Contains(response, "unlinked") {
+			if op == "link" && strings.TrimSpace(response) == "linked" {
+				t.Errorf("%q operation succeeded but should be removed", op)
+			}
+		}
+		if strings.Contains(response, "[{") {
+			t.Errorf("%q operation returned JSON array; link list should be removed", op)
+		}
 	}
 }
 

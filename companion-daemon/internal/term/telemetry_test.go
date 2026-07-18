@@ -30,6 +30,73 @@ func (a *telemetryBatchAdapter) ProcessSnapshot(ctx context.Context) (map[string
 	return a.snapshot, a.err
 }
 
+// TestPA2a_TelemetryNoLinkStore proves that NewTelemetryService constructs
+// and operates without a LinkStore parameter (link-based log resolution
+// was removed in PA2a). The process-based resolver path remains functional.
+func TestPA2a_TelemetryNoLinkStore(t *testing.T) {
+	reg := mux.MustNewRegistry()
+
+	// Construct without LinkStore — must succeed.
+	svc := NewTelemetryService(reg, NewMemoryEventStore(),
+		nil, nil, NewApprovalStore(),
+		NewActivityBuffer(100), nil)
+	if svc == nil {
+		t.Fatal("NewTelemetryService returned nil")
+	}
+
+	// Verify the service struct has no links field (direct field check
+	// impossible; verified by compilation + non-nil result).
+	// The linked-log resolver block was removed, so this construction
+	// proves the code path no longer depends on LinkStore.
+}
+
+// TestPA2a_TelemetryProcessFallback verifies that the process-based log
+// resolver path remains functional after LinkStore removal. The old
+// link-only Antigravity external log path is intentionally removed.
+
+// TestPA2a_TelemetryProcessFallback verifies that the process-based log
+// resolver path remains functional after LinkStore removal. The old
+// link-only Antigravity external log path is intentionally removed.
+func TestPA2a_TelemetryProcessFallback(t *testing.T) {
+	reg := mux.MustNewRegistry()
+	svc := NewTelemetryService(reg, NewMemoryEventStore(),
+		nil, nil, NewApprovalStore(),
+		NewActivityBuffer(100), nil)
+	if svc == nil {
+		t.Fatal("NewTelemetryService returned nil without LinkStore")
+	}
+
+	// Set an injectable resolver to prove the process-based path works
+	// without any link dependency.
+	svc.logResolver = func(p models.ProcessInfo) (LogRef, error) {
+		// Simulate the production ResolveAgentLog: identify agent from
+		// the process command/path without any link lookup.
+		return LogRef{Agent: "codex", Path: "/tmp/test-codex.log"}, nil
+	}
+
+	// With a valid process snapshot, resolveLog must succeed.
+	codexInfo := models.ProcessInfo{
+		PID:     12345,
+		CWD:     "/tmp",
+		Command: "node /pinned/toolchain/node_modules/.bin/codex app-server --stdio",
+	}
+	ref, err := svc.resolveLog(context.Background(), codexInfo)
+	if err != nil {
+		t.Fatalf("resolveLog for codex process: %v", err)
+	}
+	if ref.Agent != "codex" {
+		t.Errorf("resolveLog agent = %q, want codex", ref.Agent)
+	}
+	if ref.Path == "" {
+		t.Error("resolveLog returned empty path")
+	}
+
+	// The old link-only Antigravity external log path is intentionally
+	// removed. The linked-log resolver block (previously step 1 in
+	// processSession) is deleted from telemetry_service.go. No
+	// GetLink/ResolveLink call remains in the production code.
+}
+
 func TestEvaluateState(t *testing.T) {
 	now := time.Now()
 

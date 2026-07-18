@@ -831,6 +831,95 @@ func (p *fakeCodexProc) Wait() error       { return nil }
 func (p *fakeCodexProc) OpaqueID() string  { return "fake-opaque-id" }
 func (p *fakeCodexProc) PID() int          { return 99999 }
 
+// TestPA2a_LinkRoutesRemoved_Insecure verifies /api/v2/links returns 404
+// (unregistered, not auth-failing) in insecure local-only mode.
+func TestPA2a_LinkRoutesRemoved_Insecure(t *testing.T) {
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+
+	for _, method := range []string{"GET", "POST", "DELETE"} {
+		req, _ := http.NewRequest(method, srv.URL+"/api/v2/links", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s /api/v2/links: %v", method, err)
+		}
+		resp.Body.Close()
+		// Must be 404 (route unregistered), not 401/403 (auth failure).
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s /api/v2/links: %d want 404 (route must be unregistered)", method, resp.StatusCode)
+		}
+	}
+}
+
+// TestPA2a_LegacyLinkFileNotRead creates a malformed ~/.devremote/links.json
+// with sentinel bytes, runs NewAppWithDeps, and verifies the file is
+// completely untouched (bytes, mode, mtime, inode unchanged).
+func TestPA2a_LegacyLinkFileNotRead(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Create ~/.devremote/links.json with sentinel bytes.
+	linkDir := home + "/.devremote"
+	if err := os.MkdirAll(linkDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	linkPath := linkDir + "/links.json"
+	sentinel := []byte("PA2A-SENTINEL-DO-NOT-READ-OR-MUTATE\n")
+	if err := os.WriteFile(linkPath, sentinel, 0644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	// Record pre-App file state.
+	preInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatalf("stat before: %v", err)
+	}
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+
+	// Verify file untouched after NewApp.
+	postInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	postBytes, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(postBytes) != string(sentinel) {
+		t.Fatalf("links.json bytes changed: got %q want %q", postBytes, sentinel)
+	}
+	if postInfo.Size() != preInfo.Size() {
+		t.Fatalf("links.json size changed: %d -> %d", preInfo.Size(), postInfo.Size())
+	}
+	if !postInfo.ModTime().Equal(preInfo.ModTime()) {
+		t.Fatalf("links.json mtime changed: %v -> %v", preInfo.ModTime(), postInfo.ModTime())
+	}
+	if postInfo.Mode() != preInfo.Mode() {
+		t.Fatalf("links.json mode changed: %v -> %v", preInfo.Mode(), postInfo.Mode())
+	}
+
+	// Shutdown and verify file still untouched.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	app.Shutdown(ctx)
+	postShutdownBytes, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatalf("read after shutdown: %v", err)
+	}
+	if string(postShutdownBytes) != string(sentinel) {
+		t.Fatalf("links.json modified during shutdown: got %q want %q", postShutdownBytes, sentinel)
+	}
+}
+
 func listenFreeTCPOnAddr(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }

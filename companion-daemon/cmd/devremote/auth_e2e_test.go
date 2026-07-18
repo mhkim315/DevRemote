@@ -187,6 +187,42 @@ func getDeviceToken(t *testing.T, baseURL string, id *devicetrust.HostIdentity, 
 	return tok.Token
 }
 
+// TestPA2a_LinkRoutesRemoved_DeviceAuth verifies /api/v2/links returns 404
+// (unregistered, not auth-failing) in device-auth remote mode.
+func TestPA2a_LinkRoutesRemoved_DeviceAuth(t *testing.T) {
+	dir := t.TempDir()
+	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
+	reg, _ := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: dir + "/devices.json"})
+	_, pubDER, _ := devicetrust.GenKeypair(t)
+	reg.Add(pubDER, "owner")
+
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, testDeps())
+	if err != nil {
+		t.Fatalf("NewAppWithDeps: %v", err)
+	}
+	app.hostIdentity = id
+	app.deviceRegistry = reg
+	if app.authHandler != nil {
+		app.authHandler.Identity = id
+		app.authHandler.Registry = reg
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+
+	// Without auth token: route must be 404 (unregistered), not 401.
+	for _, method := range []string{"GET", "POST", "DELETE"} {
+		req, _ := http.NewRequest(method, srv.URL+"/api/v2/links", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s /api/v2/links: %v", method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s /api/v2/links (no auth): %d want 404 (route must be unregistered, not auth-gated)", method, resp.StatusCode)
+		}
+	}
+}
+
 func TestRemoteRouteMatrix(t *testing.T) {
 	dir := t.TempDir()
 	id, _ := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: dir + "/host.json"})
