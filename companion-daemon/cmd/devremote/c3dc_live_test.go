@@ -125,6 +125,7 @@ type c3dcLaunch struct {
 	argv []string
 	cap  *c3dcCapture
 	pid  int
+	proc *c3dcTeeProc
 }
 
 type c3dcTeeLauncher struct {
@@ -164,7 +165,7 @@ func (l *c3dcTeeLauncher) LaunchInDir(exe string, argv []string, cwd string) (te
 	}
 	l.mu.Lock()
 	l.launches = append(l.launches, &c3dcLaunch{
-		argv: append([]string(nil), argv...), cap: capture, pid: p.PID(),
+		argv: append([]string(nil), argv...), cap: capture, pid: p.PID(), proc: p,
 	})
 	l.mu.Unlock()
 	return p, nil
@@ -180,6 +181,19 @@ func (l *c3dcTeeLauncher) slice(from int) []*c3dcLaunch {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]*c3dcLaunch(nil), l.launches[from:]...)
+}
+
+// waitAll blocks until all tracked processes have exited. Used as a
+// deterministic EOF barrier before reading the tee capture buffers.
+func (l *c3dcTeeLauncher) waitAll() {
+	l.mu.Lock()
+	launches := append([]*c3dcLaunch(nil), l.launches...)
+	l.mu.Unlock()
+	for _, ln := range launches {
+		if ln.proc != nil {
+			ln.proc.Wait()
+		}
+	}
 }
 
 // ── Redacted structural projection (committed-safe; no raw provider text) ──
@@ -426,11 +440,12 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 
 		// Corroboration (non-authority): probe token in EXECUTION output.
-		time.Sleep(1 * time.Second) // allow tee capture to drain
+		// Wait for all tracked processes to exit before reading the tee
+		// capture buffers. The pump goroutine drains stdout through the
+		// tee reader; Wait() ensures the process is reaped and the pipe
+		// is closed, so the capture has all bytes.
+		launcher.waitAll()
 		launches := launcher.slice(launchFloor)
-		for i, ln := range launches {
-			t.Logf("%s: launch %d capture bytes=%d", run, i, len(ln.cap.bytes()))
-		}
 		if len(launches) != 2 {
 			t.Fatalf("%s: expected exactly initial+resume launches, got %d", run, len(launches))
 		}
