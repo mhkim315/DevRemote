@@ -150,13 +150,18 @@ A1.1 Codex Provider-Positive Path             RESEQUENCED behind managed-native 
 SP0 Native Managed Runtime                    ACCEPT 2b35f524d (review marker 6aaff30bd; structured detached launch, owned registry/process/event pump, native status REST, observer isolation)
 SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e; local/mobile structured I/O + basic native lifecycle/reconnect; no PTY emulation, approval, or observer deletion)
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
-A1.2 Claude Approval Extension                C1D ACCEPT 4794ce7; C2D closed-catalog ACCEPT 9116040 (P1 f29e1b6 → P2A f93e81e → P2B d841a88 → P3 9116040); arbitrary-command D1 remains REJECTED defeb9d; C3D authorized in staged handoff, not started
-PF  Post-Claude Accepted-State Freeze         BLOCKED pending independent final A1.2 C2D/C3D/mobile ACCEPT
-PA  Managed-Only Ownership Migration          BLOCKED pending PF ACCEPT
-PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA ACCEPT
-PC  Canonical Timeline + Shared Projections   BLOCKED pending PB ACCEPT
-N1  Notifications                             RESEQUENCED after PC ACCEPT
-PD  Common Contracts + Grok/ACP Research      BLOCKED pending PC ACCEPT
+A1.2 Claude Approval Extension                ACCEPT 33cce5743 (C1D 4794ce7; C2D closed catalog 9116040; C3D-B/mobile 3ade9e3; final pinned live allow/deny C3D-C; arbitrary-command D1 remains REJECTED defeb9d)
+PF  Post-Claude Accepted-State Freeze         READY — exact ledger and rollback SHA are the next packet
+PA0 Legacy Consumer Inventory/Ownership       BLOCKED pending PF ACCEPT; documentation only
+PA1 Managed Catalog/Public Reads              BLOCKED pending PA0 ACCEPT
+PA2 Managed Lifecycle/TerminalTransport       BLOCKED pending PA1 ACCEPT
+PA3 Mobile/Transcript/Activity Cutover        BLOCKED pending PA2 ACCEPT
+PA4 Managed Authority-Isolation Gate          BLOCKED pending PA3 ACCEPT
+PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA4 ACCEPT
+PC0 Minimal Canonical Event Spine             BLOCKED pending PB ACCEPT
+N1  Notifications                             RESEQUENCED after PC0 ACCEPT
+PC1 Full Transcript/Activity Projections      BLOCKED pending PC0 ACCEPT; may follow N1
+PD  Common Contracts + Grok/ACP Research      BLOCKED pending PC1 ACCEPT
 PE  Navigator Readiness Contracts/Evaluation  BLOCKED pending PD ACCEPT
 O1  Deterministic Broker                      PLANNED after PE
 O2  Developer-Verifier Loop                   PLANNED after O1
@@ -185,47 +190,52 @@ M3-auth-1B
 → SP0 native managed runtime
 → SP0.5 managed I/O and lifecycle
 → SP1 native approval / A1.1 provider-positive completion
-→ A1.2 Claude approval C1D → C2D → C3D
+→ A1.2 Claude approval C1D → C2D → C3D (ACCEPT)
 → PF accepted-state freeze
-→ PA managed-only ownership migration
+→ PA0 inventory/ownership contract
+→ PA1 managed catalog/public reads
+→ PA2 managed lifecycle/TerminalTransport
+→ PA3 mobile/transcript/activity cutover
+→ PA4 managed authority-isolation gate
 → PB tmux/cmux/attach physical removal
-→ PC canonical timeline and shared projections
+→ PC0 minimal canonical event spine
 → N1 notifications
+→ PC1 full transcript/activity canonical projections
 → PD common contracts and Grok/ACP research
 → PE Navigator readiness contracts/evaluation
 → O1 deterministic broker
 → O2 developer-verifier loop
 ```
 
-The authoritative conditional plan for PF through PE is
+The authoritative plan for PF through PE is
 `docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md`. It does not authorize
-work before final managed Claude C2D/C3D/mobile ACCEPT. PF must first record the
-final accepted Codex, Claude and mobile SHAs, live allow/deny/exit evidence and
-unskipped backend/mobile/Android gates. Managed runtimes may never be registered
-back into legacy `mux.Registry` as a compatibility path. Consumer migration
-precedes physical legacy deletion; Timeline follows legacy removal; Timeline is
-evidence only and never ApprovalAuthority.
+production migration before PF ACCEPT. Final managed Claude C2D/C3D/mobile is
+ACCEPTED at `33cce5743`; PF must now record the final accepted Codex, Claude and
+mobile SHAs, bounded live allow/deny/exit evidence and unskipped
+backend/mobile/Android gates. Managed runtimes may never be registered back into
+legacy `mux.Registry` as a compatibility path. PA0-PA4 consumer migration
+precedes physical legacy deletion. PC0 introduces only the bounded event subset
+needed by N1; PC1 later migrates full Transcript/Activity projections. Neither
+event phase is ApprovalAuthority.
 
 A1.2 was authorized before N1 on 2026-07-15 and retains two bounded negative
 findings without weakening approval authority. C0H found that the stable
 `PermissionRequest` hook does not fire headless. C0R separately proved that 2.1.209
 accepts `--permission-prompt-tool`, but lacks exact invocation identity and an
 authoritative consumed-decision join. C0D independently proved and received ACCEPT
-at `e42d4c5`: the stable `PreToolUse` defer/resume lifecycle preserves exact
-session/tool-use/input identity; matching PostToolUse proves allow consumption and
-matching permission_denials proves deny consumption; deterministic replay admits one
-resume owner. C1D observation-only was independently accepted at `4794ce7` with
-report HEAD `e9e661c`. The production track now authorizes C2D-A contract/code-path
-audit only, followed by separately reviewed C2D-B/C/D delivery checkpoints with
-actionability still off, then C3D atomic activation/mobile/live evidence. Each
-checkpoint stops for independent review.
+at `e42d4c5`: the stable `PreToolUse` defer/resume lifecycle exposes bounded
+provider-native identity and consumption evidence suitable for a production
+plan. Later C3D live evidence showed that a real resume creates a new session and
+tool-use identity. The accepted identity amendment therefore binds the stored
+original action once to the exact resume-attempt identity and accepts only that
+attempt's matching PostToolUse or permission-denial evidence. C1D observation,
+C2D closed-catalog admission and C3D atomic activation/mobile/live proof are now
+complete; `docs/A1_2_FINAL_ACCEPTANCE.md` is the final acceptance record.
 
-SP1 is governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and
-`docs/NEXT_EXECUTOR_SP1_NATIVE_APPROVAL_HANDOFF.md`. Queue admission is not provider
-consumption; production actionability remains disabled until the P2A delivery
-boundary is proven and P2B installs capability atomically for the exact current
-runtime. P1 is observation-only. Each packet stops for independent verification;
-only the final P3/full-contract review can unblock N1.
+SP1 remains governed by `docs/SP1_NATIVE_APPROVAL_CONTRACT_NOTE.md` and its final
+acceptance report. Queue admission is not provider consumption. The accepted
+Codex path commits only after exact provider-native resolution, and its authority
+must remain unchanged throughout PF and PA0-PA4.
 
 M3-auth-1B/M3-auth-2B positions and iOS/auth scope are unchanged by this
 sequencing update; their existing status text above remains authoritative. R1

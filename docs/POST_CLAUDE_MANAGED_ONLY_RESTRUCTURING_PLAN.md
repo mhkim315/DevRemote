@@ -1,6 +1,6 @@
 # Post-Claude Managed-Only Restructuring Plan
 
-Status: **FUTURE AUTHORITATIVE PLAN — ENTRY BLOCKED UNTIL FINAL CLAUDE ACCEPT**  
+Status: **AUTHORITATIVE PLAN — FINAL CLAUDE ACCEPTED; PF EVIDENCE FREEZE IS NEXT**
 Branch: `feature/phase10-multi-adapter`  
 Product boundary: only POKIT-launched managed runtimes are authoritative
 
@@ -15,10 +15,15 @@ The sequence is:
 Final managed Codex ACCEPT
 + Final managed Claude C2D/C3D/mobile ACCEPT
 → PF  accepted-state freeze
-→ A   managed-only ownership migration
+→ A0  legacy-consumer inventory and ownership contract
+→ A1  managed catalog/read migration
+→ A2  managed lifecycle and terminal-transport migration
+→ A3  mobile/transcript/activity managed-only cutover
+→ A4  managed authority-isolation gate
 → B   legacy physical removal
-→ C   canonical timeline migration
-→ N1  notifications from canonical projections
+→ C0  minimal canonical event spine
+→ N1  notifications from C0 projections and ApprovalAuthority
+→ C1  full transcript/activity canonical projection migration
 → D   common contracts and Grok/ACP research
 → E   Navigator readiness contracts/evaluation
 → O1  deterministic broker
@@ -32,7 +37,7 @@ approval, privacy, replay, stale-event or provider consumption contracts.
 
 ### Entry
 
-PF may start only after independent final ACCEPT documents exist for:
+PF may start only after independent final ACCEPT decisions exist for:
 
 - managed Codex implementation and mobile allow/deny;
 - managed Claude C2D, C3D and mobile allow/deny;
@@ -55,7 +60,13 @@ The verifier must record, without placeholders:
 | Android native gate | PASS, not skipped |
 | invariant/secret scan | PASS on frozen HEAD |
 
-If any field is missing, the verdict is REJECT and Phase A remains blocked.
+The final managed Claude decision was recorded at repository HEAD
+`33cce5743d4004da3e5cc2d6e1c50576c9068b81`; C3D-B/mobile evidence is rooted at
+`3ade9e3c49727e2b472cd9eb6924f879813ec08d`. PF must still assemble the complete
+ledger above and verify the accepted Codex evidence. Final Claude ACCEPT does not
+by itself complete PF.
+
+If any field is missing, PF remains incomplete and A0/A1 remain blocked.
 
 ### Exit
 
@@ -130,23 +141,48 @@ The executor must begin with an `rg`/call-graph inventory of every production
 branch. The inventory is a required committed contract note, not optional
 analysis.
 
-### Implementation order
+### Packet A0 — inventory and ownership contract (documentation only)
 
-1. Introduce the narrow ownership interfaces above using accepted managed
-   services as implementations. Reuse/rename the existing managed registry if
-   it satisfies the contract; do not create a redundant store.
-2. Migrate REST list/get/status and approval runtime lookup to
-   ManagedRuntimeCatalog.
-3. Migrate lifecycle operations to ManagedRuntime.
-4. Migrate local IPC and WebSocket lookup to ManagedRuntimeCatalog plus
-   TerminalTransport.
-5. Migrate terminal input/output/resize/replay/subscribers without changing the
-   Recorder single-reader invariant.
-6. Migrate Transcript/Activity reads for managed sessions away from Registry
-   and observer telemetry.
-7. Migrate mobile session list, lifecycle, terminal, transcript, activity and
-   approval consumers to managed-only DTOs.
-8. Remove all managed-runtime production reads from `mux.Registry`.
+Inventory every production consumer of `mux.Registry`, LinkStore, discovery,
+adapter capability checks, observer telemetry, external/localpty session IDs and
+mobile external/best-effort branches. For each consumer record its current owner,
+target owner, migration packet and deletion criterion. Freeze the minimum method
+sets for ManagedRuntime, ManagedRuntimeCatalog and TerminalTransport from actual
+call sites. Do not extract a generic provider SDK and do not modify production
+code in A0.
+
+### Packet A1 — managed catalog and public reads
+
+Reuse or narrow the accepted managed session registry; do not create a second
+store. Migrate REST list/get/status and approval runtime lookup to
+ManagedRuntimeCatalog. A managed lookup must never fall through to
+`mux.Registry`, discovery or a pane/process heuristic.
+
+### Packet A2 — lifecycle and terminal transport
+
+Migrate stop/kill/delete and local IPC/WebSocket lookup to ManagedRuntime. Move
+owned byte input/output, resize, bounded replay and subscriber fan-out behind
+TerminalTransport while preserving Recorder as the single PTY reader. Provider
+lifecycle and approval semantics remain provider-specific and unchanged.
+
+### Packet A3 — mobile, transcript and activity cutover
+
+Migrate managed session list, lifecycle, terminal, transcript, activity and
+approval consumers to managed-only DTOs. Remove external/best-effort mobile
+actionability branches. Transcript/Activity may retain their current internal
+implementation until C1, but their managed reads must no longer depend on legacy
+discovery or observer authority.
+
+### Packet A4 — authority-isolation gate
+
+Delete any temporary read-only comparison facade and prove that no managed
+production consumer imports or calls `mux.Registry`. Prove that screen, PTY text,
+JSONL fallback and observer telemetry cannot update managed semantic status or
+approval authority. Legacy adapters may still compile, but they must be
+unreachable from every managed path before Phase B starts.
+
+Each packet uses a separate contract note, implementation commit, focused gate
+and independent review stop. Do not combine A0-A4 into one executor task.
 
 ### Temporary seam
 
@@ -196,7 +232,7 @@ commits; do not introduce a runtime flag that re-enables dual authority.
 - all listed consumers use the new ownership boundaries;
 - temporary facade deleted;
 - legacy adapters may still compile but are unreachable from managed paths;
-- independent Phase A ACCEPT on a frozen clean HEAD.
+- independent A4/Phase A ACCEPT on a frozen clean HEAD.
 
 ## 4. Phase B — legacy physical removal
 
@@ -245,33 +281,42 @@ Phase A ACCEPT SHA is the rollback point. Use commit reverts, not a dormant
 legacy production flag. Exit requires independent Phase B ACCEPT and a clean
 managed-only architecture document.
 
-## 5. Phase C — append-only Canonical Timeline
+## 5. Phase C0 — minimal Canonical Event Spine
 
 ### Entry
 
 Phase B independently ACCEPTed; no legacy observer source remains.
 
-### Architecture
+### Narrow architecture
 
 ```text
 provider-native bounded evidence
 → provider-specific parser/normalizer
-→ append-only Canonical Timeline
-→ versioned pure projections
-→ Transcript / Activity / Approval UI / Status / Notifications
+→ append-only Canonical Event Spine
+→ versioned pure minimal projections
+→ runtime/approval/failure notification input
 ```
 
 Managed runtime state remains authoritative for identity/lifecycle.
 ApprovalAuthority remains authoritative for actionability/decision/delivery.
-Timeline records evidence only. Projections and caches are never authority.
+The event spine records evidence only. Projections and caches are never
+authority.
+
+C0 is deliberately limited to the events N1 needs:
+
+- runtime working, idle and exited;
+- approval requested, decided and consumed;
+- provider failure and discontinuity.
+
+User/assistant message content, general tool activity, Transcript migration and
+Navigator events are not C0 scope.
 
 ### Likely packages/files
 
 - new bounded packages such as `internal/timeline` and `internal/projection`;
 - Codex app-server and Claude hook/resume ingestion in their existing managed
   runtime/provider files;
-- existing Transcript, Activity, managed event and notification projection
-  services;
+- managed runtime, approval and future notification projection services;
 - REST DTO/handlers and mobile decoders/renderers/tests.
 
 Exact package names are chosen in the Phase C contract note, not pre-frozen
@@ -295,6 +340,47 @@ remain TerminalTransport history, not semantic Timeline events.
 
 Reducers are pure and versioned. A reducer-version mismatch requires rebuild.
 Ring buffers are live replay aids, not durable history.
+
+### C0 provider proof
+
+1. Codex writes the minimal event subset for comparison only.
+2. Prove deterministic replay/equivalence and privacy, then switch only the C0
+   notification-facing projection.
+3. Repeat for Claude.
+4. Do not switch Transcript or Activity public reads in C0.
+
+Only one C0 public projection source is active for a provider at a time.
+Dual-write must not become dual authority.
+
+### Tests/gates
+
+- parser determinism and malformed input fail-closed;
+- duplicate, out-of-order, stale-generation and cursor-gap/resync;
+- deterministic replay and reducer-version rebuild for the minimal subset;
+- Approval Store versus event-spine consistency audit without event authority;
+- privacy/leakage and DTO unknown-field/bound tests;
+- backend full race, mobile and Android gates;
+- accepted Codex and Claude runtime/approval regression evidence.
+
+### Exit
+
+Both providers emit the minimal subset, N1-facing projections are deterministic,
+and an independent C0 ACCEPT records the rollback SHA. Transcript and Activity
+remain explicitly outside C0.
+
+## 6. N1 — notifications
+
+N1 starts after C0 ACCEPT. It consumes trusted C0 projections and
+ApprovalAuthority-backed requests. It never turns heuristic or Timeline-only
+evidence into actionable approval authority. N1 completion is not a prerequisite
+for retaining the existing terminal/transcript UI.
+
+## 7. Phase C1 — full Canonical Timeline projections
+
+### Entry
+
+C0 independently ACCEPTed. N1 may be implemented before C1 and must consume only
+the bounded C0 contracts while C1 proceeds.
 
 ### Provider-by-provider migration
 
@@ -327,17 +413,11 @@ its previous read source only while that source still exists. Exit requires
 both providers on shared Timeline projections and deletion of independent
 Transcript/Activity ingestion.
 
-## 6. N1 — notifications
-
-N1 is resequenced after Phase C. It consumes trusted canonical projections and
-ApprovalAuthority-backed requests. It never turns heuristic or Timeline-only
-evidence into actionable approval authority.
-
-## 7. Phase D — common contracts and Grok/ACP research
+## 8. Phase D — common contracts and Grok/ACP research
 
 ### Entry
 
-Phase C independently ACCEPTed for both providers. N1 may complete before D;
+Phase C1 independently ACCEPTed for both providers. N1 may complete before D;
 it must not modify provider/runtime authority contracts.
 
 ### Boundaries
@@ -373,7 +453,7 @@ gates. Exit requires an independent research verdict before any Grok production
 implementation and removal only of duplication whose semantics are proven
 identical.
 
-## 8. Phase E — Navigator readiness only
+## 9. Phase E — Navigator readiness only
 
 ### Entry
 
@@ -409,7 +489,7 @@ Navigator output as execution authority.
 Independent contract/evaluation-plan ACCEPT only. Navigator implementation is a
 later separately authorized milestone.
 
-## 9. Global completion discipline
+## 10. Global completion discipline
 
 Every phase requires:
 
@@ -421,4 +501,3 @@ Every phase requires:
 - local/remote equality and clean worktree;
 - no skipped native gate in a final phase acceptance;
 - explicit rollback commit and no hidden dual-authority feature flag.
-
