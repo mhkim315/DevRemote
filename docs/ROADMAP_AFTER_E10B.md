@@ -152,8 +152,8 @@ SP0.5 Managed I/O and Lifecycle               ACCEPT 4f9241ff2 (report 62652633e
 SP1 Native Approval                           ACCEPT dd6d05c (final report 2b940a6; live Codex allow/deny consumed; final-HEAD full gate independently PASS)
 A1.2 Claude Approval Extension                ACCEPT 33cce5743 (C1D 4794ce7; C2D closed catalog 9116040; C3D-B/mobile 3ade9e3; final pinned live allow/deny C3D-C; arbitrary-command D1 remains REJECTED defeb9d)
 PF  Post-Claude Accepted-State Freeze         ACCEPT 07d5c8c5d (freeze ledger and rollback SHA cc86e3655 complete)
-PA0 Legacy Consumer Inventory/Ownership       READY — documentation only; no PA1/production changes
-PA1 Managed Catalog/Public Reads              BLOCKED pending PA0 ACCEPT
+PA0 Legacy Consumer Inventory/Ownership       ACCEPT d8e663c0c (exact consumer/symbol inventory, retained PTY boundary, executable deletion gates)
+PA1 Managed Catalog/Public Reads              READY — follow `NEXT_EXECUTOR_PA1_MANAGED_CATALOG_HANDOFF.md`; start clean at/after d8e663c, do not reuse interrupted broad WIP
 PA2 Managed Lifecycle/TerminalTransport       BLOCKED pending PA1 ACCEPT
 PA3 Mobile/Transcript/Activity Cutover        BLOCKED pending PA2 ACCEPT
 PA4 Managed Authority-Isolation Gate          BLOCKED pending PA3 ACCEPT

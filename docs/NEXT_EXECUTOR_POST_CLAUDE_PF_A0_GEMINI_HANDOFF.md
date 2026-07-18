@@ -1,6 +1,10 @@
 # Next Executor Handoff — Post-Claude PF and PA0
 
-Status: **PF EVIDENCE FREEZE IS NEXT; PA0 IS DOCUMENTATION-ONLY AND REQUIRES PF ACCEPT**
+Status: **COMPLETED / SUPERSEDED**
+
+PF and PA0 are independently accepted. The next executor must use
+`docs/NEXT_EXECUTOR_PA1_MANAGED_CATALOG_HANDOFF.md`; this document remains only
+as the historical PF/PA0 packet record.
 
 Intended execution agent: **Gemini 3.1 Pro**. The model change grants no extra
 authority and does not change any acceptance contract.
