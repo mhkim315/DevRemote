@@ -49,29 +49,45 @@ func TestR4Bridge_DuplicateResumeHook_WriteOnce(t *testing.T) {
 }
 
 // TestR4Bridge_MissingToolInput_Defer sends a resume hook with tool_input
-// omitted from the JSON body. Must defer; must not bind an attempt.
+// omitted, verifies defer, then sends a VALID hook on the SAME claim to
+// prove the invalid hook did NOT bind the attempt identity. The valid hook
+// succeeding is non-vacuous proof that the claim window is still open.
 func TestR4Bridge_MissingToolInput_Defer(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
 
+	var receipt term.DeliveryReceipt
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		del.Deliver(term.ApprovalDeliveryRequest{
+		receipt = del.Deliver(term.ApprovalDeliveryRequest{
 			ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
 		})
 	}()
 
-	resumeURL, _ := captureBridgeURLs(t, l)
-	body := `{"session_id":"` + csid + `","tool_use_id":"` + tuid + `","tool_name":"` + tn + `","hook_event_name":"PreToolUse"}`
-	r := fireRawResumeHook(t, resumeURL, body)
-	if !bytesEq(r, term.ClaudeHookResponseBytes("defer")) {
-		t.Fatalf("missing tool_input: want defer, got %s", r)
+	resumeURL, posttoolURL := captureBridgeURLs(t, l)
+
+	// Step 1: invalid hook (missing tool_input) → defer.
+	invalidBody := `{"session_id":"` + csid + `","tool_use_id":"` + tuid + `","tool_name":"` + tn + `","hook_event_name":"PreToolUse"}`
+	r1 := fireRawResumeHook(t, resumeURL, invalidBody)
+	if !bytesEq(r1, term.ClaudeHookResponseBytes("defer")) {
+		t.Fatalf("missing tool_input: want defer, got %s", r1)
 	}
+
+	// Step 2: SAME claim, VALID hook → allow. Non-vacuous: proves the
+	// invalid hook did not consume or bind the ResumeAttemptIdentity.
+	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
+	r2 := fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
+	if !bytesEq(r2, term.ClaudeHookResponseBytes("allow")) {
+		t.Fatalf("valid hook after invalid: want allow, got %s", r2)
+	}
+
+	// Step 3: PostToolUse witness → delivery accepted.
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
 	<-done
-	if svc.Coordinator().EntryCount() != 0 {
-		t.Fatal("missing tool_input must not create a coordinator entry")
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("delivery must be accepted after valid hook, got %s", receipt.Outcome)
 	}
 }
 
@@ -87,28 +103,41 @@ func fireRawResumeHook(t *testing.T, url, body string) []byte {
 }
 
 // TestR4Bridge_WrongToolName_Defer sends a resume hook with a different
-// tool_name than the original. Must defer; must not bind an attempt.
+// tool_name, verifies defer, then sends a VALID hook on the SAME claim.
+// The valid hook succeeding proves the wrong-tool hook did not bind.
 func TestR4Bridge_WrongToolName_Defer(t *testing.T) {
-	l, svc, _, claim, _, csid, tuid, _ := catalogMakeSetup(t, "allow_once")
+	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
 
+	var receipt term.DeliveryReceipt
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		del.Deliver(term.ApprovalDeliveryRequest{
+		receipt = del.Deliver(term.ApprovalDeliveryRequest{
 			ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
 		})
 	}()
 
-	resumeURL, _ := captureBridgeURLs(t, l)
+	resumeURL, posttoolURL := captureBridgeURLs(t, l)
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`
-	r := fireResumeHook(t, resumeURL, csid, tuid, "Read", inputJSON)
-	if !bytesEq(r, term.ClaudeHookResponseBytes("defer")) {
-		t.Fatalf("wrong tool name: want defer, got %s", r)
+
+	// Step 1: invalid hook (wrong tool_name) → defer.
+	r1 := fireResumeHook(t, resumeURL, csid, tuid, "Read", inputJSON)
+	if !bytesEq(r1, term.ClaudeHookResponseBytes("defer")) {
+		t.Fatalf("wrong tool name: want defer, got %s", r1)
 	}
+
+	// Step 2: SAME claim, VALID hook (correct tool_name "Bash") → allow.
+	r2 := fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
+	if !bytesEq(r2, term.ClaudeHookResponseBytes("allow")) {
+		t.Fatalf("valid hook after wrong-tool: want allow, got %s", r2)
+	}
+
+	// Step 3: PostToolUse witness → delivery accepted.
+	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
 	<-done
-	if svc.Coordinator().EntryCount() != 0 {
-		t.Fatal("wrong tool name must not create a coordinator entry")
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("delivery must be accepted after valid hook, got %s", receipt.Outcome)
 	}
 }
