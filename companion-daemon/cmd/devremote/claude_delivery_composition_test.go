@@ -191,6 +191,7 @@ func makeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedC
 func TestClaudeDelivery_CompositionAllowAccepted(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := makeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(5 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -217,6 +218,7 @@ func TestClaudeDelivery_CompositionAllowAccepted(t *testing.T) {
 func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := makeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(5 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -254,6 +256,7 @@ func TestClaudeDelivery_CompositionDenyAccepted(t *testing.T) {
 func TestClaudeDelivery_DenyPostToolUseCannotCommit(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := makeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -277,6 +280,7 @@ func TestClaudeDelivery_DenyPostToolUseCannotCommit(t *testing.T) {
 func TestClaudeDelivery_EarliestHookAfterSpawn(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(5 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -297,6 +301,7 @@ func TestClaudeDelivery_EarliestHookAfterSpawn(t *testing.T) {
 func TestClaudeDelivery_CompositionTimeout(t *testing.T) {
 	_, svc, _, claim, _, _, _, _ := makeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(10 * time.Millisecond)
 	r := d.Deliver(term.ApprovalDeliveryRequest{ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload})
 	if r.Outcome == term.DeliveryAccepted {
@@ -483,6 +488,7 @@ func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -517,6 +523,7 @@ func TestClaudeDelivery_DenyMutatedInputCannotCommit(t *testing.T) {
 func TestClaudeDelivery_DenyWithoutToolInputFailsClosed(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -546,6 +553,7 @@ func TestClaudeDelivery_DenyWithoutToolInputFailsClosed(t *testing.T) {
 func TestClaudeDelivery_DenyUnknownEntryFieldFailsClosed(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := makeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -636,6 +644,7 @@ func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.M
 func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(5 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -702,6 +711,7 @@ func TestClaudeDelivery_CatalogAllowAccepted(t *testing.T) {
 func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(5 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -774,6 +784,7 @@ func TestClaudeDelivery_CatalogDenyAccepted(t *testing.T) {
 func TestClaudeDelivery_CatalogDenyWrongWitnessFails(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "deny")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -795,6 +806,7 @@ func TestClaudeDelivery_CatalogDenyWrongWitnessFails(t *testing.T) {
 func TestClaudeDelivery_CatalogAllowWrongWitnessFails(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -822,6 +834,7 @@ func TestClaudeDelivery_CatalogAllowWrongWitnessFails(t *testing.T) {
 func TestClaudeDelivery_CatalogTimeoutFails(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(500 * time.Millisecond)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -843,6 +856,7 @@ func TestClaudeDelivery_CatalogTimeoutFails(t *testing.T) {
 func TestClaudeDelivery_CatalogMutatedResumeInput(t *testing.T) {
 	l, svc, store, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 	var receipt term.DeliveryReceipt
 	var wg sync.WaitGroup
@@ -907,6 +921,7 @@ func TestClaudeDelivery_CatalogMutatedResumeInput(t *testing.T) {
 func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
 	l, svc, store, claim, _, _, _, _ := catalogMakeSetup(t, "allow_once")
 	d := term.NewClaudeManagedApprovalDelivery(svc)
+	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 
 	if err := svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen); err != nil {

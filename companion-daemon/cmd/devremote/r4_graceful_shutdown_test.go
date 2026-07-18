@@ -16,6 +16,7 @@ import (
 func TestR4Bridge_GracefulShutdown_PostToolUseCompletes(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	inputJSON := `{"command":"echo pokitclaudeapprovalprobe"}`

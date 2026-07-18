@@ -16,6 +16,7 @@ import (
 func TestR5_PreToolUse_RejectsPostOnlyFields(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt
@@ -53,6 +54,7 @@ func TestR5_PreToolUse_RejectsPostOnlyFields(t *testing.T) {
 func TestR5_PostToolUse_AcceptsOwnFields(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt
@@ -84,6 +86,7 @@ func TestR5_PostToolUse_AcceptsOwnFields(t *testing.T) {
 func TestR5_PostToolUse_RejectsUnknownField(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt
@@ -117,6 +120,7 @@ func TestR5_PostToolUse_RejectsUnknownField(t *testing.T) {
 func TestR5_PostToolUse_WrongEventType(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt
@@ -151,6 +155,7 @@ func TestR5_PostToolUse_WrongEventType(t *testing.T) {
 func TestR5_PostToolUse_DuplicateKey(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt

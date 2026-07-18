@@ -18,6 +18,7 @@ import (
 func TestR4Bridge_DuplicateResumeHook_WriteOnce(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt
@@ -55,6 +56,7 @@ func TestR4Bridge_DuplicateResumeHook_WriteOnce(t *testing.T) {
 func TestR4Bridge_MissingToolInput_Defer(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt
@@ -108,6 +110,7 @@ func fireRawResumeHook(t *testing.T, url, body string) []byte {
 func TestR4Bridge_WrongToolName_Defer(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
+	del.SetDrainTimeout(0)
 	del.SetPollTimeout(2 * time.Second)
 
 	var receipt term.DeliveryReceipt

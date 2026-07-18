@@ -15,19 +15,29 @@ import (
 )
 
 const defaultClaudeDeliveryTimeout = 120 * time.Second
+const defaultClaudeDrainTimeout = 5 * time.Second
 
 // ClaudeManagedApprovalDelivery implements ApprovalDelivery for Claude.
 type ClaudeManagedApprovalDelivery struct {
-	svc     *ManagedClaudeService
-	timeout time.Duration
-	barrier func(stage string)
+	svc         *ManagedClaudeService
+	timeout     time.Duration
+	drainTimeout time.Duration
+	barrier     func(stage string)
 }
 
 func NewClaudeManagedApprovalDelivery(svc *ManagedClaudeService) *ClaudeManagedApprovalDelivery {
-	return &ClaudeManagedApprovalDelivery{svc: svc, timeout: defaultClaudeDeliveryTimeout}
+	return &ClaudeManagedApprovalDelivery{
+		svc: svc, timeout: defaultClaudeDeliveryTimeout,
+		drainTimeout: defaultClaudeDrainTimeout,
+	}
 }
 
 func (d *ClaudeManagedApprovalDelivery) SetPollTimeout(dur time.Duration) { d.timeout = dur }
+
+// SetDrainTimeout sets the post-witness natural-exit grace period.
+// Use 0 in deterministic tests with a fake process that closes rt.exited
+// immediately.
+func (d *ClaudeManagedApprovalDelivery) SetDrainTimeout(dur time.Duration) { d.drainTimeout = dur }
 
 func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) DeliveryReceipt {
 	fail := func(o DeliveryOutcome) DeliveryReceipt {
@@ -142,10 +152,13 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 	// Allow the resume process to exit naturally within a bounded
 	// window. The witness is committed, but tool_result stdout may
 	// still be in-flight. Killing immediately (defer terminate) would
-	// truncate the pipe before capture buffers receive the full stream.
-	select {
-	case <-rt.exited:
-	case <-time.After(5 * time.Second):
+	// truncate the pipe. Tests set drainTimeout=0 to skip the wait
+	// with fake processes that never exit naturally.
+	if d.drainTimeout > 0 {
+		select {
+		case <-rt.exited:
+		case <-time.After(d.drainTimeout):
+		}
 	}
 
 	// Construct receipt with the exact response digest.
