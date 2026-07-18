@@ -4,27 +4,49 @@ Status: **REVIEW REQUEST**
 
 This document contains the complete ledger required by section 1 of the POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md.
 
-| Evidence | Recorded value |
-| --- | --- |
-| Canonical repository HEAD | `cc86e36556754c0973f457ff202127fd282748bb` |
-| Remote branch HEAD | `cc86e36556754c0973f457ff202127fd282748bb` |
-| Worktree | clean |
-| Accepted Codex implementation | `2b940a6fce6e878ffa0da17b5df4d39438af144d` (Document: `docs/SP1_P3_EVIDENCE_REPORT.md` / `docs/SP1_NATIVE_APPROVAL_FINAL_ACCEPTANCE.md`) |
-| Accepted Claude implementation | `33cce5743d4004da3e5cc2d6e1c50576c9068b81` (Document: `docs/A1_2_FINAL_ACCEPTANCE.md`) |
-| Accepted mobile allow/deny | `3ade9e3c49727e2b472cd9eb6924f879813ec08d` (Document: `docs/NEXT_EXECUTOR_A1_2_C3D_B_R4_HANDOFF.md`) |
-| Codex live allow/deny/exit | `docs/SP1_P3_EVIDENCE_REPORT.md` (Pinned version: 0.144.1) |
-| Claude live allow/deny/exit | `docs/A1_2_C3D_C_EVIDENCE_REPORT.md` (Pinned version: `2.1.209 (Claude Code)`) |
-| Backend full race | PASS on frozen HEAD |
-| Mobile TypeScript/Jest | PASS on frozen HEAD |
-| Android native gate | PASS (`android module kotlin compile ... OK`), not skipped |
-| Invariant/secret scan | PASS on frozen HEAD |
+## 1. Frozen State and Repository HEADs
 
-## Ancestry checks
-- `2b940a6fce6e878ffa0da17b5df4d39438af144d` is ancestor: PASS
-- `4794ce7f42380c388c1a5614b4b2518bc1722870` is ancestor: PASS
-- `91160409c9fc7e41a0c60b1c97a6ec6a7c4cffb4` is ancestor: PASS
-- `3ade9e3c49727e2b472cd9eb6924f879813ec08d` is ancestor: PASS
-- `33cce5743d4004da3e5cc2d6e1c50576c9068b81` is ancestor: PASS
+- **Frozen implementation / rollback HEAD**: `cc86e36556754c0973f457ff202127fd282748bb`
+- **PF report HEAD** (current documentation commit): `b0457aa460187d199c729de785ed85289e2129e6`
+- **Remote branch HEAD**: Equal to local HEAD (`feature/phase10-multi-adapter`)
+- **Worktree**: clean
+
+## 2. Accepted Evidence Anchors
+
+| Artifact | SHA | Reference Document |
+| --- | --- | --- |
+| Accepted Codex implementation | `dd6d05c8ba0f92af196374226c01d72ce3ef6440` | `docs/SP1_P3_EVIDENCE_REPORT.md` |
+| Accepted Codex final report | `2b940a6fce6e878ffa0da17b5df4d39438af144d` | `docs/SP1_NATIVE_APPROVAL_FINAL_ACCEPTANCE.md` |
+| Accepted Claude implementation | `33cce5743d4004da3e5cc2d6e1c50576c9068b81` | `docs/A1_2_FINAL_ACCEPTANCE.md` |
+| Accepted mobile allow/deny | `3ade9e3c49727e2b472cd9eb6924f879813ec08d` | `docs/A1_2_FINAL_ACCEPTANCE.md` / `docs/A1_2_C3D_C_LIVE_PACKET_CONTRACT_NOTE.md` |
+
+## 3. Bounded Live Evidence Paths
+
+- **Codex live allow/deny/exit**: `docs/SP1_P3_EVIDENCE_REPORT.md` (Pinned version: 0.144.1)
+- **Claude live allow/deny/exit**: `docs/A1_2_C3D_C_EVIDENCE_REPORT.md` (Pinned version: `2.1.209 (Claude Code)`)
+
+## 4. Authoritative Repository Gate Results
+
+All gates were successfully executed on the frozen implementation HEAD `cc86e36556754c0973f457ff202127fd282748bb` using `sh scripts/build-gate.sh`.
+
+| Gate | Execution Command | Result |
+| --- | --- | --- |
+| Backend build/vet | `go build ./...`, `go vet ./...` | PASS |
+| Backend full race | `go test -race ./... -count=1` | PASS |
+| Clean diff | `git diff --check` | PASS |
+| Mobile TypeScript | `npm run typecheck` | PASS |
+| Mobile Jest | `npm test -- --ci` | PASS |
+| Android native gate | `./gradlew :pokit-device-key:compileReleaseKotlin` | BUILD SUCCESSFUL (not skipped) |
+| Invariant scans | Vendor branch scan, ID inference scan | PASS |
+| Secret scan | `grep -rn "sk-[A-Za-z0-9]\|ghp_\|...` | PASS |
+
+## 5. Ancestry Checks
+The following accepted SHAs are verified as ancestors of the frozen implementation HEAD `cc86e36556754c0973f457ff202127fd282748bb`:
+- `2b940a6fce6e878ffa0da17b5df4d39438af144d` (Codex final report)
+- `4794ce7f42380c388c1a5614b4b2518bc1722870` (Claude C1D)
+- `91160409c9fc7e41a0c60b1c97a6ec6a7c4cffb4` (Claude C2D)
+- `3ade9e3c49727e2b472cd9eb6924f879813ec08d` (Claude C3D-B/mobile)
+- `33cce5743d4004da3e5cc2d6e1c50576c9068b81` (Claude final ACCEPT)
 
 ## Exact rollback SHA for PA0/PA1
 Rollback SHA: `cc86e36556754c0973f457ff202127fd282748bb`
