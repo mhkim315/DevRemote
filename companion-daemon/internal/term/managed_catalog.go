@@ -43,10 +43,12 @@ type ManagedRuntimeCatalog interface {
 
 // managedRuntimeCatalog implements ManagedRuntimeCatalog.
 type managedRuntimeCatalog struct {
-	codexReg        *ManagedSessionRegistry
-	claudeReg       *ManagedSessionRegistry
-	codexRuntimeOf  func(string) (RuntimeRef, bool)
-	claudeRuntimeOf func(string) (RuntimeRef, bool)
+	codexReg           *ManagedSessionRegistry
+	claudeReg          *ManagedSessionRegistry
+	codexRuntimeOf     func(string) (RuntimeRef, bool)
+	claudeRuntimeOf    func(string) (RuntimeRef, bool)
+	codexAuthorityVer  string
+	claudeAuthorityVer string
 }
 
 // NewManagedRuntimeCatalog creates a read-only catalog over the two
@@ -58,12 +60,16 @@ func NewManagedRuntimeCatalog(
 	claudeReg *ManagedSessionRegistry,
 	codexRuntimeOf func(string) (RuntimeRef, bool),
 	claudeRuntimeOf func(string) (RuntimeRef, bool),
+	codexAuthorityVer string,
+	claudeAuthorityVer string,
 ) ManagedRuntimeCatalog {
 	return &managedRuntimeCatalog{
-		codexReg:        codexReg,
-		claudeReg:       claudeReg,
-		codexRuntimeOf:  codexRuntimeOf,
-		claudeRuntimeOf: claudeRuntimeOf,
+		codexReg:           codexReg,
+		claudeReg:          claudeReg,
+		codexRuntimeOf:     codexRuntimeOf,
+		claudeRuntimeOf:    claudeRuntimeOf,
+		codexAuthorityVer:  codexAuthorityVer,
+		claudeAuthorityVer: claudeAuthorityVer,
 	}
 }
 
@@ -79,8 +85,15 @@ func validateManagedRecord(rec *ManagedSessionRecord, expectAdapter string) erro
 	if ref.Adapter != expectAdapter {
 		return fmt.Errorf("session ID adapter %q does not match registry origin %q", ref.Adapter, expectAdapter)
 	}
-	if rec.Provider == "" {
-		return fmt.Errorf("empty provider for session %q", rec.SessionID)
+	// Exact provider-origin binding: Codex registry must have Provider=="codex";
+	// Claude registry must have Provider=="claude". Case-mutated, whitespace-mutated,
+	// cross-provider, empty, and unknown values are rejected.
+	expectProvider := "codex"
+	if expectAdapter == claudeHeadlessAdapter {
+		expectProvider = "claude"
+	}
+	if rec.Provider != expectProvider {
+		return fmt.Errorf("provider %q does not match registry origin %q for session %q", rec.Provider, expectProvider, rec.SessionID)
 	}
 	if rec.Version == "" {
 		return fmt.Errorf("empty version for session %q", rec.SessionID)
@@ -242,13 +255,17 @@ func (c *managedRuntimeCatalog) RuntimeOf(sessionID string) (RuntimeRef, bool) {
 		return RuntimeRef{}, false
 	}
 
-	// Cross-validate: the RuntimeRef must agree with the catalog record.
-	// Adapter must match the canonical prefix; LaunchGen must equal the
-	// record's epoch (generation). A mismatch means the provider resolver
-	// returned an identity inconsistent with the catalog binding.
-	if rt.Adapter != ref.Adapter || rt.LaunchGen != rec.Epoch {
-		log.Printf("managed catalog: RuntimeOf binding mismatch for %q: ref={Adapter=%s LaunchGen=%d} rec={adapter=%s epoch=%d}",
-			sessionID, rt.Adapter, rt.LaunchGen, ref.Adapter, rec.Epoch)
+	// Cross-validate: the RuntimeRef must agree with the catalog record on
+	// provider, version, adapter, and generation. Provider-specific version
+	// policy: the RuntimeRef version must equal the certified authority version
+	// configured at activation time. No generic string normalization.
+	expectedVer := c.codexAuthorityVer
+	if ref.Adapter == claudeHeadlessAdapter {
+		expectedVer = c.claudeAuthorityVer
+	}
+	if rt.Adapter != ref.Adapter || rt.LaunchGen != rec.Epoch || rt.Version != expectedVer {
+		log.Printf("managed catalog: RuntimeOf binding mismatch for %q: ref={Adapter=%s Version=%s LaunchGen=%d} rec={adapter=%s epoch=%d} wantVersion=%s",
+			sessionID, rt.Adapter, rt.Version, rt.LaunchGen, ref.Adapter, rec.Epoch, expectedVer)
 		return RuntimeRef{}, false
 	}
 	return rt, true

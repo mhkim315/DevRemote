@@ -654,6 +654,10 @@ func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error
 // Registry exposes the owned-session registry for the read-only REST surface.
 func (s *ManagedCodexService) Registry() *ManagedSessionRegistry { return s.reg }
 
+// AuthorityVersion returns the certified authority version this service was
+// configured with. Used by the catalog to cross-validate RuntimeOf results.
+func (s *ManagedCodexService) AuthorityVersion() string { return s.cfg.AuthorityVersion }
+
 // SetApprovalStore configures the authoritative approval store as the SP1-P1
 // NON-ACTIONABLE observation sink. The store is IMMUTABLE once configured
 // (P2B-R1): the ONE canonical store is fixed by the first successful

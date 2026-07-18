@@ -346,7 +346,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		claudeReg = managedClaude.Registry()
 	}
 	if codexReg != nil || claudeReg != nil {
-		h.Catalog = term.NewManagedRuntimeCatalog(codexReg, claudeReg, codexRuntimeOf, claudeRuntimeOf)
+		var codexAV, claudeAV string
+		if managed != nil {
+			codexAV = managed.AuthorityVersion()
+		}
+		if managedClaude != nil {
+			claudeAV = managedClaude.AuthorityVersion()
+		}
+		h.Catalog = term.NewManagedRuntimeCatalog(codexReg, claudeReg, codexRuntimeOf, claudeRuntimeOf, codexAV, claudeAV)
 		// Catalog.RuntimeOf replaces the combined resolver for
 		// approval-runtime dispatch. The provider-specific RuntimeOf
 		// methods and their generation/certification validation

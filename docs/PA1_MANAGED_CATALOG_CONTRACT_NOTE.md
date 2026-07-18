@@ -68,9 +68,9 @@ The catalog never stores a merged copy or a second snapshot. Each `List()`
 call reads both registries live under their respective mutexes.
 
 Duplicate detection: if the same `SessionID` appears in both registries
-after the merge (which should be impossible due to distinct adapter
-prefixes), the duplicate entry is dropped and logged. The canonical entry
-from the adapter-prefix-matched registry is retained.
+after the merge, **all candidates for the ambiguous canonical ID are
+excluded** — neither copy appears in the output. The catalog fails closed
+rather than choosing by provider order.
 
 ### RuntimeOf
 

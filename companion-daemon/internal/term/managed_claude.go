@@ -902,6 +902,10 @@ func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAtt
 
 func (s *ManagedClaudeService) Registry() *ManagedSessionRegistry { return s.reg }
 
+// AuthorityVersion returns the certified authority version this service was
+// configured with. Used by the catalog to cross-validate RuntimeOf results.
+func (s *ManagedClaudeService) AuthorityVersion() string { return s.cfg.AuthorityVersion }
+
 // Coordinator returns the C2D-B resume coordinator. Exported for composition tests.
 func (s *ManagedClaudeService) Coordinator() *claudeResumeCoordinator { return s.coordinator }
 

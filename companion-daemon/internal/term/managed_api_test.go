@@ -43,15 +43,18 @@ func catalogForAPI(codex *ManagedCodexService, claude *ManagedClaudeService) Man
 	var claudeReg *ManagedSessionRegistry
 	var codexRT func(string) (RuntimeRef, bool)
 	var claudeRT func(string) (RuntimeRef, bool)
+	var codexAV, claudeAV string
 	if codex != nil {
 		codexReg = codex.Registry()
 		codexRT = codex.RuntimeOf
+		codexAV = codex.AuthorityVersion()
 	}
 	if claude != nil {
 		claudeReg = claude.Registry()
 		claudeRT = claude.RuntimeOf
+		claudeAV = claude.AuthorityVersion()
 	}
-	return NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT)
+	return NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT, codexAV, claudeAV)
 }
 
 // TestManagedREST_ListAndGet_FromOwnedRegistry: the authenticated list

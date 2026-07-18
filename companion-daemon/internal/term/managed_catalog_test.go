@@ -206,7 +206,7 @@ func TestCatalog_MalformedRecordsFiltered(t *testing.T) {
 		_ = codexReg.Register(rec)
 	}
 
-	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil)
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil, "", "")
 
 	// Get: malformed IDs return not found.
 	for _, rec := range malformed {
@@ -259,7 +259,7 @@ func TestCatalog_Get_AmbiguousDuplicateFailsClosed(t *testing.T) {
 		CreatedAt: now,
 	})
 
-	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil)
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil, "", "")
 
 	// Get must fail closed for the ambiguous ID.
 	if _, ok := cat.Get(dupID); ok {
@@ -329,7 +329,7 @@ func TestCatalog_List_AmbiguousDropBoth(t *testing.T) {
 		SessionID: clean2, Provider: "claude", Version: "2.1.209", Epoch: 1, CreatedAt: now,
 	})
 
-	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil)
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil, "", "")
 	records := cat.List()
 
 	// Ambiguous must be absent — both copies dropped.
@@ -538,7 +538,7 @@ func TestCatalog_RuntimeOf_PreservesExactProviderBinding(t *testing.T) {
 		t.Fatalf("CreateDetached: %v", err)
 	}
 
-	cat := NewManagedRuntimeCatalog(managed.Registry(), nil, rtFunc, nil)
+	cat := NewManagedRuntimeCatalog(managed.Registry(), nil, rtFunc, nil, "0.144.1", "")
 
 	// RuntimeOf must resolve.
 	ref, ok := cat.RuntimeOf(id)
@@ -677,7 +677,7 @@ func TestAppendCatalogRows_NilCatalog(t *testing.T) {
 
 func TestAppendCatalogRows_EmptyCatalog(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(8)
-	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil)
+	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "", "")
 	snapshot := []SessionTelemetry{{ID: "tmux:0", State: "idle", Adapter: "tmux"}}
 	out := appendCatalogRows(snapshot, cat, nil)
 	if len(out) != 1 || out[0].ID != "tmux:0" {
@@ -705,13 +705,13 @@ func TestCatalog_RuntimeOf_AmbiguousFailsClosed(t *testing.T) {
 	// Stub resolvers: they would succeed if called, but RuntimeOf must
 	// reject the ambiguous ID before delegating.
 	codexRT := func(sid string) (RuntimeRef, bool) {
-		return RuntimeRef{Adapter: "codex_app_server", Version: "v", LaunchGen: 1}, true
+		return RuntimeRef{Adapter: "codex_app_server", Version: "0.144.1", LaunchGen: 1}, true
 	}
 	claudeRT := func(sid string) (RuntimeRef, bool) {
-		return RuntimeRef{Adapter: "claude_headless", Version: "v", LaunchGen: 1}, true
+		return RuntimeRef{Adapter: "claude_headless", Version: "2.1.209", LaunchGen: 1}, true
 	}
 
-	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT)
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, codexRT, claudeRT, "0.144.1", "2.1.209")
 
 	// RuntimeOf must fail for the ambiguous ID (Get rejects it).
 	if _, ok := cat.RuntimeOf(dupID); ok {
@@ -742,23 +742,146 @@ func TestCatalog_RuntimeOf_BindingMismatch(t *testing.T) {
 		SessionID: sid, Provider: "codex", Version: "0.144.1", Epoch: 3, CreatedAt: now,
 	})
 
-	// Resolver returns wrong LaunchGen (2 vs record epoch 3).
+	// Resolver returns wrong Version (mismatched authority version).
 	codexRT := func(s string) (RuntimeRef, bool) {
-		return RuntimeRef{Adapter: "codex_app_server", Version: "v", LaunchGen: 2}, true
+		return RuntimeRef{Adapter: "codex_app_server", Version: "0.999.0", LaunchGen: 3}, true
 	}
 
-	cat := NewManagedRuntimeCatalog(codexReg, nil, codexRT, nil)
+	cat := NewManagedRuntimeCatalog(codexReg, nil, codexRT, nil, "0.144.1", "")
 	if _, ok := cat.RuntimeOf(sid); ok {
-		t.Fatal("RuntimeOf accepted mismatched LaunchGen")
+		t.Fatal("RuntimeOf accepted mismatched Version")
 	}
 
 	// Resolver returns wrong Adapter.
 	codexRT2 := func(s string) (RuntimeRef, bool) {
-		return RuntimeRef{Adapter: "claude_headless", Version: "v", LaunchGen: 3}, true
+		return RuntimeRef{Adapter: "claude_headless", Version: "0.144.1", LaunchGen: 3}, true
 	}
-	cat2 := NewManagedRuntimeCatalog(codexReg, nil, codexRT2, nil)
+	cat2 := NewManagedRuntimeCatalog(codexReg, nil, codexRT2, nil, "0.144.1", "")
 	if _, ok := cat2.RuntimeOf(sid); ok {
 		t.Fatal("RuntimeOf accepted mismatched Adapter")
+	}
+}
+
+// ── Test: provider identity mutations are rejected ──
+
+func TestCatalog_ProviderIdentityMutations(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(16)
+	claudeReg := NewManagedSessionRegistry(16)
+	now := time.Now()
+
+	// Valid records as positive controls.
+	validCodex := "codex_app_server:valid-c"
+	validClaude := "claude_headless:valid-cl"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: validCodex, Provider: "codex", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: validClaude, Provider: "claude", Version: "2.1.209", Epoch: 1, CreatedAt: now,
+	})
+
+	// Codex registry: cross-provider mutation.
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: "codex_app_server:cross-prov", Provider: "claude", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	// Codex registry: empty provider.
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: "codex_app_server:empty-prov", Provider: "", Version: "0.144.1", Epoch: 1, CreatedAt: now,
+	})
+	// Claude registry: cross-provider mutation.
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: "claude_headless:cross-prov", Provider: "codex", Version: "2.1.209", Epoch: 1, CreatedAt: now,
+	})
+	// Claude registry: case-mutated provider ("Claude" vs "claude").
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: "claude_headless:case-mut", Provider: "Claude", Version: "2.1.209", Epoch: 1, CreatedAt: now,
+	})
+
+	cat := NewManagedRuntimeCatalog(codexReg, claudeReg, nil, nil, "0.144.1", "2.1.209")
+
+	// Get: all mutated records return not found.
+	for _, sid := range []string{"codex_app_server:cross-prov", "codex_app_server:empty-prov", "claude_headless:cross-prov", "claude_headless:case-mut"} {
+		if _, ok := cat.Get(sid); ok {
+			t.Errorf("Get(%q) returned true for provider-mutated record", sid)
+		}
+	}
+
+	// Get: valid records work.
+	if _, ok := cat.Get(validCodex); !ok {
+		t.Error("Get on valid codex record failed")
+	}
+	if _, ok := cat.Get(validClaude); !ok {
+		t.Error("Get on valid claude record failed")
+	}
+
+	// List: only valid records appear.
+	recs := cat.List()
+	if len(recs) != 2 {
+		t.Fatalf("List: expected 2 valid records, got %d: %v", len(recs), recs)
+	}
+	for _, rec := range recs {
+		if rec.SessionID != validCodex && rec.SessionID != validClaude {
+			t.Errorf("List included mutated record: %s", rec.SessionID)
+		}
+	}
+
+	// RuntimeOf: mutated records fail (Get path rejects them).
+	for _, sid := range []string{"codex_app_server:cross-prov", "codex_app_server:empty-prov"} {
+		if _, ok := cat.RuntimeOf(sid); ok {
+			t.Errorf("RuntimeOf(%q) returned true for provider-mutated record", sid)
+		}
+	}
+}
+
+// ── Test: version-only mismatch is rejected by RuntimeOf ──
+
+func TestCatalog_RuntimeOf_VersionMismatch(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(8)
+	now := time.Now()
+	sid := "codex_app_server:ver-test"
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: sid, Provider: "codex", Version: "codex-cli 0.144.1", Epoch: 2, CreatedAt: now,
+	})
+
+	// Resolver has correct Adapter and LaunchGen but wrong Version.
+	codexRT := func(s string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "codex_app_server", Version: "0.999.0", LaunchGen: 2}, true
+	}
+
+	cat := NewManagedRuntimeCatalog(codexReg, nil, codexRT, nil, "0.144.1", "")
+	if _, ok := cat.RuntimeOf(sid); ok {
+		t.Fatal("RuntimeOf accepted version mismatch")
+	}
+
+	// Resolver with correct version works.
+	codexRT2 := func(s string) (RuntimeRef, bool) {
+		return RuntimeRef{Adapter: "codex_app_server", Version: "0.144.1", LaunchGen: 2}, true
+	}
+	cat2 := NewManagedRuntimeCatalog(codexReg, nil, codexRT2, nil, "0.144.1", "")
+	if _, ok := cat2.RuntimeOf(sid); !ok {
+		t.Fatal("RuntimeOf rejected correct version")
+	}
+}
+
+// ── Test: empty/malformed versions are rejected ──
+
+func TestCatalog_EmptyVersionRejected(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(8)
+	now := time.Now()
+	sid := "codex_app_server:empty-ver"
+	// Empty version in record.
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: sid, Provider: "codex", Version: "", Epoch: 1, CreatedAt: now,
+	})
+
+	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
+	if _, ok := cat.Get(sid); ok {
+		t.Error("Get returned true for empty-version record")
+	}
+	if len(cat.List()) != 0 {
+		t.Error("List included empty-version record")
+	}
+	if _, ok := cat.RuntimeOf(sid); ok {
+		t.Error("RuntimeOf returned true for empty-version record")
 	}
 }
 
