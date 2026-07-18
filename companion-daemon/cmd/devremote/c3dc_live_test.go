@@ -380,30 +380,10 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		svc.WaitExited(sid)
 		t.Logf("%s: initial process exited — joined-deferred claim window open", run)
 
-		// R4-R5 diagnostic: observe PostToolUse body structure.
-		postToolDiag := make(chan term.PostToolUseDiagnostic, 1)
-		svc.PostToolDiagHook = postToolDiag
-
 		// Authenticated claim through the composed production route.
 		code, body := fx.doJSON(t, "POST",
 			"/api/sessions/"+sid+"/approvals/"+dto.ID, tok,
 			`{"action":"`+action+`","idempotencyKey":"c3dc.live.`+run+`"}`)
-		// Drain PostToolUse diagnostic (non-blocking).
-		svc.PostToolDiagHook = nil // stop observing
-		var ptDiag *term.PostToolUseDiagnostic
-		select {
-		case d := <-postToolDiag:
-			ptDiag = &d
-		default:
-		}
-		if ptDiag != nil {
-			t.Logf("%s: PostToolUse diag: reached=%v sessionEq=%v toolUseEq=%v toolNameEq=%v hasInput=%v inputType=%s digestMatch=%v fields=%v",
-				run, ptDiag.EndpointReached, ptDiag.SessionIDEq, ptDiag.ToolUseIDEq, ptDiag.ToolNameEq,
-				ptDiag.HasToolInput, ptDiag.ToolInputType, ptDiag.DigestMatch, ptDiag.TopFields)
-		} else {
-			t.Logf("%s: PostToolUse diag: NOT CALLED (endpoint not reached)", run)
-		}
-
 		if code != 200 {
 			// Full diagnostic dump.
 			if snap, ok := store.LookupRecord(sid, dto.ID); ok {
@@ -426,8 +406,6 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 					t.Logf("%s diag launch %d line: seq=%d type=%s subtype=%s deferred=%v denials=%v", run, i, lp.Seq, lp.Type, lp.Subtype, lp.Deferred, lp.PermissionDenials)
 				}
 				if evidenceDir != "" {
-					rawPath := filepath.Join(evidenceDir, "c3dc_"+run+"_launch"+itoa(i)+"_raw_diag.jsonl")
-					os.WriteFile(rawPath, ln.cap.bytes(), 0644)
 					projPath := filepath.Join(evidenceDir, "c3dc_"+run+"_launch"+itoa(i)+"_proj_diag.json")
 					blob, _ := json.MarshalIndent(diag, "", "  ")
 					os.WriteFile(projPath, blob, 0644)
@@ -448,7 +426,11 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 
 		// Corroboration (non-authority): probe token in EXECUTION output.
+		time.Sleep(1 * time.Second) // allow tee capture to drain
 		launches := launcher.slice(launchFloor)
+		for i, ln := range launches {
+			t.Logf("%s: launch %d capture bytes=%d", run, i, len(ln.cap.bytes()))
+		}
 		if len(launches) != 2 {
 			t.Fatalf("%s: expected exactly initial+resume launches, got %d", run, len(launches))
 		}
@@ -464,18 +446,15 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 			proj := c3dcProject(run, label, ln.cap.bytes(), pseudo)
 			tokenHits += proj.ToolResultTokenHits
 			projections = append(projections, proj)
-			// Always write raw capture + projection to evidence dir
-			// for debugging stream format on failure.
+			// Write structural projection to evidence dir.
 			if evidenceDir != "" {
-				rawPath := filepath.Join(evidenceDir, "c3dc_"+run+"_"+label+"_raw.jsonl")
-				os.WriteFile(rawPath, ln.cap.bytes(), 0644)
 				projPath := filepath.Join(evidenceDir, "c3dc_"+run+"_"+label+"_proj.json")
 				blob, _ := json.MarshalIndent(proj, "", "  ")
 				os.WriteFile(projPath, blob, 0644)
 			}
 		}
 		if tokenHits != wantTokenHits {
-			t.Logf("%s: WARNING tool_result probe-token hits = %d, want %d (projection parser may miss stream-json user messages; AUTHORITY witness is the PostToolUse hook, corroboration is non-authority)", run, tokenHits, wantTokenHits)
+			t.Fatalf("%s: tool_result probe-token hits = %d, want %d (execution corroboration)", run, tokenHits, wantTokenHits)
 		}
 		t.Logf("%s: execution corroboration tool_result token hits = %d", run, tokenHits)
 

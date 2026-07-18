@@ -861,11 +861,6 @@ type ManagedClaudeService struct {
 	coordinator *claudeResumeCoordinator
 
 	createBarrier func(stage string)
-
-	// PostToolDiagHook is a test-only diagnostic seam (nil in production).
-	// When set, each ResumeForApproval bridge sends one
-	// PostToolUseDiagnostic before calling MarkWitnessed.
-	PostToolDiagHook chan<- PostToolUseDiagnostic
 }
 
 func (s *ManagedClaudeService) barrier(stage string) {
@@ -1196,12 +1191,6 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		return nil, fmt.Errorf("managed claude resume bridge: %w", err)
 	}
 	<-bridge.started
-
-	// R4-R5 test-only diagnostic seam: wire the PostToolUse observer
-	// before the resume process spawns.
-	if s.PostToolDiagHook != nil {
-		bridge.postToolDiag = s.PostToolDiagHook
-	}
 
 	// Install the immutable resume context BEFORE process spawn.
 	bridge.installResumeContext(ctx)

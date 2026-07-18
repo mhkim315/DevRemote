@@ -1925,7 +1925,7 @@ func TestDenialBinding_EvidenceEventWitnessed(t *testing.T) {
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
-		resumeCtx: &resumeContext{
+		resumeCtx: &resumeContext{ expectedDecision: "deny",
 			coordinator:     c,
 			claimToken:      handle.ClaimToken,
 			claudeSessionID: sid,
@@ -1951,7 +1951,7 @@ func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
 	handle, sid, tuid, tn, dig, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
-		resumeCtx: &resumeContext{
+		resumeCtx: &resumeContext{ expectedDecision: "deny",
 			coordinator:     c,
 			claimToken:      handle.ClaimToken,
 			claudeSessionID: sid,
@@ -1992,7 +1992,7 @@ func TestDenialBinding_DuplicateBoundTUIDCancels(t *testing.T) {
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
-		resumeCtx: &resumeContext{
+		resumeCtx: &resumeContext{ expectedDecision: "deny",
 			coordinator:     c,
 			claimToken:      handle.ClaimToken,
 			claudeSessionID: sid,
@@ -2019,7 +2019,7 @@ func TestDenialBinding_WrongSessionAnomalyCancels(t *testing.T) {
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
-		resumeCtx: &resumeContext{
+		resumeCtx: &resumeContext{ expectedDecision: "deny",
 			coordinator:     c,
 			claimToken:      handle.ClaimToken,
 			claudeSessionID: sid,
@@ -2046,7 +2046,7 @@ func TestDenialBinding_MalformedLineCancelsActiveEntry(t *testing.T) {
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
-		resumeCtx: &resumeContext{
+		resumeCtx: &resumeContext{ expectedDecision: "deny",
 			coordinator:     c,
 			claimToken:      handle.ClaimToken,
 			claudeSessionID: sid,

@@ -42,6 +42,8 @@ const hookDeferResponse = `{"hookSpecificOutput":{"hookEventName":"PreToolUse","
 // Every field the real C0D provider emits is listed; anything else is
 // rejected. Fields not needed for identity binding are accepted but not
 // decoded beyond verifying they are valid JSON.
+// preToolUseAllowlist is the CLOSED set of fields accepted for PreToolUse
+// hook bodies (both initial and resume). Unknown fields are rejected.
 var preToolUseAllowlist = map[string]bool{
 	"session_id":      true,
 	"tool_use_id":     true,
@@ -53,20 +55,37 @@ var preToolUseAllowlist = map[string]bool{
 	"prompt_id":       true,
 	"permission_mode": true,
 	"effort":          true,
-	// PostToolUse-specific fields (accepted but not used for identity
-	// binding; tool_use_id/tool_name/tool_input carry the identity):
-	"tool_response": true, // the tool's stdout/stderr result
-	"duration_ms":   true, // hook execution timing
 }
 
-// strictPreToolUseDecode decodes raw JSON into a map, rejecting:
-//   - non-object input
-//   - unknown fields (not in preToolUseAllowlist)
-//   - duplicate keys
-//   - trailing content after the object
-//
-// Returns the decoded map keyed by field name, or false on any rejection.
-func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
+// postToolUseAllowlist is the CLOSED set of fields accepted for PostToolUse
+// hook bodies. The real Claude PostToolUse body includes tool_response and
+// duration_ms but NOT prompt_id. tool_use_id/tool_name/tool_input carry
+// the identity binding; the extra fields are accepted but not decoded.
+var postToolUseAllowlist = map[string]bool{
+	"session_id":      true,
+	"tool_use_id":     true,
+	"tool_name":       true,
+	"tool_input":      true,
+	"hook_event_name": true,
+	"cwd":             true,
+	"transcript_path": true,
+	"permission_mode": true,
+	"effort":          true,
+	"tool_response":   true, // PostToolUse: tool execution result
+	"duration_ms":     true, // PostToolUse: hook timing
+}
+
+// strictPostToolUseDecode decodes raw JSON against the PostToolUse
+// allowlist. Same strict rules as strictPreToolUseDecode but accepts
+// tool_response and duration_ms (rejects prompt_id).
+func strictPostToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
+	return strictHookDecode(raw, postToolUseAllowlist)
+}
+
+// strictHookDecode is the shared strict JSON decoder. It rejects
+// non-object input, unknown fields (not in allowlist), duplicate keys,
+// and trailing content.
+func strictHookDecode(raw []byte, allowlist map[string]bool) (map[string]json.RawMessage, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
 	if err != nil {
@@ -75,7 +94,7 @@ func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
 		return nil, false
 	}
-	out := make(map[string]json.RawMessage, len(preToolUseAllowlist))
+	out := make(map[string]json.RawMessage, len(allowlist))
 	for dec.More() {
 		kt, err := dec.Token()
 		if err != nil {
@@ -85,7 +104,7 @@ func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
 		if !ok {
 			return nil, false
 		}
-		if !preToolUseAllowlist[key] {
+		if !allowlist[key] {
 			return nil, false // unknown field
 		}
 		if _, dup := out[key]; dup {
@@ -104,6 +123,17 @@ func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+// strictPreToolUseDecode decodes raw JSON into a map, rejecting:
+//   - non-object input
+//   - unknown fields (not in preToolUseAllowlist)
+//   - duplicate keys
+//   - trailing content after the object
+//
+// Returns the decoded map keyed by field name, or false on any rejection.
+func strictPreToolUseDecode(raw []byte) (map[string]json.RawMessage, bool) {
+	return strictHookDecode(raw, preToolUseAllowlist)
 }
 
 // resumeContext is the immutable state installed in the bridge BEFORE the
@@ -142,25 +172,6 @@ type claudeHookBridge struct {
 
 	mu       sync.Mutex
 	shutdown bool
-
-	// R4-R5 diagnostic seam (test-only, nil in production): if non-nil,
-	// handlePostTool sends one PostToolUseDiagnostic before calling
-	// MarkWitnessed.
-	postToolDiag chan<- PostToolUseDiagnostic
-}
-
-// PostToolUseDiagnostic records structural facts about a PostToolUse
-// hook body observed by the bridge. Test-only; never contains raw text.
-type PostToolUseDiagnostic struct {
-	EndpointReached bool
-	TopFields       []string // field names present at top level
-	SessionIDEq     bool     // body session_id == ctx.claudeSessionID
-	ToolUseIDEq     bool     // body tool_use_id == ctx.toolUseID
-	ToolNameEq      bool     // body tool_name == ctx.toolName
-	HasToolInput    bool     // tool_input key is present
-	ToolInputType   string   // "string", "object", "absent"
-	DigestMatch     bool     // inputDigestBody == ctx.inputDigest (if present)
-	HTTPResult      int      // always 200 (we never fail the hook)
 }
 
 func newClaudeHookBridge() (*claudeHookBridge, string, error) {
@@ -460,17 +471,9 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	}
 
 	// Strict decode PostToolUse fields.
-	// R4-R5: extract raw top-level keys before strict decode rejects
-	// unknown fields, so we can see the ACTUAL PostToolUse field names.
-	if b.postToolDiag != nil {
-		rawKeys := rawTopLevelKeys(body)
-		b.postToolDiag <- PostToolUseDiagnostic{
-			EndpointReached: true,
-			TopFields:       rawKeys,
-			HTTPResult:      http.StatusOK,
-		}
-	}
-	fields, ok := strictPreToolUseDecode(body)
+	// R4: use the PostToolUse-specific allowlist (tool_response +
+	// duration_ms accepted; prompt_id rejected).
+	fields, ok := strictPostToolUseDecode(body)
 	if !ok {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -514,36 +517,6 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 
 	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
-}
-
-// rawTopLevelKeys extracts top-level JSON keys without allowlist filtering.
-// Used only by the R4-R5 PostToolUse diagnostic. Never returns values.
-func rawTopLevelKeys(raw []byte) []string {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	tok, err := dec.Token()
-	if err != nil {
-		return nil
-	}
-	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return nil
-	}
-	var keys []string
-	for dec.More() {
-		kt, err := dec.Token()
-		if err != nil {
-			return nil
-		}
-		key, ok := kt.(string)
-		if !ok {
-			return nil
-		}
-		keys = append(keys, key)
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return nil
-		}
-	}
-	return keys
 }
 
 func writeHookDefer(w http.ResponseWriter) {
