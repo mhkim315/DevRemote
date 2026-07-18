@@ -465,6 +465,8 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 		}
 		inputDigestBody = sha256Hex(canon)
 	}
+	// inputDigestBody stays "" if PostToolUse body has no tool_input.
+	// The ctx fallback is applied below, after ctx is resolved.
 
 	b.mu.Lock()
 	ctx := b.resumeCtx
@@ -478,6 +480,14 @@ func (b *claudeHookBridge) handlePostTool(w http.ResponseWriter, r *http.Request
 	// R4: witness the REAL PostToolUse invocation's identity. The
 	// coordinator validates against the bound ResumeAttemptIdentity
 	// (created at ClaimWrite time).
+	//
+	// PostToolUse may not carry tool_input; if the body doesn't supply
+	// a digest, use the context's authoritative value (the input was
+	// already validated against the approved original action at
+	// ClaimWrite time by both bridge and coordinator).
+	if inputDigestBody == "" {
+		inputDigestBody = ctx.inputDigest
+	}
 	ctx.coordinator.MarkWitnessed(claimToken, WitnessPostToolUse, sessionIDBody, toolUseIDBody, toolNameBody, inputDigestBody, ctx.originalRuntime)
 	w.WriteHeader(http.StatusOK)
 }

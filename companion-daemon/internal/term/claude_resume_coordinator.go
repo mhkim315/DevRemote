@@ -175,10 +175,10 @@ type WitnessOutcome int
 
 const (
 	WitnessPending   WitnessOutcome = iota + 1 // early witness stored, not terminal
-	Witnessed                                   // terminal success (binding+digest returned)
-	WitnessMismatch                             // identity mismatch
-	WitnessDuplicate                            // same identity already witnessed
-	WitnessStale                                // entry not found or wrong state
+	Witnessed                                  // terminal success (binding+digest returned)
+	WitnessMismatch                            // identity mismatch
+	WitnessDuplicate                           // same identity already witnessed
+	WitnessStale                               // entry not found or wrong state
 )
 
 // WitnessResult packs the witness outcome with optional binding/digest
@@ -1014,7 +1014,7 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
 		entry.earlyWitness = &earlyWitnessArgs{
-			kind: WitnessPermissionDenials,
+			kind:      WitnessPermissionDenials,
 			sessionID: denialSessionID, toolUseID: match.ToolUseID,
 			toolName: match.ToolName, inputDigest: match.InputDigest,
 			runtime: rt, exactRespDigest: respDigest,

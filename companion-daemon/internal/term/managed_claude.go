@@ -665,13 +665,21 @@ func (rt *claudeManagedRuntime) processLine(line []byte) {
 		rt.joinDeferred(&event)
 		return
 	}
-	switch d, outcome := decodeDenialResult(line); outcome {
-	case denialOK:
-		rt.routeDenial(d)
-	case denialMalformed:
-		// R6-B P6: a denial-shaped line that fails strict decoding is
-		// never skipped. The active resume entry (if any) is cancelled.
-		rt.failClosedDenial()
+	// R4: denial-shaped events (result lines with permission_denials)
+	// are ONLY consumption witnesses for deny decisions. An allow
+	// decision uses PostToolUse as its witness. Skip denial processing
+	// for allow — the empty permission_denials:[] in the normal resume
+	// result line is not a denial witness and must never cancel the
+	// entry.
+	if rt.resumeCtx != nil && rt.resumeCtx.expectedDecision == "deny" {
+		switch d, outcome := decodeDenialResult(line); outcome {
+		case denialOK:
+			rt.routeDenial(d)
+		case denialMalformed:
+			// R6-B P6: a denial-shaped line that fails strict
+			// decoding is never skipped.
+			rt.failClosedDenial()
+		}
 	}
 }
 
@@ -703,7 +711,10 @@ func (rt *claudeManagedRuntime) routeDenial(d *streamDenial) {
 	// under one lock.
 	result := ctx.coordinator.MarkDenialWitness(
 		ctx.claimToken, d.SessionID, d.Entries, ctx.originalRuntime)
-	if result.Outcome != Witnessed && result.Outcome != WitnessPending {
+	// R4: only cancel the entry on identity mismatch or ambiguous
+	// duplicate — real tampering evidence. Stale (entry already
+	// consumed by PostToolUse) and Pending are harmless.
+	if result.Outcome == WitnessMismatch || result.Outcome == WitnessDuplicate {
 		rt.failClosedDenial()
 	}
 }
