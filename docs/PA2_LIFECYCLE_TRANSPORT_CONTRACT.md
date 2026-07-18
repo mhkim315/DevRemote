@@ -54,8 +54,12 @@ commands, IPC operations, and linked-log telemetry resolution.
 - `internal/term/linkstore.go` — entire file: LinkStore interface,
   NewFileLinkStore, NewFileLinkStoreAt, NewNopLinkStore,
   fileLinkStore, memoryLinkStore, all methods
+- `internal/term/linkstore_test.go` — entire file: legacy positive
+  feature tests (load/save, put/get/delete, migration). Deleted; not
+  kept with compatibility shims.
 - `cmd/devremote/app.go` — LinkStore creation, Dependencies.Links,
-  App.links, Handlers.Links, `/api/v2/links` route registration, LoadLinks call
+  App.links, Handlers.Links, `/api/v2/links` route registration,
+  LoadLinks call
 - `cmd/devremote/main.go` — link/unlink/links CLI dispatch
 - `internal/term/runtime.go` — `Links LinkStore` field from Handlers
 - `internal/term/ipc.go` — link/unlink/links JSON operations,
@@ -67,8 +71,15 @@ commands, IPC operations, and linked-log telemetry resolution.
 
 **Existing on-disk data**: The daemon must no longer read legacy link
 files. It must not automatically delete or mutate existing link files.
-A test must prove startup succeeds with a malformed or inaccessible
-legacy link file (because the file is no longer consumed).
+
+**Non-vacuous sentinel immutability test**: Set HOME to a temp dir,
+create `~/.devremote/links.json` with sentinel bytes. Run
+`NewAppWithDeps`. Assert the file bytes, mode, mtime, and inode are
+identical to before. Assert the file exists unchanged after App
+shutdown. Do not use `chmod 000` (vacuously passes for root or in
+some CI environments). Complement with static proof that zero
+production code references `NewFileLinkStore`, `NewFileLinkStoreAt`,
+`LoadLinks`, `links.json`, or `LinkStore.Load`.
 
 **Authority invariants**:
 - Managed Codex/Claude list/get/status remain unchanged (still use
@@ -77,22 +88,37 @@ legacy link file (because the file is no longer consumed).
 - No tmux/cmux/localpty adapter removal
 
 **Focused tests**:
-1. HTTP route table contains no `/api/v2/links`
-2. IPC no longer exposes link/unlink/list operations
-3. CLI no longer dispatches link commands
-4. `NewAppWithDeps` has no LinkStore dependency or construction
-5. Telemetry construction succeeds without LinkStore
-6. Legacy link files are not read or deleted
-7. Managed Codex/Claude list/get/status still use ManagedRuntimeCatalog
-8. Existing Codex/Claude approval focused tests remain unchanged and pass
-9. No lifecycle or TerminalTransport behavior changes
+1. HTTP route: both InsecureLocalOnly=true and InsecureLocalOnly=false
+   compositions return 404/unregistered for GET/POST/DELETE
+   `/api/v2/links`. Must prove route is unregistered (not merely
+   auth-failing).
+2. IPC: link/unlink/links JSON operations are absent; unknown
+   operations fail through existing unsupported-operation behavior
+   (no panic, no block).
+3. CLI: `pokit link`/`pokit unlink`/`pokit links` no longer dispatch.
+4. `NewAppWithDeps` has no LinkStore dependency: `Dependencies.Links`
+   field removed; App struct `links` field removed; constructor
+   compiles and runs without LinkStore.
+5. Telemetry: `NewTelemetryService` succeeds without LinkStore.
+   Positive control: valid process snapshot + normal process-based
+   resolver → `LogRef` obtained without link → telemetry
+   state/projection unchanged. Negative control: Antigravity
+   external log previously resolved only via link is no longer
+   resolved (intended feature deletion, not PA3 regression).
+6. Legacy link file non-vacuous sentinel immutability (see above).
+7. Managed Codex/Claude list/get/status still use ManagedRuntimeCatalog.
+8. Existing Codex/Claude approval focused tests remain unchanged and pass.
+9. No lifecycle or TerminalTransport behavior changes.
 
 **Gates**:
 - `go build ./...` / `go vet ./...`
 - `go test -race ./internal/term ./cmd/devremote -count=1`
 - `gofmt -d` / `git diff --check`
 - Secret scan on changed files
-- Static zero-production-reference gate: `rg "LinkStore\|HandleLinksAPI\|/api/v2/links"` → 0 production matches
+- Static zero-production-reference gate (all of):
+  `rg "LinkStore\|SessionLink\|LoadLinks\|LinkSession\|UnlinkSession\|GetLink\|GetAllLinks\|HandleLinksAPI\|runLinkerClient\|NewFileLinkStore\|NewFileLinkStoreAt\|NewNopLinkStore\|/api/v2/links\|json:\"externalSessionId\""` → 0 production matches
+- IPC operation gate (separate, avoids "link" substring false positives):
+  `rg 'Operation.*==.*"link"\|Operation.*==.*"unlink"\|Operation.*==.*"links"'` → 0 matches
 
 **Rollback SHA**: PA1 final ACCEPT HEAD (`b377268`)
 
