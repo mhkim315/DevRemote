@@ -211,10 +211,13 @@ func (b *claudeHookBridge) close() {
 	b.shutdown = true
 	b.mu.Unlock()
 	// Graceful shutdown: drain active handlers (e.g. PostToolUse writing
-	// its 200 response) before closing the listener. A hard Close would
-	// kill in-flight HTTP connections and cause client EOF — a real
-	// production race when delivery's rt.terminate() calls bridge.close()
-	// before the PostToolUse handler completes.
+	// its 200 response) before returning. Shutdown stops accepting new
+	// connections and waits for active handlers to complete within the
+	// deadline. A hard Close would kill in-flight HTTP connections and
+	// cause client EOF — a real production race when delivery's
+	// rt.terminate() calls bridge.close() before the PostToolUse handler
+	// completes. The server already has 5s read/write/idle timeouts;
+	// authority is invalidated before the bridge closes.
 	ctx, cancel := context.WithTimeout(context.Background(), bridgeGracefulShutdown)
 	defer cancel()
 	_ = b.server.Shutdown(ctx)
