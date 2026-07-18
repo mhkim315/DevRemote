@@ -66,7 +66,7 @@ PASS (29.02s)
 | `git diff --check` | PASS |
 | Canonical secret scan | PASS |
 | Ancestry (all prerequisite SHAs) | PASS |
-| Android/native gate | SKIPPED (no Android SDK in this environment) |
+| Android Kotlin gate | PASS (`:pokit-device-key:compileReleaseKotlin`, BUILD SUCCESSFUL) |
 | Local == Remote | `995fbc5b680d3fc3cd4bcbd39c0ecb4e4b509db2` |
 | Worktree | clean |
 

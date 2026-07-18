@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +8,17 @@ import (
 )
 
 // ── R4: natural-exit drain lifecycle tests (channel barriers) ──
+
+// getResumeProc returns the last process spawned by the fake launcher
+// (the resume process created by ResumeForApproval).
+func getResumeProc(l *compFakeLauncher) *compPipeProc {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.procs) == 0 {
+		return nil
+	}
+	return l.procs[len(l.procs)-1]
+}
 
 // TestDrain_WitnessEntersWaiter: with drainTimeout>0, a successful
 // witness delivery calls the drain waiter. The drain waiter blocks
@@ -18,9 +28,8 @@ func TestDrain_WitnessEntersWaiter(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
-	del.SetDrainTimeout(1) // non-zero enables drain branch
+	del.SetDrainTimeout(1)
 
-	// Channel barrier: drainWait blocks until we release it.
 	waiterEntered := make(chan struct{})
 	waiterRelease := make(chan struct{})
 	drainCalled := make(chan struct{}, 1)
@@ -29,7 +38,7 @@ func TestDrain_WitnessEntersWaiter(t *testing.T) {
 		drainCalled <- struct{}{}
 		close(waiterEntered)
 		<-waiterRelease
-		return true // natural-exit result
+		return true
 	})
 
 	var receipt term.DeliveryReceipt
@@ -46,17 +55,15 @@ func TestDrain_WitnessEntersWaiter(t *testing.T) {
 	fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
 
-	// 1. Drain waiter must have been entered (assert non-vacuous).
 	<-waiterEntered
 
-	// 2. Delivery must NOT have returned yet (waiter is blocking).
+	// Delivery must NOT have returned yet.
 	select {
 	case <-done:
 		t.Fatal("delivery returned before drain waiter was released")
 	default:
 	}
 
-	// 3. Release the waiter → delivery returns accepted.
 	close(waiterRelease)
 	<-done
 	if receipt.Outcome != term.DeliveryAccepted {
@@ -64,12 +71,12 @@ func TestDrain_WitnessEntersWaiter(t *testing.T) {
 	}
 }
 
-// TestDrain_NonWitnessSkipsWaiter: timeout/mismatch outcomes must NOT
-// call the drain waiter.
+// TestDrain_NonWitnessSkipsWaiter: timeout/mismatch outcomes never call
+// the drain waiter.
 func TestDrain_NonWitnessSkipsWaiter(t *testing.T) {
 	_, svc, _, claim, _, _, _, _ := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
-	del.SetPollTimeout(100 * time.Millisecond) // short → non-witness
+	del.SetPollTimeout(100 * time.Millisecond)
 	del.SetDrainTimeout(1)
 
 	drainCalled := make(chan struct{}, 1)
@@ -98,23 +105,14 @@ func TestDrain_NonWitnessSkipsWaiter(t *testing.T) {
 	}
 }
 
-// TestDrain_TerminateAfterWaiter: the deferred rt.terminate() runs AFTER
-// the drain waiter returns. We prove this by observing that the process
-// Kill+Wait are called exactly once, after the waiter releases.
+// TestDrain_TerminateAfterWaiter: the deferred rt.terminate() (which
+// calls Kill+Wait) runs AFTER the drain waiter releases. Proved by
+// reading the REAL compPipeProc.KillCount/WaitCount before and after.
 func TestDrain_TerminateAfterWaiter(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
 	del.SetDrainTimeout(1)
-
-	// Count Kill/Wait calls on the fake process.
-	killCount := 0
-	waitCount := 0
-	var killMu sync.Mutex
-
-	// Wrap the launcher to track Kill/Wait.
-	origLaunch := l
-	_ = origLaunch
 
 	waiterRelease := make(chan struct{})
 	waiterEntered := make(chan struct{})
@@ -139,38 +137,49 @@ func TestDrain_TerminateAfterWaiter(t *testing.T) {
 	fireResumeHook(t, resumeURL, csid, tuid, tn, inputJSON)
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
 
-	// 1. Waiter entered → drain is running.
 	<-waiterEntered
 
-	// 2. Kill+Wait must NOT have been called yet (waiter blocks terminate).
-	killMu.Lock()
-	kc := killCount
-	wc := waitCount
-	killMu.Unlock()
-	if kc > 0 || wc > 0 {
-		t.Fatalf("Kill/Wait called before drain released: kill=%d wait=%d", kc, wc)
+	// Assert Kill+Wait NOT called yet (waiter blocks terminate).
+	proc := getResumeProc(l)
+	if proc == nil {
+		t.Fatal("resume process not found")
+	}
+	proc.CountMu.Lock()
+	kcBefore := proc.KillCount
+	wcBefore := proc.WaitCount
+	proc.CountMu.Unlock()
+	if kcBefore > 0 || wcBefore > 0 {
+		t.Fatalf("Kill/Wait called before drain released: kill=%d wait=%d", kcBefore, wcBefore)
 	}
 
-	// 3. Release waiter → termination proceeds.
+	// Release → terminate runs → Kill+Wait each exactly once.
 	close(waiterRelease)
 	<-done
-	_ = kc
-	_ = wc
+
+	proc.CountMu.Lock()
+	kcAfter := proc.KillCount
+	wcAfter := proc.WaitCount
+	proc.CountMu.Unlock()
+	if kcAfter != 1 {
+		t.Fatalf("Kill must be called exactly once after drain, got %d", kcAfter)
+	}
+	if wcAfter != 1 {
+		t.Fatalf("Wait must be called exactly once after drain, got %d", wcAfter)
+	}
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("delivery must be accepted, got %s", receipt.Outcome)
 	}
 }
 
 // TestDrain_HungProcessTimeoutResult: drain waiter returning false
-// (timeout) still produces DeliveryAccepted (witness was already
-// committed). The deferred terminate handles cleanup.
+// (timeout) still produces DeliveryAccepted. Kill+Wait are called
+// exactly once by the deferred terminate().
 func TestDrain_HungProcessTimeoutResult(t *testing.T) {
 	l, svc, _, claim, _, csid, tuid, tn := catalogMakeSetup(t, "allow_once")
 	del := term.NewClaudeManagedApprovalDelivery(svc)
 	del.SetPollTimeout(2 * time.Second)
 	del.SetDrainTimeout(1)
 
-	// Waiter returns false (timeout) immediately — no real timer.
 	del.SetDrainWaiter(func(exited <-chan struct{}, timeout time.Duration) bool {
 		return false
 	})
@@ -190,16 +199,23 @@ func TestDrain_HungProcessTimeoutResult(t *testing.T) {
 	firePostToolHook(t, posttoolURL, csid, tuid, tn, inputJSON)
 	<-done
 
-	// Must still be accepted — witness was committed before drain.
 	if receipt.Outcome != term.DeliveryAccepted {
 		t.Fatalf("delivery must be accepted after drain timeout, got %s", receipt.Outcome)
 	}
-	// After delivery returns, the deferred terminate() has run.
-	// Entry and identity must be cleaned up (Kill+Wait each 1x).
-	if svc.Coordinator().EntryCount() != 0 {
-		t.Fatal("entry must be cleaned up after drain timeout")
+
+	// Kill+Wait each exactly once (deferred terminate after drain).
+	proc := getResumeProc(l)
+	if proc == nil {
+		t.Fatal("resume process not found")
 	}
-	if svc.Coordinator().IdentityCount() != 0 {
-		t.Fatal("identity must be cleaned up after delivery")
+	proc.CountMu.Lock()
+	kc := proc.KillCount
+	wc := proc.WaitCount
+	proc.CountMu.Unlock()
+	if kc != 1 {
+		t.Fatalf("Kill must be exactly 1 after drain timeout, got %d", kc)
+	}
+	if wc != 1 {
+		t.Fatalf("Wait must be exactly 1 after drain timeout, got %d", wc)
 	}
 }

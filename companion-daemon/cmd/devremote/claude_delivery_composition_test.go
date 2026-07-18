@@ -31,6 +31,10 @@ type compPipeProc struct {
 	StdoutW *io.PipeWriter
 	killCh  chan struct{}
 	once    sync.Once
+
+	KillCount int
+	WaitCount int
+	CountMu   sync.Mutex
 }
 
 func (p *compPipeProc) Stdin() io.Writer  { return p.StdinW }
@@ -38,9 +42,18 @@ func (p *compPipeProc) Stdout() io.Reader { return p.StdoutR }
 func (p *compPipeProc) Term() error       { return p.Kill() }
 func (p *compPipeProc) Kill() error {
 	p.once.Do(func() { close(p.killCh); p.StdinW.Close(); p.StdoutW.Close() })
+	p.CountMu.Lock()
+	p.KillCount++
+	p.CountMu.Unlock()
 	return nil
 }
-func (p *compPipeProc) Wait() error { <-p.killCh; return nil }
+func (p *compPipeProc) Wait() error {
+	<-p.killCh
+	p.CountMu.Lock()
+	p.WaitCount++
+	p.CountMu.Unlock()
+	return nil
+}
 
 // PID returns a positive fake OS pid (the C3D §12 launch-certification
 // tuple requires a daemon-owned positive process id).
