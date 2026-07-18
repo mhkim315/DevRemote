@@ -42,13 +42,15 @@ func (a *lsAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
 }
 func (a *lsAdapter) ManagedLifecycle() bool { return a.managed }
 
-// seedCatalog directly seeds a catalog row in a chosen lifecycle state so every
-// state (incl. failed, which the runtime only reaches on spawn error) is testable.
+// seedCatalog directly seeds an owned-PTY lifecycle row in a chosen state so
+// every state (incl. failed, which the runtime only reaches on spawn error) is
+// testable.
 func seedCatalog(svc *LifecycleService, id, adapter, name string, state LifecycleState) {
-	c := svc.Catalog()
-	c.mu.Lock()
-	c.entries[id] = &CatalogEntry{ID: id, Adapter: adapter, Name: name, State: state}
-	c.mu.Unlock()
+	o := svc.OwnedPTY()
+	o.mu.Lock()
+	o.nextGen++
+	o.entries[id] = &CatalogEntry{ID: id, Adapter: adapter, Name: name, State: state, Generation: o.nextGen}
+	o.mu.Unlock()
 }
 
 func getSessionsSnapshot(t *testing.T, h *Handlers) map[string]SessionTelemetry {
@@ -77,7 +79,7 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true, "run", "stop")
 	external := newLSAdapter("tmux", false, "tm1")
 	reg := mux.MustNewRegistry(managed, external)
-	svc := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil), NewActivityBuffer(50), nil)
 
 	// Live managed rows with authoritative catalog states.
 	seedCatalog(svc, "controlled_pty:run", "controlled_pty", "runner", LifecycleRunning)
@@ -136,7 +138,7 @@ func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 	// the authoritative catalog state annotated onto the live row.
 	managed := newLSAdapter("controlled_pty", true, "s1")
 	reg := mux.MustNewRegistry(managed)
-	svc := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil), NewActivityBuffer(50), nil)
 	seedCatalog(svc, "controlled_pty:s1", "controlled_pty", "s1", LifecycleStopping)
 
 	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Lifecycle: svc}
@@ -150,7 +152,7 @@ func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 	// A retained terminal row is listable until Delete History succeeds, then gone.
 	managed := newLSAdapter("controlled_pty", true) // no live sessions
 	reg := mux.MustNewRegistry(managed)
-	svc := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil), NewActivityBuffer(50), nil)
 	seedCatalog(svc, "controlled_pty:done", "controlled_pty", "done", LifecycleExited)
 
 	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Lifecycle: svc}

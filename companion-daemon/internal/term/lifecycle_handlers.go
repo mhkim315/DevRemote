@@ -73,6 +73,10 @@ func writeLifecycleResult(w http.ResponseWriter, res LifecycleResult, err error)
 			writeLifecycleError(w, http.StatusUnprocessableEntity, err.Error())
 		case errors.Is(err, ErrLifecycleNotTerminal):
 			writeLifecycleError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrLifecycleStaleGeneration):
+			// PA2c: the addressed generation was replaced between catalog lookup
+			// and the owner's decisive comparison; the replacement is unaffected.
+			writeLifecycleError(w, http.StatusConflict, err.Error())
 		default:
 			writeLifecycleError(w, http.StatusInternalServerError, err.Error())
 		}

@@ -18,10 +18,10 @@ func TestLifecycle_LegacyQueryDelete_ManagedRunning_Rejected(t *testing.T) {
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("m1")
 	svc := lcService(t, a)
-	svc.Register(id, "controlled_pty", "", "n", nil)
+	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
 	svc.activity.Append(ActivityEvent{SessionID: id, Type: ActivityTerminalOutput, Text: "history"})
 
-	h := &Handlers{Registry: svc.reg, Activity: svc.activity, Lifecycle: svc}
+	h := &Handlers{Registry: svc.OwnedPTY().reg, Activity: svc.activity, Lifecycle: svc}
 	// DELETE /api/sessions?id=<managed running> via the legacy handler.
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions?id="+id, nil)
 	rr := httptest.NewRecorder()
@@ -31,7 +31,7 @@ func TestLifecycle_LegacyQueryDelete_ManagedRunning_Rejected(t *testing.T) {
 		t.Fatalf("legacy delete of running managed session status = %d, want 409 (body=%s)", rr.Code, rr.Body.String())
 	}
 	// Session and its history must be preserved (not terminated/cleared).
-	if e, ok := svc.catalog.Get(id); !ok || e.State.Terminal() {
+	if e, ok := svc.OwnedPTY().Get(id); !ok || e.State.Terminal() {
 		t.Fatalf("catalog after rejected legacy delete = %+v ok=%v, want running preserved", e, ok)
 	}
 	if got := svc.activity.List(id); len(got) == 0 {
@@ -70,14 +70,19 @@ func (a *stuckAdapter) ManagedLifecycle() bool                         { return 
 func (a *stuckAdapter) TerminateSession(context.Context, string) error { return nil }
 
 func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
-	stuck := &stuckSession{id: "stuck1", stream: &fakeStream{closed: make(chan struct{})}}
+	// Unique local id per run: the global recorder map unregisters
+	// asynchronously on stop, so a repeated run (-count=N) reusing one fixed
+	// id can race the previous iteration's teardown. The runtime code under
+	// test is id-agnostic; uniqueness only isolates iterations.
+	localID := genLocalID("stuck")
+	stuck := &stuckSession{id: localID, stream: &fakeStream{closed: make(chan struct{})}}
 	reg := mux.MustNewRegistry(&stuckAdapter{sess: stuck})
-	svc := NewLifecycleService(reg, NewActivityBuffer(10), nil)
-	svc.graceful = 50 * time.Millisecond
-	svc.killGrace = 50 * time.Millisecond
-	id := "controlled_pty:stuck1"
+	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil), NewActivityBuffer(10), nil)
+	svc.OwnedPTY().graceful = 50 * time.Millisecond
+	svc.OwnedPTY().killGrace = 50 * time.Millisecond
+	id := "controlled_pty:" + localID
 	EnsureRecorder(id, stuck, svc.activity) // recorder on a never-EOF stream
-	svc.catalog.Add(id, "controlled_pty", "", "n")
+	svc.OwnedPTY().register(id, "", "n")
 	t.Cleanup(func() { DeleteRecorder(id) })
 
 	res, err := svc.Stop(context.Background(), id)
@@ -88,7 +93,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 		t.Fatalf("state = %q, want non-terminal on unconfirmed termination", res.State)
 	}
 	// Runtime left intact: catalog not terminal, recorder not removed.
-	if e, _ := svc.catalog.Get(id); e.State.Terminal() {
+	if e, _ := svc.OwnedPTY().Get(id); e.State.Terminal() {
 		t.Fatalf("catalog marked terminal despite unconfirmed termination: %+v", e)
 	}
 	if GetRecorder(id) == nil {
@@ -104,17 +109,17 @@ func TestLifecycle_FastNaturalExit_ConvergesTerminal(t *testing.T) {
 		id := realManaged(t, svc, "exit 0")
 		deadline := time.Now().Add(3 * time.Second)
 		for {
-			if e, ok := svc.catalog.Get(id); ok && e.State.Terminal() {
+			if e, ok := svc.OwnedPTY().Get(id); ok && e.State.Terminal() {
 				break
 			}
 			if time.Now().After(deadline) {
-				e, _ := svc.catalog.Get(id)
+				e, _ := svc.OwnedPTY().Get(id)
 				t.Fatalf("iter %d: catalog stuck non-terminal after fast exit: %+v", i, e)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		// Adapter internal session must be cleaned up after natural exit.
-		if _, err := svc.reg.FindSession(context.Background(), id); err == nil {
+		if _, err := svc.OwnedPTY().reg.FindSession(context.Background(), id); err == nil {
 			t.Fatalf("iter %d: adapter session not removed after natural exit", i)
 		}
 	}
@@ -126,7 +131,7 @@ func TestLifecycle_ConcurrentDelete_OneSucceeds(t *testing.T) {
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("cd")
 	svc := lcService(t, a)
-	svc.Register(id, "controlled_pty", "", "cd", nil)
+	svc.OwnedPTY().RegisterForTest(id, "", "cd", nil)
 	if _, err := svc.Stop(context.Background(), id); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
@@ -158,7 +163,7 @@ func TestLifecycle_ConcurrentStop_StableState(t *testing.T) {
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("cs")
 	svc := lcService(t, a)
-	svc.Register(id, "controlled_pty", "", "cs", nil)
+	svc.OwnedPTY().RegisterForTest(id, "", "cs", nil)
 
 	var wg sync.WaitGroup
 	var bad int32
@@ -186,7 +191,7 @@ func TestLifecycle_Stop_RemovesAdapterSession(t *testing.T) {
 	if _, err := svc.Stop(context.Background(), id); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if _, err := svc.reg.FindSession(context.Background(), id); err == nil {
+	if _, err := svc.OwnedPTY().reg.FindSession(context.Background(), id); err == nil {
 		t.Fatalf("controlled adapter session still present after Stop")
 	}
 }

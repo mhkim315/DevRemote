@@ -217,7 +217,11 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, te
 				json.NewEncoder(conn).Encode(map[string]string{"error": "the codex command string is no longer executed via shell: use the structured codex profile (managed runtime)"})
 				return
 			}
-			id, state, cerr := createLocalControlled(context.Background(), reg, activity, lifecycle, localCreateSpec{
+			var ownedPTY *OwnedPTYRuntime
+			if lifecycle != nil {
+				ownedPTY = lifecycle.OwnedPTY()
+			}
+			id, state, cerr := createLocalControlled(context.Background(), ownedPTY, localCreateSpec{
 				ProfileID:  req.ProfileID,
 				Name:       req.Name,
 				CWD:        req.CWD,

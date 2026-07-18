@@ -180,7 +180,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	activity := term.NewActivityBuffer(2000)
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
-	lifecycle := term.NewLifecycleService(reg, activity, transcriptSvc)
+	// PA2c: the three managed lifecycle owners. OwnedPTYRuntime owns
+	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
+	// seam until PA2d); the LifecycleService is a pure dispatcher with no
+	// Registry dependency. Provider owners are wired below once constructed.
+	ownedPTY := term.NewOwnedPTYRuntime(reg, activity, transcriptSvc)
+	lifecycle := term.NewLifecycleService(ownedPTY, activity, transcriptSvc)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
 	// pinned launcher, the owned-session registry, and every managed child.
@@ -347,6 +352,19 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			h.RuntimeOf = h.Catalog.RuntimeOf
 		}
 	}
+
+	// PA2c: wire the structured-provider lifecycle owners and the read-only
+	// catalog into the lifecycle dispatcher. Explicit nil checks keep a
+	// disabled provider a TRUE nil interface (never a typed-nil), so the
+	// dispatcher's unavailable guard fails closed.
+	var codexOwner, claudeOwner term.ProviderLifecycleOwner
+	if managed != nil {
+		codexOwner = managed
+	}
+	if managedClaude != nil {
+		claudeOwner = managedClaude
+	}
+	lifecycle.WireManagedOwners(h.Catalog, codexOwner, claudeOwner)
 
 	serveMux := http.NewServeMux()
 	notifier := newPushNotifier()

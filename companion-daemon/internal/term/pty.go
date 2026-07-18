@@ -118,11 +118,15 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Managed sessions must go through the M2 lifecycle contract
-			// (managedLifecycle gate, terminal-state rule, history retention);
-			// the legacy query DELETE must not bypass it to kill a running
-			// process or clear history.
-			if h.Lifecycle != nil && h.Lifecycle.IsManaged(r.Context(), id) {
+			// PA2c: all product lifecycle actions use the same lifecycle
+			// dispatcher — the legacy query DELETE routes managed canonical
+			// prefixes through it (no Registry/IsManaged probe, no bypass).
+			switch ref.Adapter {
+			case codexAppServerAdapter, claudeHeadlessAdapter, "controlled_pty":
+				if h.Lifecycle == nil {
+					writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
+					return
+				}
 				res, lerr := h.Lifecycle.Delete(r.Context(), id)
 				writeLifecycleResult(w, res, lerr)
 				return

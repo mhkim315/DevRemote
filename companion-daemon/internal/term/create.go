@@ -78,9 +78,8 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 			json.NewEncoder(w).Encode(SessionLifecycle{Adapter: claudeHeadlessAdapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 			return
 		}
-		if h.Lifecycle != nil {
-			h.Lifecycle.Register(id, claudeHeadlessAdapter, req.ProfileID, req.Name, nil)
-		}
+		// PA2c: no Lifecycle.Register — the Claude provider service owns its
+		// lifecycle record; ManagedRuntimeCatalog is the read path.
 		writeLifecycle(w, SessionLifecycle{
 			ID:        id,
 			Adapter:   claudeHeadlessAdapter,
@@ -108,7 +107,16 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		Executable:  exe,
 		Args:        args,
 	}
-	canonicalID, rec, err := createControlledSession(r.Context(), h.Registry, h.Activity, opts)
+	// PA2c: controlled-PTY creation is owned by OwnedPTYRuntime (which uses the
+	// temporary mux spawn seam until PA2d) — creation registers the
+	// generation-bound lifecycle record and exit watcher atomically with launch.
+	if h.Lifecycle == nil || h.Lifecycle.OwnedPTY() == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
+		return
+	}
+	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), opts, req.ProfileID, req.Name)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")
@@ -148,11 +156,8 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		}
 	}
 
-	// M2: catalog the managed session + start its exit watcher on the exact
-	// Recorder we just started.
-	if h.Lifecycle != nil {
-		h.Lifecycle.Register(canonicalID, adapter, req.ProfileID, req.Name, rec)
-	}
+	// M2/PA2c: the OwnedPTYRuntime cataloged the session and started its exit
+	// watcher inside Create — no separate Register step exists.
 	writeLifecycle(w, SessionLifecycle{
 		ID:        canonicalID,
 		Adapter:   adapter,
@@ -265,17 +270,18 @@ func (spec localCreateSpec) toOptions() (mux.CreateOptions, error) {
 
 // createLocalControlled runs a privileged local create and returns the
 // canonical ID and lifecycle state. Called from the 0600 socket handler.
-func createLocalControlled(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, lifecycle *LifecycleService, spec localCreateSpec) (string, LifecycleState, error) {
+// PA2c: creation goes through the OwnedPTYRuntime lifecycle owner.
+func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec localCreateSpec) (string, LifecycleState, error) {
 	opts, err := spec.toOptions()
 	if err != nil {
 		return "", LifecycleFailed, err
 	}
-	canonicalID, rec, err := createControlledSession(ctx, reg, activity, opts)
+	if ownedPTY == nil {
+		return "", LifecycleFailed, ErrLifecycleUnavailable
+	}
+	canonicalID, err := ownedPTY.Create(ctx, opts, spec.ProfileID, spec.Name)
 	if err != nil {
 		return "", LifecycleFailed, err
-	}
-	if lifecycle != nil {
-		lifecycle.Register(canonicalID, "controlled_pty", spec.ProfileID, spec.Name, rec)
 	}
 	return canonicalID, LifecycleRunning, nil
 }

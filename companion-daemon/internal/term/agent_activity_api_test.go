@@ -25,7 +25,7 @@ func s1dSetup(t *testing.T) (*Handlers, *LifecycleService, *TelemetryService) {
 	t.Helper()
 	managed := newLSAdapter("controlled_pty", true, "s1")
 	reg := mux.MustNewRegistry(managed)
-	life := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	life := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil), NewActivityBuffer(50), nil)
 	seedCatalog(life, s1dSID, "controlled_pty", "s1", LifecycleRunning)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	telem := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
@@ -228,7 +228,7 @@ func TestS1D_NoCrossSessionActivityLeak(t *testing.T) {
 	// Two live managed sessions; only s1 has an activity record.
 	managed := newLSAdapter("controlled_pty", true, "s1", "s2")
 	reg := mux.MustNewRegistry(managed)
-	life := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	life := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil), NewActivityBuffer(50), nil)
 	seedCatalog(life, "controlled_pty:s1", "controlled_pty", "s1", LifecycleRunning)
 	seedCatalog(life, "controlled_pty:s2", "controlled_pty", "s2", LifecycleRunning)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())

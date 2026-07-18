@@ -75,10 +75,14 @@ type AgentActivityDTO struct {
 // ID (a live row always wins over a catalog row for the same id). Non-managed
 // sessions (no catalog entry) are untouched and carry no lifecycleState.
 func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleService, reg *mux.Registry) []SessionTelemetry {
-	if lifecycle == nil {
+	if lifecycle == nil || lifecycle.OwnedPTY() == nil {
 		return snapshot
 	}
-	catalog := lifecycle.Catalog()
+	// PA2c: controlled-PTY lifecycle rows come from the OwnedPTYRuntime store
+	// (the former SessionCatalog controlled-PTY portion). Structured provider
+	// rows come exclusively from ManagedRuntimeCatalog via appendCatalogRows —
+	// SessionCatalog no longer exists as a second provider lifecycle owner.
+	catalog := lifecycle.OwnedPTY()
 	live := make(map[string]int, len(snapshot))
 	for i := range snapshot {
 		live[snapshot[i].ID] = i

@@ -12,12 +12,13 @@ import (
 	"devremote/companion-daemon/internal/mux"
 )
 
-// ── Fakes: capability + state-rule tests without a real process ──
+// ── Fakes: dispatch + state-rule tests without a real process ──
 //
-// A fake managed session has no Recorder, so LifecycleService.awaitExit returns
-// immediately (GetRecorder is nil) and Stop/Kill converge to a terminal state
-// deterministically. Capability behavior is driven by the adapter's
-// ManagedLifecycle() declaration, NOT its name.
+// A fake controlled session has no Recorder, so OwnedPTYRuntime.awaitExit
+// returns immediately (GetRecorder is nil) and Stop/Kill converge to a
+// terminal state deterministically. PA2c: lifecycle routing is driven by the
+// canonical adapter PREFIX dispatch table, never by adapter capability or
+// Registry probing.
 
 type lcAdapter struct {
 	name       string
@@ -74,57 +75,40 @@ func (s *lcSession) TerminateGroup(force bool) error {
 	return nil
 }
 
+// lcService builds the PA2c dispatcher over an OwnedPTYRuntime whose spawn
+// seam uses the given adapter's registry.
 func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
 	reg := mux.MustNewRegistry(a)
-	svc := NewLifecycleService(reg, NewActivityBuffer(50), nil)
-	svc.graceful = 200 * time.Millisecond
-	return svc
+	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil)
+	owned.graceful = 200 * time.Millisecond
+	return NewLifecycleService(owned, NewActivityBuffer(50), nil)
 }
 
-// ── Capability enforcement (capability-driven, not adapter-name) ──
+// ── PA2c dispatch table: unknown/legacy fail closed, no Registry probe ──
 
-func TestLifecycle_CapabilityGate(t *testing.T) {
-	cases := []struct {
-		name        string
-		adapterName string
-		managed     bool
-		wantErr     error
-	}{
-		// A managed adapter that is NOT named controlled_pty still gets lifecycle
-		// actions — proves the gate is capability-driven, not name-driven.
-		{"managed non-controlled-name", "faketmux", true, nil},
-		{"controlled_pty managed", "controlled_pty", true, nil},
-		{"tmux external", "tmux", false, ErrLifecycleUnsupported},
-		{"cmux external", "cmux", false, ErrLifecycleUnsupported},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := newLCAdapter(tc.adapterName, tc.managed)
-			id := a.add("s1")
-			svc := lcService(t, a)
-			svc.Register(id, tc.adapterName, "", "n", nil)
-
-			for _, action := range []string{"stop", "kill"} {
-				var err error
-				if action == "stop" {
-					_, err = svc.Stop(context.Background(), id)
-				} else {
-					// re-register (previous Stop finalized it)
-					a2 := newLCAdapter(tc.adapterName, tc.managed)
-					id2 := a2.add("s2")
-					svc2 := lcService(t, a2)
-					svc2.Register(id2, tc.adapterName, "", "n", nil)
-					_, err = svc2.Kill(context.Background(), id2)
-				}
-				if tc.wantErr == nil && err != nil {
-					t.Fatalf("%s: unexpected error: %v", action, err)
-				}
-				if tc.wantErr != nil && err != tc.wantErr {
-					t.Fatalf("%s: err = %v, want %v", action, err, tc.wantErr)
-				}
-			}
-		})
+func TestLifecycle_DispatchTable_FailClosed(t *testing.T) {
+	// Legacy/unknown adapter prefixes fail closed at dispatch — even when a
+	// live session with that id exists in a Registry, because the dispatcher
+	// has no Registry to probe. TerminalTransport/byte adapters are
+	// deliberately absent from the dispatch table.
+	svc := lcService(t, newLCAdapter("controlled_pty", true))
+	for _, id := range []string{
+		"tmux:e1",        // legacy external adapter
+		"cmux:surface:1", // legacy external adapter
+		"localpty:x",     // legacy external adapter
+		"faketmux:s1",    // unknown adapter (would have passed the old capability gate)
+		"garbage-no-colon",
+	} {
+		if _, err := svc.Stop(context.Background(), id); err != ErrLifecycleUnsupported {
+			t.Errorf("Stop(%q) err = %v, want fail-closed ErrLifecycleUnsupported", id, err)
+		}
+		if _, err := svc.Kill(context.Background(), id); err != ErrLifecycleUnsupported {
+			t.Errorf("Kill(%q) err = %v, want fail-closed ErrLifecycleUnsupported", id, err)
+		}
+		if _, err := svc.Delete(context.Background(), id); err != ErrLifecycleUnsupported {
+			t.Errorf("Delete(%q) err = %v, want fail-closed ErrLifecycleUnsupported", id, err)
+		}
 	}
 }
 
@@ -151,12 +135,11 @@ func lcRequest(t *testing.T, h *Handlers, method, id, action string) *httptest.R
 }
 
 func TestLifecycle_HTTPStatusCodes(t *testing.T) {
-	// Unsupported adapter → 422, not 500.
+	// Legacy adapter → 422 fail closed, not 500.
 	ext := newLCAdapter("tmux", false)
 	extID := ext.add("e1")
 	svcE := lcService(t, ext)
-	svcE.Register(extID, "tmux", "", "n", nil)
-	hE := &Handlers{Registry: svcE.reg, Lifecycle: svcE}
+	hE := &Handlers{Lifecycle: svcE}
 	for _, action := range []string{"stop", "kill", ""} {
 		method := http.MethodPost
 		if action == "" {
@@ -167,10 +150,10 @@ func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 		}
 	}
 
-	// Unknown session → 404.
+	// Unknown controlled_pty session → 404.
 	man := newLCAdapter("controlled_pty", true)
 	svcM := lcService(t, man)
-	hM := &Handlers{Registry: svcM.reg, Lifecycle: svcM}
+	hM := &Handlers{Lifecycle: svcM}
 	if rr := lcRequest(t, hM, http.MethodPost, "controlled_pty:missing", "stop"); rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown stop status = %d, want 404", rr.Code)
 	}
@@ -180,7 +163,7 @@ func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 
 	// Managed stop → 200 with structured result.
 	sid := man.add("m1")
-	svcM.Register(sid, "controlled_pty", "", "n", nil)
+	svcM.OwnedPTY().RegisterForTest(sid, "", "n", nil)
 	rr := lcRequest(t, hM, http.MethodPost, sid, "stop")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("managed stop status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
@@ -198,7 +181,7 @@ func TestLifecycle_StopIdempotentThenDelete(t *testing.T) {
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("m1")
 	svc := lcService(t, a)
-	svc.Register(id, "controlled_pty", "", "n", nil)
+	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
 
 	r1, err := svc.Stop(context.Background(), id)
 	if err != nil || r1.State != LifecycleExited {
@@ -209,12 +192,12 @@ func TestLifecycle_StopIdempotentThenDelete(t *testing.T) {
 	if err != nil || r2.State != LifecycleExited {
 		t.Fatalf("second stop = %+v err=%v, want exited", r2, err)
 	}
-	// Delete of a terminal session removes catalog + activity.
+	// Delete of a terminal session removes the owned record + activity.
 	if _, err := svc.Delete(context.Background(), id); err != nil {
 		t.Fatalf("delete exited: %v", err)
 	}
-	if _, ok := svc.catalog.Get(id); ok {
-		t.Fatalf("catalog entry still present after delete")
+	if _, ok := svc.OwnedPTY().Get(id); ok {
+		t.Fatalf("owned record still present after delete")
 	}
 	// Repeated Delete → 404 (gone).
 	if _, err := svc.Delete(context.Background(), id); err != ErrLifecycleNotFound {
@@ -227,14 +210,14 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 	idA := a.add("a")
 	idB := a.add("b")
 	svc := lcService(t, a)
-	svc.Register(idA, "controlled_pty", "", "a", nil)
-	svc.Register(idB, "controlled_pty", "", "b", nil)
+	svc.OwnedPTY().RegisterForTest(idA, "", "a", nil)
+	svc.OwnedPTY().RegisterForTest(idB, "", "b", nil)
 
 	// Running session cannot be silently deleted → 409-equivalent error.
 	if _, err := svc.Delete(context.Background(), idA); err != ErrLifecycleNotTerminal {
 		t.Fatalf("delete running err = %v, want not-terminal", err)
 	}
-	if _, ok := svc.catalog.Get(idA); !ok {
+	if _, ok := svc.OwnedPTY().Get(idA); !ok {
 		t.Fatalf("running session A was removed by a rejected delete")
 	}
 
@@ -243,34 +226,41 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 	if _, err := svc.Delete(context.Background(), idA); err != nil {
 		t.Fatalf("delete exited A: %v", err)
 	}
-	if _, ok := svc.catalog.Get(idB); !ok {
+	if _, ok := svc.OwnedPTY().Get(idB); !ok {
 		t.Fatalf("unrelated session B was affected by deleting A")
 	}
 }
 
 // ── Real process: actual termination, escalation, subscriber EOF ──
 
-func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
+// realOwned builds an OwnedPTYRuntime over the real controlled-PTY adapter.
+func realOwned(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
-	opts := mux.CreateOptions{Name: genLocalID("lc"), Executable: "/bin/sh", Args: []string{"-c", shellCmd}}
-	id, rec, err := createControlledSession(context.Background(), svc.reg, svc.activity, opts)
-	if err != nil {
-		t.Fatalf("create real session: %v", err)
-	}
-	svc.Register(id, "controlled_pty", "", "test", rec)
-	t.Cleanup(func() {
-		DeleteRecorder(id)
-		_ = svc.reg.TerminateSession(context.Background(), "controlled_pty", mux.ParseSessionID(id).LocalID)
-	})
-	return id
+	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
+	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(100), nil)
+	owned.graceful = 400 * time.Millisecond
+	return owned
 }
 
 func realService(t *testing.T) *LifecycleService {
 	t.Helper()
-	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
-	svc := NewLifecycleService(reg, NewActivityBuffer(100), nil)
-	svc.graceful = 400 * time.Millisecond
-	return svc
+	return NewLifecycleService(realOwned(t), NewActivityBuffer(100), nil)
+}
+
+// realManaged launches a real controlled-PTY runtime through the owner.
+func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
+	t.Helper()
+	owned := svc.OwnedPTY()
+	opts := mux.CreateOptions{Name: genLocalID("lc"), Executable: "/bin/sh", Args: []string{"-c", shellCmd}}
+	id, err := owned.Create(context.Background(), opts, "", "test")
+	if err != nil {
+		t.Fatalf("create real session: %v", err)
+	}
+	t.Cleanup(func() {
+		DeleteRecorder(id)
+		_ = owned.reg.TerminateSession(context.Background(), "controlled_pty", mux.ParseSessionID(id).LocalID)
+	})
+	return id
 }
 
 func TestLifecycle_Stop_RealProcess_TerminatesAndRetainsHistory(t *testing.T) {
@@ -298,10 +288,10 @@ func TestLifecycle_Stop_RealProcess_TerminatesAndRetainsHistory(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("subscriber did not receive EOF after Stop")
 	}
-	// History remains: catalog row present + terminal.
-	entry, ok := svc.catalog.Get(id)
+	// History remains: owned lifecycle row present + terminal.
+	entry, ok := svc.OwnedPTY().Get(id)
 	if !ok || entry.State != LifecycleExited {
-		t.Fatalf("catalog after stop = %+v ok=%v, want exited row retained", entry, ok)
+		t.Fatalf("owned record after stop = %+v ok=%v, want exited row retained", entry, ok)
 	}
 	// Recorder is gone (stopped once).
 	if GetRecorder(id) != nil {
@@ -322,7 +312,7 @@ func TestLifecycle_Stop_SigkillEscalation(t *testing.T) {
 	if err != nil || res.State != LifecycleExited {
 		t.Fatalf("stop(stubborn) = %+v err=%v, want exited", res, err)
 	}
-	if elapsed := time.Since(start); elapsed < svc.graceful {
+	if elapsed := time.Since(start); elapsed < svc.OwnedPTY().graceful {
 		t.Fatalf("stop returned in %v, expected to wait the graceful timeout before SIGKILL", elapsed)
 	}
 }
@@ -347,9 +337,9 @@ func TestLifecycle_StopKillAndNaturalRaces(t *testing.T) {
 		go func() { defer wg.Done(); svc.Kill(context.Background(), id) }()
 	}
 	wg.Wait()
-	entry, ok := svc.catalog.Get(id)
+	entry, ok := svc.OwnedPTY().Get(id)
 	if !ok || !entry.State.Terminal() {
-		t.Fatalf("after races catalog = %+v ok=%v, want terminal", entry, ok)
+		t.Fatalf("after races owned record = %+v ok=%v, want terminal", entry, ok)
 	}
 
 	// Natural exit racing with Stop.
@@ -361,7 +351,7 @@ func TestLifecycle_StopKillAndNaturalRaces(t *testing.T) {
 		go func() { defer wg2.Done(); svc.Stop(context.Background(), id2) }()
 	}
 	wg2.Wait()
-	if e, ok := svc.catalog.Get(id2); !ok || !e.State.Terminal() {
-		t.Fatalf("natural-exit race catalog = %+v ok=%v, want terminal", e, ok)
+	if e, ok := svc.OwnedPTY().Get(id2); !ok || !e.State.Terminal() {
+		t.Fatalf("natural-exit race owned record = %+v ok=%v, want terminal", e, ok)
 	}
 }

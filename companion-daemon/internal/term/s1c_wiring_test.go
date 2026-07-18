@@ -245,7 +245,7 @@ func TestS1C_CorrelationLoss_Revokes(t *testing.T) {
 func TestS1C_DeleteHandlerClearsStatus_NoInherit(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true, "d1")
 	reg := mux.MustNewRegistry(managed)
-	life := NewLifecycleService(reg, NewActivityBuffer(50), nil)
+	life := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil), NewActivityBuffer(50), nil)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	telem := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
 		NewApprovalStore(), NewActivityBuffer(100), ts)
