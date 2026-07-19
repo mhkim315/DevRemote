@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strings"
 
-	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/sessionid"
 )
 
@@ -316,7 +315,6 @@ func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalo
 			RunnerColor: runnerColor,
 			AgentKind:   rec.Provider,
 			AgentStatus: string(rec.NativeStatus),
-			Events:      []models.AgentEvent{},
 			Approvals:   safe,
 		})
 	}
