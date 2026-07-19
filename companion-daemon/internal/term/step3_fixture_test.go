@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,11 +56,27 @@ func TestStep3_HistoryEndpoint_Returns410(t *testing.T) {
 
 func TestStep3_NormalList_Returns200(t *testing.T) {
 	h := newStep3Handlers(t)
+
+	// Produce a deterministic session row via mux.Registry + HandleSessionsV2.
+	// tmux adapter registered in newStep3Handlers provides a tmux session.
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET /api/sessions returned %d, want 200", rec.Code)
+		t.Fatalf("GET /api/sessions returned %d, want 200", rec.Code)
+	}
+
+	// PA3 Step 4 R1: required keys PRESENT, all five legacy keys ABSENT.
+	raw := rec.Body.String()
+	for _, k := range []string{`"id"`, `"adapter"`} {
+		if !strings.Contains(raw, k) {
+			t.Errorf("required key %s must be present in JSON", k)
+		}
+	}
+	for _, k := range []string{`"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"events"`} {
+		if strings.Contains(raw, k) {
+			t.Errorf("legacy key %s must be absent from session list JSON", k)
+		}
 	}
 }
 
