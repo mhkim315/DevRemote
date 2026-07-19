@@ -51,6 +51,11 @@ type CatalogEntry struct {
 	// winning finalizeRecord. Not serialized.
 	cleanup ownedCleanup
 
+	// recorder is the generation-bound Recorder for this exact runtime.
+	// Captured at creation for instance-guarded cleanup on replacement.
+	// Not serialized.
+	recorder *Recorder
+
 	// transport is the generation-bound TerminalTransport handle for this
 	// exact runtime. Created at launch; retired when the record is
 	// superseded. Exposed via Transport() for WriteInput/Resize/subscriber
@@ -177,15 +182,15 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 	existing, isReplacement := o.entries[canonicalID]
 	var oldCap *GenerationCleanupCapability
 	if isReplacement {
-		// Extract old cleanup capability — claimed at most once.
+		// PA3 Step 6a R2: capture exact Session + Recorder from existing entry.
 		oldCap = &GenerationCleanupCapability{
 			Generation:  existing.Generation,
-			Session:     nil, // adapter session identity from prior create
-			Recorder:    nil, // old Recorder ref
+			Session:     nil,               // adapter session identity; not stored on CatalogEntry, captured via adapter
+			Recorder:    existing.recorder, // instance-guarded Recorder
 			Transport:   existing.transport,
 			Terminator:  o.spawn.(mux.SessionIdentityTerminator),
-			CanonicalID: opts.Name,
-			LocalID:     sessionid.ParseSessionID(opts.Name).LocalID,
+			CanonicalID: canonicalID,
+			LocalID:     sessionid.ParseSessionID(canonicalID).LocalID,
 			Completion:  NewGenerationCompletion(),
 		}
 	}
@@ -239,12 +244,13 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 
 	handle, ok := sess.(mux.ManagedProcess)
 	if !ok {
-		DeleteRecorder(canonicalID)
+		// Instance-guarded: only stop the Recorder we just created.
+		DeleteRecorderIfSame(canonicalID, rec)
 		return "", fmt.Errorf("session does not support managed process")
 	}
 
 	cleanup := o.newCleanup(canonicalID, sess, rec)
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec)
 	cap.Generation = gen // success — prevent defer rollback
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
@@ -269,7 +275,7 @@ func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, opts mux.CreateOptio
 	wr, _ := sess.(writeResizer)
 	transport := newTerminalTransport(canonicalID, 0, wr, wr)
 	cleanup := o.newCleanup(canonicalID, sess, rec)
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
@@ -325,16 +331,14 @@ func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *
 
 // register adds the running record under a fresh generation, bound to its
 // immutable process handle and cleanup capability.
-func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup, transport *TerminalTransport) int64 {
+func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.nextGen++
 	gen := o.nextGen
-	// Retire the previous generation's transport handle if one exists.
 	if old, ok := o.entries[canonicalID]; ok && old.transport != nil {
 		old.transport.Retire()
 	}
-	// Set the correct generation on the transport.
 	if transport != nil {
 		transport.generation = gen
 	}
@@ -349,6 +353,7 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle m
 		handle:      handle,
 		cleanup:     cleanup,
 		transport:   transport,
+		recorder:    rec,
 		cleanupDone: make(chan struct{}),
 	}
 	return gen
@@ -713,7 +718,7 @@ func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name
 	// Test records carry a recorder-only cleanup (no captured spawn-seam
 	// session instance); it is still generation-claimed like production.
 	cleanup := func(context.Context) { DeleteRecorderIfSame(canonicalID, rec) }
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil, rec)
 	o.watchExit(canonicalID, gen, rec)
 	return gen
 }

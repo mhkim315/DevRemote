@@ -539,7 +539,7 @@ func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
 		t.Fatalf("capture gen1 session: %v", err)
 	}
 	cleanupA := owned.newCleanup(id, sessA, nil)
-	gen1 := owned.register(id, "", "old", nil, cleanupA, nil)
+	gen1 := owned.register(id, "", "old", nil, cleanupA, nil, nil)
 
 	// CLAIM the capability while gen1 is still current (the "check").
 	claimed, finalized, done := owned.finalizeRecord(id, gen1)
@@ -553,7 +553,7 @@ func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
 	adapter.sessions[local] = &lcSession{id: local, adapter: "controlled_pty"}
 	adapter.mu.Unlock()
 	reg.InvalidateAdapter("controlled_pty")
-	gen2 := owned.register(id, "", "new", nil, func(context.Context) {}, nil)
+	gen2 := owned.register(id, "", "new", nil, func(context.Context) {}, nil, nil)
 	if gen2 <= gen1 {
 		t.Fatalf("replacement generation not newer: %d then %d", gen1, gen2)
 	}

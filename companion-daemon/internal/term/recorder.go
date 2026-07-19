@@ -660,9 +660,9 @@ func GetRecorder(sessionID string) *Recorder {
 func StartRecorderUnconditional(sessionID string, stream ptyStream) *Recorder {
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
-	if recorderRegistry.terminated[sessionID] {
-		return nil
-	}
+	// PA3 Step 6a: always create a new Recorder. Clear the terminated
+	// flag — the replacement is a new generation of the same session.
+	delete(recorderRegistry.terminated, sessionID)
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Recorder{
 		sessionID: sessionID,
