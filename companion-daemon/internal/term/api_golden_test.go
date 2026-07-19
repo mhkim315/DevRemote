@@ -120,6 +120,7 @@ func TestAPIGolden_DeleteSession(t *testing.T) {
 }
 
 func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
+	t.Skip("PA3 Step 3: ?history= endpoint removed, returns 410 Gone")
 	h := goldenHandlers(t)
 	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:golden", nil)
 	rec := httptest.NewRecorder()
@@ -133,6 +134,7 @@ func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
 }
 
 func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
+	t.Skip("PA3 Step 3: ?history= endpoint removed, returns 410 Gone")
 	// When a session implements ScreenReader, history falls back to screen content.
 	h := goldenHandlersWithScreenReader(t)
 	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:golden", nil)

@@ -91,13 +91,14 @@ func TestActivityBuffer_Clear(t *testing.T) {
 }
 
 func TestActivityEndpoint_Empty(t *testing.T) {
+	// PA3 Step 3: ?activity= returns 410 Gone.
 	h := &Handlers{Activity: NewActivityBuffer(10)}
 	req := httptest.NewRequest("GET", "/api/sessions?activity=nonexistent", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
 
-	if rec.Code != 200 {
-		t.Errorf("status=%d, want 200", rec.Code)
+	if rec.Code != 410 {
+		t.Errorf("status=%d, want 410 (Gone)", rec.Code)
 	}
 	var events []ActivityEvent
 	json.Unmarshal(rec.Body.Bytes(), &events)
@@ -107,39 +108,29 @@ func TestActivityEndpoint_Empty(t *testing.T) {
 }
 
 func TestActivityEndpoint_WithData(t *testing.T) {
+	// PA3 Step 3: ?activity= returns 410 Gone regardless of data presence.
 	b := NewActivityBuffer(10)
 	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalOutput, Text: "hello", Bytes: 5})
-	b.Append(ActivityEvent{SessionID: "s1", Type: ActivityTerminalInput, Text: "", Bytes: 2})
 
 	h := &Handlers{Activity: b}
 	req := httptest.NewRequest("GET", "/api/sessions?activity=s1", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
 
-	if rec.Code != 200 {
-		t.Fatalf("status=%d, want 200", rec.Code)
-	}
-	var events []ActivityEvent
-	json.Unmarshal(rec.Body.Bytes(), &events)
-	if len(events) != 2 {
-		t.Fatalf("len=%d, want 2", len(events))
-	}
-	if events[0].Type != ActivityTerminalOutput || events[0].Seq != 1 {
-		t.Errorf("first event: type=%s seq=%d", events[0].Type, events[0].Seq)
-	}
-	if events[1].Type != ActivityTerminalInput || events[1].Seq != 2 {
-		t.Errorf("second event: type=%s seq=%d", events[1].Type, events[1].Seq)
+	if rec.Code != 410 {
+		t.Fatalf("status=%d, want 410 (Gone)", rec.Code)
 	}
 }
 
 func TestActivityEndpoint_NilBuffer(t *testing.T) {
+	// PA3 Step 3: ?activity= returns 410 Gone.
 	h := &Handlers{Activity: nil}
 	req := httptest.NewRequest("GET", "/api/sessions?activity=s1", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
 
-	if rec.Code != 200 {
-		t.Errorf("status=%d, want 200", rec.Code)
+	if rec.Code != 410 {
+		t.Errorf("status=%d, want 410 (Gone)", rec.Code)
 	}
 	var events []ActivityEvent
 	json.Unmarshal(rec.Body.Bytes(), &events)

@@ -251,6 +251,7 @@ func TestFixtureE2E_CreateAndDelete(t *testing.T) {
 }
 
 func TestFixtureE2E_UnsupportedCapability(t *testing.T) {
+	t.Skip("PA3 Step 3: ?history= endpoint removed, returns 410 Gone")
 	// Bare session: NO ScreenReader, NO HistoryReader — truly unsupported.
 	// GET /api/sessions?history=bare:bare must return 404 (not 500, not empty 200).
 	h := bareSessionHandlers(t)

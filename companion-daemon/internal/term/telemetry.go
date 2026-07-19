@@ -3,7 +3,6 @@ package term
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -208,48 +207,15 @@ func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[s
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 
-	// E8f: minimal read endpoint for captured terminal activity.
-	if activityID := r.URL.Query().Get("activity"); activityID != "" {
-		w.Header().Set("Content-Type", "application/json")
-		if h.Activity != nil {
-			events := h.Activity.List(activityID)
-			if events == nil {
-				events = []ActivityEvent{}
-			}
-			json.NewEncoder(w).Encode(events)
-		} else {
-			json.NewEncoder(w).Encode([]ActivityEvent{})
-		}
+	// PA3 Step 3: legacy query-parameter endpoints removed.
+	// ?activity= → 410 Gone (replaced by GET /api/sessions/{id}/transcript)
+	// ?history=  → 410 Gone (replaced by GET /api/sessions/{id}/transcript)
+	if q := r.URL.Query().Get("activity"); q != "" {
+		http.Error(w, "gone — use GET /api/sessions/{id}/transcript", http.StatusGone)
 		return
 	}
-
-	if historyID := r.URL.Query().Get("history"); historyID != "" {
-		events := h.Events.List(historyID)
-		w.Header().Set("Content-Type", "application/json")
-		if len(events) > 0 {
-			json.NewEncoder(w).Encode(events)
-			return
-		}
-		var out []byte
-		var err error
-		sess, err := reg.FindSession(r.Context(), mux.MigrateLegacyID(historyID))
-		if err == nil {
-			if hr, ok := sess.(mux.HistoryReader); ok {
-				out, err = hr.ReadHistory(r.Context(), 10000)
-			} else if sr, ok := sess.(mux.ScreenReader); ok {
-				out, err = sr.ReadScreen(r.Context())
-			} else {
-				err = fmt.Errorf("session does not support history or screen reading")
-			}
-		}
-		if err != nil || len(out) == 0 {
-			http.Error(w, "session not found or history unavailable", http.StatusNotFound)
-			return
-		}
-		fallbackEvents := []models.AgentEvent{{
-			ID: "fallback-0", Session: historyID, Type: "message", Summary: "Terminal History", Detail: string(out), Timestamp: time.Now().Format(time.RFC3339),
-		}}
-		json.NewEncoder(w).Encode(fallbackEvents)
+	if q := r.URL.Query().Get("history"); q != "" {
+		http.Error(w, "gone — use GET /api/sessions/{id}/transcript", http.StatusGone)
 		return
 	}
 
