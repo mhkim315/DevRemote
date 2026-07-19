@@ -504,12 +504,11 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R2 baseline)
+## 12. PA3 contract proposal gate results (R3 baseline)
 
-Baseline SHA: `d77e039eeca54602273aec65519dd6474556dc65`
+Baseline SHA: `b4a77eb28858a51acdca0299cb755122f3a3a633`
 Gate run date: 2026-07-19
-Pre-existing untracked `companion-daemon/internal/supervisor/` removed at R1
-(gate finding 1); `.gitignore` entry `internal/supervisor/` added.
+No production code changed; supervisor directory already removed at R1.
 
 ### 12.1 go build (unfiltered, all packages)
 
@@ -529,9 +528,9 @@ $ cd companion-daemon && go vet ./...
 
 ```sh
 $ cd companion-daemon && go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
-ok  	devremote/companion-daemon/internal/term	25.963s
-ok  	devremote/companion-daemon/internal/mux	6.295s
-ok  	devremote/companion-daemon/cmd/devremote	33.974s
+ok  	devremote/companion-daemon/internal/term	26.036s
+ok  	devremote/companion-daemon/internal/mux	6.277s
+ok  	devremote/companion-daemon/cmd/devremote	33.937s
 ```
 
 All three packages pass with race detector enabled. No test regressions from PA2d baseline.
@@ -547,17 +546,15 @@ $ git diff --check
 
 ```sh
 $ grep -rn "sk-[A-Za-z0-9]\{20,\}\|ghp_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9]\{20,\}" \
-  docs/PA3_CONTRACT.md companion-daemon/docs/PA3_PLANNING_EVIDENCE.md companion-daemon/.gitignore
+  docs/PA3_CONTRACT.md companion-daemon/docs/PA3_PLANNING_EVIDENCE.md
 (no output — clean)
 ```
 
-No actual secrets in any changed file. (The broader patterns `sk-[A-Za-z0-9]`,
-`ghp_`, `xox[baprs]-` appear as documented grep examples within the contract
-text — these are false positives from the pattern description, not actual secrets.)
+No actual secrets in any changed file.
 
 ### 12.6 gofmt
 
-No `.go` files were modified — not applicable (all changes are `.md` and `.gitignore` only).
+No `.go` files were modified — not applicable (all changes are `.md` only).
 
 ### 12.7 Mobile gate
 

@@ -325,48 +325,105 @@ be updated to accept the new field — this is part of Step 1.
 ### 6.1 How PA2d generation-bound identity carries through PA3
 
 The PA2d generation-bound identity model (SessionID + launch generation
-from `transcript.RegisterOrReplaceLaunch`) carries through PA3 with one
-critical addition:
+from `transcript.RegisterOrReplaceLaunch`) carries through PA3 with the
+following addition:
 
-- **Transcript clear on replacement (atomic pre-feed boundary)**: When
-  `OwnedPTYRuntime.Create` detects that the canonical session ID already
-  has a catalog entry (replacement), it **must call
-  `Service.ReplaceTranscript(canonicalID)` BEFORE `ownSpawn`**. This clears
-  the old generation's segments, projectors, arbiters, and chunk queue and
-  allocates a fresh generation number — all before the new Recorder starts,
-  so no byte from the new generation can land before the clear.
+- **Transcript generation for every session**: The `transcript.Service`
+  maintains a per-session monotonic generation counter, independent of
+  `LaunchBinding.Generation`. Every session that feeds data into Transcript
+  (controlled_pty, tmux, cmux, localpty) gets a generation. First feed
+  implicitly initialises generation to 1. Replacement explicitly increments
+  it.
 
-  `ReplaceTranscript(sessionID string) int64` is a new method on
-  `transcript.Service` that:
-  - Drains and closes the old chunk queue (wait for worker drain)
-  - Clears the in-memory store (segments only — projectors and arbiters
-    are also reset for the new generation)
-  - Increments the per-session generation counter
-  - Returns the new generation number
-  - Does **NOT** call `RemoveLaunch` — the launch binding is owned by the
-    `LaunchRegistry` and is independently managed by
-    `TelemetryService.RegisterOrReplaceLaunch`; Transcript replacement
-    must not touch launch authority
+- **Two-phase creation for controlled_pty (replacement boundary)**: The
+  existing production `OwnedPTYRuntime.Create` flow spawns the PTY and
+  starts the Recorder inside `ownSpawn` BEFORE the caller can inspect or
+  replace Transcript state. PA3 adds three narrow seams that create an
+  atomic replacement boundary without restructuring the adapter contract:
 
-  The call site in `OwnedPTYRuntime.Create` (before `ownSpawn`):
+  **Phase A — Create PTY session, obtain canonical ID**: Inside `ownSpawn`,
+  the PTY is created via `CreateSession(ctx, opts)` which returns the
+  local session ID. The canonical ID is constructed from adapter name +
+  local ID. This is already the production flow.
+
+  **Phase B — Atomic replacement BEFORE Recorder start**: After obtaining
+  the canonical ID but BEFORE calling `startRecorder` (which opens the PTY
+  stream and starts `readLoop`), `ownSpawn` checks whether the canonical
+  ID already has a catalog entry (under `o.mu`). If yes, it calls
+  `Service.ReplaceTranscript(canonicalID)`. This is the atomic pre-feed
+  boundary: the PTY session exists but no Recorder is reading from it yet,
+  so no bytes can land in the wrong generation.
+
+  If the spawn later fails (Recorder start fails, handle capture fails),
+  the creation rolls back via `DeleteRecorder` + `terminateAdapterSession`
+  and returns an error. The Transcript replacement is NOT rolled back —
+  the old generation's data is already cleared and cannot be recovered.
+  This is acceptable because the replacement is a deliberate action: the
+  caller chose to replace the session, and the old data is gone regardless
+  of whether the new spawn succeeds. The caller may retry creation, which
+  will create a fresh PTY and fresh generation.
+
+  **Phase C — Initialise generation for first creation**: After a successful
+  `ownSpawn` (Recorder started), `Create` calls
+  `Service.SetTranscriptGeneration(canonicalID, 1)` to record the initial
+  generation. This call is placed AFTER `ownSpawn` returns (post-Recorder
+  start) because SetTranscriptGeneration only writes a metadata value —
+  it does not clear anything. A tiny window exists where the Recorder feeds
+  bytes before the generation is set; during this window,
+  `TranscriptResponse.generation` would be 0 (unset). Mobile treats
+  generation 0 identically to generation 1 on first poll (no previous
+  value to compare against), so this is harmless.
+
+  **Concurrent same-ID create linearisation**: `o.mu` is held during the
+  replacement check inside `ownSpawn` (Phase B). If two concurrent creates
+  target the same canonical ID:
+  1. Create-A acquires `o.mu`, checks entry → not found, releases.
+  2. Create-B acquires `o.mu`, checks entry → not found (Create-A hasn't
+     registered yet), releases.
+  3. Both spawn and register. Create-A registers first (gen=N), Create-B
+     registers second (gen=N+1, retires Create-A's transport).
+
+  This is the existing production linearisation behavior. PA3 adds: both
+  creates call `SetTranscriptGeneration(canonicalID, 1)` after their
+  respective spawns, which is idempotent (setting gen=1 twice is harmless).
+  Neither calls `ReplaceTranscript` because neither saw an existing entry.
+
+  **Non-OwnedPTYRuntime sessions (tmux, cmux, localpty)**: For sessions
+  that are NOT created through `OwnedPTYRuntime.Create` (externally managed
+  tmux sessions, cmux observation, localpty), generation is initialised
+  lazily: the first call to `FeedBytes`, `AddSnapshotSegment`, or
+  `ProjectAgentEvents` for a session implicitly sets generation to 1 if
+  not already set. `TranscriptResponse.generation` returns 1 for these
+  sessions. No replacement path exists (these sessions are never replaced
+  through the daemon), so the generation never changes — mobile never
+  detects a reset, which is correct.
+
+  **`ReplaceTranscript` method contract**:
   ```go
-  func (o *OwnedPTYRuntime) Create(...) (string, error) {
-      canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: createdID}.Canonical()
-      // Pre-feed replacement: clear old Transcript BEFORE starting Recorder.
-      // This is an atomic boundary — no Recorder feeds bytes yet.
-      if _, exists := o.entries[canonicalID]; exists {
-          transcriptGen = o.transcript.ReplaceTranscript(canonicalID)
-      }
-      // ... ownSpawn starts the Recorder — all bytes land in the new generation
-  }
+  // ReplaceTranscript atomically drains+clears a session's Transcript and
+  // allocates a new generation. Returns the new generation number.
+  // Does NOT call RemoveLaunch — launch authority is managed separately.
+  // The caller MUST ensure no concurrent Recorder is feeding bytes for
+  // this session (the atomic pre-feed boundary guarantee).
+  func (s *Service) ReplaceTranscript(sessionID string) int64
   ```
 
-  The exact generation value to use in `TranscriptResponse` is stored
-  on the `transcript.Service` per session (set by `ReplaceTranscript` or
-  by `SetTranscriptGeneration` for first creation). `BuildResponse` reads
-  it. This generation is independent of `LaunchBinding.Generation` —
-  it works for ALL sessions (managed launch, non-managed controlled_pty,
-  tmux, cmux).
+  The method:
+  1. Closes the old chunk queue (drains remaining chunks through the
+     projector into the store, then shuts down the worker)
+  2. Clears the in-memory store (all segments deleted)
+  3. Resets the byte-stream projector and source arbiter for the session
+  4. Increments the per-session generation counter
+  5. Re-enables the chunk queue for the session (so the new Recorder's
+     `FeedBytes` calls are non-blocking)
+  6. Returns the new generation number
+
+  **`SetTranscriptGeneration` method contract**:
+  ```go
+  // SetTranscriptGeneration records the initial generation for a session.
+  // Idempotent: if already set, does nothing (first-write-wins).
+  func (s *Service) SetTranscriptGeneration(sessionID string, gen int64)
+  ```
 
 - **Agent-activity store**: `AgentStatusStore` is generation-gated via
   `LaunchGen`. A replacement raises the non-current high-water mark via
@@ -531,14 +588,24 @@ does NOT track individual event IDs for dedup. Instead:
 IDs from `SHA256(sessionID + kind + source + text + agentEventRef + seq)`.
 If the same agent event is projected twice (same cursor replayed), it
 produces two distinct segments with different `Seq` values but the same
-`AgentEventRef` field. This is acceptable because:
-- The `Seq` gap between duplicates is harmless: a re-projection of the
-  same cursor range produces segments with identical `AgentEventRef`,
-  `Kind`, and `AgentKind` fields. The mobile `TranscriptRenderer`
-  classifies segments by `kind`/`source`/`eventType` (see
-  `transcriptClassify.ts`) and renders same-eventType segments
-  sequentially — adjacent duplicates of the same semantic event are
-  visually indistinguishable from a non-duplicated sequence.
+`AgentEventRef` field.
+
+**Mobile rendering behavior (pre-PA3)**: The mobile `TranscriptRenderer`
+(classifier in `transcriptClassify.ts`) classifies segments by `kind`/
+`source`/`eventType` without deduplicating by `AgentEventRef`. Re-projected
+duplicate agent events render as separate sequential segments — the user
+sees the same content twice. This is the current production behavior; PA3
+does not change it.
+
+**PA3 Step 1 adds client-side dedup**: During the mobile cutover step,
+`transcriptClassify.ts` gains a `Set<string>` of recently-seen
+`AgentEventRef` values (bounded to 128 entries, per-generation, cleared on
+generation change). Adjacent same-`AgentEventRef` spans are collapsed to
+the first occurrence. Non-adjacent duplicates (interleaved with other
+events) are rendered as-is — interleaved duplicates indicate reordered
+delivery, not replay, and collapsing them would hide intervening content.
+This is not a correctness guarantee; it is a best-effort display optimization
+for the common cursor-replay case.
 
 **What is explicitly NOT guaranteed**: The Transcript store does NOT
 guarantee that a re-projected agent event from a replayed cursor range
@@ -675,6 +742,11 @@ Mobile consumers are migrated first — the furthest-downstream layer.
   `client.ts` but marked `@deprecated`; no production callers remain.
 - Mobile `validateTranscriptResponse` updated to accept the new additive
   `generation` field (unknown field rejection relaxed for this key).
+- Mobile `transcriptClassify.ts` gains bounded `Set<string>` dedup of
+  recently-seen `AgentEventRef` values (128 entries, cleared on generation
+  change). Adjacent same-`AgentEventRef` spans collapse to first occurrence
+  (best-effort display optimisation for cursor replay). Non-adjacent
+  duplicates render as-is.
 - Verify: mobile `tsc --noEmit` passes; emulator renders Transcript.
 
 **Gate**: Mobile compiles and renders Transcript without Activity/History
@@ -763,16 +835,24 @@ migrated.**
 - Remove `EventStore` wiring from `App.NewAppWithDeps`.
 - Remove legacy parser/resolver/tracker files (see deletion gates §11.1).
 - **Add `ReplaceTranscript` method on `transcript.Service`**: drains old
-  chunk queue, clears store + projectors + arbiters, increments per-session
-  generation, returns new generation. Does NOT call `RemoveLaunch`.
+  chunk queue, clears store + projectors + arbiters, re-enables queue,
+  increments per-session generation, returns new generation. Does NOT call
+  `RemoveLaunch`. Must be called when no Recorder is actively feeding the
+  session (atomic pre-feed boundary — caller's responsibility).
 - **Add `SetTranscriptGeneration` method on `transcript.Service`**: records
-  the initial generation (1) for a newly created session.
-- **Call `ReplaceTranscript` in `OwnedPTYRuntime.Create` BEFORE `ownSpawn`**:
-  detect existing catalog entry → replace transcript → then spawn.
-  This is the atomic pre-feed replacement boundary.
+  the initial generation (1) for a newly created session. Idempotent
+  (first-write-wins). Called AFTER Recorder start; transient generation=0
+  window is harmless (mobile treats 0 as first-poll on first encounter).
+- **Wire in `OwnedPTYRuntime.ownSpawn` (Phase B boundary)**: AFTER
+  `CreateSession` obtains the local ID and constructs the canonical ID,
+  but BEFORE `startRecorder` opens the PTY stream, check replacement under
+  `o.mu` → call `ReplaceTranscript` if entry exists.
+- **Wire in `OwnedPTYRuntime.Create` (Phase C initialise)**: AFTER
+  `ownSpawn` returns successfully, call `SetTranscriptGeneration(canonicalID, 1)`.
 - **Add `generation` field to `TranscriptResponse`** envelope and
   populate it from `Service` per-session generation counter (not from
-  `LookupLaunch`).
+  `LookupLaunch`). For sessions without explicit initialisation (tmux,
+  cmux, localpty), first feed lazily initialises generation to 1.
 - **Remove `ActivityBuffer.Append` calls from `Recorder.readLoop`**.
   Retain Transcript `FeedBytes`, TUI detection, and cmux sentinel
   detection for Transcript.
@@ -854,9 +934,10 @@ migrated.**
 
 | Location | Change | Purpose |
 | --- | --- | --- |
-| `transcript.Service.ReplaceTranscript` | New method: drain + clear + increment generation. No RemoveLaunch. | Atomic pre-feed replacement boundary |
-| `transcript.Service.SetTranscriptGeneration` | New method: record initial generation for a new session | First-creation generation assignment |
-| `OwnedPTYRuntime.Create` | `ReplaceTranscript` call BEFORE `ownSpawn` | Clear old Transcript before new Recorder starts |
+| `transcript.Service.ReplaceTranscript` | New method: drain + clear + re-enable queue + bump generation. No RemoveLaunch. | Atomic replacement boundary (called in Phase B) |
+| `transcript.Service.SetTranscriptGeneration` | New method: idempotent first-write-wins generation initialisation | First-creation generation assignment (Phase C) |
+| `OwnedPTYRuntime.ownSpawn` (Phase B) | After `CreateSession`, before `startRecorder`: check replacement under `o.mu` → `ReplaceTranscript` | Clear old Transcript before new Recorder starts feeding |
+| `OwnedPTYRuntime.Create` (Phase C) | After `ownSpawn` returns: `SetTranscriptGeneration(canonicalID, 1)` | Initialise generation for first creation |
 | `TelemetryService.processSession` | `Notifier.ApprovalRequired` from accepted adapter path (dormant until `provenActionMapping` is proven) | Notification integration point wired, fires when actionable mapping exists |
 
 ## 12. Acceptance gates
@@ -950,9 +1031,11 @@ SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
 7. **Reconnect with generation**: Mobile reconnects, calls Transcript API,
    detects generation change, discards stale cache.
 8. **Generation replacement clears Transcript**: Replace session → old
-   Transcript cleared via `ReplaceTranscript` in `Create` BEFORE `ownSpawn` →
-   new Transcript starts fresh → `generation` field increments → mobile
-   detects reset. Prove no byte from the new Recorder appears before the clear.
+   Transcript cleared via `ReplaceTranscript` in `ownSpawn` Phase B (after
+   `CreateSession`, before `startRecorder`) → new Transcript starts fresh →
+   `generation` field increments → mobile detects reset. Prove no byte from
+   the new Recorder appears before the clear. Prove spawn-failure after
+   replacement leaves the Transcript cleared (no stale data resurrection).
 9. **Mobile rendering**: Unknown agentKind/status → graceful fallback.
    Missing optional fields → no crash.
 10. **Privacy structural**: Transcript segments contain no raw input
@@ -1050,7 +1133,9 @@ These accepted paths must not be modified by PA3:
 - `internal/sessionid/` — SessionRef, ParseSessionID, Canonical
 - `internal/term/terminal_transport.go` — TerminalTransport (PA2d)
 - `internal/term/owned_pty_runtime.go` — OwnedPTYRuntime (PA2c); **allowed
-  change**: add `ReplaceTranscript` call in `Create` BEFORE `ownSpawn` on replacement
+  changes**: Phase B replacement check in `ownSpawn` (after `CreateSession`,
+  before `startRecorder`); Phase C `SetTranscriptGeneration` call in `Create`
+  after `ownSpawn` returns
 - `internal/term/lifecycle_service.go` — LifecycleService (PA2c)
 - `internal/term/lifecycle_handlers.go` — lifecycle HTTP handlers
 - `internal/term/lifecycle.go` — lifecycle state machine
@@ -1070,9 +1155,9 @@ These accepted paths must not be modified by PA3:
 - `internal/transcript/projector_bytes.go` — ByteStreamProjector
 - `internal/transcript/store.go` — Store
 - `internal/transcript/service.go` — Service; **allowed additive methods**:
-  `ReplaceTranscript(sessionID string) int64` and `SetTranscriptGeneration(sessionID string, gen int64)`.
-  Core API unchanged; these two methods wrap existing queue/clear/store operations
-  without touching `RemoveLaunch`.
+  `ReplaceTranscript(sessionID string) int64` (drain + clear + re-enable +
+  bump generation) and `SetTranscriptGeneration(sessionID string, gen int64)`
+  (idempotent first-write-wins). Does NOT call `RemoveLaunch`.
 - `internal/transcript/api.go` — HandleTranscript, HandleTranscriptStats
 - `internal/devicetrust/` — all device trust infrastructure (M2.5)
 - `internal/watcher/` — file watcher
