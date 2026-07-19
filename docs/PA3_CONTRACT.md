@@ -324,56 +324,65 @@ be updated to accept the new field — this is part of Step 1.
 
 ### 6.1 Admission authority and generation-bound identity
 
-PA3 introduces a per-canonical-session **admission token** that serializes
-same-ID mutations. The token claim/release itself is microseconds; all
-external I/O occurs between release of the old generation's token and claim
-of the new generation's token.
+PA3 serializes same-canonical-ID operations through a microsecond token for
+state transitions plus a per-generation completion channel for waiter
+signalling. The token is NEVER held across I/O.
 
 #### 6.1.1 Admission token
 
-**Definition**: A per-session state token stored in `OwnedPTYRuntime` under
-`o.mu`. Designed for microsecond claim/release; I/O phases use a generation
-completion channel to signal waiters.
+**Token** (`bool` under `o.mu`): guards catalog state transitions.
+Claimed and released within the same `o.mu` critical section — microseconds.
+NEVER held across adapter, PTY, Recorder, Transcript, or process I/O.
+
+**Generation completion channel** (`genDone chan struct{}`): stored on the
+catalog entry. Created in Phase 0 when the entry is reserved. Closed in
+Phase 6 when the entry is published. Waiters block on this channel while
+the entry is `LifecycleStarting`.
 
 ```go
-type admitState struct {
-    claimed bool          // true while an operation holds the token
-    genDone chan struct{} // closed when current holder completes I/O; wakes all waiters
+type CatalogEntry struct {
+    // ... existing fields ...
+    genDone chan struct{} // closed on publish (Phase 6); nil for terminal/absent
 }
 ```
 
 **Claim** (under `o.mu`, microseconds):
-1. If `claimed == true`: record `genDone` channel, release `o.mu`, block on `<-genDone`
-2. When `genDone` closes (wakes ALL waiters): re-acquire `o.mu`, re-check `claimed`. First waiter claims; rest re-block on the NEW `genDone` channel created by the claimer.
-3. If `claimed == false`: set `claimed = true`, allocate fresh `genDone` channel, release `o.mu`, return.
+```go
+// Only one goroutine can hold the token at a time for a given session.
+// Contention is rare — same-ID creates serialize; Stop/Kill are brief.
+if o.tokenClaimed[canonicalID] {
+    // Should not block in practice: claim is microseconds.
+    // Fallback: release o.mu, spin-wait with nanosecond sleep, retry.
+}
+o.tokenClaimed[canonicalID] = true
+```
 
 **Release** (under `o.mu`, microseconds):
-1. Close `genDone` channel (wakes ALL blocked waiters)
-2. Set `claimed = false`
-3. Waiters re-contend under `o.mu` — exactly one claims, rest re-block.
+```go
+o.tokenClaimed[canonicalID] = false
+```
 
-**Waking semantics**: `close(genDone)` releases ALL waiters simultaneously.
-They re-contend under `o.mu`; Go's mutex fairness is non-deterministic but
-bounded. This is NOT strict FIFO — it is a wake-all-re-contend pattern
-correct for same-ID serialization (any order is correct as long as only
-one proceeds at a time).
+**Waiter protocol**: A concurrent same-ID create sees the reserved entry
+(`LifecycleStarting`). It does NOT contend for the token — it blocks on
+`entry.genDone`. When the first create publishes (Phase 6), it closes
+`genDone`, waking all waiters. Each waiter re-reads the catalog entry:
+the first sees `LifecycleRunning` (takes replacement path), the rest see
+the new `LifecycleStarting` from the replacement and block on the NEW
+`genDone`.
 
-**Token scope — microseconds, never across I/O**:
+**All operations release the token before I/O**:
 
-| Operation | Claim (μs) | I/O between | Release (μs) | Token hold |
-| --- | --- | --- | --- | --- |
-| Create (first) | Phase 0: reserve entry under o.mu | Phases 1-5: CreateSession, Recorder, Transcript, Recorder start | Phase 6: publish under o.mu | μs (Phase 0 + Phase 6 only) |
-| Create (replacement) | Phase 0: extract old cleanup, reserve entry under o.mu | Phases 1-5: same + old cleanup invocation | Phase 6: publish under o.mu | μs (Phase 0 + Phase 6 only) |
-| Stop | beginStop under o.mu | Process signal + wait | After handle.Stop() returns | μs (beginStop only) |
-| Kill | requestKill under o.mu | Process signal | After handle.Kill() returns | μs (requestKill only) |
-| Final cleanup | finalizeRecord under o.mu | Adapter termination + Recorder delete | After cleanup() returns | μs (finalizeRecord only) |
-| Invalidation | Under o.mu | Status + approval store writes | After writes complete | μs |
-| Replacement retirement | Phase 0 of replacement create | Old cleanup invocation (Phase 3) | After old cleanup returns | μs |
-
-Waiters block on `genDone` during the I/O phases (Phases 1-5 for Create,
-process wait for Stop/Kill). They are woken when the holder releases.
-This is NOT holding a lock across I/O — the token is released during I/O;
-waiters simply sleep on a channel.
+| Operation | Token claim (μs) | I/O (token RELEASED) | Token release (μs) |
+| --- | --- | --- | --- |
+| Create Phase 0 | claim → reserve entry, create genDone | — | release |
+| Create Phases 1-5 | — | CreateSession, Recorder, Transcript, Recorder start | — |
+| Create Phase 6 | claim → publish, close genDone | — | release |
+| Stop | claim → beginStop | process signal + wait | release (before I/O) |
+| Kill | claim → requestKill | process signal | release (before I/O) |
+| finalizeRecord | claim → record terminal | cleanup() invocation | release (before I/O) |
+| Invalidation | claim → write status+approval | store writes | release (before I/O) |
+| Replacement Phase 0 | claim → extract old cleanup, reserve, create genDone | — | release |
+| Replacement Phase 3 | — | DeleteRecorder + invoke oldCleanup | — |
 
 #### 6.1.2 Catalog state machine (7 states)
 
@@ -381,19 +390,19 @@ waiters simply sleep on a channel.
                   ┌──────────────┐
                   │    absent    │
                   └──────┬───────┘
-                         │ Phase 0: claim token, reserve entry
+                         │ Phase 0: token claim μs → reserve + genDone → token release
                   ┌──────▼───────┐
-                  │   creating   │  ← LifecycleStarting
+                  │   creating   │  ← LifecycleStarting (genDone open)
                   └──────┬───────┘
-                         │ Phase 6: publish, release token
+                         │ Phase 6: token claim μs → publish → close genDone → token release
                   ┌──────▼───────┐
                   │   running    │  ← LifecycleRunning
                   └──┬───┬───┬───┘
                      │   │   │
-     Stop (token) ───┘   │   └─── natural exit (Recorder EOF)
+     Stop (token μs)─┘   │   └─── natural exit (Recorder EOF)
                          │
                   ┌──────▼┐
-                  │stopping│  ← beginStop, token claim μs
+                  │stopping│  ← beginStop (token μs, then released)
                   └───┬────┘
                       │
               ┌───────▼───────┐
@@ -404,130 +413,108 @@ waiters simply sleep on a channel.
                  │   absent   │
                  └────────────┘
 
-   Replacement: running → (Phase 0: extract old cleanup, reserve creating)
-   → Phase 3: invoke old cleanup → old entry → terminal
-   → Phase 6: publish new running entry
+   Replacement: running → (Phase 0: token μs → extract old cleanup,
+   reserve creating + genDone → token release) → Phase 3: invoke
+   old cleanup → old entry → terminal → Phase 6: publish new running,
+   close genDone (wakes waiters).
 ```
 
-Seven states: absent, creating, running, stopping, retiring (natural exit
-before finalize), terminal, superseded (old entry replaced; transitions to
-terminal via old cleanup in Phase 3).
+Seven states: absent, creating, running, stopping, retiring, terminal,
+superseded (old entry replaced; transitions via old cleanup in Phase 3).
 
 #### 6.1.3 Linearization points (12 total)
 
 | # | Point | Phase/Method | Under | Decision |
 | --- | --- | --- | --- | --- |
-| LP1 | Generation allocation | Phase 0 | o.mu + token | `o.nextGen++`; lifecycle gen assigned |
-| LP2 | Catalog reservation | Phase 0 | o.mu + token | Entry reserved `LifecycleStarting`; old cleanup extracted if replacement |
-| LP3 | Old cleanup claimed | Phase 0 (replacement) | o.mu + token | Old entry's cleanup extracted before CreateSession |
-| LP4 | Transcript generation | Phase 4 | Service lock | `SetTranscriptGeneration` or `ReplaceTranscript` |
-| LP5 | Recorder binding | Phase 5 | Recorder registry | `StartRecorderUnconditional` creates new instance |
-| LP6 | Publication | Phase 6 | o.mu + token | `LifecycleRunning`; handle/transport/cleanup bound; `genDone` closed |
-| LP7 | Stop claim | `beginStop` | o.mu + token | Gen check; state→stopping; handle claimed |
-| LP8 | Kill claim | `requestKill` | o.mu + token | Gen check; killRequested; handle claimed |
-| LP9 | Terminal finalization | `finalizeRecord` | o.mu + token | Gen check; state→terminal; cleanup claimed at most once |
-| LP10 | Cleanup invocation | After LP9 | None | Claimed cleanup runs (adapter termination + Recorder delete) |
+| LP1 | Generation allocation | Phase 0 | o.mu + token | `o.nextGen++` |
+| LP2 | Catalog reservation | Phase 0 | o.mu + token | Entry `LifecycleStarting` + `genDone` created |
+| LP3 | Old cleanup extraction | Phase 0 (repl) | o.mu + token | Old cleanup saved BEFORE CreateSession |
+| LP4 | Transcript generation | Phase 4 | Service lock | `SetTranscriptGeneration` (first) or `ReplaceTranscript` (repl) |
+| LP5 | Recorder binding | Phase 5 | Recorder registry | `StartRecorderUnconditional` |
+| LP6 | Publication | Phase 6 | o.mu + token | `LifecycleRunning`; `genDone` closed; handle/transport/cleanup bound |
+| LP7 | Stop claim | `beginStop` | o.mu + token | Gen check; state→stopping; handle claimed; token released before I/O |
+| LP8 | Kill claim | `requestKill` | o.mu + token | Gen check; killRequested; handle claimed; token released before I/O |
+| LP9 | Terminal finalization | `finalizeRecord` | o.mu + token | Gen check; state→terminal; cleanup claimed at most once; token released before cleanup() |
+| LP10 | Cleanup invocation | After LP9 | None (token released) | Claimed cleanup runs (adapter termination + Recorder delete) |
 | LP11 | Transcript gen init | `SetTranscriptGeneration` | Service lock | gen=1 (first-write-wins) |
 | LP12 | Transcript gen bump | `ReplaceTranscript` | Service lock | Queue drained; store cleared; gen incremented |
 
 #### 6.1.4 Guarantees
 
-**G1 — No conflicting identity**: Create and lifecycle cannot independently
-authorize conflicting identities. Token serializes all same-ID mutations;
-`o.mu` gen checks reject stale operations.
+**G1 — No conflicting identity**: Token serializes same-ID state transitions.
+`o.mu` gen checks reject stale operations. Create and lifecycle cannot
+independently authorize conflicting identities.
 
-**G2 — Adapter identity isolation**: A new adapter session is never created
-while the catalog authorizes an incompatible old generation. Phase 0 extracts
-old cleanup and reserves the creating entry BEFORE Phase 1 calls
-`CreateSession`. A concurrent same-ID create blocks on `genDone` at Phase 0.
+**G2 — Adapter identity isolation**: Phase 0 reserves creating entry +
+extracts old cleanup BEFORE Phase 1 calls `CreateSession`. A concurrent
+same-ID create sees the `LifecycleStarting` entry and blocks on `genDone`
+(not the token). No adapter mutation occurs without a reservation.
 
-**G3 — No stale lifecycle targeting**: Stale Stop/Kill/cleanup calls check
-`e.Generation != gen` under `o.mu` + token and fail closed with
-`stale_generation`. They receive nil handles and cannot signal the
-replacement process.
+**G3 — No stale lifecycle targeting**: `beginStop`/`requestKill`/
+`finalizeRecord` check `e.Generation != gen` under token + `o.mu` and
+fail closed. Stale operations receive nil handles.
 
-**G4 — Old cleanup preserved and invoked before new adapter mutation**:
-Phase 0 extracts the old entry's cleanup function under token BEFORE
-`CreateSession`. Phase 3 invokes it after stopping the old Recorder. If
-`oldCleanup` panics, the panic is recovered and execution proceeds — the
-old adapter session may leak (OS cleans up PTY FDs on daemon exit). The
-new session is NOT affected. Old `watchExit` detects gen mismatch and
-returns nil — cleanup is never invoked twice.
+**G4 — Old cleanup preserved before adapter mutation**: Phase 0 extracts
+`oldCleanup` under token (μs), then releases token. Phase 3 invokes
+`oldCleanup` after stopping old Recorder. Panic recovery prevents leak
+from crashing Create. Old `watchExit` detects gen mismatch, returns nil.
 
-**G5 — Recorder closure is not lifecycle termination**: `DeleteRecorder`
-(Phase 3) closes the PTY; for controlled_pty, this causes child SIGHUP/exit.
-The lifecycle state machine captures this as natural exit (retiring→terminal),
-not a Stop/Kill transition. Stop/Kill remain authoritative termination paths.
-Documented limitation: PTY close indirectly causes process exit.
+**G5 — Recorder closure ≠ lifecycle termination**: `DeleteRecorder`
+closes PTY; on controlled_pty, child receives SIGHUP and typically exits.
+State machine captures this as natural exit (retiring→terminal), not
+Stop/Kill. Stop/Kill remain authoritative termination paths.
 
-**G6 — No authority lock held across external I/O**: Token claim/release is
-microseconds (o.mu critical sections). All I/O (CreateSession, Recorder
-stop/start, Transcript queue drain, process signals) occurs while the token
-is RELEASED. Waiters sleep on `genDone` channel — this is not lock-holding.
+**G6 — Token never held across I/O**: Token claim/release is microseconds
+under `o.mu`. ALL I/O (CreateSession, Recorder stop/start, Transcript
+drain, process signals, cleanup invocation) executes with token RELEASED.
 PA2d §5 preserved.
 
-**G7 — Failed creation cannot publish**: If any I/O phase fails, Phase 6
-rolls back under token: `delete(o.entries[id])` iff gen matches + state is
-`LifecycleStarting`. Token released (close genDone, waking waiters). Next
-waiter sees absent or terminal entry (if replacement). `o.nextGen` never
-decremented.
+**G7 — Failed creation cannot publish**: Phase 6 claims token, checks gen,
+and either publishes or rolls back under `o.mu` (μs). `genDone` is closed
+iff entry is published. `o.nextGen` never decremented.
 
-**G8 — Bounded completion signals**: `watchExit` waits on `rec.Done()`
-(closes once). Lifecycle Stop/Kill waits on `cleanupDone` channel. Token
-`genDone` channel wakes all waiters on release. All signals
-generation-specific; no polling of mutable IDs.
+**G8 — Bounded completion signals**: `watchExit` waits on `rec.Done()`.
+Lifecycle Stop/Kill waits on `cleanupDone`. Waiters block on `genDone`
+(stored on entry, closed on publish). All signals generation-specific.
 
-#### 6.1.5 Token-mediated phase model (6 phases, Phase 0–6)
+#### 6.1.5 Phase model (Phase 0–6, token RELEASED during all I/O)
 
-Token is CLAIMED in Phase 0 (microseconds, under o.mu) and RELEASED in
-Phase 6 (microseconds, under o.mu). Phases 1-5 execute with token
-RELEASED. Token hold time: bounded by o.mu critical section latency
-(microseconds) + channel close wake-up latency.
-
-**Phase 0 — Token claim + catalog reservation** (o.mu, microseconds, NO I/O):
+**Phase 0 — Token claim + reservation** (o.mu, microseconds, NO I/O):
 ```go
 o.mu.Lock()
-o.claimToken(canonicalID) // blocks on genDone if contended; μs
+o.claimToken(canonicalID) // μs
 
 existing, isReplacement := o.entries[canonicalID]
 var oldCleanup ownedCleanup
 if isReplacement {
-    oldCleanup = existing.cleanup  // G4: extracted BEFORE CreateSession
-    existing.State = LifecycleSuperseded
+    oldCleanup = existing.cleanup       // G4: saved BEFORE CreateSession
+    existing.State = LifecycleSuperseded // old entry retired
 }
 o.nextGen++
 lifecycleGen := o.nextGen
 o.entries[canonicalID] = &CatalogEntry{
     ID: canonicalID, State: LifecycleStarting, Generation: lifecycleGen,
+    genDone: make(chan struct{}), // waiter channel
 }
+o.releaseToken(canonicalID) // μs — TOKEN RELEASED
 o.mu.Unlock()
-// Token CLAIMED (claimed=true, genDone channel created).
-// oldCleanup saved for Phase 3.
-// Adapter NOT yet mutated — CreateSession runs in Phase 1.
 ```
+Token released. All I/O in subsequent phases runs WITHOUT the token.
 
 **Phase 1 — Create adapter session** (token RELEASED, no o.mu):
 ```go
-// Token is RELEASED — waiters sleep on genDone, not blocked by I/O.
-opts.Name = localID // daemon-assigned identity from Phase 0
+opts.Name = localID // daemon-assigned
 createdID, err := creator.CreateSession(ctx, opts)
+// Concurrent same-ID create sees LifecycleStarting entry → blocks on genDone.
 ```
-If ctx is cancelled during CreateSession, the error path releases the
-token (close genDone → wake waiters) and rolls back the catalog entry
-under o.mu.
+On error: re-claim token μs → delete entry → release token → return error.
 
-**Phase 2 — [Removed — merged into Phase 0]** (no separate reservation
-phase; reservation happens under token in Phase 0).
-
-**Phase 3 — Stop old Recorder + invoke old cleanup** (token RELEASED, no o.mu):
+**Phase 3 — Stop old Recorder + old cleanup** (token RELEASED, no o.mu):
 ```go
 if isReplacement {
-    DeleteRecorder(canonicalID)   // PTY I/O
+    DeleteRecorder(canonicalID) // PTY I/O
     if oldCleanup != nil {
-        func() {
-            defer func() { recover() }() // G4: panic recovery
-            oldCleanup(ctx)
-        }()
+        func() { defer func() { recover() }(); oldCleanup(ctx) }()
     }
 }
 ```
@@ -543,20 +530,19 @@ if isReplacement {
 
 **Phase 5 — Start new Recorder** (token RELEASED, no o.mu):
 ```go
-opener, _ := adapterSession.(mux.StreamOpener)
-stream, _ := opener.OpenStream(ctx)
+stream, _ := adapterSession.(mux.StreamOpener).OpenStream(ctx)
 rec := StartRecorderUnconditional(canonicalID, stream, activity)
 ```
 
-**Phase 6 — Publish + token release** (o.mu, microseconds, NO I/O):
+**Phase 6 — Publish + wake waiters** (o.mu, microseconds, NO I/O):
 ```go
 o.mu.Lock()
+o.claimToken(canonicalID) // μs
 entry := o.entries[canonicalID]
 if entry.Generation != lifecycleGen {
-    o.releaseToken(canonicalID) // close genDone, wake waiters
+    o.releaseToken(canonicalID)
     o.mu.Unlock()
-    rec.Stop()
-    o.terminateAdapterSession(ctx, localID)
+    rec.Stop(); o.terminateAdapterSession(ctx, localID)
     return "", fmt.Errorf("session replaced")
 }
 entry.State = LifecycleRunning
@@ -564,103 +550,91 @@ entry.handle = handle
 entry.cleanup = cleanup
 entry.transport = transport
 entry.StartedAt = o.now()
-o.releaseToken(canonicalID) // close genDone, claim=false, wake all waiters
+close(entry.genDone) // WAKES ALL WAITERS on this genDone
+o.releaseToken(canonicalID) // μs
 o.mu.Unlock()
 o.watchExit(canonicalID, lifecycleGen, rec)
 return canonicalID, nil
 ```
 
-**Token release on failure**: Any Phase 1-5 error calls `releaseToken`
-under `o.mu` with rollback (delete entry if gen matches + creating state).
+**Replacement-waiter protocol**: A second same-ID create arriving during
+Phases 1-5 sees `entry.State == LifecycleStarting` and `entry.genDone != nil`.
+It blocks on `<-entry.genDone`. When Phase 6 closes `genDone`, the waiter
+wakes, re-reads the entry, sees `LifecycleRunning`, and takes the
+replacement path: it claims the token (Phase 0), extracts the published
+entry's cleanup, reserves a new creating entry with a new genDone, releases
+the token, and proceeds through Phases 1-5.
 
 #### 6.1.6 Failure/cancellation matrix
 
-| Phase | Failure | Token | Catalog | Adapter | Outcome |
+| Phase | Failure | Token | Entry state | genDone | Outcome |
 | --- | --- | --- | --- | --- | --- |
-| 0 | ID gen fails | not claimed | absent | not created | Error returned |
-| 0 | ctx cancelled during token wait | not claimed | absent | not created | ctx.Err() returned |
-| 0 | o.mu contention | not claimed | absent | not created | Retry; if ctx deadline, ctx.Err() |
-| 1 | ctx cancelled during CreateSession | claimed (genDone open) | reserved (creating) | may be partially created | Release token; delete entry if gen matches; terminate adapter if created; ctx.Err() |
-| 1 | CreateSession fails | claimed | reserved (creating) | not created | Release token; delete entry if gen matches; return error |
-| 3 | DeleteRecorder fails | released | reserved (creating) | new created; old hung | Force-close PTY FD; set terminated; proceed |
-| 3 | oldCleanup panics | released | reserved (creating) | new created | Recover; log; proceed; old adapter may leak |
-| 4 | ReplaceTranscript fails | released | reserved (creating) | new created | Release token; delete entry if gen matches; terminate new adapter; return error |
-| 5 | OpenStream/StartRecorder fails | released | reserved (creating) | new created | Release token; delete entry if gen matches; terminate new adapter; return error |
-| 6 | gen superseded (defensive) | claimed | reserved by us, published by other | new created | Release token; stop Recorder; terminate adapter; return error |
-| Any | ctx cancelled during Phases 1,3,4,5 | released (or not yet claimed) | varies | varies | Release token if claimed; rollback entry if creating; terminate adapter; ctx.Err() |
+| 0 | ctx cancelled | released if claimed | absent | — | ctx.Err() |
+| 1 | ctx cancelled / CreateSession fails | RELEASED | creating | open | Re-claim token μs → delete entry → release token → terminate adapter if created → return error |
+| 3 | DeleteRecorder fails | RELEASED | creating | open | Force-close PTY; proceed |
+| 3 | oldCleanup panics | RELEASED | creating | open | Recover; log; proceed |
+| 4 | ReplaceTranscript fails | RELEASED | creating | open | Re-claim token μs → delete entry → release token → terminate adapter → return error |
+| 5 | OpenStream/StartRecorder fails | RELEASED | creating | open | Same as Phase 4 failure |
+| 6 | gen superseded | claimed μs | creating (ours) | open | Release token → stop Recorder → terminate adapter → return error |
+| 6 | ctx cancelled | claimed μs | creating (ours) | open | Release token → stop Recorder → terminate adapter → delete entry → ctx.Err() |
+| Any | ctx cancelled during I/O (1,3,4,5) | RELEASED | creating | open | Re-claim token μs → delete entry → release token → terminate adapter → ctx.Err() |
 
-**All phases have ctx propagation**: Phase 0 and 6 check `ctx.Err()` before
-`o.mu.Lock()`. Phases 1,3,4,5 pass `ctx` to I/O calls which respect
-cancellation. Token always released on cancellation.
+**Rollback invariant**: Token always released on error path. `genDone`
+only closed on successful Phase 6 publish. `o.nextGen` never decremented.
 
-#### 6.1.7 Non-OwnedPTYRuntime sessions (tmux, cmux, localpty)
+#### 6.1.7 Non-OwnedPTYRuntime sessions
 
-Generation initialised lazily: first `FeedBytes`, `AddSnapshotSegment`, or
-`ProjectAgentEvents` implicitly sets gen=1. `TranscriptResponse.generation`
-returns 1. No replacement path — generation never changes.
+Lazy generation init: first `FeedBytes`/`AddSnapshotSegment`/`ProjectAgentEvents`
+sets gen=1. `TranscriptResponse.generation` returns 1. No replacement path.
 
 #### 6.1.8 New method contracts
 
 ```go
-// claimToken blocks until token available; sets claimed=true; creates genDone.
-// Called under o.mu. Microseconds.
-func (o *OwnedPTYRuntime) claimToken(sessionID string)
-
-// releaseToken closes genDone (wakes all waiters); sets claimed=false.
-// Called under o.mu. Microseconds.
-func (o *OwnedPTYRuntime) releaseToken(sessionID string)
-
-// ReplaceTranscript drains+clears a session's Transcript, allocates new gen.
-// PRECONDITION: old Recorder stopped. Does NOT call RemoveLaunch.
+func (o *OwnedPTYRuntime) claimToken(sessionID string)   // μs under o.mu
+func (o *OwnedPTYRuntime) releaseToken(sessionID string) // μs under o.mu
 func (s *Service) ReplaceTranscript(sessionID string) int64
-
-// SetTranscriptGeneration records initial gen. Idempotent (first-write-wins).
 func (s *Service) SetTranscriptGeneration(sessionID string, gen int64)
-
-// StartRecorderUnconditional always creates a new Recorder. Never reuses existing.
 func StartRecorderUnconditional(sessionID string, stream ptyStream, activity *ActivityBuffer) *Recorder
 ```
 
 #### 6.1.9 Focused acceptance tests
 
-1. **Token serializes same-ID creates**: Three goroutines create same ID.
-   Each claims token in Phase 0 (μs), releases in Phase 6 (μs). Prove
-   generations 1, 2, 3. No concurrent I/O under token.
+1. **Token microsecond**: Instrumentation proves token claim+release < 1ms.
+   All I/O (CreateSession, Recorder, Transcript, process signals) executes
+   with token RELEASED.
 
-2. **Replacement extracts old cleanup BEFORE CreateSession**: Create-A →
-   Create-B (same ID). Prove Create-B extracts oldCleanup in Phase 0,
-   THEN calls CreateSession in Phase 1. Old adapter session terminated
-   in Phase 3 BEFORE new Recorder starts.
+2. **genDone serializes same-ID creates**: Three goroutines create same ID.
+   Second and third block on genDone (not token). Prove generations 1,2,3.
 
-3. **Different-ID creates are parallel**: Two goroutines, different IDs.
-   Prove neither blocks on the other's genDone. Both publish.
+3. **Replacement extracts old cleanup BEFORE CreateSession**: Create-A →
+   Create-B. Prove oldCleanup saved in Phase 0, CreateSession called in
+   Phase 1 (token released). Old adapter terminated in Phase 3.
 
-4. **Stale Stop rejected after replacement**: Create-A (gen=1) →
-   Create-B (gen=2) → Stop with gen=1 → `beginStop` returns `stale=true`.
+4. **Different-ID creates parallel**: Two goroutines, different IDs.
+   Neither blocks on the other's genDone. Both publish.
 
-5. **Token released on Phase 5 failure**: Create → Phase 5 fails →
-   token released (genDone closed) → next waiter claims token and proceeds.
+5. **Stale Stop rejected**: Create-A→Create-B→Stop(gen=1)→`beginStop`
+   returns `stale=true`. Create-B unaffected.
 
-6. **ctx cancellation during token wait**: Goroutine A holds token.
-   Goroutine B blocks on genDone. B's ctx cancelled → select on
-   `<-genDone` and `<-ctx.Done()` → ctx.Done() wins → return ctx.Err().
-   Catalog untouched.
+6. **Token released on Phase 5 failure**: Create → Phase 5 fails →
+   token re-claimed μs → entry deleted → token released → next waiter
+   wakes (entry absent, creates new).
 
-7. **ctx cancellation during I/O (Phase 1,3,4,5)**: Token released during
-   I/O. ctx cancelled. Release token (close genDone), rollback catalog,
-   terminate adapter session. Next waiter unblocked.
+7. **ctx cancellation during genDone wait**: A holds token (Phase 0, μs).
+   B blocks on genDone (Phase 1-5 I/O). B's ctx cancelled → select
+   {<-genDone, <-ctx.Done()} → ctx.Done() wins. Catalog untouched.
 
-8. **No o.mu held across I/O**: Instrumentation proves o.mu.Lock() never
-   spans CreateSession, DeleteRecorder, OpenStream,
-   StartRecorderUnconditional, ReplaceTranscript, process signals.
+8. **ctx cancellation during I/O**: Token released. ctx cancelled in
+   Phase 3/4/5. Re-claim token μs → delete entry → release token →
+   terminate adapter → ctx.Err(). genDone NOT closed.
 
-9. **Lifecycle Stop claims token μs**: Stop acquires token → `beginStop`
-   (μs) → releases token → signals process (outside token). Token hold
-   time < 1ms.
+9. **No o.mu across I/O**: Instrumentation proves o.mu never spans
+   CreateSession, DeleteRecorder, OpenStream, StartRecorderUnconditional,
+   ReplaceTranscript, process signals, or cleanup invocation.
 
-10. **Natural exit claims token μs**: Recorder EOF → `finalizeRecord`
-    claims token → records terminal (μs) → releases token → invokes
-    cleanup (outside token).
+10. **Natural exit with token μs**: Recorder EOF → `finalizeRecord` claims
+    token μs → records terminal → releases token → invokes cleanup
+    (token released). Token hold < 1ms.
 
 ### 6.2 Does mobile need generation awareness?
 
@@ -734,7 +708,7 @@ Stale events from replaced generations are rejected at multiple layers:
 
 | Layer | Mechanism | Behavior |
 | --- | --- | --- |
-| Transcript store | `Service.ReplaceTranscript(sessionID)` in Phase 4 (token released, no lock; old Recorder stopped in Phase 3) | Old segments cleared before new Recorder starts; new generation allocated |
+| Transcript store | `Service.ReplaceTranscript(sessionID)` in Phase 4 (token RELEASED, no o.mu; old Recorder stopped in Phase 3) | Old segments cleared before new Recorder starts; new generation allocated |
 | Agent-activity store | `LaunchGen` gate in `AgentStatusStore.Update` | Writes with `LaunchGen < current` rejected |
 | Approval store | `SupersedeRuntime` on replacement | Prior pending approvals invalidated |
 | Recorder | `DeleteRecorderIfSame(sessionID, oldRec)` on replacement | Old recorder stopped, subscribers closed |
@@ -742,7 +716,7 @@ Stale events from replaced generations are rejected at multiple layers:
 | TranscriptResponse | `generation` field change | Mobile detects reset and discards stale cache |
 
 Mobile cannot receive stale events because the store-level clear (Phase 4,
-token released, no lock) runs after the old Recorder is stopped (Phase 3)
+token RELEASED, no o.mu) runs after the old Recorder is stopped (Phase 3)
 and before the new Recorder starts (Phase 5).
 
 ## 8. Ordering and exactly-once guarantees
@@ -1066,13 +1040,13 @@ migrated.**
 - **Add `SetTranscriptGeneration` method on `transcript.Service`**: records
   the initial generation for a newly created session. Idempotent
   (first-write-wins). Safe to call after Recorder start.
-- **Add token-mediated admission to `OwnedPTYRuntime`**: Implement
-  `claimToken`/`releaseToken` (bool + genDone chan) per §6.1.1.
-  Restructure `Create` into Phase 0–6 per §6.1.5: token claimed in
-  Phase 0 (μs), released in Phase 6 (μs); all I/O (Phases 1,3,4,5)
-  with token released. Wire token into Stop/Kill/`finalizeRecord`/
+- **Add microsecond token + genDone serialization to `OwnedPTYRuntime`**:
+  Implement `claimToken`/`releaseToken` (bool under o.mu, μs) per §6.1.1.
+  Add `genDone chan struct{}` to `CatalogEntry`. Restructure `Create` into
+  Phase 0–6 per §6.1.5: token claimed+released in Phase 0 (μs), all I/O
+  (Phases 1-5) with token RELEASED, token claimed+released in Phase 6 (μs).
+  Wire token (μs claim→transition→release) into Stop/Kill/`finalizeRecord`/
   invalidation. Extract old cleanup in Phase 0 BEFORE CreateSession.
-  See §6.1.6 for ctx cancellation per phase.
 - **Add `generation` field to `TranscriptResponse`** envelope and
   populate it from `Service` per-session generation counter (not from
   `LookupLaunch`). For sessions without explicit initialisation (tmux,
@@ -1158,18 +1132,17 @@ migrated.**
 
 | Location | Change | Purpose |
 | --- | --- | --- |
-| `OwnedPTYRuntime` token | `claimToken`/`releaseToken` (bool + genDone chan under o.mu) | Microsecond claim/release; I/O phases use genDone channel to signal waiters |
-| `OwnedPTYRuntime.Create` Phase 0 | Claim token, allocate gen, extract old cleanup, reserve creating entry (μs, no I/O) | Catalog reservation + old cleanup preserved BEFORE CreateSession |
-| `OwnedPTYRuntime.Create` Phase 1 | `CreateSession` (token released, no lock) | Adapter I/O unblocked; waiters sleep on genDone |
-| `OwnedPTYRuntime.Create` Phase 3 | `DeleteRecorder` + invoke old cleanup (token released, no lock) | Stop old Recorder + terminate old adapter session; panic recovery |
-| `OwnedPTYRuntime.Create` Phase 4 | `ReplaceTranscript`/`SetTranscriptGeneration` (token released, no lock) | Independent per-session Transcript generation |
-| `OwnedPTYRuntime.Create` Phase 5 | `StartRecorderUnconditional` (token released, no lock) | New Recorder; never reuses old instance |
-| `OwnedPTYRuntime.Create` Phase 6 | Publish entry + release token (close genDone) under o.mu (μs, no I/O) | Atomic publication; wakes all waiters |
-| `OwnedPTYRuntime` Stop/Kill | Claim token μs → `beginStop`/`requestKill` → release token → signal process outside token | Lifecycle shares token; process I/O outside token |
-| `OwnedPTYRuntime` finalizeRecord | Claim token μs → record terminal → release token → invoke cleanup outside token | Natural exit shares token; cleanup I/O outside token |
-| `OwnedPTYRuntime` invalidation | Claim token μs → write status+approval → release token | Invalidation shares token; writes outside token |
-| `transcript.Service` | Independent per-session generation counter | Strictly monotonic; not lifecycle/launch derived |
-| `recorder.go` | `StartRecorderUnconditional` | Always new Recorder; skips existing-live check |
+| `OwnedPTYRuntime` token | `claimToken`/`releaseToken` (bool under o.mu, μs) | Microsecond state-transition guard; NEVER held across I/O |
+| `CatalogEntry.genDone` | `chan struct{}` created in Phase 0, closed in Phase 6 | Same-ID waiters block on genDone; NOT token-held |
+| `OwnedPTYRuntime.Create` Phase 0 | Token claim μs → allocate gen → extract old cleanup → reserve creating + genDone → token release μs | All before CreateSession; token released |
+| `OwnedPTYRuntime.Create` Phase 1-5 | All I/O (CreateSession, DeleteRecorder, oldCleanup, ReplaceTranscript, StartRecorderUnconditional) with token RELEASED | No token, no o.mu across I/O |
+| `OwnedPTYRuntime.Create` Phase 6 | Token claim μs → publish → close genDone (wakes waiters) → token release μs | Atomic publication; waiters unblocked |
+| `OwnedPTYRuntime` Stop | Token claim μs → `beginStop` → token release → signal process (no token) | Token released before process I/O |
+| `OwnedPTYRuntime` Kill | Token claim μs → `requestKill` → token release → signal process (no token) | Token released before process I/O |
+| `OwnedPTYRuntime` finalizeRecord | Token claim μs → record terminal → token release → invoke cleanup (no token) | Token released before cleanup I/O |
+| `OwnedPTYRuntime` invalidation | Token claim μs → write status+approval → token release | Token released before store writes |
+| `transcript.Service` | Independent per-session gen counter | Not lifecycle/launch derived |
+| `recorder.go` | `StartRecorderUnconditional` | Always new Recorder |
 
 ## 12. Acceptance gates
 
@@ -1361,13 +1334,13 @@ These accepted paths must not be modified by PA3:
 - `internal/sessionid/` — SessionRef, ParseSessionID, Canonical
 - `internal/term/terminal_transport.go` — TerminalTransport (PA2d)
 - `internal/term/owned_pty_runtime.go` — OwnedPTYRuntime (PA2c); **allowed
-  changes**: add `claimToken`/`releaseToken` (bool + genDone chan under
-  o.mu) per §6.1.1; restructure `Create` into Phase 0–6 per §6.1.5
-  (token claimed μs in Phase 0, released μs in Phase 6; I/O phases
-  1,3,4,5 with token released); wire token into Stop/Kill/`finalizeRecord`/
-  invalidation; extract old cleanup in Phase 0 before CreateSession
-  (§6.1.4 G4). Add `StartRecorderUnconditional` to `recorder.go`.
-  Transcript generation counter on `transcript.Service`
+  changes**: add `claimToken`/`releaseToken` (bool under o.mu) + `genDone
+  chan struct{}` on `CatalogEntry` per §6.1.1; restructure `Create` into
+  Phase 0–6 per §6.1.5 (token μs in Phase 0 + Phase 6; ALL I/O in Phases
+  1-5 with token RELEASED); wire token into Stop/Kill/`finalizeRecord`/
+  invalidation (μs claim→transition→release before I/O); extract old
+  cleanup in Phase 0 before CreateSession. Add `StartRecorderUnconditional`
+  to `recorder.go`. Transcript gen counter on `transcript.Service`
 - `internal/term/lifecycle_service.go` — LifecycleService (PA2c)
 - `internal/term/lifecycle_handlers.go` — lifecycle HTTP handlers
 - `internal/term/lifecycle.go` — lifecycle state machine
