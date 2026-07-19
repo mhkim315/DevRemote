@@ -504,9 +504,9 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R12 — Supersession Gen Safety + Instance Guard)
+## 12. PA3 contract proposal gate results (R13 — Final Edge-Case Fixes)
 
-Baseline SHA: `0cda580be829baa18c450aafd2bd13df3218cb43`
+Baseline SHA: `a35ac1b060275627cb4bef6b8fdd97302a0dd36b`
 Gate run date: 2026-07-19
 No production code changed; supervisor directory removed at R1.
 
