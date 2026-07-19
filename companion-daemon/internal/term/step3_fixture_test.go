@@ -1,6 +1,7 @@
 package term
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,9 +17,29 @@ import (
 // Negative: legacy ?activity=/ ?history= → 410 Gone.
 // Positive: supported Transcript API proves history available.
 
+// step3Adapter is a deterministic in-memory adapter for Step 3 tests.
+// Never depends on host tmux/cmux state or socket permissions.
+type step3Adapter struct {
+	sessions []mux.Session
+}
+
+func (a *step3Adapter) Name() string { return "step3" }
+func (a *step3Adapter) ListSessions(_ context.Context) ([]mux.Session, error) {
+	return a.sessions, nil
+}
+
+type step3Session struct{ id, title string }
+
+func (s *step3Session) ID() string          { return s.id }
+func (s *step3Session) Title() string       { return s.title }
+func (s *step3Session) AdapterName() string { return "step3" }
+
 func newStep3Handlers(t *testing.T) *Handlers {
 	t.Helper()
-	reg := mux.MustNewRegistry(mux.NewTmuxAdapter())
+	adapter := &step3Adapter{sessions: []mux.Session{
+		&step3Session{id: "test-session", title: "Step 3 Test Session"},
+	}}
+	reg := mux.MustNewRegistry(adapter)
 	activity := NewActivityBuffer(100)
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
@@ -57,8 +78,8 @@ func TestStep3_HistoryEndpoint_Returns410(t *testing.T) {
 func TestStep3_NormalList_Returns200(t *testing.T) {
 	h := newStep3Handlers(t)
 
-	// Produce a deterministic session row via mux.Registry + HandleSessionsV2.
-	// tmux adapter registered in newStep3Handlers provides a tmux session.
+	// Deterministic fixture adapter (step3Adapter) provides a session row
+	// independent of host tmux state or socket permissions.
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
@@ -66,13 +87,17 @@ func TestStep3_NormalList_Returns200(t *testing.T) {
 		t.Fatalf("GET /api/sessions returned %d, want 200", rec.Code)
 	}
 
-	// PA3 Step 4 R1: required keys PRESENT, all five legacy keys ABSENT.
+	// PA3 Step 4 R2: nonempty id/adapter row PRESENT.
 	raw := rec.Body.String()
+	if !strings.Contains(raw, `"id":"step3:test-session"`) {
+		t.Error("deterministic session id not found in JSON")
+	}
 	for _, k := range []string{`"id"`, `"adapter"`} {
 		if !strings.Contains(raw, k) {
 			t.Errorf("required key %s must be present in JSON", k)
 		}
 	}
+	// All five legacy keys ABSENT.
 	for _, k := range []string{`"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"events"`} {
 		if strings.Contains(raw, k) {
 			t.Errorf("legacy key %s must be absent from session list JSON", k)
