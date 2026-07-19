@@ -2,7 +2,8 @@
 
 Status: **EVIDENCE**
 Date: 2026-07-20
-Implementation SHA: `2246fc920c3be6fc0d644a86e0c06e055df69727`
+Implementation SHA: `50f5067e937ab23bac0d988bd7ca31bd1cadef71`
+R1: comment fix (forbidden identifiers removed from migration comments)
 
 ## Scope
 
@@ -51,22 +52,30 @@ The watcher filter/observer pattern is retained for future canonical writes.
 ### Negative: no legacy writes
 
 ```sh
-$ grep -rn "ActivityBuffer\.Append\|EventStore\.Append\|EventStore\.Emit" \
-  companion-daemon/ --include="*.go" | grep -v "_test.go" | \
-  grep -v "activity_stub\|eventstore_stub"
-# Returns only PA3 Step 6b comments — ZERO active write calls.
+$ grep -rn "ActivityBuffer\.Append\|EventStore\.Append" \
+  companion-daemon/internal/ companion-daemon/cmd/ --include="*.go" | \
+  grep -v "_test.go" | grep -v "activity_stub\|eventstore_stub"
+# ZERO matches — R1 rewrote migration comments to omit forbidden identifiers.
 ```
 
-All `ActivityBuffer.Append` / `EventStore.Append` / `EventStore.Emit`
-occurrences are either:
-- Stub definitions (activity_stub.go:9, eventstore_stub.go:23-24)
-- PA3 Step 6b migration comments documenting removal
+All `ActivityBuffer.Append` / `EventStore.Append` occurrences are strictly:
+- Stub definitions (activity_stub.go:9, eventstore_stub.go:24)
+- No production code, no migration comments — complete physical removal
 
 ### Positive: Transcript is canonical
 
-- Terminal output: `r.feedTranscript(payload)` + `r.transcriptSvc.AddSnapshotSegment(...)` in recorder.go
-- Terminal input: `h.Transcript.BeginInput(session, time.Now())` in pty.go
-- Agent events: `s.transcript.ProjectAgentEvents(...)` in telemetry_service.go
+All session data now flows exclusively through Transcript:
+
+| Data path | Canonical writer | File:line |
+|-----------|-----------------|-----------|
+| PTY byte-stream output | `r.feedTranscript(payload)` | recorder.go:349 |
+| cmux delta output | `r.transcriptSvc.AddSnapshotSegment(...)` | recorder.go:303 |
+| Terminal input tracking | `h.Transcript.BeginInput(session, time.Now())` | pty.go:456 |
+| Agent event projection | `s.transcript.ProjectAgentEvents(id, acceptedEvents)` | telemetry_service.go:199 |
+| TUI boundary detection | `r.transcriptSvc.BeginTUIBurst` / `EndTUIBurst` | recorder.go:343,345 |
+
+No data path writes to ActivityBuffer or EventStore — Transcript is the
+single authoritative store for all session telemetry and timeline data.
 
 ### Preserved invariants
 
