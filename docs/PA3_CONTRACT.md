@@ -492,9 +492,22 @@ o.entries[canonicalID] = &CatalogEntry{
 o.mu.Unlock()
 
 if oldCap != nil {
-    oldCap.Execute(ctx) // CompareAndTerminate + DeleteRecorderIfSame + RetireIfGeneration
-    <-oldCap.Completion.Done() // wait for old cleanup
+    oldCap.Execute(ctx)
+    <-oldCap.Completion.Done()
 }
+
+// If pre-install steps fail after reservation, rollback the reservation.
+defer func() {
+    if retErr != nil {
+        o.mu.Lock()
+        entry := o.entries[canonicalID]
+        if entry != nil && entry.Generation == lifecycleGen {
+            delete(o.entries, canonicalID)
+        }
+        o.mu.Unlock()
+        completion.Complete() // ensure any waiter unblocks
+    }
+}()
 ```
 
 **Install** (no locks):
@@ -562,16 +575,45 @@ Lazy generation init. No replacement path.
 
 #### 6.1.8 New/modified method contracts
 
+**New types**:
+
 ```go
 // GenerationCompletion — sync.Once completion signal
 type GenerationCompletion struct { once sync.Once; done chan struct{} }
 func (c *GenerationCompletion) Complete()
 func (c *GenerationCompletion) Done() <-chan struct{}
 
-// GenerationCleanupCapability — immutable generation-bound cleanup
-type GenerationCleanupCapability struct { ... }
+// GenerationCleanupCapability — immutable generation-bound cleanup.
+// Constructed immediately after CreateSessionAndCapture.
+type GenerationCleanupCapability struct {
+    Generation int64
+    Session    mux.Session
+    Recorder   *Recorder
+    Transport  *TerminalTransport
+    Terminator mux.SessionIdentityTerminator
+    CanonicalID string
+    LocalID    string
+    Completion *GenerationCompletion
+}
 func (cap *GenerationCleanupCapability) Execute(ctx context.Context)
+```
 
+**New adapter interface** (PA3 addition to `internal/mux/adapter.go`):
+
+```go
+// SessionCreatorWithIdentity creates an adapter session and returns
+// the created (localID, Session, error) atomically. The returned
+// Session MUST be the exact adapter session identity — callers must
+// not re-resolve it via ListSessions.
+// Implemented by: controlledPTYAdapter.
+type SessionCreatorWithIdentity interface {
+    CreateSessionAndCapture(ctx context.Context, opts CreateOptions) (localID string, session Session, err error)
+}
+```
+
+**New/modified functions**:
+
+```go
 // RetireIfGeneration — retire only if gen matches (new on TerminalTransport)
 func (t *TerminalTransport) RetireIfGeneration(gen int64)
 
@@ -1013,6 +1055,13 @@ migrated.**
 - Remove `Events` field from `Handlers` struct.
 - Remove `EventStore` wiring from `App.NewAppWithDeps`.
 - Remove legacy parser/resolver/tracker files (see deletion gates §11.1).
+- **Add `SessionCreatorWithIdentity` to `internal/mux/adapter.go`**:
+  new interface with `CreateSessionAndCapture(ctx, opts) (string, Session, error)`.
+  Implement on `controlledPTYAdapter` per §6.1.8.
+- **Add `GenerationCleanupCapability` + `GenerationCompletion`**:
+  new types per §6.1.1. `cap.Execute()` nil-safe, instance-guarded cleanup.
+- **Add `RetireIfGeneration` on `TerminalTransport`** per §6.1.8.
+- **Add `StartRecorderUnconditional` on `recorder.go`** per §6.1.8.
 - **Add `ReplaceTranscript` method on `transcript.Service`**: drains old
   chunk queue, clears store + projectors + arbiters, re-enables queue,
   increments per-session generation, returns new generation. Does NOT call
@@ -1119,6 +1168,7 @@ migrated.**
 | `GenerationCleanupCapability` | New type: Generation, Session, Recorder, Transport, Completion | Immutable generation-bound cleanup; claimed at most once |
 | `GenerationCompletion` | New type: sync.Once + chan struct{} | Idempotent completion signal; Complete() on every terminal path |
 | `TerminalTransport.RetireIfGeneration` | New method: retire only if gen matches | Instance-guarded transport retirement; stale is no-op |
+| `internal/mux/adapter.go` | `SessionCreatorWithIdentity` interface + `CreateSessionAndCapture` | Returns (id, Session, error) atomically; Session never nil in capability |
 | `recorder.go` | `StartRecorderUnconditional` | Always new Recorder; never reuses existing |
 | `OwnedPTYRuntime.Create` pre-install | Claim old capability under o.mu → Execute → wait Completion.Done() → then CreateSession | Old cleanup completes BEFORE new adapter session installed |
 | Rollback paths | `cap.Execute()` (instance-guarded) | Zero ID-addressed termination: no terminateAdapterSession, TerminateSession, DeleteRecorder(id), GetRecorder(id) |
@@ -1314,8 +1364,13 @@ authoritative rollback anchor for the entire PA3 change set.
 
 These accepted paths must not be modified by PA3:
 
-- `internal/mux/` — all adapter files (tmux, cmux, localpty, controlled_pty)
-- `internal/mux/adapter.go` — Adapter interface, capability interfaces
+- `internal/mux/` — all adapter files (tmux, cmux, localpty);
+  `controlled_pty_adapter.go` — **PA3 carve-out**: may implement
+  `SessionCreatorWithIdentity` (§6.1.8). No other adapter file changes.
+- `internal/mux/adapter.go` — Adapter interface, capability interfaces;
+  **PA3 carve-out**: may add `SessionCreatorWithIdentity` interface
+  (`CreateSessionAndCapture(ctx, opts) (string, Session, error)`)
+  implemented by `controlledPTYAdapter`. No other adapter interface changes.
 - `internal/mux/registry.go` — Registry, snapshot caching
 - `internal/sessionid/` — SessionRef, ParseSessionID, Canonical
 - `internal/term/terminal_transport.go` — TerminalTransport (PA2d)
