@@ -26,8 +26,7 @@ func TestCodexLog_ProductionEventsPath(t *testing.T) {
 
 	reg := mux.MustNewRegistry(&codexTestAdapter{})
 	detector := agent.NewTermAgentDetector()
-	var events EventStore
-	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "codex"}, nil
 	})
@@ -38,7 +37,7 @@ func TestCodexLog_ProductionEventsPath(t *testing.T) {
 	cancel()
 	<-svc.Done()
 
-	h := &Handlers{Registry: reg, Events: events, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)

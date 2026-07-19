@@ -153,8 +153,7 @@ func goldenHandlers(t *testing.T) *Handlers {
 
 	return &Handlers{
 		Registry: reg,
-		Events:   nil,
-	}
+		}
 }
 
 // Inline test types for golden API tests.
@@ -206,7 +205,7 @@ func goldenHandlersWithScreenReader(t *testing.T) *Handlers {
 	t.Helper()
 	sess := &goldenScreenSession{}
 	reg := mux.MustNewRegistry(&goldenScreenAdapter{sessions: []mux.Session{sess}})
-	return &Handlers{Registry: reg, Events: nil}
+	return &Handlers{Registry: reg, }
 }
 
 type goldenScreenSession struct{ goldenSession }
@@ -237,7 +236,7 @@ var _ mux.Adapter = (*goldenAdapter)(nil) // compile-time check
 func TestAPIGolden_PostCreateCmuxSession_CanonicalID(t *testing.T) {
 	// cmux create must return canonical ID via handler exactly once.
 	reg := mux.MustNewRegistry(&cmuxCreateAdapter{})
-	h := &Handlers{Registry: reg, Events: nil}
+	h := &Handlers{Registry: reg, }
 
 	body := strings.NewReader(`{"id":"cmux:test","runner":"agent","runnerColor":"#58a6ff"}`)
 	req := httptest.NewRequest("POST", "/api/sessions", body)
@@ -279,7 +278,7 @@ func TestAPIGolden_CapabilityLessSession_NoPanic(t *testing.T) {
 	sess := &bareSession{}
 	adapter := &bareAdapter{sessions: []mux.Session{sess}}
 	reg := mux.MustNewRegistry(adapter)
-	h := &Handlers{Registry: reg, Events: nil}
+	h := &Handlers{Registry: reg, }
 
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()

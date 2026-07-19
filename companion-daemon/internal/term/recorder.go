@@ -15,7 +15,6 @@ import (
 type Recorder struct {
 	sessionID string
 	stream    ptyStream
-	activity  *ActivityBuffer
 	ctx       context.Context
 	cancel    context.CancelFunc
 
@@ -65,7 +64,7 @@ var recorderRegistry = struct {
 // StartRecorder creates a recorder for a session. Returns existing if alive.
 // Caller must provide an active stream — recorder takes ownership of the read loop.
 // The returned subscriber channel receives live PTY output immediately.
-func StartRecorder(sessionID string, stream ptyStream, activity *ActivityBuffer) (*Recorder, chan []byte) {
+func StartRecorder(sessionID string, stream ptyStream) (*Recorder, chan []byte) {
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
 
@@ -85,7 +84,6 @@ func StartRecorder(sessionID string, stream ptyStream, activity *ActivityBuffer)
 	r := &Recorder{
 		sessionID:   sessionID,
 		stream:      stream,
-		activity:    activity,
 		ctx:         ctx,
 		cancel:      cancel,
 		subscribers: nil,
@@ -489,7 +487,7 @@ type openStreamFn func() (ptyStream, error)
 
 // EnsureRecorder starts or reuses a Recorder. The opener is called to open
 // the stream on first start; it is not retained.
-func EnsureRecorder(sessionID string, openStream openStreamFn, activity *ActivityBuffer) (*Recorder, chan []byte) {
+func EnsureRecorder(sessionID string, openStream openStreamFn) (*Recorder, chan []byte) {
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
 
@@ -520,7 +518,6 @@ func EnsureRecorder(sessionID string, openStream openStreamFn, activity *Activit
 	r := &Recorder{
 		sessionID:   sessionID,
 		stream:      stream,
-		activity:    activity,
 		ctx:         ctx,
 		cancel:      cancel,
 		subscribers: nil,

@@ -26,13 +26,13 @@ func s1dSetup(t *testing.T) (*Handlers, *LifecycleService, *TelemetryService) {
 	managed := newLSAdapter("controlled_pty", true, "s1")
 	reg := mux.MustNewRegistry(managed)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	life := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil, nil), nil, nil)
+	life := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
 	seedCatalog(life, s1dSID, "controlled_pty", "s1", LifecycleRunning)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	telem := NewTelemetryService(reg, nil, nil, nil,
-		NewApprovalStore(), nil, ts)
+	telem := NewTelemetryService(reg, nil, nil,
+		NewApprovalStore(), ts)
 	life.SetStatusClearer(telem) // production Delete → status clear wiring
-	h := &Handlers{Registry: reg, Events: nil, Telemetry: telem, Lifecycle: life}
+	h := &Handlers{Registry: reg, Telemetry: telem, Lifecycle: life}
 	return h, life, telem
 }
 
@@ -230,16 +230,16 @@ func TestS1D_NoCrossSessionActivityLeak(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true, "s1", "s2")
 	reg := mux.MustNewRegistry(managed)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	life := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil, nil), nil, nil)
+	life := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
 	seedCatalog(life, "controlled_pty:s1", "controlled_pty", "s1", LifecycleRunning)
 	seedCatalog(life, "controlled_pty:s2", "controlled_pty", "s2", LifecycleRunning)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	telem := NewTelemetryService(reg, nil, nil, nil,
-		NewApprovalStore(), nil, ts)
+	telem := NewTelemetryService(reg, nil, nil,
+		NewApprovalStore(), ts)
 	life.SetStatusClearer(telem)
 	telem.statusStore.Update(AgentStatusUpdate{SessionID: "controlled_pty:s1", Generation: 1, Adapter: resolvingAdapter{},
 		Events: []agent.AgentEvent{ev("controlled_pty:s1", agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
-	h := &Handlers{Registry: reg, Events: nil, Telemetry: telem, Lifecycle: life}
+	h := &Handlers{Registry: reg, Telemetry: telem, Lifecycle: life}
 
 	byID := getSessionsSnapshot(t, h)
 	if byID["controlled_pty:s1"].AgentActivity == nil {

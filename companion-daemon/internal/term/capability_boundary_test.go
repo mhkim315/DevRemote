@@ -56,7 +56,7 @@ func TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary(t *testing.T) 
 		&capManagedAdapter{sessions: []mux.Session{&capBoundarySession{id: "cp1", adapter: "controlled_pty"}}},
 		&capExternalAdapter{sessions: []mux.Session{&capBoundarySession{id: "tm1", adapter: "tmux"}}},
 	)
-	h := &Handlers{Registry: reg, Events: nil}
+	h := &Handlers{Registry: reg, }
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
 	rr := httptest.NewRecorder()

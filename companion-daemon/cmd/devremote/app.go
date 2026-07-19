@@ -57,13 +57,12 @@ type tunnelResource interface {
 // A nil field means "use the production default".
 type Dependencies struct {
 	Verifier            term.TokenVerifier // if nil, created from Config in NewAppWithDeps
-	Events              term.EventStore    // if nil, NewMemoryEventStore used
 	Cmds                term.CommandBroker // if nil, NewCommandBroker used
 	DeviceSessionConfig *devicetrust.DeviceSessionManagerConfig
 	WSTicketConfig      *devicetrust.WSTicketStoreConfig
 	Audit               devicetrust.AuditLog // M2.5-5: nil ⇒ NopAuditLog in NewAppWithDeps
 	StartWatcher        func() (watcherResource, error)
-	StartIPC            func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error)
+	StartIPC            func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error)
 	StartTunnel         func() tunnelResource
 	// Managed injects a pre-built managed Codex service (deterministic-test
 	// seam: a fake ManagedLauncher instead of the pinned production spawn).
@@ -94,7 +93,6 @@ type App struct {
 
 	registry *mux.Registry
 	server   *http.Server
-	events   term.EventStore // agent event storage
 
 	// IPC path is owned by App so Shutdown can clean it up.
 	ipcPath string
@@ -102,7 +100,6 @@ type App struct {
 	// Background resources owned by App for lifecycle control.
 	telemetry          *term.TelemetryService     // telemetry sampling (owns state machine)
 	telemetryCtxCancel context.CancelFunc         // cancels telemetry context
-	activity           *term.ActivityBuffer       // E10b: IPC replay
 	transcriptSvc      *transcript.Service        // T3: Transcript integration
 	lifecycle          *term.LifecycleService     // M2: Stop/Kill/Delete
 	managed            *term.ManagedCodexService  // SP0: native managed Codex runtime (nil unless enabled)
@@ -164,10 +161,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		return nil, fmt.Errorf("register controlled_pty: %w", err)
 	}
 
-	events := deps.Events
-	if events == nil {
-		events = term.NewMemoryEventStore()
-	}
 	cmds := deps.Cmds
 	if cmds == nil {
 		cmds = term.NewCommandBroker()
@@ -184,15 +177,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			InsecureLocalOnly:  cfg.InsecureLocalOnly,
 		})
 	}
-	activity := term.NewActivityBuffer(2000)
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
 	// PA2c: the three managed lifecycle owners. OwnedPTYRuntime owns
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
 	// Registry dependency. Provider owners are wired below once constructed.
-	ownedPTY := term.NewOwnedPTYRuntime(ctlAdapter, activity, transcriptSvc)
-	lifecycle := term.NewLifecycleService(ownedPTY, activity, transcriptSvc)
+	ownedPTY := term.NewOwnedPTYRuntime(ctlAdapter, transcriptSvc)
+	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
 	// pinned launcher, the owned-session registry, and every managed child.
@@ -269,7 +261,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	sessionMgr.SetOnRevoke(cb)
 	challengeStore := devicetrust.NewChallengeStore()
 
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Events: events, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Activity: activity, Transcript: transcriptSvc, Lifecycle: lifecycle,
+	h := &term.Handlers{Registry: reg, Verifier: verifier, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
@@ -495,7 +487,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if cfg.EnableAgentDetection {
 		agentDetector = agent.NewTermAgentDetector()
 	}
-	telemetry := term.NewTelemetryService(reg, events, notifier, agentDetector, approvals, activity, transcriptSvc)
+	telemetry := term.NewTelemetryService(reg, notifier, agentDetector, approvals, transcriptSvc)
 	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
@@ -511,9 +503,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		deps:          deps,
 		registry:      reg,
 		server:        &http.Server{Addr: addr, Handler: serveMux},
-		events:        events,
 		telemetry:     telemetry,
-		activity:      activity,
 		transcriptSvc: transcriptSvc,
 		lifecycle:     lifecycle,
 		managed:       managed,
@@ -718,14 +708,14 @@ func (a *App) startWatcher() watcherResource {
 		}
 		return w
 	}
-	return startWatcherProd(a.events)
+	return startWatcherProd()
 }
 
 func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
-		return a.deps.StartIPC(a.ipcPath, a.registry, a.events, a.telemetry)
+		return a.deps.StartIPC(a.ipcPath, a.registry, a.telemetry)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.events, a.telemetry, a.activity, a.lifecycle, a.managed, a.managedClaude)
+	return term.StartIPCServer(a.ipcPath, a.registry, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {
@@ -797,7 +787,7 @@ func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ s
 
 // ── Production implementations ──
 
-func startWatcherProd(events term.EventStore) *watcher.Tailer {
+func startWatcherProd() *watcher.Tailer {
 	homeDir, _ := os.UserHomeDir()
 	claudeLogDir := filepath.Join(homeDir, ".claude")
 	if _, err := os.Stat(claudeLogDir); os.IsNotExist(err) {

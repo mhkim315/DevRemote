@@ -20,11 +20,9 @@ import (
 // TelemetryService owns the telemetry state machine and background sampling loop.
 type TelemetryService struct {
 	reg        *mux.Registry
-	events     EventStore
 	notifier   Notifier
 	detector   AgentDetector                            // Phase A5: optional agent detector (nil if not wired)
 	approvals  *AuthoritativeApprovalStore              // A1: generation-bound approval store
-	activity   *ActivityBuffer                          // E8f2: activity capture
 	transcript *transcript.Service                      // T3: AgentEvent → Transcript projection
 	interval   time.Duration
 	// statusStore is the S1 session-owned agent-activity store.
@@ -40,7 +38,7 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, events EventStore, notifier Notifier, detector AgentDetector, approvals *AuthoritativeApprovalStore, activity *ActivityBuffer, transcriptSvc *transcript.Service) *TelemetryService {
+func NewTelemetryService(reg *mux.Registry, notifier Notifier, detector AgentDetector, approvals *AuthoritativeApprovalStore, transcriptSvc *transcript.Service) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
@@ -49,11 +47,9 @@ func NewTelemetryService(reg *mux.Registry, events EventStore, notifier Notifier
 	}
 	return &TelemetryService{
 		reg:           reg,
-		events:        events,
 		notifier:      notifier,
 		detector:      detector,
 		approvals:     approvals,
-		activity:      activity,
 		transcript:    transcriptSvc,
 		interval:      2 * time.Second,
 		statusStore:   NewAgentStatusStore(),
@@ -123,7 +119,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 
 	// E8f2: ensure recorder exists for session.
 	if opener, ok := sess.(mux.StreamOpener); ok {
-		EnsureRecorder(id, func() (ptyStream, error) { return opener.OpenStream(ctx) }, s.activity)
+		EnsureRecorder(id, func() (ptyStream, error) { return opener.OpenStream(ctx) })
 	}
 
 	// Resolve log for accepted-adapter ingestion.

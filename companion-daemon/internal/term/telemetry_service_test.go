@@ -63,8 +63,7 @@ func TestBridge_Codex_FirstPollAuthorityPlusEvents(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -101,8 +100,7 @@ func TestBridge_Codex_SecondPollAppendsEvents(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
 		Records:   records1,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("first poll error: %v", err)
 	}
@@ -118,8 +116,7 @@ func TestBridge_Codex_SecondPollAppendsEvents(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
 		Records:   records2,
 		Cursor:    cursor1,
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("second poll error: %v", err)
 	}
@@ -151,22 +148,19 @@ func TestBridge_Codex_ThirdPollWithMoreEvents(t *testing.T) {
 	}
 	r1, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: "", MaxEvents: 500,
-	})
+		Records: base, Cursor: "", Max})
 
 	// Poll 2: add assistant.
 	base = append(base, contract.RawRecord{Bytes: testCodexAssistantMessage(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog})
 	r2, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: r1.NextCursor, MaxEvents: 500,
-	})
+		Records: base, Cursor: r1.NextCursor, Max})
 
 	// Poll 3: add another task_started.
 	base = append(base, contract.RawRecord{Bytes: testCodexTaskStarted(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog})
 	r3, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: r2.NextCursor, MaxEvents: 500,
-	})
+		Records: base, Cursor: r2.NextCursor, Max})
 	if err != nil {
 		t.Fatalf("third poll error: %v", err)
 	}
@@ -181,8 +175,7 @@ func TestBridge_Codex_ThirdPollWithMoreEvents(t *testing.T) {
 	// One-shot with all records must produce the same total events.
 	allAtOnce, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: "", MaxEvents: 500,
-	})
+		Records: base, Cursor: "", Max})
 	if err != nil {
 		t.Fatalf("one-shot error: %v", err)
 	}
@@ -200,14 +193,12 @@ func TestBridge_Codex_ZeroEventsAcrossPolls(t *testing.T) {
 	}
 	r1, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: "", MaxEvents: 500,
-	})
+		Records: base, Cursor: "", Max})
 
 	// Same records, same cursor → zero new events.
 	r2, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: r1.NextCursor, MaxEvents: 500,
-	})
+		Records: base, Cursor: r1.NextCursor, Max})
 	if err != nil {
 		t.Fatalf("second poll error: %v", err)
 	}
@@ -233,8 +224,7 @@ func TestBridge_Claude_FirstPollAuthorityPlusEvents(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "controlled_pty:test"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -255,14 +245,12 @@ func TestBridge_Claude_SecondPollAppendsEvents(t *testing.T) {
 	}
 	r1, _ := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: "", MaxEvents: 500,
-	})
+		Records: base, Cursor: "", Max})
 
 	base = append(base, contract.RawRecord{Bytes: testClaudeAssistantRecord(), Source: agent.SourceJSONL, Provenance: contract.ProvenanceNativeLog})
 	r2, err := adapter.ReadEvents(context.Background(), contract.ReadInput{
 		Session: contract.SessionContext{SessionID: "controlled_pty:test"},
-		Records: base, Cursor: r1.NextCursor, MaxEvents: 500,
-	})
+		Records: base, Cursor: r1.NextCursor, Max})
 	if err != nil {
 		t.Fatalf("second poll error: %v", err)
 	}
@@ -329,8 +317,7 @@ func TestBridge_Codex_UnsupportedVersionRevokesAuthority(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -355,8 +342,7 @@ func TestBridge_Claude_UnsupportedVersionRevokesAuthority(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -381,8 +367,7 @@ func TestBridge_Codex_MissingVersionAuthority(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -411,8 +396,7 @@ func TestBridge_MalformedCursorFailsClosed(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    contract.Cursor(string(bigCursor)),
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents should not panic: %v", err)
 	}
@@ -435,8 +419,7 @@ func TestBridge_Codex_CursorAnchorMismatch(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    tamperedCursor,
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -462,8 +445,7 @@ func TestBridge_Codex_StreamConflictSessionMetaAtNonZero(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -486,8 +468,7 @@ func TestBridge_SessionBindingPreserved(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "controlled_pty:my-session"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("ReadEvents error: %v", err)
 	}
@@ -521,8 +502,7 @@ func TestBridge_Codex_LongStream2001Plus(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    "",
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("long stream error: %v", err)
 	}
@@ -540,8 +520,7 @@ func TestBridge_Codex_LongStream2001Plus(t *testing.T) {
 		Session:   contract.SessionContext{SessionID: "s"},
 		Records:   records,
 		Cursor:    result.NextCursor,
-		MaxEvents: 500,
-	})
+		Max})
 	if err != nil {
 		t.Fatalf("long stream page 2 error: %v", err)
 	}

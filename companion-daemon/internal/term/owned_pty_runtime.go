@@ -90,7 +90,6 @@ type CatalogEntry struct {
 // waits.
 type OwnedPTYRuntime struct {
 	spawn      mux.Adapter         // the owned controlled_pty adapter (PA2d: no Registry intermediary)
-	activity   *ActivityBuffer     // recorder readiness + Delete cleanup
 	transcript *transcript.Service // T3: cleared on Delete
 	status     StatusClearer       // S1: cleared on Delete
 	graceful   time.Duration
@@ -106,10 +105,9 @@ type OwnedPTYRuntime struct {
 }
 
 // NewOwnedPTYRuntime constructs the controlled-PTY lifecycle owner.
-func NewOwnedPTYRuntime(spawn mux.Adapter, activity *ActivityBuffer, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
+func NewOwnedPTYRuntime(spawn mux.Adapter, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
 	return &OwnedPTYRuntime{
 		spawn:      spawn,
-		activity:   activity,
 		transcript: transcriptSvc,
 		graceful:   5 * time.Second,
 		killGrace:  2 * time.Second,
@@ -412,9 +410,6 @@ func (o *OwnedPTYRuntime) ownSpawn(ctx context.Context, opts mux.CreateOptions) 
 // startRecorder proves a freshly-created session's Recorder is ready via
 // the adapter's session list (no Registry lookup).
 func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string) (*Recorder, error) {
-	if o.activity == nil {
-		return nil, fmt.Errorf("activity storage not configured")
-	}
 	sessions, err := o.spawn.ListSessions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
@@ -434,7 +429,7 @@ func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string)
 	if !ok {
 		return nil, fmt.Errorf("session does not support live streaming")
 	}
-	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err }, o.activity)
+	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err })
 	if rec == nil {
 		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
 	}

@@ -439,11 +439,10 @@ func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testi
 	reg := mux.MustNewRegistry(adapter)
 	sess := &claudeWaitSession{id: "clwait"}
 	adapter.sessions = []mux.Session{sess}
-	var events EventStore
 	store := NewApprovalStore()
 	detector := agent.NewTermAgentDetector()
-	svc := NewTelemetryService(reg, events, nil,
-		detector, store, nil, ts)
+	svc := NewTelemetryService(reg, nil,
+		detector, store, ts)
 	gate := NewRuntimeDeliveryGate()
 	svc.SetDeliveryGate(gate)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
@@ -463,7 +462,7 @@ func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testi
 
 	// 1. The status projection through the production sessions API is
 	// EXACTLY waiting_approval.
-	h := &Handlers{Registry: reg, Events: events, Telemetry: svc,
+	h := &Handlers{Registry: reg, Telemetry: svc,
 		AgentDetector: detector, Approvals: store}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()

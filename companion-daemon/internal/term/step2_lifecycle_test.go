@@ -16,10 +16,9 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	ctl := mux.NewControlledPTYAdapter()
 	reg.Register(ctl)
 
-	var activity *ActivityBuffer
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(ctl, activity, transcriptSvc)
-	lifecycle := NewLifecycleService(ownedPTY, activity, transcriptSvc)
+	ownedPTY := NewOwnedPTYRuntime(ctl, transcriptSvc)
+	lifecycle := NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// Seed a running catalog entry.
 	seedCatalog(lifecycle, "controlled_pty:test-ls", "controlled_pty", "my-session", LifecycleRunning)

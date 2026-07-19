@@ -67,7 +67,6 @@ type LifecycleService struct {
 	codex      ProviderLifecycleOwner
 	claude     ProviderLifecycleOwner
 	ownedPTY   *OwnedPTYRuntime
-	activity   *ActivityBuffer     // provider Delete: daemon-owned history cleanup
 	transcript *transcript.Service // provider Delete: daemon-owned projection cleanup
 	status     StatusClearer       // provider Delete: S1 activity record cleanup
 }
@@ -75,10 +74,9 @@ type LifecycleService struct {
 // NewLifecycleService constructs the dispatcher with the controlled-PTY owner.
 // Provider owners and the read catalog are wired after construction (they are
 // built later in the composition root) via WireManagedOwners.
-func NewLifecycleService(ownedPTY *OwnedPTYRuntime, activity *ActivityBuffer, transcriptSvc *transcript.Service) *LifecycleService {
+func NewLifecycleService(ownedPTY *OwnedPTYRuntime, transcriptSvc *transcript.Service) *LifecycleService {
 	return &LifecycleService{
 		ownedPTY:   ownedPTY,
-		activity:   activity,
 		transcript: transcriptSvc,
 	}
 }

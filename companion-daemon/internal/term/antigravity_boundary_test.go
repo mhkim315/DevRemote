@@ -34,8 +34,7 @@ func TestAntigravityTelemetry_ProductionBoundary(t *testing.T) {
 	reg := mux.MustNewRegistry(adapter)
 
 	detector := agent.NewTermAgentDetector()
-	var events EventStore
-	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "antigravity"}, nil
 	})
@@ -47,7 +46,7 @@ func TestAntigravityTelemetry_ProductionBoundary(t *testing.T) {
 	cancel()
 	<-svc.Done()
 
-	h := &Handlers{Registry: reg, Events: events, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -116,8 +115,7 @@ func TestAntigravityTelemetry_DegradedSystemTypes(t *testing.T) {
 	reg := mux.MustNewRegistry(adapter)
 
 	detector := agent.NewTermAgentDetector()
-	var events EventStore
-	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "antigravity"}, nil
 	})
@@ -129,7 +127,7 @@ func TestAntigravityTelemetry_DegradedSystemTypes(t *testing.T) {
 	cancel()
 	<-svc.Done()
 
-	h := &Handlers{Registry: reg, Events: events, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -165,14 +163,14 @@ func TestAntigravityTelemetry_DegradedSystemTypes(t *testing.T) {
 func TestAntigravityDetection_FalsePositive(t *testing.T) {
 	reg := mux.MustNewRegistry(&bashSessionAdapter{})
 	detector := agent.NewTermAgentDetector()
-	svc := NewTelemetryService(reg, nil, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go svc.Run(ctx)
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-svc.Done()
-	h := &Handlers{Registry: reg, Events: nil, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)

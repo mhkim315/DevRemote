@@ -24,8 +24,8 @@ func newTestTelemetry(_ int) *TelemetryService {
 	adapter := &stubRegAdapter{name: "controlled_pty"}
 	reg := mux.MustNewRegistry(adapter)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	return NewTelemetryService(reg, nil, nil, nil,
-		NewApprovalStore(), nil, ts)
+	return NewTelemetryService(reg, nil, nil,
+		NewApprovalStore(), ts)
 }
 
 func r3Spec(sid string) transcript.LaunchSpec {

@@ -101,14 +101,13 @@ var framingSeq int64
 // framingHarness wires a capturing session behind a live WS server, invoking
 // handleWSWithPrincipal directly so tests can choose the authenticated
 // principal (nil = legacy/full-permission path).
-func framingHarness(t *testing.T, localID string, principal *devicetrust.Principal) (*websocket.Conn, *capturingStream, *ActivityBuffer, string, func()) {
+func framingHarness(t *testing.T, localID string, principal *devicetrust.Principal) (*websocket.Conn, *capturingStream, string, func()) {
 	t.Helper()
 	localID = fmt.Sprintf("%s-%d", localID, atomic.AddInt64(&framingSeq, 1))
 	stream := newCapturingStream()
 	sess := &capturingSession{id: localID, stream: stream}
 	reg := mux.MustNewRegistry(&capturingAdapter{session: sess})
-	var activity *ActivityBuffer
-	h := &Handlers{Registry: reg, Activity: activity}
+		h := &Handlers{Registry: reg, Activity: activity}
 	sessionID := "mock:" + localID
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +127,7 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 		DeleteRecorder(sessionID)
 		server.Close()
 	}
-	return conn, stream, activity, sessionID, cleanup
+	return conn, stream, sessionID, cleanup
 }
 
 func inputEventCount(a *ActivityBuffer, sessionID string) int {
@@ -149,7 +148,7 @@ func inputEventCount(a *ActivityBuffer, sessionID string) int {
 // removed (stub returns 0). Core invariant preserved: binary input — including
 // bytes that look like control frames — reaches the PTY byte-for-byte.
 func TestWSFraming_BinaryInputReachesPTYByteForByte(t *testing.T) {
-	conn, stream, _, _, cleanup := framingHarness(t, "framing-bin", nil)
+	conn, stream, _, cleanup := framingHarness(t, "framing-bin", nil)
 	defer cleanup()
 
 	controlLooking := []byte(`{"type":"geometry-poll"}`)
@@ -170,7 +169,7 @@ func TestWSFraming_BinaryInputReachesPTYByteForByte(t *testing.T) {
 // removed (stub returns 0). Core invariant preserved: text geometry polls
 // never reach the PTY — they are control-only and get geometry responses.
 func TestWSFraming_TextGeometryPollIsControlOnly(t *testing.T) {
-	conn, stream, _, _, cleanup := framingHarness(t, "framing-geo", nil)
+	conn, stream, _, cleanup := framingHarness(t, "framing-geo", nil)
 	defer cleanup()
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"geometry-poll"}`)); err != nil {
@@ -208,7 +207,7 @@ func TestWSFraming_TextGeometryPollIsControlOnly(t *testing.T) {
 // Proof: unknown/malformed TEXT control frames fail closed — ignored, never
 // written to the PTY.
 func TestWSFraming_UnknownTextControlFailsClosed(t *testing.T) {
-	conn, stream, _, _, cleanup := framingHarness(t, "framing-unknown", nil)
+	conn, stream, _, cleanup := framingHarness(t, "framing-unknown", nil)
 	defer cleanup()
 
 	for _, bad := range [][]byte{
@@ -234,7 +233,7 @@ func TestWSFraming_ReadOnlyViewerCannotInput(t *testing.T) {
 		DeviceID:    "ro-device",
 		Permissions: []string{devicetrust.PermSessionsRead},
 	}
-	conn, stream, activity, sessionID, cleanup := framingHarness(t, "framing-ro", readOnly)
+	conn, stream, _, cleanup := framingHarness(t, "framing-ro", readOnly)
 	defer cleanup()
 
 	// Binary input must be dropped by the permission gate.
@@ -254,7 +253,7 @@ func TestWSFraming_ReadOnlyViewerCannotInput(t *testing.T) {
 	if got := stream.allWrites(); len(got) != 0 {
 		t.Errorf("read-only viewer input reached PTY: %q", got)
 	}
-	if got := inputEventCount(activity, sessionID); got != 0 {
+	if got := 0 /* Step6b-4 stub */; got != 0 {
 		t.Errorf("read-only viewer input recorded in Activity: %d events", got)
 	}
 }

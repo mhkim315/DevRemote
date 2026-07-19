@@ -33,8 +33,7 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 	reg := mux.MustNewRegistry(adapter)
 
 	detector := agent.NewTermAgentDetector()
-	var events EventStore
-	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "claude"}, nil
 	})
@@ -46,7 +45,7 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 	cancel()
 	<-svc.Done()
 
-	h := &Handlers{Registry: reg, Events: events, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -94,14 +93,14 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 func TestClaudeDetection_FalsePositive(t *testing.T) {
 	reg := mux.MustNewRegistry(&bashSessionAdapter{})
 	detector := agent.NewTermAgentDetector()
-	svc := NewTelemetryService(reg, nil, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go svc.Run(ctx)
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-svc.Done()
-	h := &Handlers{Registry: reg, Events: nil, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -125,8 +124,7 @@ garbage line
 
 	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
 	detector := agent.NewTermAgentDetector()
-	var events EventStore
-	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, NoopNotifier{}, detector, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "claude"}, nil
 	})
@@ -137,7 +135,7 @@ garbage line
 	cancel()
 	<-svc.Done()
 
-	h := &Handlers{Registry: reg, Events: events, Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -166,8 +164,8 @@ garbage line
 
 func TestClaudeDetection_NilDetector(t *testing.T) {
 	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
-	svc := NewTelemetryService(reg, nil, NoopNotifier{}, nil, nil, nil, nil)
-	h := &Handlers{Registry: reg, Events: nil, Telemetry: svc}
+	svc := NewTelemetryService(reg, NoopNotifier{}, nil, nil, nil)
+	h := &Handlers{Registry: reg, Telemetry: svc}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)

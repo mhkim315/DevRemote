@@ -102,9 +102,9 @@ func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
 	reg := mux.MustNewRegistry(a)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 	owned.graceful = 200 * time.Millisecond
-	return NewLifecycleService(owned, nil, nil)
+	return NewLifecycleService(owned, nil)
 }
 
 // ── PA2c dispatch table: unknown/legacy fail closed, no Registry probe ──
@@ -260,14 +260,14 @@ func realOwned(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
 	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 	owned.graceful = 400 * time.Millisecond
 	return owned
 }
 
 func realService(t *testing.T) *LifecycleService {
 	t.Helper()
-	return NewLifecycleService(realOwned(t), nil, nil)
+	return NewLifecycleService(realOwned(t), nil)
 }
 
 // findSessionInAdapter returns a session by canonical id from an adapter's

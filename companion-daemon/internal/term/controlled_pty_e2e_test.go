@@ -44,7 +44,7 @@ func TestControlledPTY_NoWebSocketCapture(t *testing.T) {
 	}
 
 	compoundID := "controlled_pty:" + id
-	rec, ch := EnsureRecorder(compoundID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	rec, ch := EnsureRecorder(compoundID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	if rec == nil {
 		t.Fatal("EnsureRecorder returned nil")
 	}
@@ -134,7 +134,7 @@ func TestControlledPTY_DeleteCleanup(t *testing.T) {
 	}
 
 	opener := session.(mux.StreamOpener)
-	_, ch := EnsureRecorder(compoundID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	_, ch := EnsureRecorder(compoundID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	time.Sleep(300 * time.Millisecond)
 	for len(ch) > 0 {
 		<-ch

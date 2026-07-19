@@ -40,8 +40,8 @@ func s1eCodexSvc(t *testing.T, sid string, pathPtr *string) (*TelemetryService, 
 	reg := mux.MustNewRegistry(adapter)
 	sess := &procSessMock{id: sid[len("controlled_pty:"):], adapter: "controlled_pty"}
 	adapter.sessions = []mux.Session{sess}
-	svc := NewTelemetryService(reg, nil, nil, nil,
-		NewApprovalStore(), nil, ts)
+	svc := NewTelemetryService(reg, nil, nil,
+		NewApprovalStore(), ts)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: *pathPtr, Agent: "codex", Session: sid}, nil
 	})

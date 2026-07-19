@@ -88,8 +88,8 @@ func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeP
 	t.Helper()
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
-	svc := NewLifecycleService(owned, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
+	svc := NewLifecycleService(owned, nil)
 	codex := &fakeProviderOwner{currentEpoch: 7}
 	claude := &fakeProviderOwner{currentEpoch: 3}
 	cat := newFakeManagedCatalog()
@@ -190,7 +190,7 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil, nil), nil, nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
 	cat := newFakeManagedCatalog()
 	// The FEDERATED catalog still serves the pre-replacement epoch 6 — the
 	// replacement has published nowhere outside the provider's own registry.
@@ -246,7 +246,7 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 	adapter := newLCAdapter("controlled_pty", true)
 	reg := mux.MustNewRegistry(adapter)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 	owned.graceful = 50 * time.Millisecond
 	owned.killGrace = 50 * time.Millisecond
 
@@ -312,7 +312,7 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 	id := "controlled_pty:r1"
 	gen1 := owned.RegisterForTest(id, "", "n", nil)
 	// Same canonical id relaunched: a NEW generation replaces the record.
@@ -426,7 +426,7 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 	owned.RegisterForTest("controlled_pty:a", "shell", "a", nil)
 	for _, e := range owned.List() {
 		if e.Adapter != "controlled_pty" {
@@ -492,7 +492,7 @@ func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 	adapter := &handlelessAdapter{sessions: map[string]*handlelessSession{}}
 	reg := mux.MustNewRegistry(adapter)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 
 	local := genLocalID("nohandle")
 	_, err := owned.Create(context.Background(), mux.CreateOptions{Name: local}, "shell", "n")
@@ -527,7 +527,7 @@ func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
 	adapter := &lcAdapter{name: "controlled_pty", managed: true, sessions: map[string]*lcSession{}}
 	reg := mux.MustNewRegistry(adapter)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
 
 	const local = "claimrace"
 	const id = "controlled_pty:" + local

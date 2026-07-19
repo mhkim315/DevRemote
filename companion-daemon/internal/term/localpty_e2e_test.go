@@ -19,7 +19,7 @@ import (
 func TestLocalPTY_E2E_Lifecycle(t *testing.T) {
 	adapter := mux.NewLocalPTYAdapter()
 	reg := mux.MustNewRegistry(adapter)
-	h := &Handlers{Registry: reg, Events: nil}
+	h := &Handlers{Registry: reg, }
 
 	// 1. Create session (real bash process).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

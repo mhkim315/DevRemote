@@ -36,7 +36,7 @@ type IPCServer struct {
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
+func StartIPCServer(socketPath string, reg *mux.Registry, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
 	// If a socket file already exists, only remove it when it is stale. If a
 	// live daemon is still listening on it, refuse: otherwise a duplicate
 	// daemon start would delete the running daemon's socket and then fail on
@@ -69,9 +69,7 @@ func StartIPCServer(socketPath string, reg *mux.Registry, events EventStore, tel
 		listener:      listener,
 		done:          make(chan struct{}),
 		reg:           reg,
-		events:        events,
 		telemetry:     telemetry,
-		activity:      activity,
 		lifecycle:     lifecycle,
 		managed:       managed,
 		managedClaude: managedClaude,
@@ -93,7 +91,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.events, s.telemetry, s.activity, s.lifecycle, s.managed, s.managedClaude)
+		go handleIPCConnection(conn, s.reg, s.telemetry, s.lifecycle, s.managed, s.managedClaude)
 	}
 }
 
@@ -116,7 +114,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, telemetry *TelemetryService, activity *ActivityBuffer, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
+func handleIPCConnection(conn net.Conn, reg *mux.Registry, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -283,7 +281,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, te
 				cols, _ = strconv.Atoi(fields[1])
 				rows, _ = strconv.Atoi(fields[2])
 			}
-			handleIPCSubscriber(conn, subID, cols, rows, activity)
+			handleIPCSubscriber(conn, subID, cols, rows)
 			return
 		}
 		// Not sub: — process as first legacy header line.
@@ -406,7 +404,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, events EventStore, te
 // handleIPCSubscriber bridges a local terminal to an existing recorder.
 // The terminal is a subscriber — reads from recorder broadcast, writes
 // via WriteInput. No second PTY reader is created.
-func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, activity *ActivityBuffer) {
+func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int) {
 	rec := GetRecorder(sessionID)
 	if rec == nil {
 		conn.Write([]byte("session not found or recorder not started\n"))

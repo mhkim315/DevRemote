@@ -102,7 +102,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		canonicalID := sessionid.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
 		// Best-effort recorder start for external/streamable adapters; also
 		// drops the starter subscriber so no phantom viewer is retained.
-		_, _ = startRecorder(r.Context(), reg, nil, canonicalID)
+		_, _ = startRecorder(r.Context(), reg, canonicalID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
@@ -247,7 +247,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
 			return
 		}
-		rec, subCh = EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err }, nil)
+		rec, subCh = EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err })
 	}
 	if rec == nil {
 		http.Error(w, "stream failed", 500)

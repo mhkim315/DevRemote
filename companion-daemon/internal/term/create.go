@@ -291,13 +291,13 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 // failure it terminates the just-created runtime so no unrecorded live process
 // is left behind. Returns the exact Recorder so the lifecycle watcher observes
 // the real one (avoids a fast-exit race where GetRecorder is already nil).
-func createControlledSession(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, opts mux.CreateOptions) (string, *Recorder, error) {
+func createControlledSession(ctx context.Context, reg *mux.Registry, opts mux.CreateOptions) (string, *Recorder, error) {
 	createdID, err := reg.CreateSession(ctx, "controlled_pty", opts)
 	if err != nil {
 		return "", nil, err
 	}
 	canonicalID := sessionid.SessionRef{Adapter: "controlled_pty", LocalID: createdID}.Canonical()
-	rec, rerr := startRecorder(ctx, reg, activity, canonicalID)
+	rec, rerr := startRecorder(ctx, reg, canonicalID)
 	if rerr != nil {
 		_ = reg.TerminateSession(ctx, "controlled_pty", createdID)
 		DeleteRecorder(canonicalID)
@@ -311,10 +311,7 @@ func createControlledSession(ctx context.Context, reg *mux.Registry, activity *A
 // unsubscribes the starter subscriber that EnsureRecorder returns so a
 // create-without-viewer leaves no retained phantom subscription, and returns
 // the Recorder for the lifecycle watcher.
-func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuffer, canonicalID string) (*Recorder, error) {
-	if activity == nil {
-		return nil, fmt.Errorf("activity storage not configured")
-	}
+func startRecorder(ctx context.Context, reg *mux.Registry, canonicalID string) (*Recorder, error) {
 	sess, err := reg.FindSession(ctx, canonicalID)
 	if err != nil {
 		return nil, fmt.Errorf("session not found after create: %w", err)
@@ -323,7 +320,7 @@ func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuf
 	if !ok {
 		return nil, fmt.Errorf("session does not support live streaming")
 	}
-	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err }, activity)
+	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err })
 	if rec == nil {
 		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
 	}

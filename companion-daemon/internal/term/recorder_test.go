@@ -140,7 +140,6 @@ func (s *mockStreamSession) OpenStream(ctx context.Context) (mux.TerminalStream,
 // --- Original unit tests (helper-level coverage) ---
 
 func TestRecorder_NoWebSocketCapture(t *testing.T) {
-	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "hello from PTY"}
 
 	// Simulate lifecycle start without WebSocket.
@@ -169,7 +168,6 @@ func TestRecorder_NoWebSocketCapture(t *testing.T) {
 }
 
 func TestRecorder_MultipleSubscribers(t *testing.T) {
-	var activity *ActivityBuffer
 	sessionID := "test:multi-sub-old"
 
 	// Pipe that writes once and keeps pipe alive long enough for both subs.
@@ -183,7 +181,6 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 	rec := &Recorder{
 		sessionID: sessionID,
 		stream:    &testStream{pr: pr, pw: pw},
-		activity:  nil,
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
@@ -219,7 +216,6 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 }
 
 func TestRecorder_DeleteCleanup(t *testing.T) {
-	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "before delete"}
 
 	_, ch := EnsureRecorder("test:delete-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
@@ -244,7 +240,6 @@ func TestRecorder_DeleteCleanup(t *testing.T) {
 }
 
 func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
-	var activity *ActivityBuffer
 
 	// Append input via buffer (simulating WebSocket path).
 	activity.Append(ActivityEvent{
@@ -278,7 +273,6 @@ func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
 // TelemetryService.processSession → EnsureRecorder → ActivityBuffer path
 // captures output without a WebSocket connection.
 func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
-	var activity *ActivityBuffer
 
 	// Create a mock session that implements StreamOpener.
 	sess := &mockStreamSession{
@@ -288,7 +282,7 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 	}
 
 	// Create TelemetryService with ActivityBuffer.
-	svc := NewTelemetryService(nil, nil, nil, nil, nil, activity, nil)
+	svc := NewTelemetryService(nil, nil, nil, nil, nil)
 
 	// Call processSession — the production path that E8f2 added.
 	// This is the session-discovery trigger: no WebSocket, just daemon lifecycle.
@@ -317,7 +311,6 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 //   - both subscribers receive the same output
 //   - ActivityBuffer contains exactly one terminal_output
 func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
-	var activity *ActivityBuffer
 
 	// Use a counting opener with a delay so content arrives after both subs attach.
 	opener := &countingOpener{
@@ -399,7 +392,6 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 //	→ ActivityBuffer cleared
 //	→ seq reset if same ID reused
 func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
-	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "before delete cleanup"}
 	sessionID := "test:delete-cleanup"
 
@@ -419,7 +411,6 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 
 	// Production DELETE path (matching HandleSessionCRUD DELETE).
 	DeleteRecorder(sessionID)
-	activity.Clear(sessionID)
 
 	// Recorder removed.
 	if GetRecorder(sessionID) != nil {
@@ -536,13 +527,11 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 // --- E8i: screen snapshot filtering ---
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
-	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
 		sessionID: "test:snapshot-filter",
 		stream:    &testStream{pr: pr, pw: pw},
-		activity:  nil,
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
@@ -620,13 +609,11 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 // --- E8g4: cmux delta frame tagging ---
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
-	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
 		sessionID: "test:delta-marker",
 		stream:    &testStream{pr: pr, pw: pw},
-		activity:  nil,
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
@@ -692,13 +679,11 @@ func TestRecorder_NormalANSINotDelta(t *testing.T) {
 }
 
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
-	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
 		sessionID: "test:delta-then-snap",
 		stream:    &testStream{pr: pr, pw: pw},
-		activity:  nil,
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
