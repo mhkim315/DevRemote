@@ -152,11 +152,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			return nil, fmt.Errorf("register localpty: %w", err)
 		}
 	}
-	// E9: Controlled PTY Runtime — first-class Control Adapter, always available.
+	// PA2d: Controlled PTY adapter is owned by OwnedPTYRuntime, not
+	// registered in mux.Registry. The adapter is passed directly; no
+	// Registry discovery, lookup, or termination path through mux exists
+	// for controlled_pty sessions.
 	ctlAdapter := mux.NewControlledPTYAdapter()
-	if err := reg.Register(ctlAdapter); err != nil {
-		return nil, fmt.Errorf("register controlled_pty: %w", err)
-	}
 
 	events := deps.Events
 	if events == nil {

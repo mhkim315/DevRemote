@@ -144,7 +144,7 @@ func TestRecorder_NoWebSocketCapture(t *testing.T) {
 	opener := &testOpener{writeContent: "hello from PTY"}
 
 	// Simulate lifecycle start without WebSocket.
-	rec, ch := EnsureRecorder("test:recorder-test", opener, activity)
+	rec, ch := EnsureRecorder("test:recorder-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, activity)
 	if rec == nil {
 		t.Fatal("EnsureRecorder returned nil")
 	}
@@ -222,7 +222,7 @@ func TestRecorder_DeleteCleanup(t *testing.T) {
 	activity := NewActivityBuffer(100)
 	opener := &testOpener{writeContent: "before delete"}
 
-	_, ch := EnsureRecorder("test:delete-test", opener, activity)
+	_, ch := EnsureRecorder("test:delete-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, activity)
 	// Drain.
 	time.Sleep(200 * time.Millisecond)
 	for len(ch) > 0 {
@@ -328,14 +328,14 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 	sessionID := "test:ensure-multi-sub"
 
 	// First call: should open stream.
-	rec1, ch1 := EnsureRecorder(sessionID, opener, activity)
+	rec1, ch1 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, activity)
 	if rec1 == nil {
 		t.Fatal("first EnsureRecorder returned nil")
 	}
 	defer DeleteRecorder(sessionID)
 
 	// Second call: should return existing recorder, NOT open a new stream.
-	rec2, ch2 := EnsureRecorder(sessionID, opener, activity)
+	rec2, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, activity)
 	if rec2 == nil {
 		t.Fatal("second EnsureRecorder returned nil")
 	}
@@ -404,7 +404,7 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 	sessionID := "test:delete-cleanup"
 
 	// Start recorder and wait for capture.
-	_, ch := EnsureRecorder(sessionID, opener, activity)
+	_, ch := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, activity)
 	time.Sleep(200 * time.Millisecond)
 	for len(ch) > 0 {
 		<-ch
@@ -434,7 +434,7 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 
 	// Seq reset: if same session ID is reused, seq starts cleanly.
 	opener2 := &testOpener{writeContent: "after recreate"}
-	_, ch2 := EnsureRecorder(sessionID, opener2, activity)
+	_, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener2.OpenStream(context.Background()) }, activity)
 	defer DeleteRecorder(sessionID)
 	time.Sleep(300 * time.Millisecond)
 	for len(ch2) > 0 {
@@ -476,7 +476,7 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 	}
 
 	// Start recorder via EnsureRecorder (as HandleWS does).
-	rec, subCh := EnsureRecorder("test:stream-only-input", sess.opener, activity)
+	rec, subCh := EnsureRecorder("test:stream-only-input", func() (ptyStream, error) { return sess.opener.OpenStream(context.Background()) }, activity)
 	if rec == nil {
 		t.Fatal("EnsureRecorder returned nil")
 	}

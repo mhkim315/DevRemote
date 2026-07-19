@@ -228,7 +228,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
 		return
 	}
-	rec, subCh := EnsureRecorder(session, opener, h.Activity)
+	rec, subCh := EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err }, h.Activity)
 	if rec == nil {
 		http.Error(w, "stream failed", 500)
 		return

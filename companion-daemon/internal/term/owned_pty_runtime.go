@@ -3,6 +3,7 @@ package term
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"sync"
 	"time"
@@ -49,6 +50,12 @@ type CatalogEntry struct {
 	// (ownedCleanup) captured at creation; claimed at most once by the
 	// winning finalizeRecord. Not serialized.
 	cleanup ownedCleanup
+
+	// transport is the generation-bound TerminalTransport handle for this
+	// exact runtime. Created at launch; retired when the record is
+	// superseded. Exposed via Transport() for WriteInput/Resize/subscriber
+	// fan-out. Not serialized.
+	transport *TerminalTransport
 
 	// cleanupDone closes when this generation's claimed cleanup capability
 	// has finished. Convergers that lose the claim (natural exit vs Stop vs
@@ -105,6 +112,20 @@ func NewOwnedPTYRuntime(spawn mux.Adapter, activity *ActivityBuffer, transcriptS
 // SetStatusClearer wires the S1 agent-activity store so Delete clears it.
 func (o *OwnedPTYRuntime) SetStatusClearer(c StatusClearer) { o.status = c }
 
+// Transport returns the generation-bound TerminalTransport handle for the
+// given session, or nil if not found / superseded. Callers use the handle
+// for WriteInput, Resize, and subscriber fan-out without accessing the
+// underlying PTY directly.
+func (o *OwnedPTYRuntime) Transport(sessionID string) (*TerminalTransport, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e, ok := o.entries[sessionID]
+	if !ok || e.transport == nil {
+		return nil, false
+	}
+	return e.transport, true
+}
+
 func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 	o.lockMu.Lock()
 	defer o.lockMu.Unlock()
@@ -146,8 +167,16 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, pr
 		DeleteRecorder(canonicalID)
 		return "", fmt.Errorf("owned pty create: process handle capture failed: %w", herr)
 	}
+	// TerminalTransport: use io.Writer + Resize from the NativeSession PTY.
+	// The session's native is accessed via a local interface.
+	type writeResizer interface {
+		io.Writer
+		Resize(int, int) error
+	}
+	wr, _ := sess.(writeResizer)
+	transport := newTerminalTransport(canonicalID, 0, wr, wr)
 	cleanup := o.newCleanup(canonicalID, sess, rec)
-	gen := o.register(canonicalID, profileID, name, handle, cleanup)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
@@ -174,15 +203,18 @@ func (o *OwnedPTYRuntime) captureSession(ctx context.Context, localID string) (m
 }
 
 // newCleanup builds the generation-bound final-cleanup capability. The
-// adapter-level termination is ATOMICALLY conditional (PA2d): a single
-// CompareAndTerminate call on the owned adapter locates the current
-// session identity under the adapter lock, compares it against the
-// immutable instance captured at creation, and only on exact match
-// terminates the entry. Recorder removal is instance-guarded via
-// DeleteRecorderIfSame.
+// adapter MUST implement SessionIdentityTerminator — PA2d requires
+// fail-closed atomic generation-bound cleanup. Recorder removal is
+// instance-guarded via DeleteRecorderIfSame.
 func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *Recorder) ownedCleanup {
 	return func(ctx context.Context) {
-		if sit, ok := o.spawn.(mux.SessionIdentityTerminator); ok && sess != nil {
+		sit, ok := o.spawn.(mux.SessionIdentityTerminator)
+		if !ok {
+			log.Printf("FATAL: owned PTY cleanup for %s: adapter does not support atomic conditional termination", canonicalID)
+			DeleteRecorderIfSame(canonicalID, rec)
+			return
+		}
+		if sess != nil {
 			_ = sit.CompareAndTerminate(ctx, sessionid.ParseSessionID(canonicalID).LocalID, sess)
 		}
 		DeleteRecorderIfSame(canonicalID, rec)
@@ -191,7 +223,7 @@ func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *
 
 // register adds the running record under a fresh generation, bound to its
 // immutable process handle and cleanup capability.
-func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup) int64 {
+func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup, transport *TerminalTransport) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.nextGen++
@@ -206,6 +238,7 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle m
 		Generation:  gen,
 		handle:      handle,
 		cleanup:     cleanup,
+		transport:   transport,
 		cleanupDone: make(chan struct{}),
 	}
 	return gen
@@ -269,7 +302,7 @@ func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string)
 	if !ok {
 		return nil, fmt.Errorf("session does not support live streaming")
 	}
-	rec, subCh := EnsureRecorder(canonicalID, opener, o.activity)
+	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err }, o.activity)
 	if rec == nil {
 		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
 	}
@@ -570,7 +603,7 @@ func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name
 	// Test records carry a recorder-only cleanup (no captured spawn-seam
 	// session instance); it is still generation-claimed like production.
 	cleanup := func(context.Context) { DeleteRecorderIfSame(canonicalID, rec) }
-	gen := o.register(canonicalID, profileID, name, handle, cleanup)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil)
 	o.watchExit(canonicalID, gen, rec)
 	return gen
 }

@@ -145,7 +145,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 
 	// E8f2: ensure recorder exists for session (lifecycle-first, not WebSocket-born).
 	if opener, ok := sess.(mux.StreamOpener); ok {
-		EnsureRecorder(id, opener, s.activity)
+		EnsureRecorder(id, func() (ptyStream, error) { return opener.OpenStream(ctx) }, s.activity)
 	}
 
 	var logRef LogRef

@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -15,7 +14,7 @@ import (
 // One recorder per session. Single source of ActivityBuffer appends.
 type Recorder struct {
 	sessionID string
-	stream    mux.TerminalStream
+	stream    ptyStream
 	activity  *ActivityBuffer
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -24,7 +23,9 @@ type Recorder struct {
 	subscribers []chan []byte
 	done        chan struct{}
 	readErr     error
-	captureMode mux.TranscriptCaptureMode // source of truth for capture behavior
+	// captureMode is the source of truth for capture behavior
+	// ("byte_stream" or "screen_snapshot_delta"). Set at recorder start.
+	captureMode string
 
 	// T3 Transcript: optional non-blocking byte-stream feed.
 	// When non-nil, readLoop feeds copied chunks to the Transcript service
@@ -64,7 +65,7 @@ var recorderRegistry = struct {
 // StartRecorder creates a recorder for a session. Returns existing if alive.
 // Caller must provide an active stream — recorder takes ownership of the read loop.
 // The returned subscriber channel receives live PTY output immediately.
-func StartRecorder(sessionID string, stream mux.TerminalStream, activity *ActivityBuffer) (*Recorder, chan []byte) {
+func StartRecorder(sessionID string, stream ptyStream, activity *ActivityBuffer) (*Recorder, chan []byte) {
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
 
@@ -306,7 +307,7 @@ func (r *Recorder) readLoop() {
 			// T3: cmux delta → SourceSnapshot degraded path.
 			// Store as degraded segments with snapshot provenance,
 			// separate from byte-stream semantic channel.
-			if r.captureMode == mux.CaptureModeScreenSnapshotDelta && r.transcriptSvc != nil {
+			if r.captureMode == "screen_snapshot_delta" && r.transcriptSvc != nil {
 				text := stripANSI(string(payload))
 				text = strings.ReplaceAll(text, "\r", "\n")
 				if !isANSIControlOnly(text) && len(text) > 3 {
@@ -429,8 +430,8 @@ var deltaMarker = []byte("\x1b[9998m")
 // resolveCaptureMode is a future hook for per-adapter capture behavior.
 // Currently returns CaptureModeByteStream (legacy default).
 // Actual cmux behavior is enforced by sentinel detection in readLoop.
-func resolveCaptureMode(sessionID string) mux.TranscriptCaptureMode {
-	return mux.CaptureModeByteStream
+func resolveCaptureMode(sessionID string) string {
+	return "byte_stream"
 }
 
 // isDeltaMarker reports whether payload starts with the delta prefix.
@@ -515,7 +516,14 @@ func indexOf(haystack, needle []byte) int {
 // EnsureRecorder returns or creates a recorder for a session.
 // HandleWS calls this to subscribe — does NOT open its own stream.
 // If no recorder exists and no opener is provided, returns nil.
-func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *ActivityBuffer) (*Recorder, chan []byte) {
+// openStreamFn opens a PTY stream. It accepts any opener that can produce a
+// ptyStream (e.g. mux.StreamOpener whose TerminalStream satisfies
+// io.ReadWriteCloser + Resize).
+type openStreamFn func() (ptyStream, error)
+
+// EnsureRecorder starts or reuses a Recorder. The opener is called to open
+// the stream on first start; it is not retained.
+func EnsureRecorder(sessionID string, openStream openStreamFn, activity *ActivityBuffer) (*Recorder, chan []byte) {
 	recorderRegistry.mu.Lock()
 	defer recorderRegistry.mu.Unlock()
 
@@ -532,12 +540,12 @@ func EnsureRecorder(sessionID string, opener mux.StreamOpener, activity *Activit
 		}
 	}
 
-	if opener == nil {
+	if openStream == nil {
 		return nil, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := opener.OpenStream(ctx)
+	stream, err := openStream()
 	if err != nil {
 		cancel()
 		return nil, nil

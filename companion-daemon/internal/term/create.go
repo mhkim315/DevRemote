@@ -323,7 +323,7 @@ func startRecorder(ctx context.Context, reg *mux.Registry, activity *ActivityBuf
 	if !ok {
 		return nil, fmt.Errorf("session does not support live streaming")
 	}
-	rec, subCh := EnsureRecorder(canonicalID, opener, activity)
+	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err }, activity)
 	if rec == nil {
 		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
 	}
