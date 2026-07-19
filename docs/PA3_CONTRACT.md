@@ -1009,12 +1009,19 @@ Producers of legacy stores are removed before the stores.
   `TelemetryService`).
 - Remove `evaluateState`, `isApprovalPrompt`, `isThinkingFallback`
   screen heuristics.
-- Remove legacy parser dispatch from `processSession` (the
-  `parser.Parse(line)` loop and EventStore append).
+- Remove only the legacy log-parser dispatch from `processSession`:
+  delete `AgentLogParser` construction, `parser.Parse(line)`, and
+  `EventStore.Append`; the accepted-adapter record-source path is
+  retained through Step 2, so `ResolveAgentLog` may produce the
+  accepted provider/path `LogRef` and `LogCursor` with `ReadRawLines`
+  may perform generation-aware incremental raw-record reads exclusively
+  for `callAcceptedAdapter`; these retained source/cursor primitives
+  MUST NOT feed legacy parsers, EventStore, screen heuristics, or
+  legacy telemetry fields; their replacement or relocation is gated to
+  Step 6 and MUST occur before the corresponding resolver/cursor files
+  are physically deleted.
 - Remove screen read path from `processSession`
   (`ReadScreen`, `diffSize`, `tailLines`).
-- Remove log resolution from `processSession` (the `ResolveAgentLog`
-  call, `LogRef`, `LogCursor`).
 - Simplify `Snapshot()`: remove `sessionStateData` copy,
   `events` field population, `State`/`Load`/`Runner`/`RunnerColor`
   population. Keep lifecycle merge, agent detection, approval listing,
