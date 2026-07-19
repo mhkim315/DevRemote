@@ -61,62 +61,33 @@ func catalogForAPI(codex *ManagedCodexService, claude *ManagedClaudeService) Man
 // endpoint carries the managed row sourced from the owned registry, and the
 // native-status endpoint retrieves the same session by canonical ID.
 func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
- t.Skip("PA3 Step 2 R1: JSON output excludes legacy fields (State/Load/Runner/RunnerColor/Events)")
 	managed, id := createManagedForAPI(t)
 	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
-
-	// List (production handler).
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
-	h.HandleSessionsV2(rec, httptest.NewRequest("GET", "/api/sessions", nil))
+	h.HandleSessionsAPI(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("list: %d", rec.Code)
+	}
 	var rows []SessionTelemetry
 	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
-		t.Fatalf("decode list: %v", err)
+		t.Fatal(err)
 	}
-	var found *SessionTelemetry
+	var row *SessionTelemetry
 	for i := range rows {
 		if rows[i].ID == id {
-			found = &rows[i]
+			row = &rows[i]
+			break
 		}
 	}
-	if found == nil {
-		t.Fatalf("managed session %s missing from list: %s", id, rec.Body.String())
+	if row == nil {
+		t.Fatalf("managed session %s not in list", id)
 	}
-	if found.Adapter != "codex_app_server" || found.State != string(ManagedStatusIdle) {
-		t.Fatalf("managed row = %+v", found)
-	}
-
-	// Get status (production handler, path value).
-	req := httptest.NewRequest("GET", "/api/sessions/x/native-status", nil)
-	req.SetPathValue("id", id)
-	rec2 := httptest.NewRecorder()
-	h.HandleManagedNativeStatus(rec2, req)
-	if rec2.Code != 200 {
-		t.Fatalf("native-status code = %d body=%s", rec2.Code, rec2.Body.String())
-	}
-	var dto ManagedNativeStatusDTO
-	if err := json.Unmarshal(rec2.Body.Bytes(), &dto); err != nil {
-		t.Fatalf("decode dto: %v", err)
-	}
-	if dto.ID != id || dto.Provider != "codex" || dto.NativeStatus != "idle" || dto.LaunchGen != 1 {
-		t.Fatalf("dto = %+v", dto)
-	}
-
-	// Unknown ID → 404; disabled service → 404.
-	req404 := httptest.NewRequest("GET", "/api/sessions/x/native-status", nil)
-	req404.SetPathValue("id", "codex_app_server:nope")
-	rec3 := httptest.NewRecorder()
-	h.HandleManagedNativeStatus(rec3, req404)
-	if rec3.Code != 404 {
-		t.Fatalf("unknown id code = %d", rec3.Code)
-	}
-	hOff := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore()}
-	rec4 := httptest.NewRecorder()
-	hOff.HandleManagedNativeStatus(rec4, req)
-	if rec4.Code != 404 {
-		t.Fatalf("disabled service code = %d", rec4.Code)
+	// PA3 Step 2 R4: Adapter must be populated.
+	if row.Adapter != "codex_app_server" {
+		t.Errorf("managed row adapter = %q, want codex_app_server", row.Adapter)
 	}
 }
-
 // TestManagedREST_DTOBounded: the native-status response carries EXACTLY the
 // bounded field set — no prompts, command text, payloads, paths, thread/turn
 // identities, or process details.

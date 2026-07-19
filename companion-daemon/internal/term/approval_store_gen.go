@@ -305,9 +305,10 @@ func findStoredOption(rec *approvalRecord, optionID string) *agent.InteractionOp
 }
 
 // Ingest records the session's current-generation approval requests under the
-// generation rule; a newer generation supersedes prior pending AND executing authority.
-// Returns the number of items newly admitted by this call (0 = all idempotent re-offers).
-func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) int {
+// generation rule. Returns the EXACT approval IDs newly admitted by this locked
+// transaction. Idempotent re-offers are excluded from the returned set.
+// An empty slice means zero new records were admitted.
+func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) []string {
 	return s.ingest(in)
 }
 
@@ -320,7 +321,7 @@ func (s *AuthoritativeApprovalStore) IngestObserved(in ApprovalIngest) bool {
 	if len(in.Items) != 1 {
 		return false
 	}
-	return s.ingest(in) == 1
+	return len(s.ingest(in)) == 1
 }
 
 // ingest applies the generation rule and admission checks, returning the
@@ -332,9 +333,9 @@ func (s *AuthoritativeApprovalStore) IngestObserved(in ApprovalIngest) bool {
 // (authoritative provenance, structural validity, delivery material).
 // An invalid ingest must not create a session, advance generation, or
 // supersede records.
-func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
+func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted []string) {
 	if in.SessionID == "" || len(in.SessionID) > maxSessionIDLen {
-		return 0
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -344,7 +345,7 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	// Pre-check: reject older generation (read-only, no mutation).
 	if sess != nil && sess.hwInitialized {
 		if genNewer(sess.hwLaunch, sess.hwStream, in.LaunchGen, in.StreamGen) {
-			return 0
+			return nil
 		}
 	}
 
@@ -450,14 +451,14 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	// capacity reasons (R11-F1 fix 3). Without any authoritative item the
 	// entire ingest is a no-op (the original F1 fix).
 	if !hasAuthoritativeItem && len(pending) == 0 {
-		return 0 // no structural validity, no new records → no state change
+		return nil // no structural validity, no new records → no state change
 	}
 
 	// Second pass: mutate session state.
 	if sess == nil {
 		if len(s.sessions) >= authMaxApprovalSessions {
 			if !s.evictOldestSessionLocked() {
-				return 0 // capacity exhausted, no safe victim
+				return nil // capacity exhausted, no safe victim
 			}
 		}
 		sess = &sessionApprovals{records: make(map[string]*approvalRecord), idempotency: make(map[string]idempotencyEntry)}
@@ -481,7 +482,7 @@ func (s *AuthoritativeApprovalStore) ingest(in ApprovalIngest) (admitted int) {
 	for _, p := range pending {
 		if _, exists := sess.records[p.rec.approval.ID]; !exists {
 			sess.records[p.rec.approval.ID] = p.rec
-			admitted++
+			admitted = append(admitted, p.rec.approval.ID)
 		}
 	}
 	return admitted

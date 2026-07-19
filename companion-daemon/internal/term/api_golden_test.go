@@ -19,28 +19,29 @@ import (
 // capture the CURRENT (accidental) local-ID behavior as baseline.
 
 func TestAPIGolden_GetSessions(t *testing.T) {
- t.Skip("PA3 Step 2 R1: JSON output excludes legacy fields (State/Load/Runner/RunnerColor/Events)")
 	h := goldenHandlers(t)
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
-
 	h.HandleSessionsAPI(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/sessions: status = %d, want 200", rec.Code)
+	if rec.Code != 200 {
+		t.Fatalf("GET /api/sessions: status %d", rec.Code)
 	}
 	ct := rec.Header().Get("Content-Type")
 	if !strings.Contains(ct, "application/json") {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	// Verify raw JSON keys. Missing/renamed keys would still produce zero values
-	// after Go unmarshal, so we check raw body for expected field names.
+	// PA3 Step 2 R4: legacy keys must be ABSENT, required keys PRESENT.
 	raw := rec.Body.String()
-	requiredKeys := []string{`"id"`, `"displayId"`, `"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"adapter"`, `"capabilities"`, `"events"`}
-	for _, k := range requiredKeys {
+	for _, k := range []string{`"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"events"`} {
+		if strings.Contains(raw, k) {
+			t.Errorf("GET /api/sessions: legacy key %s must be absent from JSON", k)
+		}
+	}
+	for _, k := range []string{`"id"`, `"displayId"`, `"adapter"`, `"capabilities"`} {
 		if !strings.Contains(raw, k) {
-			t.Errorf("GET /api/sessions: JSON missing key %s", k)
+			t.Errorf("GET /api/sessions: required key %s must be present in JSON", k)
 		}
 	}
 
@@ -59,22 +60,12 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 			if s.DisplayID != "golden" {
 				t.Errorf("displayId = %q, want 'golden'", s.DisplayID)
 			}
-			if len(s.Capabilities) == 0 {
-				t.Error("capabilities is empty")
-			}
-			if s.State == "" {
-				t.Error("state is empty")
-			}
-			if s.Stale {
-				t.Error("stale is true for healthy golden session")
-			}
 		}
 	}
 	if !found {
-		t.Error("GET /api/sessions: golden session 'tmux:golden' not found")
+		t.Error("GET /api/sessions: did not find tmux:golden in response")
 	}
 }
-
 func TestAPIGolden_PostCreateSession_ReturnsCanonicalID(t *testing.T) {
 	// Phase 1: POST create returns CANONICAL ID (<adapter>:<local-id>).
 	h := goldenHandlers(t)

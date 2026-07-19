@@ -121,7 +121,7 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 	if len(items) == 0 {
 		return
 	}
-	admitted := s.approvals.Ingest(ApprovalIngest{
+	admittedIDs := s.approvals.Ingest(ApprovalIngest{
 		SessionID: sessionID,
 		LaunchGen: launchGen,
 		StreamGen: streamGen,
@@ -129,19 +129,12 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 		Version:   version,
 		Items:     items,
 	})
-	// PA3 Step 2 R3: notify only if store admitted new records (idempotent re-offers → 0).
-	if admitted > 0 {
-		var actionableIDs []string
-		for _, item := range items {
-			if item.Actionable {
-				actionableIDs = append(actionableIDs, item.Approval.ID)
-			}
-		}
-		for _, id := range actionableIDs {
-			for _, a := range s.approvals.ListSafe(sessionID) {
-				if a.ID == id && a.State == "pending" {
-					s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
-				}
+	// PA3 Step 2 R4: notify ONLY for exact IDs the locked store transaction admitted.
+	// Idempotent re-offers excluded. Non-actionable excluded by Actionable check.
+	for _, id := range admittedIDs {
+		for _, a := range s.approvals.ListSafe(sessionID) {
+			if a.ID == id && a.State == "pending" && a.Actionable {
+				s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
 			}
 		}
 	}
