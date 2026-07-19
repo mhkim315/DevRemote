@@ -1,3 +1,34 @@
+## 0-R4. Architectural remediation — non-atomic fallback removal, detach-before-Close, barrier tests (rejected candidate `da299248d`)
+
+**Finding 1 — non-atomic fallback.** Fixed: the `Registry.CompareAndTerminateSession`
+snapshot-cache comparison + separate id-addressed termination fallback is
+DELETED.  Adapters MUST implement `SessionIdentityTerminator`;
+non-implementing adapters receive `ErrUnsupported` (fail-closed).
+Test: `TestPA2cR4_NonImplementingAdapter_FailsClosed`.
+
+**Finding 2 — adapter lock held across NativeSession.Close process/PTY I/O.**
+Fixed: `controlledPTYAdapter.CompareAndTerminate` now detaches under
+`a.mu.Lock()` (identity check + `s.exited` + `delete(a.sessions, id)`),
+then RELEASES the lock and calls `native.Close()` outside every lifecycle
+lock.  `fixtureAdapter` and `lcAdapter` follow the same lock/check/delete/
+unlock pattern.  The detached session cannot receive new operations; a
+same-id replacement inserted between detach and Close is never touched.
+
+**Finding 3 — sleep replaced with deterministic barriers.**  Two new
+channel-coordinated tests (zero `time.Sleep`):
+`TestPA2cR4_Barrier_ReplacementInsertedAtDecisivePoint_Survives` (atomic call
+blocks before adapter lock; replacement of same canonical id inserted; call
+proceeds, sees replacement pointer, `ErrStaleSessionIdentity`; replacement
+survives untouched) and `TestPA2cR4_Barrier_OriginalCleanupCompletes`
+(atomic call matches original, no replacement, adapter lock entered with
+original still present; termination succeeds; session gone).
+Existing match-terminates, stale-survives, and not-found tests preserved.
+
+**Updated arch gate**: `TestPA2c_ArchGate_NoRegistryNoSessionCatalog`
+now also asserts `owned_pty_runtime.go` contains `CompareAndTerminateSession`.
+
+All accepted R1/R2/R3 fixes preserved.  No PA2d/PA3 started.
+
 ## 0-R3. Architectural remediation — atomic conditional termination (rejected candidate `85cf66d8c`)
 
 **Finding**: production final-cleanup performs mutable `Registry.FindSession`
@@ -46,11 +77,11 @@ presence asserted).
 
 # PA2c — Managed Lifecycle Ownership Evidence Report
 
-Status: **REVIEW REQUEST** (R3 — atomic conditional termination architectural remediation)
+Status: **REVIEW REQUEST** (R4 — non-atomic fallback removal + detach-before-Close + barrier tests)
 
-Implementation SHA: `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f` (R3, on top of R2 `85cf66d8c`)
+Implementation SHA: `cd53f6d01cb4f1fb79259318afa22cbc530b7665` (R4, on top of rejected `da299248d`)
 Evidence/report SHA: (this commit)
-Gate execution SHA: `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f`
+Gate execution SHA: `cd53f6d01cb4f1fb79259318afa22cbc530b7665`
 
 ## 0-R2. Remediation of the R2 findings (rejected candidate `a632b487353d49bc501cb242ae1923bf5377f468`)
 
@@ -158,8 +189,9 @@ No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
 | PA2c initial candidate | `5d655775e236dc2970472e155fa60b0e6a0b6356` | REJECTED (blockers above) |
 | PA2c-R1 remediation | `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` | REJECTED (R2 findings above) |
 | PA2c-R2 candidate | `f3c3ef77039f1b27219999fb578242759e0fb1b8` | test eviction (accepted, subsumed by R3) |
-| PA2c-R2 evidence | `85cf66d8c` | REJECTED (split FindSession + TerminateSession — this finding) |
-| PA2c-R3 remediation | `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f` | this candidate (8 files: 1 new, 7 modified; R2 fixes preserved) |
+| PA2c-R3 remediation | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` | eviction (subsumed by R4) |
+| PA2c-R3 evidence | `da299248d` | REJECTED (non-atomic fallback, lock-held Close, sleep test — three findings) |
+| PA2c-R4 remediation | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` | this candidate (5 files; all R1-R3 fixes preserved) |
 
 ## 2. Contract mapping (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c)
 
@@ -308,7 +340,39 @@ $ Mobile invars + tsc                                              → CLEAN / n
 
 | Condition | Value |
 | --- | --- |
-| Implementation commit | `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f` |
+| Implementation commit | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` |
+| Evidence/report commit | this commit |
+| Worktree at push | clean |
+| Local == Remote after push | verified in worker_done |
+| Rollback SHA (per contract) | `2897a9e0943656883a885e75b08513982de507b7` (PA2b final ACCEPT) |
+
+## R4. Gate results refresh (at `cd53f6d01cb4f1fb79259318afa22cbc530b7665`)
+
+```
+$ go test -race ./internal/mux -run "TestPA2cR4" -count=1 -v       → 6/6 PASS
+$ go test -race ./internal/mux -run "TestPA2cR4" -count=20          → ok (1.2s)
+$ go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=1 → 16/16 PASS
+$ go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=20 → ok (21.2s)
+$ go test ./internal/term ./cmd/devremote -count=1                  → ok / ok (23.9s / 32.1s)
+$ go test -race ./... -count=1                                      → exit 0, 12 packages ok
+```
+
+| Gate | Result |
+| --- | --- |
+| `go build ./...` / `go vet ./...` | PASS |
+| Focused mux R4 + PA2c+lifecycle suites | PASS (6+16; all 20× -race stable) |
+| `go test -race ./... -count=1` | PASS (exit 0, 12 ok) |
+| `gofmt -l` / `git diff --check` | CLEAN |
+| Secret scan (changed files) | CLEAN |
+| PA2a zero-reference / PA2b duplicate-parser | 0 / 0 |
+| PA2b focused tests | 2/2 PASS |
+| Mobile invariant + tsc | CLEAN / not-run (zero mobile changes) |
+
+## Final state
+
+| Condition | Value |
+| --- | --- |
+| Implementation commit | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` |
 | Evidence/report commit | this commit |
 | Worktree at push | clean |
 | Local == Remote after push | verified in worker_done |
