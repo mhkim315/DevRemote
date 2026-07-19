@@ -77,9 +77,10 @@ func (t *TerminalTransport) Resize(rows, cols int) error {
 }
 
 // SubscriberFanOut returns a bootstrap snapshot + live subscriber channel
-// from the Recorder. Returns nil, nil if no recorder is active for this
-// session (the runtime left or was replaced).
-func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch <-chan []byte, ok bool) {
+// from the Recorder. The returned channel is the EXACT channel registered
+// with the Recorder — it must be passed to rec.Unsubscribe(ch) to clean
+// up the subscription. Returns nil, nil, false if no recorder is active.
+func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch chan []byte, ok bool) {
 	rec := GetRecorder(sessionID)
 	if rec == nil {
 		return nil, nil, false

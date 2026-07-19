@@ -217,13 +217,10 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			if hasRec {
 				rec = GetRecorder(session)
 				transportBootstrap = bootstrap
-				subCh = make(chan []byte, 32)
-				go func() {
-					for payload := range liveCh {
-						subCh <- payload
-					}
-					close(subCh)
-				}()
+				// Use the transport channel DIRECTLY — the EXACT channel
+				// the Recorder registered, so deferred rec.Unsubscribe
+				// will clean it up correctly.
+				subCh = liveCh
 				useRegistry = false
 			}
 		}
