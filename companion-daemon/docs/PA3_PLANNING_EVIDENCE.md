@@ -504,9 +504,9 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R6 baseline)
+## 12. PA3 contract proposal gate results (R7 — Admission Resolution)
 
-Baseline SHA: `21d34e5b46e1ad5058a4b95fb6102104697e51ce`
+Baseline SHA: `a3337b7e78c29f32223ccb44e4f4f8b8b053a943`
 Gate run date: 2026-07-19
 No production code changed; supervisor directory removed at R1.
 
