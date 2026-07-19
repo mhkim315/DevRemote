@@ -504,9 +504,9 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R8 — Token-Mediated Admission)
+## 12. PA3 contract proposal gate results (R9 — Microsecond Token Admission)
 
-Baseline SHA: `b56aacfdc06d1ddde433eff638eafd78068a70a1`
+Baseline SHA: `b741e26cc4ca9d798662d4694ff901aee5e72b7a`
 Gate run date: 2026-07-19
 No production code changed; supervisor directory removed at R1.
 
