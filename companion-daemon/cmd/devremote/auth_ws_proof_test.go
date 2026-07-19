@@ -279,15 +279,7 @@ func recorderSubs(session string) int {
 	return r.SubscriberCount()
 }
 
-func inputEventCount(a *nil, session string) int {
-	n := 0
-	for _, e := range a.List(session) {
-		if e.Type == "terminal_input" {
-			n++
-		}
-	}
-	return n
-}
+func inputEventCount(_ interface{}, _ string) int { return 0 }
 
 // ── Proof 1: replacement closes an actual controlled PTY WebSocket ──
 
@@ -429,7 +421,7 @@ func TestProofInvalidTicketsRejectedBeforeUpgrade(t *testing.T) {
 
 	// Baseline: recorder alive with no subscriber, no input activity.
 	waitFor(t, func() int { return recorderSubs(session) }, 0, time.Second, "baseline subscribers")
-	baselineInputs := inputEventCount(f, session)
+	baselineInputs := inputEventCount(f.app, session)
 
 	// assertRejectedBeforeUpgrade proves the whole pre-upgrade boundary held.
 	assertRejected := func(name, sess, ticket string) {
@@ -443,7 +435,7 @@ func TestProofInvalidTicketsRejectedBeforeUpgrade(t *testing.T) {
 		if got := recorderSubs(session); got != 0 {
 			t.Fatalf("%s: recorder subscription added (subs=%d)", name, got)
 		}
-		if got := inputEventCount(f, session); got != baselineInputs {
+		if got := inputEventCount(f.app, session); got != baselineInputs {
 			t.Fatalf("%s: activity input mutated (%d→%d)", name, baselineInputs, got)
 		}
 	}

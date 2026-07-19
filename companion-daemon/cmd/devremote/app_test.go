@@ -414,7 +414,7 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -448,7 +448,7 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -486,7 +486,7 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -515,7 +515,7 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -557,7 +557,7 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{waitErr: shutdownErr}, nil
 		},
 	})
@@ -700,7 +700,7 @@ func TestApp_InjectedVerifierUsedByRoutes(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Verifier:     fv,
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})

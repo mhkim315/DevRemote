@@ -38,7 +38,7 @@ func TestSP05_LiveInteractiveTurn(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 	sock := filepath.Join(dir, "d.sock")
-	ipc, err := term.StartIPCServer(sock, app.registry, nil, nil, nil, app.lifecycle, app.managed, nil)
+	ipc, err := term.StartIPCServer(sock, app.registry, nil, app.lifecycle, app.managed, nil)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}

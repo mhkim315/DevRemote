@@ -1173,7 +1173,7 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	// Start a real IPC server on a temp socket.
 	socketPath := filepath.Join("/tmp", fmt.Sprintf("pokit-c1d-test-%d.sock", time.Now().UnixNano()))
 	reg, _ := mux.NewRegistry()
-	srv, err := StartIPCServer(socketPath, reg, nil, svc)
+	srv, err := StartIPCServer(socketPath, reg, nil, nil, nil, svc)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}

@@ -206,7 +206,7 @@ func TestHandleWS_CmuxSnapshotModeDoesNotStartRecorder(t *testing.T) {
 	reg := mux.MustNewRegistry(&cmuxSnapshotAdapter{})
 	h := &Handlers{Registry: reg}
 
-	req := httptest.NewRequest("GET", "/term/ws?session=cmux:test")
+	req := httptest.NewRequest("GET", "/term/ws?session=cmux:test", nil)
 	rec := httptest.NewRecorder()
 	h.HandleWS(rec, req)
 
