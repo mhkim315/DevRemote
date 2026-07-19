@@ -207,11 +207,16 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// owner is wired. Falls back to Registry for test Handlers without
 	// Lifecycle or for sessions not yet tracked by the owner.
 	useRegistry := true
+	// transportBootstrap is the initial ring-buffer replay from the
+	// TerminalTransport path (nil when Registry path is used).
+	var transportBootstrap []byte
+
 	if ref.Adapter == "controlled_pty" && h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
 		if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
-			_, liveCh, hasRec := transport.SubscriberFanOut(session)
+			bootstrap, liveCh, hasRec := transport.SubscriberFanOut(session)
 			if hasRec {
 				rec = GetRecorder(session)
+				transportBootstrap = bootstrap
 				subCh = make(chan []byte, 32)
 				go func() {
 					for payload := range liveCh {
@@ -359,13 +364,20 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	// E10b: atomic subscribe+bootstrap prevents gap/duplicate.
-	// Replace subCh from EnsureRecorder with atomic handoff.
-	rec.Unsubscribe(subCh)
-	bootstrap, subCh := rec.SubscribeWithBootstrap()
-	if len(bootstrap) > 0 {
+	// E10b: atomic subscribe+bootstrap.  For controlled_pty routed
+	// through TerminalTransport, the transport SubscriberFanOut already
+	// provided the bootstrap and subscriber channel — no second
+	// Recorder subscription.  For the Registry path, atomically swap
+	// the EnsureRecorder starter channel for the full subscribe+bootstrap.
+	if useRegistry {
+		rec.Unsubscribe(subCh)
+		var bootstrap []byte
+		bootstrap, subCh = rec.SubscribeWithBootstrap()
+		transportBootstrap = bootstrap
+	}
+	if len(transportBootstrap) > 0 {
 		select {
-		case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: bootstrap}:
+		case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: transportBootstrap}:
 		case <-writerDone:
 			return
 		case <-r.Context().Done():
