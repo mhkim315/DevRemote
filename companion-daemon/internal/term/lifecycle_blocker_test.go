@@ -14,16 +14,18 @@ import (
 
 // ── BLOCKER 1: legacy query DELETE must not bypass the M2 contract ──
 
+// PA3 Step 6b R1: removed t.Skip, ActivityBuffer.Append, and Activity field.
+// ActivityBuffer stub (nil) does not store history; canonical Transcript
+// is authoritative. The core invariant — legacy delete of running managed
+// session is rejected — is preserved.
 func TestLifecycle_LegacyQueryDelete_ManagedRunning_Rejected(t *testing.T) {
- t.Skip("PA3 Step6: ActivityBuffer stub")
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("m1")
 	reg := mux.MustNewRegistry(a)
 	svc := lcService(t, a)
 	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
-	svc.activity.Append(ActivityEvent{SessionID: id, Type: ActivityTerminalOutput, Text: "history"})
 
-	h := &Handlers{Registry: reg, Activity: svc.activity, Lifecycle: svc}
+	h := &Handlers{Registry: reg, Lifecycle: svc}
 	// DELETE /api/sessions?id=<managed running> via the legacy handler.
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions?id="+id, nil)
 	rr := httptest.NewRecorder()
@@ -32,12 +34,9 @@ func TestLifecycle_LegacyQueryDelete_ManagedRunning_Rejected(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("legacy delete of running managed session status = %d, want 409 (body=%s)", rr.Code, rr.Body.String())
 	}
-	// Session and its history must be preserved (not terminated/cleared).
+	// Session must be preserved (not terminated/cleared).
 	if e, ok := svc.OwnedPTY().Get(id); !ok || e.State.Terminal() {
 		t.Fatalf("catalog after rejected legacy delete = %+v ok=%v, want running preserved", e, ok)
-	}
-	if got := svc.activity.List(id); len(got) == 0 {
-		t.Fatalf("activity history cleared by a rejected legacy delete")
 	}
 }
 

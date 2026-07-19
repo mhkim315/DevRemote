@@ -60,6 +60,23 @@ func (a *fakeControlledAdapter) TerminateSession(ctx context.Context, id string)
 	return nil
 }
 
+// PA3 Step 6b R1: CreateSessionAndCapture implements SessionCreatorWithIdentity
+// so OwnedPTYRuntime.Create uses the canonical createWithCapture path instead
+// of the legacy createLegacy path (which requires non-nil ActivityBuffer).
+func (a *fakeControlledAdapter) CreateSessionAndCapture(ctx context.Context, opts mux.CreateOptions) (string, mux.Session, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.createCalls++
+	a.lastOpts = opts
+	id := opts.Name
+	if id == "" {
+		id = "generated"
+	}
+	s := &fakeControlledSession{id: id, adapter: a}
+	a.sessions[id] = s
+	return id, s, nil
+}
+
 func (a *fakeControlledAdapter) CompareAndTerminate(_ context.Context, localID string, expected mux.Session) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -124,7 +141,7 @@ func newTestHandlers(t *testing.T) (*Handlers, *fakeControlledAdapter) {
 	fa := newFakeAdapter()
 	reg := mux.MustNewRegistry(fa)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	activity := NewActivityBuffer(10)
+	var activity *ActivityBuffer
 	// PA2c: profile creation dispatches through the OwnedPTYRuntime owner
 	// (production parity — app.go always wires lifecycle + owned PTY).
 	owned := NewOwnedPTYRuntime(ctlAdapter, activity, nil)
@@ -299,7 +316,7 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	activity := NewActivityBuffer(10)
+	var activity *ActivityBuffer
 	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, activity, nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
@@ -318,7 +335,7 @@ func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil),
+	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, nil, nil),
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
 		t.Fatalf("custom argv err: %v", err)
@@ -335,7 +352,7 @@ func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	activity := NewActivityBuffer(10)
+	var activity *ActivityBuffer
 	malformed := []json.RawMessage{
 		json.RawMessage(`{"executable":"bash"}`), // object
 		json.RawMessage(`123`),                   // number

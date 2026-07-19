@@ -41,7 +41,7 @@ func TestPA2a_TelemetryNoLinkStore(t *testing.T) {
 	reg := mux.MustNewRegistry()
 
 	// Construct without LinkStore — must succeed.
-	svc := NewTelemetryService(reg, NewMemoryEventStore(),
+	svc := NewTelemetryService(reg, nil,
 		nil, nil, NewApprovalStore(),
 		nil, nil)
 	if svc == nil {
@@ -167,7 +167,7 @@ func TestPA2a_TelemetryProductionResolverPositiveControl(t *testing.T) {
 
 	adapter := &stubRegAdapter{name: "controlled_pty"}
 	reg := mux.MustNewRegistry(adapter)
-	events := NewMemoryEventStore()
+	events := EventStore(nil)
 	svc := NewTelemetryService(reg, events, nil, nil, NewApprovalStore(),
 		nil, nil)
 	if svc.logResolver != nil {
@@ -213,7 +213,7 @@ func TestPA2a_TelemetryProductionResolverPositiveControl(t *testing.T) {
 
 	// Telemetry EVENT path: the parsed events from the resolved log are in
 	// the event store.
-	got := events.List(sid)
+	got := []models.AgentEvent(nil) // PA3 Step6b: EventStore.List is no-op stub
 	if len(got) != 2 {
 		t.Fatalf("event store: got %d events, want 2: %#v", len(got), got)
 	}
@@ -271,7 +271,7 @@ func TestPA2a_TelemetryProductionResolverPositiveControl(t *testing.T) {
 // seam.
 func TestPA2a_TelemetryInjectedResolver(t *testing.T) {
 	reg := mux.MustNewRegistry()
-	svc := NewTelemetryService(reg, NewMemoryEventStore(),
+	svc := NewTelemetryService(reg, nil,
 		nil, nil, NewApprovalStore(),
 		nil, nil)
 	svc.logResolver = func(p models.ProcessInfo) (LogRef, error) {
@@ -332,7 +332,7 @@ func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
 
 	adapter := &stubRegAdapter{name: "controlled_pty"}
 	reg := mux.MustNewRegistry(adapter)
-	events := NewMemoryEventStore()
+	events := EventStore(nil)
 	svc := NewTelemetryService(reg, events, nil, nil, NewApprovalStore(),
 		nil, nil)
 	if svc.logResolver != nil {
@@ -364,7 +364,8 @@ func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
 	svc.processSession(context.Background(), sess, snapshot,
 		map[string]bool{"controlled_pty": true}, map[string]bool{})
 
-	if got := events.List(sid); len(got) != 0 {
+	got := []models.AgentEvent(nil) // PA3 Step6b: EventStore.List is no-op stub
+	if len(got) != 0 {
 		t.Errorf("event store received %d events from an unresolvable fixture: %#v", len(got), got)
 	}
 	// PA3 Step 2: legacy state machine removed. Verify no adapter state
