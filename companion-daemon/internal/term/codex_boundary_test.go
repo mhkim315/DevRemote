@@ -15,10 +15,10 @@ import (
 )
 
 func TestCodexLog_ProductionEventsPath(t *testing.T) {
+ t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
 	tmpDir := t.TempDir()
 	logPath := tmpDir + "/session.jsonl"
-	codexLog := `{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"<UUID>"}}
-{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"<UUID>"}}
+	codexLog := `{"timestamp":"2026-07-06T13:29:35.399Z","type":"session_meta","payload":{"session_id":"<UUID>"}}{"timestamp":"2026-07-06T13:29:35.399Z","type":"event_msg","payload":{"type":"task_started","turn_id":"<UUID>"}}
 {"timestamp":"2026-07-06T13:29:38.000Z","type":"event_msg","payload":{"type":"user_message","message":"<PROMPT>"}}
 {"timestamp":"2026-07-06T13:30:00.000Z","type":"event_msg","payload":{"type":"waiting_for_approval","turn_id":"<UUID>"}}
 `

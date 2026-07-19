@@ -84,12 +84,11 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 				LastError:       redactStr(st.LastError),
 			}
 
-			// Parser health from internal state (safe copy, not pointer).
-			if ss, ok := h.Telemetry.sessionStateSnapshot(st.ID); ok {
-				sd.SamplingFails = ss.SamplingFailures
-				sd.ParserHealthy = ss.SamplingFailures <= 2
-				if ss.SamplingFailures > 0 {
-					sd.DegradedReason = "sampling_failure"
+			// PA3 Step 2: adapter state health from accepted-adapter ingestion.
+			if as, ok := h.Telemetry.adapterStateSnapshot(st.ID); ok {
+				sd.ParserHealthy = !as.versionConflict
+				if as.versionConflict {
+					sd.DegradedReason = "version_conflict"
 				}
 			}
 
@@ -110,16 +109,15 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(snap)
 }
 
-// sessionStateSnapshot returns a safe copy of internal session state for diagnostics.
-// It does not expose the internal pointer after releasing the lock.
-func (s *TelemetryService) sessionStateSnapshot(id string) (sessionStateData, bool) {
+// adapterStateSnapshot returns the accepted-adapter ingestion state for diagnostics.
+func (s *TelemetryService) adapterStateSnapshot(id string) (*adapterState, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	data := s.sessions[id]
-	if data == nil {
-		return sessionStateData{}, false
+	st := s.adapterStates[id]
+	if st == nil {
+		return nil, false
 	}
-	return *data, true
+	return st, true
 }
 
 // Redaction patterns for diagnostic output safety.

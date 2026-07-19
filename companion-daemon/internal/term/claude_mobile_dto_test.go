@@ -424,10 +424,10 @@ func (s *claudeWaitSession) ProcessInfo(_ context.Context) (models.ProcessInfo, 
 // delivery endpoint holds zero queued items/bytes — no record, no claim, no
 // CTA, no delivery, no provider write can arise from the status alone.
 func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testing.T) {
+ t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
 	dir := t.TempDir()
 	logPath := dir + "/claude.jsonl"
-	writeLines(t, logPath, []string{
-		`{"type":"user","version":"2.1.202","message":{"role":"user","content":"hi"},"sessionId":"s","uuid":"u0","timestamp":"2026-07-06T13:29:35.399Z"}`,
+	writeLines(t, logPath, []string{`{"type":"user","version":"2.1.202","message":{"role":"user","content":"hi"},"sessionId":"s","uuid":"u0","timestamp":"2026-07-06T13:29:35.399Z"}`,
 		`{"type":"permission-mode","permissionMode":"ask","sessionId":"s"}`,
 	})
 	sid := "controlled_pty:clwait"
@@ -450,7 +450,7 @@ func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testi
 		return LogRef{Path: logPath, Agent: "claude", Session: sid}, nil
 	})
 	svc.mu.Lock()
-	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle"}
+	svc.adapterStates[sid] = &adapterState{}
 	svc.mu.Unlock()
 	transcript.RegisterFirstLaunch(transcript.LaunchSpec{
 		SessionID: sid, Provider: "claude", Adapter: "controlled_pty", Version: "2.1.202"})

@@ -155,34 +155,29 @@ func sessionCapabilities(s mux.Session) []string {
 	return caps
 }
 
-type sessionStateData struct {
-	LastOutput   []byte
-	LastActivity time.Time
-	State        string
-	Load         int
-	Runner       string
-	RunnerColor  string
-	Cursor       *LogCursor
-	Parser       AgentLogParser
-	// T3: accepted adapter state
-	// T3: accepted adapter positioned state (nil until used)
-	Adapter *adapterState
-	// SamplingFailures tracks consecutive telemetry errors.
-	SamplingFailures int
-}
-
 func sortTelemetry(items []SessionTelemetry) {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].ID < items[j].ID
 	})
 }
 
-func isApprovalPrompt(line string) bool {
-	return strings.Contains(line, "Do you want") ||
-		strings.Contains(line, "proceed?") ||
-		strings.Contains(line, "(y/n)") ||
-		strings.Contains(line, "(y/N)") ||
-		(strings.Contains(line, "1. Yes") && strings.Contains(line, "No"))
+// normalizeEventType maps legacy parser types to common AgentEventType.
+// PA3 Step 2 note: retained until legacy parsers are deleted in Step 6.
+func normalizeEventType(e *models.AgentEvent) {
+	switch e.Type {
+	case "user":
+		e.Type = "user_message"
+	case "tool_use":
+		e.Type = "tool_call_started"
+	case "tool_result":
+		e.Type = "tool_call_finished"
+	case "message":
+		if strings.Contains(e.Summary, "Thinking") || strings.Contains(e.Summary, "Reasoning") {
+			e.Type = "thinking"
+		} else {
+			e.Type = "assistant_message"
+		}
+	}
 }
 
 func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[string]models.ProcessInfo, map[string]bool, map[string]bool) {
@@ -207,89 +202,6 @@ func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[s
 		}
 	}
 	return snapshots, batchAdapters, failedAdapters
-}
-
-func evaluateState(stateData *sessionStateData, parsedNewEvents bool, lastEvent models.AgentEvent, logErr error, isWaiting bool, isThinkingFallback bool, diffSize int) {
-	if isWaiting {
-		stateData.State = "waiting"
-		stateData.Load = 0
-	} else if parsedNewEvents {
-		stateData.LastActivity = time.Now()
-		switch lastEvent.Type {
-		case "user", "user_message":
-			stateData.State = "thinking"
-			stateData.Load = 50
-		case "tool_use", "tool_call_started":
-			stateData.State = "working"
-			stateData.Load = 100
-		case "tool_result", "tool_call_finished":
-			stateData.State = "thinking"
-			stateData.Load = 50
-		case "thinking":
-			stateData.State = "thinking"
-			stateData.Load = 50
-		case "approval_requested":
-			stateData.State = "waiting"
-			stateData.Load = 0
-		case "message", "assistant_message":
-			if strings.Contains(lastEvent.Summary, "Thinking") || strings.Contains(lastEvent.Summary, "Reasoning") {
-				stateData.State = "thinking"
-				stateData.Load = 50
-			} else {
-				stateData.State = "idle"
-				stateData.Load = 0
-			}
-		default:
-			stateData.State = "working"
-			stateData.Load = 50
-		}
-	} else if logErr == nil {
-		if time.Since(stateData.LastActivity) > 10*time.Second {
-			switch stateData.State {
-			case "working":
-				stateData.State = "thinking"
-				stateData.Load = 50
-				stateData.LastActivity = time.Now()
-			case "thinking", "waiting":
-				stateData.State = "idle"
-				stateData.Load = 0
-			}
-		} else if stateData.State == "waiting" && !isWaiting {
-			stateData.State = "idle"
-			stateData.Load = 0
-		}
-	} else {
-		if diffSize > 50 {
-			stateData.State = "working"
-			stateData.Load = 100
-			stateData.LastActivity = time.Now()
-		} else if diffSize > 0 || isThinkingFallback {
-			stateData.State = "thinking"
-			stateData.Load = 50
-			stateData.LastActivity = time.Now()
-		} else {
-			if time.Since(stateData.LastActivity) > 5*time.Second {
-				stateData.State = "idle"
-				stateData.Load = 0
-			} else {
-				stateData.State = "thinking"
-				stateData.Load = 20
-			}
-		}
-	}
-}
-
-func preserveTransientSamplingFailure(stateData *sessionStateData, logErr error, screenErr error, adapterFailed bool, parsedNewEvents bool) bool {
-	if parsedNewEvents || logErr == nil {
-		stateData.SamplingFailures = 0
-		return false
-	}
-	if screenErr == nil && !adapterFailed {
-		stateData.SamplingFailures = 0
-		return false
-	}
-	stateData.SamplingFailures++
-	return stateData.SamplingFailures <= 2
 }
 
 // HandleSessionsV2 returns rich JSON metadata for all sessions.
@@ -352,46 +264,6 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.Events, h.AgentDetector), h.Lifecycle, reg)
 	res = appendCatalogRows(res, h.Catalog, h.Approvals)
 	json.NewEncoder(w).Encode(res)
-}
-
-// normalizeEventType maps legacy parser types + summary hints to common AgentEventType.
-func normalizeEventType(e *models.AgentEvent) {
-	switch e.Type {
-	case "user":
-		e.Type = "user_message"
-	case "tool_use":
-		e.Type = "tool_call_started"
-	case "tool_result":
-		e.Type = "tool_call_finished"
-	case "message":
-		// Term-layer parser uses Summary to distinguish thinking from message.
-		if containsAny(e.Summary, "Thinking", "Reasoning") {
-			e.Type = "thinking"
-		} else {
-			e.Type = "assistant_message"
-		}
-	}
-}
-
-func containsAny(s string, substrs ...string) bool {
-	for _, sub := range substrs {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// mapLegacyState converts legacy state machine states to common AgentStatus.
-func mapLegacyState(state string) string {
-	switch state {
-	case "waiting":
-		return "waiting_approval"
-	default:
-		return state
-	}
 }
 
 func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetry {

@@ -69,7 +69,7 @@ func TestProcessSession_AcceptedAdapterIndependent(t *testing.T) {
 
 	// Seed session state as the Run loop would.
 	svc.mu.Lock()
-	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle", Load: 0}
+	svc.adapterStates[sid] = &adapterState{}
 	svc.mu.Unlock()
 
 	svc.processSession(context.Background(), sess,
@@ -141,7 +141,7 @@ func TestProcessSession_VersionConflictNoSegments(t *testing.T) {
 	})
 
 	svc.mu.Lock()
-	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle", Load: 0}
+	svc.adapterStates[sid] = &adapterState{}
 	svc.mu.Unlock()
 
 	svc.processSession(context.Background(), sess,

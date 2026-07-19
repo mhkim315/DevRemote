@@ -16,6 +16,7 @@ import (
 )
 
 func TestClaudeLog_ProductionEventsPath(t *testing.T) {
+ t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
 	// Create a temp log at a path matching Claude's pattern.
 	tmpHome := t.TempDir()
 	projDir := filepath.Join(tmpHome, ".claude", "projects", "test-project")

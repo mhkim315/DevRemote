@@ -150,7 +150,7 @@ func TestS11B_ProductionCorrelationUsesRuntimeIdentity(t *testing.T) {
 			return LogRef{Path: logPath, Agent: "codex", Session: sid}, nil
 		})
 		svc.mu.Lock()
-		svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle"}
+		svc.adapterStates[sid] = &adapterState{}
 		svc.mu.Unlock()
 		// Managed launch binding claims PID 7777 + a specific start time.
 		transcript.RegisterFirstLaunch(transcript.LaunchSpec{
@@ -205,7 +205,7 @@ func TestS11B_ProductionAdapterMismatchNoStatus(t *testing.T) {
 		return LogRef{Path: logPath, Agent: "codex", Session: sid}, nil
 	})
 	svc.mu.Lock()
-	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle"}
+	svc.adapterStates[sid] = &adapterState{}
 	svc.mu.Unlock()
 	// Binding claims controlled_pty, but the runtime adapter is tmux.
 	transcript.RegisterFirstLaunch(transcript.LaunchSpec{

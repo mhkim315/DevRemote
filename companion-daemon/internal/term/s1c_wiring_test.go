@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/agent/contract"
@@ -33,7 +32,7 @@ func s1cSvc(t *testing.T, agentKind, logPath, sid string) (*TelemetryService, *p
 		return LogRef{Path: logPath, Agent: agentKind, Session: sid}, nil
 	})
 	svc.mu.Lock()
-	svc.sessions[sid] = &sessionStateData{LastActivity: time.Now(), State: "idle"}
+	svc.adapterStates[sid] = &adapterState{}
 	svc.mu.Unlock()
 	return svc, sess
 }

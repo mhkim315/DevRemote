@@ -818,7 +818,7 @@ func TestTelemetry_RegistryDisappearanceDeactivatesGate(t *testing.T) {
 	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("x"))); !ok {
 		t.Fatal("precondition: active endpoint should accept")
 	}
-	svc := &TelemetryService{sessions: map[string]*sessionStateData{"codex:s1": {}}, deliveryGate: gate}
+	svc := &TelemetryService{adapterStates: map[string]*adapterState{"codex:s1": {}}, deliveryGate: gate}
 	svc.reconcileSessions(nil) // no active sessions → codex:s1 disappeared
 	if _, _, ok := gate.Accept(gateReq("codex:s1", "a2", "k2", dig("default"), rt, []byte("x"))); ok {
 		t.Error("registry disappearance left the delivery endpoint active")
@@ -830,7 +830,7 @@ func TestTelemetry_ClearDeactivatesGate(t *testing.T) {
 	gate := NewRuntimeDeliveryGate()
 	rt := RuntimeRef{Adapter: "codex", Version: "0.144.1", LaunchGen: 5, StreamGen: 2}
 	gate.Activate("codex:s1", rt, 4)
-	svc := &TelemetryService{sessions: map[string]*sessionStateData{"codex:s1": {}}, deliveryGate: gate}
+	svc := &TelemetryService{adapterStates: map[string]*adapterState{"codex:s1": {}}, deliveryGate: gate}
 	svc.Clear("codex:s1")
 	if _, _, ok := gate.Accept(gateReq("codex:s1", "a1", "k1", dig("default"), rt, []byte("x"))); ok {
 		t.Error("Clear (delete/unlink) left the endpoint active")
