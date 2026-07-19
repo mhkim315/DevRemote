@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { getSessionHistory } from '../lib/client';
+// PA3 Step 1: use getTranscript() instead of deprecated getSessionHistory().
+import { getTranscript } from '../lib/client';
+import type { TranscriptSegment } from '../lib/client';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, ScrollView, ActivityIndicator, Platform } from 'react-native';
 
 interface Props {
@@ -16,18 +18,22 @@ export function HistoryModal({ visible, onClose, session, token }: Props) {
   useEffect(() => {
     if (visible) {
       setLoading(true);
-      getSessionHistory(session, token)
-        .then(data => {
-          // data is AgentEvent[] — extract terminal output Detail fields.
-          const text = Array.isArray(data)
-            ? data.map((e: any) => e.detail || e.summary || '').join('\n')
-            : JSON.stringify(data);
-          const strippedText = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-          setHistory(strippedText);
+      getTranscript(session, token)
+        .then(resp => {
+          if (resp && resp.semantic) {
+            const text = resp.semantic
+              .map((s: TranscriptSegment) => s.text || '')
+              .filter((t: string) => t.length > 0)
+              .join('\n');
+            setHistory(text);
+            return;
+          }
+          // Legacy fallback: if null (validation failed), try legacy endpoint.
+          setHistory('Transcript unavailable — validation failed.');
         })
         .catch(err => {
           console.error(err);
-          setHistory('Error fetching history');
+          setHistory('Error fetching transcript.');
         })
         .finally(() => {
           setLoading(false);

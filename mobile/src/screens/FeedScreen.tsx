@@ -77,6 +77,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const sessionGenRef = useRef(0);
   // PA3 Step 1: Transcript generation for reset detection.
   const transcriptGenRef = useRef(0);
+  // PA3 Step 1: bounded AgentEventRef dedup Set, cleared on generation reset.
+  const transcriptSeenRefs = useRef<Set<string>>(new Set());
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
@@ -304,6 +306,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             // (and not first poll), discard all cached segments.
             if (resp.generation !== undefined && transcriptGenRef.current !== 0 && resp.generation !== transcriptGenRef.current) {
               transcriptGenRef.current = resp.generation;
+              transcriptSeenRefs.current.clear();
               setTranscriptEvents([]);
               setFallbackEvents([]);
               transcriptMaxSeqRef.current = 0;
@@ -819,7 +822,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
               {fallbackEvents && fallbackEvents.length > 0 ? (
                 <View style={styles.fallbackSection}>
                   <Text style={styles.fallbackHeader}>⌇ Terminal output (snapshot / degraded)</Text>
-                  <E8g2Transcript events={fallbackEvents} />
+                  <E8g2Transcript events={fallbackEvents} seenRefs={transcriptSeenRefs.current} />
                 </View>
               ) : (
                 <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
@@ -827,11 +830,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             </>
           ) : (
             <>
-              <E8g2Transcript events={transcriptEvents} />
+              <E8g2Transcript events={transcriptEvents} seenRefs={transcriptSeenRefs.current} />
               {fallbackEvents && fallbackEvents.length > 0 && (
                 <View style={styles.fallbackSection}>
                   <Text style={styles.fallbackHeader}>⌇ Terminal output (degraded)</Text>
-                  <E8g2Transcript events={fallbackEvents} />
+                  <E8g2Transcript events={fallbackEvents} seenRefs={transcriptSeenRefs.current} />
                 </View>
               )}
             </>

@@ -3,7 +3,7 @@
 Status: **EVIDENCE**
 Date: 2026-07-19
 Contract SHA: `194f6cd070cd39a8acb6ec0d8cfbf8811f7112ec` (PA3 contract FROZEN)
-Step 1 SHA: (this commit)
+Step 1 R1 SHA: (this commit)
 
 ## Changes
 
@@ -12,8 +12,11 @@ Step 1 SHA: (this commit)
 - FeedScreen.tsx: Removed ACTIVITY tab (was using `getSessionHistory()`)
 - FeedScreen.tsx: TRANSCRIPT tab now the sole history/activity read path
 - FeedScreen.tsx: `fetchTranscript()` updated with generation reset detection
+- FeedScreen.tsx: `transcriptSeenRefs` Set wired to `E8g2Transcript` → `classifyEvents` for AgentEventRef dedup
+- FeedScreen.tsx: `transcriptSeenRefs.clear()` on generation reset
 - FeedScreen.tsx: Removed `historyEvents` state, `fetchHistory()` function, `historyError`
 - FeedScreen.tsx: Removed `EventBubble` import (was used only by ACTIVITY tab)
+- TranscriptRenderer.tsx: Accepts optional `seenRefs` Set prop, passes to `classifyEvents`
 
 ### 2. AgentCard: drop state/load/runner/runnerColor/events
 
@@ -77,8 +80,8 @@ $ cd companion-daemon && go vet ./...
 
 $ cd companion-daemon && go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
 ok  	devremote/companion-daemon/internal/term	26.601s
-ok  	devremote/companion-daemon/internal/mux	6.661s
-ok  	devremote/companion-daemon/cmd/devremote	33.277s
+ok  	devremote/companion-daemon/internal/mux	7.109s
+ok  	devremote/companion-daemon/cmd/devremote	33.580s
 ```
 
 ### No backend files modified
@@ -87,7 +90,8 @@ ok  	devremote/companion-daemon/cmd/devremote	33.277s
 $ git diff --stat b93c521b7..HEAD -- companion-daemon/
  companion-daemon/.gitignore                    |   1 +
  companion-daemon/docs/PA3_PLANNING_EVIDENCE.md | 561 +++++++++++++++++++++++++
- 2 files changed, 562 insertions(+)
+ companion-daemon/docs/PA3_STEP1_EVIDENCE.md    | (new)
+ 3 files changed (companion-daemon/)
 ```
 
 Proof: only `.gitignore` and this evidence document were changed in `companion-daemon/`.
