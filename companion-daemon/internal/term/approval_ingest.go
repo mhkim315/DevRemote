@@ -121,6 +121,12 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 	if len(items) == 0 {
 		return
 	}
+	var newlyAdmitted []string
+	for _, item := range items {
+		if item.Actionable {
+			newlyAdmitted = append(newlyAdmitted, item.Approval.ID)
+		}
+	}
 	s.approvals.Ingest(ApprovalIngest{
 		SessionID: sessionID,
 		LaunchGen: launchGen,
@@ -129,4 +135,12 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 		Version:   version,
 		Items:     items,
 	})
+	// PA3 Step 2 R2: notify for newly-admitted actionable approvals only.
+	for _, id := range newlyAdmitted {
+		for _, a := range s.approvals.ListSafe(sessionID) {
+			if a.ID == id && a.State == "pending" {
+				s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
+			}
+		}
+	}
 }

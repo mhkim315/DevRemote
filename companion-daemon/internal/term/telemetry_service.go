@@ -144,6 +144,12 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 		return // no log to ingest
 	}
 
+	// PA3 Step 2 R2: Gate on accepted adapter BEFORE state allocation + raw reads.
+	// Unsupported providers (Gemini, Antigravity, unknown) → no ingestion.
+	if !isAcceptedAdapter(logRef.Agent) {
+		return
+	}
+
 	s.mu.Lock()
 	state := s.adapterStates[id]
 	if state == nil {
@@ -157,7 +163,7 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 		return
 	}
 
-	if s.transcript != nil && isAcceptedAdapter(logRef.Agent) {
+	if s.transcript != nil {
 		state.appendRecords(rawLines)
 		records, acursor, overflowed := state.buildAdapterInput()
 		if overflowed {
@@ -219,7 +225,6 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					// PA3 Step 2: post-ingest notification hook.
 					// Notifier fires for newly pending actionable approvals only.
 					// provenActionMapping returns actionable=false today → dormant.
-					s.notifyNewApprovals(id)
 				default:
 					s.approvals.InvalidateSession(id, "correlation unavailable")
 				}
@@ -236,19 +241,6 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 	}
 }
 
-// notifyNewApprovals calls the notifier for newly-pending actionable approvals.
-// Runs outside store locks. provenActionMapping returns actionable=false today
-// (B5: no proven action mapping exists), so this is dormant — no false positives.
-func (s *TelemetryService) notifyNewApprovals(sessionID string) {
-	if s.notifier == nil {
-		return
-	}
-	for _, a := range s.approvals.ListSafe(sessionID) {
-		if a.State == "pending" && a.Actionable {
-			s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
-		}
-	}
-}
 
 // logResolver is an injectable test seam. nil means use production ResolveAgentLog.
 // SetLogResolver overrides it for testing.
