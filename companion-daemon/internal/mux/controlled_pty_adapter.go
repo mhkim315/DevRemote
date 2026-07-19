@@ -137,6 +137,69 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	return id, nil
 }
 
+// CreateSessionAndCapture implements SessionCreatorWithIdentity (PA3 Step 6).
+// Creates the PTY session and returns the Session object atomically — the
+// caller captures the exact session identity without a ListSessions lookup.
+func (a *controlledPTYAdapter) CreateSessionAndCapture(ctx context.Context, opts CreateOptions) (string, Session, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.nextID++
+	id := opts.Name
+	if id == "" {
+		id = fmt.Sprintf("pty%d", a.nextID)
+	}
+
+	command := opts.Command
+	if command == "" {
+		command = os.Getenv("SHELL")
+		if command == "" {
+			command = "bash"
+		}
+	}
+
+	if ctx.Err() != nil {
+		return "", nil, ctx.Err()
+	}
+
+	var native *NativeSession
+	var err error
+	if opts.Executable != "" {
+		native, err = SpawnPTYWithDir(id, "xterm-256color", opts.CWD, opts.Executable, opts.Args...)
+	} else {
+		native, err = SpawnPTYWithDir(id, "xterm-256color", opts.CWD, "bash", "-c", command)
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("controlled_pty SpawnPTY: %w", err)
+	}
+
+	s := &controlledPTYSession{
+		id:        id,
+		title:     id,
+		native:    native,
+		startedAt: time.Now(),
+	}
+	a.sessions[id] = s
+
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if native.Cmd.Process == nil {
+				break
+			}
+			if err := native.Cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				a.mu.Lock()
+				s.exited = true
+				a.mu.Unlock()
+				return
+			}
+		}
+	}()
+
+	return id, s, nil
+}
+
 // PA2c-R6: shared detach primitive.  Locates and removes the session under
 // a.mu, sets exited, and returns the native I/O handle.  Caller must call
 // native.Close() outside every lock.  Returns nil on not-found or stale
