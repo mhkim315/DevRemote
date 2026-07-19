@@ -167,8 +167,7 @@ func TestPA2a_TelemetryProductionResolverPositiveControl(t *testing.T) {
 
 	adapter := &stubRegAdapter{name: "controlled_pty"}
 	reg := mux.MustNewRegistry(adapter)
-	events := EventStore(nil)
-	svc := NewTelemetryService(reg, events, nil, nil, NewApprovalStore(),
+	svc := NewTelemetryService(reg, nil, nil, nil, NewApprovalStore(),
 		nil, nil)
 	if svc.logResolver != nil {
 		t.Fatal("precondition: normal production resolver must be the default (logResolver == nil)")
@@ -332,8 +331,7 @@ func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
 
 	adapter := &stubRegAdapter{name: "controlled_pty"}
 	reg := mux.MustNewRegistry(adapter)
-	events := EventStore(nil)
-	svc := NewTelemetryService(reg, events, nil, nil, NewApprovalStore(),
+	svc := NewTelemetryService(reg, nil, nil, nil, NewApprovalStore(),
 		nil, nil)
 	if svc.logResolver != nil {
 		t.Fatal("precondition: normal production resolver must be the default (logResolver == nil)")

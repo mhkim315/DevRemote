@@ -22,7 +22,7 @@ func TestControlledPTY_NoWebSocketCapture(t *testing.T) {
 		Command: "echo 'captured output'",
 	})
 	if err != nil {
-		t.Skipf("PTY creation skipped: %v", err)
+		t.Fatalf("PTY creation failed: %v", err)
 	}
 	defer adapter.(mux.SessionTerminator).TerminateSession(context.Background(), id)
 
@@ -80,7 +80,7 @@ func TestControlledPTY_InputNoRawText(t *testing.T) {
 		Command: "echo test",
 	})
 	if err != nil {
-		t.Skipf("PTY creation skipped: %v", err)
+		t.Fatalf("PTY creation failed: %v", err)
 	}
 	defer adapter.(mux.SessionTerminator).TerminateSession(context.Background(), id)
 
@@ -116,7 +116,7 @@ func TestControlledPTY_DeleteCleanup(t *testing.T) {
 		Command: "echo 'before delete'",
 	})
 	if err != nil {
-		t.Skipf("PTY creation skipped: %v", err)
+		t.Fatalf("PTY creation failed: %v", err)
 	}
 	compoundID := "controlled_pty:" + id
 
@@ -193,7 +193,7 @@ func TestControlledPTY_CWDApplied(t *testing.T) {
 		CWD:     "/tmp",
 	})
 	if err != nil {
-		t.Skipf("PTY creation skipped: %v", err)
+		t.Fatalf("PTY creation failed: %v", err)
 	}
 	defer adapter.(mux.SessionTerminator).TerminateSession(context.Background(), id)
 
