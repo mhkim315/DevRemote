@@ -54,20 +54,22 @@ func (a *lcAdapter) TerminateSession(_ context.Context, id string) error {
 }
 
 // CompareAndTerminate implements mux.SessionIdentityTerminator so the
-// PA2c-R3 atomic cleanups in this package route through the adapter-level
-// lock. It is the single Lock() gate for controlled_pty fakes.
+// PA2c-R4 atomic cleanups in this package route through the adapter-level
+// lock.  Identity comparison and detach happen under the lock; no I/O.
 func (a *lcAdapter) CompareAndTerminate(_ context.Context, localID string, expected mux.Session) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s, ok := a.sessions[localID]
 	if !ok {
+		a.mu.Unlock()
 		return mux.ErrSessionNotFound
 	}
 	if s != expected {
+		a.mu.Unlock()
 		return mux.ErrStaleSessionIdentity
 	}
 	a.terminated = append(a.terminated, localID)
 	delete(a.sessions, localID)
+	a.mu.Unlock()
 	return nil
 }
 

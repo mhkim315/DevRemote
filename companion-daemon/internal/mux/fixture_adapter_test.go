@@ -64,15 +64,17 @@ func (a *fixtureAdapter) TerminateSession(_ context.Context, id string) error {
 
 func (a *fixtureAdapter) CompareAndTerminate(_ context.Context, localID string, expected Session) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s, ok := a.sessions[localID]
 	if !ok {
+		a.mu.Unlock()
 		return ErrSessionNotFound
 	}
 	if s != expected {
+		a.mu.Unlock()
 		return ErrStaleSessionIdentity
 	}
 	delete(a.sessions, localID)
+	a.mu.Unlock()
 	return nil
 }
 
