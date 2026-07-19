@@ -226,13 +226,15 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(snapshot)
 		return
 	}
-	// Fallback without telemetry service (e.g. tests).
-	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.Events, h.AgentDetector), h.Lifecycle, reg)
+	// PA3 Step 6b: Fallback without telemetry service (e.g. tests).
+	// EventStore removed from snapshot path; Transcript is canonical.
+	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.AgentDetector), h.Lifecycle, reg)
 	res = appendCatalogRows(res, h.Catalog, h.Approvals)
 	json.NewEncoder(w).Encode(res)
 }
 
-func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetry {
+// PA3 Step 6b: events EventStore param removed; Transcript is canonical.
+func buildSimpleSnapshot(reg *mux.Registry) []SessionTelemetry {
 	sessions := reg.Sessions(context.Background())
 	res := make([]SessionTelemetry, 0)
 	for _, s := range sessions {
@@ -254,8 +256,8 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 	return res
 }
 
-func buildSimpleSnapshotWithDetector(reg *mux.Registry, events EventStore, detector AgentDetector) []SessionTelemetry {
-	result := buildSimpleSnapshot(reg, events)
+func buildSimpleSnapshotWithDetector(reg *mux.Registry, detector AgentDetector) []SessionTelemetry {
+	result := buildSimpleSnapshot(reg)
 	if detector == nil {
 		return result
 	}

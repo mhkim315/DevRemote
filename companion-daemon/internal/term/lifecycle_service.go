@@ -219,9 +219,7 @@ func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResu
 	}
 	// Daemon-owned projections for the deleted id (provider authority already
 	// recorded terminal acceptance above).
-	if s.activity != nil {
-		s.activity.Clear(id)
-	}
+	// PA3 Step 6b: s.activity.Clear removed; ActivityBuffer is no-op stub.
 	if s.transcript != nil {
 		s.transcript.ClearTranscript(id)
 	}
