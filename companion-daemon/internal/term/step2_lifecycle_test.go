@@ -38,22 +38,3 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	}
 }
 
-// TestLifecycleState_ManagedRow_Absent verifies that managed Codex/Claude
-// rows have NO LifecycleState in the SessionTelemetry projection.
-// LifecycleState is owned exclusively by OwnedPTYRuntime.
-func TestLifecycleState_ManagedRow_Absent(t *testing.T) {
-	// SessionTelemetry for a managed row carries zero LifecycleState.
-	row := SessionTelemetry{
-		ID: "codex_app_server:test-managed", Adapter: "codex_app_server",
-		AgentStatus: "idle",
-	}
-	if row.LifecycleState != "" {
-		t.Errorf("managed LifecycleState = %q, want empty (absent)", row.LifecycleState)
-	}
-	if row.Adapter != "codex_app_server" {
-		t.Errorf("Adapter = %q, want codex_app_server", row.Adapter)
-	}
-	if row.AgentStatus != "idle" {
-		t.Errorf("AgentStatus = %q, want idle", row.AgentStatus)
-	}
-}

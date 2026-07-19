@@ -83,12 +83,21 @@ func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 	if row == nil {
 		t.Fatalf("managed session %s not in list", id)
 	}
-	// PA3 Step 2 R5: Adapter must be populated for managed sessions.
+	// PA3 Step 2 R8: Branch A — Adapter + AgentStatus populated, LifecycleState absent.
 	if row.Adapter != "codex_app_server" {
 		t.Errorf("managed row adapter = %q, want codex_app_server", row.Adapter)
 	}
-	// LifecycleState is empty for managed Codex/Claude sessions —
-	// LifecycleState comes from OwnedPTYRuntime catalog, not managed providers.
+	if row.AgentStatus != string(ManagedStatusIdle) {
+		t.Errorf("managed row AgentStatus = %q, want %s", row.AgentStatus, ManagedStatusIdle)
+	}
+	if row.LifecycleState != "" {
+		t.Errorf("managed row LifecycleState = %q, want empty (absent)", row.LifecycleState)
+	}
+	// Raw JSON: lifecycleState key must be absent for managed rows.
+	raw := rec.Body.String()
+	if strings.Contains(raw, `"lifecycleState"`) {
+		t.Error("raw JSON: lifecycleState must be absent for managed row")
+	}
 }
 // TestManagedREST_DTOBounded: the native-status response carries EXACTLY the
 // bounded field set — no prompts, command text, payloads, paths, thread/turn
