@@ -136,7 +136,7 @@ func TestPA2cR6_StaleIdentity_ProductionAdapterReturnsStale(t *testing.T) {
 	// Replace under the same local id.
 	adapter.mu.Lock()
 	delete(adapter.sessions, "s1")
-	repl := &controlledPTYSession{id: "s1", title: "replacement", native: &NativeSession{}}
+	repl := &controlledPTYSession{id: "s1", title: "replacement", native: newTestNative()}
 	adapter.sessions["s1"] = repl
 	adapter.mu.Unlock()
 	reg.Invalidate()
@@ -169,7 +169,7 @@ func TestPA2cR6_KnownBad_CheckThenDelete_NegativeControl(t *testing.T) {
 	// Replace under the same local id.
 	adapter.mu.Lock()
 	delete(adapter.sessions, "s1")
-	repl := &controlledPTYSession{id: "s1", title: "replacement", native: &NativeSession{}}
+	repl := &controlledPTYSession{id: "s1", title: "replacement", native: newTestNative()}
 	adapter.sessions["s1"] = repl
 	adapter.mu.Unlock()
 	reg.Invalidate()
@@ -182,8 +182,21 @@ func TestPA2cR6_KnownBad_CheckThenDelete_NegativeControl(t *testing.T) {
 	if found == sessA {
 		t.Fatal("FindSession returned old pointer after replacement")
 	}
-	// The non-atomic TerminateSession (by id only) WOULD delete the
-	// replacement.  The atomic path correctly rejects the stale token.
+	// The non-atomic TerminateSession by id WOULD delete the replacement
+	// (the known-bad pattern).  Prove it: call TerminateSession by id;
+	// the replacement is deleted.
+	if err := reg.TerminateSession(context.Background(), "controlled_pty", "s1"); err != nil {
+		t.Fatalf("TerminateSession(replacement) by id: %v", err)
+	}
+	if _, err := reg.FindSession(context.Background(), "controlled_pty:s1"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatal("TerminateSession by id did not delete the replacement")
+	}
+	// Re-seed a second replacement so the atomic path has a live session to
+	// protect.  The original sessA is still stale.
+	repl2 := seedSession(adapter, "s1", "replacement-2")
+	reg.Invalidate()
+	// The atomic path correctly rejects the stale token (sessA) without
+	// touching the replacement.
 	if err := reg.CompareAndTerminateSession(context.Background(), "controlled_pty:s1", sessA); !errors.Is(err, ErrStaleSessionIdentity) {
 		t.Fatalf("stale token not rejected by atomic path: %v", err)
 	}
@@ -191,7 +204,7 @@ func TestPA2cR6_KnownBad_CheckThenDelete_NegativeControl(t *testing.T) {
 	adapter.mu.Lock()
 	got := adapter.sessions["s1"]
 	adapter.mu.Unlock()
-	if got != repl {
+	if got != repl2 {
 		t.Fatalf("replacement terminated by atomic call on stale token")
 	}
 }
