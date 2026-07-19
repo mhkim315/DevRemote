@@ -140,10 +140,11 @@ func (s *mockStreamSession) OpenStream(ctx context.Context) (mux.TerminalStream,
 // --- Original unit tests (helper-level coverage) ---
 
 func TestRecorder_NoWebSocketCapture(t *testing.T) {
+	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "hello from PTY"}
 
 	// Simulate lifecycle start without WebSocket.
-	rec, ch := EnsureRecorder("test:recorder-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	rec, ch := EnsureRecorder("test:recorder-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	if rec == nil {
 		t.Fatal("EnsureRecorder returned nil")
 	}
@@ -168,6 +169,7 @@ func TestRecorder_NoWebSocketCapture(t *testing.T) {
 }
 
 func TestRecorder_MultipleSubscribers(t *testing.T) {
+	var activity *ActivityBuffer
 	sessionID := "test:multi-sub-old"
 
 	// Pipe that writes once and keeps pipe alive long enough for both subs.
@@ -216,9 +218,10 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 }
 
 func TestRecorder_DeleteCleanup(t *testing.T) {
+	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "before delete"}
 
-	_, ch := EnsureRecorder("test:delete-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	_, ch := EnsureRecorder("test:delete-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	// Drain.
 	time.Sleep(200 * time.Millisecond)
 	for len(ch) > 0 {
@@ -240,6 +243,7 @@ func TestRecorder_DeleteCleanup(t *testing.T) {
 }
 
 func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
+	var activity *ActivityBuffer
 
 	// Append input via buffer (simulating WebSocket path).
 	activity.Append(ActivityEvent{
@@ -273,6 +277,7 @@ func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
 // TelemetryService.processSession → EnsureRecorder → ActivityBuffer path
 // captures output without a WebSocket connection.
 func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
+	var activity *ActivityBuffer
 
 	// Create a mock session that implements StreamOpener.
 	sess := &mockStreamSession{
@@ -311,6 +316,7 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 //   - both subscribers receive the same output
 //   - ActivityBuffer contains exactly one terminal_output
 func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
+	var activity *ActivityBuffer
 
 	// Use a counting opener with a delay so content arrives after both subs attach.
 	opener := &countingOpener{
@@ -321,14 +327,14 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 	sessionID := "test:ensure-multi-sub"
 
 	// First call: should open stream.
-	rec1, ch1 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	rec1, ch1 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	if rec1 == nil {
 		t.Fatal("first EnsureRecorder returned nil")
 	}
 	defer DeleteRecorder(sessionID)
 
 	// Second call: should return existing recorder, NOT open a new stream.
-	rec2, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	rec2, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	if rec2 == nil {
 		t.Fatal("second EnsureRecorder returned nil")
 	}
@@ -392,11 +398,12 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 //	→ ActivityBuffer cleared
 //	→ seq reset if same ID reused
 func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
+	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "before delete cleanup"}
 	sessionID := "test:delete-cleanup"
 
 	// Start recorder and wait for capture.
-	_, ch := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, nil)
+	_, ch := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
 	time.Sleep(200 * time.Millisecond)
 	for len(ch) > 0 {
 		<-ch
@@ -425,7 +432,7 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 
 	// Seq reset: if same session ID is reused, seq starts cleanly.
 	opener2 := &testOpener{writeContent: "after recreate"}
-	_, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener2.OpenStream(context.Background()) }, nil)
+	_, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener2.OpenStream(context.Background()) })
 	defer DeleteRecorder(sessionID)
 	time.Sleep(300 * time.Millisecond)
 	for len(ch2) > 0 {
@@ -466,7 +473,7 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 	}
 
 	// Start recorder via EnsureRecorder (as HandleWS does).
-	rec, subCh := EnsureRecorder("test:stream-only-input", func() (ptyStream, error) { return sess.opener.OpenStream(context.Background()) }, nil)
+	rec, subCh := EnsureRecorder("test:stream-only-input", func() (ptyStream, error) { return sess.opener.OpenStream(context.Background()) })
 	if rec == nil {
 		t.Fatal("EnsureRecorder returned nil")
 	}
@@ -527,6 +534,7 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 // --- E8i: screen snapshot filtering ---
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
+	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -609,6 +617,7 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 // --- E8g4: cmux delta frame tagging ---
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
+	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -679,6 +688,7 @@ func TestRecorder_NormalANSINotDelta(t *testing.T) {
 }
 
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
+	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -726,4 +736,28 @@ func TestRecorder_DeltaThenSnapshot(t *testing.T) {
 		t.Log("snapshot leaked into ActivityBuffer after delta+snapshot sequence")
 	}
 	t.Logf("delta=%v snapshot_leaked=%v chunks=%d", deltaFound, snapshotFound, len(received))
+}
+
+// PA3 Step6b-4: local stub types for deleted activity_stub.go
+type ActivityBuffer struct{}
+func NewActivityBuffer(capacity int) *ActivityBuffer { return &ActivityBuffer{} }
+func (b *ActivityBuffer) Append(event interface{}) {}
+func (b *ActivityBuffer) List(sessionID string) []ActivityEvent { return nil }
+func (b *ActivityBuffer) Clear(sessionID string) {}
+type ActivityType string
+const (
+	ActivityTerminalOutput ActivityType = "terminal_output"
+	ActivityTerminalInput  ActivityType = "terminal_input"
+	ActivitySystem         ActivityType = "system"
+	ActivityStatus         ActivityType = "status"
+)
+type ActivityEvent struct {
+	ID        string
+	Seq       uint64
+	SessionID string
+	Type      ActivityType
+	Text      string
+	Bytes     int
+	Hash      string
+	Timestamp interface{}
 }

@@ -148,8 +148,8 @@ func TestS1E_RegistryDisappearanceClears(t *testing.T) {
  t.Skip("PA3 Step 2: processSession restructured; status store invalidation may differ")
 	adapter := newLSAdapter("controlled_pty", true, "a", "b")
 	reg := mux.MustNewRegistry(adapter)
-	svc := NewTelemetryService(reg, nil,
-		nil, nil, NewApprovalStore(), nil, transcript.NewService(transcript.DefaultStoreConfig()))
+	svc := NewTelemetryService(reg,
+		nil, nil, NewApprovalStore(), transcript.NewService(transcript.DefaultStoreConfig()))
 	seed := func(id string) {
 		svc.statusStore.Update(AgentStatusUpdate{SessionID: id, Generation: 1, Adapter: resolvingAdapter{},
 			Events: []agent.AgentEvent{ev(id, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})
