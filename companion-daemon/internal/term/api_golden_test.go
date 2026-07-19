@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/mux"
 )
 
@@ -120,7 +119,7 @@ func TestAPIGolden_DeleteSession(t *testing.T) {
 }
 
 func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
-	t.Skip("PA3 Step 3: ?history= endpoint removed, returns 410 Gone")
+	// PA3 Step 3 R1: ?history= returns 410 Gone for ALL sessions.
 	h := goldenHandlers(t)
 	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:golden", nil)
 	rec := httptest.NewRecorder()
@@ -128,51 +127,21 @@ func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
 	h.HandleSessionsAPI(rec, req)
 
 	// Golden session has ScreenReader capability → history falls back to screen content.
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/sessions?history=tmux:golden: status = %d, want 200 (screen fallback)", rec.Code)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("GET /api/sessions?history=tmux:golden: status = %d, want %d (Gone)", rec.Code, http.StatusGone)
 	}
 }
 
 func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
-	t.Skip("PA3 Step 3: ?history= endpoint removed, returns 410 Gone")
-	// When a session implements ScreenReader, history falls back to screen content.
+	// PA3 Step 3 R1: ?history= returns 410 Gone even for screen-capable sessions.
 	h := goldenHandlersWithScreenReader(t)
 	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:golden", nil)
 	rec := httptest.NewRecorder()
-
 	h.HandleSessionsAPI(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/sessions?history=tmux:golden (screen fallback): status = %d, want 200", rec.Code)
-	}
-	raw := rec.Body.String()
-	agentEventKeys := []string{`"id"`, `"session"`, `"type"`, `"summary"`, `"detail"`, `"timestamp"`, `"agent"`, `"toolCallId"`}
-	for _, k := range agentEventKeys {
-		if !strings.Contains(raw, k) {
-			t.Errorf("history response missing AgentEvent key %s", k)
-		}
-	}
-	if !strings.Contains(raw, "GOLDEN_SCREEN") {
-		t.Errorf("history response missing screen content: %s", raw)
-	}
-
-	// Typed decode to verify value types, not just key presence.
-	var events []models.AgentEvent
-	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
-		t.Fatalf("history response: invalid AgentEvent JSON: %v", err)
-	}
-	if len(events) == 0 {
-		t.Fatal("history response: empty events array")
-	}
-	e := events[0]
-	if e.ID == "" || e.Session == "" || e.Type == "" || e.Timestamp == "" {
-		t.Errorf("history event has empty required field: id=%q session=%q type=%q ts=%q", e.ID, e.Session, e.Type, e.Timestamp)
-	}
-	if e.Detail == "" && e.Summary == "" {
-		t.Error("history event has empty detail AND summary")
+	if rec.Code != http.StatusGone {
+		t.Fatalf("GET /api/sessions?history=tmux:golden (screen fallback): status = %d, want %d (Gone)", rec.Code, http.StatusGone)
 	}
 }
-
 // goldenHandlers returns a Handlers wired with a fake Registry containing
 // one static tmux session. No real tmux process is needed.
 func goldenHandlers(t *testing.T) *Handlers {

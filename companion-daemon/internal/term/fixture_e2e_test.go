@@ -251,22 +251,15 @@ func TestFixtureE2E_CreateAndDelete(t *testing.T) {
 }
 
 func TestFixtureE2E_UnsupportedCapability(t *testing.T) {
-	t.Skip("PA3 Step 3: ?history= endpoint removed, returns 410 Gone")
-	// Bare session: NO ScreenReader, NO HistoryReader — truly unsupported.
-	// GET /api/sessions?history=bare:bare must return 404 (not 500, not empty 200).
+	// PA3 Step 3 R1: ?history= returns 410 Gone even for unsupported sessions.
 	h := bareSessionHandlers(t)
 	req := httptest.NewRequest("GET", "/api/sessions?history=bare:bare", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("unsupported history: status = %d, want 404", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "history unavailable") {
-		t.Errorf("unsupported history body missing 'history unavailable': %s", rec.Body.String())
+	if rec.Code != http.StatusGone {
+		t.Errorf("unsupported history: status = %d, want %d (Gone)", rec.Code, http.StatusGone)
 	}
 }
-
 func TestFixtureE2E_WebSocket(t *testing.T) {
 	h, adapter := fixtureE2EHandlers(t)
 
