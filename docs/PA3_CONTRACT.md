@@ -467,8 +467,9 @@ outside locks.
 **G7 — Failed creation cannot publish**: Rollback uses captured capability
 (instance-guarded), never ID-addressed termination.
 
-**G8 — Bounded completion signals**: `sync.Once` Completion. All terminal
-paths call `Complete()`. Every waiter unblocks.
+**G8 — Bounded completion signals**: `genDone` closed on publish or
+rollback (defer in pre-install). Waiters always unblock. `sync.Once`
+Completion. All terminal paths call `Complete()`.
 
 #### 6.1.6 Creation flow (aligned to PA2d production)
 
@@ -476,17 +477,27 @@ paths call `Complete()`. Every waiter unblocks.
 ```go
 o.mu.Lock()
 existing := o.entries[canonicalID]
+// If an in-progress create exists, block on its genDone.
+for existing != nil && existing.State == LifecycleCreating {
+    genDone := existing.genDone
+    o.mu.Unlock()
+    <-genDone // wait for prior create to finish (publish or rollback)
+    o.mu.Lock()
+    existing = o.entries[canonicalID]
+}
 var oldCap *GenerationCleanupCapability
 if existing != nil {
     oldCap = existing.capability
-    existing.capability = nil // claimed at most once
+    existing.capability = nil
     existing.State = LifecycleSuperseded
 }
 o.nextGen++
 lifecycleGen := o.nextGen
+genDone := make(chan struct{})
 completion := &GenerationCompletion{done: make(chan struct{})}
 o.entries[canonicalID] = &CatalogEntry{
     ID: canonicalID, State: LifecycleCreating, Generation: lifecycleGen,
+    genDone: genDone,
     // capability filled after Recorder start
 }
 o.mu.Unlock()
@@ -496,16 +507,18 @@ if oldCap != nil {
     <-oldCap.Completion.Done()
 }
 
-// If pre-install steps fail after reservation, rollback the reservation.
+// Rollback on any failure: close genDone (wakes waiters), delete if ours.
 defer func() {
     if retErr != nil {
         o.mu.Lock()
         entry := o.entries[canonicalID]
         if entry != nil && entry.Generation == lifecycleGen {
+            close(genDone)
             delete(o.entries, canonicalID)
+        } else {
+            close(genDone) // still wake waiters even if superseded
         }
         o.mu.Unlock()
-        completion.Complete() // ensure any waiter unblocks
     }
 }()
 ```
@@ -517,7 +530,9 @@ defer func() {
 // atomically so the capability captures Session immediately.
 // This requires adding a CreateSessionAndCapture method or
 // equivalent to the adapter interface.
-createdID, sess, err := o.spawn.CreateSessionAndCapture(ctx, opts)
+// creatorWithIdentity is a typed field on OwnedPTYRuntime,
+// populated at construction: creatorWithIdentity, _ = spawn.(SessionCreatorWithIdentity)
+createdID, sess, err := o.creatorWithIdentity.CreateSessionAndCapture(ctx, opts)
 if err != nil { completion.Complete(); return "", err }
 canonicalID := build(adapter, createdID)
 ref := sessionid.ParseSessionID(canonicalID)
@@ -551,21 +566,29 @@ o.transcript.SetTranscriptGeneration(canonicalID, 1)
 ```go
 o.mu.Lock()
 entry := o.entries[canonicalID]
+if entry == nil || entry.Generation != lifecycleGen {
+    // Superseded: close our genDone, do NOT mutate replacement's entry.
+    o.mu.Unlock()
+    close(genDone)
+    cap.Execute(ctx) // nil-safe cleanup of our resources
+    return "", fmt.Errorf("session replaced")
+}
 entry.State = LifecycleRunning
 entry.capability = cap
 entry.handle = handle
 entry.transport = transport
 entry.StartedAt = time.Now()
+close(genDone) // wakes waiters blocked on this generation
 o.mu.Unlock()
 ```
 
 **Rollback** (capability already constructed, fields may be nil):
 ```go
-// cap was constructed immediately after CreateSession.
-// nil-safe: RetireIfGeneration(nil) is no-op; DeleteRecorderIfSame(id, nil) is no-op;
-// CompareAndTerminate skips if Terminator==nil or Session==nil.
-// Completion.Complete() ALWAYS runs (defer in Execute).
+// cap was constructed immediately after CreateSessionAndCapture.
+// nil-safe: RetireIfGeneration, DeleteRecorderIfSame, CompareAndTerminate
+// all guard nil fields. Completion.Complete() ALWAYS runs (defer in Execute).
 cap.Execute(ctx)
+// genDone is closed by the defer in pre-install (or publish).
 // NO: terminateAdapterSession(localID), DeleteRecorder(id), TerminateSession(id)
 ```
 
