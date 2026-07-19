@@ -94,33 +94,43 @@ func TestStep6a_FailedCreateLeavesReplacementIntact(t *testing.T) {
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	ownedPTY := NewOwnedPTYRuntime(ctl, NewActivityBuffer(100), transcriptSvc)
 
-	// Create first session successfully.
+	// Create first session with exact Session captured.
 	opts := mux.CreateOptions{Name: "step6a-fail", Executable: "sleep", Args: []string{"30"}}
 	id1, err := ownedPTY.Create(context.Background(), opts, "shell", "step6a-fail")
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	entry1, _ := ownedPTY.Get(id1)
-	if entry1.session == nil {
+	entry1, ok := ownedPTY.Get(id1)
+	if !ok || entry1.session == nil {
 		t.Fatal("first entry has nil Session — precondition for captured cleanup")
 	}
+	if entry1.recorder == nil {
+		t.Fatal("first entry has nil Recorder")
+	}
 
-	// Stop old Recorder mid-sleep — simulate post-capture failure condition.
-	// The replacement pre-install barrier should clean up old Recorder
-	// before creating the new session.
+	// Trigger rollback: delete old Recorder BEFORE replacement.
+	// The pre-install barrier captures oldCap with existing.session +
+	// existing.recorder. Execute() runs DeleteRecorderIfSame (instance-guarded).
+	// The old Recorder is stopped. Replacement proceeds with fresh Recorder.
 	DeleteRecorderIfSame(id1, entry1.recorder)
 
-	// Replacement: pre-install barrier cleans up old, then creates new.
+	// Replacement creates new session B. oldCap captures entry1's Session,
+	// not nil. Pre-install barrier executes old cleanup (DeleteRecorderIfSame
+	// is no-op since already stopped), then creates fresh session.
 	id2, err := ownedPTY.Create(context.Background(), opts, "shell", "step6a-fail")
 	if err != nil {
 		t.Fatalf("replacement: %v", err)
 	}
-	_ = id2
+	if id1 != id2 {
+		t.Errorf("canonical ID changed: %s → %s", id1, id2)
+	}
 
-	// Verify replacement has fresh Recorder and Session.
 	entry2, _ := ownedPTY.Get(id2)
-	if entry2.recorder == nil || entry2.recorder == entry1.recorder {
-		t.Error("replacement did not create fresh Recorder")
+	if entry2.recorder == nil {
+		t.Fatal("replacement has nil Recorder")
+	}
+	if entry2.recorder == entry1.recorder {
+		t.Error("replacement reused old Recorder — want fresh instance")
 	}
 	if entry2.session == nil {
 		t.Error("replacement has nil Session")
@@ -130,5 +140,5 @@ func TestStep6a_FailedCreateLeavesReplacementIntact(t *testing.T) {
 	}
 
 	ownedPTY.Stop(context.Background(), id2)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 }

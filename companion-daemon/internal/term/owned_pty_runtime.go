@@ -190,7 +190,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 		// PA3 Step 6a R2: capture exact Session + Recorder from existing entry.
 		oldCap = &GenerationCleanupCapability{
 			Generation:  existing.Generation,
-			Session:     nil,               // adapter session identity; not stored on CatalogEntry, captured via adapter
+			Session:     existing.session,  // exact adapter session identity from CatalogEntry
 			Recorder:    existing.recorder, // instance-guarded Recorder
 			Transport:   existing.transport,
 			Terminator:  o.spawn.(mux.SessionIdentityTerminator),
