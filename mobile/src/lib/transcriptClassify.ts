@@ -10,13 +10,32 @@ export type OutputSpan = {
   key: string;
 };
 
-export function classifyEvents(events: any[]): OutputSpan[] {
+// PA3 Step 1: bounded dedup of adjacent same-AgentEventRef spans.
+// Non-adjacent duplicates (interleaved) render as-is.
+const MAX_DEDUP_REFS = 128;
+
+export function classifyEvents(events: any[], seenRefs?: Set<string>): OutputSpan[] {
   const result: OutputSpan[] = [];
+  let lastAgentEventRef = '';
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.kind) {
       switch (e.kind) {
-        case 'agent_event':
+        case 'agent_event': {
+          // PA3 Step 1: collapse adjacent same-agentEventRef spans.
+          const ref = e.agentEventRef || '';
+          if (ref && ref === lastAgentEventRef) {
+            // Skip duplicate — same cursor-replayed event.
+            break;
+          }
+          if (ref) {
+            lastAgentEventRef = ref;
+            if (seenRefs) {
+              if (seenRefs.has(ref)) break; // non-adjacent, already rendered
+              seenRefs.add(ref);
+              if (seenRefs.size > MAX_DEDUP_REFS) seenRefs.clear(); // bounded
+            }
+          }
           result.push({
             text: e.text || '',
             isInput: false, isDegraded: false, isAgentEvent: true,
@@ -24,7 +43,9 @@ export function classifyEvents(events: any[]): OutputSpan[] {
             key: `ae${e.seq}`,
           });
           break;
+        }
         case 'terminal_output':
+          lastAgentEventRef = '';
           if ((e.text || '').length > 0) {
             result.push({
               text: e.text, isInput: false, isDegraded: false, isAgentEvent: false,
@@ -33,21 +54,25 @@ export function classifyEvents(events: any[]): OutputSpan[] {
           }
           break;
         case 'input_boundary':
+          lastAgentEventRef = '';
           result.push({ text: '', isInput: true, isDegraded: false, isAgentEvent: false, key: `ib${e.seq}` });
           break;
         case 'degraded':
+          lastAgentEventRef = '';
           result.push({
             text: e.degradedReason || 'Transcript degraded',
             isInput: false, isDegraded: true, isAgentEvent: false, key: `dg${e.seq}`,
           });
           break;
         case 'ui_omitted':
+          lastAgentEventRef = '';
           result.push({
             text: '[terminal UI omitted]',
             isInput: false, isDegraded: true, isAgentEvent: false, key: `uo${e.seq}`,
           });
           break;
         default:
+          lastAgentEventRef = '';
           if ((e.text || '').length > 0) {
             result.push({
               text: e.text, isInput: false, isDegraded: false, isAgentEvent: false, key: `un${e.seq}`,
@@ -57,6 +82,7 @@ export function classifyEvents(events: any[]): OutputSpan[] {
       continue;
     }
     // Legacy ActivityEvent format.
+    lastAgentEventRef = '';
     if (e.type === 'terminal_output' && (e.text || '').length > 0) {
       result.push({ text: e.text, isInput: false, isDegraded: false, isAgentEvent: false, key: `o${e.seq || i}` });
     } else if (e.type === 'terminal_input') {

@@ -34,23 +34,9 @@ export default function GlobalFeedScreen({ token }: Props) {
     return () => clearInterval(interval);
   }, []);
 
-  const allEvents = React.useMemo(() => {
-    const eventsWithRunner: (AgentEvent & { runnerId?: string, runnerColor?: string, agentKind?: string })[] = [];
-    sessions.forEach(s => {
-      if (s.events) {
-        s.events.forEach(e => {
-          eventsWithRunner.push({
-            ...e,
-            runnerId: s.runner,
-            runnerColor: s.runnerColor,
-            agentKind: s.agentKind,
-          });
-        });
-      }
-    });
-    // Sort oldest to newest
-    return eventsWithRunner.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  }, [sessions]);
+  // PA3 Step 1: events removed from SessionTelemetry. Global feed now shows
+  // session cards only; per-session Transcript available via FeedScreen.
+  const allEvents: any[] = [];
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>

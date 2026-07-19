@@ -18,18 +18,17 @@ export interface AgentEvent {
 export interface SessionTelemetry {
   id: string;
   displayId?: string;
-  state: 'idle' | 'thinking' | 'working' | 'waiting';
+  // PA3 Step 1: `state` removed — use agentActivity.status + agentStatus instead.
   // M3b: daemon-authoritative managed lifecycle state (Session Catalog), separate
-  // from `state` (agent activity). Empty/absent for non-managed sessions.
+  // from agent activity. Empty/absent for non-managed sessions.
   lifecycleState?: string;
-  load: number;
-  runner?: string;
-  runnerColor?: string;
+  // PA3 Step 1: `load` removed.
+  // PA3 Step 1: `runner`/`runnerColor` removed — use agentKind instead.
   adapter?: string;
   capabilities?: string[];
   adapterCapabilities?: string[];
   isAddBtn?: boolean;
-  events?: AgentEvent[];
+  // PA3 Step 1: `events` removed — use getTranscript() for event history.
   agentKind?: string;
   agentStatus?: string;
   agentConfidence?: number;
@@ -48,61 +47,56 @@ interface Props {
   connectionStale?: boolean;
 }
 
-function getStatusColor(state: SessionTelemetry['state']) {
-  switch (state) {
-    case 'working': return '#39d353';
-    case 'thinking': return '#e3b341';
-    case 'waiting': return '#f85149';
-    default: return '#8b949e';
-  }
+// PA3 Step 1: status color derived from agentActivity + agentStatus, not legacy `state`.
+function getStatusColor(activity: AgentActivity | undefined, agentStatus: string | undefined): string {
+  const status = activity?.status || agentStatus || '';
+  if (status === 'working' || status === 'tool_call_started') return '#39d353';
+  if (status === 'thinking') return '#e3b341';
+  if (status === 'waiting_approval' || status === 'waiting') return '#f85149';
+  return '#8b949e';
+}
+
+// PA3 Step 1: animation pacing derived from agentActivity, not legacy state+load.
+function getActivityPacing(activity: AgentActivity | undefined, agentStatus: string | undefined): number {
+  const status = activity?.status || agentStatus || '';
+  if (status === 'working' || status === 'tool_call_started') return 100; // fast
+  if (status === 'thinking') return 300;
+  return 0; // idle/unknown
 }
 
 export function AgentCard({ session, onPress, onSettings, connectionStale }: Props) {
   const [frameIndex, setFrameIndex] = useState(0);
-  const runnerDef = RUNNERS.find(r => r.id === session.runner) || RUNNERS[0];
-  const runnerColor = session.runnerColor || '#58a6ff';
+  // PA3 Step 1: use agentKind for color + icon, not legacy runner.
+  const runnerColor = '#58a6ff';
+  const runnerDef = RUNNERS[0]; // default icon
+
+  // PA3 Step 1: animation driven by agentActivity, not legacy state/load.
+  const card = deriveCardActivity(session, { connectionStale });
+  const statusColor = getStatusColor(session.agentActivity, session.agentStatus);
+  const intervalMs = getActivityPacing(session.agentActivity, session.agentStatus);
 
   useEffect(() => {
-    let intervalMs = 1000;
-    if (session.state === 'working') {
-      intervalMs = Math.max(50, 200 - session.load); // Fast!
-    } else if (session.state === 'thinking') {
-      intervalMs = 300;
-    } else if (session.state === 'waiting' || session.state === 'idle') {
-      intervalMs = 0;
-    }
-
     if (intervalMs === 0) {
       setFrameIndex(0);
       return;
     }
-
     const interval = setInterval(() => {
       setFrameIndex((prev) => (prev + 1) % runnerDef.frames.length);
     }, intervalMs);
-
     return () => clearInterval(interval);
-  }, [session.state, session.load, runnerDef.frames.length]);
+  }, [intervalMs, runnerDef.frames.length]);
 
-  const pathD = (session.state === 'idle' || session.state === 'waiting') 
-    ? runnerDef.idle 
-    : runnerDef.frames[frameIndex];
+  const pathD = intervalMs === 0 ? runnerDef.idle : runnerDef.frames[frameIndex];
+  const waitingColor = (session.agentActivity?.status === 'waiting_approval' || session.agentStatus === 'waiting_approval') ? '#f85149' : runnerColor;
 
-  const recentEdit = session.events?.slice().reverse().find(e => e.type === 'file_edit');
-  // Phase A9 / S1-D: the approval CTA is driven by the approval store ONLY —
-  // agent activity (even `waiting_approval`) never creates it.
+  // Phase A9 / S1-D: the approval CTA is driven by the approval store ONLY.
   const needsApproval = sessionNeedsApproval(session.approvals);
-  // S1-D/E: the card's activity render decision. An accepted `agentActivity` DTO
-  // governs the activity dimension (forced non-current when the connection is
-  // stale); the legacy heuristic `agentStatus` is never a peer/fallback, and an
-  // accepted session with no DTO shows "Unavailable".
-  const card = deriveCardActivity(session, { connectionStale });
 
   return (
     <View style={styles.cardWrapper}>
-      <TouchableOpacity 
-        style={[styles.card, { borderColor: runnerColor }]} 
-        onPress={onPress} 
+      <TouchableOpacity
+        style={[styles.card, { borderColor: runnerColor }]}
+        onPress={onPress}
         activeOpacity={0.8}
       >
         <View style={styles.header}>
@@ -118,7 +112,7 @@ export function AgentCard({ session, onPress, onSettings, connectionStale }: Pro
                 <Text style={styles.approvalBadgeText}>ACTION</Text>
               </View>
             )}
-            <View style={[styles.statusDot, { backgroundColor: getStatusColor(session.state) }]} />
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
             {onSettings && (
               <TouchableOpacity onPress={onSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.settingsBtn}>
                 <Text style={{ color: '#1E91B3', fontSize: 18, fontWeight: 'bold' }}>⋮</Text>
@@ -134,7 +128,6 @@ export function AgentCard({ session, onPress, onSettings, connectionStale }: Pro
               🤖 {formatAgentKind(session.agentKind)}
             </Text>
           )}
-          {/* Legacy heuristic status — shown ONLY when there is no accepted DTO. */}
           {card.showLegacyStatus && session.agentStatus && (
             <Text style={{ color: isDegraded(session.agentConfidence, session.agentKind) ? '#666' : '#888', fontSize: 11 }}>
               {formatAgentStatus(session.agentStatus)}
@@ -142,10 +135,6 @@ export function AgentCard({ session, onPress, onSettings, connectionStale }: Pro
           )}
         </View>
       )}
-      {/* S1-D: accepted agent-activity dimension, rendered SEPARATELY from session
-          state / lifecycle. A stale/degraded record is labelled as a non-current
-          state (never "Working"/"Thinking") and dimmed. A malformed/future DTO
-          shows an explicit unavailable marker — never the legacy heuristic. */}
       {card.activity && (
         <View style={{ flexDirection: 'row', marginTop: 4, alignItems: 'center' }}>
           <Text style={styles.activityLabel}>ACTIVITY</Text>
@@ -175,23 +164,16 @@ export function AgentCard({ session, onPress, onSettings, connectionStale }: Pro
       )}
       <View style={styles.animationContainer}>
           <Svg width={60} height={60} viewBox="0 0 388 388">
-            <Path d={pathD} fill={session.state === 'waiting' ? '#f85149' : runnerColor} />
+            <Path d={pathD} fill={waitingColor} />
           </Svg>
         </View>
 
-        {recentEdit && (
-          <Text style={styles.recentEdit} numberOfLines={1}>
-            📝 {recentEdit.summary}
-          </Text>
-        )}
+        {/* PA3 Step 1: recent edit removed — events field no longer rendered. */}
 
         <View style={styles.footer}>
-          <Text style={[styles.stateText, session.state === 'waiting' && {color: '#f85149'}]}>
-            {session.state === 'idle' ? 'SLEEPING' : session.state.toUpperCase()}
+          <Text style={[styles.stateText, (session.agentActivity?.status === 'waiting_approval' || session.agentStatus === 'waiting_approval') && {color: '#f85149'}]}>
+            {card.activity?.label || (session.agentStatus ? formatAgentStatus(session.agentStatus) : 'IDLE')}
           </Text>
-          {session.state === 'working' && (
-            <Text style={styles.loadText}>{session.load}%</Text>
-          )}
           {/* P1a: observe-only indicator — no live_stream capability. */}
           {session.capabilities && !session.capabilities.includes('live_stream') && (
             <View style={styles.viewOnlyBadge}>

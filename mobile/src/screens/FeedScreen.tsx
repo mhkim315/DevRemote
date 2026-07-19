@@ -1,5 +1,5 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
-import { terminalURL, listSessions, getSessionHistory, getActivityHistory, getTranscript, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
+import { terminalURL, listSessions, getTranscript, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
 import type { TranscriptSegment, TranscriptResponse } from '../lib/client';
 import { E8g2Transcript } from '../components/TranscriptRenderer';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
@@ -15,7 +15,7 @@ import {View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Platfor
 import {WebView} from 'react-native-webview';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import { EventBubble } from '../components/EventBubble';
+// PA3 Step 1: EventBubble removed — activity tab removed.
 import { SessionTelemetry } from '../components/AgentCard';
 import ManagedSessionView from '../components/ManagedSessionView';
 
@@ -64,8 +64,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const [cmd, setCmd] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
 
-  // E8g: three modes — Live Terminal, Activity Feed, Transcript (read-only).
-  const [activeTab, setActiveTab] = useState<'terminal' | 'activity' | 'transcript'>('activity');
+  // PA3 Step 1: two modes — Live Terminal, Transcript (read-only). Activity removed.
+  const [activeTab, setActiveTab] = useState<'terminal' | 'transcript'>('transcript');
   const activeTabRef = useRef(activeTab);
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
   const [fallbackEvents, setFallbackEvents] = useState<any[]>([]);
@@ -75,6 +75,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const transcriptMaxSeqRef = useRef(0);
   // T3: generation counter prevents stale async responses from writing to wrong session.
   const sessionGenRef = useRef(0);
+  // PA3 Step 1: Transcript generation for reset detection.
+  const transcriptGenRef = useRef(0);
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
@@ -127,6 +129,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     setByteStreamSuppressed(false);
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
+    transcriptGenRef.current = 0;
     sessionGenRef.current++;
     lifecycleCtrlRef.current?.setSession(session, token);
   }, [session, token]);
@@ -175,23 +178,18 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     );
   }, [actionPolicy.canDelete]);
 
-  // When live terminal is unsupported (cmux), force-switch away.
+  // PA3 Step 1: when live terminal unsupported, force to transcript.
   useEffect(() => {
     if (!supportsLiveTerminal && activeTab === 'terminal') {
-      setActiveTab(isBestEffortTranscript ? 'transcript' : 'activity');
+      setActiveTab('transcript');
     }
-    if (!supportsHistory && activeTab === 'activity') {
-      setActiveTab(supportsLiveTerminal ? 'terminal' : 'transcript');
-    }
-  }, [supportsHistory, activeTab]);
+  }, [supportsLiveTerminal, activeTab]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
-  const [historyEvents, setHistoryEvents] = useState<any[]>([]);
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
 
-  // R1a: activity/transcript endpoint reachability.
+  // R1a: transcript endpoint reachability.
   const [activityError, setActivityError] = useState('');
-  const [historyError, setHistoryError] = useState('');
   // R1a: terminal WebView connection failure.
   const [terminalError, setTerminalError] = useState('');
   const [terminalErrorDetail, setTerminalErrorDetail] = useState('');
@@ -293,42 +291,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         .catch(err => console.error(err));
     };
     fetchSessionRef.current = fetchSession;
-    
-    const fetchHistory = () => {
-      getSessionHistory(session, token)
-        .then(data => {
-          if (Array.isArray(data)) {
-            setHistoryError('');
-            setHistoryEvents(prev => {
-              // E8: merge server events with local synthetics, dedup by ID.
-              const seen = new Set<string>();
-              const merged: any[] = [];
-              // Server events first (source of truth), then keep local-only synthetics.
-              for (const e of [...(data || []), ...prev]) {
-                if (!e.id || seen.has(e.id)) continue;
-                seen.add(e.id);
-                merged.push(e);
-              }
-              // Sort by timestamp ascending.
-              merged.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
-              return merged;
-            });
-          }
-        })
-        .catch(err => {
-          console.error(err);
-          if (err instanceof PokitError) {
-            setHistoryError(err.failure === ConnectivityFailure.NetworkUnreachable
-              ? 'Activity endpoint unreachable.'
-              : 'Activity endpoint error (' + err.statusCode + ').');
-          } else {
-            setHistoryError('Activity endpoint unreachable.');
-          }
-        });
-    };
 
-    // T3: fetch Transcript with cursor pagination. Generation guard
-    // prevents stale responses from previous sessions.
+    // PA3 Step 1: fetch Transcript with cursor pagination + generation reset detection.
     const fetchTranscript = () => {
       const cursor = transcriptMaxSeqRef.current;
       const gen = sessionGenRef.current;
@@ -336,8 +300,20 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         .then((resp: TranscriptResponse | null) => {
           if (gen !== sessionGenRef.current) return; // stale response
           if (resp && resp.semantic) {
-            // Keep semantic (primary) and fallback (degraded terminal-output) as
-            // separate state. Incremental: append new segments, dedup by ID.
+            // PA3 Step 1: generation reset detection. If generation changed
+            // (and not first poll), discard all cached segments.
+            if (resp.generation !== undefined && transcriptGenRef.current !== 0 && resp.generation !== transcriptGenRef.current) {
+              transcriptGenRef.current = resp.generation;
+              setTranscriptEvents([]);
+              setFallbackEvents([]);
+              transcriptMaxSeqRef.current = 0;
+              lastSeenSeqRef.current = 0;
+              return; // re-fetch with cursor=0 on next poll
+            }
+            if (resp.generation !== undefined) {
+              transcriptGenRef.current = resp.generation;
+            }
+            // Incremental: append new segments, dedup by ID.
             setTranscriptEvents((prev: any[]) => {
               const seen = new Set(prev.map((e: any) => e.id));
               const fresh = resp.semantic.filter((s: any) => !seen.has(s.id));
@@ -364,27 +340,6 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
           }
         })
         .catch(async (err) => {
-          // Fall back to legacy activity endpoint on 404 (T3 not yet deployed).
-          if (err instanceof PokitError && err.statusCode === 404) {
-            try {
-              const data = await getActivityHistory(session, token);
-              if (Array.isArray(data)) {
-                setTranscriptEvents(data);
-                setActivityError('');
-                const maxSeq = data.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
-                transcriptMaxSeqRef.current = maxSeq;
-                if (activeTabRef.current === 'transcript' && maxSeq > lastSeenSeqRef.current) {
-                  setNewOutputCount(maxSeq - lastSeenSeqRef.current);
-                }
-                if (activeTabRef.current !== 'transcript') {
-                  lastSeenSeqRef.current = maxSeq;
-                }
-              }
-              return;
-            } catch (_fallbackErr) {
-              // Both endpoints failed.
-            }
-          }
           console.error(err);
           if (err instanceof PokitError) {
             setActivityError(err.failure === ConnectivityFailure.NetworkUnreachable
@@ -397,15 +352,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     };
 
     fetchSession();
-    if (sessionDataRef.current?.capabilities?.includes('history')) {
-      fetchHistory();
-    }
     fetchTranscript();
     const interval = setInterval(() => {
       fetchSession();
-      if (sessionDataRef.current?.capabilities?.includes('history')) {
-        fetchHistory();
-      }
       fetchTranscript();
     }, 3000);
     return () => clearInterval(interval);
@@ -487,18 +436,6 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     submitLine(currentCmd);
     setCmd('');
     cmdRef.current = '';
-
-    setHistoryEvents(prev => {
-      const optEvent = {
-        id: 'opt-' + Date.now(),
-        session: session,
-        type: 'user',
-        summary: 'User',
-        detail: currentCmd,
-        timestamp: new Date().toISOString()
-      };
-      return [...prev, optEvent];
-    });
   }, [submitLine, session]);
   const sendMacro = useCallback((chars: number[]) => {
     // E8: macros use same doSend ack path.
@@ -779,15 +716,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             <Text style={[styles.tabText, activeTab === 'terminal' && styles.activeTabText]}>TERMINAL</Text>
           </TouchableOpacity>
           )}
-          {supportsHistory && (
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'activity' && styles.activeTab]}
-            onPress={() => setActiveTab('activity')}
-          >
-            <Text style={[styles.tabText, activeTab === 'activity' && styles.activeTabText]}>ACTIVITY</Text>
-          </TouchableOpacity>
-          )}
-          {/* E8g: Transcript tab — read-only terminal activity history. */}
+          {/* PA3 Step 1: Transcript tab — sole history/activity read path. */}
           <TouchableOpacity
             style={[styles.tab, activeTab === 'transcript' && styles.activeTab]}
             onPress={() => { lastSeenSeqRef.current = transcriptMaxSeqRef.current; setNewOutputCount(0); setActiveTab('transcript'); }}
@@ -846,32 +775,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
           )}
         </View>
 
-        <View style={[styles.activityContainer, {display: activeTab === 'activity' ? 'flex' : 'none'}]}>
-          {/* R1a: activity endpoint error state */}
-          {historyError ? (
-            <View style={{padding: 20, alignItems: 'center'}}>
-              <Text style={{color: '#f85149', fontSize: 13, textAlign: 'center', marginBottom: 8}}>{historyError}</Text>
-              <Text style={{color: '#8b949e', fontSize: 11, textAlign: 'center'}}>Activity history may still be loading. Pull to refresh.</Text>
-            </View>
-          ) : !historyEvents || historyEvents.length === 0 ? (
-            <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
-          ) : (
-            <FlatList
-              data={historyEvents.slice().reverse()}
-              keyExtractor={(item, idx) => item.id || String(idx)}
-              contentContainerStyle={styles.activityList}
-              renderItem={({ item }) => (
-                <EventBubble event={item} runnerId={sessionData?.runner} runnerColor={sessionData?.runnerColor} agentKind={sessionData?.agentKind} />
-              )}
-              ListEmptyComponent={
-                <Text style={styles.emptyActivityText}>No activity recorded yet.</Text>
-              }
-              inverted={true}
-            />
-          )}
-        </View>
-
-        {/* E8h: Transcript Mode — best-effort readable history. Not a terminal emulator. */}
+        {/* PA3 Step 1: Transcript Mode — sole read-only history. */}
         <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
           {/* E8g6: show observe/degraded state for best-effort transcript (cmux). */}
           {isBestEffortTranscript && (

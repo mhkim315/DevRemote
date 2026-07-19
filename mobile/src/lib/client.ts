@@ -403,12 +403,14 @@ export async function deleteSession(id: string, token?: string) {
   return res.json();
 }
 
+/** @deprecated PA3 Step 1 — use getTranscript() instead. */
 export async function getSessionHistory(sessionID: string, token?: string) {
   const res = await apiGet(`/api/sessions?history=${encodeURIComponent(sessionID)}`, token);
   return res.json();
 }
 
 // E8f: fetch captured terminal activity (transcript).
+/** @deprecated PA3 Step 1 — use getTranscript() instead. */
 export async function getActivityHistory(sessionID: string, token?: string) {
   const res = await apiGet(`/api/sessions?activity=${encodeURIComponent(sessionID)}`, token);
   return res.json();
@@ -435,6 +437,7 @@ export interface TranscriptSegment {
 
 export interface TranscriptResponse {
   sessionId: string;
+  generation?: number;
   semantic: TranscriptSegment[];
   fallback?: TranscriptSegment[];
   primarySource: 'agent_event' | 'byte_stream' | 'snapshot_delta' | 'unknown';
@@ -454,7 +457,7 @@ const SEGMENT_KNOWN_FIELDS = new Set([
   'id','seq','sessionId','kind','source','text','agentEventRef','agentKind',
   'eventType','toolName','confidence','byteCount','degradedReason','observedAt','contractVersion'
 ]);
-const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','byteStreamSuppressed','contractVersion']);
+const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','byteStreamSuppressed','contractVersion','generation']);
 
 function byteLength(s: string): number {
   // Count UTF-8 bytes (not JS character count).

@@ -144,25 +144,29 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
     return !!(s.capabilities && !s.capabilities.includes('live_stream'));
   };
 
+  // PA3 Step 1: categorize by agentActivity.status + agentStatus, not legacy `state`.
+  const getStatus = (s: SessionTelemetry): string => s.agentActivity?.status || s.agentStatus || '';
+
   const needsAttention = sessions.filter(s =>
-    sessionIdsWithPending.has(s.id) || s.state === 'waiting'
+    sessionIdsWithPending.has(s.id) || getStatus(s) === 'waiting_approval' || getStatus(s) === 'waiting'
   );
 
   const running = sessions.filter(s =>
     !sessionIdsWithPending.has(s.id) &&
-    (s.state === 'working' || s.state === 'thinking')
+    (getStatus(s) === 'working' || getStatus(s) === 'thinking' || getStatus(s) === 'tool_call_started')
   );
 
   const recentlyCompleted = sessions.filter(s =>
     !sessionIdsWithPending.has(s.id) &&
-    s.state !== 'working' && s.state !== 'thinking' && s.state !== 'waiting' &&
+    getStatus(s) !== 'working' && getStatus(s) !== 'thinking' && getStatus(s) !== 'tool_call_started' &&
+    getStatus(s) !== 'waiting_approval' && getStatus(s) !== 'waiting' &&
     !isDegraded(s.agentConfidence, s.agentKind) &&
     !isObserveOnly(s)
   );
 
   const degradedOrViewOnly = sessions.filter(s =>
     !sessionIdsWithPending.has(s.id) &&
-    s.state !== 'waiting' &&
+    getStatus(s) !== 'waiting_approval' && getStatus(s) !== 'waiting' &&
     (isDegraded(s.agentConfidence, s.agentKind) || isObserveOnly(s))
   );
 
@@ -309,8 +313,8 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
         onClose={() => { setModalVisible(false); setEditSession(null); }}
         onSave={handleSaveProfile}
         initialId={editSession?.id}
-        initialRunner={editSession?.runner}
-        initialColor={editSession?.runnerColor}
+        initialRunner={''}
+        initialColor={''}
       />
       <NewSessionModal
         visible={newSessionVisible}
