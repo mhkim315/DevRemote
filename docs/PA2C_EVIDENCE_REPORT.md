@@ -1,3 +1,29 @@
+## 0-R5. Deterministic barrier tests inside the adapter lock (rejected candidate `5e0343734`)
+
+**Finding**: R4 barrier tests blocked BEFORE the adapter acquired its lock
+(vacuous — the barrier was outside the decisive synchronization boundary).
+All three tests were replaced with production-shaped barrier tests INSIDE the
+adapter lock:
+
+- `prodShapedBarrierAdapter`: `lockAcquired` channel closes after
+  `a.mu.Lock()` (proves lock entry); `postDetachCh` blocks after
+  detach+unlock (models Close I/O).  Zero `time.Sleep`.
+
+- **Ordering A** (`TestPA2cR5_TerminationWinsLock_ReplacementSurvives`):
+  atomic call acquires lock (signal), main goroutine waits on signal then
+  blocks on `inner.mu.Lock()` (proving detach completed), injects same-id
+  replacement, unblocks Close.  Replacement survives.  Proven by mutex
+  ordering — no channel needed for the detach-after-lock proof.
+
+- **Ordering B** (`TestPA2cR5_ReplacementInstallsFirst_StaleRejected`):
+  replacement installed before atomic call; identity check sees replacement
+  pointer; `ErrStaleSessionIdentity` returned; replacement untouched.
+
+- **Preserved**: match-terminates, not-found, non-implementing-fails-closed.
+  5/5 PASS; 20× race-stable (mux + lifecycle suites).
+
+All accepted R1/R2/R3/R4 fixes preserved.  No PA2d/PA3 started.
+
 ## 0-R4. Architectural remediation — non-atomic fallback removal, detach-before-Close, barrier tests (rejected candidate `da299248d`)
 
 **Finding 1 — non-atomic fallback.** Fixed: the `Registry.CompareAndTerminateSession`
@@ -77,11 +103,11 @@ presence asserted).
 
 # PA2c — Managed Lifecycle Ownership Evidence Report
 
-Status: **REVIEW REQUEST** (R4 — non-atomic fallback removal + detach-before-Close + barrier tests)
+Status: **REVIEW REQUEST** (R5 — deterministic barrier tests inside the adapter lock)
 
-Implementation SHA: `cd53f6d01cb4f1fb79259318afa22cbc530b7665` (R4, on top of rejected `da299248d`)
+Implementation SHA: `84062341ee4cc3935124dc87de436407641d6bb0` (R5, on top of rejected `5e0343734`)
 Evidence/report SHA: (this commit)
-Gate execution SHA: `cd53f6d01cb4f1fb79259318afa22cbc530b7665`
+Gate execution SHA: `84062341ee4cc3935124dc87de436407641d6bb0`
 
 ## 0-R2. Remediation of the R2 findings (rejected candidate `a632b487353d49bc501cb242ae1923bf5377f468`)
 
@@ -189,9 +215,9 @@ No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
 | PA2c initial candidate | `5d655775e236dc2970472e155fa60b0e6a0b6356` | REJECTED (blockers above) |
 | PA2c-R1 remediation | `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` | REJECTED (R2 findings above) |
 | PA2c-R2 candidate | `f3c3ef77039f1b27219999fb578242759e0fb1b8` | test eviction (accepted, subsumed by R3) |
-| PA2c-R3 remediation | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` | eviction (subsumed by R4) |
+| PA2c-R3 remediation | `84062341ee4cc3935124dc87de436407641d6bb0` | eviction (subsumed by R4) |
 | PA2c-R3 evidence | `da299248d` | REJECTED (non-atomic fallback, lock-held Close, sleep test — three findings) |
-| PA2c-R4 remediation | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` | this candidate (5 files; all R1-R3 fixes preserved) |
+| PA2c-R4 remediation | `84062341ee4cc3935124dc87de436407641d6bb0` | this candidate (5 files; all R1-R3 fixes preserved) |
 
 ## 2. Contract mapping (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c)
 
@@ -340,13 +366,13 @@ $ Mobile invars + tsc                                              → CLEAN / n
 
 | Condition | Value |
 | --- | --- |
-| Implementation commit | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` |
+| Implementation commit | `84062341ee4cc3935124dc87de436407641d6bb0` |
 | Evidence/report commit | this commit |
 | Worktree at push | clean |
 | Local == Remote after push | verified in worker_done |
 | Rollback SHA (per contract) | `2897a9e0943656883a885e75b08513982de507b7` (PA2b final ACCEPT) |
 
-## R4. Gate results refresh (at `cd53f6d01cb4f1fb79259318afa22cbc530b7665`)
+## R4. Gate results refresh (at `84062341ee4cc3935124dc87de436407641d6bb0`)
 
 ```
 $ go test -race ./internal/mux -run "TestPA2cR4" -count=1 -v       → 6/6 PASS
@@ -372,8 +398,32 @@ $ go test -race ./... -count=1                                      → exit 0, 
 
 | Condition | Value |
 | --- | --- |
-| Implementation commit | `cd53f6d01cb4f1fb79259318afa22cbc530b7665` |
+| Implementation commit | `84062341ee4cc3935124dc87de436407641d6bb0` |
 | Evidence/report commit | this commit |
 | Worktree at push | clean |
 | Local == Remote after push | verified in worker_done |
 | Rollback SHA (per contract) | `2897a9e0943656883a885e75b08513982de507b7` (PA2b final ACCEPT) |
+
+## R5. Gate results (at `84062341ee4cc3935124dc87de436407641d6bb0`)
+
+| Gate | Result |
+| --- | --- |
+| `go build ./...` / `go vet ./...` | PASS |
+| `go test -race ./internal/mux -run TestPA2cR5 -count=1` | 5/5 PASS |
+| `go test -race ./internal/mux -run TestPA2cR5 -count=20` | ok (1.2s) |
+| `go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=1` | 16/16 PASS |
+| `go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=20` | ok (21.1s) |
+| `go test -race ./... -count=1` | exit 0, 12 ok |
+| `gofmt -l` / `git diff --check` / secret scan | CLEAN |
+| PA2a/PA2b regression | 0 / 0 |
+| Mobile invar + tsc | CLEAN / not-run (zero changes) |
+
+## Final state
+
+| Condition | Value |
+| --- | --- |
+| Implementation commit | `84062341ee4cc3935124dc87de436407641d6bb0` |
+| Evidence/report commit | this commit |
+| Worktree at push | clean |
+| Local == Remote after push | verified in worker_done |
+| Rollback SHA | `2897a9e0943656883a885e75b08513982de507b7` (PA2b final ACCEPT) |
