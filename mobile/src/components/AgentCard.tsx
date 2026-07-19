@@ -18,17 +18,17 @@ export interface AgentEvent {
 export interface SessionTelemetry {
   id: string;
   displayId?: string;
+  // PA3 Step 5: profileId + name added (additive, optional).
+  profileId?: string;
+  name?: string;
   // PA3 Step 1: `state` removed — use agentActivity.status + agentStatus instead.
   // M3b: daemon-authoritative managed lifecycle state (Session Catalog), separate
   // from agent activity. Empty/absent for non-managed sessions.
   lifecycleState?: string;
-  // PA3 Step 1: `load` removed.
-  // PA3 Step 1: `runner`/`runnerColor` removed — use agentKind instead.
   adapter?: string;
   capabilities?: string[];
   adapterCapabilities?: string[];
   isAddBtn?: boolean;
-  // PA3 Step 1: `events` removed — use getTranscript() for event history.
   agentKind?: string;
   agentStatus?: string;
   agentConfidence?: number;

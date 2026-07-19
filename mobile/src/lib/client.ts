@@ -403,18 +403,9 @@ export async function deleteSession(id: string, token?: string) {
   return res.json();
 }
 
-/** @deprecated PA3 Step 1 — use getTranscript() instead. */
-export async function getSessionHistory(sessionID: string, token?: string) {
-  const res = await apiGet(`/api/sessions?history=${encodeURIComponent(sessionID)}`, token);
-  return res.json();
-}
-
-// E8f: fetch captured terminal activity (transcript).
-/** @deprecated PA3 Step 1 — use getTranscript() instead. */
-export async function getActivityHistory(sessionID: string, token?: string) {
-  const res = await apiGet(`/api/sessions?activity=${encodeURIComponent(sessionID)}`, token);
-  return res.json();
-}
+// PA3 Step 5: getSessionHistory() and getActivityHistory() removed.
+// Legacy ?history= and ?activity= endpoints return 410 Gone since Step 3.
+// Use getTranscript() instead.
 
 // T3: versioned Transcript response envelope with separated semantic/fallback channels.
 export interface TranscriptSegment {
