@@ -83,10 +83,12 @@ func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 	if row == nil {
 		t.Fatalf("managed session %s not in list", id)
 	}
-	// PA3 Step 2 R4: Adapter must be populated.
+	// PA3 Step 2 R5: Adapter must be populated for managed sessions.
 	if row.Adapter != "codex_app_server" {
 		t.Errorf("managed row adapter = %q, want codex_app_server", row.Adapter)
 	}
+	// LifecycleState is empty for managed Codex/Claude sessions —
+	// LifecycleState comes from OwnedPTYRuntime catalog, not managed providers.
 }
 // TestManagedREST_DTOBounded: the native-status response carries EXACTLY the
 // bounded field set — no prompts, command text, payloads, paths, thread/turn
