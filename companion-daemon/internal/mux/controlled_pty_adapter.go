@@ -137,28 +137,47 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	return id, nil
 }
 
-func (a *controlledPTYAdapter) TerminateSession(_ context.Context, id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	s, ok := a.sessions[id]
+// PA2c-R6: shared detach primitive.  Locates and removes the session under
+// a.mu, sets exited, and returns the native I/O handle.  Caller must call
+// native.Close() outside every lock.  Returns nil on not-found or stale
+// identity (nil native means nothing to close).
+func (a *controlledPTYAdapter) detachLocked(localID string, expected Session) *NativeSession {
+	s, ok := a.sessions[localID]
 	if !ok {
-		return fmt.Errorf("%w: controlled_pty session %q not found", ErrSessionNotFound, id)
+		return nil
+	}
+	if expected != nil && s != expected {
+		return nil
 	}
 	s.exited = true
-	// Remove from the session map regardless of Close() outcome: a second
-	// Close on an already-dead process/PTY returns an error, and we must not
-	// leak the session in the adapter map because of it.
-	delete(a.sessions, id)
-	if err := s.native.Close(); err != nil {
+	delete(a.sessions, localID)
+	return s.native
+}
+
+func (a *controlledPTYAdapter) TerminateSession(_ context.Context, id string) error {
+	a.mu.Lock()
+	native := a.detachLocked(id, nil) // unconditional delete by local id
+	a.mu.Unlock()
+
+	if native == nil {
+		return fmt.Errorf("%w: controlled_pty session %q not found", ErrSessionNotFound, id)
+	}
+	// All lifecycle locks released before native process I/O (PA2c-R6).
+	if err := native.Close(); err != nil {
 		return fmt.Errorf("controlled_pty terminate: %w", err)
 	}
 	return nil
 }
 
+// testCloseBarrier is a nil-in-production deterministic seam exercised only
+// by the PA2c-R6 production-adapter tests. When non-nil it is called after
+// detach (lock released) but before native.Close(). Production code path:
+// nil → no-op; zero overhead.
+var testCloseBarrier func()
+
 // CompareAndTerminate implements SessionIdentityTerminator.  The identity
 // comparison and session detachment happen under a single a.mu.Lock() — the
-// PA2c-R4 atomic boundary — verifying the expected immutable session
+// PA2c-R6 atomic boundary — verifying the expected immutable session
 // pointer is still the current entry, removing it from the map, and
 // releasing the lock BEFORE native process/PTY Close I/O.  The detached
 // session cannot receive new operations; a replacement inserted under the
@@ -174,12 +193,17 @@ func (a *controlledPTYAdapter) CompareAndTerminate(_ context.Context, localID st
 		a.mu.Unlock()
 		return ErrStaleSessionIdentity
 	}
-	s.exited = true
-	delete(a.sessions, localID)
-	native := s.native
+	native := a.detachLocked(localID, expected)
 	a.mu.Unlock()
 
-	// All lifecycle locks released before native process I/O.
+	if native == nil {
+		// Should not happen: s matched expected and existed.
+		return ErrSessionNotFound
+	}
+	// Deterministic test seam: nil in production, channel-barrier in tests.
+	if testCloseBarrier != nil {
+		testCloseBarrier()
+	}
 	if err := native.Close(); err != nil {
 		return fmt.Errorf("controlled_pty atomic-terminate: %w", err)
 	}
