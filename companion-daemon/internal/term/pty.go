@@ -450,7 +450,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			continue
 		}
 
-		// PA3 Step 6b: ActivityBuffer.Append removed; Transcript is canonical.
+		// PA3 Step 6b: legacy write removed; Transcript is canonical.
 		// T3: echo privacy — suppress byte-stream projection during input.
 		// BeginInput starts suppression; the byte-stream projector
 		// auto-releases when it observes the first newline after input

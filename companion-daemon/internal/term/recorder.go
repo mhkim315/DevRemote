@@ -282,7 +282,7 @@ func (r *Recorder) readLoop() {
 
 		// E8g4: detect cmux delta frames (prefixed with ESC[9998m).
 		// Strip marker — do NOT broadcast to live terminal subscribers.
-		// PA3 Step 6b: ActivityBuffer.Append removed; Transcript is canonical.
+		// PA3 Step 6b: legacy write removed; Transcript is canonical.
 		if isDeltaMarker(payload) {
 			payload = payload[len(deltaMarker):]
 			if len(payload) == 0 {
@@ -315,7 +315,7 @@ func (r *Recorder) readLoop() {
 			continue
 		}
 
-		// PA3 Step 6b: ActivityBuffer.Append removed; Transcript is canonical.
+		// PA3 Step 6b: legacy write removed; Transcript is canonical.
 		// T3: detect TUI boundaries for transcript omission.
 		if r.transcriptSvc != nil {
 			if transcript.IsAlternateScreenStart(payload) {
