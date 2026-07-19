@@ -531,7 +531,7 @@ defer func() {
 // This requires adding a CreateSessionAndCapture method or
 // equivalent to the adapter interface.
 // creatorWithIdentity is a typed field on OwnedPTYRuntime,
-// populated at construction: creatorWithIdentity, _ = spawn.(SessionCreatorWithIdentity)
+// populated at construction: creatorWithIdentity, ok := spawn.(SessionCreatorWithIdentity); if !ok { return nil, fmt.Errorf("spawn adapter does not implement SessionCreatorWithIdentity") }
 createdID, sess, err := o.creatorWithIdentity.CreateSessionAndCapture(ctx, opts)
 if err != nil { completion.Complete(); return "", err }
 canonicalID := build(adapter, createdID)
