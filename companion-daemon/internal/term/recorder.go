@@ -665,11 +665,11 @@ func StartRecorderUnconditional(sessionID string, stream ptyStream) *Recorder {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Recorder{
-		sessionID:  sessionID,
-		stream:     stream,
-		ctx:        ctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
+		sessionID: sessionID,
+		stream:    stream,
+		ctx:       ctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
 	}
 	ch := r.Subscribe()
 	recorderRegistry.recorders[sessionID] = r

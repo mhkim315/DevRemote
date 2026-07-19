@@ -145,14 +145,10 @@ func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 // canonical-id lookup at cleanup time.
 type ownedCleanup func(ctx context.Context)
 
-// Create launches a controlled-PTY runtime through the temporary mux spawn
-// seam, proves its Recorder is ready, captures the MANDATORY immutable
-// process handle and the generation-bound cleanup capability for this exact
-// launch, registers the generation-bound lifecycle record, and starts the
-// exactly-once exit watcher on the EXACT Recorder returned by the spawn
-// (closing the fast-exit race). Failure — including a failed handle capture
-// — rolls the spawn back and leaves no visible runtime: a running
-// generation is NEVER published without its exact process binding.
+// Create launches a controlled-PTY runtime. PA3 Step 6a: prefers
+// CreateSessionAndCapture for atomic session identity + pre-install barrier
+// with GenerationCleanupCapability. Falls back to legacy ownSpawn if the
+// adapter does not implement SessionCreatorWithIdentity.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
 	if o.spawn == nil {
 		return "", fmt.Errorf("no spawn adapter")
@@ -160,26 +156,112 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, pr
 	if _, ok := o.spawn.(mux.SessionCreator); !ok {
 		return "", fmt.Errorf("spawn adapter does not support creation")
 	}
-	// PA2d-R2: fail-closed — adapter MUST support atomic conditional
-	// termination before any runtime may be published.
 	if _, ok := o.spawn.(mux.SessionIdentityTerminator); !ok {
 		return "", fmt.Errorf("spawn adapter does not support atomic conditional termination")
 	}
+
+	// PA3 Step 6a: prefer CreateSessionAndCapture for atomic pre-install.
+	if sci, ok := o.spawn.(mux.SessionCreatorWithIdentity); ok {
+		return o.createWithCapture(ctx, opts, profileID, name, sci)
+	}
+	return o.createLegacy(ctx, opts, profileID, name)
+}
+
+// createWithCapture uses CreateSessionAndCapture + GenerationCleanupCapability.
+// Pre-install barrier: claims old capability, executes it, waits for
+// Completion.Done(), then creates the new session.
+func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.CreateOptions, profileID, name string, sci mux.SessionCreatorWithIdentity) (string, error) {
+	// Pre-install barrier: check for existing entry under o.mu.
+	canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: opts.Name}.Canonical()
+	o.mu.Lock()
+	existing, isReplacement := o.entries[canonicalID]
+	var oldCap *GenerationCleanupCapability
+	if isReplacement {
+		// Extract old cleanup capability — claimed at most once.
+		oldCap = &GenerationCleanupCapability{
+			Generation:  existing.Generation,
+			Session:     nil, // adapter session identity from prior create
+			Recorder:    nil, // old Recorder ref
+			Transport:   existing.transport,
+			Terminator:  o.spawn.(mux.SessionIdentityTerminator),
+			CanonicalID: opts.Name,
+			LocalID:     sessionid.ParseSessionID(opts.Name).LocalID,
+			Completion:  NewGenerationCompletion(),
+		}
+	}
+	o.mu.Unlock()
+
+	// Execute old cleanup outside locks.
+	if oldCap != nil {
+		oldCap.Execute(ctx)
+		<-oldCap.Completion.Done()
+	}
+
+	// Create adapter session — identity captured atomically.
+	localID, sess, err := sci.CreateSessionAndCapture(ctx, opts)
+	if err != nil {
+		return "", err
+	}
+	canonicalID = sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: localID}.Canonical()
+
+	// Construct GenerationCleanupCapability immediately after CreateSessionAndCapture.
+	completion := NewGenerationCompletion()
+	cap := &GenerationCleanupCapability{
+		Generation:  0, // filled after registration
+		Session:     sess,
+		Terminator:  o.spawn.(mux.SessionIdentityTerminator),
+		CanonicalID: canonicalID,
+		LocalID:     localID,
+		Completion:  completion,
+	}
+	defer func() {
+		if cap.Generation == 0 {
+			cap.Execute(ctx) // rollback: cleanup on any failure before publish
+		}
+	}()
+
+	// Start Recorder unconditionally.
+	stream, err := openPTYStream(sess)
+	if err != nil {
+		return "", fmt.Errorf("open stream: %w", err)
+	}
+	rec := StartRecorderUnconditional(canonicalID, stream)
+
+	// Build transport and register.
+	type writeResizer interface {
+		io.Writer
+		Resize(int, int) error
+	}
+	wr, _ := sess.(writeResizer)
+	transport := newTerminalTransport(canonicalID, 0, wr, wr)
+	cap.Transport = transport
+	cap.Recorder = rec
+
+	handle, ok := sess.(mux.ManagedProcess)
+	if !ok {
+		DeleteRecorder(canonicalID)
+		return "", fmt.Errorf("session does not support managed process")
+	}
+
+	cleanup := o.newCleanup(canonicalID, sess, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport)
+	cap.Generation = gen // success — prevent defer rollback
+	o.watchExit(canonicalID, gen, rec)
+	return canonicalID, nil
+}
+
+// createLegacy is the pre-PA3 creation path using ownSpawn.
+func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
 	canonicalID, rec, err := o.ownSpawn(ctx, opts)
 	if err != nil {
 		return "", err
 	}
 	sess, handle, herr := o.captureSession(ctx, sessionid.ParseSessionID(canonicalID).LocalID)
 	if herr != nil {
-		// PA2c-R2: handle capture is MANDATORY. Roll back the spawn
-		// exactly like a recorder-readiness failure and fail creation
-		// unpublished.
 		_ = o.terminateAdapterSession(ctx, sessionid.ParseSessionID(canonicalID).LocalID)
 		DeleteRecorder(canonicalID)
 		return "", fmt.Errorf("owned pty create: process handle capture failed: %w", herr)
 	}
-	// TerminalTransport: use io.Writer + Resize from the NativeSession PTY.
-	// The session's native is accessed via a local interface.
 	type writeResizer interface {
 		io.Writer
 		Resize(int, int) error
@@ -190,6 +272,15 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, pr
 	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
+}
+
+// openPTYStream opens the terminal stream from a session.
+func openPTYStream(sess mux.Session) (ptyStream, error) {
+	opener, ok := sess.(mux.StreamOpener)
+	if !ok {
+		return nil, fmt.Errorf("session does not support streaming")
+	}
+	return opener.OpenStream(context.Background())
 }
 
 // captureSession resolves the freshly-spawned session and its process

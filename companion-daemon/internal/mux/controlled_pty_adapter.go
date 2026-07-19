@@ -137,18 +137,19 @@ func (a *controlledPTYAdapter) CreateSession(ctx context.Context, opts CreateOpt
 	return id, nil
 }
 
-// CreateSessionAndCapture implements SessionCreatorWithIdentity (PA3 Step 6).
-// Creates the PTY session and returns the Session object atomically — the
-// caller captures the exact session identity without a ListSessions lookup.
+// CreateSessionAndCapture implements SessionCreatorWithIdentity (PA3 Step 6a).
+// Allocates the session ID under a.mu, releases the lock BEFORE SpawnPTY I/O,
+// then re-acquires to install the session in the map. No adapter lock is held
+// across external I/O — PA2d §5 invariant preserved.
 func (a *controlledPTYAdapter) CreateSessionAndCapture(ctx context.Context, opts CreateOptions) (string, Session, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	a.nextID++
 	id := opts.Name
 	if id == "" {
 		id = fmt.Sprintf("pty%d", a.nextID)
 	}
+	// Release a.mu BEFORE SpawnPTY — no adapter lock across I/O.
+	a.mu.Unlock()
 
 	command := opts.Command
 	if command == "" {
@@ -179,7 +180,11 @@ func (a *controlledPTYAdapter) CreateSessionAndCapture(ctx context.Context, opts
 		native:    native,
 		startedAt: time.Now(),
 	}
+
+	// Re-acquire to install the session atomically.
+	a.mu.Lock()
 	a.sessions[id] = s
+	a.mu.Unlock()
 
 	go func() {
 		ticker := time.NewTicker(200 * time.Millisecond)

@@ -20,7 +20,7 @@ func NewGenerationCompletion() *GenerationCompletion {
 	return &GenerationCompletion{done: make(chan struct{})}
 }
 
-func (c *GenerationCompletion) Complete() { c.once.Do(func() { close(c.done) }) }
+func (c *GenerationCompletion) Complete()             { c.once.Do(func() { close(c.done) }) }
 func (c *GenerationCompletion) Done() <-chan struct{} { return c.done }
 
 type GenerationCleanupCapability struct {
