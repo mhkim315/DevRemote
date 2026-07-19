@@ -61,7 +61,7 @@ func TestProduction_AcceptedOnlyRecordReachesTranscript(t *testing.T) {
 		t.Fatalf("correlation: got %v, want ManagedLaunch", corr)
 	}
 
-	ts.ProjectAgentEvents(sid, events)
+	ts.ProjectAgentEvents(sid)
 	segments := ts.ListTranscript(sid)
 	if len(segments) == 0 {
 		t.Fatal("no Transcript segments")
@@ -286,7 +286,7 @@ func TestProduction_TranscriptAPIResponseAfterPolls(t *testing.T) {
 
 	corr := a.launchCorrelation(transcript.LookupLaunch(sid), "controlled_pty", "codex", 0, time.Time{})
 	ts.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: corr, Provider: "codex"})
-	ts.ProjectAgentEvents(sid, events)
+	ts.ProjectAgentEvents(sid)
 
 	resp := ts.BuildResponse(sid, ts.ListTranscript(sid))
 	if resp.SessionID != sid {

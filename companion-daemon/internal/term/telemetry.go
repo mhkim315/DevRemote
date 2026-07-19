@@ -46,7 +46,7 @@ type SessionTelemetry struct {
 	// telemetry poll health (Stale). It never enables lifecycle/approval actions.
 	AgentActivity *AgentActivityDTO `json:"agentActivity,omitempty"`
 	// Agent events flow through the existing Events field via
-	// TelemetryService.processSession → EventStore → Snapshot.
+	// TelemetryService.processSession → Transcript → Snapshot.
 	Stale         bool      `json:"stale,omitempty"`
 	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
 	LastError     string    `json:"lastError,omitempty"`
@@ -227,13 +227,13 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// PA3 Step 6b: Fallback without telemetry service (e.g. tests).
-	// EventStore removed from snapshot path; Transcript is canonical.
+	// Transcript is canonical for snapshot path.
 	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.AgentDetector), h.Lifecycle, reg)
 	res = appendCatalogRows(res, h.Catalog, h.Approvals)
 	json.NewEncoder(w).Encode(res)
 }
 
-// PA3 Step 6b: events EventStore param removed; Transcript is canonical.
+// Transcript is canonical.
 func buildSimpleSnapshot(reg *mux.Registry) []SessionTelemetry {
 	sessions := reg.Sessions(context.Background())
 	res := make([]SessionTelemetry, 0)

@@ -126,6 +126,6 @@ func TestOversizedRecord(t *testing.T) {
 		t.Fatalf("Expected 2 events (skipping oversized), got %d", len(events))
 	}
 	if events[0].Detail != "Line 1" || events[1].Detail != "Line 3" {
-		t.Errorf("Events did not match expected recovery: %+v", events)
+		t.Errorf("Events did not match expected recovery: %+v")
 	}
 }

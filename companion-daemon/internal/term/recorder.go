@@ -11,7 +11,7 @@ import (
 )
 
 // Recorder owns the PTY read loop for a session.
-// One recorder per session. Single source of ActivityBuffer appends.
+// One recorder per session. Transcript is canonical capture authority.
 type Recorder struct {
 	sessionID string
 	stream    ptyStream
@@ -234,7 +234,7 @@ func (r *Recorder) feedTranscript(payload []byte) {
 	r.transcriptSvc.FeedBytes(r.sessionID, payload, time.Now())
 }
 
-// readLoop reads PTY output, broadcasts to subscribers, appends to ActivityBuffer.
+// readLoop reads PTY output, broadcasts to subscribers, feeds Transcript.
 // On exit (EOF, error, or cancel), the recorder unregisters itself — but only
 // if no newer recorder for the same sessionID has been created.
 func (r *Recorder) readLoop() {
@@ -306,7 +306,7 @@ func (r *Recorder) readLoop() {
 		// (ESC[2J ESC[H + screen content) sent as one pipe Write(). The pipe
 		// delivers them in chunks; only the first chunk starts with ESC[2J.
 		// We must drain ALL chunks from the same Write() without appending
-		// any to ActivityBuffer. Live terminal subscribers still receive them.
+		// any to the transcript. Live terminal subscribers still receive them.
 		if isClearScreenSnapshot(payload) {
 			r.broadcast(payload)
 			r.drainSnapshot(buf)
@@ -327,7 +327,7 @@ func (r *Recorder) readLoop() {
 		r.feedTranscript(payload)
 
 		// Broadcast to subscribers after append — eliminates race between
-		// subscriber receive and ActivityBuffer.List.
+		// subscriber receive and Transcript query.
 		r.broadcast(payload)
 	}
 }
@@ -388,7 +388,7 @@ func (r *Recorder) Bootstrap() []byte {
 var snapshotEndMarker = []byte("\x1b[9999m")
 
 // deltaMarker prefixes cmux delta frames. ESC[9998m is an invalid SGR
-// code — xterm.js ignores it. Recorder strips it before ActivityBuffer.
+// code — xterm.js ignores it. Recorder strips it before output capture.
 var deltaMarker = []byte("\x1b[9998m")
 
 // resolveCaptureMode is a future hook for per-adapter capture behavior.
@@ -413,7 +413,7 @@ func isDeltaMarker(payload []byte) bool {
 
 // drainSnapshot reads chunks until snapshotEndMarker is found, then strips
 // it. All chunks (including the marker portion) are broadcast to live
-// terminal subscribers but never appended to ActivityBuffer.
+// terminal subscribers but never appended to the transcript.
 //
 // A 1-second safety timeout prevents false-positive drain from consuming
 // normal PTY output forever (e.g., if isClearScreenSnapshot incorrectly

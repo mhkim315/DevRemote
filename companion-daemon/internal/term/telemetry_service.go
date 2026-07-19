@@ -279,7 +279,7 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 		// PA3 Step 2 R1: legacy State/Load/Runner/RunnerColor/Events retained
 		// as compatibility stubs (json:"-"), populated with defaults for test
 		// continuity. Removed from JSON serialization. Full removal in Step 4.
-		// PA3 Step 6b: s.events.List removed; EventStore is no-op stub.
+
 		res = append(res, SessionTelemetry{
 			ID: compoundID, DisplayID: sess.ID(), Adapter: sess.AdapterName(),
 			State: "idle", Load: 0, Runner: "agent", RunnerColor: "#58a6ff",

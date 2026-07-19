@@ -23,7 +23,7 @@ package mux
 // Identical snapshots produce no transcript events.
 // Used by cmux.
 //
-// unsupported: No transcript capture. ActivityBuffer receives nothing.
+// unsupported: No transcript capture.
 // Transcript tab shows "not available" or equivalent.
 
 type TranscriptCaptureMode int

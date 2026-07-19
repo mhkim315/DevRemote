@@ -76,7 +76,7 @@ type Handlers struct {
 
 // AgentDetector is the agent adapter layer's detection interface.
 // Agent events flow through the existing production telemetry path
-// (processSession → ResolveAgentLog → ReadNewEvents → EventStore → Events).
+// (processSession → ResolveAgentLog → ReadNewEvents → Transcript → Events).
 type AgentDetector interface {
 	DetectAgent(sessionID string, adapterName string, localID string, evidence ProdDetectionEvidence) (agentKind string, agentStatus string, agentConfidence float64)
 }

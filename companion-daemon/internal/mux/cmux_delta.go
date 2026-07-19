@@ -164,7 +164,7 @@ func stripMuxANSI(s string) string {
 //   Stable Prefix  — top lines unchanged across polls (committed when they scroll out)
 //   Mutable Tail   — bottom lines that change each poll (projected, not committed)
 //
-// Lines are committed to ActivityBuffer only when they:
+// Lines are committed to the transcript only when they:
 //   1. Scroll out of the current screen (no longer visible), OR
 //   2. Remain in the stable prefix for N consecutive polls
 //
@@ -184,7 +184,7 @@ func newScreenTracker() *screenTracker {
 }
 
 // processScreen compares the current screen against the previous one.
-// Returns lines to commit to ActivityBuffer (via delta marker).
+// Returns lines to commit to the transcript (via delta marker).
 func (s *screenTracker) processScreen(currentContent string) (commitText string) {
 	currLines := splitLines(currentContent)
 	if len(currLines) == 0 {

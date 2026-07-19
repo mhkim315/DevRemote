@@ -4,7 +4,7 @@
 //
 // Ownership: this package is owned by the Transcript projection layer. It
 // consumes the frozen T0 contract.AgentEvent (accepted) and the existing
-// Recorder/ActivityBuffer byte stream. It must not modify either source.
+// Recorder byte stream. It must not modify either source.
 //
 // Source arbitration (§3.1):
 //   - Correctly correlated accepted AgentEvents are the PRIMARY semantic source.

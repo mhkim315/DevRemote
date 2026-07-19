@@ -58,7 +58,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	defer os.RemoveAll(cwd)
 
 	reg, _ := mux.NewRegistry()
-	ipc, err := term.StartIPCServer(sock, reg, nil, nil, nil, nil, nil, svc)
+	ipc, err := term.StartIPCServer(sock, reg, nil, nil, nil, svc)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}

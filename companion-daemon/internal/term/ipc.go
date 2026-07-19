@@ -26,9 +26,7 @@ type IPCServer struct {
 	closeOnce     sync.Once
 	closeErr      error
 	reg           *mux.Registry
-	events        EventStore
 	telemetry     *TelemetryService
-	activity      *ActivityBuffer
 	lifecycle     *LifecycleService
 	managed       *ManagedCodexService  // SP0: nil unless EnableManagedCodex
 	managedClaude *ManagedClaudeService // C1D: nil unless EnableManagedClaude

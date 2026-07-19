@@ -245,7 +245,7 @@ func TestS1C_DeleteHandlerClearsStatus_NoInherit(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true, "d1")
 	reg := mux.MustNewRegistry(managed)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	life := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil, nil)
+	life := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	telem := NewTelemetryService(reg, nil, nil,
 		NewApprovalStore(), ts)

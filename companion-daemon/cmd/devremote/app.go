@@ -796,7 +796,7 @@ func startWatcherProd() *watcher.Tailer {
 	t, err := watcher.New(claudeLogDir, func(ev watcher.RawEvent) {
 		toolUse := watcher.ExtractToolUse(ev)
 		if toolUse != nil && (toolUse.Name == "Replace" || toolUse.Name == "Edit" || toolUse.Name == "Write" || toolUse.Name == "StrReplace" || toolUse.Name == "GlobReplace" || toolUse.Name == "View" || toolUse.Name == "Bash") {
-			// PA3 Step 6b: events.Emit removed; legacy EventStore is no-op stub.
+			// PA3 Step 6b: events.Emit removed; Transcript is canonical.
 			// File watcher retains tool-use filter for future canonical writes.
 		}
 	})

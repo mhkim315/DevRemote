@@ -176,8 +176,8 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	regA.Register(adapterA)
 	regB.Register(adapterB)
 
-	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier(), Events: nil}
-	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier(), Events: nil}
+	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier(), }
+	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier(), }
 
 	if hA.Registry == hB.Registry {
 		t.Fatal("expected different registries")
@@ -259,7 +259,7 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
 	// Telemetry: record cancel timing. Use a minimal service so Done() is already closed.
-	app.telemetry = term.NewTelemetryService(app.registry, app.events, nil, nil, nil, nil, nil)
+	app.telemetry = term.NewTelemetryService(app.registry, nil, nil, nil, nil)
 	app.telemetryCtxCancel = func() {
 		order = append(order, "telemetry:cancel")
 		// Start + immediately cancel so Done() is closed.
@@ -383,7 +383,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 	app.ipcPath = socketPath
 
-	srv, err := term.StartIPCServer(socketPath, app.registry, nil, nil, nil, nil, nil, nil)
+	srv, err := term.StartIPCServer(socketPath, app.registry, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 
 	// Rebind without manual Remove.
-	srv2, err := term.StartIPCServer(socketPath, app.registry, nil, nil, nil, nil, nil, nil)
+	srv2, err := term.StartIPCServer(socketPath, app.registry, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
@@ -412,7 +412,6 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 	tunnelStarted := false
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		Events:       nil,
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
@@ -447,7 +446,6 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 	tunnelStarted := false
 	cfg := Config{InsecureLocalOnly: false}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		Events:       nil,
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
@@ -486,7 +484,6 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		Events:       nil,
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
@@ -516,7 +513,6 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		Events:       nil,
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
@@ -559,7 +555,6 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewAppWithDeps(cfg, Dependencies{
-		Events:       nil,
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
 		StartIPC: func(path string, reg *mux.Registry, events term.EventStore, telemetry *term.TelemetryService) (ipcResource, error) {
@@ -677,7 +672,6 @@ func insecureVerifier() term.TokenVerifier {
 // real files or network. Individual fields can be overridden.
 func testDeps() Dependencies {
 	return Dependencies{
-		Events: nil,
 		Cmds:   term.NewCommandBroker(),
 	}
 }
@@ -786,7 +780,6 @@ func TestNewAppWithDeps_CatalogWiring(t *testing.T) {
 
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Managed: svc,
-		Events:  nil,
 		Cmds:    term.NewCommandBroker(),
 	})
 	if err != nil {

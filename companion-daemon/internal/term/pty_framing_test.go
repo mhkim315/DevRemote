@@ -107,7 +107,7 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	stream := newCapturingStream()
 	sess := &capturingSession{id: localID, stream: stream}
 	reg := mux.MustNewRegistry(&capturingAdapter{session: sess})
-		h := &Handlers{Registry: reg, Activity: activity}
+		h := &Handlers{Registry: reg, }
 	sessionID := "mock:" + localID
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,15 +130,7 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	return conn, stream, sessionID, cleanup
 }
 
-func inputEventCount(a *ActivityBuffer, sessionID string) int {
-	n := 0
-	for _, e := range a.List(sessionID) {
-		if e.Type == ActivityTerminalInput {
-			n++
-		}
-	}
-	return n
-}
+
 
 // Proof: binary input — including bytes that LOOK like a control frame —
 // reaches the PTY byte-for-byte. This is the exact regression the handoff

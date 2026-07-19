@@ -702,7 +702,7 @@ func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string) (LifecycleResul
 	o.mu.Lock()
 	delete(o.entries, id)
 	o.mu.Unlock()
-	// PA3 Step 6b: o.activity.Clear removed; ActivityBuffer is no-op stub.
+
 	if o.transcript != nil {
 		o.transcript.ClearTranscript(id)
 	}
