@@ -255,6 +255,12 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 	}
 
 	cleanup := o.newCleanup(canonicalID, sess, rec)
+	// Test seam: deterministic failure before publication triggers defer rollback.
+	if testCreateWithCaptureFailAfterCapture != nil {
+		if err := testCreateWithCaptureFailAfterCapture(); err != nil {
+			return "", err
+		}
+	}
 	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec, sess)
 	cap.Generation = gen // success — prevent defer rollback
 	o.watchExit(canonicalID, gen, rec)
@@ -376,6 +382,11 @@ func (o *OwnedPTYRuntime) watchExit(canonicalID string, gen int64, rec *Recorder
 		o.finalize(canonicalID, gen)
 	}()
 }
+
+// testCreateWithCaptureFailAfterCapture is a test seam. When non-nil,
+// createWithCapture calls it after recorder/transport setup but before
+// register(), triggering the deferred cap.Execute() rollback.
+var testCreateWithCaptureFailAfterCapture func() error
 
 // spawnControlled is the PA2d owned transport: create the PTY directly
 // through the owned adapter and prove the Recorder is ready.
