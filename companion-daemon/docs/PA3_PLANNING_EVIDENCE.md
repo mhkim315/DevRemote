@@ -504,9 +504,9 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R5 baseline)
+## 12. PA3 contract proposal gate results (R6 baseline)
 
-Baseline SHA: `884cc071d995c848841016d27504028adfef8e37`
+Baseline SHA: `21d34e5b46e1ad5058a4b95fb6102104697e51ce`
 Gate run date: 2026-07-19
 No production code changed; supervisor directory removed at R1.
 
@@ -528,9 +528,9 @@ $ cd companion-daemon && go vet ./...
 
 ```sh
 $ cd companion-daemon && go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
-ok  	devremote/companion-daemon/internal/term	25.687s
-ok  	devremote/companion-daemon/internal/mux	6.679s
-ok  	devremote/companion-daemon/cmd/devremote	33.888s
+ok  	devremote/companion-daemon/internal/term	26.039s
+ok  	devremote/companion-daemon/internal/mux	6.283s
+ok  	devremote/companion-daemon/cmd/devremote	33.966s
 ```
 
 All three packages pass with race detector enabled. No test regressions from PA2d baseline.

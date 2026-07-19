@@ -362,8 +362,8 @@ following addition:
   **PA3 fix — per-ID admission gate with independent generation**:
 
   **Admission gate (per-ID, not global)**: A new per-canonical-session-ID
-  admission mutex is introduced. It is held from after `CreateSession`
-  returns through publish — across Recorder stop/start I/O — but it blocks
+  admission mutex is introduced. It is held from BEFORE `CreateSession`
+  through publish — across Recorder stop/start I/O — but it blocks
   ONLY concurrent creates of the SAME canonical ID. Different sessions are
   unblocked. This satisfies PA2d because the blocked scope is limited to
   same-ID replacement, not all lifecycle operations.
@@ -379,21 +379,35 @@ following addition:
 
   **Seven-phase flow**:
 
-  **Phase 1 — Create adapter session (no locks)**: As in production,
-  `CreateSession(ctx, opts)` runs with no daemon locks held. Adapter I/O
-  is unblocked. Returns the created local ID.
-
-  **Phase 2 — Per-ID admission (acquire before shared-state mutation)**:
+  **Phase 0 — Generate canonical ID, acquire admission gate
+  (BEFORE any adapter mutation)**:
   ```go
-  canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: createdID}.Canonical()
+  // Daemon owns identity. The canonical ID is determined by the daemon
+  // (profile + name or UUID) BEFORE CreateSession, so the admission gate
+  // is held across the ENTIRE create lifecycle. No adapter state is
+  // mutated until the gate is held.
+  localID := o.generateLocalID(profileID, name)
+  canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: localID}.Canonical()
+
   admitMu := o.admitGate(canonicalID)
   admitMu.Lock()
   defer admitMu.Unlock()
   ```
-  From this point, no other goroutine can create or replace the same
-  canonical ID. Reads (list, telemetry, Transcript) are unblocked.
+  The admission gate is acquired BEFORE any call to the adapter. A
+  concurrent create for the same canonical ID blocks here — it cannot
+  enter `CreateSession` and overwrite the first create's adapter session.
+  The canonical ID is fully determined by daemon-owned identity
+  (profile + user-supplied name, or a fresh UUID if no name), NOT by
+  the adapter's opaque local ID. The adapter must accept a caller-
+  specified identity so the created session matches the canonical ID.
 
-  **Phase 3 — Check-and-reserve (under o.mu, brief — NO I/O)**:
+  **Phase 1 — Create adapter session (admission gate held)**:
+  With the per-ID gate held, `CreateSession(ctx, opts)` creates the PTY.
+  The `opts.Name` carries the daemon-assigned local ID. Adapter I/O
+  runs with no global daemon lock — only the per-ID gate blocks same-ID
+  creates. Other sessions are unblocked.
+
+  **Phase 2 — Check-and-reserve (under o.mu, brief — NO I/O)**:
   ```go
   o.mu.Lock()
   existing, isReplacement := o.entries[canonicalID]
@@ -410,7 +424,7 @@ following addition:
   preserved. The reservation is visible to reads. A future same-ID
   create (after the admission gate releases) sees this entry.
 
-  **Phase 4 — Stop old Recorder (NO locks — PTY I/O)**:
+  **Phase 3 — Stop old Recorder (NO locks — PTY I/O)**:
   ```go
   if isReplacement {
       DeleteRecorder(canonicalID)
@@ -419,7 +433,7 @@ following addition:
   No lock held — only the per-ID admission gate blocks same-ID creates.
   After this returns, no goroutine feeds bytes for this session.
 
-  **Phase 5 — Transcript replacement or init (NO locks)**:
+  **Phase 4 — Transcript replacement or init (NO locks)**:
   ```go
   if isReplacement {
       transcriptGen = o.transcript.ReplaceTranscript(canonicalID)
@@ -432,7 +446,7 @@ following addition:
   Phase 4. Independent Transcript generation counter is used — NOT
   `o.nextGen`. The chunk queue is re-enabled after the clear.
 
-  **Phase 6 — Start new Recorder unconditionally (NO locks — PTY I/O)**:
+  **Phase 5 — Start new Recorder unconditionally (NO locks — PTY I/O)**:
   ```go
   opener, ok := adapterSession.(mux.StreamOpener)
   stream, err := opener.OpenStream(ctx)
@@ -449,7 +463,7 @@ following addition:
   If a stale old Recorder somehow survives, its PTY FD is closed and its
   readLoop exits harmlessly — it does not affect the new Recorder.
 
-  **Phase 7 — Capture, publish, or fail (under o.mu, brief — NO I/O)**:
+  **Phase 6 — Capture, publish, or fail (under o.mu, brief — NO I/O)**:
   ```go
   handle := adapterSession.(mux.ManagedProcess)
   transport := newTerminalTransport(canonicalID, lifecycleGen, wr, wr)
@@ -975,7 +989,7 @@ migrated.**
 - **Add `SetTranscriptGeneration` method on `transcript.Service`**: records
   the initial generation for a newly created session. Idempotent
   (first-write-wins). Safe to call after Recorder start.
-- **Restructure `OwnedPTYRuntime.Create` into seven-phase admission**:
+- **Restructure `OwnedPTYRuntime.Create` into six-phase admission (Phase 0-6)**:
   Phase 1: CreateSession (no locks). Phase 2: per-ID admission gate
   acquired (serializes same-ID creates only). Phase 3: check-and-reserve
   under `o.mu` (brief, no I/O). Phase 4: stop old Recorder via
@@ -1069,14 +1083,14 @@ migrated.**
 
 | Location | Change | Purpose |
 | --- | --- | --- |
-| `transcript.Service.ReplaceTranscript` | New method: drain + clear + re-enable queue + bump generation. No RemoveLaunch. Precondition: no concurrent feeder. | Called in Phase 2 after old Recorder stopped |
-| `transcript.Service.SetTranscriptGeneration` | New method: idempotent first-write-wins generation initialisation | First-creation generation assignment (Phase 2) |
-| `OwnedPTYRuntime.Create` Phase 2 | Under `o.mu`: check entry → `DeleteRecorder` if replacement → `ReplaceTranscript` or `SetTranscriptGeneration` → reserve generation slot | Atomic admission boundary with old-feeder stop |
-| `OwnedPTYRuntime.Create` Phase 2 | Per-ID admission gate acquired for canonical ID | Serializes same-ID creates; no I/O under any lock |
-| `OwnedPTYRuntime.Create` Phase 4 | `DeleteRecorder(canonicalID)` with no lock held | Stop old Recorder (PTY I/O outside any lock — PA2d preserved) |
-| `OwnedPTYRuntime.Create` Phase 6 | `StartRecorderUnconditional` with no lock held | New Recorder from new adapter session's stream; never reuses old Recorder |
-| `transcript.Service` | Independent per-session generation counter (not `o.nextGen`) | Defect 3 fix: strictly monotonic per session |
-| `OwnedPTYRuntime.Create` Phase 5 | Under `o.mu`: check gen still current, publish or return deterministic `"session replaced"` error | Replacement-wins linearisation; concurrent-create race |
+| `transcript.Service.ReplaceTranscript` | New method: drain + clear + re-enable queue + bump generation. No RemoveLaunch. | Called in Phase 4 (no locks) after old Recorder stopped |
+| `transcript.Service.SetTranscriptGeneration` | New method: idempotent first-write-wins generation initialisation | First-creation generation assignment (Phase 4) |
+| `OwnedPTYRuntime.Create` Phase 0 | Per-ID admission gate acquired BEFORE CreateSession | Serializes same-ID creates; prevents adapter-session overwrite |
+| `OwnedPTYRuntime.Create` Phase 2 | Under `o.mu`: check entry → reserve slot (brief, no I/O) | Catalog reservation; o.mu released before any PTY/Recorder I/O |
+| `OwnedPTYRuntime.Create` Phase 3 | `DeleteRecorder(canonicalID)` with no lock held | Stop old Recorder (PTY I/O outside any lock — PA2d preserved) |
+| `OwnedPTYRuntime.Create` Phase 5 | `StartRecorderUnconditional` with no lock held | New Recorder from new adapter session's stream; never reuses old Recorder |
+| `OwnedPTYRuntime.Create` Phase 6 | Under `o.mu`: check gen still current, publish or return error (brief, no I/O) | Generation guard; safety assertion since admission gate serializes |
+| `transcript.Service` | Independent per-session generation counter (not `o.nextGen`) | Strictly monotonic per session; not derived from lifecycle or launch gen |
 | `TelemetryService.processSession` | `Notifier.ApprovalRequired` from accepted adapter path (dormant until `provenActionMapping` is proven) | Notification integration point wired, fires when actionable mapping exists |
 
 ## 12. Acceptance gates
@@ -1288,13 +1302,15 @@ These accepted paths must not be modified by PA3:
 - `internal/sessionid/` — SessionRef, ParseSessionID, Canonical
 - `internal/term/terminal_transport.go` — TerminalTransport (PA2d)
 - `internal/term/owned_pty_runtime.go` — OwnedPTYRuntime (PA2c); **allowed
-  changes**: restructure `Create` into five-phase admission (Phase 1-5);
-  call `DeleteRecorder` in Phase 2 before `ReplaceTranscript`;
-  restructure `Create` into seven-phase admission (Phase 1-7);
-  use per-ID admission gate (not `o.mu`) across Recorder I/O;
-  call `StartRecorderUnconditional` in Phase 6; independent
-  Transcript generation counter (not `o.nextGen`);
-  generation-non-current check in Phase 5 with deterministic error
+  changes**: restructure `Create` into six-phase admission (Phase 0-6):
+  Phase 0 acquires per-ID gate BEFORE CreateSession; Phase 2 reserves under
+  o.mu (brief, no I/O); Phase 3 stops old Recorder (no locks); Phase 4
+  replaces/initialises Transcript (no locks); Phase 5 starts new Recorder
+  via StartRecorderUnconditional (no locks); Phase 6 publishes under o.mu
+  (brief, no I/O). Independent per-session Transcript generation counter
+  (not o.nextGen); admission gate held across Recorder I/O (per-ID only,
+  satisfies PA2d);
+  generation-non-current check in Phase 6 with deterministic error
 - `internal/term/lifecycle_service.go` — LifecycleService (PA2c)
 - `internal/term/lifecycle_handlers.go` — lifecycle HTTP handlers
 - `internal/term/lifecycle.go` — lifecycle state machine
