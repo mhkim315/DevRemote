@@ -428,11 +428,7 @@ func TestFixtureE2E_Telemetry(t *testing.T) {
 }
 
 func TestFixtureE2E_MobileSchema(t *testing.T) {
- t.Skip("PA3 Step 2 R2: JSON output excludes legacy fields; E2E HTTP test, assertions in api_golden")
- t.Skip("PA3 Step 2 R1: JSON output excludes legacy fields (State/Load/Runner/RunnerColor/Events)")
-	// Verify JSON response for third adapter matches mobile schema.
-	// Mobile client deserializes SessionTelemetry with string fields
-	// for id, adapter, displayId, state, capabilities[].
+	// PA3 Step 2 R3: verify legacy keys absent, new keys present.
 	h, _ := fixtureE2EHandlers(t)
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -440,21 +436,17 @@ func TestFixtureE2E_MobileSchema(t *testing.T) {
 
 	raw := rec.Body.String()
 
-	// All required JSON keys must be present for unknown third adapter.
-	requiredKeys := []string{
-		`"id"`,
-		`"displayId"`,
-		`"state"`,
-		`"load"`,
-		`"runner"`,
-		`"runnerColor"`,
-		`"adapter"`,
-		`"capabilities"`,
-		`"events"`,
+	// Legacy keys must be ABSENT (json:"-" excludes them).
+	for _, k := range []string{`"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"events"`} {
+		if strings.Contains(raw, k) {
+			t.Errorf("mobile schema: legacy key %s must be absent from JSON", k)
+		}
 	}
-	for _, k := range requiredKeys {
+
+	// Required keys must be PRESENT.
+	for _, k := range []string{`"id"`, `"adapter"`, `"capabilities"`} {
 		if !strings.Contains(raw, k) {
-			t.Errorf("mobile schema: JSON missing key %s for fixture adapter", k)
+			t.Errorf("mobile schema: required key %s must be present in JSON", k)
 		}
 	}
 
@@ -463,7 +455,6 @@ func TestFixtureE2E_MobileSchema(t *testing.T) {
 		t.Error("mobile schema: JSON does not contain adapter name 'fixture'")
 	}
 }
-
 // --- E8g5: adapterCapabilities API boundary test ---
 
 func TestFixtureE2E_AdapterCapabilitiesInAPI(t *testing.T) {

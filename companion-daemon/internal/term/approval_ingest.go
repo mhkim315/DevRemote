@@ -121,13 +121,7 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 	if len(items) == 0 {
 		return
 	}
-	var newlyAdmitted []string
-	for _, item := range items {
-		if item.Actionable {
-			newlyAdmitted = append(newlyAdmitted, item.Approval.ID)
-		}
-	}
-	s.approvals.Ingest(ApprovalIngest{
+	admitted := s.approvals.Ingest(ApprovalIngest{
 		SessionID: sessionID,
 		LaunchGen: launchGen,
 		StreamGen: streamGen,
@@ -135,11 +129,19 @@ func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, st
 		Version:   version,
 		Items:     items,
 	})
-	// PA3 Step 2 R2: notify for newly-admitted actionable approvals only.
-	for _, id := range newlyAdmitted {
-		for _, a := range s.approvals.ListSafe(sessionID) {
-			if a.ID == id && a.State == "pending" {
-				s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
+	// PA3 Step 2 R3: notify only if store admitted new records (idempotent re-offers → 0).
+	if admitted > 0 {
+		var actionableIDs []string
+		for _, item := range items {
+			if item.Actionable {
+				actionableIDs = append(actionableIDs, item.Approval.ID)
+			}
+		}
+		for _, id := range actionableIDs {
+			for _, a := range s.approvals.ListSafe(sessionID) {
+				if a.ID == id && a.State == "pending" {
+					s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
+				}
 			}
 		}
 	}

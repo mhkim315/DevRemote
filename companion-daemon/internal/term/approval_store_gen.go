@@ -306,8 +306,9 @@ func findStoredOption(rec *approvalRecord, optionID string) *agent.InteractionOp
 
 // Ingest records the session's current-generation approval requests under the
 // generation rule; a newer generation supersedes prior pending AND executing authority.
-func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) {
-	s.ingest(in)
+// Returns the number of items newly admitted by this call (0 = all idempotent re-offers).
+func (s *AuthoritativeApprovalStore) Ingest(in ApprovalIngest) int {
+	return s.ingest(in)
 }
 
 // IngestObserved is a NARROW SP1-P1 additive entry for single-item
