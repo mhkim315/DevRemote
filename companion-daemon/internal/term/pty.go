@@ -102,7 +102,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		canonicalID := sessionid.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
 		// Best-effort recorder start for external/streamable adapters; also
 		// drops the starter subscriber so no phantom viewer is retained.
-		_, _ = startRecorder(r.Context(), reg, h.Activity, canonicalID)
+		_, _ = startRecorder(r.Context(), reg, nil, canonicalID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
@@ -140,9 +140,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			DeleteRecorder(id)
-			if h.Activity != nil {
-				h.Activity.Clear(id)
-			}
+			// PA3 Step 6b: h.Activity.Clear removed; Transcript is canonical.
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -249,7 +247,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
 			return
 		}
-		rec, subCh = EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err }, h.Activity)
+		rec, subCh = EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err }, nil)
 	}
 	if rec == nil {
 		http.Error(w, "stream failed", 500)
@@ -452,15 +450,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			continue
 		}
 
-		// E8f: capture terminal input safely.
-		if h.Activity != nil && len(msg) > 0 {
-			h.Activity.Append(ActivityEvent{
-				SessionID: session,
-				Type:      ActivityTerminalInput,
-				Text:      "",
-				Bytes:     len(msg),
-			})
-		}
+		// PA3 Step 6b: ActivityBuffer.Append removed; Transcript is canonical.
 		// T3: echo privacy — suppress byte-stream projection during input.
 		// BeginInput starts suppression; the byte-stream projector
 		// auto-releases when it observes the first newline after input

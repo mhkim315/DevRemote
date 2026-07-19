@@ -281,28 +281,12 @@ func (r *Recorder) readLoop() {
 		copy(payload, buf[:n])
 
 		// E8g4: detect cmux delta frames (prefixed with ESC[9998m).
-		// Strip marker. Append to ActivityBuffer (Transcript)
-		// but do NOT broadcast to live terminal subscribers.
+		// Strip marker — do NOT broadcast to live terminal subscribers.
+		// PA3 Step 6b: ActivityBuffer.Append removed; Transcript is canonical.
 		if isDeltaMarker(payload) {
 			payload = payload[len(deltaMarker):]
 			if len(payload) == 0 {
 				continue
-			}
-			if r.activity != nil {
-				text := stripANSI(string(payload))
-				// Replace CR with LF so TUI status repaints don't merge.
-				text = strings.ReplaceAll(text, "\r", "\n")
-				if !isANSIControlOnly(text) && len(text) > 3 {
-					if len(text) > 32768 {
-						text = text[:32768]
-					}
-					r.activity.Append(ActivityEvent{
-						SessionID: r.sessionID,
-						Type:      ActivityTerminalOutput,
-						Text:      text,
-						Bytes:     len(payload),
-					})
-				}
 			}
 			// T3: cmux delta → SourceSnapshot degraded path.
 			// Store as degraded segments with snapshot provenance,
@@ -331,25 +315,7 @@ func (r *Recorder) readLoop() {
 			continue
 		}
 
-		// Append to ActivityBuffer FIRST — recorder is the SINGLE append source.
-		// Subscriber broadcast follows so that receiving data implies capture is done.
-		if r.activity != nil {
-			text := stripANSI(string(payload))
-			// Replace CR with LF so TUI status repaints don't merge.
-			text = strings.ReplaceAll(text, "\r", "\n")
-			if !isANSIControlOnly(text) && len(text) > 3 {
-				if len(text) > 32768 {
-					text = text[:32768]
-				}
-				r.activity.Append(ActivityEvent{
-					SessionID: r.sessionID,
-					Type:      ActivityTerminalOutput,
-					Text:      text,
-					Bytes:     n,
-				})
-			}
-		}
-
+		// PA3 Step 6b: ActivityBuffer.Append removed; Transcript is canonical.
 		// T3: detect TUI boundaries for transcript omission.
 		if r.transcriptSvc != nil {
 			if transcript.IsAlternateScreenStart(payload) {

@@ -806,19 +806,8 @@ func startWatcherProd(events term.EventStore) *watcher.Tailer {
 	t, err := watcher.New(claudeLogDir, func(ev watcher.RawEvent) {
 		toolUse := watcher.ExtractToolUse(ev)
 		if toolUse != nil && (toolUse.Name == "Replace" || toolUse.Name == "Edit" || toolUse.Name == "Write" || toolUse.Name == "StrReplace" || toolUse.Name == "GlobReplace" || toolUse.Name == "View" || toolUse.Name == "Bash") {
-			file := "file"
-			if f, ok := toolUse.Input["file_path"].(string); ok {
-				file = f
-			} else if f, ok := toolUse.Input["path"].(string); ok {
-				file = f
-			} else if f, ok := toolUse.Input["command"].(string); ok {
-				file = f
-			}
-			session := ev.SessionID
-			if session == "" {
-				session = "devremote"
-			}
-			events.Emit(session, "file_edit", toolUse.Name, file)
+			// PA3 Step 6b: events.Emit removed; legacy EventStore is no-op stub.
+			// File watcher retains tool-use filter for future canonical writes.
 		}
 	})
 	if err == nil {
