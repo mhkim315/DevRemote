@@ -1,10 +1,56 @@
+## 0-R3. Architectural remediation — atomic conditional termination (rejected candidate `85cf66d8c`)
+
+**Finding**: production final-cleanup performs mutable `Registry.FindSession`
+followed later by separate `Registry.TerminateSession` — two Registry gates.
+A replacement can interleave between validation (instance guard) and
+deletion (id-addressed adapter call). The verifier required ONE Registry
+synchronization boundary.
+
+**Fixed**: new optional adapter capability `SessionIdentityTerminator`
+(`internal/mux/adapter.go`).  `CompareAndTerminate` checks under the
+adapter's OWN mutex whether the expected immutable session pointer is still
+the current entry; on match it terminates, on mismatch it returns
+`ErrStaleSessionIdentity` without deletion, on missing it returns
+`ErrSessionNotFound`.
+
+- `controlledPTYAdapter` implements `CompareAndTerminate` under its single
+  `a.mu.Lock()` — the PA2c-R3 atomic boundary.
+- `Registry.CompareAndTerminateSession` validates the canonical id and
+  delegates to the adapter's `SessionIdentityTerminator` when present;
+  non-implementing adapters fall back to the snapshot-cache comparison
+  (unchanged safety net).
+- `OwnedPTYRuntime.newCleanup` calls `CompareAndTerminateSession` once —
+  no separate `FindSession`, no instance-guard if/else, no unlocked
+  check-then-act.  The adapter lock is the decisive gate.
+- `ErrStaleSessionIdentity` sentinel added to `internal/mux/adapter.go`.
+- `lcAdapter` and `fixtureAdapter` test adapters implement the capability,
+  so all controlled_pty lifecycle final-cleanup paths and the mux atomic
+  tests route through the adapter lock.
+
+**Tests** (in `internal/mux/registry_atomic_test.go`):
+`TestPA2cR3_AtomicTerminate_MatchTerminates` (exact pointer match →
+terminated, gone afterwards);
+`TestPA2cR3_AtomicTerminate_StaleIdentity_ReplacementSurvives` (session A
+terminated, same-local-id replacement B created, atomic call with A's
+pointer returns `ErrStaleSessionIdentity`, B alive);
+`TestPA2cR3_AtomicTerminate_NotFound` (orphan pointer → `ErrSessionNotFound`);
+`TestPA2cR3_AtomicTerminate_ConcurrentDoesNotDeadlock` (atomic call blocks
+inside adapter lock, concurrent path deletes adapter entry, call completes
+safely).  20× race-stable.
+
+The previously accepted R1/R2 fixes (mandatory handle, cleanupDone
+convergence, pre-call terminal classification, lock-free lifecycle I/O)
+are all preserved unchanged.  Arch gate: FindSession count in
+`owned_pty_runtime.go` → 1 (creation-time capture only; `CompareAndTerminateSession`
+presence asserted).
+
 # PA2c — Managed Lifecycle Ownership Evidence Report
 
-Status: **REVIEW REQUEST** (R2 — remediation of the three R2 findings)
+Status: **REVIEW REQUEST** (R3 — atomic conditional termination architectural remediation)
 
-Implementation SHA: `f3c3ef77039f1b27219999fb578242759e0fb1b8` (R2, on top of rejected R1 `a632b4873`)
+Implementation SHA: `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f` (R3, on top of R2 `85cf66d8c`)
 Evidence/report SHA: (this commit)
-Gate execution SHA: `f3c3ef77039f1b27219999fb578242759e0fb1b8`
+Gate execution SHA: `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f`
 
 ## 0-R2. Remediation of the R2 findings (rejected candidate `a632b487353d49bc501cb242ae1923bf5377f468`)
 
@@ -111,7 +157,9 @@ No PA2d/PA3 work was started; the temporary mux spawn seam remains only in
 | PA2b final ACCEPT (rollback SHA) | `2897a9e0943656883a885e75b08513982de507b7` | accepted baseline |
 | PA2c initial candidate | `5d655775e236dc2970472e155fa60b0e6a0b6356` | REJECTED (blockers above) |
 | PA2c-R1 remediation | `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` | REJECTED (R2 findings above) |
-| PA2c-R2 remediation | `f3c3ef77039f1b27219999fb578242759e0fb1b8` | this candidate (6 files; all accepted R1 fixes preserved) |
+| PA2c-R2 candidate | `f3c3ef77039f1b27219999fb578242759e0fb1b8` | test eviction (accepted, subsumed by R3) |
+| PA2c-R2 evidence | `85cf66d8c` | REJECTED (split FindSession + TerminateSession — this finding) |
+| PA2c-R3 remediation | `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f` | this candidate (8 files: 1 new, 7 modified; R2 fixes preserved) |
 
 ## 2. Contract mapping (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c)
 
@@ -226,6 +274,42 @@ repetition gate; fixed with a unique per-run id.
 | --- | --- |
 | Implementation commits | `5d655775e` (initial, rejected) + `5af5095bf6372c4a55ef7e15ba5cdc77a58f3f5b` (R1 remediation) |
 | Evidence/report commit | this commit (docs only) |
+| Worktree at push | clean |
+| Local == Remote after push | verified in worker_done |
+| Rollback SHA (per contract) | `2897a9e0943656883a885e75b08513982de507b7` (PA2b final ACCEPT) |
+
+
+## R3. Gate results refresh (at `82d53d58f`)
+
+```
+$ go test -race ./internal/mux -run "TestPA2cR3" -count=1 -v       → 4/4 PASS
+$ go test -race ./internal/mux -run "TestPA2cR3" -count=20          → ok (4.3s)
+$ go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=1 → 16/16 PASS (R3: arch gate updated)
+$ go test -race ./internal/term -run "TestPA2c|TestLifecycle" -count=20 → ok (21.1s)
+$ go test ./internal/term ./cmd/devremote -count=1                  → ok / ok (24.6s / 32.0s)
+$ go test -race ./... -count=1                                      → exit 0, 12 packages ok
+$ gofmt -l (changed files) / git diff --check / secret scan         → CLEAN
+$ PA2a zero-reference / PA2b duplicate-parser                       → 0 / 0
+$ Mobile invars + tsc                                              → CLEAN / not-run (zero mobile changes)
+```
+
+| Gate | Result |
+| --- | --- |
+| `go build ./...` / `go vet ./...` | PASS |
+| Focused atomic + PA2c+lifecycle suites | PASS (4+16; all stable 20× -race) |
+| `go test -race ./... -count=1` | PASS (exit 0, 12 ok) |
+| `gofmt -l` / `git diff --check` | CLEAN |
+| Secret scan (changed files) | CLEAN |
+| PA2a zero-reference / PA2b duplicate-parser | 0 / 0 |
+| PA2b tests | 2/2 PASS |
+| Mobile invariant + tsc | CLEAN / not-run (zero mobile changes) |
+
+## Final state
+
+| Condition | Value |
+| --- | --- |
+| Implementation commit | `82d53d58f08c62f74e4ed5a2e5010680e44e6e1f` |
+| Evidence/report commit | this commit |
 | Worktree at push | clean |
 | Local == Remote after push | verified in worker_done |
 | Rollback SHA (per contract) | `2897a9e0943656883a885e75b08513982de507b7` (PA2b final ACCEPT) |
