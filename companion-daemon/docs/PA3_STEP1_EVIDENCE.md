@@ -3,7 +3,7 @@
 Status: **EVIDENCE**
 Date: 2026-07-19
 Contract SHA: `194f6cd070cd39a8acb6ec0d8cfbf8811f7112ec` (PA3 contract FROZEN)
-Step 1 R3 SHA: 4269959e3bf262f5b0cb7b3f3d329e934b305ea5
+Step 1 R5 SHA: c69b80149cb9a2fe8c9818eaa337f47068a62e7f
 
 ## Changes
 
@@ -12,8 +12,7 @@ Step 1 R3 SHA: 4269959e3bf262f5b0cb7b3f3d329e934b305ea5
 - FeedScreen.tsx: Removed ACTIVITY tab (was using `getSessionHistory()`)
 - FeedScreen.tsx: TRANSCRIPT tab now the sole history/activity read path
 - FeedScreen.tsx: `fetchTranscript()` updated with generation reset detection
-- FeedScreen.tsx: `transcriptSeenRefs` Set wired to `E8g2Transcript` → `classifyEvents` for AgentEventRef dedup
-- FeedScreen.tsx: `transcriptSeenRefs.clear()` on generation reset
+- FeedScreen.tsx: Adjacent-only AgentEventRef dedup via `classifyEvents` internal `lastAgentEventRef` string (R3)
 - FeedScreen.tsx: Removed `historyEvents` state, `fetchHistory()` function, `historyError`
 - FeedScreen.tsx: Removed `EventBubble` import (was used only by ACTIVITY tab)
 - TranscriptRenderer.tsx: calls `classifyEvents(events)` — no additional props needed (R3)
