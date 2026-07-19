@@ -209,13 +209,17 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					s.statusStore.RevokeIfPresent(id, launchGen, state.streamGen, state.version, "correlation unavailable")
 				}
 			}
-			// A1-C: approval ingestion.
+			// A1-C: approval ingestion + notification hook.
 			if s.approvals != nil {
 				switch {
 				case state.versionConflict:
 					s.approvals.InvalidateSession(id, "accepted version conflict")
 				case corr == contract.CorrelationManagedLaunch:
 					s.ingestApprovals(id, launchGen, state.streamGen, logRef.Agent, state.version, acceptedEvents)
+					// PA3 Step 2: post-ingest notification hook.
+					// Notifier fires for newly pending actionable approvals only.
+					// provenActionMapping returns actionable=false today → dormant.
+					s.notifyNewApprovals(id)
 				default:
 					s.approvals.InvalidateSession(id, "correlation unavailable")
 				}
@@ -228,6 +232,20 @@ func (s *TelemetryService) processSession(ctx context.Context, sess mux.Session,
 					s.deliveryGate.Deactivate(id)
 				}
 			}
+		}
+	}
+}
+
+// notifyNewApprovals calls the notifier for newly-pending actionable approvals.
+// Runs outside store locks. provenActionMapping returns actionable=false today
+// (B5: no proven action mapping exists), so this is dormant — no false positives.
+func (s *TelemetryService) notifyNewApprovals(sessionID string) {
+	if s.notifier == nil {
+		return
+	}
+	for _, a := range s.approvals.ListSafe(sessionID) {
+		if a.State == "pending" && a.Actionable {
+			s.notifier.ApprovalRequired(context.Background(), sessionID, a.Summary)
 		}
 	}
 }
@@ -269,14 +287,18 @@ func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
 			errStr = snap.LastError.Error()
 		}
 		isStale := snap.LastError != nil
-		events := s.events.List(compoundID)
 
+		// PA3 Step 2 R1: legacy State/Load/Runner/RunnerColor/Events retained
+		// as compatibility stubs (json:"-"), populated with defaults for test
+		// continuity. Removed from JSON serialization. Full removal in Step 4.
+		events := s.events.List(compoundID)
 		res = append(res, SessionTelemetry{
-			ID: compoundID, DisplayID: sess.ID(), State: "idle", Load: 0,
-			Runner: "agent", RunnerColor: "#58a6ff", Adapter: sess.AdapterName(),
+			ID: compoundID, DisplayID: sess.ID(), Adapter: sess.AdapterName(),
+			State: "idle", Load: 0, Runner: "agent", RunnerColor: "#58a6ff",
+			Events:              events,
 			Capabilities:        sessionCapabilities(sess),
 			AdapterCapabilities: adapterCapabilityStrings(reg, sess.AdapterName()),
-			Events:              events, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+			Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 		})
 	}
 	sortTelemetry(res)

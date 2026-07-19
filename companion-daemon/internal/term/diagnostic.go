@@ -79,7 +79,7 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 				AgentKind:       st.AgentKind,
 				AgentStatus:     st.AgentStatus,
 				AgentConfidence: st.AgentConfidence,
-				State:           st.State,
+				// PA3 Step 2: st.State removed from SessionTelemetry
 				ParserHealthy:   true,
 				LastError:       redactStr(st.LastError),
 			}

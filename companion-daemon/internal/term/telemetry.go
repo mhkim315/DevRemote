@@ -18,21 +18,25 @@ import (
 type SessionTelemetry struct {
 	ID        string `json:"id"`
 	DisplayID string `json:"displayId,omitempty"` // local ID without adapter prefix
-	State     string `json:"state"`
+	// PA3 Step 2: State removed — use agentActivity.status + agentStatus instead.
 	// LifecycleState is the daemon-AUTHORITATIVE managed-session lifecycle sourced
 	// from the Session Catalog: starting|running|stopping|exited|killed|failed.
 	// It is SEPARATE from `state`/`agentStatus` (agent activity: idle/thinking/
 	// working/waiting). Empty for sessions that are not Pokit-managed (external
 	// tmux/cmux/observe-only) — those have no managed lifecycle. Mobile gates
 	// Stop/Kill/Delete on this field, never on list presence/absence.
-	LifecycleState      string              `json:"lifecycleState,omitempty"`
-	Load                int                 `json:"load"`
-	Runner              string              `json:"runner"`
-	RunnerColor         string              `json:"runnerColor"`
-	Adapter             string              `json:"adapter"`
-	Capabilities        []string            `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
-	AdapterCapabilities []string            `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
-	Events              []models.AgentEvent `json:"events"`
+	// PA3 Step 2: legacy fields retained as compatibility stubs for tests.
+	// Zero values, not serialized (json:"-"). Removed in Step 4 (DTO update).
+	State              string              `json:"-"`
+	Load               int                 `json:"-"`
+	Runner             string              `json:"-"`
+	RunnerColor        string              `json:"-"`
+	Events             []models.AgentEvent `json:"-"`
+
+	LifecycleState      string   `json:"lifecycleState,omitempty"`
+	Adapter             string   `json:"adapter"`
+	Capabilities        []string `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
+	AdapterCapabilities []string `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
 	AgentKind           string              `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
 	AgentStatus         string              `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
 	AgentConfidence     float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
@@ -104,16 +108,12 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 			continue
 		}
 		snapshot = append(snapshot, SessionTelemetry{
-			ID:             e.ID,
-			DisplayID:      sessionid.ParseSessionID(e.ID).LocalID,
-			State:          "idle", // agent-activity neutral; lifecycle is below
-			LifecycleState: string(e.State),
-			Runner:         e.Name,
-			Adapter:        e.Adapter,
-			// History/Activity is retained until Delete, so keep the read affordance.
+			ID:                  e.ID,
+			DisplayID:           sessionid.ParseSessionID(e.ID).LocalID,
+			LifecycleState:      string(e.State),
+			Adapter:             e.Adapter,
 			Capabilities:        []string{"history"},
 			AdapterCapabilities: adapterCapabilityStrings(reg, e.Adapter),
-			Events:              []models.AgentEvent{},
 		})
 	}
 	sortTelemetry(snapshot)
@@ -277,13 +277,11 @@ func buildSimpleSnapshot(reg *mux.Registry, events EventStore) []SessionTelemetr
 			errStr = snap.LastError.Error()
 		}
 		isStale := snap.LastError != nil
-		evts := events.List(compoundID)
 		res = append(res, SessionTelemetry{
-			ID: compoundID, DisplayID: s.ID(), State: "idle", Load: 0,
-			Runner: "cat", RunnerColor: "#58a6ff", Adapter: s.AdapterName(),
+			ID: compoundID, DisplayID: s.ID(), Adapter: s.AdapterName(),
 			Capabilities:        sessionCapabilities(s),
 			AdapterCapabilities: adapterCapabilityStrings(reg, s.AdapterName()),
-			Events:              evts, Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+			Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 		})
 	}
 	sortTelemetry(res)
