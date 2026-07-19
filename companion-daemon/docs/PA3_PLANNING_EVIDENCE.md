@@ -504,9 +504,9 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R15 — Final Purge + Capability Fields + Construction Timing)
+## 12. PA3 contract proposal gate results (R16 — Nil-Safe Execute + Session Capture + Old Text Purge)
 
-Baseline SHA: `08166105a49ce9be62ef9299bce9e3e8853ac76d`
+Baseline SHA: `4a6515dcde3e773f374f01d7be99d2ce4c5f2caa`
 Gate run date: 2026-07-19
 No production code changed; supervisor directory removed at R1.
 

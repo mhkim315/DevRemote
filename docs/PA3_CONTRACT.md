@@ -366,10 +366,17 @@ func (c *GenerationCompletion) Done() <-chan struct{} { return c.done }
 ```go
 func (cap *GenerationCleanupCapability) Execute(ctx context.Context) {
     defer cap.Completion.Complete() // ALWAYS — even on panic
-    // All I/O outside locks, using captured fields:
-    cap.Transport.RetireIfGeneration(cap.Generation)
-    DeleteRecorderIfSame(cap.CanonicalID, cap.Recorder)
-    cap.Terminator.CompareAndTerminate(ctx, cap.LocalID, cap.Session)
+    // All I/O outside locks, using captured fields. Nil-safe:
+    // resources not yet created are skipped.
+    if cap.Transport != nil {
+        cap.Transport.RetireIfGeneration(cap.Generation)
+    }
+    if cap.Recorder != nil {
+        DeleteRecorderIfSame(cap.CanonicalID, cap.Recorder)
+    }
+    if cap.Terminator != nil && cap.Session != nil {
+        cap.Terminator.CompareAndTerminate(ctx, cap.LocalID, cap.Session)
+    }
 }
 ```
 
@@ -469,8 +476,9 @@ paths call `Complete()`. Every waiter unblocks.
 ```go
 o.mu.Lock()
 existing := o.entries[canonicalID]
+var oldCap *GenerationCleanupCapability
 if existing != nil {
-    oldCap := existing.capability
+    oldCap = existing.capability
     existing.capability = nil // claimed at most once
     existing.State = LifecycleSuperseded
 }
@@ -491,37 +499,35 @@ if oldCap != nil {
 
 **Install** (no locks):
 ```go
-// Only NOW may CreateSession be called — old adapter session cleaned up.
-createdID, err := creator.CreateSession(ctx, opts)
+// PA3 implementation requirement: the controlled_pty adapter's
+// CreateSession MUST return the created (localID, Session, error)
+// atomically so the capability captures Session immediately.
+// This requires adding a CreateSessionAndCapture method or
+// equivalent to the adapter interface.
+createdID, sess, err := o.spawn.CreateSessionAndCapture(ctx, opts)
 if err != nil { completion.Complete(); return "", err }
 canonicalID := build(adapter, createdID)
 ref := sessionid.ParseSessionID(canonicalID)
 
-// Construct capability IMMEDIATELY after CreateSession, before any
-// fallible step. Rollback uses these captured fields even if partially
-// constructed (nil-safe: RetireIfGeneration and DeleteRecorderIfSame
-// accept nil; CompareAndTerminate is skipped if Terminator or Session nil).
+// Construct capability IMMEDIATELY after CreateSession.
+// Session is captured atomically — NOT obtained via fallible ListSessions.
 cap := &GenerationCleanupCapability{
     Generation: lifecycleGen,
     Terminator: o.spawn.(mux.SessionIdentityTerminator),
     CanonicalID: canonicalID,
     LocalID:    ref.LocalID,
+    Session:    sess,
     Completion: completion,
 }
 defer func() { if retErr != nil { cap.Execute(ctx) } }()
 
-// Resolve session from adapter list EXACTLY ONCE (not ID-addressed lookup).
-sessions, err := o.spawn.ListSessions(ctx)
-// ... find sess by LocalID ...
-cap.Session = sess
-
 // Start Recorder unconditionally.
-stream, err := opener.OpenStream(ctx)
+stream, err := sess.(mux.StreamOpener).OpenStream(ctx)
 rec := StartRecorderUnconditional(canonicalID, stream, activity)
 cap.Recorder = rec
 
-// Create transport.
-transport := newTerminalTransport(canonicalID, lifecycleGen, wr, wr)
+// Create transport from session (session implements io.Writer + Resize).
+transport := newTerminalTransport(canonicalID, lifecycleGen, sess, sess)
 cap.Transport = transport
 
 // Init Transcript generation.
@@ -1323,12 +1329,7 @@ These accepted paths must not be modified by PA3:
   `RetireIfGeneration` on `TerminalTransport`. Add
   `StartRecorderUnconditional` on `recorder.go`. Transcript gen counter
   on `transcript.Service`.
-  chan struct{}` on `CatalogEntry` per §6.1.1; restructure `Create` into
-  Phase 0–6 per §6.1.5 (token μs in Phase 0 + Phase 6; ALL I/O in Phases
-  1-5 with token RELEASED); wire token into Stop/Kill/`finalizeRecord`/
-  invalidation (μs claim→transition→release before I/O); extract old
-  cleanup in Phase 0 before CreateSession. Add `StartRecorderUnconditional`
-  to `recorder.go`. Transcript gen counter on `transcript.Service`
+ 
 - `internal/term/lifecycle_service.go` — LifecycleService (PA2c)
 - `internal/term/lifecycle_handlers.go` — lifecycle HTTP handlers
 - `internal/term/lifecycle.go` — lifecycle state machine
