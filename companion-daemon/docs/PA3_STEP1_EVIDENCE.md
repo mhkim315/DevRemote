@@ -3,7 +3,7 @@
 Status: **EVIDENCE**
 Date: 2026-07-19
 Contract SHA: `194f6cd070cd39a8acb6ec0d8cfbf8811f7112ec` (PA3 contract FROZEN)
-Step 1 R1 SHA: (this commit)
+Step 1 R2 SHA: (this commit)
 
 ## Changes
 
@@ -79,9 +79,9 @@ $ cd companion-daemon && go vet ./...
 (no output — success)
 
 $ cd companion-daemon && go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
-ok  	devremote/companion-daemon/internal/term	26.601s
-ok  	devremote/companion-daemon/internal/mux	7.109s
-ok  	devremote/companion-daemon/cmd/devremote	33.580s
+ok  	devremote/companion-daemon/internal/term	26.196s
+ok  	devremote/companion-daemon/internal/mux	6.185s
+ok  	devremote/companion-daemon/cmd/devremote	33.382s
 ```
 
 ### No backend files modified
@@ -90,8 +90,8 @@ ok  	devremote/companion-daemon/cmd/devremote	33.580s
 $ git diff --stat b93c521b7..HEAD -- companion-daemon/
  companion-daemon/.gitignore                    |   1 +
  companion-daemon/docs/PA3_PLANNING_EVIDENCE.md | 561 +++++++++++++++++++++++++
- companion-daemon/docs/PA3_STEP1_EVIDENCE.md    | (new)
- 3 files changed (companion-daemon/)
+ companion-daemon/docs/PA3_STEP1_EVIDENCE.md    | 123 ++++++
+ 3 files changed, 685 insertions(+)
 ```
 
 Proof: only `.gitignore` and this evidence document were changed in `companion-daemon/`.

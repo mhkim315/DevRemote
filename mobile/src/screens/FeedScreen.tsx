@@ -77,8 +77,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const sessionGenRef = useRef(0);
   // PA3 Step 1: Transcript generation for reset detection.
   const transcriptGenRef = useRef(0);
-  // PA3 Step 1: bounded AgentEventRef dedup Set, cleared on generation reset.
-  const transcriptSeenRefs = useRef<Set<string>>(new Set());
+  // PA3 Step 1: per-poll dedup Set. Recreated each poll for adjacent-only
+  // collapse within a single Transcript batch. NOT persisted across polls
+  // (cross-poll dedup would filter already-displayed events on re-render).
+  const transcriptDedupRef = useRef<Set<string>>(new Set());
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
@@ -132,6 +134,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
     transcriptGenRef.current = 0;
+    transcriptDedupRef.current.clear();
     sessionGenRef.current++;
     lifecycleCtrlRef.current?.setSession(session, token);
   }, [session, token]);
@@ -306,13 +309,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             // (and not first poll), discard all cached segments.
             if (resp.generation !== undefined && transcriptGenRef.current !== 0 && resp.generation !== transcriptGenRef.current) {
               transcriptGenRef.current = resp.generation;
-              transcriptSeenRefs.current.clear();
+              transcriptDedupRef.current.clear();
               setTranscriptEvents([]);
               setFallbackEvents([]);
               transcriptMaxSeqRef.current = 0;
               lastSeenSeqRef.current = 0;
               return; // re-fetch with cursor=0 on next poll
             }
+            // PA3 Step 1: fresh Set per poll — adjacent dedup within this batch only.
+            transcriptDedupRef.current.clear();
             if (resp.generation !== undefined) {
               transcriptGenRef.current = resp.generation;
             }
@@ -822,7 +827,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
               {fallbackEvents && fallbackEvents.length > 0 ? (
                 <View style={styles.fallbackSection}>
                   <Text style={styles.fallbackHeader}>⌇ Terminal output (snapshot / degraded)</Text>
-                  <E8g2Transcript events={fallbackEvents} seenRefs={transcriptSeenRefs.current} />
+                  <E8g2Transcript events={fallbackEvents} seenRefs={transcriptDedupRef.current} />
                 </View>
               ) : (
                 <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
@@ -830,11 +835,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             </>
           ) : (
             <>
-              <E8g2Transcript events={transcriptEvents} seenRefs={transcriptSeenRefs.current} />
+              <E8g2Transcript events={transcriptEvents} seenRefs={transcriptDedupRef.current} />
               {fallbackEvents && fallbackEvents.length > 0 && (
                 <View style={styles.fallbackSection}>
                   <Text style={styles.fallbackHeader}>⌇ Terminal output (degraded)</Text>
-                  <E8g2Transcript events={fallbackEvents} seenRefs={transcriptSeenRefs.current} />
+                  <E8g2Transcript events={fallbackEvents} seenRefs={transcriptDedupRef.current} />
                 </View>
               )}
             </>
