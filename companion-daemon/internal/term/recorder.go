@@ -654,3 +654,31 @@ func GetRecorder(sessionID string) *Recorder {
 	defer recorderRegistry.mu.Unlock()
 	return recorderRegistry.recorders[sessionID]
 }
+
+// PA3 Step 6: StartRecorderUnconditional always creates a new Recorder.
+// Unlike EnsureRecorder, it never returns an existing live Recorder.
+func StartRecorderUnconditional(sessionID string, stream ptyStream) *Recorder {
+	recorderRegistry.mu.Lock()
+	defer recorderRegistry.mu.Unlock()
+	if recorderRegistry.terminated[sessionID] {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Recorder{
+		sessionID:  sessionID,
+		stream:     stream,
+		ctx:        ctx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+	}
+	ch := r.Subscribe()
+	recorderRegistry.recorders[sessionID] = r
+	r.captureMode = resolveCaptureMode(sessionID)
+	r.transcriptSvc = transcriptSvcSingleton
+	if r.transcriptSvc != nil {
+		r.transcriptSvc.EnableQueue(r.sessionID)
+	}
+	go r.readLoop()
+	r.Unsubscribe(ch) // drop starter subscriber
+	return r
+}

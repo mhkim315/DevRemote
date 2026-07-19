@@ -86,6 +86,13 @@ type SessionCreator interface {
 	CreateSession(ctx context.Context, opts CreateOptions) (string, error)
 }
 
+// SessionCreatorWithIdentity creates an adapter session and returns the
+// created (localID, Session, error) atomically. PA3 Step 6 addition per
+// frozen contract carve-out §15 — implemented by controlledPTYAdapter only.
+type SessionCreatorWithIdentity interface {
+	CreateSessionAndCapture(ctx context.Context, opts CreateOptions) (localID string, session Session, err error)
+}
+
 // SessionTerminator represents an adapter that can kill sessions
 type SessionTerminator interface {
 	TerminateSession(ctx context.Context, id string) error

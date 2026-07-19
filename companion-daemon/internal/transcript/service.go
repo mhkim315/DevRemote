@@ -17,6 +17,7 @@ type Service struct {
 	byteProjs map[string]*ByteStreamProjector // sessionID → projector
 	arbiters  map[string]*SourceArbiter       // sessionID → arbiter
 	queues    map[string]*chunkQueue          // sessionID → bounded byte-stream queue
+	_gens     map[string]int64                // PA3 Step 6: per-session generation counter
 	mu        sync.Mutex
 }
 
@@ -310,7 +311,9 @@ func (s *Service) BuildResponse(sessionID string, segments []TranscriptSegment) 
 	s.mu.Lock()
 	arb := s.arbiters[sessionID]
 	s.mu.Unlock()
-	return NewTranscriptResponse(sessionID, segments, arb)
+	resp := NewTranscriptResponse(sessionID, segments, arb)
+	resp.Generation = s.GetGeneration(sessionID)
+	return resp
 }
 
 // ── Queue shutdown (called on Recorder stop) ──
@@ -357,4 +360,58 @@ func (s *Service) ensureQueue(sessionID string) *chunkQueue {
 	q := newChunkQueue(sessionID, s)
 	s.queues[sessionID] = q
 	return q
+}
+
+// ── PA3 Step 6: generation tracking ──
+
+// generationStore maps sessionID → generation counter.
+func (s *Service) gens() map[string]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s._gens == nil {
+		s._gens = make(map[string]int64)
+	}
+	return s._gens
+}
+
+// IncrementGeneration bumps and returns the session's generation.
+func (s *Service) IncrementGeneration(sessionID string) int64 {
+	g := s.gens()
+	g[sessionID]++
+	return g[sessionID]
+}
+
+// StoreGeneration records the initial generation for a session.
+// Idempotent: first-write-wins.
+func (s *Service) StoreGeneration(sessionID string, gen int64) {
+	g := s.gens()
+	if _, ok := g[sessionID]; !ok {
+		g[sessionID] = gen
+	}
+}
+
+// GetGeneration returns the current generation for a session.
+func (s *Service) GetGeneration(sessionID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s._gens == nil {
+		return 0
+	}
+	return s._gens[sessionID]
+}
+
+// ReplaceTranscript atomically drains+clears a session's Transcript and
+// allocates a new generation. Returns the new generation number.
+// PRECONDITION: no concurrent feeder (old Recorder must be stopped).
+func (s *Service) ReplaceTranscript(sessionID string) int64 {
+	s.CloseSessionQueue(sessionID)
+	s.ClearTranscript(sessionID)
+	gen := s.IncrementGeneration(sessionID)
+	s.EnableQueue(sessionID)
+	return gen
+}
+
+// SetTranscriptGeneration records the initial generation for a session.
+func (s *Service) SetTranscriptGeneration(sessionID string, gen int64) {
+	s.StoreGeneration(sessionID, gen)
 }

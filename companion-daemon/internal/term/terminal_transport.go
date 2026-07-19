@@ -53,6 +53,17 @@ func (t *TerminalTransport) Retire() {
 	t.resizer = nil
 }
 
+// RetireIfGeneration retires the transport only if its generation matches.
+// Instance-guarded: stale calls are no-ops.
+func (t *TerminalTransport) RetireIfGeneration(gen int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.generation == gen {
+		t.writer = nil
+		t.resizer = nil
+	}
+}
+
 // WriteInput writes keystrokes/input to the owned PTY, gated by the
 // generation guard. A retired handle silently discards input (fail-closed).
 func (t *TerminalTransport) WriteInput(data []byte) (int, error) {

@@ -96,6 +96,7 @@ func (a *SourceArbiter) IsByteStreamSuppressed() bool {
 // TranscriptResponse is the API response envelope.
 type TranscriptResponse struct {
 	SessionID     string              `json:"sessionId"`
+	Generation    int64               `json:"generation,omitempty"` // PA3 Step 6: per-session Transcript generation
 	Semantic      []TranscriptSegment `json:"semantic"`
 	Fallback      []TranscriptSegment `json:"fallback,omitempty"`
 	PrimarySource SegmentSource       `json:"primarySource"`
