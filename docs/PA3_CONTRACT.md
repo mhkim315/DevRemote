@@ -388,7 +388,7 @@ func (cap *GenerationCleanupCapability) Execute(ctx context.Context) {
 - `GetRecorder(canonicalID)` — ID-addressed lookup
 - Registry or adapter lookup by canonical or local ID
 - transport lookup by ID
-- `raw close(genDone)` — use `Completion.Complete()` (sync.Once)
+- raw `close()` on any completion channel — use `Complete()` (sync.Once)
 - function-wide `defer close(...)` combined with explicit rollback close
 
 #### 6.1.2 Replacement admission — pre-install barrier
@@ -467,9 +467,10 @@ outside locks.
 **G7 — Failed creation cannot publish**: Rollback uses captured capability
 (instance-guarded), never ID-addressed termination.
 
-**G8 — Bounded completion signals**: `genDone` closed on publish or
-rollback (defer in pre-install). Waiters always unblock. `sync.Once`
-Completion. All terminal paths call `Complete()`.
+**G8 — Bounded completion signals**: `attemptCompletion.Complete()`
+called exactly once via defer on every return path (success, error,
+panic). `sync.Once` guarantees idempotency. Waiters always unblock.
+`cap.Completion.Complete()` for cleanup completion. No raw `close()`.
 
 #### 6.1.6 Creation flow (aligned to PA2d production)
 
@@ -477,11 +478,11 @@ Completion. All terminal paths call `Complete()`.
 ```go
 o.mu.Lock()
 existing := o.entries[canonicalID]
-// If an in-progress create exists, block on its genDone.
+// If an in-progress create exists, block on its attemptCompletion.
 for existing != nil && existing.State == LifecycleCreating {
-    genDone := existing.genDone
+    wait := existing.attemptCompletion
     o.mu.Unlock()
-    <-genDone // wait for prior create to finish (publish or rollback)
+    <-wait.Done() // wait for prior create to finish (publish or rollback)
     o.mu.Lock()
     existing = o.entries[canonicalID]
 }
@@ -493,11 +494,11 @@ if existing != nil {
 }
 o.nextGen++
 lifecycleGen := o.nextGen
-genDone := make(chan struct{})
+attemptCompletion := &GenerationCompletion{done: make(chan struct{})}
 completion := &GenerationCompletion{done: make(chan struct{})}
 o.entries[canonicalID] = &CatalogEntry{
     ID: canonicalID, State: LifecycleCreating, Generation: lifecycleGen,
-    genDone: genDone,
+    attemptCompletion: attemptCompletion,
     // capability filled after Recorder start
 }
 o.mu.Unlock()
@@ -507,19 +508,18 @@ if oldCap != nil {
     <-oldCap.Completion.Done()
 }
 
-// Rollback on any failure: close genDone (wakes waiters), delete if ours.
+// On ANY return path (success, error, panic): Complete() exactly once.
+// sync.Once guarantees idempotency — second call is no-op.
 defer func() {
     if retErr != nil {
         o.mu.Lock()
         entry := o.entries[canonicalID]
         if entry != nil && entry.Generation == lifecycleGen {
-            close(genDone)
             delete(o.entries, canonicalID)
-        } else {
-            close(genDone) // still wake waiters even if superseded
         }
         o.mu.Unlock()
     }
+    attemptCompletion.Complete() // wakes waiters; idempotent
 }()
 ```
 
@@ -567,9 +567,8 @@ o.transcript.SetTranscriptGeneration(canonicalID, 1)
 o.mu.Lock()
 entry := o.entries[canonicalID]
 if entry == nil || entry.Generation != lifecycleGen {
-    // Superseded: close our genDone, do NOT mutate replacement's entry.
+    // Superseded: Complete() wakes waiters; do NOT mutate replacement.
     o.mu.Unlock()
-    close(genDone)
     cap.Execute(ctx) // nil-safe cleanup of our resources
     return "", fmt.Errorf("session replaced")
 }
@@ -578,17 +577,20 @@ entry.capability = cap
 entry.handle = handle
 entry.transport = transport
 entry.StartedAt = time.Now()
-close(genDone) // wakes waiters blocked on this generation
 o.mu.Unlock()
+// defer in pre-install calls attemptCompletion.Complete() on return.
+// On success, retErr is nil so defer does NOT delete the entry,
+// but it DOES call Complete() — waking all waiters.
 ```
 
 **Rollback** (capability already constructed, fields may be nil):
 ```go
 // cap was constructed immediately after CreateSessionAndCapture.
-// nil-safe: RetireIfGeneration, DeleteRecorderIfSame, CompareAndTerminate
-// all guard nil fields. Completion.Complete() ALWAYS runs (defer in Execute).
+// nil-safe Execute: all steps guard nil fields.
+// Completion.Complete() ALWAYS runs (defer in Execute).
 cap.Execute(ctx)
-// genDone is closed by the defer in pre-install (or publish).
+// attemptCompletion.Complete() is called by the defer in pre-install.
+// sync.Once guarantees idempotency — publish path also calls it safely.
 // NO: terminateAdapterSession(localID), DeleteRecorder(id), TerminateSession(id)
 ```
 
@@ -1200,8 +1202,8 @@ migrated.**
 
 **Prohibited in all post-capture paths**: `terminateAdapterSession`,
 `SessionTerminator.TerminateSession`, `DeleteRecorder` (by ID),
-`GetRecorder`, Registry/recorder/transport lookup by ID, `raw close(genDone)`,
-`defer close(...)` combined with explicit rollback close.
+`GetRecorder`, Registry/recorder/transport lookup by ID, raw `close()`
+on any completion channel.
 
 ## 12. Acceptance gates
 
