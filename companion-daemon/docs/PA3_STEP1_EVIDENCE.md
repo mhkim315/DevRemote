@@ -3,7 +3,7 @@
 Status: **EVIDENCE**
 Date: 2026-07-19
 Contract SHA: `194f6cd070cd39a8acb6ec0d8cfbf8811f7112ec` (PA3 contract FROZEN)
-Step 1 R3 SHA: (this commit)
+Step 1 R3 SHA: 4269959e3bf262f5b0cb7b3f3d329e934b305ea5
 
 ## Changes
 
@@ -16,7 +16,7 @@ Step 1 R3 SHA: (this commit)
 - FeedScreen.tsx: `transcriptSeenRefs.clear()` on generation reset
 - FeedScreen.tsx: Removed `historyEvents` state, `fetchHistory()` function, `historyError`
 - FeedScreen.tsx: Removed `EventBubble` import (was used only by ACTIVITY tab)
-- TranscriptRenderer.tsx: `classifyEvents` does adjacent-only dedup internally (R3)
+- TranscriptRenderer.tsx: calls `classifyEvents(events)` — no additional props needed (R3)
 
 ### 2. AgentCard: drop state/load/runner/runnerColor/events
 
@@ -47,12 +47,13 @@ Step 1 R3 SHA: (this commit)
 
 - Added to `ENVELOPE_KNOWN_FIELDS` — no longer rejected as unknown
 
-### 7. transcriptClassify.ts: bounded AgentEventRef dedup
+### 7. transcriptClassify.ts: adjacent-only AgentEventRef dedup
 
-- `classifyEvents()`: adjacent same-`agentEventRef` spans collapsed to first occurrence
-- Non-adjacent duplicates (interleaved) render as-is
-- Optional `seenRefs: Set<string>` parameter for cross-batch dedup
-- Bounded to 128 entries; cleared when full
+- `classifyEvents()`: simple `lastAgentEventRef` string comparison
+- Adjacent same-`agentEventRef` agent_event spans → skip (collapsed to first)
+- Non-adjacent duplicates (interleaved with terminal_output, input_boundary, etc.) → render as-is
+- `lastAgentEventRef` reset on any non-agent_event segment type change
+- No Set, no size bound, no lifecycle management, no props needed
 
 ### Additional fixes for tsc
 
