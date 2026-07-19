@@ -10,11 +10,11 @@ export type OutputSpan = {
   key: string;
 };
 
-// PA3 Step 1: bounded dedup of adjacent same-AgentEventRef spans.
-// Non-adjacent duplicates (interleaved) render as-is.
-const MAX_DEDUP_REFS = 128;
-
-export function classifyEvents(events: any[], seenRefs?: Set<string>): OutputSpan[] {
+// PA3 Step 1: adjacent-only AgentEventRef dedup. If two consecutive
+// agent_event segments share the same agentEventRef, only the first
+// is emitted. Non-adjacent duplicates (interleaved with other kinds)
+// render as-is.
+export function classifyEvents(events: any[]): OutputSpan[] {
   const result: OutputSpan[] = [];
   let lastAgentEventRef = '';
   for (let i = events.length - 1; i >= 0; i--) {
@@ -22,20 +22,11 @@ export function classifyEvents(events: any[], seenRefs?: Set<string>): OutputSpa
     if (e.kind) {
       switch (e.kind) {
         case 'agent_event': {
-          // PA3 Step 1: collapse adjacent same-agentEventRef spans.
           const ref = e.agentEventRef || '';
           if (ref && ref === lastAgentEventRef) {
-            // Skip duplicate — same cursor-replayed event.
-            break;
+            break; // adjacent duplicate — skip
           }
-          if (ref) {
-            lastAgentEventRef = ref;
-            if (seenRefs) {
-              if (seenRefs.has(ref)) break; // non-adjacent, already rendered
-              seenRefs.add(ref);
-              if (seenRefs.size > MAX_DEDUP_REFS) seenRefs.clear(); // bounded
-            }
-          }
+          if (ref) lastAgentEventRef = ref;
           result.push({
             text: e.text || '',
             isInput: false, isDegraded: false, isAgentEvent: true,

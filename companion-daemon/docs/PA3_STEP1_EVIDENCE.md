@@ -3,7 +3,7 @@
 Status: **EVIDENCE**
 Date: 2026-07-19
 Contract SHA: `194f6cd070cd39a8acb6ec0d8cfbf8811f7112ec` (PA3 contract FROZEN)
-Step 1 R2 SHA: (this commit)
+Step 1 R3 SHA: (this commit)
 
 ## Changes
 
@@ -16,7 +16,7 @@ Step 1 R2 SHA: (this commit)
 - FeedScreen.tsx: `transcriptSeenRefs.clear()` on generation reset
 - FeedScreen.tsx: Removed `historyEvents` state, `fetchHistory()` function, `historyError`
 - FeedScreen.tsx: Removed `EventBubble` import (was used only by ACTIVITY tab)
-- TranscriptRenderer.tsx: Accepts optional `seenRefs` Set prop, passes to `classifyEvents`
+- TranscriptRenderer.tsx: `classifyEvents` does adjacent-only dedup internally (R3)
 
 ### 2. AgentCard: drop state/load/runner/runnerColor/events
 
@@ -79,9 +79,9 @@ $ cd companion-daemon && go vet ./...
 (no output — success)
 
 $ cd companion-daemon && go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
-ok  	devremote/companion-daemon/internal/term	26.196s
-ok  	devremote/companion-daemon/internal/mux	6.185s
-ok  	devremote/companion-daemon/cmd/devremote	33.382s
+ok  	devremote/companion-daemon/internal/term	25.624s
+ok  	devremote/companion-daemon/internal/mux	6.606s
+ok  	devremote/companion-daemon/cmd/devremote	33.308s
 ```
 
 ### No backend files modified

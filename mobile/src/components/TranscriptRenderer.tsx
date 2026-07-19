@@ -4,10 +4,9 @@ import { classifyEvents, type OutputSpan } from '../lib/transcriptClassify';
 
 // ── E8g2Transcript: rendered component ──
 
-// PA3 Step 1: seenRefs enables cross-batch AgentEventRef dedup.
-// Created by FeedScreen, cleared on generation reset.
-export function E8g2Transcript({ events, seenRefs }: { events: any[]; seenRefs?: Set<string> }) {
-  const spans: OutputSpan[] = useMemo(() => classifyEvents(events, seenRefs), [events, seenRefs]);
+// PA3 Step 1: adjacent-only AgentEventRef dedup within a single batch.
+export function E8g2Transcript({ events }: { events: any[] }) {
+  const spans: OutputSpan[] = useMemo(() => classifyEvents(events), [events]);
 
   if (spans.length === 0) {
     return <Text style={styles.emptyActivityText}>No transcript yet.</Text>;
