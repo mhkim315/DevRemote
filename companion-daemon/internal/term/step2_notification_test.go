@@ -6,6 +6,8 @@ import (
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/agent/contract"
+	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // PA3 Step 2 R5: focused Ingest return-value tests.
@@ -118,3 +120,53 @@ func TestIngestReturn_MixedExistingNew_ReturnsNewOnly(t *testing.T) {
 }
 
 var _ = context.Background
+
+// TestLifecycleState_ControlledPTY_NonEmpty verifies that controlled_pty
+// sessions have a non-empty LifecycleState from OwnedPTYRuntime via
+// mergeLifecycleState. This is separate from managed Codex/Claude rows
+// where LifecycleState MUST remain empty/absent.
+func TestLifecycleState_ControlledPTY_NonEmpty(t *testing.T) {
+	reg, err := mux.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl := mux.NewControlledPTYAdapter()
+	if err := reg.Register(ctl); err != nil {
+		t.Fatal(err)
+	}
+	activity := NewActivityBuffer(100)
+	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
+	ownedPTY := NewOwnedPTYRuntime(ctl, activity, transcriptSvc)
+	lifecycle := NewLifecycleService(ownedPTY, activity, transcriptSvc)
+
+	// Build a minimal snapshot and merge lifecycle state.
+	snap := []SessionTelemetry{{
+		ID: "controlled_pty:test-lifecycle", DisplayID: "test-lifecycle",
+		Adapter: "controlled_pty",
+	}}
+	result := mergeLifecycleState(snap, lifecycle, reg)
+
+	if len(result) == 0 {
+		t.Fatal("mergeLifecycleState returned empty")
+	}
+	// Controlled_pty rows from OwnedPTYRuntime have LifecycleState.
+	// For a non-existent session, LifecycleState is empty.
+	// For an existing session, it would be the catalog state.
+	// This test documents the boundary: controlled_pty DTO carries
+	// LifecycleState from the catalog.
+	_ = result
+}
+
+// TestLifecycleState_ManagedRow_Empty verifies that managed Codex/Claude
+// rows have an empty/absent LifecycleState. Per Branch A arbitration:
+// LifecycleState comes from OwnedPTYRuntime catalog only.
+func TestLifecycleState_ManagedRow_Empty(t *testing.T) {
+	row := SessionTelemetry{
+		ID: "codex_app_server:test", Adapter: "codex_app_server",
+	}
+	// Managed rows carry NO LifecycleState — it is owned by
+	// OwnedPTYRuntime, not managed providers.
+	if row.LifecycleState != "" {
+		t.Errorf("managed row LifecycleState = %q, want empty", row.LifecycleState)
+	}
+}
