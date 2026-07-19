@@ -336,9 +336,12 @@ identities — never ID-addressed lookups. Completion uses `sync.Once`.
 ```go
 type GenerationCleanupCapability struct {
     Generation int64
-    Session    mux.Session           // exact adapter session identity
-    Recorder   *Recorder             // exact recorder instance
-    Transport  *TerminalTransport    // exact transport handle
+    Session    mux.Session              // exact adapter session identity
+    Recorder   *Recorder                // exact recorder instance
+    Transport  *TerminalTransport       // exact transport handle
+    Terminator mux.SessionIdentityTerminator // adapter that owns Session
+    CanonicalID string                  // e.g. "controlled_pty:<localID>"
+    LocalID    string                   // adapter-local session ID
     Completion *GenerationCompletion
 }
 
@@ -363,10 +366,10 @@ func (c *GenerationCompletion) Done() <-chan struct{} { return c.done }
 ```go
 func (cap *GenerationCleanupCapability) Execute(ctx context.Context) {
     defer cap.Completion.Complete() // ALWAYS — even on panic
-    // All I/O outside locks:
+    // All I/O outside locks, using captured fields:
     cap.Transport.RetireIfGeneration(cap.Generation)
-    DeleteRecorderIfSame(sessionID, cap.Recorder)
-    sit.CompareAndTerminate(ctx, localID, cap.Session)
+    DeleteRecorderIfSame(cap.CanonicalID, cap.Recorder)
+    cap.Terminator.CompareAndTerminate(ctx, cap.LocalID, cap.Session)
 }
 ```
 
@@ -489,13 +492,40 @@ if oldCap != nil {
 **Install** (no locks):
 ```go
 // Only NOW may CreateSession be called — old adapter session cleaned up.
-createdID, _ := creator.CreateSession(ctx, opts)
+createdID, err := creator.CreateSession(ctx, opts)
+if err != nil { completion.Complete(); return "", err }
 canonicalID := build(adapter, createdID)
-// ... start Recorder, init Transcript generation ...
+ref := sessionid.ParseSessionID(canonicalID)
+
+// Construct capability IMMEDIATELY after CreateSession, before any
+// fallible step. Rollback uses these captured fields even if partially
+// constructed (nil-safe: RetireIfGeneration and DeleteRecorderIfSame
+// accept nil; CompareAndTerminate is skipped if Terminator or Session nil).
 cap := &GenerationCleanupCapability{
-    Generation: lifecycleGen, Session: sess, Recorder: rec,
-    Transport: transport, Completion: completion,
+    Generation: lifecycleGen,
+    Terminator: o.spawn.(mux.SessionIdentityTerminator),
+    CanonicalID: canonicalID,
+    LocalID:    ref.LocalID,
+    Completion: completion,
 }
+defer func() { if retErr != nil { cap.Execute(ctx) } }()
+
+// Resolve session from adapter list EXACTLY ONCE (not ID-addressed lookup).
+sessions, err := o.spawn.ListSessions(ctx)
+// ... find sess by LocalID ...
+cap.Session = sess
+
+// Start Recorder unconditionally.
+stream, err := opener.OpenStream(ctx)
+rec := StartRecorderUnconditional(canonicalID, stream, activity)
+cap.Recorder = rec
+
+// Create transport.
+transport := newTerminalTransport(canonicalID, lifecycleGen, wr, wr)
+cap.Transport = transport
+
+// Init Transcript generation.
+o.transcript.SetTranscriptGeneration(canonicalID, 1)
 ```
 
 **Publish** (o.mu, μs):
@@ -510,11 +540,13 @@ entry.StartedAt = time.Now()
 o.mu.Unlock()
 ```
 
-**Rollback** (captured capability, no ID-addressed calls):
+**Rollback** (capability already constructed, fields may be nil):
 ```go
-if cap != nil {
-    cap.Execute(ctx) // instance-guarded cleanup
-}
+// cap was constructed immediately after CreateSession.
+// nil-safe: RetireIfGeneration(nil) is no-op; DeleteRecorderIfSame(id, nil) is no-op;
+// CompareAndTerminate skips if Terminator==nil or Session==nil.
+// Completion.Complete() ALWAYS runs (defer in Execute).
+cap.Execute(ctx)
 // NO: terminateAdapterSession(localID), DeleteRecorder(id), TerminateSession(id)
 ```
 
@@ -650,16 +682,17 @@ Stale events from replaced generations are rejected at multiple layers:
 
 | Layer | Mechanism | Behavior |
 | --- | --- | --- |
-| Transcript store | `Service.ReplaceTranscript(sessionID)` in Phase 4 (token RELEASED, no o.mu; old Recorder stopped via DeleteRecorder in Phase 3) | Old segments cleared; old cleanup discarded (G4) |
+| Transcript store | `Service.ReplaceTranscript(sessionID)` before new Recorder starts (old capability already executed) | Old segments cleared; old generation's Transcript retired |
 | Agent-activity store | `LaunchGen` gate in `AgentStatusStore.Update` | Writes with `LaunchGen < current` rejected |
 | Approval store | `SupersedeRuntime` on replacement | Prior pending approvals invalidated |
-| Recorder | `cap.Execute()` → `DeleteRecorderIfSame(sessionID, cap.Recorder)` — instance-guarded via capability | Stops ONLY the captured Recorder; stale is no-op |
-| TerminalTransport | `Retire()` on replacement | Input/resize to old handle silently discarded |
+| Recorder | `cap.Execute()` → `DeleteRecorderIfSame(cap.CanonicalID, cap.Recorder)` — instance-guarded via capability | Stops ONLY captured Recorder; stale is no-op |
+| TerminalTransport | `cap.Execute()` → `RetireIfGeneration(cap.Generation)` — instance-guarded via capability | Retires ONLY captured transport at captured gen |
 | TranscriptResponse | `generation` field change | Mobile detects reset and discards stale cache |
 
-Mobile cannot receive stale events because the store-level clear (Phase 4,
-token RELEASED, no o.mu) runs after the old Recorder is stopped (Phase 3)
-and before the new Recorder starts (Phase 5).
+Mobile cannot receive stale events because the old capability is claimed
+and executed (CompareAndTerminate + DeleteRecorderIfSame +
+RetireIfGeneration) BEFORE the replacement CreateSession and Recorder
+start. Completion.Done() is waited before any new data enters Transcript.
 
 ## 8. Ordering and exactly-once guarantees
 
@@ -982,13 +1015,16 @@ migrated.**
 - **Add `SetTranscriptGeneration` method on `transcript.Service`**: records
   the initial generation for a newly created session. Idempotent
   (first-write-wins). Safe to call after Recorder start.
-- **Add microsecond token + genDone serialization to `OwnedPTYRuntime`**:
-  Implement `claimToken`/`releaseToken` (bool under o.mu, μs) per §6.1.1.
-  Add `genDone chan struct{}` to `CatalogEntry`. Restructure `Create` into
-  Phase 0–6 per §6.1.5: token claimed+released in Phase 0 (μs), all I/O
-  (Phases 1-5) with token RELEASED, token claimed+released in Phase 6 (μs).
-  Wire token (μs claim→transition→release) into Stop/Kill/`finalizeRecord`/
-  invalidation. Extract old cleanup in Phase 0 BEFORE CreateSession.
+- **Implement GenerationCleanupCapability + GenerationCompletion**:
+  Add `GenerationCleanupCapability` struct with all captured fields per
+  §6.1.1. Add `GenerationCompletion` with `sync.Once` + `Complete()`.
+  Add `RetireIfGeneration` to `TerminalTransport`. Add
+  `StartRecorderUnconditional` to `recorder.go`. Restructure
+  `OwnedPTYRuntime.Create` with pre-install barrier (§6.1.2):
+  claim old capability → Execute → wait Completion.Done() → then
+  CreateSession. Construct capability immediately after CreateSession,
+  before any fallible step. All rollback paths use cap.Execute()
+  (nil-safe, instance-guarded). Zero ID-addressed termination.
 - **Add `generation` field to `TranscriptResponse`** envelope and
   populate it from `Service` per-session generation counter (not from
   `LookupLaunch`). For sessions without explicit initialisation (tmux,
@@ -1278,7 +1314,15 @@ These accepted paths must not be modified by PA3:
 - `internal/sessionid/` — SessionRef, ParseSessionID, Canonical
 - `internal/term/terminal_transport.go` — TerminalTransport (PA2d)
 - `internal/term/owned_pty_runtime.go` — OwnedPTYRuntime (PA2c); **allowed
-  changes**: add `claimToken`/`releaseToken` (bool under o.mu) + `genDone
+  changes**: add `GenerationCleanupCapability` + `GenerationCompletion`
+  per §6.1.1; pre-install barrier per §6.1.2 (claim old capability →
+  Execute → wait Completion.Done() → then CreateSession); construct
+  capability immediately after CreateSession before any fallible step;
+  all rollback/Stop/Kill paths use `cap.Execute()` (nil-safe,
+  instance-guarded); zero ID-addressed termination. Add
+  `RetireIfGeneration` on `TerminalTransport`. Add
+  `StartRecorderUnconditional` on `recorder.go`. Transcript gen counter
+  on `transcript.Service`.
   chan struct{}` on `CatalogEntry` per §6.1.1; restructure `Create` into
   Phase 0–6 per §6.1.5 (token μs in Phase 0 + Phase 6; ALL I/O in Phases
   1-5 with token RELEASED); wire token into Stop/Kill/`finalizeRecord`/
