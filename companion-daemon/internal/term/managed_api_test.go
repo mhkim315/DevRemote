@@ -62,7 +62,7 @@ func catalogForAPI(codex *ManagedCodexService, claude *ManagedClaudeService) Man
 // native-status endpoint retrieves the same session by canonical ID.
 func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 	managed, id := createManagedForAPI(t)
-	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
+	h := &Handlers{Registry: mux.MustNewRegistry(), Events: nil, Managed: managed, Catalog: catalogForAPI(managed, nil)}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -104,7 +104,7 @@ func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 // identities, or process details.
 func TestManagedREST_DTOBounded(t *testing.T) {
 	managed, id := createManagedForAPI(t)
-	h := &Handlers{Registry: mux.MustNewRegistry(), Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
+	h := &Handlers{Registry: mux.MustNewRegistry(), Events: nil, Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	req := httptest.NewRequest("GET", "/api/sessions/x/native-status", nil)
 	req.SetPathValue("id", id)
@@ -175,7 +175,7 @@ func TestManagedREST_FailingDiscoveryIsolation(t *testing.T) {
 		failingAdapter{name: "tmux"},
 		failingAdapter{name: "cmux"},
 	)
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Managed: managed, Catalog: catalogForAPI(managed, nil)}
+	h := &Handlers{Registry: reg, Events: nil, Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	// List still serves the managed row despite failing discovery.
 	rec := httptest.NewRecorder()

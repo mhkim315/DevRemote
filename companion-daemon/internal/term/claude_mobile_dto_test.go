@@ -439,11 +439,11 @@ func TestClaudeDTO_WaitingApprovalStatusAloneCreatesNoApprovalAuthority(t *testi
 	reg := mux.MustNewRegistry(adapter)
 	sess := &claudeWaitSession{id: "clwait"}
 	adapter.sessions = []mux.Session{sess}
-	events := NewMemoryEventStore()
+	var events EventStore
 	store := NewApprovalStore()
 	detector := agent.NewTermAgentDetector()
 	svc := NewTelemetryService(reg, events, nil,
-		detector, store, NewActivityBuffer(100), ts)
+		detector, store, nil, ts)
 	gate := NewRuntimeDeliveryGate()
 	svc.SetDeliveryGate(gate)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {

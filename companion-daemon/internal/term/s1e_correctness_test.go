@@ -40,8 +40,8 @@ func s1eCodexSvc(t *testing.T, sid string, pathPtr *string) (*TelemetryService, 
 	reg := mux.MustNewRegistry(adapter)
 	sess := &procSessMock{id: sid[len("controlled_pty:"):], adapter: "controlled_pty"}
 	adapter.sessions = []mux.Session{sess}
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), nil, nil,
-		NewApprovalStore(), NewActivityBuffer(100), ts)
+	svc := NewTelemetryService(reg, nil, nil, nil,
+		NewApprovalStore(), nil, ts)
 	svc.SetLogResolver(func(models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: *pathPtr, Agent: "codex", Session: sid}, nil
 	})
@@ -148,8 +148,8 @@ func TestS1E_RegistryDisappearanceClears(t *testing.T) {
  t.Skip("PA3 Step 2: processSession restructured; status store invalidation may differ")
 	adapter := newLSAdapter("controlled_pty", true, "a", "b")
 	reg := mux.MustNewRegistry(adapter)
-	svc := NewTelemetryService(reg, NewMemoryEventStore(),
-		nil, nil, NewApprovalStore(), NewActivityBuffer(50), transcript.NewService(transcript.DefaultStoreConfig()))
+	svc := NewTelemetryService(reg, nil,
+		nil, nil, NewApprovalStore(), nil, transcript.NewService(transcript.DefaultStoreConfig()))
 	seed := func(id string) {
 		svc.statusStore.Update(AgentStatusUpdate{SessionID: id, Generation: 1, Adapter: resolvingAdapter{},
 			Events: []agent.AgentEvent{ev(id, agent.EventToolCallStarted, contract.ProvenanceNativeLog, 0.9)}})

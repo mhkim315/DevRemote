@@ -43,7 +43,7 @@ func TestPA2a_TelemetryNoLinkStore(t *testing.T) {
 	// Construct without LinkStore — must succeed.
 	svc := NewTelemetryService(reg, NewMemoryEventStore(),
 		nil, nil, NewApprovalStore(),
-		NewActivityBuffer(100), nil)
+		nil, nil)
 	if svc == nil {
 		t.Fatal("NewTelemetryService returned nil")
 	}
@@ -169,7 +169,7 @@ func TestPA2a_TelemetryProductionResolverPositiveControl(t *testing.T) {
 	reg := mux.MustNewRegistry(adapter)
 	events := NewMemoryEventStore()
 	svc := NewTelemetryService(reg, events, nil, nil, NewApprovalStore(),
-		NewActivityBuffer(100), nil)
+		nil, nil)
 	if svc.logResolver != nil {
 		t.Fatal("precondition: normal production resolver must be the default (logResolver == nil)")
 	}
@@ -273,7 +273,7 @@ func TestPA2a_TelemetryInjectedResolver(t *testing.T) {
 	reg := mux.MustNewRegistry()
 	svc := NewTelemetryService(reg, NewMemoryEventStore(),
 		nil, nil, NewApprovalStore(),
-		NewActivityBuffer(100), nil)
+		nil, nil)
 	svc.logResolver = func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Agent: "test-agent", Path: "/fake/path"}, nil
 	}
@@ -334,7 +334,7 @@ func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
 	reg := mux.MustNewRegistry(adapter)
 	events := NewMemoryEventStore()
 	svc := NewTelemetryService(reg, events, nil, nil, NewApprovalStore(),
-		NewActivityBuffer(100), nil)
+		nil, nil)
 	if svc.logResolver != nil {
 		t.Fatal("precondition: normal production resolver must be the default (logResolver == nil)")
 	}

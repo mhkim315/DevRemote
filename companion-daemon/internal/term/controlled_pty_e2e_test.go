@@ -11,7 +11,7 @@ import (
 
 func TestControlledPTY_NoWebSocketCapture(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	adapter := mux.NewControlledPTYAdapter()
 	reg := mux.MustNewRegistry(adapter)
 
@@ -65,7 +65,7 @@ func TestControlledPTY_NoWebSocketCapture(t *testing.T) {
 
 func TestControlledPTY_InputNoRawText(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	activity.Append(ActivityEvent{SessionID: "controlled_pty:test-input", Type: ActivityTerminalInput, Text: "", Bytes: 5})
 	events := activity.List("controlled_pty:test-input")
 	if len(events) == 0 || events[0].Text != "" {
@@ -74,7 +74,7 @@ func TestControlledPTY_InputNoRawText(t *testing.T) {
 }
 
 func TestControlledPTY_DeleteCleanup(t *testing.T) {
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	adapter := mux.NewControlledPTYAdapter()
 
 	id, err := adapter.(mux.SessionCreator).CreateSession(context.Background(), mux.CreateOptions{

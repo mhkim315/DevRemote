@@ -40,12 +40,12 @@ func newStep3Handlers(t *testing.T) *Handlers {
 		&step3Session{id: "test-session", title: "Step 3 Test Session"},
 	}}
 	reg := mux.MustNewRegistry(adapter)
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	h := &Handlers{
 		Registry:   reg,
-		Events:     NewMemoryEventStore(),
+		Events:     nil,
 		Activity:   activity,
 		Transcript: svc,
 	}

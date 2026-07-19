@@ -141,7 +141,7 @@ func (s *mockStreamSession) OpenStream(ctx context.Context) (mux.TerminalStream,
 
 func TestRecorder_NoWebSocketCapture(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "hello from PTY"}
 
 	// Simulate lifecycle start without WebSocket.
@@ -171,7 +171,7 @@ func TestRecorder_NoWebSocketCapture(t *testing.T) {
 
 func TestRecorder_MultipleSubscribers(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	sessionID := "test:multi-sub-old"
 
 	// Pipe that writes once and keeps pipe alive long enough for both subs.
@@ -222,7 +222,7 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 
 func TestRecorder_DeleteCleanup(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "before delete"}
 
 	_, ch := EnsureRecorder("test:delete-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) }, activity)
@@ -248,7 +248,7 @@ func TestRecorder_DeleteCleanup(t *testing.T) {
 
 func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	// Append input via buffer (simulating WebSocket path).
 	activity.Append(ActivityEvent{
@@ -283,7 +283,7 @@ func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
 // captures output without a WebSocket connection.
 func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	// Create a mock session that implements StreamOpener.
 	sess := &mockStreamSession{
@@ -323,7 +323,7 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 //   - ActivityBuffer contains exactly one terminal_output
 func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	// Use a counting opener with a delay so content arrives after both subs attach.
 	opener := &countingOpener{
@@ -406,7 +406,7 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 //	→ seq reset if same ID reused
 func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	opener := &testOpener{writeContent: "before delete cleanup"}
 	sessionID := "test:delete-cleanup"
 
@@ -465,7 +465,7 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 //	→ stream.Write receives bytes
 //	→ terminal_input Text remains empty
 func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	// Create a write-capturing stream for the recorder.
 	wcs := newWriteCaptureStream()
@@ -545,7 +545,7 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -630,7 +630,7 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -703,7 +703,7 @@ func TestRecorder_NormalANSINotDelta(t *testing.T) {
 
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
  t.Skip("PA3 Step6: ActivityBuffer stub — tests to be rewritten")
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{

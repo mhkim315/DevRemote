@@ -375,7 +375,7 @@ func TestCatalog_LegacyRegistryIsolation(t *testing.T) {
 	// Build a handler with BOTH catalog and a blocking legacy registry.
 	h := &Handlers{
 		Registry: reg,
-		Events:   NewMemoryEventStore(),
+		Events:   nil,
 		Managed:  managed,
 		Catalog:  cat,
 	}

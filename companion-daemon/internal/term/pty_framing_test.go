@@ -107,7 +107,7 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	stream := newCapturingStream()
 	sess := &capturingSession{id: localID, stream: stream}
 	reg := mux.MustNewRegistry(&capturingAdapter{session: sess})
-	activity := NewActivityBuffer(256)
+	var activity *ActivityBuffer
 	h := &Handlers{Registry: reg, Activity: activity}
 	sessionID := "mock:" + localID
 

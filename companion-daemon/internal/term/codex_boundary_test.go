@@ -26,7 +26,7 @@ func TestCodexLog_ProductionEventsPath(t *testing.T) {
 
 	reg := mux.MustNewRegistry(&codexTestAdapter{})
 	detector := agent.NewTermAgentDetector()
-	events := NewMemoryEventStore()
+	var events EventStore
 	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "codex"}, nil

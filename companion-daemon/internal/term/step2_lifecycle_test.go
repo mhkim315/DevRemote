@@ -16,7 +16,7 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	ctl := mux.NewControlledPTYAdapter()
 	reg.Register(ctl)
 
-	activity := NewActivityBuffer(100)
+	var activity *ActivityBuffer
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	ownedPTY := NewOwnedPTYRuntime(ctl, activity, transcriptSvc)
 	lifecycle := NewLifecycleService(ownedPTY, activity, transcriptSvc)

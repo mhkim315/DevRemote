@@ -33,7 +33,7 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 	reg := mux.MustNewRegistry(adapter)
 
 	detector := agent.NewTermAgentDetector()
-	events := NewMemoryEventStore()
+	var events EventStore
 	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "claude"}, nil
@@ -94,14 +94,14 @@ func TestClaudeLog_ProductionEventsPath(t *testing.T) {
 func TestClaudeDetection_FalsePositive(t *testing.T) {
 	reg := mux.MustNewRegistry(&bashSessionAdapter{})
 	detector := agent.NewTermAgentDetector()
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NoopNotifier{}, detector, nil, nil, nil)
+	svc := NewTelemetryService(reg, nil, NoopNotifier{}, detector, nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go svc.Run(ctx)
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-svc.Done()
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Telemetry: svc, AgentDetector: detector}
+	h := &Handlers{Registry: reg, Events: nil, Telemetry: svc, AgentDetector: detector}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -125,7 +125,7 @@ garbage line
 
 	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
 	detector := agent.NewTermAgentDetector()
-	events := NewMemoryEventStore()
+	var events EventStore
 	svc := NewTelemetryService(reg, events, NoopNotifier{}, detector, nil, nil, nil)
 	svc.SetLogResolver(func(p models.ProcessInfo) (LogRef, error) {
 		return LogRef{Path: logPath, Agent: "claude"}, nil
@@ -166,8 +166,8 @@ garbage line
 
 func TestClaudeDetection_NilDetector(t *testing.T) {
 	reg := mux.MustNewRegistry(&claudeSessionAdapter{})
-	svc := NewTelemetryService(reg, NewMemoryEventStore(), NoopNotifier{}, nil, nil, nil, nil)
-	h := &Handlers{Registry: reg, Events: NewMemoryEventStore(), Telemetry: svc}
+	svc := NewTelemetryService(reg, nil, NoopNotifier{}, nil, nil, nil, nil)
+	h := &Handlers{Registry: reg, Events: nil, Telemetry: svc}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
