@@ -56,6 +56,11 @@ type CatalogEntry struct {
 	// Not serialized.
 	recorder *Recorder
 
+	// session is the exact adapter session identity captured at creation.
+	// Used by replacement pre-install barrier for CompareAndTerminate.
+	// Not serialized.
+	session mux.Session
+
 	// transport is the generation-bound TerminalTransport handle for this
 	// exact runtime. Created at launch; retired when the record is
 	// superseded. Exposed via Transport() for WriteInput/Resize/subscriber
@@ -250,7 +255,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 	}
 
 	cleanup := o.newCleanup(canonicalID, sess, rec)
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec, sess)
 	cap.Generation = gen // success — prevent defer rollback
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
@@ -275,7 +280,7 @@ func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, opts mux.CreateOptio
 	wr, _ := sess.(writeResizer)
 	transport := newTerminalTransport(canonicalID, 0, wr, wr)
 	cleanup := o.newCleanup(canonicalID, sess, rec)
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec, sess)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
@@ -331,7 +336,7 @@ func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *
 
 // register adds the running record under a fresh generation, bound to its
 // immutable process handle and cleanup capability.
-func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder) int64 {
+func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, sess mux.Session) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.nextGen++
@@ -354,6 +359,7 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle m
 		cleanup:     cleanup,
 		transport:   transport,
 		recorder:    rec,
+		session:     sess,
 		cleanupDone: make(chan struct{}),
 	}
 	return gen
@@ -718,7 +724,7 @@ func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name
 	// Test records carry a recorder-only cleanup (no captured spawn-seam
 	// session instance); it is still generation-claimed like production.
 	cleanup := func(context.Context) { DeleteRecorderIfSame(canonicalID, rec) }
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil, rec, nil)
 	o.watchExit(canonicalID, gen, rec)
 	return gen
 }
