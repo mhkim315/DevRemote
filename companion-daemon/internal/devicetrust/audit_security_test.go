@@ -169,7 +169,10 @@ func TestAuditRejectsNonRegularFile(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err == nil {
 		af := NewFileAuditLog(fifo)
 		done := make(chan struct{})
-		go func() { af.Record(AuditEvent{DeviceID: "aa", Action: ActionAuthVerify, Result: ResultGranted}); close(done) }()
+		go func() {
+			af.Record(AuditEvent{DeviceID: "aa", Action: ActionAuthVerify, Result: ResultGranted})
+			close(done)
+		}()
 		<-done // must return without blocking on the FIFO
 	}
 }

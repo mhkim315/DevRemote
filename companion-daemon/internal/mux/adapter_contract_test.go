@@ -667,7 +667,7 @@ type configurableAdapter struct {
 	mu       sync.Mutex
 }
 
-func (a *configurableAdapter) Name() string                       { return a.name }
+func (a *configurableAdapter) Name() string { return a.name }
 func (a *configurableAdapter) ListSessions(_ context.Context) ([]Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

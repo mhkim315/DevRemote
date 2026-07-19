@@ -72,9 +72,13 @@ func normalizeFx(rec contract.RawRecord, sid string) (contract.AgentEvent, contr
 		"done":       agent.EventCompleted,
 	}
 	et := kinds[r.Kind]
-	if et == "" { et = agent.EventUnknown }
+	if et == "" {
+		et = agent.EventUnknown
+	}
 	conf := 0.9
-	if et == agent.EventUnknown { conf = 0.2 }
+	if et == agent.EventUnknown {
+		conf = 0.2
+	}
 	id := r.ID
 	if id == "" {
 		h := sha256.Sum256(rec.Bytes)
@@ -85,7 +89,9 @@ func normalizeFx(rec contract.RawRecord, sid string) (contract.AgentEvent, contr
 		Type: et, Seq: r.TS, Confidence: conf,
 		Source: rec.Source, Provenance: string(contract.ProvenanceNativeLog),
 	}
-	if et == agent.EventApprovalRequested { ev.ApprovalID = id }
+	if et == agent.EventApprovalRequested {
+		ev.ApprovalID = id
+	}
 	return ev, contract.OK()
 }
 
@@ -94,7 +100,9 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 		return contract.ReadResult{Degraded: contract.Degrade("failing adapter")}, nil
 	}
 	sid := in.Session.SessionID
-	if sid == "" { sid = "s" }
+	if sid == "" {
+		sid = "s"
+	}
 	degraded := false
 	var diags []string
 
@@ -109,25 +117,41 @@ func (a *Adapter) ReadEvents(_ context.Context, in contract.ReadInput) (contract
 	}
 
 	records, trunc := contract.BoundBatch(in.Records)
-	if trunc { degraded = true }
+	if trunc {
+		degraded = true
+	}
 
 	limit := contract.EffectiveReadLimit(in.MaxEvents)
 	var out []contract.AgentEvent
 	seen := map[string]bool{}
 	truncOut := false
 	for _, rec := range records {
-		if !contract.AcceptRecord(rec) { degraded = true; continue }
+		if !contract.AcceptRecord(rec) {
+			degraded = true
+			continue
+		}
 		ev, _ := normalizeFx(rec, sid)
-		if ev.ID == "" || seen[ev.ID] || ev.Seq <= wm { continue }
-		if len(out) >= limit { truncOut = true; break }
+		if ev.ID == "" || seen[ev.ID] || ev.Seq <= wm {
+			continue
+		}
+		if len(out) >= limit {
+			truncOut = true
+			break
+		}
 		seen[ev.ID] = true
-		if ev.Seq > wm { wm = ev.Seq }
+		if ev.Seq > wm {
+			wm = ev.Seq
+		}
 		out = append(out, ev)
 	}
-	if truncOut { degraded = true }
+	if truncOut {
+		degraded = true
+	}
 
 	deg := contract.OK()
-	if degraded { deg = contract.Degrade("degraded: " + strings.Join(diags, ";")) }
+	if degraded {
+		deg = contract.Degrade("degraded: " + strings.Join(diags, ";"))
+	}
 	return contract.ReadResult{Events: out, NextCursor: contract.Cursor(strconv.FormatInt(wm, 10)), Degraded: deg}, nil
 }
 

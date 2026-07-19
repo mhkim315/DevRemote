@@ -28,7 +28,7 @@ type mockLocalPTYStream struct {
 	closed bool
 }
 
-func (s *mockLocalPTYStream) Read(p []byte) (int, error) { return s.pr.Read(p) }
+func (s *mockLocalPTYStream) Read(p []byte) (int, error)  { return s.pr.Read(p) }
 func (s *mockLocalPTYStream) Write(p []byte) (int, error) { return len(p), nil }
 func (s *mockLocalPTYStream) Close() error {
 	s.mu.Lock()
