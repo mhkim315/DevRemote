@@ -108,10 +108,11 @@ func newTestHandlers(t *testing.T) (*Handlers, *fakeControlledAdapter) {
 	t.Helper()
 	fa := newFakeAdapter()
 	reg := mux.MustNewRegistry(fa)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	activity := NewActivityBuffer(10)
 	// PA2c: profile creation dispatches through the OwnedPTYRuntime owner
 	// (production parity — app.go always wires lifecycle + owned PTY).
-	owned := NewOwnedPTYRuntime(reg, activity, nil)
+	owned := NewOwnedPTYRuntime(ctlAdapter, activity, nil)
 	h := &Handlers{Registry: reg, Activity: activity, Lifecycle: NewLifecycleService(owned, activity, nil)}
 	return h, fa
 }
@@ -282,8 +283,9 @@ func TestCreate_InvalidCWDAndName_Rejected(t *testing.T) {
 func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	activity := NewActivityBuffer(10)
-	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(reg, activity, nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
+	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, activity, nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
 	}
@@ -300,7 +302,8 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
-	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil),
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil),
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
 		t.Fatalf("custom argv err: %v", err)
@@ -316,6 +319,7 @@ func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	activity := NewActivityBuffer(10)
 	malformed := []json.RawMessage{
 		json.RawMessage(`{"executable":"bash"}`), // object
@@ -325,7 +329,7 @@ func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 		json.RawMessage(`""`),                    // empty string
 	}
 	for _, cmd := range malformed {
-		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(reg, activity, nil), localCreateSpec{Command: cmd})
+		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, activity, nil), localCreateSpec{Command: cmd})
 		if err == nil {
 			DeleteRecorder(id)
 			t.Fatalf("command %q accepted, want rejection", string(cmd))

@@ -87,7 +87,8 @@ func (c *fakeManagedCatalog) RuntimeOf(string) (RuntimeRef, bool) { return Runti
 func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeProviderOwner, *fakeManagedCatalog) {
 	t.Helper()
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil)
 	svc := NewLifecycleService(owned, NewActivityBuffer(10), nil)
 	codex := &fakeProviderOwner{currentEpoch: 7}
 	claude := &fakeProviderOwner{currentEpoch: 3}
@@ -188,7 +189,8 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	owner := NewManagedProviderOwner(provReg, stop, stop, stop)
 
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil), NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil), NewActivityBuffer(10), nil)
 	cat := newFakeManagedCatalog()
 	// The FEDERATED catalog still serves the pre-replacement epoch 6 — the
 	// replacement has published nowhere outside the provider's own registry.
@@ -243,7 +245,8 @@ func (h *countingHandle) TerminateGroup(bool) error {
 func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testing.T) {
 	adapter := newLCAdapter("controlled_pty", true)
 	reg := mux.MustNewRegistry(adapter)
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil)
 	owned.graceful = 50 * time.Millisecond
 	owned.killGrace = 50 * time.Millisecond
 
@@ -308,7 +311,8 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 // replaced record.
 func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil)
 	id := "controlled_pty:r1"
 	gen1 := owned.RegisterForTest(id, "", "n", nil)
 	// Same canonical id relaunched: a NEW generation replaces the record.
@@ -401,21 +405,19 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 	if _, err := os.Stat("catalog.go"); !os.IsNotExist(err) {
 		t.Error("internal/term/catalog.go still exists — SessionCatalog must be removed")
 	}
-	// R3: no Registry resolution inside the owned runtime's lifecycle ACTION
-	// path — exactly ONE FindSession call exists: the creation-time handle
-	// capture. The prior instance-guarded FindSession in the cleanup closure
-	// has been replaced by CompareAndTerminateSession (which runs the atomic
-	// comparison under the snapshot lock inside Registry, not as a separate
-	// FindSession call).
+	// PA2d: no Registry resolution at all in the owned lifecycle path.
+	// FindSession count is zero (capture uses adapter.ListSessions; cleanup
+	// calls CompareAndTerminate on the adapter directly, not through
+	// Registry).
 	src, err := os.ReadFile("owned_pty_runtime.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(src), "FindSession"); n != 1 {
-		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want exactly 1 (creation-time capture; cleanup is CompareAndTerminateSession)", n)
+	if n := strings.Count(string(src), "FindSession"); n != 0 {
+		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want 0 (PA2d: adapter.ListSessions for capture, adapter CompareAndTerminate for cleanup)", n)
 	}
-	if !strings.Contains(string(src), "CompareAndTerminateSession") {
-		t.Error("owned_pty_runtime.go does not call CompareAndTerminateSession — cleanup must use the atomic API")
+	if !strings.Contains(string(src), "CompareAndTerminate(") {
+		t.Error("owned_pty_runtime.go does not call CompareAndTerminate (adapter-level) — cleanup must use the atomic API")
 	}
 }
 
@@ -423,7 +425,8 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 // controlled_pty rows; provider creates register nothing here.
 func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
 	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil)
 	owned.RegisterForTest("controlled_pty:a", "shell", "a", nil)
 	for _, e := range owned.List() {
 		if e.Adapter != "controlled_pty" {
@@ -488,7 +491,8 @@ func (a *handlelessAdapter) ManagedLifecycle() bool { return true }
 func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 	adapter := &handlelessAdapter{sessions: map[string]*handlelessSession{}}
 	reg := mux.MustNewRegistry(adapter)
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil)
 
 	local := genLocalID("nohandle")
 	_, err := owned.Create(context.Background(), mux.CreateOptions{Name: local}, "shell", "n")
@@ -519,14 +523,15 @@ func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
 	adapter := &lcAdapter{name: "controlled_pty", managed: true, sessions: map[string]*lcSession{}}
 	reg := mux.MustNewRegistry(adapter)
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(10), nil)
 
 	const local = "claimrace"
 	const id = "controlled_pty:" + local
 
 	// Generation 1: capture its exact session instance into the capability.
 	adapter.add(local)
-	sessA, _, err := owned.captureHandle(context.Background(), id)
+	sessA, _, err := owned.captureSession(context.Background(), local)
 	if err != nil {
 		t.Fatalf("capture gen1 session: %v", err)
 	}

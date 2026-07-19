@@ -17,11 +17,12 @@ import (
 func TestLifecycle_LegacyQueryDelete_ManagedRunning_Rejected(t *testing.T) {
 	a := newLCAdapter("controlled_pty", true)
 	id := a.add("m1")
+	reg := mux.MustNewRegistry(a)
 	svc := lcService(t, a)
 	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
 	svc.activity.Append(ActivityEvent{SessionID: id, Type: ActivityTerminalOutput, Text: "history"})
 
-	h := &Handlers{Registry: svc.OwnedPTY().reg, Activity: svc.activity, Lifecycle: svc}
+	h := &Handlers{Registry: reg, Activity: svc.activity, Lifecycle: svc}
 	// DELETE /api/sessions?id=<managed running> via the legacy handler.
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions?id="+id, nil)
 	rr := httptest.NewRecorder()
@@ -76,8 +77,9 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	// test is id-agnostic; uniqueness only isolates iterations.
 	localID := genLocalID("stuck")
 	stuck := &stuckSession{id: localID, stream: &fakeStream{closed: make(chan struct{})}}
-	reg := mux.MustNewRegistry(&stuckAdapter{sess: stuck})
-	svc := NewLifecycleService(NewOwnedPTYRuntime(reg, NewActivityBuffer(10), nil), NewActivityBuffer(10), nil)
+	sadapter := &stuckAdapter{sess: stuck}
+	_ = mux.MustNewRegistry(sadapter) // Registry for session listing (not passed to owner)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(sadapter, NewActivityBuffer(10), nil), NewActivityBuffer(10), nil)
 	svc.OwnedPTY().graceful = 50 * time.Millisecond
 	svc.OwnedPTY().killGrace = 50 * time.Millisecond
 	id := "controlled_pty:" + localID
@@ -119,7 +121,7 @@ func TestLifecycle_FastNaturalExit_ConvergesTerminal(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		// Adapter internal session must be cleaned up after natural exit.
-		if _, err := svc.OwnedPTY().reg.FindSession(context.Background(), id); err == nil {
+		if sess, _ := findSessionInAdapter(svc.OwnedPTY().spawn, id); sess != nil {
 			t.Fatalf("iter %d: adapter session not removed after natural exit", i)
 		}
 	}
@@ -191,7 +193,7 @@ func TestLifecycle_Stop_RemovesAdapterSession(t *testing.T) {
 	if _, err := svc.Stop(context.Background(), id); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if _, err := svc.OwnedPTY().reg.FindSession(context.Background(), id); err == nil {
+	if sess, _ := findSessionInAdapter(svc.OwnedPTY().spawn, id); sess != nil {
 		t.Fatalf("controlled adapter session still present after Stop")
 	}
 }

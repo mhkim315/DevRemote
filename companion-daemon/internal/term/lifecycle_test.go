@@ -101,7 +101,8 @@ func (s *lcSession) TerminateGroup(force bool) error {
 func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
 	reg := mux.MustNewRegistry(a)
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(50), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(50), nil)
 	owned.graceful = 200 * time.Millisecond
 	return NewLifecycleService(owned, NewActivityBuffer(50), nil)
 }
@@ -258,7 +259,8 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 func realOwned(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
 	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
-	owned := NewOwnedPTYRuntime(reg, NewActivityBuffer(100), nil)
+	ctlAdapter, _ := reg.Adapter("controlled_pty")
+	owned := NewOwnedPTYRuntime(ctlAdapter, NewActivityBuffer(100), nil)
 	owned.graceful = 400 * time.Millisecond
 	return owned
 }
@@ -266,6 +268,19 @@ func realOwned(t *testing.T) *OwnedPTYRuntime {
 func realService(t *testing.T) *LifecycleService {
 	t.Helper()
 	return NewLifecycleService(realOwned(t), NewActivityBuffer(100), nil)
+}
+
+// findSessionInAdapter returns a session by canonical id from an adapter's
+// session list, or nil if not found.
+func findSessionInAdapter(adapter mux.Adapter, canonicalID string) (mux.Session, bool) {
+	ref := mux.ParseSessionID(canonicalID)
+	sessions, _ := adapter.ListSessions(context.Background())
+	for _, s := range sessions {
+		if s.ID() == ref.LocalID {
+			return s, true
+		}
+	}
+	return nil, false
 }
 
 // realManaged launches a real controlled-PTY runtime through the owner.
@@ -279,7 +294,8 @@ func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
 	}
 	t.Cleanup(func() {
 		DeleteRecorder(id)
-		_ = owned.reg.TerminateSession(context.Background(), "controlled_pty", mux.ParseSessionID(id).LocalID)
+		// PA2d: terminate via owned adapter, not Registry
+		_ = owned.terminateAdapterSession(context.Background(), mux.ParseSessionID(id).LocalID)
 	})
 	return id
 }

@@ -153,7 +153,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		}
 	}
 	// E9: Controlled PTY Runtime — first-class Control Adapter, always available.
-	if err := reg.Register(mux.NewControlledPTYAdapter()); err != nil {
+	ctlAdapter := mux.NewControlledPTYAdapter()
+	if err := reg.Register(ctlAdapter); err != nil {
 		return nil, fmt.Errorf("register controlled_pty: %w", err)
 	}
 
@@ -184,7 +185,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
 	// Registry dependency. Provider owners are wired below once constructed.
-	ownedPTY := term.NewOwnedPTYRuntime(reg, activity, transcriptSvc)
+	ownedPTY := term.NewOwnedPTYRuntime(ctlAdapter, activity, transcriptSvc)
 	lifecycle := term.NewLifecycleService(ownedPTY, activity, transcriptSvc)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
