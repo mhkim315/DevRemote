@@ -504,50 +504,37 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R1 baseline)
+## 12. PA3 contract proposal gate results (R2 baseline)
 
-Baseline SHA: `6e5f4de321183c1079f82373c31e29cd4e9668f4`
+Baseline SHA: `d77e039eeca54602273aec65519dd6474556dc65`
 Gate run date: 2026-07-19
+Pre-existing untracked `companion-daemon/internal/supervisor/` removed at R1
+(gate finding 1); `.gitignore` entry `internal/supervisor/` added.
 
-### 12.1 go build (excluding pre-existing untracked supervisor)
-
-The directory `companion-daemon/internal/supervisor/` is pre-existing and
-untracked (not in any commit). It contains incomplete code with compilation
-errors (`undefined: FileStore`, `undefined: StoreSnapshot`). These files
-predate PA3 and are not part of the PA3 contract baseline.
+### 12.1 go build (unfiltered, all packages)
 
 ```sh
-$ cd companion-daemon && go build $(go list ./... | grep -v supervisor)
+$ cd companion-daemon && go build ./...
 (no output — success)
 ```
 
-**Resolution**: The untracked supervisor directory must be removed or
-`.gitignore`d before any PA3 implementation step so that `go build ./...`
-passes without filtering. A `.gitignore` entry in `companion-daemon/` is
-the recommended approach:
-
-```gitignore
-# companion-daemon/.gitignore (add if not present)
-internal/supervisor/
-```
-
-### 12.2 go vet (excluding pre-existing untracked supervisor)
+### 12.2 go vet (unfiltered, all packages)
 
 ```sh
-$ go vet $(go list ./... | grep -v supervisor)
+$ cd companion-daemon && go vet ./...
 (no output — success)
 ```
 
-### 12.3 PA2 regression tests
+### 12.3 PA2 regression tests (unfiltered, race detector)
 
 ```sh
-$ go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
-ok  	devremote/companion-daemon/internal/term	26.396s
-ok  	devremote/companion-daemon/internal/mux	6.293s
-ok  	devremote/companion-daemon/cmd/devremote	33.593s
+$ cd companion-daemon && go test -race ./internal/term ./internal/mux ./cmd/devremote -count=1
+ok  	devremote/companion-daemon/internal/term	25.963s
+ok  	devremote/companion-daemon/internal/mux	6.295s
+ok  	devremote/companion-daemon/cmd/devremote	33.974s
 ```
 
-All three packages pass with race detector enabled.
+All three packages pass with race detector enabled. No test regressions from PA2d baseline.
 
 ### 12.4 git diff --check
 
@@ -556,21 +543,21 @@ $ git diff --check
 (no output — clean)
 ```
 
-### 12.5 Secret scan
+### 12.5 Secret scan (unfiltered, all changed files)
 
 ```sh
 $ grep -rn "sk-[A-Za-z0-9]\{20,\}\|ghp_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9]\{20,\}" \
-  docs/PA3_CONTRACT.md companion-daemon/docs/PA3_PLANNING_EVIDENCE.md
+  docs/PA3_CONTRACT.md companion-daemon/docs/PA3_PLANNING_EVIDENCE.md companion-daemon/.gitignore
 (no output — clean)
-
-# Note: the broader pattern "sk-[A-Za-z0-9]" matches the grep patterns
-# documented within the contract itself (false positive). No actual secrets
-# exist in either document.
 ```
+
+No actual secrets in any changed file. (The broader patterns `sk-[A-Za-z0-9]`,
+`ghp_`, `xox[baprs]-` appear as documented grep examples within the contract
+text — these are false positives from the pattern description, not actual secrets.)
 
 ### 12.6 gofmt
 
-No `.go` files were modified — not applicable (all changes are `.md` documents only).
+No `.go` files were modified — not applicable (all changes are `.md` and `.gitignore` only).
 
 ### 12.7 Mobile gate
 

@@ -174,19 +174,37 @@ Mobile changes:
 ### 3.5 Approval notification path: concrete owner is TelemetryService
 
 The legacy `Notifier.ApprovalRequired` call in `processSession` (triggered
-by screen heuristics) is removed. Approval notifications are instead driven
-by the accepted adapter path inside `TelemetryService.processSession`:
+by screen heuristics) is removed. The notification integration point moves
+to the accepted adapter path inside `TelemetryService.processSession`:
 
 **Concrete owner**: `TelemetryService` (not `AuthoritativeApprovalStore`,
 which is frozen per A1/B6/B7).
 
 **Mechanism**: After `ingestApprovals` successfully establishes new pending
 approvals from the accepted adapter batch, `TelemetryService` checks whether
-any approval transitioned from non-pending to `pending` + `actionable`.
-If so, it calls `s.notifier.ApprovalRequired(ctx, sessionID, summary)`
-where `summary` is the Pokit-owned bounded summary from
-`SafeApprovalDTO.Summary` — never a raw screen sample, never a raw provider
-prompt.
+any ingested item is `actionable`. If so, it calls
+`s.notifier.ApprovalRequired(ctx, sessionID, summary)` where `summary` is
+the Pokit-owned bounded summary from `SafeApprovalDTO.Summary`.
+
+**Production activation state (R2)**: `provenActionMapping` currently
+returns `actionable=false` for ALL providers. No controlled-fixture-proven
+action mapping exists for any provider today (B5). Therefore, the
+notification hook point is **wired but dormant** — it will fire when a
+future phase proves and accepts an actionable mapping. This is the
+correct behavior: no false notifications are emitted from unproven
+screen heuristics, and the integration point is already in the right
+location for future activation.
+
+**Managed Codex/Claude scope boundary**: The native managed Codex and
+Claude services (`ManagedCodexService`, `ManagedClaudeService`) ingest
+approvals through their own activation paths (`managed_approval_activation.go`,
+`managed_claude_activation.go`) that call `AuthoritativeApprovalStore.Ingest`
+directly — they do NOT route through `TelemetryService.ingestApprovals`.
+Notification for native managed approvals is **out of PA3 scope**. The
+managed activation, approval execution, and delivery paths are frozen
+per A1/B6/B7/SP1/C1D. When a proven actionable mapping is accepted for
+any managed provider, the notification hook for that path must be designed
+in the acceptance contract for that mapping — not retrofitted into PA3.
 
 **Why not ApprovalStore**: `AuthoritativeApprovalStore` is a frozen
 generation-gated data structure, not an integration point. Adding a
@@ -310,17 +328,45 @@ The PA2d generation-bound identity model (SessionID + launch generation
 from `transcript.RegisterOrReplaceLaunch`) carries through PA3 with one
 critical addition:
 
-- **Transcript store clear on replacement**: When `OwnedPTYRuntime.register`
-  replaces an existing session (same canonical ID, new generation), it
-  **must call `Service.ClearTranscript(canonicalID)`** before starting the
-  new Recorder. This is the PA3 production fix: today, `ClearTranscript` is
-  only called on Delete (in `finalize` → delete path), not on register.
-  Without this, a reused canonical session ID inherits the old generation's
-  Transcript segments and a stale cursor cannot detect replacement.
+- **Transcript clear on replacement (atomic pre-feed boundary)**: When
+  `OwnedPTYRuntime.Create` detects that the canonical session ID already
+  has a catalog entry (replacement), it **must call
+  `Service.ReplaceTranscript(canonicalID)` BEFORE `ownSpawn`**. This clears
+  the old generation's segments, projectors, arbiters, and chunk queue and
+  allocates a fresh generation number — all before the new Recorder starts,
+  so no byte from the new generation can land before the clear.
 
-  The call is placed in `register`, under `o.mu`, immediately after retiring
-  the old transport and before recording the new entry. This ensures the
-  Transcript is empty before the new Recorder starts feeding bytes.
+  `ReplaceTranscript(sessionID string) int64` is a new method on
+  `transcript.Service` that:
+  - Drains and closes the old chunk queue (wait for worker drain)
+  - Clears the in-memory store (segments only — projectors and arbiters
+    are also reset for the new generation)
+  - Increments the per-session generation counter
+  - Returns the new generation number
+  - Does **NOT** call `RemoveLaunch` — the launch binding is owned by the
+    `LaunchRegistry` and is independently managed by
+    `TelemetryService.RegisterOrReplaceLaunch`; Transcript replacement
+    must not touch launch authority
+
+  The call site in `OwnedPTYRuntime.Create` (before `ownSpawn`):
+  ```go
+  func (o *OwnedPTYRuntime) Create(...) (string, error) {
+      canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: createdID}.Canonical()
+      // Pre-feed replacement: clear old Transcript BEFORE starting Recorder.
+      // This is an atomic boundary — no Recorder feeds bytes yet.
+      if _, exists := o.entries[canonicalID]; exists {
+          transcriptGen = o.transcript.ReplaceTranscript(canonicalID)
+      }
+      // ... ownSpawn starts the Recorder — all bytes land in the new generation
+  }
+  ```
+
+  The exact generation value to use in `TranscriptResponse` is stored
+  on the `transcript.Service` per session (set by `ReplaceTranscript` or
+  by `SetTranscriptGeneration` for first creation). `BuildResponse` reads
+  it. This generation is independent of `LaunchBinding.Generation` —
+  it works for ALL sessions (managed launch, non-managed controlled_pty,
+  tmux, cmux).
 
 - **Agent-activity store**: `AgentStatusStore` is generation-gated via
   `LaunchGen`. A replacement raises the non-current high-water mark via
@@ -352,10 +398,13 @@ detect when the Transcript has been cleared due to session replacement.
 }
 ```
 
-`generation` is an `int64` that is the current launch generation of the
-session at the time the Transcript response is built. It is set from
-`transcript.LookupLaunch(sessionID).Generation` (or 0 if no launch
-binding exists).
+`generation` is an `int64` that is the current Transcript generation of the
+session. It is sourced from the `transcript.Service` per-session generation
+counter — NOT from `LookupLaunch` (which is managed-launch-only and returns
+0 for non-managed sessions). The counter is incremented on every
+`ReplaceTranscript` call, which happens at session replacement. For a
+first-time session creation, the generation is set to 1 via
+`SetTranscriptGeneration(sessionID, 1)` after the Recorder is started.
 
 **Mobile behavior**:
 1. On each Transcript poll, mobile records `lastSeenGeneration` per session.
@@ -405,7 +454,7 @@ Stale events from replaced generations are rejected at multiple layers:
 
 | Layer | Mechanism | Behavior |
 | --- | --- | --- |
-| Transcript store | `Service.ClearTranscript(sessionID)` in `register` on replacement | Old segments deleted before new Recorder starts |
+| Transcript store | `Service.ReplaceTranscript(sessionID)` BEFORE `ownSpawn` in `Create` | Old segments cleared before new Recorder starts; new generation allocated |
 | Agent-activity store | `LaunchGen` gate in `AgentStatusStore.Update` | Writes with `LaunchGen < current` rejected |
 | Approval store | `SupersedeRuntime` on replacement | Prior pending approvals invalidated |
 | Recorder | `DeleteRecorderIfSame(sessionID, oldRec)` on replacement | Old recorder stopped, subscribers closed |
@@ -483,10 +532,13 @@ IDs from `SHA256(sessionID + kind + source + text + agentEventRef + seq)`.
 If the same agent event is projected twice (same cursor replayed), it
 produces two distinct segments with different `Seq` values but the same
 `AgentEventRef` field. This is acceptable because:
-- The mobile Transcript renderer already groups/merges by `agentEventRef`
-  for display purposes.
-- The `Seq` gap between duplicates is harmless (a no-op re-projection of
-  the same semantic content).
+- The `Seq` gap between duplicates is harmless: a re-projection of the
+  same cursor range produces segments with identical `AgentEventRef`,
+  `Kind`, and `AgentKind` fields. The mobile `TranscriptRenderer`
+  classifies segments by `kind`/`source`/`eventType` (see
+  `transcriptClassify.ts`) and renders same-eventType segments
+  sequentially — adjacent duplicates of the same semantic event are
+  visually indistinguishable from a non-duplicated sequence.
 
 **What is explicitly NOT guaranteed**: The Transcript store does NOT
 guarantee that a re-projected agent event from a replayed cursor range
@@ -710,11 +762,17 @@ migrated.**
 - Remove `Events` field from `Handlers` struct.
 - Remove `EventStore` wiring from `App.NewAppWithDeps`.
 - Remove legacy parser/resolver/tracker files (see deletion gates §11.1).
-- **Add `ClearTranscript` call in `OwnedPTYRuntime.register`** for
-  replacement: under `o.mu`, after retiring old transport, call
-  `o.transcript.ClearTranscript(canonicalID)`.
+- **Add `ReplaceTranscript` method on `transcript.Service`**: drains old
+  chunk queue, clears store + projectors + arbiters, increments per-session
+  generation, returns new generation. Does NOT call `RemoveLaunch`.
+- **Add `SetTranscriptGeneration` method on `transcript.Service`**: records
+  the initial generation (1) for a newly created session.
+- **Call `ReplaceTranscript` in `OwnedPTYRuntime.Create` BEFORE `ownSpawn`**:
+  detect existing catalog entry → replace transcript → then spawn.
+  This is the atomic pre-feed replacement boundary.
 - **Add `generation` field to `TranscriptResponse`** envelope and
-  populate it from `LookupLaunch(sessionID).Generation`.
+  populate it from `Service` per-session generation counter (not from
+  `LookupLaunch`).
 - **Remove `ActivityBuffer.Append` calls from `Recorder.readLoop`**.
   Retain Transcript `FeedBytes`, TUI detection, and cmux sentinel
   detection for Transcript.
@@ -790,14 +848,16 @@ migrated.**
 
 | DTO | Field | Type | Purpose |
 | --- | --- | --- | --- |
-| `TranscriptResponse` | `generation` | `int64` | Monotonic launch generation for mobile reset detection |
+| `TranscriptResponse` | `generation` | `int64` | Monotonic Transcript generation for mobile reset detection (sourced from Service, not LookupLaunch) |
 
 ### 11.6 Production behavior added
 
 | Location | Change | Purpose |
 | --- | --- | --- |
-| `OwnedPTYRuntime.register` | `ClearTranscript(canonicalID)` on replacement | Clear old Transcript before new Recorder starts |
-| `TelemetryService.processSession` | `Notifier.ApprovalRequired` from accepted adapter path | Approval notifications without screen heuristics |
+| `transcript.Service.ReplaceTranscript` | New method: drain + clear + increment generation. No RemoveLaunch. | Atomic pre-feed replacement boundary |
+| `transcript.Service.SetTranscriptGeneration` | New method: record initial generation for a new session | First-creation generation assignment |
+| `OwnedPTYRuntime.Create` | `ReplaceTranscript` call BEFORE `ownSpawn` | Clear old Transcript before new Recorder starts |
+| `TelemetryService.processSession` | `Notifier.ApprovalRequired` from accepted adapter path (dormant until `provenActionMapping` is proven) | Notification integration point wired, fires when actionable mapping exists |
 
 ## 12. Acceptance gates
 
@@ -890,9 +950,9 @@ SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
 7. **Reconnect with generation**: Mobile reconnects, calls Transcript API,
    detects generation change, discards stale cache.
 8. **Generation replacement clears Transcript**: Replace session → old
-   Transcript cleared via `ClearTranscript` in `register` → new
-   Transcript starts fresh → `generation` field increments → mobile
-   detects reset.
+   Transcript cleared via `ReplaceTranscript` in `Create` BEFORE `ownSpawn` →
+   new Transcript starts fresh → `generation` field increments → mobile
+   detects reset. Prove no byte from the new Recorder appears before the clear.
 9. **Mobile rendering**: Unknown agentKind/status → graceful fallback.
    Missing optional fields → no crash.
 10. **Privacy structural**: Transcript segments contain no raw input
@@ -948,6 +1008,11 @@ The following are explicitly **NOT in PA3**:
 - **Mobile push notification infrastructure** — the `Notifier` interface
   wire point changes (screen heuristics → accepted adapter path) but the
   push delivery mechanism (`registerPush`, APNs/FCM) is unchanged.
+- **Native managed Codex/Claude approval notifications** — the managed
+  activation paths bypass `TelemetryService.ingestApprovals` and go
+  directly to `AuthoritativeApprovalStore.Ingest`. Notification hookup
+  for those paths is deferred to the actionable-mapping acceptance
+  phase, not retrofitted into PA3.
 - **New session profiles or custom command support** — profile list is
   frozen (shell, codex, claude).
 - **Per-session ACL or multi-device role UI** — M3 non-goal.
@@ -985,7 +1050,7 @@ These accepted paths must not be modified by PA3:
 - `internal/sessionid/` — SessionRef, ParseSessionID, Canonical
 - `internal/term/terminal_transport.go` — TerminalTransport (PA2d)
 - `internal/term/owned_pty_runtime.go` — OwnedPTYRuntime (PA2c); **allowed
-  change**: add `ClearTranscript` call in `register` on replacement
+  change**: add `ReplaceTranscript` call in `Create` BEFORE `ownSpawn` on replacement
 - `internal/term/lifecycle_service.go` — LifecycleService (PA2c)
 - `internal/term/lifecycle_handlers.go` — lifecycle HTTP handlers
 - `internal/term/lifecycle.go` — lifecycle state machine
@@ -1004,7 +1069,10 @@ These accepted paths must not be modified by PA3:
 - `internal/transcript/projector_agent.go` — AgentEventProjector
 - `internal/transcript/projector_bytes.go` — ByteStreamProjector
 - `internal/transcript/store.go` — Store
-- `internal/transcript/service.go` — Service (core API unchanged)
+- `internal/transcript/service.go` — Service; **allowed additive methods**:
+  `ReplaceTranscript(sessionID string) int64` and `SetTranscriptGeneration(sessionID string, gen int64)`.
+  Core API unchanged; these two methods wrap existing queue/clear/store operations
+  without touching `RemoveLaunch`.
 - `internal/transcript/api.go` — HandleTranscript, HandleTranscriptStats
 - `internal/devicetrust/` — all device trust infrastructure (M2.5)
 - `internal/watcher/` — file watcher
