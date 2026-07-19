@@ -172,22 +172,21 @@ func (o *OwnedPTYRuntime) captureHandle(ctx context.Context, canonicalID string)
 }
 
 // newCleanup builds the generation-bound final-cleanup capability. The
-// registry removal is INSTANCE-guarded against replacements: if the entry
-// visible under the canonical id is a DIFFERENT live session instance than
-// the one this generation spawned, a replacement owns the id and the
-// capability touches nothing. Otherwise (our own instance, or no live entry
-// visible — our exited runtime is filtered from listings) it removes this
-// generation's spawn-seam entry. Recorder removal is instance-guarded via
-// DeleteRecorderIfSame.
+// registry removal is ATOMICALLY conditional (PA2c-R3): a single
+// Registry.CompareAndTerminateSession call locates the current session
+// identity under the snapshot lock, compares it against the immutable
+// instance captured at creation, and only on exact match terminates the
+// spawn-seam entry. A replacement (different instance, same canonical id)
+// is returned as ErrStaleSessionIdentity without touching the adapter.
+// Recorder removal is instance-guarded via DeleteRecorderIfSame.
 func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *Recorder) ownedCleanup {
-	ref := sessionid.ParseSessionID(canonicalID)
 	return func(ctx context.Context) {
 		if o.reg != nil && sess != nil {
-			if cur, err := o.reg.FindSession(ctx, canonicalID); err == nil && cur != sess {
-				// A replacement's live entry occupies the id — never touch it.
-			} else {
-				_ = o.reg.TerminateSession(ctx, ref.Adapter, ref.LocalID)
-			}
+			_ = o.reg.CompareAndTerminateSession(ctx, canonicalID, sess)
+			// Outcome is nil (terminated), ErrStaleSessionIdentity
+			// (replacement — no deletion), or ErrSessionNotFound (already
+			// cleaned up). In every case the capability did not touch a
+			// replacement.
 		}
 		DeleteRecorderIfSame(canonicalID, rec)
 	}

@@ -20,6 +20,11 @@ var (
 	// errors.Is matches identically through mux or sessionid.
 	ErrInvalidSessionID = sessionid.ErrInvalidSessionID
 	ErrDuplicateAdapter = errors.New("duplicate adapter name")
+
+	// ErrStaleSessionIdentity is returned by CompareAndTerminateSession when the
+	// cached session instance does not match the expected identity token — a
+	// replacement was registered between capture and termination.
+	ErrStaleSessionIdentity = errors.New("stale session identity: the session was replaced")
 )
 
 // Session represents an abstract terminal session that can be viewed and controlled remotely.
@@ -84,6 +89,21 @@ type SessionCreator interface {
 // SessionTerminator represents an adapter that can kill sessions
 type SessionTerminator interface {
 	TerminateSession(ctx context.Context, id string) error
+}
+
+// SessionIdentityTerminator is an OPTIONAL capability: the adapter can
+// atomically compare a session identity token and delete only on exact
+// match. PA2c-R3 uses this as the authoritative Registry atomic
+// comparison; adapters that do not implement it fall back to
+// snapshot-cache-level identity comparison.
+type SessionIdentityTerminator interface {
+	// CompareAndTerminate checks whether the session with the given local
+	// id is still the EXACT instance identified by `expected`.  If so it
+	// terminates (deletes) it and returns nil.  If `expected` is not the
+	// current instance under that id it returns ErrStaleSessionIdentity
+	// without touching the adapter state.  If no session exists under that
+	// id it returns ErrSessionNotFound.
+	CompareAndTerminate(ctx context.Context, localID string, expected Session) error
 }
 
 // ManagedProcess is implemented by sessions whose OS process group Pokit owns.

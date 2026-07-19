@@ -96,6 +96,88 @@ func (r *Registry) TerminateSession(ctx context.Context, adapterName string, id 
 	return nil
 }
 
+// CompareAndTerminateSession is the PA2c-R3 atomic conditional termination
+// boundary. It locates the current session by canonical id, compares it
+// against the expected immutable identity token, and terminates only on
+// exact match. Returns ErrStaleSessionIdentity when a different instance
+// occupies the id (replacement), ErrSessionNotFound when no session exists,
+// or nil on successful termination.
+//
+// If the adapter implements the optional SessionIdentityTerminator
+// capability, the atomic comparison and deletion happen inside the adapter's
+// OWN synchronization boundary (the adapter lock) — the decisive gate
+// never leaves the adapter.  Otherwise it falls back to the snapshot-cache
+// comparison under snapshotsMu.
+func (r *Registry) CompareAndTerminateSession(ctx context.Context, canonicalID string, expected Session) error {
+	id := MigrateLegacyID(canonicalID)
+	ref := ParseSessionID(id)
+	if err := ref.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSessionID, err)
+	}
+	canonical := ref.Canonical()
+	localID := ref.LocalID
+
+	adapter, ok := r.Adapter(ref.Adapter)
+	if !ok {
+		return fmt.Errorf("%w: adapter %s", ErrAdapterUnavailable, ref.Adapter)
+	}
+
+	// If the adapter can do the atomic check itself, delegate: the adapter's
+	// own session-map lock is the single synchronization boundary.
+	if sit, ok := adapter.(SessionIdentityTerminator); ok {
+		err := sit.CompareAndTerminate(ctx, localID, expected)
+		if err != nil {
+			return err
+		}
+		r.Invalidate()
+		return nil
+	}
+
+	// Fallback for adapters without the optional capability: snapshot-cache
+	// comparison under snapshotsMu.
+	r.snapshotsMu.Lock()
+	snap, _, _ := r.findSessionInCacheLocked(canonical)
+	if snap == nil {
+		r.snapshotsMu.Unlock()
+		return ErrSessionNotFound
+	}
+	if snap != expected {
+		r.snapshotsMu.Unlock()
+		return ErrStaleSessionIdentity
+	}
+	r.snapshotsMu.Unlock()
+
+	terminator, ok := adapter.(SessionTerminator)
+	if !ok {
+		return fmt.Errorf("%w: adapter %s", ErrUnsupported, ref.Adapter)
+	}
+	if err := terminator.TerminateSession(ctx, localID); err != nil {
+		return err
+	}
+
+	r.snapshotsMu.Lock()
+	if s, ok := r.snapshots[ref.Adapter]; ok {
+		s.LastAttemptAt = time.Time{}
+		r.snapshots[ref.Adapter] = s
+	}
+	r.snapshotsMu.Unlock()
+	return nil
+}
+
+// findSessionInCacheLocked returns the session matching canonicalID in the
+// snapshot cache, together with the owning adapter name and local id. Caller
+// must hold snapshotsMu (exclusive). Returns nil when not found.
+func (r *Registry) findSessionInCacheLocked(canonical string) (Session, string, string) {
+	for name, snap := range r.snapshots {
+		for _, s := range snap.Sessions {
+			if s.AdapterName()+":"+s.ID() == canonical {
+				return s, name, s.ID()
+			}
+		}
+	}
+	return nil, "", ""
+}
+
 // Adapter returns a registered adapter by name.
 func (r *Registry) Adapter(name string) (Adapter, bool) {
 	r.adaptersMu.RLock()

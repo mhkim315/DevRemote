@@ -62,6 +62,20 @@ func (a *fixtureAdapter) TerminateSession(_ context.Context, id string) error {
 	return nil
 }
 
+func (a *fixtureAdapter) CompareAndTerminate(_ context.Context, localID string, expected Session) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.sessions[localID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if s != expected {
+		return ErrStaleSessionIdentity
+	}
+	delete(a.sessions, localID)
+	return nil
+}
+
 // --- Fixture Session ---
 
 type fixtureSession struct {

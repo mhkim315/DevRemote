@@ -401,17 +401,21 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 	if _, err := os.Stat("catalog.go"); !os.IsNotExist(err) {
 		t.Error("internal/term/catalog.go still exists — SessionCatalog must be removed")
 	}
-	// R1: no Registry resolution inside the owned runtime's lifecycle ACTION
-	// path — exactly two FindSession calls exist: the creation-time handle
-	// capture and the instance-guard inside the generation-bound cleanup
-	// capability (both creation-bound; neither resolves a signal target at
-	// action time).
+	// R3: no Registry resolution inside the owned runtime's lifecycle ACTION
+	// path — exactly ONE FindSession call exists: the creation-time handle
+	// capture. The prior instance-guarded FindSession in the cleanup closure
+	// has been replaced by CompareAndTerminateSession (which runs the atomic
+	// comparison under the snapshot lock inside Registry, not as a separate
+	// FindSession call).
 	src, err := os.ReadFile("owned_pty_runtime.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(src), "FindSession"); n != 2 {
-		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want exactly 2 (creation-time capture + instance-guarded cleanup)", n)
+	if n := strings.Count(string(src), "FindSession"); n != 1 {
+		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want exactly 1 (creation-time capture; cleanup is CompareAndTerminateSession)", n)
+	}
+	if !strings.Contains(string(src), "CompareAndTerminateSession") {
+		t.Error("owned_pty_runtime.go does not call CompareAndTerminateSession — cleanup must use the atomic API")
 	}
 }
 

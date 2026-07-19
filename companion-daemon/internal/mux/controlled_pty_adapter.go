@@ -156,6 +156,29 @@ func (a *controlledPTYAdapter) TerminateSession(_ context.Context, id string) er
 	return nil
 }
 
+// CompareAndTerminate implements SessionIdentityTerminator.  The entire
+// identity comparison and deletion happen under a single a.mu.Lock() — the
+// PA2c-R3 atomic boundary.  A replacement (different session pointer under
+// the same local id) is detected inside this lock and never deleted.
+func (a *controlledPTYAdapter) CompareAndTerminate(_ context.Context, localID string, expected Session) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	s, ok := a.sessions[localID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if s != expected {
+		return ErrStaleSessionIdentity
+	}
+	s.exited = true
+	delete(a.sessions, localID)
+	if err := s.native.Close(); err != nil {
+		return fmt.Errorf("controlled_pty atomic-terminate: %w", err)
+	}
+	return nil
+}
+
 // --- controlledPTYSession ---
 
 type controlledPTYSession struct {
