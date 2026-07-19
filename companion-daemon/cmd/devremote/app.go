@@ -152,11 +152,17 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			return nil, fmt.Errorf("register localpty: %w", err)
 		}
 	}
-	// PA2d: Controlled PTY adapter is owned by OwnedPTYRuntime, not
-	// registered in mux.Registry. The adapter is passed directly; no
-	// Registry discovery, lookup, or termination path through mux exists
-	// for controlled_pty sessions.
+	// PA2d: Controlled PTY adapter is owned by OwnedPTYRuntime for
+	// lifecycle + transport. It remains registered in mux.Registry for
+	// session-list and handler discovery until both owners are fully
+	// production-wired (per contract: "deleted only after both owners are
+	// production-wired"). WebSocket/input/resize routes through
+	// TerminalTransport for controlled_pty; the Registry path is a
+	// fallback for legacy callers.
 	ctlAdapter := mux.NewControlledPTYAdapter()
+	if err := reg.Register(ctlAdapter); err != nil {
+		return nil, fmt.Errorf("register controlled_pty: %w", err)
+	}
 
 	events := deps.Events
 	if events == nil {

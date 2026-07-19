@@ -59,6 +59,21 @@ func (a *fakeControlledAdapter) TerminateSession(ctx context.Context, id string)
 	delete(a.sessions, id)
 	return nil
 }
+
+func (a *fakeControlledAdapter) CompareAndTerminate(_ context.Context, localID string, expected mux.Session) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.sessions[localID]
+	if !ok {
+		return mux.ErrSessionNotFound
+	}
+	if s != expected {
+		return mux.ErrStaleSessionIdentity
+	}
+	a.terminated = append(a.terminated, localID)
+	delete(a.sessions, localID)
+	return nil
+}
 func (a *fakeControlledAdapter) snapshot() (mux.CreateOptions, int, []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -198,37 +198,57 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		session = "devremote"
 	}
 
-	var s mux.Session
-	var err error
-	s, err = reg.FindSession(r.Context(), session)
-	if err != nil {
-		log.Printf("WS session not found err: %v", err)
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
+	var rec *Recorder
+	var subCh chan []byte
+	var s mux.Session // nil for controlled_pty (not in Registry)
 
-	// E8g4: cmux uses screen snapshots, not PTY byte stream.
-	// Live terminal rendering accumulates xterm scrollback via ESC[2J.
-	// Disable live terminal for screen_snapshot_delta adapters (P0 fix).
-	if adapter, ok := reg.Adapter(s.AdapterName()); ok {
-		if cp, ok := adapter.(mux.TranscriptCaptureProvider); ok &&
-			cp.TranscriptCaptureMode() == mux.CaptureModeScreenSnapshotDelta {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotImplemented)
-			w.Write([]byte(`{"error":"unsupported","detail":"cmux uses screen snapshots. Live terminal is disabled for this adapter. Use Transcript tab for captured output."}`))
-			return
+	ref := sessionid.ParseSessionID(session)
+	// PA2d: controlled_pty prefers TerminalTransport when the lifecycle
+	// owner is wired. Falls back to Registry for test Handlers without
+	// Lifecycle or for sessions not yet tracked by the owner.
+	useRegistry := true
+	if ref.Adapter == "controlled_pty" && h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
+		if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
+			_, liveCh, hasRec := transport.SubscriberFanOut(session)
+			if hasRec {
+				rec = GetRecorder(session)
+				subCh = make(chan []byte, 32)
+				go func() {
+					for payload := range liveCh {
+						subCh <- payload
+					}
+					close(subCh)
+				}()
+				useRegistry = false
+			}
 		}
 	}
-
-	// E8f2: subscribe to session recorder. Recorder opens stream ONCE.
-	opener, hasStream := s.(mux.StreamOpener)
-	if !hasStream {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
-		return
+	if useRegistry {
+		var ferr error
+		s, ferr = reg.FindSession(r.Context(), session)
+		if ferr != nil {
+			log.Printf("WS session not found err: %v", ferr)
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if adapter, ok := reg.Adapter(s.AdapterName()); ok {
+			if cp, ok := adapter.(mux.TranscriptCaptureProvider); ok &&
+				cp.TranscriptCaptureMode() == mux.CaptureModeScreenSnapshotDelta {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotImplemented)
+				w.Write([]byte(`{"error":"unsupported","detail":"cmux uses screen snapshots. Live terminal is disabled for this adapter. Use Transcript tab for captured output."}`))
+				return
+			}
+		}
+		opener, hasStream := s.(mux.StreamOpener)
+		if !hasStream {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotImplemented)
+			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
+			return
+		}
+		rec, subCh = EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err }, h.Activity)
 	}
-	rec, subCh := EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err }, h.Activity)
 	if rec == nil {
 		http.Error(w, "stream failed", 500)
 		return
@@ -323,16 +343,18 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
-	if sr, ok := s.(mux.ScreenReader); ok {
-		if initial, snapErr := sr.ReadScreen(r.Context()); snapErr == nil && len(initial) > 0 {
-			payload := "\033[2J\033[H" + string(initial)
-			payload = strings.ReplaceAll(payload, "\n", "\r\n")
-			select {
-			case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: []byte(payload)}:
-			case <-writerDone:
-				return
-			case <-r.Context().Done():
-				return
+	if s != nil {
+		if sr, ok := s.(mux.ScreenReader); ok {
+			if initial, snapErr := sr.ReadScreen(r.Context()); snapErr == nil && len(initial) > 0 {
+				payload := "\033[2J\033[H" + string(initial)
+				payload = strings.ReplaceAll(payload, "\n", "\r\n")
+				select {
+				case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: []byte(payload)}:
+				case <-writerDone:
+					return
+				case <-r.Context().Done():
+					return
+				}
 			}
 		}
 	}
@@ -437,14 +459,25 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		if h.Transcript != nil {
 			h.Transcript.BeginInput(session, time.Now())
 		}
-		if writer, ok := s.(mux.InputWriter); ok {
-			if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
-				log.Printf("WS input write err: %v", inErr)
-				triggerClose(fmt.Errorf("input failed"))
-				break
+		// PA2d: controlled_pty input routes through TerminalTransport.
+		if ref.Adapter == "controlled_pty" && h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
+			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
+				if _, inErr := transport.WriteInput(msg); inErr != nil {
+					log.Printf("WS input write err: %v", inErr)
+					triggerClose(fmt.Errorf("input failed"))
+					break
+				}
 			}
-		} else if rec != nil {
-			rec.WriteInput(msg)
+		} else if s != nil {
+			if writer, ok := s.(mux.InputWriter); ok {
+				if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
+					log.Printf("WS input write err: %v", inErr)
+					triggerClose(fmt.Errorf("input failed"))
+					break
+				}
+			} else if rec != nil {
+				rec.WriteInput(msg)
+			}
 		}
 	}
 

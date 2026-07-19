@@ -154,6 +154,17 @@ type ownedCleanup func(ctx context.Context)
 // — rolls the spawn back and leaves no visible runtime: a running
 // generation is NEVER published without its exact process binding.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
+	if o.spawn == nil {
+		return "", fmt.Errorf("no spawn adapter")
+	}
+	if _, ok := o.spawn.(mux.SessionCreator); !ok {
+		return "", fmt.Errorf("spawn adapter does not support creation")
+	}
+	// PA2d-R2: fail-closed — adapter MUST support atomic conditional
+	// termination before any runtime may be published.
+	if _, ok := o.spawn.(mux.SessionIdentityTerminator); !ok {
+		return "", fmt.Errorf("spawn adapter does not support atomic conditional termination")
+	}
 	canonicalID, rec, err := o.ownSpawn(ctx, opts)
 	if err != nil {
 		return "", err
@@ -228,6 +239,14 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle m
 	defer o.mu.Unlock()
 	o.nextGen++
 	gen := o.nextGen
+	// Retire the previous generation's transport handle if one exists.
+	if old, ok := o.entries[canonicalID]; ok && old.transport != nil {
+		old.transport.Retire()
+	}
+	// Set the correct generation on the transport.
+	if transport != nil {
+		transport.generation = gen
+	}
 	o.entries[canonicalID] = &CatalogEntry{
 		ID:          canonicalID,
 		Adapter:     "controlled_pty",

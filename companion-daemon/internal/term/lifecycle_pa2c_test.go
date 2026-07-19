@@ -502,16 +502,19 @@ func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 	if rows := owned.List(); len(rows) != 0 {
 		t.Fatalf("owned store has %d rows after failed capture, want 0 (unpublished)", len(rows))
 	}
-	// The spawn was rolled back: the runtime was terminated and its recorder
-	// dropped.
+	// PA2d-R2: the SessionIdentityTerminator check now fails BEFORE any
+	// spawn occurs (fail-closed at the adapter capability boundary), so
+	// the adapter was never asked to terminate a runtime. The store is
+	// empty and no recorder was ever started.
 	adapter.mu.Lock()
 	terminated := len(adapter.terminated)
 	adapter.mu.Unlock()
-	if terminated != 1 {
-		t.Fatalf("spawned runtime terminated %d times on rollback, want 1", terminated)
+	if terminated != 0 {
+		t.Fatalf("spawned runtime terminated %d times on pre-spawn rejection, want 0", terminated)
 	}
+	// No recorder was created (spawn never happened).
 	if GetRecorder("controlled_pty:"+local) != nil {
-		t.Fatal("recorder retained after rolled-back creation")
+		t.Fatal("recorder present despite pre-spawn rejection")
 	}
 }
 
