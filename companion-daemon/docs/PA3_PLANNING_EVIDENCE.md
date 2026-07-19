@@ -504,9 +504,9 @@ See PA3_CONTRACT.md §15 for the complete list. Key categories:
 
 ---
 
-## 12. PA3 contract proposal gate results (R10 — Token μs + genDone Serialization)
+## 12. PA3 contract proposal gate results (R11 — genDone Close + Old Identity Fix)
 
-Baseline SHA: `74680788d610d9f0773477e281b3b3ad401eb845`
+Baseline SHA: `b5492f8803f8aaa62e68e9b5ca70ed8bdde32b44`
 Gate run date: 2026-07-19
 No production code changed; supervisor directory removed at R1.
 
