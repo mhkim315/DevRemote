@@ -324,208 +324,259 @@ be updated to accept the new field — this is part of Step 1.
 
 ### 6.1 Admission authority and generation-bound identity
 
-PA3 serializes same-canonical-ID operations through a microsecond token for
-state transitions plus a per-attempt completion channel (`ourGenDone`).
-Token never held across I/O. All cleanup is captured-identity-conditional,
-never ID-addressed. `ourGenDone` is closed UNCONDITIONALLY on every terminal
-path, independent of current catalog entry ownership.
+PA3 aligns session replacement with production PA2d code patterns. Each
+generation owns one immutable `GenerationCleanupCapability`. Before any
+same-ID replacement installs a new adapter session, Recorder, or catalog
+entry, shared admission authority atomically claims the old capability
+exactly once. All cleanup I/O executes outside locks using captured
+identities — never ID-addressed lookups. Completion uses `sync.Once`.
 
-#### 6.1.1 Admission token
+#### 6.1.1 GenerationCleanupCapability
 
-**Token** (`bool` under `o.mu`): guards catalog state transitions.
-Claim/release within same `o.mu` critical section — microseconds.
-NEVER held across I/O.
-
-**`ourGenDone`** (`chan struct{}`): created in Phase 0. **Closed
-UNCONDITIONALLY on every terminal path** — success, rollback, supersession,
-nil-entry. The channel is a local variable captured at reservation time;
-its lifecycle is independent of the catalog entry. Waiters block on
-`entry.genDone`; when the entry is replaced, waiters re-read and re-block
-on the new entry's `genDone`.
-
-**Claim/Release** (under `o.mu`, microseconds):
 ```go
-func claimToken(sessionID string)   // tokenClaimed[id] = true
-func releaseToken(sessionID string) // tokenClaimed[id] = false
+type GenerationCleanupCapability struct {
+    Generation int64
+    Session    mux.Session           // exact adapter session identity
+    Recorder   *Recorder             // exact recorder instance
+    Transport  *TerminalTransport    // exact transport handle
+    Completion *GenerationCompletion
+}
+
+type GenerationCompletion struct {
+    once sync.Once
+    done chan struct{}
+}
+
+func (c *GenerationCompletion) Complete() { c.once.Do(func() { close(c.done) }) }
+func (c *GenerationCompletion) Done() <-chan struct{} { return c.done }
 ```
 
-#### 6.1.2 Catalog state machine (7 states)
+**Claim protocol** (under `o.mu`, microseconds, NO I/O):
+
+1. Read current `o.entries[canonicalID]`
+2. If `entry.Generation != derivedGen`: return `stale_generation`
+3. Extract `entry.capability`, set `entry.capability = nil` (claimed at most once)
+4. Release `o.mu`
+
+**Cleanup execution** (outside ALL locks):
+
+```go
+func (cap *GenerationCleanupCapability) Execute(ctx context.Context) {
+    defer cap.Completion.Complete() // ALWAYS — even on panic
+    // All I/O outside locks:
+    cap.Transport.RetireIfGeneration(cap.Generation)
+    DeleteRecorderIfSame(sessionID, cap.Recorder)
+    sit.CompareAndTerminate(ctx, localID, cap.Session)
+}
+```
+
+**Prohibited** in any post-capture cleanup path:
+
+- `terminateAdapterSession(localID)` — ID-addressed, can hit replacement
+- `SessionTerminator.TerminateSession(localID)` — ID-addressed
+- `DeleteRecorder(canonicalID)` — ID-addressed, not instance-guarded
+- `GetRecorder(canonicalID)` — ID-addressed lookup
+- Registry or adapter lookup by canonical or local ID
+- transport lookup by ID
+- `raw close(genDone)` — use `Completion.Complete()` (sync.Once)
+- function-wide `defer close(...)` combined with explicit rollback close
+
+#### 6.1.2 Replacement admission — pre-install barrier
+
+Before a replacement calls `CreateSession`, starts a Recorder, installs
+an adapter session row, or publishes a catalog row:
+
+1. **Claim old capability** (under `o.mu`, μs): extract old entry's
+   `GenerationCleanupCapability`. Set `entry.State = LifecycleSuperseded`.
+2. **Execute old cleanup** (no locks, all I/O outside): `cap.Execute(ctx)`
+   which calls `CompareAndTerminate`, `DeleteRecorderIfSame`,
+   `RetireIfGeneration`, and `Completion.Complete()`.
+3. **Wait for completion**: `<-cap.Completion.Done()` — blocks until
+   old cleanup finishes (even on error/panic, Complete runs).
+4. **Proceed with replacement**: only now may `CreateSession` be called
+   and a new Recorder started.
+
+**Linearization**: The claim under `o.mu` (step 1) is the linearization
+point. After claim, the old generation is superseded and inert. Its
+cleanup cannot affect any replacement.
+
+**Stale cleanup is inert**: `CompareAndTerminate` returns
+`ErrStaleSessionIdentity` when the captured Session no longer matches the
+adapter's current session at that local ID. `DeleteRecorderIfSame` is a
+no-op when the captured `*Recorder` != the registry's current Recorder.
+`RetireIfGeneration` only retires the transport if `gen == transport.gen`.
+
+#### 6.1.3 Catalog state machine (7 states)
 
 Absent, creating, running, stopping, retiring, terminal, superseded.
-State diagram unchanged.
 
-#### 6.1.3 Linearization points (12 total)
+Replacement: `running → (claim capability under o.mu, μs) → superseded →
+(execute cleanup: CompareAndTerminate + DeleteRecorderIfSame +
+RetireIfGeneration, no locks) → Completion.Done() → (install replacement)`
 
-| # | Point | Phase/Method | Under | Decision |
-| --- | --- | --- | --- | --- |
-| LP1 | Generation allocation | Phase 0 | o.mu + token | `o.nextGen++` |
-| LP2 | Catalog reservation | Phase 0 | o.mu + token | Entry + genDone created |
-| LP3 | Old Recorder instance saved | Phase 0 (repl) | o.mu + token | `oldRec` captured for instance-guarded stop |
-| LP4 | Transcript generation | Phase 4 | Service lock | SetTranscriptGeneration / ReplaceTranscript |
-| LP5 | Recorder binding | Phase 5 | Recorder registry | StartRecorderUnconditional |
-| LP6 | Publication | Phase 6 | o.mu + token | LifecycleRunning; genDone closed |
-| LP7 | Stop claim | beginStop | o.mu + token | Handle claimed; token released before I/O |
-| LP8 | Kill claim | requestKill | o.mu + token | Handle claimed; token released before I/O |
-| LP9 | Terminal finalization | finalizeRecord | o.mu + token | Cleanup claimed at most once |
-| LP10 | Cleanup invocation | After LP9 | None | Claimed cleanup runs (identity-conditional) |
-| LP11 | Transcript gen init | SetTranscriptGeneration | Service lock | gen=1 |
-| LP12 | Transcript gen bump | ReplaceTranscript | Service lock | Queue drained; store cleared; gen++ |
+#### 6.1.4 Linearization points (12 total)
 
-#### 6.1.4 Guarantees
+| # | Point | Under | Decision |
+| --- | --- | --- | --- |
+| LP1 | Generation allocation | o.mu | `o.nextGen++` |
+| LP2 | Catalog reservation | o.mu | Entry + capability created |
+| LP3 | Old capability claimed | o.mu | Extracted before replacement CreateSession |
+| LP4 | Transcript generation | Service lock | SetTranscriptGeneration / ReplaceTranscript |
+| LP5 | Recorder binding | Recorder registry | StartRecorderUnconditional |
+| LP6 | Publication | o.mu | LifecycleRunning; capability installed |
+| LP7 | Stop claim | o.mu | Handle claimed; token released before I/O |
+| LP8 | Kill claim | o.mu | Handle claimed; token released before I/O |
+| LP9 | Terminal finalization | o.mu | Capability claimed at most once |
+| LP10 | Cleanup execution | None | cap.Execute() — all I/O outside locks |
+| LP11 | Transcript gen init | Service lock | gen=1 |
+| LP12 | Transcript gen bump | Service lock | gen++ |
 
-**G1–G6, G8**: Unchanged from R12.
+#### 6.1.5 Guarantees
 
-**G7 — Failed/superseded creation cannot mutate catalog, genDone always
-closed**: `ourGenDone` is closed UNCONDITIONALLY on every terminal path
-(success, rollback, supersession, nil-entry). Close happens BEFORE any
-attempt to mutate the catalog entry. Superseded path does NOT call
-`rec.Stop()` — the Recorder is stopped by its own `watchExit` goroutine
-via instance-guarded `DeleteRecorderIfSame` when EOF is detected. No
-ID-addressed cleanup on superseded path.
+**G1 — No conflicting identity**: Old capability claimed under `o.mu`
+before replacement installs anything. Stale cleanup inert.
 
-#### 6.1.5 Phase model (Phase 0–6)
+**G2 — Adapter identity isolation**: `CompareAndTerminate` uses captured
+Session identity. Replacement's `CreateSession` runs AFTER old cleanup
+completes.
 
-**Phase 0** (o.mu, μs, NO I/O):
+**G3 — No stale lifecycle targeting**: Gen check under `o.mu` rejects
+stale operations. Claimed capability is nil after extraction.
+
+**G4 — Replacement cleanup via captured capability**: Old capability
+executes `CompareAndTerminate` + `DeleteRecorderIfSame` +
+`RetireIfGeneration`. All instance-guarded, never ID-addressed.
+`Completion.Complete()` runs even on error/panic.
+
+**G5 — Recorder closure ≠ lifecycle termination**: PTY close causes child
+SIGHUP/exit. State machine captures as natural exit.
+
+**G6 — No lock across I/O**: Claim under `o.mu` (μs). All cleanup I/O
+outside locks.
+
+**G7 — Failed creation cannot publish**: Rollback uses captured capability
+(instance-guarded), never ID-addressed termination.
+
+**G8 — Bounded completion signals**: `sync.Once` Completion. All terminal
+paths call `Complete()`. Every waiter unblocks.
+
+#### 6.1.6 Creation flow (aligned to PA2d production)
+
+**Pre-install** (o.mu, μs):
 ```go
 o.mu.Lock()
-claimToken(canonicalID)
-existing, isReplacement := o.entries[canonicalID]
-var oldRec *Recorder
-if isReplacement {
-    oldRec = existing.recorder // captured instance
+existing := o.entries[canonicalID]
+if existing != nil {
+    oldCap := existing.capability
+    existing.capability = nil // claimed at most once
     existing.State = LifecycleSuperseded
 }
 o.nextGen++
 lifecycleGen := o.nextGen
-ourGenDone := make(chan struct{}) // THIS ATTEMPT'S channel
+completion := &GenerationCompletion{done: make(chan struct{})}
 o.entries[canonicalID] = &CatalogEntry{
-    ID: canonicalID, State: LifecycleStarting, Generation: lifecycleGen,
-    genDone: ourGenDone,
+    ID: canonicalID, State: LifecycleCreating, Generation: lifecycleGen,
+    // capability filled after Recorder start
 }
-releaseToken(canonicalID) // μs
 o.mu.Unlock()
-// defer close(ourGenDone) — UNCONDITIONAL, on every return path
-```
 
-**Phase 1** (token RELEASED, no o.mu): `CreateSession(ctx, opts)`
-
-**Phase 3** (token RELEASED, no o.mu):
-```go
-if isReplacement && oldRec != nil {
-    DeleteRecorderIfSame(canonicalID, oldRec) // instance-guarded
+if oldCap != nil {
+    oldCap.Execute(ctx) // CompareAndTerminate + DeleteRecorderIfSame + RetireIfGeneration
+    <-oldCap.Completion.Done() // wait for old cleanup
 }
 ```
 
-**Phase 4** (token RELEASED, no o.mu): `ReplaceTranscript` or `SetTranscriptGeneration`
+**Install** (no locks):
+```go
+// Only NOW may CreateSession be called — old adapter session cleaned up.
+createdID, _ := creator.CreateSession(ctx, opts)
+canonicalID := build(adapter, createdID)
+// ... start Recorder, init Transcript generation ...
+cap := &GenerationCleanupCapability{
+    Generation: lifecycleGen, Session: sess, Recorder: rec,
+    Transport: transport, Completion: completion,
+}
+```
 
-**Phase 5** (token RELEASED, no o.mu): `StartRecorderUnconditional`
-
-**Phase 6** (o.mu, μs, NO I/O):
+**Publish** (o.mu, μs):
 ```go
 o.mu.Lock()
-claimToken(canonicalID)
-entry := o.entries[canonicalID] // may be nil if concurrently superseded
-if entry == nil || entry.Generation != lifecycleGen {
-    // Superseded or entry gone: close OUR channel, mutate NOTHING.
-    releaseToken(canonicalID)
-    o.mu.Unlock()
-    // Do NOT call rec.Stop() — it deletes by ID and could hit the
-    // replacement's Recorder. Our Recorder is stopped by its own
-    // watchExit goroutine via instance-guarded DeleteRecorderIfSame.
-    o.terminateAdapterSession(ctx, localID)
-    return "", fmt.Errorf("session replaced")
-}
-entry.State = LifecycleRunning
-entry.handle = handle
-entry.cleanup = cleanup
-entry.transport = transport
-entry.recorder = rec
-entry.StartedAt = o.now()
-releaseToken(canonicalID) // μs
-o.mu.Unlock()
-o.watchExit(canonicalID, lifecycleGen, rec)
-return canonicalID, nil
-```
-
-**Rollback (any Phase 1-5 failure)**:
-```go
-// ourGenDone closed UNCONDITIONALLY — does not depend on entry ownership.
-close(ourGenDone)
-
-o.mu.Lock()
-claimToken(canonicalID)
 entry := o.entries[canonicalID]
-// Only delete if entry still belongs to this attempt.
-if entry != nil && entry.Generation == lifecycleGen {
-    delete(o.entries, canonicalID)
-}
-releaseToken(canonicalID)
+entry.State = LifecycleRunning
+entry.capability = cap
+entry.handle = handle
+entry.transport = transport
+entry.StartedAt = time.Now()
 o.mu.Unlock()
 ```
 
-`ourGenDone` is ALWAYS closed, regardless of whether the entry was
-superseded, deleted, or still ours. The `defer close(ourGenDone)` pattern
-in the Create function guarantees this.
-
-#### 6.1.6 Failure/cancellation matrix
-
-| Path | ourGenDone | Entry mutation | Recorder cleanup |
-| --- | --- | --- | --- |
-| Phase 6 success | closed | published | — |
-| Phase 1-5 rollback | UNCONDITIONALLY closed | deleted iff gen matches | none (Recorder not started or already stopped via DeleteRecorderIfSame) |
-| Phase 6 superseded (entry nil or gen mismatch) | UNCONDITIONALLY closed | NONE | NONE — watchExit handles via instance-guarded DeleteRecorderIfSame |
-| Phase 6 ctx cancelled | UNCONDITIONALLY closed | deleted iff gen matches | NONE |
-
-**No path calls `rec.Stop()` on supersession.** The Recorder is always
-cleaned up by its owning `watchExit` goroutine using instance-guarded
-`DeleteRecorderIfSame`.
+**Rollback** (captured capability, no ID-addressed calls):
+```go
+if cap != nil {
+    cap.Execute(ctx) // instance-guarded cleanup
+}
+// NO: terminateAdapterSession(localID), DeleteRecorder(id), TerminateSession(id)
+```
 
 #### 6.1.7 Non-OwnedPTYRuntime sessions
 
 Lazy generation init. No replacement path.
 
-#### 6.1.8 New method contracts
+#### 6.1.8 New/modified method contracts
 
 ```go
-func claimToken(sessionID string)
-func releaseToken(sessionID string)
+// GenerationCompletion — sync.Once completion signal
+type GenerationCompletion struct { once sync.Once; done chan struct{} }
+func (c *GenerationCompletion) Complete()
+func (c *GenerationCompletion) Done() <-chan struct{}
+
+// GenerationCleanupCapability — immutable generation-bound cleanup
+type GenerationCleanupCapability struct { ... }
+func (cap *GenerationCleanupCapability) Execute(ctx context.Context)
+
+// RetireIfGeneration — retire only if gen matches (new on TerminalTransport)
+func (t *TerminalTransport) RetireIfGeneration(gen int64)
+
+// StartRecorderUnconditional — always new Recorder (new on recorder.go)
+func StartRecorderUnconditional(sessionID string, stream ptyStream, activity *ActivityBuffer) *Recorder
+
+// Existing, unchanged:
+func DeleteRecorderIfSame(sessionID string, rec *Recorder) // instance-guarded
 func (s *Service) ReplaceTranscript(sessionID string) int64
 func (s *Service) SetTranscriptGeneration(sessionID string, gen int64)
-func StartRecorderUnconditional(sessionID string, stream ptyStream, activity *ActivityBuffer) *Recorder
-func DeleteRecorderIfSame(sessionID string, rec *Recorder) // existing, instance-guarded
 ```
 
 #### 6.1.9 Focused acceptance tests
 
-1. **Token microsecond**: Token < 1ms. All I/O with token RELEASED.
+1. **Pre-install barrier**: Old capability claimed before replacement
+   CreateSession. Replacement blocks on `<-oldCap.Completion.Done()`.
 
-2. **ourGenDone closed on success**: `close(ourGenDone)` in Phase 6. Waiter unblocks.
+2. **Cleanup-wins**: `CompareAndTerminate` removes only captured Session.
+   Stale Session returns `ErrStaleSessionIdentity`.
 
-3. **ourGenDone UNCONDITIONALLY closed on rollback**: Phase 1-5 failure →
-   `close(ourGenDone)` BEFORE `o.mu.Lock()`. Does not depend on entry state.
+3. **Recorder ABA**: `DeleteRecorderIfSame(oldRec)` cannot remove `recNew`.
 
-4. **ourGenDone closed on supersession (entry nil)**: Concurrent replacement
-   deletes entry before Phase 6. Phase 6 sees `entry == nil` → `close(ourGenDone)`
-   → return error. No mutation.
+4. **Transport ABA**: `RetireIfGeneration(oldGen)` retires only oldTransport.
 
-5. **ourGenDone closed on supersession (gen mismatch)**: Create-A (gen=1) →
-   Create-B (gen=2) supersedes. A's Phase 6: `entry.Generation=2 != 1` →
-   `close(ourGenDone)` → no entry deletion, no rec.Stop. B intact.
+5. **GenerationCompletion**: success, rollback, cancellation,
+   supersession, Stop, Kill, natural-exit — all call `Complete()`.
+   `sync.Once` guarantees single close. Zero panic. Every waiter wakes.
 
-6. **Superseded path does NOT call rec.Stop**: A superseded → A does NOT call
-   rec.Stop(). rec.Stop would use `DeleteRecorder` by ID, potentially hitting
-   B's Recorder. A's Recorder is stopped by A's watchExit via
-   `DeleteRecorderIfSame(canonicalID, recA)`.
+6. **Cleanup panic/error**: `Complete()` still runs (defer in Execute).
 
-7. **Instance-guarded Recorder stop**: `DeleteRecorderIfSame(id, capturedRec)`
-   stops ONLY the captured instance. Concurrent Recorder for same ID untouched.
+7. **Rollback**: `CreateSession` success then handle/Recorder-start
+   failure → captured conditional cleanup, zero ID-addressed termination.
 
-8. **Different-ID parallel**: Two goroutines, different IDs. Both publish.
+8. **Stop/Kill barrier**: Captured process + captured Recorder awaited,
+   not `GetRecorder(id)`.
 
-9. **genDone ALWAYS closed**: Exhaustive enumeration of all terminal paths.
-   No leaked channels.
+9. **Blocking I/O**: Admission and lifecycle locks FREE during
+   `CompareAndTerminate`, Recorder stop, transport retirement,
+   completion wait.
 
-10. **No o.mu across I/O**: Instrumentation confirms.
+10. **Static rejection**: grep confirms no `terminateAdapterSession`,
+    `TerminateSession`, `DeleteRecorder` (by ID), `GetRecorder`,
+    Registry/recorder/transport lookup in post-capture cleanup paths.
 
 ### 6.2 Does mobile need generation awareness?
 
@@ -602,7 +653,7 @@ Stale events from replaced generations are rejected at multiple layers:
 | Transcript store | `Service.ReplaceTranscript(sessionID)` in Phase 4 (token RELEASED, no o.mu; old Recorder stopped via DeleteRecorder in Phase 3) | Old segments cleared; old cleanup discarded (G4) |
 | Agent-activity store | `LaunchGen` gate in `AgentStatusStore.Update` | Writes with `LaunchGen < current` rejected |
 | Approval store | `SupersedeRuntime` on replacement | Prior pending approvals invalidated |
-| Recorder | `DeleteRecorderIfSame(sessionID, oldRec)` — instance-guarded | Stops ONLY the captured Recorder instance; never a newer one |
+| Recorder | `cap.Execute()` → `DeleteRecorderIfSame(sessionID, cap.Recorder)` — instance-guarded via capability | Stops ONLY the captured Recorder; stale is no-op |
 | TerminalTransport | `Retire()` on replacement | Input/resize to old handle silently discarded |
 | TranscriptResponse | `generation` field change | Mobile detects reset and discards stale cache |
 
@@ -1023,16 +1074,19 @@ migrated.**
 
 | Location | Change | Purpose |
 | --- | --- | --- |
-| `CatalogEntry.genDone` | `chan struct{}` created in Phase 0; closed on EVERY terminal path | Waiters always unblock; superseded attempt closes OWN channel |
-| `CatalogEntry.recorder` | `*Recorder` field | Instance-guarded old Recorder stop on replacement |
-| `OwnedPTYRuntime` token | `claimToken`/`releaseToken` (bool under o.mu, μs) | Microsecond guard; NEVER across I/O |
-| `Create` Phase 0 | Token μs → allocate gen → capture oldRec instance → reserve creating + ourGenDone → token release | Old Recorder instance saved; ourGenDone captured for this attempt |
-| `Create` Phase 3 | `DeleteRecorderIfSame(canonicalID, oldRec)` — instance-guarded | Stops ONLY captured Recorder, never a newer one |
-| `Create` Phase 6 | Token μs → if superseded: close(ourGenDone), do NOT touch entry → token release | Never closes replacement's genDone; never deletes replacement's entry |
-| `Create` rollback | Token μs → `close(ourGenDone)` → `delete` iff gen matches → token release | Only deletes own entry |
-| Stop/Kill/finalize/invalidation | Token μs → transition → token release → I/O | Token released before all I/O |
-| `transcript.Service` | Independent per-session gen counter | Not lifecycle/launch derived |
-| `recorder.go` | `StartRecorderUnconditional` | Always new Recorder |
+| `GenerationCleanupCapability` | New type: Generation, Session, Recorder, Transport, Completion | Immutable generation-bound cleanup; claimed at most once |
+| `GenerationCompletion` | New type: sync.Once + chan struct{} | Idempotent completion signal; Complete() on every terminal path |
+| `TerminalTransport.RetireIfGeneration` | New method: retire only if gen matches | Instance-guarded transport retirement; stale is no-op |
+| `recorder.go` | `StartRecorderUnconditional` | Always new Recorder; never reuses existing |
+| `OwnedPTYRuntime.Create` pre-install | Claim old capability under o.mu → Execute → wait Completion.Done() → then CreateSession | Old cleanup completes BEFORE new adapter session installed |
+| Rollback paths | `cap.Execute()` (instance-guarded) | Zero ID-addressed termination: no terminateAdapterSession, TerminateSession, DeleteRecorder(id), GetRecorder(id) |
+| Stop/Kill finalization | `cap.Execute()` outside locks | CompareAndTerminate + DeleteRecorderIfSame + RetireIfGeneration; Completion.Complete() even on panic |
+| `transcript.Service` | ReplaceTranscript, SetTranscriptGeneration | Independent per-session Transcript generation counter |
+
+**Prohibited in all post-capture paths**: `terminateAdapterSession`,
+`SessionTerminator.TerminateSession`, `DeleteRecorder` (by ID),
+`GetRecorder`, Registry/recorder/transport lookup by ID, `raw close(genDone)`,
+`defer close(...)` combined with explicit rollback close.
 
 ## 12. Acceptance gates
 
@@ -1250,9 +1304,7 @@ These accepted paths must not be modified by PA3:
 - `internal/transcript/projector_bytes.go` — ByteStreamProjector
 - `internal/transcript/store.go` — Store
 - `internal/transcript/service.go` — Service; **allowed additive methods**:
-  `ReplaceTranscript(sessionID string) int64` (drain + clear + re-enable +
-  bump generation) and `SetTranscriptGeneration(sessionID string, gen int64)`
-  (idempotent first-write-wins). Does NOT call `RemoveLaunch`.
+  `ReplaceTranscript` and `SetTranscriptGeneration` per §6.1.8. Does NOT call `RemoveLaunch`.
 - `internal/transcript/api.go` — HandleTranscript, HandleTranscriptStats
 - `internal/devicetrust/` — all device trust infrastructure (M2.5)
 - `internal/watcher/` — file watcher
