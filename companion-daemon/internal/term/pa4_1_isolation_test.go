@@ -92,18 +92,28 @@ func TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle(t *testing.T) {
 		t.Errorf("LifecycleState=%q with nil lifecycle, want empty", outNoLC[0].LifecycleState)
 	}
 
-	// Lifecycle integration: non-nil lifecycle queries OwnedPTYRuntime.Get().
-	// When no entry exists, LifecycleState is empty (no crash).
+	// Lifecycle integration: non-nil lifecycle without entry → empty.
 	adapter := mux.NewControlledPTYAdapter()
 	owned := NewOwnedPTYRuntime(adapter, nil)
 	lifecycle := NewLifecycleService(owned, nil)
-	outWithLC := appendCatalogRows(nil, cat, lifecycle, nil)
-	if outWithLC[0].LifecycleState != "" {
-		t.Errorf("LifecycleState=%q without owned entry, want empty", outWithLC[0].LifecycleState)
+	outNoEntry := appendCatalogRows(nil, cat, lifecycle, nil)
+	if outNoEntry[0].LifecycleState != "" {
+		t.Errorf("LifecycleState=%q without entry, want empty", outNoEntry[0].LifecycleState)
 	}
 
-	// Catalog capabilities are populated regardless of lifecycle wiring.
-	if len(outWithLC[0].AdapterCapabilities) == 0 || len(outWithLC[0].Capabilities) == 0 {
+	// POSITIVE: lifecycle WITH entry → LifecycleState populated.
+	// Use same-package access to insert a CatalogEntry directly.
+	owned.entries["codex_app_server:carry"] = &CatalogEntry{
+		State: LifecycleRunning,
+	}
+	outWithEntry := appendCatalogRows(nil, cat, lifecycle, nil)
+	if outWithEntry[0].LifecycleState != string(LifecycleRunning) {
+		t.Errorf("LifecycleState=%q with entry, want %q",
+			outWithEntry[0].LifecycleState, LifecycleRunning)
+	}
+
+	// Catalog capabilities populated regardless of lifecycle state.
+	if len(outWithEntry[0].AdapterCapabilities) == 0 || len(outWithEntry[0].Capabilities) == 0 {
 		t.Error("catalog row missing capabilities")
 	}
 }
