@@ -69,3 +69,4 @@ git diff --check                      → exit 0
 HEAD == upstream                      → confirmed externally
 git status --short                    → clean
 ```
+Live acceptance: SM-S926N Android 16 — PASS (tunnel connected, 6 sessions visible)
