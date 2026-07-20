@@ -95,7 +95,7 @@ type AgentActivityRecord struct {
 
 // AgentStatusUpdate is one resolution request for a single session. It carries
 // only accepted, session-bound, correlation/version-gated inputs; the caller
-// (S1-C) sources these from the accepted-adapter hook in processSession.
+// (S1-C) sources these from the accepted-adapter hook (managed ingestion).
 type AgentStatusUpdate struct {
 	SessionID  string
 	LaunchGen  int64 // S1.1-B: monotonic launch-instance identity (0 = unmanaged/legacy)

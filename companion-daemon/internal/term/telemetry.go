@@ -45,7 +45,7 @@ type SessionTelemetry struct {
 	// telemetry poll health (Stale). It never enables lifecycle/approval actions.
 	AgentActivity *AgentActivityDTO `json:"agentActivity,omitempty"`
 	// Agent events flow through the existing Events field via
-	// TelemetryService.processSession → Transcript → Snapshot.
+	// PB.2b: Managed ingestion → Transcript → Snapshot.
 	Stale         bool      `json:"stale,omitempty"`
 	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
 	LastError     string    `json:"lastError,omitempty"`
@@ -157,33 +157,7 @@ func sortTelemetry(items []SessionTelemetry) {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].ID < items[j].ID
 	})
-}
-
-func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[string]models.ProcessInfo, map[string]bool, map[string]bool) {
-	snapshots := make(map[string]models.ProcessInfo)
-	batchAdapters := make(map[string]bool)
-	failedAdapters := make(map[string]bool)
-
-	for _, adapter := range adapters {
-		name := adapter.Name()
-		provider, ok := adapter.(mux.ProcessSnapshotProvider)
-		if !ok {
-			continue
-		}
-		batchAdapters[name] = true
-		snapshot, err := provider.ProcessSnapshot(ctx)
-		if err != nil {
-			failedAdapters[name] = true
-			continue
-		}
-		for sessionID, info := range snapshot {
-			snapshots[name+":"+sessionID] = info
-		}
-	}
-	return snapshots, batchAdapters, failedAdapters
-}
-
-// HandleSessionsV2 returns rich JSON metadata for all sessions.
+} // HandleSessionsV2 returns rich JSON metadata for all sessions.
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	reg := h.Registry
 

@@ -70,8 +70,8 @@ func (s *TelemetryService) Run(ctx context.Context) {
 	}
 }
 
-// reconcileSessions prunes adapter state for sessions that have left the Registry.
-// logResolver is an injectable test seam. nil means use production ResolveAgentLog.
+// PB.2b: reconcileSessions removed — legacy observer deleted.
+// PB.2b: logResolver removed — legacy observer deleted.
 // SetLogResolver overrides it for testing.
 
 // resolveLog resolves an agent log reference from process info.
