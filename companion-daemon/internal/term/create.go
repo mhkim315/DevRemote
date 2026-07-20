@@ -279,7 +279,7 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 	if ownedPTY == nil {
 		return "", LifecycleFailed, ErrLifecycleUnavailable
 	}
-	canonicalID, err := ownedPTY.Create(ctx, opts, spec.ProfileID, spec.Name)
+	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name)
 	if err != nil {
 		return "", LifecycleFailed, err
 	}
@@ -291,8 +291,8 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 // failure it terminates the just-created runtime so no unrecorded live process
 // is left behind. Returns the exact Recorder so the lifecycle watcher observes
 // the real one (avoids a fast-exit race where GetRecorder is already nil).
-func createControlledSession(ctx context.Context, reg *mux.Registry, opts mux.CreateOptions) (string, *Recorder, error) {
-	createdID, err := reg.CreateSession(ctx, "controlled_pty", opts)
+func createControlledSession(ctx context.Context, reg *mux.Registry, opts SpawnConfig) (string, *Recorder, error) {
+	createdID, err := reg.CreateSession(ctx, "controlled_pty", mux.CreateOptions{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD})
 	if err != nil {
 		return "", nil, err
 	}

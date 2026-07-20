@@ -27,17 +27,21 @@ type SpawnConfig struct {
 
 // PTYHandle is the platform-neutral interface for a managed PTY session.
 type PTYHandle interface {
-	Resize(rows, cols int) error
+	ID() string
+	Read(p []byte) (int, error)
 	Write(p []byte) (int, error)
-	Wait() error
-	Signal(sig syscall.Signal) error
 	Close() error
+	Resize(rows, cols int) error
+	Signal(sig syscall.Signal) error
+	Wait() error
 }
 
 // ManagedPTYLauncherV1 is the narrow PB.5b target interface.
-// Separate from the transitional ManagedPTYLauncher in pty_launcher.go.
 type ManagedPTYLauncherV1 interface {
+	Name() string
 	Spawn(ctx context.Context, cfg SpawnConfig) (PTYHandle, error)
+	List(ctx context.Context) ([]PTYHandle, error)
+	Terminate(ctx context.Context, localID string, force bool) error
 }
 
 // NewPTYLauncher creates the pure-Go PTY launcher.
