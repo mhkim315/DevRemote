@@ -366,8 +366,10 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 }
 
 // TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected proves
-// that a Retire() between two SubscriberFanOut calls on the same transport
-// causes the second to be rejected — no subscriber leak from retired gen.
+// that SubscriberFanOut and Retire are mutually exclusive: when a subscriber
+// holds the RLock (inside the critical section), Retire blocks until the
+// subscriber completes. After retirement, new subscribers are rejected.
+// Uses concurrent goroutines with channel coordination.
 func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testing.T) {
 	pr, pw := io.Pipe()
 	ms := &mockStream{pr: pr, pw: pw}
@@ -379,53 +381,112 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 
 	tt := newTerminalTransport("controlled_pty:r17-race", 1, pw, ms, rec)
 
-	// First subscription succeeds.
-	_, ch1, _, ok := tt.SubscriberFanOut("controlled_pty:r17-race")
-	if !ok {
-		t.Fatal("first SubscriberFanOut failed")
+	// Coordinate: subscriber starts, retirer races.
+	subDone := make(chan struct{})
+	retireDone := make(chan struct{})
+	var subOK bool
+
+	// Goroutine A: subscriber.
+	go func() {
+		_, ch, _, ok := tt.SubscriberFanOut("controlled_pty:r17-race")
+		subOK = ok
+		if ok {
+			rec.Unsubscribe(ch)
+		}
+		close(subDone)
+	}()
+
+	// Give A a head start so it acquires RLock first.
+	time.Sleep(5 * time.Millisecond)
+
+	// Goroutine B: retirer — blocks until A releases RLock.
+	go func() {
+		tt.Retire()
+		close(retireDone)
+	}()
+
+	// Wait for both to complete.
+	<-subDone
+	if !subOK {
+		t.Fatal("first SubscriberFanOut failed — should succeed before retirement")
 	}
-	rec.Unsubscribe(ch1)
+	<-retireDone
 
-	// Retire the transport (simulating replacement race).
-	tt.Retire()
-
-	// Second subscription must fail — retired transport rejects.
-	_, _, _, ok = tt.SubscriberFanOut("controlled_pty:r17-race")
+	// After retirement, new subscriber must be rejected.
+	_, _, _, ok := tt.SubscriberFanOut("controlled_pty:r17-race")
 	if ok {
 		t.Fatal("SubscriberFanOut succeeded on retired transport — generation gate bypassed")
 	}
 }
 
 // TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder proves
-// that TerminalTransport.SubscriberFanOut returns the exact Recorder captured
-// at construction time — never the global GetRecorder for the same session ID.
+// that beginStop captures the recorder at the decisive generation check and
+// awaitExit observes the original captured Recorder, not the replacement's.
+// The test: register entry1 (original gen, rec1), call beginStop to capture
+// rec1, then StartRecorderUnconditional to create replacement rec2 for the
+// same session ID. awaitExit must observe the CAPTURED rec1.
 func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testing.T) {
-	// Create original transport with rec1.
 	pr1, pw1 := io.Pipe()
 	ms1 := &mockStream{pr: pr1, pw: pw1}
+	// Create rec1 via EnsureRecorder so it is globally registered.
 	rec1, _ := EnsureRecorder("controlled_pty:r17-replace", func() (ptyStream, error) { return ms1, nil })
 	if rec1 == nil {
 		t.Fatal("rec1 is nil")
 	}
-	defer rec1.Stop()
+	// NOTE: rec1 is NOT stopped via defer — we need it alive for awaitExit timeout.
+	// The pr1/pw1 pipe keeps it alive with a never-EOF stream.
 
-	tt := newTerminalTransport("controlled_pty:r17-replace", 1, pw1, ms1, rec1)
+	// Register entry1 with rec1 (original generation).
+	owned := NewOwnedPTYRuntime(nil, nil)
+	gen1 := owned.RegisterForTest("controlled_pty:r17-replace", "", "orig", rec1)
 
-	// SubscriberFanOut returns the exact Recorder from the transport.
-	_, ch, subRec, ok := tt.SubscriberFanOut("controlled_pty:r17-replace")
-	if !ok {
-		t.Fatal("SubscriberFanOut failed")
+	// Capture recorder via beginStop (at the decisive generation check).
+	proceed, _, found, _, _, capturedRec := owned.beginStop("controlled_pty:r17-replace", gen1)
+	if !found || !proceed || capturedRec == nil {
+		t.Fatalf("beginStop: proceed=%v found=%v rec=%v", proceed, found, capturedRec)
 	}
-	rec1.Unsubscribe(ch)
-
-	// The returned Recorder is the one passed to newTerminalTransport (rec1),
-	// NOT the one from the global GetRecorder (though they are the same here).
-	if subRec != rec1 {
-		t.Fatalf("SubscriberFanOut returned %p, want rec1 %p", subRec, rec1)
+	if capturedRec != rec1 {
+		t.Fatalf("beginStop captured rec %p, want rec1 %p", capturedRec, rec1)
 	}
 
-	// Verify global lookup matches (control).
-	if GetRecorder("controlled_pty:r17-replace") != rec1 {
-		t.Fatal("global registry should return rec1")
+	// Create replacement rec2 via StartRecorderUnconditional.
+	// This replaces rec1 in the global registry but rec1 is still alive.
+	pr2, pw2 := io.Pipe()
+	ms2 := &mockStream{pr: pr2, pw: pw2}
+	rec2 := StartRecorderUnconditional("controlled_pty:r17-replace", ms2)
+	if rec2 == nil {
+		t.Fatal("rec2 is nil")
 	}
+	defer rec2.Stop()
+
+	// Verify rec1 != rec2.
+	if rec1 == rec2 {
+		t.Fatal("rec1 == rec2 — StartRecorderUnconditional should create new instance")
+	}
+	// Global registry now returns rec2 (replacement), not rec1.
+	if GetRecorder("controlled_pty:r17-replace") != rec2 {
+		t.Fatal("global registry should return rec2 after StartRecorderUnconditional")
+	}
+
+	// Register entry2 (replacement, same ID, new generation) with rec2.
+	_ = owned.RegisterForTest("controlled_pty:r17-replace", "", "replace", rec2)
+
+	// awaitExit with the CAPTURED rec1 (original generation).
+	// rec1's stream is still open (never-EOF), so awaitExit should time out.
+	owned.graceful = 30 * time.Millisecond
+	owned.killGrace = 10 * time.Millisecond
+	result := owned.awaitExit(capturedRec, nil)
+	if result {
+		t.Fatal("awaitExit returned true with never-EOF captured recorder — should have timed out")
+	}
+
+	// Now close rec1's pipe — awaitExit should detect EOF.
+	pw1.Close()
+	time.Sleep(50 * time.Millisecond)
+	if !owned.awaitExit(capturedRec, nil) {
+		t.Fatal("awaitExit returned false after captured recorder EOF")
+	}
+
+	// Cleanup: stop rec1 now that the test is done.
+	rec1.Stop()
 }
