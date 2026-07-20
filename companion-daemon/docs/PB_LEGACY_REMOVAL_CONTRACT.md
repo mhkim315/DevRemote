@@ -1,7 +1,7 @@
 # PB Legacy Removal Contract
 
-**PB Prerequisite SHA:** `96e21fff5` (PA4-Final-R14)
-**PB Rollback SHA:** `96e21fff5`
+**PB Prerequisite SHA:** `ef012136c` (PA4-Final-R15)
+**PB Rollback SHA:** `ef012136c`
 **Status:** PENDING — PA4 accepted, PB can begin
 **Date:** 2026-07-20
 
@@ -9,7 +9,7 @@
 
 PB (Phase B) removes legacy observer/registry routes that are now contained and superseded by PA4 managed isolation. All managed paths (controlled_pty, codex, claude) are fully isolated — legacy routes serve only tmux/cmux adapters.
 
-### Pre-PB State (at `96e21fff5`)
+### Pre-PB State (at `ef012136c`)
 
 - **useRegistry=true** only for non-managed adapters (tmux, cmux)
 - **Legacy observer routes** feed TelemetryService snapshots for tmux/cmux sessions only

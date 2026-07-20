@@ -1,6 +1,6 @@
 # PA4 Managed Isolation Contract
 
-**PA4 ACCEPT SHA:** `96e21fff5`
+**PA4 ACCEPT SHA:** `ef012136c`
 **Status:** FROZEN — all PA4 waves accepted, isolation verified
 **Date:** 2026-07-20
 
@@ -41,4 +41,4 @@ PA4 establishes complete isolation between managed paths (controlled_pty, codex,
 | PA4.2 | `ba675493a` | ACCEPTED — Lifecycle and approval lookup isolation |
 | PA4.3 | `cc53eb5af` | ACCEPTED — Terminal transport generation-gated isolation |
 | PA4.4 | `a8bf135bf` | ACCEPTED — Observer containment |
-| PA4.5 | `96e21fff5` | ACCEPTED — Facade/fallback deletion, RecorderFor bypass removed |
+| PA4.5 | `ef012136c` | ACCEPTED — Facade/fallback deletion, RecorderFor/GetRecorder removed |
