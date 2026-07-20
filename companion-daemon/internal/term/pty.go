@@ -217,15 +217,13 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 					transportBootstrap = bootstrap
 					subCh = liveCh
 				}
-				// PA4.5: if subscriber fan-out failed (e.g., recorder not in
-				// global registry), use the managed entry's recorder directly.
-				if rec == nil {
-					if entryRec, ok := h.Lifecycle.OwnedPTY().RecorderFor(session); ok {
-						rec = entryRec
-						bootstrap, liveCh := entryRec.SubscribeWithBootstrap()
-						transportBootstrap = bootstrap
-						subCh = liveCh
-					}
+				if !hasRec {
+					// PA4-Final-R14: fail-closed — no RecorderFor fallback.
+					// TerminalTransport owns the subscriber capability directly.
+					// A retired/wrong-generation transport cannot subscribe.
+					log.Printf("WS subscriber fan-out denied for %s (retired or no recorder)", session)
+					http.Error(w, "terminal unavailable", http.StatusInternalServerError)
+					return
 				}
 			}
 		}

@@ -25,32 +25,39 @@ type TerminalTransport struct {
 	sessionID  string
 	generation int64
 
-	mu      sync.RWMutex
-	writer  io.Writer   // the underlying PTY (for WriteInput); nil if retired
-	resizer interface { // Resize(int, int) error; nil if retired
+	mu       sync.RWMutex
+	writer   io.Writer   // the underlying PTY (for WriteInput)
+	resizer  interface { // Resize(int, int) error
 		Resize(rows, cols int) error
 	}
+	recorder *Recorder // direct reference; nil if never set
+	retired  bool      // set by Retire/RetireIfGeneration; checked by IsRetired
 }
 
 // newTerminalTransport builds the transport handle for a freshly-launched
 // session. The session must satisfy io.Writer (PTY Write) and
-// Resize(int,int) error.
-func newTerminalTransport(sessionID string, gen int64, writer io.Writer, resizer interface{ Resize(int, int) error }) *TerminalTransport {
+// Resize(int,int) error. The recorder is an optional direct reference;
+// when nil, SubscriberFanOut returns false (no subscriber capability).
+func newTerminalTransport(sessionID string, gen int64, writer io.Writer, resizer interface{ Resize(int, int) error }, rec *Recorder) *TerminalTransport {
 	return &TerminalTransport{
 		sessionID:  sessionID,
 		generation: gen,
 		writer:     writer,
 		resizer:    resizer,
+		recorder:   rec,
 	}
 }
 
 // Retire marks the transport handle as retired: WriteInput becomes a no-op,
-// Resize is a no-op. Called when the generation is superseded.
+// Resize is a no-op, subscriber fan-out is denied. Called when the
+// generation is superseded.
 func (t *TerminalTransport) Retire() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.retired = true
 	t.writer = nil
 	t.resizer = nil
+	t.recorder = nil
 }
 
 // RetireIfGeneration retires the transport only if its generation matches.
@@ -59,8 +66,10 @@ func (t *TerminalTransport) RetireIfGeneration(gen int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.generation == gen {
+		t.retired = true
 		t.writer = nil
 		t.resizer = nil
+		t.recorder = nil
 	}
 }
 
@@ -91,6 +100,7 @@ func (t *TerminalTransport) Resize(rows, cols int) error {
 // from the Recorder. The returned channel is the EXACT channel registered
 // with the Recorder — it must be passed to rec.Unsubscribe(ch) to clean
 // up the subscription. Returns nil, nil, false if no recorder is active.
+// PA4-Final-R14: uses direct recorder reference (no global registry lookup).
 func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch chan []byte, ok bool) {
 	// PA4.3: generation gate — retired transports cannot fan out.
 	if t.IsRetired() {
@@ -100,7 +110,10 @@ func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte
 	if sessionID != t.sessionID {
 		return nil, nil, false
 	}
-	rec := GetRecorder(sessionID)
+	// PA4-Final-R14: direct recorder reference, not global registry lookup.
+	t.mu.RLock()
+	rec := t.recorder
+	t.mu.RUnlock()
 	if rec == nil {
 		return nil, nil, false
 	}
@@ -112,7 +125,7 @@ func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte
 func (t *TerminalTransport) IsRetired() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.writer == nil
+	return t.retired
 }
 
 // EnsureRecorderTransport starts a Recorder for the given session via an

@@ -2,6 +2,7 @@ package term
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -88,7 +89,7 @@ func TestPA4_5_AllManagedReadPathsIsolatedFromRegistry(t *testing.T) {
 	}
 
 	// Transport: generation-gated, no Registry dependency.
-	tt := newTerminalTransport("test:final", 1, nil, nil)
+	tt := newTerminalTransport("test:final", 1, nil, nil, nil)
 	if tt.generation != 1 {
 		t.Errorf("generation=%d, want 1", tt.generation)
 	}
@@ -157,7 +158,7 @@ func TestPA4_5_LiveAcceptanceGateStatus(t *testing.T) {
 
 	// Transport: generation-gated, no Registry.
 	var buf bytes.Buffer
-	tt := newTerminalTransport("controlled_pty:live-gate", 5, &buf, nil)
+	tt := newTerminalTransport("controlled_pty:live-gate", 5, &buf, nil, nil)
 	tt.RetireIfGeneration(3) // stale gen — not retired
 	if tt.IsRetired() {
 		t.Error("transport retired by wrong generation (3 != 5)")
@@ -206,5 +207,143 @@ func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 	// tmux uses Registry; with empty Registry, session not found.
 	if rec2.Code == http.StatusOK {
 		t.Error("tmux HandleWS succeeded on empty Registry")
+	}
+}
+
+// ── PA4-Final-R14: RecorderFor generation gate bypass fixes ──
+
+// TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup proves
+// TerminalTransport.SubscriberFanOut uses its direct recorder reference,
+// not the global GetRecorder registry. A recorder removed from the global
+// registry is still reachable through the transport handle.
+func TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup(t *testing.T) {
+	// Create a live recorder via the standard path.
+	pr, pw := io.Pipe()
+	ms := &mockStream{pr: pr, pw: pw}
+	rec, _ := EnsureRecorder("controlled_pty:r14-direct", func() (ptyStream, error) { return ms, nil })
+	if rec == nil {
+		t.Fatal("EnsureRecorder returned nil")
+	}
+	defer rec.Stop()
+
+	// Remove from global recorder registry to prove transport does NOT use it.
+	recorderRegistry.mu.Lock()
+	delete(recorderRegistry.recorders, "controlled_pty:r14-direct")
+	recorderRegistry.mu.Unlock()
+
+	// Verify global lookup returns nil.
+	if GetRecorder("controlled_pty:r14-direct") != nil {
+		t.Fatal("GetRecorder should return nil after registry removal")
+	}
+
+	// Create a TerminalTransport with the direct recorder reference.
+	tt := newTerminalTransport("controlled_pty:r14-direct", 1, pw, ms, rec)
+
+	// SubscriberFanOut must succeed — uses t.recorder, not GetRecorder.
+	bootstrap, ch, ok := tt.SubscriberFanOut("controlled_pty:r14-direct")
+	if !ok {
+		t.Fatal("SubscriberFanOut failed — transport should use direct recorder reference, not global registry")
+	}
+	if ch == nil {
+		t.Fatal("SubscriberFanOut returned nil channel")
+	}
+
+	// Write some data to the stream so bootstrap is populated.
+	pw.Write([]byte("r14-direct-test\n"))
+	time.Sleep(50 * time.Millisecond)
+
+	// Unsubscribe to clean up.
+	rec.Unsubscribe(ch)
+	_ = bootstrap
+}
+
+// TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed proves that
+// a retired TerminalTransport returns false from SubscriberFanOut — no
+// subscriber channel is created, and no RecorderFor fallback exists.
+func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T) {
+	// Create a live recorder + transport.
+	pr, pw := io.Pipe()
+	ms := &mockStream{pr: pr, pw: pw}
+	rec, _ := EnsureRecorder("controlled_pty:r14-retired", func() (ptyStream, error) { return ms, nil })
+	if rec == nil {
+		t.Fatal("EnsureRecorder returned nil")
+	}
+	defer rec.Stop()
+
+	tt := newTerminalTransport("controlled_pty:r14-retired", 1, pw, ms, rec)
+
+	// Verify SubscriberFanOut works before retirement.
+	_, ch, ok := tt.SubscriberFanOut("controlled_pty:r14-retired")
+	if !ok {
+		t.Fatal("SubscriberFanOut failed before retirement")
+	}
+	rec.Unsubscribe(ch)
+
+	// Retire the transport.
+	tt.Retire()
+	if !tt.IsRetired() {
+		t.Fatal("transport should be retired")
+	}
+
+	// SubscriberFanOut must fail-closed after retirement.
+	_, _, ok = tt.SubscriberFanOut("controlled_pty:r14-retired")
+	if ok {
+		t.Fatal("SubscriberFanOut succeeded on retired transport — generation gate bypassed")
+	}
+
+	// Verify the recorder is still alive (retirement doesn't stop it).
+	if !rec.IsAlive() {
+		t.Fatal("recorder died after transport retirement — should still be alive")
+	}
+}
+
+// TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied proves that after
+// a transport replacement (retired old + new transport with new recorder),
+// the old transport's SubscriberFanOut is denied and the new transport's
+// SubscriberFanOut succeeds — no cross-generation subscriber leak.
+func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
+	// Gen-1 transport + recorder.
+	pr1, pw1 := io.Pipe()
+	ms1 := &mockStream{pr: pr1, pw: pw1}
+	rec1, _ := EnsureRecorder("controlled_pty:r14-stale", func() (ptyStream, error) { return ms1, nil })
+	if rec1 == nil {
+		t.Fatal("EnsureRecorder gen-1 returned nil")
+	}
+	defer rec1.Stop()
+
+	tt1 := newTerminalTransport("controlled_pty:r14-stale", 1, pw1, ms1, rec1)
+
+	// Verify gen-1 works.
+	_, ch1, ok := tt1.SubscriberFanOut("controlled_pty:r14-stale")
+	if !ok {
+		t.Fatal("gen-1 SubscriberFanOut failed")
+	}
+	rec1.Unsubscribe(ch1)
+
+	// Retire gen-1 transport (simulates replacement).
+	tt1.Retire()
+
+	// Create gen-2 transport + recorder (simulates replacement under same session ID).
+	pr2, pw2 := io.Pipe()
+	ms2 := &mockStream{pr: pr2, pw: pw2}
+	rec2, _ := EnsureRecorder("controlled_pty:r14-stale", func() (ptyStream, error) { return ms2, nil })
+	if rec2 == nil {
+		t.Fatal("EnsureRecorder gen-2 returned nil")
+	}
+	defer rec2.Stop()
+
+	tt2 := newTerminalTransport("controlled_pty:r14-stale", 2, pw2, ms2, rec2)
+
+	// Gen-2 SubscriberFanOut must succeed.
+	_, ch2, ok := tt2.SubscriberFanOut("controlled_pty:r14-stale")
+	if !ok {
+		t.Fatal("gen-2 SubscriberFanOut failed — replacement transport should work")
+	}
+	rec2.Unsubscribe(ch2)
+
+	// Gen-1 SubscriberFanOut must still be denied (retired).
+	_, _, ok = tt1.SubscriberFanOut("controlled_pty:r14-stale")
+	if ok {
+		t.Fatal("gen-1 SubscriberFanOut succeeded after retirement — stale generation bypassed")
 	}
 }

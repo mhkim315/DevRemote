@@ -134,20 +134,6 @@ func (o *OwnedPTYRuntime) Transport(sessionID string) (*TerminalTransport, bool)
 	return e.transport, true
 }
 
-// RecorderFor returns the session-owned Recorder from the managed
-// entry, bypassing the global recorderRegistry. Used by HandleWS
-// when TerminalTransport exists but the global GetRecorder returns
-// nil (e.g., recorder was stopped and re-created).
-func (o *OwnedPTYRuntime) RecorderFor(sessionID string) (*Recorder, bool) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	e, ok := o.entries[sessionID]
-	if !ok || e.recorder == nil {
-		return nil, false
-	}
-	return e.recorder, true
-}
-
 func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 	o.lockMu.Lock()
 	defer o.lockMu.Unlock()
@@ -255,7 +241,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 		Resize(int, int) error
 	}
 	wr, _ := sess.(writeResizer)
-	transport := newTerminalTransport(canonicalID, 0, wr, wr)
+	transport := newTerminalTransport(canonicalID, 0, wr, wr, rec)
 	cap.Transport = transport
 	cap.Recorder = rec
 
@@ -296,7 +282,7 @@ func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, opts mux.CreateOptio
 		Resize(int, int) error
 	}
 	wr, _ := sess.(writeResizer)
-	transport := newTerminalTransport(canonicalID, 0, wr, wr)
+	transport := newTerminalTransport(canonicalID, 0, wr, wr, rec)
 	cleanup := o.newCleanup(canonicalID, sess, rec)
 	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec, sess)
 	o.watchExit(canonicalID, gen, rec)
