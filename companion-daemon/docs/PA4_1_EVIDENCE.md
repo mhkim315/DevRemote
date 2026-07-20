@@ -71,8 +71,14 @@ ok  devremote/companion-daemon/internal/watcher  2.083s
 ```
 
 ### `git rev-parse HEAD`
+
+### `git rev-parse origin/feature/phase10-multi-adapter`
 ```
-ef05e3582d2e4b2dc53f659290048db2855fdcec
+17a6346e4ef0b4ded55615418d3ba6c389f55717
+(matches HEAD — upstream equality confirmed)
+```
+```
+17a6346e4ef0b4ded55615418d3ba6c389f55717
 ```
 
 ### `git status --short`
