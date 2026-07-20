@@ -56,7 +56,7 @@
 | Claude launch | PASS — SM-S926N production mode |
 | Mobile allow/deny | PASS — SM-S926N production mode |
 | Backend full race | PASS |
-| Mobile Jest: PASS (451/451, pairingClient 34/34)
+| Mobile Jest: PASS (451/451, pairingClient 16/16, authMode + authPairing 34/34)
 | Mobile TypeScript: PASS (tsc --noEmit clean)
 | go build ./... && go vet ./... | PASS |
 | gofmt -d (changed files) | PASS — clean |
@@ -76,4 +76,4 @@ HEAD == upstream                      → confirmed
 git status --short                    → clean
 ```
 Live acceptance: SM-S926N Android 16 — PASS (production mode, tunnel connected, device paired, 6 sessions visible)
-Jest: 451/451 pass, pairingClient: 34/34 pass, tsc --noEmit: clean
+Jest: 451/451 pass, pairingClient: 16/16 pass, authMode + authPairing: 34/34 pass, tsc --noEmit: clean
