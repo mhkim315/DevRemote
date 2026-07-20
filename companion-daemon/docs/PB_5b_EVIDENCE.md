@@ -1,6 +1,6 @@
 # PB.5b Evidence — V1 Launcher Wired
 
-**PB.5b IMPL SHA:** `ebb0cdbfe`
+**PB.5b IMPL SHA:** `cbfa50b26`
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## V1 Wiring
