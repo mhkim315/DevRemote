@@ -484,40 +484,40 @@ func (o *OwnedPTYRuntime) currentGeneration(id string) (int64, bool) {
 // mutex is the decisive linearization point: a replacement between
 // derivation and this check rejects the stale request, and the claimed
 // handle can never be a later generation's process.
-func (o *OwnedPTYRuntime) beginStop(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, handle mux.ManagedProcess) {
+func (o *OwnedPTYRuntime) beginStop(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, handle mux.ManagedProcess, rec *Recorder) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e, ok := o.entries[id]
 	if !ok {
-		return false, "", false, false, nil
+		return false, "", false, false, nil, nil
 	}
 	if e.Generation != gen {
-		return false, e.State, true, true, nil
+		return false, e.State, true, true, nil, nil
 	}
 	if e.State == LifecycleRunning || e.State == LifecycleStarting {
 		e.State = LifecycleStopping
-		return true, e.State, true, false, e.handle
+		return true, e.State, true, false, e.handle, e.recorder
 	}
-	return false, e.State, true, false, nil
+	return false, e.State, true, false, nil, nil
 }
 
 // requestKill records kill intent for the EXACT generation and claims the
 // generation's immutable process handle.
-func (o *OwnedPTYRuntime) requestKill(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, handle mux.ManagedProcess) {
+func (o *OwnedPTYRuntime) requestKill(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, handle mux.ManagedProcess, rec *Recorder) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e, ok := o.entries[id]
 	if !ok {
-		return false, "", false, false, nil
+		return false, "", false, false, nil, nil
 	}
 	if e.Generation != gen {
-		return false, e.State, true, true, nil
+		return false, e.State, true, true, nil, nil
 	}
 	if e.State.Terminal() {
-		return false, e.State, true, false, nil
+		return false, e.State, true, false, nil, nil
 	}
 	e.killRequested = true
-	return true, e.State, true, false, e.handle
+	return true, e.State, true, false, e.handle, e.recorder
 }
 
 // finalizeRecord records the terminal state exactly once for the EXACT
@@ -586,10 +586,11 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	var current LifecycleState
 	var found, stale bool
 	var handle mux.ManagedProcess
+	var capturedRec *Recorder
 	if force {
-		proceed, current, found, stale, handle = o.requestKill(id, gen)
+		proceed, current, found, stale, handle, capturedRec = o.requestKill(id, gen)
 	} else {
-		proceed, current, found, stale, handle = o.beginStop(id, gen)
+		proceed, current, found, stale, handle, capturedRec = o.beginStop(id, gen)
 	}
 	lock.Unlock()
 
@@ -610,14 +611,9 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 			log.Printf("owned pty %s %s: signal error: %v", action, id, terr)
 		}
 	}
-	// PA4-Final-R16: use captured Recorder from catalog entry, not
-	// global GetRecorder which could resolve a replacement generation.
-	var capturedRec *Recorder
-	o.mu.Lock()
-	if e, ok := o.entries[id]; ok {
-		capturedRec = e.recorder
-	}
-	o.mu.Unlock()
+	// PA4-Final-R17: capturedRec from beginStop/requestKill at the
+	// decisive generation check (under lock). Never re-read entries[id]
+	// after the per-session action lock is released.
 	if !o.awaitExit(capturedRec, handle) {
 		return LifecycleResult{SessionID: id, Action: action, State: LifecycleStopping}, ErrLifecycleTerminateFailed
 	}

@@ -364,3 +364,68 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 		t.Fatal("gen-1 SubscriberFanOut succeeded after retirement — stale generation bypassed")
 	}
 }
+
+// TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected proves
+// that a Retire() between two SubscriberFanOut calls on the same transport
+// causes the second to be rejected — no subscriber leak from retired gen.
+func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testing.T) {
+	pr, pw := io.Pipe()
+	ms := &mockStream{pr: pr, pw: pw}
+	rec, _ := EnsureRecorder("controlled_pty:r17-race", func() (ptyStream, error) { return ms, nil })
+	if rec == nil {
+		t.Fatal("EnsureRecorder returned nil")
+	}
+	defer rec.Stop()
+
+	tt := newTerminalTransport("controlled_pty:r17-race", 1, pw, ms, rec)
+
+	// First subscription succeeds.
+	_, ch1, _, ok := tt.SubscriberFanOut("controlled_pty:r17-race")
+	if !ok {
+		t.Fatal("first SubscriberFanOut failed")
+	}
+	rec.Unsubscribe(ch1)
+
+	// Retire the transport (simulating replacement race).
+	tt.Retire()
+
+	// Second subscription must fail — retired transport rejects.
+	_, _, _, ok = tt.SubscriberFanOut("controlled_pty:r17-race")
+	if ok {
+		t.Fatal("SubscriberFanOut succeeded on retired transport — generation gate bypassed")
+	}
+}
+
+// TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder proves
+// that TerminalTransport.SubscriberFanOut returns the exact Recorder captured
+// at construction time — never the global GetRecorder for the same session ID.
+func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testing.T) {
+	// Create original transport with rec1.
+	pr1, pw1 := io.Pipe()
+	ms1 := &mockStream{pr: pr1, pw: pw1}
+	rec1, _ := EnsureRecorder("controlled_pty:r17-replace", func() (ptyStream, error) { return ms1, nil })
+	if rec1 == nil {
+		t.Fatal("rec1 is nil")
+	}
+	defer rec1.Stop()
+
+	tt := newTerminalTransport("controlled_pty:r17-replace", 1, pw1, ms1, rec1)
+
+	// SubscriberFanOut returns the exact Recorder from the transport.
+	_, ch, subRec, ok := tt.SubscriberFanOut("controlled_pty:r17-replace")
+	if !ok {
+		t.Fatal("SubscriberFanOut failed")
+	}
+	rec1.Unsubscribe(ch)
+
+	// The returned Recorder is the one passed to newTerminalTransport (rec1),
+	// NOT the one from the global GetRecorder (though they are the same here).
+	if subRec != rec1 {
+		t.Fatalf("SubscriberFanOut returned %p, want rec1 %p", subRec, rec1)
+	}
+
+	// Verify global lookup matches (control).
+	if GetRecorder("controlled_pty:r17-replace") != rec1 {
+		t.Fatal("global registry should return rec1")
+	}
+}

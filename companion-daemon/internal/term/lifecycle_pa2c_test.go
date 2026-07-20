@@ -325,7 +325,7 @@ func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
 		t.Fatalf("generations not monotonic: %d then %d", gen1, gen2)
 	}
 	// The decisive store-lock comparison rejects the stale transition.
-	if proceed, _, found, stale, _ := owned.beginStop(id, gen1); proceed || !found || !stale {
+	if proceed, _, found, stale, _, _ := owned.beginStop(id, gen1); proceed || !found || !stale {
 		t.Fatalf("beginStop(stale gen) = proceed=%v found=%v stale=%v, want rejected stale", proceed, found, stale)
 	}
 	// A stale finalize is a no-op: the replacement record stays running.
@@ -334,7 +334,7 @@ func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
 		t.Fatalf("record after stale finalize = %+v ok=%v, want running at gen2", e, ok)
 	}
 	// The current generation still transitions normally.
-	if proceed, _, _, stale, _ := owned.beginStop(id, gen2); !proceed || stale {
+	if proceed, _, _, stale, _, _ := owned.beginStop(id, gen2); !proceed || stale {
 		t.Fatalf("beginStop(current gen) rejected")
 	}
 }

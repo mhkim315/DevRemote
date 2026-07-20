@@ -108,21 +108,20 @@ func (t *TerminalTransport) Recorder() *Recorder {
 // the direct Recorder reference in a single atomic read. The returned channel
 // is the EXACT channel registered with the Recorder — it must be passed to
 // rec.Unsubscribe(ch) to clean up the subscription.
-// PA4-Final-R16: returns Recorder atomically to eliminate TOCTOU between
-// SubscriberFanOut and Recorder() calls.
+// PA4-Final-R17: single lock linearization point — retirement cannot interleave.
 func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch chan []byte, rec *Recorder, ok bool) {
-	// PA4.3: generation gate — retired transports cannot fan out.
-	if t.IsRetired() {
-		return nil, nil, nil, false
-	}
-	// Verify sessionID matches this transport's owner.
+	// Verify sessionID matches this transport's owner (no lock needed — immutable).
 	if sessionID != t.sessionID {
 		return nil, nil, nil, false
 	}
-	// PA4-Final-R16: atomic read — recorder + subscribe in single critical section.
+	// Single critical section: check retired, capture recorder, subscribe.
+	// Lock ordering: TerminalTransport.mu → Recorder.mu (no cycle exists).
 	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.retired {
+		return nil, nil, nil, false
+	}
 	r := t.recorder
-	t.mu.RUnlock()
 	if r == nil {
 		return nil, nil, nil, false
 	}
