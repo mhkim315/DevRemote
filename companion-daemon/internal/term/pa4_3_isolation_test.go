@@ -105,3 +105,20 @@ func TestPA4_3_NewTerminalTransportAssignsGeneration(t *testing.T) {
 		t.Errorf("generation=%d, want 42", tt.generation)
 	}
 }
+
+func TestPA4_3_SubscriberFanOutRetiredRejected(t *testing.T) {
+	tt := newTerminalTransport("test:fanout-retired", 1, nil, nil)
+	tt.RetireIfGeneration(1)
+	_, _, ok := tt.SubscriberFanOut("test:fanout-retired")
+	if ok {
+		t.Error("SubscriberFanOut succeeded on retired transport")
+	}
+}
+
+func TestPA4_3_SubscriberFanOutWrongSessionRejected(t *testing.T) {
+	tt := newTerminalTransport("test:fanout-session", 1, nil, nil)
+	_, _, ok := tt.SubscriberFanOut("wrong-session-id")
+	if ok {
+		t.Error("SubscriberFanOut succeeded with wrong sessionID")
+	}
+}

@@ -1,6 +1,6 @@
 # PA4.3 Evidence — Terminal Transport Generation-Gated Isolation
 
-**Implementation SHA:** `1c2ee001dbc4b3d0e04ef965f75f10da4acbcd1d`
+**Implementation SHA:** `1c2ee001dee3013def0488c544f98eddf2dc5871`
 **PA4.2 Baseline:** `ba675493a` (ACCEPTED)
 **PA3 Rollback:** `34d55e950`
 
@@ -21,7 +21,7 @@ and never falls back to mux.Registry or legacy adapter session lookup.
 | 6 | `pty.go:461` | Input routes through TerminalTransport | Generation-gated |
 | 7 | `pty.go:363` | Replay through TerminalTransport SubscriberFanOut | Generation-gated |
 
-## 6 PA4.3 Tests (all pass at `-race -count=20`)
+## 8 PA4.3 Tests (all pass at `-race -count=20`)
 
 | # | Test | Proves |
 |---|------|--------|

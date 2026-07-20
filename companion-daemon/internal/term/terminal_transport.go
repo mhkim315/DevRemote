@@ -92,6 +92,14 @@ func (t *TerminalTransport) Resize(rows, cols int) error {
 // with the Recorder — it must be passed to rec.Unsubscribe(ch) to clean
 // up the subscription. Returns nil, nil, false if no recorder is active.
 func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch chan []byte, ok bool) {
+	// PA4.3: generation gate — retired transports cannot fan out.
+	if t.IsRetired() {
+		return nil, nil, false
+	}
+	// Verify sessionID matches this transport's owner.
+	if sessionID != t.sessionID {
+		return nil, nil, false
+	}
 	rec := GetRecorder(sessionID)
 	if rec == nil {
 		return nil, nil, false
