@@ -14,14 +14,18 @@ import (
 
 func runPairClient(args []string) {
 	duration := 2 * time.Minute
+	autoApprove := false
 	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
 		if args[0] == "--duration" && len(args) > 1 {
 			if d, err := time.ParseDuration(args[1]); err == nil && d > 0 && d <= 10*time.Minute {
 				duration = d
 			}
 			args = args[2:]
+		} else if args[0] == "--auto-approve" {
+			autoApprove = true
+			args = args[1:]
 		} else {
-			fmt.Fprintf(os.Stderr, "Usage: pokit pair [--duration <time>]\n")
+			fmt.Fprintf(os.Stderr, "Usage: pokit pair [--duration <time>] [--auto-approve]\n")
 			os.Exit(1)
 		}
 	}
@@ -95,11 +99,18 @@ func runPairClient(args []string) {
 	c := candMsg.Candidate
 	fmt.Printf("\n📱 Device candidate:\n   Fingerprint: %s\n   Name: %s\n",
 		c.Fingerprint, c.DisplayName)
-	fmt.Printf("\nApprove this device? (y/N): ")
 
-	var answer string
-	fmt.Scanln(&answer)
-	if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+	var approved bool
+	if autoApprove {
+		fmt.Println("Auto-approving device (--auto-approve).")
+		approved = true
+	} else {
+		fmt.Printf("\nApprove this device? (y/N): ")
+		var answer string
+		fmt.Scanln(&answer)
+		approved = strings.ToLower(strings.TrimSpace(answer)) == "y"
+	}
+	if !approved {
 		reject, _ := json.Marshal(map[string]interface{}{"action": "reject", "version": 1})
 		conn.Write(append(reject, '\n'))
 		var done struct {
