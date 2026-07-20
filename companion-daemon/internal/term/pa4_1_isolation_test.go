@@ -80,28 +80,48 @@ func TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle(t *testing.T) {
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	out := appendCatalogRows(nil, cat, nil, nil)
-	if len(out) != 1 {
-		t.Fatalf("expected 1 catalog row, got %d", len(out))
+	// Query capabilities through the catalog contract interface.
+	sessCaps, adapterCaps := cat.ManagedCapabilities("codex_app_server")
+	if len(sessCaps) == 0 {
+		t.Error("ManagedCapabilities returned empty session caps")
 	}
-	row := out[0]
-	if len(row.AdapterCapabilities) == 0 {
-		t.Error("catalog row missing AdapterCapabilities")
-	}
-	if len(row.Capabilities) == 0 {
-		t.Error("catalog row missing session Capabilities")
+	if len(adapterCaps) == 0 {
+		t.Error("ManagedCapabilities returned empty adapter caps")
 	}
 	hasLiveStream := false
-	for _, c := range row.AdapterCapabilities {
+	for _, c := range adapterCaps {
 		if c == "live_stream" {
 			hasLiveStream = true
 		}
 	}
 	if !hasLiveStream {
-		t.Error("catalog row missing live_stream capability")
+		t.Error("ManagedCapabilities missing live_stream")
 	}
-	if row.Adapter != "codex_app_server" {
-		t.Errorf("adapter=%q, want codex_app_server", row.Adapter)
+
+	// Test: when lifecycle is nil, LifecycleState is empty.
+	outNoLC := appendCatalogRows(nil, cat, nil, nil)
+	if len(outNoLC) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(outNoLC))
+	}
+	if outNoLC[0].LifecycleState != "" {
+		t.Errorf("LifecycleState=%q with nil lifecycle, want empty", outNoLC[0].LifecycleState)
+	}
+
+	// Test: when lifecycle is non-nil but has no entry, LifecycleState is empty.
+	adapter := mux.NewControlledPTYAdapter()
+	owned := NewOwnedPTYRuntime(adapter, nil)
+	lifecycle := NewLifecycleService(owned, nil)
+	outWithLC := appendCatalogRows(nil, cat, lifecycle, nil)
+	if outWithLC[0].LifecycleState != "" {
+		t.Errorf("LifecycleState=%q without entry, want empty", outWithLC[0].LifecycleState)
+	}
+
+	// Catalog capabilities are populated regardless of lifecycle.
+	if len(outWithLC[0].AdapterCapabilities) == 0 {
+		t.Error("catalog row missing AdapterCapabilities")
+	}
+	if len(outWithLC[0].Capabilities) == 0 {
+		t.Error("catalog row missing session Capabilities")
 	}
 }
 
@@ -146,38 +166,64 @@ func TestPA4_1_StaleGenerationNotResurrectedThroughRegistry(t *testing.T) {
 		SessionID: "codex_app_server:stale-gen", Provider: "codex", Version: "0.144.1",
 		Epoch: 2, CreatedAt: time.Now(),
 	})
-	// Mark exited to prove catalog carries authoritative status.
+	// Mark exited to prove catalog carries authoritative status at Epoch 2.
 	codexReg.MarkExited("codex_app_server:stale-gen", 2)
 
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	// Registry has row with same ID but stale generation metadata.
+	// Registry row carries stale generation-bearing evidence: Epoch 1 claims
+	// it's "running" with AgentKind "observer" and wrong capabilities.
+	// The catalog at Epoch 2 says "exited" with AgentKind "codex" — catalog wins.
 	snapshot := []SessionTelemetry{
-		{ID: "codex_app_server:stale-gen", Adapter: "controlled_pty", AgentKind: "observer"},
+		{
+			ID: "codex_app_server:stale-gen", Adapter: "controlled_pty",
+			AgentKind: "observer", AgentStatus: "running",
+			Capabilities: []string{"screen"}, AdapterCapabilities: []string{"screen"},
+		},
 	}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
 	if len(out) != 1 {
 		t.Fatalf("expected 1 catalog row, got %d", len(out))
 	}
-	// Catalog's exited status is authoritative, not Registry's observer.
+	// Catalog's generation-2 exited status is authoritative over Registry's stale running.
 	if out[0].AgentStatus != "exited" {
-		t.Errorf("agentStatus=%q, want exited (catalog authoritative)", out[0].AgentStatus)
+		t.Errorf("agentStatus=%q, want exited (catalog epoch 2 authoritative over Registry epoch 1)", out[0].AgentStatus)
 	}
 	if out[0].AgentKind != "codex" {
-		t.Errorf("agentKind=%q, want codex", out[0].AgentKind)
+		t.Errorf("agentKind=%q, want codex (catalog authoritative over Registry observer)", out[0].AgentKind)
+	}
+	// Registry screen capability must not leak into catalog row.
+	for _, c := range out[0].AdapterCapabilities {
+		if c == "screen" {
+			t.Error("Registry screen capability leaked into catalog row")
+		}
 	}
 }
 
 // ── R2: default production composition proof ──
 
 func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
+	// Production-like composition: catalog + lifecycle both wired, matching
+	// the app.go production path (HandleSessionsV2 with both authorities).
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
 		SessionID: "codex_app_server:default-cfg", Provider: "codex", Version: "0.144.1",
 		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
-	h := newPA4Handlers(t, cat)
+
+	// Production composition: catalog + lifecycle both wired through HandleSessionsV2,
+	// matching app.go's production handler assembly path.
+	adapter := mux.NewControlledPTYAdapter()
+	owned := NewOwnedPTYRuntime(adapter, nil)
+	lifecycle := NewLifecycleService(owned, nil)
+	reg, _ := mux.NewRegistry()
+	h := &Handlers{
+		Registry:   reg,
+		Catalog:    cat,
+		Lifecycle:  lifecycle,
+		Transcript: transcript.NewService(transcript.DefaultStoreConfig()),
+	}
 
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -197,7 +243,7 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 	if len(rows[0].AdapterCapabilities) == 0 {
 		t.Error("missing adapter capabilities in default config")
 	}
-	// No special flag was used — default production composition is enforced.
+	// No special flag — default production composition enforces isolation.
 }
 
 // ── R2: legacy non-managed Registry behavior unchanged ──

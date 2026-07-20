@@ -304,26 +304,6 @@ func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps
 	}
 }
 
-// managedAdapterCapabilities returns the set of adapter-level capabilities
-// for a managed adapter name. These are derived from catalog authority and
-// never depend on mux.Registry. The managed runtime owns its terminal and
-// transcript capture; cmux-only capabilities (screen) are excluded.
-func managedAdapterCapabilities(adapter string) []string {
-	switch adapter {
-	case codexAppServerAdapter, claudeHeadlessAdapter:
-		return []string{"live_stream", "history", "process"}
-	default:
-		return nil
-	}
-}
-
-// managedSessionCapabilities returns session-level capabilities for a
-// managed session. All managed runtimes provide live terminal streaming
-// and transcript history.
-func managedSessionCapabilities() []string {
-	return []string{"live_stream", "history"}
-}
-
 // appendCatalogRows appends managed-session rows built from the catalog
 // to the /api/sessions response. It replaces appendManagedRows and
 // appendClaudeManagedRows with a single catalog-driven projector.
