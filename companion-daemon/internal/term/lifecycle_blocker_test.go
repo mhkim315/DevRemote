@@ -79,7 +79,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	stuck := &stuckSession{id: localID, stream: &fakeStream{closed: make(chan struct{})}}
 	sadapter := &stuckAdapter{sess: stuck}
 	_ = mux.MustNewRegistry(sadapter) // Registry for session listing (not passed to owner)
-	svc := NewLifecycleService(NewOwnedPTYRuntime(sadapter, nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(sadapter), nil), nil)
 	svc.OwnedPTY().graceful = 50 * time.Millisecond
 	svc.OwnedPTY().killGrace = 50 * time.Millisecond
 	id := "controlled_pty:" + localID

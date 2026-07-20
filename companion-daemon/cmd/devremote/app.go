@@ -166,7 +166,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
 	// Registry dependency. Provider owners are wired below once constructed.
-	ownedPTY := term.NewOwnedPTYRuntime(ctlAdapter, transcriptSvc)
+	launcher, err := term.NewControlledPTYLauncher(ctlAdapter)
+	if err != nil {
+		return nil, fmt.Errorf("controlled PTY launcher: %w", err)
+	}
+	ownedPTY := term.NewOwnedPTYRuntime(launcher, transcriptSvc)
 	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the

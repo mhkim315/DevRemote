@@ -94,7 +94,7 @@ func TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle(t *testing.T) {
 
 	// Lifecycle integration: non-nil lifecycle without entry → empty.
 	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
 	lifecycle := NewLifecycleService(owned, nil)
 	outNoEntry := appendCatalogRows(nil, cat, lifecycle, nil)
 	if outNoEntry[0].LifecycleState != "" {
@@ -204,7 +204,7 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
 	lifecycle := NewLifecycleService(owned, nil)
 	reg, _ := mux.NewRegistry()
 	h := &Handlers{

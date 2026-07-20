@@ -17,7 +17,7 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	reg.Register(ctl)
 
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(ctl, transcriptSvc)
+	ownedPTY := NewOwnedPTYRuntime(launcherWrapper(ctl), transcriptSvc)
 	lifecycle := NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// Seed a running catalog entry.

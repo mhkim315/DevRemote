@@ -14,7 +14,7 @@ import (
 func TestStep6a_ReplacementCapturesOldRecorder(t *testing.T) {
 	ctl := mux.NewControlledPTYAdapter()
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(ctl, transcriptSvc)
+	ownedPTY := NewOwnedPTYRuntime(launcherWrapper(ctl), transcriptSvc)
 
 	opts := mux.CreateOptions{Name: "step6a-test", Executable: "sleep", Args: []string{"10"}}
 	id1, err := ownedPTY.Create(context.Background(), opts, "shell", "step6a-test")
@@ -57,7 +57,7 @@ func TestStep6a_ReplacementCapturesOldRecorder(t *testing.T) {
 func TestStep6a_RollbackCleanupIsInstanceGuarded(t *testing.T) {
 	ctl := mux.NewControlledPTYAdapter()
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(ctl, transcriptSvc)
+	ownedPTY := NewOwnedPTYRuntime(launcherWrapper(ctl), transcriptSvc)
 
 	opts := mux.CreateOptions{Name: "step6a-rb", Executable: "sleep", Args: []string{"10"}}
 	id, err := ownedPTY.Create(context.Background(), opts, "shell", "step6a-rb")
@@ -102,7 +102,7 @@ func TestStep6a_RollbackCleanupIsInstanceGuarded(t *testing.T) {
 func TestStep6a_RollbackProof(t *testing.T) {
 	ctl := mux.NewControlledPTYAdapter()
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(ctl, transcriptSvc)
+	ownedPTY := NewOwnedPTYRuntime(launcherWrapper(ctl), transcriptSvc)
 
 	opts := mux.CreateOptions{Name: "step6a-rbproof", Executable: "sleep", Args: []string{"30"}}
 

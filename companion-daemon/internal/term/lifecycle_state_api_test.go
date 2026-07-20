@@ -80,7 +80,7 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 	external := newLSAdapter("legacy", false, "tm1")
 	reg := mux.MustNewRegistry(managed, external)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
 
 	// Live managed rows with authoritative catalog states.
 	seedCatalog(svc, "controlled_pty:run", "controlled_pty", "runner", LifecycleRunning)
@@ -140,7 +140,7 @@ func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true, "s1")
 	reg := mux.MustNewRegistry(managed)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
 	seedCatalog(svc, "controlled_pty:s1", "controlled_pty", "s1", LifecycleStopping)
 
 	h := &Handlers{Registry: reg, Lifecycle: svc}
@@ -155,7 +155,7 @@ func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true) // no live sessions
 	reg := mux.MustNewRegistry(managed)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
 	seedCatalog(svc, "controlled_pty:done", "controlled_pty", "done", LifecycleExited)
 
 	h := &Handlers{Registry: reg, Lifecycle: svc}

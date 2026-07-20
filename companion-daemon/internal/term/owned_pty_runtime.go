@@ -89,7 +89,7 @@ type CatalogEntry struct {
 // per-session action locks; no lock is held across process signalling or
 // waits.
 type OwnedPTYRuntime struct {
-	spawn      mux.Adapter         // the owned controlled_pty adapter (PA2d: no Registry intermediary)
+	spawn      ManagedPTYLauncher  // PB.5a: narrow platform-neutral launcher (no mux.Adapter dependency)
 	transcript *transcript.Service // T3: cleared on Delete
 	status     StatusClearer       // S1: cleared on Delete
 	graceful   time.Duration
@@ -105,7 +105,7 @@ type OwnedPTYRuntime struct {
 }
 
 // NewOwnedPTYRuntime constructs the controlled-PTY lifecycle owner.
-func NewOwnedPTYRuntime(spawn mux.Adapter, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
+func NewOwnedPTYRuntime(spawn ManagedPTYLauncher, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
 	return &OwnedPTYRuntime{
 		spawn:      spawn,
 		transcript: transcriptSvc,
@@ -159,26 +159,15 @@ type ownedCleanup func(ctx context.Context)
 // adapter does not implement SessionCreatorWithIdentity.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
 	if o.spawn == nil {
-		return "", fmt.Errorf("no spawn adapter")
+		return "", fmt.Errorf("no spawn launcher")
 	}
-	if _, ok := o.spawn.(mux.SessionCreator); !ok {
-		return "", fmt.Errorf("spawn adapter does not support creation")
-	}
-	if _, ok := o.spawn.(mux.SessionIdentityTerminator); !ok {
-		return "", fmt.Errorf("spawn adapter does not support atomic conditional termination")
-	}
-
-	// PA3 Step 6a: prefer CreateSessionAndCapture for atomic pre-install.
-	if sci, ok := o.spawn.(mux.SessionCreatorWithIdentity); ok {
-		return o.createWithCapture(ctx, opts, profileID, name, sci)
-	}
-	return o.createLegacy(ctx, opts, profileID, name)
+	return o.createWithCapture(ctx, opts, profileID, name, o.spawn)
 }
 
 // createWithCapture uses CreateSessionAndCapture + GenerationCleanupCapability.
 // Pre-install barrier: claims old capability, executes it, waits for
 // Completion.Done(), then creates the new session.
-func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.CreateOptions, profileID, name string, sci mux.SessionCreatorWithIdentity) (string, error) {
+func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.CreateOptions, profileID, name string, launcher ManagedPTYLauncher) (string, error) {
 	// Pre-install barrier: check for existing entry under o.mu.
 	canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: opts.Name}.Canonical()
 	o.mu.Lock()
@@ -206,7 +195,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 	}
 
 	// Create adapter session — identity captured atomically.
-	localID, sess, err := sci.CreateSessionAndCapture(ctx, opts)
+	localID, sess, err := launcher.CreateSessionAndCapture(ctx, opts)
 	if err != nil {
 		return "", err
 	}
@@ -266,27 +255,9 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 }
 
 // createLegacy is the pre-PA3 creation path using ownSpawn.
+// PB.5a: createLegacy removed — all creation goes through createWithCapture.
 func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
-	canonicalID, rec, err := o.ownSpawn(ctx, opts)
-	if err != nil {
-		return "", err
-	}
-	sess, handle, herr := o.captureSession(ctx, sessionid.ParseSessionID(canonicalID).LocalID)
-	if herr != nil {
-		_ = o.terminateAdapterSession(ctx, sessionid.ParseSessionID(canonicalID).LocalID)
-		DeleteRecorder(canonicalID)
-		return "", fmt.Errorf("owned pty create: process handle capture failed: %w", herr)
-	}
-	type writeResizer interface {
-		io.Writer
-		Resize(int, int) error
-	}
-	wr, _ := sess.(writeResizer)
-	transport := newTerminalTransport(canonicalID, 0, wr, wr, rec)
-	cleanup := o.newCleanup(canonicalID, sess, rec)
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec, sess)
-	o.watchExit(canonicalID, gen, rec)
-	return canonicalID, nil
+	return "", fmt.Errorf("legacy create path removed in PB.5a")
 }
 
 // openPTYStream opens the terminal stream from a session.
@@ -303,6 +274,9 @@ func openPTYStream(sess mux.Session) (ptyStream, error) {
 // error means the runtime exposes no process control and MUST NOT be
 // published as running.
 func (o *OwnedPTYRuntime) captureSession(ctx context.Context, localID string) (mux.Session, mux.ManagedProcess, error) {
+	if o.spawn == nil {
+		return nil, nil, fmt.Errorf("no spawn launcher")
+	}
 	sessions, err := o.spawn.ListSessions(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list sessions: %w", err)
@@ -388,23 +362,9 @@ var testCreateWithCaptureFailAfterCapture func() error
 
 // spawnControlled is the PA2d owned transport: create the PTY directly
 // through the owned adapter and prove the Recorder is ready.
+// PB.5a: ownSpawn removed — creation goes through launcher.
 func (o *OwnedPTYRuntime) ownSpawn(ctx context.Context, opts mux.CreateOptions) (string, *Recorder, error) {
-	creator, ok := o.spawn.(mux.SessionCreator)
-	if !ok {
-		return "", nil, fmt.Errorf("spawn adapter does not support creation")
-	}
-	createdID, err := creator.CreateSession(ctx, opts)
-	if err != nil {
-		return "", nil, err
-	}
-	canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: createdID}.Canonical()
-	rec, rerr := o.startRecorder(ctx, canonicalID)
-	if rerr != nil {
-		_ = o.terminateAdapterSession(ctx, createdID)
-		DeleteRecorder(canonicalID)
-		return "", nil, fmt.Errorf("recorder not ready: %w", rerr)
-	}
-	return canonicalID, rec, nil
+	return "", nil, fmt.Errorf("legacy ownSpawn removed in PB.5a")
 }
 
 // startRecorder proves a freshly-created session's Recorder is ready via
@@ -439,9 +399,7 @@ func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string)
 
 // terminateAdapterSession removes a spawn entry by local id via adapter.
 func (o *OwnedPTYRuntime) terminateAdapterSession(ctx context.Context, localID string) error {
-	if term, ok := o.spawn.(mux.SessionTerminator); ok {
-		return term.TerminateSession(ctx, localID)
-	}
+	return o.spawn.TerminateSession(ctx, localID)
 	return fmt.Errorf("spawn adapter does not support termination")
 }
 

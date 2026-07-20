@@ -102,7 +102,7 @@ func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
 	reg := mux.MustNewRegistry(a)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
 	owned.graceful = 200 * time.Millisecond
 	return NewLifecycleService(owned, nil)
 }
@@ -259,7 +259,7 @@ func realOwned(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
 	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
 	owned.graceful = 400 * time.Millisecond
 	return owned
 }

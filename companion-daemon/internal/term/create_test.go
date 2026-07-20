@@ -143,7 +143,7 @@ func newTestHandlers(t *testing.T) (*Handlers, *fakeControlledAdapter) {
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	// PA2c: profile creation dispatches through the OwnedPTYRuntime owner
 	// (production parity — app.go always wires lifecycle + owned PTY).
-	owned := NewOwnedPTYRuntime(ctlAdapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
 	h := &Handlers{Registry: reg, Lifecycle: NewLifecycleService(owned, nil)}
 	return h, fa
 }
@@ -315,7 +315,7 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
+	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
 	reg := mux.MustNewRegistry(fa)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, nil),
+	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil),
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
 		t.Fatalf("custom argv err: %v", err)
@@ -358,7 +358,7 @@ func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 		json.RawMessage(`""`),                    // empty string
 	}
 	for _, cmd := range malformed {
-		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(ctlAdapter, nil), localCreateSpec{Command: cmd})
+		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), localCreateSpec{Command: cmd})
 		if err == nil {
 			DeleteRecorder(id)
 			t.Fatalf("command %q accepted, want rejection", string(cmd))

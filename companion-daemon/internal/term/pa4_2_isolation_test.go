@@ -16,7 +16,7 @@ import (
 // ManagedRuntimeCatalog for provider-owned runtimes.
 func TestPA4_2_LifecycleServiceHasNoRegistryDependency(t *testing.T) {
 	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	// Stop routes to OwnedPTYRuntime for nonexistent sessions — returns error, not panic.
@@ -50,7 +50,7 @@ func TestPA4_2_LifecycleStopRoutesThroughProviderOwner(t *testing.T) {
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
 	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	// Wire managed owners — catalog is the sole read path for Epoch derivation.
@@ -92,7 +92,7 @@ func TestPA4_2_LifecycleDeleteClearsTranscript(t *testing.T) {
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
 	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
@@ -151,7 +151,7 @@ func TestPA4_2_ManagedLifecycleNeverUsesRegistryAdapter(t *testing.T) {
 // back to Registry or legacy discovery.
 func TestPA4_2_UnknownSessionFailsClosed(t *testing.T) {
 	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
+	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	// Empty catalog — no managed sessions.
