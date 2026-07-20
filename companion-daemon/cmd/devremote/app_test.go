@@ -1008,3 +1008,34 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 		t.Fatalf("production /api/sessions returned %d", rec.Code)
 	}
 }
+
+// TestPB2a_LinkAttachRoutesReturn404 proves removed link/attach routes return
+// exactly HTTP 404 Not Found.
+func TestPB2a_LinkAttachRoutesReturn404(t *testing.T) {
+	cfg := Config{InsecureLocalOnly: true}
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	srv := httptest.NewServer(app.server.Handler)
+	defer srv.Close()
+
+	routes := []struct{ method, path string }{
+		{"GET", "/api/v2/links"},
+		{"POST", "/api/v2/links"},
+		{"DELETE", "/api/v2/links/some-uuid"},
+		{"POST", "/api/link"},
+		{"POST", "/api/attach"},
+	}
+	for _, rt := range routes {
+		req, _ := http.NewRequest(rt.method, srv.URL+rt.path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", rt.method, rt.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s: got %d, want 404 Not Found", rt.method, rt.path, resp.StatusCode)
+		}
+	}
+}

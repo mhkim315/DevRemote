@@ -123,9 +123,6 @@ type CodexDetector struct{}
 func NewCodexDetector() *CodexDetector { return &CodexDetector{} }
 
 func (d *CodexDetector) Detect(ev DetectionEvidence) AgentIdentity {
-	if ev.ManualLink != nil && ev.ManualLink.AgentKind != "" {
-		return AgentIdentity{Kind: ev.ManualLink.AgentKind, Confidence: 1.0}
-	}
 	confidence := 0.1
 	kind := "unknown"
 	switch strings.ToLower(ev.ProcessName) {

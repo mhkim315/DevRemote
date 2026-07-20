@@ -71,7 +71,6 @@ const (
 	SourceLogFile    AgentEventSource = "log_file"    // unstructured log file
 	SourceScreen     AgentEventSource = "screen"      // terminal screen analysis
 	SourceProcess    AgentEventSource = "process"     // process name/cmdline
-	SourceManualLink AgentEventSource = "manual_link" // user manually linked
 )
 
 // AgentEvent is a normalized agent activity event.

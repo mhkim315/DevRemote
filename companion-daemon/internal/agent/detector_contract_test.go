@@ -14,7 +14,6 @@ func RunDetectorContract(t *testing.T, name string, df DetectorFactory, rf Resol
 		t.Run("Detect_KnownAgent_Codex", func(t *testing.T) { testDetectKnown(t, df, "codex") })
 		t.Run("Detect_FalsePositive", func(t *testing.T) { testDetectFalsePositive(t, df) })
 		t.Run("Detect_LowConfidence", func(t *testing.T) { testDetectLowConf(t, df) })
-		t.Run("Detect_ManualOverride", func(t *testing.T) { testDetectManual(t, df) })
 		t.Run("Resolver_NoLogs", func(t *testing.T) { testResolverNoLogs(t, rf) })
 		t.Run("Resolver_Degraded", func(t *testing.T) { testResolverDegraded(t, rf) })
 		t.Run("Detect_WithLogs", func(t *testing.T) { testDetectWithLogs(t, df, rf) })
@@ -72,21 +71,6 @@ func testDetectLowConf(t *testing.T, df DetectorFactory) {
 	assertConfidenceInvariant(t, id)
 	if id.Confidence > 0.7 {
 		t.Errorf("node alone: confidence %.2f should be <0.7", id.Confidence)
-	}
-}
-
-func testDetectManual(t *testing.T, df DetectorFactory) {
-	d := df(t)
-	id := d.Detect(DetectionEvidence{
-		ProcessName: "unknown_process",
-		ManualLink:  &ManualEvidence{AgentKind: "codex"},
-	})
-	assertConfidenceInvariant(t, id)
-	if id.Kind != "codex" {
-		t.Errorf("manual link: Kind=%q, want codex (manual must override)", id.Kind)
-	}
-	if id.Confidence < 0.9 {
-		t.Errorf("manual link: confidence %.2f < 0.9 (manual should be high confidence)", id.Confidence)
 	}
 }
 
@@ -171,9 +155,6 @@ type mockDetector struct{}
 
 func (d *mockDetector) Detect(ev DetectionEvidence) AgentIdentity {
 	// Manual link has highest priority.
-	if ev.ManualLink != nil && ev.ManualLink.AgentKind != "" {
-		return AgentIdentity{Kind: ev.ManualLink.AgentKind, DisplayName: ev.ManualLink.AgentKind, Confidence: 1.0}
-	}
 
 	confidence := 0.1
 	kind := "unknown"

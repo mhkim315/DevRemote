@@ -50,7 +50,7 @@ var knownEventTypes = map[AgentEventType]bool{
 
 var knownEventSources = map[AgentEventSource]bool{
 	agent.SourceJSONL: true, agent.SourceLogFile: true, agent.SourceScreen: true,
-	agent.SourceProcess: true, agent.SourceManualLink: true,
+	agent.SourceProcess: true,
 }
 
 var knownStatuses = map[AgentStatus]bool{

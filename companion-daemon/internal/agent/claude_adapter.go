@@ -127,9 +127,6 @@ type ClaudeDetector struct{}
 func NewClaudeDetector() *ClaudeDetector { return &ClaudeDetector{} }
 
 func (d *ClaudeDetector) Detect(ev DetectionEvidence) AgentIdentity {
-	if ev.ManualLink != nil && ev.ManualLink.AgentKind != "" {
-		return AgentIdentity{Kind: ev.ManualLink.AgentKind, DisplayName: ev.ManualLink.AgentKind, Confidence: 1.0}
-	}
 
 	confidence := 0.1
 	kind := "unknown"

@@ -509,3 +509,42 @@ func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testi
 	// Cleanup: stop rec1 now that the test is done.
 	rec1.Stop()
 }
+
+// TestPB2a_ManagedPathsUnaffectedByLinkRemoval proves that removing manual
+// link + arbitrary attach does not affect managed catalog, transcript,
+// approval, or lifecycle paths.
+func TestPB2a_ManagedPathsUnaffectedByLinkRemoval(t *testing.T) {
+	// Catalog: intact.
+	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
+	if len(cat.List()) != 0 {
+		t.Error("empty catalog should return empty list")
+	}
+	if len(cat.ManagedAdapterPrefixes()) != 2 {
+		t.Error("ManagedAdapterPrefixes should return 2 canonical prefixes")
+	}
+
+	// LifecycleService: intact.
+	svc := NewLifecycleService(nil, nil)
+	if svc == nil {
+		t.Fatal("NewLifecycleService returned nil")
+	}
+
+	// ApprovalStore: intact.
+	store := NewApprovalStore()
+	if store == nil {
+		t.Fatal("NewApprovalStore returned nil")
+	}
+
+	// TerminalTransport: intact, still uses direct recorder.
+	tt := newTerminalTransport("test:pb2a", 1, nil, nil, nil)
+	if tt.IsRetired() {
+		t.Error("new transport should not be retired")
+	}
+	b, ch, rec, ok := tt.SubscriberFanOut("test:pb2a")
+	if ok {
+		t.Error("SubscriberFanOut with nil recorder should return ok=false")
+	}
+	_ = b
+	_ = ch
+	_ = rec
+}

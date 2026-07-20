@@ -128,7 +128,7 @@ func spawnBoundedAgentFixture(t *testing.T, agentName string) int {
 // anywhere in this test (see TestPA2a_TelemetryInjectedResolver for the
 // separate unit-seam-only test).
 func TestPA2a_TelemetryProductionResolverPositiveControl(t *testing.T) {
- t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
+	t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
@@ -314,13 +314,12 @@ func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
 	// component the removed LinkStore path invoked with a linked external
 	// session id — CAN still resolve this fixture. So the only element
 	// standing between this log and telemetry is the deleted link mechanism.
-	legacyRef, legacyErr := (&AntigravityResolver{}).ResolveLink(context.Background(), agUUID)
-	if legacyErr != nil {
-		t.Fatalf("fixture is not link-equivalent (legacy resolver failed): %v", legacyErr)
-	}
-	if legacyRef.Agent != "antigravity" || legacyRef.Path != transcriptPath {
-		t.Fatalf("legacy resolver ref = %+v, want antigravity at %s", legacyRef, transcriptPath)
-	}
+	// PB.2a: ResolveLink + LinkedLogResolver removed — manual link authority deleted.
+	// The fixture transcript still exists on disk but the link path to reach
+	// it via external session ID is gone. Antigravity sessions are now
+	// discovered only through process scan + agent log resolution.
+	_ = agUUID
+	_ = transcriptPath
 
 	// Live bounded external process, like the Antigravity agent the link
 	// previously bridged: real, alive, but not identifiable by the

@@ -31,23 +31,15 @@ type LogResolver interface {
 	Resolve(evidence DetectionEvidence) (ResolveResult, error)
 }
 
-// ManualEvidence represents a user-provided agent link.
-// Has the highest priority among all evidence sources.
-type ManualEvidence struct {
-	AgentKind string // manually linked agent kind (claude, codex, etc.)
-	LogPath   string // manually linked log path (may be empty)
-}
-
 // DetectionEvidence aggregates observable signals used to identify
 // the agent running in a session.
 type DetectionEvidence struct {
-	ProcessName string          // e.g. "claude", "codex", "node"
-	ProcessArgs []string        // command line arguments
-	CWD         string          // current working directory
-	TermAdapter string          // terminal backend name (tmux, cmux)
-	LogPaths    []LogRef        // pre-resolved logs (from LogResolver)
-	ScreenText  string          // recent terminal screen content (may be empty)
-	ManualLink  *ManualEvidence // user-provided agent link (highest priority)
+	ProcessName string   // e.g. "claude", "codex", "node"
+	ProcessArgs []string // command line arguments
+	CWD         string   // current working directory
+	TermAdapter string   // terminal backend name (tmux, cmux)
+	LogPaths    []LogRef // pre-resolved logs (from LogResolver)
+	ScreenText  string   // recent terminal screen content (may be empty)
 }
 
 // AgentDetector identifies the agent from aggregated evidence.
