@@ -62,8 +62,11 @@ $ grep -rnE "cmux|Cmux|CMUX" scripts/ ../scripts/
 
 ### Packaging
 ```
-$ grep -rnE "cmux|CMUX" scripts/package.sh scripts/install.sh scripts/install-launchagent.sh
-(empty — zero)
+$ ls scripts/package.sh scripts/install.sh companion-daemon/scripts/install-launchagent.sh
+companion-daemon/scripts/install-launchagent.sh  scripts/install.sh  scripts/package.sh
+
+$ grep -rnE "cmux|CMUX" scripts/package.sh scripts/install.sh companion-daemon/scripts/install-launchagent.sh
+(exit 1 — zero matches across all 3 packaging files)
 ```
 
 ## Snapshot Marker Audit
@@ -78,7 +81,7 @@ $ grep -rn "snapshotEndMarker\|deltaMarker\|isDeltaMarker\|drainSnapshot\|Captur
 152 documents contain "cmux" in historical context.
 
 ```
-$ grep -rlc "cmux\|CMUX" docs/ companion-daemon/docs/ | wc -l
+$ grep -rlE "cmux|CMUX" docs/ companion-daemon/docs/ | wc -l
      152
 ```
 
