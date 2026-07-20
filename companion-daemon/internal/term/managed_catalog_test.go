@@ -444,7 +444,7 @@ func TestCatalog_ManagedRowsNotOverwritable(t *testing.T) {
 		{ID: "tmux:legacy", State: "idle", Adapter: "tmux"},
 	}
 
-	out := appendCatalogRows(spoofed, cat, nil)
+	out := appendCatalogRows(spoofed, cat, nil, nil)
 
 	// The legacy "tmux:legacy" row should survive.
 	foundLegacy := false
@@ -477,7 +477,7 @@ func TestCatalog_ManagedRowsNotOverwritable(t *testing.T) {
 	}
 
 	// Control: without catalog, spoofed rows pass through.
-	ctrl := appendCatalogRows(spoofed, nil, nil)
+	ctrl := appendCatalogRows(spoofed, nil, nil, nil)
 	if len(ctrl) != 3 {
 		t.Fatalf("control: expected 3 rows, got %d", len(ctrl))
 	}
@@ -668,7 +668,7 @@ func TestCatalog_DefensiveCopies(t *testing.T) {
 
 func TestAppendCatalogRows_NilCatalog(t *testing.T) {
 	snapshot := []SessionTelemetry{{ID: "tmux:0", State: "idle", Adapter: "tmux"}}
-	out := appendCatalogRows(snapshot, nil, nil)
+	out := appendCatalogRows(snapshot, nil, nil, nil)
 	if len(out) != 1 || out[0].ID != "tmux:0" {
 		t.Fatalf("nil catalog should pass through: %+v", out)
 	}
@@ -678,7 +678,7 @@ func TestAppendCatalogRows_EmptyCatalog(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(8)
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "", "")
 	snapshot := []SessionTelemetry{{ID: "tmux:0", State: "idle", Adapter: "tmux"}}
-	out := appendCatalogRows(snapshot, cat, nil)
+	out := appendCatalogRows(snapshot, cat, nil, nil)
 	if len(out) != 1 || out[0].ID != "tmux:0" {
 		t.Fatalf("empty catalog should pass through: %+v", out)
 	}

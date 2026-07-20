@@ -202,14 +202,14 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.Telemetry != nil {
 		snapshot := mergeLifecycleState(h.Telemetry.Snapshot(reg), h.Lifecycle, reg)
-		snapshot = appendCatalogRows(snapshot, h.Catalog, h.Approvals)
+		snapshot = appendCatalogRows(snapshot, h.Catalog, h.Lifecycle, h.Approvals)
 		json.NewEncoder(w).Encode(snapshot)
 		return
 	}
 	// PA3 Step 6b: Fallback without telemetry service (e.g. tests).
 	// Transcript is canonical for snapshot path.
 	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.AgentDetector), h.Lifecycle, reg)
-	res = appendCatalogRows(res, h.Catalog, h.Approvals)
+	res = appendCatalogRows(res, h.Catalog, h.Lifecycle, h.Approvals)
 	json.NewEncoder(w).Encode(res)
 }
 

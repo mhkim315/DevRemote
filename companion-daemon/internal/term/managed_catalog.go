@@ -270,13 +270,37 @@ func (c *managedRuntimeCatalog) RuntimeOf(sessionID string) (RuntimeRef, bool) {
 	return rt, true
 }
 
+// managedAdapterCapabilities returns the set of adapter-level capabilities
+// for a managed adapter name. These are derived from catalog authority and
+// never depend on mux.Registry. The managed runtime owns its terminal and
+// transcript capture; cmux-only capabilities (screen) are excluded.
+func managedAdapterCapabilities(adapter string) []string {
+	switch adapter {
+	case codexAppServerAdapter, claudeHeadlessAdapter:
+		return []string{"live_stream", "history", "process"}
+	default:
+		return nil
+	}
+}
+
+// managedSessionCapabilities returns session-level capabilities for a
+// managed session. All managed runtimes provide live terminal streaming
+// and transcript history.
+func managedSessionCapabilities() []string {
+	return []string{"live_stream", "history"}
+}
+
 // appendCatalogRows appends managed-session rows built from the catalog
 // to the /api/sessions response. It replaces appendManagedRows and
 // appendClaudeManagedRows with a single catalog-driven projector.
-// Managed identity is authoritative: any snapshot row that collides with
-// a managed canonical ID is dropped so contradictory observer evidence
-// can never overwrite or shadow the managed status.
-func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalog, approvals *AuthoritativeApprovalStore) []SessionTelemetry {
+//
+// PA4.1: Managed identity is authoritative — any snapshot row that
+// collides with a managed canonical ID is dropped so contradictory
+// observer evidence can never overwrite or shadow the managed status.
+// Managed row metadata (capabilities, agent status, lifecycle) is sourced
+// exclusively from ManagedRuntimeCatalog and never falls back to
+// mux.Registry.
+func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalog, lifecycle *LifecycleService, approvals *AuthoritativeApprovalStore) []SessionTelemetry {
 	if catalog == nil {
 		return snapshot
 	}
@@ -306,16 +330,29 @@ func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalo
 		if approvals != nil {
 			safe = approvals.ListSafe(rec.SessionID)
 		}
+
+		// PA4.1: managed lifecycle state from OwnedPTYRuntime (for
+		// controlled_pty) or from the catalog's native status.
+		lifecycleState := ""
+		if lifecycle != nil {
+			if e, ok := lifecycle.OwnedPTY().Get(rec.SessionID); ok {
+				lifecycleState = string(e.State)
+			}
+		}
+
 		out = append(out, SessionTelemetry{
-			ID:          rec.SessionID,
-			DisplayID:   strings.TrimPrefix(rec.SessionID, adapter+":"),
-			State:       string(rec.NativeStatus),
-			Adapter:     adapter,
-			Runner:      rec.Provider,
-			RunnerColor: runnerColor,
-			AgentKind:   rec.Provider,
-			AgentStatus: string(rec.NativeStatus),
-			Approvals:   safe,
+			ID:                  rec.SessionID,
+			DisplayID:           strings.TrimPrefix(rec.SessionID, adapter+":"),
+			State:               string(rec.NativeStatus),
+			Adapter:             adapter,
+			Runner:              rec.Provider,
+			RunnerColor:         runnerColor,
+			AgentKind:           rec.Provider,
+			AgentStatus:         string(rec.NativeStatus),
+			LifecycleState:      lifecycleState,
+			Capabilities:        managedSessionCapabilities(),
+			AdapterCapabilities: managedAdapterCapabilities(adapter),
+			Approvals:           safe,
 		})
 	}
 	return out
