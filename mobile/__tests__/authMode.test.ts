@@ -1,7 +1,7 @@
 // AuthMode enforcement — tests the REAL production deriveTerminalAuth from
 // FeedScreen.tsx, not a copied helper. Proves the switch is authoritative.
 
-import { deriveTerminalAuth } from '../src/lib/authMode';
+import { deriveTerminalAuth, selectAppRoute } from '../src/lib/authMode';
 
 describe('deriveTerminalAuth (production function)', () => {
   it('paired_device → tokenMgr+baseURL, termURI=null (async ticket path)', () => {
@@ -56,4 +56,40 @@ describe('deriveTerminalAuth (production function)', () => {
   // Origin binding: paired_device with a non-HTTPS baseURL is still
   // structurally accepted by deriveTerminalAuth (the TM constructor in App
   // validates the URL). This is tested at the App boot level.
+});
+
+// ── selectAppRoute enforcement ──
+
+describe('selectAppRoute', () => {
+  it('pairing_required + isConnected=true → pairing_required (fail-closed)', () => {
+    const route = selectAppRoute(
+      { mode: 'pairing_required' },
+      { loading: false, session: false, isConnected: true },
+    );
+    expect(route).toBe('pairing_required');
+  });
+
+  it('pairing_required + isConnected=false → pairing_required', () => {
+    const route = selectAppRoute(
+      { mode: 'pairing_required' },
+      { loading: false, session: false, isConnected: false },
+    );
+    expect(route).toBe('pairing_required');
+  });
+
+  it('paired_device + isConnected=true → product', () => {
+    const route = selectAppRoute(
+      { mode: 'paired_device', tokenMgr: {} as any, baseURL: 'https://x' },
+      { loading: false, session: false, isConnected: true },
+    );
+    expect(route).toBe('product');
+  });
+
+  it('paired_device + isConnected=false → device_connect', () => {
+    const route = selectAppRoute(
+      { mode: 'paired_device', tokenMgr: {} as any, baseURL: 'https://x' },
+      { loading: false, session: false, isConnected: false },
+    );
+    expect(route).toBe('device_connect');
+  });
 });
