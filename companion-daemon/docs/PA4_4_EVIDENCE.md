@@ -1,6 +1,6 @@
 # PA4.4 Evidence — Observer Containment
 
-**Implementation SHA:** `a8bf135bfe8d0ea9cc25c13a7e11d51e948718de`
+**Implementation SHA:** `a8bf135bf44c2ed389e8c34ee1db5d84d5369823`
 **PA4.3 Baseline:** `cc53eb5af` (ACCEPTED)
 **PA3 Rollback:** `34d55e950`
 
@@ -20,7 +20,7 @@ lifecycle. Legacy observer paths are contained within legacy routes.
 | 5 | `appendCatalogRows` | Drops colliding + managed-prefix Registry rows (PA4.1) |
 | 6 | `ManagedRuntimeCatalog.Get` | Unknown/non-managed prefix returns (zero, false) |
 
-## 7 PA4.4 Tests (all pass at `-race -count=20`)
+## 6 PA4.4 Tests (all pass at `-race -count=20`)
 
 | # | Test | Proves |
 |---|------|--------|
@@ -30,7 +30,6 @@ lifecycle. Legacy observer paths are contained within legacy routes.
 | 4 | `TestPA4_4_ObserverCannotAlterManagedCatalog` | Observer snapshot dropped, catalog wins |
 | 5 | `TestPA4_4_ScreenTextCannotBecomeManagedStatus` | Status projection uses provider-native API |
 | 6 | `TestPA4_4_ApprovalDeliveryUsesExactProviderIdentity` | Approval uses explicit identity |
-| 7 | (structural) PA4.1 ghost exclusion prevents observer fabrication | Managed prefixes dropped |
 
 ## Gates
 ```
