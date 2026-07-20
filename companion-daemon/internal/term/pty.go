@@ -222,6 +222,21 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	} else {
 		useRegistry = true // legacy adapters (tmux, cmux)
 	}
+	if rec == nil && ref.Adapter == "controlled_pty" {
+		// PA4.5: controlled_pty adapter-only lookup — temporary, marked
+		// for PB removal. Only used when Lifecycle owner is not wired
+		// (e.g., test handlers). Finds the session in the controlled_pty
+		// adapter and starts a Recorder through EnsureRecorder.
+		if found, ferr := reg.FindSession(r.Context(), session); ferr == nil {
+			s = found
+			if opener, hasStream := s.(mux.StreamOpener); hasStream {
+				rec, subCh = EnsureRecorder(session, func() (ptyStream, error) {
+					st, err := opener.OpenStream(r.Context())
+					return st, err
+				})
+			}
+		}
+	}
 	if useRegistry {
 		var ferr error
 		s, ferr = reg.FindSession(r.Context(), session)

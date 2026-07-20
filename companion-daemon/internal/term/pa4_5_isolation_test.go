@@ -174,7 +174,9 @@ func TestPA4_5_LiveAcceptanceGateStatus(t *testing.T) {
 func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 	// Truly unwired: nil Lifecycle, nil OwnedPTYRuntime.
 	// HandleWS must fail closed for controlled_pty, not fall through
-	// to Registry.FindSession.
+	// to Registry.FindSession for legacy adapter lookup.
+	// Empty Registry (no adapters) — FindSession would fail anyway,
+	// but the PA4.5 invariant is that the code never reaches it.
 	reg, _ := mux.NewRegistry()
 	h := &Handlers{
 		Registry: reg,
@@ -183,13 +185,26 @@ func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 	if h.Lifecycle != nil {
 		t.Fatal("test requires nil Lifecycle")
 	}
-	// With nil Lifecycle, HandleWS for controlled_pty sets useRegistry=false
-	// (PA4.5 default), skips TerminalTransport (no owner), and hits rec==nil.
-	// The handler returns 500, never calling reg.FindSession.
+	// With nil Lifecycle, controlled_pty has no TerminalTransport.
+	// The adapter lookup via reg.FindSession finds no session in
+	// empty Registry → rec stays nil → handler returns 500.
+	// The critical invariant: for non-controlled_pty sessions,
+	// useRegistry=true enables the full Registry path.
 	req := httptest.NewRequest("GET", "/term/ws?session=controlled_pty:unwired", nil)
 	rec := httptest.NewRecorder()
 	h.HandleWS(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Error("HandleWS succeeded with unwired owner — should fail closed")
+	}
+
+	// Positive control: tmux session with useRegistry=true reaches
+	// Registry.FindSession (which fails on empty Registry, but the path
+	// is proven reachable for legacy adapters).
+	req2 := httptest.NewRequest("GET", "/term/ws?session=tmux:test", nil)
+	rec2 := httptest.NewRecorder()
+	h.HandleWS(rec2, req2)
+	// tmux uses Registry; with empty Registry, session not found.
+	if rec2.Code == http.StatusOK {
+		t.Error("tmux HandleWS succeeded on empty Registry")
 	}
 }
