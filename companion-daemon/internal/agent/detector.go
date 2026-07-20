@@ -44,7 +44,7 @@ type DetectionEvidence struct {
 	ProcessName string          // e.g. "claude", "codex", "node"
 	ProcessArgs []string        // command line arguments
 	CWD         string          // current working directory
-	TermAdapter string          // terminal backend name (tmux, cmux, localpty)
+	TermAdapter string          // terminal backend name (tmux, cmux)
 	LogPaths    []LogRef        // pre-resolved logs (from LogResolver)
 	ScreenText  string          // recent terminal screen content (may be empty)
 	ManualLink  *ManualEvidence // user-provided agent link (highest priority)

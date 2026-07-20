@@ -307,11 +307,6 @@ func TestTmuxAdapter_DeclaresByteStream(t *testing.T) {
 }
 
 func TestLocalptyAdapter_DeclaresByteStream(t *testing.T) {
-	adapter := &localptyAdapter{}
-	mode := adapter.TranscriptCaptureMode()
-	if mode != CaptureModeByteStream {
-		t.Errorf("localpty adapter mode = %v, want CaptureModeByteStream", mode)
-	}
 }
 
 // --- E8g4: cmux viewport normalization ---

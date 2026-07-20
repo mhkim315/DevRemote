@@ -21,13 +21,13 @@ const (
 	CapInput AdapterCapability = "input"
 
 	// CapLiveTerminal: the adapter supports live xterm WebSocket stream.
-	// Only byte_stream adapters (tmux/localpty) have this.
+	// Only byte_stream adapters (tmux) have this.
 	// screen_snapshot_delta adapters (cmux) do NOT.
 	CapLiveTerminal AdapterCapability = "liveTerminal"
 
 	// CapReliableTranscript: PTY byte-stream-based transcript.
 	// Recorder-owned capture from real PTY deltas.
-	// tmux/localpty have this.
+	// tmux has this.
 	CapReliableTranscript AdapterCapability = "reliableTranscript"
 
 	// CapBestEffortTranscript: screen-snapshot-derived transcript.

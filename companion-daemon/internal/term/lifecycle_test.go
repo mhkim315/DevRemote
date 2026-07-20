@@ -118,7 +118,6 @@ func TestLifecycle_DispatchTable_FailClosed(t *testing.T) {
 	for _, id := range []string{
 		"tmux:e1",        // legacy external adapter
 		"cmux:surface:1", // legacy external adapter
-		"localpty:x",     // legacy external adapter
 		"faketmux:s1",    // unknown adapter (would have passed the old capability gate)
 		"garbage-no-colon",
 	} {

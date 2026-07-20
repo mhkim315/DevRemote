@@ -164,7 +164,6 @@ func TestCatalog_Get_UnknownAndMalformedIDs(t *testing.T) {
 		{"arbitrary text", "just-some-text"},
 		{"malformed with colons", "a:b:c:d"},
 		{"controlled PTY", "controlled_pty:test"},
-		{"localpty", "localpty:shell"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 func TestStatusTaxonomy_EmptyVsUnavailable(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		reg := mux.MustNewRegistry(&emptyAdapter{})
-		h := &Handlers{Registry: reg, }
+		h := &Handlers{Registry: reg}
 		req := httptest.NewRequest("GET", "/api/sessions", nil)
 		rec := httptest.NewRecorder()
 		h.HandleSessionsAPI(rec, req)
@@ -47,7 +47,7 @@ func TestStatusTaxonomy_EmptyVsUnavailable(t *testing.T) {
 	})
 	t.Run("unsupported", func(t *testing.T) {
 		reg := mux.MustNewRegistry(&noCapsAdapter{})
-		h := &Handlers{Registry: reg, }
+		h := &Handlers{Registry: reg}
 		wsReq := httptest.NewRequest("GET", "/term/ws?session=bare:test", nil)
 		wsRec := httptest.NewRecorder()
 		h.HandleWS(wsRec, wsReq)
@@ -64,14 +64,13 @@ func TestCapabilityGolden_AllBackends(t *testing.T) {
 	}{
 		{&capGoldenAdapter{name: "tmux", caps: []string{"live_stream", "screen", "history"}}, []string{"live_stream", "screen", "history"}},
 		{&capGoldenAdapter{name: "cmux", caps: []string{"live_stream", "screen", "history", "process"}}, []string{"live_stream", "screen", "history", "process"}},
-		{&capGoldenAdapter{name: "localpty", caps: []string{"live_stream"}}, []string{"live_stream"}},
 		{&capGoldenAdapter{name: "future", caps: []string{"live_stream"}}, []string{"live_stream"}},
 		{&capGoldenAdapter{name: "legacy", caps: nil}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.adapter.Name(), func(t *testing.T) {
 			reg := mux.MustNewRegistry(tt.adapter)
-			h := &Handlers{Registry: reg, }
+			h := &Handlers{Registry: reg}
 			req := httptest.NewRequest("GET", "/api/sessions", nil)
 			rec := httptest.NewRecorder()
 			h.HandleSessionsAPI(rec, req)
@@ -138,7 +137,7 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 		unavail := &unavailableAdapter{}
 		reg := mux.MustNewRegistry(healthy, unavail)
 		_ = reg.Sessions(context.Background())
-		h := &Handlers{Registry: reg, }
+		h := &Handlers{Registry: reg}
 		req := httptest.NewRequest("GET", "/api/sessions", nil)
 		rec := httptest.NewRecorder()
 		h.HandleSessionsAPI(rec, req)
@@ -168,7 +167,7 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 		// snapshot inspection is required to distinguish them.
 		adapter := &unavailableAdapter{}
 		reg := mux.MustNewRegistry(adapter)
-		h := &Handlers{Registry: reg, }
+		h := &Handlers{Registry: reg}
 		req := httptest.NewRequest("GET", "/api/sessions", nil)
 		rec := httptest.NewRecorder()
 		h.HandleSessionsAPI(rec, req)
@@ -189,11 +188,11 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 
 func TestMobileLegacyCheck_Classification(t *testing.T) {
 	// AgentCard.tsx:86 has: session.adapter !== 'native' — display-only filter.
-	names := []string{"native", "tmux", "cmux", "localpty", "future"}
+	names := []string{"native", "tmux", "cmux", "future"}
 	for _, name := range names {
 		adapter := &capGoldenAdapter{name: name, caps: []string{"live_stream"}}
 		reg := mux.MustNewRegistry(adapter)
-		h := &Handlers{Registry: reg, }
+		h := &Handlers{Registry: reg}
 		req := httptest.NewRequest("GET", "/api/sessions", nil)
 		rec := httptest.NewRecorder()
 		h.HandleSessionsAPI(rec, req)

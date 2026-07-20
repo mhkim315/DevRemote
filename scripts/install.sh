@@ -49,4 +49,4 @@ fi
 
 echo ""
 echo "To start the daemon:"
-echo "  devremote daemon --insecure-local-only --enable-localpty --enable-agent-detection"
+echo "  devremote daemon --insecure-local-only --enable-agent-detection"

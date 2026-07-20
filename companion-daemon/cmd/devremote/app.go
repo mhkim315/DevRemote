@@ -27,7 +27,6 @@ type Config struct {
 	OwnerUUID            string
 	SupabaseProjectRef   string
 	InsecureLocalOnly    bool
-	EnableLocalPTY       bool   // Phase 6: default-off feature flag
 	EnableAgentDetection bool   // Phase A5: default-off agent detection bridge
 	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
 	EnableManagedClaude  bool   // C1D: default-off native managed Claude runtime
@@ -143,11 +142,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	if err := reg.Register(mux.NewTmuxAdapter()); err != nil {
 		return nil, fmt.Errorf("register tmux: %w", err)
-	}
-	if cfg.EnableLocalPTY {
-		if err := reg.Register(mux.NewLocalPTYAdapter()); err != nil {
-			return nil, fmt.Errorf("register localpty: %w", err)
-		}
 	}
 	// PA2d: Controlled PTY adapter is owned by OwnedPTYRuntime for
 	// lifecycle + transport. It remains registered in mux.Registry for

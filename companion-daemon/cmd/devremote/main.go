@@ -60,7 +60,6 @@ func main() {
 	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
 	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
 	insecureLocalOnly := flag.Bool("insecure-local-only", false, "Disable authentication (DANGEROUS)")
-	enableLocalPTY := flag.Bool("enable-localpty", false, "Enable LocalPTY adapter (experimental)")
 	enableAgentDetection := flag.Bool("enable-agent-detection", false, "Enable agent detection bridge (experimental)")
 	enableManagedCodex := flag.Bool("enable-managed-codex", false, "Enable native managed Codex runtime (SP0, experimental)")
 	enableManagedClaude := flag.Bool("enable-managed-claude", false, "Enable native managed Claude runtime (C1D, experimental)")
@@ -76,7 +75,6 @@ func main() {
 		OwnerUUID:            *ownerUUID,
 		SupabaseProjectRef:   *supabaseRef,
 		InsecureLocalOnly:    *insecureLocalOnly,
-		EnableLocalPTY:       *enableLocalPTY,
 		EnableAgentDetection: *enableAgentDetection,
 		EnableManagedCodex:   *enableManagedCodex,
 		EnableManagedClaude:  *enableManagedClaude,

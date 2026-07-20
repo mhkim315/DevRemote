@@ -33,19 +33,6 @@ func TestAdapterCapabilities_Tmux(t *testing.T) {
 	mustNotHave(t, caps, CapManagedLifecycle)
 }
 
-func TestAdapterCapabilities_LocalPTY(t *testing.T) {
-	adapter := &localptyAdapter{}
-	caps := AdapterCapabilities(adapter)
-	mustHave(t, caps, CapObserve)
-	mustHave(t, caps, CapControl)
-	mustHave(t, caps, CapInput)
-	mustHave(t, caps, CapLiveTerminal)
-	mustHave(t, caps, CapReliableTranscript)
-	mustNotHave(t, caps, CapBestEffortTranscript)
-	// Internal/experimental: not advertised as managed for product MVP.
-	mustNotHave(t, caps, CapManagedLifecycle)
-}
-
 func TestAdapterCapabilities_Cmux(t *testing.T) {
 	adapter := &cmuxAdapter{}
 	caps := AdapterCapabilities(adapter)
