@@ -3,6 +3,7 @@
 
 import type { PokitDeviceKey } from '../../modules/pokit-device-key';
 import { toBase64, toHex, fromHex, fromBase64, deviceFingerprint, verifyDer } from './crypto';
+import { sha256 } from '@noble/hashes/sha2.js';
 import * as Crypto from 'expo-crypto';
 import { parsePairingQR } from './qrParser';
 import { ensureLegacyKeyRemoved } from './deviceIdentity';
@@ -127,7 +128,10 @@ export async function conductPairing(
       const hostProofDER = fromHex(p2.hostProof);
       // verifyDer needs the 65-byte uncompressed point (drop 26B SPKI prefix).
       const hostPubPoint = hostPubKeyFromPhase1.length === 91 ? hostPubKeyFromPhase1.subarray(26) : hostPubKeyFromPhase1;
-      if (!verifyDer(hostProofDER, transcript, hostPubPoint)) {
+      // verifyDer expects a pre-hashed (SHA256) message to match the
+      // daemon's Sign(sha256(transcript)).
+      const transcriptHash = sha256(transcript);
+      if (!verifyDer(hostProofDER, transcriptHash, hostPubPoint)) {
         return { status: 'host_proof_invalid' };
       }
     } catch { return { status: 'host_proof_invalid', errorDetail: 'host proof decode failed' }; }

@@ -254,11 +254,13 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	if time.Now().UTC().After(ph.Session.ExpiresAt) {
 		ph.state = pairStateExpired
 		ph.mu.Unlock()
+		log.Printf("PAIR-410-EXPIRED: now=%v expires=%v state=%v", time.Now().UTC(), ph.Session.ExpiresAt, ph.state)
 		http.Error(w, "session expired", http.StatusGone)
 		return
 	}
 	if ph.state != pairStatePending {
 		ph.mu.Unlock()
+		log.Printf("PAIR-410-DUPCANDIDATE: state=%v", ph.state)
 		http.Error(w, "candidate already received", http.StatusGone)
 		return
 	}
@@ -312,6 +314,7 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	ph.mu.Lock()
 	if ph.state != pairStateChallenged {
 		ph.mu.Unlock()
+		log.Printf("PAIR-410-NOCHALLENGE: state=%v", ph.state)
 		http.Error(w, "no challenge in progress", http.StatusGone)
 		return
 	}

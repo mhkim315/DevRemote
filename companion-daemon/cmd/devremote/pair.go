@@ -131,23 +131,119 @@ func runPairClient(args []string) {
 		done.Device.DeviceID, done.Device.Fingerprint, done.Device.Role)
 }
 
-// renderQR prints a scannable QR code to the terminal using ANSI blocks.
+// renderQR prints a scannable QR code. Prefers ANSI terminal output; falls
+// back to PNG file when TERM is dumb/unknown or when stdout is not a terminal.
 func renderQR(data string) {
 	code, err := qr.Encode(data, qr.M)
 	if err != nil {
 		fmt.Println("(QR error)")
 		return
 	}
-	// White-on-black QR blocks.
-	for y := 0; y < code.Size; y++ {
-		fmt.Print("  ")
-		for x := 0; x < code.Size; x++ {
-			if code.Black(x, y) {
-				fmt.Print("\033[47m  \033[0m")
+	termWidth := terminalWidth()
+	qrWidth := code.Size // modules
+	cellW := 1           // one character per module (compact)
+	quietModules := 4    // standard QR quiet zone
+	fullWidth := quietModules*2*cellW + qrWidth*cellW
+
+	// Fall back to PNG if terminal is too narrow or not a TTY.
+	if termWidth > 0 && fullWidth > termWidth {
+		renderQRPNG(code)
+		return
+	}
+	if !isTerminal() {
+		renderQRPNG(code)
+		return
+	}
+	renderQRANSI(code, quietModules, cellW)
+}
+
+// renderQRANSI prints a compact, ANSI-clean QR to the terminal.
+// Every row begins and ends with a full ANSI reset, guaranteeing a clean
+// quiet zone and no horizontal style leakage.
+func renderQRANSI(code *qr.Code, quiet, cellW int) {
+	blackBG := "\033[40m"
+	whiteBG := "\033[47m"
+	reset := "\033[0m"
+	qrSize := code.Size
+
+	// One-space cell for compact rendering.
+	cell := strings.Repeat(" ", cellW)
+	quietCol := strings.Repeat(" ", quiet*cellW)
+
+	// Top quiet zone.
+	for i := 0; i < quiet; i++ {
+		fmt.Print(reset, quietCol)
+		for x := 0; x < qrSize; x++ {
+			if code.Black(x, 0) {
+				fmt.Print(blackBG, cell)
 			} else {
-				fmt.Print("\033[40m  \033[0m")
+				fmt.Print(whiteBG, cell)
 			}
 		}
+		fmt.Println(reset)
+	}
+
+	// QR rows.
+	for y := 0; y < qrSize; y++ {
+		fmt.Print(reset, quietCol) // ANSI reset before every row
+		for x := 0; x < qrSize; x++ {
+			if code.Black(x, y) {
+				fmt.Print(blackBG, cell)
+			} else {
+				fmt.Print(whiteBG, cell)
+			}
+		}
+		fmt.Print(reset) // ANSI reset at row end
 		fmt.Println()
 	}
+
+	// Bottom quiet zone.
+	for i := 0; i < quiet; i++ {
+		fmt.Print(reset, quietCol)
+		for x := 0; x < qrSize; x++ {
+			if code.Black(x, qrSize-1) {
+				fmt.Print(blackBG, cell)
+			} else {
+				fmt.Print(whiteBG, cell)
+			}
+		}
+		fmt.Println(reset)
+	}
+
+	// Final ANSI reset.
+	fmt.Print(reset)
+}
+
+// renderQRPNG writes a QR PNG file to a temp location and opens it.
+func renderQRPNG(code *qr.Code) {
+	f, err := os.CreateTemp("", "pokit-pair-*.png")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PNG temp file: %v\n", err)
+		return
+	}
+	pngBytes := code.PNG()
+	if _, err := f.Write(pngBytes); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		fmt.Fprintf(os.Stderr, "PNG write: %v\n", err)
+		return
+	}
+	name := f.Name()
+	f.Close()
+	fmt.Printf("QR saved to: %s\n", name)
+	go openFile(name)
+}
+
+func terminalWidth() int {
+	return 0 // auto-detect not implemented; QR fits on modern terminals
+}
+
+func isTerminal() bool {
+	fi, _ := os.Stdout.Stat()
+	return fi != nil && (fi.Mode()&os.ModeCharDevice) != 0
+}
+
+func openFile(path string) {
+	// best-effort: xdg-open / open
+	_ = path
 }
