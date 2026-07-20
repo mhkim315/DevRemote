@@ -1,6 +1,6 @@
 # PA4.2 Evidence — Managed Lifecycle and Approval Lookup Isolation
 
-**Implementation SHA:** `ba675493a52ef0a3801a16e3be72f7aed94833c8`
+**Implementation SHA:** `ba675493ac9d7d1c40fc883ffb6e8a7e8d9cd1ff`
 **PA4.1 Baseline:** `2c34101fb` (ACCEPTED)
 **PA3 Rollback:** `34d55e950`
 
@@ -23,7 +23,7 @@ discovery, or raw JSONL.
 | 7 | `approval_ingest.go` | Approval ingest uses explicit provider/session identity | No Registry |
 | 8 | `approval_handler.go` | Approval resolution via `AuthoritativeApprovalStore` | No Registry |
 
-## 7 PA4.2 Tests (all pass at `-race -count=20`)
+## 6 PA4.2 Tests (all pass at `-race -count=20`)
 
 | # | Test | Proves |
 |---|------|--------|
@@ -33,7 +33,6 @@ discovery, or raw JSONL.
 | 4 | `TestPA4_2_ManagedLifecycleNeverUsesRegistryAdapter` | Nil OwnedPTYRuntime → lifecycle still works via catalog |
 | 5 | `TestPA4_2_UnknownSessionFailsClosed` | tmux/cmux sessions fail closed |
 | 6 | `TestPA4_2_ApprovalStoreHasNoRegistryDependency` | ApprovalStore has zero Registry fields |
-| 7 | (implicit) All lifecycle paths verified through existing lifecycle_pa2c_test.go | Provider dispatch, generation gating |
 
 ## Gates
 ```
