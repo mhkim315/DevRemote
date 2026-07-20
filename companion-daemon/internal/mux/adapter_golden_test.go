@@ -16,27 +16,27 @@ func TestCanonicalID_Golden(t *testing.T) {
 		localID  string
 		migrated string // MigrateLegacyID result
 	}{
-		// cmux sessions
-		{input: "cmux:ai", adapter: "cmux", localID: "ai", migrated: "cmux:ai"},
-		{input: "cmux:aider", adapter: "cmux", localID: "aider", migrated: "cmux:aider"},
-		{input: "cmux:cmux-1", adapter: "cmux", localID: "cmux-1", migrated: "cmux:cmux-1"},
-		{input: "cmux:____", adapter: "cmux", localID: "____", migrated: "cmux:____"},
+		// ext adapter sessions
+		{input: "ext:ai", adapter: "ext", localID: "ai", migrated: "ext:ai"},
+		{input: "ext:aider", adapter: "ext", localID: "aider", migrated: "ext:aider"},
+		{input: "ext:ext-1", adapter: "ext", localID: "ext-1", migrated: "ext:ext-1"},
+		{input: "ext:____", adapter: "ext", localID: "____", migrated: "ext:____"},
 
-		// Local ID containing ':' (adapter=cmux, localID="cmux:aider")
-		{input: "cmux:cmux:aider", adapter: "cmux", localID: "cmux:aider", migrated: "cmux:cmux:aider"},
-		{input: "cmux:session:with:colons", adapter: "cmux", localID: "session:with:colons", migrated: "cmux:session:with:colons"},
+		// Local ID containing ':' (adapter=ext, localID="ext:aider")
+		{input: "ext:ext:aider", adapter: "ext", localID: "ext:aider", migrated: "ext:ext:aider"},
+		{input: "ext:session:with:colons", adapter: "ext", localID: "session:with:colons", migrated: "ext:session:with:colons"},
 
 		// Unicode local ID
-		{input: "cmux:한글", adapter: "cmux", localID: "한글", migrated: "cmux:한글"},
-		{input: "cmux:セッション", adapter: "cmux", localID: "セッション", migrated: "cmux:セッション"},
+		{input: "ext:한글", adapter: "ext", localID: "한글", migrated: "ext:한글"},
+		{input: "ext:セッション", adapter: "ext", localID: "セッション", migrated: "ext:セッション"},
 
-		// cmux sessions (canonical)
-		{input: "cmux:1", adapter: "cmux", localID: "1", migrated: "cmux:1"},
-		{input: "cmux:42", adapter: "cmux", localID: "42", migrated: "cmux:42"},
+		// ext adapter sessions (canonical)
+		{input: "ext:1", adapter: "ext", localID: "1", migrated: "ext:1"},
+		{input: "ext:42", adapter: "ext", localID: "42", migrated: "ext:42"},
 
-		// Legacy cmux — ParseSessionID returns numeric localID; MigrateLegacyID canonicalizes
-		{input: "cmux:42", adapter: "cmux", localID: "42", migrated: "cmux:42"},
-		{input: "cmux:1", adapter: "cmux", localID: "1", migrated: "cmux:1"},
+		// Legacy ext — ParseSessionID returns numeric localID; MigrateLegacyID canonicalizes
+		{input: "ext:42", adapter: "ext", localID: "42", migrated: "ext:42"},
+		{input: "ext:1", adapter: "ext", localID: "1", migrated: "ext:1"},
 	}
 
 	for _, tt := range tests {
@@ -74,11 +74,11 @@ func TestCanonicalID_LocalIDWithColon(t *testing.T) {
 		adapter string
 		localID string
 	}{
-		{"cmux:aider", "cmux", "aider"},
-		{"cmux:cmux-1", "cmux", "cmux-1"},
-		{"cmux:session:with:colons", "cmux", "session:with:colons"},
-		{"cmux:cmux:aider", "cmux", "cmux:aider"}, // local part itself has ':'
-		{"cmux:42", "cmux", "42"},
+		{"ext:aider", "ext", "aider"},
+		{"ext:ext-1", "ext", "ext-1"},
+		{"ext:session:with:colons", "ext", "session:with:colons"},
+		{"ext:ext:aider", "ext", "ext:aider"}, // local part itself has ':'
+		{"ext:42", "ext", "42"},
 	}
 
 	for _, tt := range tests {
@@ -99,10 +99,10 @@ func TestCanonicalID_LocalIDWithColon(t *testing.T) {
 
 func TestCanonicalID_Unicode(t *testing.T) {
 	tests := []string{
-		"cmux:한글",
-		"cmux:セッション",
-		"cmux:中文",
-		"cmux:emoji_🎉",
+		"ext:한글",
+		"ext:セッション",
+		"ext:中文",
+		"ext:emoji_🎉",
 	}
 	for _, id := range tests {
 		t.Run(id, func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestCanonicalID_Unicode(t *testing.T) {
 				t.Errorf("RawID is empty for %q", id)
 			}
 			migrated := MigrateLegacyID(id)
-			// Unicode IDs are not migrated (not legacy cmux format).
+			// Unicode IDs are not migrated (not legacy ext format).
 			if migrated != id {
 				t.Errorf("Unicode ID %q was unexpectedly migrated to %q", id, migrated)
 			}

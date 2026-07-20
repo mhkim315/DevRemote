@@ -292,15 +292,15 @@ func (a hangingAdapter) ListSessions(context.Context) ([]mux.Session, error) {
 	return nil, nil
 }
 
-// TestManagedREST_BoundedWhileDiscoveryHangs: with cmux/cmux-style discovery
+// TestManagedREST_BoundedWhileDiscoveryHangs: with external adapter-style discovery
 // BLOCKED (not merely erroring), the dedicated managed list, the native-status
 // get, and a managed create all complete within a bounded time — and a later
 // discovery success does not change the managed status.
 func TestManagedREST_BoundedWhileDiscoveryHangs(t *testing.T) {
 	unblock := make(chan struct{})
 	reg := mux.MustNewRegistry(
-		hangingAdapter{name: "cmux", unblock: unblock},
-		hangingAdapter{name: "cmux2", unblock: unblock},
+		hangingAdapter{name: "ext", unblock: unblock},
+		hangingAdapter{name: "ext2", unblock: unblock},
 	)
 	// Occupy discovery exactly like an observer caller would.
 	discoveryDone := make(chan struct{})

@@ -96,7 +96,7 @@ func TestRegistryDeadlockAndCache(t *testing.T) {
 	}
 
 	// 2. Test legacy migration
-	s2, err := r.FindSession(context.Background(), "cmux:40")
+	s2, err := r.FindSession(context.Background(), "ext1:40")
 	if err == nil {
 		t.Errorf("expected error for non-existent migrated session, got %v", s2)
 	}
@@ -134,41 +134,41 @@ func TestRegistryDeadlockAndCache(t *testing.T) {
 func TestStaleCacheOnFailure(t *testing.T) {
 	t.Parallel()
 
-	cmux := &dummyAdapter{
-		name: "cmux",
+	ext1 := &dummyAdapter{
+		name: "ext1",
 		sessions: []Session{
-			&dummySession{id: "s1", adapter: "cmux"},
-			&dummySession{id: "s2", adapter: "cmux"},
+			&dummySession{id: "s1", adapter: "ext1"},
+			&dummySession{id: "s2", adapter: "ext1"},
 		},
 	}
-	cmux2 := &dummyAdapter{
-		name: "cmux2",
+	ext2 := &dummyAdapter{
+		name: "ext2",
 		sessions: []Session{
-			&dummySession{id: "t1", adapter: "cmux2"},
+			&dummySession{id: "t1", adapter: "ext2"},
 		},
 	}
 
-	r := MustNewRegistry(cmux, cmux2)
+	r := MustNewRegistry(ext1, ext2)
 
-	// 1. Initial success: 2 cmux, 1 cmux2
+	// 1. Initial success: 2 ext1, 1 ext2
 	r.Sessions(context.Background())
 
-	cSnap, _ := r.Snapshot("cmux")
-	tSnap, _ := r.Snapshot("cmux2")
+	cSnap, _ := r.Snapshot("ext1")
+	tSnap, _ := r.Snapshot("ext2")
 
 	if len(cSnap.Sessions) != 2 {
-		t.Fatalf("expected 2 cmux sessions, got %d", len(cSnap.Sessions))
+		t.Fatalf("expected 2 ext1 sessions, got %d", len(cSnap.Sessions))
 	}
 	if len(tSnap.Sessions) != 1 {
-		t.Fatalf("expected 1 cmux2 session, got %d", len(tSnap.Sessions))
+		t.Fatalf("expected 1 ext2 session, got %d", len(tSnap.Sessions))
 	}
 
-	// 2. Refresh fails for cmux, another still succeeds
-	cmux.mu.Lock()
-	cmux.err = fmt.Errorf("socket connection failed")
-	cmux.mu.Unlock()
+	// 2. Refresh fails for ext1, another still succeeds
+	ext1.mu.Lock()
+	ext1.err = fmt.Errorf("socket connection failed")
+	ext1.mu.Unlock()
 
-	refreshed, refreshErr := r.Refresh(context.Background(), "cmux", true)
+	refreshed, refreshErr := r.Refresh(context.Background(), "ext1", true)
 	if refreshErr == nil {
 		t.Fatal("expected forced refresh to return the adapter error")
 	}
@@ -176,35 +176,35 @@ func TestStaleCacheOnFailure(t *testing.T) {
 		t.Fatalf("expected forced refresh to return 2 stale sessions, got %d", len(refreshed.Sessions))
 	}
 
-	cmuxSnap, _ := r.Snapshot("cmux")
-	cmux2Snap, _ := r.Snapshot("cmux2")
+	ext1Snap, _ := r.Snapshot("ext1")
+	ext2Snap, _ := r.Snapshot("ext2")
 
-	if len(cmuxSnap.Sessions) != 2 {
-		t.Fatalf("expected stale cache to retain 2 cmux sessions, got %d", len(cmuxSnap.Sessions))
+	if len(ext1Snap.Sessions) != 2 {
+		t.Fatalf("expected stale cache to retain 2 ext1 sessions, got %d", len(ext1Snap.Sessions))
 	}
-	if cmuxSnap.LastError == nil {
-		t.Fatalf("expected cmux to record LastError, got nil")
+	if ext1Snap.LastError == nil {
+		t.Fatalf("expected ext1 to record LastError, got nil")
 	}
-	if len(cmux2Snap.Sessions) != 1 {
-		t.Fatalf("cmux2 should be unaffected, expected 1 session, got %d", len(cmux2Snap.Sessions))
+	if len(ext2Snap.Sessions) != 1 {
+		t.Fatalf("ext2 should be unaffected, expected 1 session, got %d", len(ext2Snap.Sessions))
 	}
 
 	// 3. Refresh succeeds but returns 0 sessions
-	cmux.mu.Lock()
-	cmux.err = nil
-	cmux.sessions = []Session{}
-	cmux.mu.Unlock()
+	ext1.mu.Lock()
+	ext1.err = nil
+	ext1.sessions = []Session{}
+	ext1.mu.Unlock()
 
 	r.Invalidate()
 	r.Sessions(context.Background())
 
-	cmuxSnap2, _ := r.Snapshot("cmux")
+	ext1Snap2, _ := r.Snapshot("ext1")
 
-	if len(cmuxSnap2.Sessions) != 0 {
-		t.Fatalf("expected cache to update to 0 cmux sessions, got %d", len(cmuxSnap2.Sessions))
+	if len(ext1Snap2.Sessions) != 0 {
+		t.Fatalf("expected cache to update to 0 ext1 sessions, got %d", len(ext1Snap2.Sessions))
 	}
-	if cmuxSnap2.LastError != nil {
-		t.Fatalf("expected no LastError, got %v", cmuxSnap2.LastError)
+	if ext1Snap2.LastError != nil {
+		t.Fatalf("expected no LastError, got %v", ext1Snap2.LastError)
 	}
 }
 
@@ -213,17 +213,17 @@ func TestRegistrySessionsStableOrder(t *testing.T) {
 
 	registry := MustNewRegistry(
 		&dummyAdapter{
-			name: "cmux",
+			name: "ext1",
 			sessions: []Session{
-				&dummySession{id: "surface:9", adapter: "cmux"},
-				&dummySession{id: "surface:1", adapter: "cmux"},
+				&dummySession{id: "surface:9", adapter: "ext1"},
+				&dummySession{id: "surface:1", adapter: "ext1"},
 			},
 		},
 		&dummyAdapter{
-			name: "cmux2",
+			name: "ext2",
 			sessions: []Session{
-				&dummySession{id: "zeta", adapter: "cmux2"},
-				&dummySession{id: "alpha", adapter: "cmux2"},
+				&dummySession{id: "zeta", adapter: "ext2"},
+				&dummySession{id: "alpha", adapter: "ext2"},
 			},
 		},
 	)
@@ -233,7 +233,7 @@ func TestRegistrySessionsStableOrder(t *testing.T) {
 	for _, s := range sessions {
 		got = append(got, s.AdapterName()+":"+s.ID())
 	}
-	want := []string{"cmux2:alpha", "cmux2:zeta", "cmux:surface:1", "cmux:surface:9"}
+	want := []string{"ext1:surface:1", "ext1:surface:9", "ext2:alpha", "ext2:zeta"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("sessions order = %v, want %v", got, want)
 	}

@@ -168,13 +168,13 @@ func TestManagedREST_SpoofedDiscoveryCannotOverwrite(t *testing.T) {
 	}
 }
 
-// TestManagedREST_FailingDiscoveryIsolation: failing cmux/cmux-style adapters
+// TestManagedREST_FailingDiscoveryIsolation: failing external adapter-style adapters
 // (and a spoofing one) do not affect managed create/list/get/status.
 func TestManagedREST_FailingDiscoveryIsolation(t *testing.T) {
 	managed, id := createManagedForAPI(t)
 	reg := mux.MustNewRegistry(
-		failingAdapter{name: "cmux"},
-		failingAdapter{name: "cmux2"},
+		failingAdapter{name: "ext"},
+		failingAdapter{name: "ext2"},
 	)
 	h := &Handlers{Registry: reg, Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
