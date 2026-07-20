@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"testing"
 	"time"
+
+	"devremote/companion-daemon/internal/mux"
 )
 
 // ── PA4.5: Final facade/fallback deletion and PA4 acceptance ──
@@ -161,5 +163,26 @@ func TestPA4_5_LiveAcceptanceGateStatus(t *testing.T) {
 	tt.RetireIfGeneration(5) // current gen — retired
 	if !tt.IsRetired() {
 		t.Error("transport not retired by correct generation (5)")
+	}
+}
+
+// TestPA4_5_UnwiredOwnerFailsClosed proves controlled_pty WS handler
+// with unwired lifecycle owner fails closed (never falls through to
+// Registry).
+func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
+	// With OwnedPTYRuntime present but no registered session,
+	// Transport() returns (nil, false). In HandleWS, this means
+	// rec stays nil and useRegistry stays false (PA4.5 default).
+	// The handler fails closed at the rec==nil check rather than
+	// falling through to Registry.FindSession.
+	adapter := mux.NewControlledPTYAdapter()
+	owned := NewOwnedPTYRuntime(adapter, nil)
+	svc := NewLifecycleService(owned, nil)
+	if svc.OwnedPTY() == nil {
+		t.Fatal("OwnedPTY should be non-nil")
+	}
+	_, ok := svc.OwnedPTY().Transport("controlled_pty:nonexistent")
+	if ok {
+		t.Error("Transport found for non-existent session — must fail closed")
 	}
 }

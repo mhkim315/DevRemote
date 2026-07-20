@@ -205,12 +205,11 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// TerminalTransport is the sole transport authority. When the
 	// lifecycle owner is not wired or the transport is unavailable,
 	// fail closed — no Registry session lookup for managed paths.
-	useRegistry := true
+	useRegistry := false
 	var transportBootstrap []byte
 
 	if ref.Adapter == "controlled_pty" {
 		if h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
-			useRegistry = false // managed path — never fall back
 			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
 				bootstrap, liveCh, hasRec := transport.SubscriberFanOut(session)
 				if hasRec {
@@ -220,9 +219,8 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				}
 			}
 		}
-		// If TerminalTransport is unavailable (no recorder, no transport),
-		// fail closed below at the rec == nil check rather than falling
-		// through to Registry.
+	} else {
+		useRegistry = true // legacy adapters (tmux, cmux)
 	}
 	if useRegistry {
 		var ferr error
