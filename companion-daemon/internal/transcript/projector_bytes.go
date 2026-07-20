@@ -18,7 +18,7 @@ import (
 //   - Alternate-screen/TUI bursts → terminal_ui_omitted marker, never flatten.
 //   - Repeated ordinary log lines are preserved (no global dedup).
 //   - Terminal input → explicit content-free boundary (echo privacy).
-//   - Capture mode routes snapshot/cmux to separate degraded path.
+//   - Capture mode routes snapshot to separate degraded path.
 type ByteStreamProjector struct {
 	mu sync.Mutex
 

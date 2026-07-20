@@ -18,7 +18,6 @@ type TranscriptCaptureMode int
 const (
 	CaptureModeUnsupported TranscriptCaptureMode = iota
 	CaptureModeByteStream
-	CaptureModeScreenSnapshotDelta
 )
 
 // TranscriptCaptureProvider is an optional adapter capability.

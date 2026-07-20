@@ -11,7 +11,7 @@ import {
 
 const MANAGED = { adapterCapabilities: ['observe', 'liveTerminal', 'reliableTranscript', 'input', 'control', 'managedLifecycle'] };
 const EXTERNAL_ADAPTER = { adapterCapabilities: ['observe', 'liveTerminal', 'reliableTranscript', 'input', 'control'] };
-const OBSERVE_ONLY_CMUX = { adapterCapabilities: ['observe', 'bestEffortTranscript'] };
+const OBSERVE_ONLY = { adapterCapabilities: ['observe', 'bestEffortTranscript'] };
 
 describe('readCapabilities', () => {
   it('reads managedLifecycle + input independently for controlled_pty', () => {
@@ -20,8 +20,8 @@ describe('readCapabilities', () => {
   it('external adapter is NOT managed but keeps input', () => {
     expect(readCapabilities(EXTERNAL_ADAPTER)).toEqual({ managed: false, inputCapable: true });
   });
-  it('observe-only cmux is neither managed nor input-capable', () => {
-    expect(readCapabilities(OBSERVE_ONLY_CMUX)).toEqual({ managed: false, inputCapable: false });
+  it('observe-only is neither managed nor input-capable', () => {
+    expect(readCapabilities(OBSERVE_ONLY)).toEqual({ managed: false, inputCapable: false });
   });
   it('fails closed for missing/legacy/unknown capabilities', () => {
     expect(readCapabilities(undefined)).toEqual({ managed: false, inputCapable: false });

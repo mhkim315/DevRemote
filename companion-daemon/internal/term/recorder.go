@@ -360,18 +360,17 @@ func (r *Recorder) Bootstrap() []byte {
 	return out
 }
 
-// snapshotEndMarker is a sentinel appended by cmux adapter after each
+// snapshotEndMarker removed in PB.4
 // full-screen snapshot. It is an invalid SGR sequence that no real
 // terminal output would contain. xterm.js ignores unknown SGR codes.
 var snapshotEndMarker = []byte("\x1b[9999m")
 
-// deltaMarker prefixes cmux delta frames. ESC[9998m is an invalid SGR
+// deltaMarker removed in PB.4. ESC[9998m is an invalid SGR
 // code — xterm.js ignores it. Recorder strips it before output capture.
 var deltaMarker = []byte("\x1b[9998m")
 
 // resolveCaptureMode is a future hook for per-adapter capture behavior.
 // Currently returns CaptureModeByteStream (legacy default).
-// Actual cmux behavior is enforced by sentinel detection in readLoop.
 func resolveCaptureMode(sessionID string) string {
 	return "byte_stream"
 }
@@ -426,7 +425,7 @@ func (r *Recorder) drainSnapshot(buf []byte) {
 			r.broadcast(chunk)
 		case <-deadline:
 			// Safety: no marker found within timeout — not a real
-			// cmux snapshot. Resume normal append behavior.
+			// PB.4: cmux snapshot path removed
 			log.Printf("RECORDER drainSnapshot timeout session=%s", r.sessionID)
 			return
 		case <-r.ctx.Done():
@@ -548,7 +547,7 @@ func DeleteRecorderIfSame(sessionID string, rec *Recorder) {
 	r.Stop()
 }
 
-// WriteInput sends input to the PTY stream. Used for cmux stream-only input fallback.
+// WriteInput sends input to the PTY stream.
 func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)
 }
@@ -560,7 +559,7 @@ func (r *Recorder) Resize(rows, cols int) error {
 }
 
 // GetSize returns the underlying PTY's current geometry, if the stream
-// supports it (native PTY sessions do; cmux streams do not). ok is false
+// supports it. ok is false
 // when the size is unavailable.
 func (r *Recorder) GetSize() (rows, cols int, ok bool) {
 	if s, isSizer := r.stream.(interface {
@@ -573,12 +572,12 @@ func (r *Recorder) GetSize() (rows, cols int, ok bool) {
 	return 0, 0, false
 }
 
-// isClearScreenSnapshot reports whether payload starts with the cmux
+// isClearScreenSnapshot reports whether payload is an ANSI clear-screen.
 // full-screen redraw header (ESC[2J ESC[H). Normal PTY output may contain
 // ESC[H (cursor home) alone, which must NOT trigger snapshot drain.
 // ESC[2J (clear screen) immediately followed by ESC[H (cursor home) is
 func isClearScreenSnapshot(payload []byte) bool {
-	// cmux header: ESC [ 2 J ESC [ H = 7 bytes
+	// ANSI clear-screen: ESC [ 2 J ESC [ H = 7 bytes
 	if len(payload) < 7 {
 		return false
 	}

@@ -61,9 +61,7 @@ func AdapterCapabilities(adapter Adapter) []AdapterCapability {
 		switch cp.TranscriptCaptureMode() {
 		case CaptureModeByteStream:
 			caps = append(caps, CapLiveTerminal, CapReliableTranscript, CapInput, CapControl)
-		case CaptureModeScreenSnapshotDelta:
-			caps = append(caps, CapBestEffortTranscript)
-			// No CapLiveTerminal, no CapReliableTranscript, no CapControl, no CapInput.
+
 		case CaptureModeUnsupported:
 			// observe only.
 		}

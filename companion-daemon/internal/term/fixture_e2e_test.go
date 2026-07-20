@@ -16,7 +16,7 @@ import (
 )
 
 // Phase 5 E2E: fixture adapter at HTTP/WS/telemetry/mobile boundaries.
-// 0 cmux/cmux changes. All state mutations provable.
+// 0 adapter changes. All state mutations provable.
 
 // --- Adapter ---
 
@@ -323,7 +323,7 @@ func TestFixtureE2E_Resize(t *testing.T) {
 	// Resize is client-side only in this architecture.
 	// xterm.js handles resize in the browser; there is no server-side
 	// /term/size Go handler (not in app.go, not in pty.go). This is
-	// true for cmux and cmux as well — it's an architectural choice,
+	// true for all adapters as well — it's an architectural choice,
 	// not a fixture limitation.
 	//
 	// The TerminalStream interface supports Resize and the fixture
@@ -444,7 +444,7 @@ func TestFixtureE2E_MobileSchema(t *testing.T) {
 		}
 	}
 
-	// Verify adapter value is "fixture" (not empty, not hardcoded cmux/cmux).
+	// Verify adapter value is "fixture" (not empty, not hardcoded).
 	if !strings.Contains(raw, `"fixture"`) {
 		t.Error("mobile schema: JSON does not contain adapter name 'fixture'")
 	}
@@ -487,52 +487,7 @@ func TestFixtureE2E_AdapterCapabilitiesInAPI(t *testing.T) {
 	}
 }
 
-// cmuxE2EAdapter returns a minimal cmux adapter for API testing.
-func cmuxE2EHandlers(t *testing.T) *Handlers {
-	t.Helper()
-	adapter := &cmuxSnapshotAdapter{}
-	reg := mux.MustNewRegistry(adapter)
-	return &Handlers{Registry: reg}
-}
-
-func TestCmuxE2E_AdapterCapabilitiesExcludesLiveTerminal(t *testing.T) {
-	h := cmuxE2EHandlers(t)
-	req := httptest.NewRequest("GET", "/api/sessions", nil)
-	rec := httptest.NewRecorder()
-	h.HandleSessionsAPI(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var sessions []SessionTelemetry
-	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	if len(sessions) == 0 {
-		t.Fatal("no sessions returned")
-	}
-	for _, s := range sessions {
-		has := func(cap string) bool {
-			for _, c := range s.AdapterCapabilities {
-				if c == cap {
-					return true
-				}
-			}
-			return false
-		}
-		if has("liveTerminal") {
-			t.Errorf("cmux session %s: must NOT have liveTerminal", s.ID)
-		}
-		if has("reliableTranscript") {
-			t.Errorf("cmux session %s: must NOT have reliableTranscript", s.ID)
-		}
-		if !has("bestEffortTranscript") {
-			t.Errorf("cmux session %s: missing bestEffortTranscript", s.ID)
-		}
-	}
-}
-
-// --- E10: command/cwd API boundary test ---
+// cmuxE2EAdapter returns a minimal cmux adapter for API testing.// --- E10: command/cwd API boundary test ---
 
 func TestE10_CommandCwdReachesCreateOptions(t *testing.T) {
 	// Use controlled_pty adapter which respects Command/CWD.

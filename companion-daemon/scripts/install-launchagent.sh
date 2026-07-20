@@ -49,9 +49,9 @@ cat >"$PLIST_PATH.tmp" <<EOF
     <key>HOME</key>
     <string>$HOME</string>
     <key>PATH</key>
-    <string>/Applications/cmux.app/Contents/Resources/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>CMUX_SOCKET_PATH</key>
-    <string>$HOME/.local/state/cmux/cmux.sock</string>
+    <string>/Applications/pokit.app/Contents/Resources/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>POKIT_SOCKET_PATH</key>
+    <string>$HOME/.local/state/pokit/pokit.sock</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

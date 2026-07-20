@@ -73,7 +73,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// Legacy shape (client-supplied id + optional command). controlled_pty
 		// command execution runs an arbitrary `bash -c` and is a privileged
 		// LOCAL operation over the 0600 socket — never over the tunnel-reachable
-		// HTTP listener. Other adapters (cmux) keep their existing create
+		// HTTP listener. Other adapters keep their existing create
 		// behavior; they do not run an arbitrary shell for the caller.
 		ref := sessionid.ParseSessionID(req.ID)
 		if err := ref.Validate(); err != nil {
@@ -238,15 +238,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-		if adapter, ok := reg.Adapter(s.AdapterName()); ok {
-			if cp, ok := adapter.(mux.TranscriptCaptureProvider); ok &&
-				cp.TranscriptCaptureMode() == mux.CaptureModeScreenSnapshotDelta {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotImplemented)
-				w.Write([]byte(`{"error":"unsupported","detail":"cmux uses screen snapshots. Live terminal is disabled for this adapter. Use Transcript tab for captured output."}`))
-				return
-			}
-		}
+
 		opener, hasStream := s.(mux.StreamOpener)
 		if !hasStream {
 			w.Header().Set("Content-Type", "application/json")

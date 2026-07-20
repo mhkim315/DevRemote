@@ -64,7 +64,7 @@ const (
 	// SourceByteStream: projected from Recorder PTY byte chunks.
 	SourceByteStream SegmentSource = "byte_stream"
 
-	// SourceSnapshot: projected from cmux screen snapshot delta (degraded).
+	// SourceSnapshot: projected from screen snapshot (degraded — PB.4 removed).
 	SourceSnapshot SegmentSource = "snapshot_delta"
 
 	// SourceUnknown: source could not be determined.

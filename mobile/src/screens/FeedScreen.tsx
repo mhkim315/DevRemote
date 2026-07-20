@@ -80,7 +80,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
-  // E8g5: adapter-level capability. cmux lacks liveTerminal.
+  // E8g5: adapter-level capability. observe-only adapters lack liveTerminal.
   const supportsLiveTerminal = !!(sessionData?.adapterCapabilities?.includes('liveTerminal'));
   const isBestEffortTranscript = !!(sessionData?.adapterCapabilities?.includes('bestEffortTranscript'));
   const sessionDataRef = useRef(sessionData);
@@ -777,7 +777,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
 
         {/* PA3 Step 1: Transcript Mode — sole read-only history. */}
         <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
-          {/* E8g6: show observe/degraded state for best-effort transcript (cmux). */}
+          {/* E8g6: show observe/degraded state for best-effort transcript. */}
           {isBestEffortTranscript && (
             <View style={[styles.transcriptInfo, {backgroundColor: '#1a1a0a'}]}>
               <Text style={styles.transcriptInfoText}>Best-effort transcript — screen snapshot based. May show duplicates.</Text>
@@ -849,7 +849,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         {/* M3b (BLOCKER 4): input (keystrokes + macros) is gated by the policy for
             EVERY session — never a non-managed bypass. External adapters that
             declare `input` keep input; observe-only/unknown/view-only
-            (cmux, missing/unknown capabilities) never show input or macros. */}
+            (missing/unknown capabilities) never show input or macros. */}
         {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && (
         <>
         <View style={styles.macroContainer}>
