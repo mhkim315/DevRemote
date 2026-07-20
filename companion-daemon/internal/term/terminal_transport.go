@@ -35,7 +35,7 @@ type TerminalTransport struct {
 
 	// subscriberFanOutHook is an optional test hook called inside the
 	// RLock critical section after recorder capture and before unlock.
-	// nil means no-op. Set only via SetSubscriberFanOutHook.
+	// nil means no-op. Set directly from same-package tests only.
 	subscriberFanOutHook func()
 }
 
@@ -99,14 +99,6 @@ func (t *TerminalTransport) Resize(rows, cols int) error {
 		return nil // retired — fail closed
 	}
 	return r.Resize(rows, cols)
-}
-
-// SetSubscriberFanOutHook sets a test-only hook called inside the
-// SubscriberFanOut RLock critical section. Must NOT call Retire or
-// any method that acquires this transport's Lock (self-deadlock).
-// Pass nil to clear. For use in tests only.
-func (t *TerminalTransport) SetSubscriberFanOutHook(fn func()) {
-	t.subscriberFanOutHook = fn
 }
 
 // SubscriberFanOut returns a bootstrap snapshot, live subscriber channel, and

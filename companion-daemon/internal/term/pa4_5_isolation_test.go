@@ -384,10 +384,10 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 	// Channel to signal that goroutine A is inside the RLock.
 	insideLock := make(chan struct{})
 	hookContinue := make(chan struct{})
-	tt.SetSubscriberFanOutHook(func() {
+	tt.subscriberFanOutHook = func() {
 		close(insideLock) // signal: A holds RLock
 		<-hookContinue    // wait: main gives permission to finish
-	})
+	}
 
 	subDone := make(chan struct{})
 	retireDone := make(chan struct{})
