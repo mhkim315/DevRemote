@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"devremote/companion-daemon/internal/models"
@@ -158,25 +157,6 @@ func sortTelemetry(items []SessionTelemetry) {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].ID < items[j].ID
 	})
-}
-
-// normalizeEventType maps legacy parser types to common AgentEventType.
-// PA3 Step 2 note: retained until legacy parsers are deleted in Step 6.
-func normalizeEventType(e *models.AgentEvent) {
-	switch e.Type {
-	case "user":
-		e.Type = "user_message"
-	case "tool_use":
-		e.Type = "tool_call_started"
-	case "tool_result":
-		e.Type = "tool_call_finished"
-	case "message":
-		if strings.Contains(e.Summary, "Thinking") || strings.Contains(e.Summary, "Reasoning") {
-			e.Type = "thinking"
-		} else {
-			e.Type = "assistant_message"
-		}
-	}
 }
 
 func collectProcessSnapshots(ctx context.Context, adapters []mux.Adapter) (map[string]models.ProcessInfo, map[string]bool, map[string]bool) {
