@@ -1,38 +1,76 @@
 # PB.5a Evidence — Managed PTY Spawn Seam Independence
 
-**PB.5a IMPL SHA:** `2fe4cbedf`
+**PB.5a IMPL SHA:** `981b74e81`
 **PA4 ACCEPT SHA:** `74560edd`
 
-## Boundary Design
+## 5a/5b Split
 
-`ManagedPTYLauncher` is a narrow platform-neutral interface in `internal/term/pty_launcher.go`:
+| Wave | Scope | Status |
+|------|-------|--------|
+| PB.5a | V1 launcher boundary (`pty_launcher_v1.go`) | COMPLETE |
+| PB.5b | OwnedPTYRuntime rewrite + old launcher deletion | PENDING |
+
+PB.5a delivers the mux-free launcher design. PB.5b integrates it into OwnedPTYRuntime.
+
+## V1 Launcher Boundary (`pty_launcher_v1.go`)
+
+### ManagedPTYLauncherV1 — Spawn only (line 37-41)
 
 ```
-type ManagedPTYLauncher interface {
-    Name() string
-    CreateSessionAndCapture(ctx, opts) (localID, Session, error)
-    CreateSession(ctx, opts) (string, error)
-    ListSessions(ctx) ([]Session, error)
-    CompareAndTerminate(ctx, canonicalID, expected) error
-    TerminateSession(ctx, localID) error
+type ManagedPTYLauncherV1 interface {
+    Spawn(ctx context.Context, cfg SpawnConfig) (PTYHandle, error)
 }
 ```
 
-Does NOT expose: registry, discovery, adapter selection, legacy list/get APIs.
+Single method. No Name, no List, no Terminate, no CompareAndTerminate. Zero mux types.
 
-## Zero-Registry Proof
+### PTYHandle — platform-neutral interface (line 28-35)
 
-Managed spawn paths (Create → createWithCapture) call only ManagedPTYLauncher methods:
-- `launcher.CreateSessionAndCapture()` replaces `sci.CreateSessionAndCapture()`
-- `launcher.CompareAndTerminate()` replaces `sit.CompareAndTerminate()`
-- `launcher.TerminateSession()` replaces `term.TerminateSession()`
+```
+type PTYHandle interface {
+    Resize(rows, cols int) error
+    Write(p []byte) (int, error)
+    Wait() error
+    Signal(sig syscall.Signal) error
+    Close() error
+}
+```
 
-`o.spawn` field changed from `mux.Adapter` to `ManagedPTYLauncher`.
-All type assertions to mux interfaces removed from owned_pty_runtime.go.
+Pure Go interface. No mux.Session, no adapter name, no registry.
+
+### SpawnConfig (line 16-27)
+
+```
+type SpawnConfig struct {
+    Name, Command string
+    Args          []string
+    Executable    string
+    CWD           string
+    Env           []string
+    Rows, Cols    int
+}
+```
+
+Plain struct. No mux types.
+
+## Zero Mux Imports
+
+```
+$ grep -c "mux\." internal/term/pty_launcher_v1.go
+0
+```
+
+Zero mux references in the V1 launcher file.
+
+## Transitional State
+
+The old `pty_launcher.go` (with mux wrapper) still serves OwnedPTYRuntime during transition. It will be deleted in PB.5b when OwnedPTYRuntime is rewritten to use ManagedPTYLauncherV1 + PTYHandle directly.
 
 ## Gates
+
 ```
 go build ./...                     exit 0
 go vet ./...                       exit 0
-go test -race ./... -count=1       ALL PASS (12 packages)
+gofmt -d .                         clean
+go test -race ./... -count=1       ALL PASS (11 packages)
 ```
