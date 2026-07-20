@@ -31,6 +31,8 @@ and never falls back to mux.Registry or legacy adapter session lookup.
 | 4 | `TestPA4_3_RetireIsIdempotent` | Multiple Retire calls safe |
 | 5 | `TestPA4_3_WriteInputFailClosed` | Nil writer silently drops input |
 | 6 | `TestPA4_3_NewTerminalTransportAssignsGeneration` | Constructor stores exact generation |
+| 7 | `TestPA4_3_SubscriberFanOutRetiredRejected` | Retired transport fan-out rejected |
+| 8 | `TestPA4_3_SubscriberFanOutWrongSessionRejected` | Wrong sessionID fan-out rejected |
 
 ## Gates
 ```
