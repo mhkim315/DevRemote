@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"syscall"
 	"sync"
+	"syscall"
 	"time"
 
 	"devremote/companion-daemon/internal/sessionid"
@@ -89,9 +89,9 @@ type CatalogEntry struct {
 // per-session action locks; no lock is held across process signalling or
 // waits.
 type OwnedPTYRuntime struct {
-	spawn      ManagedPTYLauncherV1  // PB.5b: narrow platform-neutral launcher (no mux.Adapter dependency)
-	transcript *transcript.Service // T3: cleared on Delete
-	status     StatusClearer       // S1: cleared on Delete
+	spawn      ManagedPTYLauncherV1 // PB.5b: narrow platform-neutral launcher (no mux.Adapter dependency)
+	transcript *transcript.Service  // T3: cleared on Delete
+	status     StatusClearer        // S1: cleared on Delete
 	graceful   time.Duration
 	killGrace  time.Duration
 
@@ -177,8 +177,8 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 		// PA3 Step 6a R2: capture exact Session + Recorder from existing entry.
 		oldCap = &GenerationCleanupCapability{
 			Generation:  existing.Generation,
-			Session:     existing.ptyHandle,  // exact adapter session identity from CatalogEntry
-			Recorder:    existing.recorder, // instance-guarded Recorder
+			Session:     existing.ptyHandle, // exact adapter session identity from CatalogEntry
+			Recorder:    existing.recorder,  // instance-guarded Recorder
 			Transport:   existing.transport,
 			CanonicalID: canonicalID,
 			LocalID:     sessionid.ParseSessionID(canonicalID).LocalID,
@@ -522,7 +522,8 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	var proceed bool
 	var current LifecycleState
 	var found, stale bool
-	var ph PTYHandle; var capturedRec *Recorder
+	var ph PTYHandle
+	var capturedRec *Recorder
 	if force {
 		proceed, current, found, stale, ph, capturedRec = o.requestKill(id, gen)
 	} else {
@@ -544,7 +545,9 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	// lookup that a replacement could have redirected.
 	if ph != nil {
 		var sig syscall.Signal = syscall.SIGTERM
-		if force { sig = syscall.SIGKILL }
+		if force {
+			sig = syscall.SIGKILL
+		}
 		if err := ph.Signal(sig); err != nil {
 			log.Printf("owned pty %s %s: signal error: %v", action, id, err)
 		}

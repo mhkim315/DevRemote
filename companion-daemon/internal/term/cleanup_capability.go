@@ -3,7 +3,6 @@ package term
 import (
 	"context"
 	"sync"
-
 )
 
 // PA3 Step 6: GenerationCleanupCapability — immutable generation-bound cleanup.
