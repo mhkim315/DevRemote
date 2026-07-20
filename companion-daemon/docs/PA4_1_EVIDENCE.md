@@ -70,10 +70,6 @@ ok  devremote/companion-daemon/internal/watcher  2.083s
 (exit 0)
 ```
 
-### `git rev-parse HEAD`
-
-### `git rev-parse origin/feature/phase10-multi-adapter`
-```
 80ca889c9be4dc9762c1b4b23c9cf97ec7962e0c
 (matches HEAD — upstream equality confirmed)
 ```
@@ -84,4 +80,11 @@ ok  devremote/companion-daemon/internal/watcher  2.083s
 ### `git status --short`
 ```
 (clean worktree)
+```
+
+### HEAD == upstream
+```
+Verified by external release-verification agent.
+Enclosing evidence commit equals origin/feature/phase10-multi-adapter.
+Worktree clean.
 ```
