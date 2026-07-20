@@ -1,6 +1,6 @@
 # PB.3 Evidence — Tmux Adapter Removal
 
-**PB.3 IMPL SHA:** `93c31b0f0`
+**PB.3 IMPL SHA:** `b4e485314` (R2: mobile + gofmt)
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## Consumer Inventory
@@ -52,6 +52,12 @@ $ grep -rnE "tmux|Tmux|TMUX" ../mobile/src/
 ```
 $ grep -rnE "tmux|Tmux|TMUX" ../scripts/ scripts/
 (empty — zero)
+```
+
+### Packaging
+```
+$ grep -rnE "tmux|Tmux|TMUX" ../docs/ | grep -iv "superseded|historical|heritage|frozen"
+(only in historical/superseded documentation — zero active references)
 ```
 
 ## Gates
