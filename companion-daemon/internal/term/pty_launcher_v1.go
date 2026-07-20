@@ -35,7 +35,7 @@ type PTYHandle interface {
 }
 
 // ManagedPTYLauncherV1 is the narrow PB.5b target interface.
-// Single method: Spawn. No mux types, no legacy list/get APIs.
+// Separate from the transitional ManagedPTYLauncher in pty_launcher.go.
 type ManagedPTYLauncherV1 interface {
 	Spawn(ctx context.Context, cfg SpawnConfig) (PTYHandle, error)
 }
@@ -82,6 +82,8 @@ func (h *ptyHandleImpl) Wait() error {
 	_, err := h.cmd.Process.Wait()
 	return err
 }
+
+func (l *ptyLauncher) Name() string { return "controlled_pty" }
 
 func (l *ptyLauncher) Spawn(ctx context.Context, cfg SpawnConfig) (PTYHandle, error) {
 	var cmd *exec.Cmd
@@ -135,4 +137,28 @@ func (l *ptyLauncher) Spawn(ctx context.Context, cfg SpawnConfig) (PTYHandle, er
 	}()
 
 	return h, nil
+}
+
+func (l *ptyLauncher) List(ctx context.Context) ([]PTYHandle, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]PTYHandle, 0, len(l.sessions))
+	for _, h := range l.sessions {
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+func (l *ptyLauncher) Terminate(ctx context.Context, localID string, force bool) error {
+	l.mu.Lock()
+	h, ok := l.sessions[localID]
+	l.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+	var sig syscall.Signal = syscall.SIGTERM
+	if force {
+		sig = syscall.SIGKILL
+	}
+	return h.Signal(sig)
 }
