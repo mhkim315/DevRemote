@@ -6,18 +6,34 @@
 
 ## Zero Consumers Proof
 
+### Control (proves pattern matches)
 ```
-$ grep -rn "localpty|LocalPTY|EnableLocalPTY|enable-localpty" --include='*.go' . | grep -v "_test.go" | grep -v "testdata"
-(NONE)
-
-$ grep -rn "localpty|LocalPTY|EnableLocalPTY|enable-localpty" --include='*_test.go' .
-(NONE)
-
-$ grep -rn "localpty|LocalPTY|enable-localpty" ../mobile/src/ ../scripts/ scripts/
-(NONE)
+$ printf "localpty" | grep -E "localpty|LocalPTY"
+localpty
+(exit 0 — pattern correctly matches)
 ```
 
-**Zero localpty consumers across all surfaces.**
+### Production code
+```
+$ grep -rnE "localpty|LocalPTY|EnableLocalPTY|enable-localpty" \
+    --include='*.go' . | grep -v "_test.go" | grep -v "testdata"
+(empty — zero production references)
+```
+
+### Test code
+```
+$ grep -rnE "localpty|LocalPTY|EnableLocalPTY|enable-localpty" \
+    --include='*_test.go' .
+(empty — zero test references)
+```
+
+### Mobile, scripts, packaging
+```
+$ grep -rnE "localpty|LocalPTY|enable-localpty" ../mobile/src/ ../scripts/ scripts/
+(empty — zero mobile/script references)
+```
+
+**Zero localpty consumers confirmed across all surfaces. Control proves pattern is valid.**
 
 ## Shared Primitive Extraction
 
