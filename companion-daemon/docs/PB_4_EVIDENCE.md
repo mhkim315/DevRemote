@@ -62,8 +62,8 @@ $ grep -rnE "cmux|Cmux|CMUX" scripts/ ../scripts/
 
 ### Packaging
 ```
-$ grep -rnE "cmux|Cmux|CMUX" ../Makefile ../Dockerfile ../*.nix 2>/dev/null
-(empty — zero — no packaging files exist)
+$ grep -rnE "cmux|CMUX" scripts/package.sh scripts/install.sh scripts/install-launchagent.sh
+(empty — zero)
 ```
 
 ## Snapshot Marker Audit
@@ -75,17 +75,30 @@ $ grep -rn "snapshotEndMarker\|deltaMarker\|isDeltaMarker\|drainSnapshot\|Captur
 
 ## Doc Exclusion List
 
-The following docs contain historical cmux references classified as SUPERSEDED:
+152 documents contain "cmux" in historical context.
+
+```
+$ grep -rlc "cmux\|CMUX" docs/ companion-daemon/docs/ | wc -l
+     152
+```
+
+**Classification:** ALL 152 documents are SUPERSEDED HISTORICAL DOCUMENTS. They document adapter architecture, phase plans, handoffs, and contracts from before cmux removal. Zero production, test, mobile, script, or packaging references remain.
+
+Representative sample (11 of 152):
 
 | Document | Classification |
 |----------|---------------|
-| PB_PA4_CONTRACT.md | Historical — pre-PB.4 plan |
+| ADAPTER_EXPANSION_PLAN.md | Historical — pre-implementation planning |
+| CMUX_DELTA_POC_REPORT.md | Historical — cmux delta POC |
+| CMUX_ROBUSTNESS_IMPLEMENTATION_REVIEW.md | Historical — cmux review |
+| CMUX_SOCKET_STORM_HANDOVER.md | Historical — cmux handover |
+| E8G4_CMUX_TERMINAL_DUP_DIAGNOSIS.md | Historical — cmux diagnosis |
+| PB_EXECUTION_PLAN.md | Historical — PB plan referencing cmux |
 | PB_0_INVENTORY.md | Historical — pre-deletion inventory |
 | PB_4_EVIDENCE.md | This evidence — tracks removal |
-| root docs/PA4_MANAGED_ISOLATION_CONTRACT.md | Historical — frozen PA4 contract |
-| root docs/PB_LEGACY_REMOVAL_CONTRACT.md | Historical — PB plan |
-
-These are not blockers — they document the state before/during removal.
+| PA4_MANAGED_ISOLATION_CONTRACT.md | Historical — frozen PA4 contract |
+| PB_LEGACY_REMOVAL_CONTRACT.md | Historical — PB plan |
+| ... and 142 more | All SUPERSEDED HISTORICAL |
 
 ## Gates
 
