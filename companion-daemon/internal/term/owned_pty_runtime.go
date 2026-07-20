@@ -170,14 +170,9 @@ type ownedCleanup func(ctx context.Context)
 // with GenerationCleanupCapability. Falls back to legacy ownSpawn if the
 // adapter does not implement SessionCreatorWithIdentity.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
-	// PB.5b: invoke V1 launcher as pre-flight validation.
-	// Full lifecycle (recorder, transport, entry) still via createWithCapture.
-	if o.v1Spawn != nil {
-		cfg := SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}
-		if _, err := o.v1Spawn.Spawn(ctx, cfg); err != nil {
-			return "", fmt.Errorf("v1 spawn: %w", err)
-		}
-	}
+	// PB.5b: V1 launcher stored and accessible via o.V1() for direct Spawn.
+	// Creation routes through transitional ManagedPTYLauncher for full lifecycle
+	// (single PTY — no double-spawn).
 	if o.spawn == nil {
 		return "", fmt.Errorf("no spawn launcher")
 	}
