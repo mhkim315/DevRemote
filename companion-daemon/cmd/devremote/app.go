@@ -412,7 +412,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 		serveMux.HandleFunc("POST /api/managed-claude-sessions/{id}/kill", h.AuthMiddleware(h.HandleManagedClaudeSessionKill))
 		serveMux.HandleFunc("DELETE /api/managed-claude-sessions/{id}", h.AuthMiddleware(h.HandleManagedClaudeSessionDelete))
 		serveMux.HandleFunc("/term/ws", h.AuthMiddleware(h.HandleWS))
-		serveMux.HandleFunc("/term/size", h.AuthMiddleware(term.HandleTermSize))
+		serveMux.HandleFunc("/term/size", h.AuthMiddleware(h.HandleTermSize))
 		serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 		serveMux.HandleFunc("/push/register", h.AuthMiddleware(registerPush))
 		serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
@@ -464,7 +464,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleManagedClaudeSessionDelete, devicetrust.PermHistoryDelete))
 		serveMux.HandleFunc("GET /term/ws", h.HandleWSTicketAuth)
 		serveMux.HandleFunc("/term/size",
-			devicetrust.RequirePrincipal(sessionMgr, term.HandleTermSize, devicetrust.PermSessionsRead))
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleTermSize, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("/term/",
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleHTML, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("/push/register",

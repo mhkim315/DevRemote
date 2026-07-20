@@ -240,7 +240,7 @@ func TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup(t *testing
 	tt := newTerminalTransport("controlled_pty:r14-direct", 1, pw, ms, rec)
 
 	// SubscriberFanOut must succeed — uses t.recorder, not GetRecorder.
-	bootstrap, ch, ok := tt.SubscriberFanOut("controlled_pty:r14-direct")
+	bootstrap, ch, _, ok := tt.SubscriberFanOut("controlled_pty:r14-direct")
 	if !ok {
 		t.Fatal("SubscriberFanOut failed — transport should use direct recorder reference, not global registry")
 	}
@@ -273,7 +273,7 @@ func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T
 	tt := newTerminalTransport("controlled_pty:r14-retired-hw", 1, pw, ms, rec)
 
 	// Verify SubscriberFanOut works before retirement.
-	_, ch, ok := tt.SubscriberFanOut("controlled_pty:r14-retired-hw")
+	_, ch, _, ok := tt.SubscriberFanOut("controlled_pty:r14-retired-hw")
 	if !ok {
 		t.Fatal("SubscriberFanOut failed before retirement")
 	}
@@ -331,7 +331,7 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 	tt1 := newTerminalTransport("controlled_pty:r14-stale", 1, pw1, ms1, rec1)
 
 	// Verify gen-1 works.
-	_, ch1, ok := tt1.SubscriberFanOut("controlled_pty:r14-stale")
+	_, ch1, _, ok := tt1.SubscriberFanOut("controlled_pty:r14-stale")
 	if !ok {
 		t.Fatal("gen-1 SubscriberFanOut failed")
 	}
@@ -352,14 +352,14 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 	tt2 := newTerminalTransport("controlled_pty:r14-stale", 2, pw2, ms2, rec2)
 
 	// Gen-2 SubscriberFanOut must succeed.
-	_, ch2, ok := tt2.SubscriberFanOut("controlled_pty:r14-stale")
+	_, ch2, _, ok := tt2.SubscriberFanOut("controlled_pty:r14-stale")
 	if !ok {
 		t.Fatal("gen-2 SubscriberFanOut failed — replacement transport should work")
 	}
 	rec2.Unsubscribe(ch2)
 
 	// Gen-1 SubscriberFanOut must still be denied (retired).
-	_, _, ok = tt1.SubscriberFanOut("controlled_pty:r14-stale")
+	_, _, _, ok = tt1.SubscriberFanOut("controlled_pty:r14-stale")
 	if ok {
 		t.Fatal("gen-1 SubscriberFanOut succeeded after retirement — stale generation bypassed")
 	}

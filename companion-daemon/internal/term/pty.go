@@ -211,9 +211,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	if ref.Adapter == "controlled_pty" {
 		if h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
 			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
-				bootstrap, liveCh, hasRec := transport.SubscriberFanOut(session)
+				bootstrap, liveCh, fanRec, hasRec := transport.SubscriberFanOut(session)
 				if hasRec {
-					rec = transport.Recorder()
+					rec = fanRec
 					transportBootstrap = bootstrap
 					subCh = liveCh
 				}
@@ -794,11 +794,31 @@ func HandleDump(w http.ResponseWriter, r *http.Request) {
 // JSON {"rows":R,"cols":C}. Mobile viewers mirror this so full-width TUIs
 // (e.g. claude drawing to the alternate screen at the PTY width) render
 // without re-wrapping to the phone width.
-func HandleTermSize(w http.ResponseWriter, r *http.Request) {
+// PA4-Final-R16: for controlled_pty, uses exact-generation TerminalTransport
+// geometry. Legacy adapters fall through to global GetRecorder.
+func (h *Handlers) HandleTermSize(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {
 		session = "devremote"
 	}
+
+	ref := sessionid.ParseSessionID(session)
+	if ref.Adapter == "controlled_pty" {
+		if h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
+			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
+				rows, cols, ok := transport.Geom()
+				if ok {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprintf(w, `{"rows":%d,"cols":%d}`, rows, cols)
+					return
+				}
+			}
+		}
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Legacy adapters: global Recorder lookup.
 	rec := GetRecorder(session)
 	if rec == nil {
 		http.Error(w, "session not found", http.StatusNotFound)

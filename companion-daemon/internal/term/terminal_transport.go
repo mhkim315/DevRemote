@@ -104,29 +104,45 @@ func (t *TerminalTransport) Recorder() *Recorder {
 	return t.recorder
 }
 
-// SubscriberFanOut returns a bootstrap snapshot + live subscriber channel
-// from the Recorder. The returned channel is the EXACT channel registered
-// with the Recorder — it must be passed to rec.Unsubscribe(ch) to clean
-// up the subscription. Returns nil, nil, false if no recorder is active.
-// PA4-Final-R14: uses direct recorder reference (no global registry lookup).
-func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch chan []byte, ok bool) {
+// SubscriberFanOut returns a bootstrap snapshot, live subscriber channel, and
+// the direct Recorder reference in a single atomic read. The returned channel
+// is the EXACT channel registered with the Recorder — it must be passed to
+// rec.Unsubscribe(ch) to clean up the subscription.
+// PA4-Final-R16: returns Recorder atomically to eliminate TOCTOU between
+// SubscriberFanOut and Recorder() calls.
+func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte, ch chan []byte, rec *Recorder, ok bool) {
 	// PA4.3: generation gate — retired transports cannot fan out.
 	if t.IsRetired() {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	// Verify sessionID matches this transport's owner.
 	if sessionID != t.sessionID {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
-	// PA4-Final-R14: direct recorder reference, not global registry lookup.
+	// PA4-Final-R16: atomic read — recorder + subscribe in single critical section.
+	t.mu.RLock()
+	r := t.recorder
+	t.mu.RUnlock()
+	if r == nil {
+		return nil, nil, nil, false
+	}
+	bootstrap, ch = r.SubscribeWithBootstrap()
+	return bootstrap, ch, r, true
+}
+
+// Geom returns the PTY geometry from the transport's Recorder, gated by
+// generation. Returns 0, 0, false if retired or no recorder.
+func (t *TerminalTransport) Geom() (rows, cols int, ok bool) {
+	if t.IsRetired() {
+		return 0, 0, false
+	}
 	t.mu.RLock()
 	rec := t.recorder
 	t.mu.RUnlock()
 	if rec == nil {
-		return nil, nil, false
+		return 0, 0, false
 	}
-	bootstrap, ch = rec.SubscribeWithBootstrap()
-	return bootstrap, ch, true
+	return rec.GetSize()
 }
 
 // IsRetired reports whether the transport handle has been superseded.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 )
 
 // IPCServer owns a Unix domain socket listener and its accept goroutine.
@@ -279,7 +280,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, telemetry *TelemetryS
 				cols, _ = strconv.Atoi(fields[1])
 				rows, _ = strconv.Atoi(fields[2])
 			}
-			handleIPCSubscriber(conn, subID, cols, rows)
+			handleIPCSubscriber(conn, subID, cols, rows, lifecycle)
 			return
 		}
 		// Not sub: — process as first legacy header line.
@@ -399,35 +400,84 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, telemetry *TelemetryS
 	}
 }
 
-// handleIPCSubscriber bridges a local terminal to an existing recorder.
-// The terminal is a subscriber — reads from recorder broadcast, writes
-// via WriteInput. No second PTY reader is created.
-func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int) {
+// handleIPCSubscriber bridges a local terminal to an existing recorder via
+// exact-generation TerminalTransport (managed) or global GetRecorder (legacy).
+// PA4-Final-R16: managed paths use transport, never global Recorder lookup.
+func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecycle *LifecycleService) {
+	ref := sessionid.ParseSessionID(sessionID)
+
+	// Managed: route through exact-generation TerminalTransport.
+	if ref.Adapter == "controlled_pty" {
+		if lifecycle == nil || lifecycle.OwnedPTY() == nil {
+			conn.Write([]byte("session not found or recorder not started\n"))
+			return
+		}
+		transport, ok := lifecycle.OwnedPTY().Transport(sessionID)
+		if !ok || transport == nil {
+			conn.Write([]byte("session not found or recorder not started\n"))
+			return
+		}
+		bootstrap, subCh, rec, hasRec := transport.SubscriberFanOut(sessionID)
+		if !hasRec {
+			conn.Write([]byte("session not found or recorder not started\n"))
+			return
+		}
+
+		if cols > 0 && rows > 0 {
+			if err := transport.Resize(rows, cols); err != nil {
+				log.Printf("IPC subscriber resize err session=%s: %v", sessionID, err)
+			}
+		}
+
+		if len(bootstrap) > 0 {
+			conn.Write(bootstrap)
+		}
+		defer rec.Unsubscribe(subCh)
+
+		go func() {
+			for data := range subCh {
+				if _, err := conn.Write(data); err != nil {
+					break
+				}
+			}
+			conn.Close()
+		}()
+
+		ts := GetTranscriptService()
+		buf := make([]byte, 1024)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if n > 0 {
+				if ts != nil {
+					ts.BeginInput(sessionID, time.Now())
+				}
+				transport.WriteInput(buf[:n])
+			}
+		}
+	}
+
+	// Legacy: global Recorder lookup.
 	rec := GetRecorder(sessionID)
 	if rec == nil {
 		conn.Write([]byte("session not found or recorder not started\n"))
 		return
 	}
 
-	// Resize the PTY to the local terminal size before streaming so TUIs
-	// (claude/codex) render at the attaching terminal's width, not the
-	// 80x24 spawn default.
 	if cols > 0 && rows > 0 {
 		if err := rec.Resize(rows, cols); err != nil {
 			log.Printf("IPC subscriber resize err session=%s: %v", sessionID, err)
 		}
 	}
 
-	// E10b: atomic subscribe+bootstrap — no gap, no duplicate.
 	bootstrap, subCh := rec.SubscribeWithBootstrap()
 	if len(bootstrap) > 0 {
 		conn.Write(bootstrap)
 	}
 	defer rec.Unsubscribe(subCh)
 
-	// Recorder broadcast → local stdout. When subCh closes (session ended)
-	// or a write fails, close conn so the read loop below unblocks and the
-	// local client sees EOF — otherwise both sides deadlock on exit.
 	go func() {
 		for data := range subCh {
 			if _, err := conn.Write(data); err != nil {
@@ -437,8 +487,6 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int) {
 		conn.Close()
 	}()
 
-	// Local stdin → recorder WriteInput.
-	// T3: echo privacy — suppress byte-stream projection during input.
 	ts := GetTranscriptService()
 	buf := make([]byte, 1024)
 	for {

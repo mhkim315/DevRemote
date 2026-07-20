@@ -610,7 +610,15 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 			log.Printf("owned pty %s %s: signal error: %v", action, id, terr)
 		}
 	}
-	if !o.awaitExit(id, handle) {
+	// PA4-Final-R16: use captured Recorder from catalog entry, not
+	// global GetRecorder which could resolve a replacement generation.
+	var capturedRec *Recorder
+	o.mu.Lock()
+	if e, ok := o.entries[id]; ok {
+		capturedRec = e.recorder
+	}
+	o.mu.Unlock()
+	if !o.awaitExit(capturedRec, handle) {
 		return LifecycleResult{SessionID: id, Action: action, State: LifecycleStopping}, ErrLifecycleTerminateFailed
 	}
 	o.finalize(id, gen)
@@ -628,8 +636,9 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 // awaitExit waits for confirmed process death (Recorder EOF) up to the
 // graceful timeout; on timeout it escalates to SIGKILL and waits briefly
 // more. A false result means the caller must NOT finalize.
-func (o *OwnedPTYRuntime) awaitExit(id string, mp mux.ManagedProcess) bool {
-	rec := GetRecorder(id)
+// PA4-Final-R16: receives the captured Recorder directly from the catalog
+// entry. Never resolves by session ID via global GetRecorder.
+func (o *OwnedPTYRuntime) awaitExit(rec *Recorder, mp mux.ManagedProcess) bool {
 	if rec == nil {
 		// No runtime recorder to observe (test fake, or already finalized).
 		return true
@@ -641,7 +650,7 @@ func (o *OwnedPTYRuntime) awaitExit(id string, mp mux.ManagedProcess) bool {
 	}
 	if mp != nil {
 		if terr := mp.TerminateGroup(true); terr != nil {
-			log.Printf("owned pty %s: SIGKILL escalation error: %v", id, terr)
+			log.Printf("owned pty: SIGKILL escalation error: %v", terr)
 		}
 	}
 	select {
