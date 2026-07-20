@@ -27,13 +27,55 @@
 | 13 | `TestPA4_1_DefaultConfigEnforcesIsolation` (app) | `NewAppWithDeps`+`EnableManagedCodex` wires non-nil Catalog, hits `/api/sessions` |
 
 ## Gates
+
+### `go build ./... && go vet ./...`
 ```
-go build ./... && go vet ./...        → exit 0
-gofmt -d (changed files)              → clean
-go test -race ./internal/term -run "TestPA4_1_" -count=20 → ok 1.609s
-go test -race ./cmd/devremote -run "TestPA4_1_" -count=5  → ok 1.602s
-go test -race ./internal/term -count=1                     → ok
-git diff --check                      → exit 0
-git rev-parse HEAD                    → 2c34101fb2316f58934e2699e62c21199a39490c
-git status --short                    → clean
+(exit 0)
+```
+
+### `gofmt -d` (all changed files)
+```
+(clean)
+```
+
+### `go test -race ./internal/term -run "TestPA4_1_" -count=20`
+```
+ok  devremote/companion-daemon/internal/term  1.609s
+```
+
+### `go test -race ./cmd/devremote -run "TestPA4_1_" -count=20`
+```
+ok  devremote/companion-daemon/cmd/devremote  2.075s
+```
+
+### `go test -race ./... -count=1`
+```
+ok  devremote/companion-daemon/cmd/devremote  34.209s
+?   devremote/companion-daemon/cmd/signald    [no test files]
+ok  devremote/companion-daemon/internal/agent  3.353s
+ok  devremote/companion-daemon/internal/agent/adapters/claude/v2_1_202  4.655s
+ok  devremote/companion-daemon/internal/agent/adapters/codex/v0_144_1  8.246s
+ok  devremote/companion-daemon/internal/agent/contract  3.254s
+ok  devremote/companion-daemon/internal/devicetrust  4.137s
+?   devremote/companion-daemon/internal/models  [no test files]
+ok  devremote/companion-daemon/internal/mux  6.812s
+ok  devremote/companion-daemon/internal/sessionid  3.633s
+ok  devremote/companion-daemon/internal/term  19.499s
+ok  devremote/companion-daemon/internal/transcript  1.639s
+ok  devremote/companion-daemon/internal/watcher  2.083s
+```
+
+### `git diff --check`
+```
+(exit 0)
+```
+
+### `git rev-parse HEAD`
+```
+afec67b4b8768a022a1c93c1ee2c7be6f60185f9
+```
+
+### `git status --short`
+```
+(clean worktree)
 ```
