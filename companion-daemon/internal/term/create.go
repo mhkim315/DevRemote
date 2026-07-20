@@ -116,7 +116,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), opts, req.ProfileID, req.Name)
+	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, req.ProfileID, req.Name)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")

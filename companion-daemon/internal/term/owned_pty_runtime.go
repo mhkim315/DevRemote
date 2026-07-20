@@ -232,7 +232,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 	cap.Transport = transport
 	cap.Recorder = rec
 
-	if phFound == nil {
+	if sess == nil {
 		DeleteRecorderIfSame(canonicalID, rec)
 		return "", fmt.Errorf("session does not support managed process")
 	}
@@ -276,9 +276,6 @@ func (o *OwnedPTYRuntime) captureSession(ctx context.Context, localID string) (P
 	for _, s := range sessions {
 		if s.ID() == localID {
 			return s, nil
-			if !ok {
-				return nil, fmt.Errorf("session exposes no process control")
-			}
 			return s, nil
 		}
 	}
@@ -291,11 +288,9 @@ func (o *OwnedPTYRuntime) captureSession(ctx context.Context, localID string) (P
 // instance-guarded via DeleteRecorderIfSame.
 func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess PTYHandle, rec *Recorder) ownedCleanup {
 	return func(ctx context.Context) {
-		
-		if !ok {
-			log.Printf("FATAL: owned PTY cleanup for %s: adapter does not support atomic conditional termination", canonicalID)
-			DeleteRecorderIfSame(canonicalID, rec)
-			return
+		localID := sessionid.ParseSessionID(canonicalID).LocalID
+		if err := o.spawn.Terminate(ctx, localID, true); err != nil {
+			log.Printf("owned pty cleanup for %s: terminate error: %v", canonicalID, err)
 		}
 		DeleteRecorderIfSame(canonicalID, rec)
 	}
@@ -322,11 +317,10 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, ph PTYHa
 		State:       LifecycleRunning,
 		StartedAt:   o.now(),
 		Generation:  gen,
-		handle:      handle,
+		ptyHandle:   ph,
 		cleanup:     cleanup,
 		transport:   transport,
 		recorder:    rec,
-		ptyHandle:   sess,
 		cleanupDone: make(chan struct{}),
 	}
 	return gen
@@ -374,10 +368,7 @@ func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string)
 	if phFound == nil {
 		return nil, fmt.Errorf("session not found after create")
 	}
-	_ = s
-	if !ok {
-		return nil, fmt.Errorf("session does not support live streaming")
-	}
+
 	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { return phFound, nil })
 	if rec == nil {
 		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
@@ -531,11 +522,11 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	var proceed bool
 	var current LifecycleState
 	var found, stale bool
-	var capturedRec *Recorder
+	var ph PTYHandle; var capturedRec *Recorder
 	if force {
-		proceed, current, found, stale, handle, capturedRec = o.requestKill(id, gen)
+		proceed, current, found, stale, ph, capturedRec = o.requestKill(id, gen)
 	} else {
-		proceed, current, found, stale, handle, capturedRec = o.beginStop(id, gen)
+		proceed, current, found, stale, ph, capturedRec = o.beginStop(id, gen)
 	}
 	lock.Unlock()
 
@@ -561,7 +552,7 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	// PA4-Final-R17: capturedRec from beginStop/requestKill at the
 	// decisive generation check (under lock). Never re-read entries[id]
 	// after the per-session action lock is released.
-	if !o.awaitExit(capturedRec, handle) {
+	if !o.awaitExit(capturedRec, ph) {
 		return LifecycleResult{SessionID: id, Action: action, State: LifecycleStopping}, ErrLifecycleTerminateFailed
 	}
 	o.finalize(id, gen)
@@ -680,7 +671,7 @@ func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name
 	// Test records carry a recorder-only cleanup (no captured spawn-seam
 	// session instance); it is still generation-claimed like production.
 	cleanup := func(context.Context) { DeleteRecorderIfSame(canonicalID, rec) }
-	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil, rec, nil)
+	gen := o.register(canonicalID, profileID, name, ph, cleanup, nil, rec)
 	o.watchExit(canonicalID, gen, rec)
 	return gen
 }

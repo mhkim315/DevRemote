@@ -139,11 +139,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// production-wired"). WebSocket/input/resize routes through
 	// TerminalTransport for controlled_pty; the Registry path is a
 	// fallback for legacy callers.
-	ctlAdapter := mux.NewControlledPTYAdapter()
-	if err := reg.Register(ctlAdapter); err != nil {
-		return nil, fmt.Errorf("register controlled_pty: %w", err)
-	}
-
 	cmds := deps.Cmds
 	if cmds == nil {
 		cmds = term.NewCommandBroker()
@@ -166,11 +161,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
 	// Registry dependency. Provider owners are wired below once constructed.
-	launcher, err := term.NewControlledPTYLauncher(ctlAdapter)
-	if err != nil {
-		return nil, fmt.Errorf("controlled PTY launcher: %w", err)
-	}
-	ownedPTY := term.NewOwnedPTYRuntime(launcher, transcriptSvc)
+	ownedPTY := term.NewOwnedPTYRuntime(term.NewPTYLauncher(), transcriptSvc)
 	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
