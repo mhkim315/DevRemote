@@ -1,86 +1,89 @@
 # PA4.1 Evidence — Managed REST/list/get/status Isolation
 
-**Implementation SHA:** `d58c9bed4de3964cc59ebbf626d9f6bab3dc9fdf`
+**Implementation SHA:** `204e28c1afac8a3f281ed16f4bdfc1b5161e1f1d`
 **Contract:** `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` §4.1
 **Rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
 
-**R3:** Removed dead capability helpers; lifecycle test verifies ManagedCapabilities contract + lifecycle integration; stale-generation test carries explicit generation-bearing Registry evidence; default-config test exercises production composition via HandleSessionsV2 with catalog+lifecycle wired.
+## Changes Summary
 
-**R2:** Ghost exclusion (managed-prefix Registry rows dropped), catalog-carried
-capabilities via `ManagedCapabilities`/`ManagedAdapterPrefixes` contract methods,
-8 focused tests covering all required scenarios.
+| # | File | Change |
+|---|------|--------|
+| 1 | `managed_catalog.go` | `ManagedAdapterPrefixes()` — always returns canonical managed prefixes for ghost exclusion |
+| 2 | `managed_catalog.go` | `ManagedCapabilities(adapter)` — catalog-carried authoritative capability sets |
+| 3 | `managed_catalog.go` | `appendCatalogRows` — drops managed-prefix Registry ghosts, queries catalog for capabilities |
+| 4 | `telemetry.go` | `HandleSessionsV2` passes `LifecycleService` to `appendCatalogRows` (2 call sites) |
+| 5 | `lifecycle_pa2c_test.go` | `fakeManagedCatalog` implements new interface methods |
+| 6 | `pa4_1_isolation_test.go` | 12 focused isolation tests |
 
-## Migrated Call Sites
+## 12 PA4.1 Tests (all pass at `-race -count=20`)
 
-| # | File:Line | Change |
-|---|-----------|--------|
-| 1 | `managed_catalog.go:303` | `appendCatalogRows` now accepts `*LifecycleService`; populates `Capabilities`, `AdapterCapabilities`, `LifecycleState` from catalog authority |
-| 2 | `managed_catalog.go:280-295` | New `managedAdapterCapabilities()` / `managedSessionCapabilities()` — static capability sets for managed adapters, never consult Registry |
-| 3 | `telemetry.go:205` | `HandleSessionsV2` telemetry path passes `h.Lifecycle` to `appendCatalogRows` |
-| 4 | `telemetry.go:212` | `HandleSessionsV2` fallback path passes `h.Lifecycle` to `appendCatalogRows` |
-| 5 | `managed_catalog_test.go` (4 sites) | Updated `appendCatalogRows` callers with `nil` lifecycle param |
+| # | Test | Proves |
+|---|------|--------|
+| 1 | `TestPA4_1_RegistryCodexPrefixGhostExcluded` | Registry-only Codex-prefix row excluded without catalog record |
+| 2 | `TestPA4_1_RegistryClaudePrefixGhostExcluded` | Registry-only Claude-prefix row excluded without catalog record |
+| 3 | `TestPA4_1_RegistryControlledPTYPrefixGhostExcluded` | Legacy controlled_pty rows without managed prefix survive |
+| 4 | `TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle` | ManagedCapabilities contract + nil/non-nil lifecycle integration |
+| 5 | `TestPA4_1_RegistryMetadataCannotOverrideCatalog` | Registry screen/tmux metadata cannot override catalog |
+| 6 | `TestPA4_1_StaleGenerationNotResurrectedThroughRegistry` | Catalog Epoch gate: stale Epoch 0 rejected, current Epoch 2 authoritative |
+| 7 | `TestPA4_1_DefaultConfigEnforcesIsolation` | Production composition via HandleSessionsV2 with catalog+lifecycle+Registry |
+| 8 | `TestPA4_1_LegacyNonManagedRegistryBehaviorUnchanged` | tmux/cmux legacy rows pass through unmodified |
+| 9 | `TestPA4_1_AppendCatalogDropsCollidingRegistryRows` | Managed ID collision → Registry dropped, catalog wins |
+| 10 | `TestPA4_1_HandleSessionsV2BothProviders` | Both Codex and Claude rows appear via HandleSessionsV2 |
+| 11 | `TestPA4_1_NilCatalogNoPanic` | Nil catalog handled gracefully |
+| 12 | `TestPA4_1_ConcurrentCatalogListIsolation` | Concurrent register + list never corrupts projection |
 
 ## Gate Output
 
-### Command: `go build ./... && go vet ./...`
+### `go build ./... && go vet ./...`
 ```
 (exit 0)
 ```
 
-### Command: `go test -race ./internal/term -run "TestPA4_1_" -count=20`
+### `gofmt -d internal/term/pa4_1_isolation_test.go internal/term/managed_catalog.go`
 ```
-ok  	devremote/companion-daemon/internal/term	1.470s
-(all 7 tests × 20 iterations PASS)
-```
-
-### Command: `go test -race ./internal/term ./internal/transcript ./internal/mux ./internal/agent -count=1`
-```
-ok  	devremote/companion-daemon/internal/term	17.490s
-ok  	devremote/companion-daemon/internal/transcript	1.550s
-ok  	devremote/companion-daemon/internal/mux	6.998s
-ok  	devremote/companion-daemon/internal/agent	2.495s
+(exit 0 — clean)
 ```
 
-### Command: `git diff --check`
+### `go test -race ./internal/term -run "TestPA4_1_" -count=20`
 ```
-(exit 0)
-```
-
-### Command: `git rev-parse HEAD`
-```
-7866d993db71a10fa9566ef37756316c78956b0d
+ok  devremote/companion-daemon/internal/term  1.726s
 ```
 
-### Command: `git status --short`
+### `go test -race ./internal/term -count=1`
+```
+ok  devremote/companion-daemon/internal/term  16.692s
+```
+
+### `go test -race ./... -count=1`
+```
+ok  devremote/companion-daemon/cmd/devremote
+ok  devremote/companion-daemon/internal/agent
+ok  devremote/companion-daemon/internal/mux
+ok  devremote/companion-daemon/internal/term
+ok  devremote/companion-daemon/internal/transcript
+(all packages pass)
+```
+
+### `git diff --check`
+```
+(exit 0 — clean)
+```
+
+### `git rev-parse HEAD`
+```
+204e28c1afac8a3f281ed16f4bdfc1b5161e1f1d
+```
+
+### `git status --short`
 ```
 (clean worktree)
 ```
 
-## PA4.1 Test Results
+## Preserved (Unchanged)
 
-| Test | Assertion | Result |
-|------|-----------|--------|
-| `TestPA4_1_AppendCatalogDropsCollidingRegistryRows` | Registry rows with managed canonical IDs are dropped; catalog row is authoritative | PASS |
-| `TestPA4_1_AppendCatalogProvidesCapabilities` | Managed catalog rows include AdapterCapabilities and session Capabilities from catalog | PASS |
-| `TestPA4_1_HandleSessionsV2ManagedOnly` | When only managed sessions exist, HandleSessionsV2 returns them through catalog | PASS |
-| `TestPA4_1_HandleSessionsV2BothProviders` | Both Codex and Claude managed rows appear with correct adapter-specific metadata | PASS |
-| `TestPA4_1_NilCatalogNoPanic` | Nil catalog handled gracefully (no panic) | PASS |
-| `TestPA4_1_MalformedIDFailsClosed` | Unknown adapter prefix rows excluded | PASS |
-| `TestPA4_1_ConcurrentCatalogListIsolation` | Concurrent register + list operations never corrupt projection | PASS |
-
-## Production Files Modified
-
-| File | Lines | Nature |
-|------|-------|--------|
-| `internal/term/managed_catalog.go` | +42/−7 | Enhanced `appendCatalogRows` + capability helpers |
-| `internal/term/telemetry.go` | +2/−2 | Pass `LifecycleService` to `appendCatalogRows` |
-| `internal/term/managed_catalog_test.go` | +4/−4 | Updated test callers |
-| `internal/term/pa4_1_isolation_test.go` | +247 new | 7 focused isolation tests |
-
-## Preserved (Verified Unchanged)
-
-- `recorder.go`, `service.go`, `chunk_queue.go` — PA3 Closeout A/B/C mechanisms
+- `recorder.go`, `service.go`, `chunk_queue.go` — PA3 Closeout mechanisms
 - `telemetry_service.go` — accepted adapter path
 - `create.go`, `pty.go` — session creation + WebSocket
 - `app.go` — adapter registration (PB territory)
 - All legacy adapter files (tmux, cmux, localpty)
+- Closeout A-D contracts
