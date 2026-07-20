@@ -2,6 +2,8 @@ package term
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -170,19 +172,24 @@ func TestPA4_5_LiveAcceptanceGateStatus(t *testing.T) {
 // with unwired lifecycle owner fails closed (never falls through to
 // Registry).
 func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
-	// With OwnedPTYRuntime present but no registered session,
-	// Transport() returns (nil, false). In HandleWS, this means
-	// rec stays nil and useRegistry stays false (PA4.5 default).
-	// The handler fails closed at the rec==nil check rather than
-	// falling through to Registry.FindSession.
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(adapter, nil)
-	svc := NewLifecycleService(owned, nil)
-	if svc.OwnedPTY() == nil {
-		t.Fatal("OwnedPTY should be non-nil")
+	// Truly unwired: nil Lifecycle, nil OwnedPTYRuntime.
+	// HandleWS must fail closed for controlled_pty, not fall through
+	// to Registry.FindSession.
+	reg, _ := mux.NewRegistry()
+	h := &Handlers{
+		Registry: reg,
+		// Lifecycle: nil (truly unwired owner)
 	}
-	_, ok := svc.OwnedPTY().Transport("controlled_pty:nonexistent")
-	if ok {
-		t.Error("Transport found for non-existent session — must fail closed")
+	if h.Lifecycle != nil {
+		t.Fatal("test requires nil Lifecycle")
+	}
+	// With nil Lifecycle, HandleWS for controlled_pty sets useRegistry=false
+	// (PA4.5 default), skips TerminalTransport (no owner), and hits rec==nil.
+	// The handler returns 500, never calling reg.FindSession.
+	req := httptest.NewRequest("GET", "/term/ws?session=controlled_pty:unwired", nil)
+	rec := httptest.NewRecorder()
+	h.HandleWS(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Error("HandleWS succeeded with unwired owner — should fail closed")
 	}
 }
