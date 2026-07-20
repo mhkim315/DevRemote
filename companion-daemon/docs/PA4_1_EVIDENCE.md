@@ -1,6 +1,6 @@
 # PA4.1 Evidence — Managed REST/list/get/status Isolation
 
-**Implementation SHA:** `6ca3dceddd4bc532de23f377a042eaece088c407`
+**Implementation SHA:** `e0d831d99f68eff2192ed1e287aaf43944d0e5b5`
 **Contract:** `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` §4.1
 **Rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
 
