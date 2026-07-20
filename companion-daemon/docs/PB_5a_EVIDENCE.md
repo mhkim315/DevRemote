@@ -73,4 +73,7 @@ go build ./...                     exit 0
 go vet ./...                       exit 0
 gofmt -d .                         clean
 go test -race ./... -count=1       ALL PASS (11 packages)
+go test -race ./internal/term -run "TestPA4_" -count=20  PASS
+cd mobile && npx tsc --noEmit      clean
+cd mobile && npx jest              451/451 pass, 34 suites
 ```
