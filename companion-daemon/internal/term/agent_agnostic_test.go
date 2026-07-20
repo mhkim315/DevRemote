@@ -76,7 +76,7 @@ func TestAgnostic_DegradedState(t *testing.T) {
 
 	// Degraded terminal session must still appear in API.
 	reg := mux.MustNewRegistry(&agnosticAdapter{})
-	h := &Handlers{Registry: reg, }
+	h := &Handlers{Registry: reg}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -115,7 +115,7 @@ func TestAgnostic_SchemaEvolution(t *testing.T) {
 func TestAgnostic_TerminalUnaffectedByAgentLayer(t *testing.T) {
 	// Terminal sessions must appear regardless of agent state.
 	reg := mux.MustNewRegistry(&agnosticAdapter{})
-	h := &Handlers{Registry: reg, }
+	h := &Handlers{Registry: reg}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)

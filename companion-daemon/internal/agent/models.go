@@ -67,10 +67,10 @@ const (
 type AgentEventSource string
 
 const (
-	SourceJSONL      AgentEventSource = "jsonl"       // structured log (JSONL file)
-	SourceLogFile    AgentEventSource = "log_file"    // unstructured log file
-	SourceScreen     AgentEventSource = "screen"      // terminal screen analysis
-	SourceProcess    AgentEventSource = "process"     // process name/cmdline
+	SourceJSONL   AgentEventSource = "jsonl"    // structured log (JSONL file)
+	SourceLogFile AgentEventSource = "log_file" // unstructured log file
+	SourceScreen  AgentEventSource = "screen"   // terminal screen analysis
+	SourceProcess AgentEventSource = "process"  // process name/cmdline
 )
 
 // AgentEvent is a normalized agent activity event.

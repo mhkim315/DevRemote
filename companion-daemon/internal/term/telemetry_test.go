@@ -290,7 +290,7 @@ func TestPA2a_TelemetryInjectedResolver(t *testing.T) {
 // legacy per-UUID resolver serves, plus a live bounded external process that
 // the process scan cannot identify — is NO LONGER resolved by the production
 // telemetry path. Before PA2a the LinkStore bridged this gap (session →
-// linked externalSessionID → ResolveLink); that mechanism is deleted, so the
+// linked externalSessionID); that mechanism is deleted (PB.2a), so the
 // fixture must stay unresolved (intended feature deletion, not a PA3
 // regression).
 func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
@@ -314,7 +314,7 @@ func TestPA2a_TelemetryAntigravityLinkOnlyFixtureNotResolved(t *testing.T) {
 	// component the removed LinkStore path invoked with a linked external
 	// session id — CAN still resolve this fixture. So the only element
 	// standing between this log and telemetry is the deleted link mechanism.
-	// PB.2a: ResolveLink + LinkedLogResolver removed — manual link authority deleted.
+	// PB.2a: manual link authority deleted — link-based resolution is gone.
 	// The fixture transcript still exists on disk but the link path to reach
 	// it via external session ID is gone. Antigravity sessions are now
 	// discovered only through process scan + agent log resolution.

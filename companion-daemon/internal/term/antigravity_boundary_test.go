@@ -19,7 +19,7 @@ import (
 // Antigravity actual-log fixtures reach /api/sessions.Events
 // through the same production telemetry path as Claude/Codex.
 func TestAntigravityTelemetry_ProductionBoundary(t *testing.T) {
- t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
+	t.Skip("PA3 Step 2: legacy parser removed; accepted-adapter feeds Transcript, not EventStore")
 	// Create a temp Antigravity JSONL log with real fixture event types.
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "transcript.jsonl")
