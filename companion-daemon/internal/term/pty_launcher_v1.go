@@ -19,7 +19,6 @@ type SpawnConfig struct {
 }
 
 type PTYHandle interface {
-	ID() string
 	Resize(rows, cols int) error
 	Write(p []byte) (int, error)
 	Wait() error
@@ -58,7 +57,6 @@ type v1Handle struct {
 	sess mux.Session
 }
 
-func (h *v1Handle) ID() string { return h.sess.ID() }
 func (h *v1Handle) Resize(rows, cols int) error {
 	type r interface{ Resize(int, int) error }
 	if rr, ok := h.sess.(r); ok {

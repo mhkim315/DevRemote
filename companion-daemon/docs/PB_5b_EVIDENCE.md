@@ -1,6 +1,6 @@
 # PB.5b Evidence — V1 Launcher Wired
 
-**PB.5b IMPL SHA:** TBD (fill after commit)
+**PB.5b IMPL SHA:** TBD
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## V1 Wiring
@@ -34,5 +34,5 @@ Zero mux types in the V1 interface. Bridge implementation uses mux internally.
 go build ./...                     exit 0
 go vet ./...                       exit 0
 gofmt -d .                         clean
-go test -race ./... -count=1       ALL PASS (11 packages)
+go test -race ./... -count=1       ALL PASS (11 packages, 12 with doctor)
 ```
