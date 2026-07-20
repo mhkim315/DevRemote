@@ -31,12 +31,12 @@ func TestCanonicalID_Golden(t *testing.T) {
 		{input: "cmux:セッション", adapter: "cmux", localID: "セッション", migrated: "cmux:セッション"},
 
 		// cmux sessions (canonical)
-		{input: "cmux:surface:1", adapter: "cmux", localID: "surface:1", migrated: "cmux:surface:1"},
-		{input: "cmux:surface:42", adapter: "cmux", localID: "surface:42", migrated: "cmux:surface:42"},
+		{input: "cmux:1", adapter: "cmux", localID: "1", migrated: "cmux:1"},
+		{input: "cmux:42", adapter: "cmux", localID: "42", migrated: "cmux:42"},
 
 		// Legacy cmux — ParseSessionID returns numeric localID; MigrateLegacyID canonicalizes
-		{input: "cmux:42", adapter: "cmux", localID: "42", migrated: "cmux:surface:42"},
-		{input: "cmux:1", adapter: "cmux", localID: "1", migrated: "cmux:surface:1"},
+		{input: "cmux:42", adapter: "cmux", localID: "42", migrated: "cmux:42"},
+		{input: "cmux:1", adapter: "cmux", localID: "1", migrated: "cmux:1"},
 	}
 
 	for _, tt := range tests {
@@ -78,7 +78,7 @@ func TestCanonicalID_LocalIDWithColon(t *testing.T) {
 		{"cmux:cmux-1", "cmux", "cmux-1"},
 		{"cmux:session:with:colons", "cmux", "session:with:colons"},
 		{"cmux:cmux:aider", "cmux", "cmux:aider"}, // local part itself has ':'
-		{"cmux:surface:42", "cmux", "surface:42"},
+		{"cmux:42", "cmux", "42"},
 	}
 
 	for _, tt := range tests {

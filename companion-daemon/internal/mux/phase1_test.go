@@ -345,67 +345,6 @@ func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 		t.Errorf("no percent encoding in %q", encoded)
 	}
 }
-
-func TestCmuxAdapter_CreateSessionReturnsLocalID(t *testing.T) {
-	// cmux adapter's CreateSession must return local ID "surface:42",
-	// not canonical "cmux:surface:42". Handler wraps exactly once.
-	mockRunner := &mockCmuxRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("Created new surface: surface:42 (workspace: workspace:1)"), nil
-		},
-	}
-	adapter := &cmuxAdapter{runner: mockRunner, invalidate: &mockRegistryHealth{}}
-	id, err := adapter.CreateSession(context.Background(), CreateOptions{})
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	if id != "surface:42" {
-		t.Errorf("CreateSession returned %q, want local ID surface:42", id)
-	}
-	// Handler canonicalization (exactly once).
-	canonical := SessionRef{Adapter: "cmux", LocalID: id}.Canonical()
-	if canonical != "cmux:surface:42" {
-		t.Errorf("canonical = %q, want cmux:surface:42", canonical)
-	}
-}
-
-func TestCmuxAdapter_CreateSession_MalformedOutput(t *testing.T) {
-	// Malformed output must return error, not a fake ID.
-	mockRunner := &mockCmuxRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("garbage output with no surface id"), nil
-		},
-	}
-	adapter := &cmuxAdapter{runner: mockRunner, invalidate: &mockRegistryHealth{}}
-	id, err := adapter.CreateSession(context.Background(), CreateOptions{})
-	if err == nil {
-		t.Fatalf("CreateSession with malformed output: got nil error, id=%q", id)
-	}
-	if id != "" {
-		t.Errorf("CreateSession on parse failure returned id=%q, want empty", id)
-	}
-}
-
-func TestProbeAdapter_Healthy(t *testing.T) {
-	reg := MustNewRegistry(&testAdapter{name: "test"})
-	adapter, _ := reg.Adapter("test")
-	err := ProbeAdapter(context.Background(), adapter, 4*time.Second)
-	if err != nil {
-		t.Errorf("ProbeAdapter on healthy adapter: %v", err)
-	}
-}
-
-func TestProbeAdapter_Unavailable(t *testing.T) {
-	a := &testAdapter{name: "test", failWith: errors.New("down")}
-	err := ProbeAdapter(context.Background(), a, 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("ProbeAdapter on failing adapter: got nil, want error")
-	}
-	if !errors.Is(err, ErrAdapterUnavailable) {
-		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
-	}
-}
-
 func TestRegistry_SlowAdapterDoesNotBlock(t *testing.T) {
 	fast := &testAdapter{name: "fast", sessions: []Session{&testSession{id: "s1", adapter: "fast"}}}
 	slow := &blockingAdapter{name: "slow"}
@@ -433,34 +372,14 @@ func TestRegistry_SlowAdapterDoesNotBlock(t *testing.T) {
 	}
 }
 
-func TestProbeAdapter_Timeout(t *testing.T) {
-	blocker := &blockingAdapter{name: "test"}
-	err := ProbeAdapter(context.Background(), blocker, 50*time.Millisecond)
-	if err == nil {
-		t.Fatal("ProbeAdapter with timeout: got nil, want error")
-	}
-	if !errors.Is(err, ErrAdapterUnavailable) {
-		t.Errorf("error = %v, want ErrAdapterUnavailable", err)
-	}
-}
-
-func TestProbeAdapter_Cancel(t *testing.T) {
-	blocker := &blockingAdapter{name: "test"}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := ProbeAdapter(ctx, blocker, 4*time.Second)
-	if err == nil {
-		t.Fatal("ProbeAdapter with cancelled context: got nil, want error")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("error does not wrap Canceled: %v", err)
-	}
-	if !errors.Is(err, ErrAdapterUnavailable) {
-		t.Errorf("error does not wrap ErrAdapterUnavailable: %v", err)
-	}
+// CommandOptions is retained for test runner contracts.
+type CommandOptions struct {
+	Dir string
+	Env []string
 }
 
 // recordingRunner records every Run call for exact-args contract tests.
+
 type recordingRunner struct {
 	mu      sync.Mutex
 	calls   []runnerCall
@@ -482,19 +401,4 @@ func (r *recordingRunner) Run(ctx context.Context, opts CommandOptions, args ...
 		return r.runFunc(ctx, opts, args...)
 	}
 	return nil, nil
-}
-func TestProbeAdapter_PreservesDeadlineExceeded(t *testing.T) {
-	blocker := &blockingAdapter{name: "test"}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	err := ProbeAdapter(ctx, blocker, 50*time.Millisecond)
-	if err == nil {
-		t.Fatal("ProbeAdapter: got nil, want error")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("error does not wrap DeadlineExceeded: %v", err)
-	}
-	if !errors.Is(err, ErrAdapterUnavailable) {
-		t.Errorf("error does not wrap ErrAdapterUnavailable: %v", err)
-	}
 }

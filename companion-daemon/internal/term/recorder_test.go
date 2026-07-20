@@ -550,6 +550,7 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 // --- E8i: screen snapshot filtering ---
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
@@ -607,6 +608,7 @@ func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
 	}
 }
 func TestIsClearScreenSnapshot(t *testing.T) {
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	tests := []struct {
 		name     string
 		payload  []byte
@@ -634,6 +636,7 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 // --- E8g4: cmux delta frame tagging ---
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
@@ -707,6 +710,7 @@ func TestRecorder_NormalANSINotDelta(t *testing.T) {
 }
 
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)

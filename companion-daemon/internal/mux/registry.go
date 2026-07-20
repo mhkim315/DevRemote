@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -373,15 +372,8 @@ func (r *Registry) FindSessionInCache(id string) (Session, error) {
 
 // ── Legacy ID migration (pure function, not stateful) ──
 
-var legacyCmuxRe = regexp.MustCompile(`^cmux:(\d+)$`)
-
-// MigrateLegacyID converts old cmux:38 formats to cmux:surface:38
-func MigrateLegacyID(id string) string {
-	if m := legacyCmuxRe.FindStringSubmatch(id); m != nil {
-		return "cmux:surface:" + m[1]
-	}
-	return id
-}
+// PB.4: cmux removed — MigrateLegacyID is a no-op for remaining adapters.
+func MigrateLegacyID(id string) string { return id }
 
 // ── Internal helpers ──
 

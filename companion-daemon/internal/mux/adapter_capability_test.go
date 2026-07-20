@@ -18,19 +18,6 @@ func TestAdapterCapabilities_ControlledPTY(t *testing.T) {
 	mustHave(t, caps, CapManagedLifecycle)
 	mustNotHave(t, caps, CapBestEffortTranscript)
 }
-func TestAdapterCapabilities_Cmux(t *testing.T) {
-	adapter := &cmuxAdapter{}
-	caps := AdapterCapabilities(adapter)
-	mustHave(t, caps, CapObserve)
-	mustHave(t, caps, CapBestEffortTranscript)
-	mustNotHave(t, caps, CapLiveTerminal)
-	mustNotHave(t, caps, CapReliableTranscript)
-	mustNotHave(t, caps, CapInput)
-	mustNotHave(t, caps, CapControl)
-	// External observer: never managed.
-	mustNotHave(t, caps, CapManagedLifecycle)
-}
-
 func TestAdapterCapabilities_UnknownNoProvider(t *testing.T) {
 	adapter := &unknownAdapter{}
 	caps := AdapterCapabilities(adapter)

@@ -15,7 +15,7 @@ import (
 func TestPA2b_WrapperCompat_IdenticalResults(t *testing.T) {
 	ids := []string{
 		"cmux:devremote",
-		"cmux:surface:1",
+		"cmux:1",
 		"controlled_pty:with:many:colons",
 		"claude_headless:세션",
 		"plain",
@@ -86,11 +86,11 @@ func TestPA2b_WrapperCompat_TypeAlias(t *testing.T) {
 // internal/mux (registry.go), not moved to the neutral package.
 func TestPA2b_MigrateLegacyID_UnchangedAndStaysInMux(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"cmux:3", "cmux:surface:3"},         // legacy bare-numeric cmux id migrates
-		{"cmux:12", "cmux:surface:12"},       // multi-digit
+		{"cmux:3", "cmux:3"},         // legacy bare-numeric cmux id migrates
+		{"cmux:12", "cmux:12"},       // multi-digit
 		{"cmux:surface:3", "cmux:surface:3"}, // already canonical: unchanged
 		{"cmux:abc", "cmux:abc"},             // non-numeric local id: unchanged
-		{"cmux:3", "cmux:surface:3"},         // other adapters: unchanged
+		{"cmux:3", "cmux:3"},         // other adapters: unchanged
 		{"plain", "plain"},                   // no adapter: unchanged
 		{"", ""},
 	}

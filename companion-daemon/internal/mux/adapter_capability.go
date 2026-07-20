@@ -22,7 +22,6 @@ const (
 
 	// CapLiveTerminal: the adapter supports live xterm WebSocket stream.
 	// Only byte_stream adapters have this.
-	// screen_snapshot_delta adapters (cmux) do NOT.
 	CapLiveTerminal AdapterCapability = "liveTerminal"
 
 	// CapReliableTranscript: PTY byte-stream-based transcript.
@@ -31,7 +30,7 @@ const (
 	CapReliableTranscript AdapterCapability = "reliableTranscript"
 
 	// CapBestEffortTranscript: screen-snapshot-derived transcript.
-	// Best-effort, not authoritative. cmux has this.
+	// Best-effort, not authoritative.
 	// Viewport-dependent source. May include duplicates.
 	CapBestEffortTranscript AdapterCapability = "bestEffortTranscript"
 
@@ -39,7 +38,7 @@ const (
 	// its Stop/Kill/cleanup lifecycle. Only adapters that CREATE and own the
 	// runtime (controlled_pty) declare this. input=true / control=true do NOT
 	// imply managedLifecycle=true — external or observer
-	// (cmux) adapters are never managed. M2 lifecycle actions gate on this.
+	// External adapters are never managed.
 	CapManagedLifecycle AdapterCapability = "managedLifecycle"
 )
 

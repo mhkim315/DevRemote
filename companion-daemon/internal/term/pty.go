@@ -228,7 +228,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	} else {
-		useRegistry = true // legacy adapters (cmux)
+		useRegistry = true // legacy adapters
 	}
 	if useRegistry {
 		var ferr error

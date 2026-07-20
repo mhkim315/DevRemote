@@ -3,7 +3,6 @@ package term
 import (
 	"context"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -292,41 +291,6 @@ func (r *Recorder) readLoop() {
 		payload := make([]byte, n)
 		copy(payload, buf[:n])
 
-		// E8g4: detect cmux delta frames (prefixed with ESC[9998m).
-		// Strip marker — do NOT broadcast to live terminal subscribers.
-		// PA3 Step 6b: legacy write removed; Transcript is canonical.
-		if isDeltaMarker(payload) {
-			payload = payload[len(deltaMarker):]
-			if len(payload) == 0 {
-				continue
-			}
-			// T3: cmux delta → SourceSnapshot degraded path.
-			// Store as degraded segments with snapshot provenance,
-			// separate from byte-stream semantic channel.
-			if r.captureMode == "screen_snapshot_delta" && r.transcriptSvc != nil {
-				text := stripANSI(string(payload))
-				text = strings.ReplaceAll(text, "\r", "\n")
-				if !isANSIControlOnly(text) && len(text) > 3 {
-					if len(text) > 32768 {
-						text = text[:32768]
-					}
-					r.transcriptSvc.AddSnapshotSegment(r.sessionID, text, len(payload), time.Now(), r.queueGen)
-				}
-			}
-			continue // do NOT broadcast delta to subscribers
-		}
-
-		// E8i: detect cmux screen snapshots. These are full-screen redraws
-		// (ESC[2J ESC[H + screen content) sent as one pipe Write(). The pipe
-		// delivers them in chunks; only the first chunk starts with ESC[2J.
-		// We must drain ALL chunks from the same Write() without appending
-		// any to the transcript. Live terminal subscribers still receive them.
-		if isClearScreenSnapshot(payload) {
-			r.broadcast(payload)
-			r.drainSnapshot(buf)
-			continue
-		}
-
 		// PA3 Step 6b: legacy write removed; Transcript is canonical.
 		// T3: detect TUI boundaries for transcript omission.
 		if r.transcriptSvc != nil {
@@ -613,7 +577,6 @@ func (r *Recorder) GetSize() (rows, cols int, ok bool) {
 // full-screen redraw header (ESC[2J ESC[H). Normal PTY output may contain
 // ESC[H (cursor home) alone, which must NOT trigger snapshot drain.
 // ESC[2J (clear screen) immediately followed by ESC[H (cursor home) is
-// the distinctive cmux screen poll signature.
 func isClearScreenSnapshot(payload []byte) bool {
 	// cmux header: ESC [ 2 J ESC [ H = 7 bytes
 	if len(payload) < 7 {
