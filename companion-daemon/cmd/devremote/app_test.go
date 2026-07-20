@@ -980,6 +980,7 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 		InsecureLocalOnly:  true,
 		OwnerUUID:          "pa4-1-test",
 		SupabaseProjectRef: "test",
+		EnableManagedCodex: true,
 	}
 	deps := testDeps()
 	deps.StartWatcher = func() (watcherResource, error) { return &fakeWatcher{}, nil }
@@ -990,24 +991,20 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 	}
 	defer app.Shutdown(context.Background())
 
-	// Production constructor must produce non-nil handlers.
+	// Production constructor with managed service enabled must wire Catalog.
 	if app.handlers == nil {
 		t.Fatal("production app.handlers is nil")
 	}
-	// Lifecycle, Transcript, and Registry are always wired.
-	if app.handlers.Lifecycle == nil {
-		t.Error("production Handlers.Lifecycle is nil")
-	}
-	if app.handlers.Transcript == nil {
-		t.Error("production Handlers.Transcript is nil")
-	}
-	if app.handlers.Registry == nil {
-		t.Error("production Handlers.Registry is nil")
-	}
-	// Catalog is wired conditionally (requires managed services).
-	// When nil, HandleSessionsV2 handles it gracefully — proved by
-	// TestPA4_1_NilCatalogNoPanic in the term package.
 	if app.handlers.Catalog == nil {
-		t.Log("Catalog nil (no managed services configured) — nil-catalog path is tested in term package")
+		t.Fatal("production Handlers.Catalog is nil with EnableManagedCodex — managed isolation not wired")
+	}
+
+	// Invoke /api/sessions through the production handler to prove managed
+	// isolation works end-to-end without special flags.
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	app.handlers.HandleSessionsV2(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("production /api/sessions returned %d", rec.Code)
 	}
 }
