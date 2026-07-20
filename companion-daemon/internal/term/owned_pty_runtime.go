@@ -118,6 +118,7 @@ func NewOwnedPTYRuntimeV1(v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Ser
 func newOwnedPTYRuntime(spawn ManagedPTYLauncher, v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
 	return &OwnedPTYRuntime{
 		spawn:      spawn,
+		v1Spawn:    v1,
 		transcript: transcriptSvc,
 		graceful:   5 * time.Second,
 		killGrace:  2 * time.Second,
@@ -168,8 +169,9 @@ type ownedCleanup func(ctx context.Context)
 // with GenerationCleanupCapability. Falls back to legacy ownSpawn if the
 // adapter does not implement SessionCreatorWithIdentity.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
-	// PB.5b: V1 launcher available via o.V1() accessor.
-	// Creation still routes through the transitional ManagedPTYLauncher.
+	// PB.5b: V1 launcher wired and accessible via o.V1().
+	// Creation uses the transitional ManagedPTYLauncher for full lifecycle (recorder, transport, entry).
+	// V1.Spawn() can be used directly for light spawning when full lifecycle is not needed.
 	if o.spawn == nil {
 		return "", fmt.Errorf("no spawn launcher")
 	}
