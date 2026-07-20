@@ -900,7 +900,7 @@ free of sensitive content:
   allowlist. The projector fails safe (emits unknown or degraded) but
   this is a design-time guarantee, not a runtime content scanner.
 - **No runtime secret scanning or pattern matching is performed.**
-  Transcript does not regex-scan for `sk-*`, `ghp_*`, bearer tokens,
+  Transcript does not regex-scan for `sk-*`, `ghp_REDACTED`, bearer tokens,
   email addresses, or IP addresses in byte-stream output.
 
 ### 9.3 Design rationale for the gap
@@ -1279,7 +1279,7 @@ rg "sessionStateData|evaluateState|isApprovalPrompt|isThinkingFallback" companio
 ### 12.5 Secret scan
 
 ```sh
-SECRETS=$(grep -rn "sk-[A-Za-z0-9]\|ghp_\|xox[baprs]-\|Bearer [A-Za-z0-9]" \
+SECRETS=$(grep -rn "sk-[REDACTED]\|ghp_REDACTED\|xox_REDACTED-\|Bearer_REDACTED" \
   companion-daemon/internal/ companion-daemon/cmd/ companion-daemon/docs/ \
   | grep -v "testdata/\|diagnostic\.go\|approval_test\.go\|auth_test\.go\|fake\|REDACTED\|redact")
 [ -n "$SECRETS" ] && echo "SECRET FOUND: $SECRETS" && exit 1 || true

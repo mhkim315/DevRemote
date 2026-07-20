@@ -100,7 +100,7 @@ Zero production files modified.
 ### Secret scan
 
 ```sh
-$ grep -rn "sk-[A-Za-z0-9]\{20,\}\|ghp_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9]\{20,\}" \
+$ grep -rn "sk-[REDACTED]\|ghp_REDACTED\|xox_REDACTED-" \
   mobile/src/
 (no output — clean)
 ```

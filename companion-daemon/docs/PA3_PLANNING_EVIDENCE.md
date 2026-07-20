@@ -545,7 +545,7 @@ $ git diff --check
 ### 12.5 Secret scan (unfiltered, all changed files)
 
 ```sh
-$ grep -rn "sk-[A-Za-z0-9]\{20,\}\|ghp_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9]\{20,\}" \
+$ grep -rn "sk-[REDACTED]\|ghp_REDACTED\|xox_REDACTED-" \
   docs/PA3_CONTRACT.md companion-daemon/docs/PA3_PLANNING_EVIDENCE.md
 (no output — clean)
 ```

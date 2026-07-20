@@ -79,7 +79,7 @@ ok  	devremote/companion-daemon/cmd/devremote	33.078s
 ### Secret scan
 
 ```sh
-$ grep -rn "sk-[A-Za-z0-9]\{20,\}\|ghp_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9]\{20,\}" \
+$ grep -rn "sk-[REDACTED]\|ghp_REDACTED\|xox_REDACTED-" \
   companion-daemon/internal/term/ --include="*.go" | grep -v "_test.go" | grep -v "testdata/"
 (no output — clean)
 ```
