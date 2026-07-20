@@ -33,10 +33,10 @@ type TerminalTransport struct {
 	recorder *Recorder // direct reference; nil if never set
 	retired  bool      // set by Retire/RetireIfGeneration; checked by IsRetired
 
-	// SubscriberFanOutHook is an optional test hook called inside the
+	// subscriberFanOutHook is an optional test hook called inside the
 	// RLock critical section after recorder capture and before unlock.
-	// nil means no-op. Set only from tests.
-	SubscriberFanOutHook func()
+	// nil means no-op. Set only via SetSubscriberFanOutHook.
+	subscriberFanOutHook func()
 }
 
 // newTerminalTransport builds the transport handle for a freshly-launched
@@ -101,12 +101,12 @@ func (t *TerminalTransport) Resize(rows, cols int) error {
 	return r.Resize(rows, cols)
 }
 
-// Recorder returns the transport's direct Recorder reference, or nil.
-// PA4-Final-R15: HandlerWS uses this instead of the global GetRecorder.
-func (t *TerminalTransport) Recorder() *Recorder {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.recorder
+// SetSubscriberFanOutHook sets a test-only hook called inside the
+// SubscriberFanOut RLock critical section. Must NOT call Retire or
+// any method that acquires this transport's Lock (self-deadlock).
+// Pass nil to clear. For use in tests only.
+func (t *TerminalTransport) SetSubscriberFanOutHook(fn func()) {
+	t.subscriberFanOutHook = fn
 }
 
 // SubscriberFanOut returns a bootstrap snapshot, live subscriber channel, and
@@ -131,8 +131,8 @@ func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte
 		return nil, nil, nil, false
 	}
 	bootstrap, ch = r.SubscribeWithBootstrap()
-	if t.SubscriberFanOutHook != nil {
-		t.SubscriberFanOutHook()
+	if t.subscriberFanOutHook != nil {
+		t.subscriberFanOutHook()
 	}
 	return bootstrap, ch, r, true
 }
