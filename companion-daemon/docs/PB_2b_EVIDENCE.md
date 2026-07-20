@@ -35,6 +35,10 @@
 $ printf "ResolveAgentLog" | grep -E "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector"
 ResolveAgentLog
 (exit 0 — pattern matches)
+
+$ printf "ClaudeResolver" | grep -E "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector"
+ClaudeResolver
+(exit 0 — pattern matches)
 ```
 
 ### Production
@@ -51,13 +55,13 @@ $ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAge
 
 ### Mobile
 ```
-$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|TermAgentDetector" ../mobile/src/
+$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector" ../mobile/src/
 (empty — zero)
 ```
 
 ### Scripts
 ```
-$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|TermAgentDetector" ../scripts/ scripts/
+$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector" ../scripts/ scripts/
 (empty — zero)
 ```
 
