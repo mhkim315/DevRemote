@@ -22,11 +22,11 @@ func TestStep6a_ReplacementCapturesOldRecorder(t *testing.T) {
 		t.Fatalf("first create: %v", err)
 	}
 	entry, ok := ownedPTY.Get(id1)
-	if !ok || entry.recorder == nil || entry.session == nil {
+	if !ok || entry.recorder == nil || entry.ptyHandle == nil {
 		t.Fatal("first entry missing Recorder or Session")
 	}
 	oldRec := entry.recorder
-	oldSess := entry.session
+	oldSess := entry.ptyHandle
 
 	id2, err := ownedPTY.Create(context.Background(), opts, "shell", "step6a-test")
 	if err != nil {
@@ -40,13 +40,13 @@ func TestStep6a_ReplacementCapturesOldRecorder(t *testing.T) {
 	DeleteRecorderIfSame(id1, oldRec) // no-op, already stopped by pre-install barrier
 
 	newEntry, ok := ownedPTY.Get(id2)
-	if !ok || newEntry.recorder == nil || newEntry.session == nil {
+	if !ok || newEntry.recorder == nil || newEntry.ptyHandle == nil {
 		t.Fatal("replacement entry missing Recorder or Session")
 	}
 	if newEntry.recorder == oldRec {
 		t.Error("replacement reused old Recorder")
 	}
-	if newEntry.session == oldSess {
+	if newEntry.ptyHandle == oldSess {
 		t.Error("replacement reused old Session")
 	}
 
@@ -112,11 +112,11 @@ func TestStep6a_RollbackProof(t *testing.T) {
 		t.Fatalf("create A: %v", err)
 	}
 	entryA, ok := ownedPTY.Get(idA)
-	if !ok || entryA.recorder == nil || entryA.session == nil {
+	if !ok || entryA.recorder == nil || entryA.ptyHandle == nil {
 		t.Fatal("A: missing Recorder or Session")
 	}
 	oldRec := entryA.recorder
-	oldSess := entryA.session
+	oldSess := entryA.ptyHandle
 
 	if !oldRec.IsAlive() {
 		t.Fatal("A's Recorder should be alive after creation")
@@ -183,13 +183,13 @@ func TestStep6a_RollbackProof(t *testing.T) {
 
 	// Step f: Assert B has fresh Recorder and Session, distinct from A's.
 	entryB, ok := ownedPTY.Get(idB)
-	if !ok || entryB.recorder == nil || entryB.session == nil {
+	if !ok || entryB.recorder == nil || entryB.ptyHandle == nil {
 		t.Fatal("B: missing Recorder or Session after recovery")
 	}
 	if entryB.recorder == oldRec {
 		t.Error("B reused A's old Recorder — want fresh instance")
 	}
-	if entryB.session == oldSess {
+	if entryB.ptyHandle == oldSess {
 		t.Error("B reused A's old Session — want fresh identity")
 	}
 	if !entryB.recorder.IsAlive() {

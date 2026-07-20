@@ -59,7 +59,7 @@ type CatalogEntry struct {
 	// session is the exact adapter session identity captured at creation.
 	// Used by replacement pre-install barrier for CompareAndTerminate.
 	// Not serialized.
-	session mux.Session
+	ptyHandle mux.Session
 
 	// transport is the generation-bound TerminalTransport handle for this
 	// exact runtime. Created at launch; retired when the record is
@@ -177,7 +177,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.Create
 		// PA3 Step 6a R2: capture exact Session + Recorder from existing entry.
 		oldCap = &GenerationCleanupCapability{
 			Generation:  existing.Generation,
-			Session:     existing.session,  // exact adapter session identity from CatalogEntry
+			Session:     existing.ptyHandle,  // exact adapter session identity from CatalogEntry
 			Recorder:    existing.recorder, // instance-guarded Recorder
 			Transport:   existing.transport,
 			Terminator:  o.spawn.(mux.SessionIdentityTerminator),
@@ -337,7 +337,7 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle m
 		cleanup:     cleanup,
 		transport:   transport,
 		recorder:    rec,
-		session:     sess,
+		ptyHandle:   sess,
 		cleanupDone: make(chan struct{}),
 	}
 	return gen
