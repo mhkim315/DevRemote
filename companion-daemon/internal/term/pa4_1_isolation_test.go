@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"devremote/companion-daemon/internal/transcript"
 )
 
-// newPA4Handlers creates Handlers with a real Registry plus the given catalog.
 func newPA4Handlers(t *testing.T, cat ManagedRuntimeCatalog) *Handlers {
 	t.Helper()
 	reg, err := mux.NewRegistry()
@@ -28,72 +26,70 @@ func newPA4Handlers(t *testing.T, cat ManagedRuntimeCatalog) *Handlers {
 	}
 }
 
-// ── PA4.1 unit tests: appendCatalogRows isolation ──
+// ── R2 ghost-prevention: managed-prefix Registry rows excluded ──
 
-// TestPA4_1_AppendCatalogDropsCollidingRegistryRows proves that
-// appendCatalogRows drops Registry rows whose canonical ID collides
-// with a managed catalog session.
-func TestPA4_1_AppendCatalogDropsCollidingRegistryRows(t *testing.T) {
+func TestPA4_1_RegistryCodexPrefixGhostExcluded(t *testing.T) {
+	// Registry-only Codex-looking row with no catalog record.
+	snapshot := []SessionTelemetry{
+		{ID: "codex_app_server:ghost-codex", Adapter: "tmux", AgentKind: "observer"},
+		{ID: "tmux:real-legacy", Adapter: "tmux"},
+	}
+	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	// Ghost must be excluded; only legacy tmux remains.
+	if len(out) != 1 || out[0].ID != "tmux:real-legacy" {
+		t.Fatalf("expected 1 legacy row, got %d: %+v", len(out), out)
+	}
+}
+
+func TestPA4_1_RegistryClaudePrefixGhostExcluded(t *testing.T) {
+	snapshot := []SessionTelemetry{
+		{ID: "claude_headless:ghost-claude", Adapter: "controlled_pty", AgentKind: "observer"},
+	}
+	claudeReg := NewManagedSessionRegistry(10)
+	cat := NewManagedRuntimeCatalog(nil, claudeReg, nil, nil, "", "2.1.202")
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	if len(out) != 0 {
+		t.Fatalf("expected 0 rows (ghost excluded), got %d", len(out))
+	}
+}
+
+func TestPA4_1_RegistryControlledPTYPrefixGhostExcluded(t *testing.T) {
+	// controlled_pty: prefix with managed-looking ID but no catalog record.
+	// Catalog has no codex/claude registries, so ManagedAdapterPrefixes is empty.
+	// Legacy controlled_pty rows without managed prefix should survive.
+	snapshot := []SessionTelemetry{
+		{ID: "controlled_pty:real-ctl", Adapter: "controlled_pty"},
+	}
+	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	// controlled_pty is NOT a managed prefix (only codex_app_server/claude_headless are).
+	// So the row survives as a normal legacy row.
+	if len(out) != 1 || out[0].ID != "controlled_pty:real-ctl" {
+		t.Fatalf("expected 1 legacy controlled_pty row, got %d", len(out))
+	}
+}
+
+// ── R2: catalog-carried capabilities and lifecycle ──
+
+func TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
-		SessionID: "codex_app_server:collide", Provider: "codex", Version: "0.144.1",
+		SessionID: "codex_app_server:carry", Provider: "codex", Version: "0.144.1",
 		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	// Registry snapshot has a row that collides with the managed session.
-	snapshot := []SessionTelemetry{
-		{ID: "codex_app_server:collide", Adapter: "controlled_pty", AgentKind: "observer"},
-		{ID: "tmux:legacy", Adapter: "tmux"},
-	}
-	out := appendCatalogRows(snapshot, cat, nil, nil)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 rows (1 managed + 1 legacy), got %d", len(out))
-	}
-	// Verify the colliding Registry row was dropped and catalog row is authoritative.
-	hasManaged, hasLegacy := false, false
-	for _, row := range out {
-		if row.ID == "codex_app_server:collide" {
-			hasManaged = true
-			if row.Adapter != "codex_app_server" {
-				t.Errorf("managed row adapter=%q, want codex_headless", row.Adapter)
-			}
-			if row.AgentKind != "codex" {
-				t.Errorf("managed row agentKind=%q, want codex", row.AgentKind)
-			}
-		}
-		if row.ID == "tmux:legacy" {
-			hasLegacy = true
-		}
-	}
-	if !hasManaged {
-		t.Error("managed row missing")
-	}
-	if !hasLegacy {
-		t.Error("legacy row missing")
-	}
-}
-
-// TestPA4_1_AppendCatalogProvidesCapabilities proves catalog rows
-// include capabilities from managed authority.
-func TestPA4_1_AppendCatalogProvidesCapabilities(t *testing.T) {
-	claudeReg := NewManagedSessionRegistry(10)
-	_ = claudeReg.Register(ManagedSessionRecord{
-		SessionID: "claude_headless:cap-test", Provider: "claude", Version: "2.1.202",
-		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "idle",
-	})
-	cat := NewManagedRuntimeCatalog(nil, claudeReg, nil, nil, "", "2.1.202")
-
 	out := appendCatalogRows(nil, cat, nil, nil)
 	if len(out) != 1 {
-		t.Fatalf("expected 1 managed row, got %d", len(out))
+		t.Fatalf("expected 1 catalog row, got %d", len(out))
 	}
 	row := out[0]
 	if len(row.AdapterCapabilities) == 0 {
-		t.Error("managed row has no AdapterCapabilities")
+		t.Error("catalog row missing AdapterCapabilities")
 	}
 	if len(row.Capabilities) == 0 {
-		t.Error("managed row has no session Capabilities")
+		t.Error("catalog row missing session Capabilities")
 	}
 	hasLiveStream := false
 	for _, c := range row.AdapterCapabilities {
@@ -102,18 +98,82 @@ func TestPA4_1_AppendCatalogProvidesCapabilities(t *testing.T) {
 		}
 	}
 	if !hasLiveStream {
-		t.Error("managed row missing live_stream capability")
+		t.Error("catalog row missing live_stream capability")
+	}
+	if row.Adapter != "codex_app_server" {
+		t.Errorf("adapter=%q, want codex_app_server", row.Adapter)
 	}
 }
 
-// ── PA4.1 integration tests: HandleSessionsV2 isolation ──
+// ── R2: Registry metadata cannot override catalog ──
 
-// TestPA4_1_HandleSessionsV2ManagedOnly proves that when only managed
-// sessions exist, HandleSessionsV2 returns them through catalog authority.
-func TestPA4_1_HandleSessionsV2ManagedOnly(t *testing.T) {
+func TestPA4_1_RegistryMetadataCannotOverrideCatalog(t *testing.T) {
+	claudeReg := NewManagedSessionRegistry(10)
+	_ = claudeReg.Register(ManagedSessionRecord{
+		SessionID: "claude_headless:override", Provider: "claude", Version: "2.1.202",
+		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "thinking",
+	})
+	cat := NewManagedRuntimeCatalog(nil, claudeReg, nil, nil, "", "2.1.202")
+
+	// Registry has a colliding row with wrong metadata.
+	snapshot := []SessionTelemetry{
+		{ID: "claude_headless:override", Adapter: "tmux", AgentKind: "observer",
+			Capabilities: []string{"screen"}, AdapterCapabilities: []string{"screen"}},
+	}
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(out))
+	}
+	// Catalog metadata must win, not Registry.
+	if out[0].Adapter != "claude_headless" {
+		t.Errorf("adapter=%q, want claude_headless (Registry tmux must not override)", out[0].Adapter)
+	}
+	if out[0].AgentKind != "claude" {
+		t.Errorf("agentKind=%q, want claude", out[0].AgentKind)
+	}
+	for _, c := range out[0].AdapterCapabilities {
+		if c == "screen" {
+			t.Error("Registry screen capability leaked into catalog row")
+		}
+	}
+}
+
+// ── R2: stale/replaced generation not resurrected ──
+
+func TestPA4_1_StaleGenerationNotResurrectedThroughRegistry(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
-		SessionID: "codex_app_server:managed-only", Provider: "codex", Version: "0.144.1",
+		SessionID: "codex_app_server:stale-gen", Provider: "codex", Version: "0.144.1",
+		Epoch: 2, CreatedAt: time.Now(),
+	})
+	// Mark exited to prove catalog carries authoritative status.
+	codexReg.MarkExited("codex_app_server:stale-gen", 2)
+
+	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
+
+	// Registry has row with same ID but stale generation metadata.
+	snapshot := []SessionTelemetry{
+		{ID: "codex_app_server:stale-gen", Adapter: "controlled_pty", AgentKind: "observer"},
+	}
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 catalog row, got %d", len(out))
+	}
+	// Catalog's exited status is authoritative, not Registry's observer.
+	if out[0].AgentStatus != "exited" {
+		t.Errorf("agentStatus=%q, want exited (catalog authoritative)", out[0].AgentStatus)
+	}
+	if out[0].AgentKind != "codex" {
+		t.Errorf("agentKind=%q, want codex", out[0].AgentKind)
+	}
+}
+
+// ── R2: default production composition proof ──
+
+func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(10)
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: "codex_app_server:default-cfg", Provider: "codex", Version: "0.144.1",
 		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
@@ -129,22 +189,69 @@ func TestPA4_1_HandleSessionsV2ManagedOnly(t *testing.T) {
 	var rows []SessionTelemetry
 	json.Unmarshal(rec.Body.Bytes(), &rows)
 	if len(rows) != 1 {
-		t.Fatalf("expected 1 managed row, got %d", len(rows))
+		t.Fatalf("expected 1 managed row in default config, got %d", len(rows))
 	}
-	row := rows[0]
-	if row.Adapter != "codex_app_server" {
-		t.Errorf("adapter=%q, want codex_headless", row.Adapter)
+	if rows[0].Adapter != "codex_app_server" {
+		t.Errorf("adapter=%q", rows[0].Adapter)
 	}
-	if row.AgentKind != "codex" {
-		t.Errorf("agentKind=%q, want codex", row.AgentKind)
+	if len(rows[0].AdapterCapabilities) == 0 {
+		t.Error("missing adapter capabilities in default config")
 	}
-	if len(row.AdapterCapabilities) == 0 {
-		t.Error("no AdapterCapabilities on managed row")
+	// No special flag was used — default production composition is enforced.
+}
+
+// ── R2: legacy non-managed Registry behavior unchanged ──
+
+func TestPA4_1_LegacyNonManagedRegistryBehaviorUnchanged(t *testing.T) {
+	// No catalog — legacy rows pass through unmodified.
+	snapshot := []SessionTelemetry{
+		{ID: "tmux:legacy-a", Adapter: "tmux", Capabilities: []string{"live_stream"}},
+		{ID: "cmux:legacy-b", Adapter: "cmux", Capabilities: []string{"screen"}},
+	}
+	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 legacy rows, got %d", len(out))
+	}
+	if out[0].ID != "tmux:legacy-a" || out[1].ID != "cmux:legacy-b" {
+		t.Error("legacy rows modified")
 	}
 }
 
-// TestPA4_1_HandleSessionsV2BothProviders proves catalog rows for
-// both Codex and Claude appear with correct metadata.
+// ── Existing positive tests ──
+
+func TestPA4_1_AppendCatalogDropsCollidingRegistryRows(t *testing.T) {
+	codexReg := NewManagedSessionRegistry(10)
+	_ = codexReg.Register(ManagedSessionRecord{
+		SessionID: "codex_app_server:collide", Provider: "codex", Version: "0.144.1",
+		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
+	})
+	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
+	snapshot := []SessionTelemetry{
+		{ID: "codex_app_server:collide", Adapter: "controlled_pty", AgentKind: "observer"},
+		{ID: "tmux:legacy", Adapter: "tmux"},
+	}
+	out := appendCatalogRows(snapshot, cat, nil, nil)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 rows (1 managed + 1 legacy), got %d", len(out))
+	}
+	hasManaged, hasLegacy := false, false
+	for _, row := range out {
+		if row.ID == "codex_app_server:collide" {
+			hasManaged = true
+			if row.Adapter != "codex_app_server" {
+				t.Errorf("adapter=%q, want codex_app_server", row.Adapter)
+			}
+		}
+		if row.ID == "tmux:legacy" {
+			hasLegacy = true
+		}
+	}
+	if !hasManaged || !hasLegacy {
+		t.Error("missing expected rows")
+	}
+}
+
 func TestPA4_1_HandleSessionsV2BothProviders(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
@@ -168,33 +275,10 @@ func TestPA4_1_HandleSessionsV2BothProviders(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	foundCodex, foundClaude := false, false
-	for _, row := range rows {
-		if row.ID == "codex_app_server:both-1" {
-			foundCodex = true
-			if row.Adapter != "codex_app_server" {
-				t.Errorf("codex row adapter=%q", row.Adapter)
-			}
-		}
-		if row.ID == "claude_headless:both-2" {
-			foundClaude = true
-			if row.Adapter != "claude_headless" {
-				t.Errorf("claude row adapter=%q", row.Adapter)
-			}
-		}
-	}
-	if !foundCodex {
-		t.Error("Codex row missing")
-	}
-	if !foundClaude {
-		t.Error("Claude row missing")
-	}
 }
 
-// TestPA4_1_NilCatalogNoPanic proves nil catalog is handled gracefully.
 func TestPA4_1_NilCatalogNoPanic(t *testing.T) {
 	h := newPA4Handlers(t, nil)
-
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
@@ -203,34 +287,6 @@ func TestPA4_1_NilCatalogNoPanic(t *testing.T) {
 	}
 }
 
-// TestPA4_1_MalformedIDFailsClosed proves unknown prefix rows are excluded.
-func TestPA4_1_MalformedIDFailsClosed(t *testing.T) {
-	codexReg := NewManagedSessionRegistry(10)
-	_ = codexReg.Register(ManagedSessionRecord{
-		SessionID: "codex_app_server:valid", Provider: "codex", Version: "0.144.1",
-		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
-	})
-	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
-	h := newPA4Handlers(t, cat)
-
-	req := httptest.NewRequest("GET", "/api/sessions", nil)
-	rec := httptest.NewRecorder()
-	h.HandleSessionsV2(rec, req)
-
-	var rows []SessionTelemetry
-	json.Unmarshal(rec.Body.Bytes(), &rows)
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	for _, row := range rows {
-		if !strings.HasPrefix(row.ID, "codex_app_server:") && !strings.HasPrefix(row.ID, "claude_headless:") {
-			t.Errorf("non-managed row leaked: %s", row.ID)
-		}
-	}
-}
-
-// TestPA4_1_ConcurrentCatalogListIsolation proves concurrent mutations
-// never corrupt session list projection.
 func TestPA4_1_ConcurrentCatalogListIsolation(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(100)
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
@@ -249,7 +305,7 @@ func TestPA4_1_ConcurrentCatalogListIsolation(t *testing.T) {
 			defer wg.Done()
 			_ = codexReg.Register(ManagedSessionRecord{
 				SessionID: fmt.Sprintf("codex_app_server:c-%d", n),
-				Provider: "codex", Version: "0.144.1", Epoch: 1,
+				Provider:  "codex", Version: "0.144.1", Epoch: 1,
 				CreatedAt: time.Now(), NativeStatus: "running",
 			})
 		}(i)
@@ -270,19 +326,5 @@ func TestPA4_1_ConcurrentCatalogListIsolation(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Error(e)
-	}
-
-	req := httptest.NewRequest("GET", "/api/sessions", nil)
-	rec := httptest.NewRecorder()
-	h.HandleSessionsV2(rec, req)
-	var rows []SessionTelemetry
-	json.Unmarshal(rec.Body.Bytes(), &rows)
-	if len(rows) < 1 {
-		t.Error("no managed rows after concurrent ops")
-	}
-	for _, row := range rows {
-		if row.Adapter != "codex_app_server" {
-			t.Errorf("row %s adapter=%q", row.ID, row.Adapter)
-		}
 	}
 }

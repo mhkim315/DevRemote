@@ -83,6 +83,10 @@ func (c *fakeManagedCatalog) Get(id string) (ManagedSessionRecord, bool) {
 }
 func (c *fakeManagedCatalog) List() []ManagedSessionRecord        { return nil }
 func (c *fakeManagedCatalog) RuntimeOf(string) (RuntimeRef, bool) { return RuntimeRef{}, false }
+func (c *fakeManagedCatalog) ManagedAdapterPrefixes() []string    { return nil }
+func (c *fakeManagedCatalog) ManagedCapabilities(string) ([]string, []string) {
+	return nil, nil
+}
 
 func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeProviderOwner, *fakeManagedCatalog) {
 	t.Helper()

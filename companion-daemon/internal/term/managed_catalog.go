@@ -38,6 +38,17 @@ type ManagedRuntimeCatalog interface {
 	// Uninstalled services, unknown adapters, ambiguous IDs, and stale
 	// generations return (zero, false).
 	RuntimeOf(sessionID string) (RuntimeRef, bool)
+
+	// ManagedAdapterPrefixes returns the canonical adapter prefixes that
+	// identify managed sessions. Any Registry row whose ID begins with one
+	// of these prefixes must be excluded — the catalog is the sole
+	// authority for managed session list rows.
+	ManagedAdapterPrefixes() []string
+
+	// ManagedCapabilities returns the static capability sets for a managed
+	// adapter. The returned capabilities are authoritative and never depend
+	// on mux.Registry or observer evidence.
+	ManagedCapabilities(adapter string) (sessionCaps, adapterCaps []string)
 }
 
 // managedRuntimeCatalog implements ManagedRuntimeCatalog.
@@ -270,6 +281,29 @@ func (c *managedRuntimeCatalog) RuntimeOf(sessionID string) (RuntimeRef, bool) {
 	return rt, true
 }
 
+// ManagedAdapterPrefixes returns the adapter prefixes that identify
+// managed sessions. Any Registry row matching these prefixes must be
+// excluded from the session list — the catalog is the sole authority.
+func (c *managedRuntimeCatalog) ManagedAdapterPrefixes() []string {
+	// Canonical managed adapter prefixes are always returned, even when
+	// neither registry is configured. This prevents Registry-only rows
+	// with managed-looking IDs from fabricating managed projections.
+	return []string{codexAppServerAdapter, claudeHeadlessAdapter}
+}
+
+// ManagedCapabilities returns the authoritative capability sets for a
+// managed adapter. These are static per managed runtime and never depend
+// on mux.Registry or observer evidence.
+func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps, adapterCaps []string) {
+	switch adapter {
+	case codexAppServerAdapter, claudeHeadlessAdapter:
+		return []string{"live_stream", "history"},
+			[]string{"live_stream", "history", "process"}
+	default:
+		return nil, nil
+	}
+}
+
 // managedAdapterCapabilities returns the set of adapter-level capabilities
 // for a managed adapter name. These are derived from catalog authority and
 // never depend on mux.Registry. The managed runtime owns its terminal and
@@ -294,27 +328,44 @@ func managedSessionCapabilities() []string {
 // to the /api/sessions response. It replaces appendManagedRows and
 // appendClaudeManagedRows with a single catalog-driven projector.
 //
-// PA4.1: Managed identity is authoritative — any snapshot row that
-// collides with a managed canonical ID is dropped so contradictory
-// observer evidence can never overwrite or shadow the managed status.
-// Managed row metadata (capabilities, agent status, lifecycle) is sourced
-// exclusively from ManagedRuntimeCatalog and never falls back to
+// PA4.1 R2: Managed identity is authoritative — any snapshot row whose
+// canonical ID collides with a managed session or whose adapter prefix
+// matches a managed adapter is dropped. Contradictory observer evidence
+// can never overwrite, shadow, or fabricate a managed-looking list row.
+// Managed row metadata (capabilities, lifecycle) is sourced exclusively
+// from ManagedRuntimeCatalog contract methods, never hard-coded or from
 // mux.Registry.
 func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalog, lifecycle *LifecycleService, approvals *AuthoritativeApprovalStore) []SessionTelemetry {
 	if catalog == nil {
 		return snapshot
 	}
 	recs := catalog.List()
-	if len(recs) == 0 {
-		return snapshot
-	}
+
+	// Build set of managed canonical IDs (collision exclusion).
 	managedIDs := make(map[string]struct{}, len(recs))
 	for _, rec := range recs {
 		managedIDs[rec.SessionID] = struct{}{}
 	}
+
+	// Managed adapter prefixes — any Registry row with one of these
+	// prefixes is excluded even without a catalog collision (ghost).
+	prefixes := catalog.ManagedAdapterPrefixes()
+
 	out := make([]SessionTelemetry, 0, len(snapshot)+len(recs))
 	for _, row := range snapshot {
+		// Drop if collides with a managed catalog ID.
 		if _, collides := managedIDs[row.ID]; collides {
+			continue
+		}
+		// Drop if ID matches a managed adapter prefix (ghost prevention).
+		ghost := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(row.ID, prefix+":") {
+				ghost = true
+				break
+			}
+		}
+		if ghost {
 			continue
 		}
 		out = append(out, row)
@@ -340,6 +391,9 @@ func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalo
 			}
 		}
 
+		// PA4.1 R2: capabilities from catalog contract, not hard-coded.
+		sessCaps, adapterCaps := catalog.ManagedCapabilities(adapter)
+
 		out = append(out, SessionTelemetry{
 			ID:                  rec.SessionID,
 			DisplayID:           strings.TrimPrefix(rec.SessionID, adapter+":"),
@@ -350,8 +404,8 @@ func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalo
 			AgentKind:           rec.Provider,
 			AgentStatus:         string(rec.NativeStatus),
 			LifecycleState:      lifecycleState,
-			Capabilities:        managedSessionCapabilities(),
-			AdapterCapabilities: managedAdapterCapabilities(adapter),
+			Capabilities:        sessCaps,
+			AdapterCapabilities: adapterCaps,
 			Approvals:           safe,
 		})
 	}
