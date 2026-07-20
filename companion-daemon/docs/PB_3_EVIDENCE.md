@@ -56,8 +56,12 @@ $ grep -rnE "tmux|Tmux|TMUX" ../scripts/ scripts/
 
 ### Packaging
 ```
-$ grep -rnE "tmux|Tmux|TMUX" ../Makefile ../Dockerfile ../.goreleaser* ../*.nix ../*.spec 2>/dev/null
-(empty — zero — no packaging files exist with tmux references)
+$ ls scripts/ ../scripts/
+android-native-gate.sh  build-gate.sh  cp0  dev-setup.sh  install.sh
+ios-native-gate.sh      package.sh     uninstall.sh
+
+$ grep -rnE "tmux|Tmux|TMUX" scripts/ ../scripts/
+(empty — zero)
 ```
 
 ## Gates
