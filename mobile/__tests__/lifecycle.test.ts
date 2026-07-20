@@ -20,7 +20,7 @@ describe('isRunnable (response validation gate)', () => {
     expect(isRunnable({ adapter: 'controlled_pty', state: 'running' } as any)).toBe(false);
   });
   it('rejects a non-controlled_pty adapter', () => {
-    expect(isRunnable({ ...ok, adapter: 'tmux' })).toBe(false);
+    expect(isRunnable({ ...ok, adapter: 'cmux' })).toBe(false);
   });
   it('rejects a non-running state', () => {
     for (const state of ['starting', 'stopping', 'exited', 'killed', 'failed', 'idle']) {

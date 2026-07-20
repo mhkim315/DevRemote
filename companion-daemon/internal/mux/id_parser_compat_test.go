@@ -90,7 +90,7 @@ func TestPA2b_MigrateLegacyID_UnchangedAndStaysInMux(t *testing.T) {
 		{"cmux:12", "cmux:surface:12"},       // multi-digit
 		{"cmux:surface:3", "cmux:surface:3"}, // already canonical: unchanged
 		{"cmux:abc", "cmux:abc"},             // non-numeric local id: unchanged
-		{"cmux:3", "cmux:surface:3"},                 // other adapters: unchanged
+		{"cmux:3", "cmux:surface:3"},         // other adapters: unchanged
 		{"plain", "plain"},                   // no adapter: unchanged
 		{"", ""},
 	}

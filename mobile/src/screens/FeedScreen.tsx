@@ -848,7 +848,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             input capability). Non-managed sessions keep their existing behavior. */}
         {/* M3b (BLOCKER 4): input (keystrokes + macros) is gated by the policy for
             EVERY session — never a non-managed bypass. External adapters that
-            declare `input` (tmux) keep input; observe-only/unknown/view-only
+            declare `input` keep input; observe-only/unknown/view-only
             (cmux, missing/unknown capabilities) never show input or macros. */}
         {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && (
         <>

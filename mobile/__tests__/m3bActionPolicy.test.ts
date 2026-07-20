@@ -10,15 +10,15 @@ import {
 } from '../src/lib/lifecycle';
 
 const MANAGED = { adapterCapabilities: ['observe', 'liveTerminal', 'reliableTranscript', 'input', 'control', 'managedLifecycle'] };
-const EXTERNAL_TMUX = { adapterCapabilities: ['observe', 'liveTerminal', 'reliableTranscript', 'input', 'control'] };
+const EXTERNAL_ADAPTER = { adapterCapabilities: ['observe', 'liveTerminal', 'reliableTranscript', 'input', 'control'] };
 const OBSERVE_ONLY_CMUX = { adapterCapabilities: ['observe', 'bestEffortTranscript'] };
 
 describe('readCapabilities', () => {
   it('reads managedLifecycle + input independently for controlled_pty', () => {
     expect(readCapabilities(MANAGED)).toEqual({ managed: true, inputCapable: true });
   });
-  it('external tmux is NOT managed but keeps input', () => {
-    expect(readCapabilities(EXTERNAL_TMUX)).toEqual({ managed: false, inputCapable: true });
+  it('external adapter is NOT managed but keeps input', () => {
+    expect(readCapabilities(EXTERNAL_ADAPTER)).toEqual({ managed: false, inputCapable: true });
   });
   it('observe-only cmux is neither managed nor input-capable', () => {
     expect(readCapabilities(OBSERVE_ONLY_CMUX)).toEqual({ managed: false, inputCapable: false });
@@ -70,7 +70,7 @@ describe('computeActionPolicy — plan UI policy table (managed)', () => {
 });
 
 describe('computeActionPolicy — non-managed is View Only', () => {
-  it('external tmux: no destructive controls, input retained', () => {
+  it('external adapter: no destructive controls, input retained', () => {
     const p = computeActionPolicy({ managed: false, inputCapable: true, state: 'unknown', pending: null });
     expect(p).toMatchObject({ canStop: false, canForceKill: false, canDelete: false, viewOnly: true, inputEnabled: true });
   });
