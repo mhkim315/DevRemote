@@ -400,7 +400,6 @@ func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string)
 // terminateAdapterSession removes a spawn entry by local id via adapter.
 func (o *OwnedPTYRuntime) terminateAdapterSession(ctx context.Context, localID string) error {
 	return o.spawn.TerminateSession(ctx, localID)
-	return fmt.Errorf("spawn adapter does not support termination")
 }
 
 // Get returns a copy of the lifecycle record.
