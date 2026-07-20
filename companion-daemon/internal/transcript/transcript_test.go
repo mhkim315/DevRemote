@@ -601,7 +601,9 @@ func TestServiceFeedBytes(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("terminal output\n"), time.Now(), 0)
+	gen := svc.EnableQueue(sid)
+	svc.FeedBytes(sid, []byte("terminal output\n"), time.Now(), gen)
+	svc.CloseSessionQueue(sid, gen)
 
 	list := svc.ListTranscript(sid)
 	if len(list) != 1 {
@@ -616,13 +618,14 @@ func TestServiceBothSources(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("fallback output\n"), time.Now(), 0)
+	gen := svc.EnableQueue(sid); svc.FeedBytes(sid, []byte("fallback output\n"), time.Now(), gen)
 	// Establish correlation before projecting agent events.
 	svc.SetCorrelation(sid, CorrelationState{Correlation: "proven"})
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
 		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAgentStarted, Text: "started", Provenance: "provider_protocol"},
 	})
 
+	svc.CloseSessionQueue(sid, gen)
 	list := svc.ListTranscript(sid)
 	if len(list) != 2 {
 		t.Fatalf("expected 2 segments (both sources preserved), got %d", len(list))
@@ -647,11 +650,12 @@ func TestServiceClearTranscript(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("data\n"), time.Now(), 0)
+	gen := svc.EnableQueue(sid); svc.FeedBytes(sid, []byte("data\n"), time.Now(), gen)
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
 		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "data", Provenance: "provider_protocol"},
 	})
 
+	svc.CloseSessionQueue(sid, gen)
 	if len(svc.ListTranscript(sid)) == 0 {
 		t.Fatal("expected segments before clear")
 	}
@@ -667,12 +671,15 @@ func TestServiceClearTranscript(t *testing.T) {
 	}
 }
 
+
+
 func TestServiceTranscriptStats(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("line1\nline2\nline3\n"), time.Now(), 0)
+	gen := svc.EnableQueue(sid); svc.FeedBytes(sid, []byte("line1\nline2\nline3\n"), time.Now(), gen)
 
+	svc.CloseSessionQueue(sid, gen)
 	stats := svc.TranscriptStats(sid)
 	if stats.SegmentCount != 3 {
 		t.Errorf("expected 3 segments, got %d", stats.SegmentCount)
