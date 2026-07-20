@@ -1,6 +1,6 @@
 # PB.2a Evidence — Manual Link and Arbitrary Attach Removal
 
-**PB.2a IMPL SHA:** `de2545d9c`
+**PB.2a IMPL SHA:** `36214a805` (R2: gofmt + legacy comment cleanup)
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## Consumer Map + Deletion Order
@@ -17,21 +17,42 @@
 
 ## Zero Consumers Proof
 
+### Control (proves pattern matches)
 ```
-$ grep -rnE "ManualLink|ManualEvidence|SourceManualLink|LinkedLogResolver|ResolveLink"     --include='*.go' . | grep -v "_test.go" | grep -v "testdata"
-(empty — zero production references)
-
 $ printf "ManualEvidence" | grep -E "ManualLink|ManualEvidence"
 ManualEvidence
-(exit 0 — pattern valid)
+(exit 0)
+```
+
+### Production
+```
+$ grep -rnE "ManualLink|ManualEvidence|SourceManualLink|LinkedLogResolver|ResolveLink" \
+    --include='*.go' . | grep -v "_test.go" | grep -v "testdata"
+(empty — zero)
+```
+
+### Tests
+```
+$ grep -rnE "ManualLink|ManualEvidence|SourceManualLink|LinkedLogResolver|ResolveLink" \
+    --include='*_test.go' .
+(empty — zero)
+```
+
+### Mobile
+```
+$ grep -rnE "ManualLink|ManualEvidence|SourceManualLink|LinkedLogResolver|ResolveLink" \
+    ../mobile/src/
+(empty — zero)
+```
+
+### Scripts
+```
+$ grep -rnE "ManualLink|ManualEvidence|SourceManualLink|LinkedLogResolver|ResolveLink" \
+    ../scripts/ scripts/
+(empty — zero)
 ```
 
 ## 404 Route Test
-
-```
-=== RUN   TestPB2a_LinkAttachRoutesReturn404
---- PASS: TestPB2a_LinkAttachRoutesReturn404 (0.00s)
-```
 
 All 5 routes return exactly 404:
 - GET /api/v2/links → 404
@@ -43,19 +64,19 @@ All 5 routes return exactly 404:
 ## Managed Path Preservation
 
 ```
-=== RUN   TestPB2a_ManagedPathsUnaffectedByLinkRemoval
---- PASS (catalog, lifecycle, approval, transport all intact)
+TestPB2a_ManagedPathsUnaffectedByLinkRemoval: PASS
+(catalog, lifecycle, approval, transport all intact)
 ```
 
 ## Gates
 
 ```
-go build ./...                                    exit 0
-go vet ./...                                      exit 0
-gofmt -d (changed files)                          clean
-git diff --check                                  exit 0
-go test -race ./... -count=1                      ALL PASS (12 packages)
+go build ./...                            exit 0
+go vet ./...                              exit 0
+gofmt -d .                                clean
+git diff --check                          exit 0
+go test -race ./... -count=1              ALL PASS (12 packages)
 go test -race ./internal/term -run "TestPA4_" -count=20  PASS
-cd mobile && npx tsc --noEmit                     clean
-cd mobile && npx jest                             451/451 pass, 34 suites
+cd mobile && npx tsc --noEmit             clean
+cd mobile && npx jest                     451/451 pass, 34 suites
 ```
