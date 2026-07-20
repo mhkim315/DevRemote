@@ -1,16 +1,18 @@
 # PB/PA4 Contract Evidence
 
-**Contract SHA:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
-**Contract document:** `docs/PB_PA4_CONTRACT.md`
+**Contract SHA:** `9956d7272c5a701b78851b5fd4cb2ea725d41d18`
+**Contract document:** `companion-daemon/docs/PB_PA4_CONTRACT.md`
+**Rollback SHA:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
 
-## Gate Output (read-only discovery — no production changes)
+## Exact Gate Commands and Output
 
+### Command: `go build ./... && go vet ./...`
 ```
-=== Backend ===
-(BUILD: PASS)
-(VET: PASS)
+(exit 0 — no output)
+```
 
-=== Tests ===
+### Command: `go test -race ./... -count=1`
+```
 ok  	devremote/companion-daemon/cmd/devremote	35.579s
 ?   	devremote/companion-daemon/cmd/signald	[no test files]
 ok  	devremote/companion-daemon/internal/agent	3.236s
@@ -25,13 +27,33 @@ ok  	devremote/companion-daemon/internal/sessionid	4.781s
 ok  	devremote/companion-daemon/internal/term	21.628s
 ok  	devremote/companion-daemon/internal/transcript	4.224s
 ok  	devremote/companion-daemon/internal/watcher	4.799s
+```
 
-=== Format ===
-(FORMAT: PASS)
+### Command: `git diff --check`
+```
+(exit 0 — no output)
+```
 
-=== GATE ===
-HEAD == upstream: 34d55e950
-Worktree: clean (only untracked PB_PA4_CONTRACT.md)
+### Command: `git rev-parse HEAD`
+```
+9956d7272c5a701b78851b5fd4cb2ea725d41d18
+```
+
+### Command: `git status --short`
+```
+?? companion-daemon/docs/PB_PA4_CONTRACT.md
+?? companion-daemon/docs/PB_PA4_CONTRACT_EVIDENCE.md
+```
+
+### Verification: HEAD == upstream
+```
+git rev-parse origin/feature/phase10-multi-adapter → 9956d7272c5a701b78851b5fd4cb2ea725d41d18
+(matches HEAD)
+```
+
+### Verification: Production diff is empty
+```
+git diff 34d55e950..9956d7272 -- internal/ cmd/ mobile/ → (empty)
 ```
 
 ## Consumer Inventory Summary
