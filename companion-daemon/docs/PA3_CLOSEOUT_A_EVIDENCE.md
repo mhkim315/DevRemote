@@ -2,8 +2,8 @@
 
 Status: **EVIDENCE**
 Date: 2026-07-20
-Implementation SHA: `044305f933ef76a3eb64199879c07b2df809f5e6`
-R1: barrier-controlled concurrent tests with real goroutine coordination
+Implementation SHA: `a1e73da44bb4da60e7e5596e11a887b6f357fd65`
+R2: coordinated concurrency — delete in goroutine, poll registry, install B, release A
 
 ## Root defect
 
