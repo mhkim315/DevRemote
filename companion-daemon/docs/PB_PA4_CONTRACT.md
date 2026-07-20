@@ -1,9 +1,17 @@
 # PB/PA4 Contract — Consumer Inventory, Migration Sequence, and Deletion Gates
 
-**Status:** AUTHORITATIVE CONTRACT — read-only discovery, no production edits
+**Status:** SUPERSEDED COMBINED DRAFT — historical inventory only
 **Branch:** `feature/phase10-multi-adapter`
 **Rollback SHA:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
 **Prerequisite:** PF accepted-state freeze (POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md §1)
+
+> **Superseded notice:** This combined PB/PA4 draft is not execution authority.
+> PA4 isolation and PB deletion now have separate contracts at
+> `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` and
+> `docs/PB_LEGACY_REMOVAL_CONTRACT.md`; their ordering and SHA ledger are
+> controlled by `docs/POST_PA3_AUTHORITATIVE_ROADMAP.md`. The inventory below
+> is retained only as historical discovery input. In particular, its PA3
+> rollback cannot be used as PB's prerequisite or rollback.
 
 ## Classification Vocabulary
 

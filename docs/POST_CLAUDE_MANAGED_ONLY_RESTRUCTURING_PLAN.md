@@ -1,8 +1,15 @@
 # Post-Claude Managed-Only Restructuring Plan
 
-Status: **AUTHORITATIVE PLAN — FINAL CLAUDE ACCEPTED; PF EVIDENCE FREEZE IS NEXT**
+Status: **HISTORICAL RATIONALE ONLY — post-PA3 execution order superseded**
 Branch: `feature/phase10-multi-adapter`  
 Product boundary: only POKIT-launched managed runtimes are authoritative
+
+> **Superseded notice (post-PA3):** Do not use this document to schedule PA4,
+> PB, or later work. Current authority is
+> [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md),
+> [`PA4_MANAGED_ISOLATION_CONTRACT.md`](PA4_MANAGED_ISOLATION_CONTRACT.md), and
+> [`PB_LEGACY_REMOVAL_CONTRACT.md`](PB_LEGACY_REMOVAL_CONTRACT.md). The material
+> below remains only as historical rationale for the managed-only direction.
 
 This document records the post-Claude implementation sequence. It is not an
 acceptance record and does not authorize cleanup today. A verification agent

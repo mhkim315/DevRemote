@@ -1,8 +1,13 @@
 # Pokit Roadmap After E10b
 
-Status: active product roadmap
+Status: historical product roadmap — post-PA3 status/order superseded
 Branch: `feature/phase10-multi-adapter`
 Validated runtime baseline: `6b40b32` — E10b Claude mobile width / PTY geometry mirror
+
+> **Superseded notice (post-PA3):** Current phase status and execution authority
+> live in [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md),
+> with separate PA4 and PB contracts. Do not reconstruct a tmux/cmux/localpty-
+> centered product direction from this historical roadmap.
 
 ## Product definition
 
@@ -154,10 +159,10 @@ A1.2 Claude Approval Extension                ACCEPT 33cce5743 (C1D 4794ce7; C2D
 PF  Post-Claude Accepted-State Freeze         ACCEPT 07d5c8c5d (freeze ledger and rollback SHA cc86e3655 complete)
 PA0 Legacy Consumer Inventory/Ownership       ACCEPT d8e663c0c (exact consumer/symbol inventory, retained PTY boundary, executable deletion gates)
 PA1 Managed Catalog/Public Reads              ACCEPT b377268f5 (implementation 95149ed; exact provider/version/generation binding; read-only catalog)
-PA2 Managed Lifecycle/TerminalTransport       READY — contract `PA2_LIFECYCLE_TRANSPORT_CONTRACT.md`; begin PA2a only, stop for independent review before PA2b
-PA3 Mobile/Transcript/Activity Cutover        BLOCKED pending PA2 ACCEPT
-PA4 Managed Authority-Isolation Gate          BLOCKED pending PA3 ACCEPT
-PB  tmux/cmux/attach Physical Removal         BLOCKED pending PA4 ACCEPT
+PA2 Managed Lifecycle/TerminalTransport       ACCEPT
+PA3 Mobile/Transcript/Activity Cutover        ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7`
+PA4 Managed Authority-Isolation Gate          READY FOR CONTRACT REVIEW; freeze only after independent acceptance
+PB  tmux/cmux/attach Physical Removal         BLOCKED pending exact PA4 ACCEPT SHA
 PC0 Minimal Canonical Event Spine             BLOCKED pending PB ACCEPT
 N1  Notifications                             RESEQUENCED after PC0 ACCEPT
 PC1 Full Transcript/Activity Projections      BLOCKED pending PC0 ACCEPT; may follow N1
