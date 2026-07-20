@@ -128,7 +128,9 @@ unauthorized PA3 mechanism change.
 
 ## 6. Exit and PB handoff
 
-PA4 exits only after an independent read-only verifier accepts the complete
-default-configuration boundary and records an exact SHA. That exact PA4 ACCEPT
-SHA becomes both the PB prerequisite and PB rollback baseline. Until then PB is
-BLOCKED.
+PA4 exited after an independent read-only verifier accepted the complete
+default-configuration boundary at `74560edd88ef5b53c3b3d8d215f3007efbf468a2`.
+That SHA is the immutable PB contract prerequisite. The later PA4
+freeze-document commit is recorded separately as `PB_START_BASELINE_SHA` and
+is the operational rollback point, so rollback preserves this frozen contract
+and the authoritative roadmap. The two identities must not be conflated.

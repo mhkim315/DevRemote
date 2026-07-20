@@ -1,10 +1,10 @@
 # Post-PA3 Authoritative Roadmap
 
-**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 COMPLETE, PB PENDING (gated on human authorization)
+**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 ACCEPTED; PB planning awaiting independent document review
 
 **Branch:** `feature/phase10-multi-adapter`
 
-**Frozen production baseline:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPT)
+**Frozen PA3 production baseline:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7`
 
 **Documentation input HEAD:** `b8884b5934d3a89b132f887de6339b976e01c236`
 
@@ -16,9 +16,10 @@ These identities have different meanings and must not be substituted for one ano
 |---|---|---|
 | PA2 final implementation | `b93c521b7de45f3f577805dbb7de505e16f3172d` | Accepted PA2 implementation ancestry |
 | PA3 frozen production baseline | `34d55e950012e97ccdcb03fd9abba88088ffd9a7` | Last accepted production baseline before PA4 |
-| Current documentation input HEAD | `b8884b5934d3a89b132f887de6339b976e01c236` | Documentation state reconciled by this plan |
+| PA4 production implementation | `4aaf3b76a5a4bfab64b041b3be19eaa32d2dd0e2` | Frozen managed-isolation production tree |
 | PA4 ACCEPT | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Independently verified and frozen |
-| PB prerequisite and rollback | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Set at PA4 ACCEPT freeze |
+| PB prerequisite | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Contract authority required before PB may start |
+| PB start baseline | **PENDING PA4 freeze-document commit** | Operational rollback point that preserves the frozen PA4/roadmap documents; recorded by the PB execution-plan commit |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
 
 | Packet | Status |
@@ -28,8 +29,8 @@ These identities have different meanings and must not be substituted for one ano
 | PA1 | ACCEPT |
 | PA2 | ACCEPT |
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
-| PA4 | READY FOR INDEPENDENT CONTRACT REVIEW; not frozen or authorized for implementation |
-| PB | BLOCKED pending an exact independently accepted PA4 SHA |
+| PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
+| PB | READY FOR PLAN REVIEW; code remains blocked pending the PB inventory/plan commit and independent document acceptance |
 
 ## 2. Mandatory execution order
 
@@ -72,9 +73,11 @@ not fall back to `mux.Registry`, legacy screen parsing, PTY-text inference,
 process discovery, or external raw JSONL observation. The normative contract is
 [`PA4_MANAGED_ISOLATION_CONTRACT.md`](PA4_MANAGED_ISOLATION_CONTRACT.md).
 
-PB is physical removal after PA4 ACCEPT. Its prerequisite and rollback SHA is
-the future exact PA4 ACCEPT SHA, never the PA3 baseline. The normative contract
-is [`PB_LEGACY_REMOVAL_CONTRACT.md`](PB_LEGACY_REMOVAL_CONTRACT.md).
+PB is physical removal after PA4 ACCEPT. Its contract prerequisite is the exact
+PA4 ACCEPT SHA. Its operational rollback is separately recorded as the exact
+PB start baseline after the PA4 freeze documents exist, so recovery does not
+discard the accepted authority ledger. The normative contract is
+[`PB_LEGACY_REMOVAL_CONTRACT.md`](PB_LEGACY_REMOVAL_CONTRACT.md).
 
 ## 5. Post-PB direction
 
@@ -90,8 +93,8 @@ hardening follow in that order.
 | Document | Classification after this reconciliation |
 |---|---|
 | This document | **Authoritative execution order and status ledger** |
-| `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Authoritative PA4 review candidate**; frozen only after independent acceptance |
-| `docs/PB_LEGACY_REMOVAL_CONTRACT.md` | **Authoritative PB boundary**, blocked until PA4 ACCEPT |
+| `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the independently accepted SHA |
+| `docs/PB_LEGACY_REMOVAL_CONTRACT.md` | **Authoritative PB boundary**; implementation starts only after independent PB plan review |
 | `docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md` | Historical rationale only; post-PA3 sequence superseded |
 | `docs/ROADMAP_AFTER_E10B.md` | Historical product roadmap; post-PA3 status/order superseded |
 | `docs/PA0_LEGACY_CONSUMER_INVENTORY_CONTRACT.md` | Accepted historical inventory input, not current execution authority |
@@ -107,7 +110,7 @@ post-PA3 documents named above control.
 ## 7. Stop conditions
 
 - Stop PA4 if a managed request can reach `mux.Registry` or observer evidence.
-- Stop PB if the exact PA4 ACCEPT SHA is unavailable or is not its baseline.
+- Stop PB if the exact PA4 prerequisite or the separately recorded PB start baseline is unavailable or not in its ancestry.
 - Stop either packet if PA3 generation/lifecycle/transport invariants change.
 - Stop rather than retaining Gemini or legacy discovery as an “accepted
   adapter” without a separately accepted production consumer.
