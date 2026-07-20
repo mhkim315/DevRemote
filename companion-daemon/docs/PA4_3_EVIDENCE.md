@@ -9,15 +9,15 @@ PA4.3 verifies every managed terminal operation (WriteInput, Resize,
 SubscriberFanOut, Retire) is gated by exact-generation TerminalTransport
 and never falls back to mux.Registry or legacy adapter session lookup.
 
-## Verified Call Sites (zero production changes needed)
+## Verified Call Sites
 
 | # | File:Line | Path | Isolation |
 |---|-----------|------|-----------|
-| 1 | `terminal_transport.go:69` | `WriteInput` → nil writer check → fail-closed | Generation-gated |
+| 1 | `terminal_transport.go:69` | `WriteInput` → nil writer → fail-closed | Generation-gated |
 | 2 | `terminal_transport.go:80` | `Resize` → gated by retired check | Generation-gated |
 | 3 | `terminal_transport.go:58` | `RetireIfGeneration` → mismatched gen rejected | Generation-gated |
-| 4 | `terminal_transport.go:94` | `SubscriberFanOut` → exact-generation transport | Generation-gated |
-| 5 | `pty.go:204-209` | HandleWS → TerminalTransport preferred path | No Registry fallback for managed |
+| 4 | `terminal_transport.go:94` | `SubscriberFanOut` → IsRetired+sessionID check (R2) | Generation-gated |
+| 5 | `pty.go:204-209` | HandleWS → TerminalTransport preferred path | No Registry fallback |
 | 6 | `pty.go:461` | Input routes through TerminalTransport | Generation-gated |
 | 7 | `pty.go:363` | Replay through TerminalTransport SubscriberFanOut | Generation-gated |
 
@@ -43,7 +43,7 @@ HEAD == upstream                      → confirmed externally
 git status --short                    → clean
 ```
 
-## Production Files (Unchanged)
-- `terminal_transport.go` — already generation-gated
-- `pty.go` — TerminalTransport preferred path for controlled_pty
-- `owned_pty_runtime.go` — transport registration with generation
+## Production Files
+- `terminal_transport.go` — SubscriberFanOut generation gate added (R2)
+- `pty.go` — TerminalTransport preferred path for controlled_pty (unchanged)
+- `owned_pty_runtime.go` — transport registration with generation (unchanged)
