@@ -1,7 +1,7 @@
 # PA4.5 Evidence — Facade/Fallback Deletion and Final PA4 Acceptance
 
-**Implementation SHA:** `f212ddbe9` (PA4-Final-R17: true atomic SubscriberFanOut + exact-gen awaitExit)
-**Prior EVID SHAs:** `152b07e3c` (R16), `ef012136c` (R15), `96e21fff5` (R14)
+**Implementation SHA:** `7c2d63b7c` (PA4-Final-R20: unexported hook, Recorder() removed)
+**Prior EVID SHAs:** `d2294af67` (R19), `ce2425406` (R18), `f212ddbe9` (R17)
 **PA3 Rollback:** `34d55e950`
 
 ## PA4 Acceptance Ledger
@@ -33,6 +33,9 @@
 | R15 | Remove GetRecorder global lookup, retired→500 test, gofmt | pty.go, terminal_transport.go, pa4_5_isolation_test.go |
 | R16 | Eliminate ALL managed-path GetRecorder: IPC, /term/size, awaitExit, TOCTOU | 8 files |
 | R17 | True atomic SubscriberFanOut + exact-generation awaitExit | terminal_transport.go, owned_pty_runtime.go |
+| R18 | Real goroutine race + lifecycle-path test proofs | pa4_5_isolation_test.go |
+| R19 | Test hook proves SubscriberFanOut atomicity (RLock→Lock blocking) | terminal_transport.go, pa4_5_isolation_test.go |
+| R20 | Unexport hook, delete Recorder() accessor, evidence sync | terminal_transport.go, docs |
 
 
 ## PA4.5 Audit Results
@@ -86,8 +89,9 @@
 | Production mode confirmed | PASS — no --insecure-local-only |
 | Tunnel connected | PASS — SM-S926N Android 16 |
 | Device paired | PASS — SM-S926N |
+| Mobile keyboard input | DEFERRED — post-PB (WebView/xterm interaction layer, not managed transport) |
 
-## Gates (at IMPL `f212ddbe9`)
+## Gates (at IMPL `7c2d63b7c`)
 ```
 go build ./... && go vet ./...        → exit 0
 gofmt -d (changed files)              → clean

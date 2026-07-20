@@ -8,7 +8,7 @@
 
 **PB prerequisite / rollback SHA:** **UNSET; must equal the future PA4 ACCEPT SHA**
 
-**PA4 implementation HEAD:** pending R16 commit
+**PA4 implementation HEAD:** `7c2d63b7c` (PA4-Final-R20)
 
 **Future PB ACCEPT SHA:** **UNSET**
 
