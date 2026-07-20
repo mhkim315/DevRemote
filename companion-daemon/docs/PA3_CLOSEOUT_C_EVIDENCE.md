@@ -1,6 +1,8 @@
 # PA3 Closeout C — Evidence
 
-**Implementation SHA:** `c58c807e358f41b68174c7a7ae446b7940ac5db9`
+**Implementation SHA:** `73c28b4d8293d598e6649ef093e1be7ec16010ab`
+
+**R3 Fix:** Replaced 4 gen=0 FeedBytes calls in transcript_test.go positive fixtures with EnableQueue-derived real generations and CloseSessionQueue drains.
 
 **R2 Fix:** Replaced remaining gen=0 calls in `TestRecorder_TerminalInput_NoRawText`
 with EnableQueue-obtained real generation. Queue drained before EndInput to
