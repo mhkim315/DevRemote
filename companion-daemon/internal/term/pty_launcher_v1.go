@@ -59,26 +59,36 @@ type v1Handle struct {
 
 func (h *v1Handle) Resize(rows, cols int) error {
 	type r interface{ Resize(int, int) error }
-	if rr, ok := h.sess.(r); ok { return rr.Resize(rows, cols) }
+	if rr, ok := h.sess.(r); ok {
+		return rr.Resize(rows, cols)
+	}
 	return nil
 }
 func (h *v1Handle) Write(p []byte) (int, error) {
 	type w interface{ Write([]byte) (int, error) }
-	if ww, ok := h.sess.(w); ok { return ww.Write(p) }
+	if ww, ok := h.sess.(w); ok {
+		return ww.Write(p)
+	}
 	return len(p), nil
 }
 func (h *v1Handle) Wait() error {
 	type w interface{ Wait() error }
-	if ww, ok := h.sess.(w); ok { return ww.Wait() }
+	if ww, ok := h.sess.(w); ok {
+		return ww.Wait()
+	}
 	return nil
 }
 func (h *v1Handle) Signal(sig syscall.Signal) error {
 	type s interface{ Signal(syscall.Signal) error }
-	if ss, ok := h.sess.(s); ok { return ss.Signal(sig) }
+	if ss, ok := h.sess.(s); ok {
+		return ss.Signal(sig)
+	}
 	return nil
 }
 func (h *v1Handle) Close() error {
 	type c interface{ Close() error }
-	if cc, ok := h.sess.(c); ok { return cc.Close() }
+	if cc, ok := h.sess.(c); ok {
+		return cc.Close()
+	}
 	return nil
 }

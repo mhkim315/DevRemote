@@ -89,9 +89,10 @@ type CatalogEntry struct {
 // per-session action locks; no lock is held across process signalling or
 // waits.
 type OwnedPTYRuntime struct {
-	spawn      ManagedPTYLauncher  // PB.5a: narrow platform-neutral launcher (no mux.Adapter dependency)
-	transcript *transcript.Service // T3: cleared on Delete
-	status     StatusClearer       // S1: cleared on Delete
+	spawn      ManagedPTYLauncher   // PB.5a: transitional launcher
+	v1Spawn    ManagedPTYLauncherV1 // PB.5b: V1 launcher (Spawn→PTYHandle)
+	transcript *transcript.Service  // T3: cleared on Delete
+	status     StatusClearer        // S1: cleared on Delete
 	graceful   time.Duration
 	killGrace  time.Duration
 
@@ -106,6 +107,15 @@ type OwnedPTYRuntime struct {
 
 // NewOwnedPTYRuntime constructs the controlled-PTY lifecycle owner.
 func NewOwnedPTYRuntime(spawn ManagedPTYLauncher, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
+	return newOwnedPTYRuntime(spawn, nil, transcriptSvc)
+}
+
+// NewOwnedPTYRuntimeV1 creates an OwnedPTYRuntime using the V1 launcher.
+func NewOwnedPTYRuntimeV1(v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
+	return newOwnedPTYRuntime(nil, v1, transcriptSvc)
+}
+
+func newOwnedPTYRuntime(spawn ManagedPTYLauncher, v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
 	return &OwnedPTYRuntime{
 		spawn:      spawn,
 		transcript: transcriptSvc,
@@ -158,11 +168,16 @@ type ownedCleanup func(ctx context.Context)
 // with GenerationCleanupCapability. Falls back to legacy ownSpawn if the
 // adapter does not implement SessionCreatorWithIdentity.
 func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
+	// PB.5b: V1 launcher available via o.V1() accessor.
+	// Creation still routes through the transitional ManagedPTYLauncher.
 	if o.spawn == nil {
 		return "", fmt.Errorf("no spawn launcher")
 	}
 	return o.createWithCapture(ctx, opts, profileID, name, o.spawn)
 }
+
+// V1 returns the V1 launcher, or nil if not wired.
+func (o *OwnedPTYRuntime) V1() ManagedPTYLauncherV1 { return o.v1Spawn }
 
 // createWithCapture uses CreateSessionAndCapture + GenerationCleanupCapability.
 // Pre-install barrier: claims old capability, executes it, waits for

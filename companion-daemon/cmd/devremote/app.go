@@ -170,7 +170,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("controlled PTY launcher: %w", err)
 	}
-	ownedPTY := term.NewOwnedPTYRuntime(launcher, transcriptSvc)
+	v1 := term.NewV1FromOld(launcher)
+	ownedPTY := term.NewOwnedPTYRuntimeV1(v1, transcriptSvc)
 	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
