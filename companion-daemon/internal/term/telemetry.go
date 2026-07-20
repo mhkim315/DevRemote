@@ -25,20 +25,20 @@ type SessionTelemetry struct {
 	// Stop/Kill/Delete on this field, never on list presence/absence.
 	// PA3 Step 2: legacy fields retained as compatibility stubs for tests.
 	// Zero values, not serialized (json:"-"). Removed in Step 4 (DTO update).
-	State              string              `json:"-"`
-	Load               int                 `json:"-"`
-	Runner             string              `json:"-"`
-	RunnerColor        string              `json:"-"`
-	Events             []models.AgentEvent `json:"-"`
+	State       string              `json:"-"`
+	Load        int                 `json:"-"`
+	Runner      string              `json:"-"`
+	RunnerColor string              `json:"-"`
+	Events      []models.AgentEvent `json:"-"`
 
-	LifecycleState      string   `json:"lifecycleState,omitempty"`
-	Adapter             string   `json:"adapter"`
-	Capabilities        []string `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
-	AdapterCapabilities []string `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
-	AgentKind           string              `json:"agentKind,omitempty"`       // detected agent (Phase A5+)
-	AgentStatus         string              `json:"agentStatus,omitempty"`     // agent activity status (Phase A5+)
-	AgentConfidence     float64             `json:"agentConfidence,omitempty"` // detection confidence 0.0-1.0 (Phase A5+)
-	Approvals           []SafeApprovalDTO   `json:"approvals,omitempty"`       // bounded, redacted safe approval DTOs (A1 B6)
+	LifecycleState      string            `json:"lifecycleState,omitempty"`
+	Adapter             string            `json:"adapter"`
+	Capabilities        []string          `json:"capabilities,omitempty"`        // session-level: e.g. ["live_stream","screen","history"]
+	AdapterCapabilities []string          `json:"adapterCapabilities,omitempty"` // adapter-level: e.g. ["control","liveTerminal","reliableTranscript"]
+	AgentKind           string            `json:"agentKind,omitempty"`           // detected agent (Phase A5+)
+	AgentStatus         string            `json:"agentStatus,omitempty"`         // agent activity status (Phase A5+)
+	AgentConfidence     float64           `json:"agentConfidence,omitempty"`     // detection confidence 0.0-1.0 (Phase A5+)
+	Approvals           []SafeApprovalDTO `json:"approvals,omitempty"`           // bounded, redacted safe approval DTOs (A1 B6)
 	// AgentActivity is the S1 additive, authenticated ADVISORY agent-activity
 	// projection sourced from the session-owned AgentStatusStore. It is kept
 	// SEPARATE from the daemon-authoritative lifecycle (LifecycleState) and from
@@ -229,7 +229,7 @@ func buildSimpleSnapshot(reg *mux.Registry) []SessionTelemetry {
 			ID: compoundID, DisplayID: s.ID(), Adapter: s.AdapterName(),
 			Capabilities:        sessionCapabilities(s),
 			AdapterCapabilities: adapterCapabilityStrings(reg, s.AdapterName()),
-			Stale: isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
+			Stale:               isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
 		})
 	}
 	sortTelemetry(res)
