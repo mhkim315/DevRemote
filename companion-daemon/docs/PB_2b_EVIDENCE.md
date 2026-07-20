@@ -1,6 +1,6 @@
 # PB.2b Evidence — Discovery, Resolver, and External Observer Removal
 
-**PB.2b IMPL SHA:** `fc8850762`
+**PB.2b IMPL SHA:** `3d0ea0aa7` (R2: collectProcessSnapshots deleted, comments cleaned)
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## Consumer Inventory
@@ -29,9 +29,36 @@
 | TerminalTransport | RETAINED | Managed transport boundary |
 
 ## Zero Consumers Proof
+
+### Control
+```
+$ printf "ResolveAgentLog" | grep -E "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector"
+ResolveAgentLog
+(exit 0 — pattern matches)
+```
+
+### Production
 ```
 $ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector" --include='*.go' . | grep -v "_test.go"
-(empty)
+(empty — zero)
+```
+
+### Tests
+```
+$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|ClaudeResolver|TermAgentDetector" --include='*_test.go' .
+(empty — zero)
+```
+
+### Mobile
+```
+$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|TermAgentDetector" ../mobile/src/
+(empty — zero)
+```
+
+### Scripts
+```
+$ grep -rnE "ResolveAgentLog|GeminiResolver|CodexResolver|TermAgentDetector" ../scripts/ scripts/
+(empty — zero)
 ```
 
 ## Gates
