@@ -367,9 +367,9 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 
 // TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected proves
 // that SubscriberFanOut and Retire are mutually exclusive: when a subscriber
-// holds the RLock (inside the critical section), Retire blocks until the
-// subscriber completes. After retirement, new subscribers are rejected.
-// Uses concurrent goroutines with channel coordination.
+// holds the RLock (inside the critical section), Retire blocks on Lock until
+// the subscriber completes. Uses the SubscriberFanOutHook test seam to
+// signal from inside the RLock, confirming atomicity.
 func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testing.T) {
 	pr, pw := io.Pipe()
 	ms := &mockStream{pr: pr, pw: pw}
@@ -381,7 +381,14 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 
 	tt := newTerminalTransport("controlled_pty:r17-race", 1, pw, ms, rec)
 
-	// Coordinate: subscriber starts, retirer races.
+	// Channel to signal that goroutine A is inside the RLock.
+	insideLock := make(chan struct{})
+	hookContinue := make(chan struct{})
+	tt.SubscriberFanOutHook = func() {
+		close(insideLock) // signal: A holds RLock
+		<-hookContinue    // wait: main gives permission to finish
+	}
+
 	subDone := make(chan struct{})
 	retireDone := make(chan struct{})
 	var subOK bool
@@ -396,20 +403,31 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 		close(subDone)
 	}()
 
-	// Give A a head start so it acquires RLock first.
-	time.Sleep(5 * time.Millisecond)
+	// Wait for A to enter the RLock critical section.
+	<-insideLock
 
-	// Goroutine B: retirer — blocks until A releases RLock.
+	// Goroutine B: retirer — must BLOCK because A holds RLock.
 	go func() {
 		tt.Retire()
 		close(retireDone)
 	}()
 
-	// Wait for both to complete.
+	// Assert B is blocked: Retire has not completed yet.
+	select {
+	case <-retireDone:
+		t.Fatal("Retire completed while subscriber held RLock — atomicity broken")
+	case <-time.After(30 * time.Millisecond):
+		// Expected: B is blocked on Lock.
+	}
+
+	// Allow A to finish — release RLock.
+	close(hookContinue)
 	<-subDone
 	if !subOK {
-		t.Fatal("first SubscriberFanOut failed — should succeed before retirement")
+		t.Fatal("SubscriberFanOut failed — should succeed before retirement")
 	}
+
+	// Now B should complete (Lock acquired, transport retired).
 	<-retireDone
 
 	// After retirement, new subscriber must be rejected.
@@ -417,6 +435,7 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 	if ok {
 		t.Fatal("SubscriberFanOut succeeded on retired transport — generation gate bypassed")
 	}
+	_ = ok
 }
 
 // TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder proves

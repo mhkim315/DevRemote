@@ -32,6 +32,11 @@ type TerminalTransport struct {
 	}
 	recorder *Recorder // direct reference; nil if never set
 	retired  bool      // set by Retire/RetireIfGeneration; checked by IsRetired
+
+	// SubscriberFanOutHook is an optional test hook called inside the
+	// RLock critical section after recorder capture and before unlock.
+	// nil means no-op. Set only from tests.
+	SubscriberFanOutHook func()
 }
 
 // newTerminalTransport builds the transport handle for a freshly-launched
@@ -126,6 +131,9 @@ func (t *TerminalTransport) SubscriberFanOut(sessionID string) (bootstrap []byte
 		return nil, nil, nil, false
 	}
 	bootstrap, ch = r.SubscribeWithBootstrap()
+	if t.SubscriberFanOutHook != nil {
+		t.SubscriberFanOutHook()
+	}
 	return bootstrap, ch, r, true
 }
 
