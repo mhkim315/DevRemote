@@ -56,7 +56,7 @@
 | Claude launch | BLOCKED-HARDWARE |
 | Mobile allow/deny | BLOCKED-HARDWARE |
 | Backend full race | PASS |
-| Mobile TypeScript | NOT RUN |
+| Mobile TypeScript: PASS (447/447, pairingClient 16/16)
 | go build ./... && go vet ./... | PASS |
 
 ## Gates
