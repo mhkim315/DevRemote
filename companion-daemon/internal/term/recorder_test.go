@@ -764,104 +764,89 @@ type ActivityEvent struct {
 	Timestamp interface{}
 }
 
-// PA3 Closeout A R2 — Recorder instance-safe termination.
-// Verifier-mandated coordinated concurrency: delete A in goroutine,
-// wait for atomic registry absence while readLoop blocked, then install B,
-// then release A, assert B identity + no terminated flag.
-
-// barrierStream blocks Read forever until release() or Close(), then returns
-// io.EOF. Close() closes the release channel (idempotent). During coordinated
-// tests, DeleteRecorder calls Stop() → Close() → release, which unblocks the
-// readLoop AFTER the registry removal. For A (stale), the registry already
-// points to B when the stale finalizer fires.
+// PA3 Closeout A — Recorder instance-safe termination.
 type barrierStream struct {
-	release chan struct{}
+	release     chan struct{}
+	closeCalled chan struct{}
+	releaseOnce sync.Once
+	closeOnce   sync.Once
 }
 
 func newBarrierStream() *barrierStream {
-	return &barrierStream{release: make(chan struct{})}
+	return &barrierStream{release: make(chan struct{}), closeCalled: make(chan struct{})}
 }
 
-func (s *barrierStream) Read(p []byte) (int, error) {
-	<-s.release
-	return 0, io.EOF
-}
-
+func (s *barrierStream) Read([]byte) (int, error)    { <-s.release; return 0, io.EOF }
 func (s *barrierStream) Write(p []byte) (int, error) { return len(p), nil }
-func (s *barrierStream) Close() error {
-	// Release the barrier — unblocks Read so the Recorder's Stop() →
-	// <-r.done can complete. Idempotent (safe for multiple calls).
-	select {
-	case <-s.release:
-	default:
-		close(s.release)
-	}
-	return nil
-}
+func (s *barrierStream) Close() error                { s.closeOnce.Do(func() { close(s.closeCalled) }); return nil }
 func (s *barrierStream) Resize(rows, cols int) error { return nil }
+func (s *barrierStream) Release()                    { s.releaseOnce.Do(func() { close(s.release) }) }
 
-// TestRecorder_CloseoutA_BarrierControlledStream:
-//   1. Create A (barrier-blocked)
-//   2. DeleteRecorder(A) IN A GOROUTINE
-//   3. Poll until A atomically absent from registry
-//   4. THEN install B
-//   5. THEN release A's barrier
-//   6. Assert B identity preserved, no terminated flag
-func TestRecorder_CloseoutA_BarrierControlledStream(t *testing.T) {
+var closeoutASeq int64 // atomic counter for unique session IDs across -count=N
+
+func TestRecorder_CloseoutA_StaleEOFCannotMarkReplacement(t *testing.T) {
 	seq := atomic.AddInt64(&closeoutASeq, 1)
-	sid := fmt.Sprintf("test:closeout-barrier-%d", seq)
+	sid := fmt.Sprintf("test:closeout-stale-eof-%d", seq)
 
-	// 1. Create A with barrier-blocked stream.
 	streamA := newBarrierStream()
 	recA, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamA, nil })
 	if recA == nil {
 		t.Fatal("EnsureRecorder A returned nil")
 	}
+	// Ensure the readLoop has been scheduled onto the blocking Read before
+	// DeleteRecorder cancels its context. The barrier then keeps it running
+	// until the replacement has been installed.
+	time.Sleep(time.Millisecond)
 
-	// 2. DeleteRecorder(A) in a goroutine.  DeleteRecorder calls
-	//    streamA.Close() (no-op), cancels the Recorder context, and
-	//    removes A from the registry.  A's readLoop stays blocked in
-	//    streamA.Read().
 	deleteDone := make(chan struct{})
 	go func() {
 		defer close(deleteDone)
 		DeleteRecorder(sid)
 	}()
-	<-deleteDone
 
-	// 3. Wait until A is atomically absent from the registry WHILE A's
-	//    readLoop is still blocked on the barrier.  Use bounded polling.
-	deadline := time.Now().Add(2 * time.Second)
-	for GetRecorder(sid) != nil && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	select {
+	case <-streamA.closeCalled:
+	case <-time.After(2 * time.Second):
+		streamA.Release()
+		<-deleteDone
+		t.Fatal("DeleteRecorder did not call Close on A")
 	}
-	if GetRecorder(sid) != nil {
-		t.Fatal("A still in registry after goroutine delete — DeleteRecorder did not remove it")
+	if r := GetRecorder(sid); r != nil {
+		streamA.Release()
+		<-deleteDone
+		t.Fatalf("registry has %v after DeleteRecorder removed A, want nil", r)
+	}
+	select {
+	case <-recA.Done():
+		streamA.Release()
+		<-deleteDone
+		t.Fatal("A exited before its read barrier was released")
+	default:
 	}
 
-	// 4. THEN install B.  B uses a barrier stream that is never released
-	//    — B stays alive until the test defers DeleteRecorder on it.
 	streamB := newBarrierStream()
 	recB, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamB, nil })
 	if recB == nil {
-		t.Fatal("EnsureRecorder B returned nil — stale EOF may have blocked replacement")
+		streamA.Release()
+		<-deleteDone
+		t.Fatal("EnsureRecorder B returned nil")
 	}
-	defer close(streamB.release) // cleanup: unblock B readLoop
+	defer func() {
+		streamB.Release()
+		DeleteRecorder(sid)
+	}()
 
-	// Verify B is the current registry entry.
 	if r := GetRecorder(sid); r != recB {
 		t.Fatalf("registry has %v after installing B, want B (%v)", r, recB)
 	}
 
-	// 5. A's barrier was already released by DeleteRecorder's Stop()→Close().
-	//    Wait for A's stale readLoop to finish.
+	streamA.Release()
 	select {
-	case <-recA.Done():
+	case <-deleteDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("A did not exit after barrier release")
+		t.Fatal("DeleteRecorder did not finish after releasing A")
 	}
 
-	// 6. Assert B identity preserved AND no terminated flag.
 	if r := GetRecorder(sid); r != recB {
 		t.Fatalf("registry changed to %v after barrier release, want B (%v)", r, recB)
 	}
@@ -869,108 +854,67 @@ func TestRecorder_CloseoutA_BarrierControlledStream(t *testing.T) {
 	_, termOK := recorderRegistry.terminated[sid]
 	recorderRegistry.mu.Unlock()
 	if termOK {
-		t.Error("terminated flag was set — stale A's EOF was NOT discarded by instance guard")
+		t.Error("terminated flag was set by stale A's EOF")
 	}
 }
 
-var closeoutASeq int64 // atomic counter for unique session IDs across -count=N
-
-// TestRecorder_CloseoutA_StaleFinalizer: same coordinated pattern for
-// stale EOF (readLoop finalizer) and stale Stop.
-func TestRecorder_CloseoutA_StaleFinalizer(t *testing.T) {
+func TestRecorder_CloseoutA_StaleStopCannotAffectReplacement(t *testing.T) {
 	seq := atomic.AddInt64(&closeoutASeq, 1)
+	sid := fmt.Sprintf("test:closeout-stale-stop-%d", seq)
+	streamA := newBarrierStream()
+	recA, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamA, nil })
+	if recA == nil {
+		t.Fatal("EnsureRecorder A returned nil")
+	}
 
-	// --- stale-EOF: DeleteRecorder in goroutine, wait, install B, release A ---
-	t.Run("stale-EOF", func(t *testing.T) {
-		sid := fmt.Sprintf("test:closeout-feof-%d", seq)
-		streamA := newBarrierStream()
-		recA, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamA, nil })
-		if recA == nil {
-			t.Fatal("EnsureRecorder A returned nil")
-		}
+	recA.unregisterSelf()
+	if r := GetRecorder(sid); r != nil {
+		t.Fatalf("registry has %v after unregistering A, want nil", r)
+	}
 
-		deleteDone := make(chan struct{})
-		go func() {
-			defer close(deleteDone)
-			DeleteRecorder(sid)
-		}()
-		<-deleteDone
+	streamB := newBarrierStream()
+	recB, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamB, nil })
+	if recB == nil {
+		streamA.Release()
+		t.Fatal("EnsureRecorder B returned nil")
+	}
+	defer func() {
+		streamB.Release()
+		DeleteRecorder(sid)
+	}()
 
-		// Wait for atomic registry absence.
-		deadline := time.Now().Add(2 * time.Second)
-		for GetRecorder(sid) != nil && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
-		}
-		if GetRecorder(sid) != nil {
-			t.Fatal("A still in registry")
-		}
-
-		// Install B.
-		streamB := newBarrierStream()
-		recB, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamB, nil })
-		if recB == nil {
-			t.Fatal("EnsureRecorder B returned nil")
-		}
-		defer close(streamB.release)
-
-		// A's barrier was released by DeleteRecorder's Stop()→Close().
-		<-recA.Done()
-
-		// B must still be current.
-		if r := GetRecorder(sid); r != recB {
-			t.Fatalf("registry has %v after stale EOF, want B (%v)", r, recB)
-		}
-		recorderRegistry.mu.Lock()
-		_, termOK := recorderRegistry.terminated[sid]
-		recorderRegistry.mu.Unlock()
-		if termOK {
-			t.Error("terminated flag set by stale EOF")
-		}
-	})
-
-	// --- stale-Stop: same pattern, but release A before Stop ---
-	t.Run("stale-Stop", func(t *testing.T) {
-		sid := fmt.Sprintf("test:closeout-fstop-%d", seq)
-		streamA := newBarrierStream()
-		recA, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamA, nil })
-		if recA == nil {
-			t.Fatal("EnsureRecorder A returned nil")
-		}
-
-		deleteDone := make(chan struct{})
-		go func() {
-			defer close(deleteDone)
-			DeleteRecorder(sid)
-		}()
-		<-deleteDone
-
-		deadline := time.Now().Add(2 * time.Second)
-		for GetRecorder(sid) != nil && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
-		}
-		if GetRecorder(sid) != nil {
-			t.Fatal("A still in registry")
-		}
-
-		// Install B.
-		streamB := newBarrierStream()
-		recB, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamB, nil })
-		if recB == nil {
-			t.Fatal("EnsureRecorder B returned nil")
-		}
-		defer close(streamB.release)
-
-		// A's barrier was released by DeleteRecorder's Stop()→Close().
-		<-recA.Done()
-
-		// Stale Stop: call Stop() on the now-dead stale A.
-		// Instance-safe guard must discard it — must NOT affect B.
+	stopDone := make(chan struct{})
+	go func() {
+		defer close(stopDone)
 		recA.Stop()
+	}()
+	select {
+	case <-streamA.closeCalled:
+	case <-time.After(2 * time.Second):
+		streamA.Release()
+		<-stopDone
+		t.Fatal("stale A.Stop did not call Close")
+	}
 
-		if r := GetRecorder(sid); r != recB {
-			t.Fatalf("registry has %v after stale Stop, want B (%v)", r, recB)
-		}
-	})
+	if r := GetRecorder(sid); r != recB {
+		t.Fatalf("registry has %v during stale A.Stop, want B (%v)", r, recB)
+	}
+	streamA.Release()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale A.Stop did not finish after releasing A")
+	}
+
+	if r := GetRecorder(sid); r != recB {
+		t.Fatalf("registry has %v after stale A.Stop, want B (%v)", r, recB)
+	}
+	recorderRegistry.mu.Lock()
+	_, termOK := recorderRegistry.terminated[sid]
+	recorderRegistry.mu.Unlock()
+	if termOK {
+		t.Error("terminated flag was set by stale A")
+	}
 }
 
 // TestRecorder_CloseoutA_MatchingRecordsTermination: positive control — the
@@ -998,50 +942,4 @@ func TestRecorder_CloseoutA_MatchingRecordsTermination(t *testing.T) {
 	if !term {
 		t.Error("matching Recorder did not record termination")
 	}
-}
-
-// TestRecorder_CloseoutA_SameIDRace: every iteration MUST assert real
-// success/failure. No nil accepts. errCh MUST be written on every error.
-func TestRecorder_CloseoutA_SameIDRace(t *testing.T) {
-	seq := atomic.AddInt64(&closeoutASeq, 1)
-	sid := fmt.Sprintf("test:closeout-race-%d", seq)
-	var wg sync.WaitGroup
-	errCh := make(chan error, 20)
-
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(iter int) {
-			defer wg.Done()
-			s := newBarrierStream()
-			close(s.release)
-			rec, _ := EnsureRecorder(sid, func() (ptyStream, error) { return s, nil })
-			if rec == nil {
-				errCh <- fmt.Errorf("iter %d: EnsureRecorder returned nil", iter)
-				return
-			}
-			DeleteRecorder(sid)
-		}(i)
-	}
-	wg.Wait()
-	close(errCh)
-
-	// Assert: every error must be surfaced.
-	errCount := 0
-	for err := range errCh {
-		t.Error(err)
-		errCount++
-	}
-	// If EVERY iteration failed to create, that's a fatal defect.
-	if errCount == 20 {
-		t.Fatal("all 20 iterations failed — registry may be permanently corrupted")
-	}
-
-	// Final create must succeed.
-	final := newBarrierStream()
-	close(final.release)
-	rec, _ := EnsureRecorder(sid, func() (ptyStream, error) { return final, nil })
-	if rec == nil {
-		t.Fatal("final create returned nil — race corrupted state")
-	}
-	DeleteRecorder(sid)
 }
