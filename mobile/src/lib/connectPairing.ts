@@ -18,13 +18,12 @@ export function isPairingQR(data: string): boolean {
 export interface PairFromScanDeps {
   data: string;                                   // raw scanned QR string
   createDeviceKey: () => PokitDeviceKey;          // production Secure Enclave/Keystore key
-  getBaseURL: () => string;                       // operational (tunnel/HTTPS) origin
+  operationalBaseURL: string;                     // operational (tunnel/HTTPS) origin
   pairAndSave: (qrRaw: unknown, dk: PokitDeviceKey, base: string) => Promise<PairingResult>;
   connect: (base: string) => Promise<void>;
   onPaired?: () => Promise<boolean>;              // atomic trusted-state install (Blocker C)
   onReject: () => void;                           // re-enable the scanner exactly once
   onError: (msg: string) => void;                 // surface a recoverable error
-  onNeedBaseURL: () => void;                       // no operational URL set yet
 }
 
 // pairFromScannedQR runs the production pairing transition. It NEVER opens a
@@ -34,8 +33,7 @@ export interface PairFromScanDeps {
 // onReject exactly once so the scanner never sticks and no partial paired state
 // is entered — no legacy remote fallback.
 export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
-  const base = deps.getBaseURL();
-  if (!base) { deps.onNeedBaseURL(); deps.onReject(); return; }
+  const base = deps.operationalBaseURL;
 
   // A remote pairing MUST install trusted auth state (onPaired) before any
   // connection. Without an installer we fail closed rather than connect on top
@@ -80,7 +78,7 @@ export interface ScanModules {
   pairFromScannedQR: (deps: PairFromScanDeps) => Promise<void>;
   pairAndSave: PairFromScanDeps['pairAndSave'];
   createDeviceKey: () => PokitDeviceKey;
-  getBaseURL: () => string;
+  operationalBaseURL: string;
 }
 
 export interface RunScanDeps {
@@ -105,24 +103,20 @@ export async function runScan(deps: RunScanDeps): Promise<void> {
       await m.pairFromScannedQR({
         data: deps.data,
         createDeviceKey: m.createDeviceKey,
-        getBaseURL: m.getBaseURL,
+        operationalBaseURL: m.operationalBaseURL,
         pairAndSave: m.pairAndSave,
         connect: deps.connect,
         onPaired: deps.onPaired,
         onReject: () => deps.setScanned(false),
         onError: (msg) => deps.notifyError(msg),
-        onNeedBaseURL: () => deps.notifyError('Set the daemon URL first'),
       });
     } catch (e: any) {
-      // Module load / setup / transition failure: reset the scanner ONCE.
       deps.notifyError('Pairing error: ' + (e?.message || String(e)));
       deps.setScanned(false);
     }
     return;
   }
-  // Legacy/manual: accept a plain HTTPS URL.
-  if (deps.data.startsWith('https://')) {
-    deps.setScanned(true);
-    await deps.connect(deps.data);
-  }
+  // Non-pairing QR: notify and reset scanner.
+  deps.notifyError('Not a pairing QR. Scan the QR code from your terminal.');
+  deps.setScanned(false);
 }

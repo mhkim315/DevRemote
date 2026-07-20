@@ -3,37 +3,66 @@ import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
 import { isPairingQR, pairFromScannedQR, runScan } from '../lib/connectPairing';
+import { canonicalOrigin } from '../lib/authMode';
+
+const DEFAULT_OPERATIONAL_URL = 'https://term.fullcount.kr';
 
 export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<boolean> } = {}) {
   const { connect, connectionError } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
-  const [manualURL, setManualURL] = useState('');
+  const [operationalURL, setOperationalURL] = useState(DEFAULT_OPERATIONAL_URL);
+  const [urlError, setURLError] = useState('');
 
   useEffect(() => {
     const getCameraPermissions = async () => {
       const { status } = await Camera.requestCameraPermissionsAsync();
       setHasPermission(status === 'granted');
     };
-
     getCameraPermissions();
   }, []);
 
+  const validateURL = (url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed) { setURLError(''); return true; }
+    const { error } = canonicalOrigin(trimmed);
+    if (error) { setURLError(error); return false; }
+    setURLError('');
+    return true;
+  };
+
+  const handleSetURL = (url: string) => {
+    const trimmed = url.trim();
+    if (trimmed && validateURL(trimmed)) {
+      setOperationalURL(trimmed);
+    }
+  };
+
   const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
-    // The ENTIRE handling (lazy module load + pairing transition) runs inside
-    // runScan's single recovery boundary, so any dynamic-import or setup failure
-    // resets the scanner exactly once instead of sticking at scanned=true.
+    // PA4: pairing requires a validated operational URL. The QR transport
+    // endpoint (LAN HTTP) is only used for cryptographic pairing; the
+    // operational origin (HTTPS) is where the device bearer is sent.
+    const base = operationalURL.trim();
+    const { error } = canonicalOrigin(base);
+    if (error) {
+      alert('Set a valid HTTPS daemon URL before scanning. ' + error);
+      return;
+    }
     await runScan({
       data,
       isPairing: isPairingQR,
       loadModules: async () => {
-        const [{ pairAndSave }, { createPokitDeviceKey }, { getBaseURL }] = await Promise.all([
+        const [{ pairAndSave }, { createPokitDeviceKey }] = await Promise.all([
           import('../lib/pairAndSave'),
           import('../../modules/pokit-device-key'),
-          import('../lib/client'),
         ]);
-        return { pairFromScannedQR, pairAndSave, createDeviceKey: createPokitDeviceKey, getBaseURL };
+        return {
+          pairFromScannedQR,
+          pairAndSave,
+          createDeviceKey: createPokitDeviceKey,
+          operationalBaseURL: base,
+        };
       },
       connect: (url) => connect(url),
       onPaired,
@@ -45,7 +74,7 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
   if (hasPermission === null) {
     return (
       <View style={styles.container}>
-        <Text style={styles.text}>Requesting for camera permission...</Text>
+        <Text style={styles.text}>Requesting camera permission...</Text>
       </View>
     );
   }
@@ -62,7 +91,7 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
     <View style={styles.container}>
       <Text style={styles.title}>Welcome to POKIT</Text>
       <Text style={styles.subtitle}>Scan the QR code in your terminal to connect instantly.</Text>
-      
+
       <View style={styles.cameraContainer}>
         <CameraView
           onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
@@ -75,33 +104,30 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
           <View style={styles.scanBox} />
         </View>
       </View>
-      
+
       <View style={styles.manualContainer}>
         <View style={styles.manualBtn}>
           {connectionError ? (
             <Text style={styles.error}>{connectionError}</Text>
           ) : null}
-          <Text style={styles.inputLabel}>Daemon URL</Text>
+          {urlError ? (
+            <Text style={styles.error}>{urlError}</Text>
+          ) : null}
+          <Text style={styles.inputLabel}>Daemon URL (HTTPS required)</Text>
           <TextInput
             style={styles.input}
-            placeholder="http://localhost:9171"
+            placeholder={DEFAULT_OPERATIONAL_URL}
             placeholderTextColor="#666"
-            value={manualURL}
-            onChangeText={setManualURL}
+            value={operationalURL}
+            onChangeText={(t) => { setOperationalURL(t); validateURL(t); }}
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <TouchableOpacity style={styles.connectBtn} onPress={async () => {
-            await connect(manualURL || 'http://localhost:9171');
-          }}>
-            <Text style={styles.connectBtnText}>CONNECT</Text>
+          <TouchableOpacity style={styles.setUrlBtn} onPress={() => handleSetURL(operationalURL)}>
+            <Text style={styles.setUrlBtnText}>SET DAEMON URL</Text>
           </TouchableOpacity>
-          <View style={{height: 12}} />
-          <Button title="Connect to term.fullcount.kr" onPress={async () => {
-            await connect('https://term.fullcount.kr');
-          }} color="#45EBE9" />
+          <Text style={styles.urlNote}>This URL is used after QR pairing succeeds. Scan the QR code from your terminal to pair.</Text>
         </View>
-        <Text style={styles.manualHint}>Enter daemon URL or scan the terminal QR code.</Text>
       </View>
 
       {scanned && (
@@ -116,100 +142,53 @@ const scanBoxSize = width * 0.7;
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
-    backgroundColor: '#000',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
+    flex: 1, backgroundColor: '#000', alignItems: 'center',
+    justifyContent: 'center', padding: 20,
   },
   error: {
-    color: '#f85149',
-    fontSize: 13,
-    textAlign: 'center',
-    marginBottom: 12,
-    paddingHorizontal: 20,
+    color: '#f85149', fontSize: 13, textAlign: 'center',
+    marginBottom: 12, paddingHorizontal: 20,
   },
   inputLabel: {
-    color: '#8b949e',
-    fontSize: 12,
-    marginBottom: 6,
-    fontWeight: '600',
+    color: '#8b949e', fontSize: 12, marginBottom: 6, fontWeight: '600',
   },
   input: {
-    backgroundColor: '#1C1C1E',
-    color: '#fff',
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#0D2D45',
+    backgroundColor: '#1C1C1E', color: '#fff', borderRadius: 8,
+    padding: 10, fontSize: 14, marginBottom: 12,
+    borderWidth: 1, borderColor: '#0D2D45',
   },
-  connectBtn: {
-    backgroundColor: '#39d353',
-    borderRadius: 8,
-    padding: 12,
-    alignItems: 'center',
-    marginBottom: 8,
+  setUrlBtn: {
+    backgroundColor: '#0D2D45', borderRadius: 8,
+    padding: 12, alignItems: 'center', marginBottom: 8,
   },
-  connectBtnText: {
-    color: '#000',
-    fontWeight: '800',
-    fontSize: 14,
+  setUrlBtnText: {
+    color: '#45EBE9', fontWeight: '800', fontSize: 14,
+  },
+  urlNote: {
+    color: '#666', fontSize: 11, textAlign: 'center',
+    marginTop: 4, paddingHorizontal: 10,
   },
   title: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    marginTop: 60,
+    color: '#fff', fontSize: 28, fontWeight: 'bold',
+    marginBottom: 10, marginTop: 60,
   },
   subtitle: {
-    color: '#aaa',
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 40,
+    color: '#aaa', fontSize: 16, textAlign: 'center', marginBottom: 40,
   },
-  text: {
-    color: '#fff',
-    fontSize: 18,
-  },
-  subText: {
-    color: '#888',
-    fontSize: 14,
-    textAlign: 'center',
-    marginTop: 10,
-  },
+  text: { color: '#fff', fontSize: 18 },
+  subText: { color: '#888', fontSize: 14, textAlign: 'center', marginTop: 10 },
   cameraContainer: {
-    width: width,
-    height: width,
-    overflow: 'hidden',
-    position: 'relative',
-    borderRadius: 20,
+    width: width, height: width, overflow: 'hidden',
+    position: 'relative', borderRadius: 20,
   },
   overlay: {
-    ...StyleSheet.absoluteFill,
-    justifyContent: 'center',
-    alignItems: 'center',
+    ...StyleSheet.absoluteFill, justifyContent: 'center', alignItems: 'center',
   },
   scanBox: {
-    width: scanBoxSize,
-    height: scanBoxSize,
-    borderWidth: 2,
-    borderColor: '#4ade80',
-    backgroundColor: 'transparent',
-    borderRadius: 10,
+    width: scanBoxSize, height: scanBoxSize,
+    borderWidth: 2, borderColor: '#4ade80',
+    backgroundColor: 'transparent', borderRadius: 10,
   },
-  manualContainer: {
-    marginTop: 20,
-    alignItems: 'center',
-  },
-  manualBtn: {
-    marginBottom: 10,
-  },
-  manualHint: {
-    color: '#666',
-    fontSize: 12,
-    marginTop: 5,
-  },
+  manualContainer: { marginTop: 20, alignItems: 'center' },
+  manualBtn: { marginBottom: 10 },
 });
