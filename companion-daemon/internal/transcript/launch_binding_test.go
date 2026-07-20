@@ -85,7 +85,7 @@ func TestS11B_CorrelationPIDStartRules(t *testing.T) {
 		wantManaged bool
 	}{
 		{"exact adapter+PID+start match", base, "controlled_pty", "codex", "0.144.1", 4242, start, true},
-		{"adapter mismatch", base, "tmux", "codex", "0.144.1", 4242, start, false},
+		{"adapter mismatch", base, "cmux", "codex", "0.144.1", 4242, start, false},
 		{"empty discovered adapter", base, "", "codex", "0.144.1", 4242, start, false},
 		{"same PID different start (reuse)", base, "controlled_pty", "codex", "0.144.1", 4242, other, false},
 		{"same PID missing start", base, "controlled_pty", "codex", "0.144.1", 4242, time.Time{}, false},
@@ -133,7 +133,7 @@ func TestS11B_NoPIDBindingIgnoresProcessIdentity(t *testing.T) {
 		t.Errorf("no-PID binding provider mismatch: got %v, want Unavailable", got)
 	}
 	// An adapter mismatch fails even with everything else matching.
-	if got := LaunchCorrelation(b, "tmux", "codex", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationUnavailable {
+	if got := LaunchCorrelation(b, "cmux", "codex", "0.144.1", 12345, time.Unix(1, 0)); got != contract.CorrelationUnavailable {
 		t.Errorf("no-PID binding adapter mismatch: got %v, want Unavailable", got)
 	}
 }

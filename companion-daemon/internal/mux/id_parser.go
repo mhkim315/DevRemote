@@ -8,7 +8,7 @@ import "devremote/companion-daemon/internal/sessionid"
 // logic. New managed and term production code must import internal/sessionid
 // directly.
 
-// SessionRef decomposes a compound canonical session ID (e.g. "tmux:devremote")
+// SessionRef decomposes a compound canonical session ID (e.g. "cmux:devremote")
 // into its adapter and local ID components.
 //
 // Deprecated: temporary PA4/PB deletion target — use

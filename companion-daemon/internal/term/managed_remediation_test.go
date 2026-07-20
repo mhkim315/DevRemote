@@ -279,7 +279,7 @@ func TestManagedCreate_AfterShutdown_FailsBeforeSpawn(t *testing.T) {
 
 // ── Remediation blocker 3: managed surface bounded while discovery hangs ──
 
-// hangingAdapter blocks discovery until unblocked — a tmux/cmux backend that
+// hangingAdapter blocks discovery until unblocked — a hanging backend that
 // neither errors nor returns.
 type hangingAdapter struct {
 	name    string
@@ -292,15 +292,15 @@ func (a hangingAdapter) ListSessions(context.Context) ([]mux.Session, error) {
 	return nil, nil
 }
 
-// TestManagedREST_BoundedWhileDiscoveryHangs: with tmux/cmux-style discovery
+// TestManagedREST_BoundedWhileDiscoveryHangs: with cmux/cmux-style discovery
 // BLOCKED (not merely erroring), the dedicated managed list, the native-status
 // get, and a managed create all complete within a bounded time — and a later
 // discovery success does not change the managed status.
 func TestManagedREST_BoundedWhileDiscoveryHangs(t *testing.T) {
 	unblock := make(chan struct{})
 	reg := mux.MustNewRegistry(
-		hangingAdapter{name: "tmux", unblock: unblock},
 		hangingAdapter{name: "cmux", unblock: unblock},
+		hangingAdapter{name: "cmux2", unblock: unblock},
 	)
 	// Occupy discovery exactly like an observer caller would.
 	discoveryDone := make(chan struct{})

@@ -126,7 +126,7 @@ func (o *writeCaptureOpener) OpenStream(_ context.Context) (mux.TerminalStream, 
 }
 
 // mockStreamSession implements mux.Session + mux.StreamOpener.
-// Does NOT implement mux.InputWriter (for tmux stream-only fallback tests).
+// Does NOT implement mux.InputWriter (for cmux stream-only fallback tests).
 type mockStreamSession struct {
 	id      string
 	adapter string
@@ -483,7 +483,7 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 	}
 }
 
-// TestRecorder_StreamOnlyInputFallback verifies the tmux stream-only input path:
+// TestRecorder_StreamOnlyInputFallback verifies the cmux stream-only input path:
 //
 //	session has StreamOpener but no InputWriter
 //	→ input over WS falls through to rec.WriteInput(msg)

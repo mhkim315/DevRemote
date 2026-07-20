@@ -14,12 +14,12 @@ func TestParseSessionID_CanonicalPositive(t *testing.T) {
 		adapter string
 		localID string
 	}{
-		{"tmux:devremote", "tmux", "devremote"},
+		{"cmux:devremote", "cmux", "devremote"},
 		{"cmux:surface:1", "cmux", "surface:1"}, // local IDs may contain ':'
 		{"controlled_pty:sess-1", "controlled_pty", "sess-1"},
 		{"codex_app_server:abc", "codex_app_server", "abc"},
 		{"claude_headless:세션", "claude_headless", "세션"}, // Unicode local ID
-		{"tmux: spaced ", "tmux", " spaced "},
+		{"cmux: spaced ", "cmux", " spaced "},
 	}
 	for _, tc := range cases {
 		ref := ParseSessionID(tc.id)
@@ -42,7 +42,7 @@ func TestValidate_MalformedAndEmpty(t *testing.T) {
 		{"no colon (empty adapter)", "plain"},
 		{"empty string", ""},
 		{"leading colon (empty adapter)", ":local"},
-		{"trailing colon (empty local)", "tmux:"},
+		{"trailing colon (empty local)", "cmux:"},
 		{"only colon", ":"},
 	}
 	for _, tc := range cases {
@@ -64,10 +64,10 @@ func TestValidate_MalformedAndEmpty(t *testing.T) {
 func TestValidate_ControlCharacters(t *testing.T) {
 	cases := []SessionRef{
 		{Adapter: "tm\nux", LocalID: "x"},
-		{Adapter: "tmux", LocalID: "a\tb"},
-		{Adapter: "tmux", LocalID: "a\x00b"},
+		{Adapter: "cmux", LocalID: "a\tb"},
+		{Adapter: "cmux", LocalID: "a\x00b"},
 		{Adapter: "\x1b[31m", LocalID: "x"},
-		{Adapter: "tmux", LocalID: "del\x7f"},
+		{Adapter: "cmux", LocalID: "del\x7f"},
 	}
 	for _, ref := range cases {
 		err := ref.Validate()
@@ -97,7 +97,7 @@ func TestCanonical_NonCanonicalForms(t *testing.T) {
 		t.Errorf("ParseSessionID(plain).Canonical() = %q, want plain", got)
 	}
 	// String() is exactly Canonical().
-	ref := SessionRef{Adapter: "tmux", LocalID: "a:b"}
+	ref := SessionRef{Adapter: "cmux", LocalID: "a:b"}
 	if ref.String() != ref.Canonical() {
 		t.Errorf("String() = %q != Canonical() = %q", ref.String(), ref.Canonical())
 	}
@@ -106,13 +106,13 @@ func TestCanonical_NonCanonicalForms(t *testing.T) {
 // ── PA2b focused test 1: invalid adapter grammar ──
 
 func TestValidateAdapterName_Grammar(t *testing.T) {
-	valid := []string{"tmux", "cmux", "controlled_pty", "codex_app_server", "a", "a0", "a-b_c9"}
+	valid := []string{"cmux", "cmux", "controlled_pty", "codex_app_server", "a", "a0", "a-b_c9"}
 	for _, name := range valid {
 		if err := ValidateAdapterName(name); err != nil {
 			t.Errorf("ValidateAdapterName(%q) = %v, want nil", name, err)
 		}
 	}
-	invalid := []string{"", "Tmux", "0tmux", "-tmux", "_tmux", "tm ux", "tm:ux", "tmüx", "tmux!", "TMUX"}
+	invalid := []string{"", "Cmux", "0cmux", "-cmux", "_cmux", "tm ux", "tm:ux", "tmüx", "cmux!", "INVALID_UPPER"}
 	for _, name := range invalid {
 		err := ValidateAdapterName(name)
 		if err == nil {
@@ -129,11 +129,11 @@ func TestValidateAdapterName_Grammar(t *testing.T) {
 
 func TestParseString_RoundTrip(t *testing.T) {
 	ids := []string{
-		"tmux:devremote",
+		"cmux:devremote",
 		"cmux:surface:1",
 		"controlled_pty:with:many:colons",
 		"claude_headless:유니코드-로컬",
-		"tmux:trailing:",
+		"cmux:trailing:",
 		"a:b",
 	}
 	for _, id := range ids {

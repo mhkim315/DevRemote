@@ -326,7 +326,7 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, telemetry *TelemetryS
 	sessionID := cmdStr // Simple ID for now
 	s, err := reg.FindSession(context.Background(), sessionID)
 	if err != nil {
-		s, err = mux.NewSession(sessionID, termEnv, "bash", "-c", cmdStr)
+		s, err = mux.SpawnPTY(sessionID, termEnv, "bash", "-c", cmdStr)
 		if err != nil {
 			log.Println("failed to spawn session:", err)
 			return

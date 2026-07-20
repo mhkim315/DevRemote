@@ -14,17 +14,17 @@ import (
 
 func TestPA2b_WrapperCompat_IdenticalResults(t *testing.T) {
 	ids := []string{
-		"tmux:devremote",
+		"cmux:devremote",
 		"cmux:surface:1",
 		"controlled_pty:with:many:colons",
 		"claude_headless:세션",
 		"plain",
 		"",
 		":",
-		"tmux:",
+		"cmux:",
 		":local",
 		"tm\nux:x",
-		"tmux:a\x00b",
+		"cmux:a\x00b",
 	}
 	for _, id := range ids {
 		viaMux := ParseSessionID(id)
@@ -44,7 +44,7 @@ func TestPA2b_WrapperCompat_IdenticalResults(t *testing.T) {
 		}
 	}
 
-	names := []string{"tmux", "controlled_pty", "a-b_c9", "", "Tmux", "0x", "tm:ux", "tmüx"}
+	names := []string{"cmux", "controlled_pty", "a-b_c9", "", "Cmux", "0x", "cm:ux", "cmüx"}
 	for _, name := range names {
 		mErr, sErr := ValidateAdapterName(name), sessionid.ValidateAdapterName(name)
 		if (mErr == nil) != (sErr == nil) {
@@ -75,8 +75,8 @@ func TestPA2b_WrapperCompat_SentinelIdentity(t *testing.T) {
 // PA2b: mux.SessionRef is a TYPE ALIAS of sessionid.SessionRef (not a copy),
 // so values are interchangeable with zero conversion.
 func TestPA2b_WrapperCompat_TypeAlias(t *testing.T) {
-	var viaMux SessionRef = sessionid.SessionRef{Adapter: "tmux", LocalID: "x"}
-	var direct sessionid.SessionRef = SessionRef{Adapter: "tmux", LocalID: "x"}
+	var viaMux SessionRef = sessionid.SessionRef{Adapter: "cmux", LocalID: "x"}
+	var direct sessionid.SessionRef = SessionRef{Adapter: "cmux", LocalID: "x"}
 	if viaMux != direct {
 		t.Fatal("alias values differ")
 	}
@@ -90,7 +90,7 @@ func TestPA2b_MigrateLegacyID_UnchangedAndStaysInMux(t *testing.T) {
 		{"cmux:12", "cmux:surface:12"},       // multi-digit
 		{"cmux:surface:3", "cmux:surface:3"}, // already canonical: unchanged
 		{"cmux:abc", "cmux:abc"},             // non-numeric local id: unchanged
-		{"tmux:3", "tmux:3"},                 // other adapters: unchanged
+		{"cmux:3", "cmux:surface:3"},                 // other adapters: unchanged
 		{"plain", "plain"},                   // no adapter: unchanged
 		{"", ""},
 	}

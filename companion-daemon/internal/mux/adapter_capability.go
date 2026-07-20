@@ -11,7 +11,7 @@ const (
 
 	// CapControl: the adapter can send input / drive the session. This is
 	// interactive control (keystrokes, session driving) — it is NOT
-	// process-lifecycle ownership. An externally owned runtime (tmux) can
+	// process-lifecycle ownership. An externally owned runtime can
 	// accept control while its process lifecycle is owned elsewhere. Lifecycle
 	// ownership is CapManagedLifecycle, a separate dimension.
 	CapControl AdapterCapability = "control"
@@ -21,13 +21,13 @@ const (
 	CapInput AdapterCapability = "input"
 
 	// CapLiveTerminal: the adapter supports live xterm WebSocket stream.
-	// Only byte_stream adapters (tmux) have this.
+	// Only byte_stream adapters have this.
 	// screen_snapshot_delta adapters (cmux) do NOT.
 	CapLiveTerminal AdapterCapability = "liveTerminal"
 
 	// CapReliableTranscript: PTY byte-stream-based transcript.
 	// Recorder-owned capture from real PTY deltas.
-	// tmux has this.
+	// byte_stream adapters have this.
 	CapReliableTranscript AdapterCapability = "reliableTranscript"
 
 	// CapBestEffortTranscript: screen-snapshot-derived transcript.
@@ -38,7 +38,7 @@ const (
 	// CapManagedLifecycle: Pokit owns the session's process / process group and
 	// its Stop/Kill/cleanup lifecycle. Only adapters that CREATE and own the
 	// runtime (controlled_pty) declare this. input=true / control=true do NOT
-	// imply managedLifecycle=true — external attachable (tmux) or observer
+	// imply managedLifecycle=true — external or observer
 	// (cmux) adapters are never managed. M2 lifecycle actions gate on this.
 	CapManagedLifecycle AdapterCapability = "managedLifecycle"
 )

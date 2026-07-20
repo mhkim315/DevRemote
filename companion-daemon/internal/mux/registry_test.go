@@ -141,29 +141,29 @@ func TestStaleCacheOnFailure(t *testing.T) {
 			&dummySession{id: "s2", adapter: "cmux"},
 		},
 	}
-	tmux := &dummyAdapter{
-		name: "tmux",
+	cmux2 := &dummyAdapter{
+		name: "cmux2",
 		sessions: []Session{
-			&dummySession{id: "t1", adapter: "tmux"},
+			&dummySession{id: "t1", adapter: "cmux2"},
 		},
 	}
 
-	r := MustNewRegistry(cmux, tmux)
+	r := MustNewRegistry(cmux, cmux2)
 
-	// 1. Initial success: 2 cmux, 1 tmux
+	// 1. Initial success: 2 cmux, 1 cmux2
 	r.Sessions(context.Background())
 
 	cSnap, _ := r.Snapshot("cmux")
-	tSnap, _ := r.Snapshot("tmux")
+	tSnap, _ := r.Snapshot("cmux2")
 
 	if len(cSnap.Sessions) != 2 {
 		t.Fatalf("expected 2 cmux sessions, got %d", len(cSnap.Sessions))
 	}
 	if len(tSnap.Sessions) != 1 {
-		t.Fatalf("expected 1 tmux session, got %d", len(tSnap.Sessions))
+		t.Fatalf("expected 1 cmux2 session, got %d", len(tSnap.Sessions))
 	}
 
-	// 2. Refresh fails for cmux, tmux still succeeds
+	// 2. Refresh fails for cmux, another still succeeds
 	cmux.mu.Lock()
 	cmux.err = fmt.Errorf("socket connection failed")
 	cmux.mu.Unlock()
@@ -177,7 +177,7 @@ func TestStaleCacheOnFailure(t *testing.T) {
 	}
 
 	cmuxSnap, _ := r.Snapshot("cmux")
-	tmuxSnap, _ := r.Snapshot("tmux")
+	cmux2Snap, _ := r.Snapshot("cmux2")
 
 	if len(cmuxSnap.Sessions) != 2 {
 		t.Fatalf("expected stale cache to retain 2 cmux sessions, got %d", len(cmuxSnap.Sessions))
@@ -185,8 +185,8 @@ func TestStaleCacheOnFailure(t *testing.T) {
 	if cmuxSnap.LastError == nil {
 		t.Fatalf("expected cmux to record LastError, got nil")
 	}
-	if len(tmuxSnap.Sessions) != 1 {
-		t.Fatalf("tmux should be unaffected, expected 1 session, got %d", len(tmuxSnap.Sessions))
+	if len(cmux2Snap.Sessions) != 1 {
+		t.Fatalf("cmux2 should be unaffected, expected 1 session, got %d", len(cmux2Snap.Sessions))
 	}
 
 	// 3. Refresh succeeds but returns 0 sessions
@@ -213,17 +213,17 @@ func TestRegistrySessionsStableOrder(t *testing.T) {
 
 	registry := MustNewRegistry(
 		&dummyAdapter{
-			name: "tmux",
-			sessions: []Session{
-				&dummySession{id: "zeta", adapter: "tmux"},
-				&dummySession{id: "alpha", adapter: "tmux"},
-			},
-		},
-		&dummyAdapter{
 			name: "cmux",
 			sessions: []Session{
 				&dummySession{id: "surface:9", adapter: "cmux"},
 				&dummySession{id: "surface:1", adapter: "cmux"},
+			},
+		},
+		&dummyAdapter{
+			name: "cmux2",
+			sessions: []Session{
+				&dummySession{id: "zeta", adapter: "cmux2"},
+				&dummySession{id: "alpha", adapter: "cmux2"},
 			},
 		},
 	)
@@ -233,7 +233,7 @@ func TestRegistrySessionsStableOrder(t *testing.T) {
 	for _, s := range sessions {
 		got = append(got, s.AdapterName()+":"+s.ID())
 	}
-	want := []string{"cmux:surface:1", "cmux:surface:9", "tmux:alpha", "tmux:zeta"}
+	want := []string{"cmux2:alpha", "cmux2:zeta", "cmux:surface:1", "cmux:surface:9"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("sessions order = %v, want %v", got, want)
 	}

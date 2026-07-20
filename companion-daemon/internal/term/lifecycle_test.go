@@ -116,9 +116,9 @@ func TestLifecycle_DispatchTable_FailClosed(t *testing.T) {
 	// deliberately absent from the dispatch table.
 	svc := lcService(t, newLCAdapter("controlled_pty", true))
 	for _, id := range []string{
-		"tmux:e1",        // legacy external adapter
+		"cmux:e1",        // legacy external adapter
 		"cmux:surface:1", // legacy external adapter
-		"faketmux:s1",    // unknown adapter (would have passed the old capability gate)
+		"fakecmux:s1",    // unknown adapter (would have passed the old capability gate)
 		"garbage-no-colon",
 	} {
 		if _, err := svc.Stop(context.Background(), id); err != ErrLifecycleUnsupported {
@@ -157,7 +157,7 @@ func lcRequest(t *testing.T, h *Handlers, method, id, action string) *httptest.R
 
 func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 	// Legacy adapter → 422 fail closed, not 500.
-	ext := newLCAdapter("tmux", false)
+	ext := newLCAdapter("cmux", false)
 	extID := ext.add("e1")
 	svcE := lcService(t, ext)
 	hE := &Handlers{Lifecycle: svcE}

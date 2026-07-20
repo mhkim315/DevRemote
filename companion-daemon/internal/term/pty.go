@@ -73,7 +73,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// Legacy shape (client-supplied id + optional command). controlled_pty
 		// command execution runs an arbitrary `bash -c` and is a privileged
 		// LOCAL operation over the 0600 socket — never over the tunnel-reachable
-		// HTTP listener. Other adapters (tmux/cmux) keep their existing create
+		// HTTP listener. Other adapters (cmux) keep their existing create
 		// behavior; they do not run an arbitrary shell for the caller.
 		ref := sessionid.ParseSessionID(req.ID)
 		if err := ref.Validate(); err != nil {
@@ -228,7 +228,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	} else {
-		useRegistry = true // legacy adapters (tmux, cmux)
+		useRegistry = true // legacy adapters (cmux)
 	}
 	if useRegistry {
 		var ferr error

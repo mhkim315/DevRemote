@@ -116,7 +116,7 @@ type SessionIdentityTerminator interface {
 // ManagedProcess is implemented by sessions whose OS process group Pokit owns.
 // The M2 lifecycle service uses it to Stop/Kill the whole daemon-owned process
 // group. Only managed runtimes (controlled_pty) implement it — external
-// attachable (tmux) or observer (cmux) sessions do not, so lifecycle actions
+// attachable or observer (cmux) sessions do not, so lifecycle actions
 // gate on this together with the managedLifecycle capability.
 type ManagedProcess interface {
 	// TerminateGroup signals the session's process group: SIGTERM when
@@ -145,7 +145,7 @@ type InvalidationSender interface {
 	InvalidateAdapter(name string)
 }
 
-// Adapter defines the interface for different session backends (Native, cmux, tmux).
+// Adapter defines the interface for different session backends (Native, cmux).
 // Phase 1: ListSessions accepts context. GetSession is removed from mandatory
 // contract; lookup uses snapshot refresh or optional SessionLookup capability.
 type Adapter interface {

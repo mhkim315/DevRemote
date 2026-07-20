@@ -16,19 +16,19 @@ func TestCanonicalID_Golden(t *testing.T) {
 		localID  string
 		migrated string // MigrateLegacyID result
 	}{
-		// tmux sessions
-		{input: "tmux:ai", adapter: "tmux", localID: "ai", migrated: "tmux:ai"},
-		{input: "tmux:aider", adapter: "tmux", localID: "aider", migrated: "tmux:aider"},
-		{input: "tmux:cmux-1", adapter: "tmux", localID: "cmux-1", migrated: "tmux:cmux-1"},
-		{input: "tmux:____", adapter: "tmux", localID: "____", migrated: "tmux:____"},
+		// cmux sessions
+		{input: "cmux:ai", adapter: "cmux", localID: "ai", migrated: "cmux:ai"},
+		{input: "cmux:aider", adapter: "cmux", localID: "aider", migrated: "cmux:aider"},
+		{input: "cmux:cmux-1", adapter: "cmux", localID: "cmux-1", migrated: "cmux:cmux-1"},
+		{input: "cmux:____", adapter: "cmux", localID: "____", migrated: "cmux:____"},
 
-		// Local ID containing ':' (adapter=tmux, localID="tmux:aider")
-		{input: "tmux:tmux:aider", adapter: "tmux", localID: "tmux:aider", migrated: "tmux:tmux:aider"},
-		{input: "tmux:session:with:colons", adapter: "tmux", localID: "session:with:colons", migrated: "tmux:session:with:colons"},
+		// Local ID containing ':' (adapter=cmux, localID="cmux:aider")
+		{input: "cmux:cmux:aider", adapter: "cmux", localID: "cmux:aider", migrated: "cmux:cmux:aider"},
+		{input: "cmux:session:with:colons", adapter: "cmux", localID: "session:with:colons", migrated: "cmux:session:with:colons"},
 
 		// Unicode local ID
-		{input: "tmux:한글", adapter: "tmux", localID: "한글", migrated: "tmux:한글"},
-		{input: "tmux:セッション", adapter: "tmux", localID: "セッション", migrated: "tmux:セッション"},
+		{input: "cmux:한글", adapter: "cmux", localID: "한글", migrated: "cmux:한글"},
+		{input: "cmux:セッション", adapter: "cmux", localID: "セッション", migrated: "cmux:セッション"},
 
 		// cmux sessions (canonical)
 		{input: "cmux:surface:1", adapter: "cmux", localID: "surface:1", migrated: "cmux:surface:1"},
@@ -74,10 +74,10 @@ func TestCanonicalID_LocalIDWithColon(t *testing.T) {
 		adapter string
 		localID string
 	}{
-		{"tmux:aider", "tmux", "aider"},
-		{"tmux:cmux-1", "tmux", "cmux-1"},
-		{"tmux:session:with:colons", "tmux", "session:with:colons"},
-		{"tmux:tmux:aider", "tmux", "tmux:aider"}, // local part itself has ':'
+		{"cmux:aider", "cmux", "aider"},
+		{"cmux:cmux-1", "cmux", "cmux-1"},
+		{"cmux:session:with:colons", "cmux", "session:with:colons"},
+		{"cmux:cmux:aider", "cmux", "cmux:aider"}, // local part itself has ':'
 		{"cmux:surface:42", "cmux", "surface:42"},
 	}
 
@@ -99,10 +99,10 @@ func TestCanonicalID_LocalIDWithColon(t *testing.T) {
 
 func TestCanonicalID_Unicode(t *testing.T) {
 	tests := []string{
-		"tmux:한글",
-		"tmux:セッション",
-		"tmux:中文",
-		"tmux:emoji_🎉",
+		"cmux:한글",
+		"cmux:セッション",
+		"cmux:中文",
+		"cmux:emoji_🎉",
 	}
 	for _, id := range tests {
 		t.Run(id, func(t *testing.T) {

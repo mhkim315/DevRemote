@@ -166,7 +166,7 @@ const (
 // every operation receives. It carries no raw terminal input and no secrets.
 type SessionContext struct {
 	SessionID            string   // canonical Pokit session id (<adapter>:<local>)
-	TerminalAdapter      string   // terminal backend name (controlled_pty/tmux/...)
+	TerminalAdapter      string   // terminal backend name (controlled_pty/...)
 	TerminalCapabilities []string // declared terminal capabilities
 	CWD                  string   // working directory (may be redacted upstream)
 	PID                  int      // process id, 0 if unknown

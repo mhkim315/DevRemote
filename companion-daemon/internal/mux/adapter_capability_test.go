@@ -18,21 +18,6 @@ func TestAdapterCapabilities_ControlledPTY(t *testing.T) {
 	mustHave(t, caps, CapManagedLifecycle)
 	mustNotHave(t, caps, CapBestEffortTranscript)
 }
-
-func TestAdapterCapabilities_Tmux(t *testing.T) {
-	adapter := &tmuxAdapter{}
-	caps := AdapterCapabilities(adapter)
-	mustHave(t, caps, CapObserve)
-	mustHave(t, caps, CapControl)
-	mustHave(t, caps, CapInput)
-	mustHave(t, caps, CapLiveTerminal)
-	mustHave(t, caps, CapReliableTranscript)
-	mustNotHave(t, caps, CapBestEffortTranscript)
-	// External attachable: accepts control/input but Pokit does NOT own its
-	// lifecycle — control/input must not imply managedLifecycle.
-	mustNotHave(t, caps, CapManagedLifecycle)
-}
-
 func TestAdapterCapabilities_Cmux(t *testing.T) {
 	adapter := &cmuxAdapter{}
 	caps := AdapterCapabilities(adapter)

@@ -1039,7 +1039,7 @@ func TestApp_ClaudeOnly_InstalledComposition(t *testing.T) {
 	if _, ok := app.handlers.RuntimeOf("codex_app_server:s1"); ok {
 		t.Fatal("must not resolve Codex sessions in Claude-only composition")
 	}
-	if _, ok := app.handlers.RuntimeOf("tmux:0"); ok {
+	if _, ok := app.handlers.RuntimeOf("cmux:0"); ok {
 		t.Fatal("unknown adapters must not resolve")
 	}
 

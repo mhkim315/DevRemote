@@ -15,7 +15,7 @@ import (
 // lifecycle state, and retains terminal rows after Registry removal. ──
 
 // lsAdapter is a managed/external adapter whose live sessions are controllable
-// per-test. managed=true mirrors controlled_pty; managed=false mirrors tmux.
+// per-test. managed=true mirrors controlled_pty; managed=false mirrors cmux.
 type lsAdapter struct {
 	name     string
 	managed  bool
@@ -77,7 +77,7 @@ func getSessionsSnapshot(t *testing.T, h *Handlers) map[string]SessionTelemetry 
 
 func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 	managed := newLSAdapter("controlled_pty", true, "run", "stop")
-	external := newLSAdapter("tmux", false, "tm1")
+	external := newLSAdapter("cmux", false, "tm1")
 	reg := mux.MustNewRegistry(managed, external)
 	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	svc := NewLifecycleService(NewOwnedPTYRuntime(ctlAdapter, nil), nil)
@@ -122,15 +122,15 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 	}
 
 	// External (non-managed) session carries NO lifecycleState and is not managed.
-	tm, ok := byID["tmux:tm1"]
+	tm, ok := byID["cmux:tm1"]
 	if !ok {
-		t.Fatalf("external tmux session missing from snapshot")
+		t.Fatalf("external cmux session missing from snapshot")
 	}
 	if tm.LifecycleState != "" {
-		t.Errorf("external tmux lifecycleState = %q, want empty", tm.LifecycleState)
+		t.Errorf("external cmux lifecycleState = %q, want empty", tm.LifecycleState)
 	}
 	if slices.Contains(tm.AdapterCapabilities, "managedLifecycle") {
-		t.Errorf("external tmux must not advertise managedLifecycle: %v", tm.AdapterCapabilities)
+		t.Errorf("external cmux must not advertise managedLifecycle: %v", tm.AdapterCapabilities)
 	}
 }
 

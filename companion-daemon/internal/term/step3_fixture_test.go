@@ -18,7 +18,7 @@ import (
 // Positive: supported Transcript API proves history available.
 
 // step3Adapter is a deterministic in-memory adapter for Step 3 tests.
-// Never depends on host tmux/cmux state or socket permissions.
+// Never depends on host cmux/cmux state or socket permissions.
 type step3Adapter struct {
 	sessions []mux.Session
 }
@@ -64,7 +64,7 @@ func TestStep3_ActivityEndpoint_Returns410(t *testing.T) {
 
 func TestStep3_HistoryEndpoint_Returns410(t *testing.T) {
 	h := newStep3Handlers(t)
-	req := httptest.NewRequest("GET", "/api/sessions?history=tmux:test", nil)
+	req := httptest.NewRequest("GET", "/api/sessions?history=cmux:test", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
 	if rec.Code != http.StatusGone {
@@ -76,7 +76,7 @@ func TestStep3_NormalList_Returns200(t *testing.T) {
 	h := newStep3Handlers(t)
 
 	// Deterministic fixture adapter (step3Adapter) provides a session row
-	// independent of host tmux state or socket permissions.
+	// independent of host cmux state or socket permissions.
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsV2(rec, req)
@@ -108,7 +108,7 @@ func TestStep3_TranscriptAPI_HistoryAvailable(t *testing.T) {
 	h := newStep3Handlers(t)
 
 	// Feed bytes into the Transcript store via the byte-stream projector.
-	sid := "tmux:step3-history"
+	sid := "cmux:step3-history"
 	gen := h.Transcript.EnableQueue(sid)
 	h.Transcript.FeedBytes(sid, []byte("line one\n"), time.Now(), gen)
 	h.Transcript.CloseSessionQueue(sid, gen)

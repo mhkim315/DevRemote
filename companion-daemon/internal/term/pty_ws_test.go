@@ -217,7 +217,7 @@ func TestHandleWS_CmuxSnapshotModeDoesNotStartRecorder(t *testing.T) {
 }
 
 func TestHandleWS_ByteStreamStillWorks(t *testing.T) {
-	// tmux is byte_stream — terminal must still work.
+	// cmux is byte_stream — terminal must still work.
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{id: "test-bs", stream: &mockStream{pr: pr, pw: pw}}
 	adapter := &mockAdapter{session: mockSess}

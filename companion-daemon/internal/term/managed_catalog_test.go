@@ -158,7 +158,7 @@ func TestCatalog_Get_UnknownAndMalformedIDs(t *testing.T) {
 		{"unknown codex ID", "codex_app_server:nonexistent"},
 		{"unknown claude ID", "claude_headless:nonexistent"},
 		{"no adapter prefix (pane-style)", "0"},
-		{"legacy tmux ID", "tmux:devremote"},
+		{"legacy cmux ID", "cmux:devremote"},
 		{"legacy cmux ID", "cmux:main"},
 		{"empty string", ""},
 		{"arbitrary text", "just-some-text"},
@@ -366,8 +366,8 @@ func TestCatalog_LegacyRegistryIsolation(t *testing.T) {
 	// Build a legacy registry with a blocking adapter. Any access to
 	// registry.Sessions / registry.FindSession would hang.
 	reg := mux.MustNewRegistry(
-		blockingAdapter{name: "tmux"},
-		failingAdapter{name: "cmux"},
+		blockingAdapter{name: "cmux"},
+		failingAdapter{name: "cmux2"},
 	)
 	cat, managed, id := catalogWithCodex(t)
 
@@ -440,12 +440,12 @@ func TestCatalog_ManagedRowsNotOverwritable(t *testing.T) {
 	spoofed := []SessionTelemetry{
 		{ID: codexID, State: "exited", Adapter: "codex_app_server"},
 		{ID: claudeID, State: "working", Adapter: "claude_headless"},
-		{ID: "tmux:legacy", State: "idle", Adapter: "tmux"},
+		{ID: "cmux:legacy", State: "idle", Adapter: "cmux"},
 	}
 
 	out := appendCatalogRows(spoofed, cat, nil, nil)
 
-	// The legacy "tmux:legacy" row should survive.
+	// The legacy "cmux:legacy" row should survive.
 	foundLegacy := false
 	foundCodex := 0
 	foundClaude := 0
@@ -461,7 +461,7 @@ func TestCatalog_ManagedRowsNotOverwritable(t *testing.T) {
 			if row.State != "idle" {
 				t.Fatalf("claude row overwritten by spoofed state: %+v", row)
 			}
-		case "tmux:legacy":
+		case "cmux:legacy":
 			foundLegacy = true
 		}
 	}
@@ -557,8 +557,8 @@ func TestCatalog_RuntimeOf_PreservesExactProviderBinding(t *testing.T) {
 	if _, ok := cat.RuntimeOf("claude_headless:nonexistent"); ok {
 		t.Fatal("RuntimeOf resolved unknown claude adapter without installed service")
 	}
-	if _, ok := cat.RuntimeOf("tmux:0"); ok {
-		t.Fatal("RuntimeOf resolved legacy tmux adapter")
+	if _, ok := cat.RuntimeOf("cmux:0"); ok {
+		t.Fatal("RuntimeOf resolved legacy cmux adapter")
 	}
 
 	// Stale generation (after MarkExited) is rejected.
@@ -666,9 +666,9 @@ func TestCatalog_DefensiveCopies(t *testing.T) {
 // ── PA1: appendCatalogRows projector tests ──
 
 func TestAppendCatalogRows_NilCatalog(t *testing.T) {
-	snapshot := []SessionTelemetry{{ID: "tmux:0", State: "idle", Adapter: "tmux"}}
+	snapshot := []SessionTelemetry{{ID: "cmux:0", State: "idle", Adapter: "cmux"}}
 	out := appendCatalogRows(snapshot, nil, nil, nil)
-	if len(out) != 1 || out[0].ID != "tmux:0" {
+	if len(out) != 1 || out[0].ID != "cmux:0" {
 		t.Fatalf("nil catalog should pass through: %+v", out)
 	}
 }
@@ -676,9 +676,9 @@ func TestAppendCatalogRows_NilCatalog(t *testing.T) {
 func TestAppendCatalogRows_EmptyCatalog(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(8)
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "", "")
-	snapshot := []SessionTelemetry{{ID: "tmux:0", State: "idle", Adapter: "tmux"}}
+	snapshot := []SessionTelemetry{{ID: "cmux:0", State: "idle", Adapter: "cmux"}}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
-	if len(out) != 1 || out[0].ID != "tmux:0" {
+	if len(out) != 1 || out[0].ID != "cmux:0" {
 		t.Fatalf("empty catalog should pass through: %+v", out)
 	}
 }

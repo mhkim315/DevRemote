@@ -25,7 +25,7 @@ import (
 // value, so errors.Is matches through either name.
 var ErrInvalidSessionID = errors.New("invalid session ID")
 
-// SessionRef decomposes a compound canonical session ID (e.g. "tmux:devremote")
+// SessionRef decomposes a compound canonical session ID (e.g. "cmux:devremote")
 // into its adapter and local ID components. This is the single canonical form;
 // handler/mobile must use this type instead of string split or regex.
 type SessionRef struct {

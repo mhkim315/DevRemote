@@ -329,8 +329,8 @@ func testCanonicalIDStability(t *testing.T) {
 	t.Helper()
 	t.Run("LocalID_with_colon", func(t *testing.T) {
 		for _, tt := range []struct{ in, ad, lid string }{
-			{"tmux:aider", "tmux", "aider"},
-			{"tmux:session:with:colons", "tmux", "session:with:colons"},
+			{"cmux:aider", "cmux", "aider"},
+			{"cmux:session:with:colons", "cmux", "session:with:colons"},
 			{"cmux:surface:42", "cmux", "surface:42"},
 		} {
 			ref := ParseSessionID(tt.in)
@@ -340,7 +340,7 @@ func testCanonicalIDStability(t *testing.T) {
 		}
 	})
 	t.Run("Unicode", func(t *testing.T) {
-		for _, id := range []string{"tmux:한글", "tmux:セッション", "tmux:中文"} {
+		for _, id := range []string{"cmux:한글", "cmux:セッション", "cmux:中文"} {
 			if ParseSessionID(id).LocalID == "" {
 				t.Errorf("ParseSessionID(%q) empty LocalID", id)
 			}
@@ -348,11 +348,11 @@ func testCanonicalIDStability(t *testing.T) {
 	})
 	t.Run("URL_round_trip", func(t *testing.T) {
 		lid := "session:with:colons_한글"
-		canon := SessionRef{Adapter: "tmux", LocalID: lid}.Canonical()
+		canon := SessionRef{Adapter: "cmux", LocalID: lid}.Canonical()
 		enc := url.QueryEscape(canon)
 		dec, _ := url.QueryUnescape(enc)
 		ref := ParseSessionID(dec)
-		if ref.Adapter != "tmux" || ref.LocalID != lid {
+		if ref.Adapter != "cmux" || ref.LocalID != lid {
 			t.Errorf("round-trip failed: %q %q", ref.Adapter, ref.LocalID)
 		}
 	})
@@ -566,7 +566,7 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 		t.Run("Read", func(t *testing.T) {
 			stream, err := opener.OpenStream(context.Background())
 			if err != nil {
-				// Allow skip for adapters that fail at PTY attach (e.g. tmux mock).
+				// Allow skip for adapters that fail at PTY attach (e.g. cmux mock).
 				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "not found") {
 					t.Skipf("OpenStream requires real backend: %v", err)
 				}

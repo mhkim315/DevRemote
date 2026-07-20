@@ -13,7 +13,7 @@ import (
 
 // ── SP0-P3: REST reads from the owned registry + observer isolation ──
 
-// failingAdapter simulates a broken tmux/cmux backend: discovery always errors.
+// failingAdapter simulates a broken cmux/cmux backend: discovery always errors.
 type failingAdapter struct{ name string }
 
 func (a failingAdapter) Name() string { return a.name }
@@ -168,13 +168,13 @@ func TestManagedREST_SpoofedDiscoveryCannotOverwrite(t *testing.T) {
 	}
 }
 
-// TestManagedREST_FailingDiscoveryIsolation: failing tmux/cmux-style adapters
+// TestManagedREST_FailingDiscoveryIsolation: failing cmux/cmux-style adapters
 // (and a spoofing one) do not affect managed create/list/get/status.
 func TestManagedREST_FailingDiscoveryIsolation(t *testing.T) {
 	managed, id := createManagedForAPI(t)
 	reg := mux.MustNewRegistry(
-		failingAdapter{name: "tmux"},
 		failingAdapter{name: "cmux"},
+		failingAdapter{name: "cmux2"},
 	)
 	h := &Handlers{Registry: reg, Managed: managed, Catalog: catalogForAPI(managed, nil)}
 

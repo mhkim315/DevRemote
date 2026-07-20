@@ -298,17 +298,6 @@ func TestCmuxAdapter_DeclaresScreenSnapshotDelta(t *testing.T) {
 
 // --- TranscriptCaptureMode contract tests ---
 
-func TestTmuxAdapter_DeclaresByteStream(t *testing.T) {
-	adapter := &tmuxAdapter{}
-	mode := adapter.TranscriptCaptureMode()
-	if mode != CaptureModeByteStream {
-		t.Errorf("tmux adapter mode = %v, want CaptureModeByteStream", mode)
-	}
-}
-
-func TestLocalptyAdapter_DeclaresByteStream(t *testing.T) {
-}
-
 // --- E8g4: cmux viewport normalization ---
 
 func TestNormalizeCmuxSnapshot_BoundsLargeScreen(t *testing.T) {

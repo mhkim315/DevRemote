@@ -21,7 +21,7 @@ type SessionTelemetry struct {
 	// from the Session Catalog: starting|running|stopping|exited|killed|failed.
 	// It is SEPARATE from `state`/`agentStatus` (agent activity: idle/thinking/
 	// working/waiting). Empty for sessions that are not Pokit-managed (external
-	// tmux/cmux/observe-only) — those have no managed lifecycle. Mobile gates
+	// cmux) — those have no managed lifecycle. Mobile gates
 	// Stop/Kill/Delete on this field, never on list presence/absence.
 	// PA3 Step 2: legacy fields retained as compatibility stubs for tests.
 	// Zero values, not serialized (json:"-"). Removed in Step 4 (DTO update).

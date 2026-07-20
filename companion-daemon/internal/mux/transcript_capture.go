@@ -3,7 +3,7 @@ package mux
 // TranscriptCaptureMode describes how an adapter produces transcript data.
 //
 // byte_stream: Real PTY output. Each read returns incremental bytes.
-// The Recorder reads raw PTY deltas. Used by tmux.
+// The Recorder reads raw PTY deltas. Used by adapters.
 //
 // screen_snapshot_delta: Screen polling. The adapter captures full
 // terminal screens at intervals and extracts new output by comparing
@@ -18,7 +18,7 @@ package mux
 //   - Volatile UI (timers, spinners, status bars) is best-effort filtered
 //     but not guaranteed.
 //   - This mode is EXPERIMENTAL / DEGRADED. Do not present cmux Transcript
-//     as authoritative history equivalent to byte_stream (tmux).
+//     as authoritative history equivalent to byte_stream.
 //
 // Identical snapshots produce no transcript events.
 // Used by cmux.

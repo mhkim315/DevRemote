@@ -54,11 +54,11 @@ func TestPA4_5_LegacyObserverRoutesAreContained(t *testing.T) {
 
 	// Legacy snapshot with colliding ID — catalog drops it.
 	snapshot := []SessionTelemetry{
-		{ID: "codex_app_server:contained", Adapter: "tmux", AgentKind: "observer"},
-		{ID: "tmux:legacy-observer", Adapter: "tmux"},
+		{ID: "codex_app_server:contained", Adapter: "cmux", AgentKind: "observer"},
+		{ID: "cmux:legacy-observer", Adapter: "cmux"},
 	}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
-	// Managed row + legacy tmux row, observer collides dropped.
+	// Managed row + legacy cmux row, observer collides dropped.
 	if len(out) != 2 {
 		t.Fatalf("expected 2 rows (1 managed + 1 legacy), got %d", len(out))
 	}
@@ -126,7 +126,7 @@ func TestPA4_5_NoTemporaryComparisonFacadeRemains(t *testing.T) {
 
 	// Observer snapshot with managed-prefix ID — dropped, catalog wins.
 	snapshot := []SessionTelemetry{
-		{ID: "codex_app_server:final-proof", Adapter: "tmux", AgentKind: "observer"},
+		{ID: "codex_app_server:final-proof", Adapter: "cmux", AgentKind: "observer"},
 	}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
 	if len(out) != 1 || out[0].AgentKind == "observer" {
@@ -198,15 +198,15 @@ func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 		t.Error("HandleWS succeeded with unwired owner — should fail closed")
 	}
 
-	// Positive control: tmux session with useRegistry=true reaches
+	// Positive control: cmux session with useRegistry=true reaches
 	// Registry.FindSession (which fails on empty Registry, but the path
 	// is proven reachable for legacy adapters).
-	req2 := httptest.NewRequest("GET", "/term/ws?session=tmux:test", nil)
+	req2 := httptest.NewRequest("GET", "/term/ws?session=cmux:test", nil)
 	rec2 := httptest.NewRecorder()
 	h.HandleWS(rec2, req2)
-	// tmux uses Registry; with empty Registry, session not found.
+	// cmux uses Registry; with empty Registry, session not found.
 	if rec2.Code == http.StatusOK {
-		t.Error("tmux HandleWS succeeded on empty Registry")
+		t.Error("cmux HandleWS succeeded on empty Registry")
 	}
 }
 

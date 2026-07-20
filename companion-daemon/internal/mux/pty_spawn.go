@@ -10,7 +10,7 @@ import (
 )
 
 // RETAINED: Platform-neutral PTY spawn boundary (PB.1).
-// Used by controlled_pty_adapter.go (managed) and the tmux adapter (legacy).
+// Used by controlled_pty_adapter.go (managed).
 // Must NOT be deleted during PB legacy removal. These are the canonical
 // PTY creation primitives behind the managed transport boundary.
 

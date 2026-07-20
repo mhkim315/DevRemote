@@ -101,7 +101,7 @@ export function computeActionPolicy(input: ActionPolicyInput): ActionPolicy {
 
   if (!managed) {
     // External/observe-only/unknown: no managed lifecycle controls. Declared
-    // input (e.g. external tmux) is retained; observe-only/unknown have no input
+    // input (e.g. external) is retained; observe-only/unknown have no input
     // capability so this is false anyway.
     return {
       canStop: false, canForceKill: false, canDelete: false,

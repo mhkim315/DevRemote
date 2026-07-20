@@ -735,7 +735,7 @@ func TestCodexDelivery_StaleBindingsZeroWrites(t *testing.T) {
 		t.Fatalf("stale epoch: %+v", r)
 	}
 	wrongAdapter := c.Binding
-	wrongAdapter.Runtime.Adapter = "tmux"
+	wrongAdapter.Runtime.Adapter = "cmux"
 	if r := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: wrongAdapter, Payload: c.Payload}); r.Outcome != DeliveryRuntimeMismatch {
 		t.Fatalf("wrong adapter: %+v", r)
 	}

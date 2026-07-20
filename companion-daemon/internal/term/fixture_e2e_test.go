@@ -16,7 +16,7 @@ import (
 )
 
 // Phase 5 E2E: fixture adapter at HTTP/WS/telemetry/mobile boundaries.
-// 0 tmux/cmux changes. All state mutations provable.
+// 0 cmux/cmux changes. All state mutations provable.
 
 // --- Adapter ---
 
@@ -323,7 +323,7 @@ func TestFixtureE2E_Resize(t *testing.T) {
 	// Resize is client-side only in this architecture.
 	// xterm.js handles resize in the browser; there is no server-side
 	// /term/size Go handler (not in app.go, not in pty.go). This is
-	// true for tmux and cmux as well — it's an architectural choice,
+	// true for cmux and cmux as well — it's an architectural choice,
 	// not a fixture limitation.
 	//
 	// The TerminalStream interface supports Resize and the fixture
@@ -444,7 +444,7 @@ func TestFixtureE2E_MobileSchema(t *testing.T) {
 		}
 	}
 
-	// Verify adapter value is "fixture" (not empty, not hardcoded tmux/cmux).
+	// Verify adapter value is "fixture" (not empty, not hardcoded cmux/cmux).
 	if !strings.Contains(raw, `"fixture"`) {
 		t.Error("mobile schema: JSON does not contain adapter name 'fixture'")
 	}

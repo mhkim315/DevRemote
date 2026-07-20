@@ -584,7 +584,7 @@ func DeleteRecorderIfSame(sessionID string, rec *Recorder) {
 	r.Stop()
 }
 
-// WriteInput sends input to the PTY stream. Used for tmux stream-only input fallback.
+// WriteInput sends input to the PTY stream. Used for cmux stream-only input fallback.
 func (r *Recorder) WriteInput(data []byte) (int, error) {
 	return r.stream.Write(data)
 }
@@ -596,7 +596,7 @@ func (r *Recorder) Resize(rows, cols int) error {
 }
 
 // GetSize returns the underlying PTY's current geometry, if the stream
-// supports it (native PTY sessions do; tmux/cmux streams do not). ok is false
+// supports it (native PTY sessions do; cmux streams do not). ok is false
 // when the size is unavailable.
 func (r *Recorder) GetSize() (rows, cols int, ok bool) {
 	if s, isSizer := r.stream.(interface {

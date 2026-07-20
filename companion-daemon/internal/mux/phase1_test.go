@@ -3,7 +3,6 @@ package mux
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"strings"
 	"sync"
@@ -17,11 +16,11 @@ func TestSessionRef_Canonical(t *testing.T) {
 	tests := []struct {
 		adapter, localID, want string
 	}{
-		{"tmux", "ai", "tmux:ai"},
-		{"tmux", "aider", "tmux:aider"},
-		{"tmux", "tmux:aider", "tmux:tmux:aider"},
+		{"cmux", "ai", "cmux:ai"},
+		{"cmux", "aider", "cmux:aider"},
+		{"cmux", "cmux:aider", "cmux:cmux:aider"},
 		{"cmux", "surface:1", "cmux:surface:1"},
-		{"tmux", "한글", "tmux:한글"},
+		{"cmux", "한글", "cmux:한글"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -38,7 +37,7 @@ func TestSessionRef_Canonical(t *testing.T) {
 }
 
 func TestSessionRef_Validate(t *testing.T) {
-	valid := SessionRef{Adapter: "tmux", LocalID: "session"}
+	valid := SessionRef{Adapter: "cmux", LocalID: "session"}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("Validate() on valid ref: %v", err)
 	}
@@ -48,9 +47,9 @@ func TestSessionRef_Validate(t *testing.T) {
 		ref  SessionRef
 	}{
 		{"empty adapter", SessionRef{Adapter: "", LocalID: "x"}},
-		{"empty local", SessionRef{Adapter: "tmux", LocalID: ""}},
+		{"empty local", SessionRef{Adapter: "cmux", LocalID: ""}},
 		{"control char in adapter", SessionRef{Adapter: "tm\x00ux", LocalID: "x"}},
-		{"control char in local", SessionRef{Adapter: "tmux", LocalID: "x\x1fy"}},
+		{"control char in local", SessionRef{Adapter: "cmux", LocalID: "x\x1fy"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -128,13 +127,13 @@ func TestSentinelErrors_Distinguishable(t *testing.T) {
 // Phase 1 contract regression tests.
 
 func TestValidateAdapterName(t *testing.T) {
-	valid := []string{"tmux", "cmux", "test-adapter", "backend_2", "a"}
+	valid := []string{"cmux", "cmux", "test-adapter", "backend_2", "a"}
 	for _, name := range valid {
 		if err := ValidateAdapterName(name); err != nil {
 			t.Errorf("ValidateAdapterName(%q) = %v, want nil", name, err)
 		}
 	}
-	invalid := []string{"", "Tmux", "tmux:bad", "has space", "a\x00b", "9start"}
+	invalid := []string{"", "Cmux", "cmux:bad", "has space", "a\x00b", "9start"}
 	for _, name := range invalid {
 		if err := ValidateAdapterName(name); err == nil {
 			t.Errorf("ValidateAdapterName(%q) = nil, want error", name)
@@ -282,33 +281,13 @@ func TestFindSession_EndedSession(t *testing.T) {
 		t.Errorf("error = %v, want ErrSessionNotFound", err)
 	}
 }
-
-func TestCreateSession_TmuxCanonicalContract(t *testing.T) {
-	// tmux adapter creates session by name and returns local ID.
-	// Handler wraps with adapter prefix exactly once.
-	reg := MustNewRegistry(&testAdapter{name: "tmux"})
-	localID, err := reg.CreateSession(context.Background(), "tmux", CreateOptions{Name: "test-session"})
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	// Local ID must NOT contain adapter prefix.
-	if strings.Contains(localID, "tmux:") {
-		t.Errorf("create returned %q, want local ID 'test-session' (not canonical)", localID)
-	}
-	// Handler canonicalizes: adapter + ":" + localID.
-	canonical := SessionRef{Adapter: "tmux", LocalID: localID}.Canonical()
-	if canonical != "tmux:test-session" {
-		t.Errorf("canonical = %q, want tmux:test-session", canonical)
-	}
-}
-
 func TestCanonicalID_URLRoundTrip(t *testing.T) {
 	// Colon in local ID must survive encode/decode round-trip.
 	localID := "session:with:colons"
-	ref := SessionRef{Adapter: "tmux", LocalID: localID}
+	ref := SessionRef{Adapter: "cmux", LocalID: localID}
 	canonical := ref.Canonical()
 	parsed := ParseSessionID(canonical)
-	if parsed.Adapter != "tmux" || parsed.LocalID != localID {
+	if parsed.Adapter != "cmux" || parsed.LocalID != localID {
 		t.Errorf("round-trip: %q -> Parse -> adapter=%q local=%q", canonical, parsed.Adapter, parsed.LocalID)
 	}
 }
@@ -345,7 +324,7 @@ func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 	// Colon + Unicode in local ID must survive URL query encode/decode.
 	// Mobile clients encode session IDs in query parameters.
 	localID := "session:with:colons_한글"
-	ref := SessionRef{Adapter: "tmux", LocalID: localID}
+	ref := SessionRef{Adapter: "cmux", LocalID: localID}
 	canonical := ref.Canonical()
 	// URL query-encode the canonical ID (as mobile client does for ?session=...)
 	encoded := url.QueryEscape(canonical)
@@ -355,8 +334,8 @@ func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 		t.Fatalf("QueryUnescape: %v", err)
 	}
 	parsed := ParseSessionID(decoded)
-	if parsed.Adapter != "tmux" {
-		t.Errorf("adapter = %q, want tmux", parsed.Adapter)
+	if parsed.Adapter != "cmux" {
+		t.Errorf("adapter = %q, want cmux", parsed.Adapter)
 	}
 	if parsed.LocalID != localID {
 		t.Errorf("localID = %q, want %q", parsed.LocalID, localID)
@@ -504,157 +483,6 @@ func (r *recordingRunner) Run(ctx context.Context, opts CommandOptions, args ...
 	}
 	return nil, nil
 }
-
-func TestTmuxAdapter_CreateSessionUsesRunner(t *testing.T) {
-	rec := &recordingRunner{}
-	adapter := NewTmuxAdapterWithRunner(rec)
-	_, err := adapter.(SessionCreator).CreateSession(context.Background(), CreateOptions{Name: "test", CWD: "/tmp/work"})
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	if len(rec.calls) != 1 {
-		t.Fatalf("runner called %d times, want 1", len(rec.calls))
-	}
-	c := rec.calls[0]
-	wantArgs := []string{"tmux", "new-session", "-d", "-s", "test"}
-	if fmt.Sprint(c.args) != fmt.Sprint(wantArgs) {
-		t.Errorf("args = %v, want %v", c.args, wantArgs)
-	}
-	if c.opts.Dir != "/tmp/work" {
-		t.Errorf("opts.Dir = %q, want /tmp/work", c.opts.Dir)
-	}
-}
-
-func TestTmuxAdapter_TerminateSessionUsesRunner(t *testing.T) {
-	// TerminateSession calls the runner twice: once to list-sessions (resolve target)
-	// and once to kill-session.
-	rec := &recordingRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			if args[1] == "list-sessions" {
-				return []byte("$8::POKIT::test"), nil
-			}
-			return nil, nil
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(rec).(*tmuxAdapter)
-	err := adapter.TerminateSession(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("TerminateSession: %v", err)
-	}
-	if len(rec.calls) != 2 {
-		t.Fatalf("runner called %d times, want 2 (resolve + kill)", len(rec.calls))
-	}
-	// Call 1: resolveTmuxTarget → list-sessions
-	if c := rec.calls[0]; c.args[1] != "list-sessions" {
-		t.Errorf("resolve call args = %v, want list-sessions", c.args)
-	}
-	// Call 2: kill-session
-	wantKill := []string{"tmux", "kill-session", "-t", "$8"}
-	if fmt.Sprint(rec.calls[1].args) != fmt.Sprint(wantKill) {
-		t.Errorf("kill args = %v, want %v", rec.calls[1].args, wantKill)
-	}
-}
-
-func TestTmuxAdapter_ReadScreenUsesRunner(t *testing.T) {
-	rec := &recordingRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("screen content"), nil
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(rec)
-	sess := &tmuxSession{id: "dev", target: "@3", adapter: adapter}
-	out, err := sess.ReadScreen(context.Background())
-	if err != nil {
-		t.Fatalf("ReadScreen: %v", err)
-	}
-	if string(out) != "screen content" {
-		t.Errorf("ReadScreen = %q, want 'screen content'", string(out))
-	}
-	if len(rec.calls) != 1 {
-		t.Fatalf("runner called %d times, want 1", len(rec.calls))
-	}
-	wantArgs := []string{"tmux", "capture-pane", "-t", "@3", "-p"}
-	if fmt.Sprint(rec.calls[0].args) != fmt.Sprint(wantArgs) {
-		t.Errorf("args = %v, want %v", rec.calls[0].args, wantArgs)
-	}
-}
-
-func TestTmuxAdapter_ReadHistoryUsesRunner(t *testing.T) {
-	rec := &recordingRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("history"), nil
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(rec)
-	sess := &tmuxSession{id: "dev", target: "@3", adapter: adapter}
-	_, err := sess.ReadHistory(context.Background(), 500)
-	if err != nil {
-		t.Fatalf("ReadHistory: %v", err)
-	}
-	if len(rec.calls) != 1 {
-		t.Fatalf("runner called %d times, want 1", len(rec.calls))
-	}
-	wantArgs := []string{"tmux", "capture-pane", "-t", "@3", "-p", "-S", "-500"}
-	if fmt.Sprint(rec.calls[0].args) != fmt.Sprint(wantArgs) {
-		t.Errorf("args = %v, want %v", rec.calls[0].args, wantArgs)
-	}
-}
-
-func TestTmuxAdapter_ProcessInfoUsesRunner(t *testing.T) {
-	rec := &recordingRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("1000000000,12345,/home/user/project"), nil
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(rec)
-	sess := &tmuxSession{id: "dev", target: "@3", adapter: adapter}
-	info, err := sess.ProcessInfo(context.Background())
-	if err != nil {
-		t.Fatalf("ProcessInfo: %v", err)
-	}
-	if info.PID != 12345 {
-		t.Errorf("PID = %d, want 12345", info.PID)
-	}
-	if info.CWD != "/home/user/project" {
-		t.Errorf("CWD = %q, want /home/user/project", info.CWD)
-	}
-	if len(rec.calls) != 1 {
-		t.Fatalf("runner called %d times, want 1", len(rec.calls))
-	}
-	c := rec.calls[0]
-	if c.args[0] != "tmux" || c.args[1] != "display-message" {
-		t.Errorf("args = %v, want display-message", c.args)
-	}
-}
-
-func TestTmuxAdapter_CreateSession_RunnerError(t *testing.T) {
-	rec := &recordingRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("no tmux server running"), fmt.Errorf("exit status 1")
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(rec)
-	_, err := adapter.(SessionCreator).CreateSession(context.Background(), CreateOptions{Name: "test"})
-	if err == nil {
-		t.Fatal("CreateSession with runner error: got nil, want error")
-	}
-}
-
-func TestTmuxAdapter_ReadScreen_RunnerError(t *testing.T) {
-	runnerErr := fmt.Errorf("tcgetattr: Inappropriate ioctl for device")
-	rec := &recordingRunner{
-		runFunc: func(_ context.Context, _ CommandOptions, args ...string) ([]byte, error) {
-			return []byte("stderr output"), runnerErr
-		},
-	}
-	adapter := NewTmuxAdapterWithRunner(rec)
-	sess := &tmuxSession{id: "dev", adapter: adapter}
-	_, err := sess.ReadScreen(context.Background())
-	if err == nil {
-		t.Fatal("ReadScreen with runner error: got nil, want error")
-	}
-}
-
 func TestProbeAdapter_PreservesDeadlineExceeded(t *testing.T) {
 	blocker := &blockingAdapter{name: "test"}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)

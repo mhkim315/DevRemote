@@ -139,9 +139,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	if err := reg.Register(cmuxAdapter); err != nil {
 		return nil, fmt.Errorf("register cmux: %w", err)
 	}
-	if err := reg.Register(mux.NewTmuxAdapter()); err != nil {
-		return nil, fmt.Errorf("register tmux: %w", err)
-	}
 	// PA2d: Controlled PTY adapter is owned by OwnedPTYRuntime for
 	// lifecycle + transport. It remains registered in mux.Registry for
 	// session-list and handler discovery until both owners are fully

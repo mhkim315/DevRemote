@@ -28,9 +28,9 @@ func TestPA4_4_ManagedRuntimeCatalogNeverProbesObserver(t *testing.T) {
 		t.Fatal("catalog Get failed for registered session")
 	}
 	// Get for unknown/non-managed prefix fails closed — no Registry fallback.
-	_, ok = cat.Get("tmux:observer-test")
+	_, ok = cat.Get("cmux:observer-test")
 	if ok {
-		t.Error("catalog Get found tmux session — must fail closed")
+		t.Error("catalog Get found cmux session — must fail closed")
 	}
 	_, ok = cat.Get("cmux:observer-test")
 	if ok {
@@ -53,7 +53,7 @@ func TestPA4_4_AgentStatusStoreNoObserverDependency(t *testing.T) {
 }
 
 // TestPA4_4_ProcessSessionGatesOnAcceptedAdapter proves legacy/non-accepted
-// adapters (tmux, cmux, gemini) never reach managed catalog/status/approval
+// adapters (cmux, cmux, gemini) never reach managed catalog/status/approval
 // through the processSession accepted-adapter gate.
 func TestPA4_4_ProcessSessionGatesOnAcceptedAdapter(t *testing.T) {
 	// isAcceptedAdapter returns false for non-codex, non-claude agents.
@@ -79,7 +79,7 @@ func TestPA4_4_ProcessSessionGatesOnAcceptedAdapter(t *testing.T) {
 }
 
 // TestPA4_4_ObserverCannotAlterManagedCatalog proves a legacy observer
-// session (tmux) cannot insert, modify, or shadow managed catalog rows.
+// session (cmux) cannot insert, modify, or shadow managed catalog rows.
 func TestPA4_4_ObserverCannotAlterManagedCatalog(t *testing.T) {
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
@@ -90,7 +90,7 @@ func TestPA4_4_ObserverCannotAlterManagedCatalog(t *testing.T) {
 
 	// Observer snapshot with same ID — must be dropped by catalog projector.
 	snapshot := []SessionTelemetry{
-		{ID: "codex_app_server:managed-only", Adapter: "tmux", AgentKind: "observer", AgentStatus: "idle"},
+		{ID: "codex_app_server:managed-only", Adapter: "cmux", AgentKind: "observer", AgentStatus: "idle"},
 	}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
 	if len(out) != 1 {
@@ -100,7 +100,7 @@ func TestPA4_4_ObserverCannotAlterManagedCatalog(t *testing.T) {
 	if out[0].AgentKind == "observer" {
 		t.Error("observer agentKind leaked into catalog row")
 	}
-	if out[0].Adapter == "tmux" {
+	if out[0].Adapter == "cmux" {
 		t.Error("observer adapter leaked into catalog row")
 	}
 }

@@ -706,7 +706,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         )}
 
         <View style={styles.tabBar}>
-          {/* E8g5: Terminal tab only for liveTerminal-capable adapters (tmux).
+          {/* E8g5: Terminal tab only for liveTerminal-capable adapters.
               Legacy sessions without adapterCapabilities default to showing Terminal. */}
           {(supportsLiveTerminal || !sessionData?.adapterCapabilities) && (
           <TouchableOpacity

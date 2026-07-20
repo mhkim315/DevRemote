@@ -35,7 +35,7 @@ func (a *controlledPTYAdapter) TranscriptCaptureMode() TranscriptCaptureMode {
 
 // ManagedLifecycle marks controlled_pty as a Pokit-managed runtime: Pokit owns
 // the process/process group and its Stop/Kill cleanup. This is the only MVP
-// adapter that opts in — external (tmux) and observer (cmux) adapters do not,
+// adapter that opts in — external and observer adapters do not,
 // even though they accept input/control.
 func (a *controlledPTYAdapter) ManagedLifecycle() bool { return true }
 
