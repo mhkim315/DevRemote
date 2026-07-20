@@ -1,6 +1,6 @@
 # PA4.5 Evidence — Facade/Fallback Deletion and Final PA4 Acceptance
 
-**Implementation SHA:** `f0d5cbe51449e1fbcca8c63c85ab4d9574c7fefe`
+**Implementation SHA:** `f0d5cbe5123a1a1e498f75209d2c0aae1b92a37b`
 **PA3 Rollback:** `34d55e950`
 
 ## PA4 Acceptance Ledger
