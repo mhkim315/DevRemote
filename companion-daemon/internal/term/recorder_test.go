@@ -272,16 +272,24 @@ func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	sid := "test:input-test"
 
+	gen := ts.EnableQueue(sid)
+
 	// Simulate terminal input via BeginInput (echo privacy).
 	ts.BeginInput(sid, time.Now())
 
 	// Feed bytes through byte-stream — must be suppressed.
-	ts.FeedBytes(sid, []byte("secret input\n"), time.Now(), 0)
+	// Drain queue immediately so the worker processes the suppressed
+	// chunk before EndInput clears suppression.
+	ts.FeedBytes(sid, []byte("secret inputn"), time.Now(), gen)
+	ts.CloseSessionQueue(sid, gen)
 
 	// End input — output resumes.
 	ts.EndInput(sid, time.Now())
-	ts.FeedBytes(sid, []byte("visible output\n"), time.Now(), 0)
-	ts.FlushBytes(sid, time.Now())
+
+	// Re-enable queue for visible output with same generation.
+	gen2 := ts.EnableQueue(sid)
+	ts.FeedBytes(sid, []byte("visible outputn"), time.Now(), gen2)
+	ts.CloseSessionQueue(sid, gen2)
 
 	segs := ts.ListTranscript(sid)
 	if len(segs) == 0 {
