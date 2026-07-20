@@ -1,7 +1,7 @@
 # PA4.5 Evidence — Facade/Fallback Deletion and Final PA4 Acceptance
 
-**Implementation SHA:** `ef012136c` (PA4-Final-R15: GetRecorder removed, retired→500 test, gofmt)
-**Prior EVID SHAs:** `96e21fff5` (R14), `f0d5cbe51` (PA4.5 wave), `926d2bfaa` (R12 doc), `0deca4497` (R13 doc)
+**Implementation SHA:** `152b07e3c` (PA4-Final-R16: zero managed-path GetRecorder)
+**Prior EVID SHAs:** `ef012136c` (R15), `96e21fff5` (R14), `f0d5cbe51` (PA4.5 wave)
 **PA3 Rollback:** `34d55e950`
 
 ## PA4 Acceptance Ledger
@@ -31,6 +31,7 @@
 | R13 | Fix pairingClient test count 16/16 | PA4_5_EVIDENCE.md |
 | R14 | Remove RecorderFor generation gate bypass | pty.go, terminal_transport.go, owned_pty_runtime.go |
 | R15 | Remove GetRecorder global lookup, retired→500 test, gofmt | pty.go, terminal_transport.go, pa4_5_isolation_test.go |
+| R16 | Eliminate ALL managed-path GetRecorder: IPC, /term/size, awaitExit, TOCTOU | 8 files |
 
 
 ## PA4.5 Audit Results
@@ -85,7 +86,7 @@
 | Tunnel connected | PASS — SM-S926N Android 16 |
 | Device paired | PASS — SM-S926N |
 
-## Gates (at IMPL `ef012136c`)
+## Gates (at IMPL `152b07e3c`)
 ```
 go build ./... && go vet ./...        → exit 0
 gofmt -d (changed files)              → clean

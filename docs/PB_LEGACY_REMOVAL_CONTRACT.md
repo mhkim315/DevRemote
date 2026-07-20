@@ -8,6 +8,8 @@
 
 **PB prerequisite / rollback SHA:** **UNSET; must equal the future PA4 ACCEPT SHA**
 
+**PA4 implementation HEAD:** pending R16 commit
+
 **Future PB ACCEPT SHA:** **UNSET**
 
 ## 1. Objective and prerequisite

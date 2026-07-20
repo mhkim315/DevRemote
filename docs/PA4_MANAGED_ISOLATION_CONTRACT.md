@@ -1,14 +1,14 @@
 # PA4 Managed-Path Isolation Contract
 
-**Status:** READY FOR INDEPENDENT CONTRACT REVIEW — not yet frozen; no implementation authorized
+**Status:** IMPLEMENTATION COMPLETE — awaiting independent verification (not yet frozen)
 
 **Branch:** `feature/phase10-multi-adapter`
 
 **Frozen PA3 production baseline / PA4 rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7`
 
-**Documentation input HEAD:** `b8884b5934d3a89b132f887de6339b976e01c236`
+**PA4 implementation HEAD:** `f8ad56028` (pre-R16), R16 in progress
 
-**Future PA4 ACCEPT SHA:** **UNSET**
+**Future PA4 ACCEPT SHA:** **UNSET** (set by independent verifier)
 
 ## 1. Objective
 
