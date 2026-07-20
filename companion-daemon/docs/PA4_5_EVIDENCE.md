@@ -1,7 +1,7 @@
 # PA4.5 Evidence — Facade/Fallback Deletion and Final PA4 Acceptance
 
 **Implementation SHA:** `4aaf3b76a` (PA4-Final-R21: SetSubscriberFanOutHook deleted, same-package test access)
-**Prior EVID SHAs:** `7c2d63b7c` (R20), `d2294af67` (R19), `ce2425406` (R18)
+**Prior EVID SHAs:** `250104c2a` (R20 EVID), `d2294af67` (R19 IMPL)
 **PA3 Rollback:** `34d55e950`
 
 ## PA4 Acceptance Ledger
