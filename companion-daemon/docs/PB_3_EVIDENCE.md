@@ -1,6 +1,6 @@
 # PB.3 Evidence — Tmux Adapter Removal
 
-**PB.3 IMPL SHA:** `b4e485314` (R2: mobile + gofmt)
+**PB.3 IMPL SHA:** `b4e485314` (93c31b0f0 core + R2 mobile tmux/gofmt cleanup)
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## Consumer Inventory
@@ -56,8 +56,8 @@ $ grep -rnE "tmux|Tmux|TMUX" ../scripts/ scripts/
 
 ### Packaging
 ```
-$ grep -rnE "tmux|Tmux|TMUX" ../docs/ | grep -iv "superseded|historical|heritage|frozen"
-(only in historical/superseded documentation — zero active references)
+$ grep -rnE "tmux|Tmux|TMUX" ../Makefile ../Dockerfile ../.goreleaser* ../*.nix ../*.spec 2>/dev/null
+(empty — zero — no packaging files exist with tmux references)
 ```
 
 ## Gates
