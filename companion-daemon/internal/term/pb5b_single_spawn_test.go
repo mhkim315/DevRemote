@@ -4,6 +4,8 @@ import (
 	"context"
 	"syscall"
 	"testing"
+
+	"devremote/companion-daemon/internal/mux"
 )
 
 // countingLauncher counts Spawn calls.
@@ -35,9 +37,13 @@ func TestPB5b_SingleSpawn_NoDoubleCreate(t *testing.T) {
 		t.Fatalf("calls=%d before Create", cl.calls)
 	}
 
-	// Create must NOT invoke V1 — avoids double-spawn with transitional path.
-	// V1 is stored + accessible for direct Spawn use, not called from Create.
-	// (Create uses transitional spawn for full lifecycle tracking.)
+	// Create with nil spawn fails — V1 is not called as fallback.
+	_, err := owned.Create(context.Background(), mux.CreateOptions{Name: "test"}, "", "test")
+	if err == nil {
+		t.Fatal("Create with nil spawn must fail closed")
+	}
+
+	// V1 must NOT have been called — avoids double-spawn.
 	if cl.calls != 0 {
 		t.Fatalf("V1 Spawn was called during Create: %d calls (double-spawn bug)", cl.calls)
 	}
