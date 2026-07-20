@@ -115,8 +115,40 @@ func (s *Service) emitDegraded(sessionID string, reason string, observedAt time.
 	})
 }
 
-func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Time) {
+func (s *Service) emitDegradedGuarded(sessionID string, reason string, observedAt time.Time, generation int64) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.matchGeneration(sessionID, generation) {
+		return
+	}
+	arb := s.ensureArbiter(sessionID)
+	arb.RecordDegraded()
+	s.store.Append(sessionID, []TranscriptSegment{
+		NewDegradedSegment(sessionID, reason, observedAt),
+	})
+}
+
+func (s *Service) flushBytesGuarded(sessionID string, observedAt time.Time, generation int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.matchGeneration(sessionID, generation) {
+		return
+	}
+	bp := s.ensureByteProj(sessionID)
+	arb := s.ensureArbiter(sessionID)
+	segments := bp.Flush(sessionID, observedAt)
+	if len(segments) > 0 {
+		arb.RecordByteStream()
+		s.store.Append(sessionID, segments)
+	}
+}
+
+func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Time, generation int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.matchGeneration(sessionID, generation) {
+		return
+	}
 	bp := s.ensureByteProj(sessionID)
 	arb := s.ensureArbiter(sessionID)
 	segments := bp.Feed(sessionID, data, observedAt)
@@ -124,7 +156,6 @@ func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Ti
 		arb.RecordByteStream()
 		s.store.Append(sessionID, segments)
 	}
-	s.mu.Unlock()
 }
 
 func (s *Service) BeginInput(sessionID string, observedAt time.Time) {
@@ -307,10 +338,10 @@ func (s *Service) ensureArbiter(sessionID string) *SourceArbiter {
 // ── PA3 Closeout B: generation-bound lease ──
 
 func (s *Service) matchGeneration(sessionID string, generation int64) bool {
-	if generation == 0 {
-		return true
-	}
 	cur := s.currentGen[sessionID]
+	if cur == 0 {
+		return true // no generation established yet (test-only path)
+	}
 	return cur == generation
 }
 

@@ -82,23 +82,19 @@ func (q *chunkQueue) isClosed() bool {
 func (q *chunkQueue) worker() {
 	defer close(q.done)
 	for item := range q.chunks {
-		if !q.isGenerationCurrent() {
-			continue
-		}
+		// PA3 Closeout B R2: overflow and chunk processing are each
+		// generation-guarded inside the Service lock — no TOCTOU gap
+		// between generation check and mutation. ReplaceTranscript
+		// cannot interleave.
 		q.mu.Lock()
 		overflow := q.overflow
 		q.overflow = false
 		q.mu.Unlock()
 		if overflow {
-			q.svc.emitDegraded(q.sessionID, "byte-stream chunks dropped (queue overflow)", item.observedAt)
+			q.svc.emitDegradedGuarded(q.sessionID, "byte-stream chunks dropped (queue overflow)", item.observedAt, q.generation)
 		}
-		q.svc.processChunk(q.sessionID, item.data, item.observedAt)
+		q.svc.processChunk(q.sessionID, item.data, item.observedAt, q.generation)
 	}
-	if q.isGenerationCurrent() {
-		q.svc.FlushBytes(q.sessionID, time.Now())
-	}
-}
-
-func (q *chunkQueue) isGenerationCurrent() bool {
-	return q.svc.GetGeneration(q.sessionID) == q.generation
+	// Final flush is generation-guarded inside the Service lock.
+	q.svc.flushBytesGuarded(q.sessionID, time.Now(), q.generation)
 }
