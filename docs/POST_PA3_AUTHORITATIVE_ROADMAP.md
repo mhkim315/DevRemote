@@ -6,7 +6,7 @@
 
 **Frozen PA3 production baseline:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7`
 
-**Documentation input HEAD:** `b8884b5934d3a89b132f887de6339b976e01c236`
+**Original plan-reconciliation input:** `b8884b5934d3a89b132f887de6339b976e01c236`
 
 ## 1. SHA and phase ledger
 
@@ -19,7 +19,7 @@ These identities have different meanings and must not be substituted for one ano
 | PA4 production implementation | `4aaf3b76a5a4bfab64b041b3be19eaa32d2dd0e2` | Frozen managed-isolation production tree |
 | PA4 ACCEPT | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Independently verified and frozen |
 | PB prerequisite | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Contract authority required before PB may start |
-| PB start baseline | **PENDING PA4 freeze-document commit** | Operational rollback point that preserves the frozen PA4/roadmap documents; recorded by the PB execution-plan commit |
+| PB start baseline | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback point that preserves the frozen PA4/roadmap documents |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
 
 | Packet | Status |
@@ -30,7 +30,7 @@ These identities have different meanings and must not be substituted for one ano
 | PA2 | ACCEPT |
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
 | PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
-| PB | READY FOR PLAN REVIEW; code remains blocked pending the PB inventory/plan commit and independent document acceptance |
+| PB | READY FOR INDEPENDENT PLAN REVIEW; code remains blocked pending document acceptance |
 
 ## 2. Mandatory execution order
 
@@ -40,6 +40,8 @@ PA3 COMPLETE
 → independent PA4 ACCEPT
 → PB legacy physical removal
 → independent PB ACCEPT
+→ terminal/input/restart debt remediation
+→ pairing hardening under a separate threat model
 → Canonical Timeline
 → Codex/Claude common provider contract
 → Grok/ACP conformance
@@ -81,12 +83,14 @@ discard the accepted authority ledger. The normative contract is
 
 ## 5. Post-PB direction
 
-Canonical Timeline follows PB acceptance. `AcceptedRecordSource` is not
-mandated: it may be introduced only if multiple surviving provider-native
-sources demonstrably need a narrow common interface, and it must never preserve
-legacy discovery. The common Codex/Claude provider contract follows Timeline;
-Grok/ACP conformance, Navigator/Guard, then durable orchestration and product
-hardening follow in that order.
+After PB acceptance, the explicitly deferred terminal/input/restart debt and
+pairing hardening are handled in separate reviewed packets; neither may be
+pulled back into PB. Canonical Timeline follows those bounded remediation
+packets. `AcceptedRecordSource` is not mandated: it may be introduced only if
+multiple surviving provider-native sources demonstrably need a narrow common
+interface, and it must never preserve legacy discovery. The common
+Codex/Claude provider contract follows Timeline; Grok/ACP conformance,
+Navigator/Guard, then durable orchestration and product hardening follow.
 
 ## 6. Document authority
 

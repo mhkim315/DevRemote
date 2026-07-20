@@ -10,7 +10,7 @@
 
 **PA4_ACCEPT_SHA / PB_PREREQUISITE_SHA:** `74560edd88ef5b53c3b3d8d215f3007efbf468a2`
 
-**PB_START_BASELINE_SHA:** **PENDING** — exact PA4 freeze-document commit, recorded by the PB execution-plan commit
+**PB_START_BASELINE_SHA:** `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06`
 
 **Future PB ACCEPT SHA:** **UNSET**
 
@@ -51,6 +51,10 @@ PB must not delete or weaken:
 `AcceptedRecordSource` is not mandatory. Canonical Timeline work may introduce
 it only if multiple surviving provider-native sources demonstrably require a
 narrow common interface. It must never wrap or preserve legacy discovery.
+
+The reviewed implementation inventory, baseline comparison matrix, wave gates,
+and reproducible commands are authoritative in
+[`PB_EXECUTION_PLAN.md`](PB_EXECUTION_PLAN.md).
 
 ## 4. Bounded deletion waves
 
