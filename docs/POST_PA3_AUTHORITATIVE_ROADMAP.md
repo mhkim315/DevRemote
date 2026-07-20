@@ -1,6 +1,6 @@
 # Post-PA3 Authoritative Roadmap
 
-**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — planning only; PA4 implementation is not authorized
+**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 COMPLETE, PB PENDING (gated on human authorization)
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -17,8 +17,8 @@ These identities have different meanings and must not be substituted for one ano
 | PA2 final implementation | `b93c521b7de45f3f577805dbb7de505e16f3172d` | Accepted PA2 implementation ancestry |
 | PA3 frozen production baseline | `34d55e950012e97ccdcb03fd9abba88088ffd9a7` | Last accepted production baseline before PA4 |
 | Current documentation input HEAD | `b8884b5934d3a89b132f887de6339b976e01c236` | Documentation state reconciled by this plan |
-| Future PA4 ACCEPT | **UNSET** | Assigned only by an independent PA4 verifier |
-| Future PB prerequisite and rollback | **UNSET; must equal the exact PA4 ACCEPT SHA** | PB is blocked until this exists |
+| PA4 ACCEPT | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Independently verified and frozen |
+| PB prerequisite and rollback | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Set at PA4 ACCEPT freeze |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
 
 | Packet | Status |
