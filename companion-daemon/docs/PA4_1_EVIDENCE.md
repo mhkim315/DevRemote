@@ -1,6 +1,6 @@
 # PA4.1 Evidence — Managed REST/list/get/status Isolation
 
-**Implementation SHA:** `204e28c1afac8a3f281ed16f4bdfc1b5161e1f1d`
+**Implementation SHA:** `e0d831d99f68ab5199c886f8555a495e330e25d9
 **Contract:** `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` §4.1
 **Rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
 
@@ -71,7 +71,7 @@ ok  devremote/companion-daemon/internal/transcript
 
 ### `git rev-parse HEAD`
 ```
-204e28c1afac8a3f281ed16f4bdfc1b5161e1f1d
+e0d831d99f68ab5199c886f8555a495e330e25d9
 ```
 
 ### `git status --short`
