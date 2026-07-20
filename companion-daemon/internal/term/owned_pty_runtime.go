@@ -110,9 +110,10 @@ func NewOwnedPTYRuntime(spawn ManagedPTYLauncher, transcriptSvc *transcript.Serv
 	return newOwnedPTYRuntime(spawn, nil, transcriptSvc)
 }
 
-// NewOwnedPTYRuntimeV1 creates an OwnedPTYRuntime using the V1 launcher.
-func NewOwnedPTYRuntimeV1(v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
-	return newOwnedPTYRuntime(nil, v1, transcriptSvc)
+// NewOwnedPTYRuntimeV1 creates an OwnedPTYRuntime wired with both
+// the transitional launcher AND the V1 bridge for forward compatibility.
+func NewOwnedPTYRuntimeV1(v1 ManagedPTYLauncherV1, spawn ManagedPTYLauncher, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
+	return newOwnedPTYRuntime(spawn, v1, transcriptSvc)
 }
 
 func newOwnedPTYRuntime(spawn ManagedPTYLauncher, v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
