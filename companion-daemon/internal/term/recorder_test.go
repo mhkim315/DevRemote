@@ -551,6 +551,7 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
 	t.Skip("PB.4: cmux snapshot/delta markers removed")
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
@@ -637,6 +638,7 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 	t.Skip("PB.4: cmux snapshot/delta markers removed")
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
@@ -687,29 +689,8 @@ func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 		}
 	}
 }
-
-func TestRecorder_DeltaMarkerNotVisible(t *testing.T) {
-	payload := []byte("\033[9998mhello")
-	if !isDeltaMarker(payload) {
-		t.Fatal("isDeltaMarker failed")
-	}
-	clean := stripANSI(string(payload[len(deltaMarker):]))
-	if clean != "hello" {
-		t.Errorf("stripANSI after marker removal: got %q, want 'hello'", clean)
-	}
-}
-
-func TestRecorder_NormalANSINotDelta(t *testing.T) {
-	normal := []byte("\033[31mred text\033[0m\r\n")
-	if isDeltaMarker(normal) {
-		t.Error("normal ANSI color mistaken for delta marker")
-	}
-	if isClearScreenSnapshot(normal) {
-		t.Error("normal ANSI color mistaken for snapshot")
-	}
-}
-
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
+	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	t.Skip("PB.4: cmux snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)

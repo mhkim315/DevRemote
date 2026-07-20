@@ -181,6 +181,3 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 		t.Fatal("output producer remained blocked after disconnect")
 	}
 }
-
-// --- E8g4: cmux Terminal disabled (P0 mitigation) ---// cmuxSnapshotAdapter is a minimal adapter whose session implements
-// StreamOpener and whose adapter declares CaptureModeScreenSnapshotDelta.type cmuxSnapshotSession struct{}

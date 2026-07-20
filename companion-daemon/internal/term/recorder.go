@@ -360,81 +360,16 @@ func (r *Recorder) Bootstrap() []byte {
 	return out
 }
 
-// snapshotEndMarker removed in PB.4
 // full-screen snapshot. It is an invalid SGR sequence that no real
 // terminal output would contain. xterm.js ignores unknown SGR codes.
-var snapshotEndMarker = []byte("\x1b[9999m")
 
-// deltaMarker removed in PB.4. ESC[9998m is an invalid SGR
 // code — xterm.js ignores it. Recorder strips it before output capture.
-var deltaMarker = []byte("\x1b[9998m")
 
 // resolveCaptureMode is a future hook for per-adapter capture behavior.
 // Currently returns CaptureModeByteStream (legacy default).
 func resolveCaptureMode(sessionID string) string {
 	return "byte_stream"
-}
-
-// isDeltaMarker reports whether payload starts with the delta prefix.
-func isDeltaMarker(payload []byte) bool {
-	if len(payload) < len(deltaMarker) {
-		return false
-	}
-	for i := 0; i < len(deltaMarker); i++ {
-		if payload[i] != deltaMarker[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// drainSnapshot reads chunks until snapshotEndMarker is found, then strips
-// it. All chunks (including the marker portion) are broadcast to live
-// terminal subscribers but never appended to the transcript.
-//
-// A 1-second safety timeout prevents false-positive drain from consuming
-// normal PTY output forever (e.g., if isClearScreenSnapshot incorrectly
-// matched a non-snapshot escape sequence).
-func (r *Recorder) drainSnapshot(buf []byte) {
-	const safetyTimeout = 1 * time.Second
-	deadline := time.After(safetyTimeout)
-	for {
-		type readResult struct {
-			n   int
-			err error
-		}
-		ch := make(chan readResult, 1)
-		go func() {
-			n, err := r.stream.Read(buf)
-			ch <- readResult{n, err}
-		}()
-		select {
-		case res := <-ch:
-			if res.err != nil || res.n == 0 {
-				return
-			}
-			chunk := make([]byte, res.n)
-			copy(chunk, buf[:res.n])
-
-			if idx := indexOf(chunk, snapshotEndMarker); idx >= 0 {
-				if idx > 0 {
-					r.broadcast(chunk[:idx])
-				}
-				return
-			}
-			r.broadcast(chunk)
-		case <-deadline:
-			// Safety: no marker found within timeout — not a real
-			// PB.4: cmux snapshot path removed
-			log.Printf("RECORDER drainSnapshot timeout session=%s", r.sessionID)
-			return
-		case <-r.ctx.Done():
-			return
-		}
-	}
-}
-
-// indexOf returns the index of needle in haystack, or -1 if not found.
+} // indexOf returns the index of needle in haystack, or -1 if not found.
 func indexOf(haystack, needle []byte) int {
 	if len(needle) == 0 {
 		return 0
