@@ -165,8 +165,9 @@ func TestProcessSession_SnapshotSuppressedAfterInput(t *testing.T) {
 	ts := transcript.NewService(transcript.DefaultStoreConfig())
 	sid := "controlled_pty:snaptest"
 
+	gen := ts.EnableQueue(sid)
 	ts.BeginInput(sid, time.Now())
-	ts.AddSnapshotSegment(sid, "echoed text from terminal", 20, time.Now(), 0)
+	ts.AddSnapshotSegment(sid, "echoed text from terminal", 20, time.Now(), gen)
 
 	segments := ts.ListTranscript(sid)
 	for _, seg := range segments {
@@ -174,7 +175,16 @@ func TestProcessSession_SnapshotSuppressedAfterInput(t *testing.T) {
 			t.Errorf("snapshot text leaked after input: %q", seg.Text)
 		}
 	}
-	t.Logf("snapshot after input: %d segments", len(segments))
+	// Verify that the degraded suppression marker was stored (not the snapshot text).
+	hasSuppression := false
+	for _, seg := range segments {
+		if seg.Kind == transcript.KindDegraded && seg.DegradedReason == "snapshot suppressed after terminal input" {
+			hasSuppression = true
+		}
+	}
+	if !hasSuppression {
+		t.Error("snapshot suppression marker missing — BeginInput should suppress AddSnapshotSegment")
+	}
 }
 
 var _ = agent.EventUnknown

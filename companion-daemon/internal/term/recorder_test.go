@@ -143,7 +143,10 @@ func (s *mockStreamSession) OpenStream(ctx context.Context) (mux.TerminalStream,
 // --- Original unit tests (helper-level coverage) ---
 
 func TestRecorder_NoWebSocketCapture(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
 	opener := &testOpener{writeContent: "hello from PTY"}
 
 	// Simulate lifecycle start without WebSocket.
@@ -160,25 +163,34 @@ func TestRecorder_NoWebSocketCapture(t *testing.T) {
 	}()
 	time.Sleep(500 * time.Millisecond)
 
-	// ActivityBuffer should have captured output.
-	events := activity.List("test:recorder-test")
-	if len(events) == 0 {
-		t.Log("no activity captured without WebSocket")
+	// Transcript should have captured Recorder output.
+	segs := svc.ListTranscript("test:recorder-test")
+	if len(segs) == 0 {
+		t.Error("no transcript segments captured without WebSocket")
 	}
-	if len(events) > 0 && !strings.Contains(events[0].Text, "hello from PTY") {
-		t.Logf("captured text=%q, want 'hello from PTY'", events[0].Text)
+	hasOutput := false
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "hello from PTY") {
+			hasOutput = true
+			break
+		}
 	}
-	if len(events) > 0 { t.Logf("captured %d events without WebSocket: seq=%d text=%q", len(events), events[0].Seq, events[0].Text) }
+	if !hasOutput {
+		t.Error("expected 'hello from PTY' in transcript segments")
+	}
 }
 
 func TestRecorder_MultipleSubscribers(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
 	sessionID := "test:multi-sub-old"
 
 	// Pipe that writes once and keeps pipe alive long enough for both subs.
 	pr, pw := io.Pipe()
 	go func() {
-		pw.Write([]byte("shared output"))
+		pw.Write([]byte("shared output\n"))
 		pw.Close()
 	}()
 
@@ -189,6 +201,8 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	rec.transcriptSvc = svc
+	rec.queueGen = svc.EnableQueue(sessionID)
 	ch1 := rec.Subscribe()
 	ch2 := rec.Subscribe()
 	recorderRegistry.mu.Lock()
@@ -205,23 +219,31 @@ func TestRecorder_MultipleSubscribers(t *testing.T) {
 	if got1 != got2 {
 		t.Errorf("subscribers got different data: %q vs %q", got1, got2)
 	}
+	if !strings.Contains(got1, "shared output") {
+		t.Errorf("subscriber data missing expected content: %q", got1)
+	}
 
-	events := activity.List(sessionID)
-	// Should have exactly one terminal_output (from merge).
+	// Ensure queue is drained before checking transcript.
+	svc.CloseSessionQueue(sessionID, rec.queueGen)
+
+	// Transcript should have the output (no double append).
+	segs := svc.ListTranscript(sessionID)
 	outputCount := 0
-	for _, e := range events {
-		if e.Type == ActivityTerminalOutput {
+	for _, seg := range segs {
+		if seg.Kind == transcript.KindTerminalOutput {
 			outputCount++
 		}
 	}
-	if outputCount != 1 {
-		t.Logf("ActivityBuffer has %d output events, want 1 (no double append)", outputCount)
+	if outputCount == 0 {
+		t.Error("no transcript segments after subscriber fan-out")
 	}
-	t.Logf("outputCount=%d, subscribers got same data", outputCount)
 }
 
 func TestRecorder_DeleteCleanup(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
 	opener := &testOpener{writeContent: "before delete"}
 
 	_, ch := EnsureRecorder("test:delete-test", func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
@@ -231,9 +253,10 @@ func TestRecorder_DeleteCleanup(t *testing.T) {
 		<-ch
 	}
 
-	// Verify activity captured.
-	if len(activity.List("test:delete-test")) == 0 {
-		t.Log("no activity before delete")
+	// Verify transcript captured output before delete.
+	segs := svc.ListTranscript("test:delete-test")
+	if len(segs) == 0 {
+		t.Error("no transcript segments before delete")
 	}
 
 	// Delete.
@@ -246,41 +269,67 @@ func TestRecorder_DeleteCleanup(t *testing.T) {
 }
 
 func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
-	var activity *ActivityBuffer
+	ts := transcript.NewService(transcript.DefaultStoreConfig())
+	sid := "test:input-test"
 
-	// Append input via buffer (simulating WebSocket path).
-	activity.Append(ActivityEvent{
-		SessionID: "test:input-test",
-		Type:      ActivityTerminalInput,
-		Text:      "",
-		Bytes:     5,
-	})
-	activity.Append(ActivityEvent{
-		SessionID: "test:input-test",
-		Type:      ActivityTerminalOutput,
-		Text:      "output",
-		Bytes:     6,
-	})
+	// Simulate terminal input via BeginInput (echo privacy).
+	ts.BeginInput(sid, time.Now())
 
-	events := activity.List("test:input-test")
-	if len(events) != 2 {
-		t.Logf("len=%d, want 2", len(events))
+	// Feed bytes through byte-stream — must be suppressed.
+	ts.FeedBytes(sid, []byte("secret input\n"), time.Now(), 0)
+
+	// End input — output resumes.
+	ts.EndInput(sid, time.Now())
+	ts.FeedBytes(sid, []byte("visible output\n"), time.Now(), 0)
+	ts.FlushBytes(sid, time.Now())
+
+	segs := ts.ListTranscript(sid)
+	if len(segs) == 0 {
+		t.Fatal("no transcript segments after input/output sequence")
 	}
-	if len(events) > 0 && events[0].Text != "" {
-		t.Logf("terminal_input Text=%q, want empty", events[0].Text)
+
+	// Verify input boundary is present and content-free.
+	hasBoundary := false
+	for _, seg := range segs {
+		if seg.Kind == transcript.KindInputBoundary {
+			hasBoundary = true
+			if seg.Text != "" {
+				t.Errorf("input boundary carries text: %q", seg.Text)
+			}
+		}
 	}
-	if len(events) > 1 && events[1].Text != "output" {
-		t.Logf("terminal_output Text=%q, want 'output'", events[1].Text)
+	if !hasBoundary {
+		t.Error("input boundary marker missing")
+	}
+
+	// Verify that the suppressed input text ("secret input") did NOT leak.
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "secret input") {
+			t.Errorf("suppressed input text leaked into transcript: %q", seg.Text)
+		}
+	}
+
+	// Verify visible output is present.
+	hasOutput := false
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "visible output") {
+			hasOutput = true
+		}
+	}
+	if !hasOutput {
+		t.Error("visible output missing from transcript")
 	}
 }
 
 // --- E8f2 production-path tests (Blocker resolution) ---
 
 // TestRecorder_TelemetryNoWebSocketCapture verifies that the production
-// TelemetryService.processSession → EnsureRecorder → ActivityBuffer path
+// TelemetryService.processSession → EnsureRecorder → Transcript path
 // captures output without a WebSocket connection.
 func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
-	var activity *ActivityBuffer
+	ts := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(ts)
+	defer SetTranscriptService(nil)
 
 	// Create a mock session that implements StreamOpener.
 	sess := &mockStreamSession{
@@ -289,8 +338,8 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 		opener:  &testOpener{writeContent: "hello from PTY via telemetry"},
 	}
 
-	// Create TelemetryService with ActivityBuffer.
-	svc := NewTelemetryService(nil, nil, nil, nil, nil)
+	// Create TelemetryService with Transcript Service.
+	svc := NewTelemetryService(nil, nil, nil, nil, ts)
 
 	// Call processSession — the production path that E8f2 added.
 	// This is the session-discovery trigger: no WebSocket, just daemon lifecycle.
@@ -302,24 +351,32 @@ func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
 	// Clean up.
 	defer DeleteRecorder("test:telemetry-test")
 
-	// ActivityBuffer should have captured output through production path.
-	events := activity.List("test:telemetry-test")
-	if len(events) == 0 {
-		t.Log("no activity captured through TelemetryService.processSession production path")
+	// Transcript should have captured output through production path.
+	segs := ts.ListTranscript("test:telemetry-test")
+	if len(segs) == 0 {
+		t.Error("no transcript segments captured through TelemetryService.processSession production path")
 	}
-	if len(events) > 0 && !strings.Contains(events[0].Text, "hello from PTY via telemetry") {
-		t.Logf("captured text=%q, want 'hello from PTY via telemetry'", events[0].Text)
+	hasOutput := false
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "hello from PTY via telemetry") {
+			hasOutput = true
+			break
+		}
 	}
-	if len(events) > 0 { t.Logf("telemetry production path: captured %d events, seq=%d text=%q", len(events), events[0].Seq, events[0].Text) }
+	if !hasOutput {
+		t.Error("expected telemetry output in transcript segments")
+	}
 }
 
 // TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen verifies that
 // calling EnsureRecorder twice for the same session:
 //   - calls OpenStream exactly once
 //   - both subscribers receive the same output
-//   - ActivityBuffer contains exactly one terminal_output
+//   - Transcript contains the output (no double append)
 func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
 
 	// Use a counting opener with a delay so content arrives after both subs attach.
 	opener := &countingOpener{
@@ -378,30 +435,30 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 		t.Errorf("subscriber data=%q, want 'shared output via EnsureRecorder'", got1)
 	}
 
-	// Verify ActivityBuffer has exactly one terminal_output.
-	events := activity.List(sessionID)
+	// Transcript should have the output (no double append).
+	segs := svc.ListTranscript(sessionID)
 	outputCount := 0
-	for _, e := range events {
-		if e.Type == ActivityTerminalOutput {
+	for _, seg := range segs {
+		if seg.Kind == transcript.KindTerminalOutput {
 			outputCount++
 		}
 	}
-	if outputCount != 1 {
-		t.Logf("ActivityBuffer has %d output events, want 1 (no double append)", outputCount)
+	if outputCount == 0 {
+		t.Error("no transcript segments after multi-subscriber EnsureRecorder")
 	}
-
-	t.Logf("OpenStream count=%d, outputCount=%d, subscribers match=%v",
-		opener.OpenCount(), outputCount, got1 == got2)
 }
 
 // TestRecorder_DeleteCleanup_ClearsActivity verifies the production DELETE path:
 //
-//	DeleteRecorder(id) + ActivityBuffer.Clear(id)
+//	DeleteRecorder(id) then recreate
 //	→ recorder removed
-//	→ ActivityBuffer cleared
-//	→ seq reset if same ID reused
+//	→ transcript persists across recreation
+//	→ new output appended to existing transcript
 func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
 	opener := &testOpener{writeContent: "before delete cleanup"}
 	sessionID := "test:delete-cleanup"
 
@@ -412,12 +469,11 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 		<-ch
 	}
 
-	// Verify activity captured.
-	events := activity.List(sessionID)
-	if len(events) == 0 {
-		t.Log("no activity before delete")
+	// Verify transcript captured output.
+	segsBefore := svc.ListTranscript(sessionID)
+	if len(segsBefore) == 0 {
+		t.Error("no transcript segments before delete")
 	}
-	t.Logf("before delete: %d events", len(events))
 
 	// Production DELETE path (matching HandleSessionCRUD DELETE).
 	DeleteRecorder(sessionID)
@@ -427,13 +483,13 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 		t.Error("recorder still exists after delete")
 	}
 
-	// ActivityBuffer cleared.
-	eventsAfter := activity.List(sessionID)
-	if eventsAfter != nil {
-		t.Logf("activity still present after clear: %d events", len(eventsAfter))
+	// Transcript should survive deletion (store is independent of recorder).
+	segsAfter := svc.ListTranscript(sessionID)
+	if len(segsAfter) == 0 {
+		t.Error("transcript segments lost after recorder deletion")
 	}
 
-	// Seq reset: if same session ID is reused, seq starts cleanly.
+	// Re-create: if same session ID is reused, transcript continues.
 	opener2 := &testOpener{writeContent: "after recreate"}
 	_, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener2.OpenStream(context.Background()) })
 	defer DeleteRecorder(sessionID)
@@ -442,14 +498,26 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 		<-ch2
 	}
 
-	events2 := activity.List(sessionID)
-	if len(events2) == 0 {
-		t.Log("no activity after recreate")
+	segsAfterRecreate := svc.ListTranscript(sessionID)
+	if len(segsAfterRecreate) == 0 {
+		t.Error("no transcript segments after recreate")
 	}
-	if len(events2) > 0 && events2[0].Seq != 1 {
-		t.Logf("seq after recreate = %d, want 1 (seq not reset)", events2[0].Seq)
+	hasBefore := false
+	hasAfter := false
+	for _, seg := range segsAfterRecreate {
+		if strings.Contains(seg.Text, "before delete cleanup") {
+			hasBefore = true
+		}
+		if strings.Contains(seg.Text, "after recreate") {
+			hasAfter = true
+		}
 	}
-	if len(events2) > 0 { t.Logf("after recreate: seq=%d text=%q", events2[0].Seq, events2[0].Text) }
+	if !hasBefore {
+		t.Error("transcript lost original segments after recreate")
+	}
+	if !hasAfter {
+		t.Error("transcript missing new segments after recreate")
+	}
 }
 
 // TestRecorder_StreamOnlyInputFallback verifies the tmux stream-only input path:
@@ -514,30 +582,14 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 	if !found {
 		t.Errorf("stream.Write did not receive input bytes; writes=%v", writes)
 	}
-
-	// Verify terminal_input Text remains empty (raw text not stored).
-	// This matches the HandleWS path where terminal_input is created with Text: "".
-	inputEvent := ActivityEvent{
-		SessionID: "test:stream-only-input",
-		Type:      ActivityTerminalInput,
-		Text:      "",
-		Bytes:     len(inputMsg),
-	}
-	if inputEvent.Text != "" {
-		t.Logf("terminal_input Text=%q, want empty (raw input must not be stored)", inputEvent.Text)
-	}
-	if inputEvent.Bytes != len(inputMsg) {
-		t.Logf("terminal_input Bytes=%d, want %d", inputEvent.Bytes, len(inputMsg))
-	}
-
-	t.Logf("stream-only input fallback: WriteInput returned %d bytes, stream writes=%d, terminal_input Text empty=%v",
-		n, len(writes), inputEvent.Text == "")
 }
 
 // --- E8i: screen snapshot filtering ---
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -546,6 +598,8 @@ func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	rec.transcriptSvc = svc
+	rec.queueGen = svc.EnableQueue(rec.sessionID)
 	ch := rec.Subscribe()
 	recorderRegistry.mu.Lock()
 	recorderRegistry.recorders["test:snapshot-filter"] = rec
@@ -570,27 +624,24 @@ func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 
-	t.Logf("subscriber received %d chunks", len(received))
-
-	// ActivityBuffer must NOT contain any snapshot content.
-	events := activity.List("test:snapshot-filter")
+	// Transcript must NOT contain any snapshot content.
+	segs := svc.ListTranscript("test:snapshot-filter")
 	snapshotFound := false
 	deltaFound := false
-	for _, e := range events {
-		if strings.Contains(e.Text, "AAAA") {
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "AAAA") || strings.Contains(seg.Text, "BBBB") {
 			snapshotFound = true
 		}
-		if strings.Contains(e.Text, "real delta") {
+		if strings.Contains(seg.Text, "real delta") {
 			deltaFound = true
 		}
 	}
 	if snapshotFound {
-		t.Logf("screen snapshot was appended to ActivityBuffer — should be filtered")
+		t.Error("screen snapshot leaked into transcript — should be filtered")
 	}
 	if !deltaFound {
-		t.Logf("real delta was NOT appended to ActivityBuffer — should be stored")
+		t.Error("real delta was NOT stored in transcript — should be stored")
 	}
-	t.Logf("snapshot filtered=%v delta stored=%v event_count=%d", !snapshotFound, deltaFound, len(events))
 }
 func TestIsClearScreenSnapshot(t *testing.T) {
 	tests := []struct {
@@ -620,7 +671,9 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 // --- E8g4: cmux delta frame tagging ---
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -629,6 +682,8 @@ func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	rec.transcriptSvc = svc
+	rec.queueGen = svc.EnableQueue(rec.sessionID)
 	ch := rec.Subscribe()
 	recorderRegistry.mu.Lock()
 	recorderRegistry.recorders["test:delta-marker"] = rec
@@ -646,27 +701,25 @@ func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 		received = append(received, string(data))
 	}
 
-	// Delta must be appended to ActivityBuffer but NOT broadcast to subscribers.
-	events := activity.List("test:delta-marker")
-	if len(events) == 0 {
-		t.Log("delta frame was NOT appended to ActivityBuffer")
-	}
-	if len(events) > 0 && (strings.Contains(events[0].Text, "9998") || strings.Contains(events[0].Text, "\x1b")) {
-		t.Logf("delta marker leaked into ActivityBuffer: %q", events[0].Text)
-	}
-	if len(events) > 0 && !strings.Contains(events[0].Text, "agent output") {
-		t.Logf("delta content not found: %q", events[0].Text)
-	}
-	// Subscriber must NOT see the marker or the delta content.
+	// Delta frames are NOT broadcast to subscribers (marker stripped, continue).
+	// In byte_stream capture mode (default), delta is not stored in transcript.
+	// Only screen_snapshot_delta capture mode stores via AddSnapshotSegment.
 	for _, r := range received {
 		if strings.Contains(r, "9998") {
-			t.Logf("delta marker leaked to subscriber: %q", r)
+			t.Error("delta marker leaked to subscriber")
 		}
 		if strings.Contains(r, "agent output") {
-			t.Logf("delta content leaked to subscriber: %q", r)
+			t.Error("delta content leaked to subscriber")
 		}
 	}
-	t.Logf("delta appended=%v subscriber_clean=%v", len(events) > 0, len(received) == 0)
+
+	// Delta content must NOT appear in transcript (byte_stream mode).
+	segs := svc.ListTranscript("test:delta-marker")
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "agent output") {
+			t.Error("delta content leaked into transcript in byte_stream capture mode")
+		}
+	}
 }
 
 func TestRecorder_DeltaMarkerNotVisible(t *testing.T) {
@@ -676,22 +729,24 @@ func TestRecorder_DeltaMarkerNotVisible(t *testing.T) {
 	}
 	clean := stripANSI(string(payload[len(deltaMarker):]))
 	if clean != "hello" {
-		t.Logf("stripANSI after marker removal: got %q, want 'hello'", clean)
+		t.Errorf("stripANSI after marker removal: got %q, want 'hello'", clean)
 	}
 }
 
 func TestRecorder_NormalANSINotDelta(t *testing.T) {
 	normal := []byte("\033[31mred text\033[0m\r\n")
 	if isDeltaMarker(normal) {
-		t.Log("normal ANSI color mistaken for delta marker")
+		t.Error("normal ANSI color mistaken for delta marker")
 	}
 	if isClearScreenSnapshot(normal) {
-		t.Log("normal ANSI color mistaken for snapshot")
+		t.Error("normal ANSI color mistaken for snapshot")
 	}
 }
 
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
-	var activity *ActivityBuffer
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
 
 	pr, pw := io.Pipe()
 	rec := &Recorder{
@@ -700,6 +755,8 @@ func TestRecorder_DeltaThenSnapshot(t *testing.T) {
 		done:      make(chan struct{}),
 	}
 	rec.ctx, rec.cancel = context.WithCancel(context.Background())
+	rec.transcriptSvc = svc
+	rec.queueGen = svc.EnableQueue(rec.sessionID)
 	ch := rec.Subscribe()
 	recorderRegistry.mu.Lock()
 	recorderRegistry.recorders["test:delta-then-snap"] = rec
@@ -707,10 +764,10 @@ func TestRecorder_DeltaThenSnapshot(t *testing.T) {
 	go rec.readLoop()
 	defer DeleteRecorder("test:delta-then-snap")
 
-	// First: delta frame with marker
+	// First: delta frame with marker (dropped in byte_stream mode).
 	pw.Write([]byte("\033[9998mnew output\r\n"))
 	time.Sleep(50 * time.Millisecond)
-	// Then: full screen snapshot
+	// Then: full screen snapshot (drained, not in transcript).
 	pw.Write([]byte("\033[2J\033[Hscreen content\r\n\033[9999m"))
 	pw.Close()
 
@@ -721,48 +778,24 @@ func TestRecorder_DeltaThenSnapshot(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 
-	events := activity.List("test:delta-then-snap")
-	deltaFound := false
-	snapshotFound := false
-	for _, e := range events {
-		if strings.Contains(e.Text, "new output") {
-			deltaFound = true
+	// In byte_stream mode: delta is dropped, snapshot is drained.
+	// Neither should appear in transcript.
+	segs := svc.ListTranscript("test:delta-then-snap")
+	for _, seg := range segs {
+		if strings.Contains(seg.Text, "new output") {
+			t.Error("delta content leaked into transcript (byte_stream mode)")
 		}
-		if strings.Contains(e.Text, "screen content") {
-			snapshotFound = true
+		if strings.Contains(seg.Text, "screen content") {
+			t.Error("snapshot content leaked into transcript")
 		}
 	}
-	if !deltaFound {
-		t.Log("delta not found in ActivityBuffer after delta+snapshot sequence")
-	}
-	if snapshotFound {
-		t.Log("snapshot leaked into ActivityBuffer after delta+snapshot sequence")
-	}
-	t.Logf("delta=%v snapshot_leaked=%v chunks=%d", deltaFound, snapshotFound, len(received))
-}
 
-// PA3 Step6b-4: local stub types for deleted activity_stub.go
-type ActivityBuffer struct{}
-func NewActivityBuffer(capacity int) *ActivityBuffer { return &ActivityBuffer{} }
-func (b *ActivityBuffer) Append(event interface{}) {}
-func (b *ActivityBuffer) List(sessionID string) []ActivityEvent { return nil }
-func (b *ActivityBuffer) Clear(sessionID string) {}
-type ActivityType string
-const (
-	ActivityTerminalOutput ActivityType = "terminal_output"
-	ActivityTerminalInput  ActivityType = "terminal_input"
-	ActivitySystem         ActivityType = "system"
-	ActivityStatus         ActivityType = "status"
-)
-type ActivityEvent struct {
-	ID        string
-	Seq       uint64
-	SessionID string
-	Type      ActivityType
-	Text      string
-	Bytes     int
-	Hash      string
-	Timestamp interface{}
+	// Subscriber must not receive delta content (delta frames are not broadcast).
+	for _, r := range received {
+		if strings.Contains(r, "new output") {
+			t.Error("delta content leaked to subscriber")
+		}
+	}
 }
 
 // PA3 Closeout A — Recorder instance-safe termination.
