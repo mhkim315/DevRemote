@@ -213,7 +213,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
 				bootstrap, liveCh, hasRec := transport.SubscriberFanOut(session)
 				if hasRec {
-					rec = GetRecorder(session)
+					rec = transport.Recorder()
 					transportBootstrap = bootstrap
 					subCh = liveCh
 				}

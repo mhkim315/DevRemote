@@ -25,9 +25,9 @@ type TerminalTransport struct {
 	sessionID  string
 	generation int64
 
-	mu       sync.RWMutex
-	writer   io.Writer   // the underlying PTY (for WriteInput)
-	resizer  interface { // Resize(int, int) error
+	mu      sync.RWMutex
+	writer  io.Writer // the underlying PTY (for WriteInput)
+	resizer interface {
 		Resize(rows, cols int) error
 	}
 	recorder *Recorder // direct reference; nil if never set
@@ -94,6 +94,14 @@ func (t *TerminalTransport) Resize(rows, cols int) error {
 		return nil // retired — fail closed
 	}
 	return r.Resize(rows, cols)
+}
+
+// Recorder returns the transport's direct Recorder reference, or nil.
+// PA4-Final-R15: HandlerWS uses this instead of the global GetRecorder.
+func (t *TerminalTransport) Recorder() *Recorder {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.recorder
 }
 
 // SubscriberFanOut returns a bootstrap snapshot + live subscriber channel

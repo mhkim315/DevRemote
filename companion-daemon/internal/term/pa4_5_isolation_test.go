@@ -258,22 +258,22 @@ func TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup(t *testing
 }
 
 // TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed proves that
-// a retired TerminalTransport returns false from SubscriberFanOut — no
-// subscriber channel is created, and no RecorderFor fallback exists.
+// HandleWS returns 500 when the TerminalTransport is retired — the
+// SubscriberFanOut is denied and no RecorderFor fallback exists.
 func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T) {
 	// Create a live recorder + transport.
 	pr, pw := io.Pipe()
 	ms := &mockStream{pr: pr, pw: pw}
-	rec, _ := EnsureRecorder("controlled_pty:r14-retired", func() (ptyStream, error) { return ms, nil })
+	rec, _ := EnsureRecorder("controlled_pty:r14-retired-hw", func() (ptyStream, error) { return ms, nil })
 	if rec == nil {
 		t.Fatal("EnsureRecorder returned nil")
 	}
 	defer rec.Stop()
 
-	tt := newTerminalTransport("controlled_pty:r14-retired", 1, pw, ms, rec)
+	tt := newTerminalTransport("controlled_pty:r14-retired-hw", 1, pw, ms, rec)
 
 	// Verify SubscriberFanOut works before retirement.
-	_, ch, ok := tt.SubscriberFanOut("controlled_pty:r14-retired")
+	_, ch, ok := tt.SubscriberFanOut("controlled_pty:r14-retired-hw")
 	if !ok {
 		t.Fatal("SubscriberFanOut failed before retirement")
 	}
@@ -285,10 +285,27 @@ func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T
 		t.Fatal("transport should be retired")
 	}
 
-	// SubscriberFanOut must fail-closed after retirement.
-	_, _, ok = tt.SubscriberFanOut("controlled_pty:r14-retired")
-	if ok {
-		t.Fatal("SubscriberFanOut succeeded on retired transport — generation gate bypassed")
+	// Wire a real OwnedPTYRuntime with the retired transport entry.
+	owned := NewOwnedPTYRuntime(nil, nil)
+	owned.entries["controlled_pty:r14-retired-hw"] = &CatalogEntry{
+		ID:        "controlled_pty:r14-retired-hw",
+		transport: tt,
+		recorder:  rec,
+	}
+	lcSvc := NewLifecycleService(owned, nil)
+
+	reg, _ := mux.NewRegistry()
+	h := &Handlers{
+		Registry:  reg,
+		Lifecycle: lcSvc,
+	}
+
+	// HandleWS must return 500 for the retired transport.
+	req := httptest.NewRequest("GET", "/term/ws?session=controlled_pty:r14-retired-hw", nil)
+	rr := httptest.NewRecorder()
+	h.HandleWS(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("HandleWS with retired transport: got %d, want 500", rr.Code)
 	}
 
 	// Verify the recorder is still alive (retirement doesn't stop it).
