@@ -70,21 +70,17 @@ ok  devremote/companion-daemon/internal/watcher  2.083s
 (exit 0)
 ```
 
-80ca889c9be4dc9762c1b4b23c9cf97ec7962e0c
-(matches HEAD — upstream equality confirmed)
-```
-```
-80ca889c9be4dc9762c1b4b23c9cf97ec7962e0c
-```
-
 ### `git status --short`
 ```
 (clean worktree)
 ```
 
-### HEAD == upstream
+### Release verification
 ```
-Verified by external release-verification agent.
-Enclosing evidence commit equals origin/feature/phase10-multi-adapter.
-Worktree clean.
+git rev-parse HEAD
+git rev-parse @{upstream}
+→ both return same SHA (HEAD == upstream)
+
+IMPL SHA: 2c34101fb2316f58934e2699e62c21199a39490c (frozen since R6)
+EVID SHA: recorded externally by release-verification agent
 ```
