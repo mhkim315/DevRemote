@@ -72,7 +72,7 @@ ok  devremote/companion-daemon/internal/watcher  2.083s
 
 ### `git rev-parse HEAD`
 ```
-aa376695dc0998cddf6289faddef5a47879fe72d
+ef05e3582d2e4b2dc53f659290048db2855fdcec
 ```
 
 ### `git status --short`
