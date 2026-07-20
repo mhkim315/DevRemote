@@ -254,7 +254,7 @@ describe('M3-auth-2B iOS integration', () => {
     await pairFromScannedQR({
       data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, operationalBaseURL: BASE,
       pairAndSave: async () => { throw new Error('boom'); }, onPaired: async () => true,
-      connect: async () => { a.push('connect'); }, onError: () => {}, onReject: () => a.push('reject'),
+      connect: async () => { a.push('connect'); }, onError: () => a.push('error'), onReject: () => a.push('reject'),
     });
     expect(a).toEqual(['error', 'reject']);
 
@@ -263,10 +263,10 @@ describe('M3-auth-2B iOS integration', () => {
     await pairFromScannedQR({
       data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, operationalBaseURL: '',
       pairAndSave: async () => { pairCalled = true; return { status: 'approved' } as any; }, onPaired: async () => true,
-      connect: async () => { b.push('connect'); }, onError: () => {}, onReject: () => b.push('reject'),
+      connect: async () => { b.push('connect'); }, onError: () => b.push('error'), onReject: () => b.push('reject'),
     });
-    expect(b).toEqual(['needBase', 'reject']);
-    expect(pairCalled).toBe(true); // pairing attempted with empty URL (fails at canonicalOrigin)
+    expect(b).toEqual(['error', 'reject']);
+    expect(pairCalled).toBe(false); // empty URL rejected before pairing (fails at canonicalOrigin)
   });
 
   it('a remote pairing without an onPaired installer fails closed (no connect, no pairing)', async () => {
@@ -275,7 +275,7 @@ describe('M3-auth-2B iOS integration', () => {
     await pairFromScannedQR({
       data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, operationalBaseURL: BASE,
       pairAndSave: async () => { pairCalled = true; return { status: 'approved' } as any; },
-      connect: async () => { a.push('connect'); }, onError: () => {}, onReject: () => a.push('reject'),
+      connect: async () => { a.push('connect'); }, onError: () => a.push('error'), onReject: () => a.push('reject'),
       // onPaired intentionally omitted — a re-pair with no trusted-state installer
       // must NOT connect on top of a stale TokenManager.
     });
@@ -304,7 +304,7 @@ describe('M3-auth-2B iOS integration', () => {
     expect(mismatch.mode).toBe('failed');
 
     const missing = await completePairing({
-      loadPairing: async () => pairing as any, getBaseURL: () => BASE,
+      loadPairing: async () => null, getBaseURL: () => BASE,
       createDeviceKey: () => iosDeviceKey() as any,
       makeTokenManager: (p, dk, base) => new TokenManager(p as any, dk as any, base),
     });
@@ -313,7 +313,7 @@ describe('M3-auth-2B iOS integration', () => {
 
   it('cold-start binds to the actual SE key: missing/mismatch → pairing_required, inaccessible → failed', async () => {
     const run = (createDeviceKey: () => any, p: any = pairing) => completePairing({
-      loadPairing: async () => pairing as any, getBaseURL: () => BASE, createDeviceKey,
+      loadPairing: async () => p, getBaseURL: () => BASE, createDeviceKey,
       makeTokenManager: (pp, dk, base) => new TokenManager(pp as any, dk as any, base),
     });
     // key deleted/wiped on this device → re-pairable
@@ -414,7 +414,7 @@ describe('M3-auth-2B iOS integration', () => {
       connect: async () => { ev2.push('connect'); },
       setScanned: () => {}, notifyError: () => ev2.push('error'),
     });
-    expect(ev2).toEqual(['connect']);
+    expect(ev2).toEqual(['error']); // non-pairing QR → notifyError
   });
 
   // ── Bearer + ticket ──

@@ -35,6 +35,13 @@ export interface PairFromScanDeps {
 export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
   const base = deps.operationalBaseURL;
 
+  // Reject empty operational URL before any device key creation.
+  if (!base || !base.trim()) {
+    deps.onError('Set a valid HTTPS daemon URL before pairing.');
+    deps.onReject();
+    return;
+  }
+
   // A remote pairing MUST install trusted auth state (onPaired) before any
   // connection. Without an installer we fail closed rather than connect on top
   // of a stale/previous TokenManager — this closes the re-pair-from-device_connect
