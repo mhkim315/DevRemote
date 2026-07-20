@@ -1,6 +1,10 @@
 # PA3 Closeout C — Evidence
 
-**Implementation SHA:** `5be4b0cd7a2d55d6a1f5f07e17d75e02fadbb9d4`
+**Implementation SHA:** `c58c807e358f41b68174c7a7ae446b7940ac5db9`
+
+**R2 Fix:** Replaced remaining gen=0 calls in `TestRecorder_TerminalInput_NoRawText`
+with EnableQueue-obtained real generation. Queue drained before EndInput to
+prevent worker race on suppression state.
 
 **Scope:** `term/` test files only. No production code changes.
 
