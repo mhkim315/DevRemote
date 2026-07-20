@@ -107,7 +107,7 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	stream := newCapturingStream()
 	sess := &capturingSession{id: localID, stream: stream}
 	reg := mux.MustNewRegistry(&capturingAdapter{session: sess})
-		h := &Handlers{Registry: reg, }
+	h := &Handlers{Registry: reg}
 	sessionID := "mock:" + localID
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,8 +129,6 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	}
 	return conn, stream, sessionID, cleanup
 }
-
-
 
 // Proof: binary input — including bytes that LOOK like a control frame —
 // reaches the PTY byte-for-byte. This is the exact regression the handoff
@@ -245,7 +243,7 @@ func TestWSFraming_ReadOnlyViewerCannotInput(t *testing.T) {
 	if got := stream.allWrites(); len(got) != 0 {
 		t.Errorf("read-only viewer input reached PTY: %q", got)
 	}
-	if got := 0 /* Step6b-4 stub */; got != 0 {
+	if got := 0; /* Step6b-4 stub */ got != 0 {
 		t.Errorf("read-only viewer input recorded in Activity: %d events", got)
 	}
 }

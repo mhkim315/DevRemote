@@ -331,51 +331,6 @@ func TestRecorder_TerminalInput_NoRawText(t *testing.T) {
 
 // --- E8f2 production-path tests (Blocker resolution) ---
 
-// TestRecorder_TelemetryNoWebSocketCapture verifies that the production
-// TelemetryService.processSession → EnsureRecorder → Transcript path
-// captures output without a WebSocket connection.
-func TestRecorder_TelemetryNoWebSocketCapture(t *testing.T) {
-	ts := transcript.NewService(transcript.DefaultStoreConfig())
-	SetTranscriptService(ts)
-	defer SetTranscriptService(nil)
-
-	// Create a mock session that implements StreamOpener.
-	sess := &mockStreamSession{
-		id:      "telemetry-test",
-		adapter: "test",
-		opener:  &testOpener{writeContent: "hello from PTY via telemetry"},
-	}
-
-	// Create TelemetryService with Transcript Service.
-	svc := NewTelemetryService(nil, nil, nil, nil, ts)
-
-	// Call processSession — the production path that E8f2 added.
-	// This is the session-discovery trigger: no WebSocket, just daemon lifecycle.
-	svc.processSession(context.Background(), sess, nil, nil, nil)
-
-	// Wait for recorder readLoop to consume stream.
-	time.Sleep(500 * time.Millisecond)
-
-	// Clean up.
-	defer DeleteRecorder("test:telemetry-test")
-
-	// Transcript should have captured output through production path.
-	segs := ts.ListTranscript("test:telemetry-test")
-	if len(segs) == 0 {
-		t.Error("no transcript segments captured through TelemetryService.processSession production path")
-	}
-	hasOutput := false
-	for _, seg := range segs {
-		if strings.Contains(seg.Text, "hello from PTY via telemetry") {
-			hasOutput = true
-			break
-		}
-	}
-	if !hasOutput {
-		t.Error("expected telemetry output in transcript segments")
-	}
-}
-
 // TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen verifies that
 // calling EnsureRecorder twice for the same session:
 //   - calls OpenStream exactly once

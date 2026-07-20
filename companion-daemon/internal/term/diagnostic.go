@@ -80,8 +80,8 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 				AgentStatus:     st.AgentStatus,
 				AgentConfidence: st.AgentConfidence,
 				// PA3 Step 2: st.State removed from SessionTelemetry
-				ParserHealthy:   true,
-				LastError:       redactStr(st.LastError),
+				ParserHealthy: true,
+				LastError:     redactStr(st.LastError),
 			}
 
 			// PA3 Step 2: adapter state health from accepted-adapter ingestion.

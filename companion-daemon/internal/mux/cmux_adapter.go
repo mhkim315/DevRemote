@@ -583,8 +583,7 @@ func mapAgentProcesses(snap CmuxTopSnapshot) (ProcessSnapshotResult, error) {
 			agentTags[t.Ref] = "claude"
 		} else if strings.Contains(lowerRef, "codex") || strings.Contains(lowerProvider, "codex") {
 			agentTags[t.Ref] = "codex"
-		} else if strings.Contains(lowerRef, "gemini") || strings.Contains(lowerProvider, "gemini") {
-			agentTags[t.Ref] = "gemini"
+
 		}
 	}
 
@@ -620,8 +619,7 @@ func mapAgentProcesses(snap CmuxTopSnapshot) (ProcessSnapshotResult, error) {
 				provider = "claude"
 			} else if strings.Contains(name, "codex") {
 				provider = "codex"
-			} else if strings.Contains(name, "gemini") {
-				provider = "gemini"
+
 			}
 		}
 

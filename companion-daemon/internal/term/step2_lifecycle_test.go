@@ -36,4 +36,3 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 		t.Errorf("LifecycleState = %q, want running", row.LifecycleState)
 	}
 }
-

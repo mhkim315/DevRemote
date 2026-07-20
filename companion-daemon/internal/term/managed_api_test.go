@@ -99,6 +99,7 @@ func TestManagedREST_ListAndGet_FromOwnedRegistry(t *testing.T) {
 		t.Error("raw JSON: lifecycleState must be absent for managed row")
 	}
 }
+
 // TestManagedREST_DTOBounded: the native-status response carries EXACTLY the
 // bounded field set — no prompts, command text, payloads, paths, thread/turn
 // identities, or process details.

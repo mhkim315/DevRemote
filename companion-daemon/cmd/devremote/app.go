@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
@@ -477,11 +476,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	var agentDetector term.AgentDetector
-	if cfg.EnableAgentDetection {
-		agentDetector = agent.NewTermAgentDetector()
-	}
-	telemetry := term.NewTelemetryService(reg, notifier, agentDetector, approvals, transcriptSvc)
+	telemetry := term.NewTelemetryService(reg, notifier, approvals, transcriptSvc)
 	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).

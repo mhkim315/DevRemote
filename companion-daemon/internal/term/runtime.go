@@ -38,7 +38,6 @@ type Handlers struct {
 	Verifier          TokenVerifier               // may be nil if auth is not configured
 	Cmds              CommandBroker               // pending command storage (never nil in production)
 	Telemetry         *TelemetryService           // telemetry state (nil until wired)
-	AgentDetector     AgentDetector               // Phase A5: optional agent detector (nil if not wired)
 	Approvals         *AuthoritativeApprovalStore // A1: generation-bound approval store (never nil in production)
 	InsecureLocalOnly bool                        // E6: accepts dev-token in auth middleware
 	Lifecycle         *LifecycleService           // M2: Stop/Kill/Delete for managed sessions

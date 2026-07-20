@@ -1,38 +1,18 @@
 package agent
 
-import "time"
-
-// LogRef points to a discovered agent log file.
-// Path is internal-only; DisplayPath is safe for diagnostics and mobile.
-type LogRef struct {
-	Path        string           // absolute path (internal, never exposed to API/mobile)
-	DisplayPath string           // redacted display path (safe for diagnostics/API)
-	Type        AgentEventSource // jsonl, log_file, or screen
-	Agent       string           // hinted agent kind (may be empty if unknown)
-	Size        int64            // file size in bytes, -1 if unknown
-	Modified    time.Time        // last modification time
-}
-
-// ResolveResult holds the output of LogResolver.Resolve.
-// Failure to resolve (permission denied, missing path, stale log)
-// is indicated via Degraded+Diagnostics, not via error.
-// Only truly unrecoverable conditions (e.g. nil evidence) return error.
-type ResolveResult struct {
-	Logs        []LogRef // discovered log references
-	Diagnostics []string // human-readable issues (non-empty only when Degraded)
-	Degraded    bool     // true if resolution ran in degraded mode
-}
-
-// LogResolver discovers agent log files associated with a session.
-type LogResolver interface {
-	// Resolve returns discovered log references. Permission denied,
-	// missing paths, and stale logs set Degraded=true with diagnostics.
-	// Only returns error on truly unrecoverable conditions.
-	Resolve(evidence DetectionEvidence) (ResolveResult, error)
-}
+// PB.2b: Process discovery, external raw-log observation, and legacy agent
+// detection from process/screen evidence are removed. Agent identity for
+// managed Codex/Claude sessions comes from provider-native JSONL events,
+// not from process scanning or screen analysis.
+//
+// Retained types are kept for agent adapter implementations that remain
+// compiled but are no longer wired to production paths. They are inert
+// and will be physically removed in a later wave when all consumers are
+// migrated.
 
 // DetectionEvidence aggregates observable signals used to identify
-// the agent running in a session.
+// the agent running in a session. Retained for compilation compatibility;
+// managed Codex/Claude paths do not use it.
 type DetectionEvidence struct {
 	ProcessName string   // e.g. "claude", "codex", "node"
 	ProcessArgs []string // command line arguments
@@ -42,12 +22,39 @@ type DetectionEvidence struct {
 	ScreenText  string   // recent terminal screen content (may be empty)
 }
 
+// LogRef points to a discovered agent log file.
+type LogRef struct {
+	Path        string
+	DisplayPath string
+	Agent       string
+	Session     string
+	Type        AgentEventSource
+}
+
+// ResolveResult holds the output of LogResolver.Resolve.
+type ResolveResult struct {
+	Logs        []LogRef
+	Degraded    bool
+	Diagnostics []string
+}
+
+// LogResolver discovers agent log files associated with a session.
+type LogResolver interface {
+	Resolve(evidence DetectionEvidence) (ResolveResult, error)
+}
+
 // AgentDetector identifies the agent from aggregated evidence.
-// Returns low-confidence unknown rather than false positives.
-// Confidence < 0.5 MUST result in AgentKind="unknown".
 type AgentDetector interface {
-	// Detect returns the best-guess agent identity with confidence.
-	// Confidence < 0.5 → AgentKind="unknown".
-	// Must not panic on empty or partial evidence.
 	Detect(evidence DetectionEvidence) AgentIdentity
+}
+
+// ProdDetectionEvidence is the production-boundary type alias for agent
+// detection signals. Retained for compilation; managed paths do not use it.
+type ProdDetectionEvidence struct {
+	PID         int
+	Executable  string
+	Args        []string
+	CWD         string
+	EnvTerm     string
+	TermAdapter string
 }

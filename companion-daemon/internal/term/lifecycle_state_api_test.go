@@ -176,7 +176,7 @@ func TestAPISessions_NoLifecycleServiceIsInert(t *testing.T) {
 	// no phantom rows) — additive behavior only.
 	managed := newLSAdapter("controlled_pty", true, "s1")
 	reg := mux.MustNewRegistry(managed)
-	h := &Handlers{Registry: reg, } // Lifecycle nil
+	h := &Handlers{Registry: reg} // Lifecycle nil
 	byID := getSessionsSnapshot(t, h)
 	if byID["controlled_pty:s1"].LifecycleState != "" {
 		t.Errorf("no-lifecycle snapshot must carry empty lifecycleState")

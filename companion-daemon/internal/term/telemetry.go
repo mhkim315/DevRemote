@@ -208,7 +208,7 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	// PA3 Step 6b: Fallback without telemetry service (e.g. tests).
 	// Transcript is canonical for snapshot path.
-	res := mergeLifecycleState(buildSimpleSnapshotWithDetector(reg, h.AgentDetector), h.Lifecycle, reg)
+	res := mergeLifecycleState(buildSimpleSnapshot(reg), h.Lifecycle, reg)
 	res = appendCatalogRows(res, h.Catalog, h.Lifecycle, h.Approvals)
 	json.NewEncoder(w).Encode(res)
 }
@@ -234,22 +234,4 @@ func buildSimpleSnapshot(reg *mux.Registry) []SessionTelemetry {
 	}
 	sortTelemetry(res)
 	return res
-}
-
-func buildSimpleSnapshotWithDetector(reg *mux.Registry, detector AgentDetector) []SessionTelemetry {
-	result := buildSimpleSnapshot(reg)
-	if detector == nil {
-		return result
-	}
-	for i := range result {
-		st := &result[i]
-		ref := sessionid.ParseSessionID(st.ID)
-		kind, status, confidence := detector.DetectAgent(st.ID, ref.Adapter, ref.LocalID, ProdDetectionEvidence{
-			TermAdapter: ref.Adapter,
-		})
-		st.AgentKind = kind
-		st.AgentStatus = status
-		st.AgentConfidence = confidence
-	}
-	return result
 }

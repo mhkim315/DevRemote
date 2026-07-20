@@ -22,6 +22,3 @@ type LogRef struct {
 type AgentLogResolver interface {
 	Resolve(ctx context.Context, p models.ProcessInfo) (LogRef, error)
 }
-
-// AntigravityResolver resolves the log path for an explicit Gemini-Antigravity UUID
-type AntigravityResolver struct{}
