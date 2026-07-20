@@ -1,8 +1,12 @@
 # PA4.1 Evidence — Managed REST/list/get/status Isolation
 
-**Implementation SHA:** `7866d993db71a10fa9566ef37756316c78956b0d`
+**Implementation SHA:** `58f0963ddc540633e2fe0730d91a3b9637bdebd8`
 **Contract:** `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` §4.1
 **Rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
+
+**R2:** Ghost exclusion (managed-prefix Registry rows dropped), catalog-carried
+capabilities via `ManagedCapabilities`/`ManagedAdapterPrefixes` contract methods,
+8 focused tests covering all required scenarios.
 
 ## Migrated Call Sites
 
