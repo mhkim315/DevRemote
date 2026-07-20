@@ -108,7 +108,7 @@ func testFactoryCtxTimeout(t *testing.T, factory ContractAdapterFactory) {
 	t.Helper()
 	adapter := factory(t)
 	// Use already-expired context so it fires before any internal
-	// timeout wrapping (e.g. cmux's 3s ListSessions deadline).
+	// timeout wrapping (e.g. legacy's 3s ListSessions deadline).
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 	_, err := adapter.ListSessions(ctx)
@@ -329,9 +329,9 @@ func testCanonicalIDStability(t *testing.T) {
 	t.Helper()
 	t.Run("LocalID_with_colon", func(t *testing.T) {
 		for _, tt := range []struct{ in, ad, lid string }{
-			{"cmux:aider", "cmux", "aider"},
-			{"cmux:session:with:colons", "cmux", "session:with:colons"},
-			{"cmux:surface:42", "cmux", "surface:42"},
+			{"legacy:aider", "legacy", "aider"},
+			{"legacy:session:with:colons", "legacy", "session:with:colons"},
+			{"legacy:surface:42", "legacy", "surface:42"},
 		} {
 			ref := ParseSessionID(tt.in)
 			if ref.Adapter != tt.ad || ref.LocalID != tt.lid {
@@ -340,7 +340,7 @@ func testCanonicalIDStability(t *testing.T) {
 		}
 	})
 	t.Run("Unicode", func(t *testing.T) {
-		for _, id := range []string{"cmux:한글", "cmux:セッション", "cmux:中文"} {
+		for _, id := range []string{"legacy:한글", "legacy:セッション", "legacy:中文"} {
 			if ParseSessionID(id).LocalID == "" {
 				t.Errorf("ParseSessionID(%q) empty LocalID", id)
 			}
@@ -348,11 +348,11 @@ func testCanonicalIDStability(t *testing.T) {
 	})
 	t.Run("URL_round_trip", func(t *testing.T) {
 		lid := "session:with:colons_한글"
-		canon := SessionRef{Adapter: "cmux", LocalID: lid}.Canonical()
+		canon := SessionRef{Adapter: "legacy", LocalID: lid}.Canonical()
 		enc := url.QueryEscape(canon)
 		dec, _ := url.QueryUnescape(enc)
 		ref := ParseSessionID(dec)
-		if ref.Adapter != "cmux" || ref.LocalID != lid {
+		if ref.Adapter != "legacy" || ref.LocalID != lid {
 			t.Errorf("round-trip failed: %q %q", ref.Adapter, ref.LocalID)
 		}
 	})
@@ -566,7 +566,7 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 		t.Run("Read", func(t *testing.T) {
 			stream, err := opener.OpenStream(context.Background())
 			if err != nil {
-				// Allow skip for adapters that fail at PTY attach (e.g. cmux mock).
+				// Allow skip for adapters that fail at PTY attach (e.g. legacy mock).
 				if stringsContains(err.Error(), "exec") || stringsContains(err.Error(), "SpawnPTY") || stringsContains(err.Error(), "not found") {
 					t.Skipf("OpenStream requires real backend: %v", err)
 				}
@@ -635,7 +635,7 @@ func RunLiveStreamContract(t *testing.T, cfg *ContractConfig, factory ContractAd
 			defer stream.Close()
 			n, err := stream.Write([]byte("ls\n"))
 			if err != nil {
-				// Some adapters (cmux) use InputWriter instead of stream.Write.
+				// Some adapters (legacy) use InputWriter instead of stream.Write.
 				// This is a valid design choice — not an error.
 				if stringsContains(err.Error(), "not implemented") || stringsContains(err.Error(), "InputWriter") {
 					t.Skipf("Write not implemented; adapter uses InputWriter: %v", err)

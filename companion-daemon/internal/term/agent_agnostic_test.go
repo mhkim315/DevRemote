@@ -19,8 +19,8 @@ func TestAgnostic_UnknownAgentKind(t *testing.T) {
 	for _, kind := range []string{"gemini", "qwen", "future"} {
 		t.Run(kind, func(t *testing.T) {
 			st := SessionTelemetry{
-				ID:              "cmux:test",
-				Adapter:         "cmux",
+				ID:              "legacy:test",
+				Adapter:         "legacy",
 				AgentKind:       kind,
 				AgentStatus:     "working",
 				AgentConfidence: 0.7,
@@ -44,8 +44,8 @@ func TestAgnostic_UnknownStatus(t *testing.T) {
 	for _, status := range []string{"degraded", "custom_state", "reconnecting"} {
 		t.Run(status, func(t *testing.T) {
 			st := SessionTelemetry{
-				ID:              "cmux:test",
-				Adapter:         "cmux",
+				ID:              "legacy:test",
+				Adapter:         "legacy",
 				AgentKind:       "claude",
 				AgentStatus:     status,
 				AgentConfidence: 0.5,
@@ -61,8 +61,8 @@ func TestAgnostic_UnknownStatus(t *testing.T) {
 func TestAgnostic_DegradedState(t *testing.T) {
 	// Low confidence → agentKind=unknown, no false positive.
 	st := SessionTelemetry{
-		ID:              "cmux:test",
-		Adapter:         "cmux",
+		ID:              "legacy:test",
+		Adapter:         "legacy",
 		AgentKind:       "unknown",
 		AgentStatus:     "unknown",
 		AgentConfidence: 0.1,
@@ -88,7 +88,7 @@ func TestAgnostic_DegradedState(t *testing.T) {
 func TestAgnostic_SchemaEvolution(t *testing.T) {
 	// New omitempty field: old clients ignore, new clients accept.
 	// Prove backward compat: session WITHOUT agent fields.
-	noAgent := SessionTelemetry{ID: "cmux:old", Adapter: "cmux"}
+	noAgent := SessionTelemetry{ID: "legacy:old", Adapter: "legacy"}
 	data, _ := json.Marshal(noAgent)
 	if strings.Contains(string(data), "agentKind") {
 		t.Error("backward compat: agentKind present in session without agent")
@@ -96,8 +96,8 @@ func TestAgnostic_SchemaEvolution(t *testing.T) {
 
 	// Prove forward compat: session WITH agent fields round-trips.
 	withAgent := SessionTelemetry{
-		ID:              "cmux:new",
-		Adapter:         "cmux",
+		ID:              "legacy:new",
+		Adapter:         "legacy",
 		AgentKind:       "claude",
 		AgentStatus:     "working",
 		AgentConfidence: 0.7,
@@ -127,7 +127,7 @@ func TestAgnostic_TerminalUnaffectedByAgentLayer(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &sessions)
 	found := false
 	for _, s := range sessions {
-		if s.ID == "cmux:test" {
+		if s.ID == "legacy:test" {
 			found = true
 			// Agent fields may be empty (no detector) — that's fine.
 			// The session must be listed regardless.
@@ -140,7 +140,7 @@ func TestAgnostic_TerminalUnaffectedByAgentLayer(t *testing.T) {
 
 func TestAgnostic_MissingOptionalFields(t *testing.T) {
 	// Session without agentKind/status/confidence must serialize cleanly.
-	st := SessionTelemetry{ID: "cmux:test", Adapter: "cmux"}
+	st := SessionTelemetry{ID: "legacy:test", Adapter: "legacy"}
 	data, _ := json.Marshal(st)
 	// Must NOT contain agent fields when not set.
 	for _, field := range []string{"agentKind", "agentStatus", "agentConfidence"} {
@@ -151,7 +151,7 @@ func TestAgnostic_MissingOptionalFields(t *testing.T) {
 	// Round-trip must survive.
 	var rt SessionTelemetry
 	json.Unmarshal(data, &rt)
-	if rt.ID != "cmux:test" {
+	if rt.ID != "legacy:test" {
 		t.Error("round-trip lost ID")
 	}
 	// Agent fields must be empty string/zero.
@@ -164,7 +164,7 @@ func TestAgnostic_MissingOptionalFields(t *testing.T) {
 
 type agnosticAdapter struct{}
 
-func (a *agnosticAdapter) Name() string { return "cmux" }
+func (a *agnosticAdapter) Name() string { return "legacy" }
 func (a *agnosticAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
 	return []mux.Session{&agnosticSession{}}, nil
 }
@@ -173,4 +173,4 @@ type agnosticSession struct{}
 
 func (s *agnosticSession) ID() string          { return "test" }
 func (s *agnosticSession) Title() string       { return "Test" }
-func (s *agnosticSession) AdapterName() string { return "cmux" }
+func (s *agnosticSession) AdapterName() string { return "legacy" }

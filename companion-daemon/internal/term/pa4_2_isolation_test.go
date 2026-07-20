@@ -159,14 +159,14 @@ func TestPA4_2_UnknownSessionFailsClosed(t *testing.T) {
 	svc.WireManagedOwners(cat, nil, nil)
 
 	// Unknown session must return error (fail closed), not succeed silently.
-	_, err := svc.Stop(context.Background(), "cmux:unknown")
+	_, err := svc.Stop(context.Background(), "legacy:unknown")
 	if err == nil {
-		t.Error("Stop succeeded on unknown cmux session — must fail closed")
+		t.Error("Stop succeeded on unknown legacy session — must fail closed")
 	}
 
-	_, err = svc.Kill(context.Background(), "cmux:unknown")
+	_, err = svc.Kill(context.Background(), "legacy:unknown")
 	if err == nil {
-		t.Error("Kill succeeded on unknown cmux session — must fail closed")
+		t.Error("Kill succeeded on unknown legacy session — must fail closed")
 	}
 }
 

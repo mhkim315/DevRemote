@@ -19,7 +19,7 @@ func TestPA2b_ApprovalValidSessionID_BoundsPreserved(t *testing.T) {
 		"controlled_pty:abc",
 		"codex_app_server:sess-1",
 		"claude_headless:세션",            // Unicode local id stays accepted
-		"cmux:with:inner:colons",        // local id may contain ':'
+		"legacy:with:inner:colons",      // local id may contain ':'
 		"a:" + strings.Repeat("x", 510), // exactly 512 bytes total
 	}
 	for _, s := range accepted {
@@ -35,12 +35,12 @@ func TestPA2b_ApprovalValidSessionID_BoundsPreserved(t *testing.T) {
 		{"empty", ""},
 		{"no adapter", "plain"},
 		{"empty adapter", ":local"},
-		{"empty local", "cmux:"},
-		{"control char in local", "cmux:a\x00b"},
+		{"empty local", "legacy:"},
+		{"control char in local", "legacy:a\x00b"},
 		{"newline in adapter", "tm\nux:x"},
-		{"invalid UTF-8", "cmux:a\xffb"},
-		{"adapter grammar: upper", "Cmux:x"},
-		{"adapter grammar: leading digit", "0cmux:x"},
+		{"invalid UTF-8", "legacy:a\xffb"},
+		{"adapter grammar: upper", "Legacy:x"},
+		{"adapter grammar: leading digit", "0legacy:x"},
 		{"adapter grammar: space", "tm ux:x"},
 		{"over 512 bytes", "a:" + strings.Repeat("x", 511)},
 	}
@@ -58,7 +58,7 @@ func TestPA2b_ApprovalValidAdapterID_BoundsPreserved(t *testing.T) {
 			t.Errorf("validAdapterID(%q) = false, want true (accepted adapter regressed)", s)
 		}
 	}
-	rejected := []string{"", "Cmux", "0x", "-x", "_x", "tm:ux", "tm ux", "tmüx", strings.Repeat("a", 65)}
+	rejected := []string{"", "Legacy", "0x", "-x", "_x", "tm:ux", "tm ux", "tmüx", strings.Repeat("a", 65)}
 	for _, s := range rejected {
 		if validAdapterID(s) {
 			t.Errorf("validAdapterID(%q) = true, want false (bound weakened)", s)

@@ -17,7 +17,7 @@ type DetectionEvidence struct {
 	ProcessName string   // e.g. "claude", "codex", "node"
 	ProcessArgs []string // command line arguments
 	CWD         string   // current working directory
-	TermAdapter string   // terminal backend name (cmux)
+	TermAdapter string   // terminal backend name
 	LogPaths    []LogRef // pre-resolved logs (from LogResolver)
 	ScreenText  string   // recent terminal screen content (may be empty)
 }

@@ -487,7 +487,7 @@ func TestFixtureE2E_AdapterCapabilitiesInAPI(t *testing.T) {
 	}
 }
 
-// cmuxE2EAdapter returns a minimal cmux adapter for API testing.// --- E10: command/cwd API boundary test ---
+// legacyE2EAdapter returns a minimal legacy adapter for API testing.// --- E10: command/cwd API boundary test ---
 
 func TestE10_CommandCwdReachesCreateOptions(t *testing.T) {
 	// Use controlled_pty adapter which respects Command/CWD.

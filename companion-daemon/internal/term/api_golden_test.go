@@ -51,10 +51,10 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 
 	found := false
 	for _, s := range sessions {
-		if s.ID == "cmux:golden" {
+		if s.ID == "legacy:golden" {
 			found = true
-			if s.Adapter != "cmux" {
-				t.Errorf("adapter = %q, want cmux", s.Adapter)
+			if s.Adapter != "legacy" {
+				t.Errorf("adapter = %q, want legacy", s.Adapter)
 			}
 			if s.DisplayID != "golden" {
 				t.Errorf("displayId = %q, want 'golden'", s.DisplayID)
@@ -62,14 +62,14 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("GET /api/sessions: did not find cmux:golden in response")
+		t.Error("GET /api/sessions: did not find legacy:golden in response")
 	}
 }
 func TestAPIGolden_PostCreateSession_ReturnsCanonicalID(t *testing.T) {
 	// Phase 1: POST create returns CANONICAL ID (<adapter>:<local-id>).
 	h := goldenHandlers(t)
 
-	body := strings.NewReader(`{"id":"cmux:test","runner":"claude","runnerColor":"#58a6ff"}`)
+	body := strings.NewReader(`{"id":"legacy:test","runner":"claude","runnerColor":"#58a6ff"}`)
 	req := httptest.NewRequest("POST", "/api/sessions", body)
 	rec := httptest.NewRecorder()
 
@@ -90,15 +90,15 @@ func TestAPIGolden_PostCreateSession_ReturnsCanonicalID(t *testing.T) {
 		t.Errorf("status = %q, want ok", resp.Status)
 	}
 	// Phase 1: canonical ID includes adapter prefix.
-	if resp.ID != "cmux:test" {
-		t.Errorf("id = %q, want canonical \"cmux:test\"", resp.ID)
+	if resp.ID != "legacy:test" {
+		t.Errorf("id = %q, want canonical \"legacy:test\"", resp.ID)
 	}
 }
 
 func TestAPIGolden_DeleteSession(t *testing.T) {
 	h := goldenHandlers(t)
 
-	req := httptest.NewRequest("DELETE", "/api/sessions?id=cmux:golden", nil)
+	req := httptest.NewRequest("DELETE", "/api/sessions?id=legacy:golden", nil)
 	rec := httptest.NewRecorder()
 
 	h.HandleSessionsAPI(rec, req)
@@ -121,30 +121,30 @@ func TestAPIGolden_DeleteSession(t *testing.T) {
 func TestAPIGolden_GetSessionsHistory_NoEvents(t *testing.T) {
 	// PA3 Step 3 R1: ?history= returns 410 Gone for ALL sessions.
 	h := goldenHandlers(t)
-	req := httptest.NewRequest("GET", "/api/sessions?history=cmux:golden", nil)
+	req := httptest.NewRequest("GET", "/api/sessions?history=legacy:golden", nil)
 	rec := httptest.NewRecorder()
 
 	h.HandleSessionsAPI(rec, req)
 
 	// Golden session has ScreenReader capability → history falls back to screen content.
 	if rec.Code != http.StatusGone {
-		t.Fatalf("GET /api/sessions?history=cmux:golden: status = %d, want %d (Gone)", rec.Code, http.StatusGone)
+		t.Fatalf("GET /api/sessions?history=legacy:golden: status = %d, want %d (Gone)", rec.Code, http.StatusGone)
 	}
 }
 
 func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
 	// PA3 Step 3 R1: ?history= returns 410 Gone even for screen-capable sessions.
 	h := goldenHandlersWithScreenReader(t)
-	req := httptest.NewRequest("GET", "/api/sessions?history=cmux:golden", nil)
+	req := httptest.NewRequest("GET", "/api/sessions?history=legacy:golden", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
 	if rec.Code != http.StatusGone {
-		t.Fatalf("GET /api/sessions?history=cmux:golden (screen fallback): status = %d, want %d (Gone)", rec.Code, http.StatusGone)
+		t.Fatalf("GET /api/sessions?history=legacy:golden (screen fallback): status = %d, want %d (Gone)", rec.Code, http.StatusGone)
 	}
 }
 
 // goldenHandlers returns a Handlers wired with a fake Registry containing
-// one static cmux session. No real cmux process is needed.
+// one static legacy session. No real legacy process is needed.
 func goldenHandlers(t *testing.T) *Handlers {
 	t.Helper()
 
@@ -163,7 +163,7 @@ type goldenSession struct{}
 
 func (s *goldenSession) ID() string                                     { return "golden" }
 func (s *goldenSession) Title() string                                  { return "Golden Session" }
-func (s *goldenSession) AdapterName() string                            { return "cmux" }
+func (s *goldenSession) AdapterName() string                            { return "legacy" }
 func (s *goldenSession) ReadScreen(ctx context.Context) ([]byte, error) { return []byte("screen"), nil }
 func (s *goldenSession) OpenStream(ctx context.Context) (mux.TerminalStream, error) {
 	return &goldenStream{}, nil
@@ -180,7 +180,7 @@ type goldenAdapter struct {
 	sessions []mux.Session
 }
 
-func (a *goldenAdapter) Name() string { return "cmux" }
+func (a *goldenAdapter) Name() string { return "legacy" }
 func (a *goldenAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
 	return a.sessions, nil
 }
@@ -219,7 +219,7 @@ type goldenScreenAdapter struct {
 	sessions []mux.Session
 }
 
-func (a *goldenScreenAdapter) Name() string { return "cmux" }
+func (a *goldenScreenAdapter) Name() string { return "legacy" }
 func (a *goldenScreenAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
 	return a.sessions, nil
 }
@@ -234,42 +234,42 @@ func (a *goldenScreenAdapter) GetSession(id string) (mux.Session, error) {
 
 var _ mux.Adapter = (*goldenAdapter)(nil) // compile-time check
 
-func TestAPIGolden_PostCreateCmuxSession_CanonicalID(t *testing.T) {
-	// cmux create must return canonical ID via handler exactly once.
-	reg := mux.MustNewRegistry(&cmuxCreateAdapter{})
+func TestAPIGolden_PostCreateLegacySession_CanonicalID(t *testing.T) {
+	// legacy create must return canonical ID via handler exactly once.
+	reg := mux.MustNewRegistry(&legacyCreateAdapter{})
 	h := &Handlers{Registry: reg}
 
-	body := strings.NewReader(`{"id":"cmux:test","runner":"agent","runnerColor":"#58a6ff"}`)
+	body := strings.NewReader(`{"id":"legacy:test","runner":"agent","runnerColor":"#58a6ff"}`)
 	req := httptest.NewRequest("POST", "/api/sessions", body)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("POST cmux create: status = %d, want 200", rec.Code)
+		t.Fatalf("POST legacy create: status = %d, want 200", rec.Code)
 	}
 	var resp struct {
 		Status string `json:"status"`
 		ID     string `json:"id"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("POST cmux create: invalid JSON: %v", err)
+		t.Fatalf("POST legacy create: invalid JSON: %v", err)
 	}
-	// Handler must canonicalize exactly once: adapter "cmux" + ":" + local "surface:42" = "cmux:surface:42"
-	if resp.ID != "cmux:surface:42" {
-		t.Errorf("id = %q, want canonical 'cmux:surface:42' (not double-prefixed)", resp.ID)
+	// Handler must canonicalize exactly once: adapter "legacy" + ":" + local "surface:42" = "legacy:surface:42"
+	if resp.ID != "legacy:surface:42" {
+		t.Errorf("id = %q, want canonical 'legacy:surface:42' (not double-prefixed)", resp.ID)
 	}
 }
 
-type cmuxCreateAdapter struct{}
+type legacyCreateAdapter struct{}
 
-func (a *cmuxCreateAdapter) Name() string { return "cmux" }
-func (a *cmuxCreateAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
+func (a *legacyCreateAdapter) Name() string { return "legacy" }
+func (a *legacyCreateAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
 	return nil, nil
 }
-func (a *cmuxCreateAdapter) GetSession(id string) (mux.Session, error) {
+func (a *legacyCreateAdapter) GetSession(id string) (mux.Session, error) {
 	return nil, mux.ErrSessionNotFound
 }
-func (a *cmuxCreateAdapter) CreateSession(_ context.Context, opts mux.CreateOptions) (string, error) {
+func (a *legacyCreateAdapter) CreateSession(_ context.Context, opts mux.CreateOptions) (string, error) {
 	return "surface:42", nil // local ID (Phase 1 contract)
 }
 
@@ -349,7 +349,7 @@ func (a *bareAdapter) GetSession(id string) (mux.Session, error) {
 func TestAPIGolden_BackwardCompat_MissingNewFields(t *testing.T) {
 	// Verify that old daemon responses without displayId/capabilities
 	// still deserialize correctly. New fields are omitempty.
-	oldFormat := `[{"id":"cmux:old","state":"idle","load":0,"runner":"cat","runnerColor":"#58a6ff","adapter":"cmux","events":[]}]`
+	oldFormat := `[{"id":"legacy:old","state":"idle","load":0,"runner":"cat","runnerColor":"#58a6ff","adapter":"legacy","events":[]}]`
 	var sessions []SessionTelemetry
 	if err := json.Unmarshal([]byte(oldFormat), &sessions); err != nil {
 		t.Fatalf("old format deserialize: %v", err)
@@ -358,7 +358,7 @@ func TestAPIGolden_BackwardCompat_MissingNewFields(t *testing.T) {
 		t.Fatalf("got %d sessions, want 1", len(sessions))
 	}
 	s := sessions[0]
-	if s.ID != "cmux:old" {
+	if s.ID != "legacy:old" {
 		t.Errorf("id = %q", s.ID)
 	}
 	if s.DisplayID != "" {

@@ -13,7 +13,7 @@ import (
 
 // ── SP0-P3: REST reads from the owned registry + observer isolation ──
 
-// failingAdapter simulates a broken cmux/cmux backend: discovery always errors.
+// failingAdapter simulates a broken legacy adapter backend: discovery always errors.
 type failingAdapter struct{ name string }
 
 func (a failingAdapter) Name() string { return a.name }

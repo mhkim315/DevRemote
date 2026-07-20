@@ -788,7 +788,7 @@ func TestDispatch_RoutesOnlyExactAdapter(t *testing.T) {
 	if r := dispatch.Deliver(mkReq(claudeHeadlessAdapter)); r.Outcome != DeliveryAccepted {
 		t.Fatalf("claude binding: %s", r.Outcome)
 	}
-	if r := dispatch.Deliver(mkReq("cmux")); r.Outcome != DeliveryUnavailable {
+	if r := dispatch.Deliver(mkReq("legacy")); r.Outcome != DeliveryUnavailable {
 		t.Fatalf("unknown adapter must terminate at the capacity-0 gate: %s", r.Outcome)
 	}
 	if codex.count() != 1 || claude.count() != 1 {
@@ -873,7 +873,7 @@ func TestCombinedRuntimeResolver_BoundaryDispatch(t *testing.T) {
 	if ref, ok := both("claude_headless:s1"); !ok || ref != claudeRef {
 		t.Fatalf("both: claude session: %v %v", ref, ok)
 	}
-	if _, ok := both("cmux:s1"); ok {
+	if _, ok := both("legacy:s1"); ok {
 		t.Fatal("both: unknown adapter must not resolve")
 	}
 

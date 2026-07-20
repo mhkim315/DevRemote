@@ -372,7 +372,7 @@ func (r *Registry) FindSessionInCache(id string) (Session, error) {
 
 // ── Legacy ID migration (pure function, not stateful) ──
 
-// PB.4: cmux removed — MigrateLegacyID is a no-op for remaining adapters.
+// PB.4: legacy adapters removed — MigrateLegacyID is a no-op for remaining adapters.
 func MigrateLegacyID(id string) string { return id }
 
 // ── Internal helpers ──

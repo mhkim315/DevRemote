@@ -34,11 +34,11 @@ func (a *capManagedAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
 }
 func (a *capManagedAdapter) ManagedLifecycle() bool { return true }
 
-// capExternalAdapter mirrors cmux: byte-stream (control/input) but NOT managed —
+// capExternalAdapter mirrors legacy: byte-stream (control/input) but NOT managed —
 // it does not implement ManagedLifecycleProvider at all.
 type capExternalAdapter struct{ sessions []mux.Session }
 
-func (a *capExternalAdapter) Name() string { return "cmux" }
+func (a *capExternalAdapter) Name() string { return "legacy" }
 func (a *capExternalAdapter) ListSessions(_ context.Context) ([]mux.Session, error) {
 	return a.sessions, nil
 }
@@ -49,12 +49,12 @@ func (a *capExternalAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
 // TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary proves the real
 // product boundary: Registry sessions → HandleSessionsAPI → JSON serialization →
 // each session's `adapterCapabilities`. controlled_pty exposes managedLifecycle;
-// the external adapter (cmux) does not, while keeping control/input/liveTerminal/
+// the external adapter (legacy) does not, while keeping control/input/liveTerminal/
 // reliableTranscript. The exact JSON field name is asserted from the raw body.
 func TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary(t *testing.T) {
 	reg := mux.MustNewRegistry(
 		&capManagedAdapter{sessions: []mux.Session{&capBoundarySession{id: "cp1", adapter: "controlled_pty"}}},
-		&capExternalAdapter{sessions: []mux.Session{&capBoundarySession{id: "tm1", adapter: "cmux"}}},
+		&capExternalAdapter{sessions: []mux.Session{&capBoundarySession{id: "tm1", adapter: "legacy"}}},
 	)
 	h := &Handlers{Registry: reg}
 
@@ -88,16 +88,16 @@ func TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary(t *testing.T) 
 		t.Fatalf("controlled_pty adapterCapabilities missing managedLifecycle: %v", cp)
 	}
 
-	tm, ok := byAdapter["cmux"]
+	tm, ok := byAdapter["legacy"]
 	if !ok {
-		t.Fatalf("cmux session not present in /api/sessions: %+v", byAdapter)
+		t.Fatalf("legacy session not present in /api/sessions: %+v", byAdapter)
 	}
 	if slices.Contains(tm, "managedLifecycle") {
-		t.Fatalf("cmux adapterCapabilities must not include managedLifecycle: %v", tm)
+		t.Fatalf("legacy adapterCapabilities must not include managedLifecycle: %v", tm)
 	}
 	for _, want := range []string{"control", "input", "liveTerminal", "reliableTranscript"} {
 		if !slices.Contains(tm, want) {
-			t.Fatalf("cmux adapterCapabilities missing %q: %v", want, tm)
+			t.Fatalf("legacy adapterCapabilities missing %q: %v", want, tm)
 		}
 	}
 }

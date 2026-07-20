@@ -14,17 +14,17 @@ import (
 
 func TestPA2b_WrapperCompat_IdenticalResults(t *testing.T) {
 	ids := []string{
-		"cmux:devremote",
-		"cmux:1",
+		"legacy:devremote",
+		"legacy:1",
 		"controlled_pty:with:many:colons",
 		"claude_headless:세션",
 		"plain",
 		"",
 		":",
-		"cmux:",
+		"legacy:",
 		":local",
 		"tm\nux:x",
-		"cmux:a\x00b",
+		"legacy:a\x00b",
 	}
 	for _, id := range ids {
 		viaMux := ParseSessionID(id)
@@ -44,7 +44,7 @@ func TestPA2b_WrapperCompat_IdenticalResults(t *testing.T) {
 		}
 	}
 
-	names := []string{"cmux", "controlled_pty", "a-b_c9", "", "Cmux", "0x", "cm:ux", "cmüx"}
+	names := []string{"legacy", "controlled_pty", "a-b_c9", "", "Legacy", "0x", "cm:ux", "cmüx"}
 	for _, name := range names {
 		mErr, sErr := ValidateAdapterName(name), sessionid.ValidateAdapterName(name)
 		if (mErr == nil) != (sErr == nil) {
@@ -75,8 +75,8 @@ func TestPA2b_WrapperCompat_SentinelIdentity(t *testing.T) {
 // PA2b: mux.SessionRef is a TYPE ALIAS of sessionid.SessionRef (not a copy),
 // so values are interchangeable with zero conversion.
 func TestPA2b_WrapperCompat_TypeAlias(t *testing.T) {
-	var viaMux SessionRef = sessionid.SessionRef{Adapter: "cmux", LocalID: "x"}
-	var direct sessionid.SessionRef = SessionRef{Adapter: "cmux", LocalID: "x"}
+	var viaMux SessionRef = sessionid.SessionRef{Adapter: "legacy", LocalID: "x"}
+	var direct sessionid.SessionRef = SessionRef{Adapter: "legacy", LocalID: "x"}
 	if viaMux != direct {
 		t.Fatal("alias values differ")
 	}
@@ -86,12 +86,12 @@ func TestPA2b_WrapperCompat_TypeAlias(t *testing.T) {
 // internal/mux (registry.go), not moved to the neutral package.
 func TestPA2b_MigrateLegacyID_UnchangedAndStaysInMux(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"cmux:3", "cmux:3"},                 // legacy bare-numeric cmux id migrates
-		{"cmux:12", "cmux:12"},               // multi-digit
-		{"cmux:surface:3", "cmux:surface:3"}, // already canonical: unchanged
-		{"cmux:abc", "cmux:abc"},             // non-numeric local id: unchanged
-		{"cmux:3", "cmux:3"},                 // other adapters: unchanged
-		{"plain", "plain"},                   // no adapter: unchanged
+		{"legacy:3", "legacy:3"},                 // legacy bare-numeric legacy id migrates
+		{"legacy:12", "legacy:12"},               // multi-digit
+		{"legacy:surface:3", "legacy:surface:3"}, // already canonical: unchanged
+		{"legacy:abc", "legacy:abc"},             // non-numeric local id: unchanged
+		{"legacy:3", "legacy:3"},                 // other adapters: unchanged
+		{"plain", "plain"},                       // no adapter: unchanged
 		{"", ""},
 	}
 	for _, tc := range cases {

@@ -62,8 +62,8 @@ func TestCapabilityGolden_AllBackends(t *testing.T) {
 		adapter  mux.Adapter
 		wantCaps []string
 	}{
-		{&capGoldenAdapter{name: "cmux", caps: []string{"live_stream", "screen", "history"}}, []string{"live_stream", "screen", "history"}},
-		{&capGoldenAdapter{name: "cmux", caps: []string{"live_stream", "screen", "history", "process"}}, []string{"live_stream", "screen", "history", "process"}},
+		{&capGoldenAdapter{name: "legacy", caps: []string{"live_stream", "screen", "history"}}, []string{"live_stream", "screen", "history"}},
+		{&capGoldenAdapter{name: "legacy", caps: []string{"live_stream", "screen", "history", "process"}}, []string{"live_stream", "screen", "history", "process"}},
 		{&capGoldenAdapter{name: "future", caps: []string{"live_stream"}}, []string{"live_stream"}},
 		{&capGoldenAdapter{name: "legacy", caps: nil}, nil},
 	}
@@ -188,7 +188,7 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 
 func TestMobileLegacyCheck_Classification(t *testing.T) {
 	// AgentCard.tsx:86 has: session.adapter !== 'native' — display-only filter.
-	names := []string{"native", "cmux", "cmux", "future"}
+	names := []string{"native", "legacy", "legacy", "future"}
 	for _, name := range names {
 		adapter := &capGoldenAdapter{name: name, caps: []string{"live_stream"}}
 		reg := mux.MustNewRegistry(adapter)

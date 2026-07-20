@@ -16,11 +16,11 @@ func TestSessionRef_Canonical(t *testing.T) {
 	tests := []struct {
 		adapter, localID, want string
 	}{
-		{"cmux", "ai", "cmux:ai"},
-		{"cmux", "aider", "cmux:aider"},
-		{"cmux", "cmux:aider", "cmux:cmux:aider"},
-		{"cmux", "surface:1", "cmux:surface:1"},
-		{"cmux", "한글", "cmux:한글"},
+		{"legacy", "ai", "legacy:ai"},
+		{"legacy", "aider", "legacy:aider"},
+		{"legacy", "legacy:aider", "legacy:legacy:aider"},
+		{"legacy", "surface:1", "legacy:surface:1"},
+		{"legacy", "한글", "legacy:한글"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -37,7 +37,7 @@ func TestSessionRef_Canonical(t *testing.T) {
 }
 
 func TestSessionRef_Validate(t *testing.T) {
-	valid := SessionRef{Adapter: "cmux", LocalID: "session"}
+	valid := SessionRef{Adapter: "legacy", LocalID: "session"}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("Validate() on valid ref: %v", err)
 	}
@@ -47,9 +47,9 @@ func TestSessionRef_Validate(t *testing.T) {
 		ref  SessionRef
 	}{
 		{"empty adapter", SessionRef{Adapter: "", LocalID: "x"}},
-		{"empty local", SessionRef{Adapter: "cmux", LocalID: ""}},
+		{"empty local", SessionRef{Adapter: "legacy", LocalID: ""}},
 		{"control char in adapter", SessionRef{Adapter: "tm\x00ux", LocalID: "x"}},
-		{"control char in local", SessionRef{Adapter: "cmux", LocalID: "x\x1fy"}},
+		{"control char in local", SessionRef{Adapter: "legacy", LocalID: "x\x1fy"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,13 +127,13 @@ func TestSentinelErrors_Distinguishable(t *testing.T) {
 // Phase 1 contract regression tests.
 
 func TestValidateAdapterName(t *testing.T) {
-	valid := []string{"cmux", "cmux", "test-adapter", "backend_2", "a"}
+	valid := []string{"legacy", "legacy", "test-adapter", "backend_2", "a"}
 	for _, name := range valid {
 		if err := ValidateAdapterName(name); err != nil {
 			t.Errorf("ValidateAdapterName(%q) = %v, want nil", name, err)
 		}
 	}
-	invalid := []string{"", "Cmux", "cmux:bad", "has space", "a\x00b", "9start"}
+	invalid := []string{"", "Legacy", "legacy:bad", "has space", "a\x00b", "9start"}
 	for _, name := range invalid {
 		if err := ValidateAdapterName(name); err == nil {
 			t.Errorf("ValidateAdapterName(%q) = nil, want error", name)
@@ -284,10 +284,10 @@ func TestFindSession_EndedSession(t *testing.T) {
 func TestCanonicalID_URLRoundTrip(t *testing.T) {
 	// Colon in local ID must survive encode/decode round-trip.
 	localID := "session:with:colons"
-	ref := SessionRef{Adapter: "cmux", LocalID: localID}
+	ref := SessionRef{Adapter: "legacy", LocalID: localID}
 	canonical := ref.Canonical()
 	parsed := ParseSessionID(canonical)
-	if parsed.Adapter != "cmux" || parsed.LocalID != localID {
+	if parsed.Adapter != "legacy" || parsed.LocalID != localID {
 		t.Errorf("round-trip: %q -> Parse -> adapter=%q local=%q", canonical, parsed.Adapter, parsed.LocalID)
 	}
 }
@@ -324,7 +324,7 @@ func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 	// Colon + Unicode in local ID must survive URL query encode/decode.
 	// Mobile clients encode session IDs in query parameters.
 	localID := "session:with:colons_한글"
-	ref := SessionRef{Adapter: "cmux", LocalID: localID}
+	ref := SessionRef{Adapter: "legacy", LocalID: localID}
 	canonical := ref.Canonical()
 	// URL query-encode the canonical ID (as mobile client does for ?session=...)
 	encoded := url.QueryEscape(canonical)
@@ -334,8 +334,8 @@ func TestCanonicalID_URLEncodeRoundTrip(t *testing.T) {
 		t.Fatalf("QueryUnescape: %v", err)
 	}
 	parsed := ParseSessionID(decoded)
-	if parsed.Adapter != "cmux" {
-		t.Errorf("adapter = %q, want cmux", parsed.Adapter)
+	if parsed.Adapter != "legacy" {
+		t.Errorf("adapter = %q, want legacy", parsed.Adapter)
 	}
 	if parsed.LocalID != localID {
 		t.Errorf("localID = %q, want %q", parsed.LocalID, localID)

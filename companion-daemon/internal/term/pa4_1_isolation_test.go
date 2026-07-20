@@ -31,13 +31,13 @@ func newPA4Handlers(t *testing.T, cat ManagedRuntimeCatalog) *Handlers {
 func TestPA4_1_RegistryCodexPrefixGhostExcluded(t *testing.T) {
 	// Registry-only Codex-looking row with no catalog record.
 	snapshot := []SessionTelemetry{
-		{ID: "codex_app_server:ghost-codex", Adapter: "cmux", AgentKind: "observer"},
-		{ID: "cmux:real-legacy", Adapter: "cmux"},
+		{ID: "codex_app_server:ghost-codex", Adapter: "legacy", AgentKind: "observer"},
+		{ID: "legacy:real-legacy", Adapter: "legacy"},
 	}
 	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
 	out := appendCatalogRows(snapshot, cat, nil, nil)
-	// Ghost must be excluded; only legacy cmux remains.
-	if len(out) != 1 || out[0].ID != "cmux:real-legacy" {
+	// Ghost must be excluded; only legacy legacy remains.
+	if len(out) != 1 || out[0].ID != "legacy:real-legacy" {
 		t.Fatalf("expected 1 legacy row, got %d: %+v", len(out), out)
 	}
 }
@@ -130,7 +130,7 @@ func TestPA4_1_RegistryMetadataCannotOverrideCatalog(t *testing.T) {
 
 	// Registry has a colliding row with wrong metadata.
 	snapshot := []SessionTelemetry{
-		{ID: "claude_headless:override", Adapter: "cmux", AgentKind: "observer",
+		{ID: "claude_headless:override", Adapter: "legacy", AgentKind: "observer",
 			Capabilities: []string{"screen"}, AdapterCapabilities: []string{"screen"}},
 	}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
@@ -139,7 +139,7 @@ func TestPA4_1_RegistryMetadataCannotOverrideCatalog(t *testing.T) {
 	}
 	// Catalog metadata must win, not Registry.
 	if out[0].Adapter != "claude_headless" {
-		t.Errorf("adapter=%q, want claude_headless (Registry cmux must not override)", out[0].Adapter)
+		t.Errorf("adapter=%q, want claude_headless (Registry legacy must not override)", out[0].Adapter)
 	}
 	if out[0].AgentKind != "claude" {
 		t.Errorf("agentKind=%q, want claude", out[0].AgentKind)
@@ -231,15 +231,15 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 func TestPA4_1_LegacyNonManagedRegistryBehaviorUnchanged(t *testing.T) {
 	// No catalog — legacy rows pass through unmodified.
 	snapshot := []SessionTelemetry{
-		{ID: "cmux:legacy-a", Adapter: "cmux", Capabilities: []string{"live_stream"}},
-		{ID: "cmux:legacy-b", Adapter: "cmux", Capabilities: []string{"screen"}},
+		{ID: "legacy:legacy-a", Adapter: "legacy", Capabilities: []string{"live_stream"}},
+		{ID: "legacy:legacy-b", Adapter: "legacy", Capabilities: []string{"screen"}},
 	}
 	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
 	out := appendCatalogRows(snapshot, cat, nil, nil)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 legacy rows, got %d", len(out))
 	}
-	if out[0].ID != "cmux:legacy-a" || out[1].ID != "cmux:legacy-b" {
+	if out[0].ID != "legacy:legacy-a" || out[1].ID != "legacy:legacy-b" {
 		t.Error("legacy rows modified")
 	}
 }
@@ -255,7 +255,7 @@ func TestPA4_1_AppendCatalogDropsCollidingRegistryRows(t *testing.T) {
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 	snapshot := []SessionTelemetry{
 		{ID: "codex_app_server:collide", Adapter: "controlled_pty", AgentKind: "observer"},
-		{ID: "cmux:legacy", Adapter: "cmux"},
+		{ID: "legacy:legacy", Adapter: "legacy"},
 	}
 	out := appendCatalogRows(snapshot, cat, nil, nil)
 	if len(out) != 2 {
@@ -269,7 +269,7 @@ func TestPA4_1_AppendCatalogDropsCollidingRegistryRows(t *testing.T) {
 				t.Errorf("adapter=%q, want codex_app_server", row.Adapter)
 			}
 		}
-		if row.ID == "cmux:legacy" {
+		if row.ID == "legacy:legacy" {
 			hasLegacy = true
 		}
 	}

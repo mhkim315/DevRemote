@@ -126,7 +126,7 @@ func (o *writeCaptureOpener) OpenStream(_ context.Context) (mux.TerminalStream, 
 }
 
 // mockStreamSession implements mux.Session + mux.StreamOpener.
-// Does NOT implement mux.InputWriter (for cmux stream-only fallback tests).
+// Does NOT implement mux.InputWriter (for legacy stream-only fallback tests).
 type mockStreamSession struct {
 	id      string
 	adapter string
@@ -483,7 +483,7 @@ func TestRecorder_DeleteCleanup_ClearsActivity(t *testing.T) {
 	}
 }
 
-// TestRecorder_StreamOnlyInputFallback verifies the cmux stream-only input path:
+// TestRecorder_StreamOnlyInputFallback verifies the legacy stream-only input path:
 //
 //	session has StreamOpener but no InputWriter
 //	→ input over WS falls through to rec.WriteInput(msg)
@@ -550,8 +550,8 @@ func TestRecorder_StreamOnlyInputFallback(t *testing.T) {
 // --- E8i: screen snapshot filtering ---
 
 func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
@@ -572,7 +572,7 @@ func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
 	go rec.readLoop()
 	defer DeleteRecorder("test:snapshot-filter")
 
-	// Write a multi-chunk cmux screen snapshot with end marker.
+	// Write a multi-chunk legacy screen snapshot with end marker.
 	chunk1 := strings.Repeat("A", 800)
 	chunk2 := strings.Repeat("B", 800)
 	chunk3 := strings.Repeat("C", 800)
@@ -609,13 +609,13 @@ func TestRecorder_ScreenSnapshotNotAppended(t *testing.T) {
 	}
 }
 func TestIsClearScreenSnapshot(t *testing.T) {
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
 	tests := []struct {
 		name     string
 		payload  []byte
 		expected bool
 	}{
-		{"ESC[2J+ESC[H (cmux header)", []byte("\033[2J\033[Hhello"), true},
+		{"ESC[2J+ESC[H (legacy header)", []byte("\033[2J\033[Hhello"), true},
 		{"ESC[2J alone (no ESC[H)", []byte("\033[2Jrest"), false},
 		{"ESC[H alone (no ESC[2J)", []byte("\033[Hrest"), false},
 		{"plain text", []byte("hello world"), false},
@@ -634,11 +634,11 @@ func TestIsClearScreenSnapshot(t *testing.T) {
 	}
 }
 
-// --- E8g4: cmux delta frame tagging ---
+// --- E8g4: legacy delta frame tagging ---
 
 func TestRecorder_DeltaMarkerAppended(t *testing.T) {
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
@@ -690,8 +690,8 @@ func TestRecorder_DeltaMarkerAppended(t *testing.T) {
 	}
 }
 func TestRecorder_DeltaThenSnapshot(t *testing.T) {
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
-	t.Skip("PB.4: cmux snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
+	t.Skip("PB.4: legacy snapshot/delta markers removed")
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	defer SetTranscriptService(nil)
