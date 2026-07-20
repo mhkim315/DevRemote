@@ -145,7 +145,7 @@ export function selectAppRoute(
   opts: { loading: boolean; session: boolean; isConnected: boolean },
 ): AppRoute {
   if (opts.loading || !authCtx || authCtx.mode === 'initializing') return 'loading';
-  if (authCtx.mode === 'pairing_required') return 'pairing_required';
+  if (authCtx.mode === 'pairing_required') return opts.isConnected ? 'product' : 'pairing_required';
   if (authCtx.mode === 'failed') return 'failed';
   if (authCtx.mode === 'paired_device') {
     // No Supabase session required — the device bearer is the auth root.
