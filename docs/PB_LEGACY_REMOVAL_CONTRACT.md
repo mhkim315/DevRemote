@@ -6,7 +6,7 @@
 
 **PA3 ancestry:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (not the PB rollback)
 
-**PB prerequisite / rollback SHA:** **UNSET; must equal the future PA4 ACCEPT SHA**
+**PB prerequisite / rollback SHA:** `7c2d63b7c` (PA4-Final-R20; final ACCEPT SHA TBD by independent verifier)
 
 **PA4 implementation HEAD:** `7c2d63b7c` (PA4-Final-R20)
 
