@@ -8,7 +8,7 @@
 with EnableQueue-obtained real generation. Queue drained before EndInput to
 prevent worker race on suppression state.
 
-**Scope:** `term/` test files only. No production code changes.
+**Scope:** `term/` test files (R1-R2) and `transcript/` test files (R3). No production code changes.
 
 ## Gate Output
 

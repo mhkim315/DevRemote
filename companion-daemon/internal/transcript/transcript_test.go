@@ -618,7 +618,8 @@ func TestServiceBothSources(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	gen := svc.EnableQueue(sid); svc.FeedBytes(sid, []byte("fallback output\n"), time.Now(), gen)
+	gen := svc.EnableQueue(sid)
+	svc.FeedBytes(sid, []byte("fallback output\n"), time.Now(), gen)
 	// Establish correlation before projecting agent events.
 	svc.SetCorrelation(sid, CorrelationState{Correlation: "proven"})
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
@@ -650,7 +651,8 @@ func TestServiceClearTranscript(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	gen := svc.EnableQueue(sid); svc.FeedBytes(sid, []byte("data\n"), time.Now(), gen)
+	gen := svc.EnableQueue(sid)
+	svc.FeedBytes(sid, []byte("data\n"), time.Now(), gen)
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
 		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "data", Provenance: "provider_protocol"},
 	})
@@ -671,13 +673,12 @@ func TestServiceClearTranscript(t *testing.T) {
 	}
 }
 
-
-
 func TestServiceTranscriptStats(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	gen := svc.EnableQueue(sid); svc.FeedBytes(sid, []byte("line1\nline2\nline3\n"), time.Now(), gen)
+	gen := svc.EnableQueue(sid)
+	svc.FeedBytes(sid, []byte("line1\nline2\nline3\n"), time.Now(), gen)
 
 	svc.CloseSessionQueue(sid, gen)
 	stats := svc.TranscriptStats(sid)
