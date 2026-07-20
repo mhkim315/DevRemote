@@ -1,7 +1,7 @@
 # PA4.5 Evidence — Facade/Fallback Deletion and Final PA4 Acceptance
 
-**Implementation SHA:** `7c2d63b7c` (PA4-Final-R20: unexported hook, Recorder() removed)
-**Prior EVID SHAs:** `d2294af67` (R19), `ce2425406` (R18), `f212ddbe9` (R17)
+**Implementation SHA:** `4aaf3b76a` (PA4-Final-R21: SetSubscriberFanOutHook deleted, same-package test access)
+**Prior EVID SHAs:** `7c2d63b7c` (R20), `d2294af67` (R19), `ce2425406` (R18)
 **PA3 Rollback:** `34d55e950`
 
 ## PA4 Acceptance Ledger
@@ -36,6 +36,7 @@
 | R18 | Real goroutine race + lifecycle-path test proofs | pa4_5_isolation_test.go |
 | R19 | Test hook proves SubscriberFanOut atomicity (RLock→Lock blocking) | terminal_transport.go, pa4_5_isolation_test.go |
 | R20 | Unexport hook, delete Recorder() accessor, evidence sync | terminal_transport.go, docs |
+| R21 | Delete exported SetSubscriberFanOutHook, PB doc SHA fix | terminal_transport.go, docs |
 
 
 ## PA4.5 Audit Results
@@ -91,7 +92,7 @@
 | Device paired | PASS — SM-S926N |
 | Mobile keyboard input | DEFERRED — post-PB (WebView/xterm interaction layer, not managed transport) |
 
-## Gates (at IMPL `7c2d63b7c`)
+## Gates (at IMPL `4aaf3b76a`)
 ```
 go build ./... && go vet ./...        → exit 0
 gofmt -d (changed files)              → clean

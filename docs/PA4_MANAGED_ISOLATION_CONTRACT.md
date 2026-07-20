@@ -6,7 +6,7 @@
 
 **Frozen PA3 production baseline / PA4 rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7`
 
-**PA4 implementation HEAD:** `7c2d63b7c` (PA4-Final-R20)
+**PA4 implementation HEAD:** `4aaf3b76a` (PA4-Final-R21)
 
 **Future PA4 ACCEPT SHA:** **UNSET** (set by independent verifier)
 
