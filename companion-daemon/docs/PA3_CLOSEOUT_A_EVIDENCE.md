@@ -2,7 +2,8 @@
 
 Status: **EVIDENCE**
 Date: 2026-07-20
-Implementation SHA: `d5d7fb4217e03d1a7da65993da61163200d04663`
+Implementation SHA: `044305f933ef76a3eb64199879c07b2df809f5e6`
+R1: barrier-controlled concurrent tests with real goroutine coordination
 
 ## Root defect
 
@@ -40,15 +41,24 @@ if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r 
 recorderRegistry.mu.Unlock()
 ```
 
-## Tests (5 new in recorder_test.go)
+## Tests (5 in recorder_test.go, barrier-controlled concurrency)
+
+### barrierStream helper
+
+Custom `ptyStream` that blocks `Read()` until `release` channel is closed
+or `Close()` is called. Enables precise control over exactly when a stale
+Recorder receives EOF — the replacement is installed BEFORE the stale EOF
+fires.
+
+### Test cases
 
 | Test | What it proves |
 |------|---------------|
-| `TestRecorder_CloseoutA_DeleteRecreateSameID` | Same-ID delete+recreate produces distinct instances, B alive |
-| `TestRecorder_CloseoutA_StaleEOFCannotMarkReplacement` | Stale A's EOF does not set terminated=true — B creates successfully |
-| `TestRecorder_CloseoutA_StaleStopCannotAffectReplacement` | Stale A's Stop() does not remove B from registry |
-| `TestRecorder_CloseoutA_MatchingRecordsTermination` | Current Recorder still records termination correctly |
-| `TestRecorder_CloseoutA_SameIDRace` | 20 rapid delete+recreate iterations — no deadlock, no panic, final create succeeds |
+| `TestRecorder_CloseoutA_BarrierControlledStream` | Install B BEFORE releasing A's EOF barrier. Prove B stays current, no terminated flag for stale A, stale EOF is discarded by instance guard. |
+| `TestRecorder_CloseoutA_ConcurrentStaleOps/stale-EOF` | Coordinated goroutine: stale A's EOF fires concurrently with B alive. B remains current in registry. |
+| `TestRecorder_CloseoutA_ConcurrentStaleOps/stale-Stop` | Coordinated goroutine: stale A's Stop() fires concurrently with B alive. B remains current — stale Stop discarded. |
+| `TestRecorder_CloseoutA_MatchingRecordsTermination` | Positive control: current Recorder correctly records its own termination. |
+| `TestRecorder_CloseoutA_SameIDRace` | 20 concurrent goroutines create+delete same ID. Final create must succeed — no deadlock, race, or state corruption. |
 
 ## Gate results
 
