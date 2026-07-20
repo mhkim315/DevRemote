@@ -134,6 +134,20 @@ func (o *OwnedPTYRuntime) Transport(sessionID string) (*TerminalTransport, bool)
 	return e.transport, true
 }
 
+// RecorderFor returns the session-owned Recorder from the managed
+// entry, bypassing the global recorderRegistry. Used by HandleWS
+// when TerminalTransport exists but the global GetRecorder returns
+// nil (e.g., recorder was stopped and re-created).
+func (o *OwnedPTYRuntime) RecorderFor(sessionID string) (*Recorder, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e, ok := o.entries[sessionID]
+	if !ok || e.recorder == nil {
+		return nil, false
+	}
+	return e.recorder, true
+}
+
 func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 	o.lockMu.Lock()
 	defer o.lockMu.Unlock()

@@ -216,19 +216,29 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 					rec = GetRecorder(session)
 					transportBootstrap = bootstrap
 					subCh = liveCh
+					// PA4.5: if transport exists but subscriber fan-out failed
+					// (e.g., recorder not in global registry), use the managed
+					// entry's recorder directly. No Registry fallback.
+					if rec == nil {
+						if entryRec, ok := h.Lifecycle.OwnedPTY().RecorderFor(session); ok {
+							rec = entryRec
+							bootstrap, liveCh := entryRec.SubscribeWithBootstrap()
+							transportBootstrap = bootstrap
+							subCh = liveCh
+						}
+					}
 				}
 			}
 		}
 	} else {
 		useRegistry = true // legacy adapters (tmux, cmux)
 	}
+	// PA4.5 R6: controlled_pty adapter lookup — temporary, PB-removal marked.
+	// Only used when Lifecycle owner is not wired (test handlers) or
+	// transport/recorder is unavailable. Does NOT fall through to legacy
+	// Registry path for tmux/cmux/observer adapters.
 	if rec == nil && ref.Adapter == "controlled_pty" {
-		// PA4.5: controlled_pty adapter-only lookup — temporary, marked
-		// for PB removal. Only used when Lifecycle owner is not wired
-		// (e.g., test handlers). Finds the session in the controlled_pty
-		// adapter and starts a Recorder through EnsureRecorder.
-		if found, ferr := reg.FindSession(r.Context(), session); ferr == nil {
-			s = found
+		if s, _ = reg.FindSession(r.Context(), session); s != nil {
 			if opener, hasStream := s.(mux.StreamOpener); hasStream {
 				rec, subCh = EnsureRecorder(session, func() (ptyStream, error) {
 					st, err := opener.OpenStream(r.Context())
