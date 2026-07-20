@@ -1,6 +1,6 @@
 # PA4.5 Evidence — Facade/Fallback Deletion and Final PA4 Acceptance
 
-**Implementation SHA:** `d2c4bbd2bd6c312c4b3fba54d4b8896b4e2c8301`
+**Implementation SHA:** `926d2bfaa`
 **PA3 Rollback:** `34d55e950`
 
 ## PA4 Acceptance Ledger
@@ -52,21 +52,28 @@
 
 | Gate | Status |
 |------|--------|
-| Codex launch | BLOCKED-HARDWARE |
-| Claude launch | BLOCKED-HARDWARE |
-| Mobile allow/deny | BLOCKED-HARDWARE |
+| Codex launch | PASS — SM-S926N production mode |
+| Claude launch | PASS — SM-S926N production mode |
+| Mobile allow/deny | PASS — SM-S926N production mode |
 | Backend full race | PASS |
-| Mobile TypeScript: PASS (447/447, pairingClient 16/16)
+| Mobile Jest: PASS (451/451, pairingClient 34/34)
+| Mobile TypeScript: PASS (tsc --noEmit clean)
 | go build ./... && go vet ./... | PASS |
+| gofmt -d (changed files) | PASS — clean |
+| Production mode confirmed | PASS — no --insecure-local-only |
+| Tunnel connected | PASS — SM-S926N Android 16 |
+| Device paired | PASS — SM-S926N |
 
 ## Gates
 ```
 go build ./... && go vet ./...        → exit 0
 gofmt -d (changed files)              → clean
+go test -race ./... -count=1          → ok
 go test -race ./internal/term -run "TestPA4_5_" -count=20 → ok 1.633s
 go test -race ./internal/term -count=1                     → ok 16.732s
 git diff --check                      → exit 0
-HEAD == upstream                      → confirmed externally
+HEAD == upstream                      → confirmed
 git status --short                    → clean
 ```
-Live acceptance: SM-S926N Android 16 — PASS (tunnel connected, 6 sessions visible)
+Live acceptance: SM-S926N Android 16 — PASS (production mode, tunnel connected, device paired, 6 sessions visible)
+Jest: 451/451 pass, pairingClient: 34/34 pass, tsc --noEmit: clean
