@@ -109,7 +109,7 @@ func TestStep3_TranscriptAPI_HistoryAvailable(t *testing.T) {
 
 	// Feed bytes into the Transcript store via the byte-stream projector.
 	sid := "tmux:step3-history"
-	h.Transcript.FeedBytes(sid, []byte("line one\n"), time.Now())
+	h.Transcript.FeedBytes(sid, []byte("line one\n"), time.Now(), 0)
 	h.Transcript.FlushBytes(sid, time.Now())
 
 	// Query the supported Transcript API via direct handler call.
@@ -142,10 +142,10 @@ func TestStep3_TranscriptAPI_HistoryAvailable_AfterOutput(t *testing.T) {
 	sid := "controlled_pty:step3-output"
 
 	// Simulate Recorder feeding bytes (the production byte-stream path).
-	h.Transcript.EnableQueue(sid)
-	h.Transcript.FeedBytes(sid, []byte("first output\n"), time.Now())
-	h.Transcript.FeedBytes(sid, []byte("second output\n"), time.Now())
-	h.Transcript.CloseSessionQueue(sid)
+	gen := h.Transcript.EnableQueue(sid)
+	h.Transcript.FeedBytes(sid, []byte("first output\n"), time.Now(), gen)
+	h.Transcript.FeedBytes(sid, []byte("second output\n"), time.Now(), gen)
+	h.Transcript.CloseSessionQueue(sid, gen)
 
 	req := httptest.NewRequest("GET", "/api/sessions/"+sid+"/transcript?limit=50", nil)
 	req.SetPathValue("id", sid)

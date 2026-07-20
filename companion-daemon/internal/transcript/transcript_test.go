@@ -601,7 +601,7 @@ func TestServiceFeedBytes(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("terminal output\n"), time.Now())
+	svc.FeedBytes(sid, []byte("terminal output\n"), time.Now(), 0)
 
 	list := svc.ListTranscript(sid)
 	if len(list) != 1 {
@@ -616,7 +616,7 @@ func TestServiceBothSources(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("fallback output\n"), time.Now())
+	svc.FeedBytes(sid, []byte("fallback output\n"), time.Now(), 0)
 	// Establish correlation before projecting agent events.
 	svc.SetCorrelation(sid, CorrelationState{Correlation: "proven"})
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
@@ -647,7 +647,7 @@ func TestServiceClearTranscript(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("data\n"), time.Now())
+	svc.FeedBytes(sid, []byte("data\n"), time.Now(), 0)
 	svc.ProjectAgentEvents(sid, []agent.AgentEvent{
 		{ID: "e1", SessionID: sid, AgentKind: "claude", Type: agent.EventAssistantMessage, Text: "data", Provenance: "provider_protocol"},
 	})
@@ -671,7 +671,7 @@ func TestServiceTranscriptStats(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	sid := "test:svc"
 
-	svc.FeedBytes(sid, []byte("line1\nline2\nline3\n"), time.Now())
+	svc.FeedBytes(sid, []byte("line1\nline2\nline3\n"), time.Now(), 0)
 
 	stats := svc.TranscriptStats(sid)
 	if stats.SegmentCount != 3 {

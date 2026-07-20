@@ -166,7 +166,7 @@ func TestProcessSession_SnapshotSuppressedAfterInput(t *testing.T) {
 	sid := "controlled_pty:snaptest"
 
 	ts.BeginInput(sid, time.Now())
-	ts.AddSnapshotSegment(sid, "echoed text from terminal", 20, time.Now())
+	ts.AddSnapshotSegment(sid, "echoed text from terminal", 20, time.Now(), 0)
 
 	segments := ts.ListTranscript(sid)
 	for _, seg := range segments {

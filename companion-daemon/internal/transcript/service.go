@@ -12,43 +12,33 @@ import (
 // It owns the bounded store, projectors, per-session arbitration state,
 // and per-session bounded chunk queues for byte-stream projection.
 type Service struct {
-	store     *Store
-	agentProj *AgentEventProjector
-	byteProjs map[string]*ByteStreamProjector // sessionID → projector
-	arbiters  map[string]*SourceArbiter       // sessionID → arbiter
-	queues    map[string]*chunkQueue          // sessionID → bounded byte-stream queue
-	_gens     map[string]int64                // PA3 Step 6: per-session generation counter
-	mu        sync.Mutex
+	store      *Store
+	agentProj  *AgentEventProjector
+	byteProjs  map[string]*ByteStreamProjector
+	arbiters   map[string]*SourceArbiter
+	queues     map[string]*chunkQueue
+	currentGen map[string]int64
+	mu         sync.Mutex
 }
 
-// NewService creates a Transcript integration service.
 func NewService(cfg StoreConfig) *Service {
 	return &Service{
-		store:     NewStore(cfg),
-		agentProj: NewAgentEventProjector(),
-		byteProjs: make(map[string]*ByteStreamProjector),
-		arbiters:  make(map[string]*SourceArbiter),
-		queues:    make(map[string]*chunkQueue),
+		store:      NewStore(cfg),
+		agentProj:  NewAgentEventProjector(),
+		byteProjs:  make(map[string]*ByteStreamProjector),
+		arbiters:   make(map[string]*SourceArbiter),
+		queues:     make(map[string]*chunkQueue),
+		currentGen: make(map[string]int64),
 	}
 }
 
-// ── AgentEvent projection path ──
-
-// ProjectAgentEvents projects accepted AgentEvents into the Transcript store.
-// Only events with PROVEN session correlation may enter the semantic Transcript.
-// Uncorrelated events are silently dropped — byte-stream remains primary.
 func (s *Service) ProjectAgentEvents(sessionID string, events []agent.AgentEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	arb := s.ensureArbiter(sessionID)
-
-	// Gate: only project when correlation is explicitly established.
-	// Until correlation is proven, byte-stream is the sole semantic source.
 	if !arb.CanBePrimarySource() {
 		return
 	}
-
 	segments := s.agentProj.ProjectBatch(events, sessionID)
 	if len(segments) > 0 {
 		arb.RecordAgentEvent()
@@ -56,9 +46,6 @@ func (s *Service) ProjectAgentEvents(sessionID string, events []agent.AgentEvent
 	}
 }
 
-// SetCorrelation establishes the correlation state for a session.
-// Only CorrelationProven or CorrelationManagedLaunch enable AgentEvent
-// as the primary semantic source. Must be called before events arrive.
 func (s *Service) SetCorrelation(sessionID string, cs CorrelationState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -66,16 +53,14 @@ func (s *Service) SetCorrelation(sessionID string, cs CorrelationState) {
 	arb.SetCorrelation(cs)
 }
 
-// ── Byte-stream fallback path (non-blocking enqueue) ──
-
-// FeedBytes enqueues a Recorder byte chunk for ordered, non-blocking
-// projection. It never blocks the caller. If no queue is active for the
-// session, it processes synchronously (used in tests and simple paths).
-func (s *Service) FeedBytes(sessionID string, chunk []byte, observedAt time.Time) {
+func (s *Service) FeedBytes(sessionID string, chunk []byte, observedAt time.Time, generation int64) {
 	s.mu.Lock()
+	if !s.matchGeneration(sessionID, generation) {
+		s.mu.Unlock()
+		return
+	}
 	q, hasQ := s.queues[sessionID]
 	if !hasQ {
-		// Synchronous path: no queue attached.
 		bp := s.ensureByteProj(sessionID)
 		arb := s.ensureArbiter(sessionID)
 		segments := bp.Feed(sessionID, chunk, observedAt)
@@ -90,19 +75,20 @@ func (s *Service) FeedBytes(sessionID string, chunk []byte, observedAt time.Time
 	q.enqueue(chunk, observedAt)
 }
 
-// EnableQueue attaches a bounded chunk queue to a session, making FeedBytes
-// non-blocking. Called from the Recorder production path.
-func (s *Service) EnableQueue(sessionID string) {
+func (s *Service) EnableQueue(sessionID string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.currentGen[sessionID]; !ok {
+		s.currentGen[sessionID] = 1
+	}
+	gen := s.currentGen[sessionID]
 	if _, ok := s.queues[sessionID]; !ok {
-		q := newChunkQueue(sessionID, s)
+		q := newChunkQueue(sessionID, s, gen)
 		s.queues[sessionID] = q
 	}
+	return gen
 }
 
-// FlushBytes flushes any accumulated partial state in the byte-stream
-// projector for the session.
 func (s *Service) FlushBytes(sessionID string, observedAt time.Time) {
 	s.mu.Lock()
 	bp := s.ensureByteProj(sessionID)
@@ -115,13 +101,10 @@ func (s *Service) FlushBytes(sessionID string, observedAt time.Time) {
 	s.mu.Unlock()
 }
 
-// EmitDegraded appends a degraded marker directly (called from queue worker
-// and from TelemetryService for overflow markers).
 func (s *Service) EmitDegraded(sessionID string, reason string, observedAt time.Time) {
 	s.emitDegraded(sessionID, reason, observedAt)
 }
 
-// emitDegraded appends a degraded marker directly (called from queue worker).
 func (s *Service) emitDegraded(sessionID string, reason string, observedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,7 +115,6 @@ func (s *Service) emitDegraded(sessionID string, reason string, observedAt time.
 	})
 }
 
-// processChunk is called by the chunk queue worker to project a single chunk.
 func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Time) {
 	s.mu.Lock()
 	bp := s.ensureByteProj(sessionID)
@@ -145,17 +127,13 @@ func (s *Service) processChunk(sessionID string, data []byte, observedAt time.Ti
 	s.mu.Unlock()
 }
 
-// BeginInput marks the start of terminal input for echo privacy.
-// Idempotent: if already suppressed, does not emit duplicate markers.
 func (s *Service) BeginInput(sessionID string, observedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	arb := s.ensureArbiter(sessionID)
 	if arb.IsByteStreamSuppressed() {
-		return // already suppressed, no duplicate markers
+		return
 	}
-
 	bp := s.ensureByteProj(sessionID)
 	seg := bp.BeginInput(sessionID, observedAt)
 	if seg != nil {
@@ -167,32 +145,31 @@ func (s *Service) BeginInput(sessionID string, observedAt time.Time) {
 	})
 }
 
-// EndInput marks the end of terminal input echo suppression.
 func (s *Service) EndInput(sessionID string, observedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	bp := s.ensureByteProj(sessionID)
 	bp.EndInput(sessionID, observedAt)
 }
 
-// BeginTUIBurst marks the start of an unprojectable TUI region.
-func (s *Service) BeginTUIBurst(sessionID string) {
+func (s *Service) BeginTUIBurst(sessionID string, generation int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	if !s.matchGeneration(sessionID, generation) {
+		return
+	}
 	bp := s.ensureByteProj(sessionID)
 	bp.BeginTUIBurst()
 }
 
-// EndTUIBurst marks the end of a TUI burst and appends a ui_omitted marker.
-func (s *Service) EndTUIBurst(sessionID string, observedAt time.Time) {
+func (s *Service) EndTUIBurst(sessionID string, observedAt time.Time, generation int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	if !s.matchGeneration(sessionID, generation) {
+		return
+	}
 	bp := s.ensureByteProj(sessionID)
 	arb := s.ensureArbiter(sessionID)
-
 	seg := bp.EndTUIBurst(sessionID, observedAt)
 	if seg != nil {
 		s.store.Append(sessionID, []TranscriptSegment{*seg})
@@ -200,27 +177,19 @@ func (s *Service) EndTUIBurst(sessionID string, observedAt time.Time) {
 	arb.RecordByteStream()
 }
 
-// ── Read API ──
-
-// ListTranscript returns all segments for a session, oldest-first.
 func (s *Service) ListTranscript(sessionID string) []TranscriptSegment {
 	return s.store.List(sessionID)
 }
 
-// ListTranscriptAfter returns segments with Seq > cursor, oldest-first.
 func (s *Service) ListTranscriptAfter(sessionID string, cursor int64) []TranscriptSegment {
 	return s.store.ListAfter(sessionID, cursor)
 }
 
-// TranscriptStats returns diagnostic counters for a session.
 func (s *Service) TranscriptStats(sessionID string) StoreStats {
 	return s.store.Stats(sessionID)
 }
 
-// ClearTranscript removes all segments and shuts down the queue for a session.
-// Queue is drained first to prevent the worker from resurrecting deleted state.
 func (s *Service) ClearTranscript(sessionID string) {
-	// Close queue first — wait for drain before clearing store.
 	s.mu.Lock()
 	q, hasQ := s.queues[sessionID]
 	if hasQ {
@@ -230,25 +199,17 @@ func (s *Service) ClearTranscript(sessionID string) {
 	if hasQ {
 		q.close()
 	}
-
-	// Now safe to clear store: no worker can append.
 	s.mu.Lock()
 	s.store.Clear(sessionID)
 	delete(s.byteProjs, sessionID)
 	delete(s.arbiters, sessionID)
 	s.mu.Unlock()
-
-	// Clean up managed launch binding.
 	RemoveLaunch(sessionID)
 }
 
-// ── Arbitration queries ──
-
-// PrimarySource returns the current primary Transcript source for a session.
 func (s *Service) PrimarySource(sessionID string) SegmentSource {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	arb := s.arbiters[sessionID]
 	if arb == nil {
 		return SourceUnknown
@@ -256,11 +217,9 @@ func (s *Service) PrimarySource(sessionID string) SegmentSource {
 	return arb.PrimarySource()
 }
 
-// HasAgentEvents returns true if the session has AgentEvent-sourced segments.
 func (s *Service) HasAgentEvents(sessionID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	arb := s.arbiters[sessionID]
 	if arb == nil {
 		return false
@@ -268,16 +227,14 @@ func (s *Service) HasAgentEvents(sessionID string) bool {
 	return arb.HasAgentEvents()
 }
 
-// AddSnapshotSegment appends a cmux/snapshot-sourced segment with degraded
-// SourceSnapshot provenance. Separate from both AgentEvent and byte-stream.
-// If byte-stream is suppressed (terminal input occurred), snapshot text is
-// NOT stored — snapshots may contain echoed input bytes.
-func (s *Service) AddSnapshotSegment(sessionID string, text string, byteCount int, observedAt time.Time) {
+func (s *Service) AddSnapshotSegment(sessionID string, text string, byteCount int, observedAt time.Time, generation int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.matchGeneration(sessionID, generation) {
+		return
+	}
 	arb := s.ensureArbiter(sessionID)
 	if arb.IsByteStreamSuppressed() {
-		// Snapshot may contain echoed terminal input — suppress permanently.
 		s.store.Append(sessionID, []TranscriptSegment{
 			NewDegradedSegment(sessionID, "snapshot suppressed after terminal input", observedAt),
 		})
@@ -293,20 +250,16 @@ func (s *Service) AddSnapshotSegment(sessionID string, text string, byteCount in
 		ContractVersion: ContractVersion,
 	}
 	s.store.Append(sessionID, []TranscriptSegment{seg})
-	_ = arb
 }
 
-// FeedBytesBatch directly appends pre-built terminal output segments.
 func (s *Service) FeedBytesBatch(sessionID string, segments []TranscriptSegment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	arb := s.ensureArbiter(sessionID)
 	arb.RecordByteStream()
 	s.store.Append(sessionID, segments)
 }
 
-// BuildResponse constructs the separated TranscriptResponse envelope.
 func (s *Service) BuildResponse(sessionID string, segments []TranscriptSegment) TranscriptResponse {
 	s.mu.Lock()
 	arb := s.arbiters[sessionID]
@@ -316,12 +269,12 @@ func (s *Service) BuildResponse(sessionID string, segments []TranscriptSegment) 
 	return resp
 }
 
-// ── Queue shutdown (called on Recorder stop) ──
-
-// CloseSessionQueue gracefully shuts down the chunk queue for a session.
-// The worker drains remaining chunks and flushes the projector.
-func (s *Service) CloseSessionQueue(sessionID string) {
+func (s *Service) CloseSessionQueue(sessionID string, generation int64) {
 	s.mu.Lock()
+	if !s.matchGeneration(sessionID, generation) {
+		s.mu.Unlock()
+		return
+	}
 	q, ok := s.queues[sessionID]
 	if ok {
 		delete(s.queues, sessionID)
@@ -332,8 +285,6 @@ func (s *Service) CloseSessionQueue(sessionID string) {
 		log.Printf("TRANSCRIPT queue close session=%s", sessionID)
 	}
 }
-
-// ── Internal helpers ──
 
 func (s *Service) ensureByteProj(sessionID string) *ByteStreamProjector {
 	if bp, ok := s.byteProjs[sessionID]; ok {
@@ -353,65 +304,42 @@ func (s *Service) ensureArbiter(sessionID string) *SourceArbiter {
 	return arb
 }
 
-func (s *Service) ensureQueue(sessionID string) *chunkQueue {
-	if q, ok := s.queues[sessionID]; ok {
-		return q
+// ── PA3 Closeout B: generation-bound lease ──
+
+func (s *Service) matchGeneration(sessionID string, generation int64) bool {
+	if generation == 0 {
+		return true
 	}
-	q := newChunkQueue(sessionID, s)
-	s.queues[sessionID] = q
-	return q
+	cur := s.currentGen[sessionID]
+	return cur == generation
 }
 
-// ── PA3 Step 6: generation tracking ──
-
-// generationStore maps sessionID → generation counter.
-func (s *Service) gens() map[string]int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s._gens == nil {
-		s._gens = make(map[string]int64)
-	}
-	return s._gens
-}
-
-// IncrementGeneration bumps and returns the session's generation.
-func (s *Service) IncrementGeneration(sessionID string) int64 {
-	g := s.gens()
-	g[sessionID]++
-	return g[sessionID]
-}
-
-// StoreGeneration records the initial generation for a session.
-// Idempotent: first-write-wins.
-func (s *Service) StoreGeneration(sessionID string, gen int64) {
-	g := s.gens()
-	if _, ok := g[sessionID]; !ok {
-		g[sessionID] = gen
-	}
-}
-
-// GetGeneration returns the current generation for a session.
 func (s *Service) GetGeneration(sessionID string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s._gens == nil {
-		return 0
-	}
-	return s._gens[sessionID]
+	return s.currentGen[sessionID]
 }
 
-// ReplaceTranscript atomically drains+clears a session's Transcript and
-// allocates a new generation. Returns the new generation number.
-// PRECONDITION: no concurrent feeder (old Recorder must be stopped).
 func (s *Service) ReplaceTranscript(sessionID string) int64 {
-	s.CloseSessionQueue(sessionID)
-	s.ClearTranscript(sessionID)
-	gen := s.IncrementGeneration(sessionID)
-	s.EnableQueue(sessionID)
+	s.mu.Lock()
+	oldQueue := s.queues[sessionID]
+	delete(s.queues, sessionID)
+	s.store.Clear(sessionID)
+	delete(s.byteProjs, sessionID)
+	delete(s.arbiters, sessionID)
+	if _, ok := s.currentGen[sessionID]; !ok {
+		s.currentGen[sessionID] = 1
+	} else {
+		s.currentGen[sessionID]++
+	}
+	gen := s.currentGen[sessionID]
+	q := newChunkQueue(sessionID, s, gen)
+	s.queues[sessionID] = q
+	s.mu.Unlock()
+	if oldQueue != nil {
+		oldQueue.close()
+	}
+	RemoveLaunch(sessionID)
+	log.Printf("TRANSCRIPT replace session=%s gen=%d", sessionID, gen)
 	return gen
-}
-
-// SetTranscriptGeneration records the initial generation for a session.
-func (s *Service) SetTranscriptGeneration(sessionID string, gen int64) {
-	s.StoreGeneration(sessionID, gen)
 }

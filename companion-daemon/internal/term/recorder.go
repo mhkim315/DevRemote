@@ -31,6 +31,8 @@ type Recorder struct {
 	// byte-stream projector. nil means Transcript integration is disabled.
 	transcriptSvc *transcript.Service
 
+	queueGen int64
+
 	// Terminal bootstrap: ring buffer of recent raw PTY bytes.
 	// Late-attaching subscribers receive this before live stream.
 	bootstrapBuf  []byte
@@ -97,7 +99,7 @@ func StartRecorder(sessionID string, stream ptyStream) (*Recorder, chan []byte) 
 	r.captureMode = resolveCaptureMode(sessionID)
 	r.transcriptSvc = transcriptSvcSingleton
 	if r.transcriptSvc != nil {
-		r.transcriptSvc.EnableQueue(r.sessionID)
+		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
 	}
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
@@ -174,7 +176,7 @@ func (r *Recorder) Stop() {
 	r.cancel()
 	r.stream.Close()
 	if r.transcriptSvc != nil {
-		r.transcriptSvc.CloseSessionQueue(r.sessionID)
+		r.transcriptSvc.CloseSessionQueue(r.sessionID, r.queueGen)
 	}
 	<-r.done
 
@@ -236,7 +238,7 @@ func (r *Recorder) feedTranscript(payload []byte) {
 	if r.transcriptSvc == nil {
 		return
 	}
-	r.transcriptSvc.FeedBytes(r.sessionID, payload, time.Now())
+	r.transcriptSvc.FeedBytes(r.sessionID, payload, time.Now(), r.queueGen)
 }
 
 // readLoop reads PTY output, broadcasts to subscribers, feeds Transcript.
@@ -272,7 +274,7 @@ func (r *Recorder) readLoop() {
 			recorderRegistry.mu.Unlock()
 			// T3: close transcript queue on natural EOF.
 			if r.transcriptSvc != nil {
-				r.transcriptSvc.CloseSessionQueue(r.sessionID)
+				r.transcriptSvc.CloseSessionQueue(r.sessionID, r.queueGen)
 			}
 			// Close all subscribers so WebSocket handlers detect EOF.
 			r.mu.Lock()
@@ -308,7 +310,7 @@ func (r *Recorder) readLoop() {
 					if len(text) > 32768 {
 						text = text[:32768]
 					}
-					r.transcriptSvc.AddSnapshotSegment(r.sessionID, text, len(payload), time.Now())
+					r.transcriptSvc.AddSnapshotSegment(r.sessionID, text, len(payload), time.Now(), r.queueGen)
 				}
 			}
 			continue // do NOT broadcast delta to subscribers
@@ -329,9 +331,9 @@ func (r *Recorder) readLoop() {
 		// T3: detect TUI boundaries for transcript omission.
 		if r.transcriptSvc != nil {
 			if transcript.IsAlternateScreenStart(payload) {
-				r.transcriptSvc.BeginTUIBurst(r.sessionID)
+				r.transcriptSvc.BeginTUIBurst(r.sessionID, r.queueGen)
 			} else if transcript.IsAlternateScreenEnd(payload) {
-				r.transcriptSvc.EndTUIBurst(r.sessionID, time.Now())
+				r.transcriptSvc.EndTUIBurst(r.sessionID, time.Now(), r.queueGen)
 			}
 		}
 
@@ -540,7 +542,7 @@ func EnsureRecorder(sessionID string, openStream openStreamFn) (*Recorder, chan 
 	r.captureMode = resolveCaptureMode(sessionID)
 	r.transcriptSvc = transcriptSvcSingleton
 	if r.transcriptSvc != nil {
-		r.transcriptSvc.EnableQueue(r.sessionID)
+		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
 	}
 	go r.readLoop()
 	log.Printf("RECORDER start session=%s", sessionID)
@@ -651,7 +653,7 @@ func StartRecorderUnconditional(sessionID string, stream ptyStream) *Recorder {
 	r.captureMode = resolveCaptureMode(sessionID)
 	r.transcriptSvc = transcriptSvcSingleton
 	if r.transcriptSvc != nil {
-		r.transcriptSvc.EnableQueue(r.sessionID)
+		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
 	}
 	go r.readLoop()
 	r.Unsubscribe(ch) // drop starter subscriber

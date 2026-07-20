@@ -5,21 +5,15 @@ import (
 	"time"
 )
 
-// chunkQueue is a session-owned, bounded, single-worker queue for Recorder
-// PTY byte chunks. It guarantees:
-//   - Non-blocking enqueue (overflow → coalesced gap)
-//   - Single ordered worker (preserves chunk ordering)
-//   - Bounded event count and byte capacity
-//   - Close/enqueue serialization (no send-on-closed-channel panic)
-//   - Worker completion signal for safe drain-before-clear
 type chunkQueue struct {
-	sessionID string
-	svc       *Service
+	sessionID  string
+	svc        *Service
+	generation int64
 
 	mu       sync.Mutex
 	chunks   chan chunkItem
 	closed   bool
-	done     chan struct{} // closed when worker exits
+	done     chan struct{}
 	dropped  int64
 	overflow bool
 }
@@ -34,27 +28,24 @@ const (
 	chunkQueueMaxChunkBytes = 65536
 )
 
-func newChunkQueue(sessionID string, svc *Service) *chunkQueue {
+func newChunkQueue(sessionID string, svc *Service, generation int64) *chunkQueue {
 	q := &chunkQueue{
-		sessionID: sessionID,
-		svc:       svc,
-		chunks:    make(chan chunkItem, chunkQueueCapacity),
-		done:      make(chan struct{}),
+		sessionID:  sessionID,
+		svc:        svc,
+		generation: generation,
+		chunks:     make(chan chunkItem, chunkQueueCapacity),
+		done:       make(chan struct{}),
 	}
 	go q.worker()
 	return q
 }
 
-// enqueue attempts to deliver a chunk. It never blocks. If the queue is
-// closed or full, the chunk is dropped. Send-on-closed-channel panic is
-// prevented by checking closed under lock.
 func (q *chunkQueue) enqueue(data []byte, observedAt time.Time) {
 	if len(data) > chunkQueueMaxChunkBytes {
 		data = data[:chunkQueueMaxChunkBytes]
 	}
 	chunk := make([]byte, len(data))
 	copy(chunk, data)
-
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
@@ -70,8 +61,6 @@ func (q *chunkQueue) enqueue(data []byte, observedAt time.Time) {
 	}
 }
 
-// close shuts down the worker and waits for it to drain. Safe to call
-// multiple times. After close, enqueue is a no-op.
 func (q *chunkQueue) close() {
 	q.mu.Lock()
 	if q.closed {
@@ -81,10 +70,9 @@ func (q *chunkQueue) close() {
 	q.closed = true
 	q.mu.Unlock()
 	close(q.chunks)
-	<-q.done // wait for worker to drain and exit
+	<-q.done
 }
 
-// isClosed reports whether close has been called.
 func (q *chunkQueue) isClosed() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -94,17 +82,23 @@ func (q *chunkQueue) isClosed() bool {
 func (q *chunkQueue) worker() {
 	defer close(q.done)
 	for item := range q.chunks {
+		if !q.isGenerationCurrent() {
+			continue
+		}
 		q.mu.Lock()
 		overflow := q.overflow
 		q.overflow = false
 		q.mu.Unlock()
-
 		if overflow {
 			q.svc.emitDegraded(q.sessionID, "byte-stream chunks dropped (queue overflow)", item.observedAt)
 		}
-
 		q.svc.processChunk(q.sessionID, item.data, item.observedAt)
 	}
-	// Final flush on close.
-	q.svc.FlushBytes(q.sessionID, time.Now())
+	if q.isGenerationCurrent() {
+		q.svc.FlushBytes(q.sessionID, time.Now())
+	}
+}
+
+func (q *chunkQueue) isGenerationCurrent() bool {
+	return q.svc.GetGeneration(q.sessionID) == q.generation
 }

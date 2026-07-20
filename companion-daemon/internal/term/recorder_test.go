@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/transcript"
 )
 
 // testOpener is a StreamOpener that returns a fake pipe stream.
@@ -941,5 +942,189 @@ func TestRecorder_CloseoutA_MatchingRecordsTermination(t *testing.T) {
 	recorderRegistry.mu.Unlock()
 	if !term {
 		t.Error("matching Recorder did not record termination")
+	}
+}
+
+var closeoutBSeq int64
+
+type pipeStream struct {
+	pr *io.PipeReader
+	pw *io.PipeWriter
+}
+
+func (s *pipeStream) Read(p []byte) (int, error)  { return s.pr.Read(p) }
+func (s *pipeStream) Write(p []byte) (int, error) { return s.pw.Write(p) }
+func (s *pipeStream) Close() error                { return s.pr.Close() }
+func (s *pipeStream) Resize(rows, cols int) error { return nil }
+
+func TestRecorder_CloseoutB_StaleFeedAfterReplace(t *testing.T) {
+	seq := atomic.AddInt64(&closeoutBSeq, 1)
+	sid := fmt.Sprintf("test:closeoutb-stale-feed-%d", seq)
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
+	prA, pwA := io.Pipe()
+	streamA := &pipeStream{pr: prA, pw: pwA}
+	recA, subA := EnsureRecorder(sid, func() (ptyStream, error) { return streamA, nil })
+	if recA == nil {
+		t.Fatal("EnsureRecorder A returned nil")
+	}
+
+	go func() { pwA.Write([]byte("gen1 data\n")) }()
+	select {
+	case <-subA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for gen1 data")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	segs := svc.ListTranscript(sid)
+	hasGen1 := false
+	for _, seg := range segs {
+		if seg.Text == "gen1 data" {
+			hasGen1 = true
+		}
+	}
+	if !hasGen1 {
+		t.Error("gen1 data missing")
+	}
+
+	svc.ReplaceTranscript(sid)
+
+	go func() { pwA.Write([]byte("stale from A\n")) }()
+	select {
+	case <-subA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for stale data")
+	}
+
+	svc.CloseSessionQueue(sid, 2)
+	segs = svc.ListTranscript(sid)
+	for _, seg := range segs {
+		if seg.Text == "stale from A" {
+			t.Error("stale Recorder A data leaked into gen2 transcript")
+		}
+	}
+
+	pwA.Close()
+	DeleteRecorder(sid)
+
+	prB, pwB := io.Pipe()
+	streamB := &pipeStream{pr: prB, pw: pwB}
+	recB, subB := EnsureRecorder(sid, func() (ptyStream, error) { return streamB, nil })
+	if recB == nil {
+		t.Fatal("EnsureRecorder B returned nil")
+	}
+	defer func() { pwB.Close(); DeleteRecorder(sid) }()
+
+	go func() { pwB.Write([]byte("gen2 data\n")) }()
+	select {
+	case <-subB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for gen2 data")
+	}
+
+	svc.CloseSessionQueue(sid, 2)
+	segs = svc.ListTranscript(sid)
+	hasGen2 := false
+	for _, seg := range segs {
+		if seg.Text == "gen2 data" {
+			hasGen2 = true
+		}
+	}
+	if !hasGen2 {
+		t.Error("gen2 data missing from transcript")
+	}
+}
+
+func TestRecorder_CloseoutB_StaleStopAfterReplace(t *testing.T) {
+	seq := atomic.AddInt64(&closeoutBSeq, 1)
+	sid := fmt.Sprintf("test:closeoutb-stale-stop-%d", seq)
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
+	prA, pwA := io.Pipe()
+	streamA := &pipeStream{pr: prA, pw: pwA}
+	recA, _ := EnsureRecorder(sid, func() (ptyStream, error) { return streamA, nil })
+	if recA == nil {
+		t.Fatal("EnsureRecorder A returned nil")
+	}
+
+	svc.ReplaceTranscript(sid)
+
+	pwA.Close()
+	recA.Stop()
+
+	prB, pwB := io.Pipe()
+	streamB := &pipeStream{pr: prB, pw: pwB}
+	recB, subB := EnsureRecorder(sid, func() (ptyStream, error) { return streamB, nil })
+	if recB == nil {
+		t.Fatal("EnsureRecorder B returned nil — stale Stop may have corrupted registry")
+	}
+	defer func() { pwB.Close(); DeleteRecorder(sid) }()
+
+	go func() { pwB.Write([]byte("after stale stop\n")) }()
+	select {
+	case <-subB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for Recorder B data")
+	}
+
+	svc.CloseSessionQueue(sid, 2)
+	segs := svc.ListTranscript(sid)
+	hasData := false
+	for _, seg := range segs {
+		if seg.Text == "after stale stop" {
+			hasData = true
+		}
+	}
+	if !hasData {
+		t.Error("data missing — stale Stop may have closed replacement queue")
+	}
+}
+
+func TestRecorder_CloseoutB_QueueGenCapture(t *testing.T) {
+	seq := atomic.AddInt64(&closeoutBSeq, 1)
+	sid := fmt.Sprintf("test:closeoutb-gen-capture-%d", seq)
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	SetTranscriptService(svc)
+	defer SetTranscriptService(nil)
+
+	pr, pw := io.Pipe()
+	stream := &pipeStream{pr: pr, pw: pw}
+	rec, sub := EnsureRecorder(sid, func() (ptyStream, error) { return stream, nil })
+	if rec == nil {
+		t.Fatal("EnsureRecorder returned nil")
+	}
+	defer func() { pw.Close(); DeleteRecorder(sid) }()
+
+	if rec.queueGen != 1 {
+		t.Errorf("queueGen = %d, want 1", rec.queueGen)
+	}
+	if rec.queueGen != svc.GetGeneration(sid) {
+		t.Errorf("queueGen=%d != svc.GetGeneration=%d", rec.queueGen, svc.GetGeneration(sid))
+	}
+
+	go func() { pw.Write([]byte("capture test\n")) }()
+	select {
+	case <-sub:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for data")
+	}
+
+	pw.Close()
+	rec.Stop()
+
+	segs := svc.ListTranscript(sid)
+	hasData := false
+	for _, seg := range segs {
+		if seg.Text == "capture test" {
+			hasData = true
+		}
+	}
+	if !hasData {
+		t.Error("data missing — Recorder may have passed wrong generation")
 	}
 }
