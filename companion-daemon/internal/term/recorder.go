@@ -162,8 +162,13 @@ func (r *Recorder) Unsubscribe(ch chan []byte) {
 
 // Stop terminates the recorder. Idempotent.
 func (r *Recorder) Stop() {
+	// PA3 Closeout A: instance-safe — only remove from registry if
+	// this Recorder is still the current one. A stale Stop() from a
+	// replaced Recorder must never delete the replacement's entry.
 	recorderRegistry.mu.Lock()
-	delete(recorderRegistry.recorders, r.sessionID)
+	if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r {
+		delete(recorderRegistry.recorders, r.sessionID)
+	}
 	recorderRegistry.mu.Unlock()
 
 	r.cancel()
@@ -254,9 +259,16 @@ func (r *Recorder) readLoop() {
 			r.readErr = err
 			r.mu.Unlock()
 			log.Printf("RECORDER read err session=%s: %v", r.sessionID, err)
-			// Mark session terminated so telemetry does not restart recorder.
+			// PA3 Closeout A: before marking terminated, atomically prove
+			// the Registry still points to THIS exact Recorder instance.
+			// A stale readLoop (from a deleted/replaced session) must
+			// never write terminated=true — that would block the
+			// replacement's Recorder from starting (StartRecorder checks
+			// the terminated flag).
 			recorderRegistry.mu.Lock()
-			recorderRegistry.terminated[r.sessionID] = true
+			if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r {
+				recorderRegistry.terminated[r.sessionID] = true
+			}
 			recorderRegistry.mu.Unlock()
 			// T3: close transcript queue on natural EOF.
 			if r.transcriptSvc != nil {

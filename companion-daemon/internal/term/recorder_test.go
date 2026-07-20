@@ -761,3 +761,189 @@ type ActivityEvent struct {
 	Hash      string
 	Timestamp interface{}
 }
+
+// PA3 Closeout A — Recorder instance-safe termination.
+// Prove stale Recorder readLoop EOF cannot mark a replacement session as
+// terminated, and stale Stop() cannot remove a replacement from the registry.
+
+func TestRecorder_CloseoutA_DeleteRecreateSameID(t *testing.T) {
+	// Step 1: Create Recorder A with a long-lived stream (pipe that stays open).
+	prA, pwA := io.Pipe()
+	go func() { pwA.Write([]byte("hello from A")); time.Sleep(500 * time.Millisecond); pwA.Close() }()
+	recA, chA := EnsureRecorder("test:closeout-same", func() (ptyStream, error) {
+		return &testStream{pr: prA, pw: pwA}, nil
+	})
+	if recA == nil {
+		t.Fatal("EnsureRecorder A returned nil")
+	}
+	go func() { for range chA {} }()
+	time.Sleep(100 * time.Millisecond)
+	if !recA.IsAlive() {
+		t.Fatal("A not alive after create")
+	}
+
+	// Step 2: Delete A (stops the recorder).
+	DeleteRecorder("test:closeout-same")
+	if GetRecorder("test:closeout-same") != nil {
+		t.Error("recorder still present after delete")
+	}
+
+	// Step 3: Create Recorder B (same ID, new stream).
+	prB, pwB := io.Pipe()
+	go func() { pwB.Write([]byte("hello from B")); time.Sleep(500 * time.Millisecond); pwB.Close() }()
+	recB, chB := EnsureRecorder("test:closeout-same", func() (ptyStream, error) {
+		return &testStream{pr: prB, pw: pwB}, nil
+	})
+	if recB == nil {
+		t.Fatal("EnsureRecorder B returned nil")
+	}
+	defer DeleteRecorder("test:closeout-same")
+	go func() { for range chB {} }()
+	time.Sleep(100 * time.Millisecond)
+
+	// B must be a distinct instance from A.
+	if recA == recB {
+		t.Error("A and B are the same Recorder instance")
+	}
+	if !recB.IsAlive() {
+		t.Fatal("B not alive after create")
+	}
+
+	// A must be dead (EOF from Close/stop).
+	select {
+	case <-recA.Done():
+	default:
+		t.Error("A's readLoop did not exit after delete")
+	}
+}
+
+func TestRecorder_CloseoutA_StaleEOFCannotMarkReplacement(t *testing.T) {
+	// Step 1: Create Recorder A with a pipe.
+	prA, pwA := io.Pipe()
+	go func() { pwA.Write([]byte("A output")); time.Sleep(500 * time.Millisecond); pwA.Close() }()
+	recA, _ := EnsureRecorder("test:closeout-stale-eof", func() (ptyStream, error) {
+		return &testStream{pr: prA, pw: pwA}, nil
+	})
+	if recA == nil {
+		t.Fatal("EnsureRecorder A returned nil")
+	}
+
+	// Step 2: Delete A (closes stream, triggers EOF in readLoop).
+	DeleteRecorder("test:closeout-stale-eof")
+	select {
+	case <-recA.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("A did not finish after delete")
+	}
+
+	// Step 3: Create Recorder B (same ID, new pipe).
+	prB, pwB := io.Pipe()
+	go func() { pwB.Write([]byte("B output")); time.Sleep(500 * time.Millisecond); pwB.Close() }()
+	recB, _ := EnsureRecorder("test:closeout-stale-eof", func() (ptyStream, error) {
+		return &testStream{pr: prB, pw: pwB}, nil
+	})
+	if recB == nil {
+		t.Fatal("EnsureRecorder B returned nil — stale EOF may have set terminated=true")
+	}
+	defer DeleteRecorder("test:closeout-stale-eof")
+	time.Sleep(100 * time.Millisecond)
+
+	if !recB.IsAlive() {
+		t.Fatal("B not alive — stale A's EOF blocked replacement")
+	}
+}
+
+func TestRecorder_CloseoutA_StaleStopCannotAffectReplacement(t *testing.T) {
+	// Step 1: Create Recorder A with a pipe.
+	prA, pwA := io.Pipe()
+	go func() { pwA.Write([]byte("A output")); time.Sleep(500 * time.Millisecond); pwA.Close() }()
+	recA, _ := EnsureRecorder("test:closeout-stale-stop", func() (ptyStream, error) {
+		return &testStream{pr: prA, pw: pwA}, nil
+	})
+	if recA == nil {
+		t.Fatal("EnsureRecorder A returned nil")
+	}
+
+	// Step 2: Delete A.
+	DeleteRecorder("test:closeout-stale-stop")
+	select {
+	case <-recA.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("A did not finish after delete")
+	}
+
+	// Step 3: Create Recorder B (same ID, new pipe).
+	prB, pwB := io.Pipe()
+	go func() { pwB.Write([]byte("B output")); time.Sleep(500 * time.Millisecond); pwB.Close() }()
+	recB, _ := EnsureRecorder("test:closeout-stale-stop", func() (ptyStream, error) {
+		return &testStream{pr: prB, pw: pwB}, nil
+	})
+	if recB == nil {
+		t.Fatal("EnsureRecorder B returned nil")
+	}
+	defer DeleteRecorder("test:closeout-stale-stop")
+	time.Sleep(100 * time.Millisecond)
+
+	// Step 4: Call Stop on stale Recorder A.
+	// Instance-safe: stale Stop must NOT remove B from the registry.
+	recA.Stop()
+
+	// B must still be alive — stale A's Stop must not have affected B.
+	if !recB.IsAlive() {
+		t.Fatal("B stopped after stale A's Stop — instance guard missing")
+	}
+	if r := GetRecorder("test:closeout-stale-stop"); r != recB {
+		t.Fatalf("registry points to %v, want B (%v) — stale Stop may have removed B", r, recB)
+	}
+}
+
+func TestRecorder_CloseoutA_MatchingRecordsTermination(t *testing.T) {
+	// The matching (current) Recorder must still be able to record termination.
+	opener := &testOpener{writeContent: "matching termination"}
+	rec, _ := EnsureRecorder("test:closeout-match", func() (ptyStream, error) {
+		return opener.OpenStream(context.Background())
+	})
+	if rec == nil {
+		t.Fatal("EnsureRecorder returned nil")
+	}
+	defer DeleteRecorder("test:closeout-match")
+	time.Sleep(200 * time.Millisecond)
+
+	// The current Recorder must have recorded its EOF (terminated=true).
+	recorderRegistry.mu.Lock()
+	term := recorderRegistry.terminated["test:closeout-match"]
+	recorderRegistry.mu.Unlock()
+	if !term {
+		t.Error("matching Recorder did not record termination — instance guard too strict")
+	}
+}
+
+func TestRecorder_CloseoutA_SameIDRace(t *testing.T) {
+	// -count=20 stress: rapid delete+recreate of same session ID must not
+	// deadlock, panic, or leak, and the final Recorder must be alive.
+	for i := 0; i < 20; i++ {
+		sid := "test:closeout-race"
+		opener := &testOpener{writeContent: "race output"}
+		rec, _ := EnsureRecorder(sid, func() (ptyStream, error) {
+			return opener.OpenStream(context.Background())
+		})
+		if rec == nil {
+			t.Fatalf("iter %d: EnsureRecorder returned nil", i)
+		}
+		DeleteRecorder(sid)
+		select {
+		case <-rec.Done():
+		case <-time.After(time.Second):
+			t.Fatalf("iter %d: recorder did not exit after delete", i)
+		}
+	}
+	// Final create must succeed.
+	opener := &testOpener{writeContent: "final"}
+	rec, _ := EnsureRecorder("test:closeout-race", func() (ptyStream, error) {
+		return opener.OpenStream(context.Background())
+	})
+	if rec == nil {
+		t.Fatal("final create returned nil — race corrupted state")
+	}
+	DeleteRecorder("test:closeout-race")
+}
