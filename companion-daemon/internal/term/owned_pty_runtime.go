@@ -6,9 +6,9 @@ import (
 	"io"
 	"log"
 	"sync"
-	"syscall"
 	"time"
 
+	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/sessionid"
 	"devremote/companion-daemon/internal/transcript"
 )
@@ -59,7 +59,7 @@ type CatalogEntry struct {
 	// session is the exact adapter session identity captured at creation.
 	// Used by replacement pre-install barrier for CompareAndTerminate.
 	// Not serialized.
-	ptyHandle PTYHandle
+	session mux.Session
 
 	// transport is the generation-bound TerminalTransport handle for this
 	// exact runtime. Created at launch; retired when the record is
@@ -79,7 +79,7 @@ type CatalogEntry struct {
 	// id — so a replacement under the same id can never receive a signal
 	// meant for a prior generation. Claimed under the store mutex at the
 	// decisive transition; nil for test fakes without a runtime process.
-	handle PTYHandle
+	handle mux.ManagedProcess
 
 	killRequested bool // set by Kill so the final state becomes killed not exited
 }
@@ -89,9 +89,9 @@ type CatalogEntry struct {
 // per-session action locks; no lock is held across process signalling or
 // waits.
 type OwnedPTYRuntime struct {
-	spawn      ManagedPTYLauncherV1 // PB.5b: narrow platform-neutral launcher (no mux.Adapter dependency)
-	transcript *transcript.Service  // T3: cleared on Delete
-	status     StatusClearer        // S1: cleared on Delete
+	spawn      ManagedPTYLauncher  // PB.5a: narrow platform-neutral launcher (no mux.Adapter dependency)
+	transcript *transcript.Service // T3: cleared on Delete
+	status     StatusClearer       // S1: cleared on Delete
 	graceful   time.Duration
 	killGrace  time.Duration
 
@@ -105,7 +105,7 @@ type OwnedPTYRuntime struct {
 }
 
 // NewOwnedPTYRuntime constructs the controlled-PTY lifecycle owner.
-func NewOwnedPTYRuntime(spawn ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
+func NewOwnedPTYRuntime(spawn ManagedPTYLauncher, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
 	return &OwnedPTYRuntime{
 		spawn:      spawn,
 		transcript: transcriptSvc,
@@ -157,19 +157,19 @@ type ownedCleanup func(ctx context.Context)
 // CreateSessionAndCapture for atomic session identity + pre-install barrier
 // with GenerationCleanupCapability. Falls back to legacy ownSpawn if the
 // adapter does not implement SessionCreatorWithIdentity.
-func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID, name string) (string, error) {
+func (o *OwnedPTYRuntime) Create(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
 	if o.spawn == nil {
 		return "", fmt.Errorf("no spawn launcher")
 	}
-	return o.createWithCapture(ctx, cfg, profileID, name, o.spawn)
+	return o.createWithCapture(ctx, opts, profileID, name, o.spawn)
 }
 
 // createWithCapture uses CreateSessionAndCapture + GenerationCleanupCapability.
 // Pre-install barrier: claims old capability, executes it, waits for
 // Completion.Done(), then creates the new session.
-func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig, profileID, name string, launcher ManagedPTYLauncherV1) (string, error) {
+func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, opts mux.CreateOptions, profileID, name string, launcher ManagedPTYLauncher) (string, error) {
 	// Pre-install barrier: check for existing entry under o.mu.
-	canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: cfg.Name}.Canonical()
+	canonicalID := sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: opts.Name}.Canonical()
 	o.mu.Lock()
 	existing, isReplacement := o.entries[canonicalID]
 	var oldCap *GenerationCleanupCapability
@@ -177,9 +177,10 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 		// PA3 Step 6a R2: capture exact Session + Recorder from existing entry.
 		oldCap = &GenerationCleanupCapability{
 			Generation:  existing.Generation,
-			Session:     existing.ptyHandle, // exact adapter session identity from CatalogEntry
-			Recorder:    existing.recorder,  // instance-guarded Recorder
+			Session:     existing.session,  // exact adapter session identity from CatalogEntry
+			Recorder:    existing.recorder, // instance-guarded Recorder
 			Transport:   existing.transport,
+			Terminator:  o.spawn.(mux.SessionIdentityTerminator),
 			CanonicalID: canonicalID,
 			LocalID:     sessionid.ParseSessionID(canonicalID).LocalID,
 			Completion:  NewGenerationCompletion(),
@@ -194,19 +195,20 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 	}
 
 	// Create adapter session — identity captured atomically.
-	sess, err := launcher.Spawn(ctx, cfg)
+	localID, sess, err := launcher.CreateSessionAndCapture(ctx, opts)
 	if err != nil {
 		return "", err
 	}
-	canonicalID = sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: sess.ID()}.Canonical()
+	canonicalID = sessionid.SessionRef{Adapter: o.spawn.Name(), LocalID: localID}.Canonical()
 
 	// Construct GenerationCleanupCapability immediately after CreateSessionAndCapture.
 	completion := NewGenerationCompletion()
 	cap := &GenerationCleanupCapability{
-		Generation:  0,
+		Generation:  0, // filled after registration
 		Session:     sess,
+		Terminator:  o.spawn.(mux.SessionIdentityTerminator),
 		CanonicalID: canonicalID,
-		LocalID:     sess.ID(),
+		LocalID:     localID,
 		Completion:  completion,
 	}
 	defer func() {
@@ -232,7 +234,9 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 	cap.Transport = transport
 	cap.Recorder = rec
 
-	if sess == nil {
+	handle, ok := sess.(mux.ManagedProcess)
+	if !ok {
+		// Instance-guarded: only stop the Recorder we just created.
 		DeleteRecorderIfSame(canonicalID, rec)
 		return "", fmt.Errorf("session does not support managed process")
 	}
@@ -244,7 +248,7 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 			return "", err
 		}
 	}
-	gen := o.register(canonicalID, profileID, name, sess, cleanup, transport, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, transport, rec, sess)
 	cap.Generation = gen // success — prevent defer rollback
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
@@ -252,45 +256,57 @@ func (o *OwnedPTYRuntime) createWithCapture(ctx context.Context, cfg SpawnConfig
 
 // createLegacy is the pre-PA3 creation path using ownSpawn.
 // PB.5a: createLegacy removed — all creation goes through createWithCapture.
-func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, cfg SpawnConfig, profileID, name string) (string, error) {
+func (o *OwnedPTYRuntime) createLegacy(ctx context.Context, opts mux.CreateOptions, profileID, name string) (string, error) {
 	return "", fmt.Errorf("legacy create path removed in PB.5a")
 }
 
 // openPTYStream opens the terminal stream from a session.
-func openPTYStream(h PTYHandle) (ptyStream, error) {
-	return h, nil
+func openPTYStream(sess mux.Session) (ptyStream, error) {
+	opener, ok := sess.(mux.StreamOpener)
+	if !ok {
+		return nil, fmt.Errorf("session does not support streaming")
+	}
+	return opener.OpenStream(context.Background())
 }
 
 // captureSession resolves the freshly-spawned session and its process
 // handle from the adapter's session list exactly once, at creation. An
 // error means the runtime exposes no process control and MUST NOT be
 // published as running.
-func (o *OwnedPTYRuntime) captureSession(ctx context.Context, localID string) (PTYHandle, error) {
+func (o *OwnedPTYRuntime) captureSession(ctx context.Context, localID string) (mux.Session, mux.ManagedProcess, error) {
 	if o.spawn == nil {
-		return nil, fmt.Errorf("no spawn launcher")
+		return nil, nil, fmt.Errorf("no spawn launcher")
 	}
-	sessions, err := o.spawn.List(ctx)
+	sessions, err := o.spawn.ListSessions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list sessions: %w", err)
+		return nil, nil, fmt.Errorf("list sessions: %w", err)
 	}
 	for _, s := range sessions {
 		if s.ID() == localID {
-			return s, nil
-			return s, nil
+			mp, ok := s.(mux.ManagedProcess)
+			if !ok {
+				return nil, nil, fmt.Errorf("session exposes no process control")
+			}
+			return s, mp, nil
 		}
 	}
-	return nil, fmt.Errorf("session not found after create")
+	return nil, nil, fmt.Errorf("session not found after create")
 }
 
 // newCleanup builds the generation-bound final-cleanup capability. The
 // adapter MUST implement SessionIdentityTerminator — PA2d requires
 // fail-closed atomic generation-bound cleanup. Recorder removal is
 // instance-guarded via DeleteRecorderIfSame.
-func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess PTYHandle, rec *Recorder) ownedCleanup {
+func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess mux.Session, rec *Recorder) ownedCleanup {
 	return func(ctx context.Context) {
-		localID := sessionid.ParseSessionID(canonicalID).LocalID
-		if err := o.spawn.Terminate(ctx, localID, true); err != nil {
-			log.Printf("owned pty cleanup for %s: terminate error: %v", canonicalID, err)
+		sit, ok := o.spawn.(mux.SessionIdentityTerminator)
+		if !ok {
+			log.Printf("FATAL: owned PTY cleanup for %s: adapter does not support atomic conditional termination", canonicalID)
+			DeleteRecorderIfSame(canonicalID, rec)
+			return
+		}
+		if sess != nil {
+			_ = sit.CompareAndTerminate(ctx, sessionid.ParseSessionID(canonicalID).LocalID, sess)
 		}
 		DeleteRecorderIfSame(canonicalID, rec)
 	}
@@ -298,7 +314,7 @@ func (o *OwnedPTYRuntime) newCleanup(canonicalID string, sess PTYHandle, rec *Re
 
 // register adds the running record under a fresh generation, bound to its
 // immutable process handle and cleanup capability.
-func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, ph PTYHandle, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder) int64 {
+func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, handle mux.ManagedProcess, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, sess mux.Session) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.nextGen++
@@ -317,10 +333,11 @@ func (o *OwnedPTYRuntime) register(canonicalID, profileID, name string, ph PTYHa
 		State:       LifecycleRunning,
 		StartedAt:   o.now(),
 		Generation:  gen,
-		ptyHandle:   ph,
+		handle:      handle,
 		cleanup:     cleanup,
 		transport:   transport,
 		recorder:    rec,
+		session:     sess,
 		cleanupDone: make(chan struct{}),
 	}
 	return gen
@@ -346,30 +363,33 @@ var testCreateWithCaptureFailAfterCapture func() error
 // spawnControlled is the PA2d owned transport: create the PTY directly
 // through the owned adapter and prove the Recorder is ready.
 // PB.5a: ownSpawn removed — creation goes through launcher.
-func (o *OwnedPTYRuntime) ownSpawn(ctx context.Context, cfg SpawnConfig) (string, *Recorder, error) {
+func (o *OwnedPTYRuntime) ownSpawn(ctx context.Context, opts mux.CreateOptions) (string, *Recorder, error) {
 	return "", nil, fmt.Errorf("legacy ownSpawn removed in PB.5a")
 }
 
 // startRecorder proves a freshly-created session's Recorder is ready via
 // the adapter's session list (no Registry lookup).
 func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string) (*Recorder, error) {
-	sessions, err := o.spawn.List(ctx)
+	sessions, err := o.spawn.ListSessions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	ref := sessionid.ParseSessionID(canonicalID)
-	var phFound PTYHandle
+	var sess mux.Session
 	for _, s := range sessions {
 		if s.ID() == ref.LocalID {
-			phFound = s
+			sess = s
 			break
 		}
 	}
-	if phFound == nil {
+	if sess == nil {
 		return nil, fmt.Errorf("session not found after create")
 	}
-
-	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { return phFound, nil })
+	opener, ok := sess.(mux.StreamOpener)
+	if !ok {
+		return nil, fmt.Errorf("session does not support live streaming")
+	}
+	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err })
 	if rec == nil {
 		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
 	}
@@ -379,7 +399,7 @@ func (o *OwnedPTYRuntime) startRecorder(ctx context.Context, canonicalID string)
 
 // terminateAdapterSession removes a spawn entry by local id via adapter.
 func (o *OwnedPTYRuntime) terminateAdapterSession(ctx context.Context, localID string) error {
-	return o.spawn.Terminate(ctx, localID, true)
+	return o.spawn.TerminateSession(ctx, localID)
 }
 
 // Get returns a copy of the lifecycle record.
@@ -421,7 +441,7 @@ func (o *OwnedPTYRuntime) currentGeneration(id string) (int64, bool) {
 // mutex is the decisive linearization point: a replacement between
 // derivation and this check rejects the stale request, and the claimed
 // handle can never be a later generation's process.
-func (o *OwnedPTYRuntime) beginStop(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, ph PTYHandle, rec *Recorder) {
+func (o *OwnedPTYRuntime) beginStop(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, handle mux.ManagedProcess, rec *Recorder) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e, ok := o.entries[id]
@@ -433,14 +453,14 @@ func (o *OwnedPTYRuntime) beginStop(id string, gen int64) (proceed bool, current
 	}
 	if e.State == LifecycleRunning || e.State == LifecycleStarting {
 		e.State = LifecycleStopping
-		return true, e.State, true, false, e.ptyHandle, e.recorder
+		return true, e.State, true, false, e.handle, e.recorder
 	}
 	return false, e.State, true, false, nil, nil
 }
 
 // requestKill records kill intent for the EXACT generation and claims the
 // generation's immutable process handle.
-func (o *OwnedPTYRuntime) requestKill(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, ph PTYHandle, rec *Recorder) {
+func (o *OwnedPTYRuntime) requestKill(id string, gen int64) (proceed bool, current LifecycleState, found, stale bool, handle mux.ManagedProcess, rec *Recorder) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e, ok := o.entries[id]
@@ -454,7 +474,7 @@ func (o *OwnedPTYRuntime) requestKill(id string, gen int64) (proceed bool, curre
 		return false, e.State, true, false, nil, nil
 	}
 	e.killRequested = true
-	return true, e.State, true, false, e.ptyHandle, e.recorder
+	return true, e.State, true, false, e.handle, e.recorder
 }
 
 // finalizeRecord records the terminal state exactly once for the EXACT
@@ -522,12 +542,12 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	var proceed bool
 	var current LifecycleState
 	var found, stale bool
-	var ph PTYHandle
+	var handle mux.ManagedProcess
 	var capturedRec *Recorder
 	if force {
-		proceed, current, found, stale, ph, capturedRec = o.requestKill(id, gen)
+		proceed, current, found, stale, handle, capturedRec = o.requestKill(id, gen)
 	} else {
-		proceed, current, found, stale, ph, capturedRec = o.beginStop(id, gen)
+		proceed, current, found, stale, handle, capturedRec = o.beginStop(id, gen)
 	}
 	lock.Unlock()
 
@@ -543,19 +563,15 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	// External I/O phase — no lifecycle lock held. The signal goes to the
 	// handle captured at THIS generation's creation, never to a Registry
 	// lookup that a replacement could have redirected.
-	if ph != nil {
-		var sig syscall.Signal = syscall.SIGTERM
-		if force {
-			sig = syscall.SIGKILL
-		}
-		if err := ph.Signal(sig); err != nil {
-			log.Printf("owned pty %s %s: signal error: %v", action, id, err)
+	if handle != nil {
+		if terr := handle.TerminateGroup(force); terr != nil {
+			log.Printf("owned pty %s %s: signal error: %v", action, id, terr)
 		}
 	}
 	// PA4-Final-R17: capturedRec from beginStop/requestKill at the
 	// decisive generation check (under lock). Never re-read entries[id]
 	// after the per-session action lock is released.
-	if !o.awaitExit(capturedRec, ph) {
+	if !o.awaitExit(capturedRec, handle) {
 		return LifecycleResult{SessionID: id, Action: action, State: LifecycleStopping}, ErrLifecycleTerminateFailed
 	}
 	o.finalize(id, gen)
@@ -575,7 +591,7 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 // more. A false result means the caller must NOT finalize.
 // PA4-Final-R16: receives the captured Recorder directly from the catalog
 // entry. Never resolves by session ID via global GetRecorder.
-func (o *OwnedPTYRuntime) awaitExit(rec *Recorder, ph PTYHandle) bool {
+func (o *OwnedPTYRuntime) awaitExit(rec *Recorder, mp mux.ManagedProcess) bool {
 	if rec == nil {
 		// No runtime recorder to observe (test fake, or already finalized).
 		return true
@@ -585,9 +601,9 @@ func (o *OwnedPTYRuntime) awaitExit(rec *Recorder, ph PTYHandle) bool {
 		return true
 	case <-time.After(o.graceful):
 	}
-	if ph != nil {
-		if err := ph.Signal(syscall.SIGKILL); err != nil {
-			log.Printf("owned pty: SIGKILL escalation error: %v", err)
+	if mp != nil {
+		if terr := mp.TerminateGroup(true); terr != nil {
+			log.Printf("owned pty: SIGKILL escalation error: %v", terr)
 		}
 	}
 	select {
@@ -670,11 +686,11 @@ func (o *OwnedPTYRuntime) RegisterForTest(canonicalID, profileID, name string, r
 // RegisterForTestWithHandle seeds a record bound to an explicit immutable
 // process handle (deterministic replacement/signal tests). Returns the
 // allocated generation.
-func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name string, ph PTYHandle, rec *Recorder) int64 {
+func (o *OwnedPTYRuntime) RegisterForTestWithHandle(canonicalID, profileID, name string, handle mux.ManagedProcess, rec *Recorder) int64 {
 	// Test records carry a recorder-only cleanup (no captured spawn-seam
 	// session instance); it is still generation-claimed like production.
 	cleanup := func(context.Context) { DeleteRecorderIfSame(canonicalID, rec) }
-	gen := o.register(canonicalID, profileID, name, ph, cleanup, nil, rec)
+	gen := o.register(canonicalID, profileID, name, handle, cleanup, nil, rec, nil)
 	o.watchExit(canonicalID, gen, rec)
 	return gen
 }

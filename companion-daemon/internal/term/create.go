@@ -116,7 +116,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, req.ProfileID, req.Name)
+	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), opts, req.ProfileID, req.Name)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")
@@ -279,7 +279,7 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 	if ownedPTY == nil {
 		return "", LifecycleFailed, ErrLifecycleUnavailable
 	}
-	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name)
+	canonicalID, err := ownedPTY.Create(ctx, opts, spec.ProfileID, spec.Name)
 	if err != nil {
 		return "", LifecycleFailed, err
 	}
@@ -291,8 +291,8 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 // failure it terminates the just-created runtime so no unrecorded live process
 // is left behind. Returns the exact Recorder so the lifecycle watcher observes
 // the real one (avoids a fast-exit race where GetRecorder is already nil).
-func createControlledSession(ctx context.Context, reg *mux.Registry, opts SpawnConfig) (string, *Recorder, error) {
-	createdID, err := reg.CreateSession(ctx, "controlled_pty", mux.CreateOptions{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD})
+func createControlledSession(ctx context.Context, reg *mux.Registry, opts mux.CreateOptions) (string, *Recorder, error) {
+	createdID, err := reg.CreateSession(ctx, "controlled_pty", opts)
 	if err != nil {
 		return "", nil, err
 	}
