@@ -41,19 +41,18 @@ ok  	devremote/companion-daemon/internal/watcher	4.799s
 
 ### Command: `git status --short`
 ```
-?? companion-daemon/docs/PB_PA4_CONTRACT.md
-?? companion-daemon/docs/PB_PA4_CONTRACT_EVIDENCE.md
+(exit 0 — no output; clean worktree)
 ```
 
-### Verification: HEAD == upstream
+### Command: `git rev-parse origin/feature/phase10-multi-adapter`
 ```
-git rev-parse origin/feature/phase10-multi-adapter → 9956d7272c5a701b78851b5fd4cb2ea725d41d18
-(matches HEAD)
+9956d7272c5a701b78851b5fd4cb2ea725d41d18
+(matches HEAD — upstream equality confirmed)
 ```
 
-### Verification: Production diff is empty
+### Command: `git diff 34d55e950..9956d7272 -- companion-daemon/internal companion-daemon/cmd mobile`
 ```
-git diff 34d55e950..9956d7272 -- internal/ cmd/ mobile/ → (empty)
+(exit 0 — no output; zero production changes between PA3 ACCEPTED and contract commit)
 ```
 
 ## Consumer Inventory Summary
