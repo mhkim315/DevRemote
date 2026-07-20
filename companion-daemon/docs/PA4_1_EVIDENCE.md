@@ -1,8 +1,10 @@
 # PA4.1 Evidence — Managed REST/list/get/status Isolation
 
-**Implementation SHA:** `58f0963ddc540633e2fe0730d91a3b9637bdebd8`
+**Implementation SHA:** `d58c9bed4de3964cc59ebbf626d9f6bab3dc9fdf`
 **Contract:** `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` §4.1
 **Rollback:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
+
+**R3:** Removed dead capability helpers; lifecycle test verifies ManagedCapabilities contract + lifecycle integration; stale-generation test carries explicit generation-bearing Registry evidence; default-config test exercises production composition via HandleSessionsV2 with catalog+lifecycle wired.
 
 **R2:** Ghost exclusion (managed-prefix Registry rows dropped), catalog-carried
 capabilities via `ManagedCapabilities`/`ManagedAdapterPrefixes` contract methods,
