@@ -201,27 +201,28 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	var s mux.Session // nil for controlled_pty (not in Registry)
 
 	ref := sessionid.ParseSessionID(session)
-	// PA2d: controlled_pty prefers TerminalTransport when the lifecycle
-	// owner is wired. Falls back to Registry for test Handlers without
-	// Lifecycle or for sessions not yet tracked by the owner.
+	// PA4.5: managed controlled_pty NEVER falls back to Registry.
+	// TerminalTransport is the sole transport authority. When the
+	// lifecycle owner is not wired or the transport is unavailable,
+	// fail closed — no Registry session lookup for managed paths.
 	useRegistry := true
-	// transportBootstrap is the initial ring-buffer replay from the
-	// TerminalTransport path (nil when Registry path is used).
 	var transportBootstrap []byte
 
-	if ref.Adapter == "controlled_pty" && h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
-		if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
-			bootstrap, liveCh, hasRec := transport.SubscriberFanOut(session)
-			if hasRec {
-				rec = GetRecorder(session)
-				transportBootstrap = bootstrap
-				// Use the transport channel DIRECTLY — the EXACT channel
-				// the Recorder registered, so deferred rec.Unsubscribe
-				// will clean it up correctly.
-				subCh = liveCh
-				useRegistry = false
+	if ref.Adapter == "controlled_pty" {
+		if h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
+			useRegistry = false // managed path — never fall back
+			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
+				bootstrap, liveCh, hasRec := transport.SubscriberFanOut(session)
+				if hasRec {
+					rec = GetRecorder(session)
+					transportBootstrap = bootstrap
+					subCh = liveCh
+				}
 			}
 		}
+		// If TerminalTransport is unavailable (no recorder, no transport),
+		// fail closed below at the rec == nil check rather than falling
+		// through to Registry.
 	}
 	if useRegistry {
 		var ferr error

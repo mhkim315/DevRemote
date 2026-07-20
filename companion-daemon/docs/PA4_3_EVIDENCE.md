@@ -1,6 +1,6 @@
 # PA4.3 Evidence — Terminal Transport Generation-Gated Isolation
 
-**Implementation SHA:** `1c2ee001dee3013def0488c544f98eddf2dc5871`
+**Implementation SHA:** `cc53eb5afd97d6b033b1dd1acfb8ea6717203fab`
 **PA4.2 Baseline:** `ba675493a` (ACCEPTED)
 **PA3 Rollback:** `34d55e950`
 
