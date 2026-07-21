@@ -370,4 +370,25 @@ describe('FeedScreen production input authorization', () => {
     jest.useRealTimers();
   });
 
+  it('concurrent ACK: late result cannot overwrite Possible partial delivery', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+
+    // Standalone input: pending → timeout → Possible partial delivery.
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    expect(statusText(tree)).toBe('Sent to socket');
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    expect(statusText(tree)).toBe('Possible partial delivery');
+
+    // Late accepted result arrives — must NOT overwrite.
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    expect(statusText(tree)).toBe('Possible partial delivery');
+    jest.useRealTimers();
+    await act(async () => tree.unmount());
+  });
+
 });
