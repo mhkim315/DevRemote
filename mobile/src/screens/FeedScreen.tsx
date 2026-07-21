@@ -127,6 +127,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     setTranscriptEvents([]);
     setFallbackEvents([]);
     setByteStreamSuppressed(false);
+    setReadOnlyReason('');
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
     transcriptGenRef.current = 0;
@@ -515,10 +516,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         }
       }
       // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
+      // Reason persists until the server explicitly re-grants or the session changes.
       if (data.type === 'read_only') {
         setReadOnlyReason(data.reason || 'Read only');
         setSendStatus('failed');
-        setTimeout(() => setReadOnlyReason(''), 5000);
       }
       if (data.type === 'e8diag') {
         console.log('E8DIAG', JSON.stringify(data));
@@ -861,20 +862,19 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             EVERY session — never a non-managed bypass. External adapters that
             declare `input` keep input; observe-only/unknown/view-only
             (missing/unknown capabilities) never show input or macros. */}
-        {/* PB.7 Input-A: read-only indicator when input is disabled by server policy */}
-        {activeTab === 'terminal' && !sessionEnded && !actionPolicy.inputEnabled && (
-          <View style={styles.readOnlyBar}>
-            <Text style={styles.readOnlyText}>
-              {readOnlyReason || 'View only — terminal input not available'}
-            </Text>
-          </View>
-        )}
-        {readOnlyReason !== '' && actionPolicy.inputEnabled && (
+        {/* PB.7 Input-A: server-authoritative read-only gate. When the daemon
+             sends read_only, input is disabled regardless of adapter capabilities. */}
+        {activeTab === 'terminal' && !sessionEnded && readOnlyReason !== '' && (
           <View style={styles.readOnlyBar}>
             <Text style={styles.readOnlyText}>{readOnlyReason}</Text>
           </View>
         )}
-        {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && (
+        {activeTab === 'terminal' && !sessionEnded && !actionPolicy.inputEnabled && readOnlyReason === '' && (
+          <View style={styles.readOnlyBar}>
+            <Text style={styles.readOnlyText}>View only — terminal input not available</Text>
+          </View>
+        )}
+        {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && readOnlyReason === '' && (
         <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
