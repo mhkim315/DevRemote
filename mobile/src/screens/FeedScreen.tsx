@@ -193,6 +193,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   // read_only denial. The mobile surfaces this as a visible read-only reason
   // instead of reporting send success after silent discard.
   const [readOnlyReason, setReadOnlyReason] = useState('');
+  // PB.7 Input-A: deviceCanInput reflects server-issued effective permissions.
+  // true when no read_only denial has been received from the daemon.
+  const deviceCanInput = readOnlyReason === '';
 
   // R1a: transcript endpoint reachability.
   const [activityError, setActivityError] = useState('');
@@ -877,8 +880,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             EVERY session — never a non-managed bypass. External adapters that
             declare `input` keep input; observe-only/unknown/view-only
             (missing/unknown capabilities) never show input or macros. */}
-        {/* PB.7 Input-A: server-authoritative read-only gate. When the daemon
-             sends read_only, input is disabled regardless of adapter capabilities. */}
+        {/* PB.7 Input-A: inputEnabled = sessionCanInput && deviceCanInput.
+             sessionCanInput from adapterCapabilities (actionPolicy.inputEnabled).
+             deviceCanInput from readOnlyReason (empty = no server denial = permitted). */}
         {activeTab === 'terminal' && !sessionEnded && readOnlyReason !== '' && (
           <View style={styles.readOnlyBar}>
             <Text style={styles.readOnlyText}>{readOnlyReason}</Text>
@@ -889,7 +893,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             <Text style={styles.readOnlyText}>View only — terminal input not available</Text>
           </View>
         )}
-        {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && readOnlyReason === '' && (
+        {/* inputEnabled = sessionCanInput (actionPolicy) && deviceCanInput (no server denial) */}
+        {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && deviceCanInput && (
         <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>

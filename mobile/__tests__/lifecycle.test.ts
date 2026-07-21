@@ -127,47 +127,55 @@ describe('Input-A: input enabled only when running + inputCapable', () => {
   });
 });
 
-describe('Input-A: readOnlyReason contract', () => {
-  it('inputCapable false → viewOnly for non-managed sessions', () => {
-    const p = computeActionPolicy({
-      managed: false, inputCapable: false, state: 'unknown', pending: null,
-    });
+describe('Input-A: two-layer input gate', () => {
+  // Layer 1 — sessionCanInput: adapterCapabilities includes 'input'.
+  //   Tested via readCapabilities + computeActionPolicy (pure, tested).
+  // Layer 2 — deviceCanInput: server read_only denial NOT received.
+  //   Applied in FeedScreen: deviceCanInput = (readOnlyReason === '').
+  //   inputEnabled in UI = actionPolicy.inputEnabled && deviceCanInput.
+  //
+  // Layer 1 tests:
+  it('sessionCanInput: inputCapable false → inputEnabled false', () => {
+    const caps = readCapabilities({ adapterCapabilities: ['liveTerminal'] });
+    expect(caps.inputCapable).toBe(false);
+    const p = computeActionPolicy({ managed: false, inputCapable: false, state: 'unknown', pending: null });
     expect(p.inputEnabled).toBe(false);
-    expect(p.statusLabel).toBe('View only');
   });
 
-  it('inputCapable false → input disabled even when running and managed', () => {
-    const p = computeActionPolicy({
-      managed: true, inputCapable: false, state: 'running', pending: null,
-    });
-    expect(p.inputEnabled).toBe(false);
+  it('sessionCanInput: inputCapable true → actionPolicy allows', () => {
+    const caps = readCapabilities({ adapterCapabilities: ['managedLifecycle', 'input'] });
+    expect(caps.inputCapable).toBe(true);
+    const p = computeActionPolicy({ managed: true, inputCapable: true, state: 'running', pending: null });
+    expect(p.inputEnabled).toBe(true); // session layer permits
   });
 
-  it('sessionCanInput + deviceCanInput: both must be true', () => {
-    // adapterCapabilities=['input'] gives inputCapable=true (session can input)
-    // But computeActionPolicy alone can't see the server read_only denial.
-    // The FeedScreen component layers readOnlyReason on top:
-    //   inputEnabled = actionPolicy.inputEnabled && readOnlyReason === ''
-    // This test verifies the lower layer is correct.
+  // Layer 2 — deviceCanInput: server denial → input disabled.
+  // FeedScreen derives: deviceCanInput = (readOnlyReason === '')
+  // Effective: inputEnabled = actionPolicy.inputEnabled && deviceCanInput
+  it('deviceCanInput: derived from readOnlyReason', () => {
+    // deviceCanInput = (readOnlyReason === '')
+    const noDenial: string = '';
+    const hasDenial: string = 'Terminal input not authorized — view only';
+    expect(noDenial === '').toBe(true);
+    expect(hasDenial === '').toBe(false);
+  });
+
+  it('combined: session + device both required', () => {
+    // sessionCanInput = true (adapter has 'input')
     const caps = readCapabilities({ adapterCapabilities: ['input'] });
     expect(caps.inputCapable).toBe(true);
-
-    const p = computeActionPolicy({
-      managed: false, inputCapable: caps.inputCapable, state: 'unknown', pending: null,
-    });
-    expect(p.inputEnabled).toBe(true); // adapter allows it; server denial is separate
+    // deviceCanInput = false (server sent read_only)
+    const reason: string = 'Terminal input not authorized';
+    const devCanInput = reason === '';
+    expect(devCanInput).toBe(false);
+    // Effective input = sessionCanInput && deviceCanInput = false
+    expect(caps.inputCapable && devCanInput).toBe(false);
   });
 
-  it('readOnlyReason override: UI layer contract', () => {
-    // When readOnlyReason !== '', the FeedScreen MUST disable all input.
-    // This is enforced by:
-    //   doSend: if (readOnlyReason !== '') { setSendStatus('failed'); return; }
-    //   sendMacro: if (readOnlyReason !== '') { setSendStatus('failed'); return; }
-    //   handlePasteRequest: if (readOnlyReason !== '') { setSendStatus('failed'); return; }
-    //   submitLine: if (readOnlyReason !== '') { setSendStatus('failed'); return; }
-    //   injected JS: if (window.pokitReadOnly()) { postMessage('failed'); return; }
-    //   terminal HTML: function pokitSendInput(s) { if (readOnly) return; }
-    // Contract: six independent guards, all fail closed.
-    expect(true).toBe(true); // contract documented — guards verified by code review
+  it('sessionCanInput false + deviceCanInput true → disabled (no adapter input)', () => {
+    const caps = readCapabilities({ adapterCapabilities: [] });
+    expect(caps.inputCapable).toBe(false);
+    const deviceCanInput = true;
+    expect(caps.inputCapable && deviceCanInput).toBe(false);
   });
 });

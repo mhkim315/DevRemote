@@ -47,7 +47,7 @@ func TestInputA_ReadOnlyDenialReasonIsBounded(t *testing.T) {
 	}
 }
 
-// ── Input-A: hasTicketPerm permission gate ──
+// ── Input-A: hasTicketPerm permission gate (production code) ──
 
 func TestInputA_HasTicketPerm_MissingPermissionDenied(t *testing.T) {
 	p := &devicetrust.Principal{
@@ -89,7 +89,7 @@ func TestInputA_HasTicketPerm_EmptyPermissions(t *testing.T) {
 	}
 }
 
-// ── Input-A: rate limiting ──
+// ── Input-A: rate limiting (production logic) ──
 
 func TestInputA_RateLimit_ConcurrentCoalescing(t *testing.T) {
 	var mu sync.Mutex
@@ -134,8 +134,6 @@ func TestInputA_RateLimit_CoalescedWithinWindow(t *testing.T) {
 // ── Input-A: denial payload stability ──
 
 func TestInputA_DenialPayload_ConstantFormat(t *testing.T) {
-	// The denial payload is a compile-time byte slice. It must not change
-	// between calls — no dynamic data injected.
 	p1 := string(readOnlyDenialPayload)
 	p2 := string(readOnlyDenialPayload)
 	if p1 != p2 {
@@ -145,7 +143,6 @@ func TestInputA_DenialPayload_ConstantFormat(t *testing.T) {
 
 func TestInputA_DenialPayload_NoLeakedData(t *testing.T) {
 	payload := string(readOnlyDenialPayload)
-	// Must not contain: session IDs, device IDs, tokens, paths.
 	badWords := []string{"sessionId", "deviceId", "token", "bearer", "/tmp", "poke", "secret"}
 	for _, w := range badWords {
 		if containsFold(payload, w) {
