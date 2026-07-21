@@ -1,6 +1,6 @@
 # PB Legacy Physical Removal Contract
 
-**Status:** READY FOR PLAN REVIEW — code blocked until inventory/plan document acceptance
+**Status:** EXECUTED — PB deletion complete through PB.6; PB.7 awaiting device gate. PB ACCEPT SHA remains UNSET.
 
 **Branch:** `feature/phase10-multi-adapter`
 

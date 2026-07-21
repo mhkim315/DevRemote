@@ -1,4 +1,4 @@
-# PB.5b-T3 Legacy Deletion Evidence
+# PB.5b Task 3 — Physical Deletion
 
 This change physically removes the obsolete lifecycle implementation and its
 implementation-bound tests. No compatibility package, lookup map, wrapper, or

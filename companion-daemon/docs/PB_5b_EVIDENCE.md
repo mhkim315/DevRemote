@@ -1,7 +1,14 @@
-# PB.5b Evidence — V1 Launcher Wired
+# PB.5b Evidence — SUPERSEDED
 
-**PB.5b IMPL SHA:** `cbfa50b26`
-**PA4 ACCEPT SHA:** `74560edd`
+> **THIS DOCUMENT IS SUPERSEDED.** It describes the `v1Bridge` transitional
+> scaffolding (`cbfa50b26`) which was a rejected intermediate implementation.
+> The accepted lineage is:
+> - **PB.5a** (`4ed0d3dc3`): V1 launcher cutover — `docs/PB_5a_EVIDENCE.md`
+> - **PB.5b-T2** (`0f0d57f30`): Consumer migration, zero mux imports — `docs/PB_5b_EVIDENCE.md` (see branch commits)
+> - **PB.5b-T3** (`c2c0f542a`): Physical mux directory deletion — `docs/PB5_TASK3_EVIDENCE.md`
+>
+> The interface design and gate results below are retained as historical
+> reference only. They do NOT describe the accepted production implementation.
 
 ## V1 Wiring (SUPERSEDED)
 

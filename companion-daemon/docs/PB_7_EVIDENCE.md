@@ -1,9 +1,10 @@
 # PB.7 Evidence — Automated Closeout and Device Gate
 
-**PB Evidence SHA:** `e11bee894`
-**PB Candidate SHA:** `82e550e9c`
+**Document SHA (evidence HEAD):** `7049cc619`
+**Production Candidate SHA:** `82e550e9c`
+**PB.5b-T3 Physical Deletion SHA:** `c2c0f542a`
+**PB Ancestry Baseline SHA:** `abe4df1d6`
 **PA4 ACCEPT SHA:** `74560edd`
-**PB Baseline SHA:** `abe4df1d6`
 **PB ACCEPT SHA:** UNSET
 **Status:** AWAITING_DEVICE_GATE
 

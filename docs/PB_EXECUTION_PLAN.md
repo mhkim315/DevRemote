@@ -1,6 +1,6 @@
 # PB Legacy Removal Execution Plan
 
-**Status:** PROPOSED — implementation blocked pending independent document review
+**Status:** EXECUTED — PB waves PB.1 through PB.6 complete; PB.7 awaiting device gate. PB ACCEPT SHA remains UNSET.
 
 **Branch:** `feature/phase10-multi-adapter`
 

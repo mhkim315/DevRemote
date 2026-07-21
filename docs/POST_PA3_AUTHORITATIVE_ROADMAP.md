@@ -1,6 +1,6 @@
 # Post-PA3 Authoritative Roadmap
 
-**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 ACCEPTED; PB planning awaiting independent document review
+**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 ACCEPTED; PB deletion complete through PB.6; PB.7 awaiting device gate
 
 **Branch:** `feature/phase10-multi-adapter`
 
