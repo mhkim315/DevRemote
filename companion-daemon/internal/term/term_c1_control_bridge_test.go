@@ -95,12 +95,20 @@ func newC1Fixture(t *testing.T) *c1Fixture {
 	owned.graceful = 2 * time.Second
 
 	// Use a real process that reads stdin so input is consumable.
-	cfg := SpawnConfig{Name: "c1-e2e", Executable: "sleep", Args: []string{"2"}}
+	cfg := SpawnConfig{Name: "c1-e2e", Executable: "sleep", Args: []string{"10"}}
 	id, err := owned.Create(t.Context(), cfg, "", "test")
 	if err != nil {
 		t.Fatalf("create c1 session: %v", err)
 	}
-	t.Cleanup(func() { closeOwnedForTest(owned, id) })
+	// Kill before stopping the recorder: Recorder.Stop waits for the PTY read
+	// loop, so stopping it first would wait for this deliberately long-lived
+	// test child instead of releasing the integration fixture promptly.
+	t.Cleanup(func() {
+		_, _ = owned.Kill(t.Context(), id)
+		if recorder := ownedRecorderForTest(owned, id); recorder != nil {
+			recorder.Stop()
+		}
+	})
 
 	transport, ok := owned.Transport(id)
 	if !ok {

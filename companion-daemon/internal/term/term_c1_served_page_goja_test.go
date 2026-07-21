@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"testing"
+	"time"
 
+	"devremote/companion-daemon/internal/devicetrust"
 	"github.com/dop251/goja"
+	"github.com/gorilla/websocket"
 )
 
 // servedPageHarness executes the literal HTML returned by HandleHTML in Goja.
@@ -16,14 +19,18 @@ import (
 // actual page bridge's postMessage payloads. The control bridge itself is never
 // reproduced in Go.
 type servedPageHarness struct {
-	t       *testing.T
-	vm      *goja.Runtime
-	socket  *goja.Object
-	oldSock *goja.Object
-	onData  goja.Callable
-	sent    []string
-	posts   []map[string]any
-	writes  []string
+	t        *testing.T
+	vm       *goja.Runtime
+	socket   *goja.Object
+	oldSock  *goja.Object
+	onData   goja.Callable
+	sent     []string
+	posts    []map[string]any
+	writes   []string
+	dial     func() *websocket.Conn
+	live     map[*goja.Object]*websocket.Conn
+	timers   []goja.Callable
+	delivery *c1NativeDelivery
 }
 
 func newServedPageHarness(t *testing.T) *servedPageHarness {
@@ -33,12 +40,25 @@ func newServedPageHarness(t *testing.T) *servedPageHarness {
 	if rr.Code != 200 {
 		t.Fatalf("HandleHTML status=%d", rr.Code)
 	}
-	matches := regexp.MustCompile(`(?s)<script>\s*(.*?)</script>\s*</body>`).FindStringSubmatch(rr.Body.String())
+	return newServedPageHarnessHTML(t, rr.Body.String(), "controlled_pty:goja", nil)
+}
+
+// newLiveServedPageHarness executes the served page with a WebSocket object
+// whose send method writes to the actual ticketed HandleWS endpoint. Server
+// frames are synchronously pumped into the page's real onmessage callback.
+func newLiveServedPageHarness(t *testing.T, f *c1Fixture) *servedPageHarness {
+	t.Helper()
+	return newServedPageHarnessHTML(t, f.pageHTML, f.session, func() *websocket.Conn { return f.dialWS(t) })
+}
+
+func newServedPageHarnessHTML(t *testing.T, html, session string, dial func() *websocket.Conn) *servedPageHarness {
+	t.Helper()
+	matches := regexp.MustCompile(`(?s)<script>\s*(.*?)</script>\s*</body>`).FindStringSubmatch(html)
 	if len(matches) != 2 {
 		t.Fatal("served inline terminal script not found")
 	}
 
-	h := &servedPageHarness{t: t, vm: goja.New()}
+	h := &servedPageHarness{t: t, vm: goja.New(), dial: dial, live: make(map[*goja.Object]*websocket.Conn), delivery: newC1NativeDelivery()}
 	vm := h.vm
 	window := vm.GlobalObject()
 	if err := vm.Set("window", window); err != nil {
@@ -47,7 +67,7 @@ func newServedPageHarness(t *testing.T) *servedPageHarness {
 	location := vm.NewObject()
 	location.Set("protocol", "http:")
 	location.Set("host", "daemon.test")
-	location.Set("search", "?session=controlled_pty:goja")
+	location.Set("search", "?session="+session)
 	window.Set("location", location)
 
 	status := vm.NewObject()
@@ -63,7 +83,12 @@ func newServedPageHarness(t *testing.T) *servedPageHarness {
 	document.Set("addEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	window.Set("document", document)
 	window.Set("addEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
-	window.Set("setTimeout", func(goja.FunctionCall) goja.Value { return vm.ToValue(1) })
+	window.Set("setTimeout", func(call goja.FunctionCall) goja.Value {
+		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
+			h.timers = append(h.timers, fn)
+		}
+		return vm.ToValue(len(h.timers))
+	})
 	window.Set("setInterval", func(goja.FunctionCall) goja.Value { return vm.ToValue(1) })
 	window.Set("clearInterval", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 
@@ -109,11 +134,23 @@ TextDecoder.prototype.decode=function(a){var s='';for(var i=0;i<a.length;i++)s+=
 		}
 		socket := vm.NewObject()
 		socket.Set("readyState", 1)
+		if h.dial != nil {
+			h.live[socket] = h.dial()
+		}
 		socket.Set("send", func(call goja.FunctionCall) goja.Value {
-			h.sent = append(h.sent, call.Argument(0).String())
+			raw := call.Argument(0).String()
+			h.sent = append(h.sent, raw)
+			if conn := h.live[socket]; conn != nil {
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(raw)); err != nil {
+					t.Fatalf("served WebSocket.send → HandleWS: %v", err)
+				}
+			}
 			return goja.Undefined()
 		})
-		socket.Set("close", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+		socket.Set("close", func(goja.FunctionCall) goja.Value {
+			h.closeLiveSocket(socket)
+			return goja.Undefined()
+		})
 		h.socket = socket
 		return socket
 	}); err != nil {
@@ -126,6 +163,7 @@ TextDecoder.prototype.decode=function(a){var s='';for(var i=0;i<a.length;i++)s+=
 			t.Fatalf("ReactNativeWebView payload=%q: %v", call.Argument(0).String(), err)
 		}
 		h.posts = append(h.posts, payload)
+		h.delivery.consume(payload)
 		return goja.Undefined()
 	})
 	window.Set("ReactNativeWebView", rn)
@@ -137,6 +175,58 @@ TextDecoder.prototype.decode=function(a){var s='';for(var i=0;i<a.length;i++)s+=
 		t.Fatal("served page did not establish WebSocket and direct-keyboard handler")
 	}
 	return h
+}
+
+// pumpText drives a TEXT control generated by the real daemon through the
+// page's actual ws.onmessage handler. It deliberately does not fabricate ACKs.
+func (h *servedPageHarness) pumpText(socket *goja.Object) string {
+	h.t.Helper()
+	conn := h.live[socket]
+	if conn == nil {
+		h.t.Fatal("pumpText requires a live HandleWS socket")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn.SetReadDeadline(deadline)
+		kind, payload, err := conn.ReadMessage()
+		if err != nil {
+			h.t.Fatalf("read HandleWS control frame: %v", err)
+		}
+		if kind != websocket.TextMessage {
+			continue
+		}
+		raw := string(payload)
+		h.emitRaw(socket, raw)
+		return raw
+	}
+}
+
+// closeLiveSocket is the browser boundary for a network close: it closes the
+// real gorilla peer and invokes the page's actual onclose callback. Timers are
+// then run explicitly by the test, keeping reconnect timing deterministic.
+func (h *servedPageHarness) closeLiveSocket(socket *goja.Object) {
+	if conn := h.live[socket]; conn != nil {
+		_ = conn.Close()
+	}
+	socket.Set("readyState", 3)
+	if onClose, ok := goja.AssertFunction(socket.Get("onclose")); ok {
+		event := h.vm.NewObject()
+		event.Set("code", 1006)
+		if _, err := onClose(socket, event); err != nil {
+			h.t.Fatalf("served socket onclose: %v", err)
+		}
+	}
+}
+
+func (h *servedPageHarness) runTimers() {
+	h.t.Helper()
+	for len(h.timers) > 0 {
+		fn := h.timers[0]
+		h.timers = h.timers[1:]
+		if _, err := fn(h.vm.GlobalObject()); err != nil {
+			h.t.Fatalf("served timer: %v", err)
+		}
+	}
 }
 
 func (h *servedPageHarness) emitText(socket *goja.Object, frame any) {
@@ -222,6 +312,252 @@ func countType(posts []map[string]any, typ string) int {
 		}
 	}
 	return n
+}
+
+// c1NativeDelivery is a deliberately narrow native-message consumer matching
+// FeedScreen's Input-B delivery rule: a pending frame is identity-bound, a
+// changed hello makes unresolved delivery unknown, and a line is Delivered
+// only after both its text and Enter results are accepted. It consumes only
+// messages emitted by the actual served page's ReactNativeWebView.postMessage.
+type c1NativeDelivery struct {
+	connectionID string
+	sessionID    string
+	generation   float64
+	pending      map[string]c1NativePending
+	lines        map[string]map[string]string
+	status       string
+}
+
+type c1NativePending struct {
+	operation string
+	part      string
+}
+
+func newC1NativeDelivery() *c1NativeDelivery {
+	return &c1NativeDelivery{pending: make(map[string]c1NativePending), lines: make(map[string]map[string]string)}
+}
+
+func (n *c1NativeDelivery) consume(frame map[string]any) {
+	typ, _ := frame["type"].(string)
+	connectionID, _ := frame["connectionId"].(string)
+	sessionID, _ := frame["sessionId"].(string)
+	generation, _ := frame["generation"].(float64)
+	sameIdentity := connectionID == n.connectionID && sessionID == n.sessionID && generation == n.generation
+	switch typ {
+	case "hello":
+		if n.connectionID != "" && !sameIdentity && len(n.pending) > 0 {
+			n.status = "Possible partial delivery"
+			n.pending = make(map[string]c1NativePending)
+			n.lines = make(map[string]map[string]string)
+		}
+		n.connectionID, n.sessionID, n.generation = connectionID, sessionID, generation
+	case "input_pending":
+		if !sameIdentity {
+			return
+		}
+		inputID, _ := frame["inputId"].(string)
+		if inputID == "" {
+			return
+		}
+		operation, _ := frame["operationId"].(string)
+		part, _ := frame["part"].(string)
+		n.pending[inputID] = c1NativePending{operation: operation, part: part}
+		if operation != "" && (part == "text" || part == "enter") && n.lines[operation] == nil {
+			n.lines[operation] = make(map[string]string)
+		}
+		n.status = "Sent to socket"
+	case "input_result":
+		inputID, _ := frame["inputId"].(string)
+		outcome, _ := frame["outcome"].(string)
+		pending, ok := n.pending[inputID]
+		if !sameIdentity || !ok {
+			return
+		}
+		delete(n.pending, inputID)
+		if pending.operation == "" || (pending.part != "text" && pending.part != "enter") {
+			if outcome == "accepted" {
+				n.status = "Delivered to terminal"
+			}
+			return
+		}
+		line := n.lines[pending.operation]
+		line[pending.part] = outcome
+		if line["text"] == "accepted" && line["enter"] == "accepted" {
+			n.status = "Delivered to terminal"
+		}
+	}
+}
+
+// This is the TERM-C1 production chain: literal HandleHTML script running in
+// Goja → its WebSocket.send → real gorilla HandleWS → real server ACK → that
+// same page's onmessage → ReactNativeWebView.postMessage → native delivery
+// receiver. No Go helper constructs terminal_input frames or fabricates ACKs.
+func TestTERM_C1_ServedPageGojaRealWebSocketToNativeDelivery(t *testing.T) {
+	f := newC1Fixture(t)
+	h := newLiveServedPageHarness(t, f)
+	h.pumpText(h.socket) // real HandleWS hello
+	if got := countType(h.posts, "hello"); got != 1 {
+		t.Fatalf("native hello deliveries=%d, want 1", got)
+	}
+
+	beforeCalls := f.writes.Calls()
+	// A real two-frame line proves the native receiver does not claim delivery
+	// after only the text ACK.
+	h.pageInput("two-frame", "line-real", "text")
+	h.pumpText(h.socket)
+	if h.delivery.status == "Delivered to terminal" {
+		t.Fatal("native delivery claimed Delivered after only the text ACK")
+	}
+	h.pageInput("\r", "line-real", "enter")
+	h.pumpText(h.socket)
+	if h.delivery.status != "Delivered to terminal" {
+		t.Fatalf("two accepted real ACKs status=%q, want Delivered to terminal", h.delivery.status)
+	}
+
+	// Every surface now executes the page's actual sender and is acknowledged
+	// by HandleWS. Macros are intentionally here (not just in a fake WS test).
+	paste := "paste\nbody"
+	h.pageInput(paste, "paste-real", "text")
+	h.pumpText(h.socket)
+	// Ctrl+C is last because it intentionally terminates this test PTY; it has
+	// still travelled through the same live page → HandleWS chain.
+	macros := [][]byte{{27}, {9}, {27, 91, 65}, {27, 91, 66}, {27, 91, 68}, {27, 91, 67}, {121, 13}, {110, 13}, {13}, {3}}
+	for i, macro := range macros {
+		h.pageInput(string(macro), "macro-real-"+string(rune('a'+i)), "text")
+		h.pumpText(h.socket)
+	}
+
+	frames := terminalInputFrames(t, h.sent)
+	if got, want := len(frames), 13; got != want {
+		t.Fatalf("real served-page terminal_input count=%d, want %d", got, want)
+	}
+	wantPayloads := append([]string{"two-frame", "\r", paste}, byteSlicesToStrings(macros)...)
+	for i, want := range wantPayloads {
+		if got := decodedInput(t, frames[i]); got != want {
+			t.Fatalf("real served-page input %d=%q, want %q", i, got, want)
+		}
+	}
+	if got, want := f.writes.Calls(), beforeCalls+len(wantPayloads); got != want {
+		t.Fatalf("HandleWS WriteInput calls=%d, want %d", got, want)
+	}
+	if got, want := countType(h.posts, "input_result"), len(wantPayloads); got != want {
+		t.Fatalf("native input_result deliveries=%d, want %d", got, want)
+	}
+}
+
+func TestTERM_C1_ServedPageGojaRealDirectCtrlC(t *testing.T) {
+	f := newC1Fixture(t)
+	h := newLiveServedPageHarness(t, f)
+	h.pumpText(h.socket)
+	beforeCalls := f.writes.Calls()
+	h.keyboard("\x03") // actual term.onData → actual pokitSendInput → live HandleWS
+	h.pumpText(h.socket)
+	frames := terminalInputFrames(t, h.sent)
+	if len(frames) != 1 || decodedInput(t, frames[0]) != "\x03" {
+		t.Fatalf("direct keyboard Ctrl+C frames=%#v", frames)
+	}
+	if got, want := f.writes.Calls(), beforeCalls+1; got != want {
+		t.Fatalf("direct Ctrl+C HandleWS WriteInput calls=%d, want %d", got, want)
+	}
+	if h.delivery.status != "Delivered to terminal" {
+		t.Fatalf("direct Ctrl+C native status=%q, want Delivered to terminal", h.delivery.status)
+	}
+}
+
+func TestTERM_C1_ServedPageGojaRealEveryMacroDeniedZeroPTYWrite(t *testing.T) {
+	f := newC1Fixture(t)
+	// Issue the live WS ticket as a viewer. The actual HandleWS hello omits
+	// terminal:input, so the served bridge must deny every macro before send.
+	f.principal.Permissions = []string{devicetrust.PermSessionsRead}
+	h := newLiveServedPageHarness(t, f)
+	h.pumpText(h.socket)
+	beforeCalls := f.writes.Calls()
+	macros := [][]byte{{3}, {27}, {9}, {27, 91, 65}, {27, 91, 66}, {27, 91, 68}, {27, 91, 67}, {121, 13}, {110, 13}, {13}}
+	for i, macro := range macros {
+		h.pageInput(string(macro), "denied-macro-"+string(rune('a'+i)), "text")
+	}
+	if got := len(terminalInputFrames(t, h.sent)); got != 0 {
+		t.Fatalf("viewer macros emitted %d terminal_input frames", got)
+	}
+	if got, want := f.writes.Calls(), beforeCalls; got != want {
+		t.Fatalf("viewer macro HandleWS WriteInput calls=%d, want %d", got, want)
+	}
+	if got, want := countType(h.posts, "delivery_unknown"), len(macros); got != want {
+		t.Fatalf("viewer macro native denials=%d, want %d", got, want)
+	}
+}
+
+func byteSlicesToStrings(in [][]byte) []string {
+	out := make([]string, len(in))
+	for i := range in {
+		out[i] = string(in[i])
+	}
+	return out
+}
+
+func TestTERM_C1_ServedPageGojaPendingDuplicateAndReconnect(t *testing.T) {
+	f := newC1Fixture(t)
+	h := newLiveServedPageHarness(t, f)
+	realHello := h.pumpText(h.socket)
+
+	// Create an actual pending HandleWS input, then replay the literal server
+	// hello before its real ACK is pumped. The page must suppress the duplicate
+	// and FeedScreen-like native state must retain the pending operation.
+	h.pageInput("duplicate-pending", "", "text")
+	if h.delivery.status != "Sent to socket" || len(h.delivery.pending) != 1 {
+		t.Fatalf("expected one pending native delivery, status=%q pending=%d", h.delivery.status, len(h.delivery.pending))
+	}
+	h.emitRaw(h.socket, realHello)
+	if got := countType(h.posts, "hello"); got != 1 {
+		t.Fatalf("duplicate real hello forwarded %d times, want 1", got)
+	}
+	if len(h.delivery.pending) != 1 {
+		t.Fatal("duplicate hello cleared native pending input")
+	}
+	h.pumpText(h.socket) // actual HandleWS accepted ACK
+	if h.delivery.status != "Delivered to terminal" {
+		t.Fatalf("duplicate hello prevented real ACK delivery: %q", h.delivery.status)
+	}
+
+	// Leave this server ACK unread by JavaScript, then close the actual gorilla
+	// peer. The page's real onclose/reconnect path creates a new socket; its
+	// actual new HandleWS hello turns the unresolved native operation into
+	// Possible partial delivery.
+	beforeUnacknowledgedWrite := f.writes.Calls()
+	resultsBeforeClose := countType(h.posts, "input_result")
+	h.pageInput("unacknowledged-before-close", "", "text")
+	if len(h.delivery.pending) != 1 {
+		t.Fatalf("expected unacknowledged pending input, got %d", len(h.delivery.pending))
+	}
+	waitForC1WriteCalls(t, f.writes, beforeUnacknowledgedWrite+1)
+	if got := countType(h.posts, "input_result"); got != resultsBeforeClose {
+		t.Fatalf("ACK was consumed before real socket close: results=%d, want %d", got, resultsBeforeClose)
+	}
+	old := h.socket
+	h.closeLiveSocket(old)
+	h.runTimers()
+	if h.socket == old || h.oldSock != old {
+		t.Fatal("served onclose reconnect did not replace the real WebSocket")
+	}
+	h.pumpText(h.socket) // new real HandleWS hello
+	if h.delivery.status != "Possible partial delivery" {
+		t.Fatalf("reconnect with unread real ACK status=%q, want Possible partial delivery", h.delivery.status)
+	}
+	if len(h.delivery.pending) != 0 {
+		t.Fatal("new real hello did not retire unresolved native pending input")
+	}
+}
+
+func waitForC1WriteCalls(t *testing.T, writes *c1WriteCounter, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if writes.Calls() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("HandleWS WriteInput calls=%d, want at least %d", writes.Calls(), want)
 }
 
 func TestTERM_C1_ServedPageGojaInputSurfacesAndAcceptedResults(t *testing.T) {
