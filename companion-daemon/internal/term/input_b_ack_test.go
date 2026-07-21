@@ -246,3 +246,65 @@ func TestInputB_InputIDConflictDifferentPayload(t *testing.T) {
 		t.Fatal("conflicting inputID was accepted — must be rejected")
 	}
 }
+
+func TestInputB_ProductionRejectsLegacyBinaryBeforeWrite(t *testing.T) {
+	writer := &inputBWriter{}
+	conn, _ := openInputBWS(t, writer) // InsecureLocalOnly is false: paired production.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("legacy binary")); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil || result.Outcome != "invalid_request" {
+		t.Fatalf("legacy binary result=%s decoded=%+v err=%v", payload, result, err)
+	}
+	if len(writer.wrote) != 0 {
+		t.Fatalf("production legacy binary wrote %q", writer.wrote)
+	}
+}
+
+func TestInputB_TrailingTerminalInputIsRejected(t *testing.T) {
+	writer := &inputBWriter{}
+	conn, generation := openInputBWS(t, writer)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	req := append(controlRequest("controlled_pty:input-b-ack", generation, testInputID(), []byte("no write")), []byte(` {}`)...)
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil || result.Outcome != "invalid_request" {
+		t.Fatalf("trailing result=%s decoded=%+v err=%v", payload, result, err)
+	}
+	if len(writer.wrote) != 0 {
+		t.Fatalf("trailing request wrote %q", writer.wrote)
+	}
+}
+
+func TestInputB_ConnectionIDEntropyFailureIsFailClosed(t *testing.T) {
+	old := connectionIDEntropy
+	connectionIDEntropy = func([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+	t.Cleanup(func() { connectionIDEntropy = old })
+	if id, err := newConnectionID(); err == nil || id != "" {
+		t.Fatalf("newConnectionID = %q, %v; want fail closed", id, err)
+	}
+}

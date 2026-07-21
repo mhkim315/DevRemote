@@ -124,6 +124,10 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
+// connectionIDEntropy is replaceable only by same-package tests. Production
+// uses crypto/rand and fails the upgrade if entropy is unavailable.
+var connectionIDEntropy = rand.Read
+
 // readOnlyDenialPayload is the JSON control frame sent to a WebSocket client
 // when binary terminal input is rejected. The mobile uses this to display a
 // read-only reason instead of reporting send success after silent discard.
@@ -145,11 +149,13 @@ func effectiveInputCapabilities(p *devicetrust.Principal) []string {
 // upgrade, before any user input. It contains the server-authorized effective
 // session capabilities; the terminal page and native FeedScreen use this
 // projection as their pre-send input guard.
-func permissionAnnouncement(p *devicetrust.Principal, generation int64) []byte {
+func permissionAnnouncement(p *devicetrust.Principal, session string, generation int64, connectionID string) []byte {
 	b, _ := json.Marshal(map[string]interface{}{
 		"type":         "hello",
 		"capabilities": effectiveInputCapabilities(p),
+		"sessionId":    session,
 		"generation":   generation,
+		"connectionId": connectionID,
 	})
 	return b
 }
@@ -259,6 +265,11 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
+	connID, err := newConnectionID()
+	if err != nil {
+		http.Error(w, "terminal connection unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WS upgrade err: %v", err)
@@ -346,7 +357,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// PB.7 Input-A: announce device effective permissions before any
 	// user input. The terminal page sets its readOnly flag from this
 	// frame so pokitSendInput is gated before the first keystroke.
-	permAnnounce := permissionAnnouncement(ticketPrincipal, inputGeneration)
+	permAnnounce := permissionAnnouncement(ticketPrincipal, session, inputGeneration, connID)
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
 	default:
@@ -390,9 +401,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}()
 
 	var lastDenial time.Time
-	connID := newConnectionID()
 	recentCache := newInputRecentCache()
-	defer recentCache.clear()
 	defer recentCache.clear()
 	var inputSequence uint64
 	for {
@@ -410,38 +419,28 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		// type the exact bytes {"type":"geometry-poll"} into the terminal:
 		// they are sent as a BINARY frame and reach the PTY unchanged.
 		if mt == websocket.TextMessage {
-			// geometry-poll is the only client→server control frame today.
-			// Reading geometry is always permitted (even for input-denied,
-			// read-only viewers) and never reaches WriteInput or Activity.
-			if len(msg) > 0 && msg[0] == '{' {
-				var ctrl struct {
-					Type string `json:"type"`
-				}
-				if err := json.Unmarshal(msg, &ctrl); err == nil && ctrl.Type == "geometry-poll" && rec != nil {
-					if rows, cols, ok := rec.GetSize(); ok {
-						geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
-						// Response send exits on writer/request cancellation.
-						select {
-						case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}:
-						case <-writerDone:
-						case <-r.Context().Done():
-						}
+			// Parse the terminal-input grammar first. The strict decoder returns
+			// the partially decoded request on unknown/trailing JSON, so malformed
+			// terminal_input is rejected rather than silently ignored by dispatch.
+			if req, _, _ := parseInputControlRequest(msg); req != nil && req.Type == "terminal_input" {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID); result != nil {
+					select {
+					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
+					default:
 					}
 				}
+				continue
 			}
-			// terminal_input: versioned control request (§6.2).
-			if len(msg) > 0 && msg[0] == '{' {
-				var ctrl2 struct {
-					Type string `json:"type"`
-				}
-				if json.Unmarshal(msg, &ctrl2) == nil && ctrl2.Type == "terminal_input" {
-					if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID); result != nil {
-						select {
-						case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
-						default:
-						}
+			// geometry-poll is read-only control, and is intentionally decoded
+			// only after strict terminal-input dispatch has declined it.
+			if strictControlType(msg) == "geometry-poll" && rec != nil {
+				if rows, cols, ok := rec.GetSize(); ok {
+					geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
+					select {
+					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}:
+					case <-writerDone:
+					case <-r.Context().Done():
 					}
-					continue
 				}
 			}
 			// Unknown/malformed text control frames fail closed: ignored.
@@ -449,7 +448,6 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 
 		// From here mt is a BinaryMessage: raw terminal input.
-
 		// PB.7 Input-A: device-auth input permission gate. Rejected input
 		// must perform zero WriteInput calls and cause zero Transcript
 		// mutation. A bounded read_only denial is sent to the client so
@@ -462,6 +460,16 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 					lastDenial = time.Now()
 				default:
 				}
+			}
+			continue
+		}
+		if !h.InsecureLocalOnly {
+			// Paired production accepts only the versioned acknowledged control
+			// protocol. Raw binary remains an explicit local-development escape
+			// hatch and is never permitted merely because a ticket has input.
+			select {
+			case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(`{"type":"input_result","outcome":"invalid_request"}`)}:
+			default:
 			}
 			continue
 		}
@@ -540,7 +548,7 @@ html,body{width:100%;height:100%;background:#000}
 // Input remains denied until the server's hello frame explicitly grants the
 // terminal:input capability. This also closes the reconnect window before a
 // replacement ticket's authorization arrives.
-var readOnly=true,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false,inputGeneration=null,inputSequence=0;
+var readOnly=true,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false,inputGeneration=null,inputConnectionID=null,inputSessionID=null;
 	// E8: diagnostic counters — increment-only, never reset.
 	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
@@ -555,12 +563,12 @@ term.open(document.getElementById("t"));
 var _pokitEnc=new TextEncoder();
 function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=((a[i]>>4)&15).toString(16);h+=(a[i]&15).toString(16)}return h}
 function pokitSendInput(s){
-  if(readOnly||inputGeneration===null)return;
+  if(readOnly||inputGeneration===null||inputConnectionID===null||inputSessionID===null)return;
   var w=window.ws;
   if(!w||w.readyState!==1)return;
   var inputID=pokitMakeInputID();
-  var req={type:"terminal_input",version:1,sessionId:(new URLSearchParams(location.search)).get("session")||"",generation:inputGeneration,inputId:inputID,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(s)))};
-  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",generation:inputGeneration,inputId:inputID}));} }catch(e){}
+  var req={type:"terminal_input",version:1,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(s)))};
+  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",connectionId:inputConnectionID,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID}));} }catch(e){}
 }
 window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
 
@@ -583,7 +591,7 @@ function stopSession(text) {
 function connect(){
   if(reconnecting||stopped)return;
 	readOnly=true;
-  inputGeneration=null;inputSequence=0;
+  inputGeneration=null;inputConnectionID=null;inputSessionID=null;
   var protocol=location.protocol==='https:'?'wss://':'ws://';
   if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
   opened=false;
@@ -610,7 +618,7 @@ function connect(){
     // overwritten by this onmessage assignment. Returning here on text ensures
     // unknown/malformed control frames fail closed and are never rendered as
     // PTY output.
-    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];inputGeneration=Number.isInteger(ctrl.generation)?ctrl.generation:null;readOnly=p.indexOf("terminal:input")===-1||inputGeneration===null;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="input_result"){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
+    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];inputGeneration=Number.isInteger(ctrl.generation)?ctrl.generation:null;inputConnectionID=typeof ctrl.connectionId==="string"&&ctrl.connectionId?ctrl.connectionId:null;inputSessionID=typeof ctrl.sessionId==="string"&&ctrl.sessionId?ctrl.sessionId:null;readOnly=p.indexOf("terminal:input")===-1||inputGeneration===null||inputConnectionID===null||inputSessionID===null;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="input_result"){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
@@ -895,8 +903,10 @@ func transcriptIfNotNil(ts *transcript.Service) interface{ BeginInput(string, ti
 	return ts
 }
 
-func newConnectionID() string {
+func newConnectionID() (string, error) {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := connectionIDEntropy(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

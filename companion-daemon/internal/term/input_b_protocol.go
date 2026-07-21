@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -69,11 +70,13 @@ func parseInputControlRequest(raw []byte) (*inputControlRequest, []byte, error) 
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		return nil, nil, fmt.Errorf("invalid_request")
+		return &req, nil, fmt.Errorf("invalid_request")
 	}
-	// Reject trailing data.
-	if dec.More() {
-		return nil, nil, fmt.Errorf("invalid_request")
+	// Decode exactly one JSON value. Decoder.More only applies inside arrays
+	// and previously let a second JSON document pass this boundary.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return &req, nil, fmt.Errorf("invalid_request")
 	}
 	if req.Type != "terminal_input" || req.Version != 1 {
 		return &req, nil, fmt.Errorf("invalid_request")
@@ -89,6 +92,24 @@ func parseInputControlRequest(raw []byte) (*inputControlRequest, []byte, error) 
 		return &req, nil, fmt.Errorf("input_too_large")
 	}
 	return &req, decoded, nil
+}
+
+// strictControlType reads exactly one small control object for non-input
+// dispatch. It deliberately rejects trailing JSON so a control prefix cannot
+// alter which protocol parser owns the frame.
+func strictControlType(raw []byte) string {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(&envelope); err != nil {
+		return ""
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return ""
+	}
+	return envelope.Type
 }
 
 // inputCacheEntry stores a prior result for duplicate detection.

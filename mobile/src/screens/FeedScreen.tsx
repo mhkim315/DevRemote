@@ -50,6 +50,19 @@ function jsSend(chars: number[]): string {
 
 const INPUT_ACK_TIMEOUT_MS = 3000;
 type SendStatus = 'idle' | 'sending' | 'socket_sent' | 'delivered' | 'not_delivered' | 'failed';
+type PendingInput = {
+  timeout: ReturnType<typeof setTimeout>;
+  connectionId: string;
+  sessionId: string;
+  generation: number;
+};
+type PendingLine = {
+  textId: string | null;
+  enterId: string | null;
+  textOutcome: string | null;
+  enterOutcome: string | null;
+  enterQueued: boolean;
+};
 
 const NORMAL_MACROS: { label: string; chars: number[] }[] = [
   { label: 'Ctrl+C',  chars: [3] },
@@ -213,9 +226,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<SendStatus>('idle');
   // PB.7 Input-B: pending ACKs tracked by inputId → timeout.
-  const pendingInputRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingInputRef = useRef<Map<string, PendingInput>>(new Map());
   // 2-frame submitLine: text+Enter = 2 requests. Track both ACKs.
-  const pendingLineRef = useRef<{ textId: string; enterId: string } | null>(null);
+  const pendingLineRef = useRef<PendingLine | null>(null);
+  const connectionRef = useRef<{ connectionId: string; sessionId: string; generation: number } | null>(null);
   // PB.7 Input-A: caps is a server-authorized capability snapshot. Missing,
   // stale, or not-yet-announced capability data is read-only before any frame.
   const [caps, setCaps] = useState<string[]>(() => Array.isArray(initialCaps) ? initialCaps : []);
@@ -242,11 +256,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   const currentAttemptIdRef = useRef<number>(0);
 
   useEffect(() => () => {
-    for (const timeout of pendingInputRef.current.values()) clearTimeout(timeout);
+    for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
     pendingInputRef.current.clear();
   }, []);
   useEffect(() => {
-    for (const timeout of pendingInputRef.current.values()) clearTimeout(timeout);
+    for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
     pendingInputRef.current.clear();
   }, [session]);
 
@@ -482,9 +496,16 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   const submitLine = useCallback((text: string) => {
     if (!deviceCanInput) { setSendStatus('failed'); return; }
     // PB.7 Input-B: 2-frame operation. Track both text+Enter ACKs.
-    pendingLineRef.current = { textId: '', enterId: '' };
+    const line: PendingLine = { textId: null, enterId: null, textOutcome: null, enterOutcome: null, enterQueued: false };
+    pendingLineRef.current = line;
     if (text) doSend(text);
-    setTimeout(() => doSend('\r'), 40);
+    setTimeout(() => {
+      // A failed/timeout first frame cancels this operation; never send a
+      // delayed Enter into a later command's two-frame state.
+      if (pendingLineRef.current !== line) return;
+      line.enterQueued = true;
+      doSend('\r');
+    }, 40);
   }, [doSend, deviceCanInput]);
 
   const send = useCallback(() => {
@@ -565,58 +586,64 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       if (data.type === 'sendStatus') {
         setSendStatus(data.status === 'sent' ? 'socket_sent' : 'failed');
       }
-      // PB.7 Input-B: versioned control-request protocol — track by inputId.
-      if (data.type === 'input_pending' && Number.isInteger(data.generation) && typeof data.inputId === 'string') {
-        const key = data.inputId as string;
-        // Capture inputId for 2-frame submitLine tracking.
-        const line = pendingLineRef.current;
-        if (line && line.textId === '') { line.textId = key; }
-        else if (line && line.enterId === '') { line.enterId = key; }
-
-        const existing = pendingInputRef.current.get(key);
-        if (existing) clearTimeout(existing);
-        const timeout = setTimeout(() => {
-          if (pendingInputRef.current.delete(key)) {
-            if (line && (key === line.textId || key === line.enterId)) {
-              pendingLineRef.current = null;
-              setSendStatus('not_delivered');
-            } else if (pendingInputRef.current.size === 0) {
-              setSendStatus('not_delivered');
-            }
-          }
-        }, INPUT_ACK_TIMEOUT_MS);
-        pendingInputRef.current.set(key, timeout);
-        setSendStatus('socket_sent');
-      }
-      if (data.type === 'input_result' && typeof data.inputId === 'string' && typeof data.outcome === 'string') {
-        const key = data.inputId as string;
-        const timeout = pendingInputRef.current.get(key);
-        if (!timeout) { /* stale or already acked — ignore */ }
-        else {
-          clearTimeout(timeout);
-          pendingInputRef.current.delete(key);
-
-          // PB.7 Input-B: 2-frame submitLine — track both text+Enter.
-          const line = pendingLineRef.current;
-          if (line && (key === line.textId || key === line.enterId)) {
-            if (key === line.textId) line.textId = '';
-            if (key === line.enterId) line.enterId = '';
-            if (line.textId === '' && line.enterId === '') {
-              pendingLineRef.current = null;
-              setSendStatus('delivered');
-              setCmd('');
-              cmdRef.current = '';
-            }
-          } else if (pendingInputRef.current.size === 0) {
-            setSendStatus('delivered');
-          }
-        }
-      }
       if (data.type === 'hello') {
         const nextCaps = serverCapabilitiesFromControl(data);
-        if (nextCaps !== null) {
+        if (nextCaps !== null && typeof data.connectionId === 'string' && data.connectionId && data.sessionId === session && Number.isInteger(data.generation)) {
+          connectionRef.current = { connectionId: data.connectionId, sessionId: data.sessionId, generation: data.generation };
           setCaps(nextCaps);
           setReadOnlyReason(nextCaps.includes('terminal:input') ? '' : 'Terminal input not authorized — view only');
+        } else if (nextCaps !== null) {
+          // A hello not bound to this screen cannot grant input.
+          connectionRef.current = null;
+          setCaps([]);
+          setReadOnlyReason('Terminal input not authorized — view only');
+        }
+      }
+      // PB.7 Input-B: pending/result are accepted only when all connection
+      // identities match the server hello snapshot and the individual request.
+      if (data.type === 'input_pending' && typeof data.connectionId === 'string' && typeof data.sessionId === 'string' && Number.isInteger(data.generation) && typeof data.inputId === 'string') {
+        const conn = connectionRef.current;
+        if (!conn || data.connectionId !== conn.connectionId || data.sessionId !== conn.sessionId || data.generation !== conn.generation) return;
+        const key = data.inputId as string;
+        const line = pendingLineRef.current;
+        if (line && line.textId === null) line.textId = key;
+        else if (line && line.enterQueued && line.enterId === null) line.enterId = key;
+        const existing = pendingInputRef.current.get(key);
+        if (existing) clearTimeout(existing.timeout);
+        const timeout = setTimeout(() => {
+          const pending = pendingInputRef.current.get(key);
+          if (!pending) return;
+          pendingInputRef.current.delete(key);
+          const activeLine = pendingLineRef.current;
+          if (activeLine && (key === activeLine.textId || key === activeLine.enterId)) {
+            pendingLineRef.current = null;
+          }
+          setSendStatus('not_delivered');
+        }, INPUT_ACK_TIMEOUT_MS);
+        pendingInputRef.current.set(key, { timeout, connectionId: conn.connectionId, sessionId: conn.sessionId, generation: conn.generation });
+        setSendStatus('socket_sent');
+      }
+      if (data.type === 'input_result' && typeof data.inputId === 'string' && typeof data.outcome === 'string' && typeof data.connectionId === 'string' && typeof data.sessionId === 'string' && Number.isInteger(data.generation)) {
+        const key = data.inputId as string;
+        const pending = pendingInputRef.current.get(key);
+        if (!pending || data.connectionId !== pending.connectionId || data.sessionId !== pending.sessionId || data.generation !== pending.generation) return;
+        clearTimeout(pending.timeout);
+        pendingInputRef.current.delete(key);
+        const line = pendingLineRef.current;
+        if (line && (key === line.textId || key === line.enterId)) {
+          if (key === line.textId) line.textOutcome = data.outcome;
+          if (key === line.enterId) line.enterOutcome = data.outcome;
+          if (data.outcome !== 'accepted') {
+            pendingLineRef.current = null;
+            setSendStatus('not_delivered'); // possible partial delivery; preserve command
+          } else if (line.enterQueued && line.textId !== null && line.enterId !== null && line.textOutcome === 'accepted' && line.enterOutcome === 'accepted') {
+            pendingLineRef.current = null;
+            setSendStatus('delivered');
+            setCmd('');
+            cmdRef.current = '';
+          }
+        } else {
+          setSendStatus(data.outcome === 'accepted' ? 'delivered' : 'not_delivered');
         }
       }
       // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
@@ -633,7 +660,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         handleReconnect(data);
       }
     } catch (e) {}
-  }, [handleReconnect]);
+  }, [handleReconnect, session]);
 
   const pinchZoomInjection = `
     (function() {

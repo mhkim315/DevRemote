@@ -16,11 +16,14 @@ const { create, act } = require('react-test-renderer') as {
 jest.mock('react-native', () => {
   const R = require('react');
   const host = (tag: string) => (props: any) => {
-    const { children, testID, editable, disabled } = props || {};
+    const { children, testID, editable, disabled, onChangeText, onPress, value } = props || {};
     const mapped = {
       ...(testID ? { 'data-testid': testID } : {}),
       ...(editable === false ? { disabled: true } : {}),
       ...(disabled ? { disabled: true } : {}),
+      ...(onChangeText ? { onChangeText } : {}),
+      ...(onPress ? { onPress } : {}),
+      ...(value !== undefined ? { value } : {}),
     };
     return R.createElement(tag, mapped, children);
   };
@@ -39,7 +42,11 @@ jest.mock('react-native', () => {
 jest.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'div' }));
 jest.mock('react-native-webview', () => {
   const R = require('react');
-  return { WebView: ({ onMessage }: any) => R.createElement('webview', { onMessage }) };
+  const WebView = R.forwardRef(({ onMessage }: any, ref: any) => {
+    R.useImperativeHandle(ref, () => ({ injectJavaScript: () => {} }));
+    return R.createElement('webview', { onMessage });
+  });
+  return { WebView };
 });
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => '', setStringAsync: async () => {} }));
 jest.mock('../src/lib/client', () => {
@@ -82,6 +89,15 @@ function isDisabled(tree: any, testID: string): boolean {
 
 function statusText(tree: any): string {
   return tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send-status').children.join('');
+}
+
+const connectionId = '0123456789abcdef0123456789abcdef';
+const inputID1 = 'aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff';
+const inputID2 = 'bbbb111122223333444455556666777788889999aaaabbbbccccddddeeeeffff';
+const inputID3 = 'cccc111122223333444455556666777788889999aaaabbbbccccddddeeeeffff';
+
+function control(type: string, extra: Record<string, unknown> = {}) {
+  return { nativeEvent: { data: JSON.stringify({ type, connectionId, sessionId: mockInputCapableSession.id, generation: 7, ...extra }) } };
 }
 
 describe('FeedScreen production input authorization', () => {
@@ -130,7 +146,7 @@ describe('FeedScreen production input authorization', () => {
     const webview = tree.root.findByType('webview');
     await act(async () => {
       webview.props.onMessage({ nativeEvent: { data: JSON.stringify({
-        type: 'hello', capabilities: ['history', 'terminal:input'],
+        type: 'hello', capabilities: ['history', 'terminal:input'], connectionId, sessionId: session.id, generation: 7,
       }) } });
     });
     expect(isDisabled(tree, 'terminal-input')).toBe(false);
@@ -138,7 +154,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => tree.unmount());
   });
 
-  it('labels socket send as delivered only after the exact-generation ACK, then not delivered on timeout', async () => {
+  it('requires both line-frame accepted results even when the first ACK arrives before Enter is pending', async () => {
     jest.useFakeTimers();
     const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
     let tree: any;
@@ -148,15 +164,80 @@ describe('FeedScreen production input authorization', () => {
       }));
     });
     const webview = tree.root.findByType('webview');
-    // PB.7 Input-B: versioned protocol — tracks by inputId, not sequence.
-    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, inputId: 'aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff' }) } }));
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    const input = tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+    const send = tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
+    await act(async () => input.props.onChangeText('keep me until both ACKs'));
+    await act(async () => send.props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
     expect(statusText(tree)).toBe('Sent to socket');
-    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_result', inputId: 'aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff', outcome: 'accepted', generation: 7, sequence: 1 }) } }));
+    // The text ACK is deliberately before the 40 ms Enter request. It must
+    // not claim delivery while the second frame is not even pending.
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted', sequence: 1 })));
+    expect(statusText(tree)).not.toBe('Delivered to terminal');
+    await act(async () => { jest.advanceTimersByTime(40); });
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2 })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted', sequence: 2 })));
     expect(statusText(tree)).toBe('Delivered to terminal');
+    expect(tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input').props.value).toBe('');
+    await act(async () => tree.unmount());
+    jest.useRealTimers();
+  });
 
-    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, inputId: 'bbbb111122223333444455556666777788889999aaaabbbbccccddddeeeeffff' }) } }));
+  it('ignores result frames whose connection, session, generation, or input ID does not match the pending request', async () => {
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    for (const mismatch of [
+      { connectionId: 'wrong-connection' },
+      { sessionId: 'controlled_pty:wrong-session' },
+      { generation: 8 },
+      { inputId: inputID2 },
+    ]) {
+      await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted', ...mismatch })));
+      expect(statusText(tree)).toBe('Sent to socket');
+    }
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    expect(statusText(tree)).toBe('Delivered to terminal');
+    await act(async () => tree.unmount());
+  });
+
+  it('preserves command and reports partial delivery on first or second non-accepted result and timeout', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    const input = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+    const send = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+
+    await act(async () => input().props.onChangeText('first failure'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'write_failed' })));
+    expect(statusText(tree)).toBe('Not delivered');
+    expect(input().props.value).toBe('first failure');
+
+    await act(async () => input().props.onChangeText('second failure'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2 })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted' })));
+    await act(async () => { jest.advanceTimersByTime(40); });
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3 })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID3, outcome: 'write_failed' })));
+    expect(statusText(tree)).toBe('Not delivered');
+    expect(input().props.value).toBe('second failure');
+
+    await act(async () => input().props.onChangeText('timeout'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
     await act(async () => { jest.advanceTimersByTime(3000); });
     expect(statusText(tree)).toBe('Not delivered');
+    expect(input().props.value).toBe('timeout');
     await act(async () => tree.unmount());
     jest.useRealTimers();
   });
