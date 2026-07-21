@@ -1,6 +1,6 @@
 # PB.7 Evidence — Automated Closeout and Device Gate
 
-**Document SHA (evidence HEAD):** `5ad609a72`
+**Document SHA (evidence HEAD):** `0a19c17d9`
 **Production Candidate SHA:** `82e550e9c`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
@@ -20,7 +20,7 @@ PB BASELINE: ANCESTOR OK
 ## Physical Device Matrix
 
 **Physical device matrix was NOT executed.** This gate requires:
-- Physical iOS device (iPhone/iPad) with Orca mobile app installed
+- Physical Android device (Samsung SM-S926N) with Orca mobile app installed
 - Physical macOS device running companion-daemon
 - Cloudflare tunnel connectivity between daemon and mobile app
 - Manual verification of session CRUD, WebSocket streaming, and agent display

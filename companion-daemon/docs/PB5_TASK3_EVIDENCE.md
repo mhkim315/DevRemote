@@ -28,7 +28,7 @@ contract.
 
 | Removed source | Former test scope | V1 successor or disposition |
 |---|---|---|
-| `cmd/devremote/app_test.go` | app composition, shutdown, tunnel and route wiring | `cmd/devremote/auth_e2e_test.go`, `cmd/devremote/managed_integration_test.go`, and `cmd/devremote/test_helpers_test.go` construct the V1 dependency graph; shutdown/tunnel tests were implementation-bound to the removed construction surface. |
+| `cmd/devremote/app_test.go` | app composition, shutdown, tunnel and route wiring | `cmd/devremote/auth_e2e_test.go`, `cmd/devremote/app_lifecycle_v1_test.go`, and `cmd/devremote/test_helpers_test.go` construct the V1 dependency graph; shutdown/tunnel tests were implementation-bound to the removed construction surface. |
 | `internal/mux/adapter.go`, `adapter_capability_test.go`, `adapter_contract_test.go`, `adapter_golden_test.go` | adapter interface and capability contract | removed implementation; V1 equivalents are `PTYHandle`, `ManagedPTYLauncherV1`, and `TestPB5V1_StopUsesTypedSignalAndWait`. |
 | `internal/mux/controlled_pty_adapter.go`, `controlled_pty_test.go`, `controlled_pty_r6_test.go`, `pty_spawn.go`, `transcript_capture.go` | old controlled-PTY spawn, capture, and identity termination | `TestPB5V1_ReplacementCleansOnlyPriorGeneration`, `TestStep6a_ReplacementCapturesOldRecorder`, `TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated`, and `TestLifecycle_Stop_RealProcess_TerminatesAndRetainsHistory`. |
 | `internal/mux/fixture_adapter_test.go` | old fixture adapter | removed implementation; `migrationLauncher` and `migrationHandle` are direct V1 fixtures used by the successor tests above. |
