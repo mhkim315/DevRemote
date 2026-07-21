@@ -479,7 +479,10 @@ html,body{width:100%;height:100%;background:#000}
 <div id="t"></div>
 <div id="status"></div>
 <script>
-var readOnly=false,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
+// Input remains denied until the server's hello frame explicitly grants the
+// terminal:input capability. This also closes the reconnect window before a
+// replacement ticket's authorization arrives.
+var readOnly=true,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
 	// E8: diagnostic counters — increment-only, never reset.
 	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
@@ -516,6 +519,7 @@ function stopSession(text) {
 
 function connect(){
   if(reconnecting||stopped)return;
+	readOnly=true;
   var protocol=location.protocol==='https:'?'wss://':'ws://';
   if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
   opened=false;

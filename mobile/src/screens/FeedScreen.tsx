@@ -28,6 +28,19 @@ interface Props {
   caps?: string[];
   // Production remains transcript-first; explicit only for deterministic render tests.
   initialTab?: 'terminal' | 'transcript';
+  // Optional server snapshot carried by a caller that already has the session
+  // list response. It is also the deterministic render boundary for the
+  // production component; absent data remains fail-closed.
+  initialSessionData?: SessionTelemetry;
+}
+
+// serverCapabilitiesFromControl is the sole parser for the daemon's hello
+// control message. Only a valid hello replaces the capability snapshot; every
+// other control frame leaves authorization unchanged.
+export function serverCapabilitiesFromControl(data: unknown): string[] | null {
+  if (!data || typeof data !== 'object' || (data as any).type !== 'hello') return null;
+  const caps = (data as any).capabilities;
+  return Array.isArray(caps) ? caps.filter((cap: unknown) => typeof cap === 'string') : [];
 }
 
 function jsSend(chars: number[]): string {
@@ -61,7 +74,7 @@ export default function FeedScreen(props: Props) {
   return <LegacyFeedScreen {...props} />;
 }
 
-function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'transcript'}: Props) {
+function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'transcript', initialSessionData}: Props) {
   const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
@@ -81,7 +94,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   const sessionGenRef = useRef(0);
   // PA3 Step 1: Transcript generation for reset detection.
   const transcriptGenRef = useRef(0);
-  const [sessionData, setSessionData] = useState<SessionTelemetry | null>(null);
+  const [sessionData, setSessionData] = useState<SessionTelemetry | null>(initialSessionData ?? null);
   // Legacy (capabilities===undefined) is treated as no-history for safety.
   const supportsHistory = !!(sessionData?.capabilities?.includes('history'));
   // E8g5: adapter-level capability. observe-only adapters lack liveTerminal.
@@ -96,7 +109,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // (Session Catalog, including retained terminal rows) and each Stop/Kill/Delete
   // response. The client never infers state from list presence/absence and never
   // fabricates a terminal state; WS/EOF and network loss are display hints only.
-  const [lifecycleState, setLifecycleState] = useState<ManagedLifecycleState>('unknown');
+  const [lifecycleState, setLifecycleState] = useState<ManagedLifecycleState>(
+    (initialSessionData?.lifecycleState as ManagedLifecycleState | undefined) ?? 'unknown',
+  );
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [actionError, setActionError] = useState('');
   const fetchSessionRef = useRef<(() => void) | null>(null);
@@ -125,20 +140,21 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
 
   // Reset lifecycle + T3 Transcript state when the viewed session changes.
   useEffect(() => {
-    setLifecycleState('unknown');
+    setLifecycleState((initialSessionData?.lifecycleState as ManagedLifecycleState | undefined) ?? 'unknown');
     setPendingAction(null);
     setActionError('');
     setTranscriptEvents([]);
     setFallbackEvents([]);
     setByteStreamSuppressed(false);
-	setReadOnlyReason('');
+    setReadOnlyReason('');
 	setCaps(Array.isArray(initialCaps) ? initialCaps : []);
+	setSessionData(initialSessionData ?? null);
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
     transcriptGenRef.current = 0;
     sessionGenRef.current++;
     lifecycleCtrlRef.current?.setSession(session, token);
-	}, [session, token, initialCaps]);
+	}, [session, token, initialCaps, initialSessionData]);
 
   // On unmount (Back/navigation away), invalidate all in-flight async work.
   // Bump generation so late fetch responses, lifecycle actions, and state
@@ -535,11 +551,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         }
       }
       if (data.type === 'hello') {
-        const nextCaps = Array.isArray(data.capabilities)
-          ? data.capabilities.filter((cap: unknown) => typeof cap === 'string')
-          : [];
-        setCaps(nextCaps);
-        setReadOnlyReason(nextCaps.includes('terminal:input') ? '' : 'Terminal input not authorized — view only');
+        const nextCaps = serverCapabilitiesFromControl(data);
+        if (nextCaps !== null) {
+          setCaps(nextCaps);
+          setReadOnlyReason(nextCaps.includes('terminal:input') ? '' : 'Terminal input not authorized — view only');
+        }
       }
       // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
       // Reason persists until the server explicitly re-grants or the session changes.

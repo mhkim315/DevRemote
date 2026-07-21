@@ -35,19 +35,58 @@ jest.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'div' }));
 jest.mock('react-native-webview', () => ({ WebView: 'div' }));
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => '', setStringAsync: async () => {} }));
 
-import FeedScreen from '../src/screens/FeedScreen';
+import FeedScreen, { serverCapabilitiesFromControl } from '../src/screens/FeedScreen';
+
+const inputCapableSession = {
+  id: 'controlled_pty:input-a-mobile',
+  lifecycleState: 'running',
+  adapterCapabilities: ['input'],
+  capabilities: ['history'],
+};
+
+function renderFeed(caps: string[], sessionData = inputCapableSession): string {
+  return renderToStaticMarkup(React.createElement(FeedScreen, {
+    onBack: () => {},
+    session: sessionData.id,
+    caps,
+    initialSessionData: sessionData,
+    initialTab: 'terminal',
+  }));
+}
+
+function controlTag(html: string, testID: string): string {
+  const match = html.match(new RegExp(`<[^>]*data-testid="${testID}"[^>]*>`));
+  if (!match) throw new Error(`missing ${testID}`);
+  return match[0];
+}
 
 describe('FeedScreen production input authorization', () => {
-  it('renders terminal input and Send disabled without terminal:input capability', () => {
-    const html = renderToStaticMarkup(React.createElement(FeedScreen, {
-      onBack: () => {},
-      session: 'controlled_pty:input-a-mobile',
-      caps: ['history'],
-      initialTab: 'terminal',
-    }));
+  it('renders terminal input and Send disabled for an input-capable session without terminal:input', () => {
+    const html = renderFeed(['history']);
 
-    expect(html).toMatch(/data-testid="terminal-input"[^>]*disabled/);
-    expect(html).toMatch(/data-testid="terminal-send"[^>]*disabled/);
+    expect(controlTag(html, 'terminal-input')).toContain('disabled');
+    expect(controlTag(html, 'terminal-send')).toContain('disabled');
+  });
+
+  it('renders terminal input and Send enabled only for an input-capable session with terminal:input', () => {
+    const authorizedSession = { ...inputCapableSession, capabilities: ['history', 'terminal:input'] };
+    const html = renderFeed(['history', 'terminal:input'], authorizedSession);
+
+    expect(controlTag(html, 'terminal-input')).not.toContain('disabled');
+    expect(controlTag(html, 'terminal-send')).not.toContain('disabled');
+  });
+
+  it('hello capability transition changes the rendered input authorization', () => {
+    const before = renderFeed(['history']);
+    expect(controlTag(before, 'terminal-send')).toContain('disabled');
+
+    const fromHello = serverCapabilitiesFromControl({
+      type: 'hello', capabilities: ['history', 'terminal:input'],
+    });
+    expect(fromHello).toEqual(['history', 'terminal:input']);
+
+    const after = renderFeed(fromHello!, { ...inputCapableSession, capabilities: fromHello! });
+    expect(controlTag(after, 'terminal-send')).not.toContain('disabled');
   });
 
 });

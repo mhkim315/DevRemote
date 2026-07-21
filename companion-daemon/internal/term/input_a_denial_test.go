@@ -3,6 +3,7 @@ package term
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
+	"devremote/companion-daemon/internal/transcript"
 	"github.com/gorilla/websocket"
 )
 
@@ -148,11 +150,13 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	h := &Handlers{
 		Lifecycle:    NewLifecycleService(owned, nil),
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
+		Transcript:   transcriptSvc,
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
@@ -180,7 +184,13 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 		t.Fatalf("viewer hello = type:%d payload:%s decoded:%+v", messageType, payload, hello)
 	}
 
+	// Two rapid frames exercise the same production reader loop: only the
+	// first may produce the bounded denial; neither may write or mutate the
+	// transcript before authorization is granted.
 	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("blocked-before-first-send")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("blocked-again")); err != nil {
 		t.Fatal(err)
 	}
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -196,5 +206,18 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 	}
 	if got := writes.Calls(); got != 0 {
 		t.Fatalf("unauthorized binary frame invoked TerminalTransport.WriteInput %d times, want 0", got)
+	}
+	if got := transcriptSvc.ListTranscript(session); len(got) != 0 {
+		t.Fatalf("unauthorized binary frame mutated transcript: %+v", got)
+	}
+
+	// The per-connection limiter must coalesce the second denial. A read
+	// deadline well inside the one-second window proves no second TextMessage
+	// was emitted, i.e. at most one denial per second.
+	conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if mt, extra, err := conn.ReadMessage(); err == nil {
+		t.Fatalf("unexpected second denial within rate window: type=%d payload=%s", mt, extra)
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("second denial read error = %v, want deadline timeout", err)
 	}
 }
