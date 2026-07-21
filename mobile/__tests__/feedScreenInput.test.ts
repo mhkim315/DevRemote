@@ -80,6 +80,10 @@ function isDisabled(tree: any, testID: string): boolean {
   return tree.root.find((node: any) => node.props['data-testid'] === testID).props.disabled === true;
 }
 
+function statusText(tree: any): string {
+  return tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send-status').children.join('');
+}
+
 describe('FeedScreen production input authorization', () => {
   it('renders terminal input and Send disabled for an input-capable session without terminal:input', () => {
     const html = renderFeed(['history']);
@@ -132,6 +136,28 @@ describe('FeedScreen production input authorization', () => {
     expect(isDisabled(tree, 'terminal-input')).toBe(false);
     expect(isDisabled(tree, 'terminal-send')).toBe(false);
     await act(async () => tree.unmount());
+  });
+
+  it('labels socket send as delivered only after the exact-generation ACK, then not delivered on timeout', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => {
+      tree = create(React.createElement(FeedScreen, {
+        onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal',
+      }));
+    });
+    const webview = tree.root.findByType('webview');
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, sequence: 1 }) } }));
+    expect(statusText(tree)).toBe('Sent to socket');
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_ack', generation: 7, sequence: 1 }) } }));
+    expect(statusText(tree)).toBe('Delivered to terminal');
+
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, sequence: 2 }) } }));
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    expect(statusText(tree)).toBe('Not delivered');
+    await act(async () => tree.unmount());
+    jest.useRealTimers();
   });
 
 });

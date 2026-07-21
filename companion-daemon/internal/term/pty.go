@@ -142,10 +142,24 @@ func effectiveInputCapabilities(p *devicetrust.Principal) []string {
 // upgrade, before any user input. It contains the server-authorized effective
 // session capabilities; the terminal page and native FeedScreen use this
 // projection as their pre-send input guard.
-func permissionAnnouncement(p *devicetrust.Principal) []byte {
+func permissionAnnouncement(p *devicetrust.Principal, generation int64) []byte {
 	b, _ := json.Marshal(map[string]interface{}{
 		"type":         "hello",
 		"capabilities": effectiveInputCapabilities(p),
+		"generation":   generation,
+	})
+	return b
+}
+
+// inputAcknowledgement is emitted only after the exact transport captured at
+// WebSocket establishment has accepted every byte of one binary input frame.
+// The pair (generation, sequence) lets the client reject stale ACKs after a
+// replacement or reconnect; it does not claim the shell executed the input.
+func inputAcknowledgement(generation int64, sequence uint64) []byte {
+	b, _ := json.Marshal(map[string]interface{}{
+		"type":       "input_ack",
+		"generation": generation,
+		"sequence":   sequence,
 	})
 	return b
 }
@@ -200,10 +214,16 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// lifecycle owner is not wired or the transport is unavailable,
 	// fail closed — no Registry session lookup for managed paths.
 	var transportBootstrap []byte
+	var inputTransport *TerminalTransport
+	var inputGeneration int64
 
 	if ref.Adapter == "controlled_pty" {
 		if h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
 			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
+				// Capture this exact generation once. Input processing must never
+				// look up a replacement transport by session ID later.
+				inputTransport = transport
+				inputGeneration = transport.generation
 				bootstrap, liveCh, fanRec, hasRec := transport.SubscriberFanOut(session)
 				if hasRec {
 					rec = fanRec
@@ -323,7 +343,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// PB.7 Input-A: announce device effective permissions before any
 	// user input. The terminal page sets its readOnly flag from this
 	// frame so pokitSendInput is gated before the first keystroke.
-	permAnnounce := permissionAnnouncement(ticketPrincipal)
+	permAnnounce := permissionAnnouncement(ticketPrincipal, inputGeneration)
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
 	default:
@@ -367,6 +387,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}()
 
 	var lastDenial time.Time
+	var inputSequence uint64
 	for {
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -432,13 +453,28 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			h.Transcript.BeginInput(session, time.Now())
 		}
 		// PA2d: controlled_pty input routes through TerminalTransport.
-		if ref.Adapter == "controlled_pty" && h.Lifecycle != nil && h.Lifecycle.OwnedPTY() != nil {
-			if transport, ok := h.Lifecycle.OwnedPTY().Transport(session); ok && transport != nil {
-				if _, inErr := transport.WriteInput(msg); inErr != nil {
+		if ref.Adapter == "controlled_pty" {
+			if inputTransport == nil {
+				triggerClose(fmt.Errorf("input transport unavailable"))
+				break
+			}
+			written, inErr := inputTransport.WriteInput(msg)
+			if inErr != nil || written != len(msg) {
+				if inErr != nil {
 					log.Printf("WS input write err: %v", inErr)
-					triggerClose(fmt.Errorf("input failed"))
-					break
+				} else {
+					log.Printf("WS input short write: got %d want %d", written, len(msg))
 				}
+				triggerClose(fmt.Errorf("input failed"))
+				break
+			}
+			inputSequence++
+			select {
+			case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: inputAcknowledgement(inputGeneration, inputSequence)}:
+			case <-writerDone:
+				break
+			case <-r.Context().Done():
+				break
 			}
 		}
 	}
@@ -482,7 +518,7 @@ html,body{width:100%;height:100%;background:#000}
 // Input remains denied until the server's hello frame explicitly grants the
 // terminal:input capability. This also closes the reconnect window before a
 // replacement ticket's authorization arrives.
-var readOnly=true,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
+var readOnly=true,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false,inputGeneration=null,inputSequence=0;
 	// E8: diagnostic counters — increment-only, never reset.
 	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
@@ -495,9 +531,9 @@ term.open(document.getElementById("t"));
 // the ONLY text frames and are sent elsewhere. Exposed on window so the
 // mobile host (FeedScreen Send/macros) uses the exact same contract.
 var _pokitEnc=new TextEncoder();
-function pokitSendInput(s){if(readOnly)return;
+function pokitSendInput(s){if(readOnly||inputGeneration===null)return;
   var w=window.ws;
-  if(w&&w.readyState===1){ try{ w.send(_pokitEnc.encode(s)); }catch(e){} }
+  if(w&&w.readyState===1){ try{ w.send(_pokitEnc.encode(s));inputSequence++;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",generation:inputGeneration,sequence:inputSequence}));} }catch(e){} }
 }
 window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
 
@@ -520,6 +556,7 @@ function stopSession(text) {
 function connect(){
   if(reconnecting||stopped)return;
 	readOnly=true;
+  inputGeneration=null;inputSequence=0;
   var protocol=location.protocol==='https:'?'wss://':'ws://';
   if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
   opened=false;
@@ -546,7 +583,7 @@ function connect(){
     // overwritten by this onmessage assignment. Returning here on text ensures
     // unknown/malformed control frames fail closed and are never rendered as
     // PTY output.
-    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];readOnly=p.indexOf("terminal:input")===-1;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
+    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];inputGeneration=Number.isInteger(ctrl.generation)?ctrl.generation:null;readOnly=p.indexOf("terminal:input")===-1||inputGeneration===null;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="input_ack"){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;

@@ -34,7 +34,7 @@ func TestInputA_PermissionAnnouncementCarriesCapabilities(t *testing.T) {
 		Type         string   `json:"type"`
 		Capabilities []string `json:"capabilities"`
 	}
-	if err := json.Unmarshal(permissionAnnouncement(p), &hello); err != nil {
+	if err := json.Unmarshal(permissionAnnouncement(p, 7), &hello); err != nil {
 		t.Fatal(err)
 	}
 	if hello.Type != "hello" || len(hello.Capabilities) != 1 || hello.Capabilities[0] != devicetrust.PermTerminalInput {

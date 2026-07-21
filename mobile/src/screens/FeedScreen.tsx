@@ -48,6 +48,9 @@ function jsSend(chars: number[]): string {
   return `window.ws.send(String.fromCharCode.apply(null, ${arr}))`;
 }
 
+const INPUT_ACK_TIMEOUT_MS = 3000;
+type SendStatus = 'idle' | 'sending' | 'socket_sent' | 'delivered' | 'not_delivered' | 'failed';
+
 const NORMAL_MACROS: { label: string; chars: number[] }[] = [
   { label: 'Ctrl+C',  chars: [3] },
   { label: 'Esc',     chars: [27] },
@@ -208,7 +211,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   }, [supportsLiveTerminal, activeTab]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   // E8: input delivery status — idle | sending | sent | failed
-  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  const [sendStatus, setSendStatus] = useState<SendStatus>('idle');
+  // Each WebView send is correlated by the generation/sequence assigned by
+  // the daemon connection. Socket send is not delivery: only this exact ACK
+  // may move a pending input to delivered.
+  const pendingInputRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // PB.7 Input-A: caps is a server-authorized capability snapshot. Missing,
   // stale, or not-yet-announced capability data is read-only before any frame.
   const [caps, setCaps] = useState<string[]>(() => Array.isArray(initialCaps) ? initialCaps : []);
@@ -233,6 +240,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   const [termError, setTermError] = useState<string>('');
   const ctrlRef = useRef<TerminalController | null>(null);
   const currentAttemptIdRef = useRef<number>(0);
+
+  useEffect(() => () => {
+    for (const timeout of pendingInputRef.current.values()) clearTimeout(timeout);
+    pendingInputRef.current.clear();
+  }, []);
+  useEffect(() => {
+    for (const timeout of pendingInputRef.current.values()) clearTimeout(timeout);
+    pendingInputRef.current.clear();
+  }, [session]);
 
   const doBootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string) => {
     const ctrl = new TerminalController();
@@ -448,8 +464,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       // the page's single sender. Fall back to an inline binary encode if the
       // page helper is not yet defined (still binary — never a text frame).
       'if(window.pokitSendInput){window.pokitSendInput(' + JSON.stringify(parsedText) + ');}' +
-      'else{w.send(new TextEncoder().encode(' + JSON.stringify(parsedText) + '));}' +
-      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"sent"}));' +
+      'else{throw new Error("terminal input protocol unavailable");}' +
       '}catch(e){' +
       'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
       '}' +
@@ -545,9 +560,25 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         setCopyModalVisible(true);
       }
       if (data.type === 'sendStatus') {
-        setSendStatus(data.status === 'sent' ? 'sent' : 'failed');
-        if (data.status === 'sent') {
-          setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
+        setSendStatus(data.status === 'sent' ? 'socket_sent' : 'failed');
+      }
+      if (data.type === 'input_pending' && Number.isInteger(data.generation) && Number.isInteger(data.sequence)) {
+        const key = `${data.generation}:${data.sequence}`;
+        const existing = pendingInputRef.current.get(key);
+        if (existing) clearTimeout(existing);
+        const timeout = setTimeout(() => {
+          if (pendingInputRef.current.delete(key)) setSendStatus('not_delivered');
+        }, INPUT_ACK_TIMEOUT_MS);
+        pendingInputRef.current.set(key, timeout);
+        setSendStatus('socket_sent');
+      }
+      if (data.type === 'input_ack' && Number.isInteger(data.generation) && Number.isInteger(data.sequence)) {
+        const key = `${data.generation}:${data.sequence}`;
+        const timeout = pendingInputRef.current.get(key);
+        if (timeout) {
+          clearTimeout(timeout);
+          pendingInputRef.current.delete(key);
+          setSendStatus('delivered');
         }
       }
       if (data.type === 'hello') {
@@ -935,8 +966,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           />
           {/* E8: input delivery status indicator */}
           {sendStatus !== 'idle' && (
-            <Text style={[styles.sendStatus, sendStatus === 'failed' && styles.sendFailed]}>
-              {sendStatus === 'sending' ? '↑' : sendStatus === 'sent' ? '✓' : '✗'}
+            <Text testID="terminal-send-status" style={[styles.sendStatus, (sendStatus === 'failed' || sendStatus === 'not_delivered') && styles.sendFailed]}>
+              {sendStatus === 'sending' ? '↑' : sendStatus === 'socket_sent' ? 'Sent to socket' : sendStatus === 'delivered' ? 'Delivered to terminal' : sendStatus === 'not_delivered' ? 'Not delivered' : '✗'}
             </Text>
           )}
           <TouchableOpacity testID="terminal-send" disabled={!terminalInputEnabled} onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
