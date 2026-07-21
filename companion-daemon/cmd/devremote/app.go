@@ -77,7 +77,7 @@ type tunnelProc struct {
 	done chan struct{}
 }
 
-func (t *tunnelProc) Done() <-chan struct{}      { return t.done }
+func (t *tunnelProc) Done() <-chan struct{} { return t.done }
 func (t *tunnelProc) Signal(sig os.Signal) error {
 	if t == nil || t.cmd == nil || t.cmd.Process == nil {
 		return os.ErrProcessDone

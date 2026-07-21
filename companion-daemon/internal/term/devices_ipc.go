@@ -99,9 +99,9 @@ func handleDevicesRecoverOwner(conn net.Conn, oldOwnerID, newOwnerID string) {
 		})
 	}
 	writeIPC(conn, map[string]interface{}{
-		"status":       "recovered",
-		"oldOwnerId":   oldOwnerID,
-		"newOwnerId":   newOwnerID,
+		"status":        "recovered",
+		"oldOwnerId":    oldOwnerID,
+		"newOwnerId":    newOwnerID,
 		"oldOwnerState": "revoked",
 		"newOwnerRole":  "owner",
 	})

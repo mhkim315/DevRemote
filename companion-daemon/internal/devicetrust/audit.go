@@ -25,12 +25,12 @@ import (
 // Audit action constants — a closed set. An action names an operation; it never
 // carries free-form or sensitive text.
 const (
-	ActionAuthVerify     = "auth.verify"
-	ActionDeviceRevoke   = "device.revoke"
-	ActionOwnerRecovery  = "owner.recovery"
-	ActionSessionStop    = "session.stop"
-	ActionSessionKill    = "session.kill"
-	ActionWSTicketDeny   = "ws.ticket.deny"
+	ActionAuthVerify    = "auth.verify"
+	ActionDeviceRevoke  = "device.revoke"
+	ActionOwnerRecovery = "owner.recovery"
+	ActionSessionStop   = "session.stop"
+	ActionSessionKill   = "session.kill"
+	ActionWSTicketDeny  = "ws.ticket.deny"
 )
 
 // Audit result constants — a closed set.
