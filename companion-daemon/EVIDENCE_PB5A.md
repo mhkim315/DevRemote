@@ -34,6 +34,31 @@ spawn check in `pb5b_single_spawn_test.go`).
 | `TestStep6a_ReplacementCapturesOldRecorder` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
 | `TestStep6a_RollbackCleanupIsInstanceGuarded` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
 | `TestStep6a_RollbackProof` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_1_RegistryCodexPrefixGhostExcluded` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_RegistryClaudePrefixGhostExcluded` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_RegistryControlledPTYPrefixGhostExcluded` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_RegistryMetadataCannotOverrideCatalog` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_StaleGenerationNotResurrectedThroughRegistry` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_1_DefaultConfigEnforcesIsolation` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_1_LegacyNonManagedRegistryBehaviorUnchanged` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_1_AppendCatalogDropsCollidingRegistryRows` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_HandleSessionsV2BothProviders` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_NilCatalogNoPanic` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_1_ConcurrentCatalogListIsolation` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_5_NoManagedToLegacyFallbackExists` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_LegacyObserverRoutesAreContained` | No V1 equivalent needed (property is now structural) |
+| `TestPA4_5_AllManagedReadPathsIsolatedFromRegistry` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_PA4AcceptanceGatesRecorded` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_NoTemporaryComparisonFacadeRemains` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_LiveAcceptanceGateStatus` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_UnwiredOwnerFailsClosed` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup` | `TestPB5V1_StopUsesTypedSignalAndWait` |
+| `TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected` | `TestPB5V1_ProcessCleanupIsExactlyOnce` |
+| `TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPB2a_ManagedPathsUnaffectedByLinkRemoval` | `go run scripts/archgate.go --task=1` |
 
 The V1 tests exercise only `ManagedPTYLauncherV1`, `LaunchResult`,
 `LaunchIdentity`, `PTYHandle`, and `ProcessCleanup`; no test adapter bridge is
