@@ -55,25 +55,12 @@ func TestInputB_StrictParserRejectsMalformedUnknownAndTrailing(t *testing.T) {
 		valid + ` {}`,
 		strings.Replace(valid, testInputID(), strings.Repeat("A", inputIDLen), 1),
 		strings.Replace(valid, testInputID(), strings.Repeat("a", inputIDLen-1), 1),
+		strings.Replace(valid, testInputID(), strings.Repeat("a", inputIDLen+1), 1),
 		strings.Replace(valid, `"payload":"eA=="`, `"payload":"%%%"`, 1),
 	} {
 		if _, _, err := parseInputControlRequest([]byte(raw)); err == nil || err.Error() != "invalid_request" {
 			t.Fatalf("raw=%q err=%v, want invalid_request", raw, err)
 		}
-	}
-}
-
-func TestInputB_ConnectionCloseClearsReplayCache(t *testing.T) {
-	cache := newInputRecentCache()
-	digest := requestDigest(&inputControlRequest{SessionID: "controlled_pty:input-b-ack", Generation: 7, Payload: "eA=="})
-	cache.store(testInputID(), digest, "accepted", 1)
-	if _, _, ok := cache.get(testInputID(), digest); !ok {
-		t.Fatal("cache did not retain live input before close")
-	}
-	// HandleWS defers this exact operation for each WebSocket connection.
-	cache.clear()
-	if _, _, ok := cache.get(testInputID(), digest); ok {
-		t.Fatal("connection-close cleanup retained replay state")
 	}
 }
 

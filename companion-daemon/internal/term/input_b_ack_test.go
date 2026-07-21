@@ -34,10 +34,19 @@ func (w *inputBWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// openInputBWS builds the real ticket-authenticated HandleWS path with a
-// captured generation-7 transport. Tests exercise the production reader and
-// writer goroutines.
-func openInputBWS(t *testing.T, writer *inputBWriter) (*websocket.Conn, int64) {
+type inputBWSFixture struct {
+	server     *httptest.Server
+	tickets    *devicetrust.WSTicketStore
+	principal  *devicetrust.Principal
+	hostID     string
+	session    string
+	generation int64
+}
+
+// newInputBWSFixture builds the real ticket-authenticated HandleWS path with
+// a captured generation-7 transport. Tests exercise production reader/writer
+// goroutines and may reconnect against the same server.
+func newInputBWSFixture(t *testing.T, writer *inputBWriter) *inputBWSFixture {
 	t.Helper()
 	const session = "controlled_pty:input-b-ack"
 	const generation = int64(7)
@@ -66,23 +75,34 @@ func openInputBWS(t *testing.T, writer *inputBWriter) (*websocket.Conn, int64) {
 		t.Fatal("device session did not authenticate")
 	}
 	tickets := devicetrust.NewWSTicketStore()
-	ticket, _, err := tickets.Issue(principal, identity.HostID, session)
-	if err != nil {
-		t.Fatal(err)
-	}
 	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil), WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity}
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
 	t.Cleanup(srv.Close)
-	u, _ := url.Parse(srv.URL)
+	return &inputBWSFixture{server: srv, tickets: tickets, principal: principal, hostID: identity.HostID, session: session, generation: generation}
+}
+
+func (f *inputBWSFixture) dial(t *testing.T) *websocket.Conn {
+	t.Helper()
+	ticket, _, err := f.tickets.Issue(f.principal, f.hostID, f.session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(f.server.URL)
 	u.Scheme = "ws"
 	u.Path = "/term/ws"
-	u.RawQuery = "session=" + url.QueryEscape(session) + "&ticket=" + url.QueryEscape(ticket)
+	u.RawQuery = "session=" + url.QueryEscape(f.session) + "&ticket=" + url.QueryEscape(ticket)
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return conn
+}
+
+func openInputBWS(t *testing.T, writer *inputBWriter) (*websocket.Conn, int64) {
+	f := newInputBWSFixture(t, writer)
+	conn := f.dial(t)
 	t.Cleanup(func() { _ = conn.Close() })
-	return conn, generation
+	return conn, f.generation
 }
 
 // controlRequest builds a versioned terminal_input TextMessage.
@@ -242,6 +262,85 @@ func TestInputB_DuplicateInputIDReplaysCached(t *testing.T) {
 	// WriteInput must NOT have been called a second time.
 	if len(writer.wrote) != len(input) {
 		t.Fatalf("WriteInput called twice: wrote %d bytes, want %d", len(writer.wrote), len(input))
+	}
+}
+
+func TestInputB_QueuedDuplicateArrivalWritesOnlyOnce(t *testing.T) {
+	writer := &inputBWriter{}
+	conn, generation := openInputBWS(t, writer)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("queued duplicate")
+	req := controlRequest("controlled_pty:input-b-ack", generation, testInputID(), payload)
+	// Queue both frames before the reader consumes either result. HandleWS owns
+	// one ordered reader, so the second arrival must hit the first result cache.
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result inputResult
+		if err := json.Unmarshal(raw, &result); err != nil || result.Outcome != "accepted" || result.Sequence != 1 {
+			t.Fatalf("queued duplicate result=%s decoded=%+v err=%v", raw, result, err)
+		}
+	}
+	if string(writer.wrote) != string(payload) {
+		t.Fatalf("queued duplicate wrote %q, want one %q", writer.wrote, payload)
+	}
+}
+
+func TestInputB_HandleWSCloseDropsConnectionReplayState(t *testing.T) {
+	writer := &inputBWriter{}
+	f := newInputBWSFixture(t, writer)
+	conn := f.dial(t)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	req := controlRequest(f.session, f.generation, testInputID(), []byte("per connection"))
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new authenticated HandleWS connection owns a fresh replay cache. This
+	// exercises the production close/defer path rather than calling clear() in
+	// isolation; the reused input ID is a new per-connection request.
+	conn = f.dial(t)
+	t.Cleanup(func() { _ = conn.Close() })
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result inputResult
+	if err := json.Unmarshal(raw, &result); err != nil || result.Outcome != "accepted" {
+		t.Fatalf("reconnected result=%s decoded=%+v err=%v", raw, result, err)
+	}
+	if string(writer.wrote) != "per connectionper connection" {
+		t.Fatalf("writes=%q", writer.wrote)
 	}
 }
 

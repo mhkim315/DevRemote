@@ -213,6 +213,29 @@ describe('FeedScreen production input authorization', () => {
     jest.useRealTimers();
   });
 
+  it('makes an unknown Enter fail the text sibling and ignores late text or macro results', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    const input = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+    const send = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    await act(async () => input().props.onChangeText('unknown sibling'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
+    await act(async () => { jest.advanceTimersByTime(40); });
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-1', part: 'enter' })));
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'delivery_unknown', operationId: 'line-1', part: 'enter' }) } }));
+    expect(statusText(tree)).toBe('Possible partial delivery');
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'delivery_unknown', operationId: 'macro-1', part: 'text' }) } }));
+    expect(statusText(tree)).toBe('Possible partial delivery');
+    await act(async () => tree.unmount());
+    jest.useRealTimers();
+  });
+
   it('ignores result frames whose connection, session, generation, or input ID does not match the pending request', async () => {
     const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
     let tree: any;
@@ -255,9 +278,9 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2, outcome: 'write_failed' })));
-    expect(statusText(tree)).toBe('Not delivered');
+    expect(statusText(tree)).toBe('Possible partial delivery');
     await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, outcome: 'accepted' })));
-    expect(statusText(tree)).toBe('Not delivered');
+    expect(statusText(tree)).toBe('Possible partial delivery');
     expect(input().props.value).toBe('partial');
 
     // An overlapping Send cannot replace a live line operation's ACK slots.
@@ -268,6 +291,20 @@ describe('FeedScreen production input authorization', () => {
     expect(statusText(tree)).toBe('Not delivered');
     await act(async () => tree.unmount());
     jest.useRealTimers();
+  });
+
+  it('fails closed when a permission-refresh hello revokes input during a pending ACK', async () => {
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history'], connectionId: 'fedcba9876543210fedcba9876543210' })));
+    expect(isDisabled(tree, 'terminal-input')).toBe(true);
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    expect(statusText(tree)).not.toBe('Delivered to terminal');
+    await act(async () => tree.unmount());
   });
 
   it('preserves command and reports partial delivery on first or second non-accepted result and timeout', async () => {
@@ -284,7 +321,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => send().props.onPress());
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'write_failed' })));
-    expect(statusText(tree)).toBe('Not delivered');
+    expect(statusText(tree)).toBe('Possible partial delivery');
     expect(input().props.value).toBe('first failure');
 
     await act(async () => input().props.onChangeText('second failure'));
@@ -294,7 +331,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3, operationId: 'line-2', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID3, outcome: 'write_failed' })));
-    expect(statusText(tree)).toBe('Not delivered');
+    expect(statusText(tree)).toBe('Possible partial delivery');
     expect(input().props.value).toBe('second failure');
 
     await act(async () => input().props.onChangeText('timeout'));

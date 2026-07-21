@@ -685,7 +685,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
               }
             }
             pendingLineRef.current = null;
-            setSendStatus('not_delivered'); // possible partial delivery; preserve command
+            // A short/failed PTY write can still have consumed a prefix. Do
+            // not present that as a definite non-delivery.
+            setSendStatus(data.outcome === 'write_failed' ? 'delivery_unknown' : 'not_delivered');
           } else if (line.enterQueued && line.textId !== null && line.enterId !== null && line.textOutcome === 'accepted' && line.enterOutcome === 'accepted') {
             pendingLineRef.current = null;
             setSendStatus('delivered');
@@ -701,10 +703,27 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       }
       if (data.type === 'delivery_unknown') {
         const operationId = typeof data.operationId === 'string' ? data.operationId : null;
-        if (operationId && pendingLineRef.current?.operationId === operationId) {
+        const line = pendingLineRef.current;
+        if (operationId && line && line.operationId === operationId) {
+          // One unknown sibling makes the entire two-frame command unknown.
+          // Otherwise a late accepted text/Enter ACK could falsely settle the
+          // command as Delivered after the page failed to submit its sibling.
+          for (const sibling of [line.textId, line.enterId]) {
+            if (!sibling) continue;
+            abandonedInputRef.current.add(sibling);
+            const siblingPending = pendingInputRef.current.get(sibling);
+            if (siblingPending) {
+              clearTimeout(siblingPending.timeout);
+              pendingInputRef.current.delete(sibling);
+            }
+          }
           pendingLineRef.current = null;
+          setSendStatus('delivery_unknown');
+        } else if (!line) {
+          // Macro/paste/keyboard failures are independent operations. They
+          // may update the status only when no line awaits both ACKs.
+          setSendStatus('delivery_unknown');
         }
-        setSendStatus('delivery_unknown');
       }
       // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
       // Reason persists until the server explicitly re-grants or the session changes.
