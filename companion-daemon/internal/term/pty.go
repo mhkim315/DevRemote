@@ -292,8 +292,8 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// E10b: atomic subscribe+bootstrap.  For controlled_pty routed
 	// through TerminalTransport, the transport SubscriberFanOut already
 	// provided the bootstrap and subscriber channel — no second
-	// Recorder subscription.  For the Registry path, atomically swap
-	// the EnsureRecorder starter channel for the full subscribe+bootstrap.
+	// Recorder subscription. The transport owns the full
+	// subscribe+bootstrap sequence.
 	if len(transportBootstrap) > 0 {
 		select {
 		case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: transportBootstrap}:

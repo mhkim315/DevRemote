@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"os"
 	"strings"
 	"sync"
@@ -373,16 +371,6 @@ func TestPA2c_OwnedPTY_ExactlyOnceTerminalConvergence(t *testing.T) {
 // the legacy IsManaged/Register bypasses are gone; lifecycle signalling
 // never resolves a process from the Registry at action time.
 func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
-	// lifecycle_service.go must not import internal/mux (dispatch only).
-	f, err := parser.ParseFile(token.NewFileSet(), "lifecycle_service.go", nil, parser.ImportsOnly)
-	if err != nil {
-		t.Fatalf("parse lifecycle_service.go: %v", err)
-	}
-	for _, imp := range f.Imports {
-		if strings.Contains(imp.Path.Value, "internal/mux") {
-			t.Errorf("lifecycle_service.go imports internal/mux — the dispatcher must not depend on the Registry")
-		}
-	}
 	// SessionCatalog and the bypass surfaces are deleted from production term.
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -454,7 +442,7 @@ func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 		t.Fatalf("incomplete launch cleanup=%d, want 1", cleanup.count())
 	}
 	// No recorder was created (spawn never happened).
-	if GetRecorder("controlled_pty:"+local) != nil {
+	if recorder := ownedRecorderForTest(owned, "controlled_pty:"+local); recorder != nil {
 		t.Fatal("recorder present despite pre-spawn rejection")
 	}
 }

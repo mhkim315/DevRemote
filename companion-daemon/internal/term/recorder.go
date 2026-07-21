@@ -41,13 +41,8 @@ type Recorder struct {
 
 // transcriptSvcSingleton is the optional T3 Transcript service, set once
 // during app initialization. Recorders check this to feed byte-stream data
-// into the Transcript byte-stream projector without requiring signature
-// changes to StartRecorder/EnsureRecorder.
+// into the Transcript byte-stream projector.
 var transcriptSvcSingleton *transcript.Service
-
-// recorderLifecycleObserver is a test seam only. Production leaves it nil;
-// recorder ownership never consults or populates a process-wide lookup.
-var recorderLifecycleObserver func(*Recorder, bool)
 
 // SetTranscriptService sets the process-wide Transcript service for Recorder feeding.
 func SetTranscriptService(svc *transcript.Service) {
@@ -81,9 +76,6 @@ func StartRecorder(sessionID string, stream ptyStream) (*Recorder, chan []byte) 
 		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
 	}
 	go r.readLoop()
-	if recorderLifecycleObserver != nil {
-		recorderLifecycleObserver(r, false)
-	}
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch
 }
@@ -146,9 +138,6 @@ func (r *Recorder) Unsubscribe(ch chan []byte) {
 
 // Stop terminates the recorder. Idempotent.
 func (r *Recorder) Stop() {
-	if recorderLifecycleObserver != nil {
-		recorderLifecycleObserver(r, true)
-	}
 	r.cancel()
 	r.stream.Close()
 	if r.transcriptSvc != nil {
@@ -342,22 +331,6 @@ func indexOf(haystack, needle []byte) int {
 		}
 	}
 	return -1
-}
-
-// openStreamFn opens a PTY stream.
-type openStreamFn func() (ptyStream, error)
-
-// EnsureRecorder is retained for non-production test fixtures. Production
-// callers must hold a direct Recorder reference through TerminalTransport.
-func EnsureRecorder(sessionID string, openStream openStreamFn) (*Recorder, chan []byte) {
-	if openStream == nil {
-		return nil, nil
-	}
-	stream, err := openStream()
-	if err != nil {
-		return nil, nil
-	}
-	return StartRecorder(sessionID, stream)
 }
 
 // WriteInput sends input to the PTY stream.

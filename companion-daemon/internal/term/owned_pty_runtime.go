@@ -47,10 +47,6 @@ type OwnedPTYRuntime struct {
 func NewOwnedPTYRuntime(v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
 	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), now: time.Now, locks: make(map[string]*sync.Mutex)}
 }
-func NewOwnedPTYRuntimeV1(v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) *OwnedPTYRuntime {
-	return NewOwnedPTYRuntime(v1, transcriptSvc)
-}
-func (o *OwnedPTYRuntime) V1() ManagedPTYLauncherV1         { return o.v1Spawn }
 func (o *OwnedPTYRuntime) SetStatusClearer(c StatusClearer) { o.status = c }
 func (o *OwnedPTYRuntime) Transport(id string) (*TerminalTransport, bool) {
 	o.mu.Lock()

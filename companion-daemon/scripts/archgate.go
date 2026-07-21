@@ -49,15 +49,6 @@ func main() {
 			fail("forbidden legacy lifecycle reference: " + forbidden)
 		}
 	}
-	for _, path := range []string{"internal/term/owned_pty_runtime.go", "internal/term/pty_launcher_v1.go", "internal/term/cleanup_capability.go"} {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			fail(err.Error())
-		}
-		if strings.Contains(string(b), "internal/mux") {
-			fail(path + " imports mux")
-		}
-	}
 	fmt.Println("PASS: PB.5a V1-only managed lifecycle")
 }
 func fail(msg string) { fmt.Fprintln(os.Stderr, "FAIL:", msg); os.Exit(1) }

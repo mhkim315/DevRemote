@@ -187,7 +187,7 @@ func TestManagedInteractiveCreate_StructuredNoShellNoAutoTurn(t *testing.T) {
 func TestManagedIPCCreate_LegacyCodexCommandRemoved(t *testing.T) {
 	app := &interactiveAppServer{threadID: "thread-A6"}
 	managed, fl := newInteractiveService(t, app)
-	resp := ipcRoundTripWith(t, nil, managed, map[string]any{
+	resp := ipcRoundTripWith(t, managed, map[string]any{
 		"version": 1, "operation": "create", "command": " codex ",
 	})
 	if !strings.Contains(resp["error"], "structured codex profile") {

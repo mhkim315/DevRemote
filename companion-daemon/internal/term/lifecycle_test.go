@@ -13,7 +13,7 @@ import (
 // ── Fakes: dispatch + state-rule tests without a real process ──
 //
 // A fake controlled session has no Recorder, so OwnedPTYRuntime.awaitExit
-// returns immediately (GetRecorder is nil) and Stop/Kill converge to a
+// returns immediately and Stop/Kill converge to a
 // terminal state deterministically. PA2c: lifecycle routing is driven by the
 // canonical adapter PREFIX dispatch table, never by adapter capability or
 // Registry probing.
@@ -206,8 +206,7 @@ func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
 		t.Fatalf("create real session: %v", err)
 	}
 	t.Cleanup(func() {
-		DeleteRecorder(id)
-		_, _ = owned.Kill(context.Background(), id)
+		closeOwnedForTest(owned, id)
 	})
 	return id
 }
@@ -216,7 +215,7 @@ func TestLifecycle_Stop_RealProcess_TerminatesAndRetainsHistory(t *testing.T) {
 	svc := realService(t)
 	id := realManaged(t, svc, "sleep 30")
 	// A subscriber must receive EOF (channel close) when the session ends.
-	rec := GetRecorder(id)
+	rec := ownedRecorderForTest(svc.OwnedPTY(), id)
 	if rec == nil {
 		t.Fatal("no recorder")
 	}

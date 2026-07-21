@@ -2,7 +2,6 @@ package term
 
 import (
 	"io"
-	"log"
 	"sync"
 )
 
@@ -12,8 +11,7 @@ import (
 // OpenStream — the Recorder remains the sole PTY reader.
 
 // ptyStream is the local interface for a PTY byte stream (replaces
-// mux.TerminalStream in the Recorder). It combines ReadWriteCloser with
-// Resize.
+// the recorder's byte stream). It combines ReadWriteCloser with Resize.
 type ptyStream interface {
 	io.ReadWriteCloser
 	Resize(rows, cols int) error
@@ -149,16 +147,4 @@ func (t *TerminalTransport) IsRetired() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.retired
-}
-
-// EnsureRecorderTransport starts a Recorder for the given session via an
-// opener, replacing the former stream-opener dependency. The opener is any
-// value that can open a ptyStream.
-func EnsureRecorderTransport(sessionID string, openStream func() (ptyStream, error)) (*Recorder, chan []byte) {
-	stream, err := openStream()
-	if err != nil {
-		log.Printf("TerminalTransport: openStream failed for %s: %v", sessionID, err)
-		return nil, nil
-	}
-	return StartRecorder(sessionID, stream)
 }

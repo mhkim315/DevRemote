@@ -3,15 +3,10 @@
 //
 // This package owns ONLY structural identity: the canonical
 // "<adapter>:<local-id>" form, its parsing, serialization, structural
-// validation, and the adapter-name grammar. It deliberately excludes legacy
-// migration (MigrateLegacyID stays in internal/mux), adapter discovery,
-// registry lookup/mutation, approval claim/delivery/consumption logic,
+// validation, and the adapter-name grammar. It deliberately excludes adapter
+// discovery, registry lookup/mutation, approval claim/delivery/consumption logic,
 // provider-specific identity validation, authority-version validation, and
 // lifecycle generation authority — those remain with their current owners.
-//
-// internal/sessionid must not import internal/mux (enforced by the PA2b
-// forbidden-import gate); internal/mux retains thin deprecated wrappers that
-// delegate here.
 package sessionid
 
 import (
@@ -21,8 +16,7 @@ import (
 )
 
 // ErrInvalidSessionID is the sentinel for structurally invalid session
-// identities. internal/mux aliases its ErrInvalidSessionID to this exact
-// value, so errors.Is matches through either name.
+// identities.
 var ErrInvalidSessionID = errors.New("invalid session ID")
 
 // SessionRef decomposes a compound canonical session ID (e.g. "legacy:devremote")

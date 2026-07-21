@@ -10,7 +10,7 @@ import (
 // TestPA4_4_ManagedRuntimeCatalogNeverProbesObserver proves the catalog
 // contract explicitly forbids Registry, discovery, screen, and JSONL.
 func TestPA4_4_ManagedRuntimeCatalogNeverProbesObserver(t *testing.T) {
-	// ManagedRuntimeCatalog doc comment: "It never probes mux.Registry,
+	// ManagedRuntimeCatalog doc comment: "It never probes legacy discovery,
 	// discovery, process names, panes, screen text, PTY bytes, or JSONL."
 	// Structural proof: the interface has only Get, List, RuntimeOf,
 	// ManagedAdapterPrefixes, ManagedCapabilities — all read from

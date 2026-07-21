@@ -54,20 +54,18 @@ func (*stuckPTYHandle) Wait(ctx context.Context) LifecycleOutcome {
 }
 
 func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
-	// Unique local id per run: the global recorder map unregisters
-	// asynchronously on stop, so a repeated run (-count=N) reusing one fixed
-	// id can race the previous iteration's teardown. The runtime code under
-	// test is id-agnostic; uniqueness only isolates iterations.
+	// A unique local id keeps repeated runs isolated. The runtime code under
+	// test is id-agnostic.
 	localID := genLocalID("stuck")
 	handle := &stuckPTYHandle{stream: &fakeStream{closed: make(chan struct{})}}
 	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 	svc.OwnedPTY().graceful = 50 * time.Millisecond
 	svc.OwnedPTY().killGrace = 50 * time.Millisecond
 	id := "controlled_pty:" + localID
-	rec, _ := EnsureRecorder(id, func() (ptyStream, error) { return handle.stream, nil })
+	rec, _ := StartRecorder(id, handle.stream)
 	o := svc.OwnedPTY()
 	o.register(id, "", "n", handle, LaunchIdentity{InstanceID: localID, StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{handle}, handle, rec), rec)
-	t.Cleanup(func() { DeleteRecorder(id) })
+	t.Cleanup(func() { closeOwnedForTest(o, id) })
 
 	res, err := svc.Stop(context.Background(), id)
 	if err != ErrLifecycleTerminateFailed {
@@ -80,7 +78,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	if e, _ := svc.OwnedPTY().Get(id); e.State.Terminal() {
 		t.Fatalf("catalog marked terminal despite unconfirmed termination: %+v", e)
 	}
-	if GetRecorder(id) == nil {
+	if ownedRecorderForTest(o, id) == nil {
 		t.Fatalf("recorder removed despite unconfirmed termination")
 	}
 }

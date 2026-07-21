@@ -157,7 +157,7 @@ func TestCreate_ProfileShell_RunningRecorderReadyNoPhantom(t *testing.T) {
 	if !strings.HasPrefix(lc.ID, "controlled_pty:shell-") || lc.State != LifecycleRunning {
 		t.Fatalf("lifecycle = %+v, want daemon id + running", lc)
 	}
-	t.Cleanup(func() { DeleteRecorder(lc.ID) })
+	t.Cleanup(func() { closeOwnedForTest(h.Lifecycle.OwnedPTY(), lc.ID) })
 
 	opts, calls, _ := fa.snapshot()
 	if calls != 1 || opts.Executable == "" || !filepath.IsAbs(opts.Executable) {
@@ -170,7 +170,7 @@ func TestCreate_ProfileShell_RunningRecorderReadyNoPhantom(t *testing.T) {
 		t.Fatalf("cwd = %q, want exact %q", opts.CWD, dir)
 	}
 
-	rec := GetRecorder(lc.ID)
+	rec := ownedRecorderForTest(h.Lifecycle.OwnedPTY(), lc.ID)
 	if rec == nil || !rec.IsAlive() {
 		t.Fatalf("recorder not alive after create")
 	}
@@ -195,7 +195,7 @@ func TestCreate_ProfileShell_EmptyName_DefaultsToLabel(t *testing.T) {
 	if lc.Adapter != "controlled_pty" || lc.State != LifecycleRunning || lc.ID == "" {
 		t.Fatalf("lifecycle = %+v, want running controlled_pty with id", lc)
 	}
-	t.Cleanup(func() { DeleteRecorder(lc.ID) })
+	t.Cleanup(func() { closeOwnedForTest(h.Lifecycle.OwnedPTY(), lc.ID) })
 }
 
 // BLOCKER 2: OpenStream failure must never report running and must clean up.
@@ -271,11 +271,12 @@ func TestCreate_InvalidCWDAndName_Rejected(t *testing.T) {
 // BLOCKER 1: privileged local create still runs an arbitrary command.
 func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(fa, nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
+	owned := NewOwnedPTYRuntime(fa, nil)
+	id, state, err := createLocalControlled(context.Background(), owned, localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
 	}
-	t.Cleanup(func() { DeleteRecorder(id) })
+	t.Cleanup(func() { closeOwnedForTest(owned, id) })
 	if state != LifecycleRunning || !strings.HasPrefix(id, "controlled_pty:run-") {
 		t.Fatalf("id=%q state=%q, want running run-*", id, state)
 	}
@@ -287,12 +288,13 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 
 func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(fa, nil),
+	owned := NewOwnedPTYRuntime(fa, nil)
+	id, _, err := createLocalControlled(context.Background(), owned,
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
 		t.Fatalf("custom argv err: %v", err)
 	}
-	t.Cleanup(func() { DeleteRecorder(id) })
+	t.Cleanup(func() { closeOwnedForTest(owned, id) })
 	opts, _, _ := fa.snapshot()
 	if filepath.Base(opts.Executable) != "bash" || len(opts.Args) != 2 {
 		t.Fatalf("opts=%+v, want resolved bash + 2 args", opts)
@@ -302,6 +304,7 @@ func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 // BLOCKER 3: malformed legacy command creates no session.
 func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 	_, fa := newTestHandlers(t)
+	owned := NewOwnedPTYRuntime(fa, nil)
 	malformed := []json.RawMessage{
 		json.RawMessage(`{"executable":"bash"}`), // object
 		json.RawMessage(`123`),                   // number
@@ -310,9 +313,9 @@ func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 		json.RawMessage(`""`),                    // empty string
 	}
 	for _, cmd := range malformed {
-		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(fa, nil), localCreateSpec{Command: cmd})
+		id, state, err := createLocalControlled(context.Background(), owned, localCreateSpec{Command: cmd})
 		if err == nil {
-			DeleteRecorder(id)
+			closeOwnedForTest(owned, id)
 			t.Fatalf("command %q accepted, want rejection", string(cmd))
 		}
 		if state != LifecycleFailed || id != "" {
