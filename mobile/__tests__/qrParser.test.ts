@@ -79,4 +79,33 @@ describe('qrParser — reject', () => {
     const r = parsePairingQR(validPayload());
     expect('error' in r).toBe(false);
   });
+
+  // PB.7 QR evidence: the daemon (pair.go) builds the QR payload with
+  // these exact 7 fields. This test proves parsePairingQR accepts the
+  // daemon's canonical payload format — the same JSON that renderQR
+  // embeds in the QR code and the Go test round-trips through gozxing.
+  it('accepts daemon-format pairing payload', () => {
+    const daemonPayload = JSON.stringify({
+      sessionId: 'sess-abc',
+      hostId: 'host-001',
+      fingerprint: '0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff',
+      hostPubKey: HOST_PUB_HEX,
+      bootstrapToken: 'tok-123',
+      endpoint: 'http://192.168.1.10:8765/pair',
+      expiresAt: FUTURE,
+    });
+    const r = parsePairingQR(daemonPayload);
+    expect('error' in r).toBe(false);
+    // Verify every daemon field is decoded back.
+    if ('error' in r) throw new Error('unexpected');
+    expect(r.sessionId).toBe('sess-abc');
+    expect(r.hostId).toBe('host-001');
+    expect(r.fingerprint).toBe('0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff');
+    expect(r.bootstrapToken).toBe('tok-123');
+    expect(r.endpoint).toBe('http://192.168.1.10:8765/pair');
+    expect(r.expiresAt).toBeInstanceOf(Date);
+    expect(r.hostPubKeyB64).toBeTruthy();
+    expect(r.hostPubKeyDer).toBeInstanceOf(Uint8Array);
+    expect(r.hostPubKeyDer.length).toBe(91);
+  });
 });

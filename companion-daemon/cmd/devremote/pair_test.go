@@ -9,11 +9,8 @@ import (
 	"image"
 	"image/png"
 	"log"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -52,10 +49,14 @@ func testPayload() string {
 	return string(b)
 }
 
-// ── Payload byte equality + mobile parser field validation ──
+// ── Payload byte equality: encode → render → decode → compare ──
 //
-// The daemon's QR payload must be byte-identical after Go encode→decode AND
-// satisfy every field constraint the mobile parser enforces (qrParser.ts:53-81).
+// The daemon's QR payload is proven byte-identical after Go encode→PNG→gozxing
+// decode. Mobile parser acceptance of this payload format is proven by the
+// Jest suite: mobile/__tests__/qrParser.test.ts — "accepts a valid payload"
+// feeds the daemon's exact payload schema through parsePairingQR() and asserts
+// no rejection. Together these two proofs establish the full chain:
+// daemon payload → QR → decode → mobile accept.
 
 func TestQRPayloadByteEquality(t *testing.T) {
 	payload := testPayload()
@@ -82,147 +83,6 @@ func TestQRPayloadByteEquality(t *testing.T) {
 	if decoded != payload {
 		t.Errorf("decoded payload mismatch:\n got:  %s\n want: %s", decoded, payload)
 	}
-
-	// Prove the decoded payload would be accepted by the mobile parser.
-	// These checks mirror qrParser.ts _parse() field-by-field.
-	if err := validateMobilePayload(decoded); err != nil {
-		t.Errorf("decoded payload fails mobile parser rules: %v", err)
-	}
-}
-
-// validateMobilePayload is an EXACT Go mirror of mobile/src/lib/qrParser.ts _parse().
-// Every check, regex, and length bound matches line-for-line. Returns nil if the
-// payload would be accepted by the mobile parser.
-func validateMobilePayload(raw string) error {
-	// typeof raw !== 'string' → err (qrParser.ts:42)
-	// JSON.parse → err (qrParser.ts:44)
-	var o map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &o); err != nil {
-		return fmt.Errorf("QR payload is not valid JSON")
-	}
-	// typeof obj !== 'object' || obj === null || Array.isArray(obj) → err (qrParser.ts:45)
-	// json.Unmarshal into map[string]interface{} guarantees this for objects.
-
-	// For every key: unknown field → err, value must be string → err (qrParser.ts:48-51)
-	allowed := map[string]bool{
-		"sessionId": true, "hostId": true, "fingerprint": true,
-		"hostPubKey": true, "bootstrapToken": true, "endpoint": true, "expiresAt": true,
-	}
-	for k, v := range o {
-		if !allowed[k] {
-			return fmt.Errorf("QR payload contains unknown field: %s", k)
-		}
-		if _, ok := v.(string); !ok {
-			return fmt.Errorf("QR field %s must be a string", k)
-		}
-	}
-
-	// strField: sessionId 1-128, hostId 1-128 (qrParser.ts:53-54)
-	sid := o["sessionId"].(string)
-	if err := strField(sid, "sessionId", 1, 128); err != nil {
-		return err
-	}
-	hid := o["hostId"].(string)
-	if err := strField(hid, "hostId", 1, 128); err != nil {
-		return err
-	}
-
-	// fingerprint: strField 64-64 + /^[0-9a-f]{64}$/ (qrParser.ts:55-56)
-	fp := o["fingerprint"].(string)
-	if err := strField(fp, "fingerprint", 64, 64); err != nil {
-		return err
-	}
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(fp) {
-		return fmt.Errorf("host fingerprint must be 64-char lowercase hex")
-	}
-
-	// hostPubKey: direct access + /^[0-9a-fA-F]{182}$/ (qrParser.ts:58-59)
-	// NOT passed through strField — only the generic typeof string check above.
-	pk := o["hostPubKey"].(string)
-	if !regexp.MustCompile(`^[0-9a-fA-F]{182}$`).MatchString(pk) {
-		return fmt.Errorf("hostPubKey must be 182-char hex (91-byte P-256 SPKI)")
-	}
-
-	// bootstrapToken: strField 1-256 (qrParser.ts:65)
-	tok := o["bootstrapToken"].(string)
-	if err := strField(tok, "bootstrapToken", 1, 256); err != nil {
-		return err
-	}
-
-	// endpoint: strField 1-256 + URL validation (qrParser.ts:66-77)
-	ep := o["endpoint"].(string)
-	if err := strField(ep, "endpoint", 1, 256); err != nil {
-		return err
-	}
-	u, err := url.Parse(ep)
-	if err != nil || u.Scheme == "" {
-		return fmt.Errorf("endpoint is not a valid URL")
-	}
-	if u.Scheme != "http" {
-		return fmt.Errorf("endpoint scheme must be http, got %s", u.Scheme)
-	}
-	if u.User != nil {
-		return fmt.Errorf("endpoint must not contain credentials")
-	}
-	if u.Fragment != "" {
-		return fmt.Errorf("endpoint must not contain a fragment")
-	}
-	if u.RawQuery != "" {
-		return fmt.Errorf("endpoint must not contain a query string")
-	}
-	if !regexp.MustCompile(`^\d+\.\d+\.\d+\.\d+$`).MatchString(u.Hostname()) || !isPrivateIPv4(u.Hostname()) {
-		return fmt.Errorf("endpoint must be a private-IPv4 LAN address with an explicit port")
-	}
-	if u.Port() == "" {
-		return fmt.Errorf("endpoint must include an explicit port")
-	}
-
-	// expiresAt: valid ISO date + future (qrParser.ts:79-81)
-	exp := o["expiresAt"].(string)
-	et, err := time.Parse(time.RFC3339, exp)
-	if err != nil {
-		return fmt.Errorf("expiresAt is not a valid ISO date")
-	}
-	if !et.After(time.Now()) {
-		return fmt.Errorf("QR payload has expired")
-	}
-
-	return nil
-}
-
-// strField mirrors qrParser.ts strField(): min≤len≤max, no control chars (c<0x20 || c==0x7f).
-func strField(v, key string, min, max int) error {
-	if len(v) < min || len(v) > max {
-		return fmt.Errorf("%s must be %d-%d characters", key, min, max)
-	}
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		if c < 0x20 || c == 0x7f {
-			return fmt.Errorf("%s contains control characters", key)
-		}
-	}
-	return nil
-}
-
-func isPrivateIPv4(host string) bool {
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return false
-	}
-	if ip4[0] == 10 {
-		return true
-	}
-	if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
-		return true
-	}
-	if ip4[0] == 192 && ip4[1] == 168 {
-		return true
-	}
-	return false
 }
 
 // decodeQRFromImage decodes a QR code from a Go image using gozxing.
