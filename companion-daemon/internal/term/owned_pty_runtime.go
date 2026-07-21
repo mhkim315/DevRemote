@@ -56,7 +56,10 @@ func (o *OwnedPTYRuntime) Transport(id string) (*TerminalTransport, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e, ok := o.entries[id]
-	return e.transport, ok && e.transport != nil
+	if !ok || e.transport == nil {
+		return nil, false
+	}
+	return e.transport, true
 }
 func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 	o.lockMu.Lock()
