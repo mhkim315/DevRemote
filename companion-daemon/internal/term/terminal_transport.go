@@ -78,14 +78,16 @@ func (t *TerminalTransport) RetireIfGeneration(gen int64) {
 
 // WriteInput writes keystrokes/input to the owned PTY, gated by the
 // generation guard. A retired handle silently discards input (fail-closed).
+// PB.7 Input-B: holds RLock through w.Write so Retire cannot interleave
+// between the nil-check and the write — the write is atomic from the
+// transport's perspective.
 func (t *TerminalTransport) WriteInput(data []byte) (int, error) {
 	t.mu.RLock()
-	w := t.writer
-	t.mu.RUnlock()
-	if w == nil {
+	defer t.mu.RUnlock()
+	if t.writer == nil {
 		return 0, nil // retired — fail closed
 	}
-	return w.Write(data)
+	return t.writer.Write(data)
 }
 
 // Resize changes the PTY geometry, gated by the generation guard.

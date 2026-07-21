@@ -11,6 +11,7 @@ import (
 
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/sessionid"
+	"devremote/companion-daemon/internal/transcript"
 	"github.com/gorilla/websocket"
 )
 
@@ -387,6 +388,8 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}()
 
 	var lastDenial time.Time
+	recentCache := newInputRecentCache()
+	defer recentCache.clear()
 	var inputSequence uint64
 	for {
 		mt, msg, err := conn.ReadMessage()
@@ -420,6 +423,21 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 						case <-r.Context().Done():
 						}
 					}
+				}
+			}
+			// terminal_input: versioned control request (§6.2).
+			if len(msg) > 0 && msg[0] == '{' {
+				var ctrl2 struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(msg, &ctrl2) == nil && ctrl2.Type == "terminal_input" {
+					if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache); result != nil {
+						select {
+						case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
+						default:
+						}
+					}
+					continue
 				}
 			}
 			// Unknown/malformed text control frames fail closed: ignored.
@@ -859,4 +877,11 @@ func hostIDForTicket(h *Handlers) string {
 		return h.HostIdentity.HostID
 	}
 	return ""
+}
+
+func transcriptIfNotNil(ts *transcript.Service) interface{ BeginInput(string, time.Time) } {
+	if ts == nil {
+		return nil
+	}
+	return ts
 }

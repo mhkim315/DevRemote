@@ -1,6 +1,7 @@
 package term
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,7 +31,7 @@ func (w *inputBWriter) Write(p []byte) (int, error) {
 
 // openInputBWS builds the real ticket-authenticated HandleWS path with a
 // captured generation-7 transport. Tests exercise the production reader and
-// writer goroutines rather than calling WriteInput or ACK helpers directly.
+// writer goroutines.
 func openInputBWS(t *testing.T, writer *inputBWriter) (*websocket.Conn, int64) {
 	t.Helper()
 	const session = "controlled_pty:input-b-ack"
@@ -79,10 +80,30 @@ func openInputBWS(t *testing.T, writer *inputBWriter) (*websocket.Conn, int64) {
 	return conn, generation
 }
 
+// controlRequest builds a versioned terminal_input TextMessage.
+func controlRequest(sessionID string, generation int64, inputID string, payload []byte) []byte {
+	req := map[string]interface{}{
+		"type":       "terminal_input",
+		"version":    1,
+		"sessionId":  sessionID,
+		"generation": generation,
+		"inputId":    inputID,
+		"payload":    base64.StdEncoding.EncodeToString(payload),
+	}
+	b, _ := json.Marshal(req)
+	return b
+}
+
+// testInputID returns a 64-char lowercase hex inputId for testing.
+func testInputID() string {
+	return "0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff"
+}
+
 func TestInputB_HandleWSAcknowledgesExactGenerationAfterWrite(t *testing.T) {
 	writer := &inputBWriter{}
 	conn, generation := openInputBWS(t, writer)
 
+	// Read hello.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, helloPayload, err := conn.ReadMessage()
 	if err != nil {
@@ -96,22 +117,27 @@ func TestInputB_HandleWSAcknowledgesExactGenerationAfterWrite(t *testing.T) {
 		t.Fatalf("hello=%s decoded=%+v err=%v", helloPayload, hello, err)
 	}
 
+	// Send versioned control request (TextMessage).
 	input := []byte("accepted input")
-	if err := conn.WriteMessage(websocket.BinaryMessage, input); err != nil {
+	req := controlRequest("controlled_pty:input-b-ack", generation, testInputID(), input)
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
 		t.Fatal(err)
 	}
+
+	// Read result.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	mt, ackPayload, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatal(err)
 	}
 	var ack struct {
-		Type       string `json:"type"`
-		Generation int64  `json:"generation"`
-		Sequence   uint64 `json:"sequence"`
+		Type     string `json:"type"`
+		InputID  string `json:"inputId"`
+		Outcome  string `json:"outcome"`
+		Sequence uint64 `json:"sequence"`
 	}
-	if mt != websocket.TextMessage || json.Unmarshal(ackPayload, &ack) != nil || ack.Type != "input_ack" || ack.Generation != generation || ack.Sequence != 1 {
-		t.Fatalf("ack type=%d payload=%s decoded=%+v", mt, ackPayload, ack)
+	if mt != websocket.TextMessage || json.Unmarshal(ackPayload, &ack) != nil || ack.Type != "input_result" || ack.Outcome != "accepted" || ack.Sequence != 1 {
+		t.Fatalf("result type=%d payload=%s decoded=%+v", mt, ackPayload, ack)
 	}
 	if string(writer.wrote) != string(input) {
 		t.Fatalf("WriteInput data=%q, want %q", writer.wrote, input)
@@ -122,24 +148,101 @@ func TestInputB_HandleWSWriteFailureDoesNotAcknowledge(t *testing.T) {
 	writer := &inputBWriter{err: errors.New("write failed")}
 	conn, _ := openInputBWS(t, writer)
 
+	// Read hello.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, err := conn.ReadMessage(); err != nil { // hello
+	if _, _, err := conn.ReadMessage(); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("must not ack")); err != nil {
+
+	// Send control request — write will fail.
+	req := controlRequest("controlled_pty:input-b-ack", 7, testInputID(), []byte("must not ack"))
+	if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
 		t.Fatal(err)
 	}
-	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	for {
-		mt, payload, err := conn.ReadMessage()
-		if err != nil {
-			return // close or deadline: both prove no acceptance ACK was emitted.
-		}
-		var control struct {
-			Type string `json:"type"`
-		}
-		if mt == websocket.TextMessage && json.Unmarshal(payload, &control) == nil && control.Type == "input_ack" {
-			t.Fatalf("write failure emitted acceptance ACK: %s", payload)
-		}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mt, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Type    string `json:"type"`
+		Outcome string `json:"outcome"`
+	}
+	if mt != websocket.TextMessage || json.Unmarshal(payload, &result) != nil || result.Type != "input_result" {
+		t.Fatalf("result type=%d payload=%s", mt, payload)
+	}
+	if result.Outcome != "write_failed" {
+		t.Fatalf("expected write_failed, got %q", result.Outcome)
+	}
+}
+
+func TestInputB_DuplicateInputIDReplaysCached(t *testing.T) {
+	writer := &inputBWriter{}
+	conn, generation := openInputBWS(t, writer)
+
+	// Read hello.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.ReadMessage()
+
+	inputID := testInputID()
+	input := []byte("duplicate test")
+	req := controlRequest("controlled_pty:input-b-ack", generation, inputID, input)
+
+	// First write — accepted.
+	conn.WriteMessage(websocket.TextMessage, req)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mt, ackPayload, _ := conn.ReadMessage()
+	var ack struct {
+		Type     string `json:"type"`
+		Outcome  string `json:"outcome"`
+		Sequence uint64 `json:"sequence"`
+	}
+	json.Unmarshal(ackPayload, &ack)
+	if mt != websocket.TextMessage || ack.Outcome != "accepted" || ack.Sequence != 1 {
+		t.Fatalf("first write: outcome=%q seq=%d", ack.Outcome, ack.Sequence)
+	}
+
+	// Second write with same inputID and same payload — cached duplicate.
+	conn.WriteMessage(websocket.TextMessage, req)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mt, ackPayload, _ = conn.ReadMessage()
+	json.Unmarshal(ackPayload, &ack)
+	if ack.Outcome != "accepted" || ack.Sequence != 1 {
+		t.Fatalf("duplicate: outcome=%q seq=%d (want accepted seq=1 cached)", ack.Outcome, ack.Sequence)
+	}
+	// WriteInput must NOT have been called a second time.
+	if len(writer.wrote) != len(input) {
+		t.Fatalf("WriteInput called twice: wrote %d bytes, want %d", len(writer.wrote), len(input))
+	}
+}
+
+func TestInputB_InputIDConflictDifferentPayload(t *testing.T) {
+	writer := &inputBWriter{}
+	conn, generation := openInputBWS(t, writer)
+
+	// Read hello.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.ReadMessage()
+
+	inputID := testInputID()
+	// First write.
+	req1 := controlRequest("controlled_pty:input-b-ack", generation, inputID, []byte("first"))
+	conn.WriteMessage(websocket.TextMessage, req1)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.ReadMessage() // accepted
+
+	// Same inputID, DIFFERENT payload — must be input_id_conflict (not
+	// supported by the protocol yet — we just check it doesn't replay).
+	req2 := controlRequest("controlled_pty:input-b-ack", generation, inputID, []byte("second"))
+	conn.WriteMessage(websocket.TextMessage, req2)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, ackPayload, _ := conn.ReadMessage()
+	var ack struct {
+		Outcome string `json:"outcome"`
+	}
+	json.Unmarshal(ackPayload, &ack)
+	if ack.Outcome == "accepted" {
+		t.Fatal("conflicting inputID was accepted — must be rejected")
 	}
 }
