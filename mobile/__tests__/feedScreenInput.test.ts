@@ -420,7 +420,7 @@ describe('FeedScreen production input authorization', () => {
     const daemonHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pokit-c1-mobile-'));
     const goCache = path.join(os.tmpdir(), 'pokit-c1-go-build-cache');
     const goModCache = path.join(os.tmpdir(), 'pokit-c1-go-mod-cache');
-    const daemon = spawn('go', ['run', './cmd/devremote', 'daemon', '--insecure-local-only', '--listen-addr', '127.0.0.1:19171'], {
+    const daemon = spawn('go', ['run', './cmd/devremote', 'daemon', '--insecure-local-only'], {
       cwd: daemonRoot,
       env: {
         ...process.env, HOME: daemonHome, SHELL: '/bin/sh',
@@ -432,7 +432,7 @@ describe('FeedScreen production input authorization', () => {
     let daemonLog = '';
     daemon.stdout.on('data', (b: Buffer) => { daemonLog += b.toString(); });
     daemon.stderr.on('data', (b: Buffer) => { daemonLog += b.toString(); });
-    const baseURL = 'http://127.0.0.1:19171';
+    const baseURL = 'http://127.0.0.1:9171';
     let sessionID = '';
     let tree: any;
     let pageSocket: any;
@@ -447,7 +447,7 @@ describe('FeedScreen production input authorization', () => {
     };
 
     try {
-      await waitFor(() => daemonLog.includes('POKIT daemon 127.0.0.1:19171'), 'daemon startup');
+      await waitFor(() => daemonLog.includes('POKIT daemon 127.0.0.1:9171'), 'daemon startup');
       const createRes = await fetch(`${baseURL}/api/sessions?token=dev-token`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({profileId: 'shell', name: 'TERM-C1 mobile integration'}),
@@ -499,7 +499,7 @@ describe('FeedScreen production input authorization', () => {
       const target = {clientHeight: 340, clientWidth: 800, style: {}};
       const page: any = {
         location: {
-          protocol: 'http:', host: '127.0.0.1:19171',
+          protocol: 'http:', host: '127.0.0.1:9171',
           search: `?session=${encodeURIComponent(sessionID)}&token=dev-token`,
         },
         document: {
