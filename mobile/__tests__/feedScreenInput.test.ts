@@ -293,6 +293,20 @@ describe('FeedScreen production input authorization', () => {
     jest.useRealTimers();
   });
 
+  it('keeps pending ACK state on a repeated identical hello', async () => {
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    const hello = control('hello', { capabilities: ['history', 'terminal:input'] });
+    await act(async () => webview.props.onMessage(hello));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    await act(async () => webview.props.onMessage(hello));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    expect(statusText(tree)).toBe('Delivered to terminal');
+    await act(async () => tree.unmount());
+  });
+
   it('fails closed when a permission-refresh hello revokes input during a pending ACK', async () => {
     const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
     let tree: any;

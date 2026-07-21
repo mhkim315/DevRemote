@@ -150,6 +150,12 @@ describe('TerminalController', () => {
     expectPTYSizeInjected(html, 30, 100);
   });
 
+  it('TERM-C1: bootstrap geometry is applied only through the control bridge', async () => {
+    const html = await bootstrapWithSize({ rows: 30, cols: 100 });
+    expect(html).toContain('window.__pokitControlBridge.bootstrapGeometry(__pokitPTYSize.rows,__pokitPTYSize.cols)');
+    expect(html).not.toContain('term.resize(__pokitPTYSize.cols,__pokitPTYSize.rows)');
+  });
+
   it('TERM-G1: rejects non-integer rows', async () => {
     const html = await bootstrapWithSize({ rows: 30.5, cols: 100 });
     expectPTYSizeAbsent(html);

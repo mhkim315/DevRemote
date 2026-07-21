@@ -118,6 +118,73 @@ async function makeHarness(): Promise<Harness> {
   // queues installReconnect via setTimeout).
   vm.runInContext(script, sandbox);
 
+  // This mirrors the served daemon page's TERM-C1 control bridge. The injected
+  // ticket wrapper binds each exact socket, while this one dispatcher owns
+  // hello, read_only, input_result, input_pending, and geometry delivery.
+  let inputSequence = 0;
+  const bridge: any = {
+    state: { socket: null as FakeWS | null, connectionId: null as string | null, sessionId: null as string | null, generation: null as number | null, readOnly: true, inputEnabled: false, geometry: null as any },
+    seen: new Set<string>(),
+    bind(socket: FakeWS) {
+      if (this.state.socket === socket) return;
+      this.state.socket = socket;
+      this.state.connectionId = null;
+      this.state.sessionId = null;
+      this.state.generation = null;
+      this.state.readOnly = true;
+      this.state.inputEnabled = false;
+      this.seen.clear();
+    },
+    post(frame: any) { rnPosts.push(frame); },
+    once(frame: any) {
+      const key = frame.type + ':' + JSON.stringify(frame);
+      if (this.seen.has(key)) return false;
+      this.seen.add(key);
+      return true;
+    },
+    receive(raw: string, socket: FakeWS) {
+      if (socket !== this.state.socket) return;
+      let frame: any;
+      try { frame = JSON.parse(raw); } catch { return; }
+      if (!frame || typeof frame.type !== 'string') return;
+      if (frame.type === 'hello') {
+        if (typeof frame.connectionId !== 'string' || !frame.connectionId || typeof frame.sessionId !== 'string' || !Number.isInteger(frame.generation) || !Array.isArray(frame.capabilities)) return;
+        if (!this.once(frame)) return;
+        this.state.connectionId = frame.connectionId;
+        this.state.sessionId = frame.sessionId;
+        this.state.generation = frame.generation;
+        this.state.inputEnabled = frame.capabilities.includes('terminal:input');
+        this.state.readOnly = !this.state.inputEnabled;
+        this.post(frame);
+      } else if (frame.type === 'geometry') {
+        if (frame.session !== this.state.sessionId || frame.generation !== this.state.generation || !Number.isInteger(frame.rows) || !Number.isInteger(frame.cols) || frame.rows < 1 || frame.rows > 1000 || frame.cols < 1 || frame.cols > 2000 || !this.once(frame)) return;
+        this.state.geometry = { rows: frame.rows, cols: frame.cols };
+        sandbox.__pokitLastGeom = this.state.geometry;
+        term.resize(frame.cols, frame.rows);
+        this.post(frame);
+      } else if (frame.type === 'read_only') {
+        if (this.state.connectionId === null || !this.once(frame)) return;
+        this.state.readOnly = true;
+        this.state.inputEnabled = false;
+        this.post(frame);
+      } else if (frame.type === 'input_result') {
+        if (frame.connectionId !== this.state.connectionId || frame.sessionId !== this.state.sessionId || frame.generation !== this.state.generation || typeof frame.inputId !== 'string' || typeof frame.outcome !== 'string' || !this.once(frame)) return;
+        this.post(frame);
+      }
+    },
+    sendInput(text: string, operationId?: string, part?: string) {
+      const socket = this.state.socket;
+      if (this.state.readOnly || !this.state.inputEnabled || !socket || socket.readyState !== 1) {
+        this.post({ type: 'delivery_unknown', operationId: operationId || null, part: part || null });
+        return;
+      }
+      const inputId = `input-${++inputSequence}`;
+      socket.send(JSON.stringify({ type: 'terminal_input', version: 1, sessionId: this.state.sessionId, generation: this.state.generation, inputId, payload: Buffer.from(text).toString('base64') }));
+      this.post({ type: 'input_pending', connectionId: this.state.connectionId, sessionId: this.state.sessionId, generation: this.state.generation, inputId, operationId: operationId || null, part: part || null });
+    },
+  };
+  sandbox.__pokitControlBridge = bridge;
+
   // Model the daemon page body: define connect() and its onmessage demux, then
   // (as the page does at the end of its script) open the first connection —
   // BEFORE the queued installReconnect runs, so ticket A is used.
@@ -125,19 +192,17 @@ async function makeHarness(): Promise<Harness> {
     const proto = sandbox.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const ws = new sandbox.WebSocket(proto + sandbox.location.host + '/term/ws' + sandbox.location.search);
     sandbox.window.ws = ws;
+    bridge.bind(ws);
     ws.binaryType = 'arraybuffer';
     // Production onmessage demultiplexer: binary → write, text → ignore.
     ws.onmessage = (e: any) => {
-      if (typeof e.data === 'string') return;
+      if (typeof e.data === 'string') { bridge.receive(e.data, ws); return; }
       term.write(new TextDecoder().decode(e.data));
     };
   };
   sandbox.window.connect = pageConnect;
   // The page's single binary-input sender (mirrors window.pokitSendInput).
-  sandbox.window.pokitSendInput = (str: string) => {
-    const w = sandbox.window.ws;
-    if (w && w.readyState === 1) w.send(new TextEncoder().encode(str));
-  };
+  sandbox.window.pokitSendInput = (str: string, operationId?: string, part?: string) => bridge.sendInput(str, operationId, part);
 
   const flushTimeouts = () => { while (timeouts.length) timeouts.shift()!(); };
   return { sandbox, term, rnPosts, timeouts, activeIntervals, flushTimeouts, pageConnect };
@@ -231,8 +296,8 @@ describe('generated production script execution', () => {
     const ws = lastWS();
     ws.open();
     // TERM-G1: hello must precede geometry for identity binding.
-    ws.emit('message', { data: JSON.stringify({ type: 'hello', sessionId: 'controlled_pty:s', generation: 7, connectionId: 'conn-1', capabilities: ['terminal:input'] }) });
-    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: 30, cols: 100, session: 'controlled_pty:s', generation: 7 }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'hello', sessionId: 's', generation: 7, connectionId: 'conn-1', capabilities: ['terminal:input'] }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: 30, cols: 100, session: 's', generation: 7 }) });
 
     expect(h.term.resize).toHaveBeenCalledWith(100, 30);
     expect(h.term.write).not.toHaveBeenCalled();
@@ -250,13 +315,14 @@ describe('generated production script execution', () => {
     const ws = lastWS();
     ws.open();
 
-    const control = '{"type":"geometry-poll"}';
-    h.sandbox.window.pokitSendInput(control);
+    emitHello(h, ws, 's');
+    h.sandbox.window.pokitSendInput('hello');
 
-    // The immediate open-poll is a TEXT frame; the input is a BINARY frame.
-    const binarySends = ws.sent.filter((d: any) => typeof d !== 'string');
-    expect(binarySends).toHaveLength(1);
-    expect(new TextDecoder().decode(binarySends[0])).toBe(control);
+    // Production input uses the acknowledged terminal_input control protocol;
+    // no legacy raw-binary fallback may be emitted by the page bridge.
+    const requests = ws.sent.filter((d: any) => typeof d === 'string' && d.includes('"type":"terminal_input"'));
+    expect(requests).toHaveLength(1);
+    expect(h.rnPosts.filter((p) => p.type === 'input_pending')).toHaveLength(1);
   });
 
   it('proof 10: geometry poll timer is created on open and cleared on close', async () => {
@@ -274,9 +340,64 @@ describe('generated production script execution', () => {
     expect(h.activeIntervals.size).toBe(0); // cleared on close
   });
 
+  it('TERM-C1: one bridge forwards each control frame once and owns all permission state', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    ws.open();
+
+    emitHello(h, ws, 's');
+    emitHello(h, ws, 's'); // repeated hello must not create a second authority
+    emitGeom(h, ws, 30, 100, 's');
+    emitGeom(h, ws, 30, 100, 's');
+    h.sandbox.window.pokitSendInput('x', 'macro-1', 'text');
+    const pending = h.rnPosts.find((p) => p.type === 'input_pending');
+    ws.emit('message', { data: JSON.stringify({
+      type: 'input_result', connectionId: 'conn-1', sessionId: 's', generation: TEST_GEN,
+      inputId: pending.inputId, outcome: 'accepted',
+    }) });
+    ws.emit('message', { data: JSON.stringify({
+      type: 'input_result', connectionId: 'conn-1', sessionId: 's', generation: TEST_GEN,
+      inputId: pending.inputId, outcome: 'accepted',
+    }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'read_only', reason: 'view only' }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'read_only', reason: 'view only' }) });
+
+    expect(h.rnPosts.filter((p) => p.type === 'hello')).toHaveLength(1);
+    expect(h.rnPosts.filter((p) => p.type === 'geometry')).toHaveLength(1);
+    expect(h.rnPosts.filter((p) => p.type === 'input_pending')).toHaveLength(1);
+    expect(h.rnPosts.filter((p) => p.type === 'input_result')).toHaveLength(1);
+    expect(h.rnPosts.filter((p) => p.type === 'read_only')).toHaveLength(1);
+    expect(h.sandbox.__pokitControlBridge.state.readOnly).toBe(true);
+    expect(h.sandbox.__pokitControlBridge.state.inputEnabled).toBe(false);
+    expect(h.sandbox.__pokitControlBridge.state.geometry).toEqual({ rows: 30, cols: 100 });
+  });
+
+  it('TERM-C1: reconnect fails closed, retains last geometry, and rejects old-socket controls', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws1 = lastWS();
+    ws1.open();
+    emitHello(h, ws1, 's');
+    emitGeom(h, ws1, 30, 100, 's');
+
+    h.pageConnect();
+    const ws2 = lastWS();
+    expect(h.sandbox.__pokitControlBridge.state.readOnly).toBe(true);
+    expect(h.sandbox.__pokitControlBridge.state.geometry).toEqual({ rows: 30, cols: 100 });
+    const before = h.rnPosts.length;
+    ws1.emit('message', { data: JSON.stringify({ type: 'read_only', reason: 'stale' }) });
+    expect(h.rnPosts).toHaveLength(before);
+
+    ws2.open();
+    emitHello(h, ws2, 's', TEST_GEN + 1);
+    expect(h.sandbox.__pokitControlBridge.state.readOnly).toBe(false);
+    expect(h.sandbox.__pokitControlBridge.state.generation).toBe(TEST_GEN + 1);
+  });
+
   // ── TERM-G1: live WS geometry frame validation with identity binding ──
 
-  const TEST_SESSION = 'controlled_pty:s';
+  const TEST_SESSION = 's';
   const TEST_GEN = 7;
 
   function emitHello(h: Harness, ws: FakeWS, session?: string, generation?: number) {

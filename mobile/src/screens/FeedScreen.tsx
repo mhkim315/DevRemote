@@ -609,19 +609,26 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       }
       if (data.type === 'hello') {
         const nextCaps = serverCapabilitiesFromControl(data);
-        // A new hello is a new server connection authority. No result from
-        // PB.7 Input-B R9: a new hello invalidates the prior connection.
-        // Any pending request whose result is lost must be surfaced as
-        // possible partial delivery, not silently forgotten.
-        if (pendingInputRef.current.size > 0 || pendingLineRef.current !== null) {
-          setSendStatus('delivery_unknown');
-        }
-        for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
-        pendingInputRef.current.clear();
-        pendingLineRef.current = null;
-        abandonedInputRef.current.clear();
         if (nextCaps !== null && typeof data.connectionId === 'string' && data.connectionId && data.sessionId === session && Number.isInteger(data.generation)) {
-          connectionRef.current = { connectionId: data.connectionId, sessionId: data.sessionId, generation: data.generation };
+          const nextConnection = { connectionId: data.connectionId, sessionId: data.sessionId, generation: data.generation };
+          const currentConnection = connectionRef.current;
+          const isNewConnection = currentConnection === null ||
+            currentConnection.connectionId !== nextConnection.connectionId ||
+            currentConnection.sessionId !== nextConnection.sessionId ||
+            currentConnection.generation !== nextConnection.generation;
+          // TERM-C1: a repeated hello from the same bridge snapshot is a
+          // permission refresh, not a reconnect. Only a genuinely new server
+          // connection makes outstanding acknowledged input delivery unknown.
+          if (isNewConnection) {
+            if (pendingInputRef.current.size > 0 || pendingLineRef.current !== null) {
+              setSendStatus('delivery_unknown');
+            }
+            for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
+            pendingInputRef.current.clear();
+            pendingLineRef.current = null;
+            abandonedInputRef.current.clear();
+          }
+          connectionRef.current = nextConnection;
           setCaps(nextCaps);
           setReadOnlyReason(nextCaps.includes('terminal:input') ? '' : 'Terminal input not authorized — view only');
         } else if (nextCaps !== null) {
@@ -774,50 +781,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         '.xterm { width: max-content !important; min-width: 100% !important; }';
       document.head.appendChild(style);
 
-      // Override fitTerminal: mirror the PTY's real geometry so full-width
-      // TUIs render without wrapping (Claude draws to the alternate screen at
-      // the PTY width; a fixed 100-col xterm made its wide output re-wrap on
-      // the phone). We fetch the live PTY size and resize xterm to match; the
-      // container scrolls for overflow (see CSS). The mobile viewer never
-      // resizes the shared PTY — it only matches it. Falls back to a >=100-col
-      // viewport fit if the size can't be fetched.
-      // TERM-G1: geometry is authoritative from the server side.
-      // Authenticated bootstrap injects __pokitPTYSize; WS geometry frames
-      // provide live updates. No unauthenticated REST poll — the paired
-      // WebView has no bearer token and /term/size returns 401.
-      window.fitTerminal = function() {
-        if (!window.term) return;
-        var apply = function(cols, rows) {
-          if (cols > 0 && rows > 0 &&
-              (window.term.cols !== cols || window.term.rows !== rows)) {
-            window.term.resize(cols, rows);
-          }
-        };
-        var ps = window.__pokitPTYSize;
-        if (ps && ps.cols > 0 && ps.rows > 0 && ps.cols <= 2000 && ps.rows <= 1000) {
-          apply(ps.cols, ps.rows);
-          return;
-        }
-        // Fallback: viewport-derived geometry (mirror, not PTY authority).
-        var h = document.getElementById('t').clientHeight;
-        var w = document.getElementById('t').clientWidth;
-        var span = document.createElement('span');
-        span.textContent = 'W';
-        span.style.fontFamily = window.term.options.fontFamily;
-        span.style.fontSize = window.term.options.fontSize + 'px';
-        span.style.visibility = 'hidden';
-        document.body.appendChild(span);
-        var cw = span.getBoundingClientRect().width;
-        var ch = span.getBoundingClientRect().height;
-        document.body.removeChild(span);
-        var fbCols = Math.max(Math.floor(w / cw), 100);
-        var fbRows = Math.floor(h / ch);
-        apply(fbCols, fbRows);
-      };
-
-      window.addEventListener('resize', function() {
-        if (window.fitTerminal) window.fitTerminal();
-      });
+      // TERM-C1: geometry belongs solely to the served-page control bridge.
+      // Viewport changes may alter scrollability and font scale, never rows or
+      // columns. The daemon page's resize hook calls this no-op replacement.
+      window.fitTerminal = function() {};
 
       document.addEventListener('touchstart', function(e) {
         if(e.touches.length === 2 && window.term) {
@@ -840,7 +807,6 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           
           if (window.term.options.fontSize !== newFontSize) {
             window.term.options.fontSize = newFontSize;
-            window.fitTerminal();
           }
         }
       });
@@ -860,18 +826,6 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         }
       };
 
-      // Force an initial resize when this script is loaded
-      setTimeout(function() {
-        if (window.fitTerminal) window.fitTerminal();
-      }, 500);
-
-      // Poll the PTY size so the mobile view tracks host-terminal resizes
-      // (e.g. the user widens Terminal.app while attached). Re-applies only on
-      // an actual change (fitTerminal guards term.resize).
-      setInterval(function() {
-        if (window.fitTerminal) window.fitTerminal();
-      }, 3000);
-      
       true;
     })();
   `;

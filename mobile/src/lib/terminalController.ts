@@ -84,48 +84,13 @@ export class TerminalController {
       if(!ticketConsumed){ ticketConsumed=true; rawWS=new _origWS(wsURL(ticketA),protocols); }
       else if(window._nextTicket){ var tk=window._nextTicket; window._nextTicket=null; rawWS=new _origWS(wsURL(tk),protocols); }
       else { rawWS=new _origWS(url,protocols); }
-      // M3-auth-4A: addEventListener so the page's onmessage assignment does NOT
-      // overwrite us. Demultiplex: binary frames → PTY (handled by page),
-      // text geometry frames → term.resize (server-authoritative mirror).
-      // BUG-006B: authoritative control-frame listener installed BEFORE the
-      // daemon HTML's ws.onmessage assignment. This guarantees hello, read_only,
-      // and input_result frames are never lost to a race between WebSocket open
-      // and the page's onmessage assignment. Geometry frames are handled here;
-      // all other control frames are forwarded to ReactNativeWebView exactly once
-      // (the page's onmessage handler also forwards them — deduplication is
-      // handled by the native FeedScreen which is idempotent for identical hello
-      // frames with the same generation).
-      // TERM-G1: globally-tracked session+generation from the most recent
-      // hello. When a reconnect delivers a new generation, geometry frames
-      // from old connections (still bearing the old generation) are rejected.
-      rawWS.addEventListener('message',function(e){
-        if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data);
-          if(ctrl&&ctrl.type==='hello'){
-            if(Number.isInteger(ctrl.generation)&&typeof ctrl.sessionId==='string'&&ctrl.sessionId){
-              window.__pokitGeomGen=ctrl.generation;
-              window.__pokitGeomSession=ctrl.sessionId;
-            }
-            try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(e.data); }catch(pm){}
-          } else if(ctrl&&(ctrl.type==='read_only'||ctrl.type==='input_result')){
-            try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(e.data); }catch(pm){}
-          } else if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'){
-            // TERM-G1: validate bounds AND global identity binding.
-            // Geometry must match the globally-current session+generation.
-            var ok=false;
-            if(Number.isInteger(ctrl.rows)&&Number.isInteger(ctrl.cols)&&
-               ctrl.rows>=1&&ctrl.rows<=1000&&ctrl.cols>=1&&ctrl.cols<=2000){
-              var gs=window.__pokitGeomSession, gg=window.__pokitGeomGen;
-              if(gs!==undefined&&gg!==undefined&&
-                 ctrl.session===gs&&ctrl.generation===gg){
-                ok=true;
-              }
-            }
-            if(ok){
-              try{ if(window.term){ window.term.resize(ctrl.cols,ctrl.rows); window.__pokitLastGeom={rows:ctrl.rows,cols:ctrl.cols}; } }catch(ge){}
-            }
-          }
-        }catch(x){} }
-      });
+      // TERM-C1: the served daemon page owns the sole control dispatcher.
+      // Bind this exact socket before it can receive frames; the page's binary
+      // onmessage handler never parses or forwards control frames. This avoids
+      // the former interceptor + page double delivery of hello/read_only/result.
+      if(window.__pokitControlBridge&&window.__pokitControlBridge.bind){
+        window.__pokitControlBridge.bind(rawWS);
+      }
       // M3-auth-4A geometry poll lifecycle (Blocker D):
       //  - send an immediate poll on 'open' (not at construction);
       //  - start exactly ONE bounded interval, only after open;
@@ -171,9 +136,9 @@ export class TerminalController {
 </script>`;
     html = html.replace(/<head[^>]*>/i, (m: string) => m + ticketScript);
 
-    // Inject PTY size consumer: after the daemon's xterm is initialized, apply
-    // the authoritative host geometry so the mobile xterm mirrors it.
-    html = html.replace('</body>', `<script>if(window.__pokitPTYSize){try{term.resize(__pokitPTYSize.cols,__pokitPTYSize.rows)}catch(e){}}</script></body>`);
+    // TERM-C1: bootstrap geometry enters through the same served-page control
+    // bridge as live WS geometry. No second handler may resize xterm directly.
+    html = html.replace('</body>', `<script>if(window.__pokitPTYSize&&window.__pokitControlBridge){window.__pokitControlBridge.bootstrapGeometry(__pokitPTYSize.rows,__pokitPTYSize.cols)}</script></body>`);
 
     return { attemptId, result: { html, baseUrl: baseURL, ticket: t.ticket, sessionId } };
   }

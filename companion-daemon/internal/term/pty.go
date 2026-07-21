@@ -368,9 +368,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 
 	// E10b: atomic subscribe+bootstrap.  For controlled_pty routed
 	// through TerminalTransport, the transport SubscriberFanOut already
-	// PB.7 Input-A: announce device effective permissions before any
-	// user input. The terminal page sets its readOnly flag from this
-	// frame so pokitSendInput is gated before the first keystroke.
+	// PB.7 Input-A / TERM-C1: announce device effective permissions before
+	// any user input. The served-page control bridge is the only consumer of
+	// this snapshot and gates pokitSendInput before the first keystroke.
 	permAnnounce := permissionAnnouncement(ticketPrincipal, session, inputGeneration, connID)
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
@@ -571,36 +571,77 @@ html,body{width:100%;height:100%;background:#000}
 <div id="t"></div>
 <div id="status"></div>
 <script>
-// Input remains denied until the server's hello frame explicitly grants the
-// terminal:input capability. This also closes the reconnect window before a
-// replacement ticket's authorization arrives.
-var readOnly=true,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false,inputGeneration=null,inputConnectionID=null,inputSessionID=null;
+// TERM-C1: one control bridge owns the server hello snapshot, effective input
+// permission, connection identity, and server-authoritative geometry. The
+// WebSocket binary renderer, native controls, and direct xterm keyboard all
+// consume this state; none derives permission independently.
+var raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
 	// E8: diagnostic counters — increment-only, never reset.
 	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
 var term=new Terminal({scrollback:50000,fontSize:12,fontFamily:'Menlo,Monaco,"Courier New",monospace',theme:{background:"#000",foreground:"#ccc"}});
 term.open(document.getElementById("t"));
 
-// M3-auth-4A framing contract — THE single client→server sender.
-// Raw terminal input is sent as a BINARY frame; the daemon writes binary
-// frames byte-for-byte to the PTY. Control frames (e.g. geometry-poll) are
-// the ONLY text frames and are sent elsewhere. Exposed on window so the
-// mobile host (FeedScreen Send/macros) uses the exact same contract.
-var _pokitEnc=new TextEncoder();
 function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=((a[i]>>4)&15).toString(16);h+=(a[i]&15).toString(16)}return h}
-function pokitSendInput(s,operationId,part){
-  // The native host owns the line-operation state.  A page-side failure must
-  // therefore be reported, rather than silently returning and stranding the
-  // host with an unresolvable pending operation.
-  function unknown(){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"delivery_unknown",operationId:operationId||null,part:part||null}));}}
-  if(readOnly||inputGeneration===null||inputConnectionID===null||inputSessionID===null){unknown();return;}
-  var w=window.ws;
-  if(!w||w.readyState!==1){unknown();return;}
-  var inputID=pokitMakeInputID();
-  var req={type:"terminal_input",version:1,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(s)))};
-  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",connectionId:inputConnectionID,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,operationId:operationId||null,part:part||null}));} }catch(e){unknown()}
-}
-window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
+window.__pokitControlBridge=(function(){
+  var expectedSession=(function(){var m=location.search.match(/(?:^|[?&])session=([^&]+)/);try{return m?decodeURIComponent(m[1].replace(/\+/g," ")):"devremote"}catch(_){return ""}})();
+  var state={socket:null,connectionId:null,sessionId:null,generation:null,capabilities:[],inputEnabled:false,readOnly:true,geometry:window.__pokitLastGeom||null,lastRejected:""};
+  var seen={};
+  function reject(predicate){state.lastRejected=predicate;}
+  function post(frame){try{if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(frame));}catch(_){}}
+  function fingerprint(frame){return frame.type+":"+JSON.stringify(frame);}
+  function once(frame){var key=fingerprint(frame);if(seen[key])return false;seen[key]=true;return true;}
+  function sameIdentity(frame){return state.connectionId!==null&&frame.connectionId===state.connectionId&&frame.sessionId===state.sessionId&&frame.generation===state.generation;}
+  function bind(socket){
+    if(state.socket===socket)return;
+    state.socket=socket;state.connectionId=null;state.sessionId=null;state.generation=null;state.capabilities=[];state.inputEnabled=false;state.readOnly=true;state.lastRejected="";seen={};
+  }
+  function receive(raw,socket){
+    if(socket!==state.socket){reject("connection");return;}
+    var frame;try{frame=JSON.parse(raw)}catch(_){reject("json");return;}
+    if(!frame||typeof frame!=="object"||typeof frame.type!=="string"){reject("shape");return;}
+    if(frame.type==="hello"){
+      if(typeof frame.connectionId!=="string"||!frame.connectionId||typeof frame.sessionId!=="string"||frame.sessionId!==expectedSession||!Number.isInteger(frame.generation)||frame.generation<0||!Array.isArray(frame.capabilities)||frame.capabilities.some(function(c){return typeof c!=="string";})){reject("hello_identity");return;}
+      if(!once(frame))return;
+      state.connectionId=frame.connectionId;state.sessionId=frame.sessionId;state.generation=frame.generation;state.capabilities=frame.capabilities.slice();state.inputEnabled=state.capabilities.indexOf("terminal:input")!==-1;state.readOnly=!state.inputEnabled;
+      post(frame);return;
+    }
+    if(frame.type==="geometry"){
+      if(state.sessionId===null||frame.session!==state.sessionId||frame.generation!==state.generation||!Number.isInteger(frame.rows)||!Number.isInteger(frame.cols)||frame.rows<1||frame.rows>1000||frame.cols<1||frame.cols>2000){reject("geometry_identity");return;}
+      if(!once(frame))return;
+      state.geometry={rows:frame.rows,cols:frame.cols};window.__pokitLastGeom=state.geometry;
+      try{if(window.term)window.term.resize(frame.cols,frame.rows);}catch(_){}
+      post(frame);
+      return;
+    }
+    if(frame.type==="read_only"){
+      if(state.connectionId===null||!once(frame)){if(state.connectionId===null)reject("read_only_identity");return;}
+      state.inputEnabled=false;state.readOnly=true;post(frame);return;
+    }
+    if(frame.type==="input_result"){
+      if(!sameIdentity(frame)||typeof frame.inputId!=="string"||typeof frame.outcome!=="string"){reject("result_identity");return;}
+      if(once(frame))post(frame);return;
+    }
+    reject("type");
+  }
+  function bootstrapGeometry(rows,cols){
+    if(!Number.isInteger(rows)||!Number.isInteger(cols)||rows<1||rows>1000||cols<1||cols>2000){reject("bootstrap_geometry");return;}
+    state.geometry={rows:rows,cols:cols};window.__pokitLastGeom=state.geometry;
+    try{if(window.term)window.term.resize(cols,rows);}catch(_){}
+  }
+  function unknown(operationId,part){post({type:"delivery_unknown",operationId:operationId||null,part:part||null});}
+  function sendInput(text,operationId,part){
+    if(state.readOnly||!state.inputEnabled||state.connectionId===null||state.sessionId===null||state.generation===null){unknown(operationId,part);return;}
+    var socket=state.socket;
+    if(!socket||socket.readyState!==1){unknown(operationId,part);return;}
+    var inputId=pokitMakeInputID();
+    var req={type:"terminal_input",version:1,sessionId:state.sessionId,generation:state.generation,inputId:inputId,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(text)))};
+    try{socket.send(JSON.stringify(req));post({type:"input_pending",connectionId:state.connectionId,sessionId:state.sessionId,generation:state.generation,inputId:inputId,operationId:operationId||null,part:part||null});}catch(_){unknown(operationId,part);}
+  }
+  return {bind:bind,receive:receive,sendInput:sendInput,bootstrapGeometry:bootstrapGeometry,readOnly:function(){return state.readOnly;},state:state};
+})();
+window.pokitSendInput=function(s,operationId,part){window.__pokitControlBridge.sendInput(s,operationId,part);};
+window.pokitReadOnly=function(){return window.__pokitControlBridge.readOnly();};
 
 
 
@@ -620,13 +661,12 @@ function stopSession(text) {
 
 function connect(){
   if(reconnecting||stopped)return;
-	readOnly=true;
-  inputGeneration=null;inputConnectionID=null;inputSessionID=null;
   var protocol=location.protocol==='https:'?'wss://':'ws://';
   if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
   opened=false;
   var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);
   window.ws=ws;
+  window.__pokitControlBridge.bind(ws);
   ws.binaryType='arraybuffer';
   ws.onopen=function(){
     opened=true;
@@ -643,12 +683,10 @@ function connect(){
     // M3-auth-4A page-level demultiplexer (server → client):
     //   BINARY = raw PTY output → term.write (byte-for-byte).
     //   TEXT   = control frame (e.g. geometry) — NEVER written to the terminal.
-    // Text control frames are handled by a dedicated listener installed on the
-    // socket (see the injected reconnect/ticket bridge) which cannot be
-    // overwritten by this onmessage assignment. Returning here on text ensures
-    // unknown/malformed control frames fail closed and are never rendered as
-    // PTY output.
-    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];inputGeneration=Number.isInteger(ctrl.generation)?ctrl.generation:null;inputConnectionID=typeof ctrl.connectionId==="string"&&ctrl.connectionId?ctrl.connectionId:null;inputSessionID=typeof ctrl.sessionId==="string"&&ctrl.sessionId?ctrl.sessionId:null;readOnly=p.indexOf("terminal:input")===-1||inputGeneration===null||inputConnectionID===null||inputSessionID===null;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="input_result"){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
+    // Text control frames are handled only by the served-page control bridge.
+    // Returning here on text ensures unknown/malformed control frames fail
+    // closed and are never rendered as PTY output.
+    if(typeof e.data==="string"){window.__pokitControlBridge.receive(e.data,ws);return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
