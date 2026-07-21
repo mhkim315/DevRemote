@@ -90,110 +90,118 @@ func TestQRPayloadByteEquality(t *testing.T) {
 	}
 }
 
-// validateMobilePayload mirrors mobile/src/lib/qrParser.ts _parse().
-// Returns nil if the payload would be accepted by the mobile parser.
+// validateMobilePayload is an EXACT Go mirror of mobile/src/lib/qrParser.ts _parse().
+// Every check, regex, and length bound matches line-for-line. Returns nil if the
+// payload would be accepted by the mobile parser.
 func validateMobilePayload(raw string) error {
+	// typeof raw !== 'string' → err (qrParser.ts:42)
+	// JSON.parse → err (qrParser.ts:44)
 	var o map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &o); err != nil {
-		return fmt.Errorf("JSON parse: %w", err)
+		return fmt.Errorf("QR payload is not valid JSON")
 	}
+	// typeof obj !== 'object' || obj === null || Array.isArray(obj) → err (qrParser.ts:45)
+	// json.Unmarshal into map[string]interface{} guarantees this for objects.
 
+	// For every key: unknown field → err, value must be string → err (qrParser.ts:48-51)
 	allowed := map[string]bool{
 		"sessionId": true, "hostId": true, "fingerprint": true,
 		"hostPubKey": true, "bootstrapToken": true, "endpoint": true, "expiresAt": true,
 	}
-	for k := range o {
+	for k, v := range o {
 		if !allowed[k] {
-			return fmt.Errorf("unknown field: %s", k)
+			return fmt.Errorf("QR payload contains unknown field: %s", k)
+		}
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("QR field %s must be a string", k)
 		}
 	}
 
-	s, ok := str(o, "fingerprint")
-	if !ok || len(s) != 64 {
-		return fmt.Errorf("fingerprint must be 64 chars, got %d", len(s))
+	// strField: sessionId 1-128, hostId 1-128 (qrParser.ts:53-54)
+	sid := o["sessionId"].(string)
+	if err := strField(sid, "sessionId", 1, 128); err != nil {
+		return err
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(s) {
-		return fmt.Errorf("fingerprint not 64-char lowercase hex")
+	hid := o["hostId"].(string)
+	if err := strField(hid, "hostId", 1, 128); err != nil {
+		return err
 	}
 
-	pk, ok := str(o, "hostPubKey")
-	if !ok || len(pk) != 182 {
-		return fmt.Errorf("hostPubKey must be 182 chars, got %d", len(pk))
+	// fingerprint: strField 64-64 + /^[0-9a-f]{64}$/ (qrParser.ts:55-56)
+	fp := o["fingerprint"].(string)
+	if err := strField(fp, "fingerprint", 64, 64); err != nil {
+		return err
 	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(fp) {
+		return fmt.Errorf("host fingerprint must be 64-char lowercase hex")
+	}
+
+	// hostPubKey: direct access + /^[0-9a-fA-F]{182}$/ (qrParser.ts:58-59)
+	// NOT passed through strField — only the generic typeof string check above.
+	pk := o["hostPubKey"].(string)
 	if !regexp.MustCompile(`^[0-9a-fA-F]{182}$`).MatchString(pk) {
-		return fmt.Errorf("hostPubKey not 182-char hex")
+		return fmt.Errorf("hostPubKey must be 182-char hex (91-byte P-256 SPKI)")
 	}
 
-	ep, ok := str(o, "endpoint")
-	if !ok {
-		return fmt.Errorf("missing endpoint")
+	// bootstrapToken: strField 1-256 (qrParser.ts:65)
+	tok := o["bootstrapToken"].(string)
+	if err := strField(tok, "bootstrapToken", 1, 256); err != nil {
+		return err
 	}
-	u, err := parseEndpoint(ep)
-	if err != nil {
-		return fmt.Errorf("endpoint: %w", err)
+
+	// endpoint: strField 1-256 + URL validation (qrParser.ts:66-77)
+	ep := o["endpoint"].(string)
+	if err := strField(ep, "endpoint", 1, 256); err != nil {
+		return err
+	}
+	u, err := url.Parse(ep)
+	if err != nil || u.Scheme == "" {
+		return fmt.Errorf("endpoint is not a valid URL")
 	}
 	if u.Scheme != "http" {
-		return fmt.Errorf("endpoint scheme must be http")
+		return fmt.Errorf("endpoint scheme must be http, got %s", u.Scheme)
 	}
 	if u.User != nil {
 		return fmt.Errorf("endpoint must not contain credentials")
 	}
-	if u.Fragment != "" || u.RawQuery != "" {
-		return fmt.Errorf("endpoint must not contain fragment or query")
+	if u.Fragment != "" {
+		return fmt.Errorf("endpoint must not contain a fragment")
 	}
-	if !isPrivateIPv4(u.Hostname()) {
-		return fmt.Errorf("endpoint must be private-IPv4 LAN address")
+	if u.RawQuery != "" {
+		return fmt.Errorf("endpoint must not contain a query string")
+	}
+	if !regexp.MustCompile(`^\d+\.\d+\.\d+\.\d+$`).MatchString(u.Hostname()) || !isPrivateIPv4(u.Hostname()) {
+		return fmt.Errorf("endpoint must be a private-IPv4 LAN address with an explicit port")
 	}
 	if u.Port() == "" {
-		return fmt.Errorf("endpoint must include explicit port")
+		return fmt.Errorf("endpoint must include an explicit port")
 	}
 
-	exp, ok := str(o, "expiresAt")
-	if !ok {
-		return fmt.Errorf("missing expiresAt")
-	}
+	// expiresAt: valid ISO date + future (qrParser.ts:79-81)
+	exp := o["expiresAt"].(string)
 	et, err := time.Parse(time.RFC3339, exp)
 	if err != nil {
-		return fmt.Errorf("expiresAt not valid ISO date: %w", err)
+		return fmt.Errorf("expiresAt is not a valid ISO date")
 	}
 	if !et.After(time.Now()) {
-		return fmt.Errorf("expiresAt is in the past: %s", et.Format(time.RFC3339))
-	}
-
-	sid, ok := str(o, "sessionId")
-	if !ok || len(sid) < 1 || len(sid) > 128 {
-		return fmt.Errorf("sessionId length out of range")
-	}
-	hid, ok := str(o, "hostId")
-	if !ok || len(hid) < 1 || len(hid) > 128 {
-		return fmt.Errorf("hostId length out of range")
-	}
-	tok, ok := str(o, "bootstrapToken")
-	if !ok || len(tok) < 1 || len(tok) > 256 {
-		return fmt.Errorf("bootstrapToken length out of range")
+		return fmt.Errorf("QR payload has expired")
 	}
 
 	return nil
 }
 
-func str(o map[string]interface{}, k string) (string, bool) {
-	v, ok := o[k]
-	if !ok {
-		return "", false
+// strField mirrors qrParser.ts strField(): min≤len≤max, no control chars (c<0x20 || c==0x7f).
+func strField(v, key string, min, max int) error {
+	if len(v) < min || len(v) > max {
+		return fmt.Errorf("%s must be %d-%d characters", key, min, max)
 	}
-	s, ok := v.(string)
-	return s, ok
-}
-
-func parseEndpoint(raw string) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, err
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c < 0x20 || c == 0x7f {
+			return fmt.Errorf("%s contains control characters", key)
+		}
 	}
-	// net.ParseURL accepts "192.168.1.10:8765" without scheme.
-	// new URL() in JS requires http:// prefix. We enforce the http scheme
-	// separately; here we only validate basic structure.
-	return u, nil
+	return nil
 }
 
 func isPrivateIPv4(host string) bool {
