@@ -58,21 +58,10 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Adapter health from Registry.
-	for _, a := range h.Registry.Adapters() {
-		ad := AdapterDiag{Name: a.Name(), Healthy: true}
-		as, _ := h.Registry.Snapshot(a.Name())
-		if as.LastError != nil {
-			ad.Healthy = false
-			ad.LastError = redactStr(as.LastError.Error())
-		}
-		snap.Adapters = append(snap.Adapters, ad)
-	}
-	snap.Daemon.AdapterCount = len(snap.Adapters)
-
-	// Session diagnostics from Telemetry + ApprovalStore.
+	// Session diagnostics come from the same owned-runtime/catalog projection as
+	// the sessions endpoint. Adapter discovery is intentionally absent.
 	if h.Telemetry != nil {
-		for _, st := range h.Telemetry.Snapshot(h.Registry) {
+		for _, st := range appendCatalogRows(mergeLifecycleState(h.Telemetry.Snapshot(), h.Lifecycle), h.Catalog, h.Lifecycle, h.Approvals) {
 			sd := SessionDiag{
 				ID:              st.ID,
 				Adapter:         st.Adapter,
@@ -104,6 +93,7 @@ func (h *Handlers) HandleDiagnostic(w http.ResponseWriter, r *http.Request) {
 			snap.Sessions = append(snap.Sessions, sd)
 		}
 	}
+	snap.Daemon.AdapterCount = len(snap.Adapters)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(snap)

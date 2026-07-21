@@ -148,13 +148,7 @@ func TestAPIGolden_GetSessionsHistory_ScreenFallback(t *testing.T) {
 func goldenHandlers(t *testing.T) *Handlers {
 	t.Helper()
 
-	reg := mux.MustNewRegistry(&goldenAdapter{
-		sessions: []mux.Session{&goldenSession{}},
-	})
-
-	return &Handlers{
-		Registry: reg,
-	}
+	return &Handlers{}
 }
 
 // Inline test types for golden API tests.
@@ -205,8 +199,8 @@ func (a *goldenAdapter) TerminateSession(_ context.Context, id string) error {
 func goldenHandlersWithScreenReader(t *testing.T) *Handlers {
 	t.Helper()
 	sess := &goldenScreenSession{}
-	reg := mux.MustNewRegistry(&goldenScreenAdapter{sessions: []mux.Session{sess}})
-	return &Handlers{Registry: reg}
+	_ = sess
+	return &Handlers{}
 }
 
 type goldenScreenSession struct{ goldenSession }
@@ -236,8 +230,7 @@ var _ mux.Adapter = (*goldenAdapter)(nil) // compile-time check
 
 func TestAPIGolden_PostCreateLegacySession_CanonicalID(t *testing.T) {
 	// legacy create must return canonical ID via handler exactly once.
-	reg := mux.MustNewRegistry(&legacyCreateAdapter{})
-	h := &Handlers{Registry: reg}
+	h := &Handlers{}
 
 	body := strings.NewReader(`{"id":"legacy:test","runner":"agent","runnerColor":"#58a6ff"}`)
 	req := httptest.NewRequest("POST", "/api/sessions", body)
@@ -278,8 +271,8 @@ func (a *legacyCreateAdapter) CreateSession(_ context.Context, opts mux.CreateOp
 func TestAPIGolden_CapabilityLessSession_NoPanic(t *testing.T) {
 	sess := &bareSession{}
 	adapter := &bareAdapter{sessions: []mux.Session{sess}}
-	reg := mux.MustNewRegistry(adapter)
-	h := &Handlers{Registry: reg}
+	_ = adapter
+	h := &Handlers{}
 
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()

@@ -1,40 +1,17 @@
 package term
 
 import (
-	"context"
-	"errors"
 	"log"
 	"net/http"
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/devicetrust"
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
 )
-
-// registryCtxKey is used to store the Registry in a request context.
-type registryCtxKey struct{}
-
-// WithRegistry returns a context carrying the Registry.
-func WithRegistry(ctx context.Context, reg *mux.Registry) context.Context {
-	return context.WithValue(ctx, registryCtxKey{}, reg)
-}
-
-// RegistryFromContext extracts the Registry from a context.
-var ErrRegistryMissing = errors.New("registry missing from request context")
-
-func RegistryFromContext(ctx context.Context) (*mux.Registry, error) {
-	reg, ok := ctx.Value(registryCtxKey{}).(*mux.Registry)
-	if !ok || reg == nil {
-		return nil, ErrRegistryMissing
-	}
-	return reg, nil
-}
 
 // Handlers groups HTTP handler dependencies so they are visible as struct fields
 // rather than hidden behind context extraction or package globals.
 type Handlers struct {
-	Registry          *mux.Registry
 	Verifier          TokenVerifier               // may be nil if auth is not configured
 	Cmds              CommandBroker               // pending command storage (never nil in production)
 	Telemetry         *TelemetryService           // telemetry state (nil until wired)

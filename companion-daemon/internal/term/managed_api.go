@@ -1,6 +1,6 @@
 // Package term — SP0-P3: authenticated read-only REST surface for managed
 // native sessions. Rows and status come DIRECTLY from the owned
-// ManagedSessionRegistry — never from mux.Registry discovery, telemetry
+// ManagedSessionRegistry — never from legacy discovery, telemetry
 // snapshots, screen text, PTY bytes, or JSONL. DTOs are bounded: no prompts,
 // command text, payloads, paths, tokens, raw protocol messages, or process
 // details.
@@ -62,7 +62,7 @@ func managedNativeStatusDTO(rec ManagedSessionRecord) ManagedNativeStatusDTO {
 
 // HandleManagedNativeStatus serves GET /api/sessions/{id}/native-status from
 // the managed catalog ONLY. The catalog dispatches by canonical adapter prefix;
-// it never probes mux.Registry, discovery, or the legacy telemetry snapshot.
+// it never probes legacy discovery or the legacy telemetry snapshot.
 // Auth is applied by the router.
 func (h *Handlers) HandleManagedNativeStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -81,7 +81,7 @@ func (h *Handlers) HandleManagedNativeStatus(w http.ResponseWriter, r *http.Requ
 }
 
 // HandleManagedSessions serves GET /api/managed-sessions from the managed
-// catalog only: it never touches mux.Registry, adapter discovery, or the
+// catalog only: it never touches legacy adapter discovery or the
 // telemetry snapshot. Returns combined results from both managed registries
 // through the catalog's deterministic merge.
 func (h *Handlers) HandleManagedSessions(w http.ResponseWriter, r *http.Request) {

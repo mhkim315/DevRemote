@@ -1,5 +1,3 @@
-//go:build legacy
-
 package term
 
 import (
@@ -11,18 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
 )
 
 func newPA4Handlers(t *testing.T, cat ManagedRuntimeCatalog) *Handlers {
 	t.Helper()
-	reg, err := mux.NewRegistry()
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
 	return &Handlers{
-		Registry:   reg,
 		Catalog:    cat,
 		Transcript: transcript.NewService(transcript.DefaultStoreConfig()),
 	}
@@ -95,8 +87,7 @@ func TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle(t *testing.T) {
 	}
 
 	// Lifecycle integration: non-nil lifecycle without entry → empty.
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
+	owned := NewOwnedPTYRuntime(&migrationLauncher{}, nil)
 	lifecycle := NewLifecycleService(owned, nil)
 	outNoEntry := appendCatalogRows(nil, cat, lifecycle, nil)
 	if outNoEntry[0].LifecycleState != "" {
@@ -197,7 +188,7 @@ func TestPA4_1_StaleGenerationNotResurrectedThroughRegistry(t *testing.T) {
 // ── R2: default production composition proof ──
 
 func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
-	// Production default: catalog + lifecycle + Registry all wired through
+	// Production default: catalog + lifecycle are wired through
 	// HandleSessionsV2, matching app.go's handler assembly. No special flag.
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
@@ -205,12 +196,10 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
+	owned := NewOwnedPTYRuntime(&migrationLauncher{}, nil)
 	lifecycle := NewLifecycleService(owned, nil)
-	reg, _ := mux.NewRegistry()
 	h := &Handlers{
-		Registry: reg, Catalog: cat, Lifecycle: lifecycle,
+		Catalog: cat, Lifecycle: lifecycle,
 		Transcript: transcript.NewService(transcript.DefaultStoreConfig()),
 	}
 

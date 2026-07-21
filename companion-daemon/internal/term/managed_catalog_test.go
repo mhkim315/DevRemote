@@ -373,9 +373,8 @@ func TestCatalog_LegacyRegistryIsolation(t *testing.T) {
 
 	// Build a handler with BOTH catalog and a blocking legacy registry.
 	h := &Handlers{
-		Registry: reg,
-		Managed:  managed,
-		Catalog:  cat,
+		Managed: managed,
+		Catalog: cat,
 	}
 
 	// Start a background goroutine that would trigger the blocking

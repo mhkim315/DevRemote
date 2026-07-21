@@ -17,7 +17,6 @@ import (
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/agent/contract"
-	"devremote/companion-daemon/internal/mux"
 )
 
 // ── Test fakes ──
@@ -1013,7 +1012,7 @@ func TestClaudeIPCComposition(t *testing.T) {
 		PinnedPath:       "/pinned/test/claude",
 	}, launcher, &fakeClaudeAttestor{})
 
-	go handleIPCConnection(serverConn, nil, nil, nil, nil, svc)
+	go handleIPCConnection(serverConn, nil, nil, nil, svc)
 
 	// Send a create request for the claude profile.
 	req := `{"operation":"create","profileId":"claude","cwd":"/tmp","detach":true}`
@@ -1049,7 +1048,7 @@ func TestClaudeIPCUnavailable(t *testing.T) {
 	defer serverConn.Close()
 	defer clientConn.Close()
 
-	go handleIPCConnection(serverConn, nil, nil, nil, nil, nil)
+	go handleIPCConnection(serverConn, nil, nil, nil, nil)
 
 	req := `{"operation":"create","profileId":"claude","cwd":"/tmp"}`
 	clientConn.Write([]byte(req + "\n"))
@@ -1172,8 +1171,7 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 
 	// Start a real IPC server on a temp socket.
 	socketPath := filepath.Join("/tmp", fmt.Sprintf("pokit-c1d-test-%d.sock", time.Now().UnixNano()))
-	reg, _ := mux.NewRegistry()
-	srv, err := StartIPCServer(socketPath, reg, nil, nil, nil, svc)
+	srv, err := StartIPCServer(socketPath, nil, nil, nil, svc)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}

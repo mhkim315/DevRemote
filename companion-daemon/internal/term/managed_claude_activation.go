@@ -22,7 +22,7 @@ import (
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/devicetrust"
-	"devremote/companion-daemon/internal/mux"
+	"devremote/companion-daemon/internal/sessionid"
 )
 
 // certifiedClaudeAuthorityVersion is the exact C0D-certified provider
@@ -205,7 +205,7 @@ func (d claudeDispatchingApprovalDelivery) Deliver(req ApprovalDeliveryRequest) 
 // one boundary-owned dispatch point.
 func NewCombinedRuntimeResolver(codex, claude func(string) (RuntimeRef, bool)) func(string) (RuntimeRef, bool) {
 	return func(sessionID string) (RuntimeRef, bool) {
-		switch mux.ParseSessionID(sessionID).Adapter {
+		switch sessionid.ParseSessionID(sessionID).Adapter {
 		case codexAppServerAdapter:
 			if codex == nil {
 				return RuntimeRef{}, false

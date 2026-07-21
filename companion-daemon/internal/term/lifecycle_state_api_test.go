@@ -59,7 +59,7 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 	seedCatalog(svc, "controlled_pty:failed", "controlled_pty", "failed", LifecycleFailed)
 
 	snapshot := []SessionTelemetry{{ID: "controlled_pty:run", Adapter: "controlled_pty", AdapterCapabilities: []string{"managedLifecycle"}}, {ID: "controlled_pty:stop", Adapter: "controlled_pty", AdapterCapabilities: []string{"managedLifecycle"}}, {ID: "legacy:tm1", Adapter: "legacy"}}
-	rows := mergeLifecycleState(snapshot, svc, nil)
+	rows := mergeLifecycleState(snapshot, svc)
 	byID := map[string]SessionTelemetry{}
 	for _, row := range rows {
 		byID[row.ID] = row
@@ -112,7 +112,7 @@ func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 	seedCatalog(svc, "controlled_pty:s1", "controlled_pty", "s1", LifecycleStopping)
 
-	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, svc, nil)
+	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, svc)
 	byID := map[string]SessionTelemetry{}
 	for _, row := range rows {
 		if _, ok := byID[row.ID]; ok {
@@ -130,14 +130,14 @@ func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 	seedCatalog(svc, "controlled_pty:done", "controlled_pty", "done", LifecycleExited)
 
-	listed := mergeLifecycleState(nil, svc, nil)
+	listed := mergeLifecycleState(nil, svc)
 	if len(listed) != 1 || listed[0].ID != "controlled_pty:done" {
 		t.Fatalf("retained terminal row must be listable before Delete")
 	}
 	if _, err := svc.Delete(context.Background(), "controlled_pty:done"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if rows := mergeLifecycleState(nil, svc, nil); len(rows) != 0 {
+	if rows := mergeLifecycleState(nil, svc); len(rows) != 0 {
 		t.Fatalf("retained row must be gone after Delete: %v", rows)
 	}
 }
@@ -145,7 +145,7 @@ func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 func TestAPISessions_NoLifecycleServiceIsInert(t *testing.T) {
 	// Without a LifecycleService, the snapshot is unchanged (no lifecycleState,
 	// no phantom rows) — additive behavior only.
-	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, nil, nil)
+	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, nil)
 	if rows[0].LifecycleState != "" {
 		t.Errorf("no-lifecycle snapshot must carry empty lifecycleState")
 	}

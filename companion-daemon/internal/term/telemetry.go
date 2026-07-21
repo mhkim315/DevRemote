@@ -1,14 +1,12 @@
 package term
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
 
 	"devremote/companion-daemon/internal/models"
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/sessionid"
 )
 
@@ -76,7 +74,7 @@ type AgentActivityDTO struct {
 // review and Delete History until it is explicitly deleted. Dedup is by canonical
 // ID (a live row always wins over a catalog row for the same id). Non-managed
 // sessions (no catalog entry) are untouched and carry no lifecycleState.
-func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleService, reg *mux.Registry) []SessionTelemetry {
+func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleService) []SessionTelemetry {
 	if lifecycle == nil || lifecycle.OwnedPTY() == nil {
 		return snapshot
 	}
@@ -95,62 +93,22 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 			snapshot[i].LifecycleState = string(e.State)
 		}
 	}
-	// (2) retained terminal rows not represented live.
+	// (2) all controlled-PTY rows are owned by the runtime, including live
+	// and retained terminal generations.
 	for _, e := range catalog.List() {
 		if _, ok := live[e.ID]; ok {
 			continue // live row already present and annotated
 		}
-		if !e.State.Terminal() {
-			// A managed row absent from the live Registry but not yet terminal is a
-			// transient finalize race; skip rather than surface a phantom session.
-			continue
-		}
 		snapshot = append(snapshot, SessionTelemetry{
-			ID:                  e.ID,
-			DisplayID:           sessionid.ParseSessionID(e.ID).LocalID,
-			LifecycleState:      string(e.State),
-			Adapter:             e.Adapter,
-			Capabilities:        []string{"history"},
-			AdapterCapabilities: adapterCapabilityStrings(reg, e.Adapter),
+			ID:             e.ID,
+			DisplayID:      sessionid.ParseSessionID(e.ID).LocalID,
+			LifecycleState: string(e.State),
+			Adapter:        e.Adapter,
+			Capabilities:   []string{"live_stream", "history"},
 		})
 	}
 	sortTelemetry(snapshot)
 	return snapshot
-}
-
-// adapterCapabilityStrings returns the adapter-level capabilities as JSON-safe strings.
-func adapterCapabilityStrings(reg *mux.Registry, adapterName string) []string {
-	if reg == nil {
-		return nil
-	}
-	adapter, ok := reg.Adapter(adapterName)
-	if !ok {
-		return nil
-	}
-	caps := mux.AdapterCapabilities(adapter)
-	out := make([]string, len(caps))
-	for i, c := range caps {
-		out[i] = string(c)
-	}
-	return out
-}
-
-// sessionCapabilities returns the list of optional capabilities a session supports.
-func sessionCapabilities(s mux.Session) []string {
-	var caps []string
-	if _, ok := s.(mux.StreamOpener); ok {
-		caps = append(caps, "live_stream")
-	}
-	if _, ok := s.(mux.ScreenReader); ok {
-		caps = append(caps, "screen")
-	}
-	if _, ok := s.(mux.HistoryReader); ok {
-		caps = append(caps, "history")
-	}
-	if _, ok := s.(mux.ProcessProvider); ok {
-		caps = append(caps, "process")
-	}
-	return caps
 }
 
 func sortTelemetry(items []SessionTelemetry) {
@@ -159,8 +117,6 @@ func sortTelemetry(items []SessionTelemetry) {
 	})
 } // HandleSessionsV2 returns rich JSON metadata for all sessions.
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
-	reg := h.Registry
-
 	// PA3 Step 3: legacy query-parameter endpoints removed.
 	// ?activity= → 410 Gone (replaced by GET /api/sessions/{id}/transcript)
 	// ?history=  → 410 Gone (replaced by GET /api/sessions/{id}/transcript)
@@ -175,37 +131,14 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if h.Telemetry != nil {
-		snapshot := mergeLifecycleState(h.Telemetry.Snapshot(reg), h.Lifecycle, reg)
+		snapshot := mergeLifecycleState(h.Telemetry.Snapshot(), h.Lifecycle)
 		snapshot = appendCatalogRows(snapshot, h.Catalog, h.Lifecycle, h.Approvals)
 		json.NewEncoder(w).Encode(snapshot)
 		return
 	}
 	// PA3 Step 6b: Fallback without telemetry service (e.g. tests).
 	// Transcript is canonical for snapshot path.
-	res := mergeLifecycleState(buildSimpleSnapshot(reg), h.Lifecycle, reg)
+	res := mergeLifecycleState(nil, h.Lifecycle)
 	res = appendCatalogRows(res, h.Catalog, h.Lifecycle, h.Approvals)
 	json.NewEncoder(w).Encode(res)
-}
-
-// Transcript is canonical.
-func buildSimpleSnapshot(reg *mux.Registry) []SessionTelemetry {
-	sessions := reg.Sessions(context.Background())
-	res := make([]SessionTelemetry, 0)
-	for _, s := range sessions {
-		compoundID := s.AdapterName() + ":" + s.ID()
-		snap, _ := reg.Snapshot(s.AdapterName())
-		var errStr string
-		if snap.LastError != nil {
-			errStr = snap.LastError.Error()
-		}
-		isStale := snap.LastError != nil
-		res = append(res, SessionTelemetry{
-			ID: compoundID, DisplayID: s.ID(), Adapter: s.AdapterName(),
-			Capabilities:        sessionCapabilities(s),
-			AdapterCapabilities: adapterCapabilityStrings(reg, s.AdapterName()),
-			Stale:               isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
-		})
-	}
-	sortTelemetry(res)
-	return res
 }

@@ -126,15 +126,15 @@ func newFakeTunnelDone() *fakeTunnel {
 
 // ── Tests ──
 
-func TestNewApp_CreatesPrivateMux(t *testing.T) {
+func TestNewApp_CreatesOwnedRuntime(t *testing.T) {
 	// Not Parallel — shared config mutation in verifier creation.
 	cfg := Config{InsecureLocalOnly: true}
 	app, err := NewApp(cfg)
 	if err != nil {
 		t.Fatalf("NewApp failed: %v", err)
 	}
-	if app.registry == nil {
-		t.Fatal("registry is nil")
+	if app.lifecycle == nil {
+		t.Fatal("lifecycle is nil")
 	}
 	if app.server == nil {
 		t.Fatal("server is nil")
@@ -176,12 +176,10 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 	regA.Register(adapterA)
 	regB.Register(adapterB)
 
-	hA := &term.Handlers{Registry: regA, Verifier: insecureVerifier()}
-	hB := &term.Handlers{Registry: regB, Verifier: insecureVerifier()}
-
-	if hA.Registry == hB.Registry {
-		t.Fatal("expected different registries")
-	}
+	_ = regA
+	_ = regB
+	hA := &term.Handlers{Verifier: insecureVerifier()}
+	hB := &term.Handlers{Verifier: insecureVerifier()}
 
 	muxA := http.NewServeMux()
 	muxA.HandleFunc("/api/sessions", hA.AuthMiddleware(hA.HandleSessionsAPI))
@@ -259,7 +257,7 @@ func TestApp_ShutdownOrder(t *testing.T) {
 	app.ipc = &fakeIPC{closeOrdr: &order, name: "ipc"}
 
 	// Telemetry: record cancel timing. Use a minimal service so Done() is already closed.
-	app.telemetry = term.NewTelemetryService(app.registry, nil, nil, nil)
+	app.telemetry = term.NewTelemetryService(nil, nil, nil)
 	app.telemetryCtxCancel = func() {
 		order = append(order, "telemetry:cancel")
 		// Start + immediately cancel so Done() is closed.
@@ -383,7 +381,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 	app.ipcPath = socketPath
 
-	srv, err := term.StartIPCServer(socketPath, app.registry, nil, nil, nil, nil)
+	srv, err := term.StartIPCServer(socketPath, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("StartIPCServer failed: %v", err)
 	}
@@ -400,7 +398,7 @@ func TestApp_ShutdownRemovesIPCPathAndAllowsRebind(t *testing.T) {
 	}
 
 	// Rebind without manual Remove.
-	srv2, err := term.StartIPCServer(socketPath, app.registry, nil, nil, nil, nil)
+	srv2, err := term.StartIPCServer(socketPath, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("rebind StartIPCServer failed: %v", err)
 	}
@@ -414,7 +412,7 @@ func TestApp_TunnelNotStartedInInsecureMode(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -448,7 +446,7 @@ func TestApp_TunnelStartedInProductionMode(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 		StartTunnel: func() tunnelResource {
@@ -486,7 +484,7 @@ func TestApp_RunContextCancelReturnsNil(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -515,7 +513,7 @@ func TestApp_RunReturnsHTTPServeError(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})
@@ -557,7 +555,7 @@ func TestApp_RunJoinsServeAndShutdownErrors(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Cmds:         term.NewCommandBroker(),
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error) {
 			return &fakeIPC{waitErr: shutdownErr}, nil
 		},
 	})
@@ -700,7 +698,7 @@ func TestApp_InjectedVerifierUsedByRoutes(t *testing.T) {
 	app, err := NewAppWithDeps(cfg, Dependencies{
 		Verifier:     fv,
 		StartWatcher: func() (watcherResource, error) { return &fakeWatcher{}, nil },
-		StartIPC: func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error) {
+		StartIPC: func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error) {
 			return &fakeIPC{}, nil
 		},
 	})

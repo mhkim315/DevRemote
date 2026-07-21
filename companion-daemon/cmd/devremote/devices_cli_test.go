@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 )
 
@@ -43,10 +42,9 @@ func TestDevicesCLI_ListedIDRevokesUnchanged(t *testing.T) {
 	term.SetPairingContext(nil, reg)
 	term.SetDeviceAdminContext(mgr, devicetrust.NopAuditLog{})
 
-	muxReg, _ := mux.NewRegistry()
 	sock := "/tmp/pokit-m255-cli-test.sock"
 	_ = os.Remove(sock)
-	ipc, err := term.StartIPCServer(sock, muxReg, nil, nil, nil, nil)
+	ipc, err := term.StartIPCServer(sock, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("start IPC: %v", err)
 	}

@@ -19,7 +19,7 @@ import (
 func ipcRoundTripWith(t *testing.T, reg *mux.Registry, managed *ManagedCodexService, body map[string]any) map[string]string {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
-	go handleIPCConnection(serverConn, reg, nil, nil, managed, nil)
+	go handleIPCConnection(serverConn, nil, nil, managed, nil)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -310,7 +310,7 @@ func TestManagedREST_BoundedWhileDiscoveryHangs(t *testing.T) {
 	}()
 
 	managed, id := createManagedForAPI(t)
-	h := &Handlers{Registry: reg, Managed: managed, Catalog: catalogForAPI(managed, nil)}
+	h := &Handlers{Managed: managed, Catalog: catalogForAPI(managed, nil)}
 
 	type outcome struct {
 		listCode, statusCode int

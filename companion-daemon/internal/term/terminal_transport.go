@@ -152,7 +152,7 @@ func (t *TerminalTransport) IsRetired() bool {
 }
 
 // EnsureRecorderTransport starts a Recorder for the given session via an
-// opener, replacing the mux.StreamOpener dependency. The opener is any
+// opener, replacing the former stream-opener dependency. The opener is any
 // value that can open a ptyStream.
 func EnsureRecorderTransport(sessionID string, openStream func() (ptyStream, error)) (*Recorder, chan []byte) {
 	stream, err := openStream()

@@ -22,7 +22,7 @@ import (
 )
 
 // codexAppServerAdapter is the canonical-ID adapter segment for managed
-// sessions. It is NEVER registered in mux.Registry, so the identity space is
+// sessions. It is never registered in the legacy adapter store, so the identity space is
 // disjoint from controlled_pty and unreachable through
 // adapter discovery.
 const codexAppServerAdapter = "codex_app_server"

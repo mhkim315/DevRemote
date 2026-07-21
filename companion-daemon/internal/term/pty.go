@@ -6,12 +6,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/sessionid"
 	"github.com/gorilla/websocket"
 )
@@ -46,8 +44,6 @@ func ExtractToken(r *http.Request) string {
 }
 
 func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
-	reg := h.Registry
-
 	if r.Method == "POST" || r.Method == "PUT" {
 		var req createSessionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -84,28 +80,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "controlled_pty command execution is only available via the local pokit CLI; create over HTTP with a profileId", http.StatusForbidden)
 			return
 		}
-		// Strict decode: a present command must be a JSON string. Never coerce
-		// malformed input into a default shell.
-		var cmdStr string
-		if len(req.Command) > 0 {
-			if err := json.Unmarshal(req.Command, &cmdStr); err != nil {
-				http.Error(w, "command must be a string", http.StatusBadRequest)
-				return
-			}
-		}
-		opts := mux.CreateOptions{Name: ref.LocalID, WorkspaceID: req.WorkspaceID, Command: cmdStr, CWD: req.CWD}
-		createdID, err := reg.CreateSession(r.Context(), ref.Adapter, opts)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
-			return
-		}
-		canonicalID := sessionid.SessionRef{Adapter: ref.Adapter, LocalID: createdID}.Canonical()
-		// Best-effort recorder start for external/streamable adapters; also
-		// drops the starter subscriber so no phantom viewer is retained.
-		_, _ = startRecorder(r.Context(), reg, canonicalID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		w.Write([]byte(fmt.Sprintf(`{"status":"ok","id":"%s"}`, canonicalID)))
+		http.Error(w, "only daemon-owned controlled_pty sessions are supported", http.StatusNotImplemented)
 		return
 	}
 
@@ -132,15 +107,8 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// External adapters keep the legacy compatibility behavior.
-			adapterName := ref.Adapter
-
-			if err := reg.TerminateSession(r.Context(), adapterName, ref.LocalID); err != nil {
-				http.Error(w, fmt.Sprintf("failed to terminate session: %v", err), http.StatusInternalServerError)
-				return
-			}
-			DeleteRecorder(id)
-			// PA3 Step 6b: h.Activity.Clear removed; Transcript is canonical.
+			http.Error(w, "session is not daemon-owned", http.StatusNotFound)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -186,7 +154,6 @@ func (h *Handlers) HandleWSTicketAuth(w http.ResponseWriter, r *http.Request) {
 	h.handleWSWithPrincipal(w, r, p)
 }
 func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request, ticketPrincipal *devicetrust.Principal) {
-	reg := h.Registry
 
 	// Extract JWT from Authorization header (preferred) or ?token= query param
 	// Auth check is handled by middleware
@@ -198,14 +165,11 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 
 	var rec *Recorder
 	var subCh chan []byte
-	var s mux.Session // nil for controlled_pty (not in Registry)
-
 	ref := sessionid.ParseSessionID(session)
 	// PA4.5: managed controlled_pty NEVER falls back to Registry.
 	// TerminalTransport is the sole transport authority. When the
 	// lifecycle owner is not wired or the transport is unavailable,
 	// fail closed — no Registry session lookup for managed paths.
-	useRegistry := false
 	var transportBootstrap []byte
 
 	if ref.Adapter == "controlled_pty" {
@@ -228,25 +192,8 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	} else {
-		useRegistry = true // legacy adapters
-	}
-	if useRegistry {
-		var ferr error
-		s, ferr = reg.FindSession(r.Context(), session)
-		if ferr != nil {
-			log.Printf("WS session not found err: %v", ferr)
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-
-		opener, hasStream := s.(mux.StreamOpener)
-		if !hasStream {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotImplemented)
-			w.Write([]byte(`{"error":"unsupported","detail":"session does not support live streaming"}`))
-			return
-		}
-		rec, subCh = EnsureRecorder(session, func() (ptyStream, error) { s, err := opener.OpenStream(r.Context()); return s, err })
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
 	}
 	if rec == nil {
 		http.Error(w, "stream failed", 500)
@@ -342,33 +289,11 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
-	if s != nil {
-		if sr, ok := s.(mux.ScreenReader); ok {
-			if initial, snapErr := sr.ReadScreen(r.Context()); snapErr == nil && len(initial) > 0 {
-				payload := "\033[2J\033[H" + string(initial)
-				payload = strings.ReplaceAll(payload, "\n", "\r\n")
-				select {
-				case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: []byte(payload)}:
-				case <-writerDone:
-					return
-				case <-r.Context().Done():
-					return
-				}
-			}
-		}
-	}
-
 	// E10b: atomic subscribe+bootstrap.  For controlled_pty routed
 	// through TerminalTransport, the transport SubscriberFanOut already
 	// provided the bootstrap and subscriber channel — no second
 	// Recorder subscription.  For the Registry path, atomically swap
 	// the EnsureRecorder starter channel for the full subscribe+bootstrap.
-	if useRegistry {
-		rec.Unsubscribe(subCh)
-		var bootstrap []byte
-		bootstrap, subCh = rec.SubscribeWithBootstrap()
-		transportBootstrap = bootstrap
-	}
 	if len(transportBootstrap) > 0 {
 		select {
 		case outbound <- wsOutbound{messageType: websocket.BinaryMessage, payload: transportBootstrap}:
@@ -465,16 +390,6 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 					triggerClose(fmt.Errorf("input failed"))
 					break
 				}
-			}
-		} else if s != nil {
-			if writer, ok := s.(mux.InputWriter); ok {
-				if inErr := writer.WriteInput(r.Context(), msg); inErr != nil {
-					log.Printf("WS input write err: %v", inErr)
-					triggerClose(fmt.Errorf("input failed"))
-					break
-				}
-			} else if rec != nil {
-				rec.WriteInput(msg)
 			}
 		}
 	}
@@ -787,7 +702,7 @@ func HandleDump(w http.ResponseWriter, r *http.Request) {
 // (e.g. claude drawing to the alternate screen at the PTY width) render
 // without re-wrapping to the phone width.
 // PA4-Final-R16: for controlled_pty, uses exact-generation TerminalTransport
-// geometry. Legacy adapters fall through to global GetRecorder.
+// geometry. Other adapters are not part of the owned runtime.
 func (h *Handlers) HandleTermSize(w http.ResponseWriter, r *http.Request) {
 	session := r.URL.Query().Get("session")
 	if session == "" {
@@ -810,19 +725,7 @@ func (h *Handlers) HandleTermSize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Legacy adapters: global Recorder lookup.
-	rec := GetRecorder(session)
-	if rec == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-	rows, cols, ok := rec.GetSize()
-	if !ok {
-		http.Error(w, "size unavailable", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"rows":%d,"cols":%d}`, rows, cols)
+	http.Error(w, "session not found", http.StatusNotFound)
 }
 
 // HandleE8Diag receives diagnostic counters from the terminal WebView.

@@ -38,7 +38,7 @@ func (cap *GenerationCleanupCapability) Execute(ctx context.Context) {
 		cap.Transport.RetireIfGeneration(cap.Generation)
 	}
 	if cap.Recorder != nil {
-		DeleteRecorderIfSame(cap.CanonicalID, cap.Recorder)
+		cap.Recorder.Stop()
 	}
 	if cap.Cleanup != nil {
 		cap.Cleanup.Execute(ctx)

@@ -76,7 +76,8 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 	adapter := &mockAdapter{session: mockSess}
 	reg.Register(adapter)
 
-	h := &Handlers{Registry: reg}
+	_ = reg
+	h := &Handlers{}
 
 	// Unique session ID per test to avoid recorderRegistry collision with parallel tests.
 	sessionID := "mock:test-1011"
@@ -132,7 +133,8 @@ func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	adapter := &mockAdapter{session: mockSess}
 	reg.Register(adapter)
 
-	h := &Handlers{Registry: reg}
+	_ = reg
+	h := &Handlers{}
 
 	// Unique session ID per test to avoid recorderRegistry collision with parallel tests.
 	sessionID := "mock:test-disconnect"

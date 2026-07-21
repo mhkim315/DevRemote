@@ -19,7 +19,7 @@ import (
 )
 
 // ManagedRuntimeCatalog is the read-only federated view over managed
-// runtime registries. It never probes mux.Registry, discovery, process
+// runtime registries. It never probes legacy discovery, process
 // names, panes, screen text, PTY bytes, or JSONL.
 type ManagedRuntimeCatalog interface {
 	// Get returns the exact provider-owned record for sessionID.
@@ -47,7 +47,7 @@ type ManagedRuntimeCatalog interface {
 
 	// ManagedCapabilities returns the static capability sets for a managed
 	// adapter. The returned capabilities are authoritative and never depend
-	// on mux.Registry or observer evidence.
+	// on legacy discovery or observer evidence.
 	ManagedCapabilities(adapter string) (sessionCaps, adapterCaps []string)
 }
 
@@ -293,7 +293,7 @@ func (c *managedRuntimeCatalog) ManagedAdapterPrefixes() []string {
 
 // ManagedCapabilities returns the authoritative capability sets for a
 // managed adapter. These are static per managed runtime and never depend
-// on mux.Registry or observer evidence.
+// on legacy discovery or observer evidence.
 func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps, adapterCaps []string) {
 	switch adapter {
 	case codexAppServerAdapter, claudeHeadlessAdapter:
@@ -314,7 +314,7 @@ func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps
 // can never overwrite, shadow, or fabricate a managed-looking list row.
 // Managed row metadata (capabilities, lifecycle) is sourced exclusively
 // from ManagedRuntimeCatalog contract methods, never hard-coded or from
-// mux.Registry.
+// legacy adapter registry.
 func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalog, lifecycle *LifecycleService, approvals *AuthoritativeApprovalStore) []SessionTelemetry {
 	if catalog == nil {
 		return snapshot

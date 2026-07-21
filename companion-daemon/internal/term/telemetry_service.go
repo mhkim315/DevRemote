@@ -10,13 +10,11 @@ import (
 	claude "devremote/companion-daemon/internal/agent/adapters/claude/v2_1_202"
 	codex "devremote/companion-daemon/internal/agent/adapters/codex/v0_144_1"
 	"devremote/companion-daemon/internal/agent/contract"
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
 )
 
 // TelemetryService owns the telemetry state machine and background sampling loop.
 type TelemetryService struct {
-	reg        *mux.Registry
 	notifier   Notifier
 	approvals  *AuthoritativeApprovalStore // A1: generation-bound approval store
 	transcript *transcript.Service         // T3: AgentEvent → Transcript projection
@@ -33,7 +31,7 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(reg *mux.Registry, notifier Notifier, approvals *AuthoritativeApprovalStore, transcriptSvc *transcript.Service) *TelemetryService {
+func NewTelemetryService(notifier Notifier, approvals *AuthoritativeApprovalStore, transcriptSvc *transcript.Service) *TelemetryService {
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
@@ -41,7 +39,6 @@ func NewTelemetryService(reg *mux.Registry, notifier Notifier, approvals *Author
 		approvals = NewAuthoritativeApprovalStore()
 	}
 	return &TelemetryService{
-		reg:           reg,
 		notifier:      notifier,
 		approvals:     approvals,
 		transcript:    transcriptSvc,
@@ -79,36 +76,9 @@ func (s *TelemetryService) Run(ctx context.Context) {
 // Done returns a channel that closes when the sampling loop has exited.
 func (s *TelemetryService) Done() <-chan struct{} { return s.done }
 
-// Snapshot returns a copy of the current telemetry state for all sessions.
-func (s *TelemetryService) Snapshot(reg *mux.Registry) []SessionTelemetry {
-	sessions := reg.Sessions(context.Background())
-
-	res := make([]SessionTelemetry, 0)
-	for _, sess := range sessions {
-		compoundID := sess.AdapterName() + ":" + sess.ID()
-		snap, _ := reg.Snapshot(sess.AdapterName())
-		var errStr string
-		if snap.LastError != nil {
-			errStr = snap.LastError.Error()
-		}
-		isStale := snap.LastError != nil
-
-		// PA3 Step 2 R1: legacy State/Load/Runner/RunnerColor/Events retained
-		// as compatibility stubs (json:"-"), populated with defaults for test
-		// continuity. Removed from JSON serialization. Full removal in Step 4.
-
-		res = append(res, SessionTelemetry{
-			ID: compoundID, DisplayID: sess.ID(), Adapter: sess.AdapterName(),
-			State: "idle", Load: 0, Runner: "agent", RunnerColor: "#58a6ff",
-			Events:              nil,
-			Capabilities:        sessionCapabilities(sess),
-			AdapterCapabilities: adapterCapabilityStrings(reg, sess.AdapterName()),
-			Stale:               isStale, LastSuccessAt: snap.LastSuccessAt, LastError: errStr,
-		})
-	}
-	sortTelemetry(res)
-	return res
-}
+// Snapshot returns telemetry-owned state. Session rows are built from the
+// owned runtime and managed catalog; telemetry never discovers adapters.
+func (s *TelemetryService) Snapshot() []SessionTelemetry { return nil }
 
 // acceptedAdapterFor returns a fresh accepted version-specific adapter instance.
 func acceptedAdapterFor(kind string) contract.AgentAdapter {

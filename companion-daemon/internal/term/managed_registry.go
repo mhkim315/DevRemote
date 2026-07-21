@@ -1,6 +1,6 @@
 // Package term — SP0-P2: minimal owned-session registry for native managed
 // sessions. This is the single semantic-status authority store for managed
-// sessions. It has NO dependency on mux.Registry, discovery, adapter
+// sessions. It has no dependency on legacy adapter discovery,
 // snapshots, screen readers, JSONL, or telemetry — native app-server events
 // (applied by the owning runtime's event pump) are the only status writers.
 package term

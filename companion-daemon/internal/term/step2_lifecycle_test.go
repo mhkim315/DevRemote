@@ -21,7 +21,7 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	snap := []SessionTelemetry{{
 		ID: "controlled_pty:test-ls", DisplayID: "test-ls", Adapter: "controlled_pty",
 	}}
-	result := mergeLifecycleState(snap, lifecycle, nil)
+	result := mergeLifecycleState(snap, lifecycle)
 
 	if len(result) == 0 {
 		t.Fatal("mergeLifecycleState returned empty")

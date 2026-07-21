@@ -52,11 +52,7 @@ func (a *capExternalAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
 // the external adapter (legacy) does not, while keeping control/input/liveTerminal/
 // reliableTranscript. The exact JSON field name is asserted from the raw body.
 func TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary(t *testing.T) {
-	reg := mux.MustNewRegistry(
-		&capManagedAdapter{sessions: []mux.Session{&capBoundarySession{id: "cp1", adapter: "controlled_pty"}}},
-		&capExternalAdapter{sessions: []mux.Session{&capBoundarySession{id: "tm1", adapter: "legacy"}}},
-	)
-	h := &Handlers{Registry: reg}
+	h := &Handlers{}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
 	rr := httptest.NewRecorder()

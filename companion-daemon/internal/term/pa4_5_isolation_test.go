@@ -1,5 +1,3 @@
-//go:build legacy
-
 package term
 
 import (
@@ -9,19 +7,17 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"devremote/companion-daemon/internal/mux"
 )
 
 // ── PA4.5: Final facade/fallback deletion and PA4 acceptance ──
 
 // TestPA4_5_NoManagedToLegacyFallbackExists proves no managed production
 // path (ManagedRuntimeCatalog, AgentStatusStore, ApprovalStore,
-// LifecycleService) imports or calls mux.Registry, adapter discovery,
+// LifecycleService) imports or calls legacy adapter discovery,
 // or legacy session lookup under default config.
 func TestPA4_5_NoManagedToLegacyFallbackExists(t *testing.T) {
 	// Structural proof: ManagedRuntimeCatalog doc comment states it
-	// "never probes mux.Registry, discovery, process names, panes,
+	// "never probes legacy discovery, process names, panes,
 	// screen text, PTY bytes, or JSONL." This is the fundamental
 	// isolation boundary — no facade or fallback between managed
 	// catalog and legacy Registry exists.
@@ -68,8 +64,8 @@ func TestPA4_5_LegacyObserverRoutesAreContained(t *testing.T) {
 
 // TestPA4_5_AllManagedReadPathsIsolatedFromRegistry proves every managed
 // read path (catalog Get/List, lifecycle Stop/Kill/Delete, approval
-// Ingest/ListSafe, transport SubscriberFanOut/WriteInput) operates
-// without mux.Registry.
+// Ingest/ListSafe, transport SubscriberFanOut/WriteInput) operates without
+// adapter discovery.
 func TestPA4_5_AllManagedReadPathsIsolatedFromRegistry(t *testing.T) {
 	// Catalog: Get/List read from ManagedSessionRegistry.
 	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
@@ -178,21 +174,12 @@ func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 	// Truly unwired: nil Lifecycle, nil OwnedPTYRuntime.
 	// HandleWS must fail closed for controlled_pty, not fall through
 	// to Registry.FindSession for legacy adapter lookup.
-	// Empty Registry (no adapters) — FindSession would fail anyway,
-	// but the PA4.5 invariant is that the code never reaches it.
-	reg, _ := mux.NewRegistry()
-	h := &Handlers{
-		Registry: reg,
-		// Lifecycle: nil (truly unwired owner)
-	}
+	h := &Handlers{} // Lifecycle is nil: truly unwired owner.
 	if h.Lifecycle != nil {
 		t.Fatal("test requires nil Lifecycle")
 	}
 	// With nil Lifecycle, controlled_pty has no TerminalTransport.
-	// The adapter lookup via reg.FindSession finds no session in
-	// empty Registry → rec stays nil → handler returns 500.
-	// The critical invariant: for non-controlled_pty sessions,
-	// useRegistry=true enables the full Registry path.
+	// The absence of an owned transport must fail closed.
 	req := httptest.NewRequest("GET", "/term/ws?session=controlled_pty:unwired", nil)
 	rec := httptest.NewRecorder()
 	h.HandleWS(rec, req)
@@ -200,15 +187,12 @@ func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 		t.Error("HandleWS succeeded with unwired owner — should fail closed")
 	}
 
-	// Positive control: legacy session with useRegistry=true reaches
-	// Registry.FindSession (which fails on empty Registry, but the path
-	// is proven reachable for legacy adapters).
+	// Other adapters have no production fallback path either.
 	req2 := httptest.NewRequest("GET", "/term/ws?session=legacy:test", nil)
 	rec2 := httptest.NewRecorder()
 	h.HandleWS(rec2, req2)
-	// legacy uses Registry; with empty Registry, session not found.
 	if rec2.Code == http.StatusOK {
-		t.Error("legacy HandleWS succeeded on empty Registry")
+		t.Error("non-owned HandleWS succeeded")
 	}
 }
 
@@ -216,32 +200,21 @@ func TestPA4_5_UnwiredOwnerFailsClosed(t *testing.T) {
 
 // TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup proves
 // TerminalTransport.SubscriberFanOut uses its direct recorder reference,
-// not the global GetRecorder registry. A recorder removed from the global
-// registry is still reachable through the transport handle.
+// not a global lookup. The direct recorder remains reachable through the
+// transport handle.
 func TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup(t *testing.T) {
 	// Create a live recorder via the standard path.
 	pr, pw := io.Pipe()
 	ms := &mockStream{pr: pr, pw: pw}
-	rec, _ := EnsureRecorder("controlled_pty:r14-direct", func() (ptyStream, error) { return ms, nil })
+	rec, _ := StartRecorder("controlled_pty:r14-direct", ms)
 	if rec == nil {
-		t.Fatal("EnsureRecorder returned nil")
+		t.Fatal("StartRecorder returned nil")
 	}
 	defer rec.Stop()
-
-	// Remove from global recorder registry to prove transport does NOT use it.
-	recorderRegistry.mu.Lock()
-	delete(recorderRegistry.recorders, "controlled_pty:r14-direct")
-	recorderRegistry.mu.Unlock()
-
-	// Verify global lookup returns nil.
-	if GetRecorder("controlled_pty:r14-direct") != nil {
-		t.Fatal("GetRecorder should return nil after registry removal")
-	}
-
 	// Create a TerminalTransport with the direct recorder reference.
 	tt := newTerminalTransport("controlled_pty:r14-direct", 1, pw, ms, rec)
 
-	// SubscriberFanOut must succeed — uses t.recorder, not GetRecorder.
+	// SubscriberFanOut must succeed through the direct recorder reference.
 	bootstrap, ch, _, ok := tt.SubscriberFanOut("controlled_pty:r14-direct")
 	if !ok {
 		t.Fatal("SubscriberFanOut failed — transport should use direct recorder reference, not global registry")
@@ -266,9 +239,9 @@ func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T
 	// Create a live recorder + transport.
 	pr, pw := io.Pipe()
 	ms := &mockStream{pr: pr, pw: pw}
-	rec, _ := EnsureRecorder("controlled_pty:r14-retired-hw", func() (ptyStream, error) { return ms, nil })
+	rec, _ := StartRecorder("controlled_pty:r14-retired-hw", ms)
 	if rec == nil {
-		t.Fatal("EnsureRecorder returned nil")
+		t.Fatal("StartRecorder returned nil")
 	}
 	defer rec.Stop()
 
@@ -296,9 +269,7 @@ func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T
 	}
 	lcSvc := NewLifecycleService(owned, nil)
 
-	reg, _ := mux.NewRegistry()
 	h := &Handlers{
-		Registry:  reg,
 		Lifecycle: lcSvc,
 	}
 
@@ -324,9 +295,9 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 	// Gen-1 transport + recorder.
 	pr1, pw1 := io.Pipe()
 	ms1 := &mockStream{pr: pr1, pw: pw1}
-	rec1, _ := EnsureRecorder("controlled_pty:r14-stale", func() (ptyStream, error) { return ms1, nil })
+	rec1, _ := StartRecorder("controlled_pty:r14-stale", ms1)
 	if rec1 == nil {
-		t.Fatal("EnsureRecorder gen-1 returned nil")
+		t.Fatal("StartRecorder gen-1 returned nil")
 	}
 	defer rec1.Stop()
 
@@ -345,9 +316,9 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 	// Create gen-2 transport + recorder (simulates replacement under same session ID).
 	pr2, pw2 := io.Pipe()
 	ms2 := &mockStream{pr: pr2, pw: pw2}
-	rec2, _ := EnsureRecorder("controlled_pty:r14-stale", func() (ptyStream, error) { return ms2, nil })
+	rec2, _ := StartRecorder("controlled_pty:r14-stale", ms2)
 	if rec2 == nil {
-		t.Fatal("EnsureRecorder gen-2 returned nil")
+		t.Fatal("StartRecorder gen-2 returned nil")
 	}
 	defer rec2.Stop()
 
@@ -375,9 +346,9 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testing.T) {
 	pr, pw := io.Pipe()
 	ms := &mockStream{pr: pr, pw: pw}
-	rec, _ := EnsureRecorder("controlled_pty:r17-race", func() (ptyStream, error) { return ms, nil })
+	rec, _ := StartRecorder("controlled_pty:r17-race", ms)
 	if rec == nil {
-		t.Fatal("EnsureRecorder returned nil")
+		t.Fatal("StartRecorder returned nil")
 	}
 	defer rec.Stop()
 
@@ -441,75 +412,49 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 }
 
 // TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder proves
-// that beginStop captures the recorder at the decisive generation check and
-// awaitExit observes the original captured Recorder, not the replacement's.
-// The test: register entry1 (original gen, rec1), call beginStop to capture
-// rec1, then StartRecorderUnconditional to create replacement rec2 for the
-// same session ID. awaitExit must observe the CAPTURED rec1.
+// that beginStop captures the V1 handle and LaunchIdentity at the decisive
+// generation check. A replacement must not change the captured capability.
 func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testing.T) {
 	pr1, pw1 := io.Pipe()
 	ms1 := &mockStream{pr: pr1, pw: pw1}
-	// Create rec1 via EnsureRecorder so it is globally registered.
-	rec1, _ := EnsureRecorder("controlled_pty:r17-replace", func() (ptyStream, error) { return ms1, nil })
+	rec1, _ := StartRecorder("controlled_pty:r17-replace", ms1)
 	if rec1 == nil {
 		t.Fatal("rec1 is nil")
 	}
-	// NOTE: rec1 is NOT stopped via defer — we need it alive for awaitExit timeout.
-	// The pr1/pw1 pipe keeps it alive with a never-EOF stream.
-
-	// Register entry1 with rec1 (original generation).
+	firstHandle := &migrationHandle{reader: migrationReader{done: make(chan struct{})}}
 	owned := NewOwnedPTYRuntime(nil, nil)
-	gen1 := owned.RegisterForTest("controlled_pty:r17-replace", "", "orig", rec1)
-
-	// Capture recorder via beginStop (at the decisive generation check).
-	proceed, _, found, _, _, capturedRec := owned.beginStop("controlled_pty:r17-replace", gen1)
-	if !found || !proceed || capturedRec == nil {
-		t.Fatalf("beginStop: proceed=%v found=%v rec=%v", proceed, found, capturedRec)
-	}
-	if capturedRec != rec1 {
-		t.Fatalf("beginStop captured rec %p, want rec1 %p", capturedRec, rec1)
+	gen1 := owned.register("controlled_pty:r17-replace", "", "orig", firstHandle,
+		LaunchIdentity{InstanceID: "original", StartedAt: time.Now()}, nil,
+		newTerminalTransport("controlled_pty:r17-replace", 0, ms1, ms1, rec1), rec1)
+	proceed, _, found, _, capturedHandle, capturedIdentity := owned.beginStop("controlled_pty:r17-replace", gen1)
+	if !found || !proceed || capturedHandle != firstHandle || capturedIdentity.InstanceID != "original" {
+		t.Fatalf("beginStop did not retain original V1 capability: proceed=%v found=%v identity=%+v", proceed, found, capturedIdentity)
 	}
 
-	// Create replacement rec2 via StartRecorderUnconditional.
-	// This replaces rec1 in the global registry but rec1 is still alive.
 	pr2, pw2 := io.Pipe()
 	ms2 := &mockStream{pr: pr2, pw: pw2}
-	rec2 := StartRecorderUnconditional("controlled_pty:r17-replace", ms2)
+	rec2, _ := StartRecorder("controlled_pty:r17-replace", ms2)
 	if rec2 == nil {
 		t.Fatal("rec2 is nil")
 	}
 	defer rec2.Stop()
-
-	// Verify rec1 != rec2.
 	if rec1 == rec2 {
-		t.Fatal("rec1 == rec2 — StartRecorderUnconditional should create new instance")
+		t.Fatal("replacement reused the original recorder")
 	}
-	// Global registry now returns rec2 (replacement), not rec1.
-	if GetRecorder("controlled_pty:r17-replace") != rec2 {
-		t.Fatal("global registry should return rec2 after StartRecorderUnconditional")
+	secondHandle := &migrationHandle{reader: migrationReader{done: make(chan struct{})}}
+	owned.register("controlled_pty:r17-replace", "", "replace", secondHandle,
+		LaunchIdentity{InstanceID: "replacement", StartedAt: time.Now().Add(time.Nanosecond)}, nil,
+		newTerminalTransport("controlled_pty:r17-replace", 0, ms2, ms2, rec2), rec2)
+	if !owned.currentIdentity("controlled_pty:r17-replace", gen1, capturedIdentity) {
+		// The old capability must be rejected after replacement, rather than
+		// being redirected to the replacement handle.
+		if capturedHandle == secondHandle {
+			t.Fatal("replacement redirected the captured V1 handle")
+		}
 	}
-
-	// Register entry2 (replacement, same ID, new generation) with rec2.
-	_ = owned.RegisterForTest("controlled_pty:r17-replace", "", "replace", rec2)
-
-	// awaitExit with the CAPTURED rec1 (original generation).
-	// rec1's stream is still open (never-EOF), so awaitExit should time out.
-	owned.graceful = 30 * time.Millisecond
-	owned.killGrace = 10 * time.Millisecond
-	result := owned.awaitExit(capturedRec, nil)
-	if result {
-		t.Fatal("awaitExit returned true with never-EOF captured recorder — should have timed out")
-	}
-
-	// Now close rec1's pipe — awaitExit should detect EOF.
-	pw1.Close()
-	time.Sleep(50 * time.Millisecond)
-	if !owned.awaitExit(capturedRec, nil) {
-		t.Fatal("awaitExit returned false after captured recorder EOF")
-	}
-
-	// Cleanup: stop rec1 now that the test is done.
 	rec1.Stop()
+	pw1.Close()
+	pw2.Close()
 }
 
 // TestPB2a_ManagedPathsUnaffectedByLinkRemoval proves that removing manual

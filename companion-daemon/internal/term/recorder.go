@@ -45,6 +45,10 @@ type Recorder struct {
 // changes to StartRecorder/EnsureRecorder.
 var transcriptSvcSingleton *transcript.Service
 
+// recorderLifecycleObserver is a test seam only. Production leaves it nil;
+// recorder ownership never consults or populates a process-wide lookup.
+var recorderLifecycleObserver func(*Recorder, bool)
+
 // SetTranscriptService sets the process-wide Transcript service for Recorder feeding.
 func SetTranscriptService(svc *transcript.Service) {
 	transcriptSvcSingleton = svc
@@ -55,32 +59,10 @@ func GetTranscriptService() *transcript.Service {
 	return transcriptSvcSingleton
 }
 
-// recorderRegistry tracks active recorders.
-var recorderRegistry = struct {
-	mu         sync.Mutex
-	recorders  map[string]*Recorder
-	terminated map[string]bool // sessions whose PTY process exited
-}{recorders: make(map[string]*Recorder), terminated: make(map[string]bool)}
-
-// StartRecorder creates a recorder for a session. Returns existing if alive.
-// Caller must provide an active stream — recorder takes ownership of the read loop.
-// The returned subscriber channel receives live PTY output immediately.
+// StartRecorder creates a recorder owned by the caller. Recorder ownership is
+// deliberately explicit: the managed runtime retains the reference for the
+// exact launch generation. There is no process-wide session-to-recorder map.
 func StartRecorder(sessionID string, stream ptyStream) (*Recorder, chan []byte) {
-	recorderRegistry.mu.Lock()
-	defer recorderRegistry.mu.Unlock()
-
-	if recorderRegistry.terminated[sessionID] {
-		return nil, nil
-	}
-
-	if r, ok := recorderRegistry.recorders[sessionID]; ok {
-		if !r.IsAlive() || r.Err() != nil {
-			delete(recorderRegistry.recorders, sessionID)
-		} else {
-			return r, r.Subscribe()
-		}
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Recorder{
 		sessionID:   sessionID,
@@ -93,14 +75,15 @@ func StartRecorder(sessionID string, stream ptyStream) (*Recorder, chan []byte) 
 
 	// Add initial subscriber BEFORE starting readLoop to avoid race.
 	ch := r.Subscribe()
-	recorderRegistry.recorders[sessionID] = r
-
 	r.captureMode = resolveCaptureMode(sessionID)
 	r.transcriptSvc = transcriptSvcSingleton
 	if r.transcriptSvc != nil {
 		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
 	}
 	go r.readLoop()
+	if recorderLifecycleObserver != nil {
+		recorderLifecycleObserver(r, false)
+	}
 	log.Printf("RECORDER start session=%s", sessionID)
 	return r, ch
 }
@@ -163,15 +146,9 @@ func (r *Recorder) Unsubscribe(ch chan []byte) {
 
 // Stop terminates the recorder. Idempotent.
 func (r *Recorder) Stop() {
-	// PA3 Closeout A: instance-safe — only remove from registry if
-	// this Recorder is still the current one. A stale Stop() from a
-	// replaced Recorder must never delete the replacement's entry.
-	recorderRegistry.mu.Lock()
-	if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r {
-		delete(recorderRegistry.recorders, r.sessionID)
+	if recorderLifecycleObserver != nil {
+		recorderLifecycleObserver(r, true)
 	}
-	recorderRegistry.mu.Unlock()
-
 	r.cancel()
 	r.stream.Close()
 	if r.transcriptSvc != nil {
@@ -220,16 +197,6 @@ func (r *Recorder) IsAlive() bool {
 // natural exit and Stop/Kill all end here, converging on one cleanup path.
 func (r *Recorder) Done() <-chan struct{} { return r.done }
 
-// unregisterSelf removes this recorder from the registry, but only if
-// the registry still points to this exact instance (not a newer replacement).
-func (r *Recorder) unregisterSelf() {
-	recorderRegistry.mu.Lock()
-	defer recorderRegistry.mu.Unlock()
-	if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r {
-		delete(recorderRegistry.recorders, r.sessionID)
-	}
-}
-
 // feedTranscript feeds copied payload bytes to the T3 Transcript byte-stream
 // projector via a bounded, non-blocking queue. The queue has a single ordered
 // worker; overflow chunks are dropped with a coalesced gap marker.
@@ -241,11 +208,10 @@ func (r *Recorder) feedTranscript(payload []byte) {
 }
 
 // readLoop reads PTY output, broadcasts to subscribers, feeds Transcript.
-// On exit (EOF, error, or cancel), the recorder unregisters itself — but only
-// if no newer recorder for the same sessionID has been created.
+// On exit (EOF, error, or cancel), the owning runtime observes Done and
+// retires the matching launch generation.
 func (r *Recorder) readLoop() {
 	defer close(r.done)
-	defer r.unregisterSelf()
 	buf := make([]byte, 1024)
 	for {
 		select {
@@ -260,17 +226,6 @@ func (r *Recorder) readLoop() {
 			r.readErr = err
 			r.mu.Unlock()
 			log.Printf("RECORDER read err session=%s: %v", r.sessionID, err)
-			// PA3 Closeout A: before marking terminated, atomically prove
-			// the Registry still points to THIS exact Recorder instance.
-			// A stale readLoop (from a deleted/replaced session) must
-			// never write terminated=true — that would block the
-			// replacement's Recorder from starting (StartRecorder checks
-			// the terminated flag).
-			recorderRegistry.mu.Lock()
-			if existing, ok := recorderRegistry.recorders[r.sessionID]; ok && existing == r {
-				recorderRegistry.terminated[r.sessionID] = true
-			}
-			recorderRegistry.mu.Unlock()
 			// T3: close transcript queue on natural EOF.
 			if r.transcriptSvc != nil {
 				r.transcriptSvc.CloseSessionQueue(r.sessionID, r.queueGen)
@@ -389,97 +344,20 @@ func indexOf(haystack, needle []byte) int {
 	return -1
 }
 
-// EnsureRecorder returns or creates a recorder for a session.
-// HandleWS calls this to subscribe — does NOT open its own stream.
-// If no recorder exists and no opener is provided, returns nil.
-// openStreamFn opens a PTY stream. It accepts any opener that can produce a
-// ptyStream (e.g. mux.StreamOpener whose TerminalStream satisfies
-// io.ReadWriteCloser + Resize).
+// openStreamFn opens a PTY stream.
 type openStreamFn func() (ptyStream, error)
 
-// EnsureRecorder starts or reuses a Recorder. The opener is called to open
-// the stream on first start; it is not retained.
+// EnsureRecorder is retained for non-production test fixtures. Production
+// callers must hold a direct Recorder reference through TerminalTransport.
 func EnsureRecorder(sessionID string, openStream openStreamFn) (*Recorder, chan []byte) {
-	recorderRegistry.mu.Lock()
-	defer recorderRegistry.mu.Unlock()
-
-	// E10: do not restart recorder for sessions whose PTY process exited.
-	if recorderRegistry.terminated[sessionID] {
-		return nil, nil
-	}
-
-	if r, ok := recorderRegistry.recorders[sessionID]; ok {
-		if !r.IsAlive() || r.Err() != nil {
-			delete(recorderRegistry.recorders, sessionID)
-		} else {
-			return r, r.Subscribe()
-		}
-	}
-
 	if openStream == nil {
 		return nil, nil
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := openStream()
 	if err != nil {
-		cancel()
 		return nil, nil
 	}
-
-	r := &Recorder{
-		sessionID:   sessionID,
-		stream:      stream,
-		ctx:         ctx,
-		cancel:      cancel,
-		subscribers: nil,
-		done:        make(chan struct{}),
-	}
-	ch := r.Subscribe()
-	recorderRegistry.recorders[sessionID] = r
-	r.captureMode = resolveCaptureMode(sessionID)
-	r.transcriptSvc = transcriptSvcSingleton
-	if r.transcriptSvc != nil {
-		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
-	}
-	go r.readLoop()
-	log.Printf("RECORDER start session=%s", sessionID)
-	return r, ch
-}
-
-// DeleteRecorder stops and removes the recorder for a session.
-// Called on session delete/end.
-func DeleteRecorder(sessionID string) {
-	recorderRegistry.mu.Lock()
-	r, ok := recorderRegistry.recorders[sessionID]
-	if ok {
-		delete(recorderRegistry.recorders, sessionID)
-	}
-	delete(recorderRegistry.terminated, sessionID)
-	recorderRegistry.mu.Unlock()
-	if ok {
-		r.Stop()
-	}
-}
-
-// DeleteRecorderIfSame stops and removes the recorder for a session ONLY if
-// it is still the exact given instance (PA2c-R2 generation-bound final
-// cleanup: a replacement's recorder under a reused canonical id is never
-// removed by a stale finalizer). A nil rec never matches anything.
-func DeleteRecorderIfSame(sessionID string, rec *Recorder) {
-	if rec == nil {
-		return
-	}
-	recorderRegistry.mu.Lock()
-	r, ok := recorderRegistry.recorders[sessionID]
-	if !ok || r != rec {
-		recorderRegistry.mu.Unlock()
-		return
-	}
-	delete(recorderRegistry.recorders, sessionID)
-	delete(recorderRegistry.terminated, sessionID)
-	recorderRegistry.mu.Unlock()
-	r.Stop()
+	return StartRecorder(sessionID, stream)
 }
 
 // WriteInput sends input to the PTY stream.
@@ -522,37 +400,10 @@ func isClearScreenSnapshot(payload []byte) bool {
 		payload[6] == 'H'
 }
 
-// GetRecorder returns the recorder for a session, or nil.
-func GetRecorder(sessionID string) *Recorder {
-	recorderRegistry.mu.Lock()
-	defer recorderRegistry.mu.Unlock()
-	return recorderRegistry.recorders[sessionID]
-}
-
 // PA3 Step 6: StartRecorderUnconditional always creates a new Recorder.
-// Unlike EnsureRecorder, it never returns an existing live Recorder.
+// The caller owns the returned instance and is responsible for Stop.
 func StartRecorderUnconditional(sessionID string, stream ptyStream) *Recorder {
-	recorderRegistry.mu.Lock()
-	defer recorderRegistry.mu.Unlock()
-	// PA3 Step 6a: always create a new Recorder. Clear the terminated
-	// flag — the replacement is a new generation of the same session.
-	delete(recorderRegistry.terminated, sessionID)
-	ctx, cancel := context.WithCancel(context.Background())
-	r := &Recorder{
-		sessionID: sessionID,
-		stream:    stream,
-		ctx:       ctx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-	}
-	ch := r.Subscribe()
-	recorderRegistry.recorders[sessionID] = r
-	r.captureMode = resolveCaptureMode(sessionID)
-	r.transcriptSvc = transcriptSvcSingleton
-	if r.transcriptSvc != nil {
-		r.queueGen = r.transcriptSvc.EnableQueue(r.sessionID)
-	}
-	go r.readLoop()
-	r.Unsubscribe(ch) // drop starter subscriber
+	r, ch := StartRecorder(sessionID, stream)
+	r.Unsubscribe(ch)
 	return r
 }

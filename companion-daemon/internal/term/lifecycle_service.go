@@ -55,7 +55,7 @@ type ProviderLifecycleOwner interface {
 // LifecycleService is the PA2c lifecycle DISPATCHER. It owns no runtime,
 // registry, or catalog state: every action is routed by canonical adapter
 // prefix to exactly one managed lifecycle owner, with the current generation
-// derived server-side. It has no *mux.Registry dependency; byte transport
+// derived server-side. It has no legacy adapter-store dependency; byte transport
 // and terminal adapters cannot terminate, delete, or restore a runtime.
 //
 //	codex_app_server → ManagedCodexService   (provider-owned, generation-bound)
@@ -224,6 +224,5 @@ func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResu
 	if s.status != nil {
 		s.status.Clear(id)
 	}
-	DeleteRecorder(id)
 	return LifecycleResult{SessionID: id, Action: "delete", State: LifecycleExited}, nil
 }

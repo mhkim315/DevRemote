@@ -128,7 +128,7 @@ func validClaimToken(t string) bool { return len(t) == 32 && allHex(t) }
 // validSessionID reports whether s is a CANONICAL compound session ID. R9-A: length
 // alone is insufficient — control characters, whitespace, path-shaped strings and
 // invalid adapter grammar must be rejected. The single canonical boundary in
-// internal/mux is reused: parse once, require a non-empty adapter and local part, an
+// the session-ID parser is reused: parse once, require a non-empty adapter and local part, an
 // exact canonical round trip, SessionRef.Validate (rejects control chars) and
 // ValidateAdapterName ([a-z][a-z0-9_-]*) on the adapter.
 func validSessionID(s string) bool {

@@ -39,11 +39,10 @@ func newStep3Handlers(t *testing.T) *Handlers {
 	adapter := &step3Adapter{sessions: []mux.Session{
 		&step3Session{id: "test-session", title: "Step 3 Test Session"},
 	}}
-	reg := mux.MustNewRegistry(adapter)
+	_ = adapter
 	svc := transcript.NewService(transcript.DefaultStoreConfig())
 	SetTranscriptService(svc)
 	h := &Handlers{
-		Registry:   reg,
 		Transcript: svc,
 	}
 	t.Cleanup(func() { SetTranscriptService(nil) })

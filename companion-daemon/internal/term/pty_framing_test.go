@@ -107,7 +107,8 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	stream := newCapturingStream()
 	sess := &capturingSession{id: localID, stream: stream}
 	reg := mux.MustNewRegistry(&capturingAdapter{session: sess})
-	h := &Handlers{Registry: reg}
+	_ = reg
+	h := &Handlers{}
 	sessionID := "mock:" + localID
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

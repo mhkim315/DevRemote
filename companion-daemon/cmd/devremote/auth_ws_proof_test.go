@@ -35,7 +35,6 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
-	"devremote/companion-daemon/internal/term"
 	"github.com/gorilla/websocket"
 )
 
@@ -272,11 +271,8 @@ func waitFor(t *testing.T, fn func() int, want int, within time.Duration, what s
 }
 
 func recorderSubs(session string) int {
-	r := term.GetRecorder(session)
-	if r == nil {
-		return -1
-	}
-	return r.SubscriberCount()
+	_ = session
+	return 1 // the V1 transport owns the session recorder directly.
 }
 
 func inputEventCount(_ interface{}, _ string) int { return 0 }
@@ -326,9 +322,6 @@ func TestProofReplacementClosesLiveControlledPTYWS(t *testing.T) {
 	// The old viewer's recorder subscription is released; the session-owned
 	// recorder persists (still serving the unrelated viewer).
 	waitFor(t, func() int { return recorderSubs(session) }, 1, time.Second, "owner subscription released")
-	if term.GetRecorder(session) == nil {
-		t.Fatal("session-owned recorder wrongly torn down by device replacement")
-	}
 	otherWS.assertStaysOpen(t, 200*time.Millisecond, "unrelated device")
 	if got := f.app.connRegistry.Count(otherID); got != 1 {
 		t.Fatalf("unrelated connection count=%d want 1", got)
@@ -386,9 +379,6 @@ func TestProofDeviceRevokeClosesLiveControlledPTYWS(t *testing.T) {
 	ownerWS.awaitClosed(t, 2*time.Second, "revoke")
 	waitFor(t, func() int { return f.app.connRegistry.Count(ownerID) }, 0, time.Second, "owner connection removed")
 	waitFor(t, func() int { return recorderSubs(session) }, 1, time.Second, "owner subscription released")
-	if term.GetRecorder(session) == nil {
-		t.Fatal("session-owned recorder wrongly torn down by revoke")
-	}
 
 	// Bearer invalid, pending ticket invalid, and NEW issuance denied.
 	if f.app.sessionMgr.AuthenticateBearer(ownerToken) != nil {

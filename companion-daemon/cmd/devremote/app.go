@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/transcript"
 	"devremote/companion-daemon/internal/watcher"
@@ -60,7 +59,7 @@ type Dependencies struct {
 	WSTicketConfig      *devicetrust.WSTicketStoreConfig
 	Audit               devicetrust.AuditLog // M2.5-5: nil ⇒ NopAuditLog in NewAppWithDeps
 	StartWatcher        func() (watcherResource, error)
-	StartIPC            func(path string, reg *mux.Registry, telemetry *term.TelemetryService) (ipcResource, error)
+	StartIPC            func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error)
 	StartTunnel         func() tunnelResource
 	// Managed injects a pre-built managed Codex service (deterministic-test
 	// seam: a fake ManagedLauncher instead of the pinned production spawn).
@@ -89,8 +88,7 @@ type App struct {
 	config Config
 	deps   Dependencies
 
-	registry *mux.Registry
-	server   *http.Server
+	server *http.Server
 
 	// IPC path is owned by App so Shutdown can clean it up.
 	ipcPath string
@@ -127,23 +125,6 @@ func NewApp(cfg Config) (*App, error) {
 
 // NewAppWithDeps creates an App with injectable dependencies for testing.
 func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
-	// 1. Registry — instance-owned, no package global.
-	reg, err := mux.NewRegistry()
-	if err != nil {
-		return nil, fmt.Errorf("registry: %w", err)
-	}
-	// PA2d: Controlled PTY adapter is owned by OwnedPTYRuntime for
-	// lifecycle + transport. It remains registered in mux.Registry for
-	// session-list and handler discovery until both owners are fully
-	// production-wired (per contract: "deleted only after both owners are
-	// production-wired"). WebSocket/input/resize routes through
-	// TerminalTransport for controlled_pty; the Registry path is a
-	// fallback for legacy callers.
-	ctlAdapter := mux.NewControlledPTYAdapter()
-	if err := reg.Register(ctlAdapter); err != nil {
-		return nil, fmt.Errorf("register controlled_pty: %w", err)
-	}
-
 	cmds := deps.Cmds
 	if cmds == nil {
 		cmds = term.NewCommandBroker()
@@ -244,7 +225,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	sessionMgr.SetOnRevoke(cb)
 	challengeStore := devicetrust.NewChallengeStore()
 
-	h := &term.Handlers{Registry: reg, Verifier: verifier, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Transcript: transcriptSvc, Lifecycle: lifecycle,
+	h := &term.Handlers{Verifier: verifier, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
@@ -466,7 +447,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	telemetry := term.NewTelemetryService(reg, notifier, approvals, transcriptSvc)
+	telemetry := term.NewTelemetryService(notifier, approvals, transcriptSvc)
 	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
@@ -480,7 +461,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	return &App{
 		config:        cfg,
 		deps:          deps,
-		registry:      reg,
 		server:        &http.Server{Addr: addr, Handler: serveMux},
 		telemetry:     telemetry,
 		transcriptSvc: transcriptSvc,
@@ -692,9 +672,9 @@ func (a *App) startWatcher() watcherResource {
 
 func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
-		return a.deps.StartIPC(a.ipcPath, a.registry, a.telemetry)
+		return a.deps.StartIPC(a.ipcPath, a.telemetry, a.lifecycle)
 	}
-	return term.StartIPCServer(a.ipcPath, a.registry, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
+	return term.StartIPCServer(a.ipcPath, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {

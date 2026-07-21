@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/sessionid"
 )
 
@@ -26,7 +25,6 @@ type IPCServer struct {
 	done          chan struct{}
 	closeOnce     sync.Once
 	closeErr      error
-	reg           *mux.Registry
 	telemetry     *TelemetryService
 	lifecycle     *LifecycleService
 	managed       *ManagedCodexService  // SP0: nil unless EnableManagedCodex
@@ -35,7 +33,7 @@ type IPCServer struct {
 
 // StartIPCServer creates a Unix Domain Socket server for local 'pokit run' commands.
 // The caller owns the returned IPCServer and must call Close + Wait to clean up.
-func StartIPCServer(socketPath string, reg *mux.Registry, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
+func StartIPCServer(socketPath string, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) (*IPCServer, error) {
 	// If a socket file already exists, only remove it when it is stale. If a
 	// live daemon is still listening on it, refuse: otherwise a duplicate
 	// daemon start would delete the running daemon's socket and then fail on
@@ -67,7 +65,6 @@ func StartIPCServer(socketPath string, reg *mux.Registry, telemetry *TelemetrySe
 	srv := &IPCServer{
 		listener:      listener,
 		done:          make(chan struct{}),
-		reg:           reg,
 		telemetry:     telemetry,
 		lifecycle:     lifecycle,
 		managed:       managed,
@@ -90,7 +87,7 @@ func (s *IPCServer) serve() {
 			log.Printf("IPC accept error: %v", err)
 			return // unexpected error, stop serving
 		}
-		go handleIPCConnection(conn, s.reg, s.telemetry, s.lifecycle, s.managed, s.managedClaude)
+		go handleIPCConnection(conn, s.telemetry, s.lifecycle, s.managed, s.managedClaude)
 	}
 }
 
@@ -113,7 +110,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 	}
 }
 
-func handleIPCConnection(conn net.Conn, reg *mux.Registry, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
+func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -322,87 +319,14 @@ func handleIPCConnection(conn net.Conn, reg *mux.Registry, telemetry *TelemetryS
 		return
 	}
 
-	// Spawn a new native multiplexer session, or use existing one
-	sessionID := cmdStr // Simple ID for now
-	s, err := reg.FindSession(context.Background(), sessionID)
-	if err != nil {
-		s, err = mux.SpawnPTY(sessionID, termEnv, "bash", "-c", cmdStr)
-		if err != nil {
-			log.Println("failed to spawn session:", err)
-			return
-		}
-	}
-
-	var stream mux.TerminalStream
-	if opener, ok := s.(mux.StreamOpener); ok {
-		stream, err = opener.OpenStream(context.Background())
-		if err != nil {
-			log.Println("failed to open IPC stream:", err)
-			return
-		}
-		defer stream.Close()
-	} else {
-		log.Println("session does not support opening streams")
-		return
-	}
-
-	// Set initial PTY size if provided
-	if initialW > 0 && initialH > 0 {
-		if szErr := stream.Resize(initialH, initialW); szErr != nil {
-			log.Printf("IPC resize err: %v", szErr)
-		}
-	}
-
-	// Stream PTY stdout to IPC connection securely
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := stream.Read(buf)
-			if err != nil {
-				break
-			}
-			if _, wErr := conn.Write(buf[:n]); wErr != nil {
-				break
-			}
-		}
-	}()
-
-	// Stream IPC connection to PTY stdin (Raw byte copy)
-	ts := GetTranscriptService()
-	canonicalID := fmt.Sprintf("%s:%s", s.AdapterName(), s.ID())
-	if reader.Buffered() > 0 {
-		bufferedData, _ := reader.Peek(reader.Buffered())
-		if ts != nil {
-			ts.BeginInput(canonicalID, time.Now())
-		}
-		if writer, ok := s.(mux.InputWriter); ok {
-			writer.WriteInput(context.Background(), bufferedData)
-		} else {
-			stream.Write(bufferedData)
-		}
-		reader.Discard(reader.Buffered())
-	}
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			break
-		}
-		if ts != nil {
-			ts.BeginInput(canonicalID, time.Now())
-		}
-		if writer, ok := s.(mux.InputWriter); ok {
-			writer.WriteInput(context.Background(), buf[:n])
-		} else {
-			stream.Write(buf[:n])
-		}
-	}
+	_ = termEnv
+	_ = initialW
+	_ = initialH
+	conn.Write([]byte("legacy IPC protocol is not supported; use JSON create or sub:<session>\n"))
 }
 
 // handleIPCSubscriber bridges a local terminal to an existing recorder via
-// exact-generation TerminalTransport (managed) or global GetRecorder (legacy).
-// PA4-Final-R16: managed paths use transport, never global Recorder lookup.
+// exact-generation TerminalTransport. Other session types are unsupported.
 func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecycle *LifecycleService) {
 	ref := sessionid.ParseSessionID(sessionID)
 
@@ -459,46 +383,5 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 		}
 	}
 
-	// Legacy: global Recorder lookup.
-	rec := GetRecorder(sessionID)
-	if rec == nil {
-		conn.Write([]byte("session not found or recorder not started\n"))
-		return
-	}
-
-	if cols > 0 && rows > 0 {
-		if err := rec.Resize(rows, cols); err != nil {
-			log.Printf("IPC subscriber resize err session=%s: %v", sessionID, err)
-		}
-	}
-
-	bootstrap, subCh := rec.SubscribeWithBootstrap()
-	if len(bootstrap) > 0 {
-		conn.Write(bootstrap)
-	}
-	defer rec.Unsubscribe(subCh)
-
-	go func() {
-		for data := range subCh {
-			if _, err := conn.Write(data); err != nil {
-				break
-			}
-		}
-		conn.Close()
-	}()
-
-	ts := GetTranscriptService()
-	buf := make([]byte, 1024)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			return
-		}
-		if n > 0 {
-			if ts != nil {
-				ts.BeginInput(sessionID, time.Now())
-			}
-			rec.WriteInput(buf[:n])
-		}
-	}
+	conn.Write([]byte("session not found or recorder not started\n"))
 }

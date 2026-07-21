@@ -156,18 +156,16 @@ func (s *fixtureStream) Resize(rows, cols int) error {
 func fixtureE2EHandlers(t *testing.T) (*Handlers, *fixtureE2EAdapter) {
 	t.Helper()
 	adapter := newFixtureE2EAdapter()
-	reg := mux.MustNewRegistry(adapter)
-	return &Handlers{Registry: reg}, adapter
+	return &Handlers{}, adapter
 }
 
 // bareSessionHandlers returns Handlers with a session that has ZERO optional capabilities.
 func bareSessionHandlers(t *testing.T) *Handlers {
 	t.Helper()
-	adapter := &bareOnlyAdapter{
+	_ = &bareOnlyAdapter{
 		sessions: []mux.Session{&fixtureBareSession{id: "bare", title: "Bare Session"}},
 	}
-	reg := mux.MustNewRegistry(adapter)
-	return &Handlers{Registry: reg}
+	return &Handlers{}
 }
 
 type bareOnlyAdapter struct {
@@ -382,9 +380,9 @@ func TestFixtureE2E_StreamContent(t *testing.T) {
 }
 
 func TestFixtureE2E_Telemetry(t *testing.T) {
-	h, _ := fixtureE2EHandlers(t)
+	_, _ = fixtureE2EHandlers(t)
 
-	svc := NewTelemetryService(h.Registry, NoopNotifier{}, nil, nil)
+	svc := NewTelemetryService(NoopNotifier{}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	go svc.Run(ctx)
@@ -397,7 +395,7 @@ func TestFixtureE2E_Telemetry(t *testing.T) {
 	defer DeleteRecorder("fixture:f1")
 	defer DeleteRecorder("fixture:f2")
 
-	snapshot := svc.Snapshot(h.Registry)
+	snapshot := svc.Snapshot()
 	found := false
 	for _, s := range snapshot {
 		if s.Adapter == "fixture" {
@@ -492,8 +490,8 @@ func TestFixtureE2E_AdapterCapabilitiesInAPI(t *testing.T) {
 func TestE10_CommandCwdReachesCreateOptions(t *testing.T) {
 	// Use controlled_pty adapter which respects Command/CWD.
 	adapter := mux.NewControlledPTYAdapter()
-	reg := mux.MustNewRegistry(adapter)
-	h := &Handlers{Registry: reg}
+	_ = adapter
+	h := &Handlers{}
 
 	body := strings.NewReader(`{"id":"controlled_pty:test-cmd","command":"echo hello","cwd":"/tmp","runner":"test","runnerColor":"#fff"}`)
 	req := httptest.NewRequest("POST", "/api/sessions", body)

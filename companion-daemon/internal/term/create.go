@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"devremote/companion-daemon/internal/mux"
-	"devremote/companion-daemon/internal/sessionid"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -137,10 +135,9 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		} else if req.ProfileID == "claude" {
 			version = "2.1.202"
 		}
-		pid, startedAt := managedProcessIdentity(r.Context(), h.Registry, canonicalID)
 		spec := transcript.LaunchSpec{
 			SessionID: canonicalID, Provider: req.ProfileID, Adapter: adapter,
-			Version: version, PID: pid, StartedAt: startedAt,
+			Version: version,
 		}
 		if h.Telemetry != nil {
 			// Production path: the atomic replacement boundary with status
@@ -215,21 +212,21 @@ func validateLaunchInputExclusivity(profileID, executable string, command json.R
 	return nil
 }
 
-// toOptions validates the spec and resolves it to CreateOptions. Malformed
+// toOptions validates the spec and resolves it to SpawnConfig. Malformed
 // input (e.g. a non-string command) is rejected — it is never coerced into a
 // default shell.
-func (spec localCreateSpec) toOptions() (mux.CreateOptions, error) {
+func (spec localCreateSpec) toOptions() (SpawnConfig, error) {
 	if err := validateLaunchInputExclusivity(spec.ProfileID, spec.Executable, spec.Command); err != nil {
-		return mux.CreateOptions{}, err
+		return SpawnConfig{}, err
 	}
 	if err := validateCWD(spec.CWD); err != nil {
-		return mux.CreateOptions{}, err
+		return SpawnConfig{}, err
 	}
 	prefix := spec.ProfileID
 	if prefix == "" || prefix == "custom" {
 		prefix = "run"
 	}
-	opts := mux.CreateOptions{Name: genLocalID(prefix), CWD: spec.CWD}
+	opts := SpawnConfig{Name: genLocalID(prefix), CWD: spec.CWD}
 
 	switch {
 	case spec.ProfileID != "" && spec.ProfileID != "custom":
@@ -283,70 +280,6 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 		return "", LifecycleFailed, err
 	}
 	return canonicalID, LifecycleRunning, nil
-}
-
-// createControlledSession creates a controlled_pty session and proves its
-// Recorder is ready before the session may be exposed as running. On readiness
-// failure it terminates the just-created runtime so no unrecorded live process
-// is left behind. Returns the exact Recorder so the lifecycle watcher observes
-// the real one (avoids a fast-exit race where GetRecorder is already nil).
-func createControlledSession(ctx context.Context, reg *mux.Registry, opts mux.CreateOptions) (string, *Recorder, error) {
-	createdID, err := reg.CreateSession(ctx, "controlled_pty", opts)
-	if err != nil {
-		return "", nil, err
-	}
-	canonicalID := sessionid.SessionRef{Adapter: "controlled_pty", LocalID: createdID}.Canonical()
-	rec, rerr := startRecorder(ctx, reg, canonicalID)
-	if rerr != nil {
-		_ = reg.TerminateSession(ctx, "controlled_pty", createdID)
-		DeleteRecorder(canonicalID)
-		return "", nil, fmt.Errorf("recorder not ready: %w", rerr)
-	}
-	return canonicalID, rec, nil
-}
-
-// startRecorder starts the single Recorder for a freshly created session and
-// proves it is ready (session found, stream openable, recorder alive). It
-// unsubscribes the starter subscriber that EnsureRecorder returns so a
-// create-without-viewer leaves no retained phantom subscription, and returns
-// the Recorder for the lifecycle watcher.
-func startRecorder(ctx context.Context, reg *mux.Registry, canonicalID string) (*Recorder, error) {
-	sess, err := reg.FindSession(ctx, canonicalID)
-	if err != nil {
-		return nil, fmt.Errorf("session not found after create: %w", err)
-	}
-	opener, ok := sess.(mux.StreamOpener)
-	if !ok {
-		return nil, fmt.Errorf("session does not support live streaming")
-	}
-	rec, subCh := EnsureRecorder(canonicalID, func() (ptyStream, error) { s, err := opener.OpenStream(ctx); return s, err })
-	if rec == nil {
-		return nil, fmt.Errorf("recorder failed to start (stream unavailable)")
-	}
-	// No viewer yet — do not retain the starter subscription.
-	rec.Unsubscribe(subCh)
-	return rec, nil
-}
-
-// managedProcessIdentity resolves the freshly-created session's PID and spawn
-// start time from its own adapter session (controlled_pty ProcessProvider). It
-// is best-effort supporting identity: on any failure it returns (0, zero) so the
-// launch binding claims no process identity rather than a fabricated one. It does
-// NOT scrape ps/lsof — it reads only what the adapter already owns.
-func managedProcessIdentity(ctx context.Context, reg *mux.Registry, canonicalID string) (int, time.Time) {
-	sess, err := reg.FindSession(ctx, canonicalID)
-	if err != nil {
-		return 0, time.Time{}
-	}
-	pp, ok := sess.(mux.ProcessProvider)
-	if !ok {
-		return 0, time.Time{}
-	}
-	info, err := pp.ProcessInfo(ctx)
-	if err != nil {
-		return 0, time.Time{}
-	}
-	return info.PID, info.StartedAt
 }
 
 // genLocalID generates a unique daemon-owned local session id. Clients never

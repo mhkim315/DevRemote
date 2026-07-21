@@ -331,12 +331,16 @@ func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string) (LifecycleResul
 	if o.status != nil {
 		o.status.Clear(id)
 	}
-	DeleteRecorder(id)
+	if e.recorder != nil {
+		e.recorder.Stop()
+	}
 	return LifecycleResult{SessionID: id, Action: "delete", State: LifecycleExited}, nil
 }
 func (o *OwnedPTYRuntime) RegisterForTest(id, profileID, name string, rec *Recorder) int64 {
 	return o.register(id, profileID, name, nil, LaunchIdentity{InstanceID: "test", StartedAt: o.now()}, func(context.Context) CleanupOutcome {
-		DeleteRecorderIfSame(id, rec)
+		if rec != nil {
+			rec.Stop()
+		}
 		return CleanupOutcome{Completed: true}
 	}, newTerminalTransport(id, 0, io.Discard, nil, rec), rec)
 }
