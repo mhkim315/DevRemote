@@ -1,7 +1,7 @@
 # PB.7 Evidence — Automated Closeout and Device Gate
 
 **Pre-Device Candidate SHA:** `9b75c1e4a`
-**PB.7 Evidence HEAD:** `780f4bc66`
+**PB.7 Evidence HEAD:** `4009a9fc5`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
 **PB ACCEPT SHA:** UNSET
@@ -56,6 +56,8 @@ internal/watcher                                  PASS
 ```
 
 ## Zero-Consumer Static Scans — All 5 Surfaces
+
+All commands run from `companion-daemon/`.
 
 ### Control
 ```
@@ -113,8 +115,8 @@ $ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter" scripts/
 ### 5. Packaging
 
 ```
-$ grep -rnE "tmux|cmux|localpty" Makefile
-(empty)
+$ grep -rnE "tmux|cmux|localpty" Makefile 2>/dev/null
+(empty — no Makefile)
 ```
 
 ## Pre-Device Packet ACCEPT SHAs

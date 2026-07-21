@@ -1,7 +1,7 @@
 # PB.6 Evidence — Re-Verify at 9b75c1e4a
 
 **Re-Verify Candidate SHA:** `9b75c1e4a`
-**PB.6 Evidence HEAD:** `780f4bc66`
+**PB.6 Evidence HEAD:** `4009a9fc5`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Baseline SHA:** `abe4df1d6`
 
@@ -33,6 +33,8 @@ internal/watcher                                  PASS
 ```
 
 ## Zero-Consumer Static Scans — All 5 Surfaces
+
+All commands run from `companion-daemon/`.
 
 ### 1. Production (non-test Go)
 
@@ -80,8 +82,8 @@ $ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter" scripts/
 ### 5. Packaging
 
 ```
-$ grep -rnE "tmux|cmux|localpty" Makefile
-(empty)
+$ grep -rnE "tmux|cmux|localpty" Makefile 2>/dev/null
+(empty — no Makefile)
 ```
 
 ## PB Wave Ledger
