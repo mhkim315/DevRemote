@@ -403,6 +403,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	var lastDenial time.Time
 	recentCache := newInputRecentCache()
 	defer recentCache.clear()
+	permissionLimiter := newInputPermissionLimiter(time.Now())
 	var inputSequence uint64
 	for {
 		mt, msg, err := conn.ReadMessage()
@@ -419,11 +420,22 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		// type the exact bytes {"type":"geometry-poll"} into the terminal:
 		// they are sent as a BINARY frame and reach the PTY unchanged.
 		if mt == websocket.TextMessage {
+			// A frame above the raw protocol bound cannot be safely dispatched by
+			// a partial parse. Return the closed oversized result directly.
+			if len(msg) > inputMaxRawFrame {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter); result != nil {
+					select {
+					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
+					default:
+					}
+				}
+				continue
+			}
 			// Parse the terminal-input grammar first. The strict decoder returns
 			// the partially decoded request on unknown/trailing JSON, so malformed
 			// terminal_input is rejected rather than silently ignored by dispatch.
 			if req, _, _ := parseInputControlRequest(msg); req != nil && req.Type == "terminal_input" {
-				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID); result != nil {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
 					default:
@@ -468,7 +480,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// protocol. Raw binary remains an explicit local-development escape
 			// hatch and is never permitted merely because a ticket has input.
 			select {
-			case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(`{"type":"input_result","outcome":"invalid_request"}`)}:
+			case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: mustJSON(inputResult{Type: "input_result", ConnectionID: connID, SessionID: session, Generation: inputGeneration, Outcome: "invalid_request", Reason: "update_required"})}:
 			default:
 			}
 			continue

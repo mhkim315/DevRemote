@@ -205,6 +205,42 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => tree.unmount());
   });
 
+  it('clears old pending ACKs on reconnect and never lets a late sibling turn partial delivery into Delivered', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    const input = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+    const send = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'], connectionId: 'fedcba9876543210fedcba9876543210' })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    expect(statusText(tree)).not.toBe('Delivered to terminal');
+
+    // Start one line and make both frames pending before failing the first.
+    await act(async () => input().props.onChangeText('partial'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2 })));
+    await act(async () => { jest.advanceTimersByTime(40); });
+    await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3 })));
+    await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2, outcome: 'write_failed' })));
+    expect(statusText(tree)).toBe('Not delivered');
+    await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, outcome: 'accepted' })));
+    expect(statusText(tree)).toBe('Not delivered');
+    expect(input().props.value).toBe('partial');
+
+    // An overlapping Send cannot replace a live line operation's ACK slots.
+    await act(async () => input().props.onChangeText('one'));
+    await act(async () => send().props.onPress());
+    await act(async () => input().props.onChangeText('two'));
+    await act(async () => send().props.onPress());
+    expect(statusText(tree)).toBe('Not delivered');
+    await act(async () => tree.unmount());
+    jest.useRealTimers();
+  });
+
   it('preserves command and reports partial delivery on first or second non-accepted result and timeout', async () => {
     jest.useFakeTimers();
     const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };

@@ -230,6 +230,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // 2-frame submitLine: text+Enter = 2 requests. Track both ACKs.
   const pendingLineRef = useRef<PendingLine | null>(null);
   const connectionRef = useRef<{ connectionId: string; sessionId: string; generation: number } | null>(null);
+  // IDs belonging to a failed two-frame operation never regain delivery
+  // status if a sibling result arrives later.
+  const abandonedInputRef = useRef<Set<string>>(new Set());
   // PB.7 Input-A: caps is a server-authorized capability snapshot. Missing,
   // stale, or not-yet-announced capability data is read-only before any frame.
   const [caps, setCaps] = useState<string[]>(() => Array.isArray(initialCaps) ? initialCaps : []);
@@ -258,10 +261,13 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   useEffect(() => () => {
     for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
     pendingInputRef.current.clear();
+    abandonedInputRef.current.clear();
   }, []);
   useEffect(() => {
     for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
     pendingInputRef.current.clear();
+    pendingLineRef.current = null;
+    abandonedInputRef.current.clear();
   }, [session]);
 
   const doBootstrap = useCallback(async (sess: string, mgr: TokenManager, base: string) => {
@@ -495,6 +501,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // Enter keypress. Text goes out once, \r once — no accumulated-buffer bug.
   const submitLine = useCallback((text: string) => {
     if (!deviceCanInput) { setSendStatus('failed'); return; }
+    if (pendingLineRef.current) {
+      // One line operation owns the text/Enter pair; do not let an overlapping
+      // command steal its ACK slots or overwrite a partial-delivery result.
+      setSendStatus('not_delivered');
+      return;
+    }
     // PB.7 Input-B: 2-frame operation. Track both text+Enter ACKs.
     const line: PendingLine = { textId: null, enterId: null, textOutcome: null, enterOutcome: null, enterQueued: false };
     pendingLineRef.current = line;
@@ -588,6 +600,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       }
       if (data.type === 'hello') {
         const nextCaps = serverCapabilitiesFromControl(data);
+        // A new hello is a new server connection authority. No result from
+        // the prior socket may settle an operation after reconnect.
+        for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
+        pendingInputRef.current.clear();
+        pendingLineRef.current = null;
+        abandonedInputRef.current.clear();
         if (nextCaps !== null && typeof data.connectionId === 'string' && data.connectionId && data.sessionId === session && Number.isInteger(data.generation)) {
           connectionRef.current = { connectionId: data.connectionId, sessionId: data.sessionId, generation: data.generation };
           setCaps(nextCaps);
@@ -616,6 +634,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           pendingInputRef.current.delete(key);
           const activeLine = pendingLineRef.current;
           if (activeLine && (key === activeLine.textId || key === activeLine.enterId)) {
+            for (const sibling of [activeLine.textId, activeLine.enterId]) {
+              if (!sibling) continue;
+              abandonedInputRef.current.add(sibling);
+              const siblingPending = pendingInputRef.current.get(sibling);
+              if (siblingPending) {
+                clearTimeout(siblingPending.timeout);
+                pendingInputRef.current.delete(sibling);
+              }
+            }
             pendingLineRef.current = null;
           }
           setSendStatus('not_delivered');
@@ -625,6 +652,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       }
       if (data.type === 'input_result' && typeof data.inputId === 'string' && typeof data.outcome === 'string' && typeof data.connectionId === 'string' && typeof data.sessionId === 'string' && Number.isInteger(data.generation)) {
         const key = data.inputId as string;
+        if (abandonedInputRef.current.has(key)) return;
         const pending = pendingInputRef.current.get(key);
         if (!pending || data.connectionId !== pending.connectionId || data.sessionId !== pending.sessionId || data.generation !== pending.generation) return;
         clearTimeout(pending.timeout);
@@ -634,6 +662,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           if (key === line.textId) line.textOutcome = data.outcome;
           if (key === line.enterId) line.enterOutcome = data.outcome;
           if (data.outcome !== 'accepted') {
+            for (const sibling of [line.textId, line.enterId]) {
+              if (!sibling) continue;
+              abandonedInputRef.current.add(sibling);
+              const siblingPending = pendingInputRef.current.get(sibling);
+              if (siblingPending) {
+                clearTimeout(siblingPending.timeout);
+                pendingInputRef.current.delete(sibling);
+              }
+            }
             pendingLineRef.current = null;
             setSendStatus('not_delivered'); // possible partial delivery; preserve command
           } else if (line.enterQueued && line.textId !== null && line.enterId !== null && line.textOutcome === 'accepted' && line.enterOutcome === 'accepted') {

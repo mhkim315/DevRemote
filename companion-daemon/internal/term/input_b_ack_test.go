@@ -263,9 +263,13 @@ func TestInputB_ProductionRejectsLegacyBinaryBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result struct {
-		Outcome string `json:"outcome"`
+		Outcome      string `json:"outcome"`
+		Reason       string `json:"reason"`
+		ConnectionID string `json:"connectionId"`
+		SessionID    string `json:"sessionId"`
+		Generation   int64  `json:"generation"`
 	}
-	if err := json.Unmarshal(payload, &result); err != nil || result.Outcome != "invalid_request" {
+	if err := json.Unmarshal(payload, &result); err != nil || result.Outcome != "invalid_request" || result.Reason != "update_required" || result.ConnectionID == "" || result.SessionID != "controlled_pty:input-b-ack" || result.Generation != 7 {
 		t.Fatalf("legacy binary result=%s decoded=%+v err=%v", payload, result, err)
 	}
 	if len(writer.wrote) != 0 {

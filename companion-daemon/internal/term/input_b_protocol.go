@@ -43,6 +43,12 @@ type inputResult struct {
 	Generation   int64  `json:"generation"`
 	Sequence     uint64 `json:"sequence,omitempty"`
 	Outcome      string `json:"outcome"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+func mustJSON(v interface{}) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // validInputID returns true when s is exactly 64 lowercase hex characters.
@@ -174,15 +180,28 @@ func (c *inputRecentCache) getConflict(inputID string, digest [32]byte) bool {
 	return e.digest != digest
 }
 
-// store records a result under inputID. Evicts oldest entry if at capacity.
+// canStore reserves capacity before a write. A full connection cache rejects a
+// new request instead of evicting an accepted result: replaying an evicted ID
+// must never turn an ACK-loss retry into a second terminal write.
+func (c *inputRecentCache) canStore(inputID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.purgeLocked()
+	if _, ok := c.entries[inputID]; ok {
+		return true
+	}
+	return len(c.entries) < inputCacheSize
+}
+
+// store records a result under inputID. Capacity is preflighted by canStore;
+// it intentionally does not evict a live result.
 func (c *inputRecentCache) store(inputID string, digest [32]byte, outcome string, sequence uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Purge expired entries.
 	c.purgeLocked()
-	// Evict oldest if at capacity.
-	for len(c.entries) >= inputCacheSize && len(c.order) > 0 {
-		c.evictLocked(c.order[0])
+	if _, exists := c.entries[inputID]; !exists && len(c.entries) >= inputCacheSize {
+		return
 	}
 	c.entries[inputID] = &inputCacheEntry{
 		digest:   digest,
@@ -191,6 +210,31 @@ func (c *inputRecentCache) store(inputID string, digest [32]byte, outcome string
 		expires:  time.Now().Add(inputCacheTTL),
 	}
 	c.order = append(c.order, inputID)
+}
+
+// inputPermissionLimiter is per connection. It permits a burst of three
+// permission_denied receipts and refills at ten per minute, preventing a
+// read-only device from turning the result channel into an unbounded oracle.
+type inputPermissionLimiter struct {
+	tokens float64
+	last   time.Time
+}
+
+func newInputPermissionLimiter(now time.Time) *inputPermissionLimiter {
+	return &inputPermissionLimiter{tokens: 3, last: now}
+}
+
+func (l *inputPermissionLimiter) allow(now time.Time) bool {
+	l.tokens += now.Sub(l.last).Minutes() * (10.0 / 60.0)
+	if l.tokens > 3 {
+		l.tokens = 3
+	}
+	l.last = now
+	if l.tokens < 1 {
+		return false
+	}
+	l.tokens--
+	return true
 }
 
 // clear removes all entries (connection close).
@@ -237,6 +281,7 @@ func handleTerminalInput(
 	ticketPrincipal interface{},
 	recentCache *inputRecentCache,
 	connID string,
+	permissionLimiter *inputPermissionLimiter,
 ) []byte {
 	mkResult := func(req *inputControlRequest, outcome string, seq uint64) []byte {
 		b, _ := json.Marshal(inputResult{
@@ -265,6 +310,9 @@ func handleTerminalInput(
 
 	tp, _ := ticketPrincipal.(*devicetrust.Principal)
 	if tp != nil && !hasTicketPerm(tp, string(devicetrust.PermTerminalInput)) {
+		if permissionLimiter == nil || !permissionLimiter.allow(time.Now()) {
+			return nil
+		}
 		return mkResult(req, "permission_denied", 0)
 	}
 
@@ -290,6 +338,9 @@ func handleTerminalInput(
 		return mkResult(req, outcome, seq)
 	}
 	if recentCache.getConflict(req.InputID, digest) {
+		return mkResult(req, "invalid_request", 0)
+	}
+	if !recentCache.canStore(req.InputID) {
 		return mkResult(req, "invalid_request", 0)
 	}
 
