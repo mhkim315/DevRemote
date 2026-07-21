@@ -1,7 +1,7 @@
 # TERM-G1 Evidence — Managed-PTY Geometry Authority Restoration
 
 **IMPL SHA:** `2d13020ae`
-**EVID SHA:** (this commit — DOCS-ONLY R1)
+**EVID SHA:** `34b88eca6`
 **ACCEPT SHA:** `2d13020ae`
 **Plan:** `docs/PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md` §4
 

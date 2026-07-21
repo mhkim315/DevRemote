@@ -152,7 +152,7 @@ Secrets: CLEAN (pre-existing test fixtures only — deadbeef, xyz in auth test f
 - [x] Managed PTY reports valid generation-bound geometry
 - [x] Direct keyboard, Send, paste, Ctrl+C, and macros agree on same owner permission
 - [x] No paired WebView performs unauthenticated REST polling
-- [x] Scroll comparison classified (IDENTICAL)
+- [x] Scroll comparison classified (source-level mitigation unchanged; physical confirmation pending SM-S926N)
 - [x] PB.6/PB.7 automated evidence regenerated
 - [ ] Clean daemon and APK artifacts attest same exact `PB_DEVICE_CANDIDATE_SHA`
 - [ ] `PB_ACCEPT_SHA` remains **UNSET**

@@ -6,13 +6,13 @@
 
 **Last independently accepted input production baseline:** `9b75c1e4a`
 
-**Current evidence HEAD:** `25636ec9c`
+**Current evidence HEAD:** `b18123e77`
 
 **TERM-G1 ACCEPT SHA:** `2d13020ae` (IMPL `2d13020ae`) — managed-PTY geometry authority
 
 **TERM-C1 ACCEPT SHA:** `ba78b617a` (IMPL `262d38b88`) — single control bridge
 
-**Scroll comparison:** IDENTICAL to baseline, no action (`SCROLL_COMPARISON.md`)
+**Scroll comparison:** source-level mitigation unchanged; physical confirmation pending SM-S926N (`SCROLL_COMPARISON.md`)
 
 **Target device:** Samsung SM-S926N (Galaxy S24 Ultra), Android 16
 
