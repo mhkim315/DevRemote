@@ -3,6 +3,7 @@
 **Input-B R4 remediation IMPL SHA:** `514bf83ce`
 **Input-B R5 edge-case IMPL SHA:** `78b9090ce`
 **Input-B R6 uncertain-delivery IMPL SHA:** `8a80c5219`
+**Input-B R7 sibling-isolation IMPL SHA:** `97a03931d`
 **Prior Input-B R4 IMPL SHA:** `042005af7`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
@@ -34,7 +35,7 @@ go vet ./...                      exit 0
 gofmt -l .                        0 files
 go test -race ./... -count=1       ALL PASS
 npx tsc --noEmit                   clean
-npx jest --runInBand               478/478 pass, 35 suites
+npx jest --runInBand               R6: 479/479 pass; R7: 481/481 pass, 35 suites
 ```
 
 ## Protocol Details
@@ -118,6 +119,12 @@ npx jest --runInBand               478/478 pass, 35 suites
 - A macro/keyboard/paste result cannot replace the visible state of an active
   two-frame line; only that line's tagged text and Enter acknowledgements can
   settle it.
+- `delivery_unknown` for either line sibling abandons and clears both sibling
+  pending IDs. Late accepted ACKs are ignored, so an Enter send failure cannot
+  later turn its text ACK into `Delivered`. A non-line unknown result is also
+  ignored while a line remains pending.
+- `write_failed` is rendered as **Possible partial delivery**, because the
+  PTY writer can report a short write after consuming a prefix.
 
 ## Focused Tests
 
@@ -135,7 +142,7 @@ TestInputB_ExactRawAndDecodedBounds               PASS
 TestInputB_StrictParserRejectsMalformedUnknownAndTrailing PASS
 TestInputB_ClosedOutcomesAndPermissionLimiter     PASS
 TestInputB_CacheCapacityNeverEvictsAcceptedReplay PASS
-TestInputB_ConnectionCloseClearsReplayCache       PASS
+TestInputB_HandleWSCloseDropsConnectionReplayState PASS
 TestInputB_CacheCapacityRaceNeverEvictsAcceptedEntries PASS
 TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration PASS
 TestInputB_ReplacementRaceKeepsWriteBoundToCapturedGeneration PASS
