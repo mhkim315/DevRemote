@@ -62,12 +62,12 @@ $ grep -rnE "/api/v2/links|/api/link|/api/attach" --include='*.go' cmd/ | grep -
 | Wave | SHA | Status |
 |------|-----|--------|
 | PB.0 | `321cd1a84` | ACCEPTED — Consumer inventory |
-| PB.1 | `8d50d834c` | ACCEPTED — Localpty removal |
-| PB.2a | `ac1811e6e` | ACCEPTED — Manual link removal |
-| PB.2b | `9df01aa85` | ACCEPTED — Discovery/observer removal |
-| PB.3 | `b690a99ec` | ACCEPTED — Tmux removal |
-| PB.4 | `3b09ee144` | ACCEPTED — Cmux/snapshot removal |
-| PB.5a | `28b627278` | ACCEPTED — Launcher boundary |
-| PB.5b | `70e2c2a37` | ACCEPTED — V1 wiring |
-| PB.6 | `54a1fb351` | ACCEPTED — Mobile/daemon cleanup |
+| PB.1 | `c0f5664d0` | ACCEPTED — Localpty removal (R2) |
+| PB.2a | `359e3853e` | ACCEPTED — Manual link removal (R2) |
+| PB.2b | `3c65b5990` | ACCEPTED — Discovery/observer removal (R3) |
+| PB.3 | `2987b6fe1` | ACCEPTED — Tmux removal (R4) |
+| PB.4 | `ed9bb5468` | ACCEPTED — Cmux/snapshot removal (R8) |
+| PB.5a | `28b627278` | ACCEPTED — Launcher boundary (R6) |
+| PB.5b | `70e2c2a37` | ACCEPTED — V1 wiring (final) |
+| PB.6 | `54a1fb351` | ACCEPTED — Mobile/daemon cleanup (final) |
 | PB.7 | `54a1fb35125cd3abcd7298036621944628149ae0` | AWAITING_DEVICE_GATE |
