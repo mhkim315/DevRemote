@@ -47,9 +47,9 @@ type StatusClearer interface{ Clear(sessionID string) }
 // classifies from the provider-owned registry record and never parses
 // provider error strings.
 type ProviderLifecycleOwner interface {
-	Stop(sessionID string, epoch int64) LifecycleOutcome
-	Kill(sessionID string, epoch int64) LifecycleOutcome
-	Delete(sessionID string, epoch int64) LifecycleOutcome
+	Stop(sessionID string, epoch int64) LifecycleActionOutcome
+	Kill(sessionID string, epoch int64) LifecycleActionOutcome
+	Delete(sessionID string, epoch int64) LifecycleActionOutcome
 }
 
 // LifecycleService is the PA2c lifecycle DISPATCHER. It owns no runtime,

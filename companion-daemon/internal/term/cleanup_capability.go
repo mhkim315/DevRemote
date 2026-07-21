@@ -3,8 +3,6 @@ package term
 import (
 	"context"
 	"sync"
-
-	"devremote/companion-daemon/internal/mux"
 )
 
 // PA3 Step 6: GenerationCleanupCapability — immutable generation-bound cleanup.
@@ -25,10 +23,10 @@ func (c *GenerationCompletion) Done() <-chan struct{} { return c.done }
 
 type GenerationCleanupCapability struct {
 	Generation  int64
-	Session     mux.Session
+	Identity    LaunchIdentity
 	Recorder    *Recorder
 	Transport   *TerminalTransport
-	Terminator  mux.SessionIdentityTerminator
+	Cleanup     ProcessCleanup
 	CanonicalID string
 	LocalID     string
 	Completion  *GenerationCompletion
@@ -42,7 +40,7 @@ func (cap *GenerationCleanupCapability) Execute(ctx context.Context) {
 	if cap.Recorder != nil {
 		DeleteRecorderIfSame(cap.CanonicalID, cap.Recorder)
 	}
-	if cap.Terminator != nil && cap.Session != nil {
-		_ = cap.Terminator.CompareAndTerminate(ctx, cap.LocalID, cap.Session)
+	if cap.Cleanup != nil {
+		cap.Cleanup.Execute(ctx)
 	}
 }

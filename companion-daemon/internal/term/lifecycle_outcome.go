@@ -5,37 +5,37 @@ package term
 // sentinels mechanically; no provider error string is ever parsed and no
 // late federated-catalog reread is used to infer what an owner decided.
 
-// LifecycleOutcome is the closed internal vocabulary a lifecycle owner
+// LifecycleActionOutcome is the closed internal vocabulary a lifecycle owner
 // returns for a dispatched {SessionID, generation} action.
-type LifecycleOutcome string
+type LifecycleActionOutcome string
 
 const (
 	// OutcomeAccepted — the owner performed the action for the exact
 	// dispatched generation and recorded terminal acceptance.
-	OutcomeAccepted LifecycleOutcome = "accepted"
+	OutcomeAccepted LifecycleActionOutcome = "accepted"
 	// OutcomeAlreadyTerminal — the exact generation is already terminal;
 	// the action is idempotent success.
-	OutcomeAlreadyTerminal LifecycleOutcome = "already_terminal"
+	OutcomeAlreadyTerminal LifecycleActionOutcome = "already_terminal"
 	// OutcomeStaleGeneration — the dispatched generation is not the owner's
 	// current generation (a replacement won); the current process was not
 	// touched.
-	OutcomeStaleGeneration LifecycleOutcome = "stale_generation"
+	OutcomeStaleGeneration LifecycleActionOutcome = "stale_generation"
 	// OutcomeNotFound — the owner has no record for the session.
-	OutcomeNotFound LifecycleOutcome = "not_found"
+	OutcomeNotFound LifecycleActionOutcome = "not_found"
 	// OutcomeNotTerminal — Delete on a non-terminal runtime.
-	OutcomeNotTerminal LifecycleOutcome = "not_terminal"
+	OutcomeNotTerminal LifecycleActionOutcome = "not_terminal"
 	// OutcomeUnavailable — the owner cannot serve lifecycle actions in this
 	// composition.
-	OutcomeUnavailable LifecycleOutcome = "unavailable"
+	OutcomeUnavailable LifecycleActionOutcome = "unavailable"
 	// OutcomeTerminationFailed — same generation, owner attempted
 	// termination, process death could not be confirmed.
-	OutcomeTerminationFailed LifecycleOutcome = "termination_failed"
+	OutcomeTerminationFailed LifecycleActionOutcome = "termination_failed"
 )
 
 // mapOutcome converts a closed owner outcome to the handler-facing sentinel
 // (nil for success outcomes). Purely mechanical: one arm per vocabulary
 // entry, no inference.
-func mapOutcome(oc LifecycleOutcome) error {
+func mapOutcome(oc LifecycleActionOutcome) error {
 	switch oc {
 	case OutcomeAccepted, OutcomeAlreadyTerminal:
 		return nil
@@ -99,7 +99,7 @@ func NewManagedProviderOwner(
 // termination_failed: the record shows Exited at the SAME generation after
 // the call, but termination was not confirmed, so it must not be reported
 // as already_terminal. err is only checked for nil-ness — never parsed.
-func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int64) error, isDelete bool) LifecycleOutcome {
+func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int64) error, isDelete bool) LifecycleActionOutcome {
 	if call == nil || p.reg == nil {
 		return OutcomeUnavailable
 	}
@@ -133,14 +133,14 @@ func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int
 	}
 }
 
-func (p *managedProviderOwner) Stop(id string, epoch int64) LifecycleOutcome {
+func (p *managedProviderOwner) Stop(id string, epoch int64) LifecycleActionOutcome {
 	return p.act(id, epoch, p.stop, false)
 }
 
-func (p *managedProviderOwner) Kill(id string, epoch int64) LifecycleOutcome {
+func (p *managedProviderOwner) Kill(id string, epoch int64) LifecycleActionOutcome {
 	return p.act(id, epoch, p.kill, false)
 }
 
-func (p *managedProviderOwner) Delete(id string, epoch int64) LifecycleOutcome {
+func (p *managedProviderOwner) Delete(id string, epoch int64) LifecycleActionOutcome {
 	return p.act(id, epoch, p.del, true)
 }

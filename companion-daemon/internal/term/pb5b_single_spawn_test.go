@@ -2,49 +2,68 @@ package term
 
 import (
 	"context"
+	"io"
+	"sync"
 	"syscall"
 	"testing"
-
-	"devremote/companion-daemon/internal/mux"
+	"time"
 )
 
-// countingLauncher counts Spawn calls.
-type countingLauncher struct{ calls int }
+type v1TestLauncher struct {
+	calls  int
+	handle *v1TestHandle
+}
 
-func (l *countingLauncher) Spawn(_ context.Context, _ SpawnConfig) (PTYHandle, error) {
+func (l *v1TestLauncher) Spawn(_ context.Context, _ SpawnConfig) (LaunchResult, error) {
 	l.calls++
-	return &spawnCountingHandle{}, nil
+	return LaunchResult{Handle: l.handle, Identity: LaunchIdentity{InstanceID: "one", StartedAt: time.Now()}, ProcessCleanup: &v1TestCleanup{}}, nil
 }
 
-type spawnCountingHandle struct{}
+type v1TestHandle struct {
+	io.Reader
+	mu      sync.Mutex
+	signals int
+	killed  int
+}
 
-func (h *spawnCountingHandle) Resize(int, int) error       { return nil }
-func (h *spawnCountingHandle) Write([]byte) (int, error)   { return 0, nil }
-func (h *spawnCountingHandle) Wait() error                 { return nil }
-func (h *spawnCountingHandle) Signal(syscall.Signal) error { return nil }
-func (h *spawnCountingHandle) Close() error                { return nil }
+func (h *v1TestHandle) Signal(syscall.Signal) SignalOutcome {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.signals++
+	return SignalOutcome{Delivered: true}
+}
+func (h *v1TestHandle) Kill() KillOutcome {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.killed++
+	return KillOutcome{Killed: true}
+}
+func (h *v1TestHandle) Wait(context.Context) LifecycleOutcome { return LifecycleOutcome{Exited: true} }
+func (h *v1TestHandle) Write(p []byte) (int, error)           { return len(p), nil }
+func (*v1TestHandle) Resize(int, int) error                   { return nil }
+func (*v1TestHandle) CloseTransport() error                   { return nil }
 
-// TestPB5b_SingleSpawn_NoDoubleCreate proves 1 Create → exactly 1 Spawn.
-func TestPB5b_SingleSpawn_NoDoubleCreate(t *testing.T) {
-	cl := &countingLauncher{}
+type v1TestCleanup struct {
+	once  sync.Once
+	calls int
+}
 
-	// V1-wired OwnedPTYRuntime.
-	owned := NewOwnedPTYRuntimeV1(cl, nil, nil)
-	if owned.V1() != cl {
-		t.Fatal("V1() must return the injected launcher")
+func (c *v1TestCleanup) Execute(context.Context) CleanupOutcome {
+	c.once.Do(func() { c.calls++ })
+	return CleanupOutcome{Completed: true}
+}
+
+func TestPB5_V1CreateUsesExactlyOneSpawn(t *testing.T) {
+	l := &v1TestLauncher{handle: &v1TestHandle{Reader: emptyReader{}}}
+	o := NewOwnedPTYRuntime(l, nil)
+	if _, err := o.Create(context.Background(), SpawnConfig{Name: "test", Executable: "true"}, "", "test"); err != nil {
+		t.Fatal(err)
 	}
-	if cl.calls != 0 {
-		t.Fatalf("calls=%d before Create", cl.calls)
-	}
-
-	// Create with nil spawn fails — V1 is not called as fallback.
-	_, err := owned.Create(context.Background(), mux.CreateOptions{Name: "test"}, "", "test")
-	if err == nil {
-		t.Fatal("Create with nil spawn must fail closed")
-	}
-
-	// V1 must NOT have been called — avoids double-spawn.
-	if cl.calls != 0 {
-		t.Fatalf("V1 Spawn was called during Create: %d calls (double-spawn bug)", cl.calls)
+	if l.calls != 1 {
+		t.Fatalf("Spawn calls=%d, want 1", l.calls)
 	}
 }
+
+type emptyReader struct{}
+
+func (emptyReader) Read([]byte) (int, error) { return 0, io.EOF }

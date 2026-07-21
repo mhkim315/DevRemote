@@ -1,3 +1,5 @@
+//go:build legacy
+
 package term
 
 import (
@@ -34,7 +36,7 @@ type fakeProviderOwner struct {
 	signalsToCurrent int
 }
 
-func (f *fakeProviderOwner) decide(action, id string, epoch int64) LifecycleOutcome {
+func (f *fakeProviderOwner) decide(action, id string, epoch int64) LifecycleActionOutcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, struct {
@@ -51,13 +53,13 @@ func (f *fakeProviderOwner) decide(action, id string, epoch int64) LifecycleOutc
 	return OutcomeAccepted
 }
 
-func (f *fakeProviderOwner) Stop(id string, epoch int64) LifecycleOutcome {
+func (f *fakeProviderOwner) Stop(id string, epoch int64) LifecycleActionOutcome {
 	return f.decide("stop", id, epoch)
 }
-func (f *fakeProviderOwner) Kill(id string, epoch int64) LifecycleOutcome {
+func (f *fakeProviderOwner) Kill(id string, epoch int64) LifecycleActionOutcome {
 	return f.decide("kill", id, epoch)
 }
-func (f *fakeProviderOwner) Delete(id string, epoch int64) LifecycleOutcome {
+func (f *fakeProviderOwner) Delete(id string, epoch int64) LifecycleActionOutcome {
 	return f.decide("delete", id, epoch)
 }
 

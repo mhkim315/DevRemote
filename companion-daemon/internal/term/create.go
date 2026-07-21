@@ -100,12 +100,11 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 
-	opts := mux.CreateOptions{
-		Name:        genLocalID(req.ProfileID),
-		WorkspaceID: req.WorkspaceID,
-		CWD:         req.CWD,
-		Executable:  exe,
-		Args:        args,
+	cfg := SpawnConfig{
+		Name:       genLocalID(req.ProfileID),
+		CWD:        req.CWD,
+		Executable: exe,
+		Args:       args,
 	}
 	// PA2c: controlled-PTY creation is owned by OwnedPTYRuntime (which uses the
 	// temporary mux spawn seam until PA2d) — creation registers the
@@ -116,7 +115,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), opts, req.ProfileID, req.Name)
+	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), cfg, req.ProfileID, req.Name)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")
@@ -279,7 +278,7 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 	if ownedPTY == nil {
 		return "", LifecycleFailed, ErrLifecycleUnavailable
 	}
-	canonicalID, err := ownedPTY.Create(ctx, opts, spec.ProfileID, spec.Name)
+	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name)
 	if err != nil {
 		return "", LifecycleFailed, err
 	}
