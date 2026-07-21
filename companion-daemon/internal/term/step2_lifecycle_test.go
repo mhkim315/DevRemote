@@ -1,11 +1,8 @@
-//go:build legacy
-
 package term
 
 import (
 	"testing"
 
-	"devremote/companion-daemon/internal/mux"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -14,12 +11,8 @@ import (
 // TestLifecycleState_ControlledPTY_SeededEntry verifies mergeLifecycleState
 // returns the EXACT non-empty LifecycleState from a seeded CatalogEntry.
 func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
-	reg, _ := mux.NewRegistry()
-	ctl := mux.NewControlledPTYAdapter()
-	reg.Register(ctl)
-
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(launcherWrapper(ctl), transcriptSvc)
+	ownedPTY := NewOwnedPTYRuntime(nil, transcriptSvc)
 	lifecycle := NewLifecycleService(ownedPTY, transcriptSvc)
 
 	// Seed a running catalog entry.
@@ -28,7 +21,7 @@ func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	snap := []SessionTelemetry{{
 		ID: "controlled_pty:test-ls", DisplayID: "test-ls", Adapter: "controlled_pty",
 	}}
-	result := mergeLifecycleState(snap, lifecycle, reg)
+	result := mergeLifecycleState(snap, lifecycle, nil)
 
 	if len(result) == 0 {
 		t.Fatal("mergeLifecycleState returned empty")
