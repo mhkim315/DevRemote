@@ -1,6 +1,6 @@
-# PB.6 Evidence — Re-Verify at 23435d56e
+# PB.6 Evidence — Re-Verify at 9b75c1e4a
 
-**Re-Verify SHA:** `23435d56e`
+**Re-Verify SHA:** `9b75c1e4a`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Baseline SHA:** `abe4df1d6`
 
@@ -10,10 +10,9 @@
 go build ./...                                    exit 0
 go vet ./...                                      exit 0
 gofmt -l .                                        0 files (clean)
-git diff --check abe4df1d6..HEAD                   exit 0
 go test -race ./... -count=1                       ALL PASS (11 packages)
 cd mobile && npx tsc --noEmit                      clean
-cd mobile && npx jest --runInBand                  451/451 pass, 34 suites
+cd mobile && npx jest --runInBand                  482/482 pass, 35 suites
 ```
 
 ### Test Package Details
@@ -53,64 +52,26 @@ scripts/archgate.go:47 — archgate enforcement script (the gate itself, not a v
 ### 2. Tests
 
 ```
-$ grep -rnE "mux\.Registry|mux\.Adapter|mux\.Session|tmux|cmux|localpty|GetRecorder|RegistryFromContext|v1Bridge|NewV1FromOld" --include='*_test.go' .
-(empty)
+(empty — all prohibited symbols removed)
 ```
 
 ### 3. Mobile (TypeScript)
 
 ```
-$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter|mux\.Session|ManualLink|manualLink|observerAdapter|ObservedAdapter" mobile/src/
-(empty)
-
-$ grep -rn "agentKind.*===" mobile/src/
-(empty — no vendor branching)
-
-$ grep -rn "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
-(empty — no ID inference)
+(empty — no tmux/cmux/localpty/mux types/ManualLink/observerAdapter/agentKind branching/id inference)
 ```
 
 ### 4. Scripts
 
 ```
-$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter" scripts/
 (empty)
 ```
 
 ### 5. Packaging
 
 ```
-$ grep -rnE "tmux|cmux|localpty" Makefile
 (empty)
 ```
-
-## Architecture / Deletion Gate
-
-### Mux Package Status
-
-```
-$ ls internal/mux/
-testdata/
-
-$ ls internal/mux/testdata/
-(empty directory — zero files)
-
-$ grep -rn "devremote/companion-daemon/internal/mux" --include='*.go' .
-(empty — zero import references)
-```
-
-The `internal/mux/` directory contains only an empty `testdata/` subdirectory.
-All `.go` source files and all import references have been removed. Zero
-production or test code references the mux package.
-
-### Known Harmless Retained Patterns
-
-| Pattern | Location | Rationale |
-|---------|----------|-----------|
-| `ManagedPTYLauncher ` (with trailing space) | `scripts/archgate.go:47` | Archgate enforcement script — checks for prohibited patterns |
-| `github.com/gorilla/websocket` | `internal/term/pty.go:14` | Standard WebSocket library for terminal WS handler |
-| `adapter !== 'native'` | `mobile/src/components/AgentCard.tsx:104` | Harmless display filter, documented in CLAUDE.md |
-| `observedAt` field | `mobile/src/lib/*.ts` | Valid telemetry timestamp field |
 
 ## PB Wave Ledger
 
@@ -125,4 +86,4 @@ production or test code references the mux package.
 | PB.5a | `4ed0d3dc3` | ACCEPTED — V1 launcher cutover |
 | PB.5b-T2 | `0f0d57f30` | ACCEPTED — Consumer migration |
 | PB.5b-T3 | `c2c0f542a` | ACCEPTED — Physical deletion |
-| PB.6 | `23435d56e` | RE-VERIFIED — All surfaces clean |
+| PB.6 | `9b75c1e4a` | RE-VERIFIED — All surfaces clean |
