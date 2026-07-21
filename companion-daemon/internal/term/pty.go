@@ -121,6 +121,12 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
+// readOnlyDenialPayload is the JSON control frame sent to a WebSocket client
+// when binary terminal input is rejected. The mobile uses this to display a
+// read-only reason instead of reporting send success after silent discard.
+// Coalesced: at most once per second per connection (see HandleWS reader loop).
+var readOnlyDenialPayload = []byte(`{"type":"read_only","reason":"Terminal input not authorized — view only"}`)
+
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	var ticketPrincipal *devicetrust.Principal
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" && h.WSTickets != nil {
@@ -328,6 +334,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
+	var lastDenial time.Time
 	for {
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -368,9 +375,19 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 
 		// From here mt is a BinaryMessage: raw terminal input.
 
-		// M2.5-4: device-auth input permission gate. Rejected input must not
-		// reach WriteInput OR modify Activity.
+		// PB.7 Input-A: device-auth input permission gate. Rejected input
+		// must perform zero WriteInput calls and cause zero Transcript
+		// mutation. A bounded read_only denial is sent to the client so
+		// the mobile can show a read-only reason instead of reporting
+		// success after silent discard.
 		if ticketPrincipal != nil && !hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {
+			if time.Since(lastDenial) > time.Second {
+				select {
+				case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: readOnlyDenialPayload}:
+					lastDenial = time.Now()
+				default:
+				}
+			}
 			continue
 		}
 
@@ -493,7 +510,7 @@ function connect(){
     // overwritten by this onmessage assignment. Returning here on text ensures
     // unknown/malformed control frames fail closed and are never rendered as
     // PTY output.
-    if(typeof e.data==='string') return;
+    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="read_only" && window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}catch(_){}return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;

@@ -187,6 +187,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  // PB.7 Input-A: server-issued read-only state. When the daemon rejects
+  // terminal input (missing terminal:input permission) it sends a bounded
+  // read_only denial. The mobile surfaces this as a visible read-only reason
+  // instead of reporting send success after silent discard.
+  const [readOnlyReason, setReadOnlyReason] = useState('');
 
   // R1a: transcript endpoint reachability.
   const [activityError, setActivityError] = useState('');
@@ -508,6 +513,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         if (data.status === 'sent') {
           setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
         }
+      }
+      // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
+      if (data.type === 'read_only') {
+        setReadOnlyReason(data.reason || 'Read only');
+        setSendStatus('failed');
+        setTimeout(() => setReadOnlyReason(''), 5000);
       }
       if (data.type === 'e8diag') {
         console.log('E8DIAG', JSON.stringify(data));
@@ -850,6 +861,19 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             EVERY session — never a non-managed bypass. External adapters that
             declare `input` keep input; observe-only/unknown/view-only
             (missing/unknown capabilities) never show input or macros. */}
+        {/* PB.7 Input-A: read-only indicator when input is disabled by server policy */}
+        {activeTab === 'terminal' && !sessionEnded && !actionPolicy.inputEnabled && (
+          <View style={styles.readOnlyBar}>
+            <Text style={styles.readOnlyText}>
+              {readOnlyReason || 'View only — terminal input not available'}
+            </Text>
+          </View>
+        )}
+        {readOnlyReason !== '' && actionPolicy.inputEnabled && (
+          <View style={styles.readOnlyBar}>
+            <Text style={styles.readOnlyText}>{readOnlyReason}</Text>
+          </View>
+        )}
         {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && (
         <>
         <View style={styles.macroContainer}>
@@ -987,6 +1011,9 @@ const styles = StyleSheet.create({
   btnT: {color:'#ffffff', fontWeight:'700', fontSize:13, letterSpacing: 1.17},
   sendStatus: {color:'#45EBE9', fontSize:14, fontWeight:'700', marginHorizontal:4},
   sendFailed: {color:'#f85149'},
+  // PB.7 Input-A: read-only indicator bar shown when terminal input is denied.
+  readOnlyBar: { backgroundColor: 'rgba(248, 81, 73, 0.12)', borderTopWidth: 1, borderTopColor: '#f85149', paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center' },
+  readOnlyText: { color: '#f85149', fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
 
   activityContainer: {
     flex: 1,
