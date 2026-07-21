@@ -1,6 +1,6 @@
-# Input-B Evidence — Versioned Control-Request Protocol (R3)
+# Input-B Evidence — Versioned Control-Request Protocol (R4)
 
-**Input-B IMPL SHA (R3):** (this commit)
+**Input-B IMPL SHA (R4):** `042005af7`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
 
@@ -19,8 +19,7 @@ PB BASELINE: ANCESTOR OK
 internal/term/input_b_protocol.go  — versioned protocol, cache, handleTerminalInput (NEW)
 internal/term/input_b_ack_test.go  — WS integration tests
 internal/term/pty.go               — TextMessage handler hook, terminal HTML protocol
-internal/term/terminal_transport.go — atomic WriteInput lock
-mobile/src/screens/FeedScreen.tsx   — inputId tracking, 2-frame ACK, command preservation
+mobile/src/screens/FeedScreen.tsx   — identity-bound inputId tracking, 2-frame ACK, command preservation
 mobile/__tests__/feedScreenInput.test.ts — protocol test update
 ```
 
@@ -30,9 +29,9 @@ mobile/__tests__/feedScreenInput.test.ts — protocol test update
 go build ./...                    exit 0
 go vet ./...                      exit 0
 gofmt -l .                        0 files
-go test -race ./... -count=1       ALL PASS (11 packages)
+go test -race ./... -count=1       ALL PASS
 npx tsc --noEmit                   clean
-npx jest --runInBand               474/474 pass, 35 suites
+npx jest --runInBand               476/476 pass, 35 suites
 ```
 
 ## Protocol Details
@@ -67,14 +66,29 @@ npx jest --runInBand               474/474 pass, 35 suites
 - Decoded payload: 4096 bytes max
 - inputId: exactly 64 lowercase hex chars
 - Cache: 64 entries, 30s TTL, LRU eviction
-- Strict JSON: DisallowUnknownFields + trailing data check
+- Strict JSON: DisallowUnknownFields plus exact-one-document decoding;
+  trailing JSON is `invalid_request` and never reaches `WriteInput`
 - pokitMakeInputID: 32 bytes crypto random → 64 hex chars
+
+### Production binary policy and connection binding
+
+- Paired production (`InsecureLocalOnly == false`) rejects every legacy binary
+  input frame before `WriteInput`; it returns `invalid_request`. Raw binary is
+  retained only for the explicit local-development mode.
+- `newConnectionID` uses crypto/rand and fails the upgrade closed when entropy
+  cannot be read.
+- hello, `input_pending`, and `input_result` carry the bound connection ID,
+  session ID, and generation. The mobile accepts a result only when those
+  identities and its `inputId` all match its pending request.
 
 ### 2-Frame submitLine
 - Text + Enter sent as two independent control requests
-- "Delivered to terminal" only after BOTH accepted
-- Command preserved until both ACKs arrive
-- Partial delivery recognized when one ACK fails/times out
+- The delayed Enter is tied to its original operation and is cancelled if the
+  first request fails or times out
+- "Delivered to terminal" only after BOTH results are `accepted`, including
+  when the first ACK arrives before the 40ms Enter request becomes pending
+- Command is preserved for failure/timeout; the UI says "Not delivered" to
+  represent possible partial delivery rather than claiming command success
 
 ## Focused Tests
 
@@ -84,5 +98,8 @@ TestInputB_HandleWSAcknowledgesExactGeneration   PASS
 TestInputB_HandleWSWriteFailureDoesNotAcknowledge PASS
 TestInputB_DuplicateInputIDReplaysCached         PASS
 TestInputB_InputIDConflictDifferentPayload       PASS
-feedScreenInput.test.ts — all 5 tests            PASS
+TestInputB_ProductionRejectsLegacyBinaryBeforeWrite PASS
+TestInputB_TrailingTerminalInputIsRejected       PASS
+TestInputB_ConnectionIDEntropyFailureIsFailClosed PASS
+feedScreenInput.test.ts — two-frame/identity/partial tests PASS
 ```
