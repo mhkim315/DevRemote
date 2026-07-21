@@ -41,12 +41,21 @@ export class TerminalController {
 
     // Get authoritative PTY size from the daemon so the mobile xterm mirrors
     // the host geometry (mobile does NOT resize the shared PTY).
+    // TERM-G1: validate bounds — reject non-integer, zero, negative, or
+    // implausibly large values. Invalid geometry falls through to viewport
+    // fallback; the mobile viewer never authors PTY size.
     let ptySize = '';
     try {
       const szRes = await authenticatedFetch(`${baseURL}/term/size?session=${encodeURIComponent(sessionId)}`, undefined, tokenMgr);
       if (szRes.ok) {
         const sz = await szRes.json();
-        ptySize = `window.__pokitPTYSize={rows:${sz.rows||24},cols:${sz.cols||80}};`;
+        const rows = Number(sz.rows);
+        const cols = Number(sz.cols);
+        if (Number.isInteger(rows) && Number.isInteger(cols) &&
+            rows >= 1 && rows <= 1000 &&
+            cols >= 1 && cols <= 2000) {
+          ptySize = `window.__pokitPTYSize={rows:${rows},cols:${cols}};`;
+        }
       }
     } catch {}
 

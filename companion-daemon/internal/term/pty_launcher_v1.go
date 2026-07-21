@@ -94,12 +94,10 @@ func (l *NativePTYLauncher) Spawn(ctx context.Context, cfg SpawnConfig) (LaunchR
 	if len(cfg.Env) > 0 {
 		cmd.Env = cfg.Env
 	}
-	ptm, err := pty.Start(cmd)
-	if err != nil {
-		return LaunchResult{}, fmt.Errorf("start PTY: %w", err)
-	}
-	// TERM-G1: always set an explicit initial PTY size before the child
-	// process produces output. Zero config values default to 30×100.
+	// TERM-G1: compute PTY geometry BEFORE the child process starts.
+	// Zero config values default to 30×100. StartWithSize sets the
+	// window size atomically with PTY allocation — the child never
+	// sees a zero or OS-default geometry.
 	rows, cols := cfg.Rows, cfg.Cols
 	if rows <= 0 {
 		rows = 30
@@ -107,7 +105,10 @@ func (l *NativePTYLauncher) Spawn(ctx context.Context, cfg SpawnConfig) (LaunchR
 	if cols <= 0 {
 		cols = 100
 	}
-	_ = pty.Setsize(ptm, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	ptm, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	if err != nil {
+		return LaunchResult{}, fmt.Errorf("start PTY: %w", err)
+	}
 	h := &nativePTYHandle{cmd: cmd, ptm: ptm, waitDone: make(chan struct{})}
 	go h.collectWait()
 	id := LaunchIdentity{InstanceID: fmt.Sprintf("%d-%d", cmd.Process.Pid, l.now().UnixNano()), StartedAt: l.now()}

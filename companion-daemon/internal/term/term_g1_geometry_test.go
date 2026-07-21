@@ -1,6 +1,7 @@
 package term
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"syscall"
@@ -416,6 +417,174 @@ func TestTERM_G1_PTYReadDoesNotResolveWrongGeneration(t *testing.T) {
 	// Gen-1 recorder must still be alive (reading from gen-1 PTY until EOF).
 	if !rec1.IsAlive() {
 		t.Log("gen-1 recorder already exited (expected — PTY closed on retire)")
+	}
+}
+
+// ── TERM-G1 ANSI fixtures at 100 columns ──
+
+// readUntil reads from the PTY handle until EOF or timeout, collecting all bytes.
+// Returns the accumulated output as a string.
+func readUntil(t *testing.T, h PTYHandle, timeout time.Duration) string {
+	t.Helper()
+	var buf bytes.Buffer
+	reader := h.(io.Reader)
+	deadline := time.After(timeout)
+	for {
+		// Non-blocking read via goroutine with timeout.
+		type readResult struct {
+			data []byte
+			err  error
+		}
+		ch := make(chan readResult, 1)
+		go func() {
+			b := make([]byte, 4096)
+			n, err := reader.Read(b)
+			ch <- readResult{b[:n], err}
+		}()
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				if len(r.data) > 0 {
+					buf.Write(r.data)
+				}
+				return buf.String()
+			}
+			if len(r.data) > 0 {
+				buf.Write(r.data)
+			}
+		case <-deadline:
+			return buf.String()
+		}
+	}
+}
+
+// TestTERM_G1_ANSIFixtureDefault100Cols proves the PTY shell sees 100 columns
+// (the frozen default) when spawned through the V1 launcher.
+func TestTERM_G1_ANSIFixtureDefault100Cols(t *testing.T) {
+	l := NewNativePTYLauncher()
+	result, err := l.Spawn(context.Background(), SpawnConfig{
+		Name:       "g1-ansi-cols",
+		Executable: "bash", Args: []string{"-c", "tput cols"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer result.ProcessCleanup.Execute(context.Background())
+
+	out := readUntil(t, result.Handle, 2*time.Second)
+	out = string(bytes.TrimSpace([]byte(out)))
+	if out != "100" {
+		t.Errorf("tput cols = %q, want \"100\"", out)
+	}
+}
+
+// TestTERM_G1_ANSIFixtureResizeReflectedInTTY proves that after Resize, the
+// PTY shell sees the new column count via stty size.
+func TestTERM_G1_ANSIFixtureResizeReflectedInTTY(t *testing.T) {
+	l := NewNativePTYLauncher()
+	result, err := l.Spawn(context.Background(), SpawnConfig{
+		Name:       "g1-ansi-resize",
+		Executable: "bash", Args: []string{"-c", "sleep 1 && tput cols"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer result.ProcessCleanup.Execute(context.Background())
+
+	// Resize before the shell reports.
+	if err := result.Handle.Resize(40, 132); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+
+	out := readUntil(t, result.Handle, 3*time.Second)
+	out = string(bytes.TrimSpace([]byte(out)))
+	if out != "132" {
+		t.Errorf("tput cols after resize = %q, want \"132\"", out)
+	}
+}
+
+// TestTERM_G1_ANSIFixtureWideLineNoKernelWrap proves a 100-character line
+// written to a 100-column PTY is not truncated or wrapped by the kernel
+// terminal driver (the PTY is in raw mode and passes bytes unchanged).
+func TestTERM_G1_ANSIFixtureWideLineNoKernelWrap(t *testing.T) {
+	l := NewNativePTYLauncher()
+	// cat -n prepends line numbers; a 100-char line plus "     1\t" prefix
+	// exceeds 100 columns. In a cooked terminal this would wrap, but the
+	// raw PTY just passes the bytes.
+	result, err := l.Spawn(context.Background(), SpawnConfig{
+		Name:       "g1-ansi-wide",
+		Executable: "bash", Args: []string{"-c", "printf '%100s' 'X' | tr ' ' 'X'; echo ''"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer result.ProcessCleanup.Execute(context.Background())
+
+	out := readUntil(t, result.Handle, 2*time.Second)
+	// Output should be 100 X's followed by a newline — exactly 101 bytes.
+	// No kernel-injected CR/LF pairs within the line.
+	trimmed := bytes.TrimRight([]byte(out), "\r\n")
+	xCount := bytes.Count(trimmed, []byte("X"))
+	if xCount != 100 {
+		t.Errorf("got %d X characters, want 100 (kernel line wrap would inject breaks). Output len=%d", xCount, len(out))
+	}
+}
+
+// TestTERM_G1_ANSIFixtureAlternateScreenSequences proves ANSI alternate-screen
+// entry (ESC[?1049h) and exit (ESC[?1049l) sequences pass through the PTY
+// unchanged — the terminal emulator interprets them; the PTY is transparent.
+func TestTERM_G1_ANSIFixtureAlternateScreenSequences(t *testing.T) {
+	l := NewNativePTYLauncher()
+	// Write a marker, enter alternate screen, write another marker, exit.
+	// All bytes must pass through unmodified.
+	result, err := l.Spawn(context.Background(), SpawnConfig{
+		Name:       "g1-ansi-alt",
+		Executable: "bash",
+		Args:       []string{"-c", "echo MARK1; printf '\\e[?1049h'; echo ALTMARK; printf '\\e[?1049l'; echo MARK2"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer result.ProcessCleanup.Execute(context.Background())
+
+	out := readUntil(t, result.Handle, 2*time.Second)
+	// All three markers must appear in the output.
+	for _, marker := range []string{"MARK1", "ALTMARK", "MARK2"} {
+		if !bytes.Contains([]byte(out), []byte(marker)) {
+			t.Errorf("output missing %q — alternate-screen sequences may have been stripped. Got: %q", marker, out)
+		}
+	}
+	// The alternate-screen escape sequences must be present too.
+	if !bytes.Contains([]byte(out), []byte("\x1b[?1049h")) {
+		t.Error("ESC[?1049h (enter alternate screen) missing from output")
+	}
+	if !bytes.Contains([]byte(out), []byte("\x1b[?1049l")) {
+		t.Error("ESC[?1049l (exit alternate screen) missing from output")
+	}
+}
+
+// TestTERM_G1_ANSIFixtureCursorMovement proves cursor movement sequences
+// (CUP — Cursor Position) pass through the PTY unchanged.
+func TestTERM_G1_ANSIFixtureCursorMovement(t *testing.T) {
+	l := NewNativePTYLauncher()
+	result, err := l.Spawn(context.Background(), SpawnConfig{
+		Name:       "g1-ansi-cursor",
+		Executable: "bash",
+		Args:       []string{"-c", "printf '\\e[10;50HA' && echo ' OK'"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer result.ProcessCleanup.Execute(context.Background())
+
+	out := readUntil(t, result.Handle, 2*time.Second)
+	// The CUP sequence ESC[10;50H must be present.
+	if !bytes.Contains([]byte(out), []byte("\x1b[10;50H")) {
+		t.Errorf("ESC[10;50H (cursor position row=10 col=50) missing from output: %q", out)
+	}
+	// The char 'A' and ' OK' must be present after the CUP.
+	if !bytes.Contains([]byte(out), []byte("A")) {
+		t.Error("character after CUP missing from output")
 	}
 }
 

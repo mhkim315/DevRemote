@@ -116,4 +116,108 @@ describe('TerminalController', () => {
   // browser in terminalGeneratedScript.test.ts (Blocker E). That suite proves
   // the real wsURL output, ticket A single-use, reconnect A→B→C, framing
   // demux, and timer cleanup — replacing the earlier copy-of-wsURL assertion.
+
+  // ── TERM-G1 geometry validation tests ──
+
+  function expectPTYSizeInjected(html: string, rows: number, cols: number) {
+    // The assignment `window.__pokitPTYSize={rows:N,cols:M};` must appear
+    // before the ticket script.
+    expect(html).toContain(`window.__pokitPTYSize={rows:${rows},cols:${cols}};`);
+  }
+
+  function expectPTYSizeAbsent(html: string) {
+    // The assignment must not be present. The consumer script
+    // `if(window.__pokitPTYSize){...}` is always injected and is harmless
+    // when the global is undefined.
+    expect(html).not.toContain('window.__pokitPTYSize={rows:');
+  }
+
+  async function bootstrapWithSize(size: { rows: number; cols: number } | null): Promise<string> {
+    mockFetch.mockImplementationOnce(async () => ({ ok: true, text: async () => TERM_HTML, status: 200 } as any));
+    if (size) {
+      mockFetch.mockImplementationOnce(async () => ({ ok: true, json: async () => size } as any));
+    } else {
+      mockFetch.mockImplementationOnce(async () => ({ ok: false, status: 404 } as any));
+    }
+    mockTicketResp();
+    const ctrl = new TerminalController();
+    const { result } = await ctrl.bootstrap('s', fakeMgr, 'http://d');
+    return result!.html;
+  }
+
+  it('TERM-G1: valid PTY size is injected as __pokitPTYSize', async () => {
+    const html = await bootstrapWithSize({ rows: 30, cols: 100 });
+    expectPTYSizeInjected(html, 30, 100);
+  });
+
+  it('TERM-G1: rejects non-integer rows', async () => {
+    const html = await bootstrapWithSize({ rows: 30.5, cols: 100 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects non-integer cols', async () => {
+    const html = await bootstrapWithSize({ rows: 30, cols: 100.1 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects zero rows', async () => {
+    const html = await bootstrapWithSize({ rows: 0, cols: 100 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects zero cols', async () => {
+    const html = await bootstrapWithSize({ rows: 30, cols: 0 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects negative rows', async () => {
+    const html = await bootstrapWithSize({ rows: -1, cols: 100 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects negative cols', async () => {
+    const html = await bootstrapWithSize({ rows: 30, cols: -1 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects implausibly large rows (>1000)', async () => {
+    const html = await bootstrapWithSize({ rows: 1001, cols: 100 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: rejects implausibly large cols (>2000)', async () => {
+    const html = await bootstrapWithSize({ rows: 30, cols: 2001 });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: accepts boundary-max rows=1000 cols=2000', async () => {
+    const html = await bootstrapWithSize({ rows: 1000, cols: 2000 });
+    expectPTYSizeInjected(html, 1000, 2000);
+  });
+
+  it('TERM-G1: accepts boundary-min rows=1 cols=1', async () => {
+    const html = await bootstrapWithSize({ rows: 1, cols: 1 });
+    expectPTYSizeInjected(html, 1, 1);
+  });
+
+  it('TERM-G1: absent /term/size response leaves __pokitPTYSize unset', async () => {
+    const html = await bootstrapWithSize(null);
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: string rows/cols are coerced to numbers (accepted if valid)', async () => {
+    // Number("30") → 30, which is a valid integer — strings are coerced.
+    const html = await bootstrapWithSize({ rows: '30' as any, cols: '100' as any });
+    expectPTYSizeInjected(html, 30, 100);
+  });
+
+  it('TERM-G1: NaN rows/cols are rejected', async () => {
+    const html = await bootstrapWithSize({ rows: NaN, cols: NaN });
+    expectPTYSizeAbsent(html);
+  });
+
+  it('TERM-G1: non-numeric strings are rejected', async () => {
+    const html = await bootstrapWithSize({ rows: 'abc' as any, cols: 'xyz' as any });
+    expectPTYSizeAbsent(html);
+  });
 });
