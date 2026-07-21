@@ -1,10 +1,9 @@
 # PB/PA4 Contract Evidence
 
-**Status:** HISTORICAL EVIDENCE ONLY — the combined contract is superseded by
-`docs/POST_PA3_AUTHORITATIVE_ROADMAP.md`,
-`docs/PA4_MANAGED_ISOLATION_CONTRACT.md`, and
-`docs/PB_LEGACY_REMOVAL_CONTRACT.md`. This evidence does not authorize PA4 or
-PB implementation.
+**Status:** HISTORICAL EVIDENCE ONLY — PB deletion complete (PB.7 `e11bee894`).
+This combined contract was superseded by `POST_PA3_AUTHORITATIVE_ROADMAP.md`,
+`PA4_MANAGED_ISOLATION_CONTRACT.md`, and `PB_LEGACY_REMOVAL_CONTRACT.md`.
+This evidence does not authorize PA4 or PB implementation.
 
 **Contract SHA:** `9956d7272c5a701b78851b5fd4cb2ea725d41d18`
 **Contract document:** `companion-daemon/docs/PB_PA4_CONTRACT.md`

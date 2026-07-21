@@ -1,5 +1,6 @@
 # PB.7 Evidence — Automated Closeout and Device Gate
 
+**PB Evidence SHA:** `e11bee894`
 **PB Candidate SHA:** `82e550e9c`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Baseline SHA:** `abe4df1d6`
@@ -135,7 +136,7 @@ $ grep -rnE "tmux|cmux|localpty" scripts/ Makefile
 | `adapter !== 'native'` | `mobile/src/components/AgentCard.tsx:104` | Harmless display filter, documented in CLAUDE.md |
 | `observedAt` field | `mobile/src/lib/*.ts` | Valid telemetry timestamp field |
 
-## PB Wave Ledger (FINAL — ACCEPTED)
+## PB Wave Ledger
 
 | Wave | SHA | Description |
 |------|-----|-------------|

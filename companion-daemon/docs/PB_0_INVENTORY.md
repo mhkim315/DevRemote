@@ -1,7 +1,7 @@
 # PB.0 Consumer Inventory
 
-**Generated:** 2026-07-21  
-**Baseline:** PA4 ACCEPT `74560edd`, IMPL `4aaf3b76a`  
+**Generated:** 2026-07-21
+**Baseline:** PA4 ACCEPT `74560edd`, IMPL `4aaf3b76a`
 **Status:** READ-ONLY — no deletions performed
 
 ## §3.1 Legacy Mux Ownership
@@ -220,7 +220,7 @@ No managed Codex/Claude paths consume snapshot markers.
 | §3.4 — Mobile | 8/8 | ALL PRESENT |
 | §3.4 — Scripts/packaging | 10+1 | ALL PRESENT |
 
-**Total legacy consumers:** 54 files confirmed  
-**Shared spawn primitive:** `SpawnPTY`/`SpawnPTYWithDir` in `session.go` — shared by localpty + controlled_pty  
-**Surprises:** 0 — all mux-referencing files are either in-plan, retained managed paths, or contained legacy paths  
+**Total legacy consumers:** 54 files confirmed
+**Shared spawn primitive:** `SpawnPTY`/`SpawnPTYWithDir` in `session.go` — shared by localpty + controlled_pty
+**Surprises:** 0 — all mux-referencing files are either in-plan, retained managed paths, or contained legacy paths
 **No plan omissions found.**

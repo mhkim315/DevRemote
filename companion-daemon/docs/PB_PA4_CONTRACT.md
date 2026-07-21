@@ -1,6 +1,6 @@
 # PB/PA4 Contract — Consumer Inventory, Migration Sequence, and Deletion Gates
 
-**Status:** SUPERSEDED COMBINED DRAFT — historical inventory only
+**Status:** SUPERSEDED COMBINED DRAFT — historical inventory only. PB deletion complete as of PB.7 (`e11bee894`).
 **Branch:** `feature/phase10-multi-adapter`
 **Rollback SHA:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7` (PA3 ACCEPTED)
 **Prerequisite:** PF accepted-state freeze (POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md §1)

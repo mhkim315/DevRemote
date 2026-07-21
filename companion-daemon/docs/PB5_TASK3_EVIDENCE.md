@@ -1,4 +1,4 @@
-# PB.5c legacy deletion evidence
+# PB.5b-T3 Legacy Deletion Evidence
 
 This change physically removes the obsolete lifecycle implementation and its
 implementation-bound tests. No compatibility package, lookup map, wrapper, or
