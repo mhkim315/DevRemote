@@ -1,5 +1,3 @@
-//go:build legacy
-
 package term
 
 import (
@@ -288,15 +286,14 @@ func findSessionInAdapter(adapter mux.Adapter, canonicalID string) (mux.Session,
 func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
 	t.Helper()
 	owned := svc.OwnedPTY()
-	opts := mux.CreateOptions{Name: genLocalID("lc"), Executable: "/bin/sh", Args: []string{"-c", shellCmd}}
-	id, err := owned.Create(context.Background(), opts, "", "test")
+	cfg := SpawnConfig{Name: genLocalID("lc"), Executable: "/bin/sh", Args: []string{"-c", shellCmd}}
+	id, err := owned.Create(context.Background(), cfg, "", "test")
 	if err != nil {
 		t.Fatalf("create real session: %v", err)
 	}
 	t.Cleanup(func() {
 		DeleteRecorder(id)
-		// PA2d: terminate via owned adapter, not Registry
-		_ = owned.terminateAdapterSession(context.Background(), mux.ParseSessionID(id).LocalID)
+		_, _ = owned.Kill(context.Background(), id)
 	})
 	return id
 }
