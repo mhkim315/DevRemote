@@ -25,11 +25,12 @@ import (
 // Audit action constants — a closed set. An action names an operation; it never
 // carries free-form or sensitive text.
 const (
-	ActionAuthVerify   = "auth.verify"
-	ActionDeviceRevoke = "device.revoke"
-	ActionSessionStop  = "session.stop"
-	ActionSessionKill  = "session.kill"
-	ActionWSTicketDeny = "ws.ticket.deny"
+	ActionAuthVerify     = "auth.verify"
+	ActionDeviceRevoke   = "device.revoke"
+	ActionOwnerRecovery  = "owner.recovery"
+	ActionSessionStop    = "session.stop"
+	ActionSessionKill    = "session.kill"
+	ActionWSTicketDeny   = "ws.ticket.deny"
 )
 
 // Audit result constants — a closed set.
@@ -73,8 +74,8 @@ const maxAuditFieldLen = 256
 // auditActions / auditResults are the closed vocabularies. An event whose
 // action or result is outside these sets is dropped, never written.
 var auditActions = map[string]struct{}{
-	ActionAuthVerify: {}, ActionDeviceRevoke: {}, ActionSessionStop: {},
-	ActionSessionKill: {}, ActionWSTicketDeny: {},
+	ActionAuthVerify: {}, ActionDeviceRevoke: {}, ActionOwnerRecovery: {},
+	ActionSessionStop: {}, ActionSessionKill: {}, ActionWSTicketDeny: {},
 }
 
 var auditResults = map[string]struct{}{

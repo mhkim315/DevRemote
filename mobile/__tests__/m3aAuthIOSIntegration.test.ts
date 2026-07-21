@@ -231,7 +231,10 @@ describe('M3-auth-2B iOS integration', () => {
     expect(order).toEqual(['onPaired', 'connect']); // trusted state before connect; no reject/error
   });
 
-  it('a rejected pairing fails closed: no connect, scanner re-enabled (no legacy fallback)', async () => {
+  // BUG-004: scanner is one-shot. Rejected pairing does NOT call onReject
+  // (which would immediately re-enable the scanner). Error is surfaced, scanner
+  // stays locked until user taps "Scan Again".
+  it('a rejected pairing fails closed: no connect, scanner stays locked (no legacy fallback)', async () => {
     const order: string[] = [];
     await pairFromScannedQR({
       data: makePairingQR(),
@@ -244,19 +247,20 @@ describe('M3-auth-2B iOS integration', () => {
       onError: () => order.push('error'),
     });
     expect(order).toContain('error');
-    expect(order).toContain('reject');
+    expect(order).not.toContain('reject'); // BUG-004: scanner stays locked
     expect(order).not.toContain('connect');
     expect(order).not.toContain('onPaired');
   });
 
-  it('a thrown pairing error and a missing base URL both fail closed', async () => {
+  it('a thrown pairing error and a missing base URL both fail closed (scanner locked)', async () => {
     const a: string[] = [];
     await pairFromScannedQR({
       data: makePairingQR(), createDeviceKey: () => iosDeviceKey() as any, operationalBaseURL: BASE,
       pairAndSave: async () => { throw new Error('boom'); }, onPaired: async () => true,
       connect: async () => { a.push('connect'); }, onError: () => a.push('error'), onReject: () => a.push('reject'),
     });
-    expect(a).toEqual(['error', 'reject']);
+    expect(a).toEqual(['error']);
+    expect(a).not.toContain('reject');
 
     const b: string[] = [];
     let pairCalled = false;
@@ -265,7 +269,8 @@ describe('M3-auth-2B iOS integration', () => {
       pairAndSave: async () => { pairCalled = true; return { status: 'approved' } as any; }, onPaired: async () => true,
       connect: async () => { b.push('connect'); }, onError: () => b.push('error'), onReject: () => b.push('reject'),
     });
-    expect(b).toEqual(['error', 'reject']);
+    expect(b).toEqual(['error']);
+    expect(b).not.toContain('reject');
     expect(pairCalled).toBe(false); // empty URL rejected before pairing (fails at canonicalOrigin)
   });
 
@@ -279,7 +284,8 @@ describe('M3-auth-2B iOS integration', () => {
       // onPaired intentionally omitted — a re-pair with no trusted-state installer
       // must NOT connect on top of a stale TokenManager.
     });
-    expect(a).toEqual(['error', 'reject']);
+    expect(a).toEqual(['error']);
+    expect(a).not.toContain('reject');
     expect(pairCalled).toBe(false);
   });
 
@@ -377,7 +383,9 @@ describe('M3-auth-2B iOS integration', () => {
 
   // ── ConnectScreen scan boundary (runScan) ──
 
-  it('runScan resets the scanner on a module-load failure — never sticks', async () => {
+  // BUG-004: scanner is one-shot. Module-load failure does NOT reset scanned.
+  // The scanner stays locked; user must tap "Scan Again" manually.
+  it('runScan locks scanner on module-load failure — never auto-resets', async () => {
     const ev: string[] = [];
     await runScan({
       data: makePairingQR(), isPairing: isPairingQR,
@@ -387,8 +395,9 @@ describe('M3-auth-2B iOS integration', () => {
       setScanned: (v) => ev.push('scanned=' + v),
       notifyError: () => ev.push('error'),
     });
-    expect(ev).toEqual(['scanned=true', 'error', 'scanned=false']); // lock, then reset exactly once
+    expect(ev).toEqual(['scanned=true', 'error']); // locked, error shown — no auto-reset
     expect(ev).not.toContain('connect');
+    expect(ev).not.toContain('scanned=false');
   });
 
   it('runScan runs the real transition on a pairing QR, and connects a plain HTTPS URL', async () => {

@@ -2,6 +2,7 @@ package devicetrust
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -254,6 +255,69 @@ func (r *DeviceRegistry) TouchLastSeen(deviceID string) error {
 		d.LastSeenAt = prev
 		return err
 	}
+	return nil
+}
+
+// ErrNotOwner is returned when an operation requires the device to be the
+// current owner but it is not (member, revoked, or unknown).
+var ErrNotOwner = errors.New("device is not the current owner")
+
+// ErrAlreadyOwner is returned when promoting a device that is already owner.
+var ErrAlreadyOwner = errors.New("device is already owner")
+
+// RecoverOwner atomically revokes oldOwnerID and promotes newOwnerID from
+// member to owner. This is a host-local privilege available only through the
+// Unix socket; it is never exposed over HTTP/WS/tunnel.
+//
+// Preconditions (fail-closed):
+//   - oldOwnerID must be the current active owner (not revoked, not missing)
+//   - newOwnerID must be an active member (not revoked, not missing, not already
+//     owner)
+//
+// On success the old owner is revoked, the target is promoted to owner, the
+// change is persisted atomically, and exactly one active owner exists. On any
+// persistence failure neither mutation becomes durable (in-memory state is
+// rolled back).
+func (r *DeviceRegistry) RecoverOwner(oldOwnerID, newOwnerID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	oldDev, ok := r.devices[oldOwnerID]
+	if !ok {
+		return fmt.Errorf("%w: old owner %s", ErrDeviceNotFound, oldOwnerID)
+	}
+	if oldDev.Revoked() {
+		return fmt.Errorf("%w: old owner %s is already revoked", ErrDeviceRevoked, oldOwnerID)
+	}
+	if oldDev.Role != RoleOwner {
+		return fmt.Errorf("%w: device %s has role %q", ErrNotOwner, oldOwnerID, oldDev.Role)
+	}
+
+	newDev, ok := r.devices[newOwnerID]
+	if !ok {
+		return fmt.Errorf("%w: target %s", ErrDeviceNotFound, newOwnerID)
+	}
+	if newDev.Revoked() {
+		return fmt.Errorf("%w: target %s is revoked", ErrDeviceRevoked, newOwnerID)
+	}
+	if newDev.Role == RoleOwner {
+		return fmt.Errorf("%w: target %s is already owner", ErrAlreadyOwner, newOwnerID)
+	}
+
+	// Atomic: revoke old + promote new. On save failure, roll back both.
+	now := time.Now().UTC()
+	oldDev.RevokedAt = &now
+	oldDevRole := oldDev.Role
+	newDev.Role = RoleOwner
+
+	if err := r.saveLocked(); err != nil {
+		// Roll back in-memory to match persisted state.
+		oldDev.RevokedAt = nil
+		oldDev.Role = oldDevRole
+		newDev.Role = RoleMember
+		return err
+	}
+
 	return nil
 }
 

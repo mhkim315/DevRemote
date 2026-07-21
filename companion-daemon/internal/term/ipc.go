@@ -144,8 +144,10 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 			Duration       int    `json:"duration"`
 			PhoneSignature []byte `json:"phoneSignature,omitempty"`
 			// device admin (M2.5-5, local 0600 socket only)
-			DeviceID string `json:"deviceId"`
-			Limit    int    `json:"limit"`
+			DeviceID     string `json:"deviceId"`
+			FromDeviceID string `json:"fromDeviceId"`
+			ToDeviceID   string `json:"toDeviceId"`
+			Limit        int    `json:"limit"`
 		}
 		dec := json.NewDecoder(reader)
 		if err := dec.Decode(&req); err != nil {
@@ -250,6 +252,9 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 			return
 		} else if req.Operation == "devices-revoke" {
 			handleDevicesRevoke(conn, req.DeviceID)
+			return
+		} else if req.Operation == "devices-recover-owner" {
+			handleDevicesRecoverOwner(conn, req.FromDeviceID, req.ToDeviceID)
 			return
 		} else if req.Operation == "audit-list" {
 			handleAuditList(conn, req.Limit)

@@ -153,6 +153,227 @@ func TestRegistry_PublicDTONoKeyMaterial(t *testing.T) {
 	}
 }
 
+// ── Owner Recovery ──
+
+func TestRecoverOwner_Success(t *testing.T) {
+	r, path := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Old Owner")
+	member, _ := r.Add(genPubDER(t), "Target")
+
+	if owner.Role != RoleOwner || member.Role != RoleMember {
+		t.Fatalf("setup: roles = %q/%q, want owner/member", owner.Role, member.Role)
+	}
+
+	if err := r.RecoverOwner(owner.DeviceID, member.DeviceID); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	// Old owner is now revoked.
+	if d, ok := r.GetActive(owner.DeviceID); ok {
+		t.Fatalf("old owner still active: %+v", d)
+	}
+	// Target is now owner.
+	d, ok := r.GetActive(member.DeviceID)
+	if !ok {
+		t.Fatalf("target not active after promotion")
+	}
+	if d.Role != RoleOwner {
+		t.Fatalf("target role = %q, want owner", d.Role)
+	}
+	// Exactly one active owner.
+	ownerCount := 0
+	for _, dev := range r.List() {
+		if !dev.Revoked() && dev.Role == RoleOwner {
+			ownerCount++
+		}
+	}
+	if ownerCount != 1 {
+		t.Fatalf("owner count = %d, want 1", ownerCount)
+	}
+
+	// Persistence round-trip.
+	r2, err := NewDeviceRegistry(&FileDeviceStore{Path: path})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := r2.GetActive(owner.DeviceID); ok {
+		t.Fatalf("old owner active after reload")
+	}
+	if d2, ok := r2.GetActive(member.DeviceID); !ok || d2.Role != RoleOwner {
+		t.Fatalf("target not owner after reload: role=%q active=%v", d2.Role, ok)
+	}
+}
+
+func TestRecoverOwner_OldOwnerNotFound(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+	member, _ := r.Add(genPubDER(t), "Target")
+	_ = owner
+
+	if err := r.RecoverOwner("nonexistent", member.DeviceID); !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("err = %v, want ErrDeviceNotFound", err)
+	}
+	// Target must not be promoted.
+	d, _ := r.GetActive(member.DeviceID)
+	if d.Role != RoleMember {
+		t.Fatalf("target unexpectedly promoted to %q", d.Role)
+	}
+}
+
+func TestRecoverOwner_TargetNotFound(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+
+	if err := r.RecoverOwner(owner.DeviceID, "nonexistent"); !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("err = %v, want ErrDeviceNotFound", err)
+	}
+	// Owner must not be revoked.
+	d, _ := r.GetActive(owner.DeviceID)
+	if d.Revoked() {
+		t.Fatalf("owner unexpectedly revoked")
+	}
+}
+
+func TestRecoverOwner_OldOwnerAlreadyRevoked(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+	r.Revoke(owner.DeviceID)
+	member, _ := r.Add(genPubDER(t), "Member")
+
+	if err := r.RecoverOwner(owner.DeviceID, member.DeviceID); !errors.Is(err, ErrDeviceRevoked) {
+		t.Fatalf("err = %v, want ErrDeviceRevoked", err)
+	}
+}
+
+func TestRecoverOwner_OldOwnerIsMember(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+	member, _ := r.Add(genPubDER(t), "Member")
+
+	// Try to use member as the "old owner".
+	if err := r.RecoverOwner(member.DeviceID, owner.DeviceID); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("err = %v, want ErrNotOwner", err)
+	}
+}
+
+func TestRecoverOwner_TargetAlreadyOwner(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+
+	if err := r.RecoverOwner(owner.DeviceID, owner.DeviceID); !errors.Is(err, ErrAlreadyOwner) {
+		t.Fatalf("err = %v, want ErrAlreadyOwner", err)
+	}
+	// Owner must still be active.
+	if _, ok := r.GetActive(owner.DeviceID); !ok {
+		t.Fatalf("owner erroneously affected")
+	}
+}
+
+func TestRecoverOwner_TargetRevoked(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+	member, _ := r.Add(genPubDER(t), "Member")
+	r.Revoke(member.DeviceID)
+
+	if err := r.RecoverOwner(owner.DeviceID, member.DeviceID); !errors.Is(err, ErrDeviceRevoked) {
+		t.Fatalf("err = %v, want ErrDeviceRevoked", err)
+	}
+}
+
+func TestRecoverOwner_RollbackOnSaveFailure(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Old Owner")
+	member, _ := r.Add(genPubDER(t), "Target")
+
+	// Simulate save failure: corrupt the underlying file to make it unwritable
+	// by removing write permission from the parent directory. This forces
+	// saveLocked (which calls writeOwnerOnly → os.WriteFile) to fail.
+	r.store = &failingStore{inner: r.store, failOn: "save"}
+
+	err := r.RecoverOwner(owner.DeviceID, member.DeviceID)
+	if err == nil {
+		t.Fatalf("expected save failure, got nil")
+	}
+
+	// In-memory state must be rolled back.
+	dOwner, _ := r.GetActive(owner.DeviceID)
+	if dOwner.Revoked() {
+		t.Fatalf("old owner was not rolled back: revoked=%v", dOwner.Revoked())
+	}
+	dMember, _ := r.GetActive(member.DeviceID)
+	if dMember.Role != RoleMember {
+		t.Fatalf("target was not rolled back: role=%q", dMember.Role)
+	}
+}
+
+// failingStore wraps a DeviceStore and injects failures for Load or Save.
+type failingStore struct {
+	inner  DeviceStore
+	failOn string
+}
+
+func (f *failingStore) Load() ([]Device, error) {
+	if f.failOn == "load" {
+		return nil, errors.New("injected load failure")
+	}
+	return f.inner.Load()
+}
+
+func (f *failingStore) Save(recs []Device) error {
+	if f.failOn == "save" {
+		return errors.New("injected save failure")
+	}
+	return f.inner.Save(recs)
+}
+
+func TestRecoverOwner_ConcurrentOnlyOneWinner(t *testing.T) {
+	r, _ := newReg(t)
+	owner, _ := r.Add(genPubDER(t), "Owner")
+	m1, _ := r.Add(genPubDER(t), "Member-1")
+	m2, _ := r.Add(genPubDER(t), "Member-2")
+
+	// Two goroutines try to recover to different targets concurrently.
+	// Only one should succeed because RecoverOwner takes a write lock and
+	// verifies the old owner is still active owner at entry.
+	var wg sync.WaitGroup
+	var won1, won2 bool
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := r.RecoverOwner(owner.DeviceID, m1.DeviceID); err == nil {
+			won1 = true
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := r.RecoverOwner(owner.DeviceID, m2.DeviceID); err == nil {
+			won2 = true
+		}
+	}()
+	wg.Wait()
+
+	if won1 && won2 {
+		t.Fatalf("both recoveries claimed success — atomicity violated")
+	}
+	if !won1 && !won2 {
+		t.Fatalf("neither recovery succeeded")
+	}
+	// Exactly one owner.
+	ownerCount := 0
+	for _, d := range r.List() {
+		if !d.Revoked() && d.Role == RoleOwner {
+			ownerCount++
+		}
+	}
+	if ownerCount != 1 {
+		t.Fatalf("owner count = %d, want 1", ownerCount)
+	}
+	// Old owner must be revoked.
+	if _, ok := r.GetActive(owner.DeviceID); ok {
+		t.Fatalf("old owner still active after recovery")
+	}
+}
+
 func TestRegistry_ConcurrentOps(t *testing.T) {
 	r, _ := newReg(t)
 	// Seed a device to revoke concurrently.

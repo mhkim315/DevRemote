@@ -39,7 +39,12 @@ export function deviceFingerprint(spki: Uint8Array): string {
 // KeyStore signs with SHA256withECDSA (single hash), so verification must
 // match: p256.verify with prehash:true.
 export function verifyDer(sigDer: Uint8Array, message: Uint8Array, pubUncompressed: Uint8Array): boolean {
-  return p256.verify(sigDer, message, pubUncompressed, { format: 'der', prehash: true });
+  // lowS: false — Go's ecdsa.SignASN1 produces both high-S and low-S signatures
+  // (~50% each). Noble defaults to rejecting high-S (lowS: true). The protocol
+  // transcript already includes nonces and session identity for uniqueness; S
+  // malleability does not weaken the host-pin or device-auth security model.
+  // BUG-001 Layer 3 / BUG-006A root cause.
+  return p256.verify(sigDer, message, pubUncompressed, { format: 'der', prehash: true, lowS: false });
 }
 
 // ── strict fail-closed codecs (Hermes/Node identical) ──

@@ -112,17 +112,20 @@ export async function pairThenConnect(args: {
   try {
     ok = args.onPaired ? await args.onPaired() : true;
   } catch {
-    args.onReject();
+    // BUG-004 fix: onPaired threw — leave scanner locked. The error was
+    // surfaced via onError/notifyError above. Do NOT call onReject which
+    // would immediately re-enable the scanner and cause a re-scan loop.
     return;
   }
   if (!ok) {
-    args.onReject();
+    // BUG-004 fix: onPaired returned false — same as above.
     return;
   }
   try {
     await args.connect();
   } catch {
-    args.onReject();
+    // connect() threw after trusted auth was installed — leave scanner
+    // locked and show the error rather than risking a re-scan loop.
   }
 }
 

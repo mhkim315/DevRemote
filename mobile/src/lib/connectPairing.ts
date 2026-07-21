@@ -38,7 +38,7 @@ export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
   // Reject empty operational URL before any device key creation.
   if (!base || !base.trim()) {
     deps.onError('Set a valid HTTPS daemon URL before pairing.');
-    deps.onReject();
+    // BUG-004 fix: scanner stays locked — user must tap "Scan Again".
     return;
   }
 
@@ -48,7 +48,6 @@ export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
   // hole where pairThenConnect would otherwise treat a missing callback as success.
   if (!deps.onPaired) {
     deps.onError('Pairing unavailable: no trusted-state installer');
-    deps.onReject();
     return;
   }
 
@@ -58,7 +57,6 @@ export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
     result = await deps.pairAndSave(deps.data, dk, base);
   } catch (e: any) {
     deps.onError('Pairing error: ' + (e?.message || String(e)));
-    deps.onReject();
     return;
   }
 
@@ -70,7 +68,9 @@ export async function pairFromScannedQR(deps: PairFromScanDeps): Promise<void> {
     });
   } else {
     deps.onError('Pairing failed: ' + (result.errorDetail || result.status));
-    deps.onReject();
+    // BUG-004 fix: scanner stays locked. onReject is NOT called — user must
+    // manually tap "Scan Again" to prevent the same QR from being re-scanned
+    // in a tight loop (which causes 410 / consumed-session errors).
   }
 }
 
@@ -114,12 +114,16 @@ export async function runScan(deps: RunScanDeps): Promise<void> {
         pairAndSave: m.pairAndSave,
         connect: deps.connect,
         onPaired: deps.onPaired,
-        onReject: () => deps.setScanned(false),
+        // BUG-004 fix: onReject must NOT unlock the scanner. Any unlock
+        // would immediately re-scan the same QR, causing a 410 loop.
+        // The scanner is one-shot: success transitions away, failure
+        // shows the error and "Tap to Scan Again" button.
+        onReject: () => {},
         onError: (msg) => deps.notifyError(msg),
       });
     } catch (e: any) {
       deps.notifyError('Pairing error: ' + (e?.message || String(e)));
-      deps.setScanned(false);
+      // BUG-004 fix: do NOT reset scanned — leave scanner locked.
     }
     return;
   }

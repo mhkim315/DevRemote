@@ -6,6 +6,7 @@ import type { PokitDeviceKey } from '../../modules/pokit-device-key';
 import { conductPairing, type PairingResult } from './pairingClient';
 import { savePairing, type StoredPairing } from './pairingStore';
 import { canonicalOrigin } from './authMode';
+import { setBaseURL } from './client';
 
 // pairAndSave runs the full pairing protocol and persists the result on
 // success. The operational origin comes from setBaseURL (the user-configured
@@ -33,5 +34,13 @@ export async function pairAndSave(
   } catch {
     return { status: 'network_error', errorDetail: 'failed to persist pairing' };
   }
+
+  // M3-auth-BUGFIX: the saved pairing's operational origin must be immediately
+  // visible to the global getBaseURL() so that completePairing() (called by the
+  // post-scan onPaired callback) can validate the origin binding. Without this,
+  // getBaseURL() returns '' and completePairing fails with pairing_required,
+  // leaving the scanner permanently stuck after a successful daemon-side pair.
+  setBaseURL(operationalBaseURL);
+
   return result;
 }

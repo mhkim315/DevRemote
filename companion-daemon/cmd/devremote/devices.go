@@ -11,7 +11,8 @@ import (
 
 const pokitSocket = "/tmp/pokit.sock"
 
-// runDevicesClient implements `pokit devices` and `pokit devices revoke <id>`.
+// runDevicesClient implements `pokit devices`, `pokit devices revoke <id>`, and
+// `pokit devices recover-owner --from <old-owner-id> --to <target-device-id>`.
 // Device management is local-only: it speaks the privileged 0600 Unix socket,
 // never the tunnel-reachable HTTP listener.
 func runDevicesClient(args []string) {
@@ -21,6 +22,10 @@ func runDevicesClient(args []string) {
 			os.Exit(1)
 		}
 		revokeDevice(args[1])
+		return
+	}
+	if len(args) > 0 && args[0] == "recover-owner" {
+		runRecoverOwner(args[1:])
 		return
 	}
 	listDevices()
@@ -87,6 +92,100 @@ func revokeDevice(deviceID string) {
 		log.Fatalf("revoke: %s", resp.Error)
 	}
 	fmt.Printf("✔ Revoked device %s. Active sessions, tickets, and connections were invalidated.\n", resp.DeviceID)
+}
+
+// runRecoverOwner implements `pokit devices recover-owner --from <id> --to <id>`.
+func runRecoverOwner(args []string) {
+	var fromID, toID string
+	for len(args) > 0 && args[0] != "" {
+		if args[0] == "--from" && len(args) > 1 {
+			fromID = args[1]
+			args = args[2:]
+		} else if args[0] == "--to" && len(args) > 1 {
+			toID = args[1]
+			args = args[2:]
+		} else {
+			fmt.Fprintf(os.Stderr, "Usage: pokit devices recover-owner --from <old-owner-id> --to <target-device-id>\n")
+			os.Exit(1)
+		}
+	}
+	if fromID == "" || toID == "" {
+		fmt.Fprintf(os.Stderr, "Usage: pokit devices recover-owner --from <old-owner-id> --to <target-device-id>\n")
+		os.Exit(1)
+	}
+	if fromID == toID {
+		fmt.Fprintf(os.Stderr, "Old owner and target must be different devices.\n")
+		os.Exit(1)
+	}
+
+	// Show shortened fingerprints and confirm.
+	shortFrom := fromID
+	if len(shortFrom) > 16 {
+		shortFrom = shortFrom[:8] + "..." + shortFrom[len(shortFrom)-8:]
+	}
+	shortTo := toID
+	if len(shortTo) > 16 {
+		shortTo = shortTo[:8] + "..." + shortTo[len(shortTo)-8:]
+	}
+
+	fmt.Printf(`
+Owner Recovery
+══════════════
+  Current owner: %s
+  → will be REVOKED and all its sessions invalidated
+
+  Target device: %s
+  → will be PROMOTED to owner (its current sessions are also invalidated)
+
+This is a destructive authority change. It cannot be undone without
+a second recovery. Both the old owner and the promoted target will
+need to re-authenticate.
+
+`, shortFrom, shortTo)
+
+	// Require non-trivial confirmation — type the first 8 hex chars of the
+	// target device ID.
+	fmt.Printf("To confirm, type the first 8 characters of the TARGET device ID: ")
+	var confirm string
+	fmt.Scanln(&confirm)
+
+	want := toID[:8]
+	if confirm != want {
+		fmt.Fprintf(os.Stderr, "Confirmation mismatch (expected %q, got %q). Aborted.\n", want, confirm)
+		os.Exit(1)
+	}
+
+	// Execute.
+	conn := dialPokit()
+	defer conn.Close()
+	writeJSONLine(conn, map[string]interface{}{
+		"version":      1,
+		"operation":    "devices-recover-owner",
+		"fromDeviceId": fromID,
+		"toDeviceId":   toID,
+	})
+
+	var resp struct {
+		Status        string `json:"status"`
+		OldOwnerID    string `json:"oldOwnerId"`
+		NewOwnerID    string `json:"newOwnerId"`
+		OldOwnerState string `json:"oldOwnerState"`
+		NewOwnerRole  string `json:"newOwnerRole"`
+		Error         string `json:"error"`
+	}
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		log.Fatalf("owner recovery failed: %v", err)
+	}
+	if resp.Error != "" {
+		log.Fatalf("owner recovery: %s", resp.Error)
+	}
+	fmt.Printf(`
+✔ Owner recovered.
+  Old owner (%s): %s
+  New owner (%s): %s
+  All sessions and tickets invalidated for both devices.
+  The promoted device must re-authenticate before receiving owner permissions.
+`, shortFrom, resp.OldOwnerState, shortTo, resp.NewOwnerRole)
 }
 
 // runAuditClient implements `pokit audit [--limit N]`.

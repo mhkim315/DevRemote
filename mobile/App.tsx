@@ -14,7 +14,7 @@ import { RootTabs } from './src/navigation/RootNavigator';
 import { TokenManager } from './src/lib/authClient';
 import { loadPairing } from './src/lib/pairingStore';
 import { createPokitDeviceKey } from './modules/pokit-device-key';
-import { getBaseURL, setDeviceAuth } from './src/lib/client';
+import { getBaseURL, setBaseURL, setDeviceAuth } from './src/lib/client';
 import { canonicalOrigin, completePairing, selectAppRoute, type AuthContext } from './src/lib/authMode';
 
 // E6: explicit test-build gate — does not depend on stored baseURL.
@@ -60,11 +60,20 @@ function AppContent() {
     // Restored paired identity is trusted only after key-identity verification;
     // a missing/mismatched key routes to pairing_required, an inaccessible one
     // to failed — never a stuck paired_device on the wrong key.
-    completeAndInstall()
-      .then(ctx => { if (ctx.mode === 'paired_device' && ctx.baseURL) connect(ctx.baseURL).catch(() => {}); })
-      .catch(() => setAuthCtx({ mode: 'failed' }));
+        // BUGFIX M3-auth-4A: ConnectionProvider restores BASE_URL from AsyncStorage
+        // asynchronously, but completeAndInstall calls getBaseURL() synchronously.
+        // Pre-load pairing and seed the global base URL before completeAndInstall.
+        const init = async () => {
+          try {
+            const p = await loadPairing();
+            if (p?.baseURL && !getBaseURL()) setBaseURL(p.baseURL);
+          } catch {}
+          return completeAndInstall();
+        };
+        init()
+          .then(ctx => { if (ctx.mode === 'paired_device' && ctx.baseURL) connect(ctx.baseURL).catch(() => {}); })
+          .catch(() => setAuthCtx({ mode: 'failed' }));
   }, []);
-
   useEffect(() => {
     // E6: skip Supabase auth entirely when test flag is set.
     if (NO_LOGIN) {

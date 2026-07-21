@@ -62,6 +62,51 @@ func handleDevicesRevoke(conn net.Conn, deviceID string) {
 	writeIPC(conn, map[string]interface{}{"status": "revoked", "deviceId": deviceID})
 }
 
+// handleDevicesRecoverOwner is the host-local owner recovery operation. It
+// revokes the old owner, promotes the target member to owner, invalidates
+// all sessions/tickets for both, and emits an audit record. Preconditions:
+// oldOwnerID must be the current active owner; newOwnerID must be an active
+// member. This is reachable only through the 0600 Unix socket.
+func handleDevicesRecoverOwner(conn net.Conn, oldOwnerID, newOwnerID string) {
+	reg, sessions, audit := deviceAdminContext()
+	if reg == nil {
+		writeIPC(conn, map[string]string{"error": "device trust not configured"})
+		return
+	}
+	if oldOwnerID == "" || newOwnerID == "" {
+		writeIPC(conn, map[string]string{"error": "both --from and --to device IDs are required"})
+		return
+	}
+	if oldOwnerID == newOwnerID {
+		writeIPC(conn, map[string]string{"error": "old owner and target must be different devices"})
+		return
+	}
+	if err := reg.RecoverOwner(oldOwnerID, newOwnerID); err != nil {
+		writeIPC(conn, map[string]string{"error": err.Error()})
+		return
+	}
+	// Invalidate all sessions/tickets for BOTH the revoked old owner and the
+	// promoted target so neither retains a stale bearer with old permissions.
+	if sessions != nil {
+		sessions.RevokeDevice(oldOwnerID)
+		sessions.RevokeDevice(newOwnerID)
+	}
+	if audit != nil {
+		audit.Record(devicetrust.AuditEvent{
+			DeviceID: newOwnerID,
+			Action:   devicetrust.ActionOwnerRecovery,
+			Result:   devicetrust.ResultOK,
+		})
+	}
+	writeIPC(conn, map[string]interface{}{
+		"status":       "recovered",
+		"oldOwnerId":   oldOwnerID,
+		"newOwnerId":   newOwnerID,
+		"oldOwnerState": "revoked",
+		"newOwnerRole":  "owner",
+	})
+}
+
 // handleAuditList returns up to limit most-recent redacted audit events.
 func handleAuditList(conn net.Conn, limit int) {
 	_, _, audit := deviceAdminContext()
