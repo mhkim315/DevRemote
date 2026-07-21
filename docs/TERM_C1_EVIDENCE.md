@@ -1,6 +1,6 @@
 # TERM-C1 — Single control bridge evidence
 
-Implementation commit: `8df7a16c2af55a17f1c198f33dce569ea0f07db3`
+Implementation commit: `262d38b8884448c132169bab97318f12fd2083a8`
 
 This remediation supersedes the rejected evidence associated with
 `c5cb19342fccb1162c5158c8e39c28ccc2343111`.
@@ -50,6 +50,14 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
   `terminal:input` for its existing dev-token input path. Remote/no-ticket
   connections remain fail-closed; the change makes local server permission
   announcement and actual input enforcement agree.
+- When `--insecure-local-only` is set, a supplied `--listen-addr` must parse
+  as an IP loopback address. Wildcard, LAN, and hostname addresses are rejected
+  during application construction before the HTTP server can bind them.
+- The composed mobile test starts the daemon on `127.0.0.1:0`, parses the
+  pre-bound address from the daemon's startup log, and installs that exact
+  dynamic `location.protocol` and `location.host` in the executed served page.
+  Consequently the page's unmodified bridge opens its WebSocket to the same
+  listener that served its HTML; no `9171` test endpoint remains.
 - `TestTERM_C1_ServedPageGojaRealWebSocketToNativeDelivery` obtains the
   literal production `HandleHTML` script and executes it in Goja. Its
   `WebSocket.send` writes to a ticketed real gorilla connection targeting
@@ -94,7 +102,8 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
 
 All passed:
 
-- `npm test -- --runInBand --silent feedScreenInput.test.ts`
+- `npm test -- --runInBand --silent feedScreenInput.test.ts` — 1 suite,
+  16 tests
 - `npm run typecheck`
 - `npm test -- --ci --runInBand --silent` — 35 suites, 519 tests
 - `go test ./internal/term -run 'TestTERM_C1_ServedPageGoja(Real|Pending)' -count=1`
