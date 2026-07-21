@@ -9,11 +9,15 @@ import (
 	"image"
 	"image/png"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/makiuchi-d/gozxing"
@@ -21,25 +25,37 @@ import (
 	gozxqr "rsc.io/qr"
 )
 
-// shared test payload matching mobile parser contract
+// testPayload builds a pairing payload matching the mobile parser contract
+// (mobile/src/lib/qrParser.ts:53-81). Every field is chosen to pass validation:
+//
+//	fingerprint: 64-char lowercase hex
+//	hostPubKey:  182-char hex (91-byte P-256 SPKI)
+//	endpoint:    private-LAN HTTP with explicit port
+//	expiresAt:   valid ISO date in the FUTURE
 func testPayload() string {
+	fp := make([]byte, 32)
+	rand.Read(fp)
+	pk := make([]byte, 91)
+	rand.Read(pk)
+	tok := make([]byte, 16)
+	rand.Read(tok)
 	p := map[string]string{
-		"sessionId": "test-session", "hostId": "test-host",
-		"fingerprint": "aa:bb:cc:dd", "hostPubKey": "base64-pub-key",
-		"bootstrapToken": "tok-deadbeef", "endpoint": "https://example.com",
-		"expiresAt": "2026-01-01T00:00:00Z",
+		"sessionId":      "test-session",
+		"hostId":         "test-host",
+		"fingerprint":    hex.EncodeToString(fp),                                   // 64 lowercase hex
+		"hostPubKey":     hex.EncodeToString(pk),                                   // 182 hex chars
+		"bootstrapToken": hex.EncodeToString(tok),                                  // 32 hex chars
+		"endpoint":       "http://192.168.1.10:8765",                               // private-LAN HTTP
+		"expiresAt":      time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339), // future
 	}
 	b, _ := json.Marshal(p)
 	return string(b)
 }
 
-// ── Payload byte equality: encode → render → decode → compare ──
+// ── Payload byte equality + mobile parser field validation ──
 //
-// Mobile parser compatibility is covered by the existing Jest suite:
-//   mobile/__tests__/qrParser.test.ts — reject + accept (valid payload)
-//   mobile/src/lib/qrParser.ts — parsePairingQR (field validation, hex checks, expiry)
-// The mobile parser decodes the same JSON payload that renderQR embeds in the QR.
-// Go-side round-trip proved here; mobile-side decode proved by Jest (451/451 pass).
+// The daemon's QR payload must be byte-identical after Go encode→decode AND
+// satisfy every field constraint the mobile parser enforces (qrParser.ts:53-81).
 
 func TestQRPayloadByteEquality(t *testing.T) {
 	payload := testPayload()
@@ -66,6 +82,139 @@ func TestQRPayloadByteEquality(t *testing.T) {
 	if decoded != payload {
 		t.Errorf("decoded payload mismatch:\n got:  %s\n want: %s", decoded, payload)
 	}
+
+	// Prove the decoded payload would be accepted by the mobile parser.
+	// These checks mirror qrParser.ts _parse() field-by-field.
+	if err := validateMobilePayload(decoded); err != nil {
+		t.Errorf("decoded payload fails mobile parser rules: %v", err)
+	}
+}
+
+// validateMobilePayload mirrors mobile/src/lib/qrParser.ts _parse().
+// Returns nil if the payload would be accepted by the mobile parser.
+func validateMobilePayload(raw string) error {
+	var o map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &o); err != nil {
+		return fmt.Errorf("JSON parse: %w", err)
+	}
+
+	allowed := map[string]bool{
+		"sessionId": true, "hostId": true, "fingerprint": true,
+		"hostPubKey": true, "bootstrapToken": true, "endpoint": true, "expiresAt": true,
+	}
+	for k := range o {
+		if !allowed[k] {
+			return fmt.Errorf("unknown field: %s", k)
+		}
+	}
+
+	s, ok := str(o, "fingerprint")
+	if !ok || len(s) != 64 {
+		return fmt.Errorf("fingerprint must be 64 chars, got %d", len(s))
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(s) {
+		return fmt.Errorf("fingerprint not 64-char lowercase hex")
+	}
+
+	pk, ok := str(o, "hostPubKey")
+	if !ok || len(pk) != 182 {
+		return fmt.Errorf("hostPubKey must be 182 chars, got %d", len(pk))
+	}
+	if !regexp.MustCompile(`^[0-9a-fA-F]{182}$`).MatchString(pk) {
+		return fmt.Errorf("hostPubKey not 182-char hex")
+	}
+
+	ep, ok := str(o, "endpoint")
+	if !ok {
+		return fmt.Errorf("missing endpoint")
+	}
+	u, err := parseEndpoint(ep)
+	if err != nil {
+		return fmt.Errorf("endpoint: %w", err)
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("endpoint scheme must be http")
+	}
+	if u.User != nil {
+		return fmt.Errorf("endpoint must not contain credentials")
+	}
+	if u.Fragment != "" || u.RawQuery != "" {
+		return fmt.Errorf("endpoint must not contain fragment or query")
+	}
+	if !isPrivateIPv4(u.Hostname()) {
+		return fmt.Errorf("endpoint must be private-IPv4 LAN address")
+	}
+	if u.Port() == "" {
+		return fmt.Errorf("endpoint must include explicit port")
+	}
+
+	exp, ok := str(o, "expiresAt")
+	if !ok {
+		return fmt.Errorf("missing expiresAt")
+	}
+	et, err := time.Parse(time.RFC3339, exp)
+	if err != nil {
+		return fmt.Errorf("expiresAt not valid ISO date: %w", err)
+	}
+	if !et.After(time.Now()) {
+		return fmt.Errorf("expiresAt is in the past: %s", et.Format(time.RFC3339))
+	}
+
+	sid, ok := str(o, "sessionId")
+	if !ok || len(sid) < 1 || len(sid) > 128 {
+		return fmt.Errorf("sessionId length out of range")
+	}
+	hid, ok := str(o, "hostId")
+	if !ok || len(hid) < 1 || len(hid) > 128 {
+		return fmt.Errorf("hostId length out of range")
+	}
+	tok, ok := str(o, "bootstrapToken")
+	if !ok || len(tok) < 1 || len(tok) > 256 {
+		return fmt.Errorf("bootstrapToken length out of range")
+	}
+
+	return nil
+}
+
+func str(o map[string]interface{}, k string) (string, bool) {
+	v, ok := o[k]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+func parseEndpoint(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	// net.ParseURL accepts "192.168.1.10:8765" without scheme.
+	// new URL() in JS requires http:// prefix. We enforce the http scheme
+	// separately; here we only validate basic structure.
+	return u, nil
+}
+
+func isPrivateIPv4(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	if ip4[0] == 10 {
+		return true
+	}
+	if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+		return true
+	}
+	if ip4[0] == 192 && ip4[1] == 168 {
+		return true
+	}
+	return false
 }
 
 // decodeQRFromImage decodes a QR code from a Go image using gozxing.
