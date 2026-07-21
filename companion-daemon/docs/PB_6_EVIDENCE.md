@@ -62,13 +62,13 @@ $ grep -rnE "mux\.Registry|mux\.Adapter|mux\.Session|tmux|cmux|localpty|GetRecor
 ### 3. Mobile (TypeScript)
 
 ```
-$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter|mux\.Session|ManualLink|observerAdapter|ObservedAdapter" mobile/src/
+$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter|mux\.Session|ManualLink|observerAdapter|ObservedAdapter" ../mobile/src/
 (empty)
 
-$ grep -rn "agentKind.*===" mobile/src/
+$ grep -rn "agentKind.*===" ../mobile/src/
 (empty — no vendor branching)
 
-$ grep -rn "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
+$ grep -rn "opt\.id === 'approve'|opt\.id === 'reject'" ../mobile/src/
 (empty — no ID inference)
 ```
 
@@ -82,8 +82,8 @@ $ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter" scripts/
 ### 5. Packaging
 
 ```
-$ grep -rnE "tmux|cmux|localpty" Makefile 2>/dev/null
-(empty — no Makefile)
+$ grep -rnE "tmux|cmux|localpty" scripts/ ../scripts/
+(empty)
 ```
 
 ## PB Wave Ledger
