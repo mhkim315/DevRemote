@@ -1,7 +1,7 @@
 # Input-B Evidence — Delivery Semantics, Reconnect Loss, and Concurrency
 
 **Implementation SHA:** `06c5b2a81`
-**Evidence SHA:** `0cd560829`
+**Evidence SHA:** `414138e88`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
 
@@ -23,7 +23,7 @@ gofmt -l .                        0 files
 git diff --check                   exit 0
 go test -race ./... -count=1       ALL PASS (11 packages)
 npx tsc --noEmit                   clean
-npx jest --runInBand               481/481 pass, 35 suites
+npx jest --runInBand               482/482 pass, 35 suites
 ```
 
 ## Focused Test Results
@@ -52,9 +52,9 @@ TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration PASS
 TestInputB_ReplacementRaceKeepsWriteBoundToCapturedGeneration PASS
 ```
 
-### Mobile FeedScreen Input-B (7+ tests)
+### Mobile FeedScreen Input-B
 ```
-feedScreenInput.test.ts — all PASS (481 total Jest)
+feedScreenInput.test.ts — all PASS (482 total Jest)
 ```
 
 ## Delivery Semantics
@@ -81,23 +81,40 @@ feedScreenInput.test.ts — all PASS (481 total Jest)
 | timeout/reconnect/unknown | Possible partial delivery |
 | reconnect hello clears pending | Possible partial delivery |
 
-## Concurrency Proofs
+## Concurrency Tests
 
-### Concurrent Cache Access Race
-100 goroutines concurrently call cache.store() and cache.get(). Final read is
-consistent — exactly one accepted result with correct sequence number. No
-corruption, no lost entries, no double-write.
+### ConcurrentDuplicateArrivalRace
+Pre-stores a cache entry, then 99 concurrent goroutines call `get()` to read the
+cached result (sequential write, concurrent readers). All readers see the
+identical cached outcome. A `getConflict` check verifies that same-digest
+returns false and different-digest returns true. The write is sequential; only
+the reads are concurrent.
 
-### Permission Refresh Interleaving
-Connection A (authorized) sends input while Connection B opens concurrently.
-Connection A's auth snapshot is immutable per connection — it writes bytes
-and receives accepted regardless of Connection B's existence. The frozen
-connection-time authorization rule is tested with channel barriers (no sleeps).
+### ConcurrentCacheAccessRace
+100 goroutines race on `canStore` + `store` with unique inputIds, using an
+atomic counter. Every stored entry is verifiably readable with the correct
+outcome. Tests that concurrent cache access does not cause panics, corruption,
+or lost entries. Does not assert single-write semantics.
+
+### PermissionRefreshInterleaving
+Two independently-created fixtures: one with an authorized principal (has
+`terminal:input`) and one with an unauthorized principal (no `terminal:input`).
+Connection A (authorized fixture) receives `accepted` with bytes written.
+Connection B (unauthorized fixture) receives `permission_denied` with zero
+bytes written. Proves that each connection's authorization is determined by its
+own principal at connect time.
 
 ### Transport Replacement Race
 Two transports created for the same session ID. Old transport's write is
 bound to the captured instance. Replacement transport writes to the new
 instance. No cross-generation leak.
+
+### Mobile Concurrent ACK (sequential fake-timer)
+A standalone input is sent via postMessage, then the fake timer advances past
+the ACK timeout (3s), producing "Possible partial delivery". A late
+`input_result` with outcome `accepted` is then delivered — it must NOT
+overwrite the "Possible partial delivery" state. Uses Jest fake timers; no
+real concurrency.
 
 ## QR and Input-A
 
@@ -108,5 +125,5 @@ were changed.
 ## Changed Files
 
 - `mobile/src/screens/FeedScreen.tsx` — reconnect delivery_unknown, 2-frame sibling-accepted, standalone write_failed
-- `companion-daemon/internal/term/input_b_ack_test.go` — concurrent cache race, permission refresh interleaving
+- `companion-daemon/internal/term/input_b_ack_test.go` — concurrent cache + permission tests
 - `companion-daemon/docs/PB7_INPUT_B_EVIDENCE.md` — this document
