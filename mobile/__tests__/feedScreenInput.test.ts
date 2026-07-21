@@ -172,6 +172,9 @@ describe('FeedScreen production input authorization', () => {
     // An unrelated macro/paste pending frame arrives first; operation tags
     // prevent it from claiming the text slot.
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3, operationId: 'macro-1', part: 'text' })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID3, outcome: 'accepted', sequence: 99 })));
+    // A non-line macro ACK must not overwrite the line's in-flight status.
+    expect(statusText(tree)).not.toBe('Delivered to terminal');
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
     expect(statusText(tree)).toBe('Sent to socket');
     // The text ACK is deliberately before the 40 ms Enter request. It must
@@ -298,8 +301,34 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => send().props.onPress());
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-3', part: 'text' })));
     await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(statusText(tree)).toBe('Not delivered');
+    expect(statusText(tree)).toBe('Possible partial delivery');
     expect(input().props.value).toBe('timeout');
+    await act(async () => tree.unmount());
+    jest.useRealTimers();
+  });
+
+  it('clears a line operation after page delivery_unknown so a later Send is not stranded or retried', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    const input = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+    const send = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    await act(async () => input().props.onChangeText('lost websocket'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'delivery_unknown', operationId: 'line-1', part: 'text' }) } }));
+    expect(statusText(tree)).toBe('Possible partial delivery');
+    await act(async () => { jest.advanceTimersByTime(10000); });
+    expect(statusText(tree)).toBe('Possible partial delivery');
+
+    // No automatic retry occurs, and the failure releases the operation lock
+    // so an explicit later Send can create the next line operation.
+    await act(async () => input().props.onChangeText('later command'));
+    await act(async () => send().props.onPress());
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-2', part: 'text' })));
+    expect(statusText(tree)).toBe('Sent to socket');
     await act(async () => tree.unmount());
     jest.useRealTimers();
   });

@@ -18,6 +18,7 @@ import (
 
 type inputBWriter struct {
 	err   error
+	short int
 	wrote []byte
 }
 
@@ -25,8 +26,12 @@ func (w *inputBWriter) Write(p []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
 	}
-	w.wrote = append(w.wrote, p...)
-	return len(p), nil
+	n := len(p)
+	if w.short > 0 && n > w.short {
+		n = w.short
+	}
+	w.wrote = append(w.wrote, p[:n]...)
+	return n, nil
 }
 
 // openInputBWS builds the real ticket-authenticated HandleWS path with a
@@ -174,6 +179,29 @@ func TestInputB_HandleWSWriteFailureDoesNotAcknowledge(t *testing.T) {
 	}
 	if result.Outcome != "write_failed" {
 		t.Fatalf("expected write_failed, got %q", result.Outcome)
+	}
+}
+
+func TestInputB_HandleWSShortWriteIsWriteFailed(t *testing.T) {
+	writer := &inputBWriter{short: 1}
+	conn, _ := openInputBWS(t, writer)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, controlRequest("controlled_pty:input-b-ack", 7, testInputID(), []byte("short write"))); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil || result.Outcome != "write_failed" {
+		t.Fatalf("short-write result=%s decoded=%+v err=%v", payload, result, err)
 	}
 }
 

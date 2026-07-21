@@ -49,7 +49,7 @@ function jsSend(chars: number[]): string {
 }
 
 const INPUT_ACK_TIMEOUT_MS = 3000;
-type SendStatus = 'idle' | 'sending' | 'socket_sent' | 'delivered' | 'not_delivered' | 'failed';
+type SendStatus = 'idle' | 'sending' | 'socket_sent' | 'delivered' | 'delivery_unknown' | 'not_delivered' | 'failed';
 type PendingInput = {
   timeout: ReturnType<typeof setTimeout>;
   connectionId: string;
@@ -467,7 +467,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       return;
     }
     if (!text || !wv.current) {
-      setSendStatus('failed');
+      if (operationId && pendingLineRef.current?.operationId === operationId) pendingLineRef.current = null;
+      setSendStatus('delivery_unknown');
       return;
     }
     const parsedText = text.replace(/\n/g, '\r');
@@ -476,12 +477,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       '(function(){' +
       // PB.7 Input-A: server read_only gate — check before enqueue.
       'if(window.pokitReadOnly&&window.pokitReadOnly()){' +
-      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed",reason:"read_only"}));' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"delivery_unknown",operationId:' + JSON.stringify(operationId || null) + ',part:' + JSON.stringify(part || null) + '}));' +
       'return;' +
       '}' +
       'var w=window.ws;' +
       'if(!w||w.readyState!==1){' +
-      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"delivery_unknown",operationId:' + JSON.stringify(operationId || null) + ',part:' + JSON.stringify(part || null) + '}));' +
       'return;' +
       '}' +
       'try{' +
@@ -491,7 +492,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       'if(window.pokitSendInput){window.pokitSendInput(' + JSON.stringify(parsedText) + ',' + JSON.stringify(operationId || null) + ',' + JSON.stringify(part || null) + ');}' +
       'else{throw new Error("terminal input protocol unavailable");}' +
       '}catch(e){' +
-      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"delivery_unknown",operationId:' + JSON.stringify(operationId || null) + ',part:' + JSON.stringify(part || null) + '}));' +
       '}' +
       '})()'
     );
@@ -657,7 +658,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
             }
             pendingLineRef.current = null;
           }
-          setSendStatus('not_delivered');
+          setSendStatus('delivery_unknown');
         }, INPUT_ACK_TIMEOUT_MS);
         pendingInputRef.current.set(key, { timeout, connectionId: conn.connectionId, sessionId: conn.sessionId, generation: conn.generation, operationId, part });
         setSendStatus('socket_sent');
@@ -694,9 +695,16 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
               cmdRef.current = '';
             }
           }
-        } else {
+        } else if (!line) {
           setSendStatus(data.outcome === 'accepted' ? 'delivered' : 'not_delivered');
         }
+      }
+      if (data.type === 'delivery_unknown') {
+        const operationId = typeof data.operationId === 'string' ? data.operationId : null;
+        if (operationId && pendingLineRef.current?.operationId === operationId) {
+          pendingLineRef.current = null;
+        }
+        setSendStatus('delivery_unknown');
       }
       // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
       // Reason persists until the server explicitly re-grants or the session changes.
@@ -1076,8 +1084,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           />
           {/* E8: input delivery status indicator */}
           {sendStatus !== 'idle' && (
-            <Text testID="terminal-send-status" style={[styles.sendStatus, (sendStatus === 'failed' || sendStatus === 'not_delivered') && styles.sendFailed]}>
-              {sendStatus === 'sending' ? '↑' : sendStatus === 'socket_sent' ? 'Sent to socket' : sendStatus === 'delivered' ? 'Delivered to terminal' : sendStatus === 'not_delivered' ? 'Not delivered' : '✗'}
+            <Text testID="terminal-send-status" style={[styles.sendStatus, (sendStatus === 'failed' || sendStatus === 'not_delivered' || sendStatus === 'delivery_unknown') && styles.sendFailed]}>
+              {sendStatus === 'sending' ? '↑' : sendStatus === 'socket_sent' ? 'Sent to socket' : sendStatus === 'delivered' ? 'Delivered to terminal' : sendStatus === 'delivery_unknown' ? 'Possible partial delivery' : sendStatus === 'not_delivered' ? 'Not delivered' : '✗'}
             </Text>
           )}
           <TouchableOpacity testID="terminal-send" disabled={!terminalInputEnabled} onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>

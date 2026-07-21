@@ -3,11 +3,28 @@ package term
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
 )
+
+type blockingInputWriter struct {
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	wrote   []byte
+}
+
+func (w *blockingInputWriter) Write(p []byte) (int, error) {
+	close(w.started)
+	<-w.release
+	w.mu.Lock()
+	w.wrote = append(w.wrote, p...)
+	w.mu.Unlock()
+	return len(p), nil
+}
 
 func protocolRequest(payload []byte) []byte {
 	return controlRequest("controlled_pty:input-b-ack", 7, testInputID(), payload)
@@ -37,9 +54,50 @@ func TestInputB_StrictParserRejectsMalformedUnknownAndTrailing(t *testing.T) {
 		strings.Replace(valid, `"payload":`, `"unknown":true,"payload":`, 1),
 		valid + ` {}`,
 		strings.Replace(valid, testInputID(), strings.Repeat("A", inputIDLen), 1),
+		strings.Replace(valid, testInputID(), strings.Repeat("a", inputIDLen-1), 1),
+		strings.Replace(valid, `"payload":"eA=="`, `"payload":"%%%"`, 1),
 	} {
 		if _, _, err := parseInputControlRequest([]byte(raw)); err == nil || err.Error() != "invalid_request" {
 			t.Fatalf("raw=%q err=%v, want invalid_request", raw, err)
+		}
+	}
+}
+
+func TestInputB_ConnectionCloseClearsReplayCache(t *testing.T) {
+	cache := newInputRecentCache()
+	digest := requestDigest(&inputControlRequest{SessionID: "controlled_pty:input-b-ack", Generation: 7, Payload: "eA=="})
+	cache.store(testInputID(), digest, "accepted", 1)
+	if _, _, ok := cache.get(testInputID(), digest); !ok {
+		t.Fatal("cache did not retain live input before close")
+	}
+	// HandleWS defers this exact operation for each WebSocket connection.
+	cache.clear()
+	if _, _, ok := cache.get(testInputID(), digest); ok {
+		t.Fatal("connection-close cleanup retained replay state")
+	}
+}
+
+func TestInputB_CacheCapacityRaceNeverEvictsAcceptedEntries(t *testing.T) {
+	cache := newInputRecentCache()
+	var digest [32]byte
+	var wg sync.WaitGroup
+	for i := 0; i < inputCacheSize; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id := strings.Repeat("0", inputIDLen-2) + string("0123456789abcdef"[i/16]) + string("0123456789abcdef"[i%16])
+			cache.store(id, digest, "accepted", uint64(i+1))
+		}()
+	}
+	wg.Wait()
+	if cache.canStore(strings.Repeat("f", inputIDLen)) {
+		t.Fatal("concurrent cache population left capacity for an eviction-prone replay")
+	}
+	for i := 0; i < inputCacheSize; i++ {
+		id := strings.Repeat("0", inputIDLen-2) + string("0123456789abcdef"[i/16]) + string("0123456789abcdef"[i%16])
+		if _, _, ok := cache.get(id, digest); !ok {
+			t.Fatalf("accepted entry %d disappeared during capacity race", i)
 		}
 	}
 }
@@ -132,5 +190,34 @@ func TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration(t *testing.T) 
 	}
 	if len(oldWriter.wrote) != 0 {
 		t.Fatalf("retired generation wrote %q", oldWriter.wrote)
+	}
+}
+
+func TestInputB_ReplacementRaceKeepsWriteBoundToCapturedGeneration(t *testing.T) {
+	oldWriter := &blockingInputWriter{started: make(chan struct{}), release: make(chan struct{})}
+	captured := newTerminalTransport("controlled_pty:input-b-ack", 7, oldWriter, nil, nil)
+	newWriter := &inputBWriter{}
+	_ = newTerminalTransport("controlled_pty:input-b-ack", 8, newWriter, nil, nil)
+	seq := uint64(0)
+	resultCh := make(chan []byte, 1)
+	go func() {
+		resultCh <- handleTerminalInput(protocolRequest([]byte("old connection")), "controlled_pty:input-b-ack", 7, captured, nil, &seq, nil, newInputRecentCache(), "conn", newInputPermissionLimiter(time.Now()))
+	}()
+	<-oldWriter.started
+	retired := make(chan struct{})
+	go func() { captured.Retire(); close(retired) }()
+	select {
+	case <-retired:
+		t.Fatal("replacement retired captured transport while its write was active")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(oldWriter.release)
+	result := decodeInputOutcome(t, <-resultCh)
+	<-retired
+	if result.Outcome != "accepted" {
+		t.Fatalf("captured-generation race outcome=%q", result.Outcome)
+	}
+	if len(newWriter.wrote) != 0 {
+		t.Fatalf("replacement generation received stale input %q", newWriter.wrote)
 	}
 }

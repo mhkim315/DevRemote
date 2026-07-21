@@ -574,12 +574,16 @@ term.open(document.getElementById("t"));
 var _pokitEnc=new TextEncoder();
 function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=((a[i]>>4)&15).toString(16);h+=(a[i]&15).toString(16)}return h}
 function pokitSendInput(s,operationId,part){
-  if(readOnly||inputGeneration===null||inputConnectionID===null||inputSessionID===null)return;
+  // The native host owns the line-operation state.  A page-side failure must
+  // therefore be reported, rather than silently returning and stranding the
+  // host with an unresolvable pending operation.
+  function unknown(){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"delivery_unknown",operationId:operationId||null,part:part||null}));}}
+  if(readOnly||inputGeneration===null||inputConnectionID===null||inputSessionID===null){unknown();return;}
   var w=window.ws;
-  if(!w||w.readyState!==1)return;
+  if(!w||w.readyState!==1){unknown();return;}
   var inputID=pokitMakeInputID();
   var req={type:"terminal_input",version:1,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(s)))};
-  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",connectionId:inputConnectionID,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,operationId:operationId||null,part:part||null}));} }catch(e){}
+  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",connectionId:inputConnectionID,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,operationId:operationId||null,part:part||null}));} }catch(e){unknown()}
 }
 window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
 
