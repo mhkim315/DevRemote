@@ -553,7 +553,7 @@ term.open(document.getElementById("t"));
 // the ONLY text frames and are sent elsewhere. Exposed on window so the
 // mobile host (FeedScreen Send/macros) uses the exact same contract.
 var _pokitEnc=new TextEncoder();
-function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=("0"+((a[i]>>4)&15).toString(16)).slice(-2);h+=("0"+(a[i]&15).toString(16)).slice(-2)}return h}
+function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=((a[i]>>4)&15).toString(16);h+=(a[i]&15).toString(16)}return h}
 function pokitSendInput(s){
   if(readOnly||inputGeneration===null)return;
   var w=window.ws;

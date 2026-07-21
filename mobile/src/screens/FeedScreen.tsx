@@ -212,10 +212,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<SendStatus>('idle');
-  // Each WebView send is correlated by the generation/sequence assigned by
-  // the daemon connection. Socket send is not delivery: only this exact ACK
-  // may move a pending input to delivered.
+  // PB.7 Input-B: pending ACKs tracked by inputId → timeout.
   const pendingInputRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // 2-frame submitLine: text+Enter = 2 requests. Track both ACKs.
+  const pendingLineRef = useRef<{ textId: string; enterId: string } | null>(null);
   // PB.7 Input-A: caps is a server-authorized capability snapshot. Missing,
   // stale, or not-yet-announced capability data is read-only before any frame.
   const [caps, setCaps] = useState<string[]>(() => Array.isArray(initialCaps) ? initialCaps : []);
@@ -481,6 +481,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // Enter keypress. Text goes out once, \r once — no accumulated-buffer bug.
   const submitLine = useCallback((text: string) => {
     if (!deviceCanInput) { setSendStatus('failed'); return; }
+    // PB.7 Input-B: 2-frame operation. Track both text+Enter ACKs.
+    pendingLineRef.current = { textId: '', enterId: '' };
     if (text) doSend(text);
     setTimeout(() => doSend('\r'), 40);
   }, [doSend, deviceCanInput]);
@@ -566,10 +568,22 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       // PB.7 Input-B: versioned control-request protocol — track by inputId.
       if (data.type === 'input_pending' && Number.isInteger(data.generation) && typeof data.inputId === 'string') {
         const key = data.inputId as string;
+        // Capture inputId for 2-frame submitLine tracking.
+        const line = pendingLineRef.current;
+        if (line && line.textId === '') { line.textId = key; }
+        else if (line && line.enterId === '') { line.enterId = key; }
+
         const existing = pendingInputRef.current.get(key);
         if (existing) clearTimeout(existing);
         const timeout = setTimeout(() => {
-          if (pendingInputRef.current.delete(key)) setSendStatus('not_delivered');
+          if (pendingInputRef.current.delete(key)) {
+            if (line && (key === line.textId || key === line.enterId)) {
+              pendingLineRef.current = null;
+              setSendStatus('not_delivered');
+            } else if (pendingInputRef.current.size === 0) {
+              setSendStatus('not_delivered');
+            }
+          }
         }, INPUT_ACK_TIMEOUT_MS);
         pendingInputRef.current.set(key, timeout);
         setSendStatus('socket_sent');
@@ -577,10 +591,25 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       if (data.type === 'input_result' && typeof data.inputId === 'string' && typeof data.outcome === 'string') {
         const key = data.inputId as string;
         const timeout = pendingInputRef.current.get(key);
-        if (timeout) {
+        if (!timeout) { /* stale or already acked — ignore */ }
+        else {
           clearTimeout(timeout);
           pendingInputRef.current.delete(key);
-          setSendStatus(data.outcome === 'accepted' ? 'delivered' : 'not_delivered');
+
+          // PB.7 Input-B: 2-frame submitLine — track both text+Enter.
+          const line = pendingLineRef.current;
+          if (line && (key === line.textId || key === line.enterId)) {
+            if (key === line.textId) line.textId = '';
+            if (key === line.enterId) line.enterId = '';
+            if (line.textId === '' && line.enterId === '') {
+              pendingLineRef.current = null;
+              setSendStatus('delivered');
+              setCmd('');
+              cmdRef.current = '';
+            }
+          } else if (pendingInputRef.current.size === 0) {
+            setSendStatus('delivered');
+          }
         }
       }
       if (data.type === 'hello') {
