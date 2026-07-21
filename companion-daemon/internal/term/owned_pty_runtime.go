@@ -119,6 +119,12 @@ type handleStream struct {
 
 func (s *handleStream) Read(p []byte) (int, error) { return s.reader.Read(p) }
 func (s *handleStream) Close() error               { return s.CloseTransport() }
+func (s *handleStream) GetSize() (int, int, error) {
+	if sized, ok := s.reader.(interface{ GetSize() (int, int, error) }); ok {
+		return sized.GetSize()
+	}
+	return 0, 0, fmt.Errorf("PTY size unavailable")
+}
 
 func (o *OwnedPTYRuntime) register(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder) int64 {
 	o.mu.Lock()

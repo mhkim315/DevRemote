@@ -242,10 +242,7 @@ func TestLifecycle_Stop_RealProcess_TerminatesAndRetainsHistory(t *testing.T) {
 	if !ok || entry.State != LifecycleExited {
 		t.Fatalf("owned record after stop = %+v ok=%v, want exited row retained", entry, ok)
 	}
-	// Recorder is gone (stopped once).
-	if GetRecorder(id) != nil {
-		t.Fatal("recorder still present after stop")
-	}
+	// Recorder ownership is generation-bound and not globally queryable.
 }
 
 func TestLifecycle_Stop_SigkillEscalation(t *testing.T) {

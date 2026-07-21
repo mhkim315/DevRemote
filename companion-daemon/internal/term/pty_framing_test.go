@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,6 +95,29 @@ func (a *capturingAdapter) ListSessions(_ context.Context) ([]mux.Session, error
 	return []mux.Session{a.session}, nil
 }
 
+// framingPTYHandle is a V1-only test handle. The runtime owns its recorder
+// and transport; no registry session is consulted by HandleWS.
+type framingPTYHandle struct{ stream ptyStream }
+
+func (h *framingPTYHandle) Signal(syscall.Signal) SignalOutcome {
+	return SignalOutcome{Delivered: true}
+}
+func (h *framingPTYHandle) Kill() KillOutcome { return KillOutcome{Killed: true} }
+func (h *framingPTYHandle) Wait(ctx context.Context) LifecycleOutcome {
+	<-ctx.Done()
+	return LifecycleOutcome{TimedOut: true, Err: ctx.Err()}
+}
+func (h *framingPTYHandle) Write(p []byte) (int, error) { return h.stream.Write(p) }
+func (h *framingPTYHandle) Resize(r, c int) error       { return h.stream.Resize(r, c) }
+func (h *framingPTYHandle) CloseTransport() error       { return h.stream.Close() }
+func (h *framingPTYHandle) Read(p []byte) (int, error)  { return h.stream.Read(p) }
+func (h *framingPTYHandle) GetSize() (int, int, error) {
+	if sized, ok := h.stream.(interface{ GetSize() (int, int, error) }); ok {
+		return sized.GetSize()
+	}
+	return 0, 0, fmt.Errorf("size unavailable")
+}
+
 // framingSeq gives every harness a unique session ID so the shared, global
 // recorder registry never collides across repeated runs (go test -count=N).
 var framingSeq int64
@@ -105,11 +129,16 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 	t.Helper()
 	localID = fmt.Sprintf("%s-%d", localID, atomic.AddInt64(&framingSeq, 1))
 	stream := newCapturingStream()
-	sess := &capturingSession{id: localID, stream: stream}
-	reg := mux.MustNewRegistry(&capturingAdapter{session: sess})
-	_ = reg
-	h := &Handlers{}
-	sessionID := "mock:" + localID
+	handle := &framingPTYHandle{stream: stream}
+	cleanup := &migrationCleanup{}
+	owned := NewOwnedPTYRuntime(&migrationLauncher{results: []LaunchResult{{
+		Handle: handle, Identity: LaunchIdentity{InstanceID: localID, StartedAt: time.Now()}, ProcessCleanup: cleanup,
+	}}}, nil)
+	sessionID, err := owned.Create(context.Background(), SpawnConfig{Name: localID, Executable: "test"}, "", localID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=" + sessionID
@@ -122,13 +151,12 @@ func framingHarness(t *testing.T, localID string, principal *devicetrust.Princip
 		server.Close()
 		t.Fatalf("dial failed: %v", err)
 	}
-	cleanup := func() {
+	cleanupFn := func() {
 		conn.Close()
 		stream.Close()
-		DeleteRecorder(sessionID)
 		server.Close()
 	}
-	return conn, stream, sessionID, cleanup
+	return conn, stream, sessionID, cleanupFn
 }
 
 // Proof: binary input — including bytes that LOOK like a control frame —

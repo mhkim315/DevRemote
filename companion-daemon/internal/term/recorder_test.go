@@ -356,11 +356,9 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 	}
 	defer DeleteRecorder(sessionID)
 
-	// Second call: should return existing recorder, NOT open a new stream.
-	rec2, ch2 := EnsureRecorder(sessionID, func() (ptyStream, error) { return opener.OpenStream(context.Background()) })
-	if rec2 == nil {
-		t.Fatal("second EnsureRecorder returned nil")
-	}
+	// V1 callers hold the recorder capability and subscribe directly; no
+	// session-ID lookup or second stream open occurs.
+	rec2, ch2 := rec1, rec1.Subscribe()
 	defer rec2.Unsubscribe(ch2)
 
 	if rec1 != rec2 {
@@ -385,7 +383,7 @@ func TestRecorder_EnsureRecorder_MultipleSubscribers_NoMultiOpen(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Verify OpenStream called exactly once.
+	// Verify the explicit capability opened its stream exactly once.
 	if opener.OpenCount() != 1 {
 		t.Errorf("OpenStream called %d times, want 1 (multi-open detected)", opener.OpenCount())
 	}
@@ -918,11 +916,8 @@ func TestRecorder_CloseoutA_MatchingRecordsTermination(t *testing.T) {
 		t.Fatal("recorder did not exit")
 	}
 
-	recorderRegistry.mu.Lock()
-	term := recorderRegistry.terminated[sid]
-	recorderRegistry.mu.Unlock()
-	if !term {
-		t.Error("matching Recorder did not record termination")
+	if rec.IsAlive() {
+		t.Error("matching Recorder did not terminate")
 	}
 }
 

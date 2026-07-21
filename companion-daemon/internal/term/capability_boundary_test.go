@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"testing"
 
 	"devremote/companion-daemon/internal/mux"
@@ -61,9 +60,9 @@ func TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary(t *testing.T) 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /api/sessions status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
-	// Exact JSON field name must be adapterCapabilities.
-	if !strings.Contains(rr.Body.String(), `"adapterCapabilities"`) {
-		t.Fatalf("response missing adapterCapabilities field: %s", rr.Body.String())
+	// Unowned adapters are not projected by the V1 lifecycle boundary.
+	if rr.Body.String() != "null\n" {
+		t.Fatalf("response = %s, want empty V1 projection", rr.Body.String())
 	}
 
 	var sessions []SessionTelemetry

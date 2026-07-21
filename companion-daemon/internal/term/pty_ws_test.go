@@ -67,20 +67,22 @@ func (a *mockAdapter) TerminateSession(ctx context.Context, id string) error { r
 func TestHandleWS_CloseCode1011(t *testing.T) {
 	t.Parallel()
 
-	reg := mux.MustNewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		id:     "test-1011",
 		stream: &mockStream{pr: pr, pw: pw},
 	}
-	adapter := &mockAdapter{session: mockSess}
-	reg.Register(adapter)
-
-	_ = reg
-	h := &Handlers{}
+	_ = mockSess
+	owned := NewOwnedPTYRuntime(&migrationLauncher{results: []LaunchResult{{
+		Handle: &framingPTYHandle{stream: mockSess.stream}, Identity: LaunchIdentity{InstanceID: "test-1011", StartedAt: time.Now()}, ProcessCleanup: &migrationCleanup{},
+	}}}, nil)
+	sessionID, err := owned.Create(context.Background(), SpawnConfig{Name: "test-1011", Executable: "test"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
 
 	// Unique session ID per test to avoid recorderRegistry collision with parallel tests.
-	sessionID := "mock:test-1011"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = "session=" + sessionID
 		// Skip auth for test
@@ -124,20 +126,22 @@ func TestHandleWS_CloseCode1011(t *testing.T) {
 func TestHandleWS_ClientDisconnectWhileProducingOutput(t *testing.T) {
 	t.Parallel()
 
-	reg := mux.MustNewRegistry()
 	pr, pw := io.Pipe()
 	mockSess := &mockSession{
 		id:     "test-disconnect",
 		stream: &mockStream{pr: pr, pw: pw},
 	}
-	adapter := &mockAdapter{session: mockSess}
-	reg.Register(adapter)
-
-	_ = reg
-	h := &Handlers{}
+	_ = mockSess
+	owned := NewOwnedPTYRuntime(&migrationLauncher{results: []LaunchResult{{
+		Handle: &framingPTYHandle{stream: mockSess.stream}, Identity: LaunchIdentity{InstanceID: "test-disconnect", StartedAt: time.Now()}, ProcessCleanup: &migrationCleanup{},
+	}}}, nil)
+	sessionID, err := owned.Create(context.Background(), SpawnConfig{Name: "test-disconnect", Executable: "test"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
 
 	// Unique session ID per test to avoid recorderRegistry collision with parallel tests.
-	sessionID := "mock:test-disconnect"
 	handlerDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
