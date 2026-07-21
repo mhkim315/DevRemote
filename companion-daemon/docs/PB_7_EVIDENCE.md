@@ -1,9 +1,9 @@
 # PB.7 Evidence — Terminal Remediation Accepted, Device Gate Ready
 
 **Pre-Device Candidate SHA:** `9b75c1e4a`
-**PB.7 Evidence HEAD:** `25636ec9c`
+**PB.7 Evidence HEAD:** `af077ed54`
 **PA4 ACCEPT SHA:** `74560edd`
-**PB Ancestry Baseline SHA:** `abe4df1d6`
+**PB Start Baseline SHA:** `abe4df1d6`
 **PB ACCEPT SHA:** UNSET
 **PB DEVICE CANDIDATE SHA:** UNSET
 **Status:** ALL NON-DEVICE PB GATES ACCEPTED — AWAITING_DEVICE_GATE
@@ -22,8 +22,8 @@
 $ git merge-base --is-ancestor 74560edd HEAD && echo "PA4 ACCEPT: ANCESTOR OK"
 PA4 ACCEPT: ANCESTOR OK
 
-$ git merge-base --is-ancestor abe4df1d6 HEAD && echo "PB BASELINE: ANCESTOR OK"
-PB BASELINE: ANCESTOR OK
+$ git merge-base --is-ancestor abe4df1d6 HEAD && echo "PB START BASELINE: ANCESTOR OK"
+PB START BASELINE: ANCESTOR OK
 
 $ git merge-base --is-ancestor 2d13020ae HEAD && echo "TERM-G1 ACCEPT: ANCESTOR OK"
 TERM-G1 ACCEPT: ANCESTOR OK
@@ -39,7 +39,7 @@ go build ./...                                    exit 0
 go vet ./...                                      exit 0
 gofmt -l .                                        0 files (clean)
 git diff --check                                  exit 0
-go test -race ./... -count=1                      ALL PASS (12 packages)
+go test -race ./... -count=1                      ALL PASS (14 total, 11 tested, 3 no test files)
 cd mobile && npx tsc --noEmit                     clean
 cd mobile && npx jest --no-coverage               519/519 pass, 35 suites
 ```
@@ -142,8 +142,8 @@ Secrets: CLEAN (pre-existing test fixtures only — deadbeef, xyz in auth test f
 | PB.5a | `4ed0d3dc3` | V1 launcher cutover | VERIFIED |
 | PB.5b-T2 | `0f0d57f30` | Consumer migration | VERIFIED |
 | PB.5b-T3 | `c2c0f542a` | Physical deletion | VERIFIED |
-| PB.6 | `25636ec9c` | Re-verify — all 5 surfaces clean | VERIFIED |
-| PB.7 | `25636ec9c` | Terminal remediation accepted — device gate ready | CURRENT |
+| PB.6 | `af077ed54` | Re-verify — all 5 surfaces clean | VERIFIED |
+| PB.7 | `af077ed54` | Terminal remediation accepted — device gate ready | CURRENT |
 
 ## Physical Device Matrix
 
