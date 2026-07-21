@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/models"
 	"devremote/companion-daemon/internal/sessionid"
 )
@@ -115,7 +116,35 @@ func sortTelemetry(items []SessionTelemetry) {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].ID < items[j].ID
 	})
-} // HandleSessionsV2 returns rich JSON metadata for all sessions.
+}
+
+// applyDeviceInputCapability publishes terminal:input only to a device whose
+// authenticated server principal holds that permission. It copies rows and
+// capability slices so a principal-specific response cannot mutate telemetry's
+// shared snapshot for another device.
+func applyDeviceInputCapability(rows []SessionTelemetry, p *devicetrust.Principal) []SessionTelemetry {
+	if p == nil || !hasTicketPerm(p, devicetrust.PermTerminalInput) {
+		return rows
+	}
+	out := append([]SessionTelemetry(nil), rows...)
+	for i := range out {
+		caps := append([]string(nil), out[i].Capabilities...)
+		found := false
+		for _, cap := range caps {
+			if cap == devicetrust.PermTerminalInput {
+				found = true
+				break
+			}
+		}
+		if !found {
+			caps = append(caps, devicetrust.PermTerminalInput)
+		}
+		out[i].Capabilities = caps
+	}
+	return out
+}
+
+// HandleSessionsV2 returns rich JSON metadata for all sessions.
 func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	// PA3 Step 3: legacy query-parameter endpoints removed.
 	// ?activity= → 410 Gone (replaced by GET /api/sessions/{id}/transcript)
@@ -133,12 +162,12 @@ func (h *Handlers) HandleSessionsV2(w http.ResponseWriter, r *http.Request) {
 	if h.Telemetry != nil {
 		snapshot := mergeLifecycleState(h.Telemetry.Snapshot(), h.Lifecycle)
 		snapshot = appendCatalogRows(snapshot, h.Catalog, h.Lifecycle, h.Approvals)
-		json.NewEncoder(w).Encode(snapshot)
+		json.NewEncoder(w).Encode(applyDeviceInputCapability(snapshot, devicetrust.PrincipalFromContext(r.Context())))
 		return
 	}
 	// PA3 Step 6b: Fallback without telemetry service (e.g. tests).
 	// Transcript is canonical for snapshot path.
 	res := mergeLifecycleState(nil, h.Lifecycle)
 	res = appendCatalogRows(res, h.Catalog, h.Lifecycle, h.Approvals)
-	json.NewEncoder(w).Encode(res)
+	json.NewEncoder(w).Encode(applyDeviceInputCapability(res, devicetrust.PrincipalFromContext(r.Context())))
 }

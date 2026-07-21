@@ -3,7 +3,7 @@ module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/__tests__/**/*.test.ts'],
   transform: {
-    '^.+\\.(ts|js)$': ['ts-jest', {
+    '^.+\\.(ts|tsx|js)$': ['ts-jest', {
       tsconfig: { strict: true, esModuleInterop: true, skipLibCheck: true, allowJs: true },
     }],
   },

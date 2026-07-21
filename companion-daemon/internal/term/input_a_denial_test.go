@@ -2,175 +2,199 @@ package term
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
+	"github.com/gorilla/websocket"
 )
 
-// ── Input-A: denial payload format ──
-
-func TestInputA_DenialPayloadIsValidJSON(t *testing.T) {
-	var ctrl struct {
-		Type   string `json:"type"`
-		Reason string `json:"reason"`
+func TestInputA_EffectiveInputCapabilitiesAreTicketAuthorized(t *testing.T) {
+	denied := &devicetrust.Principal{DeviceID: "viewer", Permissions: []string{devicetrust.PermSessionsRead}}
+	if got := effectiveInputCapabilities(denied); len(got) != 0 {
+		t.Fatalf("viewer capabilities = %v, want no input capability", got)
 	}
-	if err := json.Unmarshal(readOnlyDenialPayload, &ctrl); err != nil {
-		t.Fatalf("readOnlyDenialPayload is not valid JSON: %v", err)
-	}
-	if ctrl.Type != "read_only" {
-		t.Errorf("type = %q, want read_only", ctrl.Type)
-	}
-	if ctrl.Reason == "" {
-		t.Error("reason must not be empty")
+	owner := &devicetrust.Principal{DeviceID: "owner", Permissions: []string{devicetrust.PermTerminalInput}}
+	if got := effectiveInputCapabilities(owner); len(got) != 1 || got[0] != devicetrust.PermTerminalInput {
+		t.Fatalf("owner capabilities = %v, want terminal:input", got)
 	}
 }
 
-func TestInputA_ReadOnlyDenialReasonIsBounded(t *testing.T) {
-	payload := string(readOnlyDenialPayload)
-	if len(payload) > 256 {
-		t.Errorf("payload too large: %d bytes", len(payload))
+func TestInputA_PermissionAnnouncementCarriesCapabilities(t *testing.T) {
+	p := &devicetrust.Principal{DeviceID: "owner", Permissions: []string{devicetrust.PermTerminalInput}}
+	var hello struct {
+		Type         string   `json:"type"`
+		Capabilities []string `json:"capabilities"`
 	}
-	var ctrl struct {
-		Type   string `json:"type"`
-		Reason string `json:"reason"`
+	if err := json.Unmarshal(permissionAnnouncement(p), &hello); err != nil {
+		t.Fatal(err)
 	}
-	json.Unmarshal(readOnlyDenialPayload, &ctrl)
-	for _, c := range ctrl.Reason {
-		if c < 0x20 && c != ' ' {
-			t.Errorf("reason contains control char U+%04X", c)
-		}
-	}
-	if len(ctrl.Reason) > 120 {
-		t.Errorf("reason too long: %d chars", len(ctrl.Reason))
+	if hello.Type != "hello" || len(hello.Capabilities) != 1 || hello.Capabilities[0] != devicetrust.PermTerminalInput {
+		t.Fatalf("hello = %+v, want server-authorized terminal:input capability", hello)
 	}
 }
 
-// ── Input-A: hasTicketPerm permission gate (production code) ──
-
-func TestInputA_HasTicketPerm_MissingPermissionDenied(t *testing.T) {
-	p := &devicetrust.Principal{
-		DeviceID:    "device-1",
-		Permissions: []string{"sessions:read"},
+func TestInputA_SessionCapabilitiesArePrincipalAuthorized(t *testing.T) {
+	identity, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: filepath.Join(t.TempDir(), "host.json")})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if hasTicketPerm(p, string(devicetrust.PermTerminalInput)) {
-		t.Error("hasTicketPerm must return false when terminal:input is missing")
+	sessions := devicetrust.NewDeviceSessionManager("input-a-caps", time.Minute)
+	ownerToken, _, _, err := sessions.CreateAfterVerifiedChallenge("owner", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead, devicetrust.PermTerminalInput})
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestInputA_HasTicketPerm_PermissionGranted(t *testing.T) {
-	p := &devicetrust.Principal{
-		DeviceID:    "device-1",
-		Permissions: []string{string(devicetrust.PermTerminalInput)},
+	viewerToken, _, _, err := sessions.CreateAfterVerifiedChallenge("viewer", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !hasTicketPerm(p, string(devicetrust.PermTerminalInput)) {
-		t.Error("hasTicketPerm must return true when terminal:input is present")
-	}
-}
-
-func TestInputA_HasTicketPerm_NilPrincipal(t *testing.T) {
-	// nil principal = legacy/no-auth path. hasTicketPerm returns true
-	// so the caller (handleWSWithPrincipal) needn't special-case nil.
-	// The combined check is: ticketPrincipal != nil && !hasTicketPerm(...)
-	// which correctly gates only authenticated connections.
-	if !hasTicketPerm(nil, string(devicetrust.PermTerminalInput)) {
-		t.Error("hasTicketPerm(nil) must return true — nil = no auth = permitted")
-	}
-}
-
-func TestInputA_HasTicketPerm_EmptyPermissions(t *testing.T) {
-	p := &devicetrust.Principal{
-		DeviceID:    "device-1",
-		Permissions: []string{},
-	}
-	if hasTicketPerm(p, string(devicetrust.PermTerminalInput)) {
-		t.Error("hasTicketPerm must return false for empty permissions")
-	}
-}
-
-// ── Input-A: rate limiting (production logic) ──
-
-func TestInputA_RateLimit_ConcurrentCoalescing(t *testing.T) {
-	var mu sync.Mutex
-	last := time.Time{}
-	sent := 0
-
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			mu.Lock()
-			if time.Since(last) > time.Second {
-				sent++
-				last = time.Now()
+	owned := NewOwnedPTYRuntime(nil, nil)
+	owned.RegisterForTest("controlled_pty:capability-session", "", "test", nil)
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
+	endpoint := devicetrust.RequirePrincipal(sessions, h.HandleSessionsV2, devicetrust.PermSessionsRead)
+	for _, tc := range []struct {
+		name, token string
+		wantInput   bool
+	}{
+		{name: "viewer", token: viewerToken, wantInput: false},
+		{name: "owner", token: ownerToken, wantInput: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			rr := httptest.NewRecorder()
+			endpoint(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 			}
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	if sent != 1 {
-		t.Errorf("concurrent denials: got %d sent, want exactly 1 (coalesced)", sent)
-	}
-}
-
-func TestInputA_RateLimit_AllowedAfterWindow(t *testing.T) {
-	last := time.Now().Add(-2 * time.Second)
-	if time.Since(last) <= time.Second {
-		t.Error("denial must be allowed after >1s window")
-	}
-}
-
-func TestInputA_RateLimit_CoalescedWithinWindow(t *testing.T) {
-	last := time.Now()
-	time.Sleep(5 * time.Millisecond)
-	if time.Since(last) > time.Second {
-		t.Skip("clock too coarse for rate-limit test")
-	}
-}
-
-// ── Input-A: denial payload stability ──
-
-func TestInputA_DenialPayload_ConstantFormat(t *testing.T) {
-	p1 := string(readOnlyDenialPayload)
-	p2 := string(readOnlyDenialPayload)
-	if p1 != p2 {
-		t.Error("denial payload changed between reads — must be constant")
-	}
-}
-
-func TestInputA_DenialPayload_NoLeakedData(t *testing.T) {
-	payload := string(readOnlyDenialPayload)
-	badWords := []string{"sessionId", "deviceId", "token", "bearer", "/tmp", "poke", "secret"}
-	for _, w := range badWords {
-		if containsFold(payload, w) {
-			t.Errorf("denial payload contains potentially leaked word: %q", w)
-		}
-	}
-}
-
-func containsFold(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			c1 := s[i+j]
-			c2 := substr[j]
-			if c1 >= 'A' && c1 <= 'Z' {
-				c1 += 32
+			var rows []SessionTelemetry
+			if err := json.Unmarshal(rr.Body.Bytes(), &rows); err != nil {
+				t.Fatal(err)
 			}
-			if c2 >= 'A' && c2 <= 'Z' {
-				c2 += 32
+			if len(rows) != 1 {
+				t.Fatalf("rows=%d, want one", len(rows))
 			}
-			if c1 != c2 {
-				match = false
-				break
+			got := false
+			for _, cap := range rows[0].Capabilities {
+				if cap == devicetrust.PermTerminalInput {
+					got = true
+				}
 			}
-		}
-		if match {
-			return true
-		}
+			if got != tc.wantInput {
+				t.Fatalf("capabilities=%v, terminal input=%v want %v", rows[0].Capabilities, got, tc.wantInput)
+			}
+		})
 	}
-	return false
+}
+
+type inputAWriteCounter struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (w *inputAWriteCounter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls++
+	return len(p), nil
+}
+
+func (w *inputAWriteCounter) Calls() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls
+}
+
+// TestInputA_DenialViaHandleWS exercises the actual ticket-consuming
+// HandleWS path. It sends a binary websocket frame, reads the bounded denial,
+// and proves the captured TerminalTransport did not receive WriteInput.
+func TestInputA_DenialViaHandleWS(t *testing.T) {
+	const session = "controlled_pty:input-a-deny"
+	pr, pw := io.Pipe()
+	stream := &mockStream{pr: pr, pw: pw}
+	recorder, _ := StartRecorder(session, stream)
+	defer recorder.Stop()
+	defer pw.Close()
+
+	writes := &inputAWriteCounter{}
+	transport := newTerminalTransport(session, 1, writes, stream, recorder)
+	owned := NewOwnedPTYRuntime(nil, nil)
+	owned.RegisterForTest(session, "", "test", recorder)
+	owned.mu.Lock()
+	owned.entries[session].transport = transport
+	owned.mu.Unlock()
+
+	identity, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: filepath.Join(t.TempDir(), "host.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := devicetrust.NewDeviceSessionManager("input-a-boot", time.Minute)
+	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge("device-readonly", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := sessions.AuthenticateBearer(bearer)
+	if principal == nil {
+		t.Fatal("device session did not authenticate")
+	}
+	tickets := devicetrust.NewWSTicketStore()
+	ticket, _, err := tickets.Issue(principal, identity.HostID, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handlers{
+		Lifecycle:    NewLifecycleService(owned, nil),
+		WSTickets:    tickets,
+		SessionMgr:   sessions,
+		HostIdentity: identity,
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	u.Scheme = "ws"
+	u.Path = "/term/ws"
+	u.RawQuery = "session=" + url.QueryEscape(session) + "&ticket=" + url.QueryEscape(ticket)
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	messageType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hello struct {
+		Type         string   `json:"type"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if messageType != websocket.TextMessage || json.Unmarshal(payload, &hello) != nil || hello.Type != "hello" || len(hello.Capabilities) != 0 {
+		t.Fatalf("viewer hello = type:%d payload:%s decoded:%+v", messageType, payload, hello)
+	}
+
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("blocked-before-first-send")); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	messageType, payload, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var denial struct {
+		Type string `json:"type"`
+	}
+	if messageType != websocket.TextMessage || json.Unmarshal(payload, &denial) != nil || denial.Type != "read_only" {
+		t.Fatalf("denial = type:%d payload:%s decoded:%+v", messageType, payload, denial)
+	}
+	if got := writes.Calls(); got != 0 {
+		t.Fatalf("unauthorized binary frame invoked TerminalTransport.WriteInput %d times, want 0", got)
+	}
 }

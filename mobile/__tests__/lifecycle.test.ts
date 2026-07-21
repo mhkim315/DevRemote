@@ -130,9 +130,8 @@ describe('Input-A: input enabled only when running + inputCapable', () => {
 describe('Input-A: two-layer input gate', () => {
   // Layer 1 — sessionCanInput: adapterCapabilities includes 'input'.
   //   Tested via readCapabilities + computeActionPolicy (pure, tested).
-  // Layer 2 — deviceCanInput: server read_only denial NOT received.
-  //   Applied in FeedScreen: deviceCanInput = (readOnlyReason === '').
-  //   inputEnabled in UI = actionPolicy.inputEnabled && deviceCanInput.
+  // Layer 2 — deviceCanInput is the server capability snapshot. The
+  // production FeedScreen render test covers the actual UI guard.
   //
   // Layer 1 tests:
   it('sessionCanInput: inputCapable false → inputEnabled false', () => {
@@ -149,30 +148,7 @@ describe('Input-A: two-layer input gate', () => {
     expect(p.inputEnabled).toBe(true); // session layer permits
   });
 
-  // Layer 2 — deviceCanInput: server denial → input disabled.
-  // FeedScreen derives: deviceCanInput = (readOnlyReason === '')
-  // Effective: inputEnabled = actionPolicy.inputEnabled && deviceCanInput
-  it('deviceCanInput: derived from readOnlyReason', () => {
-    // deviceCanInput = (readOnlyReason === '')
-    const noDenial: string = '';
-    const hasDenial: string = 'Terminal input not authorized — view only';
-    expect(noDenial === '').toBe(true);
-    expect(hasDenial === '').toBe(false);
-  });
-
-  it('combined: session + device both required', () => {
-    // sessionCanInput = true (adapter has 'input')
-    const caps = readCapabilities({ adapterCapabilities: ['input'] });
-    expect(caps.inputCapable).toBe(true);
-    // deviceCanInput = false (server sent read_only)
-    const reason: string = 'Terminal input not authorized';
-    const devCanInput = reason === '';
-    expect(devCanInput).toBe(false);
-    // Effective input = sessionCanInput && deviceCanInput = false
-    expect(caps.inputCapable && devCanInput).toBe(false);
-  });
-
-  it('sessionCanInput false + deviceCanInput true → disabled (no adapter input)', () => {
+  it('sessionCanInput false remains disabled even with an authorized device', () => {
     const caps = readCapabilities({ adapterCapabilities: [] });
     expect(caps.inputCapable).toBe(false);
     const deviceCanInput = true;

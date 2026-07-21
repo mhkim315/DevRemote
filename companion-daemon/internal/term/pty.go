@@ -127,6 +127,29 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 // Coalesced: at most once per second per connection (see HandleWS reader loop).
 var readOnlyDenialPayload = []byte(`{"type":"read_only","reason":"Terminal input not authorized — view only"}`)
 
+// effectiveInputCapabilities is the device-scoped, server-authorized session
+// capability projection. A capability is never inferred from a denial frame or
+// local UI state: only an authenticated ticket carrying terminal:input grants
+// it. Missing/unknown authentication therefore fails closed.
+func effectiveInputCapabilities(p *devicetrust.Principal) []string {
+	if p != nil && hasTicketPerm(p, devicetrust.PermTerminalInput) {
+		return []string{devicetrust.PermTerminalInput}
+	}
+	return nil
+}
+
+// permissionAnnouncement returns the initial WS control frame sent after
+// upgrade, before any user input. It contains the server-authorized effective
+// session capabilities; the terminal page and native FeedScreen use this
+// projection as their pre-send input guard.
+func permissionAnnouncement(p *devicetrust.Principal) []byte {
+	b, _ := json.Marshal(map[string]interface{}{
+		"type":         "hello",
+		"capabilities": effectiveInputCapabilities(p),
+	})
+	return b
+}
+
 func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 	var ticketPrincipal *devicetrust.Principal
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" && h.WSTickets != nil {
@@ -297,6 +320,15 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 
 	// E10b: atomic subscribe+bootstrap.  For controlled_pty routed
 	// through TerminalTransport, the transport SubscriberFanOut already
+	// PB.7 Input-A: announce device effective permissions before any
+	// user input. The terminal page sets its readOnly flag from this
+	// frame so pokitSendInput is gated before the first keystroke.
+	permAnnounce := permissionAnnouncement(ticketPrincipal)
+	select {
+	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
+	default:
+	}
+
 	// provided the bootstrap and subscriber channel — no second
 	// Recorder subscription. The transport owns the full
 	// subscribe+bootstrap sequence.
@@ -510,7 +542,7 @@ function connect(){
     // overwritten by this onmessage assignment. Returning here on text ensures
     // unknown/malformed control frames fail closed and are never rendered as
     // PTY output.
-    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
+    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];readOnly=p.indexOf("terminal:input")===-1;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;

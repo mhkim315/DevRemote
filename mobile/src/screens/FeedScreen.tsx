@@ -24,6 +24,10 @@ interface Props {
   session: string;
   token?: string;            // legacy: dev-token / Supabase JWT (explicit_local_dev only)
   authCtx?: import('../lib/authMode').AuthContext; // M3-auth-4A
+  // Server-authorized session capabilities. Unknown is intentionally empty.
+  caps?: string[];
+  // Production remains transcript-first; explicit only for deterministic render tests.
+  initialTab?: 'terminal' | 'transcript';
 }
 
 function jsSend(chars: number[]): string {
@@ -57,7 +61,7 @@ export default function FeedScreen(props: Props) {
   return <LegacyFeedScreen {...props} />;
 }
 
-function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
+function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'transcript'}: Props) {
   const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
@@ -65,7 +69,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   const [kbHeight, setKbHeight] = useState(0);
 
   // PA3 Step 1: two modes — Live Terminal, Transcript (read-only). Activity removed.
-  const [activeTab, setActiveTab] = useState<'terminal' | 'transcript'>('transcript');
+	const [activeTab, setActiveTab] = useState<'terminal' | 'transcript'>(initialTab);
   const activeTabRef = useRef(activeTab);
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
   const [fallbackEvents, setFallbackEvents] = useState<any[]>([]);
@@ -127,13 +131,14 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     setTranscriptEvents([]);
     setFallbackEvents([]);
     setByteStreamSuppressed(false);
-    setReadOnlyReason('');
+	setReadOnlyReason('');
+	setCaps(Array.isArray(initialCaps) ? initialCaps : []);
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
     transcriptGenRef.current = 0;
     sessionGenRef.current++;
     lifecycleCtrlRef.current?.setSession(session, token);
-  }, [session, token]);
+	}, [session, token, initialCaps]);
 
   // On unmount (Back/navigation away), invalidate all in-flight async work.
   // Bump generation so late fetch responses, lifecycle actions, and state
@@ -188,14 +193,13 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   // E8: input delivery status — idle | sending | sent | failed
   const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
-  // PB.7 Input-A: server-issued read-only state. When the daemon rejects
-  // terminal input (missing terminal:input permission) it sends a bounded
-  // read_only denial. The mobile surfaces this as a visible read-only reason
-  // instead of reporting send success after silent discard.
+  // PB.7 Input-A: caps is a server-authorized capability snapshot. Missing,
+  // stale, or not-yet-announced capability data is read-only before any frame.
+  const [caps, setCaps] = useState<string[]>(() => Array.isArray(initialCaps) ? initialCaps : []);
+  // readOnlyReason is display-only. It never grants or denies input.
   const [readOnlyReason, setReadOnlyReason] = useState('');
-  // PB.7 Input-A: deviceCanInput reflects server-issued effective permissions.
-  // true when no read_only denial has been received from the daemon.
-  const deviceCanInput = readOnlyReason === '';
+  const deviceCanInput = caps.includes('terminal:input');
+  const terminalInputEnabled = actionPolicy.inputEnabled && deviceCanInput;
 
   // R1a: transcript endpoint reachability.
   const [activityError, setActivityError] = useState('');
@@ -396,12 +400,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
       );
     });
     return () => sub.remove();
-  }, [inject, readOnlyReason]);
+  }, [inject]);
 
   // E8: send text via injected JS with postMessage ack back to React Native.
-  // PB.7 Input-A: gated on readOnlyReason — server denial blocks all input.
+  // PB.7 Input-A: gated on server-authorized capabilities before any frame.
   const doSend = useCallback((text: string) => {
-    if (readOnlyReason !== '') {
+    if (!deviceCanInput) {
       setSendStatus('failed');
       return;
     }
@@ -435,7 +439,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
       '}' +
       '})()'
     );
-  }, [inject, readOnlyReason]);
+  }, [inject, deviceCanInput]);
 
   // submitLine sends the text and Enter as TWO separate messages. Codex treats
   // a trailing \r bundled with the text as a literal newline (paste heuristic),
@@ -445,11 +449,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   // small delay keeps the \r in a separate PTY read so Codex sees a discrete
   // Enter keypress. Text goes out once, \r once — no accumulated-buffer bug.
   const submitLine = useCallback((text: string) => {
-    // PB.7 Input-A: check at execution time to prevent stale-closure bypass.
-    if (readOnlyReason !== '') { setSendStatus('failed'); return; }
+    if (!deviceCanInput) { setSendStatus('failed'); return; }
     if (text) doSend(text);
     setTimeout(() => doSend('\r'), 40);
-  }, [doSend, readOnlyReason]);
+  }, [doSend, deviceCanInput]);
 
   const send = useCallback(() => {
     const currentCmd = cmdRef.current || cmd;
@@ -459,11 +462,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     cmdRef.current = '';
   }, [submitLine, session]);
   const sendMacro = useCallback((chars: number[]) => {
-    // PB.7 Input-A: macros gated on readOnlyReason.
-    if (readOnlyReason !== '') { setSendStatus('failed'); return; }
+    if (!deviceCanInput) { setSendStatus('failed'); return; }
     const macroText = String.fromCharCode.apply(null, chars);
     doSend(macroText);
-  }, [doSend, readOnlyReason]);
+  }, [doSend, deviceCanInput]);
 
   const handleChangeText = useCallback((text: string) => {
     cmdRef.current = text;
@@ -489,16 +491,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     try {
       inject('window.ReactNativeWebView.postMessage(JSON.stringify({type:"copy",text:(function(){var s="";for(var i=0;i<term.rows;i++){var l=term.buffer.active.getLine(i);if(l)s+=l.translateToString(true)+"\n"}return s})()}))');
     } catch(e) {}
-  }, [inject, readOnlyReason]);
+  }, [inject]);
 
   const handlePasteRequest = useCallback(async () => {
-    // PB.7 Input-A: paste gated on readOnlyReason.
-    if (readOnlyReason !== '') { setSendStatus('failed'); return; }
+    if (!deviceCanInput) { setSendStatus('failed'); return; }
     const text = await Clipboard.getStringAsync();
     if (text) {
       doSend(text);
     }
-  }, [doSend, readOnlyReason]);
+  }, [doSend, deviceCanInput]);
 
 
 
@@ -532,6 +533,13 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
         if (data.status === 'sent') {
           setTimeout(() => setSendStatus(s => s === 'sent' ? 'idle' : s), 1500);
         }
+      }
+      if (data.type === 'hello') {
+        const nextCaps = Array.isArray(data.capabilities)
+          ? data.capabilities.filter((cap: unknown) => typeof cap === 'string')
+          : [];
+        setCaps(nextCaps);
+        setReadOnlyReason(nextCaps.includes('terminal:input') ? '' : 'Terminal input not authorized — view only');
       }
       // PB.7 Input-A: server read_only denial — surfaces permission reason from daemon.
       // Reason persists until the server explicitly re-grants or the session changes.
@@ -687,7 +695,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             {activeTab === 'terminal' && (
               <>
                 <TouchableOpacity onPress={handleCopyRequest} style={styles.textBtn}><Text style={styles.textBtnText}>COPY</Text></TouchableOpacity>
-                <TouchableOpacity onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>PASTE</Text></TouchableOpacity>
+                <TouchableOpacity disabled={!deviceCanInput} onPress={handlePasteRequest} style={styles.textBtn}><Text style={styles.textBtnText}>PASTE</Text></TouchableOpacity>
                 <TouchableOpacity onPress={() => {
                   if (wv.current) wv.current.reload();
                 }}><Text style={styles.reloadBtn}>↻</Text></TouchableOpacity>
@@ -873,33 +881,20 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
           )}
         </View>
 
-        {/* M3b: input (keystrokes + macros) is hidden when a MANAGED session is
-            not in a state that accepts input (starting/stopping/terminal, or no
-            input capability). Non-managed sessions keep their existing behavior. */}
-        {/* M3b (BLOCKER 4): input (keystrokes + macros) is gated by the policy for
-            EVERY session — never a non-managed bypass. External adapters that
-            declare `input` keep input; observe-only/unknown/view-only
-            (missing/unknown capabilities) never show input or macros. */}
-        {/* PB.7 Input-A: inputEnabled = sessionCanInput && deviceCanInput.
-             sessionCanInput from adapterCapabilities (actionPolicy.inputEnabled).
-             deviceCanInput from readOnlyReason (empty = no server denial = permitted). */}
-        {activeTab === 'terminal' && !sessionEnded && readOnlyReason !== '' && (
+        {/* Input requires both transport state and the server-authorized
+            terminal:input capability. Missing capabilities fail closed before
+            any user frame; readOnlyReason is only the explanation. */}
+        {activeTab === 'terminal' && !sessionEnded && !terminalInputEnabled && (
           <View style={styles.readOnlyBar}>
-            <Text style={styles.readOnlyText}>{readOnlyReason}</Text>
+            <Text style={styles.readOnlyText}>{readOnlyReason || 'View only — terminal input not authorized'}</Text>
           </View>
         )}
-        {activeTab === 'terminal' && !sessionEnded && !actionPolicy.inputEnabled && readOnlyReason === '' && (
-          <View style={styles.readOnlyBar}>
-            <Text style={styles.readOnlyText}>View only — terminal input not available</Text>
-          </View>
-        )}
-        {/* inputEnabled = sessionCanInput (actionPolicy) && deviceCanInput (no server denial) */}
-        {activeTab === 'terminal' && !sessionEnded && actionPolicy.inputEnabled && deviceCanInput && (
+        {activeTab === 'terminal' && !sessionEnded && (
         <>
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
             {NORMAL_MACROS.map((m, i) => (
-              <TouchableOpacity key={i} style={styles.macroBtn} onPress={() => sendMacro(m.chars)}>
+              <TouchableOpacity key={i} style={styles.macroBtn} disabled={!terminalInputEnabled} onPress={() => sendMacro(m.chars)}>
                 <Text style={styles.macroText}>{m.label}</Text>
               </TouchableOpacity>
             ))}
@@ -919,6 +914,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
             autoCapitalize="none"
             multiline={false}
             blurOnSubmit={false}
+            editable={terminalInputEnabled}
+            testID="terminal-input"
           />
           {/* E8: input delivery status indicator */}
           {sendStatus !== 'idle' && (
@@ -926,7 +923,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
               {sendStatus === 'sending' ? '↑' : sendStatus === 'sent' ? '✓' : '✗'}
             </Text>
           )}
-          <TouchableOpacity onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
+          <TouchableOpacity testID="terminal-send" disabled={!terminalInputEnabled} onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>
         </View>
         </>
         )}
