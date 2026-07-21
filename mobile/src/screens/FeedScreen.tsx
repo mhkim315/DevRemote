@@ -393,10 +393,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
       );
     });
     return () => sub.remove();
-  }, [inject]);
+  }, [inject, readOnlyReason]);
 
   // E8: send text via injected JS with postMessage ack back to React Native.
+  // PB.7 Input-A: gated on readOnlyReason — server denial blocks all input.
   const doSend = useCallback((text: string) => {
+    if (readOnlyReason !== '') {
+      setSendStatus('failed');
+      return;
+    }
     if (!text || !wv.current) {
       setSendStatus('failed');
       return;
@@ -422,7 +427,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
       '}' +
       '})()'
     );
-  }, [inject]);
+  }, [inject, readOnlyReason]);
 
   // submitLine sends the text and Enter as TWO separate messages. Codex treats
   // a trailing \r bundled with the text as a literal newline (paste heuristic),
@@ -444,10 +449,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     cmdRef.current = '';
   }, [submitLine, session]);
   const sendMacro = useCallback((chars: number[]) => {
-    // E8: macros use same doSend ack path.
+    // PB.7 Input-A: macros gated on readOnlyReason.
+    if (readOnlyReason !== '') { setSendStatus('failed'); return; }
     const macroText = String.fromCharCode.apply(null, chars);
     doSend(macroText);
-  }, [doSend]);
+  }, [doSend, readOnlyReason]);
 
   const handleChangeText = useCallback((text: string) => {
     cmdRef.current = text;
@@ -473,14 +479,16 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     try {
       inject('window.ReactNativeWebView.postMessage(JSON.stringify({type:"copy",text:(function(){var s="";for(var i=0;i<term.rows;i++){var l=term.buffer.active.getLine(i);if(l)s+=l.translateToString(true)+"\n"}return s})()}))');
     } catch(e) {}
-  }, [inject]);
+  }, [inject, readOnlyReason]);
 
   const handlePasteRequest = useCallback(async () => {
+    // PB.7 Input-A: paste gated on readOnlyReason.
+    if (readOnlyReason !== '') { setSendStatus('failed'); return; }
     const text = await Clipboard.getStringAsync();
     if (text) {
       doSend(text);
     }
-  }, [doSend]);
+  }, [doSend, readOnlyReason]);
 
 
 

@@ -447,7 +447,7 @@ html,body{width:100%;height:100%;background:#000}
 <div id="t"></div>
 <div id="status"></div>
 <script>
-var raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
+var readOnly=false,raw='', reconnecting=false, opened=false, everOpened=false, consecutiveFailures=0, stopped=false, cmdPoll=null, wasReconnect=false;
 	// E8: diagnostic counters — increment-only, never reset.
 	var e8_fitCount=0;
 	var e8diag = {connectCount:0, closeCount:0, msgCount:0, totalBytes:0, lastMsgSize:0};
@@ -460,7 +460,7 @@ term.open(document.getElementById("t"));
 // the ONLY text frames and are sent elsewhere. Exposed on window so the
 // mobile host (FeedScreen Send/macros) uses the exact same contract.
 var _pokitEnc=new TextEncoder();
-function pokitSendInput(s){
+function pokitSendInput(s){if(readOnly)return;
   var w=window.ws;
   if(w&&w.readyState===1){ try{ w.send(_pokitEnc.encode(s)); }catch(e){} }
 }
@@ -486,7 +486,7 @@ function connect(){
   if(reconnecting||stopped)return;
   var protocol=location.protocol==='https:'?'wss://':'ws://';
   if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
-  opened=false;
+  opened=false;readOnly=false;
   var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);
   window.ws=ws;
   ws.binaryType='arraybuffer';
@@ -510,7 +510,7 @@ function connect(){
     // overwritten by this onmessage assignment. Returning here on text ensures
     // unknown/malformed control frames fail closed and are never rendered as
     // PTY output.
-    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="read_only" && window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}catch(_){}return}
+    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
