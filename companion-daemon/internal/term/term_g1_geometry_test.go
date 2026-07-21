@@ -506,11 +506,9 @@ func TestTERM_G1_ANSIFixtureResizeReflectedInTTY(t *testing.T) {
 // TestTERM_G1_ANSIFixtureWideLineNoKernelWrap proves a 100-character line
 // written to a 100-column PTY is not truncated or wrapped by the kernel
 // terminal driver (the PTY is in raw mode and passes bytes unchanged).
+// The assertion explicitly checks for absence of interior line breaks.
 func TestTERM_G1_ANSIFixtureWideLineNoKernelWrap(t *testing.T) {
 	l := NewNativePTYLauncher()
-	// cat -n prepends line numbers; a 100-char line plus "     1\t" prefix
-	// exceeds 100 columns. In a cooked terminal this would wrap, but the
-	// raw PTY just passes the bytes.
 	result, err := l.Spawn(context.Background(), SpawnConfig{
 		Name:       "g1-ansi-wide",
 		Executable: "bash", Args: []string{"-c", "printf '%100s' 'X' | tr ' ' 'X'; echo ''"},
@@ -521,13 +519,45 @@ func TestTERM_G1_ANSIFixtureWideLineNoKernelWrap(t *testing.T) {
 	defer result.ProcessCleanup.Execute(context.Background())
 
 	out := readUntil(t, result.Handle, 2*time.Second)
-	// Output should be 100 X's followed by a newline — exactly 101 bytes.
-	// No kernel-injected CR/LF pairs within the line.
-	trimmed := bytes.TrimRight([]byte(out), "\r\n")
-	xCount := bytes.Count(trimmed, []byte("X"))
-	if xCount != 100 {
-		t.Errorf("got %d X characters, want 100 (kernel line wrap would inject breaks). Output len=%d", xCount, len(out))
+	// The output must contain exactly one contiguous run of 100 X characters,
+	// optionally bracketed by echo's leading/trailing bytes. The key assertion:
+	// there must be no CR, LF, or CRLF within the 100-X span itself.
+	//
+	// Find where the 100 X's start and end; verify no line break between.
+	xs := locateConsecutiveX([]byte(out), 100)
+	if xs < 0 {
+		t.Errorf("did not find 100 consecutive X characters in output (len=%d): %q", len(out), out)
+		return
 	}
+	// Slice from the start of the X-run to 100 bytes ahead.
+	run := []byte(out)[xs : xs+100]
+	for i, b := range run {
+		if b == '\n' || b == '\r' {
+			t.Errorf("interior line break at offset %d within 100-col output — kernel wrapping detected. Byte=%d at pos=%d in run", xs+i, b, i)
+			break
+		}
+	}
+	// Verify the run contains only X bytes.
+	if !bytes.Equal(run, bytes.Repeat([]byte("X"), 100)) {
+		t.Errorf("100-col run is not pure X's: %q", run)
+	}
+}
+
+// locateConsecutiveX finds the index of the first byte in a run of at least n
+// consecutive 'X' bytes, or returns -1.
+func locateConsecutiveX(data []byte, n int) int {
+	run := 0
+	for i, b := range data {
+		if b == 'X' {
+			run++
+			if run >= n {
+				return i - n + 1
+			}
+		} else {
+			run = 0
+		}
+	}
+	return -1
 }
 
 // TestTERM_G1_ANSIFixtureAlternateScreenSequences proves ANSI alternate-screen
@@ -585,6 +615,45 @@ func TestTERM_G1_ANSIFixtureCursorMovement(t *testing.T) {
 	// The char 'A' and ' OK' must be present after the CUP.
 	if !bytes.Contains([]byte(out), []byte("A")) {
 		t.Error("character after CUP missing from output")
+	}
+}
+
+// TestTERM_G1_ANSIFixtureColorSGR proves SGR color sequences (foreground,
+// background, bold, reset) pass through the PTY unchanged at 100 columns.
+func TestTERM_G1_ANSIFixtureColorSGR(t *testing.T) {
+	l := NewNativePTYLauncher()
+	// Emit red foreground (31), blue background (44), bold (1), and reset (0).
+	result, err := l.Spawn(context.Background(), SpawnConfig{
+		Name:       "g1-ansi-color",
+		Executable: "bash",
+		Args: []string{"-c",
+			// Extended combined SGR: bold + red fg + blue bg → ESC[1;31;44m
+			`printf '\e[1;31;44mCOLORED\e[0m' && echo ' RESET'`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer result.ProcessCleanup.Execute(context.Background())
+
+	out := readUntil(t, result.Handle, 2*time.Second)
+
+	// Bold (1), red foreground (31), blue background (44) — combined SGR.
+	if !bytes.Contains([]byte(out), []byte("\x1b[1;31;44m")) {
+		t.Errorf("combined SGR ESC[1;31;44m (bold+red+blue) missing from output: %q", out)
+	}
+	// Reset (0).
+	if !bytes.Contains([]byte(out), []byte("\x1b[0m")) {
+		t.Errorf("SGR reset ESC[0m missing from output: %q", out)
+	}
+	// The text "COLORED" must appear between the SGR sequences.
+	coloredIdx := bytes.Index([]byte(out), []byte("COLORED"))
+	resetIdx := bytes.Index([]byte(out), []byte("\x1b[0m"))
+	if coloredIdx < 0 {
+		t.Error("COLORED text missing from output")
+	}
+	if coloredIdx >= 0 && resetIdx >= 0 && coloredIdx >= resetIdx {
+		t.Error("COLORED text appears after reset — SGR ordering violated")
 	}
 }
 

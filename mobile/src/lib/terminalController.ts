@@ -97,8 +97,13 @@ export class TerminalController {
       // frames with the same generation).
       rawWS.addEventListener('message',function(e){
         if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data);
-          if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){
-            try{ if(window.term) window.term.resize(ctrl.cols,ctrl.rows); }catch(ge){}
+          // TERM-G1: validate live geometry frames — reject non-integer,
+          // zero, negative, or implausibly large values. Preserve last
+          // valid geometry; invalid frames are silently dropped.
+          if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'){
+            if(Number.isInteger(ctrl.rows)&&Number.isInteger(ctrl.cols)&&ctrl.rows>=1&&ctrl.rows<=1000&&ctrl.cols>=1&&ctrl.cols<=2000){
+              try{ if(window.term){ window.term.resize(ctrl.cols,ctrl.rows); window.__pokitLastGeom={rows:ctrl.rows,cols:ctrl.cols}; } }catch(ge){}
+            }
           } else if(ctrl&&(ctrl.type==='hello'||ctrl.type==='read_only'||ctrl.type==='input_result')){
             // Forward control frames to React Native. The daemon HTML page's
             // ws.onmessage also forwards these — the FeedScreen is idempotent
