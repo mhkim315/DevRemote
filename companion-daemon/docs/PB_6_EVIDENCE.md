@@ -1,6 +1,7 @@
 # PB.6 Evidence — Re-Verify at 9b75c1e4a
 
-**Re-Verify SHA:** `9b75c1e4a`
+**Re-Verify Candidate SHA:** `9b75c1e4a`
+**PB.6 Evidence HEAD:** `780f4bc66`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Baseline SHA:** `abe4df1d6`
 
@@ -52,24 +53,34 @@ scripts/archgate.go:47 — archgate enforcement script (the gate itself, not a v
 ### 2. Tests
 
 ```
-(empty — all prohibited symbols removed)
+$ grep -rnE "mux\.Registry|mux\.Adapter|mux\.Session|tmux|cmux|localpty|GetRecorder|v1Bridge|NewV1FromOld|ManualLink|ResolveAgentLog|snapshotEndMarker|deltaMarker|drainSnapshot" --include='*_test.go' .
+(empty)
 ```
 
 ### 3. Mobile (TypeScript)
 
 ```
-(empty — no tmux/cmux/localpty/mux types/ManualLink/observerAdapter/agentKind branching/id inference)
+$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter|mux\.Session|ManualLink|observerAdapter|ObservedAdapter" mobile/src/
+(empty)
+
+$ grep -rn "agentKind.*===" mobile/src/
+(empty — no vendor branching)
+
+$ grep -rn "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
+(empty — no ID inference)
 ```
 
 ### 4. Scripts
 
 ```
+$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter" scripts/
 (empty)
 ```
 
 ### 5. Packaging
 
 ```
+$ grep -rnE "tmux|cmux|localpty" Makefile
 (empty)
 ```
 

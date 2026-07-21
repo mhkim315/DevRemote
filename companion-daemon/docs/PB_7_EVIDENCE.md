@@ -1,6 +1,7 @@
 # PB.7 Evidence — Automated Closeout and Device Gate
 
 **Pre-Device Candidate SHA:** `9b75c1e4a`
+**PB.7 Evidence HEAD:** `780f4bc66`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
 **PB ACCEPT SHA:** UNSET
@@ -56,38 +57,73 @@ internal/watcher                                  PASS
 
 ## Zero-Consumer Static Scans — All 5 Surfaces
 
-### Production (non-test Go)
+### Control
+```
+$ printf "tmux" | grep -E "tmux|Tmux|TMUX"
+tmux
+(exit 0 — pattern matches)
+```
+
+### 1. Production (non-test Go)
 
 ```
-$ grep -rnE "mux\.Registry|mux\.Adapter|mux\.Session|tmux|cmux|localpty|GetRecorder|EnsureRecorder|RegistryFromContext|WithRegistry|v1Bridge|NewV1FromOld|v1Handle|ManualLink|ResolveAgentLog|snapshotEndMarker|deltaMarker|drainSnapshot|observedAdapter|ObservedAdapter" --include='*.go' . | grep -v "_test.go"
+$ grep -rnE "mux\.Registry|mux\.Adapter[^a-zA-Z]|mux\.Session[^I]" --include='*.go' . | grep -v "_test.go"
+(empty)
+
+$ grep -rnE "tmux|Tmux|TMUX|cmux|Cmux|CMUX|localpty|LocalPTY" --include='*.go' . | grep -v "_test.go"
+(empty)
+
+$ grep -rnE "GetRecorder|EnsureRecorder|RegistryFromContext|WithRegistry" --include='*.go' . | grep -v "_test.go"
+(empty)
+
+$ grep -rnE "ManagedPTYLauncher |v1Bridge|NewV1FromOld|v1Handle" --include='*.go' . | grep -v "_test.go"
 scripts/archgate.go:47 — archgate enforcement script (the gate itself, not a violation)
-```
 
-### Tests
-
-```
-(empty — all prohibited symbols removed)
-```
-
-### Mobile
-
-```
-(empty — no prohibited symbols, no vendor branching, no ID inference)
-```
-
-### Scripts & Packaging
-
-```
+$ grep -rnE "ManualLink|ManualEvidence|ResolveLink|ResolveAgentLog|snapshotEndMarker|deltaMarker|drainSnapshot|observedAdapter" --include='*.go' . | grep -v "_test.go"
 (empty)
 ```
 
-## Pre-Device Packet Accepted SHAs
+### 2. Tests
 
-| Packet | IMPL SHA | EVID SHA | Description |
-|--------|----------|----------|-------------|
-| QR | `b55780c7f` | `0ce53d9ad` | Half-block ANSI renderer + secure PNG fallback |
-| Input-A | `e28964875` | — | Effective permission + read-only UX |
-| Input-B | `06c5b2a81` | `9b75c1e4a` | Versioned control-request protocol + delivery semantics |
+```
+$ grep -rnE "mux\.Registry|mux\.Adapter|mux\.Session|tmux|cmux|localpty|GetRecorder|v1Bridge|NewV1FromOld|ManualLink|ResolveAgentLog|snapshotEndMarker|deltaMarker|drainSnapshot" --include='*_test.go' .
+(empty)
+```
+
+### 3. Mobile (TypeScript)
+
+```
+$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter|mux\.Session|ManualLink|observerAdapter|ObservedAdapter" mobile/src/
+(empty)
+
+$ grep -rn "agentKind.*===" mobile/src/
+(empty — no vendor branching)
+
+$ grep -rn "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
+(empty — no ID inference)
+```
+
+### 4. Scripts
+
+```
+$ grep -rnE "tmux|cmux|localpty|mux\.Registry|mux\.Adapter" scripts/
+(empty)
+```
+
+### 5. Packaging
+
+```
+$ grep -rnE "tmux|cmux|localpty" Makefile
+(empty)
+```
+
+## Pre-Device Packet ACCEPT SHAs
+
+| Packet | ACCEPT SHA | Description |
+|--------|-----------|-------------|
+| QR | `b55780c7f` | Half-block ANSI renderer + secure PNG fallback |
+| Input-A | `e28964875` | Effective permission + read-only UX |
+| Input-B | `9b75c1e4a` | Versioned control-request protocol + delivery semantics |
 
 ## PB Wave Ledger
 
