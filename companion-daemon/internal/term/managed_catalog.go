@@ -299,6 +299,12 @@ func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps
 	case codexAppServerAdapter, claudeHeadlessAdapter:
 		return []string{"live_stream", "history"},
 			[]string{"live_stream", "history", "process"}
+	case "controlled_pty":
+		// BUG-006B: controlled_pty ("shell" profile) is a StreamOpener
+		// with a live WebSocket terminal. Must advertise liveTerminal so
+		// the mobile FeedScreen shows the Terminal tab.
+		return []string{"live_stream", "history"},
+			[]string{"liveTerminal", "live_stream", "history", "managedLifecycle"}
 	default:
 		return nil, nil
 	}
@@ -356,6 +362,10 @@ func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalo
 		if strings.HasPrefix(rec.SessionID, claudeHeadlessAdapter+":") {
 			adapter = claudeHeadlessAdapter
 			runnerColor = "#f97316"
+		} else if strings.HasPrefix(rec.SessionID, "controlled_pty:") {
+			// BUG-006B: controlled_pty ("shell" profile) must be
+			// identified so ManagedCapabilities returns liveTerminal.
+			adapter = "controlled_pty"
 		}
 		var safe []SafeApprovalDTO
 		if approvals != nil {

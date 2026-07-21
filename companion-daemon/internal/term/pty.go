@@ -140,7 +140,13 @@ var readOnlyDenialPayload = []byte(`{"type":"read_only","reason":"Terminal input
 // it. Missing/unknown authentication therefore fails closed.
 func effectiveInputCapabilities(p *devicetrust.Principal) []string {
 	if p != nil && hasTicketPerm(p, devicetrust.PermTerminalInput) {
+		log.Printf("WS-CAPS: terminal:input GRANTED perms=%v", p.Permissions)
 		return []string{devicetrust.PermTerminalInput}
+	}
+	if p != nil {
+		log.Printf("WS-CAPS: terminal:input DENIED (has perms=%v, need %s)", p.Permissions, devicetrust.PermTerminalInput)
+	} else {
+		log.Printf("WS-CAPS: terminal:input DENIED (nil principal)")
 	}
 	return nil
 }
@@ -182,6 +188,14 @@ func (h *Handlers) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		// Optional ticket auth: session binding verified.
 		ticketPrincipal = h.WSTickets.ConsumeBound(ticket, hostIDForTicket(h), sess, h.SessionMgr)
+		// BUG-006B diag: log ticket principal state
+		if ticketPrincipal != nil {
+			log.Printf("WS-TICKET OK session=%s perms=%v", sess, ticketPrincipal.Permissions)
+		} else {
+			log.Printf("WS-TICKET NIL session=%s (ticket consumed/expired/mismatched)", sess)
+		}
+	} else {
+		log.Printf("WS-NO-TICKET session=%s (ticket=%v wstickets=%v)", r.URL.Query().Get("session"), r.URL.Query().Get("ticket") != "", h.WSTickets != nil)
 	}
 	h.handleWSWithPrincipal(w, r, ticketPrincipal)
 }
