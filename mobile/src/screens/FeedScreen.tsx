@@ -55,8 +55,12 @@ type PendingInput = {
   connectionId: string;
   sessionId: string;
   generation: number;
+  operationId?: string;
+  part?: 'text' | 'enter';
 };
 type PendingLine = {
+  operationId: string;
+  sentText: string;
   textId: string | null;
   enterId: string | null;
   textOutcome: string | null;
@@ -233,6 +237,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // IDs belonging to a failed two-frame operation never regain delivery
   // status if a sibling result arrives later.
   const abandonedInputRef = useRef<Set<string>>(new Set());
+  const lineOperationSeqRef = useRef(0);
   // PB.7 Input-A: caps is a server-authorized capability snapshot. Missing,
   // stale, or not-yet-announced capability data is read-only before any frame.
   const [caps, setCaps] = useState<string[]>(() => Array.isArray(initialCaps) ? initialCaps : []);
@@ -456,7 +461,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
 
   // E8: send text via injected JS with postMessage ack back to React Native.
   // PB.7 Input-A: gated on server-authorized capabilities before any frame.
-  const doSend = useCallback((text: string) => {
+  const doSend = useCallback((text: string, operationId?: string, part?: 'text' | 'enter') => {
     if (!deviceCanInput) {
       setSendStatus('failed');
       return;
@@ -483,7 +488,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       // M3-auth-4A framing contract: raw input goes out as a BINARY frame via
       // the page's single sender. Fall back to an inline binary encode if the
       // page helper is not yet defined (still binary — never a text frame).
-      'if(window.pokitSendInput){window.pokitSendInput(' + JSON.stringify(parsedText) + ');}' +
+      'if(window.pokitSendInput){window.pokitSendInput(' + JSON.stringify(parsedText) + ',' + JSON.stringify(operationId || null) + ',' + JSON.stringify(part || null) + ');}' +
       'else{throw new Error("terminal input protocol unavailable");}' +
       '}catch(e){' +
       'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
@@ -508,15 +513,15 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       return;
     }
     // PB.7 Input-B: 2-frame operation. Track both text+Enter ACKs.
-    const line: PendingLine = { textId: null, enterId: null, textOutcome: null, enterOutcome: null, enterQueued: false };
+    const line: PendingLine = { operationId: `line-${++lineOperationSeqRef.current}`, sentText: text, textId: null, enterId: null, textOutcome: null, enterOutcome: null, enterQueued: false };
     pendingLineRef.current = line;
-    if (text) doSend(text);
+    if (text) doSend(text, line.operationId, 'text');
     setTimeout(() => {
       // A failed/timeout first frame cancels this operation; never send a
       // delayed Enter into a later command's two-frame state.
       if (pendingLineRef.current !== line) return;
       line.enterQueued = true;
-      doSend('\r');
+      doSend('\r', line.operationId, 'enter');
     }, 40);
   }, [doSend, deviceCanInput]);
 
@@ -540,8 +545,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
     // Detect trailing \n, strip it, and send the command.
     if (text.endsWith('\n')) {
       const cmd = text.replace(/\n$/, '');
-      setCmd('');
-      cmdRef.current = '';
+      // Treat soft-keyboard Enter exactly like Send: preserve the command
+      // until both acknowledged frames settle.
+      setCmd(cmd);
+      cmdRef.current = cmd;
       if (cmd.trim()) {
         submitLine(cmd);
       }
@@ -624,8 +631,13 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         if (!conn || data.connectionId !== conn.connectionId || data.sessionId !== conn.sessionId || data.generation !== conn.generation) return;
         const key = data.inputId as string;
         const line = pendingLineRef.current;
-        if (line && line.textId === null) line.textId = key;
-        else if (line && line.enterQueued && line.enterId === null) line.enterId = key;
+        const operationId = typeof data.operationId === 'string' ? data.operationId : undefined;
+        const part = data.part === 'text' || data.part === 'enter' ? data.part as 'text' | 'enter' : undefined;
+        // Only the page-tagged frames from this exact line operation own its
+        // two slots. Macro/paste/raw keyboard pending events cannot steal them
+        // merely by arriving first.
+        if (line && operationId === line.operationId && part === 'text' && line.textId === null) line.textId = key;
+        else if (line && operationId === line.operationId && part === 'enter' && line.enterQueued && line.enterId === null) line.enterId = key;
         const existing = pendingInputRef.current.get(key);
         if (existing) clearTimeout(existing.timeout);
         const timeout = setTimeout(() => {
@@ -647,7 +659,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           }
           setSendStatus('not_delivered');
         }, INPUT_ACK_TIMEOUT_MS);
-        pendingInputRef.current.set(key, { timeout, connectionId: conn.connectionId, sessionId: conn.sessionId, generation: conn.generation });
+        pendingInputRef.current.set(key, { timeout, connectionId: conn.connectionId, sessionId: conn.sessionId, generation: conn.generation, operationId, part });
         setSendStatus('socket_sent');
       }
       if (data.type === 'input_result' && typeof data.inputId === 'string' && typeof data.outcome === 'string' && typeof data.connectionId === 'string' && typeof data.sessionId === 'string' && Number.isInteger(data.generation)) {
@@ -676,8 +688,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           } else if (line.enterQueued && line.textId !== null && line.enterId !== null && line.textOutcome === 'accepted' && line.enterOutcome === 'accepted') {
             pendingLineRef.current = null;
             setSendStatus('delivered');
-            setCmd('');
-            cmdRef.current = '';
+            // Do not erase a newer edit made while this operation awaited ACKs.
+            if (cmdRef.current === line.sentText) {
+              setCmd('');
+              cmdRef.current = '';
+            }
           }
         } else {
           setSendStatus(data.outcome === 'accepted' ? 'delivered' : 'not_delivered');

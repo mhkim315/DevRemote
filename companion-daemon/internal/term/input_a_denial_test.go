@@ -157,6 +157,10 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 		SessionMgr:   sessions,
 		HostIdentity: identity,
 		Transcript:   transcriptSvc,
+		// Input-A's bounded read_only contract is retained for the explicit
+		// local-development binary path. Paired production rejects binary with
+		// update_required and is covered by Input-B.
+		InsecureLocalOnly: true,
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))

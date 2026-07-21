@@ -225,7 +225,8 @@ func newInputPermissionLimiter(now time.Time) *inputPermissionLimiter {
 }
 
 func (l *inputPermissionLimiter) allow(now time.Time) bool {
-	l.tokens += now.Sub(l.last).Minutes() * (10.0 / 60.0)
+	// Rate is ten receipts per minute, not ten per hour.
+	l.tokens += now.Sub(l.last).Minutes() * 10.0
 	if l.tokens > 3 {
 		l.tokens = 3
 	}

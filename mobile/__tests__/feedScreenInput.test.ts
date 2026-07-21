@@ -169,17 +169,43 @@ describe('FeedScreen production input authorization', () => {
     const send = tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
     await act(async () => input.props.onChangeText('keep me until both ACKs'));
     await act(async () => send.props.onPress());
-    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    // An unrelated macro/paste pending frame arrives first; operation tags
+    // prevent it from claiming the text slot.
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3, operationId: 'macro-1', part: 'text' })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
     expect(statusText(tree)).toBe('Sent to socket');
     // The text ACK is deliberately before the 40 ms Enter request. It must
     // not claim delivery while the second frame is not even pending.
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted', sequence: 1 })));
     expect(statusText(tree)).not.toBe('Delivered to terminal');
     await act(async () => { jest.advanceTimersByTime(40); });
-    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted', sequence: 2 })));
     expect(statusText(tree)).toBe('Delivered to terminal');
     expect(tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input').props.value).toBe('');
+    await act(async () => tree.unmount());
+    jest.useRealTimers();
+  });
+
+  it('preserves soft-keyboard Enter text and newer edits while an earlier line awaits both ACKs', async () => {
+    jest.useFakeTimers();
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => { tree = create(React.createElement(FeedScreen, { onBack: () => {}, session: session.id, caps: ['history', 'terminal:input'], initialSessionData: session, initialTab: 'terminal' })); });
+    const webview = tree.root.findByType('webview');
+    const input = () => tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+    await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'] })));
+    // Soft-keyboard Enter must not clear before the line is acknowledged.
+    await act(async () => input().props.onChangeText('keyboard command\n'));
+    expect(input().props.value).toBe('keyboard command');
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
+    await act(async () => input().props.onChangeText('newer unsent edit'));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
+    await act(async () => { jest.advanceTimersByTime(40); });
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-1', part: 'enter' })));
+    await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted' })));
+    expect(statusText(tree)).toBe('Delivered to terminal');
+    expect(input().props.value).toBe('newer unsent edit');
     await act(async () => tree.unmount());
     jest.useRealTimers();
   });
@@ -222,9 +248,9 @@ describe('FeedScreen production input authorization', () => {
     // Start one line and make both frames pending before failing the first.
     await act(async () => input().props.onChangeText('partial'));
     await act(async () => send().props.onPress());
-    await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2, operationId: 'line-1', part: 'text' })));
     await act(async () => { jest.advanceTimersByTime(40); });
-    await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2, outcome: 'write_failed' })));
     expect(statusText(tree)).toBe('Not delivered');
     await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, outcome: 'accepted' })));
@@ -253,24 +279,24 @@ describe('FeedScreen production input authorization', () => {
 
     await act(async () => input().props.onChangeText('first failure'));
     await act(async () => send().props.onPress());
-    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'write_failed' })));
     expect(statusText(tree)).toBe('Not delivered');
     expect(input().props.value).toBe('first failure');
 
     await act(async () => input().props.onChangeText('second failure'));
     await act(async () => send().props.onPress());
-    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-2', part: 'text' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted' })));
     await act(async () => { jest.advanceTimersByTime(40); });
-    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3, operationId: 'line-2', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID3, outcome: 'write_failed' })));
     expect(statusText(tree)).toBe('Not delivered');
     expect(input().props.value).toBe('second failure');
 
     await act(async () => input().props.onChangeText('timeout'));
     await act(async () => send().props.onPress());
-    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
+    await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-3', part: 'text' })));
     await act(async () => { jest.advanceTimersByTime(3000); });
     expect(statusText(tree)).toBe('Not delivered');
     expect(input().props.value).toBe('timeout');

@@ -460,6 +460,16 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 
 		// From here mt is a BinaryMessage: raw terminal input.
+		if !h.InsecureLocalOnly {
+			// Paired production accepts only the versioned acknowledged control
+			// protocol. This applies before permission checks so every old client
+			// receives the explicit update-required contract, never read_only.
+			select {
+			case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: mustJSON(inputResult{Type: "input_result", ConnectionID: connID, SessionID: session, Generation: inputGeneration, Outcome: "invalid_request", Reason: "update_required"})}:
+			default:
+			}
+			continue
+		}
 		// PB.7 Input-A: device-auth input permission gate. Rejected input
 		// must perform zero WriteInput calls and cause zero Transcript
 		// mutation. A bounded read_only denial is sent to the client so
@@ -475,17 +485,6 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 			continue
 		}
-		if !h.InsecureLocalOnly {
-			// Paired production accepts only the versioned acknowledged control
-			// protocol. Raw binary remains an explicit local-development escape
-			// hatch and is never permitted merely because a ticket has input.
-			select {
-			case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: mustJSON(inputResult{Type: "input_result", ConnectionID: connID, SessionID: session, Generation: inputGeneration, Outcome: "invalid_request", Reason: "update_required"})}:
-			default:
-			}
-			continue
-		}
-
 		// PA3 Step 6b: legacy write removed; Transcript is canonical.
 		// T3: echo privacy — suppress byte-stream projection during input.
 		// BeginInput starts suppression; the byte-stream projector
@@ -574,13 +573,13 @@ term.open(document.getElementById("t"));
 // mobile host (FeedScreen Send/macros) uses the exact same contract.
 var _pokitEnc=new TextEncoder();
 function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=((a[i]>>4)&15).toString(16);h+=(a[i]&15).toString(16)}return h}
-function pokitSendInput(s){
+function pokitSendInput(s,operationId,part){
   if(readOnly||inputGeneration===null||inputConnectionID===null||inputSessionID===null)return;
   var w=window.ws;
   if(!w||w.readyState!==1)return;
   var inputID=pokitMakeInputID();
   var req={type:"terminal_input",version:1,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(s)))};
-  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",connectionId:inputConnectionID,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID}));} }catch(e){}
+  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",connectionId:inputConnectionID,sessionId:inputSessionID,generation:inputGeneration,inputId:inputID,operationId:operationId||null,part:part||null}));} }catch(e){}
 }
 window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
 

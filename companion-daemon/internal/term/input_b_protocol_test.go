@@ -88,6 +88,9 @@ func TestInputB_ClosedOutcomesAndPermissionLimiter(t *testing.T) {
 	if result := handleTerminalInput(msg, "controlled_pty:input-b-ack", 7, transport, nil, &seq, denied, cache, "conn", limiter); result != nil {
 		t.Fatalf("fourth denial bypassed burst limiter: %s", result)
 	}
+	if !limiter.allow(time.Now().Add(time.Minute)) {
+		t.Fatal("limiter did not refill at ten receipts per minute")
+	}
 }
 
 func TestInputB_CacheCapacityNeverEvictsAcceptedReplay(t *testing.T) {
