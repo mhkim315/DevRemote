@@ -98,9 +98,16 @@ func (l *NativePTYLauncher) Spawn(ctx context.Context, cfg SpawnConfig) (LaunchR
 	if err != nil {
 		return LaunchResult{}, fmt.Errorf("start PTY: %w", err)
 	}
-	if cfg.Rows > 0 && cfg.Cols > 0 {
-		_ = pty.Setsize(ptm, &pty.Winsize{Rows: uint16(cfg.Rows), Cols: uint16(cfg.Cols)})
+	// TERM-G1: always set an explicit initial PTY size before the child
+	// process produces output. Zero config values default to 30×100.
+	rows, cols := cfg.Rows, cfg.Cols
+	if rows <= 0 {
+		rows = 30
 	}
+	if cols <= 0 {
+		cols = 100
+	}
+	_ = pty.Setsize(ptm, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	h := &nativePTYHandle{cmd: cmd, ptm: ptm, waitDone: make(chan struct{})}
 	go h.collectWait()
 	id := LaunchIdentity{InstanceID: fmt.Sprintf("%d-%d", cmd.Process.Pid, l.now().UnixNano()), StartedAt: l.now()}
@@ -163,6 +170,9 @@ func (h *nativePTYHandle) Wait(ctx context.Context) LifecycleOutcome {
 func (h *nativePTYHandle) Write(p []byte) (int, error) { return h.ptm.Write(p) }
 func (h *nativePTYHandle) Resize(r, c int) error {
 	return pty.Setsize(h.ptm, &pty.Winsize{Rows: uint16(r), Cols: uint16(c)})
+}
+func (h *nativePTYHandle) GetSize() (int, int, error) {
+	return pty.Getsize(h.ptm)
 }
 func (h *nativePTYHandle) CloseTransport() error {
 	var err error

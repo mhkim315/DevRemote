@@ -781,6 +781,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       // container scrolls for overflow (see CSS). The mobile viewer never
       // resizes the shared PTY — it only matches it. Falls back to a >=100-col
       // viewport fit if the size can't be fetched.
+      // TERM-G1: geometry is authoritative from the server side.
+      // Authenticated bootstrap injects __pokitPTYSize; WS geometry frames
+      // provide live updates. No unauthenticated REST poll — the paired
+      // WebView has no bearer token and /term/size returns 401.
       window.fitTerminal = function() {
         if (!window.term) return;
         var apply = function(cols, rows) {
@@ -789,6 +793,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
             window.term.resize(cols, rows);
           }
         };
+        var ps = window.__pokitPTYSize;
+        if (ps && ps.cols > 0 && ps.rows > 0 && ps.cols <= 2000 && ps.rows <= 1000) {
+          apply(ps.cols, ps.rows);
+          return;
+        }
+        // Fallback: viewport-derived geometry (mirror, not PTY authority).
         var h = document.getElementById('t').clientHeight;
         var w = document.getElementById('t').clientWidth;
         var span = document.createElement('span');
@@ -802,19 +812,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         document.body.removeChild(span);
         var fbCols = Math.max(Math.floor(w / cw), 100);
         var fbRows = Math.floor(h / ch);
-
-        var p = new URLSearchParams(location.search);
-        var sess = p.get('session');
-        var tok = p.get('token');
-        var hdrs = {};
-        if (tok) hdrs['Authorization'] = 'Bearer ' + tok;
-        fetch('/term/size?session=' + encodeURIComponent(sess), { headers: hdrs })
-          .then(function(r) { return r.ok ? r.json() : null; })
-          .then(function(sz) {
-            if (sz && sz.cols > 0 && sz.rows > 0) apply(sz.cols, sz.rows);
-            else apply(fbCols, fbRows);
-          })
-          .catch(function() { apply(fbCols, fbRows); });
+        apply(fbCols, fbRows);
       };
 
       window.addEventListener('resize', function() {
