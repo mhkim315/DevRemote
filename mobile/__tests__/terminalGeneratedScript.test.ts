@@ -1,4 +1,6 @@
-// M3-auth-4A Blocker E: execute the ACTUAL generated production script.
+// M3-auth-4A / TERM-C1: execute the ACTUAL served daemon page and generated
+// production script. The bridge below is extracted byte-for-byte from pty.go;
+// this test must never reimplement it in TypeScript.
 //
 // The prior test rewrote an equivalent wsURL() inside the test and asserted on
 // the copy. This suite instead extracts the real <script> that
@@ -9,6 +11,8 @@
 // written unchanged, text geometry resizes but is never written, control-
 // looking binary input reaches the socket, and timer cleanup).
 
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vm from 'vm';
 import { TerminalController, shouldIssueReconnect } from '../src/lib/terminalController';
 import { TokenManager } from '../src/lib/authClient';
@@ -17,10 +21,21 @@ const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
 const fakeMgr = { getValidToken: async () => '0'.repeat(64) } as TokenManager;
-// A realistic daemon page: it defines connect()/term and, per the production
-// contract, an onmessage demultiplexer (binary → term.write, text → ignore).
-const TERM_HTML =
-  '<html><head></head><body><div id="t"></div></body></html>';
+const daemonPageSource = fs.readFileSync(
+  path.resolve(__dirname, '../../companion-daemon/internal/term/pty.go'), 'utf8',
+);
+
+function extractServed(pattern: RegExp, label: string): string {
+  const match = daemonPageSource.match(pattern);
+  if (!match) throw new Error(`served daemon ${label} not found`);
+  return match[1];
+}
+
+const TERM_HTML = extractServed(/io\.WriteString\(w, `([\s\S]*?)`\)\n}\n\nfunc \(h \*Handlers\) HandleCmd/, 'HTML');
+const SERVED_INPUT_ID = extractServed(/(function pokitMakeInputID\(\)\{[^\n]*\})/, 'input ID generator');
+const SERVED_CONTROL_BRIDGE = extractServed(/(window\.__pokitControlBridge=\(function\(\)\{[\s\S]*?window\.pokitReadOnly=function\(\)\{return window\.__pokitControlBridge\.readOnly\(\);\};)/, 'control bridge');
+const SERVED_CONNECT = extractServed(/(function connect\(\)\{[\s\S]*?\n\}\n\nterm\.onData)/, 'connect dispatcher').replace(/\nterm\.onData$/, '');
+const SERVED_KEYBOARD = extractServed(/(term\.onData\(function\(d\)\{[\s\S]*?\n\}\);)/, 'keyboard sender');
 const TICKET_A = '0'.repeat(64);
 const TICKET_B = '1'.repeat(64);
 const TICKET_C = '2'.repeat(64);
@@ -67,7 +82,7 @@ class FakeWS {
 
 interface Harness {
   sandbox: any;
-  term: { resize: jest.Mock; write: jest.Mock };
+  term: { resize: jest.Mock; write: jest.Mock; clear: jest.Mock };
   rnPosts: any[];
   timeouts: Array<() => void>;
   activeIntervals: Set<number>;
@@ -79,11 +94,12 @@ async function makeHarness(): Promise<Harness> {
   const script = await generateInjectedScript();
   FakeWS.instances.length = 0;
 
-  const term = { resize: jest.fn(), write: jest.fn() };
+  const term = { resize: jest.fn(), write: jest.fn(), clear: jest.fn() };
   const rnPosts: any[] = [];
   const timeouts: Array<() => void> = [];
   const activeIntervals = new Set<number>();
   let nextTimerId = 1;
+  let entropyOffset = 0;
 
   const sandbox: any = {
     JSON,
@@ -98,9 +114,15 @@ async function makeHarness(): Promise<Harness> {
       search: '?session=s',
       href: 'https://daemon.example.com/term/?session=s',
     },
-    document: { readyState: 'complete', addEventListener: () => {} },
+    document: {
+      readyState: 'complete',
+      addEventListener: () => {},
+      getElementById: () => ({ style: {}, textContent: '' }),
+    },
     WebSocket: FakeWS,
     term,
+    crypto: { getRandomValues: (bytes: Uint8Array) => { for (let i = 0; i < bytes.length; i++) bytes[i] = (entropyOffset + i) & 0xff; entropyOffset++; return bytes; } },
+    btoa: (s: string) => Buffer.from(s, 'binary').toString('base64'),
     setTimeout: (fn: () => void) => { timeouts.push(fn); return 0; },
     setInterval: (_fn: () => void) => { const id = nextTimerId++; activeIntervals.add(id); return id; },
     clearInterval: (id: number) => { activeIntervals.delete(id); },
@@ -110,105 +132,50 @@ async function makeHarness(): Promise<Harness> {
       if (type === 'message') (sandbox.__messageListeners || (sandbox.__messageListeners = [])).push(fn);
     },
     ReactNativeWebView: { postMessage: (s: string) => rnPosts.push(JSON.parse(s)) },
+    reconnecting: false,
+    stopped: false,
+    opened: false,
+    everOpened: false,
+    consecutiveFailures: 0,
+    wasReconnect: false,
+    raw: '',
+    e8diag: { connectCount: 0, closeCount: 0, msgCount: 0, totalBytes: 0, lastMsgSize: 0 },
+    e8_fitCount: 0,
+    fitTerminal: () => {},
+    setStatus: () => {},
+    stopSession: () => {},
   };
+  (term as any).onData = (fn: (data: string) => void) => { sandbox.__termOnData = fn; };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
 
   // Run the REAL injected script (Phase 1 wraps WebSocket immediately; Phase 2
   // queues installReconnect via setTimeout).
   vm.runInContext(script, sandbox);
-
-  // This mirrors the served daemon page's TERM-C1 control bridge. The injected
-  // ticket wrapper binds each exact socket, while this one dispatcher owns
-  // hello, read_only, input_result, input_pending, and geometry delivery.
-  let inputSequence = 0;
-  const bridge: any = {
-    state: { socket: null as FakeWS | null, connectionId: null as string | null, sessionId: null as string | null, generation: null as number | null, readOnly: true, inputEnabled: false, geometry: null as any },
-    seen: new Set<string>(),
-    bind(socket: FakeWS) {
-      if (this.state.socket === socket) return;
-      this.state.socket = socket;
-      this.state.connectionId = null;
-      this.state.sessionId = null;
-      this.state.generation = null;
-      this.state.readOnly = true;
-      this.state.inputEnabled = false;
-      this.seen.clear();
-    },
-    post(frame: any) { rnPosts.push(frame); },
-    once(frame: any) {
-      const key = frame.type + ':' + JSON.stringify(frame);
-      if (this.seen.has(key)) return false;
-      this.seen.add(key);
-      return true;
-    },
-    receive(raw: string, socket: FakeWS) {
-      if (socket !== this.state.socket) return;
-      let frame: any;
-      try { frame = JSON.parse(raw); } catch { return; }
-      if (!frame || typeof frame.type !== 'string') return;
-      if (frame.type === 'hello') {
-        if (typeof frame.connectionId !== 'string' || !frame.connectionId || typeof frame.sessionId !== 'string' || !Number.isInteger(frame.generation) || !Array.isArray(frame.capabilities)) return;
-        if (!this.once(frame)) return;
-        this.state.connectionId = frame.connectionId;
-        this.state.sessionId = frame.sessionId;
-        this.state.generation = frame.generation;
-        this.state.inputEnabled = frame.capabilities.includes('terminal:input');
-        this.state.readOnly = !this.state.inputEnabled;
-        this.post(frame);
-      } else if (frame.type === 'geometry') {
-        if (frame.session !== this.state.sessionId || frame.generation !== this.state.generation || !Number.isInteger(frame.rows) || !Number.isInteger(frame.cols) || frame.rows < 1 || frame.rows > 1000 || frame.cols < 1 || frame.cols > 2000 || !this.once(frame)) return;
-        this.state.geometry = { rows: frame.rows, cols: frame.cols };
-        sandbox.__pokitLastGeom = this.state.geometry;
-        term.resize(frame.cols, frame.rows);
-        this.post(frame);
-      } else if (frame.type === 'read_only') {
-        if (this.state.connectionId === null || !this.once(frame)) return;
-        this.state.readOnly = true;
-        this.state.inputEnabled = false;
-        this.post(frame);
-      } else if (frame.type === 'input_result') {
-        if (frame.connectionId !== this.state.connectionId || frame.sessionId !== this.state.sessionId || frame.generation !== this.state.generation || typeof frame.inputId !== 'string' || typeof frame.outcome !== 'string' || !this.once(frame)) return;
-        this.post(frame);
-      }
-    },
-    sendInput(text: string, operationId?: string, part?: string) {
-      const socket = this.state.socket;
-      if (this.state.readOnly || !this.state.inputEnabled || !socket || socket.readyState !== 1) {
-        this.post({ type: 'delivery_unknown', operationId: operationId || null, part: part || null });
-        return;
-      }
-      const inputId = `input-${++inputSequence}`;
-      socket.send(JSON.stringify({ type: 'terminal_input', version: 1, sessionId: this.state.sessionId, generation: this.state.generation, inputId, payload: Buffer.from(text).toString('base64') }));
-      this.post({ type: 'input_pending', connectionId: this.state.connectionId, sessionId: this.state.sessionId, generation: this.state.generation, inputId, operationId: operationId || null, part: part || null });
-    },
-  };
-  sandbox.__pokitControlBridge = bridge;
-
-  // Model the daemon page body: define connect() and its onmessage demux, then
-  // (as the page does at the end of its script) open the first connection —
-  // BEFORE the queued installReconnect runs, so ticket A is used.
-  const pageConnect = () => {
-    const proto = sandbox.location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const ws = new sandbox.WebSocket(proto + sandbox.location.host + '/term/ws' + sandbox.location.search);
-    sandbox.window.ws = ws;
-    bridge.bind(ws);
-    ws.binaryType = 'arraybuffer';
-    // Production onmessage demultiplexer: binary → write, text → ignore.
-    ws.onmessage = (e: any) => {
-      if (typeof e.data === 'string') { bridge.receive(e.data, ws); return; }
-      term.write(new TextDecoder().decode(e.data));
-    };
-  };
-  sandbox.window.connect = pageConnect;
-  // The page's single binary-input sender (mirrors window.pokitSendInput).
-  sandbox.window.pokitSendInput = (str: string, operationId?: string, part?: string) => bridge.sendInput(str, operationId, part);
+  // Execute the exact served bridge, served connect dispatcher, and direct
+  // xterm keyboard sender extracted above. The test intentionally has no
+  // TypeScript bridge implementation to drift from production behavior.
+  vm.runInContext(SERVED_INPUT_ID, sandbox);
+  vm.runInContext(SERVED_CONTROL_BRIDGE, sandbox);
+  vm.runInContext(SERVED_CONNECT, sandbox);
+  vm.runInContext(SERVED_KEYBOARD, sandbox);
 
   const flushTimeouts = () => { while (timeouts.length) timeouts.shift()!(); };
-  return { sandbox, term, rnPosts, timeouts, activeIntervals, flushTimeouts, pageConnect };
+  return { sandbox, term, rnPosts, timeouts, activeIntervals, flushTimeouts, pageConnect: () => sandbox.window.connect() };
 }
 
 function lastWS(): FakeWS { return FakeWS.instances[FakeWS.instances.length - 1]; }
+
+function terminalInputRequests(ws: FakeWS): any[] {
+  return ws.sent
+    .filter((payload: unknown) => typeof payload === 'string')
+    .map((payload: string) => JSON.parse(payload))
+    .filter((frame: any) => frame.type === 'terminal_input');
+}
+
+function decodeInput(frame: any): string {
+  return Buffer.from(frame.payload, 'base64').toString('utf8');
+}
 
 describe('generated production script execution', () => {
   it('proof 1+2: first connection uses ticket A exactly once, absent from navigation history', async () => {
@@ -393,6 +360,90 @@ describe('generated production script execution', () => {
     emitHello(h, ws2, 's', TEST_GEN + 1);
     expect(h.sandbox.__pokitControlBridge.state.readOnly).toBe(false);
     expect(h.sandbox.__pokitControlBridge.state.generation).toBe(TEST_GEN + 1);
+  });
+
+  it('TERM-C1 served bridge: direct Ctrl+C, paste, every macro, and text+Enter use acknowledged input', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    ws.open();
+    emitHello(h, ws, 's');
+
+    // Direct xterm keyboard input is the actual served term.onData callback.
+    h.sandbox.__termOnData('\x03');
+    // Native paste and every macro converge on the same served sender.
+    h.sandbox.window.pokitSendInput('paste\nbody', 'paste-1', 'text');
+    const macros = [
+      [3], [27], [9], [27, 91, 65], [27, 91, 66], [27, 91, 68],
+      [27, 91, 67], [121, 13], [110, 13], [13],
+    ];
+    for (const chars of macros) {
+      h.sandbox.window.pokitSendInput(String.fromCharCode(...chars), 'macro-' + chars.join('-'), 'text');
+    }
+    // Send remains a two-frame operation: text followed by a discrete Enter.
+    h.sandbox.window.pokitSendInput('two frame', 'line-1', 'text');
+    h.sandbox.window.pokitSendInput('\r', 'line-1', 'enter');
+
+    const requests = terminalInputRequests(ws);
+    expect(requests).toHaveLength(14);
+    expect(decodeInput(requests[0])).toBe('\x03');
+    expect(decodeInput(requests[1])).toBe('paste\nbody');
+    expect(requests.slice(2, 12).map(decodeInput)).toEqual(macros.map((chars) => String.fromCharCode(...chars)));
+    expect(requests.slice(12).map(decodeInput)).toEqual(['two frame', '\r']);
+    expect(h.rnPosts.filter((p) => p.type === 'input_pending')).toHaveLength(14);
+
+    for (const request of requests) {
+      ws.emit('message', { data: JSON.stringify({
+        type: 'input_result', connectionId: 'conn-1', sessionId: 's', generation: TEST_GEN,
+        inputId: request.inputId, outcome: 'accepted',
+      }) });
+    }
+    expect(h.rnPosts.filter((p) => p.type === 'input_result' && p.outcome === 'accepted')).toHaveLength(14);
+  });
+
+  it('TERM-C1 served bridge: malformed, unknown, or mismatched authority yields zero terminal writes', async () => {
+    const deniedHellos = [
+      { connectionId: 'conn-1', sessionId: 'wrong-session', generation: TEST_GEN, capabilities: ['terminal:input'] },
+      { connectionId: '', sessionId: 's', generation: TEST_GEN, capabilities: ['terminal:input'] },
+      { connectionId: 'conn-1', sessionId: 's', generation: 7.5, capabilities: ['terminal:input'] },
+      { connectionId: 'conn-1', sessionId: 's', generation: TEST_GEN, capabilities: undefined },
+      { connectionId: 'conn-1', sessionId: 's', generation: TEST_GEN, capabilities: ['terminal:unknown'] },
+    ];
+    const macros = [[3], [27], [9], [27, 91, 65], [27, 91, 66], [27, 91, 68], [27, 91, 67], [121, 13], [110, 13], [13]];
+
+    for (const hello of deniedHellos) {
+      const h = await makeHarness();
+      h.pageConnect();
+      const ws = lastWS();
+      ws.open();
+      ws.emit('message', { data: JSON.stringify({ type: 'hello', ...hello }) });
+      h.sandbox.__termOnData('\x03');
+      h.sandbox.window.pokitSendInput('paste', 'paste-1', 'text');
+      for (const chars of macros) h.sandbox.window.pokitSendInput(String.fromCharCode(...chars), 'macro', 'text');
+      h.sandbox.window.pokitSendInput('two frame', 'line-1', 'text');
+      h.sandbox.window.pokitSendInput('\r', 'line-1', 'enter');
+      expect(terminalInputRequests(ws)).toHaveLength(0);
+      expect(h.rnPosts.filter((p) => p.type === 'delivery_unknown')).toHaveLength(14);
+    }
+
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    ws.open();
+    emitHello(h, ws, 's');
+    const postedBefore = h.rnPosts.length;
+    // Wrong result identities are never forwarded or interpreted as delivery.
+    ws.emit('message', { data: JSON.stringify({ type: 'input_result', connectionId: 'conn-1', sessionId: 'wrong-session', generation: TEST_GEN, inputId: 'x', outcome: 'accepted' }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'input_result', connectionId: 'wrong-connection', sessionId: 's', generation: TEST_GEN, inputId: 'x', outcome: 'accepted' }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'input_result', connectionId: 'conn-1', sessionId: 's', generation: TEST_GEN + 1, inputId: 'x', outcome: 'accepted' }) });
+    expect(h.rnPosts).toHaveLength(postedBefore);
+
+    // A different connection identity on the same socket is a fail-closed
+    // rebind, so a later native send cannot produce a terminal write.
+    ws.emit('message', { data: JSON.stringify({ type: 'hello', connectionId: 'wrong-connection', sessionId: 's', generation: TEST_GEN, capabilities: ['terminal:input'] }) });
+    h.sandbox.window.pokitSendInput('must not write');
+    expect(h.rnPosts).toHaveLength(postedBefore + 1); // local delivery_unknown only
+    expect(terminalInputRequests(ws)).toHaveLength(0);
   });
 
   // ── TERM-G1: live WS geometry frame validation with identity binding ──

@@ -602,6 +602,10 @@ window.__pokitControlBridge=(function(){
     if(!frame||typeof frame!=="object"||typeof frame.type!=="string"){reject("shape");return;}
     if(frame.type==="hello"){
       if(typeof frame.connectionId!=="string"||!frame.connectionId||typeof frame.sessionId!=="string"||frame.sessionId!==expectedSession||!Number.isInteger(frame.generation)||frame.generation<0||!Array.isArray(frame.capabilities)||frame.capabilities.some(function(c){return typeof c!=="string";})){reject("hello_identity");return;}
+      // A new WebSocket may establish a new identity only after bind() has
+      // reset this bridge. A second identity on the same socket is a mismatch,
+      // never a permission refresh; revoke local send permission fail-closed.
+      if(state.connectionId!==null&&(frame.connectionId!==state.connectionId||frame.sessionId!==state.sessionId||frame.generation!==state.generation)){state.inputEnabled=false;state.readOnly=true;reject("hello_rebind");return;}
       if(!once(frame))return;
       state.connectionId=frame.connectionId;state.sessionId=frame.sessionId;state.generation=frame.generation;state.capabilities=frame.capabilities.slice();state.inputEnabled=state.capabilities.indexOf("terminal:input")!==-1;state.readOnly=!state.inputEnabled;
       post(frame);return;
