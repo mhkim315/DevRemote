@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
-
-	"devremote/companion-daemon/internal/mux"
+	"time"
 )
 
 // fakeControlledAdapter registers as "controlled_pty" and records CreateOptions
@@ -20,103 +20,63 @@ import (
 // controllable OpenStream so the readiness/cleanup contract can be tested.
 type fakeControlledAdapter struct {
 	mu            sync.Mutex
-	sessions      map[string]*fakeControlledSession
-	lastOpts      mux.CreateOptions
+	lastOpts      SpawnConfig
 	createCalls   int
 	terminated    []string
 	openStreamErr bool
 }
 
 func newFakeAdapter() *fakeControlledAdapter {
-	return &fakeControlledAdapter{sessions: map[string]*fakeControlledSession{}}
+	return &fakeControlledAdapter{}
 }
-func (a *fakeControlledAdapter) Name() string { return "controlled_pty" }
-func (a *fakeControlledAdapter) ListSessions(ctx context.Context) ([]mux.Session, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]mux.Session, 0, len(a.sessions))
-	for _, s := range a.sessions {
-		out = append(out, s)
-	}
-	return out, nil
-}
-func (a *fakeControlledAdapter) CreateSession(ctx context.Context, opts mux.CreateOptions) (string, error) {
+func (a *fakeControlledAdapter) Spawn(_ context.Context, opts SpawnConfig) (LaunchResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.createCalls++
 	a.lastOpts = opts
-	id := opts.Name
-	if id == "" {
-		id = "generated"
+	if a.openStreamErr {
+		a.terminated = append(a.terminated, opts.Name)
+		return LaunchResult{}, fmt.Errorf("openstream failed")
 	}
-	a.sessions[id] = &fakeControlledSession{id: id, adapter: a}
-	return id, nil
+	s := &fakeStream{closed: make(chan struct{})}
+	h := &createV1Handle{fakeStream: s}
+	return LaunchResult{Handle: h, Identity: LaunchIdentity{InstanceID: opts.Name, StartedAt: time.Now()}, ProcessCleanup: &createV1Cleanup{adapter: a, id: opts.Name, handle: h}}, nil
 }
-func (a *fakeControlledAdapter) TerminateSession(ctx context.Context, id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.terminated = append(a.terminated, id)
-	delete(a.sessions, id)
-	return nil
-}
-
-// PA3 Step 6b R1: CreateSessionAndCapture implements SessionCreatorWithIdentity
-// so OwnedPTYRuntime.Create uses the canonical createWithCapture path instead
-// of the legacy createLegacy path (which requires non-nil ActivityBuffer).
-func (a *fakeControlledAdapter) CreateSessionAndCapture(ctx context.Context, opts mux.CreateOptions) (string, mux.Session, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.createCalls++
-	a.lastOpts = opts
-	id := opts.Name
-	if id == "" {
-		id = "generated"
-	}
-	s := &fakeControlledSession{id: id, adapter: a}
-	a.sessions[id] = s
-	return id, s, nil
-}
-
-func (a *fakeControlledAdapter) CompareAndTerminate(_ context.Context, localID string, expected mux.Session) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	s, ok := a.sessions[localID]
-	if !ok {
-		return mux.ErrSessionNotFound
-	}
-	if s != expected {
-		return mux.ErrStaleSessionIdentity
-	}
-	a.terminated = append(a.terminated, localID)
-	delete(a.sessions, localID)
-	return nil
-}
-func (a *fakeControlledAdapter) snapshot() (mux.CreateOptions, int, []string) {
+func (a *fakeControlledAdapter) snapshot() (SpawnConfig, int, []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.lastOpts, a.createCalls, append([]string(nil), a.terminated...)
 }
 
-type fakeControlledSession struct {
-	id      string
+type createV1Handle struct{ *fakeStream }
+
+func (*createV1Handle) Signal(syscall.Signal) SignalOutcome { return SignalOutcome{Delivered: true} }
+func (h *createV1Handle) Kill() KillOutcome                 { _ = h.Close(); return KillOutcome{Killed: true} }
+func (h *createV1Handle) Wait(ctx context.Context) LifecycleOutcome {
+	select {
+	case <-h.closed:
+		return LifecycleOutcome{Exited: true}
+	case <-ctx.Done():
+		return LifecycleOutcome{TimedOut: true, Err: ctx.Err()}
+	}
+}
+func (h *createV1Handle) CloseTransport() error { return h.Close() }
+
+type createV1Cleanup struct {
+	once    sync.Once
 	adapter *fakeControlledAdapter
+	id      string
+	handle  *createV1Handle
 }
 
-func (s *fakeControlledSession) ID() string          { return s.id }
-func (s *fakeControlledSession) AdapterName() string { return "controlled_pty" }
-func (s *fakeControlledSession) Title() string       { return s.id }
-
-// TerminateGroup: real controlled-PTY sessions are mux.ManagedProcess; the
-// PA2c-R2 mandatory handle capture requires the fake to expose it too.
-func (s *fakeControlledSession) TerminateGroup(bool) error { return nil }
-func (s *fakeControlledSession) OpenStream(ctx context.Context) (mux.TerminalStream, error) {
-	s.adapter.mu.Lock()
-	fail := s.adapter.openStreamErr
-	s.adapter.mu.Unlock()
-	if fail {
-		return nil, fmt.Errorf("openstream failed")
-	}
-	return &fakeStream{closed: make(chan struct{})}, nil
+func (c *createV1Cleanup) Execute(context.Context) CleanupOutcome {
+	c.once.Do(func() {
+		_ = c.handle.Close()
+		c.adapter.mu.Lock()
+		c.adapter.terminated = append(c.adapter.terminated, c.id)
+		c.adapter.mu.Unlock()
+	})
+	return CleanupOutcome{Completed: true}
 }
 
 // fakeStream blocks in Read until closed so the Recorder stays alive (mimics a
@@ -139,12 +99,10 @@ func (s *fakeStream) Resize(rows, cols int) error { return nil }
 func newTestHandlers(t *testing.T) (*Handlers, *fakeControlledAdapter) {
 	t.Helper()
 	fa := newFakeAdapter()
-	reg := mux.MustNewRegistry(fa)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	// PA2c: profile creation dispatches through the OwnedPTYRuntime owner
 	// (production parity — app.go always wires lifecycle + owned PTY).
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
-	h := &Handlers{Registry: reg, Lifecycle: NewLifecycleService(owned, nil)}
+	owned := NewOwnedPTYRuntime(fa, nil)
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
 	return h, fa
 }
 
@@ -313,9 +271,7 @@ func TestCreate_InvalidCWDAndName_Rejected(t *testing.T) {
 // BLOCKER 1: privileged local create still runs an arbitrary command.
 func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	reg := mux.MustNewRegistry(fa)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
+	id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(fa, nil), localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
 	}
@@ -331,9 +287,7 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 
 func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	reg := mux.MustNewRegistry(fa)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil),
+	id, _, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(fa, nil),
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
 		t.Fatalf("custom argv err: %v", err)
@@ -348,8 +302,6 @@ func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 // BLOCKER 3: malformed legacy command creates no session.
 func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	reg := mux.MustNewRegistry(fa)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
 	malformed := []json.RawMessage{
 		json.RawMessage(`{"executable":"bash"}`), // object
 		json.RawMessage(`123`),                   // number
@@ -358,7 +310,7 @@ func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 		json.RawMessage(`""`),                    // empty string
 	}
 	for _, cmd := range malformed {
-		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), localCreateSpec{Command: cmd})
+		id, state, err := createLocalControlled(context.Background(), NewOwnedPTYRuntime(fa, nil), localCreateSpec{Command: cmd})
 		if err == nil {
 			DeleteRecorder(id)
 			t.Fatalf("command %q accepted, want rejection", string(cmd))

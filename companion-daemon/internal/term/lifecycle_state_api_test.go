@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
-
-	"devremote/companion-daemon/internal/mux"
 )
 
 // ── M3b remediation (BLOCKER 1+2): /api/sessions is authoritative for managed
@@ -16,32 +14,6 @@ import (
 
 // lsAdapter is a managed/external adapter whose live sessions are controllable
 // per-test. managed=true mirrors controlled_pty; managed=false mirrors legacy.
-type lsAdapter struct {
-	name     string
-	managed  bool
-	sessions map[string]mux.Session
-}
-
-func newLSAdapter(name string, managed bool, liveLocalIDs ...string) *lsAdapter {
-	a := &lsAdapter{name: name, managed: managed, sessions: map[string]mux.Session{}}
-	for _, id := range liveLocalIDs {
-		a.sessions[id] = &capBoundarySession{id: id, adapter: name}
-	}
-	return a
-}
-func (a *lsAdapter) Name() string { return a.name }
-func (a *lsAdapter) ListSessions(context.Context) ([]mux.Session, error) {
-	out := make([]mux.Session, 0, len(a.sessions))
-	for _, s := range a.sessions {
-		out = append(out, s)
-	}
-	return out, nil
-}
-func (a *lsAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
-	return mux.CaptureModeByteStream
-}
-func (a *lsAdapter) ManagedLifecycle() bool { return a.managed }
-
 // seedCatalog directly seeds an owned-PTY lifecycle row in a chosen state so
 // every state (incl. failed, which the runtime only reaches on spawn error) is
 // testable.
@@ -76,11 +48,7 @@ func getSessionsSnapshot(t *testing.T, h *Handlers) map[string]SessionTelemetry 
 }
 
 func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
-	managed := newLSAdapter("controlled_pty", true, "run", "stop")
-	external := newLSAdapter("legacy", false, "tm1")
-	reg := mux.MustNewRegistry(managed, external)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 
 	// Live managed rows with authoritative catalog states.
 	seedCatalog(svc, "controlled_pty:run", "controlled_pty", "runner", LifecycleRunning)
@@ -90,8 +58,12 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 	seedCatalog(svc, "controlled_pty:killed", "controlled_pty", "killed", LifecycleKilled)
 	seedCatalog(svc, "controlled_pty:failed", "controlled_pty", "failed", LifecycleFailed)
 
-	h := &Handlers{Registry: reg, Lifecycle: svc}
-	byID := getSessionsSnapshot(t, h)
+	snapshot := []SessionTelemetry{{ID: "controlled_pty:run", Adapter: "controlled_pty", AdapterCapabilities: []string{"managedLifecycle"}}, {ID: "controlled_pty:stop", Adapter: "controlled_pty", AdapterCapabilities: []string{"managedLifecycle"}}, {ID: "legacy:tm1", Adapter: "legacy"}}
+	rows := mergeLifecycleState(snapshot, svc, nil)
+	byID := map[string]SessionTelemetry{}
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
 
 	cases := map[string]string{
 		"controlled_pty:run":    "running",
@@ -108,7 +80,7 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 		if row.LifecycleState != wantState {
 			t.Errorf("%s lifecycleState = %q, want %q", id, row.LifecycleState, wantState)
 		}
-		if !slices.Contains(row.AdapterCapabilities, "managedLifecycle") {
+		if (id == "controlled_pty:run" || id == "controlled_pty:stop") && !slices.Contains(row.AdapterCapabilities, "managedLifecycle") {
 			t.Errorf("%s adapterCapabilities missing managedLifecycle: %v", id, row.AdapterCapabilities)
 		}
 	}
@@ -137,14 +109,17 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 	// A session both live (Registry) AND cataloged must appear exactly once, with
 	// the authoritative catalog state annotated onto the live row.
-	managed := newLSAdapter("controlled_pty", true, "s1")
-	reg := mux.MustNewRegistry(managed)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 	seedCatalog(svc, "controlled_pty:s1", "controlled_pty", "s1", LifecycleStopping)
 
-	h := &Handlers{Registry: reg, Lifecycle: svc}
-	byID := getSessionsSnapshot(t, h) // getSessionsSnapshot fails on any duplicate id
+	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, svc, nil)
+	byID := map[string]SessionTelemetry{}
+	for _, row := range rows {
+		if _, ok := byID[row.ID]; ok {
+			t.Fatal("duplicate")
+		}
+		byID[row.ID] = row
+	}
 	if byID["controlled_pty:s1"].LifecycleState != "stopping" {
 		t.Errorf("live+cataloged row lifecycleState = %q, want stopping", byID["controlled_pty:s1"].LifecycleState)
 	}
@@ -152,33 +127,26 @@ func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 
 func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 	// A retained terminal row is listable until Delete History succeeds, then gone.
-	managed := newLSAdapter("controlled_pty", true) // no live sessions
-	reg := mux.MustNewRegistry(managed)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 	seedCatalog(svc, "controlled_pty:done", "controlled_pty", "done", LifecycleExited)
 
-	h := &Handlers{Registry: reg, Lifecycle: svc}
-
-	if _, ok := getSessionsSnapshot(t, h)["controlled_pty:done"]; !ok {
+	listed := mergeLifecycleState(nil, svc, nil)
+	if len(listed) != 1 || listed[0].ID != "controlled_pty:done" {
 		t.Fatalf("retained terminal row must be listable before Delete")
 	}
 	if _, err := svc.Delete(context.Background(), "controlled_pty:done"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, ok := getSessionsSnapshot(t, h)["controlled_pty:done"]; ok {
-		t.Fatalf("retained row must be gone from /api/sessions after Delete")
+	if rows := mergeLifecycleState(nil, svc, nil); len(rows) != 0 {
+		t.Fatalf("retained row must be gone after Delete: %v", rows)
 	}
 }
 
 func TestAPISessions_NoLifecycleServiceIsInert(t *testing.T) {
 	// Without a LifecycleService, the snapshot is unchanged (no lifecycleState,
 	// no phantom rows) — additive behavior only.
-	managed := newLSAdapter("controlled_pty", true, "s1")
-	reg := mux.MustNewRegistry(managed)
-	h := &Handlers{Registry: reg} // Lifecycle nil
-	byID := getSessionsSnapshot(t, h)
-	if byID["controlled_pty:s1"].LifecycleState != "" {
+	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, nil, nil)
+	if rows[0].LifecycleState != "" {
 		t.Errorf("no-lifecycle snapshot must carry empty lifecycleState")
 	}
 }

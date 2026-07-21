@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"devremote/companion-daemon/internal/mux"
 )
 
 // ── Fakes: dispatch + state-rule tests without a real process ──
@@ -20,89 +18,20 @@ import (
 // canonical adapter PREFIX dispatch table, never by adapter capability or
 // Registry probing.
 
-type lcAdapter struct {
-	name       string
-	managed    bool
-	mu         sync.Mutex
-	sessions   map[string]*lcSession
-	terminated []string
-}
+type lcAdapter struct{ name string }
 
 func newLCAdapter(name string, managed bool) *lcAdapter {
-	return &lcAdapter{name: name, managed: managed, sessions: map[string]*lcSession{}}
+	return &lcAdapter{name: name}
 }
-func (a *lcAdapter) Name() string { return a.name }
-func (a *lcAdapter) ListSessions(context.Context) ([]mux.Session, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]mux.Session, 0, len(a.sessions))
-	for _, s := range a.sessions {
-		out = append(out, s)
-	}
-	return out, nil
-}
-func (a *lcAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
-	return mux.CaptureModeByteStream
-}
-func (a *lcAdapter) ManagedLifecycle() bool { return a.managed }
-func (a *lcAdapter) TerminateSession(_ context.Context, id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.terminated = append(a.terminated, id)
-	delete(a.sessions, id)
-	return nil
-}
-
-// CompareAndTerminate implements mux.SessionIdentityTerminator so the
-// PA2c-R4 atomic cleanups in this package route through the adapter-level
-// lock.  Identity comparison and detach happen under the lock; no I/O.
-func (a *lcAdapter) CompareAndTerminate(_ context.Context, localID string, expected mux.Session) error {
-	a.mu.Lock()
-	s, ok := a.sessions[localID]
-	if !ok {
-		a.mu.Unlock()
-		return mux.ErrSessionNotFound
-	}
-	if s != expected {
-		a.mu.Unlock()
-		return mux.ErrStaleSessionIdentity
-	}
-	a.terminated = append(a.terminated, localID)
-	delete(a.sessions, localID)
-	a.mu.Unlock()
-	return nil
-}
-
 func (a *lcAdapter) add(localID string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.sessions[localID] = &lcSession{id: localID, adapter: a.name}
 	return a.name + ":" + localID
-}
-
-type lcSession struct {
-	id, adapter string
-	mu          sync.Mutex
-	signals     []bool
-}
-
-func (s *lcSession) ID() string          { return s.id }
-func (s *lcSession) AdapterName() string { return s.adapter }
-func (s *lcSession) Title() string       { return s.id }
-func (s *lcSession) TerminateGroup(force bool) error {
-	s.mu.Lock()
-	s.signals = append(s.signals, force)
-	s.mu.Unlock()
-	return nil
 }
 
 // lcService builds the PA2c dispatcher over an OwnedPTYRuntime whose spawn
 // seam uses the given adapter's registry.
 func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
-	reg := mux.MustNewRegistry(a)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
+	owned := NewOwnedPTYRuntime(nil, nil)
 	owned.graceful = 200 * time.Millisecond
 	return NewLifecycleService(owned, nil)
 }
@@ -265,19 +194,6 @@ func realOwned(t *testing.T) *OwnedPTYRuntime {
 func realService(t *testing.T) *LifecycleService {
 	t.Helper()
 	return NewLifecycleService(realOwned(t), nil)
-}
-
-// findSessionInAdapter returns a session by canonical id from an adapter's
-// session list, or nil if not found.
-func findSessionInAdapter(adapter mux.Adapter, canonicalID string) (mux.Session, bool) {
-	ref := mux.ParseSessionID(canonicalID)
-	sessions, _ := adapter.ListSessions(context.Background())
-	for _, s := range sessions {
-		if s.ID() == ref.LocalID {
-			return s, true
-		}
-	}
-	return nil, false
 }
 
 // realManaged launches a real controlled-PTY runtime through the owner.
