@@ -59,6 +59,7 @@ func main() {
 
 	ownerUUID := flag.String("owner-uuid", "", "Supabase user UUID that owns this daemon (required for auth)")
 	supabaseRef := flag.String("supabase-ref", "", "Supabase project reference for JWKS (e.g. abcdefghijklmnop)")
+	listenAddr := flag.String("listen-addr", "", "Loopback listen address for insecure mode (e.g. 127.0.0.1:0); ignored without --insecure-local-only")
 	insecureLocalOnly := flag.Bool("insecure-local-only", false, "Disable authentication (DANGEROUS)")
 	enableAgentDetection := flag.Bool("enable-agent-detection", false, "Enable agent detection bridge (experimental)")
 	enableManagedCodex := flag.Bool("enable-managed-codex", false, "Enable native managed Codex runtime (SP0, experimental)")
@@ -74,6 +75,7 @@ func main() {
 	runDaemon(Config{
 		OwnerUUID:            *ownerUUID,
 		SupabaseProjectRef:   *supabaseRef,
+		ListenAddr:           *listenAddr,
 		InsecureLocalOnly:    *insecureLocalOnly,
 		EnableAgentDetection: *enableAgentDetection,
 		EnableManagedCodex:   *enableManagedCodex,

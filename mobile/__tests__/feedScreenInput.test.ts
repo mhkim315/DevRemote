@@ -420,7 +420,7 @@ describe('FeedScreen production input authorization', () => {
     const daemonHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pokit-c1-mobile-'));
     const goCache = path.join(os.tmpdir(), 'pokit-c1-go-build-cache');
     const goModCache = path.join(os.tmpdir(), 'pokit-c1-go-mod-cache');
-    const daemon = spawn('go', ['run', './cmd/devremote', 'daemon', '--insecure-local-only'], {
+    const daemon = spawn('go', ['run', './cmd/devremote', 'daemon', '--listen-addr', '127.0.0.1:0', '--insecure-local-only'], {
       cwd: daemonRoot,
       env: {
         ...process.env, HOME: daemonHome, SHELL: '/bin/sh',
@@ -432,7 +432,7 @@ describe('FeedScreen production input authorization', () => {
     let daemonLog = '';
     daemon.stdout.on('data', (b: Buffer) => { daemonLog += b.toString(); });
     daemon.stderr.on('data', (b: Buffer) => { daemonLog += b.toString(); });
-    const baseURL = 'http://127.0.0.1:9171';
+    let baseURL = '';
     let sessionID = '';
     let tree: any;
     let pageSocket: any;
@@ -447,7 +447,11 @@ describe('FeedScreen production input authorization', () => {
     };
 
     try {
-      await waitFor(() => daemonLog.includes('POKIT daemon 127.0.0.1:9171'), 'daemon startup');
+      // Parse actual port from daemon log line: "POKIT daemon 127.0.0.1:XXXXX (owner=…)"
+      await waitFor(() => /POKIT daemon 127\.0\.0\.1:\d+/.test(daemonLog), 'daemon startup');
+      const addrMatch = daemonLog.match(/POKIT daemon (127\.0\.0\.1:\d+)/);
+      if (!addrMatch) throw new Error('daemon address not found in log');
+      baseURL = 'http://' + addrMatch[1];
       const createRes = await fetch(`${baseURL}/api/sessions?token=dev-token`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({profileId: 'shell', name: 'TERM-C1 mobile integration'}),

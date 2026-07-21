@@ -371,7 +371,20 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// PB.7 Input-A / TERM-C1: announce device effective permissions before
 	// any user input. The served-page control bridge is the only consumer of
 	// this snapshot and gates pokitSendInput before the first keystroke.
-	permAnnounce := permissionAnnouncement(ticketPrincipal, session, inputGeneration, connID)
+	// In explicit insecure-local-only mode, a nil principal (dev-token
+	// WebSocket, no device ticket) receives terminal:input — the loopback
+	// binding and --insecure-local-only flag together are the auth gate.
+	caps := effectiveInputCapabilities(ticketPrincipal)
+	if len(caps) == 0 && h.InsecureLocalOnly && ticketPrincipal == nil {
+		caps = []string{devicetrust.PermTerminalInput}
+	}
+	permAnnounce, _ := json.Marshal(map[string]interface{}{
+		"type":         "hello",
+		"capabilities": caps,
+		"sessionId":    session,
+		"generation":   inputGeneration,
+		"connectionId": connID,
+	})
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
 	default:

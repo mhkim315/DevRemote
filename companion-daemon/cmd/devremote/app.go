@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ import (
 type Config struct {
 	OwnerUUID            string
 	SupabaseProjectRef   string
+	ListenAddr           string // loopback addr for insecure mode (e.g. 127.0.0.1:0); ignored when InsecureLocalOnly=false
 	InsecureLocalOnly    bool
 	EnableAgentDetection bool   // Phase A5: default-off agent detection bridge
 	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
@@ -460,7 +462,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {
-		addr = "127.0.0.1:9171"
+		if cfg.ListenAddr != "" {
+			addr = cfg.ListenAddr
+		} else {
+			addr = "127.0.0.1:9171"
+		}
 	}
 
 	return &App{
@@ -528,12 +534,18 @@ func (a *App) Run(ctx context.Context) error {
 		a.tunnel = a.startTunnel()
 	}
 
-	log.Printf("POKIT daemon %s (owner=%s)", a.server.Addr, a.config.OwnerUUID)
+	// If the configured address uses port 0, create the listener first so
+	// the actual port is known before logging. Tests can parse this log line.
+	ln, err := net.Listen("tcp", a.server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", a.server.Addr, err)
+	}
+	log.Printf("POKIT daemon %s (owner=%s)", ln.Addr().String(), a.config.OwnerUUID)
 
 	// 4. Serve HTTP in background; wait for shutdown signal or HTTP error.
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- a.server.ListenAndServe()
+		errCh <- a.server.Serve(ln)
 	}()
 
 	var serveErr error
