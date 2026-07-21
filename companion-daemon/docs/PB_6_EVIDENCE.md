@@ -1,6 +1,6 @@
 # PB.6 Evidence — Daemon-Wire and Mobile Cleanup
 
-**PB.6 IMPL SHA:** TBD
+**PB.6 IMPL SHA:** `a366b65cc`
 **PA4 ACCEPT SHA:** `74560edd`
 
 ## Inventory
@@ -11,15 +11,18 @@ PB.6 confirms zero remaining references across all surfaces.
 
 ## Zero Consumers Proof
 
+### Control
+
+
 ### Production Go
 ```
-$ grep -rn "tmux|cmux|localpty|LocalPTY" --include='*.go' . | grep -v "_test.go"
+$ grep -rnE "tmux|cmux|localpty|LocalPTY" --include='*.go' . | grep -v "_test.go"
 (empty — zero)
 ```
 
 ### Test Go
 ```
-$ grep -rn "tmux|cmux|localpty|LocalPTY" --include='*_test.go' .
+$ grep -rnE "tmux|cmux|localpty|LocalPTY" --include='*_test.go' .
 (empty — zero)
 ```
 
@@ -56,6 +59,7 @@ go build ./...                     exit 0
 go vet ./...                       exit 0
 gofmt -d .                         clean
 go test -race ./... -count=1       ALL PASS (11 packages)
+go test -race ./internal/term -run "TestPA4_" -count=20  PASS
 cd mobile && npx tsc --noEmit      clean
 cd mobile && npx jest              451/451 pass, 34 suites
 ```
