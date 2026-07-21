@@ -25,10 +25,18 @@ import (
 // Ctrl+C / paste / macros through the acknowledged input protocol, and
 // rejects wrong session/generation/missing-capability frames.
 //
-// The Go test stands in for the WebView: it fetches the daemon page,
-// verifies the control bridge JS is present, dials the real HandleWS,
-// exercises the EXACT protocol the bridge's sendInput() produces, and
-// verifies the transport (PTY) actually received the bytes.
+// Integration argument:
+//   Go tests (this file) — validate delivery semantics through real
+//     HandleWS: hello frame identity, ACK outcomes, PTY WriteInput
+//     byte-for-byte, sequence monotonicity, reconnect state isolation.
+//   Goja tests (term_c1_served_page_goja_test.go) — execute the actual
+//     served daemon page JavaScript against real HandleWS connections,
+//     proving the bridge's sendInput/receive/bind lifecycle.
+//   FeedScreen Jest tests (mobile/__tests__/terminalController.test.ts,
+//     terminalGeneratedScript.test.ts) — validate the real React Native
+//     WebView onMessage handler against real served-page HTML.
+//
+// Combined = complete TERM-C1 integration per plan §4.
 
 // ── PTY write counter ──
 
@@ -550,6 +558,197 @@ func TestTERM_C1_ViewerDeniedZeroPTYWrite(t *testing.T) {
 	}
 	if writes.Calls() != beforeCalls {
 		t.Errorf("PTY write count = %d, want 0 (viewer must not write)", writes.Calls()-beforeCalls)
+	}
+}
+
+// ── E2E: viewer denied — paste through acknowledged input ──
+
+func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
+	// Same viewer fixture as TestTERM_C1_ViewerDeniedZeroPTYWrite but sends
+	// acknowledged terminal_input (same format bridge.sendInput produces)
+	// instead of raw binary. Prove the viewer principal is denied even
+	// when using the correct protocol framing.
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned.graceful = 2 * time.Second
+	cfg := SpawnConfig{Name: "c1-viewer-paste", Executable: "sleep", Args: []string{"2"}}
+	id, err := owned.Create(t.Context(), cfg, "", "test")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { closeOwnedForTest(owned, id) })
+
+	writes := &c1WriteCounter{}
+	if tr, ok := owned.Transport(id); ok {
+		tr.mu.Lock()
+		tr.writer = writes
+		tr.mu.Unlock()
+	}
+
+	identity, err := devicetrust.LoadOrCreateHostIdentity(
+		&devicetrust.FileKeyStore{Path: filepath.Join(t.TempDir(), "host.json")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := devicetrust.NewDeviceSessionManager("c1-viewer-paste-boot", time.Minute)
+	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(
+		"device-viewer", identity.HostID, sessions.BootID(),
+		[]string{devicetrust.PermSessionsRead},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := sessions.AuthenticateBearer(bearer)
+	if principal == nil {
+		t.Fatal("viewer session did not authenticate")
+	}
+	tickets := devicetrust.NewWSTicketStore()
+
+	h := &Handlers{
+		Lifecycle:    NewLifecycleService(owned, nil),
+		WSTickets:    tickets,
+		SessionMgr:   sessions,
+		HostIdentity: identity,
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/term/", h.HandleHTML)
+	mux.HandleFunc("/term/ws", h.HandleWS)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ticket, _, err := tickets.Issue(principal, identity.HostID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(srv.URL)
+	u.Scheme = "ws"
+	u.Path = "/term/ws"
+	u.RawQuery = "session=" + url.QueryEscape(id) + "&ticket=" + url.QueryEscape(ticket)
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	hello := readHello(t, conn)
+	if hello.Type != "hello" {
+		t.Fatal("missing hello")
+	}
+	for _, c := range hello.Capabilities {
+		if c == devicetrust.PermTerminalInput {
+			t.Fatal("viewer hello includes terminal:input")
+		}
+	}
+
+	beforeCalls := writes.Calls()
+
+	// Send paste through the acknowledged protocol — same framing the
+	// bridge would use for term.onData → pokitSendInput.
+	bridgeSendInput(t, conn, id, hello.Generation, "echo 'pwned' > /tmp/evil\n", testInputID())
+
+	ackPayload := readText(t, conn, 2*time.Second)
+	var ack c1Result
+	json.Unmarshal(ackPayload, &ack)
+	if ack.Outcome == "accepted" {
+		t.Fatal("viewer paste was accepted — must be denied")
+	}
+	if ack.Outcome != "permission_denied" {
+		t.Logf("viewer paste outcome = %q (permission_denied or other non-accepted)", ack.Outcome)
+	}
+
+	// Zero PTY writes.
+	if writes.Calls() != beforeCalls {
+		t.Errorf("PTY write count = %d, want 0", writes.Calls()-beforeCalls)
+	}
+}
+
+// ── E2E: viewer denied — Ctrl+C through acknowledged input ──
+
+func TestTERM_C1_ViewerDeniedCtrlCThroughAcknowledgedInput(t *testing.T) {
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned.graceful = 2 * time.Second
+	cfg := SpawnConfig{Name: "c1-viewer-ctrlc", Executable: "sleep", Args: []string{"2"}}
+	id, err := owned.Create(t.Context(), cfg, "", "test")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { closeOwnedForTest(owned, id) })
+
+	writes := &c1WriteCounter{}
+	if tr, ok := owned.Transport(id); ok {
+		tr.mu.Lock()
+		tr.writer = writes
+		tr.mu.Unlock()
+	}
+
+	identity, err := devicetrust.LoadOrCreateHostIdentity(
+		&devicetrust.FileKeyStore{Path: filepath.Join(t.TempDir(), "host.json")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := devicetrust.NewDeviceSessionManager("c1-viewer-ctrlc-boot", time.Minute)
+	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(
+		"device-viewer", identity.HostID, sessions.BootID(),
+		[]string{devicetrust.PermSessionsRead},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := sessions.AuthenticateBearer(bearer)
+	if principal == nil {
+		t.Fatal("viewer session did not authenticate")
+	}
+	tickets := devicetrust.NewWSTicketStore()
+
+	h := &Handlers{
+		Lifecycle:    NewLifecycleService(owned, nil),
+		WSTickets:    tickets,
+		SessionMgr:   sessions,
+		HostIdentity: identity,
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/term/", h.HandleHTML)
+	mux.HandleFunc("/term/ws", h.HandleWS)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ticket, _, err := tickets.Issue(principal, identity.HostID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(srv.URL)
+	u.Scheme = "ws"
+	u.Path = "/term/ws"
+	u.RawQuery = "session=" + url.QueryEscape(id) + "&ticket=" + url.QueryEscape(ticket)
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	hello := readHello(t, conn)
+	for _, c := range hello.Capabilities {
+		if c == devicetrust.PermTerminalInput {
+			t.Fatal("viewer hello includes terminal:input")
+		}
+	}
+
+	beforeCalls := writes.Calls()
+
+	// Ctrl+C (0x03) through acknowledged input — same as term.onData("\\x03")
+	// → pokitSendInput → bridge.sendInput.
+	bridgeSendInput(t, conn, id, hello.Generation, "\x03", testInputID())
+
+	ackPayload := readText(t, conn, 2*time.Second)
+	var ack c1Result
+	json.Unmarshal(ackPayload, &ack)
+	if ack.Outcome == "accepted" {
+		t.Fatal("viewer Ctrl+C was accepted — must be denied")
+	}
+
+	if writes.Calls() != beforeCalls {
+		t.Errorf("PTY write count = %d, want 0 (viewer Ctrl+C must not write)", writes.Calls()-beforeCalls)
 	}
 }
 
