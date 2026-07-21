@@ -28,19 +28,19 @@ $ grep -rnE "tmux|cmux|localpty|LocalPTY" --include='*_test.go' .
 
 ### Mobile TypeScript
 ```
-$ grep -rn "tmux|cmux|localpty" ../mobile/src/
+$ grep -rnE "tmux|cmux|localpty" ../mobile/src/
 (empty — zero)
 ```
 
 ### Mobile Tests
 ```
-$ grep -rn "tmux|cmux|localpty" ../mobile/__tests__/
+$ grep -rnE "tmux|cmux|localpty" ../mobile/__tests__/
 (empty — zero)
 ```
 
 ### Scripts/Packaging
 ```
-$ grep -rn "tmux|cmux|localpty" ../scripts/ scripts/
+$ grep -rnE "tmux|cmux|localpty" ../scripts/ scripts/
 (empty — zero)
 ```
 
