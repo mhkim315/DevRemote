@@ -442,7 +442,8 @@ describe('generated production script execution', () => {
     // rebind, so a later native send cannot produce a terminal write.
     ws.emit('message', { data: JSON.stringify({ type: 'hello', connectionId: 'wrong-connection', sessionId: 's', generation: TEST_GEN, capabilities: ['terminal:input'] }) });
     h.sandbox.window.pokitSendInput('must not write');
-    expect(h.rnPosts).toHaveLength(postedBefore + 1); // local delivery_unknown only
+    expect(h.rnPosts).toHaveLength(postedBefore + 2); // bridge read_only + local delivery_unknown
+    expect(h.rnPosts[postedBefore].type).toBe('read_only');
     expect(terminalInputRequests(ws)).toHaveLength(0);
   });
 

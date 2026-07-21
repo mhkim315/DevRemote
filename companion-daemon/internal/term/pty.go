@@ -589,6 +589,7 @@ window.__pokitControlBridge=(function(){
   var seen={};
   function reject(predicate){state.lastRejected=predicate;}
   function post(frame){try{if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(frame));}catch(_){}}
+  function failClosed(predicate){var wasEnabled=state.inputEnabled||!state.readOnly;state.inputEnabled=false;state.readOnly=true;reject(predicate);if(wasEnabled)post({type:"read_only",reason:"Terminal input not authorized — view only"});}
   function fingerprint(frame){return frame.type+":"+JSON.stringify(frame);}
   function once(frame){var key=fingerprint(frame);if(seen[key])return false;seen[key]=true;return true;}
   function sameIdentity(frame){return state.connectionId!==null&&frame.connectionId===state.connectionId&&frame.sessionId===state.sessionId&&frame.generation===state.generation;}
@@ -605,7 +606,7 @@ window.__pokitControlBridge=(function(){
       // A new WebSocket may establish a new identity only after bind() has
       // reset this bridge. A second identity on the same socket is a mismatch,
       // never a permission refresh; revoke local send permission fail-closed.
-      if(state.connectionId!==null&&(frame.connectionId!==state.connectionId||frame.sessionId!==state.sessionId||frame.generation!==state.generation)){state.inputEnabled=false;state.readOnly=true;reject("hello_rebind");return;}
+      if(state.connectionId!==null&&(frame.connectionId!==state.connectionId||frame.sessionId!==state.sessionId||frame.generation!==state.generation)){failClosed("hello_rebind");return;}
       if(!once(frame))return;
       state.connectionId=frame.connectionId;state.sessionId=frame.sessionId;state.generation=frame.generation;state.capabilities=frame.capabilities.slice();state.inputEnabled=state.capabilities.indexOf("terminal:input")!==-1;state.readOnly=!state.inputEnabled;
       post(frame);return;
