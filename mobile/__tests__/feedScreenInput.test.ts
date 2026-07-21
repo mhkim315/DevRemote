@@ -1,8 +1,14 @@
 import React from 'react';
+// React 19 requires this opt-in for state updates flushed by act().
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 // react-dom/server has no @types package in the mobile toolchain; the runtime
 // renderer is the production React implementation used by this test.
 const { renderToStaticMarkup } = require('react-dom/server') as {
   renderToStaticMarkup: (element: React.ReactElement) => string;
+};
+const { create, act } = require('react-test-renderer') as {
+  create: (element: React.ReactElement) => any;
+  act: (callback: () => void | Promise<void>) => Promise<void>;
 };
 
 // Render the production FeedScreen with lightweight host-element shims. This
@@ -10,9 +16,8 @@ const { renderToStaticMarkup } = require('react-dom/server') as {
 jest.mock('react-native', () => {
   const R = require('react');
   const host = (tag: string) => (props: any) => {
-    const { children, testID, editable, disabled, ...rest } = props || {};
+    const { children, testID, editable, disabled } = props || {};
     const mapped = {
-      ...rest,
       ...(testID ? { 'data-testid': testID } : {}),
       ...(editable === false ? { disabled: true } : {}),
       ...(disabled ? { disabled: true } : {}),
@@ -32,19 +37,30 @@ jest.mock('react-native', () => {
   };
 });
 jest.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'div' }));
-jest.mock('react-native-webview', () => ({ WebView: 'div' }));
+jest.mock('react-native-webview', () => {
+  const R = require('react');
+  return { WebView: ({ onMessage }: any) => R.createElement('webview', { onMessage }) };
+});
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => '', setStringAsync: async () => {} }));
+jest.mock('../src/lib/client', () => {
+  const actual = jest.requireActual('../src/lib/client');
+  return {
+    ...actual,
+    listSessions: jest.fn(async () => [mockInputCapableSession]),
+    getTranscript: jest.fn(async () => ({ semantic: [], fallback: [] })),
+  };
+});
 
-import FeedScreen, { serverCapabilitiesFromControl } from '../src/screens/FeedScreen';
+import FeedScreen from '../src/screens/FeedScreen';
 
-const inputCapableSession = {
+const mockInputCapableSession = {
   id: 'controlled_pty:input-a-mobile',
   lifecycleState: 'running',
-  adapterCapabilities: ['input'],
+  adapterCapabilities: ['managedLifecycle', 'liveTerminal', 'input'],
   capabilities: ['history'],
 };
 
-function renderFeed(caps: string[], sessionData = inputCapableSession): string {
+function renderFeed(caps: string[], sessionData = mockInputCapableSession): string {
   return renderToStaticMarkup(React.createElement(FeedScreen, {
     onBack: () => {},
     session: sessionData.id,
@@ -60,6 +76,10 @@ function controlTag(html: string, testID: string): string {
   return match[0];
 }
 
+function isDisabled(tree: any, testID: string): boolean {
+  return tree.root.find((node: any) => node.props['data-testid'] === testID).props.disabled === true;
+}
+
 describe('FeedScreen production input authorization', () => {
   it('renders terminal input and Send disabled for an input-capable session without terminal:input', () => {
     const html = renderFeed(['history']);
@@ -69,24 +89,49 @@ describe('FeedScreen production input authorization', () => {
   });
 
   it('renders terminal input and Send enabled only for an input-capable session with terminal:input', () => {
-    const authorizedSession = { ...inputCapableSession, capabilities: ['history', 'terminal:input'] };
+    const authorizedSession = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
     const html = renderFeed(['history', 'terminal:input'], authorizedSession);
 
     expect(controlTag(html, 'terminal-input')).not.toContain('disabled');
     expect(controlTag(html, 'terminal-send')).not.toContain('disabled');
   });
 
-  it('hello capability transition changes the rendered input authorization', () => {
-    const before = renderFeed(['history']);
-    expect(controlTag(before, 'terminal-send')).toContain('disabled');
+  it('renders terminal input and Send disabled for an authorized device on a non-input-capable session', () => {
+    const nonInputSession = { ...mockInputCapableSession, adapterCapabilities: ['managedLifecycle'], capabilities: ['history', 'terminal:input'] };
+    const html = renderFeed(['history', 'terminal:input'], nonInputSession);
 
-    const fromHello = serverCapabilitiesFromControl({
-      type: 'hello', capabilities: ['history', 'terminal:input'],
+    expect(controlTag(html, 'terminal-input')).toContain('disabled');
+    expect(controlTag(html, 'terminal-send')).toContain('disabled');
+  });
+
+  it('renders terminal input and Send disabled when neither device nor session authorizes input', () => {
+    const nonInputSession = { ...mockInputCapableSession, adapterCapabilities: ['managedLifecycle'], capabilities: ['history'] };
+    const html = renderFeed(['history'], nonInputSession);
+
+    expect(controlTag(html, 'terminal-input')).toContain('disabled');
+    expect(controlTag(html, 'terminal-send')).toContain('disabled');
+  });
+
+  it('transitions one FeedScreen instance from disabled to enabled on a server hello', async () => {
+    const session = { ...mockInputCapableSession, capabilities: ['history', 'terminal:input'] };
+    let tree: any;
+    await act(async () => {
+      tree = create(React.createElement(FeedScreen, {
+        onBack: () => {}, session: session.id, caps: ['history'], initialSessionData: session, initialTab: 'terminal',
+      }));
     });
-    expect(fromHello).toEqual(['history', 'terminal:input']);
+    expect(isDisabled(tree, 'terminal-input')).toBe(true);
+    expect(isDisabled(tree, 'terminal-send')).toBe(true);
 
-    const after = renderFeed(fromHello!, { ...inputCapableSession, capabilities: fromHello! });
-    expect(controlTag(after, 'terminal-send')).not.toContain('disabled');
+    const webview = tree.root.findByType('webview');
+    await act(async () => {
+      webview.props.onMessage({ nativeEvent: { data: JSON.stringify({
+        type: 'hello', capabilities: ['history', 'terminal:input'],
+      }) } });
+    });
+    expect(isDisabled(tree, 'terminal-input')).toBe(false);
+    expect(isDisabled(tree, 'terminal-send')).toBe(false);
+    await act(async () => tree.unmount());
   });
 
 });
