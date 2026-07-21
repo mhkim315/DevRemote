@@ -78,8 +78,25 @@ export class TerminalController {
       // M3-auth-4A: addEventListener so the page's onmessage assignment does NOT
       // overwrite us. Demultiplex: binary frames → PTY (handled by page),
       // text geometry frames → term.resize (server-authoritative mirror).
+      // BUG-006B: authoritative control-frame listener installed BEFORE the
+      // daemon HTML's ws.onmessage assignment. This guarantees hello, read_only,
+      // and input_result frames are never lost to a race between WebSocket open
+      // and the page's onmessage assignment. Geometry frames are handled here;
+      // all other control frames are forwarded to ReactNativeWebView exactly once
+      // (the page's onmessage handler also forwards them — deduplication is
+      // handled by the native FeedScreen which is idempotent for identical hello
+      // frames with the same generation).
       rawWS.addEventListener('message',function(e){
-        if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data); if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){ try{ if(window.term) window.term.resize(ctrl.cols,ctrl.rows); }catch(ge){} } }catch(x){} }
+        if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data);
+          if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'&&ctrl.rows>0&&ctrl.cols>0){
+            try{ if(window.term) window.term.resize(ctrl.cols,ctrl.rows); }catch(ge){}
+          } else if(ctrl&&(ctrl.type==='hello'||ctrl.type==='read_only'||ctrl.type==='input_result')){
+            // Forward control frames to React Native. The daemon HTML page's
+            // ws.onmessage also forwards these — the FeedScreen is idempotent
+            // for identical hello frames.
+            try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(e.data); }catch(pm){}
+          }
+        }catch(x){} }
       });
       // M3-auth-4A geometry poll lifecycle (Blocker D):
       //  - send an immediate poll on 'open' (not at construction);

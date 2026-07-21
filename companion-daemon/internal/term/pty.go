@@ -693,13 +693,10 @@ function fitTerminal(){
   var w=document.getElementById('t').clientWidth;
   var rows=Math.floor(h/17);
   var cols=Math.floor(w/7.8);
+  // Geometry is handled by native bootstrap and WS geometry poll; no
+  // unauthenticated REST fallback needed in production paired-device mode.
   if(rows>0&&cols>0){
-    var p=new URLSearchParams(location.search);
-    var sess=p.get('session');
-    var tok=p.get('token');
-    var hdrs={};
-    if(tok)hdrs['Authorization']='Bearer '+tok;
-    fetch('/term/size?session='+encodeURIComponent(sess)+'&rows='+rows+'&cols='+cols,{method:'POST',headers:hdrs}).catch(function(){});
+    // no-op: geometry is authoritative from the native side
   }
 }
 
@@ -718,50 +715,8 @@ window.addEventListener('resize',function(){fitTerminal()});
 	    e8_wasScrolled = false;
 	  }, 300);
 	});
-cmdPoll=setInterval(function(){
-  if(stopped)return;
-  var p=new URLSearchParams(location.search);
-  var sess=p.get('session');
-  var tok=p.get('token');
-  var hdrs={};
-  if(tok)hdrs['Authorization']='Bearer '+tok;
-  fetch("/debug/cmd?session="+encodeURIComponent(sess),{headers:hdrs})
-    .then(function(r){return r.text()})
-    .then(function(d){
-      // Debug command injection also uses the raw-input BINARY contract.
-      if(d)pokitSendInput(d+"\n");
-    })
-    .catch(function(){});
-},2000);
-
 setTimeout(function(){term.focus();fitTerminal();},500);
 connect();
-	// E8: post diagnostic counters to React Native every 5s.
-	setInterval(function(){
-	  var diag = {
-	    type:"e8diag",
-	    connectCount: e8diag.connectCount,
-	    closeCount: e8diag.closeCount,
-	    msgCount: e8diag.msgCount,
-	    totalBytes: e8diag.totalBytes,
-	    lastMsgSize: e8diag.lastMsgSize,
-	    rawLen: e8diag.rawLen || raw.length,
-	    fitCount: e8_fitCount, wasReconnect: wasReconnect
-	  };
-	  // Route 1: to React Native via postMessage.
-	  try{
-	    if(window.ReactNativeWebView){
-	      window.ReactNativeWebView.postMessage(JSON.stringify(diag));
-	    }
-	  }catch(e){}
-	  // Route 2: to daemon log via authenticated diagnostic POST.
-	  var qs = Object.keys(diag).map(function(k){return k+'='+encodeURIComponent(diag[k])}).join('&');
-		  var p=new URLSearchParams(location.search);
-		  var tok=p.get('token');
-		  var hdrs={};
-		  if(tok)hdrs['Authorization']='Bearer '+tok;
-		  fetch('/debug/e8diag?'+qs,{method:'POST',headers:hdrs}).catch(function(){});
-	},5000);
 </script>
 </body>
 </html>`)

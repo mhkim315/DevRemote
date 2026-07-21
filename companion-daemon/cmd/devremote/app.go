@@ -78,7 +78,12 @@ type tunnelProc struct {
 }
 
 func (t *tunnelProc) Done() <-chan struct{}      { return t.done }
-func (t *tunnelProc) Signal(sig os.Signal) error { return t.cmd.Process.Signal(sig) }
+func (t *tunnelProc) Signal(sig os.Signal) error {
+	if t == nil || t.cmd == nil || t.cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	return t.cmd.Process.Signal(sig)
+}
 
 // ── App ──
 
@@ -765,7 +770,7 @@ func startWatcherProd() *watcher.Tailer {
 	return t
 }
 
-func startTunnelProd() *tunnelProc {
+func startTunnelProd() tunnelResource {
 	cloudflaredPath := "cloudflared"
 	exePath, err := os.Executable()
 	if err == nil {

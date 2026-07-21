@@ -336,6 +336,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
     const fetchSession = () => {
       listSessions(token)
         .then(data => {
+          if (!Array.isArray(data)) return;
           const sess = data.find((s: any) => (s.id || s) === session);
           if (sess && typeof sess !== 'string') {
             setSessionData(sess);
