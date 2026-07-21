@@ -1,4 +1,4 @@
-# Input-A R5 evidence
+# Input-A R6 evidence
 
 The input authorization source is the server-issued capability snapshot.
 `terminal:input` is projected only when the authenticated device principal
@@ -26,9 +26,10 @@ Mobile production-path coverage:
   component with an input-capable server session in both authorization states:
   `caps: ["history"]` disables the production TextInput and Send controls,
   while `caps: ["history", "terminal:input"]` enables them. It also parses a
-  server hello capability frame and re-renders the same component with that
-  resulting authoritative snapshot to cover the denied-to-authorized
-  transition.
+  server hello capability frame through the same mounted instance's production
+  WebView `onMessage` callback and observes the denied-to-authorized control
+  transition. An authorized device on a session without the adapter `input`
+  capability remains disabled, completing the device/session gate truth table.
 - The former `readOnlyReason === ""` policy test was removed; no local denial
   state can grant input.
 
