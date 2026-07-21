@@ -34,6 +34,26 @@ type Config struct {
 	ClaudeDigest         string // C1D: pre-verified SHA-256 of the pinned Claude binary
 }
 
+// insecureLocalListenAddr returns the only listener address permitted for the
+// intentionally unauthenticated local-development mode. A caller-supplied
+// address must be an IP loopback address; accepting a wildcard or LAN address
+// here would expose the insecure daemon beyond the local machine.
+func insecureLocalListenAddr(addr string) (string, error) {
+	if addr == "" {
+		return "127.0.0.1:9171", nil
+	}
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid --listen-addr for --insecure-local-only: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return "", fmt.Errorf("--listen-addr %q must be a loopback address when --insecure-local-only is set", addr)
+	}
+	return addr, nil
+}
+
 // ── Test seam interfaces ──
 
 // ipcResource abstracts *term.IPCServer so tests can inject fakes.
@@ -463,10 +483,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 
 	addr := ":9171"
 	if cfg.InsecureLocalOnly {
-		if cfg.ListenAddr != "" {
-			addr = cfg.ListenAddr
-		} else {
-			addr = "127.0.0.1:9171"
+		var err error
+		addr, err = insecureLocalListenAddr(cfg.ListenAddr)
+		if err != nil {
+			return nil, err
 		}
 	}
 

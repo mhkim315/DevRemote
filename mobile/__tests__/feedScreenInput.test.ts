@@ -448,10 +448,11 @@ describe('FeedScreen production input authorization', () => {
 
     try {
       // Parse actual port from daemon log line: "POKIT daemon 127.0.0.1:XXXXX (owner=…)"
-      await waitFor(() => /POKIT daemon 127\.0\.0\.1:\d+/.test(daemonLog), 'daemon startup');
-      const addrMatch = daemonLog.match(/POKIT daemon (127\.0\.0\.1:\d+)/);
+      await waitFor(() => /POKIT daemon 127\.0\.0\.1:[1-9]\d*/.test(daemonLog), 'daemon startup');
+      const addrMatch = daemonLog.match(/POKIT daemon (127\.0\.0\.1:[1-9]\d*)/);
       if (!addrMatch) throw new Error('daemon address not found in log');
       baseURL = 'http://' + addrMatch[1];
+      const daemonURL = new URL(baseURL);
       const createRes = await fetch(`${baseURL}/api/sessions?token=dev-token`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({profileId: 'shell', name: 'TERM-C1 mobile integration'}),
@@ -503,7 +504,7 @@ describe('FeedScreen production input authorization', () => {
       const target = {clientHeight: 340, clientWidth: 800, style: {}};
       const page: any = {
         location: {
-          protocol: 'http:', host: '127.0.0.1:9171',
+          protocol: daemonURL.protocol, host: daemonURL.host,
           search: `?session=${encodeURIComponent(sessionID)}&token=dev-token`,
         },
         document: {
