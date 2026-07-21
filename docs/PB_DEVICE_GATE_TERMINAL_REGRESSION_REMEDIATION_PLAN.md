@@ -1,12 +1,18 @@
 # PB Device-Gate Terminal Regression Remediation Plan
 
-**Status:** AUTHORITATIVE AND FROZEN — DEVICE GATE PAUSED
+**Status:** TERMINAL REMEDIATION ACCEPTED — AWAITING DEVICE GATE
 
 **Branch:** `feature/phase10-multi-adapter`
 
 **Last independently accepted input production baseline:** `9b75c1e4a`
 
-**Current diagnostic checkpoint:** `dad910c82154f56f51553a995ebbb07e196eda7f`
+**Current evidence HEAD:** `25636ec9c`
+
+**TERM-G1 ACCEPT SHA:** `2d13020ae` (IMPL `aba206add`) — managed-PTY geometry authority
+
+**TERM-C1 ACCEPT SHA:** `ba78b617a` (IMPL `262d38b88`) — single control bridge
+
+**Scroll comparison:** IDENTICAL to baseline, no action (`SCROLL_COMPARISON.md`)
 
 **Target device:** Samsung SM-S926N (Galaxy S24 Ultra), Android 16
 
