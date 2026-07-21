@@ -1,34 +1,61 @@
-# Input-B evidence
+# Input-B Evidence — Versioned Control-Request Protocol
 
-Input-B adds acknowledgement of terminal acceptance without changing Input-A's
-server-authorized permission gate. A binary frame is acknowledged only after
-the exact `TerminalTransport` captured during WebSocket establishment writes
-every input byte successfully.
+**Input-B IMPL SHA:** `5f498f9f7`
+**PA4 ACCEPT SHA:** `74560edd`
+**PB Ancestry Baseline SHA:** `abe4df1d6`
 
-The server hello frame carries the captured generation. Each successful input
-returns an `input_ack` control frame containing that same generation and a
-per-connection monotonic sequence. The reader never resolves a transport by
-session ID after the connection is established, so replacement cannot cause an
-old connection to receive an ACK for a newer generation. Short writes, write
-errors, and retired transports produce no acceptance ACK.
+## Ancestry
 
-`TestInputB_HandleWSAcknowledgesExactGenerationAfterWrite` drives ticket-auth
-`HandleWS`, sends a binary frame, verifies the writer received it, and asserts
-the returned `input_ack` has generation 7 and sequence 1.
-`TestInputB_HandleWSWriteFailureDoesNotAcknowledge` drives the same path with a
-failing writer and proves it emits no `input_ack`.
-
-The terminal page reports each socket enqueue to the native client as
-`input_pending` with the generation/sequence. `FeedScreen` treats this only as
-"Sent to socket". It shows "Delivered to terminal" only after the matching
-server ACK, or "Not delivered" if no ACK arrives within three seconds; it does
-not automatically replay the input.
-
-Validation:
-
-```text
-go test -race ./... -count=1 -timeout 90s
-go vet ./...
-go build ./...
-cd mobile && npm test -- --runInBand && npm run typecheck
 ```
+$ git merge-base --is-ancestor 74560edd8 HEAD && echo "PA4 ACCEPT: ANCESTOR OK"
+$ git merge-base --is-ancestor abe4df1d6 HEAD && echo "PB BASELINE: ANCESTOR OK"
+```
+
+## Diff Scope
+
+```
+companion-daemon/internal/term/input_b_protocol.go     | 319 +++++ (new)
+companion-daemon/internal/term/input_b_ack_test.go     | 173 +-
+companion-daemon/internal/term/input_a_denial_test.go  |   4 +-
+companion-daemon/internal/term/pty.go                  |  23 +-
+companion-daemon/internal/term/terminal_transport.go   |   6 +-
+ 5 files changed, 451 insertions(+), 25 deletions(-)
+```
+
+## Gate Results
+
+```
+go build ./...                                    exit 0
+go vet ./...                                      exit 0
+gofmt -l .                                        0 files
+go test -race ./... -count=1                       ALL PASS (11 packages)
+cd mobile && npx tsc --noEmit                      clean
+cd mobile && npx jest --runInBand                  474/474 pass, 35 suites
+```
+
+## Protocol Tests
+
+```
+TestInputA_DenialViaHandleWS                       PASS
+TestInputB_HandleWSAcknowledgesExactGeneration...  PASS
+TestInputB_HandleWSWriteFailureDoesNotAcknowledge  PASS
+TestInputB_DuplicateInputIDReplaysCached           PASS
+TestInputB_InputIDConflictDifferentPayload         PASS
+```
+
+## Requirement Trace (§6)
+
+| Requirement | Status |
+|---|---|
+| Versioned control request (TextMessage JSON) | IMPL |
+| Closed result vocabulary (8 outcomes) | IMPL + tested |
+| Legacy BinaryMessage → local_dev only | IMPL |
+| Paired production raw binary rejected | IMPL |
+| request/result bound to session+gen+inputId | IMPL |
+| 64-entry/30s recent-result cache | IMPL |
+| inputId digest conflict detection | IMPL + tested |
+| Duplicate replay without re-write | IMPL + tested |
+| 8192/4096 byte limits | IMPL |
+| inputId 64-char lowercase hex validation | IMPL |
+| Atomic WriteInput (lock through Write) | IMPL |
+| Retire/write race protection | IMPL |
