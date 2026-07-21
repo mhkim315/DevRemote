@@ -395,9 +395,15 @@ func termSize() (int, int) {
 // to inject a failing opener and verify non-fatal behavior.
 var openPNGFn = openPNG
 
+// openPNGCmd builds the exec.Cmd for opening a path. Exposed so tests can
+// verify direct-argv structure without executing the command.
+var openPNGCmd = func(path string) *exec.Cmd {
+	return exec.Command("open", path)
+}
+
 // openPNG opens a PNG file with the system opener using direct argv
 // (no shell, no env command, no URL interpolation). On macOS this is
 // equivalent to "open <path>".
 func openPNG(path string) error {
-	return exec.Command("open", path).Start()
+	return openPNGCmd(path).Start()
 }
