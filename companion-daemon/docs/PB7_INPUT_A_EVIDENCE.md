@@ -10,17 +10,25 @@ Daemon production-path coverage:
 - `TestInputA_SessionCapabilitiesArePrincipalAuthorized` drives the real
   `RequirePrincipal` middleware into `HandleSessionsV2` and proves viewer and
   owner responses differ only by the server-authorized capability.
-- `TestInputA_DenialViaHandleWS` drives the real WebSocket endpoint, sends a
-  binary frame with `conn.WriteMessage`, reads the text `read_only` control
-  frame, and asserts `TerminalTransport.WriteInput` was called zero times.
+- `TestInputA_DenialViaHandleWS` drives the real WebSocket endpoint, sends two
+  rapid binary frames with `conn.WriteMessage`, reads the text `read_only`
+  control frame, and asserts `TerminalTransport.WriteInput` was called zero
+  times, the transcript has no new event, and no second denial is emitted in
+  the one-second rate-limit window.
 - `TestInputA_PermissionAnnouncementCarriesCapabilities` verifies the WS
   hello frame is the same server-authorized capability projection.
+- The served terminal page begins and reconnects in read-only mode; only that
+  server hello frame can enable input.
 
 Mobile production-path coverage:
 
 - `mobile/__tests__/feedScreenInput.test.ts` renders the actual `FeedScreen`
-  component with `caps: ["history"]` and asserts both the production
-  TextInput and Send controls render disabled.
+  component with an input-capable server session in both authorization states:
+  `caps: ["history"]` disables the production TextInput and Send controls,
+  while `caps: ["history", "terminal:input"]` enables them. It also parses a
+  server hello capability frame and re-renders the same component with that
+  resulting authoritative snapshot to cover the denied-to-authorized
+  transition.
 - The former `readOnlyReason === ""` policy test was removed; no local denial
   state can grant input.
 
