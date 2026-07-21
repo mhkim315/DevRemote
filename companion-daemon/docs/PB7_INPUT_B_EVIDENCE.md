@@ -1,7 +1,7 @@
 # Input-B Evidence — Delivery Semantics, Reconnect Loss, and Concurrency
 
-**Implementation SHA:** `0bcb9004d`
-**Evidence SHA:** `0383d3f67`
+**Implementation SHA:** `06c5b2a81`
+**Evidence SHA:** `(this commit)`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
 
