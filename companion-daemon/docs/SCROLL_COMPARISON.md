@@ -1,6 +1,6 @@
 # Scroll Duplication Comparison — Plan §6
 
-**Status:** COMPARISON COMPLETE — IDENTICAL TO EARLIER BASELINE
+**Status:** COMPARISON COMPLETE — source-level mitigation unchanged; physical behavior confirmation pending SM-S926N
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -57,10 +57,14 @@ scroll rendering.
 
 ## 3. Comparison verdict
 
-**IDENTICAL.** The scroll duplication behavior at current HEAD is identical to the
-earlier recorded baseline. The two mitigation mechanisms (reconnect clear +
-scroll viewport timer) are unchanged. No new scrollback redesign, xterm parser
+**Source-level mitigation unchanged.** The scroll duplication mitigations
+(reconnect clear + scroll viewport timer) at current HEAD are unchanged from
+the earlier recorded baseline. No new scrollback redesign, xterm parser
 replacement, or replay protocol changes have been introduced.
+
+Physical behavior confirmation (whether the scroll duplication defect manifests
+identically, worse, or differently on the SM-S926N device) is pending the
+device-gate matrix restart.
 
 ## 4. Classification
 

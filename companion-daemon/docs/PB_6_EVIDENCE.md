@@ -1,12 +1,12 @@
 # PB.6 Evidence — Re-Verify at Terminal Remediation ACCEPT
 
-**Re-Verify Candidate SHA:** `af077ed54`
-**PB.6 Evidence HEAD:** `af077ed54`
+**Re-Verify Candidate SHA:** `b18123e77`
+**PB.6 Evidence HEAD:** `b18123e77`
 
 **Accepted Terminal Remediation:**
-- TERM-G1 ACCEPT: `2d13020ae` (IMPL `aba206add`) — managed-PTY geometry authority
+- TERM-G1 ACCEPT: `2d13020ae` (IMPL `2d13020ae`) — managed-PTY geometry authority
 - TERM-C1 ACCEPT: `ba78b617a` (IMPL `262d38b88`) — single control bridge
-- Scroll Comparison: IDENTICAL to baseline, no action (`docs/SCROLL_COMPARISON.md`)
+- Scroll Comparison: source-level mitigation unchanged; physical confirmation pending SM-S926N (`docs/SCROLL_COMPARISON.md`)
 
 **Prior PB Wave:**
 - PB Baseline: `abe4df1d6` (PB_START_BASELINE)
@@ -154,4 +154,4 @@ Secrets scan: CLEAN (pre-existing test fixtures only — deadbeef, xyz in auth t
 | PB.5a | `4ed0d3dc3` | ACCEPTED — V1 launcher cutover |
 | PB.5b-T2 | `0f0d57f30` | ACCEPTED — Consumer migration |
 | PB.5b-T3 | `c2c0f542a` | ACCEPTED — Physical deletion |
-| PB.6 | `af077ed54` | RE-VERIFIED — All 5 surfaces clean, 519/519 Jest, 14 Go pkgs (11 tested), TERM-G1 + TERM-C1 ACCEPT |
+| PB.6 | `b18123e77` | RE-VERIFIED — All 5 surfaces clean, 519/519 Jest, 14 Go pkgs (11 tested), TERM-G1 + TERM-C1 ACCEPT |

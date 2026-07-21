@@ -1,7 +1,7 @@
 # PB.7 Evidence — Terminal Remediation Accepted, Device Gate Ready
 
 **Pre-Device Candidate SHA:** `9b75c1e4a`
-**PB.7 Evidence HEAD:** `af077ed54`
+**PB.7 Evidence HEAD:** `b18123e77`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Start Baseline SHA:** `abe4df1d6`
 **PB ACCEPT SHA:** UNSET
@@ -12,9 +12,9 @@
 
 | Packet | ACCEPT SHA | IMPL SHA | Description |
 |--------|-----------|----------|-------------|
-| TERM-G1 | `2d13020ae` | `aba206add` | Managed-PTY geometry authority restoration |
+| TERM-G1 | `2d13020ae` | `2d13020ae` | Managed-PTY geometry authority restoration |
 | TERM-C1 | `ba78b617a` | `262d38b88` | Single control bridge + native capability convergence |
-| Scroll | `25636ec9c` | — | Comparison: IDENTICAL to baseline, no action (`docs/SCROLL_COMPARISON.md`) |
+| Scroll | `25636ec9c` | — | Source-level mitigation unchanged; physical confirmation pending SM-S926N (`docs/SCROLL_COMPARISON.md`) |
 
 ## Ancestry Verification
 
@@ -142,8 +142,8 @@ Secrets: CLEAN (pre-existing test fixtures only — deadbeef, xyz in auth test f
 | PB.5a | `4ed0d3dc3` | V1 launcher cutover | VERIFIED |
 | PB.5b-T2 | `0f0d57f30` | Consumer migration | VERIFIED |
 | PB.5b-T3 | `c2c0f542a` | Physical deletion | VERIFIED |
-| PB.6 | `af077ed54` | Re-verify — all 5 surfaces clean | VERIFIED |
-| PB.7 | `af077ed54` | Terminal remediation accepted — device gate ready | CURRENT |
+| PB.6 | `b18123e77` | Re-verify — all 5 surfaces clean | VERIFIED |
+| PB.7 | `b18123e77` | Terminal remediation accepted — device gate ready | CURRENT |
 
 ## Physical Device Matrix
 

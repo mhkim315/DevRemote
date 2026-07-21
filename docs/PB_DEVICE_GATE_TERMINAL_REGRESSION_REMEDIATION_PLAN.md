@@ -8,7 +8,7 @@
 
 **Current evidence HEAD:** `25636ec9c`
 
-**TERM-G1 ACCEPT SHA:** `2d13020ae` (IMPL `aba206add`) — managed-PTY geometry authority
+**TERM-G1 ACCEPT SHA:** `2d13020ae` (IMPL `2d13020ae`) — managed-PTY geometry authority
 
 **TERM-C1 ACCEPT SHA:** `ba78b617a` (IMPL `262d38b88`) — single control bridge
 
