@@ -75,7 +75,9 @@ func TestAgnostic_DegradedState(t *testing.T) {
 	}
 
 	// Degraded terminal session must still appear in API.
-	h := &Handlers{}
+	owned := NewOwnedPTYRuntime(nil, nil)
+	owned.RegisterForTest("controlled_pty:terminal", "", "terminal", nil)
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -113,7 +115,9 @@ func TestAgnostic_SchemaEvolution(t *testing.T) {
 
 func TestAgnostic_TerminalUnaffectedByAgentLayer(t *testing.T) {
 	// Terminal sessions must appear regardless of agent state.
-	h := &Handlers{}
+	owned := NewOwnedPTYRuntime(nil, nil)
+	owned.RegisterForTest("controlled_pty:terminal", "", "terminal", nil)
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
 	req := httptest.NewRequest("GET", "/api/sessions", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
@@ -125,7 +129,7 @@ func TestAgnostic_TerminalUnaffectedByAgentLayer(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &sessions)
 	found := false
 	for _, s := range sessions {
-		if s.ID == "legacy:test" {
+		if s.ID == "controlled_pty:terminal" {
 			found = true
 			// Agent fields may be empty (no detector) — that's fine.
 			// The session must be listed regardless.

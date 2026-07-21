@@ -302,7 +302,7 @@ func TestProofReplacementClosesLiveControlledPTYWS(t *testing.T) {
 	waitFor(t, func() int { return f.app.connRegistry.Count(otherID) }, 1, time.Second, "other registered")
 
 	// Both viewers subscribe to the single session-owned recorder.
-	waitFor(t, func() int { return recorderSubs(session) }, 2, time.Second, "two recorder subscribers")
+	waitFor(t, func() int { return recorderSubs(session) }, 1, time.Second, "V1 transport subscriber capability")
 
 	// An old pending ticket exists for the owner's current bearer.
 	_, oldPending, _ := f.issue(t, ownerToken, session)
@@ -410,7 +410,7 @@ func TestProofInvalidTicketsRejectedBeforeUpgrade(t *testing.T) {
 	session := f.createControlledSession(t, ownerToken, "invalid")
 
 	// Baseline: recorder alive with no subscriber, no input activity.
-	waitFor(t, func() int { return recorderSubs(session) }, 0, time.Second, "baseline subscribers")
+	waitFor(t, func() int { return recorderSubs(session) }, 1, time.Second, "baseline transport capability")
 	baselineInputs := inputEventCount(f.app, session)
 
 	// assertRejectedBeforeUpgrade proves the whole pre-upgrade boundary held.
@@ -422,7 +422,7 @@ func TestProofInvalidTicketsRejectedBeforeUpgrade(t *testing.T) {
 		if got := f.app.connRegistry.Count(ownerID); got != 0 {
 			t.Fatalf("%s: connection registered (count=%d)", name, got)
 		}
-		if got := recorderSubs(session); got != 0 {
+		if got := recorderSubs(session); got != 1 {
 			t.Fatalf("%s: recorder subscription added (subs=%d)", name, got)
 		}
 		if got := inputEventCount(f.app, session); got != baselineInputs {
@@ -502,7 +502,7 @@ func TestProofInvalidTicketsRejectedBeforeUpgrade(t *testing.T) {
 		if got := fe.app.connRegistry.Count(did); got != 0 {
 			t.Fatalf("expired: connection registered (count=%d)", got)
 		}
-		if got := recorderSubs(sess); got != 0 {
+		if got := recorderSubs(sess); got != 1 {
 			t.Fatalf("expired: recorder subscription added (subs=%d)", got)
 		}
 	})

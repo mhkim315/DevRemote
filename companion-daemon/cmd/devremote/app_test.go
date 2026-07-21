@@ -157,29 +157,13 @@ func TestPrivateMux_NoDefaultMuxUsage(t *testing.T) {
 }
 
 func TestHandlers_RegistryDataIsolation(t *testing.T) {
-	// Not Parallel — NewApp sets term.OnApproval global.
-	regA := mux.MustNewRegistry()
-	regB := mux.MustNewRegistry()
-
-	adapterA := &testAdapter{
-		name: "test-a",
-		sessions: []mux.Session{
-			&testSession{id: "session-a", title: "Session A", adapter: "test-a"},
-		},
-	}
-	adapterB := &testAdapter{
-		name: "test-b",
-		sessions: []mux.Session{
-			&testSession{id: "session-b", title: "Session B", adapter: "test-b"},
-		},
-	}
-	regA.Register(adapterA)
-	regB.Register(adapterB)
-
-	_ = regA
-	_ = regB
-	hA := &term.Handlers{Verifier: insecureVerifier()}
-	hB := &term.Handlers{Verifier: insecureVerifier()}
+	// Each handler reads only its explicitly-owned V1 runtime.
+	ownedA := term.NewOwnedPTYRuntime(nil, nil)
+	ownedB := term.NewOwnedPTYRuntime(nil, nil)
+	ownedA.RegisterForTest("controlled_pty:session-a", "", "Session A", nil)
+	ownedB.RegisterForTest("controlled_pty:session-b", "", "Session B", nil)
+	hA := &term.Handlers{Verifier: insecureVerifier(), Lifecycle: term.NewLifecycleService(ownedA, nil)}
+	hB := &term.Handlers{Verifier: insecureVerifier(), Lifecycle: term.NewLifecycleService(ownedB, nil)}
 
 	muxA := http.NewServeMux()
 	muxA.HandleFunc("/api/sessions", hA.AuthMiddleware(hA.HandleSessionsAPI))
@@ -222,13 +206,13 @@ func TestHandlers_RegistryDataIsolation(t *testing.T) {
 		t.Errorf("server A response missing 'session-a': %s", bodyStrA)
 	}
 	if strings.Contains(bodyStrA, "session-b") {
-		t.Errorf("server A response leaked 'session-b' from registry B: %s", bodyStrA)
+		t.Errorf("server A response leaked 'session-b' from runtime B: %s", bodyStrA)
 	}
 	if !strings.Contains(bodyStrB, "session-b") {
 		t.Errorf("server B response missing 'session-b': %s", bodyStrB)
 	}
 	if strings.Contains(bodyStrB, "session-a") {
-		t.Errorf("server B response leaked 'session-a' from registry A: %s", bodyStrB)
+		t.Errorf("server B response leaked 'session-a' from runtime A: %s", bodyStrB)
 	}
 }
 

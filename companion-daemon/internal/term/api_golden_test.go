@@ -31,16 +31,11 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	// PA3 Step 2 R4: legacy keys must be ABSENT, required keys PRESENT.
+	// An unwired handler returns an empty V1 catalog, still as JSON.
 	raw := rec.Body.String()
 	for _, k := range []string{`"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"events"`} {
 		if strings.Contains(raw, k) {
 			t.Errorf("GET /api/sessions: legacy key %s must be absent from JSON", k)
-		}
-	}
-	for _, k := range []string{`"id"`, `"displayId"`, `"adapter"`, `"capabilities"`} {
-		if !strings.Contains(raw, k) {
-			t.Errorf("GET /api/sessions: required key %s must be present in JSON", k)
 		}
 	}
 
@@ -49,20 +44,8 @@ func TestAPIGolden_GetSessions(t *testing.T) {
 		t.Fatalf("GET /api/sessions: invalid JSON: %v", err)
 	}
 
-	found := false
-	for _, s := range sessions {
-		if s.ID == "legacy:golden" {
-			found = true
-			if s.Adapter != "legacy" {
-				t.Errorf("adapter = %q, want legacy", s.Adapter)
-			}
-			if s.DisplayID != "golden" {
-				t.Errorf("displayId = %q, want 'golden'", s.DisplayID)
-			}
-		}
-	}
-	if !found {
-		t.Error("GET /api/sessions: did not find legacy:golden in response")
+	if len(sessions) != 0 {
+		t.Errorf("GET /api/sessions: got %d rows, want empty V1 catalog", len(sessions))
 	}
 }
 func TestAPIGolden_PostCreateSession_ReturnsCanonicalID(t *testing.T) {
@@ -75,23 +58,8 @@ func TestAPIGolden_PostCreateSession_ReturnsCanonicalID(t *testing.T) {
 
 	h.HandleSessionsAPI(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /api/sessions: status = %d, want 200", rec.Code)
-	}
-
-	var resp struct {
-		Status string `json:"status"`
-		ID     string `json:"id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("POST /api/sessions: invalid JSON: %v", err)
-	}
-	if resp.Status != "ok" {
-		t.Errorf("status = %q, want ok", resp.Status)
-	}
-	// Phase 1: canonical ID includes adapter prefix.
-	if resp.ID != "legacy:test" {
-		t.Errorf("id = %q, want canonical \"legacy:test\"", resp.ID)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("POST /api/sessions: status = %d, want 501 for non-owned adapter", rec.Code)
 	}
 }
 
@@ -103,18 +71,8 @@ func TestAPIGolden_DeleteSession(t *testing.T) {
 
 	h.HandleSessionsAPI(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("DELETE /api/sessions: status = %d, want 200", rec.Code)
-	}
-
-	var resp struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("DELETE /api/sessions: invalid JSON: %v", err)
-	}
-	if resp.Status != "ok" {
-		t.Errorf("status = %q, want ok", resp.Status)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("DELETE /api/sessions: status = %d, want 404 for non-owned adapter", rec.Code)
 	}
 }
 
@@ -237,20 +195,10 @@ func TestAPIGolden_PostCreateLegacySession_CanonicalID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.HandleSessionsAPI(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST legacy create: status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("POST legacy create: status = %d, want 501", rec.Code)
 	}
-	var resp struct {
-		Status string `json:"status"`
-		ID     string `json:"id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("POST legacy create: invalid JSON: %v", err)
-	}
-	// Handler must canonicalize exactly once: adapter "legacy" + ":" + local "surface:42" = "legacy:surface:42"
-	if resp.ID != "legacy:surface:42" {
-		t.Errorf("id = %q, want canonical 'legacy:surface:42' (not double-prefixed)", resp.ID)
-	}
+	// Non-owned adapters cannot allocate a process through the V1 boundary.
 }
 
 type legacyCreateAdapter struct{}
