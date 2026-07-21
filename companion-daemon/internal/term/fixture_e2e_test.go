@@ -244,7 +244,7 @@ func TestFixtureE2E_UnsupportedCapability(t *testing.T) {
 	}
 }
 func TestFixtureE2E_WebSocket(t *testing.T) {
-	h, adapter := fixtureE2EHandlers(t)
+	h, _ := fixtureE2EHandlers(t)
 
 	// Clean up recorder to prevent cross-test contamination via global recorderRegistry.
 	defer DeleteRecorder("fixture:f1")
@@ -262,45 +262,6 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 		t.Fatal("WS unexpectedly upgraded without V1 transport")
 	}
 	return
-
-	// Frame 1: ReadScreen preflight (CSI clear + screen content).
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, msg1, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("WS read frame 1: %v", err)
-	}
-	if !strings.Contains(string(msg1), "fixture screen content") {
-		t.Errorf("frame 1 missing ReadScreen content: %q", string(msg1))
-	}
-
-	// Frame 2: stream content pushed via io.Pipe.
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, msg2, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("WS read frame 2 (stream): %v", err)
-	}
-	if !strings.Contains(string(msg2), "FIXTURE_STREAM_CONTENT") {
-		t.Errorf("frame 2 missing stream content: %q", string(msg2))
-	}
-
-	// Write input through WS → verify it reached the session via InputWriter.
-	// M3-auth-4A framing contract: raw terminal input is a BINARY frame.
-	testInput := []byte("echo hello\n")
-	if err := conn.WriteMessage(websocket.BinaryMessage, testInput); err != nil {
-		t.Fatalf("WS write: %v", err)
-	}
-	time.Sleep(200 * time.Millisecond) // allow handler to process
-
-	// Verify input reached the session (WS handler calls InputWriter.WriteInput).
-	adapter.mu.Lock()
-	sess := adapter.sessions["f1"].(*fixtureFullSession)
-	adapter.mu.Unlock()
-	sess.mu.Lock()
-	got := string(sess.lastInput)
-	sess.mu.Unlock()
-	if got != string(testInput) {
-		t.Errorf("WS input not relayed to session: got %q, want %q", got, string(testInput))
-	}
 }
 
 func TestFixtureE2E_Resize(t *testing.T) {
