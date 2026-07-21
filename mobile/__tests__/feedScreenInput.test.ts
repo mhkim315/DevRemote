@@ -1,6 +1,16 @@
 import React from 'react';
+const { spawn } = require('child_process') as { spawn: any };
+const fs = require('fs') as typeof import('fs');
+const os = require('os') as typeof import('os');
+const path = require('path') as typeof import('path');
+const vm = require('vm') as typeof import('vm');
+const NodeWebSocket = require('ws') as any;
+const { webcrypto } = require('crypto') as { webcrypto: Crypto };
 // React 19 requires this opt-in for state updates flushed by act().
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+// The integration test below gives FeedScreen's production injection path a
+// real page VM. Existing component tests keep this unset and retain a no-op.
+let mockWebViewInjection: ((source: string) => void) | null = null;
 // react-dom/server has no @types package in the mobile toolchain; the runtime
 // renderer is the production React implementation used by this test.
 const { renderToStaticMarkup } = require('react-dom/server') as {
@@ -43,7 +53,7 @@ jest.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'div' }));
 jest.mock('react-native-webview', () => {
   const R = require('react');
   const WebView = R.forwardRef(({ onMessage }: any, ref: any) => {
-    R.useImperativeHandle(ref, () => ({ injectJavaScript: () => {} }));
+    R.useImperativeHandle(ref, () => ({ injectJavaScript: (source: string) => mockWebViewInjection?.(source) }));
     return R.createElement('webview', { onMessage });
   });
   return { WebView };
@@ -404,5 +414,174 @@ describe('FeedScreen production input authorization', () => {
     jest.useRealTimers();
     await act(async () => tree.unmount());
   });
+
+  it('runs the real daemon → served page → WebView → FeedScreen acknowledgement chain', async () => {
+    const daemonRoot = path.resolve(__dirname, '../../companion-daemon');
+    const daemonHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pokit-c1-mobile-'));
+    const goCache = path.join(os.tmpdir(), 'pokit-c1-go-build-cache');
+    const goModCache = path.join(os.tmpdir(), 'pokit-c1-go-mod-cache');
+    const daemon = spawn('go', ['run', './cmd/devremote', 'daemon', '--insecure-local-only', '--listen-addr', '127.0.0.1:19171'], {
+      cwd: daemonRoot,
+      env: {
+        ...process.env, HOME: daemonHome, SHELL: '/bin/sh',
+        GOCACHE: goCache, GOMODCACHE: goModCache,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    let daemonLog = '';
+    daemon.stdout.on('data', (b: Buffer) => { daemonLog += b.toString(); });
+    daemon.stderr.on('data', (b: Buffer) => { daemonLog += b.toString(); });
+    const baseURL = 'http://127.0.0.1:19171';
+    let sessionID = '';
+    let tree: any;
+    let pageSocket: any;
+    const browserSocketEvents: string[] = [];
+
+    const waitFor = async (predicate: () => boolean, label: string) => {
+      const deadline = Date.now() + 20000;
+      while (!predicate() && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      if (!predicate()) throw new Error(`timed out waiting for ${label}; ws=${browserSocketEvents.join('|')}; daemon=${daemonLog}`);
+    };
+
+    try {
+      await waitFor(() => daemonLog.includes('POKIT daemon 127.0.0.1:19171'), 'daemon startup');
+      const createRes = await fetch(`${baseURL}/api/sessions?token=dev-token`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({profileId: 'shell', name: 'TERM-C1 mobile integration'}),
+      });
+      const createBody = await createRes.text();
+      expect({ok: createRes.ok, status: createRes.status, body: createBody}).toEqual(
+        expect.objectContaining({ok: true}),
+      );
+      sessionID = JSON.parse(createBody).id;
+      expect(sessionID).toMatch(/^controlled_pty:/);
+
+      const pageRes = await fetch(`${baseURL}/term/?session=${encodeURIComponent(sessionID)}&token=dev-token`);
+      expect(pageRes.ok).toBe(true);
+      const html = await pageRes.text();
+      const script = html.match(/<script>\s*([\s\S]*?)<\/script>\s*<\/body>/)?.[1];
+      expect(script).toBeTruthy();
+
+      const nativeFrames: string[] = [];
+      class BrowserWebSocket {
+        raw: any;
+        onopen: any;
+        onmessage: any;
+        onclose: any;
+        onerror: any;
+        constructor(url: string) {
+          this.raw = new NodeWebSocket(url);
+          this.raw.on('open', () => { browserSocketEvents.push('open'); this.onopen?.({}); });
+          this.raw.on('message', (data: Buffer, isBinary: boolean) => {
+            browserSocketEvents.push(`message:${isBinary ? 'binary' : 'text'}:${data.toString().slice(0, 32)}`);
+            this.onmessage?.({data: isBinary ? data : data.toString()});
+          });
+          this.raw.on('close', (code: number) => { browserSocketEvents.push(`close:${code}`); this.onclose?.({code}); });
+          this.raw.on('error', (error: Error) => { browserSocketEvents.push(`error:${error.message}`); this.onerror?.(error); });
+        }
+        get readyState() { return this.raw.readyState; }
+        send(data: string) { this.raw.send(data); }
+        close() { this.raw.close(); }
+      }
+      const terminal = function(this: any) {
+        this.open = () => {};
+        this.focus = () => {};
+        this.clear = () => {};
+        this.resize = () => {};
+        this.write = () => {};
+        this.writeln = () => {};
+        this.onScroll = () => {};
+        this.onData = () => {};
+      };
+      const target = {clientHeight: 340, clientWidth: 800, style: {}};
+      const page: any = {
+        location: {
+          protocol: 'http:', host: '127.0.0.1:19171',
+          search: `?session=${encodeURIComponent(sessionID)}&token=dev-token`,
+        },
+        document: {
+          getElementById: (id: string) => id === 'status' ? {style: {}} : target,
+          addEventListener: () => {},
+        },
+        Terminal: terminal,
+        WebSocket: BrowserWebSocket,
+        TextEncoder, TextDecoder, Uint8Array,
+        crypto: webcrypto,
+        btoa: (value: string) => Buffer.from(value, 'binary').toString('base64'),
+        setTimeout: () => 1, setInterval: () => 1, clearInterval: () => {}, clearTimeout: () => {},
+        addEventListener: () => {},
+        ReactNativeWebView: {postMessage: (raw: string) => nativeFrames.push(raw)},
+      };
+      page.window = page;
+      const context = vm.createContext(page);
+      vm.runInContext(script!, context, {filename: 'served-term-page.js'});
+      pageSocket = page.ws;
+      expect(pageSocket).toBeTruthy();
+
+      const session = {
+        id: sessionID, lifecycleState: 'running',
+        adapterCapabilities: ['managedLifecycle', 'liveTerminal', 'input'],
+        capabilities: ['history', 'terminal:input'],
+      };
+      // The production component refreshes through listSessions after mount.
+      // Point its existing test transport at this daemon-owned session so that
+      // refresh preserves the same live-terminal capability boundary.
+      Object.assign(mockInputCapableSession, session);
+      await act(async () => {
+        tree = create(React.createElement(FeedScreen, {
+          onBack: () => {}, session: sessionID, caps: ['history'],
+          initialSessionData: session, initialTab: 'terminal',
+        }));
+      });
+      const webview = tree.root.findByType('webview');
+      let delivered = 0;
+      const deliverNativeFrames = async () => {
+        const frames = nativeFrames.slice(delivered);
+        delivered += frames.length;
+        if (frames.length) await act(async () => {
+          for (const raw of frames) webview.props.onMessage({nativeEvent: {data: raw}});
+        });
+      };
+
+      await waitFor(() => nativeFrames.some(raw => JSON.parse(raw).type === 'hello'), 'served page hello');
+      await deliverNativeFrames();
+      expect(isDisabled(tree, 'terminal-send')).toBe(false);
+
+      // This is the real FeedScreen Send action. Its production injection
+      // calls pokitSendInput in the literal daemon page VM; that page's real
+      // WebSocket reaches HandleWS and its ACKs come back via postMessage.
+      mockWebViewInjection = (source: string) => vm.runInContext(source, context, {filename: 'feed-screen-injection.js'});
+      const input = tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input');
+      const send = tree.root.find((node: any) => node.props['data-testid'] === 'terminal-send');
+      await act(async () => input.props.onChangeText('real daemon line'));
+      await act(async () => send.props.onPress());
+
+      await waitFor(() => nativeFrames.filter(raw => JSON.parse(raw).type === 'input_result').length >= 2, 'two real HandleWS ACKs');
+      await deliverNativeFrames();
+      expect(nativeFrames.filter(raw => JSON.parse(raw).type === 'input_pending')).toHaveLength(2);
+      expect(nativeFrames.filter(raw => JSON.parse(raw).type === 'input_result')).toHaveLength(2);
+      expect(statusText(tree)).toBe('Delivered to terminal');
+    } finally {
+      mockWebViewInjection = null;
+      try { pageSocket?.close(); } catch {}
+      if (tree) await act(async () => tree.unmount());
+      if (sessionID) {
+        await fetch(`${baseURL}/api/sessions/${encodeURIComponent(sessionID)}/kill?token=dev-token`, {method: 'POST'}).catch(() => {});
+      }
+      // `go run` owns a short-lived Go wrapper plus the daemon child. Kill the
+      // dedicated process group so a failed assertion cannot leak the child.
+      try { process.kill(-daemon.pid, 'SIGTERM'); } catch {}
+      let fallback: any;
+      await Promise.race([
+        new Promise(resolve => daemon.once('exit', resolve)),
+        new Promise(resolve => { fallback = setTimeout(resolve, 3000); fallback.unref?.(); }),
+      ]);
+      if (fallback) clearTimeout(fallback);
+      fs.rmSync(daemonHome, {recursive: true, force: true});
+    }
+  }, 60000);
 
 });

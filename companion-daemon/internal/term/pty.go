@@ -155,10 +155,18 @@ func effectiveInputCapabilities(p *devicetrust.Principal) []string {
 // upgrade, before any user input. It contains the server-authorized effective
 // session capabilities; the terminal page and native FeedScreen use this
 // projection as their pre-send input guard.
-func permissionAnnouncement(p *devicetrust.Principal, session string, generation int64, connectionID string) []byte {
+func permissionAnnouncement(p *devicetrust.Principal, session string, generation int64, connectionID string, insecureLocalOnly bool) []byte {
+	caps := effectiveInputCapabilities(p)
+	// The explicitly local-only daemon accepts dev-token WebSocket input
+	// without a device ticket. Its served page must receive the identical
+	// authority snapshot; remote/no-ticket connections remain fail-closed.
+	if p == nil && insecureLocalOnly {
+		caps = []string{devicetrust.PermTerminalInput}
+		log.Printf("WS-CAPS: terminal:input GRANTED (explicit insecure local mode)")
+	}
 	b, _ := json.Marshal(map[string]interface{}{
 		"type":         "hello",
-		"capabilities": effectiveInputCapabilities(p),
+		"capabilities": caps,
 		"sessionId":    session,
 		"generation":   generation,
 		"connectionId": connectionID,
@@ -371,7 +379,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// PB.7 Input-A / TERM-C1: announce device effective permissions before
 	// any user input. The served-page control bridge is the only consumer of
 	// this snapshot and gates pokitSendInput before the first keystroke.
-	permAnnounce := permissionAnnouncement(ticketPrincipal, session, inputGeneration, connID)
+	permAnnounce := permissionAnnouncement(ticketPrincipal, session, inputGeneration, connID, h.InsecureLocalOnly)
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
 	default:

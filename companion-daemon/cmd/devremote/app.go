@@ -24,6 +24,7 @@ import (
 type Config struct {
 	OwnerUUID            string
 	SupabaseProjectRef   string
+	ListenAddr           string // optional explicit listener, used by isolated local integrations
 	InsecureLocalOnly    bool
 	EnableAgentDetection bool   // Phase A5: default-off agent detection bridge
 	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
@@ -458,8 +459,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
 	lifecycle.SetStatusClearer(telemetry)
 
-	addr := ":9171"
-	if cfg.InsecureLocalOnly {
+	addr := cfg.ListenAddr
+	if addr == "" {
+		addr = ":9171"
+	}
+	if cfg.InsecureLocalOnly && cfg.ListenAddr == "" {
 		addr = "127.0.0.1:9171"
 	}
 
