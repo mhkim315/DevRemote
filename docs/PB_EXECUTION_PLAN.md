@@ -1,6 +1,6 @@
 # PB Legacy Removal Execution Plan
 
-**Status:** EXECUTED — PB waves PB.1 through PB.6 complete; PB.7 awaiting device gate. PB ACCEPT SHA remains UNSET.
+**Status:** EXECUTED THROUGH AUTOMATED CLOSEOUT — pre-device QR/Input remediation planned; physical device gate not started; PB ACCEPT SHA remains UNSET.
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -12,6 +12,9 @@
 | `PA4_ACCEPT_SHA` | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Independent PA4 acceptance record |
 | `PB_PREREQUISITE_SHA` | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Contract authority required before PB |
 | `PB_START_BASELINE_SHA` | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback preserving the frozen PA4 and roadmap documents |
+| `CURRENT_NON_DEVICE_CHECKPOINT_SHA` | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before QR/Input remediation |
+| Future `PB_DEVICE_CANDIDATE_SHA` | **UNSET** | Exact production/mobile source for the device daemon and APK |
+| Future `PB_AUTOMATED_EVIDENCE_SHA` | **UNSET** | Documentation-only head after PB.6/PB.7 regeneration |
 | Future `PB_ACCEPT_SHA` | **UNSET** | Assigned only by the final independent PB verifier |
 
 `PB_PREREQUISITE_SHA` and `PB_START_BASELINE_SHA` have different meanings.
@@ -175,10 +178,14 @@ telemetry, pairing, and device authentication.
 
 ### PB.7 — automated closeout and device gate
 
-Run all automated gates first. If they pass, set status to
-`AWAITING_DEVICE_GATE`; do not declare PB complete. Run the Android comparison
-matrix in Section 5, publish exact evidence, then request independent PB
-verification.
+The original automated closeout reached the current non-device checkpoint, but
+the physical gate has not started. Before device execution, complete the QR,
+Input-A, and Input-B packets and their independent acceptances under
+[`PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md`](PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md).
+Then regenerate all affected PB.6/PB.7 evidence, freeze the exact production
+candidate, and build both daemon and APK from that same candidate. Only then set
+status to `AWAITING_DEVICE_GATE`, run the Android matrix in Section 5, publish
+exact evidence, and request independent PB verification.
 
 ## 5. Frozen PA4 physical-device comparison matrix
 
@@ -196,13 +203,15 @@ Daemon mode: production configuration, without `--insecure-local-only`.
 | Codex/Claude launch, lifecycle, approval | PASS | Any failure is a PB blocker |
 | Transcript/output/replay | PASS on accepted live path | New loss or changed failure point blocks |
 | Managed shell empty terminal | Known intermittent/pre-existing debt | Same behavior may remain deferred; worse or changed behavior blocks |
-| Terminal input authorization/WebView keyboard | FAIL/known pre-existing debt | Reproduce and record; same failure may remain deferred, any regression blocks |
+| Terminal input authorization/WebView keyboard | FAIL/known pre-existing debt at PA4 | Pre-device Input-A/Input-B acceptance supersedes this waiver: owner input must use exact-generation ACK; member remains explicitly read-only |
 | Terminal restart/recovery | Known pre-existing debt, not fully bounded | Reproduce and record; changed or broader failure blocks |
 | Generation isolation and cleanup | PASS in automated/live-supported paths | Any regression is a PB blocker |
 
-The baseline-relative exception applies only to the three explicitly recorded
-terminal debts. It does not waive pairing, authentication, managed discovery,
-lifecycle, approval, output/replay, generation isolation, or cleanup.
+The baseline-relative exception now applies only to managed-shell empty-terminal
+and terminal restart/recovery debt. Terminal-input authorization is removed from
+the waiver by the authoritative pre-device remediation plan. No exception
+waives pairing, authentication, managed discovery, lifecycle, approval,
+output/replay, generation isolation, or cleanup.
 
 HTTPS pairing through the public tunnel is not a PB fix. Existing security
 authority defines pairing as LAN-only and excluded from tunnel ingress. A
@@ -248,12 +257,19 @@ Stop the current wave when:
 - a test is weakened to make deletion pass;
 - either frozen prerequisite SHA is missing from ancestry;
 - PB.7 lacks the Android device comparison.
+- the pre-device QR, Input-A, or Input-B packet lacks independent acceptance;
+- regenerated PB.6/PB.7 evidence does not name a distinct production candidate
+  and evidence head, or the daemon/APK source identities do not equal the
+  production candidate.
 
-After independent PB ACCEPT, proceed in this order:
+The QR renderer/security and Input-A/Input-B packets must complete before the
+physical PB gate under the linked authoritative plan. After independent PB
+ACCEPT, proceed in this order:
 
-1. terminal/input/restart debt remediation under its own reviewed contract;
-2. pairing hardening, including any remote-pairing threat model, under a
-   separate reviewed contract;
+1. remaining empty-terminal/restart debt remediation under its own reviewed
+   contract;
+2. additional pairing hardening, including any remote-pairing threat model,
+   under a separate reviewed contract;
 3. Canonical Timeline;
 4. Codex/Claude common provider contract;
 5. Grok/ACP conformance;
