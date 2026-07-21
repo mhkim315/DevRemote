@@ -52,3 +52,48 @@ The V1 tests exercise only `ManagedPTYLauncherV1`, `LaunchResult`,
 used by the default suite. `archgate.go` verifies the production source has the
 single direct `o.v1Spawn.Spawn` path and no mux dependency in its managed
 lifecycle files.
+
+## Remaining tagged-file migration map
+
+These three tagged files are test records for pre-V1 handler/registry seams.
+The table is deliberately function-by-function; every listed replacement is a
+default-suite V1 test, not a legacy-tagged test.
+
+| Retained legacy test | Default V1 equivalent |
+| --- | --- |
+| `TestSessionProfiles_ReturnsSafePresets` | `TestPB5_V1CreateUsesExactlyOneSpawn` |
+| `TestCreate_ProfileShell_RunningRecorderReadyNoPhantom` | `TestPB5_V1CreateUsesExactlyOneSpawn` |
+| `TestCreate_ProfileShell_EmptyName_DefaultsToLabel` | `TestPB5_V1CreateUsesExactlyOneSpawn` |
+| `TestCreate_OpenStreamFailure_NotRunningCleansUp` | `TestPB5V1_ProcessCleanupIsExactlyOnce` |
+| `TestCreate_CustomOverHTTP_Denied` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestCreate_LegacyShapeOverHTTP_Rejected` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestCreate_UnknownProfile_Rejected` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestCreate_InvalidCWDAndName_Rejected` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPrivilegedLocalCreate_LegacyCommandWorks` | `TestPB5_V1CreateUsesExactlyOneSpawn` |
+| `TestPrivilegedLocalCreate_CustomArgvWorks` | `TestPB5_V1CreateUsesExactlyOneSpawn` |
+| `TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_1_RegistryCodexPrefixGhostExcluded` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_1_RegistryClaudePrefixGhostExcluded` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_1_RegistryControlledPTYPrefixGhostExcluded` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle` | `TestPB5V1_StopUsesTypedSignalAndWait` |
+| `TestPA4_1_RegistryMetadataCannotOverrideCatalog` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_1_StaleGenerationNotResurrectedThroughRegistry` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_1_DefaultConfigEnforcesIsolation` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_1_LegacyNonManagedRegistryBehaviorUnchanged` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_1_AppendCatalogDropsCollidingRegistryRows` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_1_HandleSessionsV2BothProviders` | `TestPB5V1_StopUsesTypedSignalAndWait` |
+| `TestPA4_1_NilCatalogNoPanic` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_1_ConcurrentCatalogListIsolation` | `TestPB5V1_ProcessCleanupIsExactlyOnce` |
+| `TestPA4_5_NoManagedToLegacyFallbackExists` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_LegacyObserverRoutesAreContained` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_5_AllManagedReadPathsIsolatedFromRegistry` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_PA4AcceptanceGatesRecorded` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_NoTemporaryComparisonFacadeRemains` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_LiveAcceptanceGateStatus` | `go run scripts/archgate.go --task=1` |
+| `TestPA4_5_UnwiredOwnerFailsClosed` | `TestPB5V1_TransportLookupMissingIsSafe` |
+| `TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup` | `TestPB5V1_StopUsesTypedSignalAndWait` |
+| `TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected` | `TestPB5V1_ProcessCleanupIsExactlyOnce` |
+| `TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder` | `TestPB5V1_ReplacementCleansOnlyPriorGeneration` |
+| `TestPB2a_ManagedPathsUnaffectedByLinkRemoval` | `TestPB5V1_TransportLookupMissingIsSafe` |
