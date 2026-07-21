@@ -1,6 +1,7 @@
-# Input-B Evidence — Versioned Control-Request Protocol (R4)
+# Input-B Evidence — Versioned Control-Request Protocol (R4 remediation)
 
-**Input-B IMPL SHA (R4):** `042005af7`
+**Input-B R4 remediation IMPL SHA:** `514bf83ce`
+**Prior Input-B R4 IMPL SHA:** `042005af7`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
 
@@ -31,7 +32,7 @@ go vet ./...                      exit 0
 gofmt -l .                        0 files
 go test -race ./... -count=1       ALL PASS
 npx tsc --noEmit                   clean
-npx jest --runInBand               476/476 pass, 35 suites
+npx jest --runInBand               477/477 pass, 35 suites
 ```
 
 ## Protocol Details
@@ -74,12 +75,19 @@ npx jest --runInBand               476/476 pass, 35 suites
 
 - Paired production (`InsecureLocalOnly == false`) rejects every legacy binary
   input frame before `WriteInput`; it returns `invalid_request`. Raw binary is
-  retained only for the explicit local-development mode.
+  retained only for the explicit local-development mode. The rejection carries
+  the bound connection/session/generation plus `reason: "update_required"`.
 - `newConnectionID` uses crypto/rand and fails the upgrade closed when entropy
   cannot be read.
 - hello, `input_pending`, and `input_result` carry the bound connection ID,
   session ID, and generation. The mobile accepts a result only when those
   identities and its `inputId` all match its pending request.
+- Raw frames above 8192 bytes and decoded payloads above 4096 bytes return the
+  closed `input_too_large` result rather than being silently ignored.
+- The per-connection result cache does not evict live accepted entries. At 64
+  entries it rejects a new request before writing, preserving retry safety;
+  only TTL expiry frees capacity. Permission-denied results are burst-limited
+  to three and refill at ten per minute.
 
 ### 2-Frame submitLine
 - Text + Enter sent as two independent control requests
@@ -89,6 +97,9 @@ npx jest --runInBand               476/476 pass, 35 suites
   when the first ACK arrives before the 40ms Enter request becomes pending
 - Command is preserved for failure/timeout; the UI says "Not delivered" to
   represent possible partial delivery rather than claiming command success
+- A reconnect hello clears all old pending IDs, and a failed/timeout line
+  abandons every known sibling ID so a late accepted result cannot overwrite
+  its partial-delivery state. A second Send cannot overlap a live line.
 
 ## Focused Tests
 
@@ -101,5 +112,10 @@ TestInputB_InputIDConflictDifferentPayload       PASS
 TestInputB_ProductionRejectsLegacyBinaryBeforeWrite PASS
 TestInputB_TrailingTerminalInputIsRejected       PASS
 TestInputB_ConnectionIDEntropyFailureIsFailClosed PASS
-feedScreenInput.test.ts — two-frame/identity/partial tests PASS
+TestInputB_ExactRawAndDecodedBounds               PASS
+TestInputB_StrictParserRejectsMalformedUnknownAndTrailing PASS
+TestInputB_ClosedOutcomesAndPermissionLimiter     PASS
+TestInputB_CacheCapacityNeverEvictsAcceptedReplay PASS
+TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration PASS
+feedScreenInput.test.ts — reconnect/late-sibling/overlap tests PASS
 ```
