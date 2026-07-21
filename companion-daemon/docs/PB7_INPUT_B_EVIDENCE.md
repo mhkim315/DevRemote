@@ -1,6 +1,7 @@
 # Input-B Evidence — Versioned Control-Request Protocol (R4 remediation)
 
 **Input-B R4 remediation IMPL SHA:** `514bf83ce`
+**Input-B R5 edge-case IMPL SHA:** `78b9090ce`
 **Prior Input-B R4 IMPL SHA:** `042005af7`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
@@ -32,7 +33,7 @@ go vet ./...                      exit 0
 gofmt -l .                        0 files
 go test -race ./... -count=1       ALL PASS
 npx tsc --noEmit                   clean
-npx jest --runInBand               477/477 pass, 35 suites
+npx jest --runInBand               478/478 pass, 35 suites
 ```
 
 ## Protocol Details
@@ -88,6 +89,8 @@ npx jest --runInBand               477/477 pass, 35 suites
   entries it rejects a new request before writing, preserving retry safety;
   only TTL expiry frees capacity. Permission-denied results are burst-limited
   to three and refill at ten per minute.
+- Legacy binary is classified before the permission gate in paired production,
+  so both authorized and unauthorized old clients receive `update_required`.
 
 ### 2-Frame submitLine
 - Text + Enter sent as two independent control requests
@@ -100,6 +103,10 @@ npx jest --runInBand               477/477 pass, 35 suites
 - A reconnect hello clears all old pending IDs, and a failed/timeout line
   abandons every known sibling ID so a late accepted result cannot overwrite
   its partial-delivery state. A second Send cannot overlap a live line.
+- Soft-keyboard Enter uses the same preservation path as Send. The page tags
+  each line frame with an operation ID and `text`/`enter` role, so macro/paste
+  traffic cannot claim a line's ACK slots. A completed line clears the editor
+  only when its acknowledged text still equals the current editor content.
 
 ## Focused Tests
 
