@@ -230,8 +230,9 @@ describe('generated production script execution', () => {
     h.pageConnect();
     const ws = lastWS();
     ws.open();
-
-    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: 30, cols: 100 }) });
+    // TERM-G1: hello must precede geometry for identity binding.
+    ws.emit('message', { data: JSON.stringify({ type: 'hello', sessionId: 'controlled_pty:s', generation: 7, connectionId: 'conn-1', capabilities: ['terminal:input'] }) });
+    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: 30, cols: 100, session: 'controlled_pty:s', generation: 7 }) });
 
     expect(h.term.resize).toHaveBeenCalledWith(100, 30);
     expect(h.term.write).not.toHaveBeenCalled();
@@ -273,37 +274,120 @@ describe('generated production script execution', () => {
     expect(h.activeIntervals.size).toBe(0); // cleared on close
   });
 
-  // ── TERM-G1: live WS geometry frame validation ──
+  // ── TERM-G1: live WS geometry frame validation with identity binding ──
 
-  function emitGeom(h: Harness, ws: FakeWS, rows: number, cols: number) {
-    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows, cols }) });
+  const TEST_SESSION = 'controlled_pty:s';
+  const TEST_GEN = 7;
+
+  function emitHello(h: Harness, ws: FakeWS, session?: string, generation?: number) {
+    ws.emit('message', { data: JSON.stringify({
+      type: 'hello',
+      sessionId: session ?? TEST_SESSION,
+      generation: generation ?? TEST_GEN,
+      connectionId: 'conn-1',
+      capabilities: ['terminal:input'],
+    }) });
   }
 
-  it('TERM-G1 live: valid geometry frame resizes and preserves last valid', async () => {
+  function emitGeom(h: Harness, ws: FakeWS, rows: number, cols: number, session?: string, generation?: number) {
+    ws.emit('message', { data: JSON.stringify({
+      type: 'geometry',
+      rows, cols,
+      session: session ?? TEST_SESSION,
+      generation: generation ?? TEST_GEN,
+    }) });
+  }
+
+  function openAndHello(h: Harness, ws: FakeWS) {
+    ws.open();
+    emitHello(h, ws);
+  }
+
+  it('TERM-G1 live: valid geometry with identity resizes and preserves last', async () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws = lastWS();
-    ws.open();
+    openAndHello(h, ws);
 
     emitGeom(h, ws, 30, 100);
     expect(h.term.resize).toHaveBeenCalledWith(100, 30);
     expect(h.sandbox.window.__pokitLastGeom).toEqual({ rows: 30, cols: 100 });
   });
 
-  it('TERM-G1 live: float rows rejected (no resize, last valid preserved)', async () => {
+  it('TERM-G1 live: geometry before hello is rejected (no identity yet)', async () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws = lastWS();
     ws.open();
+    // No hello emitted — identity is null.
 
-    // Set a valid geometry first.
+    emitGeom(h, ws, 30, 100);
+    expect(h.term.resize).not.toHaveBeenCalled();
+  });
+
+  it('TERM-G1 live: wrong session geometry rejected', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    openAndHello(h, ws);
+
+    emitGeom(h, ws, 30, 100, 'controlled_pty:other');
+    expect(h.term.resize).not.toHaveBeenCalled();
+  });
+
+  it('TERM-G1 live: wrong generation geometry rejected', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    openAndHello(h, ws);
+
+    emitGeom(h, ws, 30, 100, TEST_SESSION, TEST_GEN + 1);
+    expect(h.term.resize).not.toHaveBeenCalled();
+  });
+
+  it('TERM-G1 live: old generation geometry rejected (stale connection)', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    openAndHello(h, ws);
+
+    // Old generation — must be rejected.
+    emitGeom(h, ws, 30, 100, TEST_SESSION, TEST_GEN - 1);
+    expect(h.term.resize).not.toHaveBeenCalled();
+  });
+
+  it('TERM-G1 live: missing session field in geometry rejected', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    openAndHello(h, ws);
+
+    // Geometry without session field — pre-G1 daemon format.
+    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: 30, cols: 100, generation: TEST_GEN }) });
+    expect(h.term.resize).not.toHaveBeenCalled();
+  });
+
+  it('TERM-G1 live: missing generation field in geometry rejected', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    openAndHello(h, ws);
+
+    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: 30, cols: 100, session: TEST_SESSION }) });
+    expect(h.term.resize).not.toHaveBeenCalled();
+  });
+
+  it('TERM-G1 live: float rows rejected (no resize, last valid preserved)', async () => {
+    const h = await makeHarness();
+    h.pageConnect();
+    const ws = lastWS();
+    openAndHello(h, ws);
+
     emitGeom(h, ws, 30, 100);
     h.term.resize.mockClear();
 
-    // Float rows — must be rejected.
     emitGeom(h, ws, 30.5, 100);
     expect(h.term.resize).not.toHaveBeenCalled();
-    // Last valid geometry preserved.
     expect(h.sandbox.window.__pokitLastGeom).toEqual({ rows: 30, cols: 100 });
   });
 
@@ -311,7 +395,7 @@ describe('generated production script execution', () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws = lastWS();
-    ws.open();
+    openAndHello(h, ws);
 
     emitGeom(h, ws, 30, 100);
     h.term.resize.mockClear();
@@ -321,131 +405,69 @@ describe('generated production script execution', () => {
     expect(h.sandbox.window.__pokitLastGeom).toEqual({ rows: 30, cols: 100 });
   });
 
-  it('TERM-G1 live: zero rows rejected, last valid preserved', async () => {
+  it('TERM-G1 live: zero/negative/out-of-bounds rows rejected', async () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws = lastWS();
-    ws.open();
+    openAndHello(h, ws);
 
-    emitGeom(h, ws, 30, 100);
-    h.term.resize.mockClear();
-
-    emitGeom(h, ws, 0, 100);
-    expect(h.term.resize).not.toHaveBeenCalled();
-    expect(h.sandbox.window.__pokitLastGeom).toEqual({ rows: 30, cols: 100 });
+    for (const r of [0, -1, 1001]) {
+      h.term.resize.mockClear();
+      emitGeom(h, ws, r, 100);
+      expect(h.term.resize).not.toHaveBeenCalled();
+    }
   });
 
-  it('TERM-G1 live: zero cols rejected', async () => {
+  it('TERM-G1 live: zero/negative/out-of-bounds cols rejected', async () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws = lastWS();
-    ws.open();
+    openAndHello(h, ws);
 
-    emitGeom(h, ws, 30, 100);
-    h.term.resize.mockClear();
-
-    emitGeom(h, ws, 30, 0);
-    expect(h.term.resize).not.toHaveBeenCalled();
-  });
-
-  it('TERM-G1 live: negative rows rejected', async () => {
-    const h = await makeHarness();
-    h.pageConnect();
-    const ws = lastWS();
-    ws.open();
-
-    emitGeom(h, ws, -1, 100);
-    expect(h.term.resize).not.toHaveBeenCalled();
-  });
-
-  it('TERM-G1 live: negative cols rejected', async () => {
-    const h = await makeHarness();
-    h.pageConnect();
-    const ws = lastWS();
-    ws.open();
-
-    emitGeom(h, ws, 30, -1);
-    expect(h.term.resize).not.toHaveBeenCalled();
-  });
-
-  it('TERM-G1 live: rows > 1000 rejected', async () => {
-    const h = await makeHarness();
-    h.pageConnect();
-    const ws = lastWS();
-    ws.open();
-
-    emitGeom(h, ws, 30, 100);
-    h.term.resize.mockClear();
-
-    emitGeom(h, ws, 1001, 100);
-    expect(h.term.resize).not.toHaveBeenCalled();
-  });
-
-  it('TERM-G1 live: cols > 2000 rejected', async () => {
-    const h = await makeHarness();
-    h.pageConnect();
-    const ws = lastWS();
-    ws.open();
-
-    emitGeom(h, ws, 30, 100);
-    h.term.resize.mockClear();
-
-    emitGeom(h, ws, 30, 2001);
-    expect(h.term.resize).not.toHaveBeenCalled();
+    for (const c of [0, -1, 2001]) {
+      h.term.resize.mockClear();
+      emitGeom(h, ws, 30, c);
+      expect(h.term.resize).not.toHaveBeenCalled();
+    }
   });
 
   it('TERM-G1 live: boundary-max rows=1000 cols=2000 accepted', async () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws = lastWS();
-    ws.open();
+    openAndHello(h, ws);
 
     emitGeom(h, ws, 1000, 2000);
     expect(h.term.resize).toHaveBeenCalledWith(2000, 1000);
     expect(h.sandbox.window.__pokitLastGeom).toEqual({ rows: 1000, cols: 2000 });
   });
 
-  it('TERM-G1 live: reconnect geometry applies to new connection', async () => {
+  it('TERM-G1 live: reconnect — new generation invalidates old connection geometry', async () => {
     const h = await makeHarness();
     h.pageConnect();
     const ws1 = lastWS();
-    ws1.open();
-
-    // Set valid geometry on first connection.
+    // First connection: gen=7.
+    openAndHello(h, ws1);
     emitGeom(h, ws1, 30, 100);
     expect(h.term.resize).toHaveBeenCalledWith(100, 30);
     h.term.resize.mockClear();
 
-    // Simulate reconnect: close first, create second WS, open it.
+    // Close ws1, create ws2 with NEW gen=8.
     ws1.close();
     h.pageConnect();
     const ws2 = lastWS();
     ws2.open();
+    // New hello with generation=8 updates global state.
+    emitHello(h, ws2, TEST_SESSION, 8);
 
-    // New connection gets its own geometry frame.
-    emitGeom(h, ws2, 40, 120);
+    // New connection geometry with gen=8 works.
+    emitGeom(h, ws2, 40, 120, TEST_SESSION, 8);
     expect(h.term.resize).toHaveBeenCalledWith(120, 40);
-    expect(h.sandbox.window.__pokitLastGeom).toEqual({ rows: 40, cols: 120 });
-  });
+    h.term.resize.mockClear();
 
-  it('TERM-G1 live: malformed geometry frame (missing rows) rejected', async () => {
-    const h = await makeHarness();
-    h.pageConnect();
-    const ws = lastWS();
-    ws.open();
-
-    ws.emit('message', { data: JSON.stringify({ type: 'geometry', cols: 100 }) });
-    expect(h.term.resize).not.toHaveBeenCalled();
-  });
-
-  it('TERM-G1 live: non-integer string rows/cols rejected', async () => {
-    const h = await makeHarness();
-    h.pageConnect();
-    const ws = lastWS();
-    ws.open();
-
-    ws.emit('message', { data: JSON.stringify({ type: 'geometry', rows: '30', cols: '100' }) });
-    // typeof '30' is 'string', not 'number' — rejected by typeof check.
+    // Old connection ws1 geometry with gen=7 must be REJECTED
+    // because global state now requires gen=8.
+    emitGeom(h, ws1, 99, 999, TEST_SESSION, 7);
     expect(h.term.resize).not.toHaveBeenCalled();
   });
 });

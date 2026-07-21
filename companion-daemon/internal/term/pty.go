@@ -459,9 +459,10 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 			// geometry-poll is read-only control, and is intentionally decoded
 			// only after strict terminal-input dispatch has declined it.
+			// TERM-G1: include session + generation for mobile identity binding.
 			if strictControlType(msg) == "geometry-poll" && rec != nil {
 				if rows, cols, ok := rec.GetSize(); ok {
-					geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d}`, rows, cols)
+					geo := fmt.Sprintf(`{"type":"geometry","rows":%d,"cols":%d,"session":%q,"generation":%d}`, rows, cols, session, inputGeneration)
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: []byte(geo)}:
 					case <-writerDone:

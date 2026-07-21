@@ -95,20 +95,34 @@ export class TerminalController {
       // (the page's onmessage handler also forwards them — deduplication is
       // handled by the native FeedScreen which is idempotent for identical hello
       // frames with the same generation).
+      // TERM-G1: globally-tracked session+generation from the most recent
+      // hello. When a reconnect delivers a new generation, geometry frames
+      // from old connections (still bearing the old generation) are rejected.
       rawWS.addEventListener('message',function(e){
         if(typeof e.data==='string'){ try{ var ctrl=JSON.parse(e.data);
-          // TERM-G1: validate live geometry frames — reject non-integer,
-          // zero, negative, or implausibly large values. Preserve last
-          // valid geometry; invalid frames are silently dropped.
-          if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'){
-            if(Number.isInteger(ctrl.rows)&&Number.isInteger(ctrl.cols)&&ctrl.rows>=1&&ctrl.rows<=1000&&ctrl.cols>=1&&ctrl.cols<=2000){
+          if(ctrl&&ctrl.type==='hello'){
+            if(Number.isInteger(ctrl.generation)&&typeof ctrl.sessionId==='string'&&ctrl.sessionId){
+              window.__pokitGeomGen=ctrl.generation;
+              window.__pokitGeomSession=ctrl.sessionId;
+            }
+            try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(e.data); }catch(pm){}
+          } else if(ctrl&&(ctrl.type==='read_only'||ctrl.type==='input_result')){
+            try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(e.data); }catch(pm){}
+          } else if(ctrl&&ctrl.type==='geometry'&&typeof ctrl.rows==='number'&&typeof ctrl.cols==='number'){
+            // TERM-G1: validate bounds AND global identity binding.
+            // Geometry must match the globally-current session+generation.
+            var ok=false;
+            if(Number.isInteger(ctrl.rows)&&Number.isInteger(ctrl.cols)&&
+               ctrl.rows>=1&&ctrl.rows<=1000&&ctrl.cols>=1&&ctrl.cols<=2000){
+              var gs=window.__pokitGeomSession, gg=window.__pokitGeomGen;
+              if(gs!==undefined&&gg!==undefined&&
+                 ctrl.session===gs&&ctrl.generation===gg){
+                ok=true;
+              }
+            }
+            if(ok){
               try{ if(window.term){ window.term.resize(ctrl.cols,ctrl.rows); window.__pokitLastGeom={rows:ctrl.rows,cols:ctrl.cols}; } }catch(ge){}
             }
-          } else if(ctrl&&(ctrl.type==='hello'||ctrl.type==='read_only'||ctrl.type==='input_result')){
-            // Forward control frames to React Native. The daemon HTML page's
-            // ws.onmessage also forwards these — the FeedScreen is idempotent
-            // for identical hello frames.
-            try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(e.data); }catch(pm){}
           }
         }catch(x){} }
       });
