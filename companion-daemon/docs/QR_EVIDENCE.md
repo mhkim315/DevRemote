@@ -1,6 +1,6 @@
 # QR Renderer/Security Packet — Evidence (R1 — Rejection Fixes)
 
-**QR IMPL SHA:** (pending commit)
+**QR IMPL SHA (R1):** `e6dc31b87`
 **QR R0 IMPL SHA:** `bad7e83eb`
 **QA EVIDENCE SHA:** (this commit)
 **PA4 ACCEPT SHA:** `74560edd`
