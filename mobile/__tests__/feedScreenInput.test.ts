@@ -148,12 +148,13 @@ describe('FeedScreen production input authorization', () => {
       }));
     });
     const webview = tree.root.findByType('webview');
-    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, sequence: 1 }) } }));
+    // PB.7 Input-B: versioned protocol — tracks by inputId, not sequence.
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, inputId: 'aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff' }) } }));
     expect(statusText(tree)).toBe('Sent to socket');
-    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_ack', generation: 7, sequence: 1 }) } }));
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_result', inputId: 'aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff', outcome: 'accepted', generation: 7, sequence: 1 }) } }));
     expect(statusText(tree)).toBe('Delivered to terminal');
 
-    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, sequence: 2 }) } }));
+    await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'input_pending', generation: 7, inputId: 'bbbb111122223333444455556666777788889999aaaabbbbccccddddeeeeffff' }) } }));
     await act(async () => { jest.advanceTimersByTime(3000); });
     expect(statusText(tree)).toBe('Not delivered');
     await act(async () => tree.unmount());

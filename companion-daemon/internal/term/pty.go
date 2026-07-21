@@ -1,6 +1,8 @@
 package term
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -388,7 +390,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}()
 
 	var lastDenial time.Time
+	connID := newConnectionID()
 	recentCache := newInputRecentCache()
+	defer recentCache.clear()
 	defer recentCache.clear()
 	var inputSequence uint64
 	for {
@@ -431,7 +435,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 					Type string `json:"type"`
 				}
 				if json.Unmarshal(msg, &ctrl2) == nil && ctrl2.Type == "terminal_input" {
-					if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache); result != nil {
+					if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID); result != nil {
 						select {
 						case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
 						default:
@@ -549,9 +553,14 @@ term.open(document.getElementById("t"));
 // the ONLY text frames and are sent elsewhere. Exposed on window so the
 // mobile host (FeedScreen Send/macros) uses the exact same contract.
 var _pokitEnc=new TextEncoder();
-function pokitSendInput(s){if(readOnly||inputGeneration===null)return;
+function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=("0"+((a[i]>>4)&15).toString(16)).slice(-2);h+=("0"+(a[i]&15).toString(16)).slice(-2)}return h}
+function pokitSendInput(s){
+  if(readOnly||inputGeneration===null)return;
   var w=window.ws;
-  if(w&&w.readyState===1){ try{ w.send(_pokitEnc.encode(s));inputSequence++;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",generation:inputGeneration,sequence:inputSequence}));} }catch(e){} }
+  if(!w||w.readyState!==1)return;
+  var inputID=pokitMakeInputID();
+  var req={type:"terminal_input",version:1,sessionId:(new URLSearchParams(location.search)).get("session")||"",generation:inputGeneration,inputId:inputID,payload:btoa(String.fromCharCode.apply(null,new TextEncoder().encode(s)))};
+  try{ w.send(JSON.stringify(req));if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({type:"input_pending",generation:inputGeneration,inputId:inputID}));} }catch(e){}
 }
 window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
 
@@ -601,7 +610,7 @@ function connect(){
     // overwritten by this onmessage assignment. Returning here on text ensures
     // unknown/malformed control frames fail closed and are never rendered as
     // PTY output.
-    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];inputGeneration=Number.isInteger(ctrl.generation)?ctrl.generation:null;readOnly=p.indexOf("terminal:input")===-1||inputGeneration===null;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="input_ack"){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
+    if(typeof e.data==="string"){try{var ctrl=JSON.parse(e.data);if(ctrl.type==="hello"){var p=ctrl.capabilities||[];inputGeneration=Number.isInteger(ctrl.generation)?ctrl.generation:null;readOnly=p.indexOf("terminal:input")===-1||inputGeneration===null;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="read_only"){readOnly=true;if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}else if(ctrl.type==="input_result"){if(window.ReactNativeWebView){window.ReactNativeWebView.postMessage(e.data)}}}catch(_){}return}
     var t=new TextDecoder().decode(e.data);
     raw+=t;
 	    e8diag.msgCount++; e8diag.totalBytes+=t.length; e8diag.lastMsgSize=t.length; e8diag.rawLen=raw.length;
@@ -884,4 +893,10 @@ func transcriptIfNotNil(ts *transcript.Service) interface{ BeginInput(string, ti
 		return nil
 	}
 	return ts
+}
+
+func newConnectionID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

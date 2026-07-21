@@ -1,6 +1,7 @@
 package term
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -58,27 +59,34 @@ func validInputID(s string) bool {
 }
 
 // parseInputControlRequest validates and decodes a raw JSON text frame into a
-// control request. Unknown fields and trailing data cause rejection.
+// control request. Unknown fields, trailing data, and malformed input cause
+// rejection with distinct error values so callers can map to protocol outcomes.
 func parseInputControlRequest(raw []byte) (*inputControlRequest, []byte, error) {
 	if len(raw) > inputMaxRawFrame {
 		return nil, nil, fmt.Errorf("input_too_large")
 	}
 	var req inputControlRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return nil, nil, fmt.Errorf("invalid_request")
+	}
+	// Reject trailing data.
+	if dec.More() {
 		return nil, nil, fmt.Errorf("invalid_request")
 	}
 	if req.Type != "terminal_input" || req.Version != 1 {
-		return nil, nil, fmt.Errorf("invalid_request")
+		return &req, nil, fmt.Errorf("invalid_request")
 	}
 	if !validInputID(req.InputID) {
-		return nil, nil, fmt.Errorf("invalid_request")
+		return &req, nil, fmt.Errorf("invalid_request")
 	}
 	decoded, err := base64.StdEncoding.DecodeString(req.Payload)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid_request")
+		return &req, nil, fmt.Errorf("invalid_request")
 	}
 	if len(decoded) > inputMaxDecoded {
-		return nil, nil, fmt.Errorf("input_too_large")
+		return &req, nil, fmt.Errorf("input_too_large")
 	}
 	return &req, decoded, nil
 }
@@ -207,12 +215,28 @@ func handleTerminalInput(
 	inputSequence *uint64,
 	ticketPrincipal interface{},
 	recentCache *inputRecentCache,
+	connID string,
 ) []byte {
+	mkResult := func(req *inputControlRequest, outcome string, seq uint64) []byte {
+		b, _ := json.Marshal(inputResult{
+			Type: "input_result", InputID: req.InputID,
+			ConnectionID: connID, SessionID: req.SessionID,
+			Generation: req.Generation, Sequence: seq, Outcome: outcome,
+		})
+		return b
+	}
+
 	req, decoded, parseErr := parseInputControlRequest(msg)
 	if parseErr != nil {
-		result := inputResult{Type: "input_result", Outcome: "invalid_request"}
+		outcome := "invalid_request"
+		if parseErr.Error() == "input_too_large" {
+			outcome = "input_too_large"
+		}
+		result := inputResult{Type: "input_result", ConnectionID: connID, Outcome: outcome}
 		if req != nil {
 			result.InputID = req.InputID
+			result.SessionID = req.SessionID
+			result.Generation = req.Generation
 		}
 		b, _ := json.Marshal(result)
 		return b
@@ -220,17 +244,13 @@ func handleTerminalInput(
 
 	tp, _ := ticketPrincipal.(*devicetrust.Principal)
 	if tp != nil && !hasTicketPerm(tp, string(devicetrust.PermTerminalInput)) {
-		b, _ := json.Marshal(inputResult{
-			Type: "input_result", InputID: req.InputID,
-			SessionID: req.SessionID, Generation: req.Generation,
-			Outcome: "permission_denied",
-		})
-		return b
+		return mkResult(req, "permission_denied", 0)
 	}
 
 	if req.SessionID != session {
 		b, _ := json.Marshal(inputResult{
 			Type: "input_result", InputID: req.InputID,
+			ConnectionID: connID, SessionID: req.SessionID,
 			Generation: req.Generation, Outcome: "session_not_found",
 		})
 		return b
@@ -238,37 +258,22 @@ func handleTerminalInput(
 	if req.Generation != inputGeneration {
 		b, _ := json.Marshal(inputResult{
 			Type: "input_result", InputID: req.InputID,
-			SessionID: req.SessionID, Generation: inputGeneration,
-			Outcome: "stale_generation",
+			ConnectionID: connID, SessionID: req.SessionID,
+			Generation: inputGeneration, Outcome: "stale_generation",
 		})
 		return b
 	}
 
 	digest := requestDigest(req)
 	if outcome, seq, ok := recentCache.get(req.InputID, digest); ok {
-		b, _ := json.Marshal(inputResult{
-			Type: "input_result", InputID: req.InputID,
-			SessionID: req.SessionID, Generation: req.Generation,
-			Sequence: seq, Outcome: outcome,
-		})
-		return b
+		return mkResult(req, outcome, seq)
 	}
 	if recentCache.getConflict(req.InputID, digest) {
-		b, _ := json.Marshal(inputResult{
-			Type: "input_result", InputID: req.InputID,
-			SessionID: req.SessionID, Generation: req.Generation,
-			Outcome: "invalid_request",
-		})
-		return b
+		return mkResult(req, "invalid_request", 0)
 	}
 
 	if inputTransport == nil {
-		b, _ := json.Marshal(inputResult{
-			Type: "input_result", InputID: req.InputID,
-			SessionID: req.SessionID, Generation: req.Generation,
-			Outcome: "transport_closed",
-		})
-		return b
+		return mkResult(req, "transport_closed", 0)
 	}
 
 	if transcriptSvc != nil {
@@ -287,10 +292,5 @@ func handleTerminalInput(
 	}
 
 	recentCache.store(req.InputID, digest, outcome, seq)
-	b, _ := json.Marshal(inputResult{
-		Type: "input_result", InputID: req.InputID,
-		SessionID: req.SessionID, Generation: req.Generation,
-		Sequence: seq, Outcome: outcome,
-	})
-	return b
+	return mkResult(req, outcome, seq)
 }

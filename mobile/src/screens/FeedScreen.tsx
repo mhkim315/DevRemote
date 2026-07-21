@@ -489,8 +489,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
     const currentCmd = cmdRef.current || cmd;
     if (!currentCmd.trim()) return;
     submitLine(currentCmd);
-    setCmd('');
-    cmdRef.current = '';
+    // PB.7 Input-B: preserve command until ACK. Clear only after both
+    // text+Enter receive accepted results (handled in the input_result
+    // handler — when pendingInputRef is empty, SendStatus shows Delivered).
   }, [submitLine, session]);
   const sendMacro = useCallback((chars: number[]) => {
     if (!deviceCanInput) { setSendStatus('failed'); return; }
@@ -562,8 +563,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       if (data.type === 'sendStatus') {
         setSendStatus(data.status === 'sent' ? 'socket_sent' : 'failed');
       }
-      if (data.type === 'input_pending' && Number.isInteger(data.generation) && Number.isInteger(data.sequence)) {
-        const key = `${data.generation}:${data.sequence}`;
+      // PB.7 Input-B: versioned control-request protocol — track by inputId.
+      if (data.type === 'input_pending' && Number.isInteger(data.generation) && typeof data.inputId === 'string') {
+        const key = data.inputId as string;
         const existing = pendingInputRef.current.get(key);
         if (existing) clearTimeout(existing);
         const timeout = setTimeout(() => {
@@ -572,13 +574,13 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         pendingInputRef.current.set(key, timeout);
         setSendStatus('socket_sent');
       }
-      if (data.type === 'input_ack' && Number.isInteger(data.generation) && Number.isInteger(data.sequence)) {
-        const key = `${data.generation}:${data.sequence}`;
+      if (data.type === 'input_result' && typeof data.inputId === 'string' && typeof data.outcome === 'string') {
+        const key = data.inputId as string;
         const timeout = pendingInputRef.current.get(key);
         if (timeout) {
           clearTimeout(timeout);
           pendingInputRef.current.delete(key);
-          setSendStatus('delivered');
+          setSendStatus(data.outcome === 'accepted' ? 'delivered' : 'not_delivered');
         }
       }
       if (data.type === 'hello') {
