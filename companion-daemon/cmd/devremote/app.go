@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -534,19 +535,29 @@ func (a *App) Run(ctx context.Context) error {
 		a.tunnel = a.startTunnel()
 	}
 
-	// If the configured address uses port 0, create the listener first so
-	// the actual port is known before logging. Tests can parse this log line.
-	ln, err := net.Listen("tcp", a.server.Addr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", a.server.Addr, err)
-	}
-	log.Printf("POKIT daemon %s (owner=%s)", ln.Addr().String(), a.config.OwnerUUID)
-
 	// 4. Serve HTTP in background; wait for shutdown signal or HTTP error.
+	var ln net.Listener
+	if strings.HasSuffix(a.server.Addr, ":0") {
+		// Dynamic port: pre-bind so the actual port is known before logging.
+		// Tests parse the log line for the assigned port.
+		var err error
+		ln, err = net.Listen("tcp", a.server.Addr)
+		if err != nil {
+			return fmt.Errorf("listen %s: %w", a.server.Addr, err)
+		}
+	}
+	addrStr := a.server.Addr
+	if ln != nil {
+		addrStr = ln.Addr().String()
+	}
+	log.Printf("POKIT daemon %s (owner=%s)", addrStr, a.config.OwnerUUID)
+
 	errCh := make(chan error, 1)
-	go func() {
-		errCh <- a.server.Serve(ln)
-	}()
+	if ln != nil {
+		go func() { errCh <- a.server.Serve(ln) }()
+	} else {
+		go func() { errCh <- a.server.ListenAndServe() }()
+	}
 
 	var serveErr error
 	select {
