@@ -1,14 +1,20 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"golang.org/x/term"
 	"rsc.io/qr"
 )
 
@@ -65,7 +71,8 @@ func runPairClient(args []string) {
 	fmt.Printf("\nPokit Pairing\nHost ID: %s\nFingerprint: %s\n", sess.HostID, sess.Fingerprint)
 	fmt.Printf("Endpoint: %s\nExpires: %s\n", sess.Endpoint, sess.ExpiresAt)
 
-	// Build the QR payload.
+	// Build the QR payload. Payload bytes are NEVER emitted to
+	// stdout, stderr, logs, diagnostics, or process arguments.
 	qrPayload, _ := json.Marshal(map[string]string{
 		"sessionId":      sess.SessionID,
 		"hostId":         sess.HostID,
@@ -75,12 +82,9 @@ func runPairClient(args []string) {
 		"endpoint":       sess.Endpoint,
 		"expiresAt":      sess.ExpiresAt,
 	})
-	// Render an actual scannable QR.
 	fmt.Println()
-	renderQR(string(qrPayload))
-	// Debug fallback (no secrets — the bootstrap token is already in the QR).
-	fmt.Printf("\nQR payload: %s\n", string(qrPayload))
-	fmt.Println()
+	cleanup := renderQR(string(qrPayload))
+	defer cleanup()
 
 	// 2) Decode candidate (arrives after proof_verified).
 	var candMsg struct {
@@ -142,119 +146,254 @@ func runPairClient(args []string) {
 		done.Device.DeviceID, done.Device.Fingerprint, done.Device.Role)
 }
 
-// renderQR prints a scannable QR code. Prefers ANSI terminal output; falls
-// back to PNG file when TERM is dumb/unknown or when stdout is not a terminal.
-func renderQR(data string) {
+// ── QR Renderer ──
+
+// renderQR renders a scannable QR code. It prefers ANSI half-block terminal
+// output when the compact QR with quiet zone fits the measured dimensions;
+// otherwise falls back to a securely created PNG file. Returns a cleanup
+// function that removes any temporary file (best-effort, safe path only).
+func renderQR(data string) func() {
 	code, err := qr.Encode(data, qr.M)
 	if err != nil {
 		fmt.Println("(QR error)")
-		return
+		return func() {}
 	}
-	termWidth := terminalWidth()
-	qrWidth := code.Size // modules
-	cellW := 1           // one character per module (compact)
-	quietModules := 4    // standard QR quiet zone
-	fullWidth := quietModules*2*cellW + qrWidth*cellW
 
-	// Fall back to PNG if terminal is too narrow or not a TTY.
-	if termWidth > 0 && fullWidth > termWidth {
-		renderQRPNG(code)
-		return
+	// Selection: TTY + known fitting dimensions → ANSI; otherwise PNG.
+	if ansiOK(code) {
+		renderQRANSI(code)
+		return func() {}
 	}
-	if !isTerminal() {
-		renderQRPNG(code)
-		return
+	pngPath, err := renderQRPNG(code)
+	if err != nil {
+		// Secure creation failure is fatal.
+		log.Fatalf("QR PNG: %v", err)
 	}
-	renderQRANSI(code, quietModules, cellW)
+	// Opener failure is non-fatal after secure creation.
+	fmt.Printf("QR saved to: %s\n", pngPath)
+	if err := openPNG(pngPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Could not open QR image: %v\n", err)
+	}
+	return func() { cleanupPNG(pngPath) }
 }
 
-// renderQRANSI prints a compact, ANSI-clean QR to the terminal.
-// Every row begins and ends with a full ANSI reset, guaranteeing a clean
-// quiet zone and no horizontal style leakage.
-func renderQRANSI(code *qr.Code, quiet, cellW int) {
-	blackBG := "\033[40m"
-	whiteBG := "\033[47m"
-	reset := "\033[0m"
+// ansiOK returns true when stdout is a TTY, terminal dimensions are known,
+// and the compact QR with 4-module quiet zone fits both width and height.
+func ansiOK(code *qr.Code) bool {
+	if !isTTY() {
+		return false
+	}
+	w, h := termSize()
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	qrSize := code.Size
+	// Width: 4 left quiet + qrSize modules + 4 right quiet.
+	fullWidth := 8 + qrSize
+	// Height: 2 half-block rows (4 module rows of quiet) top + bottom,
+	// plus ceil(qrSize/2) half-block rows for the QR body.
+	halfRows := (qrSize + 1) / 2
+	fullHeight := 4 + halfRows // 2 top quiet + 2 bottom quiet = 4 half-block rows
+	return fullWidth <= w && fullHeight <= h
+}
+
+// ── ANSI Half-Block Terminal Renderer ──
+
+const (
+	ansiReset   = "\033[0m"
+	ansiBlackBG = "\033[40m"
+	ansiWhiteBG = "\033[47m"
+	ansiBlackFG = "\033[30m"
+	ansiWhiteFG = "\033[37m"
+
+	quietModules = 4 // QR standard quiet zone
+)
+
+// halfBlock maps a pair of QR module rows (top, bottom) into one terminal
+// cell using U+2584 (▄ LOWER HALF BLOCK). The foreground (ink) is the
+// bottom module; the background is the top module. Black → FG black,
+// white → FG white (explicit per cell).
+func halfBlock(topBlack, bottomBlack bool) string {
+	fg := ansiWhiteFG
+	bg := ansiWhiteBG
+	if topBlack {
+		bg = ansiBlackBG
+	}
+	if bottomBlack {
+		fg = ansiBlackFG
+	}
+	return fg + bg + "▄"
+}
+
+// fullBlockTop renders a single QR module row in the upper half of the
+// cell using U+2580 (▀ UPPER HALF BLOCK). The foreground (ink) is the
+// top/only module; the background is always white.
+func fullBlockTop(black bool) string {
+	fg := ansiWhiteFG
+	if black {
+		fg = ansiBlackFG
+	}
+	return fg + ansiWhiteBG + "▀"
+}
+
+// whiteCell returns a half-block cell that is entirely white.
+func whiteCell() string {
+	return ansiWhiteFG + ansiWhiteBG + "▄"
+}
+
+func renderQRANSI(code *qr.Code) {
 	qrSize := code.Size
 
-	// One-space cell for compact rendering.
-	cell := strings.Repeat(" ", cellW)
-	quietCol := strings.Repeat(" ", quiet*cellW)
+	// Per-row reset and final reset after output.
+	defer fmt.Print(ansiReset)
 
-	// Top quiet zone.
-	for i := 0; i < quiet; i++ {
-		fmt.Print(reset, quietCol)
-		for x := 0; x < qrSize; x++ {
-			if code.Black(x, 0) {
-				fmt.Print(blackBG, cell)
-			} else {
-				fmt.Print(whiteBG, cell)
-			}
-		}
-		fmt.Println(reset)
+	// Left quiet zone: 4 white columns.
+	leftQuiet := strings.Repeat(whiteCell(), quietModules)
+
+	// Top quiet zone: 2 blank white half-block rows (4 module rows).
+	topQuietRow := leftQuiet + strings.Repeat(whiteCell(), qrSize) + leftQuiet
+	for range 2 {
+		fmt.Print(ansiReset, topQuietRow, ansiReset, "\n")
 	}
 
-	// QR rows.
-	for y := 0; y < qrSize; y++ {
-		fmt.Print(reset, quietCol) // ANSI reset before every row
+	// QR body: process 2 module rows per terminal row.
+	for y := 0; y < qrSize; y += 2 {
+		hasNext := y+1 < qrSize
+		fmt.Print(ansiReset, leftQuiet)
 		for x := 0; x < qrSize; x++ {
-			if code.Black(x, y) {
-				fmt.Print(blackBG, cell)
+			if hasNext {
+				fmt.Print(halfBlock(code.Black(x, y), code.Black(x, y+1)))
 			} else {
-				fmt.Print(whiteBG, cell)
+				fmt.Print(fullBlockTop(code.Black(x, y)))
 			}
 		}
-		fmt.Print(reset) // ANSI reset at row end
-		fmt.Println()
+		fmt.Print(leftQuiet)
+		fmt.Print(ansiReset, "\n")
 	}
 
-	// Bottom quiet zone.
-	for i := 0; i < quiet; i++ {
-		fmt.Print(reset, quietCol)
-		for x := 0; x < qrSize; x++ {
-			if code.Black(x, qrSize-1) {
-				fmt.Print(blackBG, cell)
-			} else {
-				fmt.Print(whiteBG, cell)
-			}
-		}
-		fmt.Println(reset)
+	// Bottom quiet zone: 2 blank white half-block rows.
+	for range 2 {
+		fmt.Print(ansiReset, topQuietRow, ansiReset, "\n")
 	}
-
-	// Final ANSI reset.
-	fmt.Print(reset)
 }
 
-// renderQRPNG writes a QR PNG file to a temp location and opens it.
-func renderQRPNG(code *qr.Code) {
-	f, err := os.CreateTemp("", "pokit-pair-*.png")
+// ── Secure PNG Fallback ──
+
+// renderQRPNG creates a QR PNG file securely. The file is created atomically
+// with an unpredictable name, mode 0600, and current-user ownership. Symlinks,
+// non-regular targets, permissive modes, and ownership mismatch are rejected.
+// Returns the absolute path of the successfully created file.
+func renderQRPNG(code *qr.Code) (string, error) {
+	dir := os.TempDir()
+
+	// Unpredictable name: 16 random bytes, hex-encoded.
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("rand: %w", err)
+	}
+	name := filepath.Join(dir, "pokit-pair-"+hex.EncodeToString(b)+".png")
+
+	// Atomic creation: O_EXCL ensures no overwrite.
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "PNG temp file: %v\n", err)
-		return
+		return "", fmt.Errorf("create: %w", err)
 	}
-	pngBytes := code.PNG()
-	if _, err := f.Write(pngBytes); err != nil {
+
+	// Security verification: mode, ownership, symlink, non-regular.
+	if err := verifySecureFile(f); err != nil {
 		f.Close()
-		os.Remove(f.Name())
-		fmt.Fprintf(os.Stderr, "PNG write: %v\n", err)
-		return
+		os.Remove(name)
+		return "", err
 	}
-	name := f.Name()
-	f.Close()
-	fmt.Printf("QR saved to: %s\n", name)
-	go openFile(name)
+
+	if _, err := f.Write(code.PNG()); err != nil {
+		f.Close()
+		os.Remove(name)
+		return "", fmt.Errorf("write: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(name)
+		return "", fmt.Errorf("close: %w", err)
+	}
+
+	return name, nil
 }
 
-func terminalWidth() int {
-	return 0 // auto-detect not implemented; QR fits on modern terminals
+// verifySecureFile checks that an open file is a regular file (not symlink),
+// has mode exactly 0600, and is owned by the current user.
+func verifySecureFile(f *os.File) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat: %w", err)
+	}
+
+	// Reject non-regular files.
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file: mode=%s", fi.Mode())
+	}
+
+	// Reject permissive modes (anything other than 0600).
+	if fi.Mode().Perm() != 0600 {
+		return fmt.Errorf("permissive mode: %o", fi.Mode().Perm())
+	}
+
+	// Verify ownership: current user must own the file.
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+		if stat.Uid != uint32(os.Getuid()) {
+			return fmt.Errorf("ownership mismatch: uid=%d, want=%d", stat.Uid, os.Getuid())
+		}
+	}
+
+	// Verify the path is not a symlink (TOCTOU check on name).
+	lfi, err := os.Lstat(f.Name())
+	if err != nil {
+		return fmt.Errorf("lstat: %w", err)
+	}
+	if lfi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path is a symlink")
+	}
+
+	return nil
 }
 
-func isTerminal() bool {
-	fi, _ := os.Stdout.Stat()
-	return fi != nil && (fi.Mode()&os.ModeCharDevice) != 0
+// cleanupPNG removes the PNG file at path. Best-effort, safe path only.
+// Failure is silent.
+func cleanupPNG(path string) {
+	if path != "" {
+		os.Remove(path)
+	}
 }
 
-func openFile(path string) {
-	// best-effort: xdg-open / open
-	_ = path
+// ── Terminal Detection ──
+
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// termSize returns the terminal width and height in cells, or 0,0 if
+// stdout is not a TTY or the query fails.
+func termSize() (int, int) {
+	fd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) {
+		return 0, 0
+	}
+	w, h, err := term.GetSize(fd)
+	if err != nil {
+		return 0, 0
+	}
+	return w, h
+}
+
+// ── macOS Opener ──
+
+// openPNG opens a PNG file with the system opener using direct argv
+// (no shell, no env command, no URL interpolation). On macOS this is
+// equivalent to "open <path>".
+func openPNG(path string) error {
+	return exec.Command("open", path).Start()
 }
