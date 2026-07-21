@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"image/png"
 	"os"
 	"os/exec"
@@ -38,24 +39,48 @@ func TestQRPayloadByteEquality(t *testing.T) {
 		t.Fatalf("qr.Encode: %v", err)
 	}
 
-	// PNG round-trip: encode → decode → same payload bytes.
-	pngBytes := code.PNG()
-	img, err := png.Decode(bytes.NewReader(pngBytes))
-	if err != nil {
-		t.Fatalf("PNG decode: %v", err)
-	}
-	_ = img
-
-	// Re-encode payload and compare QR sizes match.
+	// Render QR → decode: verify the QR module matrix encodes our payload
+	// by re-encoding the same payload and comparing all modules.
 	code2, err := qr.Encode(payload, qr.M)
 	if err != nil {
 		t.Fatalf("qr.Encode (2): %v", err)
 	}
 	if code.Size != code2.Size {
-		t.Errorf("QR size mismatch: %d vs %d", code.Size, code2.Size)
+		t.Fatalf("QR size mismatch: %d vs %d", code.Size, code2.Size)
+	}
+	// Every module must match — deterministic encoding of the same payload.
+	for y := 0; y < code.Size; y++ {
+		for x := 0; x < code.Size; x++ {
+			if code.Black(x, y) != code2.Black(x, y) {
+				t.Fatalf("module mismatch at (%d,%d): payload not round-tripped", x, y)
+			}
+		}
 	}
 
-	// Verifiable: decoded PNG bytes produce a valid QR image.
+	// A different payload must produce different modules.
+	altPayload := `{"sessionId":"other"}`
+	code3, _ := qr.Encode(altPayload, qr.M)
+	different := false
+	if code.Size == code3.Size {
+		for y := 0; y < code.Size && !different; y++ {
+			for x := 0; x < code.Size; x++ {
+				if code.Black(x, y) != code3.Black(x, y) {
+					different = true
+					break
+				}
+			}
+		}
+	}
+	if !different && code.Size == code3.Size {
+		t.Error("different payloads produced identical QR modules")
+	}
+
+	// PNG round-trip: the PNG bytes decode to a valid image.
+	pngBytes := code.PNG()
+	img, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("PNG decode: %v", err)
+	}
 	if img.Bounds().Dx() == 0 || img.Bounds().Dy() == 0 {
 		t.Error("decoded PNG has zero dimensions")
 	}
@@ -306,40 +331,35 @@ func TestQRPNGSecureCreation(t *testing.T) {
 // ── Symlink rejection ──
 
 func TestQRPNGSymlinkRejection(t *testing.T) {
-	payload := testPayload()
-	code, _ := qr.Encode(payload, qr.M)
+	dir := t.TempDir()
 
-	// Create a real file first.
-	realPath, err := renderQRPNG(code)
+	// Create a real file at targetPath, then a symlink at linkPath → targetPath.
+	targetPath := filepath.Join(dir, "real.png")
+	f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		t.Fatalf("renderQRPNG: %v", err)
-	}
-	defer os.Remove(realPath)
-
-	// Create a symlink pointing to the real file.
-	linkPath := filepath.Join(os.TempDir(), "pokit-pair-symlink-test.png")
-	os.Remove(linkPath)
-	if err := os.Symlink(realPath, linkPath); err != nil {
-		t.Skipf("symlink not supported: %v", err)
-	}
-	defer os.Remove(linkPath)
-
-	// Now hack: create a file at the symlink path and verify it rejects.
-	// The verifySecureFile uses Lstat which detects symlinks.
-	f, err := os.Create(linkPath) // follow symlink, creates at realPath
-	if err != nil {
-		t.Fatalf("create via symlink: %v", err)
+		t.Fatalf("create real: %v", err)
 	}
 	f.Close()
 
-	// Direct symlink check: Lstat on linkPath returns symlink info.
-	lfi, err := os.Lstat(linkPath)
+	linkPath := filepath.Join(dir, "link.png")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	// Open the symlink path. The file descriptor follows the symlink to
+	// targetPath, but f.Name() returns linkPath. verifySecureFile calls
+	// Lstat(linkPath) which must detect the symlink and reject.
+	f2, err := os.OpenFile(linkPath, os.O_WRONLY, 0)
 	if err != nil {
-		t.Fatalf("lstat: %v", err)
+		t.Fatalf("open via symlink: %v", err)
 	}
-	if lfi.Mode()&os.ModeSymlink == 0 {
-		t.Error("expected symlink, got regular file")
+	defer f2.Close()
+
+	err = verifySecureFile(f2)
+	if err == nil {
+		t.Error("verifySecureFile must reject file opened through a symlink path")
 	}
+	t.Logf("symlink rejected: %v", err)
 }
 
 // ── Direct-argv opener ──
@@ -368,21 +388,21 @@ func TestQROpenerDirectArgv(t *testing.T) {
 
 func TestQROpenerFailureNonFatal(t *testing.T) {
 	payload := testPayload()
-	code, _ := qr.Encode(payload, qr.M)
 
-	// Secure creation succeeds.
-	path, err := renderQRPNG(code)
-	if err != nil {
-		t.Fatalf("renderQRPNG: %v", err)
-	}
-	defer os.Remove(path)
+	// Inject a failing opener.
+	orig := openPNGFn
+	openPNGFn = func(path string) error { return fmt.Errorf("injected opener failure") }
+	defer func() { openPNGFn = orig }()
 
-	// Opener failure (open non-existent binary) is non-fatal.
-	err = openPNG(path)
-	// openPNG only returns Start() error; the "open" command should exist on macOS.
-	// If it fails to start, that's non-fatal in the caller.
-	if err != nil {
-		t.Logf("openPNG returned error (non-fatal by design): %v", err)
+	// In test, stdout is not a TTY → renderQR takes PNG path.
+	// renderQRPNG succeeds, opener fails → must NOT log.Fatal.
+	// Instead it prints the safe path to stdout and the error to stderr.
+	cleanup := renderQR(payload)
+	defer cleanup()
+
+	// renderQR returns cleanup func (not killed by opener failure).
+	if cleanup == nil {
+		t.Fatal("renderQR returned nil cleanup — opener failure should be non-fatal")
 	}
 }
 

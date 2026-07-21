@@ -171,7 +171,7 @@ func renderQR(data string) func() {
 	}
 	// Opener failure is non-fatal after secure creation.
 	fmt.Printf("QR saved to: %s\n", pngPath)
-	if err := openPNG(pngPath); err != nil {
+	if err := openPNGFn(pngPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Could not open QR image: %v\n", err)
 	}
 	return func() { cleanupPNG(pngPath) }
@@ -390,6 +390,10 @@ func termSize() (int, int) {
 }
 
 // ── macOS Opener ──
+
+// openPNGFn is the opener function used by renderQR. Tests may override it
+// to inject a failing opener and verify non-fatal behavior.
+var openPNGFn = openPNG
 
 // openPNG opens a PNG file with the system opener using direct argv
 // (no shell, no env command, no URL interpolation). On macOS this is
