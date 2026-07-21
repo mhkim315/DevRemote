@@ -1,24 +1,19 @@
-//go:build legacy
-
 package term
 
 import (
 	"context"
 	"testing"
 	"time"
-
-	"devremote/companion-daemon/internal/mux"
 )
 
 // ── PA4.2: Managed lifecycle and approval lookup isolation ──
 
 // TestPA4_2_LifecycleServiceHasNoRegistryDependency proves the
-// LifecycleService struct has zero *mux.Registry fields or methods.
+// LifecycleService struct has zero legacy registry fields or methods.
 // Managed lifecycle routes exclusively through OwnedPTYRuntime and
 // ManagedRuntimeCatalog for provider-owned runtimes.
 func TestPA4_2_LifecycleServiceHasNoRegistryDependency(t *testing.T) {
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	// Stop routes to OwnedPTYRuntime for nonexistent sessions — returns error, not panic.
@@ -51,8 +46,7 @@ func TestPA4_2_LifecycleStopRoutesThroughProviderOwner(t *testing.T) {
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	// Wire managed owners — catalog is the sole read path for Epoch derivation.
@@ -93,8 +87,7 @@ func TestPA4_2_LifecycleDeleteClearsTranscript(t *testing.T) {
 	codexReg.MarkExited(sid, 1)
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
@@ -152,8 +145,7 @@ func TestPA4_2_ManagedLifecycleNeverUsesRegistryAdapter(t *testing.T) {
 // unknown/non-managed session IDs return not-found without falling
 // back to Registry or legacy discovery.
 func TestPA4_2_UnknownSessionFailsClosed(t *testing.T) {
-	adapter := mux.NewControlledPTYAdapter()
-	owned := NewOwnedPTYRuntime(launcherWrapper(adapter), nil)
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	svc := NewLifecycleService(owned, nil)
 
 	// Empty catalog — no managed sessions.

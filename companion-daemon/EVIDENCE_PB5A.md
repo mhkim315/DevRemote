@@ -65,3 +65,7 @@ The V1 tests exercise only `ManagedPTYLauncherV1`, `LaunchResult`,
 used by the default suite. `archgate.go` verifies the production source has the
 single direct `o.v1Spawn.Spawn` path and no mux dependency in its managed
 lifecycle files.
+
+PA4.1 and PA4.5 remain explicitly `legacy`-tagged Task 2 migration targets:
+their handler-level observer and websocket assertions require removal of the
+production `Handlers.Registry` dependency before they can become V1-only tests.

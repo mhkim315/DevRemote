@@ -1,5 +1,3 @@
-//go:build legacy
-
 package term
 
 import (
@@ -12,10 +10,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
-
-	"devremote/companion-daemon/internal/mux"
 )
 
 // ── PA2c focused tests (docs/PA2_LIFECYCLE_TRANSPORT_CONTRACT.md §PA2c) ──
@@ -92,9 +89,7 @@ func (c *fakeManagedCatalog) ManagedCapabilities(string) ([]string, []string) {
 
 func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeProviderOwner, *fakeManagedCatalog) {
 	t.Helper()
-	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
+	owned := NewOwnedPTYRuntime(nil, nil)
 	svc := NewLifecycleService(owned, nil)
 	codex := &fakeProviderOwner{currentEpoch: 7}
 	claude := &fakeProviderOwner{currentEpoch: 3}
@@ -194,9 +189,7 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	}
 	owner := NewManagedProviderOwner(provReg, stop, stop, stop)
 
-	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	svc := NewLifecycleService(NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil), nil)
+	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
 	cat := newFakeManagedCatalog()
 	// The FEDERATED catalog still serves the pre-replacement epoch 6 — the
 	// replacement has published nowhere outside the provider's own registry.
@@ -231,35 +224,45 @@ type blockingHandle struct {
 	forceLog []bool
 }
 
-func (h *blockingHandle) TerminateGroup(force bool) error {
+func (h *blockingHandle) Signal(syscall.Signal) SignalOutcome {
 	h.mu.Lock()
 	h.signals++
-	h.forceLog = append(h.forceLog, force)
+	h.forceLog = append(h.forceLog, false)
 	h.mu.Unlock()
 	close(h.started)
 	<-h.release
-	return nil
+	return SignalOutcome{Delivered: true}
 }
+func (h *blockingHandle) Kill() KillOutcome {
+	_ = h.Signal(syscall.SIGKILL)
+	return KillOutcome{Killed: true}
+}
+func (*blockingHandle) Wait(context.Context) LifecycleOutcome { return LifecycleOutcome{Exited: true} }
+func (*blockingHandle) Write(p []byte) (int, error)           { return len(p), nil }
+func (*blockingHandle) Resize(int, int) error                 { return nil }
+func (*blockingHandle) CloseTransport() error                 { return nil }
 
 type countingHandle struct{ signals atomic.Int32 }
 
-func (h *countingHandle) TerminateGroup(bool) error {
+func (h *countingHandle) Signal(syscall.Signal) SignalOutcome {
 	h.signals.Add(1)
-	return nil
+	return SignalOutcome{Delivered: true}
 }
+func (h *countingHandle) Kill() KillOutcome                   { h.signals.Add(1); return KillOutcome{Killed: true} }
+func (*countingHandle) Wait(context.Context) LifecycleOutcome { return LifecycleOutcome{Exited: true} }
+func (*countingHandle) Write(p []byte) (int, error)           { return len(p), nil }
+func (*countingHandle) Resize(int, int) error                 { return nil }
+func (*countingHandle) CloseTransport() error                 { return nil }
 
 func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testing.T) {
-	adapter := newLCAdapter("controlled_pty", true)
-	reg := mux.MustNewRegistry(adapter)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
+	owned := NewOwnedPTYRuntime(nil, nil)
 	owned.graceful = 50 * time.Millisecond
 	owned.killGrace = 50 * time.Millisecond
 
 	const id = "controlled_pty:replace-1"
 	h1 := &blockingHandle{started: make(chan struct{}), release: make(chan struct{})}
 	h2 := &countingHandle{}
-	gen1 := owned.RegisterForTestWithHandle(id, "", "old", h1, nil)
+	gen1 := owned.register(id, "", "old", h1, LaunchIdentity{InstanceID: "old", StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{h1}, h1, nil), nil)
 
 	// Stale Stop blocks inside h1.TerminateGroup — OUTSIDE every lock.
 	stopDone := make(chan error, 1)
@@ -273,7 +276,7 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 	// this would deadlock if any lifecycle lock were held across the I/O.
 	regDone := make(chan int64, 1)
 	go func() {
-		regDone <- owned.RegisterForTestWithHandle(id, "", "new", h2, nil)
+		regDone <- owned.register(id, "", "new", h2, LaunchIdentity{InstanceID: "new", StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{h2}, h2, nil), nil)
 	}()
 	var gen2 int64
 	select {
@@ -304,21 +307,13 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 	if h1.signals != 1 {
 		t.Fatalf("captured old handle signalled %d times, want exactly 1", h1.signals)
 	}
-	adapter.mu.Lock()
-	terminated := len(adapter.terminated)
-	adapter.mu.Unlock()
-	if terminated != 0 {
-		t.Fatalf("stale finalize terminated %d registry sessions of the replacement", terminated)
-	}
 }
 
 // Contract test 3 (owned PTY): a stale-generation transition on the owned
 // store is rejected at the store lock, and a stale finalize cannot touch a
 // replaced record.
 func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
-	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
+	owned := NewOwnedPTYRuntime(nil, nil)
 	id := "controlled_pty:r1"
 	gen1 := owned.RegisterForTest(id, "", "n", nil)
 	// Same canonical id relaunched: a NEW generation replaces the record.
@@ -374,7 +369,7 @@ func TestPA2c_OwnedPTY_ExactlyOnceTerminalConvergence(t *testing.T) {
 }
 
 // Contract tests 5+7 (architecture, static): the dispatcher has no
-// mux.Registry dependency; SessionCatalog no longer exists in production;
+// legacy registry dependency; SessionCatalog no longer exists in production;
 // the legacy IsManaged/Register bypasses are gone; lifecycle signalling
 // never resolves a process from the Registry at action time.
 func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
@@ -422,17 +417,15 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 	if n := strings.Count(string(src), "FindSession"); n != 0 {
 		t.Errorf("owned_pty_runtime.go has %d FindSession calls, want 0 (PA2d: adapter.ListSessions for capture, adapter CompareAndTerminate for cleanup)", n)
 	}
-	if !strings.Contains(string(src), "CompareAndTerminate(") {
-		t.Error("owned_pty_runtime.go does not call CompareAndTerminate (adapter-level) — cleanup must use the atomic API")
+	if !strings.Contains(string(src), "ProcessCleanup") {
+		t.Error("owned_pty_runtime.go does not use ProcessCleanup — V1 cleanup must remain generation-bound")
 	}
 }
 
 // Contract test 7 (no provider rows): the owned-PTY store carries only
 // controlled_pty rows; provider creates register nothing here.
 func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
-	reg := mux.MustNewRegistry(newLCAdapter("controlled_pty", true))
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
+	owned := NewOwnedPTYRuntime(nil, nil)
 	owned.RegisterForTest("controlled_pty:a", "shell", "a", nil)
 	for _, e := range owned.List() {
 		if e.Adapter != "controlled_pty" {
@@ -443,80 +436,22 @@ func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
 
 // ── PA2c-R2 remediation tests ──
 
-// handlelessSession supports streaming (recorder readiness passes) but is NOT
-// a mux.ManagedProcess — modelling a spawn whose process control could not be
-// bound.
-type handlelessSession struct {
-	id     string
-	stream *fakeStream
-}
-
-func (s *handlelessSession) ID() string          { return s.id }
-func (s *handlelessSession) AdapterName() string { return "controlled_pty" }
-func (s *handlelessSession) Title() string       { return s.id }
-func (s *handlelessSession) OpenStream(context.Context) (mux.TerminalStream, error) {
-	return s.stream, nil
-}
-
-type handlelessAdapter struct {
-	mu         sync.Mutex
-	sessions   map[string]*handlelessSession
-	terminated []string
-}
-
-func (a *handlelessAdapter) Name() string { return "controlled_pty" }
-func (a *handlelessAdapter) ListSessions(context.Context) ([]mux.Session, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]mux.Session, 0, len(a.sessions))
-	for _, s := range a.sessions {
-		out = append(out, s)
-	}
-	return out, nil
-}
-func (a *handlelessAdapter) CreateSession(_ context.Context, opts mux.CreateOptions) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.sessions[opts.Name] = &handlelessSession{id: opts.Name, stream: &fakeStream{closed: make(chan struct{})}}
-	return opts.Name, nil
-}
-func (a *handlelessAdapter) TerminateSession(_ context.Context, id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.terminated = append(a.terminated, id)
-	delete(a.sessions, id)
-	return nil
-}
-func (a *handlelessAdapter) TranscriptCaptureMode() mux.TranscriptCaptureMode {
-	return mux.CaptureModeByteStream
-}
-func (a *handlelessAdapter) ManagedLifecycle() bool { return true }
-
 // R2 finding 1: creation MUST NOT publish a running generation without its
 // exact process handle — a failed capture rolls the spawn back unpublished.
 func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
-	adapter := &handlelessAdapter{sessions: map[string]*handlelessSession{}}
-	reg := mux.MustNewRegistry(adapter)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
-
-	local := genLocalID("nohandle")
-	_, err := owned.Create(context.Background(), mux.CreateOptions{Name: local}, "shell", "n")
+	cleanup := &migrationCleanup{}
+	launcher := &migrationLauncher{results: []LaunchResult{{Identity: LaunchIdentity{InstanceID: "missing", StartedAt: time.Now()}, ProcessCleanup: cleanup}}}
+	owned := NewOwnedPTYRuntime(launcher, nil)
+	local := "nohandle"
+	_, err := owned.Create(context.Background(), SpawnConfig{Name: local, Executable: "true"}, "shell", "n")
 	if err == nil {
 		t.Fatal("Create published a running generation without a process handle")
 	}
 	if rows := owned.List(); len(rows) != 0 {
 		t.Fatalf("owned store has %d rows after failed capture, want 0 (unpublished)", len(rows))
 	}
-	// PA2d-R2: the SessionIdentityTerminator check now fails BEFORE any
-	// spawn occurs (fail-closed at the adapter capability boundary), so
-	// the adapter was never asked to terminate a runtime. The store is
-	// empty and no recorder was ever started.
-	adapter.mu.Lock()
-	terminated := len(adapter.terminated)
-	adapter.mu.Unlock()
-	if terminated != 0 {
-		t.Fatalf("spawned runtime terminated %d times on pre-spawn rejection, want 0", terminated)
+	if cleanup.count() != 1 {
+		t.Fatalf("incomplete launch cleanup=%d, want 1", cleanup.count())
 	}
 	// No recorder was created (spawn never happened).
 	if GetRecorder("controlled_pty:"+local) != nil {
@@ -530,62 +465,25 @@ func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 // terminate the replacement's registry session or recorder: the capability
 // is instance-guarded, not id-addressed.
 func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
-	t.Skip("PB.5a: legacy captureSession path replaced by ManagedPTYLauncher")
-	adapter := &lcAdapter{name: "controlled_pty", managed: true, sessions: map[string]*lcSession{}}
-	reg := mux.MustNewRegistry(adapter)
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
-
-	const local = "claimrace"
-	const id = "controlled_pty:" + local
-
-	// Generation 1: capture its exact session instance into the capability.
-	adapter.add(local)
-	sessA, _, err := owned.captureSession(context.Background(), local)
+	firstDone, secondDone := make(chan struct{}), make(chan struct{})
+	firstCleanup, secondCleanup := &migrationCleanup{}, &migrationCleanup{}
+	launcher := &migrationLauncher{results: []LaunchResult{step6aResult("old", firstDone, firstCleanup), step6aResult("new", secondDone, secondCleanup)}}
+	owned := NewOwnedPTYRuntime(launcher, nil)
+	id, err := owned.Create(context.Background(), SpawnConfig{Name: "claimrace", Executable: "true"}, "", "")
 	if err != nil {
-		t.Fatalf("capture gen1 session: %v", err)
+		t.Fatal(err)
 	}
-	cleanupA := owned.newCleanup(id, sessA, nil)
-	gen1 := owned.register(id, "", "old", nil, cleanupA, nil, nil, nil)
-
-	// CLAIM the capability while gen1 is still current (the "check").
-	claimed, finalized, done := owned.finalizeRecord(id, gen1)
-	if !finalized || claimed == nil || done == nil {
-		t.Fatalf("finalizeRecord(current gen) = claimed=%v finalized=%v, want claim", claimed != nil, finalized)
+	old, _ := owned.Get(id)
+	if _, err := owned.Create(context.Background(), SpawnConfig{Name: "claimrace", Executable: "true"}, "", ""); err != nil {
+		t.Fatal(err)
 	}
-
-	// Replacement lands BETWEEN claim and cleanup: same canonical id, new
-	// session instance, new generation.
-	adapter.mu.Lock()
-	adapter.sessions[local] = &lcSession{id: local, adapter: "controlled_pty"}
-	adapter.mu.Unlock()
-	reg.InvalidateAdapter("controlled_pty")
-	gen2 := owned.register(id, "", "new", nil, func(context.Context) {}, nil, nil, nil)
-	if gen2 <= gen1 {
-		t.Fatalf("replacement generation not newer: %d then %d", gen1, gen2)
+	owned.finalize(id, old.Generation)
+	current, _ := owned.Get(id)
+	if current.Identity.InstanceID != "new" || secondCleanup.count() != 0 {
+		t.Fatal("stale cleanup touched replacement")
 	}
-
-	// Invoke the stale claimed capability: the instance guard must refuse to
-	// terminate the replacement's session.
-	claimed(context.Background())
-	adapter.mu.Lock()
-	terminated := len(adapter.terminated)
-	_, present := adapter.sessions[local]
-	adapter.mu.Unlock()
-	if terminated != 0 {
-		t.Fatalf("stale claimed cleanup terminated %d registry sessions of the replacement", terminated)
-	}
-	if !present {
-		t.Fatal("replacement registry session missing after stale cleanup")
-	}
-	if e, ok := owned.Get(id); !ok || e.Generation != gen2 || e.State != LifecycleRunning {
-		t.Fatalf("replacement record = %+v ok=%v, want running at gen %d", e, ok, gen2)
-	}
-	// And the capability can never be claimed twice; a stale generation gets
-	// no wait channel either (it must never wait on a replacement).
-	if cl, again, staleDone := owned.finalizeRecord(id, gen1); again || cl != nil || staleDone != nil {
-		t.Fatal("stale generation finalized/claimed/waited a second time")
-	}
+	close(firstDone)
+	close(secondDone)
 }
 
 // R2 finding 3: the real Codex-shaped timeout path — the frozen service
