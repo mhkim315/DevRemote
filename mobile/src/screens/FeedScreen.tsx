@@ -609,7 +609,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
       if (data.type === 'hello') {
         const nextCaps = serverCapabilitiesFromControl(data);
         // A new hello is a new server connection authority. No result from
-        // the prior socket may settle an operation after reconnect.
+        // PB.7 Input-B R9: a new hello invalidates the prior connection.
+        // Any pending request whose result is lost must be surfaced as
+        // possible partial delivery, not silently forgotten.
+        if (pendingInputRef.current.size > 0 || pendingLineRef.current !== null) {
+          setSendStatus('delivery_unknown');
+        }
         for (const pending of pendingInputRef.current.values()) clearTimeout(pending.timeout);
         pendingInputRef.current.clear();
         pendingLineRef.current = null;
@@ -685,9 +690,19 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
               }
             }
             pendingLineRef.current = null;
-            // A short/failed PTY write can still have consumed a prefix. Do
-            // not present that as a definite non-delivery.
-            setSendStatus(data.outcome === 'write_failed' ? 'delivery_unknown' : 'not_delivered');
+            // PB.7 Input-B R9: if the sibling frame was already accepted,
+            // bytes reached the PTY. ANY non-accepted outcome on the second
+            // frame is possible partial delivery — never definite failure.
+            const siblingAccepted = (key === line.textId && line.enterOutcome === 'accepted') ||
+                                    (key === line.enterId && line.textOutcome === 'accepted');
+            const anyNonAccepted = data.outcome !== 'accepted';
+            // write_failed = short write, bytes partially consumed.
+            const isShortWrite = data.outcome === 'write_failed';
+            if (anyNonAccepted && (siblingAccepted || isShortWrite)) {
+              setSendStatus('delivery_unknown');
+            } else {
+              setSendStatus(anyNonAccepted ? 'not_delivered' : 'delivered');
+            }
           } else if (line.enterQueued && line.textId !== null && line.enterId !== null && line.textOutcome === 'accepted' && line.enterOutcome === 'accepted') {
             pendingLineRef.current = null;
             setSendStatus('delivered');
@@ -698,7 +713,10 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
             }
           }
         } else if (!line) {
-          setSendStatus(data.outcome === 'accepted' ? 'delivered' : 'not_delivered');
+          // PB.7 Input-B R9: standalone macro/paste/keyboard input.
+          // write_failed = short write implies bytes may have been consumed.
+          setSendStatus(data.outcome === 'accepted' ? 'delivered' :
+                        data.outcome === 'write_failed' ? 'delivery_unknown' : 'not_delivered');
         }
       }
       if (data.type === 'delivery_unknown') {

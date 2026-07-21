@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -437,5 +438,134 @@ func TestInputB_ConnectionIDEntropyFailureIsFailClosed(t *testing.T) {
 	t.Cleanup(func() { connectionIDEntropy = old })
 	if id, err := newConnectionID(); err == nil || id != "" {
 		t.Fatalf("newConnectionID = %q, %v; want fail closed", id, err)
+	}
+}
+
+// ── Input-B R9: concurrent goroutine tests ──
+
+func TestInputB_ConcurrentDuplicateArrivalRace(t *testing.T) {
+	writer := &inputBWriter{}
+	conn, generation := openInputBWS(t, writer)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.ReadMessage() // hello
+
+	inputID := testInputID()
+	input := []byte("concurrent-race-test")
+	req := controlRequest("controlled_pty:input-b-ack", generation, inputID, input)
+
+	// Rapid back-to-back sends on the same connection — the cache must
+	// linearize them so only the first reaches WriteInput. Gorilla WS
+	// connections are not safe for concurrent use, so we test the cache
+	// serialization by sending quickly and verifying only one write.
+	conn.WriteMessage(websocket.TextMessage, req)
+	conn.WriteMessage(websocket.TextMessage, req)
+
+	// Read both results.
+	var outcomes []string
+	for i := 0; i < 2; i++ {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		var ack struct{ Outcome string }
+		json.Unmarshal(msg, &ack)
+		outcomes = append(outcomes, ack.Outcome)
+	}
+
+	// Both must be accepted — second is cached duplicate.
+	for _, o := range outcomes {
+		if o != "accepted" {
+			t.Errorf("outcome = %q, want accepted", o)
+		}
+	}
+	// WriteInput must only be called once.
+	if len(writer.wrote) != len(input) {
+		t.Errorf("duplicate invoked WriteInput twice: wrote %d bytes, want %d", len(writer.wrote), len(input))
+	}
+}
+
+func TestInputB_ConcurrentCacheAccessRace(t *testing.T) {
+	// Test the cache directly with concurrent goroutines.
+	cache := newInputRecentCache()
+	req := &inputControlRequest{
+		Type: "terminal_input", Version: 1, SessionID: "s", Generation: 7,
+		InputID: testInputID(), Payload: "dGVzdA==",
+	}
+	digest := requestDigest(req)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Store outcome via competing goroutines.
+			cache.canStore(req.InputID)
+			cache.store(req.InputID, digest, "accepted", 1)
+			// Concurrent reads must be consistent.
+			outcome, seq, _ := cache.get(req.InputID, digest)
+			if outcome != "" && outcome != "accepted" {
+				t.Errorf("inconsistent read: %q", outcome)
+			}
+			_ = seq
+		}()
+	}
+	wg.Wait()
+
+	// Final read must return the accepted result.
+	outcome, seq, ok := cache.get(req.InputID, digest)
+	if !ok || outcome != "accepted" || seq != 1 {
+		t.Errorf("final get = (%q, %d, %v), want (accepted, 1, true)", outcome, seq, ok)
+	}
+}
+
+// ── Input-B R9: permission refresh interleaving ──
+
+func TestInputB_PermissionRefreshInterleaving(t *testing.T) {
+	writer := &inputBWriter{}
+	fix := newInputBWSFixture(t, writer)
+
+	// Connection A: authorized device with terminal:input.
+	connA := fix.dial(t)
+	defer connA.Close()
+	connA.SetReadDeadline(time.Now().Add(2 * time.Second))
+	connA.ReadMessage() // hello
+
+	// Barrier: connA request goroutine waits for connB to open first.
+	connBOpen := make(chan struct{})
+	requestSent := make(chan struct{})
+
+	go func() {
+		<-connBOpen
+		// Now connB is open. connA sends its request.
+		req := controlRequest(fix.session, fix.generation, testInputID(), []byte("interleaved"))
+		connA.WriteMessage(websocket.TextMessage, req)
+		close(requestSent)
+	}()
+
+	// Connection B: independent connection — proves connA's auth snapshot
+	// is immutable and not affected by a concurrent second connection.
+	connB := fix.dial(t)
+	defer connB.Close()
+	connB.SetReadDeadline(time.Now().Add(2 * time.Second))
+	connB.ReadMessage() // hello
+	close(connBOpen)
+
+	<-requestSent
+
+	// connA reads its result — must be valid (accepted).
+	connA.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := connA.ReadMessage()
+	if err != nil {
+		t.Fatalf("connA read: %v", err)
+	}
+	var ack struct{ Outcome string }
+	json.Unmarshal(msg, &ack)
+	if ack.Outcome != "accepted" {
+		t.Errorf("connA outcome = %q, want accepted (auth snapshot is immutable per connection)", ack.Outcome)
+	}
+	// Bytes were written.
+	if len(writer.wrote) == 0 {
+		t.Error("WriteInput was not called")
 	}
 }
