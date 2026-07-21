@@ -1,6 +1,6 @@
 # TERM-C1 — Single control bridge evidence
 
-Implementation commit: `473ba2f89a798fe4be2cda09de9222b5514aac03`
+Implementation commit: `6e598ec386904b22b4f4c213b1f748807eae42c5`
 
 This remediation supersedes the rejected evidence associated with
 `c5cb19342fccb1162c5158c8e39c28ccc2343111`.
@@ -29,24 +29,37 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
 
 ## Focused assertions
 
-- `term_c1_served_page_goja_test.go` gets the HTML from the production
-  `HandleHTML` handler, extracts its literal inline page script, and executes
-  it in Goja. The only test host objects are browser/WebView boundaries
-  (`WebSocket`, `Terminal`, and `ReactNativeWebView.postMessage`); Go does not
-  model, duplicate, or call the page control bridge or `sendInput` logic.
-- The real served `term.onData`, `pokitSendInput`, `connect()`, and
-  `__pokitControlBridge` produce the captured WebSocket and native bridge
-  events. This covers direct Ctrl+C (`0x03`), paste, every macro, and
-  two-frame text+Enter, with an `accepted` result delivered to the native
-  bridge for every frame.
+- `TestTERM_C1_ServedPageGojaRealWebSocketToNativeDelivery` obtains the
+  literal production `HandleHTML` script and executes it in Goja. Its
+  `WebSocket.send` writes to a ticketed real gorilla connection targeting
+  production `HandleWS`; TEXT controls read from that same connection are
+  passed into the page's real `ws.onmessage`, then its real
+  `ReactNativeWebView.postMessage`. No Go helper constructs `terminal_input`
+  frames or fabricates input ACKs in this test.
+- That one chain covers paste, every macro (including Ctrl+C), and two-frame
+  text+Enter. Every positive surface produces a real `HandleWS` `WriteInput`
+  and an actual ACK delivered back through the served page. A direct keyboard
+  Ctrl+C test separately proves the literal `term.onData` path sends exactly
+  byte `0x03` through the same live chain.
+- The native message receiver used by this integration test applies the same
+  Input-B delivery boundary as FeedScreen: it reports **Delivered to terminal**
+  only after both real text and Enter ACKs. The production FeedScreen Jest test
+  independently executes the component and verifies that same two-ACK rule.
+- A viewer's real `HandleWS` hello omits `terminal:input`; the served page then
+  denies every macro with zero `terminal_input` frames and zero PTY writes.
+  Existing real-WS negative tests additionally cover wrong session/generation
+  and assert zero `WriteInput` calls.
 - Invalid/missing/unknown capability hellos, malformed controls, and wrong
   session/connection/generation identities fail closed: direct keyboard and
   native page sends emit zero `terminal_input` frames (and therefore zero
   terminal writes). Wrong-identity results never reach the native bridge.
-- An identical duplicate hello is delivered once without resetting state. A
-  different identity on the same socket revokes authority and posts read-only;
-  the page's actual reconnect creates a replacement socket, rejects stale old
-  socket controls, and accepts the replacement hello.
+- The duplicate/reconnect integration starts with an actual pending input. It
+  replays the literal received hello before the real ACK is pumped and proves
+  the page forwards it once while retaining pending state. It then sends a
+  second input, waits until real `WriteInput` completes but deliberately does
+  not pump its ACK, closes the gorilla peer, runs the served page's actual
+  reconnect path, and proves the replacement `HandleWS` hello changes the
+  native result to **Possible partial delivery**.
 - `input_b_ack_test.go` exercises production `HandleWS` and its terminal
   writer: an exact authorized input reaches `WriteInput` and produces the
   acknowledged result, while rejected controls make zero writes. Together
@@ -65,7 +78,7 @@ All passed:
 - `npm test -- --runInBand terminalGeneratedScript.test.ts feedScreenInput.test.ts terminalController.test.ts`
 - `npm run typecheck`
 - `npm test -- --runInBand` — 35 suites, 518 tests
-- `go test ./internal/term -run 'TestTERM_C1_ServedPageGoja' -count=1`
+- `go test ./internal/term -run 'TestTERM_C1_ServedPageGoja(Real|Pending)' -count=1`
 - `go test ./internal/term`
 - `go vet ./...`
 - `go run scripts/archgate.go`
