@@ -3,6 +3,7 @@ package term
 import (
 	"context"
 	"io"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,10 +31,22 @@ func (l *testV1Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (LaunchResu
 		return LaunchResult{}, err
 	}
 	h := &testV1Handle{sess: sess}
+	if opener, ok := sess.(mux.StreamOpener); ok {
+		stream, err := opener.OpenStream(ctx)
+		if err != nil {
+			_ = l.old.CompareAndTerminate(ctx, "controlled_pty:"+id, sess)
+			return LaunchResult{}, err
+		}
+		h.stream = stream
+	}
 	return LaunchResult{Handle: h, Identity: LaunchIdentity{InstanceID: id, StartedAt: time.Now()}, ProcessCleanup: testCleanup{old: l.old, id: id, sess: sess}}, nil
 }
 
-type testV1Handle struct{ sess mux.Session }
+type testV1Handle struct {
+	sess   mux.Session
+	mu     sync.Mutex
+	stream io.ReadCloser
+}
 
 func (h *testV1Handle) Signal(syscall.Signal) SignalOutcome   { return SignalOutcome{Delivered: true} }
 func (h *testV1Handle) Kill() KillOutcome                     { return KillOutcome{Killed: true} }
@@ -51,6 +64,13 @@ func (h *testV1Handle) Resize(r, c int) error {
 	return nil
 }
 func (h *testV1Handle) CloseTransport() error {
+	h.mu.Lock()
+	stream := h.stream
+	h.stream = nil
+	h.mu.Unlock()
+	if stream != nil {
+		return stream.Close()
+	}
 	if x, ok := h.sess.(io.Closer); ok {
 		return x.Close()
 	}
@@ -60,14 +80,24 @@ func (h *testV1Handle) Read(p []byte) (int, error) {
 	if x, ok := h.sess.(io.Reader); ok {
 		return x.Read(p)
 	}
-	if x, ok := h.sess.(mux.StreamOpener); ok {
-		s, e := x.OpenStream(context.Background())
-		if e != nil {
-			return 0, e
+	h.mu.Lock()
+	stream := h.stream
+	if stream == nil {
+		x, ok := h.sess.(mux.StreamOpener)
+		if !ok {
+			h.mu.Unlock()
+			return 0, io.EOF
 		}
-		return s.Read(p)
+		s, err := x.OpenStream(context.Background())
+		if err != nil {
+			h.mu.Unlock()
+			return 0, err
+		}
+		stream = s
+		h.stream = s
 	}
-	return 0, io.EOF
+	h.mu.Unlock()
+	return stream.Read(p)
 }
 
 type testCleanup struct {

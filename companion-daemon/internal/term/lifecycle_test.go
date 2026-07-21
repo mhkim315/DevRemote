@@ -254,12 +254,10 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 
 // ── Real process: actual termination, escalation, subscriber EOF ──
 
-// realOwned builds an OwnedPTYRuntime over the real controlled-PTY adapter.
+// realOwned builds an OwnedPTYRuntime over the production V1 launcher.
 func realOwned(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
-	reg := mux.MustNewRegistry(mux.NewControlledPTYAdapter())
-	ctlAdapter, _ := reg.Adapter("controlled_pty")
-	owned := NewOwnedPTYRuntime(launcherWrapper(ctlAdapter), nil)
+	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 400 * time.Millisecond
 	return owned
 }

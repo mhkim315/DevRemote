@@ -232,6 +232,14 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	if !o.currentIdentity(id, g, identity) {
 		return LifecycleResult{}, ErrLifecycleStaleGeneration
 	}
+	if h == nil {
+		// RegisterForTest rows have no process. They are already terminal from
+		// the V1 process boundary's perspective and must not dereference a
+		// missing handle while exercising HTTP lifecycle responses.
+		o.finalize(id, g)
+		e, _ := o.Get(id)
+		return LifecycleResult{SessionID: id, Action: action, State: e.State}, nil
+	}
 	if force {
 		_ = h.Kill()
 	} else {
