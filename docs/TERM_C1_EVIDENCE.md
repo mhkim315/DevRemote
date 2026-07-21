@@ -1,6 +1,6 @@
 # TERM-C1 — Single control bridge evidence
 
-Implementation commit: `6e598ec386904b22b4f4c213b1f748807eae42c5`
+Implementation commit: `8df7a16c2af55a17f1c198f33dce569ea0f07db3`
 
 This remediation supersedes the rejected evidence associated with
 `c5cb19342fccb1162c5158c8e39c28ccc2343111`.
@@ -29,6 +29,27 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
 
 ## Focused assertions
 
+- `feedScreenInput.test.ts` now contains the single composed mobile test:
+  `runs the real daemon → served page → WebView → FeedScreen acknowledgement
+  chain`. Jest starts an isolated loopback `devremote daemon` process, creates
+  a daemon-owned shell session, fetches production `HandleHTML`, and executes
+  its literal inline script in the WebView VM.
+- The test's WebSocket is a real Node `ws` connection to that daemon's
+  production `HandleWS`. Its only browser adaptation converts Node text and
+  binary events into the WebSocket event shape a WebView supplies; it neither
+  parses nor creates terminal control frames. The actual page
+  `pokitSendInput` sends both line frames, real daemon ACKs re-enter the
+  page's `onmessage`, and its actual `ReactNativeWebView.postMessage` is passed
+  to the rendered production FeedScreen `onMessage` callback.
+- The test invokes the actual FeedScreen Send control and asserts exactly two
+  native `input_pending` plus two `input_result` messages, then asserts the
+  rendered status is **Delivered to terminal**. This is the required single
+  WebSocket → daemon page → WebView → React Native composition, rather than a
+  test-only Go delivery model.
+- The explicit `--insecure-local-only` daemon snapshot now advertises
+  `terminal:input` for its existing dev-token input path. Remote/no-ticket
+  connections remain fail-closed; the change makes local server permission
+  announcement and actual input enforcement agree.
 - `TestTERM_C1_ServedPageGojaRealWebSocketToNativeDelivery` obtains the
   literal production `HandleHTML` script and executes it in Goja. Its
   `WebSocket.send` writes to a ticketed real gorilla connection targeting
@@ -41,10 +62,9 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
   and an actual ACK delivered back through the served page. A direct keyboard
   Ctrl+C test separately proves the literal `term.onData` path sends exactly
   byte `0x03` through the same live chain.
-- The native message receiver used by this integration test applies the same
-  Input-B delivery boundary as FeedScreen: it reports **Delivered to terminal**
-  only after both real text and Enter ACKs. The production FeedScreen Jest test
-  independently executes the component and verifies that same two-ACK rule.
+- The Goja integration retains coverage for every macro, direct Ctrl+C,
+  zero-PTY-write denial, and duplicate/reconnect boundary. The mobile test is
+  the production FeedScreen proof for the two-ACK delivery result.
 - A viewer's real `HandleWS` hello omits `terminal:input`; the served page then
   denies every macro with zero `terminal_input` frames and zero PTY writes.
   Existing real-WS negative tests additionally cover wrong session/generation
@@ -65,9 +85,8 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
   acknowledged result, while rejected controls make zero writes. Together
   with the Goja test, this proves the composed WebSocket → served daemon page
   → WebView native-message contract.
-- `feedScreenInput.test.ts` proves the React Native FeedScreen reports
-  Delivered only after both text and Enter frames are accepted, and that a
-  duplicate hello cannot clear a pending acknowledgement.
+- `feedScreenInput.test.ts` also retains the component-level duplicate hello
+  and two-ACK state-transition coverage.
 - `terminalController.test.ts` proves bootstrap geometry invokes the control
   bridge rather than calling `term.resize` directly.
 
@@ -75,14 +94,12 @@ does not constitute independent TERM-C1 acceptance or device-gate approval.
 
 All passed:
 
-- `npm test -- --runInBand terminalGeneratedScript.test.ts feedScreenInput.test.ts terminalController.test.ts`
+- `npm test -- --runInBand --silent feedScreenInput.test.ts`
 - `npm run typecheck`
-- `npm test -- --runInBand` — 35 suites, 518 tests
+- `npm test -- --ci --runInBand --silent` — 35 suites, 519 tests
 - `go test ./internal/term -run 'TestTERM_C1_ServedPageGoja(Real|Pending)' -count=1`
 - `go test ./internal/term`
 - `go vet ./...`
 - `go run scripts/archgate.go`
-- `sh scripts/build-gate.sh` — build, vet, race tests, mobile typecheck/tests,
-  Android Kotlin compile, invariant and secret scans
 
 Static diff scan found zero new `mux.Registry` or `GetRecorder` references.
