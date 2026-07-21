@@ -2,6 +2,7 @@
 
 **Input-B R4 remediation IMPL SHA:** `514bf83ce`
 **Input-B R5 edge-case IMPL SHA:** `78b9090ce`
+**Input-B R6 uncertain-delivery IMPL SHA:** `8a80c5219`
 **Prior Input-B R4 IMPL SHA:** `042005af7`
 **PA4 ACCEPT SHA:** `74560edd`
 **PB Ancestry Baseline SHA:** `abe4df1d6`
@@ -67,7 +68,7 @@ npx jest --runInBand               478/478 pass, 35 suites
 - Raw frame: 8192 bytes max
 - Decoded payload: 4096 bytes max
 - inputId: exactly 64 lowercase hex chars
-- Cache: 64 entries, 30s TTL, LRU eviction
+- Cache: 64 entries, 30s TTL; live accepted entries are never evicted
 - Strict JSON: DisallowUnknownFields plus exact-one-document decoding;
   trailing JSON is `invalid_request` and never reaches `WriteInput`
 - pokitMakeInputID: 32 bytes crypto random → 64 hex chars
@@ -107,6 +108,16 @@ npx jest --runInBand               478/478 pass, 35 suites
   each line frame with an operation ID and `text`/`enter` role, so macro/paste
   traffic cannot claim a line's ACK slots. A completed line clears the editor
   only when its acknowledged text still equals the current editor content.
+- A failed page-side send (including a closed WebSocket or a `ws.send` throw)
+  posts `delivery_unknown` to the host. The matching line operation is released
+  immediately, so an ACK that will never exist cannot block all later sends.
+  The client never automatically retries that input.
+- ACK timeout is also `delivery_unknown`, rendered as **Possible partial
+  delivery**. It preserves the command and avoids incorrectly claiming either
+  delivery or non-delivery when the server may have accepted the bytes.
+- A macro/keyboard/paste result cannot replace the visible state of an active
+  two-frame line; only that line's tagged text and Enter acknowledgements can
+  settle it.
 
 ## Focused Tests
 
@@ -114,6 +125,7 @@ npx jest --runInBand               478/478 pass, 35 suites
 TestInputA_DenialViaHandleWS                     PASS
 TestInputB_HandleWSAcknowledgesExactGeneration   PASS
 TestInputB_HandleWSWriteFailureDoesNotAcknowledge PASS
+TestInputB_HandleWSShortWriteIsWriteFailed        PASS
 TestInputB_DuplicateInputIDReplaysCached         PASS
 TestInputB_InputIDConflictDifferentPayload       PASS
 TestInputB_ProductionRejectsLegacyBinaryBeforeWrite PASS
@@ -123,6 +135,9 @@ TestInputB_ExactRawAndDecodedBounds               PASS
 TestInputB_StrictParserRejectsMalformedUnknownAndTrailing PASS
 TestInputB_ClosedOutcomesAndPermissionLimiter     PASS
 TestInputB_CacheCapacityNeverEvictsAcceptedReplay PASS
+TestInputB_ConnectionCloseClearsReplayCache       PASS
+TestInputB_CacheCapacityRaceNeverEvictsAcceptedEntries PASS
 TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration PASS
-feedScreenInput.test.ts — reconnect/late-sibling/overlap tests PASS
+TestInputB_ReplacementRaceKeepsWriteBoundToCapturedGeneration PASS
+feedScreenInput.test.ts — reconnect/late-sibling/overlap/ACK-loss tests PASS
 ```
