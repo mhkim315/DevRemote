@@ -1,6 +1,6 @@
 # Pre-Device QR and Terminal-Input Remediation Plan
 
-**Status:** AUTHORITATIVE AND FROZEN — implementation has not started
+**Status:** EXECUTED THROUGH INPUT-B — DEVICE GATE PAUSED FOR TERMINAL REGRESSION REMEDIATION
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -9,6 +9,14 @@
 **Target device:** Samsung SM-S926N (Galaxy S24 Ultra), Android 16
 
 **PB ACCEPT SHA:** **UNSET**
+
+> **Authoritative device-gate amendment:** The first physical run exposed a
+> managed-PTY geometry regression and split/duplicated WebView control
+> authority. Device testing is paused. The required TERM-G1 and TERM-C1 packets,
+> evidence flow, and restart criteria are frozen in
+> [`PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md`](PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md).
+> This amendment does not change the already accepted QR, Input-A, or Input-B
+> contracts. `PB_DEVICE_CANDIDATE_SHA` and `PB_ACCEPT_SHA` remain unset.
 
 ## 1. Purpose and authority
 

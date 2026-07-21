@@ -1,6 +1,6 @@
 # PB Legacy Physical Removal Contract
 
-**Status:** EXECUTED — PB deletion complete through PB.6; PB.7 awaiting device gate. PB ACCEPT SHA remains UNSET.
+**Status:** EXECUTED — PB deletion complete through PB.6; PB.7 device gate paused for terminal regression remediation. PB ACCEPT SHA remains UNSET.
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -13,6 +13,13 @@
 **PB_START_BASELINE_SHA:** `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06`
 
 **Future PB ACCEPT SHA:** **UNSET**
+
+> **Current PB.7 authority:** The initial SM-S926N run is diagnostic and the
+> physical matrix is paused. Complete the bounded TERM-G1 geometry and TERM-C1
+> control-bridge packets in
+> [`PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md`](PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md),
+> regenerate PB.6/PB.7 evidence, freeze one exact production candidate, and
+> restart the complete matrix before assigning PB ACCEPT.
 
 ## 1. Objective and prerequisite
 
