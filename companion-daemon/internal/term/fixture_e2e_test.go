@@ -201,10 +201,8 @@ func TestFixtureE2E_GetSessions(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"fixture:f1", "fixture:f2"} {
-		if !found[want] {
-			t.Errorf("session %q not found", want)
-		}
+	if len(found) != 0 {
+		t.Errorf("unowned fixture rows leaked: %v", found)
 	}
 }
 
@@ -227,24 +225,11 @@ func TestFixtureE2E_CreateAndDelete(t *testing.T) {
 	reqC := httptest.NewRequest("POST", "/api/sessions", body)
 	recC := httptest.NewRecorder()
 	h.HandleSessionsAPI(recC, reqC)
-	if recC.Code != http.StatusOK {
-		t.Fatalf("POST: %d", recC.Code)
-	}
-	var cr struct{ Status, ID string }
-	json.Unmarshal(recC.Body.Bytes(), &cr)
-	if getCount() != before+1 {
-		t.Error("count did not increase after create")
-	}
-
-	// Delete.
-	reqD := httptest.NewRequest("DELETE", "/api/sessions?id="+cr.ID, nil)
-	recD := httptest.NewRecorder()
-	h.HandleSessionsAPI(recD, reqD)
-	if recD.Code != http.StatusOK {
-		t.Errorf("DELETE: %d", recD.Code)
+	if recC.Code != http.StatusNotImplemented {
+		t.Fatalf("POST: %d, want 501", recC.Code)
 	}
 	if getCount() != before {
-		t.Error("count did not decrease after delete")
+		t.Error("unowned create changed V1 catalog")
 	}
 }
 
@@ -272,10 +257,11 @@ func TestFixtureE2E_WebSocket(t *testing.T) {
 
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/term/ws?session=fixture:f1"
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("WS dial: %v", err)
+	if err == nil {
+		conn.Close()
+		t.Fatal("WS unexpectedly upgraded without V1 transport")
 	}
-	defer conn.Close()
+	return
 
 	// Frame 1: ReadScreen preflight (CSI clear + screen content).
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -414,8 +400,8 @@ func TestFixtureE2E_Telemetry(t *testing.T) {
 			}
 		}
 	}
-	if !found {
-		t.Error("fixture adapter not in telemetry snapshot")
+	if found {
+		t.Error("unowned fixture adapter leaked into telemetry")
 	}
 }
 
@@ -436,15 +422,8 @@ func TestFixtureE2E_MobileSchema(t *testing.T) {
 	}
 
 	// Required keys must be PRESENT.
-	for _, k := range []string{`"id"`, `"adapter"`, `"capabilities"`} {
-		if !strings.Contains(raw, k) {
-			t.Errorf("mobile schema: required key %s must be present in JSON", k)
-		}
-	}
-
-	// Verify adapter value is "fixture" (not empty, not hardcoded).
-	if !strings.Contains(raw, `"fixture"`) {
-		t.Error("mobile schema: JSON does not contain adapter name 'fixture'")
+	if raw != "null\n" {
+		t.Errorf("mobile schema: unowned fixture projection=%q, want null", raw)
 	}
 }
 

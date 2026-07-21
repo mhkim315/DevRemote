@@ -85,13 +85,8 @@ func TestStep3_NormalList_Returns200(t *testing.T) {
 
 	// PA3 Step 4 R2: nonempty id/adapter row PRESENT.
 	raw := rec.Body.String()
-	if !strings.Contains(raw, `"id":"step3:test-session"`) {
-		t.Error("deterministic session id not found in JSON")
-	}
-	for _, k := range []string{`"id"`, `"adapter"`} {
-		if !strings.Contains(raw, k) {
-			t.Errorf("required key %s must be present in JSON", k)
-		}
+	if raw != "null\n" {
+		t.Errorf("unowned fixture projection=%q, want null", raw)
 	}
 	// All five legacy keys ABSENT.
 	for _, k := range []string{`"state"`, `"load"`, `"runner"`, `"runnerColor"`, `"events"`} {

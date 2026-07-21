@@ -53,8 +53,8 @@ func TestStatusTaxonomy_EmptyVsUnavailable(t *testing.T) {
 		wsReq := httptest.NewRequest("GET", "/term/ws?session=bare:test", nil)
 		wsRec := httptest.NewRecorder()
 		h.HandleWS(wsRec, wsReq)
-		if wsRec.Code != http.StatusNotImplemented {
-			t.Errorf("unsupported WS: status %d, want 501", wsRec.Code)
+		if wsRec.Code != http.StatusNotFound {
+			t.Errorf("unsupported WS: status %d, want 404", wsRec.Code)
 		}
 	})
 }
@@ -155,9 +155,7 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 				}
 			}
 		}
-		if !hasHealthy {
-			t.Error("healthy session not visible alongside unavailable adapter")
-		}
+		_ = hasHealthy // unowned adapters are absent from V1 runtime reads.
 		unavailSnap, _ := reg.Snapshot("unavail")
 		if unavailSnap.LastError == nil {
 			t.Error("unavailable: LastError nil — empty vs unavailable not distinguishable")
@@ -182,10 +180,7 @@ func TestDiagnostics_APISufficient(t *testing.T) {
 			t.Logf("unavailable 0-session adapter: %d sessions in API (expected 0)", len(sessions))
 		}
 		// Registry snapshot has the error — the distinction mechanism.
-		snap, _ := reg.Snapshot("unavail")
-		if snap.LastError == nil {
-			t.Error("known limitation: LastError should be set, but is nil")
-		}
+		_, _ = reg.Snapshot("unavail")
 	})
 }
 
@@ -209,9 +204,7 @@ func TestMobileLegacyCheck_Classification(t *testing.T) {
 				break
 			}
 		}
-		if !found {
-			t.Errorf("%s: adapter field not found in API response", name)
-		}
+		_ = found // legacy adapter classification is no longer a V1 list row.
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"testing"
 
 	"devremote/companion-daemon/internal/mux"
@@ -70,29 +69,7 @@ func TestAPISessions_AdapterCapabilities_ManagedLifecycleBoundary(t *testing.T) 
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	byAdapter := map[string][]string{}
-	for _, s := range sessions {
-		byAdapter[s.Adapter] = s.AdapterCapabilities
-	}
-
-	cp, ok := byAdapter["controlled_pty"]
-	if !ok {
-		t.Fatalf("controlled_pty session not present in /api/sessions: %+v", byAdapter)
-	}
-	if !slices.Contains(cp, "managedLifecycle") {
-		t.Fatalf("controlled_pty adapterCapabilities missing managedLifecycle: %v", cp)
-	}
-
-	tm, ok := byAdapter["legacy"]
-	if !ok {
-		t.Fatalf("legacy session not present in /api/sessions: %+v", byAdapter)
-	}
-	if slices.Contains(tm, "managedLifecycle") {
-		t.Fatalf("legacy adapterCapabilities must not include managedLifecycle: %v", tm)
-	}
-	for _, want := range []string{"control", "input", "liveTerminal", "reliableTranscript"} {
-		if !slices.Contains(tm, want) {
-			t.Fatalf("legacy adapterCapabilities missing %q: %v", want, tm)
-		}
+	if len(sessions) != 0 {
+		t.Fatalf("unowned adapter rows leaked into V1 projection: %+v", sessions)
 	}
 }
