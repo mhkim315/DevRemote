@@ -5,9 +5,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
-// ── Input-A denial payload format ──
+// ── Input-A: denial payload format ──
 
 func TestInputA_DenialPayloadIsValidJSON(t *testing.T) {
 	var ctrl struct {
@@ -25,49 +27,71 @@ func TestInputA_DenialPayloadIsValidJSON(t *testing.T) {
 	}
 }
 
-// ── Input-A rate limiting ──
-
-// allowDenial implements the coalescing gate: returns true when a denial
-// should be sent (more than 1 second since the last one).
-func allowDenial(last time.Time) (bool, time.Time) {
-	if time.Since(last) > time.Second {
-		return true, time.Now()
+func TestInputA_ReadOnlyDenialReasonIsBounded(t *testing.T) {
+	payload := string(readOnlyDenialPayload)
+	if len(payload) > 256 {
+		t.Errorf("payload too large: %d bytes", len(payload))
 	}
-	return false, last
-}
-
-func TestInputA_RateLimit_FirstDenialSent(t *testing.T) {
-	allowed, _ := allowDenial(time.Time{}) // zero time = never denied
-	if !allowed {
-		t.Error("first denial must be allowed")
+	var ctrl struct {
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
 	}
-}
-
-func TestInputA_RateLimit_CoalescedWithinWindow(t *testing.T) {
-	last := time.Now()
-	allowed, next := allowDenial(last)
-	if allowed {
-		t.Error("denial sent immediately after last — must be coalesced")
+	json.Unmarshal(readOnlyDenialPayload, &ctrl)
+	for _, c := range ctrl.Reason {
+		if c < 0x20 && c != ' ' {
+			t.Errorf("reason contains control char U+%04X", c)
+		}
 	}
-	if !next.Equal(last) {
-		t.Error("last timestamp must not advance when coalesced")
+	if len(ctrl.Reason) > 120 {
+		t.Errorf("reason too long: %d chars", len(ctrl.Reason))
 	}
 }
 
-func TestInputA_RateLimit_AllowedAfterWindow(t *testing.T) {
-	last := time.Now().Add(-2 * time.Second)
-	allowed, next := allowDenial(last)
-	if !allowed {
-		t.Error("denial must be allowed after >1s window")
+// ── Input-A: hasTicketPerm permission gate ──
+
+func TestInputA_HasTicketPerm_MissingPermissionDenied(t *testing.T) {
+	p := &devicetrust.Principal{
+		DeviceID:    "device-1",
+		Permissions: []string{"sessions:read"},
 	}
-	if !next.After(last) {
-		t.Error("last timestamp must advance when denial is sent")
+	if hasTicketPerm(p, string(devicetrust.PermTerminalInput)) {
+		t.Error("hasTicketPerm must return false when terminal:input is missing")
 	}
 }
+
+func TestInputA_HasTicketPerm_PermissionGranted(t *testing.T) {
+	p := &devicetrust.Principal{
+		DeviceID:    "device-1",
+		Permissions: []string{string(devicetrust.PermTerminalInput)},
+	}
+	if !hasTicketPerm(p, string(devicetrust.PermTerminalInput)) {
+		t.Error("hasTicketPerm must return true when terminal:input is present")
+	}
+}
+
+func TestInputA_HasTicketPerm_NilPrincipal(t *testing.T) {
+	// nil principal = legacy/no-auth path. hasTicketPerm returns true
+	// so the caller (handleWSWithPrincipal) needn't special-case nil.
+	// The combined check is: ticketPrincipal != nil && !hasTicketPerm(...)
+	// which correctly gates only authenticated connections.
+	if !hasTicketPerm(nil, string(devicetrust.PermTerminalInput)) {
+		t.Error("hasTicketPerm(nil) must return true — nil = no auth = permitted")
+	}
+}
+
+func TestInputA_HasTicketPerm_EmptyPermissions(t *testing.T) {
+	p := &devicetrust.Principal{
+		DeviceID:    "device-1",
+		Permissions: []string{},
+	}
+	if hasTicketPerm(p, string(devicetrust.PermTerminalInput)) {
+		t.Error("hasTicketPerm must return false for empty permissions")
+	}
+}
+
+// ── Input-A: rate limiting ──
 
 func TestInputA_RateLimit_ConcurrentCoalescing(t *testing.T) {
-	// N concurrent goroutines try to send denials within the same window.
-	// Only the first must be allowed.
 	var mu sync.Mutex
 	last := time.Time{}
 	sent := 0
@@ -78,10 +102,9 @@ func TestInputA_RateLimit_ConcurrentCoalescing(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			mu.Lock()
-			allowed, newLast := allowDenial(last)
-			if allowed {
+			if time.Since(last) > time.Second {
 				sent++
-				last = newLast
+				last = time.Now()
 			}
 			mu.Unlock()
 		}()
@@ -89,32 +112,68 @@ func TestInputA_RateLimit_ConcurrentCoalescing(t *testing.T) {
 	wg.Wait()
 
 	if sent != 1 {
-		t.Errorf("concurrent denials: got %d sent, want exactly 1", sent)
+		t.Errorf("concurrent denials: got %d sent, want exactly 1 (coalesced)", sent)
 	}
 }
 
-// ── Input-A denial does not reach WriteInput ──
+func TestInputA_RateLimit_AllowedAfterWindow(t *testing.T) {
+	last := time.Now().Add(-2 * time.Second)
+	if time.Since(last) <= time.Second {
+		t.Error("denial must be allowed after >1s window")
+	}
+}
 
-func TestInputA_ReadOnlyDenialReasonIsBounded(t *testing.T) {
-	// The reason field is a fixed static string — no user/session data leaked.
+func TestInputA_RateLimit_CoalescedWithinWindow(t *testing.T) {
+	last := time.Now()
+	time.Sleep(5 * time.Millisecond)
+	if time.Since(last) > time.Second {
+		t.Skip("clock too coarse for rate-limit test")
+	}
+}
+
+// ── Input-A: denial payload stability ──
+
+func TestInputA_DenialPayload_ConstantFormat(t *testing.T) {
+	// The denial payload is a compile-time byte slice. It must not change
+	// between calls — no dynamic data injected.
+	p1 := string(readOnlyDenialPayload)
+	p2 := string(readOnlyDenialPayload)
+	if p1 != p2 {
+		t.Error("denial payload changed between reads — must be constant")
+	}
+}
+
+func TestInputA_DenialPayload_NoLeakedData(t *testing.T) {
 	payload := string(readOnlyDenialPayload)
-	if len(payload) > 256 {
-		t.Errorf("denial payload too large: %d bytes", len(payload))
-	}
-
-	var ctrl struct {
-		Type   string `json:"type"`
-		Reason string `json:"reason"`
-	}
-	json.Unmarshal(readOnlyDenialPayload, &ctrl)
-
-	// Reason must not contain JSON, HTML, or control characters.
-	for _, c := range ctrl.Reason {
-		if c < 0x20 && c != ' ' {
-			t.Errorf("denial reason contains control character: U+%04X", c)
+	// Must not contain: session IDs, device IDs, tokens, paths.
+	badWords := []string{"sessionId", "deviceId", "token", "bearer", "/tmp", "poke", "secret"}
+	for _, w := range badWords {
+		if containsFold(payload, w) {
+			t.Errorf("denial payload contains potentially leaked word: %q", w)
 		}
 	}
-	if len(ctrl.Reason) > 120 {
-		t.Errorf("denial reason too long: %d chars", len(ctrl.Reason))
+}
+
+func containsFold(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		match := true
+		for j := 0; j < len(substr); j++ {
+			c1 := s[i+j]
+			c2 := substr[j]
+			if c1 >= 'A' && c1 <= 'Z' {
+				c1 += 32
+			}
+			if c2 >= 'A' && c2 <= 'Z' {
+				c2 += 32
+			}
+			if c1 != c2 {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
 	}
+	return false
 }

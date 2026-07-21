@@ -410,6 +410,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
     setSendStatus('sending');
     inject(
       '(function(){' +
+      // PB.7 Input-A: server read_only gate — check before enqueue.
+      'if(window.pokitReadOnly&&window.pokitReadOnly()){' +
+      'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed",reason:"read_only"}));' +
+      'return;' +
+      '}' +
       'var w=window.ws;' +
       'if(!w||w.readyState!==1){' +
       'window.ReactNativeWebView.postMessage(JSON.stringify({type:"sendStatus",status:"failed"}));' +
@@ -437,9 +442,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx}: Props) {
   // small delay keeps the \r in a separate PTY read so Codex sees a discrete
   // Enter keypress. Text goes out once, \r once — no accumulated-buffer bug.
   const submitLine = useCallback((text: string) => {
+    // PB.7 Input-A: check at execution time to prevent stale-closure bypass.
+    if (readOnlyReason !== '') { setSendStatus('failed'); return; }
     if (text) doSend(text);
     setTimeout(() => doSend('\r'), 40);
-  }, [doSend]);
+  }, [doSend, readOnlyReason]);
 
   const send = useCallback(() => {
     const currentCmd = cmdRef.current || cmd;

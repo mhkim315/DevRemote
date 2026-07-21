@@ -464,7 +464,7 @@ function pokitSendInput(s){if(readOnly)return;
   var w=window.ws;
   if(w&&w.readyState===1){ try{ w.send(_pokitEnc.encode(s)); }catch(e){} }
 }
-window.pokitSendInput=pokitSendInput;
+window.pokitSendInput=pokitSendInput;window.pokitReadOnly=function(){return readOnly};
 
 
 
@@ -486,7 +486,7 @@ function connect(){
   if(reconnecting||stopped)return;
   var protocol=location.protocol==='https:'?'wss://':'ws://';
   if(window.ws)try{window.ws.onclose=null;window.ws.close()}catch(e){}
-  opened=false;readOnly=false;
+  opened=false;
   var ws=new WebSocket(protocol+location.host+"/term/ws"+location.search);
   window.ws=ws;
   ws.binaryType='arraybuffer';
