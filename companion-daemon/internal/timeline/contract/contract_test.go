@@ -2,6 +2,7 @@ package contract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -322,6 +323,50 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 			_, err := NewEnvelope(e)
 			if (n <= tc.n) != (err == nil) {
 				t.Fatalf("%s at %d: %v", tc.name, n, err)
+			}
+		}
+	}
+}
+
+func TestT0MetadataCountBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
+	for _, n := range []int{MaxMetadataKeys - 1, MaxMetadataKeys, MaxMetadataKeys + 1} {
+		e := validEnvelope(t)
+		e.T0Event.Metadata = make(map[string]string, n)
+		for i := 0; i < n; i++ {
+			e.T0Event.Metadata[fmt.Sprintf("k%d", i)] = "v"
+		}
+		e.EventID = ""
+		_, err := NewEnvelope(e)
+		if n <= MaxMetadataKeys {
+			// The count has passed production validation. The remaining error is
+			// the independent privacy invariant: every valid payload forbids
+			// embedded metadata detail.
+			if err == nil || !strings.Contains(err.Error(), "payload variant") {
+				t.Fatalf("metadata count %d did not pass its bound before privacy: %v", n, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "Metadata exceeds key count") {
+			t.Fatalf("metadata count %d: %v (want bound rejection)", n, err)
+		}
+	}
+}
+
+func TestT0MetadataKeyAndValueBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
+	for _, field := range []string{"key", "value"} {
+		for _, n := range []int{MaxReferenceBytes - 1, MaxReferenceBytes, MaxReferenceBytes + 1} {
+			e := validEnvelope(t)
+			if field == "key" {
+				e.T0Event.Metadata = map[string]string{strings.Repeat("k", n): "v"}
+			} else {
+				e.T0Event.Metadata = map[string]string{"k": strings.Repeat("v", n)}
+			}
+			e.EventID = ""
+			_, err := NewEnvelope(e)
+			if n <= MaxReferenceBytes {
+				if err == nil || !strings.Contains(err.Error(), "payload variant") {
+					t.Fatalf("metadata %s %d did not pass its bound before privacy: %v", field, n, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "Metadata key or value exceeds") {
+				t.Fatalf("metadata %s %d: %v (want bound rejection)", field, n, err)
 			}
 		}
 	}
