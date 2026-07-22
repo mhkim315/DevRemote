@@ -65,15 +65,18 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 | `pwd` submit | PASS | `KEYCODE_ENTER` → field cleared |
 | `input_boundary` | PASS | Transcript event at 11:37:09 |
 | PTY geometry (initial) | PASS | `{"rows":30,"cols":100}` |
-| Output rendering | PASS | Daemon transcript evidence |
-| Ctrl+C macro | BLOCKED | RN TouchableOpacity not responsive to injection |
-| Geometry resize | PASS (initial) | Keyboard/resize not testable on emulator |
+| PTY output production | PASS | Daemon transcript `input_boundary` |
+| xterm.js rendering | NOT TESTED | Canvas output not in accessibility tree; requires screenshot or xterm buffer read |
+| Macro controls visible/enabled | PASS | 11 macro TouchableOpacity elements, `enabled=true` |
+| Macro native press → PTY delivery | NOT TESTED | RN TouchableOpacity not responsive to Tapflow/ADB injection; requires Maestro/Detox or physical touch |
+| Ctrl+C native press | NOT TESTED | Same injection limitation |
+| Output rendering (visual) | NOT TESTED | Requires Samsung WebView or screenshot diff |
 
 ### Known Limitations
-- **Tapflow/ADB taps cannot activate RN Modal TouchableOpacity** — Shell/CREATE in NewSessionModal require physical touch
-- **Tapflow/ADB taps cannot activate RN Macros** — Ctrl+C/paste require physical touch or keyboard
+- **Tapflow/ADB taps cannot activate RN `TouchableOpacity.onPress`** — Shell/CREATE in Modal, macro buttons, Send button all require native UI automation (Maestro/Detox) or physical touch
 - **Emulator instability** — QEMU GPU snapshot corruption causes crashes; `-no-snapshot` mitigates
-- **Terminal output not in accessibility tree** — xterm.js canvas rendering is not captured by UI automator
+- **Terminal output not in accessibility tree** — xterm.js canvas rendering requires screenshot diff or xterm buffer read
+- **`explicit_local_dev` ≠ production auth** — dev-token + HTTP localhost does not cover QR pairing, DeviceAuth, WSS tickets, Keystore identity
 
 ## Physical Device Gates (require SM-S926N)
 - QR pairing (host LAN IP)

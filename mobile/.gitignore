@@ -39,3 +39,4 @@ dist/
 modules/*/android/build/
 modules/*/android/.gradle/
 modules/*/ios/build/
+.tapflow/

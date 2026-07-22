@@ -68,17 +68,21 @@ type PendingLine = {
   enterQueued: boolean;
 };
 
-const NORMAL_MACROS: { label: string; chars: number[] }[] = [
-  { label: 'Ctrl+C',  chars: [3] },
-  { label: 'Esc',     chars: [27] },
-  { label: 'Tab',     chars: [9] },
-  { label: '↑',       chars: [27, 91, 65] },
-  { label: '↓',       chars: [27, 91, 66] },
-  { label: '←',       chars: [27, 91, 68] },
-  { label: '→',       chars: [27, 91, 67] },
-  { label: 'Y',       chars: [121, 13] },
-  { label: 'N',       chars: [110, 13] },
-  { label: 'Enter',   chars: [13] },
+// LOCAL-E2E-R2: stable testIDs for Maestro/Detox native UI automation.
+// Each macro exposes a deterministic testID so native tap drivers can
+// activate TouchableOpacity without relying on accessibility labels or
+// coordinate injection.
+const NORMAL_MACROS: { label: string; chars: number[]; testID: string }[] = [
+  { label: 'Ctrl+C',  chars: [3],           testID: 'terminal-macro-ctrl-c' },
+  { label: 'Esc',     chars: [27],          testID: 'terminal-macro-escape' },
+  { label: 'Tab',     chars: [9],           testID: 'terminal-macro-tab' },
+  { label: '↑',       chars: [27, 91, 65],  testID: 'terminal-macro-arrow-up' },
+  { label: '↓',       chars: [27, 91, 66],  testID: 'terminal-macro-arrow-down' },
+  { label: '←',       chars: [27, 91, 68],  testID: 'terminal-macro-arrow-left' },
+  { label: '→',       chars: [27, 91, 67],  testID: 'terminal-macro-arrow-right' },
+  { label: 'Y',       chars: [121, 13],     testID: 'terminal-macro-y' },
+  { label: 'N',       chars: [110, 13],     testID: 'terminal-macro-n' },
+  { label: 'Enter',   chars: [13],          testID: 'terminal-macro-enter' },
 ];
 
 
@@ -1049,7 +1053,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
             {NORMAL_MACROS.map((m, i) => (
-              <TouchableOpacity key={i} style={styles.macroBtn} disabled={!terminalInputEnabled} onPress={() => sendMacro(m.chars)}>
+              <TouchableOpacity key={i} testID={m.testID} style={styles.macroBtn} disabled={!terminalInputEnabled} onPress={() => sendMacro(m.chars)}>
                 <Text style={styles.macroText}>{m.label}</Text>
               </TouchableOpacity>
             ))}

@@ -83,6 +83,16 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 		if (id == "controlled_pty:run" || id == "controlled_pty:stop") && !slices.Contains(row.AdapterCapabilities, "managedLifecycle") {
 			t.Errorf("%s adapterCapabilities missing managedLifecycle: %v", id, row.AdapterCapabilities)
 		}
+		// LOCAL-E2E-R1: controlled-PTY adapterCapabilities must include
+		// liveTerminal (Terminal tab visibility), input (writable gate),
+		// live_stream, history, and managedLifecycle.
+		if id == "controlled_pty:run" || id == "controlled_pty:stop" {
+			for _, want := range []string{"input", "liveTerminal", "live_stream", "history"} {
+				if !slices.Contains(row.AdapterCapabilities, want) {
+					t.Errorf("%s adapterCapabilities missing %s: %v", id, want, row.AdapterCapabilities)
+				}
+			}
+		}
 	}
 
 	// Retained terminal rows keep the history read affordance (Activity/Transcript
