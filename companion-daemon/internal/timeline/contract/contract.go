@@ -27,6 +27,7 @@ const (
 
 	MaxPayloadBytes   = 16 << 10
 	MaxReferenceBytes = 512
+	MaxMetadataKeys   = 64
 )
 
 var (
@@ -204,11 +205,44 @@ func (e Envelope) validate(requireEventID bool) error {
 	if !eventKindMatchesT0(e.EventKind, e.T0Event.Type) {
 		return errors.New("timeline: event kind contradicts wrapped T0 event type")
 	}
+	// CT-P1 T1: bound T0 fields BEFORE payload validation so bounds apply
+	// to all envelopes regardless of payload variant.
+	if len(e.T0Event.Text) > MaxPayloadBytes {
+		return errors.New("timeline: T0Event.Text exceeds payload bound")
+	}
+	if len(e.T0Event.ToolName) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.ToolName exceeds reference bound")
+	}
+	if len(e.T0Event.ApprovalID) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.ApprovalID exceeds reference bound")
+	}
+	if len(e.T0Event.RawRef) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.RawRef exceeds reference bound")
+	}
+	if len(e.T0Event.Provenance) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.Provenance exceeds reference bound")
+	}
+	if len(string(e.T0Event.Source)) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.Source exceeds reference bound")
+	}
+	if len(e.T0Event.Metadata) > MaxMetadataKeys {
+		return errors.New("timeline: T0Event.Metadata exceeds key count bound")
+	}
+	for k, v := range e.T0Event.Metadata {
+		if len(k) > MaxReferenceBytes || len(v) > MaxReferenceBytes {
+			return fmt.Errorf("timeline: T0Event.Metadata key or value exceeds reference bound")
+		}
+	}
 	if err := e.Payload.validate(); err != nil {
 		return err
 	}
-	if e.Payload.Redacted != nil && (e.T0Event.RawRef != "" || e.T0Event.ToolName != "" || e.T0Event.ApprovalID != "" || e.T0Event.Text != "" || len(e.T0Event.Metadata) != 0) {
-		return errors.New("timeline: redacted payload cannot carry wrapped T0 detail")
+	// CT-P1 T1: any payload variant is the privacy boundary. When Redacted,
+	// Digest, or Opaque is set, T0Event raw detail (Text, ToolName, ApprovalID,
+	// RawRef, Metadata) must be zero/empty — the envelope payload IS the
+	// canonical evidence; embedded T0 detail contradicts it.
+	if (e.Payload.Redacted != nil || e.Payload.Digest != nil || e.Payload.Opaque != nil) &&
+		(e.T0Event.RawRef != "" || e.T0Event.ToolName != "" || e.T0Event.ApprovalID != "" || e.T0Event.Text != "" || len(e.T0Event.Metadata) != 0) {
+		return errors.New("timeline: envelope payload variant cannot carry wrapped T0 detail")
 	}
 	if err := e.References.validate(e); err != nil {
 		return err

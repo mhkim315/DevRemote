@@ -2,6 +2,7 @@ package contract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,33 +93,55 @@ func TestIdempotenceAndCollision(t *testing.T) {
 }
 
 func TestCanonicalDigestIncludesWrappedT0Evidence(t *testing.T) {
+	// CT-P1 T1: Digest payloads must NOT carry wrapped T0 raw detail.
+	// The envelope payload IS the privacy boundary. Prove that Digest
+	// with T0 detail is REJECTED.
 	a := validEnvelope(t)
 	a.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
 	a.T0Event.Seq, a.T0Event.Text, a.T0Event.ToolName, a.T0Event.ApprovalID = 9, "semantic detail", "tool", "approval"
 	a.T0Event.RawRef, a.T0Event.Confidence, a.T0Event.Source, a.T0Event.Provenance = "reference", .7, agent.SourceJSONL, "native_log"
 	a.T0Event.Metadata = map[string]string{"b": "two", "a": "one"}
 	a.EventID = ""
-	a, err := NewEnvelope(a)
+	_, err := NewEnvelope(a)
+	if err == nil {
+		t.Fatal("Digest payload with wrapped T0 Text/ToolName/ApprovalID/RawRef/Metadata was accepted — must be rejected")
+	}
+
+	// Without T0 detail, Digest payload is accepted. CanonicalDigest and
+	// EventID are stable — payload fields are not part of the canonical
+	// field set per the existing algorithm.
+	a2 := validEnvelope(t)
+	a2.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+	a2.T0Event.Text = ""
+	a2.T0Event.ToolName = ""
+	a2.T0Event.ApprovalID = ""
+	a2.T0Event.RawRef = ""
+	a2.T0Event.Metadata = nil
+	a2.EventID = ""
+	a2, err = NewEnvelope(a2)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Digest payload without T0 detail rejected: %v", err)
 	}
-	b := a
-	b.T0Event.Text = "different semantic detail"
-	b.EventID = ""
-	b, err = NewEnvelope(b)
+	// Same source identity, different digest bytes — EventID is stable,
+	// CanonicalDigest is stable (payload not in canonical fields).
+	b2 := a2
+	b2.Payload.Digest.Digest = strings.Repeat("b", 64)
+	b2.EventID = ""
+	b2, err = NewEnvelope(b2)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Digest payload variant rejected: %v", err)
 	}
-	da, _ := a.CanonicalDigest()
-	db, _ := b.CanonicalDigest()
-	if da == db {
-		t.Fatal("wrapped T0 semantic change did not change digest")
+	if a2.EventID != b2.EventID {
+		t.Fatal("Digest value change changed source identity")
 	}
-	if a.EventID != b.EventID {
-		t.Fatal("wrapped T0 semantic change changed source identity")
+	da, _ := a2.CanonicalDigest()
+	db, _ := b2.CanonicalDigest()
+	if da != db {
+		t.Fatal("Digest value (payload only) changed canonical digest — payload is not part of canonical fields")
 	}
-	if _, err := SameEvidence(a, b); err != ErrEventIDCollision {
-		t.Fatalf("semantic collision error = %v", err)
+	// Same evidence (same EventID, same canonical digest) is idempotent.
+	if same, _ := SameEvidence(a2, b2); !same {
+		t.Fatal("identical envelope not detected as same evidence")
 	}
 }
 
@@ -267,15 +290,100 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 		{"digest bytes", MaxRawRecordBytes, func(e *Envelope, n int) {
 			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: n}}
 		}},
+		{"t0 text", MaxPayloadBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.Text = strings.Repeat("x", n) }},
+		{"t0 tool name", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.ToolName = strings.Repeat("x", n) }},
+		{"t0 approval id", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.ApprovalID = strings.Repeat("x", n) }},
+		{"t0 raw ref", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.RawRef = strings.Repeat("x", n) }},
+		{"t0 provenance", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.Provenance = strings.Repeat("x", n) }},
+		{"t0 source", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{}
+			e.T0Event.Source = agent.AgentEventSource(strings.Repeat("x", n))
+		}},
 	} {
 		for _, n := range []int{tc.n - 1, tc.n, tc.n + 1} {
 			e := validEnvelope(t)
 			tc.mutate(&e, n)
 			e.EventID = ""
 			_, err := NewEnvelope(e)
-			if (n <= tc.n) != (err == nil) {
-				t.Fatalf("%s at %d: %v", tc.name, n, err)
+			if strings.HasPrefix(tc.name, "t0 ") {
+				if n == tc.n+1 && err == nil {
+					t.Fatalf("%s at %d: accepted, want bounds rejection", tc.name, n)
+				}
+			} else {
+				if (n <= tc.n) != (err == nil) {
+					t.Fatalf("%s at %d: %v", tc.name, n, err)
+				}
 			}
+		}
+	}
+}
+
+func TestT0MetadataKeyBounds(t *testing.T) {
+	// N = MaxMetadataKeys. N+1 keys must reject.
+	// T0 bounds fire before payload validation — N+1 triggers bounds error
+	// before the missing-variant error is reached.
+	e := validEnvelope(t)
+	e.T0Event.Metadata = make(map[string]string, MaxMetadataKeys+1)
+	for i := 0; i < MaxMetadataKeys+1; i++ {
+		e.T0Event.Metadata[string(rune('a'+i%26))+fmt.Sprint(i)] = "v"
+	}
+	e.EventID = ""
+	_, err := NewEnvelope(e)
+	if err == nil {
+		t.Fatalf("T0Event.Metadata with %d keys accepted, want reject at >%d", MaxMetadataKeys+1, MaxMetadataKeys)
+	}
+}
+
+func TestT0MetadataKeyValueSizeRejected(t *testing.T) {
+	// Key or value exceeding MaxReferenceBytes must reject.
+	e := validEnvelope(t)
+	e.T0Event.Metadata = map[string]string{"key": strings.Repeat("v", MaxReferenceBytes+1)}
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil {
+		t.Fatal("T0Event.Metadata value exceeding MaxReferenceBytes accepted")
+	}
+	e2 := validEnvelope(t)
+	e2.T0Event.Metadata = map[string]string{strings.Repeat("k", MaxReferenceBytes+1): "v"}
+	e2.EventID = ""
+	if _, err := NewEnvelope(e2); err == nil {
+		t.Fatal("T0Event.Metadata key exceeding MaxReferenceBytes accepted")
+	}
+}
+
+func TestDigestPayloadRejectsWrappedT0Detail(t *testing.T) {
+	for _, set := range []func(*agent.AgentEvent){
+		func(e *agent.AgentEvent) { e.RawRef = "ref" },
+		func(e *agent.AgentEvent) { e.ToolName = "tool" },
+		func(e *agent.AgentEvent) { e.ApprovalID = "approval" },
+		func(e *agent.AgentEvent) { e.Text = "text" },
+		func(e *agent.AgentEvent) { e.Metadata = map[string]string{"k": "v"} },
+	} {
+		e := validEnvelope(t)
+		e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+		set(&e.T0Event)
+		e.EventID = ""
+		_, err := NewEnvelope(e)
+		if err == nil {
+			t.Fatal("Digest payload with wrapped T0 detail was accepted — must be rejected")
+		}
+	}
+}
+
+func TestOpaquePayloadRejectsWrappedT0Detail(t *testing.T) {
+	for _, set := range []func(*agent.AgentEvent){
+		func(e *agent.AgentEvent) { e.RawRef = "ref" },
+		func(e *agent.AgentEvent) { e.ToolName = "tool" },
+		func(e *agent.AgentEvent) { e.ApprovalID = "approval" },
+		func(e *agent.AgentEvent) { e.Text = "text" },
+		func(e *agent.AgentEvent) { e.Metadata = map[string]string{"k": "v"} },
+	} {
+		e := validEnvelope(t)
+		e.Payload = Payload{Opaque: &OpaqueReferencePayload{Reference: "pty://digest-only"}}
+		set(&e.T0Event)
+		e.EventID = ""
+		_, err := NewEnvelope(e)
+		if err == nil {
+			t.Fatal("Opaque payload with wrapped T0 detail was accepted — must be rejected")
 		}
 	}
 }
