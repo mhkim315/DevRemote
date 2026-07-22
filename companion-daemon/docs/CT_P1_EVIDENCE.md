@@ -1,6 +1,8 @@
 # CT-P1 Evidence — Minimal Timeline Envelope
 
-Implementation commit: `680a78f69b5a0cdae737eaf7c630c1c219185617`
+Initial implementation commit: `680a78f69b5a0cdae737eaf7c630c1c219185617`
+
+R2 implementation commit: `ec41d196de6e5bd2fa1531703d9ced4a69f61d31`
 
 ## Scope and dependency boundary
 
@@ -77,22 +79,31 @@ type References struct {
 ## Contract properties covered
 
 - `SchemaV1`/`PayloadV1` gate unknown versions.
-- `ComputedEventID` uses framed, domain-separated SHA-256 over provider/source
-  identity and semantic digest. It accepts no append sequence and excludes both
-  timestamps; append order and timestamp changes cannot alter identity or dedup.
-- `CanonicalDigest` excludes `EventID`, `OccurredAt`, and `ObservedAt`.
+- `ComputedEventID` uses framed, domain-separated SHA-256 over **only** the
+  provider/source identity tuple: provider, source identity, source position,
+  and source incarnation. It has no append sequence, digest, or timestamp
+  input. Same source identity with a different canonical digest is rejected as
+  `ErrEventIDCollision`, never assigned a new EventID.
+- `CanonicalDigest` excludes `EventID`, `OccurredAt`, and `ObservedAt`, but
+  includes every other wrapped T0 semantic field (including deterministically
+  sorted metadata) so a semantic change cannot be treated as idempotent.
 - `Payload` is an exact one-of redacted summary, digest reference, or opaque
   reference. Redacted and opaque values reject common secret markers; raw PTY
-  bytes are not an envelope payload field.
+  bytes are not an envelope payload field. R2 additionally rejects any wrapped
+  T0 raw reference, tool name, approval ID, text, or metadata alongside a
+  redacted payload.
+- The wrapped T0 event must have an ID and a type compatible with the envelope
+  event kind; contradictory wrappers are rejected.
 - Typed references are closed and scoped to session/runtime/launch generation.
   They are required only by their matching event kind and rejected everywhere
   else, including cross-session, cross-runtime, and cross-generation bindings.
 - Fixture-derived read limits are 1000 events, 4096 cursor bytes, and 1 MiB raw
-  record bytes; each has N-1/N/N+1 coverage.
+  record bytes. R2 has N-1/N/N+1 coverage for those limits plus payload bytes,
+  envelope/reference IDs, opaque references, and digest-reference byte counts.
 
 ## Verification
 
-All passed on the implementation commit:
+All passed on the R2 implementation commit:
 
 - `go test -race ./internal/timeline/contract -count=1`
 - `go test ./internal/timeline/contract -run=^$ -fuzz=FuzzEnvelopeValidator -fuzztime=2s`
