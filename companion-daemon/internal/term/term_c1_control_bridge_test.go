@@ -842,6 +842,41 @@ func TestTERM_C1_DuplicateHelloDoesNotClearPendingInputState(t *testing.T) {
 	}
 }
 
+// ── TERM-C1-R3: __pokitExpectedSession injection ──
+
+// TestTERM_C1_R3_ExpectedSessionInjection verifies the served HTML page
+// contains the __pokitExpectedSession priority path in the expectedSession
+// computation. This is the paired-device HTML path where location.search
+// has no ?session= query parameter (the page is loaded via
+// source={{html,baseUrl}}).
+func TestTERM_C1_R3_ExpectedSessionInjection(t *testing.T) {
+	mux := http.NewServeMux()
+	h := &Handlers{}
+	mux.HandleFunc("/term/", h.HandleHTML)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/term/?session=controlled_pty:test-session")
+	if err != nil {
+		t.Fatalf("fetch daemon page: %v", err)
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, 512*1024)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	if !strings.Contains(body, "__pokitExpectedSession") {
+		t.Fatal("HandleHTML output missing __pokitExpectedSession in expectedSession computation")
+	}
+	if !strings.Contains(body, "window.__pokitExpectedSession") {
+		t.Fatal("HandleHTML output missing window.__pokitExpectedSession priority check")
+	}
+	// Verify fallback still exists for explicit_local_dev direct URI loads
+	if !strings.Contains(body, "location.search.match") {
+		t.Fatal("HandleHTML output missing location.search fallback for explicit_local_dev")
+	}
+}
+
 // ── Compile-time guards ──
 
 var _ http.HandlerFunc = (&Handlers{}).HandleHTML
