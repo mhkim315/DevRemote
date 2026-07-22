@@ -159,7 +159,19 @@ func NewApp(cfg Config) (*App, error) {
 }
 
 // NewAppWithDeps creates an App with injectable dependencies for testing.
-func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
+func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
+	var timelineWriter *writer.Writer
+	// Timeline is constructed before several independent, fallible App
+	// components. If any of those components rejects construction, release the
+	// optional writer immediately rather than leaking its file descriptor.
+	defer func() {
+		if err != nil && timelineWriter != nil {
+			if closeErr := timelineWriter.Close(); closeErr != nil {
+				log.Printf("Timeline shadow rollback close error (ignored): %v", closeErr)
+			}
+		}
+	}()
+
 	cmds := deps.Cmds
 	if cmds == nil {
 		cmds = term.NewCommandBroker()
@@ -183,7 +195,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	// to terminal, approval, input, lifecycle, or recorder paths. A future
 	// producer must submit only after its authority commits and without holding
 	// an authority lock.
-	var timelineWriter *writer.Writer
 	if cfg.EnableTimelineShadow {
 		path := cfg.TimelineShadowPath
 		if path == "" {

@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"devremote/companion-daemon/internal/agent"
+	"devremote/companion-daemon/internal/timeline/contract"
 	"devremote/companion-daemon/internal/timeline/writer"
 )
 
@@ -48,4 +52,53 @@ func TestSTEP4TimelineUnavailableDoesNotBlockDaemonConstruction(t *testing.T) {
 	if err := app.Run(ctx); err != nil {
 		t.Fatalf("Timeline failure blocked daemon startup/shutdown: %v", err)
 	}
+}
+
+func TestSTEP4FailedAppConstructionClosesTimelineWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "timeline-shadow.jsonl")
+	var opened *writer.Writer
+	deps := Dependencies{
+		OpenTimelineShadow: func(config writer.Config) (*writer.Writer, error) {
+			var err error
+			opened, err = writer.Open(config)
+			return opened, err
+		},
+	}
+	_, err := NewAppWithDeps(Config{
+		InsecureLocalOnly: true, EnableTimelineShadow: true, TimelineShadowPath: path,
+		ListenAddr: "not-a-loopback-address",
+	}, deps)
+	if err == nil {
+		t.Fatal("invalid listen address unexpectedly constructed App")
+	}
+	if opened == nil {
+		t.Fatal("Timeline writer was not opened by regression setup")
+	}
+	if opened.Append(step4Envelope(t)) {
+		t.Fatal("Timeline writer remained open after failed App construction")
+	}
+	if got := opened.Stats(); got != (writer.Stats{Dropped: 1}) {
+		t.Fatalf("stats = %+v, want closed-writer drop", got)
+	}
+}
+
+func step4Envelope(t *testing.T) contract.Envelope {
+	t.Helper()
+	scope := contract.Scope{SessionID: "controlled_pty:one", RuntimeID: "runtime-1", LaunchGeneration: 1}
+	e, err := contract.NewEnvelope(contract.Envelope{
+		SchemaVersion: contract.SchemaV1, PayloadVersion: contract.PayloadV1,
+		EventKind: contract.EventToolCallStarted,
+		SessionID: scope.SessionID, RuntimeID: scope.RuntimeID, LaunchGeneration: scope.LaunchGeneration,
+		Provider: "codex", SourceIncarnation: "run-1",
+		SourceIdentity: contract.SourceIdentity{Kind: "provider", ID: "session-1"}, SourcePosition: "position-1",
+		OccurredAt: time.Unix(1, 0).UTC(), ObservedAt: time.Unix(2, 0).UTC(), RedactionPolicyVersion: "redaction-v1",
+		Payload:         contract.Payload{Redacted: &contract.RedactedPayload{Summary: "safe"}},
+		EvidenceSources: contract.EvidenceSources{Provider: &contract.ProviderEvidenceRef{ID: "provider-evidence-1", Scope: scope}},
+		References:      contract.References{ToolCall: &contract.TypedReference{Kind: contract.ReferenceToolCall, ID: "tool-1", Scope: scope}},
+		T0Event:         agent.AgentEvent{ID: "t0-1", SessionID: scope.SessionID, AgentKind: "codex", Type: agent.EventToolCallStarted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
 }

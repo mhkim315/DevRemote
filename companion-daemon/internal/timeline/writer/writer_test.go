@@ -20,6 +20,8 @@ type testFile struct {
 	contents string
 	writeErr error
 	syncErr  error
+	shortN   *int
+	syncs    int
 	closed   bool
 }
 
@@ -32,13 +34,18 @@ func (f *testFile) Write(record []byte) (int, error) {
 	if f.writeErr != nil {
 		return 0, f.writeErr
 	}
-	f.contents += string(record)
-	return len(record), nil
+	n := len(record)
+	if f.shortN != nil {
+		n = *f.shortN
+	}
+	f.contents += string(record[:n])
+	return n, nil
 }
 
 func (f *testFile) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.syncs++
 	return f.syncErr
 }
 
@@ -112,6 +119,21 @@ func TestAppendFailureIsIsolated(t *testing.T) {
 				t.Fatalf("stats = %+v", got)
 			}
 		})
+	}
+}
+
+func TestShortWriteIsDroppedBeforeSync(t *testing.T) {
+	shortN := 1
+	f := &testFile{shortN: &shortN}
+	w := newWriter(f)
+	if w.Append(validEnvelope(t)) {
+		t.Fatal("Append accepted a short write")
+	}
+	if got := w.Stats(); got != (Stats{Dropped: 1, Failures: 1}) {
+		t.Fatalf("stats = %+v", got)
+	}
+	if f.syncs != 0 {
+		t.Fatalf("Sync calls after short write = %d, want 0", f.syncs)
 	}
 }
 

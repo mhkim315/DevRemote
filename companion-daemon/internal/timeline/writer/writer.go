@@ -89,7 +89,8 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 		w.dropped++
 		return false
 	}
-	if _, err := w.file.Write(record); err != nil {
+	n, err := w.file.Write(record)
+	if err != nil || n != len(record) {
 		w.dropped++
 		w.failures++
 		return false
