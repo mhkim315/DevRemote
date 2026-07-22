@@ -1,6 +1,6 @@
 # PB Device-Gate Terminal Regression Remediation Plan
 
-**Status:** TERMINAL REMEDIATION ACCEPTED — AWAITING DEVICE GATE
+**Status:** TERMINAL REMEDIATION ACCEPTED — ARTIFACT-ID1 REQUIRED BEFORE DEVICE GATE
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -85,7 +85,8 @@ DEVICE_GATE_PAUSED at diagnostic checkpoint dad910c82
 → conditional scroll-duplication comparison
 → PB.6/PB.7 full automated evidence regeneration
 → exact PB_DEVICE_CANDIDATE_SHA freeze
-→ daemon and APK built from that same candidate
+→ ARTIFACT-ID1 matched daemon/APK provenance remediation
+→ independent ARTIFACT-ID1 ACCEPT
 → restart the complete SM-S926N matrix from pairing
 → final independent PB ACCEPT
 ```
@@ -231,6 +232,118 @@ HEAD/upstream equality, and clean-worktree checks. Evidence must name artifact
 and source identities and must state failures honestly; logging or screenshots
 cannot replace assertions.
 
+### 7.1 ARTIFACT-ID1 — matched candidate provenance remediation
+
+This is a build-and-evidence packet. It changes no production code, mobile
+source, tests, runtime configuration, or frozen candidate content. The frozen
+production identity remains:
+
+```text
+PB_DEVICE_CANDIDATE_SHA=ab18846622327334300de8436aff600db5c08e17
+```
+
+The rejected build embedded documentation HEAD
+`6a6d95125bf9b954184f6bd6bbf1638c09b89d34` in the APK while the daemon
+attested `ab18846622327334300de8436aff600db5c08e17`. Its APK hash and all device
+results are invalid for PB acceptance. Rebuilding from an evidence or roadmap
+HEAD is prohibited even when the production file diff is empty.
+
+#### Required execution boundary
+
+1. Create a fresh detached checkout at the exact full candidate SHA. Do not
+   checkout, amend, tag, or otherwise mutate the canonical workspace while
+   building.
+2. Confirm the detached checkout has no tracked or untracked changes before
+   starting. Generated attestation files must be ignored build inputs under
+   `mobile/android/app/src/main/assets/`; they must never be committed.
+3. Build the daemon first from that checkout. Require `go version -m` to report
+   the exact candidate and `vcs.modified=false`, then compute its full SHA-256.
+4. Generate exactly two APK assets from the just-verified values:
+   `PB_DEVICE_CANDIDATE_SHA.txt` containing the full candidate SHA and
+   `DAEMON_SHA256.txt` containing the full hash of that exact daemon binary.
+5. With `EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST` unset, build the release-variant
+   APK in the same detached checkout. Do not rebuild from the later evidence
+   commit and do not reuse Gradle outputs from another checkout.
+6. Extract both assets from the completed APK and compare them byte-for-byte
+   with the candidate SHA and daemon hash. Also verify the APK hash, bundled JS,
+   release manifest cleartext prohibition, NO_LOGIN-negative state, signature,
+   and current-user-readable artifact locations.
+7. Preserve the daemon and APK together in one immutable candidate artifact
+   directory. The SM-S926N gate must use that exact pair; no subsequent rebuild
+   or artifact substitution is permitted.
+
+The executor may use an equivalent isolated directory, but the proof must be
+reproducible from repository root with commands equivalent to:
+
+```sh
+C=ab18846622327334300de8436aff600db5c08e17
+git clone --no-hardlinks . /tmp/pokit-pb-device-candidate
+git -C /tmp/pokit-pb-device-candidate checkout --detach "$C"
+test -z "$(git -C /tmp/pokit-pb-device-candidate status --porcelain --untracked-files=all)"
+
+cd /tmp/pokit-pb-device-candidate/companion-daemon
+mkdir -p /tmp/pokit-pb-device-artifacts
+go build -o /tmp/pokit-pb-device-artifacts/devremote ./cmd/devremote
+go version -m /tmp/pokit-pb-device-artifacts/devremote
+shasum -a 256 /tmp/pokit-pb-device-artifacts/devremote
+
+cd /tmp/pokit-pb-device-candidate
+mkdir -p mobile/android/app/src/main/assets
+printf '%s\n' "$C" > mobile/android/app/src/main/assets/PB_DEVICE_CANDIDATE_SHA.txt
+shasum -a 256 /tmp/pokit-pb-device-artifacts/devremote | awk '{print $1}' \
+  > mobile/android/app/src/main/assets/DAEMON_SHA256.txt
+cd mobile
+env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST \
+  ./android/gradlew -p android :app:assembleRelease
+cp android/app/build/outputs/apk/release/app-release.apk \
+  /tmp/pokit-pb-device-artifacts/app-release.apk
+
+unzip -p /tmp/pokit-pb-device-artifacts/app-release.apk \
+  assets/PB_DEVICE_CANDIDATE_SHA.txt
+unzip -p /tmp/pokit-pb-device-artifacts/app-release.apk \
+  assets/DAEMON_SHA256.txt
+shasum -a 256 /tmp/pokit-pb-device-artifacts/app-release.apk
+```
+
+The final detached-checkout cleanliness proof excludes only the two explicitly
+ignored generated assets and ordinary ignored build output. Any other change is
+a rejection.
+
+#### Evidence-only closeout
+
+After the matched artifacts exist, commit only documentation updates. The
+evidence must:
+
+- record the exact full candidate, daemon source, and APK source as
+  `ab18846622327334300de8436aff600db5c08e17`;
+- record the exact daemon and APK SHA-256 values and the two values extracted
+  from the APK;
+- name the already regenerated PB.6/PB.7 automated-evidence identity rather
+  than leaving `PB_AUTOMATED_EVIDENCE_SHA` blank or `UNSET`;
+- update every authoritative identity table consistently and remove stale text
+  claiming the device candidate is unset;
+- mark the PB.7 matched-artifact condition complete while leaving
+  `PB_ACCEPT_SHA` **UNSET**;
+- state that the release-variant APK is Android-debug-signed and authorized
+  only for this USB device gate, not for production distribution;
+- prove candidate-to-evidence ancestry, HEAD/upstream equality, documentation-
+  only diff scope, `git diff --check`, and a clean canonical worktree.
+
+ARTIFACT-ID1 requires independent read-only ACCEPT. The verifier independently
+extracts the two APK assets, hashes both artifacts, checks daemon VCS metadata,
+inspects the merged release manifest and signature, and confirms that the
+device command invokes the accepted daemon artifact. Only that ACCEPT permits
+SM-S926N installation and matrix execution.
+
+#### Stop conditions
+
+Stop and reject if any build uses a commit other than the exact candidate, the
+APK candidate differs from the daemon VCS revision, the embedded daemon hash
+differs from the tested binary, the worktree has an unexplained mutation, an
+attestation file is tracked, release cleartext or NO_LOGIN is enabled, evidence
+and production changes are mixed, an authoritative document remains
+inconsistent, or an artifact is replaced after hashing.
+
 ## 8. Device-gate resume criteria
 
 The SM-S926N matrix restarts from its first pairing scenario only after:
@@ -243,6 +356,7 @@ The SM-S926N matrix restarts from its first pairing scenario only after:
 - no paired WebView performs unauthenticated REST polling;
 - the conditional scroll comparison is classified;
 - PB.6/PB.7 automated evidence is regenerated;
+- ARTIFACT-ID1 has independent read-only ACCEPT;
 - clean daemon and APK artifacts attest the same exact
   `PB_DEVICE_CANDIDATE_SHA`;
 - `PB_ACCEPT_SHA` remains **UNSET**.
