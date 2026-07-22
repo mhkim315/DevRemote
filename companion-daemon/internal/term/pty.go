@@ -583,7 +583,13 @@ term.open(document.getElementById("t"));
 
 function pokitMakeInputID(){var a=new Uint8Array(32);crypto.getRandomValues(a);var h="";for(var i=0;i<32;i++){h+=((a[i]>>4)&15).toString(16);h+=(a[i]&15).toString(16)}return h}
 window.__pokitControlBridge=(function(){
-  var expectedSession=(function(){var m=location.search.match(/(?:^|[?&])session=([^&]+)/);try{return m?decodeURIComponent(m[1].replace(/\+/g," ")):"devremote"}catch(_){return ""}})();
+  // TERM-C1-R3: paired-device HTML is loaded via source={{html,baseUrl}}
+  // which strips the original ?session= query parameter from location.search.
+  // The native TerminalController bootstrapper sets __pokitExpectedSession
+  // before the page loads so the bridge can match the exact daemon hello
+  // sessionId. Fall back to location.search for explicit_local_dev direct
+  // URI loads where the query IS present.
+  var expectedSession=(function(){if(typeof window.__pokitExpectedSession==="string"&&window.__pokitExpectedSession)return window.__pokitExpectedSession;var m=location.search.match(/(?:^|[?&])session=([^&]+)/);try{return m?decodeURIComponent(m[1].replace(/\+/g," ")):"devremote"}catch(_){return ""}})();
   var state={socket:null,connectionId:null,sessionId:null,generation:null,capabilities:[],inputEnabled:false,readOnly:true,geometry:window.__pokitLastGeom||null,lastRejected:""};
   var seen={};
   function reject(predicate){state.lastRejected=predicate;}

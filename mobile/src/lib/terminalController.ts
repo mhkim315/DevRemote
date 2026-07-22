@@ -67,6 +67,10 @@ export class TerminalController {
     // daemon's real connect() is defined before we wrap it.
     const connId = this.connId;
     const ticketScript = `<script>${ptySize}
+// TERM-C1-R3: paired-device HTML loses the ?session= query parameter
+// when loaded via source={{html,baseUrl}}. Seed the exact session ID
+// so the served-page control bridge can validate the daemon hello frame.
+window.__pokitExpectedSession=${JSON.stringify(sessionId)};
 (function(){
   var ticketA=${JSON.stringify(t.ticket)}, session=${JSON.stringify(sessionId)}, attemptId=${attemptId}, connId=${connId};
   var pendingReconnect=false, realConnectFn=null;
