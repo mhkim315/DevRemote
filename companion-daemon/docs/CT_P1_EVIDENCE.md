@@ -14,6 +14,10 @@ Correction chain (all commits after the R2 implementation):
   aliasing test and its collision assertion.
 - `2f54674fc973c5a4cec91fe5b72783932a5c0057` — recorded the preceding T2
   test-correction evidence.
+- `7fb93e0e0` — restored metadata key-count and key/value-size boundary
+  regression tests (`TestT0MetadataKeyBounds`, `TestT0MetadataKeyValueSizeRejected`).
+- `07a8a6ea5` — this evidence HEAD; corrected metadata test descriptions
+  and all-payload-variant scope documentation.
 
 ## Scope and dependency boundary
 
@@ -101,8 +105,13 @@ type References struct {
 - `Payload` is an exact one-of redacted summary, digest reference, or opaque
   reference. Redacted and opaque values reject common secret markers; raw PTY
   bytes are not an envelope payload field. R2 additionally rejects any wrapped
-  T0 raw reference, tool name, approval ID, text, or metadata alongside a
-  redacted payload.
+  T0 raw reference, tool name, approval ID, text, or metadata alongside **any**
+  payload variant (redacted, digest, or opaque) — the envelope payload IS the
+  privacy boundary, and embedded T0 detail contradicts it regardless of which
+  variant is set. Metadata tests use `validEnvelope()` which carries a
+  RedactedPayload by default; the T0-detail rejection applies identically to
+  all three variants so the specific variant in `validEnvelope()` does not
+  affect the test outcome.
 - The wrapped T0 event must have an ID and a type compatible with the envelope
   event kind; contradictory wrappers are rejected.
 - Typed references are closed and scoped to session/runtime/launch generation.
