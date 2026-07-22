@@ -50,10 +50,12 @@ The frozen state is:
 
 | Identity or phase | State |
 | --- | --- |
-| PB production/device candidate | `ab18846622327334300de8436aff600db5c08e17` |
-| Frozen daemon SHA-256 | `5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580` |
-| Frozen APK SHA-256 | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` |
-| PB physical SM-S926N evidence | **PENDING** |
+| Historical pre-R3 PB candidate | `ab18846622327334300de8436aff600db5c08e17` |
+| Historical pre-R3 daemon SHA-256 | `5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580` |
+| Historical pre-R3 APK SHA-256 | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` |
+| PB-DG-R4 planning baseline | `45d2433dce8b59a025bf3adf7563a7e5fc37d747` |
+| Replacement PB device candidate and artifacts | **UNSET; governed by `PB_DG_R4_CLOSEOUT_PLAN.md`** |
+| PB physical SM-S926N evidence | **PENDING replacement-candidate smoke** |
 | PB ACCEPT SHA | **UNSET** |
 | CT-PRE | **CT-P0 and CT-P1 accepted; operational amendment pending PB ACCEPT** |
 | CT-P2 | **BLOCKED** |
@@ -111,10 +113,11 @@ semantics from terminal text.
 
 ## 3. Branch, artifact, and rollback rules
 
-1. `PB_PRODUCTION_BASE_SHA` is exactly
-   `ab18846622327334300de8436aff600db5c08e17`.
-2. The daemon and APK named above are immutable. They remain the only artifacts
-   authorized for the pending SM-S926N matrix.
+1. The pre-R3 candidate `ab18846622327334300de8436aff600db5c08e17` and its
+   artifacts remain immutable historical provenance, but are no longer
+   authorized for final device acceptance after TERM-C1-R3 was discovered.
+2. `PB_DG_R4_CLOSEOUT_PLAN.md` must freeze a replacement production candidate
+   and matched daemon/APK artifacts before the bounded SM-S926N smoke.
 3. CT-P0 planning/evidence remains documentation-only on the existing branch.
 4. After independent CT-P0 ACCEPT, create
    `feature/canonical-timeline-foundation` from the accepted CT-P0 documentation
@@ -124,9 +127,9 @@ semantics from terminal text.
 5. Each CT wave uses separate implementation and evidence commits and receives
    independent read-only ACCEPT before the next wave.
 6. CT commits never merge into the frozen PB candidate or its artifact branch.
-7. If the device gate finds a PB defect, fix it on a PB-only branch from the
-   frozen candidate. Do not cherry-pick CT code into that branch.
-8. If a new PB candidate is accepted, stop CT-PRE, rebase or replay accepted CT
+7. The current device-discovered fix is governed only by PB-DG-R4. No CT-P2 or
+   production Timeline work may be mixed into its candidate.
+8. When the replacement PB candidate is accepted, stop CT-PRE, rebase or replay accepted CT
    changes onto that exact production baseline, rerun every accepted CT gate,
    and obtain fresh acceptance. Old CT evidence cannot be spliced forward.
 9. Wave rollback is commit-level removal of that wave back to the preceding
@@ -583,7 +586,8 @@ begin CT-P2 or create a production
 writer, shadow queue, startup/DI registration, live normalizer callback, route,
 DTO, mobile consumer, or cutover plan until:
 
-1. the exact SM-S926N matrix passes using the frozen matched artifacts;
+1. PB-DG-R4 passes and the bounded SM-S926N smoke uses its exact replacement
+   candidate and matched artifacts;
 2. an independent verifier assigns an exact PB ACCEPT SHA;
 3. CT-P1 is reviewed against the operational-evidence direction in
    `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and narrowly amended if
