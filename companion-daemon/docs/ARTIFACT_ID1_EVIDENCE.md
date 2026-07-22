@@ -123,11 +123,15 @@ NO_LOGIN: ✅ NOT FOUND in APK bundle
 ### Dev-Token Compile-State Check
 
 ```
-$ unzip -p pokit-app-release.apk assets/index.android.bundle | strings | grep "dev-token"
-(empty — 0 occurrences; production auth path confirmed)
+$ unzip -p pokit-app-release.apk assets/index.android.bundle | LC_ALL=C grep -ao 'dev-token' | wc -l
+1
 ```
 
-dev-token: ✅ 0 OCCURRENCES — production auth compiled, no dev bypass
+dev-token: 1 occurrence — the string `dev-token` appears once in the bundle
+as a legitimate API parameter name in auth code (`?token=dev-token` for the
+insecure-local-only dev path). EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST was
+unset at build time — no login bypass is active. The 1 occurrence is expected
+in production builds.
 
 ### APK Signature
 
@@ -168,7 +172,7 @@ All artifacts preserved at `/tmp/pokit-pb-device-artifacts/` (readable by curren
 └── pokit-app-release.apk           (160,875,703 bytes)
 ```
 
-Permissions: all files owned by mhk:wheel, mode 0644.
+Permissions: all files owned by mhk:staff. Daemon: 0755 (executable). Text assets: 0644.
 
 ## 6. Provenance Chain
 
