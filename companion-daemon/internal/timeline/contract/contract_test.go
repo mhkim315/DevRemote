@@ -24,6 +24,7 @@ func validEnvelope(t *testing.T) Envelope {
 		OccurredAt: time.Unix(100, 0).UTC(), ObservedAt: time.Unix(200, 0).UTC(),
 		RedactionPolicyVersion: "redaction-v1",
 		Payload:                Payload{Redacted: &RedactedPayload{Summary: "completed a redacted operation"}},
+		EvidenceSources:        EvidenceSources{Provider: &ProviderEvidenceRef{ID: "provider-evidence-1", Scope: scope}},
 		References:             References{ToolCall: &TypedReference{Kind: ReferenceToolCall, ID: "tool-1", Scope: scope}},
 		T0Event:                agent.AgentEvent{ID: "t0-event-1", SessionID: scope.SessionID, AgentKind: "codex", Type: agent.EventToolCallStarted},
 	})
@@ -31,6 +32,139 @@ func validEnvelope(t *testing.T) Envelope {
 		t.Fatal(err)
 	}
 	return e
+}
+
+func TestEvidenceSourcesRequireExactlyOneScopedSource(t *testing.T) {
+	e := validEnvelope(t)
+	e.EvidenceSources = EvidenceSources{}
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil || !strings.Contains(err.Error(), "exactly one evidence source") {
+		t.Fatalf("missing evidence source: %v", err)
+	}
+
+	e = validEnvelope(t)
+	e.EvidenceSources.Runtime = &RuntimeEvidenceRef{ID: "runtime-evidence-1", Scope: Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration}}
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil || !strings.Contains(err.Error(), "exactly one evidence source") {
+		t.Fatalf("multiple evidence sources: %v", err)
+	}
+
+	e = validEnvelope(t)
+	e.EvidenceSources.Provider.Scope.RuntimeID = "other"
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil || !strings.Contains(err.Error(), "provider evidence scope") {
+		t.Fatalf("cross-runtime provider evidence accepted: %v", err)
+	}
+}
+
+func TestNonProviderEvidenceDoesNotRequireFabricatedT0Event(t *testing.T) {
+	scope := Scope{SessionID: "controlled_pty:one", RuntimeID: "runtime-1", LaunchGeneration: 3}
+	for _, tc := range []struct {
+		name string
+		set  func(*EvidenceSources)
+	}{
+		{"runtime", func(s *EvidenceSources) { s.Runtime = &RuntimeEvidenceRef{ID: "runtime-evidence-1", Scope: scope} }},
+		{"approval", func(s *EvidenceSources) { s.Approval = &ApprovalEvidenceRef{ID: "approval-evidence-1", Scope: scope} }},
+		{"input", func(s *EvidenceSources) { s.Input = &InputEvidenceRef{ID: "input-evidence-1", Scope: scope} }},
+		{"workspace", func(s *EvidenceSources) {
+			s.Workspace = &WorkspaceEvidenceRef{ID: "workspace-evidence-1", Scope: scope}
+		}},
+		{"coordination", func(s *EvidenceSources) {
+			s.Coordination = &CoordinationEvidenceRef{ID: "coordination-evidence-1", Scope: scope}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := validEnvelope(t)
+			e.EventKind = EventEvidenceObserved
+			e.References = References{Provenance: &TypedReference{Kind: ReferenceProvenance, ID: "provenance-1", Scope: scope}}
+			e.EvidenceSources = EvidenceSources{}
+			tc.set(&e.EvidenceSources)
+			e.T0Event = agent.AgentEvent{}
+			e.EventID = ""
+			if _, err := NewEnvelope(e); err != nil {
+				t.Fatalf("non-provider operational evidence rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestEvidenceSourceBoundaryPreservesProviderWrapperRules(t *testing.T) {
+	e := validEnvelope(t)
+	e.T0Event = agent.AgentEvent{}
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil || !strings.Contains(err.Error(), "wrapped T0 event") {
+		t.Fatalf("provider evidence without wrapped T0 event accepted: %v", err)
+	}
+
+	e = validEnvelope(t)
+	e.EventKind = EventEvidenceObserved
+	e.References = References{Provenance: &TypedReference{Kind: ReferenceProvenance, ID: "provenance-1", Scope: Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration}}}
+	e.EvidenceSources = EvidenceSources{Runtime: &RuntimeEvidenceRef{ID: "runtime-evidence-1", Scope: Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration}}}
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil || !strings.Contains(err.Error(), "non-provider evidence cannot carry") {
+		t.Fatalf("non-provider evidence with T0 wrapper accepted: %v", err)
+	}
+}
+
+func TestEvidenceSourceParticipatesInCanonicalDigest(t *testing.T) {
+	a := validEnvelope(t)
+	b := a
+	b.EvidenceSources.Provider = &ProviderEvidenceRef{ID: "provider-evidence-2", Scope: a.EvidenceSources.Provider.Scope}
+	b.EventID = ""
+	b, err := NewEnvelope(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.EventID != b.EventID {
+		t.Fatal("evidence source changed source-derived event id")
+	}
+	da, err := a.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := b.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if da == db {
+		t.Fatal("evidence source did not change canonical digest")
+	}
+	if _, err := SameEvidence(a, b); err != ErrEventIDCollision {
+		t.Fatalf("source evidence collision = %v", err)
+	}
+}
+
+func TestEvidenceSourceIDBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
+	scope := Scope{SessionID: "controlled_pty:one", RuntimeID: "runtime-1", LaunchGeneration: 3}
+	for _, tc := range []struct {
+		name string
+		set  func(*EvidenceSources, string)
+	}{
+		{"provider", func(s *EvidenceSources, id string) { s.Provider = &ProviderEvidenceRef{ID: id, Scope: scope} }},
+		{"runtime", func(s *EvidenceSources, id string) { s.Runtime = &RuntimeEvidenceRef{ID: id, Scope: scope} }},
+		{"approval", func(s *EvidenceSources, id string) { s.Approval = &ApprovalEvidenceRef{ID: id, Scope: scope} }},
+		{"input", func(s *EvidenceSources, id string) { s.Input = &InputEvidenceRef{ID: id, Scope: scope} }},
+		{"workspace", func(s *EvidenceSources, id string) { s.Workspace = &WorkspaceEvidenceRef{ID: id, Scope: scope} }},
+		{"coordination", func(s *EvidenceSources, id string) { s.Coordination = &CoordinationEvidenceRef{ID: id, Scope: scope} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, n := range []int{MaxReferenceBytes - 1, MaxReferenceBytes, MaxReferenceBytes + 1} {
+				e := validEnvelope(t)
+				e.EvidenceSources = EvidenceSources{}
+				tc.set(&e.EvidenceSources, strings.Repeat("x", n))
+				if tc.name != "provider" {
+					e.EventKind = EventEvidenceObserved
+					e.References = References{Provenance: &TypedReference{Kind: ReferenceProvenance, ID: "provenance-1", Scope: scope}}
+					e.T0Event = agent.AgentEvent{}
+				}
+				e.EventID = ""
+				_, err := NewEnvelope(e)
+				if (n <= MaxReferenceBytes) != (err == nil) {
+					t.Fatalf("id length %d: %v", n, err)
+				}
+			}
+		})
+	}
 }
 
 func TestEventIDReplayAppendAndTimestampInvariant(t *testing.T) {
@@ -283,10 +417,10 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 			e.Payload = Payload{Redacted: &RedactedPayload{Summary: strings.Repeat("x", n)}}
 		}},
 		{"session id", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.SessionID, e.T0Event.SessionID, e.References.ToolCall.Scope.SessionID = strings.Repeat("x", n), strings.Repeat("x", n), strings.Repeat("x", n)
+			e.SessionID, e.T0Event.SessionID, e.References.ToolCall.Scope.SessionID, e.EvidenceSources.Provider.Scope.SessionID = strings.Repeat("x", n), strings.Repeat("x", n), strings.Repeat("x", n), strings.Repeat("x", n)
 		}},
 		{"runtime id", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.RuntimeID, e.References.ToolCall.Scope.RuntimeID = strings.Repeat("x", n), strings.Repeat("x", n)
+			e.RuntimeID, e.References.ToolCall.Scope.RuntimeID, e.EvidenceSources.Provider.Scope.RuntimeID = strings.Repeat("x", n), strings.Repeat("x", n), strings.Repeat("x", n)
 		}},
 		{"provider", MaxReferenceBytes, func(e *Envelope, n int) {
 			e.Provider, e.T0Event.AgentKind = strings.Repeat("x", n), strings.Repeat("x", n)
@@ -297,6 +431,7 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 		{"envelope source position", MaxReferenceBytes, func(e *Envelope, n int) { e.SourcePosition = strings.Repeat("x", n) }},
 		{"redaction policy", MaxReferenceBytes, func(e *Envelope, n int) { e.RedactionPolicyVersion = strings.Repeat("x", n) }},
 		{"reference id", MaxReferenceBytes, func(e *Envelope, n int) { e.References.ToolCall.ID = strings.Repeat("x", n) }},
+		{"provider evidence id", MaxReferenceBytes, func(e *Envelope, n int) { e.EvidenceSources.Provider.ID = strings.Repeat("x", n) }},
 		{"opaque reference", MaxReferenceBytes, func(e *Envelope, n int) {
 			e.Payload = Payload{Opaque: &OpaqueReferencePayload{Reference: strings.Repeat("x", n)}}
 		}},

@@ -84,6 +84,63 @@ type Scope struct {
 	LaunchGeneration int64  `json:"launchGeneration"`
 }
 
+// ProviderEvidenceRef identifies provider-native evidence. Provider evidence
+// is normalized through the wrapped T0 AgentEvent; it is not a second event
+// model.
+type ProviderEvidenceRef struct {
+	ID    string `json:"id"`
+	Scope Scope  `json:"scope"`
+}
+
+// RuntimeEvidenceRef identifies an operational fact owned by the managed
+// runtime. It deliberately does not model runtime state.
+type RuntimeEvidenceRef struct {
+	ID    string `json:"id"`
+	Scope Scope  `json:"scope"`
+}
+
+// ApprovalEvidenceRef identifies observational approval evidence. Approval
+// authority and delivery remain outside the Timeline.
+type ApprovalEvidenceRef struct {
+	ID    string `json:"id"`
+	Scope Scope  `json:"scope"`
+}
+
+// InputEvidenceRef identifies observational input-path evidence. It neither
+// authorizes nor delivers input.
+type InputEvidenceRef struct {
+	ID    string `json:"id"`
+	Scope Scope  `json:"scope"`
+}
+
+// WorkspaceEvidenceRef identifies an operational fact owned by a workspace
+// authority. It intentionally does not define workspace state or transitions.
+type WorkspaceEvidenceRef struct {
+	ID    string `json:"id"`
+	Scope Scope  `json:"scope"`
+}
+
+// CoordinationEvidenceRef identifies an operational coordination fact. The
+// coordination broker/store owns delivery and its state; Timeline records only
+// referenced evidence.
+type CoordinationEvidenceRef struct {
+	ID    string `json:"id"`
+	Scope Scope  `json:"scope"`
+}
+
+// EvidenceSources is a closed one-of source boundary. Provider evidence wraps
+// T0 AgentEvent; the other source types make operational evidence possible
+// without fabricating an AgentEvent or defining a future authority's state
+// machine.
+type EvidenceSources struct {
+	Provider     *ProviderEvidenceRef     `json:"provider,omitempty"`
+	Runtime      *RuntimeEvidenceRef      `json:"runtime,omitempty"`
+	Approval     *ApprovalEvidenceRef     `json:"approval,omitempty"`
+	Input        *InputEvidenceRef        `json:"input,omitempty"`
+	Workspace    *WorkspaceEvidenceRef    `json:"workspace,omitempty"`
+	Coordination *CoordinationEvidenceRef `json:"coordination,omitempty"`
+}
+
 // TypedReference is deliberately conditional: References exposes one pointer
 // per semantic domain and validation rejects a pointer on an unrelated kind.
 type TypedReference struct {
@@ -148,6 +205,7 @@ type Envelope struct {
 	ObservedAt             time.Time        `json:"observedAt"`
 	RedactionPolicyVersion string           `json:"redactionPolicyVersion"`
 	Payload                Payload          `json:"payload"`
+	EvidenceSources        EvidenceSources  `json:"evidenceSources"`
 	References             References       `json:"references,omitempty"`
 	T0Event                agent.AgentEvent `json:"t0Event"`
 }
@@ -196,42 +254,18 @@ func (e Envelope) validate(requireEventID bool) error {
 	if e.LaunchGeneration < 0 || e.OccurredAt.IsZero() || e.ObservedAt.IsZero() {
 		return errors.New("timeline: invalid generation or evidence timestamp")
 	}
-	if e.T0Event.SessionID != e.SessionID || e.T0Event.AgentKind != e.Provider {
-		return errors.New("timeline: wrapped T0 event scope does not match envelope")
+	providerEvidence, err := e.EvidenceSources.validate(e)
+	if err != nil {
+		return err
 	}
-	if e.T0Event.ID == "" || len(e.T0Event.ID) > MaxReferenceBytes {
-		return errors.New("timeline: wrapped T0 event id is required")
-	}
-	if !eventKindMatchesT0(e.EventKind, e.T0Event.Type) {
-		return errors.New("timeline: event kind contradicts wrapped T0 event type")
-	}
-	// CT-P1 T1: bound T0 fields BEFORE payload validation so bounds apply
-	// to all envelopes regardless of payload variant.
-	if len(e.T0Event.Text) > MaxPayloadBytes {
-		return errors.New("timeline: T0Event.Text exceeds payload bound")
-	}
-	if len(e.T0Event.ToolName) > MaxReferenceBytes {
-		return errors.New("timeline: T0Event.ToolName exceeds reference bound")
-	}
-	if len(e.T0Event.ApprovalID) > MaxReferenceBytes {
-		return errors.New("timeline: T0Event.ApprovalID exceeds reference bound")
-	}
-	if len(e.T0Event.RawRef) > MaxReferenceBytes {
-		return errors.New("timeline: T0Event.RawRef exceeds reference bound")
-	}
-	if len(e.T0Event.Provenance) > MaxReferenceBytes {
-		return errors.New("timeline: T0Event.Provenance exceeds reference bound")
-	}
-	if len(string(e.T0Event.Source)) > MaxReferenceBytes {
-		return errors.New("timeline: T0Event.Source exceeds reference bound")
-	}
-	if len(e.T0Event.Metadata) > MaxMetadataKeys {
-		return errors.New("timeline: T0Event.Metadata exceeds key count bound")
-	}
-	for k, v := range e.T0Event.Metadata {
-		if len(k) > MaxReferenceBytes || len(v) > MaxReferenceBytes {
-			return fmt.Errorf("timeline: T0Event.Metadata key or value exceeds reference bound")
+	if providerEvidence {
+		if err := e.validateWrappedT0(); err != nil {
+			return err
 		}
+	} else if e.EventKind != EventEvidenceObserved {
+		return errors.New("timeline: non-provider evidence must use evidence_observed")
+	} else if !zeroT0Event(e.T0Event) {
+		return errors.New("timeline: non-provider evidence cannot carry wrapped T0 event")
 	}
 	if err := e.Payload.validate(); err != nil {
 		return err
@@ -240,7 +274,7 @@ func (e Envelope) validate(requireEventID bool) error {
 	// Digest, or Opaque is set, T0Event raw detail (Text, ToolName, ApprovalID,
 	// RawRef, Metadata) must be zero/empty — the envelope payload IS the
 	// canonical evidence; embedded T0 detail contradicts it.
-	if (e.Payload.Redacted != nil || e.Payload.Digest != nil || e.Payload.Opaque != nil) &&
+	if providerEvidence && (e.Payload.Redacted != nil || e.Payload.Digest != nil || e.Payload.Opaque != nil) &&
 		(e.T0Event.RawRef != "" || e.T0Event.ToolName != "" || e.T0Event.ApprovalID != "" || e.T0Event.Text != "" || len(e.T0Event.Metadata) != 0) {
 		return errors.New("timeline: envelope payload variant cannot carry wrapped T0 detail")
 	}
@@ -381,6 +415,110 @@ func (r References) validate(e Envelope) error {
 	return nil
 }
 
+// validate reports whether the selected source is provider-native. Exactly one
+// source reference is required, scoped to the same managed runtime generation
+// as its envelope, and bounded like every other reference.
+func (s EvidenceSources) validate(e Envelope) (bool, error) {
+	type source struct {
+		name     string
+		id       string
+		scope    Scope
+		provider bool
+		present  bool
+	}
+	sources := []source{
+		{name: "provider", provider: true, present: s.Provider != nil},
+		{name: "runtime", present: s.Runtime != nil},
+		{name: "approval", present: s.Approval != nil},
+		{name: "input", present: s.Input != nil},
+		{name: "workspace", present: s.Workspace != nil},
+		{name: "coordination", present: s.Coordination != nil},
+	}
+	if s.Provider != nil {
+		sources[0].id, sources[0].scope = s.Provider.ID, s.Provider.Scope
+	}
+	if s.Runtime != nil {
+		sources[1].id, sources[1].scope = s.Runtime.ID, s.Runtime.Scope
+	}
+	if s.Approval != nil {
+		sources[2].id, sources[2].scope = s.Approval.ID, s.Approval.Scope
+	}
+	if s.Input != nil {
+		sources[3].id, sources[3].scope = s.Input.ID, s.Input.Scope
+	}
+	if s.Workspace != nil {
+		sources[4].id, sources[4].scope = s.Workspace.ID, s.Workspace.Scope
+	}
+	if s.Coordination != nil {
+		sources[5].id, sources[5].scope = s.Coordination.ID, s.Coordination.Scope
+	}
+	var selected *source
+	for i := range sources {
+		if !sources[i].present {
+			continue
+		}
+		if selected != nil {
+			return false, errors.New("timeline: exactly one evidence source is required")
+		}
+		selected = &sources[i]
+	}
+	if selected == nil {
+		return false, errors.New("timeline: exactly one evidence source is required")
+	}
+	if selected.id == "" || len(selected.id) > MaxReferenceBytes || selected.scope.SessionID != e.SessionID || selected.scope.RuntimeID != e.RuntimeID || selected.scope.LaunchGeneration != e.LaunchGeneration {
+		return false, fmt.Errorf("timeline: %s evidence scope mismatch", selected.name)
+	}
+	return selected.provider, nil
+}
+
+func (e Envelope) validateWrappedT0() error {
+	if e.T0Event.SessionID != e.SessionID || e.T0Event.AgentKind != e.Provider {
+		return errors.New("timeline: wrapped T0 event scope does not match envelope")
+	}
+	if e.T0Event.ID == "" || len(e.T0Event.ID) > MaxReferenceBytes {
+		return errors.New("timeline: wrapped T0 event id is required")
+	}
+	if !eventKindMatchesT0(e.EventKind, e.T0Event.Type) {
+		return errors.New("timeline: event kind contradicts wrapped T0 event type")
+	}
+	// Bound T0 fields before payload validation so bounds apply to every
+	// provider-native envelope regardless of payload variant.
+	if len(e.T0Event.Text) > MaxPayloadBytes {
+		return errors.New("timeline: T0Event.Text exceeds payload bound")
+	}
+	if len(e.T0Event.ToolName) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.ToolName exceeds reference bound")
+	}
+	if len(e.T0Event.ApprovalID) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.ApprovalID exceeds reference bound")
+	}
+	if len(e.T0Event.RawRef) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.RawRef exceeds reference bound")
+	}
+	if len(e.T0Event.Provenance) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.Provenance exceeds reference bound")
+	}
+	if len(string(e.T0Event.Source)) > MaxReferenceBytes {
+		return errors.New("timeline: T0Event.Source exceeds reference bound")
+	}
+	if len(e.T0Event.Metadata) > MaxMetadataKeys {
+		return errors.New("timeline: T0Event.Metadata exceeds key count bound")
+	}
+	for k, v := range e.T0Event.Metadata {
+		if len(k) > MaxReferenceBytes || len(v) > MaxReferenceBytes {
+			return errors.New("timeline: T0Event.Metadata key or value exceeds reference bound")
+		}
+	}
+	return nil
+}
+
+func zeroT0Event(event agent.AgentEvent) bool {
+	return event.ID == "" && event.SessionID == "" && event.AgentKind == "" && event.Type == "" &&
+		event.Seq == 0 && event.Timestamp.IsZero() && event.Text == "" && event.ToolName == "" &&
+		event.ApprovalID == "" && event.RawRef == "" && event.Confidence == 0 && event.Source == "" &&
+		event.Provenance == "" && len(event.Metadata) == 0
+}
+
 func (r References) has(kind ReferenceKind) bool {
 	switch kind {
 	case ReferenceProviderInvocation:
@@ -509,6 +647,9 @@ func (e Envelope) canonicalFields(includeEventID bool) []string {
 		fields = append(fields, e.EventID)
 	}
 	fields = append(fields, payloadFields(e.Payload)...)
+	for _, source := range evidenceSourceFields(e.EvidenceSources) {
+		fields = append(fields, source...)
+	}
 	for _, r := range []*TypedReference{refs.ProviderInvocation, refs.Thread, refs.Turn, refs.ToolCall, refs.ApprovalRequest, refs.Correlation, refs.Causation, refs.Transport, refs.Degraded, refs.Provenance} {
 		if r == nil {
 			fields = append(fields, "")
@@ -518,6 +659,47 @@ func (e Envelope) canonicalFields(includeEventID bool) []string {
 	}
 	return fields
 }
+
+func evidenceSourceFields(s EvidenceSources) [][]string {
+	fields := make([][]string, 0, 6)
+	if s.Provider == nil {
+		fields = append(fields, emptyEvidenceSourceField())
+	} else {
+		fields = append(fields, evidenceSourceField("provider", s.Provider.ID, s.Provider.Scope))
+	}
+	if s.Runtime == nil {
+		fields = append(fields, emptyEvidenceSourceField())
+	} else {
+		fields = append(fields, evidenceSourceField("runtime", s.Runtime.ID, s.Runtime.Scope))
+	}
+	if s.Approval == nil {
+		fields = append(fields, emptyEvidenceSourceField())
+	} else {
+		fields = append(fields, evidenceSourceField("approval", s.Approval.ID, s.Approval.Scope))
+	}
+	if s.Input == nil {
+		fields = append(fields, emptyEvidenceSourceField())
+	} else {
+		fields = append(fields, evidenceSourceField("input", s.Input.ID, s.Input.Scope))
+	}
+	if s.Workspace == nil {
+		fields = append(fields, emptyEvidenceSourceField())
+	} else {
+		fields = append(fields, evidenceSourceField("workspace", s.Workspace.ID, s.Workspace.Scope))
+	}
+	if s.Coordination == nil {
+		fields = append(fields, emptyEvidenceSourceField())
+	} else {
+		fields = append(fields, evidenceSourceField("coordination", s.Coordination.ID, s.Coordination.Scope))
+	}
+	return fields
+}
+
+func evidenceSourceField(kind, id string, scope Scope) []string {
+	return []string{kind, id, scope.SessionID, scope.RuntimeID, fmt.Sprintf("%d", scope.LaunchGeneration)}
+}
+
+func emptyEvidenceSourceField() []string { return []string{"", "", "", "", ""} }
 
 func payloadFields(p Payload) []string {
 	if p.Redacted != nil {
