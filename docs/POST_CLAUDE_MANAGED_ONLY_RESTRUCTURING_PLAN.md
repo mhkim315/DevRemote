@@ -6,10 +6,13 @@ Product boundary: only POKIT-launched managed runtimes are authoritative
 
 > **Superseded notice (post-PA3):** Do not use this document to schedule PA4,
 > PB, or later work. Current authority is
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md),
 > [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md),
 > [`PA4_MANAGED_ISOLATION_CONTRACT.md`](PA4_MANAGED_ISOLATION_CONTRACT.md), and
 > [`PB_LEGACY_REMOVAL_CONTRACT.md`](PB_LEGACY_REMOVAL_CONTRACT.md). The material
 > below remains only as historical rationale for the managed-only direction.
+> In particular, the old Grok/ACP, Navigator/Guard, and O1/O2 sequence is not
+> current product authority.
 
 This document records the post-Claude implementation sequence. It is not an
 acceptance record and does not authorize cleanup today. A verification agent

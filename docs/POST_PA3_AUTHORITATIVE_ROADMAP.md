@@ -1,6 +1,15 @@
 # Post-PA3 Authoritative Roadmap
 
-**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 ACCEPTED; PB implementation candidate frozen; physical device evidence pending; bounded offline CT-PRE planning authorized
+**Status:** AUTHORITATIVE PA/PB IDENTITY LEDGER — product and post-PB execution
+direction moved to `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`
+
+> **Authority notice:** This document retains accepted PA/PB identities and
+> frozen safety boundaries. The current product definition, post-PB order, MVP,
+> coordination/workspace model, and CT-P1 transition are authoritative in
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
+> If the older post-PB sequence below conflicts with that document, the new
+> roadmap wins. PB physical evidence remains pending and PB ACCEPT remains
+> **UNSET**.
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -21,7 +30,7 @@ These identities have different meanings and must not be substituted for one ano
 | PB prerequisite | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Contract authority required before PB may start |
 | PB start baseline | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback point that preserves the frozen PA4/roadmap documents |
 | Current non-device checkpoint | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before the frozen QR/Input remediation sequence |
-| Future PB device candidate | `ab1884662` | Final production/mobile identity after QR, Input-A, and Input-B acceptance |
+| Planned PB device candidate alias | `ab1884662` | Historical short form of the exact frozen candidate recorded below |
 | Future PB automated evidence | `b18123e77` | Evidence-only head after PB.6/PB.7 regeneration |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
 | Frozen PB device candidate | `ab18846622327334300de8436aff600db5c08e17` | Immutable production/mobile source for the pending physical matrix |
@@ -37,7 +46,7 @@ These identities have different meanings and must not be substituted for one ano
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
 | PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
 | PB | AUTOMATED LEGACY REMOVAL COMPLETE; pre-device remediation planned; device gate not started; ACCEPT unset |
-| CT-PRE | PLAN FROZEN; implementation blocked until independent CT-P0 ACCEPT; production composition forbidden |
+| CT-PRE | CT-P0 accepted; CT-P1 candidate work exists but is not declared independently accepted here; production composition forbidden |
 
 ## 2. Mandatory execution order
 
@@ -52,16 +61,14 @@ PA3 COMPLETE
 → Input-B exact-generation acknowledged input and independent ACCEPT
 → PB.6/PB.7 evidence regeneration
 → exact device-candidate freeze and matched daemon/APK builds
-→ [parallel-safe, isolated] CT-P0..CT-P5 offline foundation only
+→ bounded offline CT-P0/CT-P1 candidate work only
 → SM-S926N device matrix using the exact frozen artifacts
 → independent PB ACCEPT
-→ remaining terminal/restart debt remediation
-→ remote-pairing hardening under a separate threat model
-→ Canonical Timeline
-→ Codex/Claude common provider contract
-→ Grok/ACP conformance
-→ Navigator/Guard
-→ durable orchestration and product hardening
+→ CT-P1 operational-evidence amendment and independent ACCEPT
+→ fail-open Operational Canonical Timeline shadow
+→ workspace identity and cooperative write lease
+→ manual coordination and frozen-snapshot validation
+→ mobile operational cockpit and alpha/beta
 ```
 
 No later packet may be pulled forward to justify a shortcut in PA4 or PB. PB
@@ -106,30 +113,28 @@ the physical gate; it does not reopen PB legacy-removal scope.
 
 The bounded offline Canonical Timeline foundation exception is governed by
 [`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
-It starts only after independent CT-P0 plan acceptance and stops after offline
-CT-P5. Production shadow-write and every authority/UI cutover remain blocked
-until an exact PB ACCEPT SHA exists.
+CT-P0 is accepted and bounded CT-P1 candidate work may finish without
+disruption. CT-P2 and later CT waves are not currently authorized. Production
+shadow-write and every authority/UI cutover remain blocked until an exact PB
+ACCEPT SHA and independent acceptance of the revised operational CT-P1 exist.
 
 ## 5. Post-PB direction
 
 The QR renderer/security and exact-generation input packets defined by the
-pre-device plan and the zero-composition CT-PRE offline foundation are the only
-approved exceptions before PB acceptance. Remaining
-empty-terminal/restart debt and any remote-pairing hardening stay in separate
-post-PB reviewed packets. Canonical Timeline production shadowing and cutover
-follow those bounded remediation packets; only the offline CT-PRE foundation may
-run earlier under its separate contract. `AcceptedRecordSource` is not mandated:
-it may be introduced only if
-multiple surviving provider-native sources demonstrably need a narrow common
-interface, and it must never preserve legacy discovery. The common
-Codex/Claude provider contract follows Timeline; Grok/ACP conformance,
-Navigator/Guard, then durable orchestration and product hardening follow.
+pre-device plan and bounded zero-composition CT-P1 candidate work are the only
+approved exceptions before PB acceptance. Remaining terminal/restart debt and
+remote-pairing hardening stay in separate reviewed packets. Product and
+architecture direction after PB is exclusively defined by
+[`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
+Grok/ACP, Navigator/Guard, generic adapters, and broad orchestration are not an
+automatic continuation of the accepted PA/PB work.
 
 ## 6. Document authority
 
 | Document | Classification after this reconciliation |
 |---|---|
-| This document | **Authoritative execution order and status ledger** |
+| This document | **Authoritative accepted PA/PB identity and safety ledger** |
+| `docs/POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` | **Authoritative product definition, authority model, MVP, and post-PB order** |
 | `docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md` | **Authoritative pre-device QR/Input packet contract and device-entry gate** |
 | `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative offline CT-PRE contract; production composition/cutover blocked pending PB ACCEPT** |
 | `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the independently accepted SHA |
@@ -142,9 +147,11 @@ Navigator/Guard, then durable orchestration and product hardening follow.
 | `companion-daemon/docs/PB_PA4_CONTRACT_EVIDENCE.md` | Historical evidence for the superseded draft |
 | Older README, handover, adapter-layer, or implementation plans | Historical rationale unless explicitly re-authorized here |
 
-Future agents must not reconstruct a tmux/cmux/localpty-centered product
-direction from superseded documents. When language conflicts, the three
-post-PA3 documents named above control.
+Future agents must not reconstruct a tmux/cmux/localpty-centered product or a
+generic orchestration harness from superseded documents. Product and post-PB
+ordering conflicts are resolved by
+`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`; frozen PA/PB identities and
+safety boundaries remain controlled by this ledger and its accepted contracts.
 
 ## 7. Stop conditions
 
@@ -154,8 +161,9 @@ post-PA3 documents named above control.
 - Stop the device gate until QR, Input-A, and Input-B have independent ACCEPT
   identities, regenerated PB.6/PB.7 evidence is clean, and daemon/APK identities
   equal the frozen production candidate.
-- Stop CT-PRE before CT-P1 until CT-P0 has independent ACCEPT; stop after CT-P5
-  until PB has an exact independent ACCEPT SHA. Any production import,
+- Do not begin CT-P2. Keep CT-P1 production-unwired until PB has an exact
+  independent ACCEPT SHA and the operational-evidence amendment is independently
+  accepted. Any premature production import,
   construction, goroutine, filesystem write, route, DTO, mobile dependency, or
   authority change is an immediate CT-PRE reject.
 - Stop rather than retaining Gemini or legacy discovery as an “accepted

@@ -1,6 +1,11 @@
 # R2 Multi-agent Expansion Research Plan
 
-Status: **PLANNED — research only**
+Status: **SUPERSEDED — HISTORICAL RESEARCH ONLY**
+
+> Current product and implementation authority is
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
+> R2 does not authorize multi-agent expansion, automatic dispatch, provider
+> routing, or orchestration. Retain this document only as historical research.
 
 Entry gate: **both T1 Codex and T2 Claude must have independent ACCEPT
 decisions.** Finishing either implementation, passing its local tests, or

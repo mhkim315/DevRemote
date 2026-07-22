@@ -1,7 +1,16 @@
 # Canonical Timeline CT-PRE Execution Plan
 
-**Status:** AUTHORITATIVE PLAN — CT-PRE planning frozen; implementation blocked
-until independent CT-P0 ACCEPT
+**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0 accepted; active CT-P1
+candidate must finish without disruption; CT-P2 and production wiring blocked
+
+> **Product-direction amendment:** The product, authority model, and post-PB
+> order now live in
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
+> This document continues to govern CT foundation safety. It does not declare
+> the current CT-P1 candidate independently accepted. After the executor
+> finishes, CT-P1 must be reviewed and, if needed, narrowly amended so that
+> Canonical Timeline is operational evidence and does not require every future
+> operational event to be a provider `AgentEvent`. Do not begin CT-P2.
 
 **Architecture name:** **Canonical Timeline**
 
@@ -17,7 +26,7 @@ They prevent a null-heavy universal envelope, separate semantic identity from
 storage order, prevent premature retention of user/provider content, and keep
 the Canonical Timeline evidentiary rather than authoritative.
 
-The canonical relationship is:
+The original CT-PRE relationship is:
 
 ```text
 Managed provider-native evidence
@@ -26,6 +35,13 @@ Managed provider-native evidence
   -> append-only Canonical Timeline
   -> Transcript / Activity / status projections
 ```
+
+That path remains valid for accepted provider evidence. Future runtime,
+approval, input, workspace, and coordination evidence may require typed source
+references rather than fabricated T0 events. CT-P1 should preserve envelope
+identity, ordering, versioning, validation, redaction, collision/gap handling,
+evidence references, projection boundaries, and zero production composition,
+while leaving future source behavior to its actual authority.
 
 `Transcript` means only a user-facing or derived projection. `Activity` and
 status are also projections. They are not names for the Canonical Timeline.
@@ -39,8 +55,9 @@ The frozen state is:
 | Frozen APK SHA-256 | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` |
 | PB physical SM-S926N evidence | **PENDING** |
 | PB ACCEPT SHA | **UNSET** |
-| CT-PRE | **PLANNED; blocked until CT-P0 independent ACCEPT** |
-| Production shadow-write | **BLOCKED until PB ACCEPT** |
+| CT-PRE | **CT-P0 accepted; CT-P1 candidate in review chain** |
+| CT-P2 | **BLOCKED** |
+| Production shadow-write | **BLOCKED until PB ACCEPT and revised CT-P1 independent ACCEPT** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
 
 CT-PRE is a bounded pre-PB-ACCEPT exception for offline foundation work only.
@@ -294,7 +311,12 @@ unrelated nullable refs are accepted; secrets/raw payloads are retained.
 
 **Rollback:** remove CT-P1 implementation/evidence commits to CT-P0 ACCEPT.
 
-### CT-P2a — Pure Codex normalizer
+### CT-P2a — Pure Codex normalizer (DEFERRED; NOT AUTHORIZED)
+
+> CT-P2 and every later wave in this historical CT-PRE decomposition are
+> blocked by the current product roadmap. Their retained contracts are planning
+> inputs only. Do not execute them before PB ACCEPT, CT-P1 operational-evidence
+> review/amendment, and a new independent authorization.
 
 **Purpose:** map only the accepted pinned Codex fixture/native shape into T0 and
 then the Timeline envelope as a pure function.
@@ -322,7 +344,7 @@ silent gap/unknown version, provider content leak.
 
 **Rollback:** revert CT-P2a commits to CT-P1 ACCEPT.
 
-### CT-P2b — Pure Claude normalizer
+### CT-P2b — Pure Claude normalizer (DEFERRED; NOT AUTHORIZED)
 
 **Purpose/allowed/forbidden:** same isolation as CT-P2a in a separately accepted
 `internal/timeline/normalize/claude` package, using only a proven managed shape
@@ -345,7 +367,7 @@ accepted before CT-P3a.
 
 **Rollback:** revert CT-P2b commits to the last accepted preceding CT SHA.
 
-### CT-P3a — Offline persistence format and recovery contract
+### CT-P3a — Offline persistence format and recovery contract (DEFERRED; NOT AUTHORIZED)
 
 **Purpose:** freeze logical framing and recovery using temporary/offline fixtures,
 not a production service.
@@ -376,7 +398,7 @@ order; format persists prohibited content; quota/segment/retention guessed.
 
 **Rollback:** revert CT-P3a to both accepted normalizers.
 
-### CT-P3b — Hardened standalone filesystem store
+### CT-P3b — Hardened standalone filesystem store (DEFERRED; NOT AUTHORIZED)
 
 **Purpose:** implement the CT-P3a contract only as an explicitly constructed
 offline component and prove its filesystem failure matrix.
@@ -409,7 +431,7 @@ production startup/write.
 
 **Rollback:** revert CT-P3b to CT-P3a ACCEPT and delete only test temp data.
 
-### CT-P4 — Offline reducer and replay
+### CT-P4 — Offline reducer and replay (DEFERRED; NOT AUTHORIZED)
 
 **Purpose:** derive disposable Transcript/Activity/status-shaped projections with
 pure versioned reducers, without making them public or authoritative.
@@ -439,7 +461,7 @@ raw PTY parsing; approval/lifecycle/input decisions derived from history.
 
 **Rollback:** revert CT-P4; delete disposable offline snapshots only.
 
-### CT-P5 — Offline equivalence
+### CT-P5 — Offline equivalence (DEFERRED; NOT AUTHORIZED)
 
 **Purpose:** compare private Canonical Timeline projections only with surviving
 authoritative read models without requiring meaningless byte equality.
@@ -511,20 +533,21 @@ Every wave must prove:
 Any violation is a wave REJECT and immediate stop. A test may not be skipped,
 returned early, weakened to logging, or replaced with a nil/vacuous fixture.
 
-## 8. Acceptance matrix
+## 8. Historical acceptance matrix and current authorization
 
 | Wave | Minimum acceptance result | Independent boundary |
 | --- | --- | --- |
 | CT-P0 | artifacts/source/order/docs independently verified; zero code diff | required before any CT code |
-| CT-P1 | minimal T0-reusing envelope and stable identity accepted | required before normalizers |
-| CT-P2a | Codex fixture-only pure normalizer accepted | separate Codex packet |
-| CT-P2b | Claude fixture-only pure normalizer accepted | separate Claude packet |
-| CT-P3a | framing/recovery contract and measurements accepted | before filesystem code |
-| CT-P3b | offline filesystem failure matrix accepted | before reducers |
-| CT-P4 | pure replay/reducer determinism accepted | before equivalence |
-| CT-P5 | zero unexplained semantic differences accepted | final CT-PRE packet |
+| CT-P1 | current minimal envelope candidate; requires operational source-boundary review and independent ACCEPT | required before any later CT work |
+| CT-P2a | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
+| CT-P2b | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
+| CT-P3a | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
+| CT-P3b | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
+| CT-P4 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
+| CT-P5 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 
-After CT-P5, stop. CT-PRE completion does not authorize shadow-write or cutover.
+Stop after the current CT-P1 candidate. Executor completion does not equal
+independent acceptance and does not authorize CT-P2, shadow-write, or cutover.
 
 ## 9. Deferred decisions
 
@@ -555,21 +578,24 @@ drop/gap as an invalid equivalence run.
 
 ## 10. Exact stop condition before PB ACCEPT
 
-When CT-P5 receives independent ACCEPT, all Canonical Timeline work stops. Do
-not create a production writer, shadow queue, startup/DI registration, live
-normalizer callback, route, DTO, mobile consumer, or cutover plan until:
+When the current CT-P1 executor produces its clean candidate, all Canonical
+Timeline implementation stops. Do not begin CT-P2 or create a production
+writer, shadow queue, startup/DI registration, live normalizer callback, route,
+DTO, mobile consumer, or cutover plan until:
 
 1. the exact SM-S926N matrix passes using the frozen matched artifacts;
 2. an independent verifier assigns an exact PB ACCEPT SHA;
-3. the CT branch is reconciled onto that exact accepted PB production baseline;
-4. every CT-PRE gate is rerun and the reconciled foundation is independently
-   accepted; and
+3. CT-P1 is reviewed against the operational-evidence direction in
+   `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and narrowly amended if
+   needed;
+4. the revised CT-P1 foundation is independently accepted; and
 5. a new privacy/retention and production-shadow contract is reviewed.
 
-## 11. CT-P0 executor handoff only
+## 11. Historical CT-P0 executor handoff (COMPLETED)
 
-The next executor is authorized to perform **CT-P0 documentation and inventory
-only**:
+This handoff is retained for acceptance provenance. CT-P0 completed and was
+independently accepted at `d4b4d99baa2ab769ab48dea025c7343a870baf61`.
+It is not a current executor authorization:
 
 1. verify branch, upstream equality, clean worktree, exact PB ancestry, and both
    frozen artifact hashes;
@@ -581,6 +607,6 @@ only**:
 6. produce a documentation-only implementation commit and a separate evidence
    commit, push fast-forward, and request independent read-only CT-P0 review.
 
-The executor must not create CT-P1 types, modify fixtures/tests, create a branch
-containing implementation, or draft an implementation prompt for CT-P1. CT-P1
-may be planned in executable detail only after CT-P0 independent ACCEPT.
+The historical CT-P0 executor prohibition on CT-P1 was satisfied before CT-P1
+started. Current work follows the stop and transition rules in sections 8-10
+and `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`; CT-P2 remains blocked.

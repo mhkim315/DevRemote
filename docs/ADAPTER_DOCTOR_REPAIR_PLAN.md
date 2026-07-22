@@ -1,6 +1,10 @@
 # Adapter Doctor/Repair Plan
 
-Status: **READY — implement only through the authoritative D1 handoff**
+Status: **SUPERSEDED — HISTORICAL RATIONALE ONLY**
+
+> Adapter Doctor/Repair is not on the current authoritative roadmap and must
+> not revive deleted discovery or generic adapter authority. See
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
 
 Position in the execution sequence:
 

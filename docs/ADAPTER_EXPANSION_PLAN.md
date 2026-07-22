@@ -1,5 +1,10 @@
 # Terminal Adapter Expansion Plan
 
+> **SUPERSEDED — HISTORICAL RATIONALE ONLY.** tmux/cmux/localpty and arbitrary
+> adapter expansion are not current product direction. See
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
+> Do not restore deleted discovery or legacy adapter authority from this plan.
+
 - 작성일: 2026-07-06
 - 기준 브랜치: `feature/phase10-multi-adapter`
 - 동작 기준 커밋: `dc026d5`

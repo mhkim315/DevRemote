@@ -4,10 +4,12 @@ Status: historical product roadmap — post-PA3 status/order superseded
 Branch: `feature/phase10-multi-adapter`
 Validated runtime baseline: `6b40b32` — E10b Claude mobile width / PTY geometry mirror
 
-> **Superseded notice (post-PA3):** Current phase status and execution authority
-> live in [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md),
-> with separate PA4 and PB contracts. Do not reconstruct a tmux/cmux/localpty-
-> centered product direction from this historical roadmap.
+> **Superseded notice:** Current product and post-PB execution authority lives in
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md);
+> accepted PA/PB identities remain in
+> [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md). Do not
+> reconstruct a tmux/cmux/localpty-centered or generic harness direction from
+> this historical roadmap.
 
 ## Product definition
 

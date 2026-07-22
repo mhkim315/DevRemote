@@ -1,5 +1,11 @@
 # Agent Adapter Layer Plan
 
+> **SUPERSEDED — HISTORICAL RATIONALE ONLY.** The universal agent-adapter and
+> lowest-common-denominator runtime direction is no longer authoritative.
+> Current integration uses provider-independent control authority with
+> provider-specific native integration; see
+> [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
+
 - 작성일: 2026-07-07
 - 기준 브랜치: `feature/phase10-multi-adapter`
 - Terminal Adapter Layer 기준 상태: Phase 7 accepted (`b163c1b`)
