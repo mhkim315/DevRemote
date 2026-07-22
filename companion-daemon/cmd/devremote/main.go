@@ -67,6 +67,7 @@ func main() {
 	claudeDigest := flag.String("claude-digest", "", "Pre-verified SHA-256 digest of pinned Claude binary (required for managed Claude)")
 	enableTimelineShadow := flag.Bool("enable-timeline-shadow", false, "Enable fail-open Operational Canonical Timeline shadow writer (STEP4, experimental)")
 	timelineShadowPath := flag.String("timeline-shadow-path", "", "Absolute path for Timeline shadow writer (optional)")
+	enableWorkspaceLease := flag.Bool("enable-workspace-lease", false, "Enable cooperative workspace lease contract (STEP5, experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -85,6 +86,7 @@ func main() {
 		ClaudeDigest:         *claudeDigest,
 		EnableTimelineShadow: *enableTimelineShadow,
 		TimelineShadowPath:   *timelineShadowPath,
+		EnableWorkspaceLease: *enableWorkspaceLease,
 	})
 }
 

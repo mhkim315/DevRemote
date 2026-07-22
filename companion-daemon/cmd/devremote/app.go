@@ -21,6 +21,7 @@ import (
 	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
 	"devremote/companion-daemon/internal/watcher"
+	"devremote/companion-daemon/internal/workspace"
 )
 
 // Config holds immutable daemon configuration parsed from CLI flags.
@@ -35,6 +36,7 @@ type Config struct {
 	ClaudeDigest         string // C1D: pre-verified SHA-256 of the pinned Claude binary
 	EnableTimelineShadow bool   // STEP4: default-off, fail-open Timeline shadow sink
 	TimelineShadowPath   string // optional absolute shadow-file override
+	EnableWorkspaceLease bool   // STEP5: default-off cooperative workspace contract
 }
 
 // insecureLocalListenAddr returns the only listener address permitted for the
@@ -144,8 +146,9 @@ type App struct {
 	handlers           *term.Handlers                         // set after construction for late wiring
 	ipc                ipcResource
 	watcher            watcherResource
-	tunnel             tunnelResource // nil in insecure mode
-	timelineWriter     *writer.Writer // nil unless the default-off shadow flag is enabled
+	tunnel             tunnelResource     // nil in insecure mode
+	timelineWriter     *writer.Writer     // nil unless the default-off shadow flag is enabled
+	workspaceLeases    *workspace.Manager // nil unless the default-off workspace flag is enabled
 }
 
 // NewApp creates the App with production defaults.
@@ -161,6 +164,7 @@ func NewApp(cfg Config) (*App, error) {
 // NewAppWithDeps creates an App with injectable dependencies for testing.
 func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	var timelineWriter *writer.Writer
+	var workspaceLeases *workspace.Manager
 	// Timeline is constructed before several independent, fallible App
 	// components. If any of those components rejects construction, release the
 	// optional writer immediately rather than leaking its file descriptor.
@@ -212,6 +216,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		} else {
 			timelineWriter = w
 		}
+	}
+	// STEP5: this pure cooperative ledger has no filesystem lock, Git command,
+	// or callback into authority paths. It is constructed only behind its
+	// default-off flag; wiring live workspace producers remains separate work.
+	if cfg.EnableWorkspaceLease {
+		workspaceLeases = workspace.NewManager(nil)
 	}
 	// PA2c: the three managed lifecycle owners. OwnedPTYRuntime owns
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
@@ -533,22 +543,23 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	}
 
 	return &App{
-		config:         cfg,
-		deps:           deps,
-		server:         &http.Server{Addr: addr, Handler: serveMux},
-		telemetry:      telemetry,
-		transcriptSvc:  transcriptSvc,
-		lifecycle:      lifecycle,
-		managed:        managed,
-		managedClaude:  managedClaude,
-		authHandler:    authH,
-		sessionMgr:     sessionMgr,
-		wsTickets:      wsTickets,
-		connRegistry:   connRegistry,
-		audit:          audit,
-		handlers:       h,
-		ipcPath:        "/tmp/pokit.sock",
-		timelineWriter: timelineWriter,
+		config:          cfg,
+		deps:            deps,
+		server:          &http.Server{Addr: addr, Handler: serveMux},
+		telemetry:       telemetry,
+		transcriptSvc:   transcriptSvc,
+		lifecycle:       lifecycle,
+		managed:         managed,
+		managedClaude:   managedClaude,
+		authHandler:     authH,
+		sessionMgr:      sessionMgr,
+		wsTickets:       wsTickets,
+		connRegistry:    connRegistry,
+		audit:           audit,
+		handlers:        h,
+		ipcPath:         "/tmp/pokit.sock",
+		timelineWriter:  timelineWriter,
+		workspaceLeases: workspaceLeases,
 	}, nil
 }
 

@@ -28,6 +28,23 @@ func TestSTEP4TimelineShadowIsDefaultOff(t *testing.T) {
 	}
 }
 
+func TestSTEP5WorkspaceLeaseIsDefaultOff(t *testing.T) {
+	off, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.workspaceLeases != nil {
+		t.Fatal("workspace lease constructed while flag is off")
+	}
+	on, err := NewAppWithDeps(Config{InsecureLocalOnly: true, EnableWorkspaceLease: true}, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on.workspaceLeases == nil {
+		t.Fatal("workspace lease was not constructed while flag is on")
+	}
+}
+
 func TestSTEP4TimelineUnavailableDoesNotBlockDaemonConstruction(t *testing.T) {
 	unavailable := errors.New("timeline path unavailable")
 	deps := v1LifecycleDeps(&appV1Watcher{}, &appV1IPC{})
