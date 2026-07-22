@@ -16,7 +16,7 @@
 
 **Target device:** Samsung SM-S926N (Galaxy S24 Ultra), Android 16
 
-**PB DEVICE CANDIDATE SHA:** `301fad09e`
+**PB DEVICE CANDIDATE SHA:** `699782ebd`
 
 **PB ACCEPT SHA:** **UNSET** (device gate pending)
 

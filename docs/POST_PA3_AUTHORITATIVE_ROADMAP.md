@@ -21,7 +21,7 @@ These identities have different meanings and must not be substituted for one ano
 | PB prerequisite | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Contract authority required before PB may start |
 | PB start baseline | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback point that preserves the frozen PA4/roadmap documents |
 | Current non-device checkpoint | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before the frozen QR/Input remediation sequence |
-| Future PB device candidate | `301fad09e` | Final production/mobile identity after QR, Input-A, and Input-B acceptance |
+| Future PB device candidate | `699782ebd` | Final production/mobile identity after QR, Input-A, and Input-B acceptance |
 | Future PB automated evidence | **UNSET** | Evidence-only head after PB.6/PB.7 regeneration |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
 
