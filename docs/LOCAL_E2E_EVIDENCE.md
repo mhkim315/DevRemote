@@ -9,8 +9,8 @@
 | Artifact | SHA-256 |
 |----------|--------|
 | Daemon | `6fccc90b40fe8d477af74985d63cd921701f9a14f2dde9ff66f0a43d53c86f3d` |
-| APK (release) | `d1c4a0990d8db3e1821e1a1d43408e2bb315b8c9503f3a3d9db297c4c296bc96` |
-| vcs.revision | `699782ebde64658ebe8d97f9cef97c8dcbf8ad25` |
+| APK (release) | `dc7344779beb482e64dceecfd5b507bf68cf210411a6e9358fe0152343b4670b` |
+| vcs.revision | `699782ebdec5afd404be377727834d9064a1eeda` |
 | vcs.modified | `false` |
 | Release cleartext | absent (debug-only via debugOptimized overlay) |
 | Release NO_LOGIN | `process.env.EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST` not set → `NO_LOGIN=false` |

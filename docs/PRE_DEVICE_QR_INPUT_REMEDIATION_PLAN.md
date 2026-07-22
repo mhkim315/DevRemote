@@ -65,7 +65,7 @@ The following identities are deliberately distinct:
 | `QR_IMPL_SHA` / `QR_EVIDENCE_SHA` / `QR_ACCEPT_SHA` | QR production change, evidence-only head, and independent acceptance | **UNSET** |
 | `INPUT_A_IMPL_SHA` / `INPUT_A_EVIDENCE_SHA` / `INPUT_A_ACCEPT_SHA` | Input-A production change, evidence-only head, and independent acceptance | **UNSET** |
 | `INPUT_B_IMPL_SHA` / `INPUT_B_EVIDENCE_SHA` / `INPUT_B_ACCEPT_SHA` | Input-B production change, evidence-only head, and independent acceptance | **UNSET** |
-| `PB_DEVICE_CANDIDATE_SHA` | Exact production/mobile source tree used for device binaries | **UNSET** |
+| `PB_DEVICE_CANDIDATE_SHA` | Exact production/mobile source tree used for device binaries | `699782ebd` |
 | `PB_AUTOMATED_EVIDENCE_SHA` | Evidence-only head recording regenerated PB.6/PB.7 gates | **UNSET** |
 | `DAEMON_BUILD_SOURCE_SHA` | Source identity embedded in the tested daemon | **UNSET** |
 | `APK_BUILD_SOURCE_SHA` | Source identity embedded in the tested APK | **UNSET** |
