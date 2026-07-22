@@ -20,8 +20,10 @@ Correction chain (all commits after the R2 implementation):
   `TestT0MetadataKeyAndValueBoundsAtNMinusOneNAndNPlusOne`).
 - `07a8a6ea51bac2008c16fa7876da54a2eaf895d3` — recorded CT-P1 T1 R3 evidence
   doc correction (all-payload-variant scope, missing SHAs).
-- `1e9ee591461e914558aac77f0aeac101669e9858` — this evidence HEAD; corrected
+- `1e9ee591461e914558aac77f0aeac101669e9858` — R3 evidence commit; corrected
   short SHAs to full-length and updated test function names to exact matches.
+- `517e0f66efb231cddbbcc670e0e700e229e820ac` — recorded exact SHAs and the
+  metadata test function names.
 
 ## Scope and dependency boundary
 
@@ -34,7 +36,7 @@ A	companion-daemon/internal/timeline/contract/contract_test.go
 A	companion-daemon/internal/timeline/contract/testdata/redaction_cases.json
 ```
 
-`git diff --diff-filter=M --name-only d4b4d99ba..680a78f69` produced no output:
+`git diff --diff-filter=M --name-only d4b4d99baa2ab769ab48dea025c7343a870baf61..680a78f69b5a0cdae737eaf7c630c1c219185617` produced no output:
 no existing production file was modified. `rg -n 'timeline/contract'
 companion-daemon/cmd companion-daemon/internal/term mobile` also produced no
 output, proving no command, terminal, or mobile consumer exists.
