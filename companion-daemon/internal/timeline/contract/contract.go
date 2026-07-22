@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,8 +198,17 @@ func (e Envelope) validate(requireEventID bool) error {
 	if e.T0Event.SessionID != e.SessionID || e.T0Event.AgentKind != e.Provider {
 		return errors.New("timeline: wrapped T0 event scope does not match envelope")
 	}
+	if e.T0Event.ID == "" || len(e.T0Event.ID) > MaxReferenceBytes {
+		return errors.New("timeline: wrapped T0 event id is required")
+	}
+	if !eventKindMatchesT0(e.EventKind, e.T0Event.Type) {
+		return errors.New("timeline: event kind contradicts wrapped T0 event type")
+	}
 	if err := e.Payload.validate(); err != nil {
 		return err
+	}
+	if e.Payload.Redacted != nil && (e.T0Event.RawRef != "" || e.T0Event.ToolName != "" || e.T0Event.ApprovalID != "" || e.T0Event.Text != "" || len(e.T0Event.Metadata) != 0) {
+		return errors.New("timeline: redacted payload cannot carry wrapped T0 detail")
 	}
 	if err := e.References.validate(e); err != nil {
 		return err
@@ -228,17 +239,13 @@ func (e Envelope) CanonicalDigest() (string, error) {
 }
 
 // ComputedEventID derives a stable, domain-separated identity from the provider
-// and source identity tuple plus canonical evidence. It excludes timestamps and
-// intentionally has no append-sequence argument.
+// source identity tuple only. CanonicalDigest is intentionally not an input: a
+// different digest under the same identity is corruption, not a new event.
+// Timestamps and append sequence are absent by design.
 func (e Envelope) ComputedEventID() (string, error) {
-	digest, err := e.CanonicalDigest()
-	if err != nil {
-		return "", err
-	}
 	return digestHex("timeline/event-id/v1", []string{
 		e.Provider, e.SourceIncarnation, e.SourceIdentity.Kind, e.SourceIdentity.ID,
-		e.SourcePosition, string(e.EventKind), e.SessionID, e.RuntimeID,
-		fmt.Sprintf("%d", e.LaunchGeneration), digest,
+		e.SourcePosition,
 	}), nil
 }
 
@@ -396,6 +403,34 @@ func knownEventKind(k EventKind) bool {
 	return false
 }
 
+func eventKindMatchesT0(kind EventKind, t agent.AgentEventType) bool {
+	switch kind {
+	case EventProviderInvocationStarted, EventCorrelationEstablished:
+		return t == agent.EventAgentStarted
+	case EventProviderInvocationFinished:
+		return t == agent.EventCompleted || t == agent.EventFailed || t == agent.EventInterrupted
+	case EventThreadObserved:
+		return t == agent.EventUserMessage
+	case EventTurnObserved:
+		return t == agent.EventUserMessage || t == agent.EventAssistantMessage
+	case EventToolCallStarted:
+		return t == agent.EventToolCallStarted
+	case EventToolCallFinished:
+		return t == agent.EventToolCallFinished
+	case EventApprovalRequested:
+		return t == agent.EventApprovalRequested
+	case EventApprovalResolved:
+		return t == agent.EventApprovalResolved
+	case EventStreamObserved:
+		return t == agent.EventThinking
+	case EventDegraded:
+		return t == agent.EventFailed
+	case EventEvidenceObserved:
+		return t == agent.EventUnknown
+	}
+	return false
+}
+
 func referenceAllowed(event EventKind, ref ReferenceKind) bool {
 	switch ref {
 	case ReferenceProviderInvocation:
@@ -424,7 +459,18 @@ func referenceAllowed(event EventKind, ref ReferenceKind) bool {
 
 func (e Envelope) canonicalFields(includeEventID bool) []string {
 	refs := e.References
-	fields := []string{fmt.Sprintf("%d", e.SchemaVersion), fmt.Sprintf("%d", e.PayloadVersion), string(e.EventKind), e.SessionID, e.RuntimeID, fmt.Sprintf("%d", e.LaunchGeneration), e.Provider, e.SourceIncarnation, e.SourceIdentity.Kind, e.SourceIdentity.ID, e.SourcePosition, e.RedactionPolicyVersion, e.T0Event.ID, string(e.T0Event.Type), e.T0Event.RawRef}
+	// T0Event.Timestamp is intentionally omitted: timestamps are evidence, never
+	// identity, ordering, or deduplication authority. Every other T0 field is
+	// framed below, including a sorted representation of Metadata.
+	fields := []string{fmt.Sprintf("%d", e.SchemaVersion), fmt.Sprintf("%d", e.PayloadVersion), string(e.EventKind), e.SessionID, e.RuntimeID, fmt.Sprintf("%d", e.LaunchGeneration), e.Provider, e.SourceIncarnation, e.SourceIdentity.Kind, e.SourceIdentity.ID, e.SourcePosition, e.RedactionPolicyVersion, e.T0Event.ID, e.T0Event.SessionID, e.T0Event.AgentKind, string(e.T0Event.Type), fmt.Sprintf("%d", e.T0Event.Seq), e.T0Event.Text, e.T0Event.ToolName, e.T0Event.ApprovalID, e.T0Event.RawRef, strconv.FormatFloat(e.T0Event.Confidence, 'g', -1, 64), string(e.T0Event.Source), e.T0Event.Provenance}
+	keys := make([]string, 0, len(e.T0Event.Metadata))
+	for k := range e.T0Event.Metadata {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fields = append(fields, k, e.T0Event.Metadata[k])
+	}
 	if includeEventID {
 		fields = append(fields, e.EventID)
 	}

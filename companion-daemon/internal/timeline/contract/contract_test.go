@@ -24,7 +24,7 @@ func validEnvelope(t *testing.T) Envelope {
 		RedactionPolicyVersion: "redaction-v1",
 		Payload:                Payload{Redacted: &RedactedPayload{Summary: "completed a redacted operation"}},
 		References:             References{ToolCall: &TypedReference{Kind: ReferenceToolCall, ID: "tool-1", Scope: scope}},
-		T0Event:                agent.AgentEvent{ID: "t0-event-1", SessionID: scope.SessionID, AgentKind: "codex", Type: agent.EventToolCallStarted, RawRef: "safe-ref"},
+		T0Event:                agent.AgentEvent{ID: "t0-event-1", SessionID: scope.SessionID, AgentKind: "codex", Type: agent.EventToolCallStarted},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,8 +78,79 @@ func TestIdempotenceAndCollision(t *testing.T) {
 	}
 	b := a
 	b.Payload.Redacted = &RedactedPayload{Summary: "different safe summary"}
+	b.EventID = ""
+	b, err = NewEnvelope(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.EventID != b.EventID {
+		t.Fatal("same source identity produced different event id")
+	}
 	if _, err := SameEvidence(a, b); err != ErrEventIDCollision {
 		t.Fatalf("collision error = %v", err)
+	}
+}
+
+func TestCanonicalDigestIncludesWrappedT0Evidence(t *testing.T) {
+	a := validEnvelope(t)
+	a.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+	a.T0Event.Seq, a.T0Event.Text, a.T0Event.ToolName, a.T0Event.ApprovalID = 9, "semantic detail", "tool", "approval"
+	a.T0Event.RawRef, a.T0Event.Confidence, a.T0Event.Source, a.T0Event.Provenance = "reference", .7, agent.SourceJSONL, "native_log"
+	a.T0Event.Metadata = map[string]string{"b": "two", "a": "one"}
+	a.EventID = ""
+	a, err := NewEnvelope(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := a
+	b.T0Event.Text = "different semantic detail"
+	b.EventID = ""
+	b, err = NewEnvelope(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	da, _ := a.CanonicalDigest()
+	db, _ := b.CanonicalDigest()
+	if da == db {
+		t.Fatal("wrapped T0 semantic change did not change digest")
+	}
+	if a.EventID != b.EventID {
+		t.Fatal("wrapped T0 semantic change changed source identity")
+	}
+	if _, err := SameEvidence(a, b); err != ErrEventIDCollision {
+		t.Fatalf("semantic collision error = %v", err)
+	}
+}
+
+func TestRedactedPayloadRejectsWrappedT0Details(t *testing.T) {
+	for _, set := range []func(*agent.AgentEvent){
+		func(e *agent.AgentEvent) { e.RawRef = "ref" },
+		func(e *agent.AgentEvent) { e.ToolName = "tool" },
+		func(e *agent.AgentEvent) { e.ApprovalID = "approval" },
+		func(e *agent.AgentEvent) { e.Text = "raw detail" },
+		func(e *agent.AgentEvent) { e.Metadata = map[string]string{"k": "v"} },
+	} {
+		e := validEnvelope(t)
+		set(&e.T0Event)
+		e.EventID = ""
+		if _, err := NewEnvelope(e); err == nil {
+			t.Fatal("redacted payload accepted wrapped detail")
+		}
+	}
+}
+
+func TestWrappedT0IdentityAndKindRequired(t *testing.T) {
+	e := validEnvelope(t)
+	e.T0Event.ID = ""
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil {
+		t.Fatal("empty wrapped T0 id accepted")
+	}
+	e = validEnvelope(t)
+	e.T0Event.Type = agent.EventApprovalRequested
+	e.EventID = ""
+	if _, err := NewEnvelope(e); err == nil {
+		t.Fatal("contradictory event kind accepted")
 	}
 }
 
@@ -95,6 +166,7 @@ func TestConditionalReferencesRequiredAndForbidden(t *testing.T) {
 	} {
 		e := base
 		e.EventKind = tc.kind
+		e.T0Event.Type = t0Type(tc.kind)
 		e.References = References{}
 		e.EventID = ""
 		if _, err := NewEnvelope(e); err == nil || !strings.Contains(err.Error(), "required") {
@@ -108,6 +180,7 @@ func TestConditionalReferencesRequiredAndForbidden(t *testing.T) {
 	for _, ref := range []ReferenceKind{ReferenceProviderInvocation, ReferenceThread, ReferenceTurn, ReferenceToolCall, ReferenceApprovalRequest, ReferenceCorrelation, ReferenceCausation, ReferenceTransport, ReferenceDegraded, ReferenceProvenance} {
 		e := base
 		e.EventKind = EventEvidenceObserved
+		e.T0Event.Type = t0Type(e.EventKind)
 		e.References = referenceFor(ReferenceProvenance, Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration})
 		if ref != ReferenceProvenance {
 			addReference(&e.References, ref, Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration})
@@ -121,6 +194,7 @@ func TestConditionalReferencesRequiredAndForbidden(t *testing.T) {
 	// resolution/correlation event alongside that event's required reference.
 	e := base
 	e.EventKind = EventApprovalResolved
+	e.T0Event.Type = t0Type(e.EventKind)
 	e.References = referenceFor(ReferenceApprovalRequest, Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration})
 	addReference(&e.References, ReferenceCausation, Scope{SessionID: e.SessionID, RuntimeID: e.RuntimeID, LaunchGeneration: e.LaunchGeneration})
 	e.EventID = ""
@@ -170,6 +244,36 @@ func TestReadBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 		for _, n := range []int{tc.n - 1, tc.n, tc.n + 1} {
 			err := tc.run(n)
 			if (n <= tc.limit) != (err == nil) {
+				t.Fatalf("%s at %d: %v", tc.name, n, err)
+			}
+		}
+	}
+}
+
+func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		n      int
+		mutate func(*Envelope, int)
+	}{
+		{"payload", MaxPayloadBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Redacted: &RedactedPayload{Summary: strings.Repeat("x", n)}}
+		}},
+		{"envelope source position", MaxReferenceBytes, func(e *Envelope, n int) { e.SourcePosition = strings.Repeat("x", n) }},
+		{"reference id", MaxReferenceBytes, func(e *Envelope, n int) { e.References.ToolCall.ID = strings.Repeat("x", n) }},
+		{"opaque reference", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Opaque: &OpaqueReferencePayload{Reference: strings.Repeat("x", n)}}
+		}},
+		{"digest bytes", MaxRawRecordBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: n}}
+		}},
+	} {
+		for _, n := range []int{tc.n - 1, tc.n, tc.n + 1} {
+			e := validEnvelope(t)
+			tc.mutate(&e, n)
+			e.EventID = ""
+			_, err := NewEnvelope(e)
+			if (n <= tc.n) != (err == nil) {
 				t.Fatalf("%s at %d: %v", tc.name, n, err)
 			}
 		}
@@ -297,4 +401,30 @@ func referenceFor(kind ReferenceKind, scope Scope) References {
 		return References{Provenance: r}
 	}
 	return References{}
+}
+
+func t0Type(kind EventKind) agent.AgentEventType {
+	switch kind {
+	case EventProviderInvocationStarted, EventCorrelationEstablished:
+		return agent.EventAgentStarted
+	case EventProviderInvocationFinished, EventDegraded:
+		return agent.EventFailed
+	case EventThreadObserved:
+		return agent.EventUserMessage
+	case EventTurnObserved:
+		return agent.EventAssistantMessage
+	case EventToolCallStarted:
+		return agent.EventToolCallStarted
+	case EventToolCallFinished:
+		return agent.EventToolCallFinished
+	case EventApprovalRequested:
+		return agent.EventApprovalRequested
+	case EventApprovalResolved:
+		return agent.EventApprovalResolved
+	case EventStreamObserved:
+		return agent.EventThinking
+	case EventEvidenceObserved:
+		return agent.EventUnknown
+	}
+	return agent.EventUnknown
 }
