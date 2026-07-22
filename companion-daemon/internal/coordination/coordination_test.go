@@ -8,7 +8,7 @@ import (
 )
 
 func envelope(now time.Time) Envelope {
-	return Envelope{Version: 1, ID: "m1", TaskID: "t1", Type: Instruction, Source: Endpoint{"codex", "r1", "s1", 1}, Target: Endpoint{"claude", "r2", "s2", 2}, RepositoryID: "repo", WorkspaceMode: workspace.ModeSharedSequential, SnapshotID: "snap", BaseSHA: "base", CurrentSHA: "head", TreeHash: "tree", DiffDigest: "diff", HandoffReference: "h", EvidenceReference: "e", ContentDigest: "digest", RedactedSummary: "safe", RedactionPolicyVersion: "r1", RequiredCapability: "receive", CreatedAt: now, ExpiresAt: now.Add(time.Minute), State: Queued}
+	return Envelope{Version: 1, ID: "m1", TaskID: "t1", Type: Instruction, Source: Endpoint{"codex", "r1", "s1", 1}, Target: Endpoint{"claude", "r2", "s2", 2}, RepositoryID: "repo", WorkspaceMode: workspace.ModeSharedSequential, SnapshotID: "snap", BaseSHA: "base", CurrentSHA: "head", TreeHash: "tree", DiffDigest: "diff", HandoffReference: "h", EvidenceReference: "e", ContentDigest: "digest", RedactedSummary: "safe", RedactionPolicyVersion: "r1", RequiredTargetCapability: "receive", CreatedAt: now, ExpiresAt: now.Add(time.Minute), State: Queued}
 }
 func TestBrokerClosedTransitionsAndNoReplay(t *testing.T) {
 	now := time.Unix(1, 0)

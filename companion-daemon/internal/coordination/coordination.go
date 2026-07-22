@@ -13,6 +13,8 @@ import (
 )
 
 const MaxBytes = 512
+const MaxReferenceBytes = 512
+const MaxHandoffItems = 64
 
 var (
 	ErrInvalid    = errors.New("coordination: invalid envelope")
@@ -32,6 +34,9 @@ const (
 	HandoffMessage    MessageType = "handoff"
 	Cancellation      MessageType = "cancellation"
 	FailureRecovery   MessageType = "failure_recovery"
+	Question          MessageType = "question"
+	Finding           MessageType = "finding"
+	RevisionRequest   MessageType = "revision_request"
 )
 
 type DeliveryState string
@@ -52,16 +57,16 @@ type Endpoint struct {
 	Generation                     int64
 }
 type Envelope struct {
-	Version                                                                                                                                 uint16
-	ID, TaskID                                                                                                                              string
-	Type                                                                                                                                    MessageType
-	Source, Target                                                                                                                          Endpoint
-	RepositoryID                                                                                                                            string
-	WorkspaceMode                                                                                                                           workspace.Mode
-	SnapshotID, BaseSHA, CurrentSHA, TreeHash, DiffDigest                                                                                   string
-	HandoffReference, EvidenceReference, ContentDigest, RedactedSummary, RedactionPolicyVersion, ReplyToID, CausationID, RequiredCapability string
-	CreatedAt, ExpiresAt                                                                                                                    time.Time
-	State                                                                                                                                   DeliveryState
+	Version                                                                                                                                       uint16
+	ID, TaskID                                                                                                                                    string
+	Type                                                                                                                                          MessageType
+	Source, Target                                                                                                                                Endpoint
+	RepositoryID                                                                                                                                  string
+	WorkspaceMode                                                                                                                                 workspace.Mode
+	SnapshotID, BaseSHA, CurrentSHA, TreeHash, DiffDigest                                                                                         string
+	HandoffReference, EvidenceReference, ContentDigest, RedactedSummary, RedactionPolicyVersion, ReplyToID, CausationID, RequiredTargetCapability string
+	CreatedAt, ExpiresAt                                                                                                                          time.Time
+	State                                                                                                                                         DeliveryState
 }
 type Handoff struct {
 	Objective, AcceptanceCriteria, Constraints                                            string
@@ -73,7 +78,7 @@ type Handoff struct {
 }
 
 func (e Envelope) Validate() error {
-	if e.Version != 1 || !text(e.ID) || !text(e.TaskID) || !endpoint(e.Source) || !endpoint(e.Target) || !text(e.RepositoryID) || !text(e.SnapshotID) || !text(e.BaseSHA) || !text(e.CurrentSHA) || !text(e.TreeHash) || !text(e.DiffDigest) || !text(e.ContentDigest) || !text(e.RedactedSummary) || !text(e.RedactionPolicyVersion) || !text(e.RequiredCapability) || e.CreatedAt.IsZero() || e.ExpiresAt.IsZero() || !e.ExpiresAt.After(e.CreatedAt) || !knownType(e.Type) || e.State != Queued {
+	if e.Version != 1 || !text(e.ID) || !text(e.TaskID) || !endpoint(e.Source) || !endpoint(e.Target) || !text(e.RepositoryID) || !text(e.SnapshotID) || !text(e.BaseSHA) || !text(e.CurrentSHA) || !text(e.TreeHash) || !text(e.DiffDigest) || !text(e.ContentDigest) || !text(e.RedactedSummary) || !text(e.RedactionPolicyVersion) || !text(e.RequiredTargetCapability) || !reference(e.HandoffReference) || !reference(e.EvidenceReference) || !optionalReference(e.ReplyToID) || !optionalReference(e.CausationID) || e.CreatedAt.IsZero() || e.ExpiresAt.IsZero() || !e.ExpiresAt.After(e.CreatedAt) || !knownType(e.Type) || e.State != Queued {
 		return ErrInvalid
 	}
 	if strings.Contains(strings.ToLower(e.RedactedSummary), "bearer ") || strings.Contains(strings.ToLower(e.RedactedSummary), "sk-") {
@@ -85,18 +90,31 @@ func (e Envelope) Validate() error {
 	return nil
 }
 func (h Handoff) Validate() error {
-	if !text(h.Objective) || !text(h.AcceptanceCriteria) || !text(h.Constraints) || h.Workspace.Validate() != nil || !text(h.ApprovalState) || !text(h.EvidenceProvenance) || !text(h.ArtifactHash) || !text(h.ArtifactType) || !text(h.RedactionPolicyVersion) || h.ArtifactBytes < 0 || h.ExpiresAt.IsZero() {
+	if !text(h.Objective) || !text(h.AcceptanceCriteria) || !text(h.Constraints) || h.Workspace.Validate() != nil || !text(h.ApprovalState) || !text(h.EvidenceProvenance) || !text(h.ArtifactHash) || !text(h.ArtifactType) || !text(h.RedactionPolicyVersion) || h.ArtifactBytes < 0 || h.ExpiresAt.IsZero() || !items(h.ChangedFiles) || !items(h.TestCommands) || !items(h.TestResults) || !items(h.UnresolvedFindings) {
 		return ErrInvalid
 	}
 	return nil
 }
-func text(s string) bool { return s != "" && len(s) <= MaxBytes }
+func text(s string) bool              { return s != "" && len(s) <= MaxBytes }
+func reference(s string) bool         { return s != "" && len(s) <= MaxReferenceBytes }
+func optionalReference(s string) bool { return s == "" || len(s) <= MaxReferenceBytes }
+func items(v []string) bool {
+	if len(v) > MaxHandoffItems {
+		return false
+	}
+	for _, s := range v {
+		if s == "" || len(s) > MaxBytes {
+			return false
+		}
+	}
+	return true
+}
 func endpoint(e Endpoint) bool {
 	return text(e.Provider) && text(e.RuntimeID) && text(e.SessionID) && e.Generation >= 0
 }
 func knownType(t MessageType) bool {
 	switch t {
-	case Instruction, Status, Result, ValidationRequest, Revision, HandoffMessage, Cancellation, FailureRecovery:
+	case Instruction, Status, Result, ValidationRequest, Revision, HandoffMessage, Cancellation, FailureRecovery, Question, Finding, RevisionRequest:
 		return true
 	}
 	return false
