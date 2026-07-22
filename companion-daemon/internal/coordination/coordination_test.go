@@ -200,11 +200,11 @@ func TestBroker_AuthorizationEnforced(t *testing.T) {
 	}}
 	b.SetCapabilityChecker(auth)
 
-	// Source has capability → accepted.
+	// Target has capability → accepted.
 	e1 := envelope(now)
 	e1.ID = "auth-ok"
 	if err := b.Enqueue(e1); err != nil {
-		t.Fatalf("authorized source rejected: %v", err)
+		t.Fatalf("authorized target rejected: %v", err)
 	}
 
 	// Target lacks capability → rejected.
