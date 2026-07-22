@@ -76,7 +76,13 @@ export function deriveTerminalAuth(
     return { tokenMgr: authCtx.tokenMgr, baseURL: authCtx.baseURL, termURI: null };
   }
   if (authCtx?.mode === 'explicit_local_dev' && authCtx.legacyToken) {
-    return { tokenMgr: undefined, baseURL: undefined, termURI: '/term/?session=' + encodeURIComponent(session) + '&token=' + encodeURIComponent(authCtx.legacyToken) };
+    // When baseURL is set (local E2E test mode), construct an ABSOLUTE
+    // daemon URL so the WebView loads the terminal page from the correct
+    // daemon port rather than the Metro bundle origin. Without baseURL
+    // (legacy production dev), the relative path resolves against the
+    // tunnel origin which already points to the daemon.
+    const prefix = authCtx.baseURL ? authCtx.baseURL : '';
+    return { tokenMgr: undefined, baseURL: undefined, termURI: prefix + '/term/?session=' + encodeURIComponent(session) + '&token=' + encodeURIComponent(authCtx.legacyToken) };
   }
   return { tokenMgr: undefined, baseURL: undefined, termURI: null };
 }

@@ -74,6 +74,15 @@ function AppContent() {
           .then(ctx => { if (ctx.mode === 'paired_device' && ctx.baseURL) connect(ctx.baseURL).catch(() => {}); })
           .catch(() => setAuthCtx({ mode: 'failed' }));
   }, []);
+  // Sync baseURL into authCtx for explicit_local_dev (NO_LOGIN) mode
+  // so deriveTerminalAuth can build absolute daemon URLs for the terminal
+  // WebView (needed on emulator where Metro and daemon use different ports).
+  useEffect(() => {
+    if (!NO_LOGIN || !isConnected || authCtx.mode !== 'explicit_local_dev') return;
+    const url = getBaseURL();
+    if (url && !authCtx.baseURL) setAuthCtx(prev => ({ ...prev, baseURL: url }));
+  }, [isConnected, authCtx.mode]);
+
   useEffect(() => {
     // E6: skip Supabase auth entirely when test flag is set.
     if (NO_LOGIN) {
