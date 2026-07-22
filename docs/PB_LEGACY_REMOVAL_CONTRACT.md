@@ -1,6 +1,6 @@
 # PB Legacy Physical Removal Contract
 
-**Status:** EXECUTED — PB deletion complete through PB.6; PB.7 device gate paused for terminal regression remediation. PB ACCEPT SHA remains UNSET.
+**Status:** PB deletion complete through PB.6. Terminal remediation ACCEPTED (TERM-G1 `2d13020ae`, TERM-C1 `ba78b617a`). ARTIFACT-ID1 complete — matched daemon/APK provenance at candidate `ab1884662`. PB.6/PB.7 evidence regenerated at `b18123e77`. PB ACCEPT SHA remains UNSET — awaiting physical SM-S926N device gate.
 
 **Branch:** `feature/phase10-multi-adapter`
 

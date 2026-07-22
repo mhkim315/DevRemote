@@ -154,7 +154,7 @@ Secrets: CLEAN (pre-existing test fixtures only — deadbeef, xyz in auth test f
 - [x] No paired WebView performs unauthenticated REST polling
 - [x] Scroll comparison classified (source-level mitigation unchanged; physical confirmation pending SM-S926N)
 - [x] PB.6/PB.7 automated evidence regenerated
-- [ ] Clean daemon and APK artifacts attest same exact `PB_DEVICE_CANDIDATE_SHA`
+- [x] Clean daemon and APK artifacts attest same exact `PB_DEVICE_CANDIDATE_SHA` (ARTIFACT-ID1: daemon + APK built from `ab1884662`, hashes embedded and byte-for-byte verified)
 - [ ] `PB_ACCEPT_SHA` remains **UNSET**
 
 This is the sole remaining gate before PB ACCEPT SHA can be assigned.

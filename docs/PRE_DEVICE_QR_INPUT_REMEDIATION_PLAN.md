@@ -66,9 +66,9 @@ The following identities are deliberately distinct:
 | `INPUT_A_IMPL_SHA` / `INPUT_A_EVIDENCE_SHA` / `INPUT_A_ACCEPT_SHA` | Input-A production change, evidence-only head, and independent acceptance | **UNSET** |
 | `INPUT_B_IMPL_SHA` / `INPUT_B_EVIDENCE_SHA` / `INPUT_B_ACCEPT_SHA` | Input-B production change, evidence-only head, and independent acceptance | **UNSET** |
 | `PB_DEVICE_CANDIDATE_SHA` | Exact production/mobile source tree used for device binaries | `ab1884662` |
-| `PB_AUTOMATED_EVIDENCE_SHA` | Evidence-only head recording regenerated PB.6/PB.7 gates | **UNSET** |
-| `DAEMON_BUILD_SOURCE_SHA` | Source identity embedded in the tested daemon | **UNSET** |
-| `APK_BUILD_SOURCE_SHA` | Source identity embedded in the tested APK | **UNSET** |
+| `PB_AUTOMATED_EVIDENCE_SHA` | Evidence-only head recording regenerated PB.6/PB.7 gates | `b18123e77` |
+| `DAEMON_BUILD_SOURCE_SHA` | Source identity embedded in the tested daemon | `ab1884662` |
+| `APK_BUILD_SOURCE_SHA` | Source identity embedded in the tested APK | `ab1884662` |
 | `PB_ACCEPT_SHA` | Final independent acceptance after the physical matrix | **UNSET** |
 
 `PB_DEVICE_CANDIDATE_SHA` is a production identity.
