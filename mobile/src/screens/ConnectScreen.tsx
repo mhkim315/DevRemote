@@ -3,15 +3,19 @@ import { StyleSheet, Text, TextInput, View, Button, TouchableOpacity, Dimensions
 import { CameraView, Camera } from 'expo-camera';
 import { useConnection } from '../lib/connection';
 import { isPairingQR, pairFromScannedQR, runScan } from '../lib/connectPairing';
-import { canonicalOrigin } from '../lib/authMode';
+import { canonicalOrigin, canonicalLocalTestOrigin } from '../lib/authMode';
 
 const DEFAULT_OPERATIONAL_URL = 'https://term.fullcount.kr';
+const LOCAL_TEST_DEFAULT_URL = 'http://localhost:9172';
 
-export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<boolean> } = {}) {
+export default function ConnectScreen({ onPaired, localTest }: {
+  onPaired?: () => Promise<boolean>;
+  localTest?: boolean;
+} = {}) {
   const { connect, connectionError } = useConnection();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
-  const [operationalURL, setOperationalURL] = useState(DEFAULT_OPERATIONAL_URL);
+  const [operationalURL, setOperationalURL] = useState(localTest ? LOCAL_TEST_DEFAULT_URL : DEFAULT_OPERATIONAL_URL);
   const [urlError, setURLError] = useState('');
 
   useEffect(() => {
@@ -25,6 +29,13 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
   const validateURL = (url: string) => {
     const trimmed = url.trim();
     if (!trimmed) { setURLError(''); return true; }
+    // Local E2E test path: permit HTTP localhost when explicit_local_dev + debug build
+    if (localTest) {
+      const { error } = canonicalLocalTestOrigin(trimmed, true, 'explicit_local_dev');
+      if (error) { setURLError(error); return false; }
+      setURLError('');
+      return true;
+    }
     const { error } = canonicalOrigin(trimmed);
     if (error) { setURLError(error); return false; }
     setURLError('');
@@ -35,6 +46,11 @@ export default function ConnectScreen({ onPaired }: { onPaired?: () => Promise<b
     const trimmed = url.trim();
     if (trimmed && validateURL(trimmed)) {
       setOperationalURL(trimmed);
+      // In local test mode, immediately connect to the daemon after URL set.
+      // This triggers ConnectionProvider.probeDaemon() → isConnected → product route.
+      if (localTest) {
+        connect(trimmed).catch(() => {});
+      }
     }
   };
 

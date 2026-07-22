@@ -158,7 +158,7 @@ function AppContent() {
     // connection state can never race ahead of trusted auth state.
     return (
       <SafeAreaProvider><StatusBar style="light" />
-        <ConnectScreen onPaired={async () => (await completeAndInstall()).mode === 'paired_device'} />
+        <ConnectScreen onPaired={async () => (await completeAndInstall()).mode === 'paired_device'} localTest={NO_LOGIN} />
       </SafeAreaProvider>
     );
   }
@@ -185,7 +185,7 @@ function AppContent() {
         // Pass the SAME atomic completion callback so a re-scan here installs a
         // fresh DeviceKey-verified TokenManager + bearer before connecting —
         // never connecting on top of a stale/invalid auth context.
-        <ConnectScreen onPaired={async () => (await completeAndInstall()).mode === 'paired_device'} />
+        <ConnectScreen onPaired={async () => (await completeAndInstall()).mode === 'paired_device'} localTest={NO_LOGIN} />
       )}
     </SafeAreaProvider>
   );

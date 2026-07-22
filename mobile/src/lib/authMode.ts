@@ -32,6 +32,39 @@ export function canonicalOrigin(baseURL: string): { origin?: string; error?: str
   return { origin: u.origin };
 }
 
+// localTestOriginKeys is the closed set of hostnames permitted by
+// canonicalLocalTestOrigin. Emulator aliases (10.0.2.2), LAN IPs, and
+// arbitrary domains are never added to this set.
+const localTestOriginKeys = new Set(['localhost', '127.0.0.1']);
+
+// canonicalLocalTestOrigin is the explicit local-E2E origin validator for
+// the Android Emulator development path. It permits HTTP ONLY when ALL of
+// the following are true:
+//   - localTestExplicit is true (caller attests to debug + NO_LOGIN flag)
+//   - originMode is 'explicit_local_dev'
+//   - the scheme is 'http:'
+//   - the hostname is exactly 'localhost' or '127.0.0.1'
+// Every other input — LAN IPs, 10.0.2.2, arbitrary domains, missing flags,
+// wrong mode, missing port, credentials, query, fragment, path — is
+// rejected. Production HTTPS origins are never routed through this function.
+export function canonicalLocalTestOrigin(
+  baseURL: string,
+  localTestExplicit: boolean,
+  originMode: string,
+): { origin?: string; error?: string } {
+  if (!localTestExplicit) return { error: 'local test requires explicit opt-in' };
+  if (originMode !== 'explicit_local_dev') return { error: 'local test requires explicit_local_dev mode' };
+
+  let u: URL;
+  try { u = new URL(baseURL); } catch { return { error: 'invalid base URL' }; }
+  if (u.protocol !== 'http:') return { error: 'local test only supports HTTP' };
+  if (!localTestOriginKeys.has(u.hostname)) return { error: 'local test only permits localhost and 127.0.0.1' };
+  if (u.username || u.password || u.search || u.hash) return { error: 'base URL must not contain credentials, query, or fragment' };
+  if (u.pathname !== '/' && u.pathname !== '') return { error: 'base URL must not contain a path' };
+  if (!u.port) return { error: 'local test requires an explicit port' };
+  return { origin: u.origin };
+}
+
 // deriveTerminalAuth is the ONE authoritative production decision for which
 // terminal auth path to use. Exported from here (no RN deps) so jest imports
 // it directly without needing React Native mocks.
