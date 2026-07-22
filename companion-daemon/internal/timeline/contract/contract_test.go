@@ -2,7 +2,6 @@ package contract
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,9 +106,8 @@ func TestCanonicalDigestIncludesWrappedT0Evidence(t *testing.T) {
 		t.Fatal("Digest payload with wrapped T0 Text/ToolName/ApprovalID/RawRef/Metadata was accepted — must be rejected")
 	}
 
-	// Without T0 detail, Digest payload is accepted. CanonicalDigest and
-	// EventID are stable — payload fields are not part of the canonical
-	// field set per the existing algorithm.
+	// Without T0 detail, Digest payload is accepted. EventID is source-identity
+	// only, while payload bytes remain canonical evidence.
 	a2 := validEnvelope(t)
 	a2.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
 	a2.T0Event.Text = ""
@@ -123,9 +121,11 @@ func TestCanonicalDigestIncludesWrappedT0Evidence(t *testing.T) {
 		t.Fatalf("Digest payload without T0 detail rejected: %v", err)
 	}
 	// Same source identity, different digest bytes — EventID is stable,
-	// CanonicalDigest is stable (payload not in canonical fields).
+	// CanonicalDigest differs, and the identity collision is rejected.
 	b2 := a2
-	b2.Payload.Digest.Digest = strings.Repeat("b", 64)
+	digestCopy := *a2.Payload.Digest
+	digestCopy.Digest = strings.Repeat("b", 64)
+	b2.Payload.Digest = &digestCopy
 	b2.EventID = ""
 	b2, err = NewEnvelope(b2)
 	if err != nil {
@@ -136,12 +136,11 @@ func TestCanonicalDigestIncludesWrappedT0Evidence(t *testing.T) {
 	}
 	da, _ := a2.CanonicalDigest()
 	db, _ := b2.CanonicalDigest()
-	if da != db {
-		t.Fatal("Digest value (payload only) changed canonical digest — payload is not part of canonical fields")
+	if da == db {
+		t.Fatal("Digest value change did not change canonical digest")
 	}
-	// Same evidence (same EventID, same canonical digest) is idempotent.
-	if same, _ := SameEvidence(a2, b2); !same {
-		t.Fatal("identical envelope not detected as same evidence")
+	if _, err := SameEvidence(a2, b2); err != ErrEventIDCollision {
+		t.Fatalf("digest collision error = %v", err)
 	}
 }
 
@@ -282,7 +281,20 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 		{"payload", MaxPayloadBytes, func(e *Envelope, n int) {
 			e.Payload = Payload{Redacted: &RedactedPayload{Summary: strings.Repeat("x", n)}}
 		}},
+		{"session id", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.SessionID, e.T0Event.SessionID, e.References.ToolCall.Scope.SessionID = strings.Repeat("x", n), strings.Repeat("x", n), strings.Repeat("x", n)
+		}},
+		{"runtime id", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.RuntimeID, e.References.ToolCall.Scope.RuntimeID = strings.Repeat("x", n), strings.Repeat("x", n)
+		}},
+		{"provider", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Provider, e.T0Event.AgentKind = strings.Repeat("x", n), strings.Repeat("x", n)
+		}},
+		{"source incarnation", MaxReferenceBytes, func(e *Envelope, n int) { e.SourceIncarnation = strings.Repeat("x", n) }},
+		{"source identity kind", MaxReferenceBytes, func(e *Envelope, n int) { e.SourceIdentity.Kind = strings.Repeat("x", n) }},
+		{"source identity id", MaxReferenceBytes, func(e *Envelope, n int) { e.SourceIdentity.ID = strings.Repeat("x", n) }},
 		{"envelope source position", MaxReferenceBytes, func(e *Envelope, n int) { e.SourcePosition = strings.Repeat("x", n) }},
+		{"redaction policy", MaxReferenceBytes, func(e *Envelope, n int) { e.RedactionPolicyVersion = strings.Repeat("x", n) }},
 		{"reference id", MaxReferenceBytes, func(e *Envelope, n int) { e.References.ToolCall.ID = strings.Repeat("x", n) }},
 		{"opaque reference", MaxReferenceBytes, func(e *Envelope, n int) {
 			e.Payload = Payload{Opaque: &OpaqueReferencePayload{Reference: strings.Repeat("x", n)}}
@@ -290,32 +302,16 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 		{"digest bytes", MaxRawRecordBytes, func(e *Envelope, n int) {
 			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: n}}
 		}},
-		// CT-P1 T1: T0 field bounds with valid Digest payload. Text/ToolName/
-		// ApprovalID/RawRef are in the T0-detail check so N-1/N fail with detail
-		// rejection. Provenance/Source are NOT in detail check so N-1/N pass.
-		// All fields: N+1 must fail with bounds error (proves bounds gate exists).
-		{"t0 text bounds", MaxPayloadBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
-			e.T0Event.Text = strings.Repeat("x", n)
-		}},
-		{"t0 tool name bounds", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
-			e.T0Event.ToolName = strings.Repeat("x", n)
-		}},
-		{"t0 approval id bounds", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
-			e.T0Event.ApprovalID = strings.Repeat("x", n)
-		}},
-		{"t0 raw ref bounds", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
-			e.T0Event.RawRef = strings.Repeat("x", n)
+		// Wrapped detail is intentionally rejected for every payload variant by
+		// the privacy boundary. These are the bounded T0 identity/provenance
+		// fields that remain valid in an otherwise valid envelope.
+		{"t0 id bounds", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.T0Event.ID = strings.Repeat("x", n)
 		}},
 		{"t0 provenance bounds", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
 			e.T0Event.Provenance = strings.Repeat("x", n)
 		}},
 		{"t0 source bounds", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
 			e.T0Event.Source = agent.AgentEventSource(strings.Repeat("x", n))
 		}},
 	} {
@@ -324,65 +320,10 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 			tc.mutate(&e, n)
 			e.EventID = ""
 			_, err := NewEnvelope(e)
-			// CT-P1 T1: T0 bounds — Text/ToolName/ApprovalID/RawRef are in the
-			// T0-detail check so N-1/N fail with detail rejection; Provenance/
-			// Source are NOT in detail check so N-1/N pass. All: N+1→bounds error.
-			if strings.HasPrefix(tc.name, "t0 ") {
-				inDetail := strings.Contains(tc.name, "text ") ||
-					strings.Contains(tc.name, "tool ") ||
-					strings.Contains(tc.name, "approval ") ||
-					strings.Contains(tc.name, "raw ref ")
-				if n == tc.n+1 {
-					if err == nil || !strings.Contains(err.Error(), "exceeds") {
-						t.Fatalf("%s at %d: %v (want bounds error)", tc.name, n, err)
-					}
-				} else if inDetail {
-					if err == nil {
-						t.Fatalf("%s at %d: accepted, want detail rejection", tc.name, n)
-					}
-				} else {
-					if err != nil {
-						t.Fatalf("%s at %d: %v (want acceptance)", tc.name, n, err)
-					}
-				}
-			} else {
-				if (n <= tc.n) != (err == nil) {
-					t.Fatalf("%s at %d: %v", tc.name, n, err)
-				}
+			if (n <= tc.n) != (err == nil) {
+				t.Fatalf("%s at %d: %v", tc.name, n, err)
 			}
 		}
-	}
-}
-
-func TestT0MetadataKeyBounds(t *testing.T) {
-	// N = MaxMetadataKeys. N+1 keys must reject.
-	// T0 bounds fire before payload validation — N+1 triggers bounds error
-	// before the missing-variant error is reached.
-	e := validEnvelope(t)
-	e.T0Event.Metadata = make(map[string]string, MaxMetadataKeys+1)
-	for i := 0; i < MaxMetadataKeys+1; i++ {
-		e.T0Event.Metadata[string(rune('a'+i%26))+fmt.Sprint(i)] = "v"
-	}
-	e.EventID = ""
-	_, err := NewEnvelope(e)
-	if err == nil {
-		t.Fatalf("T0Event.Metadata with %d keys accepted, want reject at >%d", MaxMetadataKeys+1, MaxMetadataKeys)
-	}
-}
-
-func TestT0MetadataKeyValueSizeRejected(t *testing.T) {
-	// Key or value exceeding MaxReferenceBytes must reject.
-	e := validEnvelope(t)
-	e.T0Event.Metadata = map[string]string{"key": strings.Repeat("v", MaxReferenceBytes+1)}
-	e.EventID = ""
-	if _, err := NewEnvelope(e); err == nil {
-		t.Fatal("T0Event.Metadata value exceeding MaxReferenceBytes accepted")
-	}
-	e2 := validEnvelope(t)
-	e2.T0Event.Metadata = map[string]string{strings.Repeat("k", MaxReferenceBytes+1): "v"}
-	e2.EventID = ""
-	if _, err := NewEnvelope(e2); err == nil {
-		t.Fatal("T0Event.Metadata key exceeding MaxReferenceBytes accepted")
 	}
 }
 
