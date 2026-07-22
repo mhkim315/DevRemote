@@ -10,6 +10,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -602,17 +605,40 @@ func TestPairing_QuerylessPairedWebViewBootstrap(t *testing.T) {
 	rand.Read(phoneNonce)
 
 	cb, _ := json.Marshal(PairingRequest{PublicKeyDER: pubDER, DisplayName: "queryless-device", PhoneNonce: phoneNonce, BootstrapToken: ph.Session.BootstrapToken})
-	resp, _ := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	resp, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(cb))
+	if err != nil {
+		t.Fatalf("phase1: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("phase1 status=%d, want 200", resp.StatusCode)
+	}
 	var chal ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&chal)
+	if err := json.NewDecoder(resp.Body).Decode(&chal); err != nil {
+		resp.Body.Close()
+		t.Fatalf("phase1 response: %v", err)
+	}
 	resp.Body.Close()
 
 	sig := signTranscript(t, priv, phoneNonce, chal.HostNonce, chal.HostPublicDER, ph.Session.SessionID)
 	cfb, _ := json.Marshal(Confirmation{PhoneSignature: sig})
-	resp, _ = http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
+	resp, err = http.Post("http://"+ph.addr+"/pair/confirm", "application/json", bytes.NewReader(cfb))
+	if err != nil {
+		t.Fatalf("phase2: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("phase2 status=%d, want 200", resp.StatusCode)
+	}
 	resp.Body.Close()
 
-	ph.Approve()
+	candidate, ok := ph.WaitForCandidate()
+	if !ok || candidate.Fingerprint != fp {
+		t.Fatalf("verified candidate ok=%v fingerprint=%q, want %q", ok, candidate.Fingerprint, fp)
+	}
+	if err := ph.Approve(); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
 
 	// ── Verify paired device in registry ──
 	dev, ok := r.GetActiveByFingerprint(fp)
@@ -622,4 +648,250 @@ func TestPairing_QuerylessPairedWebViewBootstrap(t *testing.T) {
 	if dev.DisplayName != "queryless-device" {
 		t.Errorf("display name = %q, want queryless-device", dev.DisplayName)
 	}
+	if dev.Role != RoleOwner {
+		t.Fatalf("paired device role=%q, want %q so terminal:input is authorized", dev.Role, RoleOwner)
+	}
+
+	// term imports devicetrust, so this same-package test cannot import term
+	// without creating an import cycle. Run the terminal half as a temporary
+	// external module and pass it the identity produced by the real pairing flow.
+	// The probe creates a native managed PTY, creates/authenticates the paired
+	// device session, issues a bound ticket, dials Handlers.HandleWS, validates
+	// the hello identity, rejects wrong-session input, and accepts bound input.
+	runQuerylessWebViewBootstrapProbe(t, dev.DeviceID, dev.Role)
 }
+
+func runQuerylessWebViewBootstrapProbe(t *testing.T, deviceID, role string) {
+	t.Helper()
+
+	moduleRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("module root: %v", err)
+	}
+	helperDir := t.TempDir()
+	goMod := "module devremote/companion-daemon/pbdgr4probe\n\n" +
+		"go 1.26.4\n\n" +
+		"require devremote/companion-daemon v0.0.0\n\n" +
+		"replace devremote/companion-daemon => " + filepath.ToSlash(moduleRoot) + "\n"
+	if err := os.WriteFile(filepath.Join(helperDir, "go.mod"), []byte(goMod), 0o600); err != nil {
+		t.Fatalf("write probe go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(helperDir, "main.go"), []byte(querylessWebViewBootstrapProbe), 0o600); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+
+	cmd := exec.CommandContext(t.Context(), "go", "run", "-mod=mod", ".", deviceID, role)
+	cmd.Dir = helperDir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("queryless paired WebView infrastructure probe: %v\n%s", err, output)
+	}
+}
+
+const querylessWebViewBootstrapProbe = `package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"devremote/companion-daemon/internal/devicetrust"
+	"devremote/companion-daemon/internal/term"
+	"github.com/gorilla/websocket"
+)
+
+type helloFrame struct {
+	Type         string   ` + "`json:\"type\"`" + `
+	Capabilities []string ` + "`json:\"capabilities\"`" + `
+	SessionID    string   ` + "`json:\"sessionId\"`" + `
+	Generation   int64    ` + "`json:\"generation\"`" + `
+	ConnectionID string   ` + "`json:\"connectionId\"`" + `
+}
+
+type inputResult struct {
+	Type         string ` + "`json:\"type\"`" + `
+	InputID      string ` + "`json:\"inputId\"`" + `
+	ConnectionID string ` + "`json:\"connectionId\"`" + `
+	SessionID    string ` + "`json:\"sessionId\"`" + `
+	Generation   int64  ` + "`json:\"generation\"`" + `
+	Sequence     uint64 ` + "`json:\"sequence\"`" + `
+	Outcome      string ` + "`json:\"outcome\"`" + `
+}
+
+func fail(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func readHello(conn *websocket.Conn) helloFrame {
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			fail("read hello: %v", err)
+		}
+		if messageType != websocket.TextMessage {
+			continue
+		}
+		var hello helloFrame
+		if err := json.Unmarshal(payload, &hello); err == nil && hello.Type == "hello" {
+			return hello
+		}
+	}
+}
+
+func sendInput(conn *websocket.Conn, session string, generation int64, inputID string, payload []byte) {
+	frame, err := json.Marshal(map[string]interface{}{
+		"type": "terminal_input", "version": 1, "sessionId": session,
+		"generation": generation, "inputId": inputID,
+		"payload": base64.StdEncoding.EncodeToString(payload),
+	})
+	if err != nil {
+		fail("marshal terminal_input: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+		fail("write terminal_input: %v", err)
+	}
+}
+
+func readResult(conn *websocket.Conn, inputID string) inputResult {
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			fail("read input result %s: %v", inputID, err)
+		}
+		if messageType != websocket.TextMessage {
+			continue
+		}
+		var result inputResult
+		if err := json.Unmarshal(payload, &result); err == nil && result.Type == "input_result" && result.InputID == inputID {
+			return result
+		}
+	}
+}
+
+func main() {
+	if len(os.Args) != 3 {
+		fail("usage: probe DEVICE_ID ROLE")
+	}
+	deviceID, role := os.Args[1], os.Args[2]
+	permissions := devicetrust.PermissionsForRole(role)
+	if !contains(permissions, devicetrust.PermSessionsRead) || !contains(permissions, devicetrust.PermTerminalInput) {
+		fail("paired device permissions=%v; sessions:read and terminal:input required", permissions)
+	}
+
+	identityDir, err := os.MkdirTemp("", "pb-dg-r4-identity-")
+	if err != nil {
+		fail("identity tempdir: %v", err)
+	}
+	defer os.RemoveAll(identityDir)
+	identity, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: filepath.Join(identityDir, "host.json")})
+	if err != nil {
+		fail("host identity: %v", err)
+	}
+
+	sessions := devicetrust.NewDeviceSessionManager("pb-dg-r4-boot", time.Minute)
+	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(deviceID, identity.HostID, sessions.BootID(), permissions)
+	if err != nil {
+		fail("create paired device session: %v", err)
+	}
+	principal := sessions.AuthenticateBearer(bearer)
+	if principal == nil || principal.DeviceID != deviceID || !contains(principal.Permissions, devicetrust.PermTerminalInput) {
+		fail("authenticated paired session=%+v", principal)
+	}
+
+	cat, err := exec.LookPath("cat")
+	if err != nil {
+		fail("managed PTY command: %v", err)
+	}
+	owned := term.NewOwnedPTYRuntime(term.NewNativePTYLauncher(), nil)
+	sessionID, err := owned.Create(context.Background(), term.SpawnConfig{
+		Name: "pb-dg-r4-queryless", Executable: cat, Rows: 24, Cols: 80,
+	}, "shell", "PB-DG-R4 queryless")
+	if err != nil {
+		fail("create native managed session: %v", err)
+	}
+	lifecycle := term.NewLifecycleService(owned, nil)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = lifecycle.Kill(ctx, sessionID)
+	}()
+	entry, ok := owned.Get(sessionID)
+	if !ok || entry.Generation <= 0 {
+		fail("managed session entry=%+v ok=%v", entry, ok)
+	}
+
+	tickets := devicetrust.NewWSTicketStore()
+	ticket, ticketExpiry, err := tickets.Issue(principal, identity.HostID, sessionID)
+	if err != nil || ticket == "" || ticketExpiry.IsZero() {
+		fail("issue WS ticket: ticket=%q expiry=%v err=%v", ticket, ticketExpiry, err)
+	}
+	handlers := &term.Handlers{
+		Lifecycle: lifecycle, WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity,
+	}
+	server := httptest.NewServer(http.HandlerFunc(handlers.HandleWS))
+	defer server.Close()
+
+	wsURL, err := url.Parse(server.URL)
+	if err != nil {
+		fail("parse WS URL: %v", err)
+	}
+	wsURL.Scheme = "ws"
+	wsURL.Path = "/term/ws"
+	wsURL.RawQuery = "session=" + url.QueryEscape(sessionID) + "&ticket=" + url.QueryEscape(ticket)
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if err != nil {
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+		}
+		fail("HandleWS upgrade: status=%d err=%v", status, err)
+	}
+	defer conn.Close()
+
+	hello := readHello(conn)
+	if hello.SessionID != sessionID || hello.Generation != entry.Generation || hello.ConnectionID == "" {
+		fail("hello identity=%+v; want session=%q generation=%d non-empty connectionId", hello, sessionID, entry.Generation)
+	}
+	if !contains(hello.Capabilities, devicetrust.PermTerminalInput) {
+		fail("hello capabilities=%v; terminal:input missing", hello.Capabilities)
+	}
+
+	wrongID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sendInput(conn, "controlled_pty:wrong-session", hello.Generation, wrongID, []byte("must-not-write\n"))
+	wrong := readResult(conn, wrongID)
+	if wrong.Outcome != "session_not_found" || wrong.ConnectionID != hello.ConnectionID || wrong.Sequence != 0 {
+		fail("wrong-session result=%+v; want session_not_found, matching connection, sequence 0", wrong)
+	}
+
+	correctID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sendInput(conn, hello.SessionID, hello.Generation, correctID, []byte("queryless bootstrap accepted\n"))
+	accepted := readResult(conn, correctID)
+	if accepted.Outcome != "accepted" || accepted.SessionID != hello.SessionID ||
+		accepted.Generation != hello.Generation || accepted.ConnectionID != hello.ConnectionID || accepted.Sequence != 1 {
+		fail("correct-session result=%+v; want accepted with hello identity and sequence 1", accepted)
+	}
+}
+`

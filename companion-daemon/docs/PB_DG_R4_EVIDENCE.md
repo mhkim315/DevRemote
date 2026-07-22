@@ -5,7 +5,7 @@
 **IMPL SHA (candidate):** `c190d8318ab790f6264c130d0a1045064d6af3f6`
 **EVID SHA:** (this commit)
 **Branch:** `feature/canonical-timeline-foundation`
-**Date:** 2026-07-22
+**Date:** 2026-07-23
 
 ## R4.1 — Pairing V1 Transport Closure (Verified)
 
@@ -19,7 +19,7 @@ Production pairing handlers at `internal/devicetrust/pairing.go`:
 | Redirects rejected for all pair paths | ✅ | No redirect logic in handlers; method enforcement |
 | confirm/result URLs from validated origin only | ✅ | `siblingURL()` derivation in mobile test |
 | No bearer token over LAN HTTP pairing | ✅ | Bootstrap token constant-time compare, no Authorization header check |
-| Operational origin HTTPS/WSS enforced | ✅ | `PairingConfig.LANAddr` is LAN-only, operational origin separate |
+| Operational origin HTTPS/WSS enforced | ⏳ R4.4 device smoke | Automated HTTPS operational-origin infrastructure is not available; see explicit R4.2 scope note below |
 | Bootstrap-token single use | ✅ | `pairing.go:247` — constant-time compare, state check prevents reuse |
 | Expiry | ✅ | `pairing.go:254` — session expiry check before processing |
 | Host-key proof | ✅ | `handleConfirm` verifies phone signature, returns host proof |
@@ -28,17 +28,31 @@ Production pairing handlers at `internal/devicetrust/pairing.go`:
 
 ## R4.2 — Mandatory Automated Tests (Added)
 
-5 new behavioral tests in `internal/devicetrust/pairing_test.go`:
+4 automated behavioral tests in `internal/devicetrust/pairing_test.go`, plus one explicitly deferred HTTPS device-smoke assertion:
 
 | Test | Scenarios | Status |
 |------|-----------|--------|
-| `TestPairing_PathVariantRejection` | 15 path/method variants: `/pair/`, `/pair/sub`, `/%70air`, `/PAIR`, `?x=1`, `#frag`, `/other`, `/`, `/api/pair`, GET on all 3 paths | ✅ PASS |
+| `TestPairing_PathVariantRejection` | Exact `POST /pair` control plus trailing-slash, sub-path, wrong-case, unrelated/nested path, and wrong-method rejection through real HTTP requests | ✅ PASS |
 | `TestPairing_NoRedirectOnPairPaths` | `/pair`, `/pair/confirm`, `/pair/result` — all reject 3xx with `CheckRedirect` | ✅ PASS |
 | `TestPairing_NoBearerTokenOverCleartextOrigin` | `Authorization: Bearer fake-token` over LAN HTTP `/pair` — does not produce 200 | ✅ PASS |
-| `TestPairing_OperationalOriginHTTPSOnly` | Full 2-phase pairing → approve → result poll — deviceId + fingerprint returned | ✅ PASS |
-| `TestPairing_QuerylessPairedWebViewSessionBinding` | Full pairing → device in registry with correct display name after approve | ✅ PASS |
+| HTTPS operational origin | Behavioral automated test deferred: no automated HTTPS operational-origin server infrastructure is available in this scope | ⏳ R4.4 SM-S926N smoke |
+| `TestPairing_QuerylessPairedWebViewBootstrap` | Full pairing and approval → owner permission projection → native managed PTY session → bound WS ticket → real `Handlers.HandleWS` upgrade → hello session/generation/connectionId validation → wrong-session `session_not_found` with zero sequence → correct-session accepted ACK with matching identity and sequence 1 | ✅ PASS |
+
+### Explicit HTTPS Scope Change
+
+The prior `TestPairing_OperationalOriginHTTPSOnly` did not start HTTPS infrastructure or send an operational request; it only completed pairing over HTTP and checked the returned device identity. Retaining that name as automated HTTPS evidence would therefore be misleading. A behavioral automated HTTPS operational-origin test is deferred to R4.4 device smoke because automated HTTPS server infrastructure is not available in the allowed R4.2 test scope. R4.4 must verify on the SM-S926N that post-pairing REST and terminal traffic switch to the configured HTTPS/WSS operational origin and that the cleartext pairing origin receives no bearer, session, or terminal traffic.
 
 Existing tests: 13 pairing tests (Full2Phase, MobileIntegration, RejectLifecycle, ResultSessionMismatch, NonP256Rejected, NoBootstrapRejected, SecondCandidateRejected, ExpiredSessionRejected, ApproveWithoutProofFails, SessionExpires, RejectAfterProof, ProductionE2E, ApprovalRace) — all continue to PASS.
+
+### R4 T2 Escalation Verification
+
+```
+go test ./internal/devicetrust -run '^TestPairing_QuerylessPairedWebViewBootstrap$' -count=1 -v  PASS
+go test ./internal/devicetrust -run '^(TestPairing_|TestMobilePairing)' -count=1                PASS
+go test ./internal/devicetrust -count=1                                                        PASS
+go test -race ./internal/devicetrust -run '^TestPairing_QuerylessPairedWebViewBootstrap$' -count=1 PASS
+go test ./...                                                                                  PASS
+```
 
 ## R4.3 — Candidate Freeze + Artifact Build
 
