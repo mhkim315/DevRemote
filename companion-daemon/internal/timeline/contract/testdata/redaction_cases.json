@@ -1,0 +1,5 @@
+[
+  {"summary":"provider completed a redacted operation", "valid":true},
+  {"summary":"Bearer not-a-real-token", "valid":false},
+  {"summary":"sk-test-only", "valid":false}
+]
