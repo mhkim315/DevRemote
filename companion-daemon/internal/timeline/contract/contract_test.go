@@ -290,13 +290,32 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 		{"digest bytes", MaxRawRecordBytes, func(e *Envelope, n int) {
 			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: n}}
 		}},
-		{"t0 text", MaxPayloadBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.Text = strings.Repeat("x", n) }},
-		{"t0 tool name", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.ToolName = strings.Repeat("x", n) }},
-		{"t0 approval id", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.ApprovalID = strings.Repeat("x", n) }},
-		{"t0 raw ref", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.RawRef = strings.Repeat("x", n) }},
-		{"t0 provenance", MaxReferenceBytes, func(e *Envelope, n int) { e.Payload = Payload{}; e.T0Event.Provenance = strings.Repeat("x", n) }},
-		{"t0 source", MaxReferenceBytes, func(e *Envelope, n int) {
-			e.Payload = Payload{}
+		// CT-P1 T1: T0 field bounds with valid Digest payload. Text/ToolName/
+		// ApprovalID/RawRef are in the T0-detail check so N-1/N fail with detail
+		// rejection. Provenance/Source are NOT in detail check so N-1/N pass.
+		// All fields: N+1 must fail with bounds error (proves bounds gate exists).
+		{"t0 text bounds", MaxPayloadBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+			e.T0Event.Text = strings.Repeat("x", n)
+		}},
+		{"t0 tool name bounds", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+			e.T0Event.ToolName = strings.Repeat("x", n)
+		}},
+		{"t0 approval id bounds", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+			e.T0Event.ApprovalID = strings.Repeat("x", n)
+		}},
+		{"t0 raw ref bounds", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+			e.T0Event.RawRef = strings.Repeat("x", n)
+		}},
+		{"t0 provenance bounds", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
+			e.T0Event.Provenance = strings.Repeat("x", n)
+		}},
+		{"t0 source bounds", MaxReferenceBytes, func(e *Envelope, n int) {
+			e.Payload = Payload{Digest: &DigestReferencePayload{Digest: strings.Repeat("a", 64), Bytes: 7}}
 			e.T0Event.Source = agent.AgentEventSource(strings.Repeat("x", n))
 		}},
 	} {
@@ -305,9 +324,26 @@ func TestEnvelopeBoundsAtNMinusOneNAndNPlusOne(t *testing.T) {
 			tc.mutate(&e, n)
 			e.EventID = ""
 			_, err := NewEnvelope(e)
+			// CT-P1 T1: T0 bounds — Text/ToolName/ApprovalID/RawRef are in the
+			// T0-detail check so N-1/N fail with detail rejection; Provenance/
+			// Source are NOT in detail check so N-1/N pass. All: N+1→bounds error.
 			if strings.HasPrefix(tc.name, "t0 ") {
-				if n == tc.n+1 && err == nil {
-					t.Fatalf("%s at %d: accepted, want bounds rejection", tc.name, n)
+				inDetail := strings.Contains(tc.name, "text ") ||
+					strings.Contains(tc.name, "tool ") ||
+					strings.Contains(tc.name, "approval ") ||
+					strings.Contains(tc.name, "raw ref ")
+				if n == tc.n+1 {
+					if err == nil || !strings.Contains(err.Error(), "exceeds") {
+						t.Fatalf("%s at %d: %v (want bounds error)", tc.name, n, err)
+					}
+				} else if inDetail {
+					if err == nil {
+						t.Fatalf("%s at %d: accepted, want detail rejection", tc.name, n)
+					}
+				} else {
+					if err != nil {
+						t.Fatalf("%s at %d: %v (want acceptance)", tc.name, n, err)
+					}
 				}
 			} else {
 				if (n <= tc.n) != (err == nil) {
