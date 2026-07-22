@@ -19,3 +19,7 @@ mobile/android/app/.cxx/
 mobile/node_modules/
 mobile/.expo/
 dist/
+
+# tapflow runtime data
+.tapflow/data/
+.tapflow/artifacts/
