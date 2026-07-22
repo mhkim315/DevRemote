@@ -1,6 +1,6 @@
 # PB Legacy Removal Execution Plan
 
-**Status:** EXECUTED THROUGH AUTOMATED CLOSEOUT — pre-device QR/Input remediation planned; physical device gate not started; PB ACCEPT SHA remains UNSET.
+**Status:** EXECUTED THROUGH ARTIFACT-ID1 — terminal remediation accepted (TERM-G1 `2d13020ae`, TERM-C1 `ba78b617a`); matched daemon/APK provenance at candidate `ab1884662`; physical device gate pending; PB ACCEPT SHA remains UNSET.
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -14,7 +14,7 @@
 | `PB_START_BASELINE_SHA` | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback preserving the frozen PA4 and roadmap documents |
 | `CURRENT_NON_DEVICE_CHECKPOINT_SHA` | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before QR/Input remediation |
 | Future `PB_DEVICE_CANDIDATE_SHA` | `ab1884662` | Exact production/mobile source for the device daemon and APK |
-| Future `PB_AUTOMATED_EVIDENCE_SHA` | **UNSET** | Documentation-only head after PB.6/PB.7 regeneration |
+| Future `PB_AUTOMATED_EVIDENCE_SHA` | `b18123e77` | Documentation-only head after PB.6/PB.7 regeneration |
 | Future `PB_ACCEPT_SHA` | **UNSET** | Assigned only by the final independent PB verifier |
 
 `PB_PREREQUISITE_SHA` and `PB_START_BASELINE_SHA` have different meanings.

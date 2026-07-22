@@ -1,6 +1,6 @@
 # PB Device-Gate Terminal Regression Remediation Plan
 
-**Status:** TERMINAL REMEDIATION ACCEPTED — ARTIFACT-ID1 REQUIRED BEFORE DEVICE GATE
+**Status:** TERMINAL REMEDIATION ACCEPTED — ARTIFACT-ID1 ACCEPTED — AWAITING PHYSICAL SM-S926N DEVICE GATE
 
 **Branch:** `feature/phase10-multi-adapter`
 

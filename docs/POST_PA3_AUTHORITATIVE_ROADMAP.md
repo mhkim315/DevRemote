@@ -22,7 +22,7 @@ These identities have different meanings and must not be substituted for one ano
 | PB start baseline | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback point that preserves the frozen PA4/roadmap documents |
 | Current non-device checkpoint | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before the frozen QR/Input remediation sequence |
 | Future PB device candidate | `ab1884662` | Final production/mobile identity after QR, Input-A, and Input-B acceptance |
-| Future PB automated evidence |  | Evidence-only head after PB.6/PB.7 regeneration |
+| Future PB automated evidence | `b18123e77` | Evidence-only head after PB.6/PB.7 regeneration |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
 
 | Packet | Status |
