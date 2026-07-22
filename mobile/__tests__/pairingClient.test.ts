@@ -332,4 +332,3 @@ describe('conductPairing — full protocol', () => {
     expect(result.status).toBe('approved');
   });
 });
-
