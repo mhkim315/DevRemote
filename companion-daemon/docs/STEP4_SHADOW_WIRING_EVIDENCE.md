@@ -2,6 +2,8 @@
 
 Implementation commit: `5a6a600c5de774184cd6f2ec5ed666a0a00af6e6`
 
+STEP4 R2 implementation commit: `6d1a72d35c7d2f3f0680b7602e82c0eae1c3d82e`
+
 ## Scope and authority boundary
 
 STEP4 adds only an explicitly constructed, default-off `internal/timeline/writer`
@@ -39,6 +41,19 @@ there is no terminal or mobile import.
   future producer must submit after its primary commit and without an authority
   lock; Timeline has no authority callback.
 
+## R2 blocker corrections
+
+- `NewAppWithDeps` now names its return values and installs a rollback defer
+  before fallible construction continues. If a later constructor step fails,
+  the already-open optional Timeline writer is closed immediately. Its close
+  error is logged only, preserving fail-open semantics. The regression forces
+  an invalid listen address after a real writer opens, then proves a valid
+  subsequent append is dropped because the descriptor was closed.
+- `Writer.Append` now requires `Write` to return the complete framed JSONL
+  record length. A short write with nil error is a dropped failure and does not
+  call `Sync` or increment `Appended`; a truncated record can therefore never
+  be reported as successful evidence.
+
 ## Tests
 
 `internal/timeline/writer/writer_test.go` covers:
@@ -50,6 +65,8 @@ there is no terminal or mobile import.
 - concurrent append under `-race`;
 - explicit no-new-goroutine assertion;
 - rejection of implicit/relative output paths.
+- short-write-with-nil-error rejection before `Sync`.
+- failed App construction closes the already-open Timeline writer.
 
 `cmd/devremote/step4_shadow_wiring_test.go` proves that the flag is default-off
 and that a configured but unavailable Timeline writer still permits full daemon
