@@ -4,13 +4,13 @@
 **Date**: 2026-07-22  
 **Device**: Android Emulator (Pixel 9, API 37) + SM-S926N (physical)
 
-## PB_DEVICE_CANDIDATE_SHA: `699782ebd`
+## PB_DEVICE_CANDIDATE_SHA: `ab1884662`
 
 | Artifact | SHA-256 |
 |----------|--------|
-| Daemon | `6fccc90b40fe8d477af74985d63cd921701f9a14f2dde9ff66f0a43d53c86f3d` |
-| APK (release) | `dc7344779beb482e64dceecfd5b507bf68cf210411a6e9358fe0152343b4670b` |
-| vcs.revision | `699782ebdec5afd404be377727834d9064a1eeda` |
+| Daemon | `1ace37be59515a84b3dc7518d45140d39ca1ff840291886ef842c944e6b4f93a` |
+| APK (release) | `29788d9000e91c0d9acd0757c1f88b7b00e1fafc54a5d191ce459587a58c2729` |
+| vcs.revision | `ab18846622327334300de8436aff600db5c08e17` |
 | vcs.modified | `false` |
 | Release cleartext | absent (debug-only via debugOptimized overlay) |
 | Release NO_LOGIN | `process.env.EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST` not set → `NO_LOGIN=false` |
@@ -19,7 +19,7 @@
 
 | SHA | Description |
 |-----|-------------|
-| `699782ebd` | **PB DEVICE CANDIDATE** — daemon vcs.modified=false, release cleartext removed |
+| `ab1884662` | **PB DEVICE CANDIDATE** — daemon vcs.modified=false, release cleartext removed |
 |-----|-------------|
 | `554e1c67a` | `canonicalLocalTestOrigin()` — localhost HTTP for emulator |
 | `647fa031d` | Absolute daemon URL for terminal WebView |
@@ -111,7 +111,7 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 |-----|------|---------|
 | `b1caf9795` | 2026-07-22 | LOCAL-E2E-R1: evidence corrections, testIDs, daemon test |
 | `5c50f9199` | 2026-07-22 | LOCAL-E2E-R2: Detox scaffold, 10 testIDs |
-| `699782ebd` | 2026-07-22 | PB candidate freeze — clean daemon identity, release cleartext fix |
+| `ab1884662` | 2026-07-22 | PB candidate freeze — clean daemon identity, release cleartext fix |
 | `c0b030b2a` | 2026-07-22 | R2 review fixes — evidence corrections, whitespace, Detox SCAFFOLD status |
 
 ### Detox Status: SCAFFOLD
