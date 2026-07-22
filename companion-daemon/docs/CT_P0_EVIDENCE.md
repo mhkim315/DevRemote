@@ -1,16 +1,15 @@
-# CT-P0 Evidence — Canonical Timeline Source Freeze
+# CT-P0 Evidence — Canonical Timeline Source Freeze (R2)
 
-**IMPL SHA:** `9688cc687`
+**IMPL SHA:** `7b7f23d0a`
 **EVID SHA:** (this commit)
 **Freeze baseline:** `ab1884662`
-**Current HEAD:** `316008304`
 **Date:** 2026-07-22
 
 ## 1. Source Tree Verification
 
 ```
 $ git rev-parse HEAD
-316008304b74331fed0eb99f70a6768c7e9ea836
+7b7f23d0a...
 
 $ git status --porcelain --untracked-files=all
 (0 files — clean worktree)
@@ -24,10 +23,11 @@ ANCESTOR OK
 ```
 $ git diff --name-status ab1884662..HEAD
 A    companion-daemon/docs/ARTIFACT_ID1_EVIDENCE.md
+M    companion-daemon/docs/CT_P0_EVIDENCE.md
 M    companion-daemon/docs/PB_7_EVIDENCE.md
 A    docs/CANONICAL_TIMELINE_CT_P0_SOURCE_FREEZE.md
 A    docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md
-A    docs/COORDINATOR_HANDOFF.md
+M    docs/COORDINATOR_HANDOFF.md (was A, now M)
 M    docs/LOCAL_E2E_EVIDENCE.md
 M    docs/PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md
 M    docs/PB_EXECUTION_PLAN.md
@@ -54,116 +54,132 @@ Expected: 934febb17b... ✅ MATCH
 
 ```
 $ cd companion-daemon
-$ go build ./...                 PASS
-$ go vet ./...                   PASS
-$ gofmt -l .                     CLEAN (0 files)
-$ git diff --check               CLEAN
-$ go test -race ./... -count=1   ALL PASS
+$ go build ./...                          PASS
+$ go vet ./...                            PASS
+$ gofmt -l .                              CLEAN (0 files)
+$ git diff --check                        CLEAN
+$ go test -race ./... -count=1            ALL PASS
 
-ok  cmd/devremote                33.6s
-ok  internal/agent                1.5s
-ok  internal/agent/...claude     2.9s
-ok  internal/agent/...codex      6.2s
-ok  internal/agent/contract      3.5s
-ok  internal/agent/doctor       101.3s
-ok  internal/devicetrust          6.4s
-ok  internal/sessionid            2.5s
-ok  internal/term                20.9s
-ok  internal/transcript           4.7s
-ok  internal/watcher              4.0s
-?   cmd/signald                  [no test files]
-?   internal/models              [no test files]
-?   scripts                      [no test files]
+ok  cmd/devremote                 33.6s
+ok  internal/agent                 1.5s
+ok  internal/agent/...claude      2.9s
+ok  internal/agent/...codex       6.2s
+ok  internal/agent/contract       3.5s
+ok  internal/agent/doctor        101.3s
+ok  internal/devicetrust           6.4s
+ok  internal/sessionid             2.5s
+ok  internal/term                 20.9s
+ok  internal/transcript            4.7s
+ok  internal/watcher               4.0s
+?   cmd/signald                   [no test files]
+?   internal/models               [no test files]
+?   scripts                       [no test files]
 
 $ cd ../mobile
-$ npx tsc --noEmit               PASS (clean)
+$ npx tsc --noEmit                      PASS (clean)
+$ npx jest --runInBand                  PASS (35 suites, 537/537 tests)
 ```
 
-## 5. Static Scans
+## 5. Static Scans (all use grep -E, control-tested)
 
-### Timeline
-
+Control test:
 ```
-$ grep -rn "timeline" companion-daemon/cmd companion-daemon/internal/term mobile/src \
-  | grep -v "_test.go|.md|testdata"
-(empty — ZERO runtime references)
-```
-
-### Legacy Symbols
-
-```
-$ grep -rn "ResolveAgentLog|NewActivityBuffer|NewMemoryEventStore|manual_link" companion-daemon \
-  --include="*.go" | grep -v "_test.go|testdata"
-
-companion-daemon/internal/agent/models.go:93:
-  Source AgentEventSource — "manual_link" enum value only (not a production caller)
-
-companion-daemon/internal/agent/contract/validate.go:173:
-  SourceScreen fallback — contract test default, not a production path
-
-companion-daemon/internal/agent/contract/contract.go:68:
-  Documentation comment — legacy source classification reference
-
-Classification: SYMBOLS EXIST AS ENUM/CONTRACT DEFINITIONS ONLY.
-Zero production callers from term/ or cmd/.
+$ printf 'manual_link\ntest\n' | grep -E 'manual_link'
+manual_link
+(pattern matches — scan functional)
 ```
 
 ### Forbidden Symbols
 
 ```
-$ grep -rn "mux\.Registry|mux\.Adapter[^a-zA-Z]|mux\.Session[^I]" companion-daemon --include="*.go" | grep -v "_test.go"
+$ grep -rnE "mux\.Registry|mux\.Adapter[^a-zA-Z]|mux\.Session[^I]" companion-daemon \
+  --include="*.go" | grep -v "_test.go"
+(empty — ZERO production hits)
+
+$ grep -rnE "tmux|Tmux|TMUX|cmux|Cmux|CMUX|localpty|LocalPTY" companion-daemon \
+  --include="*.go" | grep -v "_test.go"
 (empty)
 
-$ grep -rn "tmux|Tmux|TMUX|cmux|Cmux|CMUX|localpty|LocalPTY" companion-daemon --include="*.go" | grep -v "_test.go"
+$ grep -rnE "GetRecorder|EnsureRecorder|RegistryFromContext|WithRegistry" companion-daemon \
+  --include="*.go" | grep -v "_test.go"
 (empty)
 
-$ grep -rn "GetRecorder|EnsureRecorder|RegistryFromContext|WithRegistry" companion-daemon --include="*.go" | grep -v "_test.go"
+$ grep -rnE "v1Bridge|NewV1FromOld|v1Handle" companion-daemon \
+  --include="*.go" | grep -v "_test.go"
 (empty)
 
-$ grep -rn "v1Bridge|NewV1FromOld|v1Handle" companion-daemon --include="*.go" | grep -v "_test.go"
+$ grep -rnE "snapshotEndMarker|deltaMarker|drainSnapshot" companion-daemon \
+  --include="*.go" | grep -v "_test.go"
 (empty)
+```
 
-$ grep -rn "snapshotEndMarker|deltaMarker|drainSnapshot" companion-daemon --include="*.go" | grep -v "_test.go"
-(empty)
+### Legacy Symbols
+
+```
+$ grep -rnE "ResolveAgentLog|NewActivityBuffer|NewMemoryEventStore|manual_link" \
+  companion-daemon --include="*.go" | grep -v "_test.go\|testdata"
+
+internal/agent/models.go:93:
+  Comment-only in JSON tag description — NOT a constant.
+  SourceManualLink is DELETED (PB.2a).
+
+internal/agent/contract/validate.go:173:
+  SourceScreen assignment with comment "never manual_link by default".
+  Contract test path — not a production caller.
+
+internal/agent/contract/contract.go:68:
+  Documentation comment listing legacy source types.
+
+Classification: ZERO production callers. All hits are comments/documentation.
+```
+
+### Timeline
+
+```
+$ grep -rnE "timeline" companion-daemon/cmd companion-daemon/internal/term mobile/src \
+  | grep -v "_test.go\|\.md\|testdata"
+(empty — ZERO runtime references)
 ```
 
 ### Mobile
 
 ```
-$ grep -rn "agentKind.*===" mobile/src/
+$ grep -rnE "agentKind.*===" mobile/src/
 (empty — no vendor branching)
 
-$ grep -rn "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
+$ grep -rnE "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
 (empty — no ID inference)
 ```
 
 ### Security
 
 ```
-Secret scan (excl. testdata/redaction patterns): CLEAN
+$ grep -rnE "sk-[A-Za-z0-9]|ghp_|xox[baprs]-|Bearer [A-Za-z0-9]" companion-daemon/internal/ \
+  companion-daemon/docs/ | grep -v "testdata/\|diagnostic\.go\|approval_test\.go\|auth_test\.go\|fake\|REDACTED\|redact\|doctor"
+(empty — CLEAN)
 ```
 
-## 6. Agent Adapter Import Map
+## 6. Agent Adapter Classification (Corrected)
 
-The ONLY production path from `term/` into `agent/adapters/`:
+Agent adapters (claude v2_1_202, codex v0_144_1) are imported ONLY by
+`telemetry_service.go` for read-only telemetry parsing via `callAcceptedAdapter`.
+They do NOT create sessions, spawn processes, or route input.
 
-```
-internal/term/telemetry_service.go:
-  import claude v2_1_202
-  import codex v0_144_1
-```
+Classification: **FIXTURE-ONLY for production session creation.**
+The actual managed-native producers (`ManagedCodexService`, `ManagedClaudeService`,
+`OwnedPTYRuntime`) spawn processes directly without going through the agent adapter
+layer. The adapters are tested via contract harnesses but no production code path
+uses them for session lifecycle.
 
-Read-only telemetry consumer. No session creation, process spawning, or
-input routing through agent adapters. All managed-native lifecycle is
-owned by `ManagedCodexService` / `ManagedClaudeService` in `term/`.
+## 7. SourceManualLink Status
 
-## 7. Managed-Native Producer Summary
+Verified against `internal/agent/models.go` at freeze baseline:
 
-| Producer | Sessions | Session Prefix | Live |
-|----------|----------|---------------|------|
-| ManagedCodexService | Codex app-server | `codex_app_server:` | ✅ |
-| ManagedClaudeService | Claude headless | `claude_headless:` | ✅ |
-| OwnedPTYRuntime | Shell/custom | `controlled_pty:` | ✅ |
-| Legacy mux adapter | — | — | ❌ DELETED |
-| Legacy localpty | — | — | ❌ DELETED |
-| Legacy tmux/cmux | — | — | ❌ DELETED |
+- `SourceManualLink` is NOT a defined constant.
+- The four existing `AgentEventSource` constants are: `SourceJSONL`, `SourceLogFile`, `SourceScreen`, `SourceProcess`.
+- The string `manual_link` appears only in:
+  - `models.go:93` — JSON tag description comment
+  - `contract/validate.go:173` — comment saying "never manual_link by default"
+  - `contract/contract.go:68` — documentation comment
+
+SourceManualLink was deleted in PB.2a. Zero runtime effect.
