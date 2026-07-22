@@ -75,6 +75,10 @@ type Handoff struct {
 	ApprovalState, EvidenceProvenance, ArtifactHash, ArtifactType, RedactionPolicyVersion string
 	ArtifactBytes                                                                         int64
 	ExpiresAt                                                                             time.Time
+	// STEP6: source bindings tie the handoff to the exact producer session.
+	SourceProvider, SourceRuntimeID, SourceSessionID string
+	SourceGeneration                                 int64
+	DiffDigest                                       string
 }
 
 func (e Envelope) Validate() error {
@@ -91,6 +95,10 @@ func (e Envelope) Validate() error {
 }
 func (h Handoff) Validate() error {
 	if !text(h.Objective) || !text(h.AcceptanceCriteria) || !text(h.Constraints) || h.Workspace.Validate() != nil || !text(h.ApprovalState) || !text(h.EvidenceProvenance) || !text(h.ArtifactHash) || !text(h.ArtifactType) || !text(h.RedactionPolicyVersion) || h.ArtifactBytes < 0 || h.ExpiresAt.IsZero() || !items(h.ChangedFiles) || !items(h.TestCommands) || !items(h.TestResults) || !items(h.UnresolvedFindings) {
+		return ErrInvalid
+	}
+	// STEP6: source bindings are required.
+	if !text(h.SourceProvider) || !text(h.SourceRuntimeID) || !text(h.SourceSessionID) || h.SourceGeneration < 0 || !text(h.DiffDigest) {
 		return ErrInvalid
 	}
 	return nil
@@ -120,10 +128,17 @@ func knownType(t MessageType) bool {
 	return false
 }
 
+// CapabilityChecker verifies that a source endpoint holds a required capability.
+// Implementations are provider-specific; the Broker only calls HasCapability.
+type CapabilityChecker interface {
+	HasCapability(source Endpoint, capability string) bool
+}
+
 type Broker struct {
 	mu       sync.Mutex
 	now      func() time.Time
 	messages map[string]Envelope
+	auth     CapabilityChecker // nil means authorization is not enforced
 }
 
 func NewBroker(now func() time.Time) *Broker {
@@ -132,12 +147,28 @@ func NewBroker(now func() time.Time) *Broker {
 	}
 	return &Broker{now: now, messages: map[string]Envelope{}}
 }
+
+// SetCapabilityChecker sets the authorization hook. If nil, capability
+// checks are skipped (all envelopes accepted).
+func (b *Broker) SetCapabilityChecker(auth CapabilityChecker) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.auth = auth
+}
+
 func (b *Broker) Enqueue(e Envelope) error {
 	if e.Validate() != nil {
 		return ErrInvalid
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// STEP6: if an auth hook is configured, the source must hold the
+	// required target capability.
+	if b.auth != nil && e.RequiredTargetCapability != "" {
+		if !b.auth.HasCapability(e.Source, e.RequiredTargetCapability) {
+			return ErrInvalid
+		}
+	}
 	if _, ok := b.messages[e.ID]; ok {
 		return ErrExists
 	}
