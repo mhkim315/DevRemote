@@ -127,11 +127,12 @@ $ unzip -p pokit-app-release.apk assets/index.android.bundle | LC_ALL=C grep -ao
 1
 ```
 
-dev-token: 1 occurrence — the string `dev-token` appears once in the bundle
-as a legitimate API parameter name in auth code (`?token=dev-token` for the
-insecure-local-only dev path). EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST was
-unset at build time — no login bypass is active. The 1 occurrence is expected
-in production builds.
+dev-token: 1 occurrence — the string `dev-token` is the explicit local-dev
+bypass credential VALUE (the query parameter name is `token`, the value
+`dev-token` authenticates in `--insecure-local-only` mode). Retained in the
+bundle as a string literal in auth code but INACTIVE at runtime —
+EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST was unset, so the insecure-local-only
+mode is never enabled in this production build.
 
 ### APK Signature
 
@@ -172,7 +173,15 @@ All artifacts preserved at `/tmp/pokit-pb-device-artifacts/` (readable by curren
 └── pokit-app-release.apk           (160,875,703 bytes)
 ```
 
-Permissions: all files owned by mhk:staff. Daemon: 0755 (executable). Text assets: 0644.
+Permissions (per-file):
+| File | Owner:Group | Mode |
+|------|-------------|------|
+| `pokit-daemon` | mhk:staff | 0755 (executable) |
+| `pokit-app-release.apk` | mhk:wheel | 0644 |
+| `PB_DEVICE_CANDIDATE_SHA.txt` | mhk:wheel | 0644 |
+| `DAEMON_SHA256.txt` | mhk:wheel | 0644 |
+| `APK_EXTRACTED_CANDIDATE.txt` | mhk:wheel | 0644 |
+| `APK_EXTRACTED_DAEMON.txt` | mhk:wheel | 0644 |
 
 ## 6. Provenance Chain
 
