@@ -20,23 +20,25 @@ import (
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
+	"devremote/companion-daemon/internal/validation"
 	"devremote/companion-daemon/internal/watcher"
 	"devremote/companion-daemon/internal/workspace"
 )
 
 // Config holds immutable daemon configuration parsed from CLI flags.
 type Config struct {
-	OwnerUUID            string
-	SupabaseProjectRef   string
-	ListenAddr           string // loopback addr for insecure mode (e.g. 127.0.0.1:0); ignored when InsecureLocalOnly=false
-	InsecureLocalOnly    bool
-	EnableAgentDetection bool   // Phase A5: default-off agent detection bridge
-	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
-	EnableManagedClaude  bool   // C1D: default-off native managed Claude runtime
-	ClaudeDigest         string // C1D: pre-verified SHA-256 of the pinned Claude binary
-	EnableTimelineShadow bool   // STEP4: default-off, fail-open Timeline shadow sink
-	TimelineShadowPath   string // optional absolute shadow-file override
-	EnableWorkspaceLease bool   // STEP5: default-off cooperative workspace contract
+	OwnerUUID              string
+	SupabaseProjectRef     string
+	ListenAddr             string // loopback addr for insecure mode (e.g. 127.0.0.1:0); ignored when InsecureLocalOnly=false
+	InsecureLocalOnly      bool
+	EnableAgentDetection   bool   // Phase A5: default-off agent detection bridge
+	EnableManagedCodex     bool   // SP0: default-off native managed Codex runtime
+	EnableManagedClaude    bool   // C1D: default-off native managed Claude runtime
+	ClaudeDigest           string // C1D: pre-verified SHA-256 of the pinned Claude binary
+	EnableTimelineShadow   bool   // STEP4: default-off, fail-open Timeline shadow sink
+	TimelineShadowPath     string // optional absolute shadow-file override
+	EnableWorkspaceLease   bool   // STEP5: default-off cooperative workspace contract
+	EnableFrozenValidation bool   // STEP7: default-off frozen validation contract
 }
 
 // insecureLocalListenAddr returns the only listener address permitted for the
@@ -146,9 +148,10 @@ type App struct {
 	handlers           *term.Handlers                         // set after construction for late wiring
 	ipc                ipcResource
 	watcher            watcherResource
-	tunnel             tunnelResource     // nil in insecure mode
-	timelineWriter     *writer.Writer     // nil unless the default-off shadow flag is enabled
-	workspaceLeases    *workspace.Manager // nil unless the default-off workspace flag is enabled
+	tunnel             tunnelResource             // nil in insecure mode
+	timelineWriter     *writer.Writer             // nil unless the default-off shadow flag is enabled
+	workspaceLeases    *workspace.Manager         // nil unless the default-off workspace flag is enabled
+	validationCheck    *validation.StalenessCheck // nil unless the default-off validation flag is enabled
 }
 
 // NewApp creates the App with production defaults.
@@ -165,6 +168,7 @@ func NewApp(cfg Config) (*App, error) {
 func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	var timelineWriter *writer.Writer
 	var workspaceLeases *workspace.Manager
+	var validationCheck *validation.StalenessCheck
 	// Timeline is constructed before several independent, fallible App
 	// components. If any of those components rejects construction, release the
 	// optional writer immediately rather than leaking its file descriptor.
@@ -222,6 +226,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// default-off flag; wiring live workspace producers remains separate work.
 	if cfg.EnableWorkspaceLease {
 		workspaceLeases = workspace.NewManager(nil)
+	}
+	if cfg.EnableFrozenValidation {
+		validationCheck = &validation.StalenessCheck{}
 	}
 	// PA2c: the three managed lifecycle owners. OwnedPTYRuntime owns
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
@@ -560,6 +567,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		ipcPath:         "/tmp/pokit.sock",
 		timelineWriter:  timelineWriter,
 		workspaceLeases: workspaceLeases,
+		validationCheck: validationCheck,
 	}, nil
 }
 

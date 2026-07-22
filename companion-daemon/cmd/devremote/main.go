@@ -68,6 +68,7 @@ func main() {
 	enableTimelineShadow := flag.Bool("enable-timeline-shadow", false, "Enable fail-open Operational Canonical Timeline shadow writer (STEP4, experimental)")
 	timelineShadowPath := flag.String("timeline-shadow-path", "", "Absolute path for Timeline shadow writer (optional)")
 	enableWorkspaceLease := flag.Bool("enable-workspace-lease", false, "Enable cooperative workspace lease contract (STEP5, experimental)")
+	enableFrozenValidation := flag.Bool("enable-frozen-validation", false, "Enable frozen clean-snapshot validation contract (STEP7, experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -76,17 +77,18 @@ func main() {
 	}
 
 	runDaemon(Config{
-		OwnerUUID:            *ownerUUID,
-		SupabaseProjectRef:   *supabaseRef,
-		ListenAddr:           *listenAddr,
-		InsecureLocalOnly:    *insecureLocalOnly,
-		EnableAgentDetection: *enableAgentDetection,
-		EnableManagedCodex:   *enableManagedCodex,
-		EnableManagedClaude:  *enableManagedClaude,
-		ClaudeDigest:         *claudeDigest,
-		EnableTimelineShadow: *enableTimelineShadow,
-		TimelineShadowPath:   *timelineShadowPath,
-		EnableWorkspaceLease: *enableWorkspaceLease,
+		OwnerUUID:              *ownerUUID,
+		SupabaseProjectRef:     *supabaseRef,
+		ListenAddr:             *listenAddr,
+		InsecureLocalOnly:      *insecureLocalOnly,
+		EnableAgentDetection:   *enableAgentDetection,
+		EnableManagedCodex:     *enableManagedCodex,
+		EnableManagedClaude:    *enableManagedClaude,
+		ClaudeDigest:           *claudeDigest,
+		EnableTimelineShadow:   *enableTimelineShadow,
+		TimelineShadowPath:     *timelineShadowPath,
+		EnableWorkspaceLease:   *enableWorkspaceLease,
+		EnableFrozenValidation: *enableFrozenValidation,
 	})
 }
 
