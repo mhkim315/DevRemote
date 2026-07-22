@@ -8,6 +8,7 @@ import DashboardScreen from '../screens/dashboard/DashboardScreen';
 import FeedScreen from '../screens/FeedScreen';
 import SnippetsScreen from '../screens/SnippetsScreen';
 import GlobalFeedScreen from '../screens/GlobalFeedScreen';
+import CockpitScreen from '../screens/CockpitScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -104,6 +105,7 @@ export function RootTabs({ token, authCtx }: { token?: string; authCtx?: any }) 
         >
           {() => <GlobalFeedScreen token={token} />}
         </Tab.Screen>
+        <Tab.Screen name="Cockpit" component={CockpitScreen} options={{ title: 'Cockpit' }} />
       </Tab.Navigator>
     </NavigationContainer>
   );
