@@ -2,6 +2,13 @@
 
 Implementation commit: `e1cbe7211e57f9f986306153afb8c247a22a5aed`
 
+STEP7 R2 implementation commit: `a753e126c81ad4fc2d52fb39c7ae7ed419290e8c`
+
+R2 removes caller-controlled stale authorization. `CanAuthorize` now requires
+the current binding and recomputes staleness at authorization time, so omitted
+`Apply` and post-check drift fail closed. Invalid bindings are stale, and every
+finding binding must exactly equal its ValidationResult binding.
+
 `internal/validation` binds results/findings to clean committed snapshot
 identity (repository, base/target SHA, tree/index/untracked/diff digests,
 snapshot, lease epoch), validator provider/model/runtime/session/generation,
