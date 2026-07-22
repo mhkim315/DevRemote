@@ -288,10 +288,28 @@ describe('conductPairing — full protocol', () => {
     expect(result.status).toBe('network_error');
   });
 
-  // result poll loops until expiry; redirect rejection for POST endpoints
-  // (phase1/confirm) is covered above. The resultURL fetch also carries
-  // redirect:'error' in production but the polling loop's 2s retry delay
-  // makes a timeout-based redirect test impractical at unit scale.
+  // ── PB-DG-R4: result poll redirect is TERMINAL ──
+
+  it('result poll redirect poisons the loop — later approval is impossible', async () => {
+    mockPhase1(); mockPhase2();
+    let calls = 0;
+    mockFetch.mockImplementation(async (_url: string, init?: any) => {
+      calls++;
+      // Verify redirect:'error' is passed on every call
+      expect(init?.redirect).toBe('error');
+      if (calls <= 2) {
+        // First two calls: simulate redirect rejection
+        throw new TypeError('fetch failed: redirect is not allowed');
+      }
+      // Subsequent calls: offer approval — must be REJECTED
+      return { ok: true, status: 200, json: async () => ({ status: 'approved', deviceId: DEV_ID, fingerprint: DEV_ID, role: 'owner' }) };
+    });
+    const qr = makeQR({ expiresAt: new Date(Date.now() + 20000).toISOString() });
+    const result = await conductPairing(qr, fakeDeviceKey as any);
+    // Redirect-poisoned: must NOT be approved, even though later polls returned approval.
+    expect(result.status).not.toBe('approved');
+    expect(result.status).toBe('pairing_expired');
+  }, 25000);
 
   it('phase1 POST passes redirect:error in fetch options', async () => {
     mockFetch.mockImplementationOnce(async (_url: string, init?: any) => {
@@ -314,3 +332,4 @@ describe('conductPairing — full protocol', () => {
     expect(result.status).toBe('approved');
   });
 });
+

@@ -139,9 +139,12 @@ export async function conductPairing(
     return { status: 'host_proof_invalid', errorDetail: 'host proof missing' };
   }
 
-  // 5. Poll for operator approval.
+  // 5. Poll for operator approval. Redirect on the result path is TERMINAL:
+  //    a detected redirect poisons the poll loop — it may continue running
+  //    until expiry but must never return 'approved'.
   const resultURL = siblingURL(qr.endpoint, '/pair/result') + '?session=' + encodeURIComponent(sessionId);
   const deadline = qr.expiresAt.getTime();
+  let redirectDetected = false;
   for (;;) {
     if (Date.now() > deadline) return { status: 'pairing_expired' };
     let poll: any;
@@ -149,7 +152,14 @@ export async function conductPairing(
       const res = await fetch(resultURL, { redirect: 'error' }); // Pairing V1: no HTTP redirects
       if (!res.ok) { await delay(2000); continue; }
       poll = await res.json();
-    } catch { await delay(2000); continue; }
+    } catch {
+      // fetch with redirect:'error' throws TypeError on redirect.
+      // Mark the session as poison — no subsequent response may produce approval.
+      redirectDetected = true;
+      await delay(2000); continue;
+    }
+    // Redirect-poisoned polls can never yield approval.
+    if (redirectDetected && poll?.status === 'approved') continue;
     switch (poll.status) {
       case 'approved': {
         if (poll.deviceId !== identity.deviceId) {
