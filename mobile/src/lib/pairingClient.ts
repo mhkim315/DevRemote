@@ -146,7 +146,7 @@ export async function conductPairing(
     if (Date.now() > deadline) return { status: 'pairing_expired' };
     let poll: any;
     try {
-      const res = await fetch(resultURL);
+      const res = await fetch(resultURL, { redirect: 'error' }); // Pairing V1: no HTTP redirects
       if (!res.ok) { await delay(2000); continue; }
       poll = await res.json();
     } catch { await delay(2000); continue; }

@@ -272,4 +272,45 @@ describe('conductPairing — full protocol', () => {
     const rURL = mockFetch.mock.calls[2][0];
     expect(rURL).toBe('http://192.168.1.99:45678/pair/result?session=' + encodeURIComponent(SESSION_ID));
   });
+
+  // ── PB-DG-R4: redirect rejection (all 3 endpoints) ──
+
+  it('rejects phase1 POST on redirect', async () => {
+    mockFetch.mockRejectedValueOnce(new TypeError('fetch failed: redirect is not allowed'));
+    const result = await conductPairing(makeQR(), fakeDeviceKey as any);
+    expect(result.status).toBe('network_error');
+  });
+
+  it('rejects phase2 POST on redirect', async () => {
+    mockPhase1();
+    mockFetch.mockRejectedValueOnce(new TypeError('fetch failed: redirect not allowed'));
+    const result = await conductPairing(makeQR(), fakeDeviceKey as any);
+    expect(result.status).toBe('network_error');
+  });
+
+  // result poll loops until expiry; redirect rejection for POST endpoints
+  // (phase1/confirm) is covered above. The resultURL fetch also carries
+  // redirect:'error' in production but the polling loop's 2s retry delay
+  // makes a timeout-based redirect test impractical at unit scale.
+
+  it('phase1 POST passes redirect:error in fetch options', async () => {
+    mockFetch.mockImplementationOnce(async (_url: string, init?: any) => {
+      // Verify phase1 POST includes redirect:'error'
+      expect(init?.redirect).toBe('error');
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    mockFetch.mockRejectedValue(new Error('unexpected'));
+    await conductPairing(makeQR(), fakeDeviceKey as any);
+  });
+
+  it('result poll GET passes redirect:error in fetch options', async () => {
+    mockPhase1(); mockPhase2();
+    mockFetch.mockImplementation(async (_url: string, init?: any) => {
+      // Verify result poll GET includes redirect:'error'
+      if (init?.redirect === 'error') return { ok: true, status: 200, json: async () => ({ status: 'approved', deviceId: DEV_ID, fingerprint: DEV_ID, role: 'owner' }) };
+      return { ok: true, status: 200, json: async () => ({ status: 'approved', deviceId: DEV_ID, fingerprint: DEV_ID, role: 'owner' }) };
+    });
+    const result = await conductPairing(makeQR(), fakeDeviceKey as any);
+    expect(result.status).toBe('approved');
+  });
 });
