@@ -4,9 +4,22 @@
 **Date**: 2026-07-22  
 **Device**: Android Emulator (Pixel 9, API 37) + SM-S926N (physical)
 
-## Commits
+## PB_DEVICE_CANDIDATE_SHA: `301fad09e`
+
+| Artifact | SHA-256 |
+|----------|--------|
+| Daemon | `57b97ac83a730282bfadb40725df716ce96da53ca6cf7204a3879ccdc5079dc7` |
+| APK (release) | `a8522374fc22a573d2fa847889cae869ca7641ffdae9912e9a1d3deb492dd2e1` |
+| vcs.revision | `301fad09ee64658ebe8d97f9cef97c8dcbf8ad25` |
+| vcs.modified | `false` |
+| Release cleartext | absent (debug-only via debugOptimized overlay) |
+| Release NO_LOGIN | `process.env.EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST` not set → `NO_LOGIN=false` |
+
+## PB Production Candidate
 
 | SHA | Description |
+|-----|-------------|
+| `301fad09e` | **PB DEVICE CANDIDATE** — daemon vcs.modified=false, release cleartext removed |
 |-----|-------------|
 | `554e1c67a` | `canonicalLocalTestOrigin()` — localhost HTTP for emulator |
 | `647fa031d` | Absolute daemon URL for terminal WebView |
@@ -98,6 +111,7 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 |-----|------|---------|
 | `b1caf9795` | 2026-07-22 | LOCAL-E2E-R1: evidence corrections, testIDs, daemon test |
 | `5c50f9199` | 2026-07-22 | LOCAL-E2E-R2: Detox scaffold, 10 testIDs |
+| `301fad09e` | 2026-07-22 | PB candidate freeze — clean daemon identity, release cleartext fix |
 | `c0b030b2a` | 2026-07-22 | R2 review fixes — evidence corrections, whitespace, Detox SCAFFOLD status |
 
 ### Detox Status: SCAFFOLD
