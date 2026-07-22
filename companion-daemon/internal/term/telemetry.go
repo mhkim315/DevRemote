@@ -92,7 +92,7 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 	for i := range snapshot {
 		if e, ok := catalog.Get(snapshot[i].ID); ok {
 			snapshot[i].LifecycleState = string(e.State)
-			snapshot[i].AdapterCapabilities = []string{"liveTerminal", "live_stream", "history", "managedLifecycle"}
+			snapshot[i].AdapterCapabilities = []string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input"}
 		}
 	}
 	// (2) all controlled-PTY rows are owned by the runtime, including live
@@ -107,7 +107,7 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 			LifecycleState:      string(e.State),
 			Adapter:             e.Adapter,
 			Capabilities:        []string{"live_stream", "history"},
-			AdapterCapabilities: []string{"liveTerminal", "live_stream", "history", "managedLifecycle"},
+			AdapterCapabilities: []string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input"},
 		})
 	}
 	sortTelemetry(snapshot)

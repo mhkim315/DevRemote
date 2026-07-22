@@ -304,7 +304,7 @@ func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps
 		// with a live WebSocket terminal. Must advertise liveTerminal so
 		// the mobile FeedScreen shows the Terminal tab.
 		return []string{"live_stream", "history"},
-			[]string{"liveTerminal", "live_stream", "history", "managedLifecycle"}
+			[]string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input"}
 	default:
 		return nil, nil
 	}
