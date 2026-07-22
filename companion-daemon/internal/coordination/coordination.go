@@ -162,12 +162,13 @@ func (b *Broker) Enqueue(e Envelope) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// STEP6: if an auth hook is configured, the source must hold the
-	// required target capability.
-	if b.auth != nil && e.RequiredTargetCapability != "" {
-		if !b.auth.HasCapability(e.Source, e.RequiredTargetCapability) {
-			return ErrInvalid
-		}
+	// STEP6: authorization is fail-closed. A nil CapabilityChecker rejects
+	// all envelopes — the Broker must be explicitly configured before use.
+	if b.auth == nil {
+		return ErrInvalid
+	}
+	if e.RequiredTargetCapability != "" && !b.auth.HasCapability(e.Target, e.RequiredTargetCapability) {
+		return ErrInvalid
 	}
 	if _, ok := b.messages[e.ID]; ok {
 		return ErrExists

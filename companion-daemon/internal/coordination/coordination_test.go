@@ -14,6 +14,7 @@ func envelope(now time.Time) Envelope {
 func TestBrokerClosedTransitionsAndNoReplay(t *testing.T) {
 	now := time.Unix(1, 0)
 	b := NewBroker(func() time.Time { return now })
+	b.SetCapabilityChecker(&testAuth{allow: map[string]bool{"s2:receive": true}})
 	e := envelope(now)
 	if err := b.Enqueue(e); err != nil {
 		t.Fatal(err)
@@ -31,6 +32,7 @@ func TestBrokerClosedTransitionsAndNoReplay(t *testing.T) {
 func TestBrokerExpiryAndSecretRejection(t *testing.T) {
 	now := time.Unix(1, 0)
 	b := NewBroker(func() time.Time { return now })
+	b.SetCapabilityChecker(&testAuth{allow: map[string]bool{"s2:receive": true}})
 	e := envelope(now)
 	if err := b.Enqueue(e); err != nil {
 		t.Fatal(err)
@@ -53,7 +55,7 @@ func validHandoff(t *testing.T) Handoff {
 	t.Helper()
 	return Handoff{
 		Objective: "obj", AcceptanceCriteria: "acc", Constraints: "con",
-		Workspace:              workspace.Identity{RepositoryID: "repo", Mode: workspace.ModeSharedSequential, BaseSHA: "base", CurrentSHA: "cur", TreeHash: "tree", SnapshotID: "snap"},
+		Workspace:              workspace.Identity{RepositoryID: "repo", Mode: workspace.ModeSharedSequential, BaseSHA: "base", CurrentSHA: "cur", TreeHash: "tree", SnapshotID: "snap", IsolationProfile: workspace.IsolationRepoOnly},
 		ChangedFiles:           []string{"f1"},
 		TestCommands:           []string{"t1"},
 		TestResults:            []string{"ok"},
@@ -191,8 +193,9 @@ func (a *testAuth) HasCapability(src Endpoint, cap string) bool {
 func TestBroker_AuthorizationEnforced(t *testing.T) {
 	now := time.Unix(1, 0)
 	b := NewBroker(func() time.Time { return now })
+	// Target endpoint: {"claude", "r2", "s2", 2}. Check target has capability.
 	auth := &testAuth{allow: map[string]bool{
-		"s1:receive": true,
+		"s2:receive": true,
 		"s3:receive": false,
 	}}
 	b.SetCapabilityChecker(auth)
@@ -204,29 +207,28 @@ func TestBroker_AuthorizationEnforced(t *testing.T) {
 		t.Fatalf("authorized source rejected: %v", err)
 	}
 
-	// Source lacks capability → rejected.
+	// Target lacks capability → rejected.
 	e2 := envelope(now)
 	e2.ID = "auth-fail"
-	e2.Source = Endpoint{"codex", "r3", "s3", 3}
+	e2.Target = Endpoint{"claude", "r3", "s3", 3}
 	if err := b.Enqueue(e2); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("unauthorized source accepted: %v", err)
+		t.Fatalf("unauthorized target accepted: %v", err)
 	}
 
-	// Source not in allow map → rejected.
+	// Target not in allow map → rejected.
 	e3 := envelope(now)
 	e3.ID = "auth-missing"
-	e3.Source = Endpoint{"codex", "r4", "s4", 4}
+	e3.Target = Endpoint{"claude", "r4", "s4", 4}
 	if err := b.Enqueue(e3); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("unknown source accepted: %v", err)
+		t.Fatalf("unknown target accepted: %v", err)
 	}
 
-	// Broker without auth hook → all accepted.
+	// Broker without auth hook → fail-closed (nil CapabilityChecker rejects all).
 	b2 := NewBroker(func() time.Time { return now })
 	e4 := envelope(now)
 	e4.ID = "no-auth"
-	e4.Source = Endpoint{"codex", "r5", "s5", 5}
-	if err := b2.Enqueue(e4); err != nil {
-		t.Fatalf("no-auth broker rejected: %v", err)
+	if err := b2.Enqueue(e4); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("no-auth broker accepted (want fail-closed): %v", err)
 	}
 }
 
