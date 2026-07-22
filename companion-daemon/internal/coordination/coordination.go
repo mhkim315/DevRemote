@@ -128,17 +128,17 @@ func knownType(t MessageType) bool {
 	return false
 }
 
-// CapabilityChecker verifies that a source endpoint holds a required capability.
+// CapabilityChecker verifies that a target endpoint holds a required capability.
 // Implementations are provider-specific; the Broker only calls HasCapability.
 type CapabilityChecker interface {
-	HasCapability(source Endpoint, capability string) bool
+	HasCapability(target Endpoint, capability string) bool
 }
 
 type Broker struct {
 	mu       sync.Mutex
 	now      func() time.Time
 	messages map[string]Envelope
-	auth     CapabilityChecker // nil means authorization is not enforced
+	auth     CapabilityChecker // nil rejects all envelopes (fail-closed); must be explicitly configured
 }
 
 func NewBroker(now func() time.Time) *Broker {
@@ -148,8 +148,8 @@ func NewBroker(now func() time.Time) *Broker {
 	return &Broker{now: now, messages: map[string]Envelope{}}
 }
 
-// SetCapabilityChecker sets the authorization hook. If nil, capability
-// checks are skipped (all envelopes accepted).
+// SetCapabilityChecker sets the authorization hook. Must be non-nil before
+// any Enqueue call — a nil hook causes Enqueue to reject every envelope.
 func (b *Broker) SetCapabilityChecker(auth CapabilityChecker) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

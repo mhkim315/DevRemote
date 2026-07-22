@@ -19,14 +19,16 @@
 ## Blocker 2 — Authorization Enforcement
 
 `CapabilityChecker` interface + `Broker.SetCapabilityChecker(auth)`. `Enqueue`
-checks `auth.HasCapability(source, RequiredTargetCapability)` before accepting.
+checks `auth.HasCapability(target, RequiredTargetCapability)` before accepting.
+Nil CapabilityChecker → fail-closed (all envelopes rejected, must be explicitly
+configured before use).
 
 | Test | Scenario | Status |
 |------|----------|--------|
-| `TestBroker_AuthorizationEnforced` | Authorized source → accepted | ✅ PASS |
-| | Source lacks capability → ErrInvalid | ✅ PASS |
-| | Source not in allow map → ErrInvalid | ✅ PASS |
-| | Broker without auth hook → all accepted | ✅ PASS |
+| `TestBroker_AuthorizationEnforced` | Authorized target → accepted | ✅ PASS |
+| | Target lacks capability → ErrInvalid | ✅ PASS |
+| | Target not in allow map → ErrInvalid | ✅ PASS |
+| | Broker without auth hook → fail-closed (ErrInvalid) | ✅ PASS |
 
 ## Blocker 3 — Handoff Source Bindings
 
