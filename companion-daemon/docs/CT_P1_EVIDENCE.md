@@ -24,6 +24,14 @@ Correction chain (all commits after the R2 implementation):
   short SHAs to full-length and updated test function names to exact matches.
 - `517e0f66efb231cddbbcc670e0e700e229e820ac` — recorded exact SHAs and the
   metadata test function names.
+- `f1a208cb2ae258d3e54992e529f99bede4a8eb1a` — corrected SHA provenance
+  (amended; removed self-referential label).
+- `bad195d31e93cc18b6a0e80b0886b5863b950744` — added f1a208cb2 evidence
+  HEAD line (non-amend follow-up).
+- `2ce14c40acb4df560b6e1845b6c9887317b8b9e1` — replaced placeholder with
+  exact SHA (single-amend).
+- `70dad54a7d07c6cc307aa2787cac7c3184f19265` — removed self-referential
+  SHA; chain verified via `git log`.
 - The current evidence HEAD completes this chain (verify with `git log -1`).
 
 ## Scope and dependency boundary
