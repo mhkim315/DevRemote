@@ -2,12 +2,9 @@
 
 **Status:** IMPLEMENTATION DOCUMENT
 
+**IMPL SHA:** `9688cc687`
 **Branch:** `feature/phase10-multi-adapter`
-
 **Freeze baseline:** `ab1884662` (PB_DEVICE_CANDIDATE_SHA)
-
-**Current HEAD:** `316008304`
-
 **Date:** 2026-07-22
 
 ## 1. Freeze Verification
@@ -16,28 +13,16 @@
 
 ```
 $ git rev-parse HEAD
-316008304b74331fed0eb99f70a6768c7e9ea836
+9688cc687... (IMPL commit)
 
 $ git status --porcelain --untracked-files=all
-(0 untracked/modified files — clean worktree)
+(0 files — clean worktree)
 
 $ git merge-base --is-ancestor ab1884662 HEAD && echo YES
 YES
 
 $ git diff --name-status ab1884662..HEAD
-A    companion-daemon/docs/ARTIFACT_ID1_EVIDENCE.md
-M    companion-daemon/docs/PB_7_EVIDENCE.md
-A    docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md
-A    docs/COORDINATOR_HANDOFF.md
-M    docs/LOCAL_E2E_EVIDENCE.md
-M    docs/PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md
-M    docs/PB_EXECUTION_PLAN.md
-M    docs/PB_LEGACY_REMOVAL_CONTRACT.md
-M    docs/POST_PA3_AUTHORITATIVE_ROADMAP.md
-M    docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md
-
-ALL files are in docs/ — zero Go, TypeScript, mobile, test, build, config,
-fixture, or runtime changes from the frozen device candidate.
+(all files in docs/ only — zero Go/TS/mobile/test/build/config changes)
 ```
 
 ### 1.2 Frozen Artifact SHA-256
@@ -55,13 +40,28 @@ Expected: 934febb17b... ✅ MATCH
 ## 2. Managed-Native Producer & Consumer Enumeration
 
 After PB legacy removal, all managed terminal sessions flow through exactly
-two native managed producer paths. There is no T1/T2 mapper fallback.
+three native managed producer paths. No T1/T2 mapper fallback exists.
 
-### 2.1 Codex — ManagedCodexService
+### 2.1 Controlled PTY — OwnedPTYRuntime
 
 | Attribute | Value |
 |-----------|-------|
-| **Type** | Native managed (T0 — direct process spawn) |
+| **Type** | Native managed (V1 NativePTYLauncher — direct PTY spawn) |
+| **Entry point** | `OwnedPTYRuntime.Create(ctx, SpawnConfig, profileID, name)` |
+| **Session prefix** | `controlled_pty:` |
+| **Runtime binding** | `OwnedPTYRuntime` catalog entries |
+| **Generation** | Monotonic, owned by `OwnedPTYRuntime` |
+| **Transport** | `TerminalTransport` (generation-gated WriteInput, Resize, Geom) |
+| **Recorder** | Per-session, generation-bound (`StartRecorderUnconditional`) |
+| **Input** | `TerminalTransport.WriteInput` via acknowledged Input-B protocol |
+| **Live/fixture** | LIVE — daemon-owned PTY via `creack/pty` |
+| **Feature flag** | Always enabled (default adapter) |
+
+### 2.2 Codex — ManagedCodexService
+
+| Attribute | Value |
+|-----------|-------|
+| **Type** | Native managed (direct process spawn, no agent adapter) |
 | **Entry point** | `ManagedCodexService.CreateDetached(cwd)` |
 | **Session prefix** | `codex_app_server:` |
 | **Runtime binding** | `ManagedRuntimeCatalog` (register/status) |
@@ -69,14 +69,13 @@ two native managed producer paths. There is no T1/T2 mapper fallback.
 | **Input** | `SubmitPrompt` through IPC or REST |
 | **Live/fixture** | LIVE — production binary at pinned version `0.144.1` |
 | **Feature flag** | `cfg.EnableManagedCodex` |
-| **Production callers** | `app.go:NewAppWithDeps`, `create.go:createFromProfile` |
-| **IPC entry** | `ipc.go:StartIPCServer` → `handleIPCConnection` (profile `codex`) |
+| **Production callers** | `app.go:NewAppWithDeps`, `create.go:createFromProfile`, `ipc.go:handleIPCConnection` |
 
-### 2.2 Claude — ManagedClaudeService
+### 2.3 Claude — ManagedClaudeService
 
 | Attribute | Value |
 |-----------|-------|
-| **Type** | Native managed (T0 — direct process spawn) |
+| **Type** | Native managed (direct process spawn, no agent adapter) |
 | **Entry point** | `ManagedClaudeService.CreateDetached(cwd)` |
 | **Session prefix** | `claude_headless:` |
 | **Runtime binding** | `ManagedRuntimeCatalog` |
@@ -84,78 +83,76 @@ two native managed producer paths. There is no T1/T2 mapper fallback.
 | **Input** | Through approval delivery system |
 | **Live/fixture** | LIVE — production binary at pinned version `2.1.202` |
 | **Feature flag** | `cfg.EnableManagedClaude` |
-| **Production callers** | `app.go:NewAppWithDeps`, `create.go:createFromProfile` |
-| **IPC entry** | `ipc.go:handleIPCConnection` (profile `claude`) |
-
-### 2.3 Controlled PTY — OwnedPTYRuntime
-
-| Attribute | Value |
-|-----------|-------|
-| **Type** | Native managed (T0 — V1 NativePTYLauncher) |
-| **Entry point** | `OwnedPTYRuntime.Create(ctx, SpawnConfig, profileID, name)` |
-| **Session prefix** | `controlled_pty:` |
-| **Runtime binding** | `OwnedPTYRuntime` catalog entries |
-| **Generation** | Monotonic, owned by `OwnedPTYRuntime` |
-| **Input** | `TerminalTransport.WriteInput` (generation-gated) |
-| **Live/fixture** | LIVE — daemon-owned PTY via `creack/pty` |
-| **Feature flag** | Always enabled (default adapter) |
+| **Production callers** | `app.go:NewAppWithDeps`, `create.go:createFromProfile`, `ipc.go:handleIPCConnection` |
 
 ## 3. Agent Adapter Layer — Post-PB Classification
 
-The agent adapter layer (`internal/agent/`) is post-PB inventory.
-Every adapter is classified as live, test-fixture, or deleted.
+### 3.1 Telemetry Consumers (read-only, NOT session producers)
 
-### 3.1 Live (Production)
+The ONLY production imports from `term/` or `cmd/` into `agent/adapters/` are:
 
-| Adapter | Path | Session prefix | Status |
-|---------|------|---------------|--------|
-| Claude v2.1.202 | `agent/adapters/claude/v2_1_202/` | `claude_headless:` | LIVE — production parser + detector |
-| Codex v0.144.1 | `agent/adapters/codex/v0_144_1/` | `codex_app_server:` | LIVE — production parser + detector |
-| Contract harness | `agent/contract/` | — | LIVE — reusable parser/detector contract tests |
-| Doctor | `agent/doctor/` | — | LIVE — secret scanner, no runtime dependency |
+```
+internal/term/telemetry_service.go:
+  import claude v2_1_202  → callAcceptedAdapter → ClaudeParser
+  import codex v0_144_1   → callAcceptedAdapter → CodexParser
+```
 
-### 3.2 Test-Only (no production path)
+These parse agent output for telemetry (status extraction, approval detection).
+They do NOT create sessions, spawn processes, or route input. The actual
+managed-native session lifecycle is owned by the services in `term/`.
+
+`isAcceptedAdapter` returns true only for "codex" and "claude" kinds.
+`callAcceptedAdapter` routes raw log lines to version-specific parsers.
+`ingestApprovals` (driven by push, not polling) extracts approval requests.
+
+**Classification: FIXTURE-ONLY for production session creation.**
+The adapters are tested via contract harness (`RunParserContract`, `RunDetectorContract`)
+but no production code path goes through them to create sessions or spawn processes.
+All managed-native spawning is direct (T0).
+
+### 3.2 Contract/Test-Only
 
 | Item | Path | Classification |
 |------|------|---------------|
-| `TestFixtureParser` | `agent/parser_contract_test.go` | TEST-ONLY — contract harness fixture |
-| `TestFixtureDetector` | `agent/detector_contract_test.go` | TEST-ONLY — contract harness fixture |
 | `RunParserContract` | `agent/parser_contract_test.go` | TEST-ONLY — reusable test helper |
 | `RunDetectorContract` | `agent/detector_contract_test.go` | TEST-ONLY — reusable test helper |
+| `TestFixtureParser` | `agent/parser_contract_test.go` | TEST-ONLY — contract harness fixture |
+| `TestFixtureDetector` | `agent/detector_contract_test.go` | TEST-ONLY — contract harness fixture |
 
 ### 3.3 Deleted (PB physical removal)
 
 | Item | Original path | Removal wave |
-|------|--------------|--------------|
+|------|--------------|-------------|
 | tmux adapter | `mux/tmux_adapter.go` | PB.3 |
 | cmux adapter | `mux/cmux_adapter.go` | PB.4 |
 | localpty adapter | `mux/localpty_adapter.go` | PB.1 |
 | Legacy mux.Registry | `mux/registry.go` | PB.5b |
-| Manual link | `agent/models.go:SourceManualLink` | PB.2a |
-| Legacy JSONL observation | External file watching | PB.2b |
-| Link resolver | `agent/detector.go:ResolveLink` | PB.2a |
+| Manual link (SourceManualLink) | `agent/detector.go` | PB.2a — DELETED; only comment references remain |
+| Link resolver | `agent/detector.go` | PB.2a |
 | Snapshot drain/delta | `recorder.go` (legacy capture) | PB.4 |
 
-## 4. T0/T1/T2/T3 Reuse & Legacy Matrices
+## 4. T0/T1/T2/T3 Matrix (per contract definitions)
 
-### 4.1 Terminal Producer Matrix
+### 4.1 Contract Layer Definitions
 
-| Layer | Current | Post-PB Path | Legacy Equivalent |
-|-------|---------|-------------|-------------------|
-| T0 (direct spawn) | `NativePTYLauncher.Spawn`, `ManagedCodexService`, `ManagedClaudeService` | Direct V1/managed-native | — |
-| T1 (broker) | — | Not implemented post-PB | `CommandBroker` (deleted) |
-| T2 (mux mapper) | — | Not implemented post-PB | `mux.Registry` (deleted) |
-| T3 (remote) | — | Not implemented post-PB | `cloudflared tunnel` (app-level) |
+Per `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` §2 and
+`internal/agent/contract/contract.go`:
 
-### 4.2 Agent Producer Matrix
+| Layer | Contract Definition | Current State |
+|-------|-------------------|---------------|
+| T0 | AgentEvent/contract — the common event model, parser/detector contracts, reusable test harnesses | LIVE — `agent/models.go`, `agent/contract/` |
+| T1 | Codex fixtures — version-pinned parser + detector for `v0_144_1` | LIVE — `agent/adapters/codex/v0_144_1/` (telemetry consumer only) |
+| T2 | Claude fixtures — version-pinned parser + detector for `v2_1_202` | LIVE — `agent/adapters/claude/v2_1_202/` (telemetry consumer only) |
+| T3 | Transcript — the canonical capture/ingest/replay authority | LIVE — `internal/transcript/` |
 
-| Source | Description | Live/Deleted |
-|--------|-------------|-------------|
-| `SourceProcess` | Direct process observation (Codex/Claude stdout) | LIVE |
-| `SourceScreen` | Terminal screen parse (generic fallback) | LIVE (contract only) |
-| `SourceJSONL` | Structured JSONL ingestion | LIVE (Claude v2.1.202) |
-| `SourceLogFile` | Log file tailing | LIVE (Codex v0.144.1) |
-| `SourceManualLink` | User-provided external log path | DELETED (PB.2a) |
+### 4.2 Reuse Matrix
+
+| Layer | Reused By | Reuse Mechanism |
+|-------|----------|----------------|
+| T0 (contract) | T1, T2, telemetry, doctor | `AgentEvent`, `AgentParser`, `AgentDetector` interfaces |
+| T1 (Codex fixtures) | `telemetry_service.go` | `callAcceptedAdapter("codex", ...)` — read-only telemetry |
+| T2 (Claude fixtures) | `telemetry_service.go` | `callAcceptedAdapter("claude", ...)` — read-only telemetry |
+| T3 (Transcript) | `term/`, `Recorder`, `OwnedPTYRuntime` | Byte-stream projection, generation-bound queue |
 
 ### 4.3 Forbidden Legacy Sources
 
@@ -164,25 +161,10 @@ After PB, no production code may:
 - Reference `tmux`, `cmux`, `localpty`
 - Call `GetRecorder`, `EnsureRecorder`, `RegistryFromContext`
 - Use `v1Bridge`, `NewV1FromOld`
-- Read `ManualLink` or `ResolveAgentLog`
+- Call `ResolveAgentLog` or use `ManualLink` (SourceManualLink deleted PB.2a)
 - Use `snapshotEndMarker`, `deltaMarker`, `drainSnapshot`
-- Reference `observedAdapter` or `observerAdapter`
 
-All above: ZERO production hits at freeze baseline (verified PB.6 scans).
-
-### 4.4 Agent Adapter Import Map
-
-The ONLY production path from `term/` into `agent/adapters/` is:
-
-```
-internal/term/telemetry_service.go:
-  imports claude v2_1_202  (telemetry sampling — reads managed agent status)
-  imports codex v0_144_1   (telemetry sampling — reads managed agent status)
-```
-
-This is a read-only telemetry consumer. It does not create sessions, spawn
-processes, or route input. All managed-native lifecycle is owned by the
-`ManagedCodexService` / `ManagedClaudeService` in `term/`.
+All above: ZERO production hits at freeze baseline (verified PB.6 scans with `grep -E`).
 
 ## 5. Session/Runtime/Generation Binding
 
@@ -193,7 +175,7 @@ Session ID:  controlled_pty:<local-id>
 Generation:  monotonic int64, owned by OwnedPTYRuntime
 Transport:   TerminalTransport (writer, resizer, recorder reference)
 Recorder:    per-session, generation-bound (StartRecorderUnconditional)
-Lifecycle:   Create → LifecycleRunning → Stop/Kill → LifecycleExited/Killed → Delete
+Lifecycle:   Create → Running → Stop/Kill → Exited/Killed → Delete
 ```
 
 ### 5.2 Managed Codex
@@ -202,7 +184,6 @@ Lifecycle:   Create → LifecycleRunning → Stop/Kill → LifecycleExited/Kille
 Session ID:  codex_app_server:<pid>-<nanos>
 Runtime:     ManagedRuntimeCatalog → status, approval, process info
 Generation:  per-runtime monotonic, owned by ManagedCodexService
-Identity:    Pinned binary 0.144.1 (verified SHA-256 at spawn)
 ```
 
 ### 5.3 Managed Claude
@@ -211,22 +192,22 @@ Identity:    Pinned binary 0.144.1 (verified SHA-256 at spawn)
 Session ID:  claude_headless:claude-<nanos>
 Runtime:     ManagedRuntimeCatalog → status, approval, process info
 Generation:  per-runtime monotonic, owned by ManagedClaudeService
-Identity:    Pinned binary 2.1.202 (verified SHA-256 at spawn)
 ```
 
-## 6. Legacy Symbol Classification (existing code only)
+## 6. Legacy Symbol Classification
 
-The following symbols exist in the codebase but have NO production callers
-from `term/` or `cmd/`:
+Verified against actual file content at freeze baseline:
 
-| Symbol | File | Classification |
-|--------|------|---------------|
-| `SourceManualLink` | `agent/models.go:93` | Enum value — deleted source, retained for contract completeness |
-| `SourceScreen` fallback | `agent/contract/validate.go:173` | Contract test fallback — never used as primary production source |
+| Symbol | Location | Actual Content |
+|--------|----------|---------------|
+| `manual_link` | `models.go:93` | Comment-only — `// mechanical origin (jsonl/log_file/screen/process/manual_link)` in JSON tag description. NOT a constant. |
+| `SourceScreen` | `validate.go:173` | Contract test default — `e.Source = agent.SourceScreen // never manual_link by default` |
+| `manual_link` | `contract.go:68` | Documentation comment — legacy source classification reference |
 
-These are structural definitions in the agent contract layer, not production
-entry points. They were retained during PB because they do not create legacy
-discovery paths.
+**SourceManualLink is DELETED (PB.2a).** The string `manual_link` survives only in
+comments and JSON tag descriptions. It has zero runtime effect. The four remaining
+`AgentEventSource` constants are: `SourceJSONL`, `SourceLogFile`, `SourceScreen`,
+`SourceProcess` — all four are live.
 
 ## 7. Gate Results (at freeze baseline ab1884662)
 
@@ -237,9 +218,11 @@ gofmt -l .                              CLEAN (0 files)
 git diff --check                        CLEAN
 go test -race ./... -count=1            PASS (12 ok, 3 no-test)
 cd mobile && npx tsc --noEmit           PASS (clean)
-Secret scan                             CLEAN
-Timeline scan (cmd/term/mobile)         ZERO
-Legacy symbol scan                      ZERO production callers
+cd mobile && npx jest --runInBand       PASS (519/519, 35 suites)
+Secret scan (grep -E)                   CLEAN
+Timeline scan (grep -E, cmd/term/mobile) ZERO
+Legacy symbol scan (grep -E)            ZERO production callers (comments only)
+Forbidden symbol scan (grep -E)         ZERO
 Non-doc changes ab1884662..HEAD         ZERO
 Frozen artifact SHA-256 verify          BOTH MATCH
 ```
