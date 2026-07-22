@@ -1,6 +1,6 @@
 # STEP6 T1 Evidence — Coordination Protocol Fixes
 
-**IMPL SHA:** `1aefbc477`
+**IMPL SHA:** `3b1a2c7ed`
 **EVID SHA:** (this commit)
 **Branch:** `feature/canonical-timeline-foundation`
 **Date:** 2026-07-23
