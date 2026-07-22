@@ -51,7 +51,7 @@ func (r ValidationResult) Validate() error {
 		return ErrInvalid
 	}
 	for _, f := range r.Findings {
-		if f.ID == "" || f.Summary == "" || f.Binding.Validate() != nil {
+		if f.ID == "" || f.Summary == "" || f.Binding.Validate() != nil || !sameBinding(f.Binding, r.Binding) {
 			return ErrInvalid
 		}
 	}
@@ -63,15 +63,17 @@ func (r ValidationResult) Validate() error {
 type StalenessCheck struct{ Current SnapshotBinding }
 
 func (s StalenessCheck) Stale(binding SnapshotBinding) bool {
-	return binding.RepositoryID != s.Current.RepositoryID || binding.Manifest.BaseSHA != s.Current.Manifest.BaseSHA || binding.Manifest.TargetSHA != s.Current.Manifest.TargetSHA || binding.Manifest.TreeHash != s.Current.Manifest.TreeHash || binding.Manifest.IndexHash != s.Current.Manifest.IndexHash || binding.Manifest.UntrackedManifestDigest != s.Current.Manifest.UntrackedManifestDigest || binding.Manifest.DiffDigest != s.Current.Manifest.DiffDigest || binding.SnapshotID != s.Current.SnapshotID || binding.LeaseEpoch != s.Current.LeaseEpoch || binding.ValidatorProvider != s.Current.ValidatorProvider || binding.ValidatorModel != s.Current.ValidatorModel || binding.ValidatorRuntimeID != s.Current.ValidatorRuntimeID || binding.ValidatorSessionID != s.Current.ValidatorSessionID || binding.ValidatorGeneration != s.Current.ValidatorGeneration || binding.ConfigEpoch != s.Current.ConfigEpoch || binding.EvidenceDigest != s.Current.EvidenceDigest || binding.ArtifactDigest != s.Current.ArtifactDigest || binding.IsolationProfile != s.Current.IsolationProfile
+	return binding.Validate() != nil || s.Current.Validate() != nil || !sameBinding(binding, s.Current)
 }
 func (s StalenessCheck) Apply(f Finding) Finding { f.Stale = s.Stale(f.Binding); return f }
 
 // CanAuthorize is intentionally false for stale findings. Callers still need
 // their own authority; a fresh validation result alone is never authorization.
-func (f Finding) CanAuthorize() error {
-	if f.Stale {
+func (f Finding) CanAuthorize(current SnapshotBinding) error {
+	if (StalenessCheck{Current: current}).Stale(f.Binding) {
 		return ErrStale
 	}
 	return nil
 }
+
+func sameBinding(a, b SnapshotBinding) bool { return a == b }

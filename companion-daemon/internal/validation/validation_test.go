@@ -25,11 +25,30 @@ func TestStaleFindingVisibleButCannotAuthorize(t *testing.T) {
 	f := Finding{ID: "f", Summary: "finding", Binding: b}
 	current := b
 	current.LeaseEpoch++
+	if !errors.Is(f.CanAuthorize(current), ErrStale) {
+		t.Fatal("omitted Apply authorized stale finding")
+	}
 	f = (StalenessCheck{Current: current}).Apply(f)
 	if !f.Stale {
 		t.Fatal("not stale")
 	}
-	if !errors.Is(f.CanAuthorize(), ErrStale) {
+	if !errors.Is(f.CanAuthorize(current), ErrStale) {
 		t.Fatal("stale finding authorized")
+	}
+}
+
+func TestInvalidAndMismatchedBindingsFailClosed(t *testing.T) {
+	zero := SnapshotBinding{}
+	if !(StalenessCheck{Current: zero}).Stale(zero) {
+		t.Fatal("invalid bindings fresh")
+	}
+	b := binding()
+	r := ValidationResult{ID: "r", Binding: b, Findings: []Finding{{ID: "f", Summary: "x", Binding: b}}}
+	if r.Validate() != nil {
+		t.Fatal("valid result")
+	}
+	r.Findings[0].Binding.LeaseEpoch++
+	if !errors.Is(r.Validate(), ErrInvalid) {
+		t.Fatal("mismatched finding accepted")
 	}
 }
