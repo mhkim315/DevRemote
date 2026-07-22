@@ -24,7 +24,7 @@ Correction chain (all commits after the R2 implementation):
   short SHAs to full-length and updated test function names to exact matches.
 - `517e0f66efb231cddbbcc670e0e700e229e820ac` — recorded exact SHAs and the
   metadata test function names.
-- `08c5f83038389eb0ccb6e810bb715756daacaa95` — this evidence HEAD.
+- The current evidence HEAD completes this chain (verify with `git log -1`).
 
 ## Scope and dependency boundary
 
