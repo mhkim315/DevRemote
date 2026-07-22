@@ -59,7 +59,7 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 | Terminal WebView loaded | PASS | 47-element UI tree |
 | **"view only" resolved** | PASS | `'input'` capability → Send + macros enabled |
 | Send button | PASS | `enabled=true` |
-| Macros (11) | PASS | Ctrl+C, Esc, Tab, arrows, Enter, Y, N |
+| Macro controls visible/enabled | PASS | 11 TouchableOpacity elements, enabled=true |
 | WebSocket connected | PASS | Daemon `WS [...] connected` log |
 | `pwd` input | PASS | `adb input keyevent` → field shows "pwd" |
 | `pwd` submit | PASS | `KEYCODE_ENTER` → field cleared |
@@ -92,3 +92,24 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 - `canonicalOrigin()` unchanged — HTTPS still required for production
 - Release builds: `NO_LOGIN=false` → `localTest=false` → HTTP localhost rejected
 - Android `usesCleartextTraffic` in debug manifest only (pre-existing)
+
+## Revision History
+
+| SHA | Date | Changes |
+|-----|------|---------|
+| `b1caf9795` | 2026-07-22 | LOCAL-E2E-R1: evidence corrections, testIDs, daemon test |
+| `5c50f9199` | 2026-07-22 | LOCAL-E2E-R2: Detox scaffold, 10 testIDs |
+| `5c50f9199` | 2026-07-22 | Detox status: SCAFFOLD READY — NOT EXECUTED |
+
+### Detox Status: SCAFFOLD
+
+Test file `mobile/e2e/terminal-macros.test.ts` serves as automation contract spec.
+Actual execution requires APK rebuild with Metro bundle baked in (NO_LOGIN mode).
+Detox native tap execution is deferred to CI/build pipeline or SM-S926N gate.
+
+Assertions to complete before Detox PASS claim:
+- Enter macro tap via `terminal-macro-enter` testID → PTY delivery confirmed
+- Ctrl+C tap via `terminal-macro-ctrl-c` → 0x03 byte → process interrupt confirmed
+- Paste → exact PTY bytes confirmed
+- Two-frame Text+Enter → both ACKs confirmed
+- Reconnect → capability+geometry+pending ACK state confirmed

@@ -32,7 +32,7 @@ describe('Terminal Macros', () => {
     const inputField = element(by.id('terminal-input'));
     await inputField.tap();
     await inputField.typeText('echo MACRO_TEST\n');
-    
+
     // Verify send status changes (not 'failed')
     // The exact status depends on timing, but it should not be 'failed'
     await expect(element(by.id('terminal-send-status'))).toNotExist();
