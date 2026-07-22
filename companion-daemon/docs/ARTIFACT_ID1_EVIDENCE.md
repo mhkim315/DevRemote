@@ -85,7 +85,7 @@ BUILD SUCCESSFUL in 3m 47s
 ### SHA-256
 
 ```
-b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797  pokit-app-release.apk
+934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d  pokit-app-release.apk
 ```
 
 ### Embedded Assets — Byte-for-Byte Comparison
@@ -120,11 +120,29 @@ $ unzip -p pokit-app-release.apk assets/index.android.bundle | strings | grep -i
 
 NO_LOGIN: ✅ NOT FOUND in APK bundle
 
+### Dev-Token Compile-State Check
+
+```
+$ unzip -p pokit-app-release.apk assets/index.android.bundle | strings | grep "dev-token"
+(empty — 0 occurrences; production auth path confirmed)
+```
+
+dev-token: ✅ 0 OCCURRENCES — production auth compiled, no dev bypass
+
 ### APK Signature
 
 The APK is signed with the **Android SDK debug keystore** using APK Signature
-Scheme v2/v3 (embedded in APK Signing Block, no META-INF/.RSA files). This is a
-build-verify artifact — the device tester must verify installation on SM-S926N.
+Scheme v2 only:
+```
+$ apksigner verify --verbose pokit-app-release.apk
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): false
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+```
+This is a build-verify artifact — the device tester must verify installation
+on SM-S926N.
 
 APK contents: 1,387 entries including `assets/index.android.bundle` (3.2MB),
 5 DEX files, `AndroidManifest.xml`.
@@ -144,11 +162,10 @@ All artifacts preserved at `/tmp/pokit-pb-device-artifacts/` (readable by curren
 /tmp/pokit-pb-device-artifacts/
 ├── PB_DEVICE_CANDIDATE_SHA.txt     (41 bytes)
 ├── DAEMON_SHA256.txt               (65 bytes)
-├── APK_SHA256.txt                  (65 bytes)
 ├── APK_EXTRACTED_CANDIDATE.txt     (41 bytes) — extracted from APK, verified match
 ├── APK_EXTRACTED_DAEMON.txt        (65 bytes) — extracted from APK, verified match
 ├── pokit-daemon                    (12,349,410 bytes)
-└── pokit-app-release.apk           (160,875,337 bytes)
+└── pokit-app-release.apk           (160,875,703 bytes)
 ```
 
 Permissions: all files owned by mhk:wheel, mode 0644.
@@ -165,7 +182,7 @@ git clone (exact candidate SHA) → npm install → expo prebuild
   → embed PB_DEVICE_CANDIDATE_SHA.txt + DAEMON_SHA256.txt in assets/
   → env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST gradle assembleRelease
   → APK = 160MB release build
-  → SHA-256 = b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797
+  → SHA-256 = 934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d
   → assets extracted byte-for-byte match source ✅
   → cleartext clean ✅
   → NO_LOGIN not leaked ✅
@@ -201,7 +218,7 @@ echo "5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580" > androi
 cd android
 env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST ./gradlew assembleRelease
 shasum -a 256 app/build/outputs/apk/release/app-release.apk
-# Expected: b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797
+# Expected: 934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d
 
 # Verify embedded assets
 unzip -p app/build/outputs/apk/release/app-release.apk assets/PB_DEVICE_CANDIDATE_SHA.txt
