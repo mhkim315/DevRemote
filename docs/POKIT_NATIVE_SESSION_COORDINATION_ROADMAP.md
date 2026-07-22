@@ -4,10 +4,10 @@
 
 **Planning base:** `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`
 
-**Current execution state:** CT-P1 candidate work has completed its scoped
-executor pass but is **not declared independently accepted by this document**;
-PB physical-device evidence is pending; PB ACCEPT is **UNSET**; CT-P2 and all
-production Timeline wiring are blocked.
+**Current execution state:** CT-P1 is independently accepted at
+`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; PB physical-device evidence is
+pending; PB ACCEPT is **UNSET**; the operational-evidence amendment, CT-P2, and
+all production Timeline wiring are blocked.
 
 This document owns the current product definition, authority boundaries, MVP,
 and post-PB execution order. [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md)
@@ -320,8 +320,8 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 
 ## 10. Authoritative implementation order
 
-1. Allow the active CT-P1 executor to finish its scoped candidate without
-   disruption. Do not call the dirty or merely executor-complete state accepted.
+1. **COMPLETE:** CT-P1 finished without disruption and received independent
+   ACCEPT at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`.
 2. Complete PB physical-device evidence and obtain final independent PB ACCEPT.
 3. Review CT-P1 against this operational-evidence direction; add a narrow
    contract amendment if required and independently accept the revised CT-P1.

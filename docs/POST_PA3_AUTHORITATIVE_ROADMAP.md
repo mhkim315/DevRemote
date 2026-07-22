@@ -46,7 +46,7 @@ These identities have different meanings and must not be substituted for one ano
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
 | PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
 | PB | AUTOMATED LEGACY REMOVAL COMPLETE; pre-device remediation planned; device gate not started; ACCEPT unset |
-| CT-PRE | CT-P0 accepted; CT-P1 candidate work exists but is not declared independently accepted here; production composition forbidden |
+| CT-PRE | CT-P0 and CT-P1 ACCEPT (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`); post-PB operational amendment pending; production composition forbidden |
 
 ## 2. Mandatory execution order
 
@@ -113,8 +113,8 @@ the physical gate; it does not reopen PB legacy-removal scope.
 
 The bounded offline Canonical Timeline foundation exception is governed by
 [`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
-CT-P0 is accepted and bounded CT-P1 candidate work may finish without
-disruption. CT-P2 and later CT waves are not currently authorized. Production
+CT-P0 and CT-P1 are accepted; the CT-P1 operational-evidence amendment, CT-P2,
+and later CT waves are not currently authorized. Production
 shadow-write and every authority/UI cutover remain blocked until an exact PB
 ACCEPT SHA and independent acceptance of the revised operational CT-P1 exist.
 

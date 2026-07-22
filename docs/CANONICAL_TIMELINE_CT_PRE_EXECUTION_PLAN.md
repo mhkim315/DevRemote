@@ -1,14 +1,14 @@
 # Canonical Timeline CT-PRE Execution Plan
 
-**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0 accepted; active CT-P1
-candidate must finish without disruption; CT-P2 and production wiring blocked
+**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0 and CT-P1 accepted;
+operational-evidence amendment, CT-P2, and production wiring blocked
 
 > **Product-direction amendment:** The product, authority model, and post-PB
 > order now live in
 > [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
-> This document continues to govern CT foundation safety. It does not declare
-> the current CT-P1 candidate independently accepted. After the executor
-> finishes, CT-P1 must be reviewed and, if needed, narrowly amended so that
+> This document continues to govern CT foundation safety. CT-P1 was
+> independently accepted at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`.
+> After PB ACCEPT, CT-P1 must be reviewed and, if needed, narrowly amended so that
 > Canonical Timeline is operational evidence and does not require every future
 > operational event to be a provider `AgentEvent`. Do not begin CT-P2.
 
@@ -55,7 +55,7 @@ The frozen state is:
 | Frozen APK SHA-256 | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` |
 | PB physical SM-S926N evidence | **PENDING** |
 | PB ACCEPT SHA | **UNSET** |
-| CT-PRE | **CT-P0 accepted; CT-P1 candidate in review chain** |
+| CT-PRE | **CT-P0 and CT-P1 accepted; operational amendment pending PB ACCEPT** |
 | CT-P2 | **BLOCKED** |
 | Production shadow-write | **BLOCKED until PB ACCEPT and revised CT-P1 independent ACCEPT** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
@@ -538,7 +538,7 @@ returned early, weakened to logging, or replaced with a nil/vacuous fixture.
 | Wave | Minimum acceptance result | Independent boundary |
 | --- | --- | --- |
 | CT-P0 | artifacts/source/order/docs independently verified; zero code diff | required before any CT code |
-| CT-P1 | current minimal envelope candidate; requires operational source-boundary review and independent ACCEPT | required before any later CT work |
+| CT-P1 | **ACCEPT** at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; operational source-boundary amendment still required post-PB | required before any later CT work |
 | CT-P2a | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 | CT-P2b | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 | CT-P3a | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
@@ -546,8 +546,8 @@ returned early, weakened to logging, or replaced with a nil/vacuous fixture.
 | CT-P4 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 | CT-P5 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 
-Stop after the current CT-P1 candidate. Executor completion does not equal
-independent acceptance and does not authorize CT-P2, shadow-write, or cutover.
+Stop at the accepted CT-P1 foundation. Its acceptance does not authorize CT-P2,
+shadow-write, cutover, or the post-PB operational amendment.
 
 ## 9. Deferred decisions
 
@@ -578,8 +578,8 @@ drop/gap as an invalid equivalence run.
 
 ## 10. Exact stop condition before PB ACCEPT
 
-When the current CT-P1 executor produces its clean candidate, all Canonical
-Timeline implementation stops. Do not begin CT-P2 or create a production
+At the accepted CT-P1 SHA, all Canonical Timeline implementation stops. Do not
+begin CT-P2 or create a production
 writer, shadow queue, startup/DI registration, live normalizer callback, route,
 DTO, mobile consumer, or cutover plan until:
 
