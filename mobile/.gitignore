@@ -40,3 +40,5 @@ modules/*/android/build/
 modules/*/android/.gradle/
 modules/*/ios/build/
 .tapflow/
+/android/app/src/main/assets/PB_DEVICE_CANDIDATE_SHA.txt
+/android/app/src/main/assets/DAEMON_SHA256.txt
