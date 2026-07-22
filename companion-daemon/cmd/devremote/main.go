@@ -65,6 +65,8 @@ func main() {
 	enableManagedCodex := flag.Bool("enable-managed-codex", false, "Enable native managed Codex runtime (SP0, experimental)")
 	enableManagedClaude := flag.Bool("enable-managed-claude", false, "Enable native managed Claude runtime (C1D, experimental)")
 	claudeDigest := flag.String("claude-digest", "", "Pre-verified SHA-256 digest of pinned Claude binary (required for managed Claude)")
+	enableTimelineShadow := flag.Bool("enable-timeline-shadow", false, "Enable fail-open Operational Canonical Timeline shadow writer (STEP4, experimental)")
+	timelineShadowPath := flag.String("timeline-shadow-path", "", "Absolute path for Timeline shadow writer (optional)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -81,6 +83,8 @@ func main() {
 		EnableManagedCodex:   *enableManagedCodex,
 		EnableManagedClaude:  *enableManagedClaude,
 		ClaudeDigest:         *claudeDigest,
+		EnableTimelineShadow: *enableTimelineShadow,
+		TimelineShadowPath:   *timelineShadowPath,
 	})
 }
 

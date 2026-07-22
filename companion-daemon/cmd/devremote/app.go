@@ -18,6 +18,7 @@ import (
 
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/term"
+	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
 	"devremote/companion-daemon/internal/watcher"
 )
@@ -32,6 +33,8 @@ type Config struct {
 	EnableManagedCodex   bool   // SP0: default-off native managed Codex runtime
 	EnableManagedClaude  bool   // C1D: default-off native managed Claude runtime
 	ClaudeDigest         string // C1D: pre-verified SHA-256 of the pinned Claude binary
+	EnableTimelineShadow bool   // STEP4: default-off, fail-open Timeline shadow sink
+	TimelineShadowPath   string // optional absolute shadow-file override
 }
 
 // insecureLocalListenAddr returns the only listener address permitted for the
@@ -91,6 +94,9 @@ type Dependencies struct {
 	// ManagedClaude injects a pre-built managed Claude service (test seam).
 	// nil ⇒ the production service is constructed when EnableManagedClaude.
 	ManagedClaude *term.ManagedClaudeService
+	// OpenTimelineShadow constructs the optional fail-open Timeline sink. A
+	// failure disables Timeline only; it never prevents daemon construction.
+	OpenTimelineShadow func(writer.Config) (*writer.Writer, error)
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -139,6 +145,7 @@ type App struct {
 	ipc                ipcResource
 	watcher            watcherResource
 	tunnel             tunnelResource // nil in insecure mode
+	timelineWriter     *writer.Writer // nil unless the default-off shadow flag is enabled
 }
 
 // NewApp creates the App with production defaults.
@@ -171,6 +178,30 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
+	// STEP4: Timeline is an optional, explicitly constructed sink. It has no
+	// callback into a primary authority and this composition does not attach it
+	// to terminal, approval, input, lifecycle, or recorder paths. A future
+	// producer must submit only after its authority commits and without holding
+	// an authority lock.
+	var timelineWriter *writer.Writer
+	if cfg.EnableTimelineShadow {
+		path := cfg.TimelineShadowPath
+		if path == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, ".pokit", "timeline-shadow.jsonl")
+			}
+		}
+		openTimeline := deps.OpenTimelineShadow
+		if openTimeline == nil {
+			openTimeline = writer.Open
+		}
+		w, err := openTimeline(writer.Config{Path: path})
+		if err != nil {
+			log.Printf("WARNING: Timeline shadow disabled (fail-open): %v", err)
+		} else {
+			timelineWriter = w
+		}
+	}
 	// PA2c: the three managed lifecycle owners. OwnedPTYRuntime owns
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
@@ -491,21 +522,22 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (*App, error) {
 	}
 
 	return &App{
-		config:        cfg,
-		deps:          deps,
-		server:        &http.Server{Addr: addr, Handler: serveMux},
-		telemetry:     telemetry,
-		transcriptSvc: transcriptSvc,
-		lifecycle:     lifecycle,
-		managed:       managed,
-		managedClaude: managedClaude,
-		authHandler:   authH,
-		sessionMgr:    sessionMgr,
-		wsTickets:     wsTickets,
-		connRegistry:  connRegistry,
-		audit:         audit,
-		handlers:      h,
-		ipcPath:       "/tmp/pokit.sock",
+		config:         cfg,
+		deps:           deps,
+		server:         &http.Server{Addr: addr, Handler: serveMux},
+		telemetry:      telemetry,
+		transcriptSvc:  transcriptSvc,
+		lifecycle:      lifecycle,
+		managed:        managed,
+		managedClaude:  managedClaude,
+		authHandler:    authH,
+		sessionMgr:     sessionMgr,
+		wsTickets:      wsTickets,
+		connRegistry:   connRegistry,
+		audit:          audit,
+		handlers:       h,
+		ipcPath:        "/tmp/pokit.sock",
+		timelineWriter: timelineWriter,
 	}, nil
 }
 
@@ -698,6 +730,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 		if err := a.managedClaude.Shutdown(ctx); err != nil {
 			log.Printf("Managed claude shutdown error: %v", err)
 			errs = append(errs, fmt.Errorf("managed claude: %w", err))
+		}
+	}
+
+	// 8. Timeline is a best-effort shadow sink. Its close result is logged but
+	// never joins shutdown errors, so Timeline unavailability cannot block a
+	// primary shutdown path.
+	if a.timelineWriter != nil {
+		if err := a.timelineWriter.Close(); err != nil {
+			log.Printf("Timeline shadow close error (ignored): %v", err)
 		}
 	}
 
