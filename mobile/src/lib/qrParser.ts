@@ -75,6 +75,8 @@ function _parse(raw: unknown): PairingQRPayload {
     err('endpoint must be a private-IPv4 LAN address with an explicit port');
   }
   if (!parsed.port) err('endpoint must include an explicit port');
+  // Pairing V1 contract: endpoint path must be exactly /pair
+  if (parsed.pathname !== '/pair') err('endpoint path must be /pair');
 
   const expiresAt = new Date(o.expiresAt as string);
   if (isNaN(expiresAt.getTime())) err('expiresAt is not a valid ISO date');

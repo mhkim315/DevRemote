@@ -45,10 +45,12 @@ function siblingURL(endpoint: string, path: string): string {
 }
 
 // pairingPOST returns res.json(), checking the HTTP status first.
+// Pairing V1 contract: LAN HTTP only, no redirects, exact /pair path.
 async function pairingPOST(url: string, body: unknown): Promise<any> {
   const res = await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    redirect: 'error', // Pairing V1: no HTTP redirects
   });
   if (!res.ok) return { error: `server returned ${res.status}` };
   try { return await res.json(); } catch { return { error: 'non-JSON response' }; }
