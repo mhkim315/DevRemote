@@ -85,3 +85,18 @@
 | Android logcat | `/tmp/r4.4-r3-smoke.log` |
 | APK binary | `/tmp/pokit-pb-device-artifacts/pokit-app-release.apk` |
 | Daemon binary | `/tmp/pokit-daemon` |
+
+## R4.4-R3 Provenance Bundle (self-consistent)
+
+All files in `/tmp/pokit-pb-device-artifacts/` now match:
+
+| File | Value |
+|------|-------|
+| `pokit-app-release.apk` (SHA-256) | `9ee0c476...` |
+| `APK_SHA256.txt` | `9ee0c476...` |
+| `APK_EXTRACTED_CANDIDATE.txt` | `059bef181...` |
+| `APK_EXTRACTED_DAEMON.txt` | `a2753537...` |
+| `PB_DEVICE_CANDIDATE_SHA.txt` (embedded in APK) | `059bef181...` |
+| `DAEMON_SHA256.txt` (embedded in APK) | `a2753537...` |
+
+No stale provenance references remain.
