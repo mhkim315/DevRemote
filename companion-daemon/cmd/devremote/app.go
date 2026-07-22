@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"devremote/companion-daemon/internal/cockpit"
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/timeline/writer"
@@ -39,6 +40,7 @@ type Config struct {
 	TimelineShadowPath     string // optional absolute shadow-file override
 	EnableWorkspaceLease   bool   // STEP5: default-off cooperative workspace contract
 	EnableFrozenValidation bool   // STEP7: default-off frozen validation contract
+	EnableCockpit          bool   // STEP8: default-off read-only cockpit route
 }
 
 // insecureLocalListenAddr returns the only listener address permitted for the
@@ -419,6 +421,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	lifecycle.WireManagedOwners(h.Catalog, codexOwner, claudeOwner)
 
 	serveMux := http.NewServeMux()
+	if cfg.EnableCockpit {
+		cockpit.RegisterCockpitHandler(serveMux, cockpit.NewCockpitStore())
+	}
 	notifier := newPushNotifier()
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")

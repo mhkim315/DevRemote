@@ -69,6 +69,7 @@ func main() {
 	timelineShadowPath := flag.String("timeline-shadow-path", "", "Absolute path for Timeline shadow writer (optional)")
 	enableWorkspaceLease := flag.Bool("enable-workspace-lease", false, "Enable cooperative workspace lease contract (STEP5, experimental)")
 	enableFrozenValidation := flag.Bool("enable-frozen-validation", false, "Enable frozen clean-snapshot validation contract (STEP7, experimental)")
+	enableCockpit := flag.Bool("enable-cockpit", false, "Enable read-only operational cockpit route (STEP8, experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -89,6 +90,7 @@ func main() {
 		TimelineShadowPath:     *timelineShadowPath,
 		EnableWorkspaceLease:   *enableWorkspaceLease,
 		EnableFrozenValidation: *enableFrozenValidation,
+		EnableCockpit:          *enableCockpit,
 	})
 }
 
