@@ -67,7 +67,6 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 | PTY geometry (initial) | PASS | `{"rows":30,"cols":100}` |
 | PTY output production | PASS | Daemon transcript `input_boundary` |
 | xterm.js rendering | NOT TESTED | Canvas output not in accessibility tree; requires screenshot or xterm buffer read |
-| Macro controls visible/enabled | PASS | 11 macro TouchableOpacity elements, `enabled=true` |
 | Macro native press → PTY delivery | NOT TESTED | RN TouchableOpacity not responsive to Tapflow/ADB injection; requires Maestro/Detox or physical touch |
 | Ctrl+C native press | NOT TESTED | Same injection limitation |
 | Output rendering (visual) | NOT TESTED | Requires Samsung WebView or screenshot diff |
@@ -99,7 +98,7 @@ Without `'input'` in adapterCapabilities: `inputEnabled=false` → "view only" b
 |-----|------|---------|
 | `b1caf9795` | 2026-07-22 | LOCAL-E2E-R1: evidence corrections, testIDs, daemon test |
 | `5c50f9199` | 2026-07-22 | LOCAL-E2E-R2: Detox scaffold, 10 testIDs |
-| `5c50f9199` | 2026-07-22 | Detox status: SCAFFOLD READY — NOT EXECUTED |
+| `c0b030b2a` | 2026-07-22 | R2 review fixes — evidence corrections, whitespace, Detox SCAFFOLD status |
 
 ### Detox Status: SCAFFOLD
 
