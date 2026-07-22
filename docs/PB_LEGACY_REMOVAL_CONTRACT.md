@@ -12,7 +12,7 @@
 
 **PB_START_BASELINE_SHA:** `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06`
 
-**Future PB ACCEPT SHA:** **UNSET**
+**Future PB ACCEPT SHA:** **UNSET** (device gate pending, candidate `301fad09e`)
 
 > **Current PB.7 authority:** The initial SM-S926N run is diagnostic and the
 > physical matrix is paused. Complete the bounded TERM-G1 geometry and TERM-C1

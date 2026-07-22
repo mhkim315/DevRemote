@@ -13,7 +13,7 @@
 | `PB_PREREQUISITE_SHA` | `74560edd88ef5b53c3b3d8d215f3007efbf468a2` | Contract authority required before PB |
 | `PB_START_BASELINE_SHA` | `abe4df1d6485a8eceafde30e7dfc8da06b8c7f06` | Operational rollback preserving the frozen PA4 and roadmap documents |
 | `CURRENT_NON_DEVICE_CHECKPOINT_SHA` | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before QR/Input remediation |
-| Future `PB_DEVICE_CANDIDATE_SHA` | **UNSET** | Exact production/mobile source for the device daemon and APK |
+| Future `PB_DEVICE_CANDIDATE_SHA` | `301fad09e` | Exact production/mobile source for the device daemon and APK |
 | Future `PB_AUTOMATED_EVIDENCE_SHA` | **UNSET** | Documentation-only head after PB.6/PB.7 regeneration |
 | Future `PB_ACCEPT_SHA` | **UNSET** | Assigned only by the final independent PB verifier |
 
