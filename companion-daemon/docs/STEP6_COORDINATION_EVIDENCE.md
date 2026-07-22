@@ -2,6 +2,13 @@
 
 Implementation commit: `dfefef7b233274b40f1513e8bc5cb26c78c7d088`
 
+STEP6 R2 implementation commit: `abec8fbd4be6787a5e819775bdbf600cbb09d522`
+
+R2 adds closed `question`, `finding`, and `revision_request` message types;
+requires the explicit `requiredTargetCapability` authorization binding; bounds
+handoff/evidence/reply/causation references; and bounds every handoff list to
+64 non-empty 512-byte items. Oversized values are rejected before broker entry.
+
 `internal/coordination` is a pure, in-memory broker-owned delivery ledger. It
 defines closed message types and delivery states, exact source/target runtime
 identity, repository/snapshot provenance, bounded redacted content/evidence
