@@ -14,10 +14,14 @@ Correction chain (all commits after the R2 implementation):
   aliasing test and its collision assertion.
 - `2f54674fc973c5a4cec91fe5b72783932a5c0057` — recorded the preceding T2
   test-correction evidence.
-- `7fb93e0e0` — restored metadata key-count and key/value-size boundary
-  regression tests (`TestT0MetadataKeyBounds`, `TestT0MetadataKeyValueSizeRejected`).
-- `07a8a6ea5` — this evidence HEAD; corrected metadata test descriptions
-  and all-payload-variant scope documentation.
+- `7fb93e0e03240aba11b4480f71e58ef48e75f8e6` — restored metadata count and
+  key/value-size boundary regression tests
+  (`TestT0MetadataCountBoundsAtNMinusOneNAndNPlusOne`,
+  `TestT0MetadataKeyAndValueBoundsAtNMinusOneNAndNPlusOne`).
+- `07a8a6ea51bac2008c16fa7876da54a2eaf895d3` — recorded CT-P1 T1 R3 evidence
+  doc correction (all-payload-variant scope, missing SHAs).
+- `1e9ee591461e914558aac77f0aeac101669e9858` — this evidence HEAD; corrected
+  short SHAs to full-length and updated test function names to exact matches.
 
 ## Scope and dependency boundary
 
