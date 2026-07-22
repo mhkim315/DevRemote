@@ -1,226 +1,136 @@
-# CT-P0 Evidence — Canonical Timeline Source Freeze (R2)
+# CT-P0 Evidence — Canonical Timeline Source Freeze (R3)
 
 **IMPL SHA:** `7b7f23d0a`
 **EVID SHA:** `9885caf1f`
 **Freeze baseline:** `ab1884662`
 **Date:** 2026-07-22
 
-## 1. Source Tree Verification
+This R3 correction records only observations reproduced from the current tree.
+Every fenced block below is unedited stdout from the command named immediately
+before it; commands, prompts, and explanatory annotations are deliberately not
+inside fenced blocks.
+
+## 1. Adapter producer/consumer inventory
+
+The exact stdout of `rg -n --glob='*.go' 'callAcceptedAdapter\(' companion-daemon/internal companion-daemon/cmd | LC_ALL=C sort` is:
 
 ```
-$ git rev-parse --short=9 7b7f23d0a
-7b7f23d0a
-
-$ git rev-parse --short=9 9885caf1f
-9885caf1f
-
-$ git rev-parse --short=9 ab1884662
-ab1884662
-
-$ git status --porcelain --untracked-files=all
-(0 files — clean worktree)
-
-$ git merge-base --is-ancestor ab1884662 HEAD && echo "ANCESTOR OK"
-ANCESTOR OK
+companion-daemon/internal/term/production_bridge_test.go:104:	ev2, _, nc2, _ := callAcceptedAdapter("codex", recs, "s", ac)
+companion-daemon/internal/term/production_bridge_test.go:114:	ev3, _, nc3, _ := callAcceptedAdapter("codex", recs, "s", ac)
+companion-daemon/internal/term/production_bridge_test.go:152:	_, version, _, _ := callAcceptedAdapter("codex", recs, "s", ac)
+companion-daemon/internal/term/production_bridge_test.go:283:	events, version, nc, _ := callAcceptedAdapter("codex", recs, sid, ac)
+companion-daemon/internal/term/production_bridge_test.go:321:	ev, _, _, _ := callAcceptedAdapter("codex", recs, "s", ac)
+companion-daemon/internal/term/production_bridge_test.go:44:	events, version, nextCursor, _ := callAcceptedAdapter("codex", records, sid, acursor)
+companion-daemon/internal/term/production_bridge_test.go:94:	ev1, _, nc1, _ := callAcceptedAdapter("codex", recs, "s", ac)
+companion-daemon/internal/term/telemetry_service.go:168:func callAcceptedAdapter(kind string, rawLines [][]byte, sessionID string, prevCursor string) ([]agent.AgentEvent, string, string, bool) {
 ```
 
-## 2. Zero Non-Documentation Changes
+The exact stdout of `rg -n --glob='*.go' 'ingestApprovals\(' companion-daemon/internal companion-daemon/cmd` is:
 
 ```
-$ git diff --name-status ab1884662..HEAD
-A    companion-daemon/docs/ARTIFACT_ID1_EVIDENCE.md
-M    companion-daemon/docs/CT_P0_EVIDENCE.md
-M    companion-daemon/docs/PB_7_EVIDENCE.md
-A    docs/CANONICAL_TIMELINE_CT_P0_SOURCE_FREEZE.md
-A    docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md
-M    docs/COORDINATOR_HANDOFF.md (was A, now M)
-M    docs/LOCAL_E2E_EVIDENCE.md
-M    docs/PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md
-M    docs/PB_EXECUTION_PLAN.md
-M    docs/PB_LEGACY_REMOVAL_CONTRACT.md
-M    docs/POST_PA3_AUTHORITATIVE_ROADMAP.md
-M    docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md
-
-ALL files are docs/ only — ZERO production changes from frozen candidate.
+companion-daemon/internal/term/approval_ingest.go:74:func (s *TelemetryService) ingestApprovals(sessionID string, launchGen int64, streamGen int, provider, version string, events []agent.AgentEvent) {
 ```
 
-## 3. Frozen Artifact SHA-256 Verification
+`telemetry_service.go` imports the version-pinned adapter packages to implement
+`acceptedAdapterFor`, but import and compilation do not establish a live
+producer. The first trace shows that all calls to `callAcceptedAdapter` are in
+`production_bridge_test.go`; the second shows that `ingestApprovals` has no
+callers. Classification: **no live adapter producer or consumer**. T1 and T2
+are fixture-only parser assets, not production-live session or telemetry paths.
+
+## 2. T0–T3 contract classification
+
+| Layer | Classification |
+|---|---|
+| T0 | `AgentEvent` and `contract` model/harness layer; not a session producer. |
+| T1 | Codex version-pinned fixtures; no live caller. |
+| T2 | Claude version-pinned fixtures; no live caller. |
+| T3 | Transcript capture/ingest/replay authority. |
+
+Managed Codex, Managed Claude, and owned PTY lifecycle remain direct managed
+service paths; they do not route through T1 or T2.
+
+## 3. Exact frozen-candidate diff
+
+The exact stdout of `git diff --name-status ab1884662..HEAD` is:
 
 ```
-$ shasum -a 256 /tmp/pokit-pb-device-artifacts/pokit-daemon
-5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580
-Expected: 5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580 ✅ MATCH
-
-$ shasum -a 256 /tmp/pokit-pb-device-artifacts/pokit-app-release.apk
-934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d
-Expected: 934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d ✅ MATCH
+A	companion-daemon/docs/ARTIFACT_ID1_EVIDENCE.md
+A	companion-daemon/docs/CT_P0_EVIDENCE.md
+M	companion-daemon/docs/PB_7_EVIDENCE.md
+A	docs/CANONICAL_TIMELINE_CT_P0_SOURCE_FREEZE.md
+A	docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md
+A	docs/COORDINATOR_HANDOFF.md
+M	docs/LOCAL_E2E_EVIDENCE.md
+M	docs/PB_DEVICE_GATE_TERMINAL_REGRESSION_REMEDIATION_PLAN.md
+M	docs/PB_EXECUTION_PLAN.md
+M	docs/PB_LEGACY_REMOVAL_CONTRACT.md
+M	docs/POST_PA3_AUTHORITATIVE_ROADMAP.md
+M	docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md
 ```
 
-## 4. Build Gate
+All paths are under `docs/` or `companion-daemon/docs/`.
+
+## 4. Legacy-symbol literal scan
+
+The exact stdout of `grep -rnE "ResolveAgentLog|NewActivityBuffer|NewMemoryEventStore|manual_link" companion-daemon --include="*.go" | grep -v "_test.go\|testdata"` is:
 
 ```
-$ cd companion-daemon
-$ go build ./...                          PASS
-$ go vet ./...                            PASS
-$ gofmt -l .                              CLEAN (0 files)
-$ git diff --check                        CLEAN
-$ go test -race ./... -count=1            ALL PASS
-
-ok  cmd/devremote                 33.6s
-ok  internal/agent                 1.5s
-ok  internal/agent/...claude      2.9s
-ok  internal/agent/...codex       6.2s
-ok  internal/agent/contract       3.5s
-ok  internal/agent/doctor        101.3s
-ok  internal/devicetrust           6.4s
-ok  internal/sessionid             2.5s
-ok  internal/term                 20.9s
-ok  internal/transcript            4.7s
-ok  internal/watcher               4.0s
-?   cmd/signald                   [no test files]
-?   internal/models               [no test files]
-?   scripts                       [no test files]
-
-$ cd ../mobile
-$ npx tsc --noEmit                      PASS (clean)
-$ npx jest --runInBand                  PASS (35 suites, 537/537 tests)
+companion-daemon/internal/agent/models.go:93:	Source     AgentEventSource `json:"source"` // mechanical origin (jsonl/log_file/screen/process/manual_link)
+companion-daemon/internal/agent/contract/validate.go:173:		e.Source = agent.SourceScreen // weakest concrete source; never manual_link by default
+companion-daemon/internal/agent/contract/contract.go:68:// jsonl/log_file/screen/process/manual_link). Precedence between conflicting
 ```
 
-## 5. Static Scans (all use `grep -E`, individually control-tested)
+Those three matches are comments. The exact `grep -rnE 'SourceManualLink'
+companion-daemon/cmd companion-daemon/internal --include='*.go'` command produced
+no stdout: `SourceManualLink` is physically deleted, while `manual_link` remains
+only in the three comments shown above.
 
-Every pattern below was control-tested before its corresponding tree scan. The
-following is the literal control output, in scan order:
+## 5. Security scan across internal code and documentation
 
-```
-$ printf '%s\n' 'mux.Registry' | grep -E 'mux\.Registry|mux\.Adapter[^a-zA-Z]|mux\.Session[^I]'
-mux.Registry
-$ printf '%s\n' 'tmux' | grep -E 'tmux|Tmux|TMUX|cmux|Cmux|CMUX|localpty|LocalPTY'
-tmux
-$ printf '%s\n' 'GetRecorder' | grep -E 'GetRecorder|EnsureRecorder|RegistryFromContext|WithRegistry'
-GetRecorder
-$ printf '%s\n' 'v1Bridge' | grep -E 'v1Bridge|NewV1FromOld|v1Handle'
-v1Bridge
-$ printf '%s\n' 'snapshotEndMarker' | grep -E 'snapshotEndMarker|deltaMarker|drainSnapshot'
-snapshotEndMarker
-$ printf '%s\n' 'manual_link' | grep -E 'ResolveAgentLog|NewActivityBuffer|NewMemoryEventStore|manual_link'
-manual_link
-$ printf '%s\n' 'SourceManualLink' | grep -E 'SourceManualLink'
-SourceManualLink
-$ printf '%s\n' 'timeline' | grep -E 'timeline'
-timeline
-$ printf '%s\n' 'agentKind ===' | grep -E 'agentKind.*==='
-agentKind ===
-$ printf '%s\n' "opt.id === 'approve'" | grep -E "opt\.id === 'approve'|opt\.id === 'reject'"
-opt.id === 'approve'
-$ printf '%s\n' 'sk-test' | grep -E 'sk-[A-Za-z0-9]|ghp_|xox[baprs]-|Bearer [A-Za-z0-9]'
-sk-test
-```
-
-### Forbidden Symbols
+`gsecrets` is not installed in this workspace. The available, reproducible
+extended-regex scan was run across both required roots with `grep -E`; no scanner
+result is inferred from an unavailable executable. The exact stdout of
+`grep -rnE "sk-[A-Za-z0-9]|ghp_|xox[baprs]-|Bearer [A-Za-z0-9]" companion-daemon/internal docs` is:
 
 ```
-$ grep -rnE "mux\.Registry|mux\.Adapter[^a-zA-Z]|mux\.Session[^I]" companion-daemon/cmd companion-daemon/internal \
-  --include="*.go" | grep -v "_test.go"
-(empty — ZERO production hits)
-
-$ grep -rnE "tmux|Tmux|TMUX|cmux|Cmux|CMUX|localpty|LocalPTY" companion-daemon/cmd companion-daemon/internal \
-  --include="*.go" | grep -v "_test.go"
-(empty)
-
-$ grep -rnE "GetRecorder|EnsureRecorder|RegistryFromContext|WithRegistry" companion-daemon/cmd companion-daemon/internal \
-  --include="*.go" | grep -v "_test.go"
-(empty)
-
-$ grep -rnE "v1Bridge|NewV1FromOld|v1Handle" companion-daemon/cmd companion-daemon/internal \
-  --include="*.go" | grep -v "_test.go"
-(empty)
-
-$ grep -rnE "snapshotEndMarker|deltaMarker|drainSnapshot" companion-daemon/cmd companion-daemon/internal \
-  --include="*.go" | grep -v "_test.go"
-(empty)
-```
-
-### Legacy Symbols
-
-```
-$ grep -rnE "ResolveAgentLog|NewActivityBuffer|NewMemoryEventStore|manual_link" \
-  companion-daemon --include="*.go" | grep -v "_test.go\|testdata"
-
-companion-daemon/internal/agent/models.go:93:
-  Comment-only in JSON tag description — NOT a constant.
-  SourceManualLink is DELETED (PB.2a).
-
-companion-daemon/internal/agent/contract/validate.go:173:
-  SourceScreen assignment with comment "never manual_link by default".
-  Contract test path — not a production caller.
-
-companion-daemon/internal/agent/contract/contract.go:68:
-  Documentation comment listing legacy source types.
-
-Classification: ZERO production callers. All hits are comments/documentation.
-
-$ grep -rnE "SourceManualLink" companion-daemon/cmd companion-daemon/internal --include="*.go"
-(empty — the identifier is physically deleted; the separate `manual_link` scan
-above records its comment-only remnants.)
-```
-
-### Timeline
-
-```
-$ grep -rnE "timeline" companion-daemon/cmd companion-daemon/internal/term mobile/src \
-  | grep -v "_test.go\|\.md\|testdata"
-(empty — ZERO runtime references)
-```
-
-### Mobile
-
-```
-$ grep -rnE "agentKind.*===" mobile/src/
-(empty — no vendor branching)
-
-$ grep -rnE "opt\.id === 'approve'|opt\.id === 'reject'" mobile/src/
-(empty — no ID inference)
-```
-
-### Security
-
-```
-$ grep -rnE "sk-[A-Za-z0-9]|ghp_|xox[baprs]-|Bearer [A-Za-z0-9]" companion-daemon/internal/
-companion-daemon/internal/transcript/api_test.go:231:req.Header.Set("Authorization", "Bearer deadbeef")
-companion-daemon/internal/term/devices_ipc_test.go:119:// Bearer session gone.
+companion-daemon/internal/transcript/api_test.go:231:	req.Header.Set("Authorization", "Bearer deadbeef")
+companion-daemon/internal/term/auth_test.go:512:	req.Header.Set("Authorization", "Bearer test-token")
+companion-daemon/internal/term/diagnostic.go:120:	redactGhpRE    = regexp.MustCompile(`\bghp_[A-Za-z0-9]{20,}\b`)
+companion-daemon/internal/term/diagnostic.go:143:	s = redactGhpRE.ReplaceAllString(s, "ghp_<REDACTED>")
+companion-daemon/internal/term/devices_ipc_test.go:119:	// Bearer session gone.
 companion-daemon/internal/devicetrust/session.go:189:// isActiveBearer reports whether a bearer session ID is still the current
-companion-daemon/internal/devicetrust/auth_middleware_test.go:29:req.Header.Set("Authorization", "Bearer deadbeef")
-companion-daemon/internal/devicetrust/auth_middleware_test.go:121:req.Header.Set("Authorization", "Bearer xyz")
+companion-daemon/internal/devicetrust/auth_middleware_test.go:29:	req.Header.Set("Authorization", "Bearer deadbeef")
+companion-daemon/internal/devicetrust/auth_middleware_test.go:121:	req.Header.Set("Authorization", "Bearer xyz")
 companion-daemon/internal/devicetrust/auth_middleware.go:51:// bearerToken extracts the raw token from an Authorization: Bearer header.
-
-Classification: every match is either a test value or the literal HTTP
-Authorization scheme handled by the authentication middleware; no credential
-or provider token is present.
+companion-daemon/internal/agent/contract/validate.go:365:var redactPrefixes = []string{"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer ", "AKIA"}
+companion-daemon/internal/agent/doctor/orchestrator.go:639:		"sk-", "ghp_", "xoxb-", "xoxp-", "Bearer ", "AKIA",
+companion-daemon/internal/agent/doctor/doctor_test.go:915:	secretPatch := []byte("diff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/adapter.go\n@@ -0,0 +1,3 @@\n+package v3_0_0\n+// sk-supersecretkey\n+var x = 1\n")
+companion-daemon/internal/agent/doctor/doctor_test.go:1106:	secretDiff := []byte("sk-mysecretkey\ndiff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/adapter.go\n@@ -0,0 +1,2 @@\n+package v3_0_0\n+var x = 1\n")
+companion-daemon/internal/agent/doctor/doctor_test.go:1117:	secretDiff := []byte("diff --git a/internal/agent/adapters/claude/v3_0_0/adapter.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/adapter.go\n@@ -0,0 +1,2 @@ ghp_secretinhunk\n+package v3_0_0\n+var x = 1\n")
+companion-daemon/internal/agent/doctor/doctor_test.go:1126:	secretDiff := []byte("diff --git a/internal/agent/adapters/claude/v3_0_0/Bearer token.go b/internal/agent/adapters/claude/v3_0_0/adapter.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/agent/adapters/claude/v3_0_0/Bearer token.go\n@@ -0,0 +1,1 @@\n+package v3_0_0\n")
+companion-daemon/internal/agent/doctor/doctor_test.go:1687:	os.WriteFile(filepath.Join(nestedDir, "events.jsonl"), []byte(`sk-mysecretkey`), 0644)
+docs/E6_NO_LOGIN_REPORT.md:8:- **Backend**: `InsecureLocalOnly` flag on Handlers. AuthMiddleware accepts `Authorization: Bearer dev-token` when insecure mode is active.
+docs/AGENT_PHASE_A10_ALPHA_CHECKLIST.md:50:- [x] Bearer tokens redacted (tested: TestRedactStr_HomePath)
+docs/A1_APPROVAL_SAFETY_REMEDIATION_3_REPORT.md:34:| `sanitizeLogID` leaves paths/tokens verbatim | strip control bytes then apply `redactStr` (home paths, sk-/ghp_/xox/Bearer, Authorization, key=value secrets), bounded | `TestHandler_LogRedaction` (actual log capture; Unix+Windows paths, secret/token patterns) — production-wired |
+docs/M3_AUTH_2B_IMPLEMENTATION_REPORT.md:72:| ticket is exactly lowercase 64-hex, session-bound | New: "getWSTicket 64-hex ticket, session query, Bearer header"; `wsTicket.test.ts` |
+docs/M3B_IMPLEMENTATION_REPORT.md:158:| paired-device bearer only in Authorization | `m3bLifecycleClient`: `Bearer DEVICE_BEARER_A`, header never contains `SUPABASE_JWT` |
+docs/PA3_CONTRACT.md:903:  Transcript does not regex-scan for `sk-*`, `ghp_REDACTED`, bearer tokens,
+docs/PA3_CONTRACT.md:1282:SECRETS=$(grep -rn "sk-[REDACTED]\|ghp_REDACTED\|xox_REDACTED-\|Bearer_REDACTED" \
+docs/AGENT_ADAPTER_LAYER_PLAN.md:598:| API key / token | `<TOKEN>` | `sk-ant-abc123...` → `<TOKEN>` |
 ```
 
-## 6. Agent Adapter Classification (Corrected)
+The matches classify as follows: test fixtures are the transcript, terminal,
+device-trust, and doctor-test entries; `diagnostic.go`, `validate.go`, and
+`orchestrator.go` contain redaction patterns; `session.go` and
+`auth_middleware.go` name the HTTP Bearer scheme; and every `docs/` match is
+documentation, a redaction description, or an explicitly synthetic token.
+No match is an active credential. The doctor-test values are deliberately used
+to verify secret detection and redaction, so they are not excluded from the
+literal scan.
 
-Agent adapters (claude v2_1_202, codex v0_144_1) are imported ONLY by
-`telemetry_service.go` for read-only telemetry parsing via `callAcceptedAdapter`.
-They do NOT create sessions, spawn processes, or route input.
+## 6. Gate result
 
-Classification: **FIXTURE-ONLY — NOT PRODUCTION-LIVE.** The adapter layer is
-not a live session producer; its version-pinned fixtures are consumed only for
-read-only telemetry parsing.
-The actual managed-native producers (`ManagedCodexService`, `ManagedClaudeService`,
-`OwnedPTYRuntime`) spawn processes directly without going through the agent adapter
-layer. The adapters are tested via contract harnesses but no production code path
-uses them for session lifecycle.
-
-## 7. SourceManualLink Status
-
-Verified against `internal/agent/models.go` at freeze baseline:
-
-- `SourceManualLink` is NOT a defined constant.
-- The four existing `AgentEventSource` constants are: `SourceJSONL`, `SourceLogFile`, `SourceScreen`, `SourceProcess`.
-- The string `manual_link` appears only in:
-  - `models.go:93` — JSON tag description comment
-  - `contract/validate.go:173` — comment saying "never manual_link by default"
-  - `contract/contract.go:68` — documentation comment
-
-SourceManualLink was deleted in PB.2a. Zero runtime effect.
+The full mobile gate completed with 35 suites and 537/537 tests. The TypeScript
+check completed successfully. This document makes no claim about a live adapter
+path because the caller inventory above proves none exists.

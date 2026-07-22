@@ -90,29 +90,19 @@ three native managed producer paths. No T1/T2 mapper fallback exists.
 
 ## 3. Agent Adapter Layer — Post-PB Classification
 
-### 3.1 Telemetry Consumers (read-only, NOT session producers)
+### 3.1 No live adapter producer or consumer
 
-The ONLY production imports from `term/` or `cmd/` into `agent/adapters/` are:
+`telemetry_service.go` imports the version-pinned Codex and Claude packages only
+to construct values in `acceptedAdapterFor`. That import/compilation fact is not
+a live call path. The code-level caller inventory is decisive: every
+`callAcceptedAdapter` invocation is in `production_bridge_test.go`, while
+`ingestApprovals` has no invocation at all. Consequently neither function
+provides a production telemetry consumer, approval consumer, session producer,
+process spawner, or input route.
 
-```
-internal/term/telemetry_service.go:
-  import claude v2_1_202  → callAcceptedAdapter → ClaudeParser
-  import codex v0_144_1   → callAcceptedAdapter → CodexParser
-```
-
-These parse agent output for telemetry (status extraction, approval detection).
-They do NOT create sessions, spawn processes, or route input. The actual
-managed-native session lifecycle is owned by the services in `term/`.
-
-`isAcceptedAdapter` returns true only for "codex" and "claude" kinds.
-`callAcceptedAdapter` routes raw log lines to version-specific parsers.
-`ingestApprovals` (driven by push, not polling) extracts approval requests.
-
-**Classification: FIXTURE-ONLY for production session creation.**
-The adapters are tested via contract harness (`RunParserContract`, `RunDetectorContract`)
-but no production code path goes through them to create sessions or spawn processes.
-They are **FIXTURE-ONLY — NOT PRODUCTION-LIVE**; all managed-native spawning is
-directly owned by the managed services.
+**Classification: NO LIVE PRODUCER OR CONSUMER.** T1 and T2 are fixture-only
+parser assets. Managed-native lifecycle is directly owned by the managed
+services; it does not pass through the adapter layer.
 
 ### 3.2 Contract/Test-Only
 
@@ -153,9 +143,9 @@ Per `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` §2 and
 
 | Layer | Reused By | Reuse Mechanism |
 |-------|----------|----------------|
-| T0 (contract) | T1, T2, telemetry, doctor | `AgentEvent`, `AgentParser`, `AgentDetector` interfaces |
-| T1 (Codex fixtures) | `telemetry_service.go` | `callAcceptedAdapter("codex", ...)` — read-only telemetry; not production-live lifecycle |
-| T2 (Claude fixtures) | `telemetry_service.go` | `callAcceptedAdapter("claude", ...)` — read-only telemetry; not production-live lifecycle |
+| T0 (contract) | T1, T2, contract tests, doctor | `AgentEvent`, `AgentParser`, `AgentDetector` interfaces |
+| T1 (Codex fixtures) | No live caller | Fixture-only parser asset |
+| T2 (Claude fixtures) | No live caller | Fixture-only parser asset |
 | T3 (Transcript) | `term/`, `Recorder`, `OwnedPTYRuntime` | Byte-stream projection, generation-bound queue |
 
 ### 4.3 Forbidden Legacy Sources
