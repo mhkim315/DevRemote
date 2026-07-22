@@ -8,10 +8,10 @@ direction moved to `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`
 > coordination/workspace model, and CT-P1 transition are authoritative in
 > [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
 > If the older post-PB sequence below conflicts with that document, the new
-> roadmap wins. PB physical evidence remains pending and PB ACCEPT remains
-> **UNSET**.
+> roadmap wins. PB physical evidence and final independent acceptance completed
+> at `5354077afcf30343d9666511e259346d9bea0ad6`.
 
-**Branch:** `feature/phase10-multi-adapter`
+**Current execution branch:** `feature/canonical-timeline-foundation`
 
 **Frozen PA3 production baseline:** `34d55e950012e97ccdcb03fd9abba88088ffd9a7`
 
@@ -32,12 +32,14 @@ These identities have different meanings and must not be substituted for one ano
 | Current non-device checkpoint | `f052e7f8a60ae0ece8b7a5535045f59c55b8e3c4` | Automated PB checkpoint before the frozen QR/Input remediation sequence |
 | Historical PB device candidate alias | `ab1884662` | Pre-TERM-C1-R3 candidate; no longer authorized for final device acceptance |
 | Historical PB automated evidence | `b18123e77` | Pre-TERM-C1-R3 evidence; retained as history only |
-| Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
+| PB ACCEPT | `5354077afcf30343d9666511e259346d9bea0ad6` | Independent final acceptance after the matched SM-S926N device gate |
 | Historical pre-R3 PB device candidate | `ab18846622327334300de8436aff600db5c08e17` | Superseded for final device acceptance after TERM-C1-R3 was found |
 | Historical pre-R3 daemon artifact | `5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580` | Retained provenance only; not valid for final smoke |
 | Historical pre-R3 APK artifact | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` | Retained provenance only; not valid for final smoke |
 | PB-DG-R4 planning baseline | `45d2433dce8b59a025bf3adf7563a7e5fc37d747` | Current TERM-C1-R3 and Pairing V1 correction; not yet a frozen candidate |
-| Replacement PB device candidate | **UNSET** | Frozen only after PB-DG-R4 implementation and automated gates |
+| Accepted PB device candidate | `059bef181c6c2ef312eee421dbf10f12b15b0326` | Exact production/mobile source used for the accepted PB-DG-R4 device artifacts |
+| Accepted PB daemon artifact | `a2753537801536b94d725d274ec94a7f5b0d1b6b7409a2f2e5f5cbbef08e93ea` | Frozen daemon SHA-256; VCS revision equals the accepted candidate and `vcs.modified=false` |
+| Accepted PB APK artifact | `9ee0c4763151e080cb50b67b393bae525b4ab79463b24708f3a1cfc57bf97128` | Frozen release APK SHA-256 with matching embedded candidate and daemon identities |
 
 | Packet | Status |
 |---|---|
@@ -47,8 +49,8 @@ These identities have different meanings and must not be substituted for one ano
 | PA2 | ACCEPT |
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
 | PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
-| PB | AUTOMATED LEGACY REMOVAL COMPLETE; PB-DG-R4 device closeout is the sole active prerequisite; ACCEPT unset |
-| CT-PRE | CT-P0 and CT-P1 ACCEPT (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`); post-PB operational amendment pending; production composition forbidden |
+| PB | ACCEPT at `5354077afcf30343d9666511e259346d9bea0ad6`; candidate `059bef181c6c2ef312eee421dbf10f12b15b0326`; matched SM-S926N evidence complete |
+| CT-PRE | CT-P0 and CT-P1 ACCEPT (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`); operational-evidence amendment is NEXT; CT-P2 and production composition remain blocked pending its independent ACCEPT and a reviewed post-PB packet |
 
 ## 2. Mandatory execution order
 
@@ -115,18 +117,18 @@ The bounded pre-device exception is governed exclusively by
 It is required because usable pairing and truthful input are prerequisites for
 the physical gate; it does not reopen PB legacy-removal scope.
 
-The device-discovered TERM-C1-R3 and Pairing V1 closeout is governed by
+The completed device-discovered TERM-C1-R3 and Pairing V1 closeout is governed by
 [`PB_DG_R4_CLOSEOUT_PLAN.md`](PB_DG_R4_CLOSEOUT_PLAN.md). It supersedes the old
-pre-R3 candidate for final device evidence and is the sole execution priority.
-No post-PB work may begin until its replacement candidate receives independent
-PB ACCEPT.
+pre-R3 candidate for final device evidence and was independently accepted at
+`5354077afcf30343d9666511e259346d9bea0ad6`.
 
 The bounded offline Canonical Timeline foundation exception is governed by
 [`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
-CT-P0 and CT-P1 are accepted; the CT-P1 operational-evidence amendment, CT-P2,
-and later CT waves are not currently authorized. Production
-shadow-write and every authority/UI cutover remain blocked until an exact PB
-ACCEPT SHA and independent acceptance of the revised operational CT-P1 exist.
+CT-P0 and CT-P1 are accepted, and PB ACCEPT now satisfies the amendment's PB
+prerequisite. The CT-P1 operational-evidence amendment is the sole active next
+packet; CT-P2 and later CT waves are not yet authorized. Production shadow-write
+and every authority/UI cutover remain blocked until independent acceptance of
+the revised operational CT-P1 and the applicable separately reviewed packet.
 
 ## 5. Post-PB direction
 
@@ -147,7 +149,7 @@ automatic continuation of the accepted PA/PB work.
 | `docs/POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` | **Authoritative product definition, authority model, MVP, and post-PB order** |
 | `docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md` | **Authoritative pre-device QR/Input packet contract and device-entry gate** |
 | `docs/PB_DG_R4_CLOSEOUT_PLAN.md` | **Authoritative final PB device-closeout prerequisite and independent stop gate** |
-| `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative offline CT-PRE contract; production composition/cutover blocked pending PB ACCEPT** |
+| `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative CT foundation contract; CT-P1 amendment is next, while CT-P2 and production composition/cutover remain separately gated** |
 | `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the independently accepted SHA |
 | `docs/PB_LEGACY_REMOVAL_CONTRACT.md` | **Authoritative PB boundary**; implementation starts only after independent PB plan review |
 | `docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md` | Historical rationale only; post-PA3 sequence superseded |
@@ -173,12 +175,12 @@ safety boundaries remain controlled by this ledger and its accepted contracts.
   identities, regenerated PB.6/PB.7 evidence is clean, and daemon/APK identities
   equal the replacement PB-DG-R4 production candidate. The pre-R3 candidate and
   artifacts are historical only.
-- Stop PB-DG-R4 after its implementation/evidence push. Do not assign PB ACCEPT
-  or begin later work until independent review records ACCEPT for the exact
-  replacement candidate and matched SM-S926N evidence.
-- Do not begin CT-P2. Keep CT-P1 production-unwired until PB has an exact
-  independent ACCEPT SHA and the operational-evidence amendment is independently
-  accepted. Any premature production import,
+- PB-DG-R4 is complete and independently accepted. Preserve candidate
+  `059bef181c6c2ef312eee421dbf10f12b15b0326`, its matched artifacts, and ACCEPT
+  `5354077afcf30343d9666511e259346d9bea0ad6` as immutable evidence.
+- Do not begin CT-P2. Keep CT-P1 production-unwired until the
+  operational-evidence amendment is independently accepted and a separate
+  post-PB packet authorizes the next implementation boundary. Any premature production import,
   construction, goroutine, filesystem write, route, DTO, mobile dependency, or
   authority change is an immediate CT-PRE reject.
 - Stop rather than retaining Gemini or legacy discovery as an “accepted

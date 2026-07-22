@@ -1,21 +1,26 @@
 # Canonical Timeline CT-PRE Execution Plan
 
 **Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0 and CT-P1 accepted;
-operational-evidence amendment, CT-P2, and production wiring blocked
+PB accepted; operational-evidence amendment is NEXT; CT-P2 and production
+wiring remain blocked pending amendment acceptance and separate authorization
 
 > **Product-direction amendment:** The product, authority model, and post-PB
 > order now live in
 > [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
 > This document continues to govern CT foundation safety. CT-P1 was
 > independently accepted at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`.
-> After PB ACCEPT, CT-P1 must be reviewed and, if needed, narrowly amended so that
+> PB received independent ACCEPT at
+> `5354077afcf30343d9666511e259346d9bea0ad6`. CT-P1 must now be reviewed and,
+> if needed, narrowly amended so that
 > Canonical Timeline is operational evidence and does not require every future
-> operational event to be a provider `AgentEvent`. Do not begin CT-P2.
+> operational event to be a provider `AgentEvent`. Do not begin CT-P2 until the
+> amendment receives independent ACCEPT and a separate post-PB packet authorizes
+> it.
 
 **Architecture name:** **Canonical Timeline**
 
-**Branch:** `feature/phase10-multi-adapter` for this planning packet; the
-implementation branch rule is defined below.
+**Current execution branch:** `feature/canonical-timeline-foundation`; the
+historical branch and replay rules are retained below for provenance.
 
 ## 1. Verdict and state model
 
@@ -54,17 +59,20 @@ The frozen state is:
 | Historical pre-R3 daemon SHA-256 | `5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580` |
 | Historical pre-R3 APK SHA-256 | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` |
 | PB-DG-R4 planning baseline | `45d2433dce8b59a025bf3adf7563a7e5fc37d747` |
-| Replacement PB device candidate and artifacts | **UNSET; governed by `PB_DG_R4_CLOSEOUT_PLAN.md`** |
-| PB physical SM-S926N evidence | **PENDING replacement-candidate smoke** |
-| PB ACCEPT SHA | **UNSET** |
-| CT-PRE | **CT-P0 and CT-P1 accepted; operational amendment pending PB ACCEPT** |
-| CT-P2 | **BLOCKED** |
-| Production shadow-write | **BLOCKED until PB ACCEPT and revised CT-P1 independent ACCEPT** |
+| Accepted PB device candidate | `059bef181c6c2ef312eee421dbf10f12b15b0326` |
+| Accepted PB daemon SHA-256 | `a2753537801536b94d725d274ec94a7f5b0d1b6b7409a2f2e5f5cbbef08e93ea` |
+| Accepted PB APK SHA-256 | `9ee0c4763151e080cb50b67b393bae525b4ab79463b24708f3a1cfc57bf97128` |
+| PB physical SM-S926N evidence | **8/8 PASS** |
+| PB ACCEPT SHA | `5354077afcf30343d9666511e259346d9bea0ad6` |
+| CT-PRE | **CT-P0 and CT-P1 accepted; operational amendment is NEXT** |
+| CT-P2 | **BLOCKED pending amended CT-P1 independent ACCEPT and separate post-PB authorization** |
+| Production shadow-write | **BLOCKED until revised CT-P1 independent ACCEPT and a reviewed shadow-wiring packet** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
 
-CT-PRE is a bounded pre-PB-ACCEPT exception for offline foundation work only.
-It does not assert that PB is complete and cannot alter the frozen candidate or
-its artifacts.
+CT-PRE was a bounded pre-PB-ACCEPT exception for offline foundation work only.
+PB is now accepted, but that acceptance authorizes only the CT-P1 contract
+amendment. It does not itself authorize CT-P2, production composition, or
+shadow-write, and no CT work may alter the frozen PB candidate or artifacts.
 
 ## 2. Authority and composition boundary
 
@@ -318,8 +326,9 @@ unrelated nullable refs are accepted; secrets/raw payloads are retained.
 
 > CT-P2 and every later wave in this historical CT-PRE decomposition are
 > blocked by the current product roadmap. Their retained contracts are planning
-> inputs only. Do not execute them before PB ACCEPT, CT-P1 operational-evidence
-> review/amendment, and a new independent authorization.
+> inputs only. PB ACCEPT is satisfied, but do not execute them before the CT-P1
+> operational-evidence amendment receives independent ACCEPT and a new reviewed
+> post-PB packet authorizes the wave.
 
 **Purpose:** map only the accepted pinned Codex fixture/native shape into T0 and
 then the Timeline envelope as a pure function.
@@ -549,8 +558,9 @@ returned early, weakened to logging, or replaced with a nil/vacuous fixture.
 | CT-P4 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 | CT-P5 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
 
-Stop at the accepted CT-P1 foundation. Its acceptance does not authorize CT-P2,
-shadow-write, cutover, or the post-PB operational amendment.
+Stop at the accepted CT-P1 foundation except for the now-authorized narrow
+operational-evidence contract amendment. Neither the original CT-P1 acceptance
+nor PB ACCEPT authorizes CT-P2, shadow-write, or cutover.
 
 ## 9. Deferred decisions
 
@@ -579,16 +589,18 @@ after the primary authority commits, never hold authority locks across Timeline
 I/O, never call back into authority, use bounded failure isolation, and treat any
 drop/gap as an invalid equivalence run.
 
-## 10. Exact stop condition before PB ACCEPT
+## 10. Exact transition gate after PB ACCEPT
 
-At the accepted CT-P1 SHA, all Canonical Timeline implementation stops. Do not
-begin CT-P2 or create a production
+PB-DG-R4 and its exact matched artifacts have satisfied conditions 1-2 below.
+At the accepted CT-P1 SHA, all Canonical Timeline implementation remains stopped
+except for the narrow contract amendment. Do not begin CT-P2 or create a production
 writer, shadow queue, startup/DI registration, live normalizer callback, route,
 DTO, mobile consumer, or cutover plan until:
 
-1. PB-DG-R4 passes and the bounded SM-S926N smoke uses its exact replacement
-   candidate and matched artifacts;
-2. an independent verifier assigns an exact PB ACCEPT SHA;
+1. **SATISFIED:** PB-DG-R4 passed and the bounded SM-S926N smoke used candidate
+   `059bef181c6c2ef312eee421dbf10f12b15b0326` and its matched artifacts;
+2. **SATISFIED:** independent PB ACCEPT is
+   `5354077afcf30343d9666511e259346d9bea0ad6`;
 3. CT-P1 is reviewed against the operational-evidence direction in
    `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and narrowly amended if
    needed;
@@ -613,4 +625,5 @@ It is not a current executor authorization:
 
 The historical CT-P0 executor prohibition on CT-P1 was satisfied before CT-P1
 started. Current work follows the stop and transition rules in sections 8-10
-and `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`; CT-P2 remains blocked.
+and `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`. Current work is the CT-P1
+operational-evidence amendment; CT-P2 remains blocked.

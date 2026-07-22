@@ -5,9 +5,11 @@
 **Planning base:** `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`
 
 **Current execution state:** CT-P1 is independently accepted at
-`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; PB physical-device evidence is
-pending; PB ACCEPT is **UNSET**; the operational-evidence amendment, CT-P2, and
-all production Timeline wiring are blocked.
+`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; PB is independently accepted at
+`5354077afcf30343d9666511e259346d9bea0ad6`; the CT-P1 operational-evidence
+amendment is the sole active next packet. CT-P2 and all production Timeline
+wiring remain blocked until the amended CT-P1 contract receives independent
+ACCEPT and the applicable post-PB packet is reviewed.
 
 This document owns the current product definition, authority boundaries, MVP,
 and post-PB execution order. [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md)
@@ -322,8 +324,10 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 
 1. **COMPLETE:** CT-P1 finished without disruption and received independent
    ACCEPT at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`.
-2. Complete PB physical-device evidence and obtain final independent PB ACCEPT.
-3. Review CT-P1 against this operational-evidence direction; add a narrow
+2. **COMPLETE:** PB physical-device evidence received final independent ACCEPT
+   at `5354077afcf30343d9666511e259346d9bea0ad6` for candidate
+   `059bef181c6c2ef312eee421dbf10f12b15b0326`.
+3. **NEXT:** Review CT-P1 against this operational-evidence direction; add a narrow
    contract amendment if required and independently accept the revised CT-P1.
 4. Add fail-open Operational Canonical Timeline shadow wiring.
 5. Add workspace identity, clean-snapshot contract, and cooperative repository
@@ -338,8 +342,8 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 Operational Timeline and workspace identity may be adjacent foundation work,
 but communication and validation cannot precede exact workspace identity.
 CT-P2 is blocked. CT-P1 remains production-unwired through steps 1-3, and no
-production Timeline shadow wiring begins before PB ACCEPT plus independent
-acceptance of the revised CT-P1 contract.
+production Timeline shadow wiring begins before independent acceptance of the
+revised CT-P1 contract and its separately reviewed shadow-wiring packet.
 
 ## 11. Stop and expansion gates
 
