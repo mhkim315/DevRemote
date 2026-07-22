@@ -48,7 +48,7 @@ Existing tests: 13 pairing tests (Full2Phase, MobileIntegration, RejectLifecycle
 SHA:       c190d8318ab790f6264c130d0a1045064d6af3f6
 Branch:    feature/canonical-timeline-foundation
 Ancestry:  f80183578 → c190d8318 (1 commit forward)
-Worktree:  0 untracked/modified files at checkout
+Worktree:  0 untracked/modified files at checkout (fresh clone, verified vcs.modified=false)
 ```
 
 ### Daemon
@@ -58,7 +58,7 @@ Build:     go build -o pokit-daemon ./cmd/devremote (from clean checkout)
 Go:        go1.26.4
 VCS rev:   c190d8318ab790f6264c130d0a1045064d6af3f6 (exact match ✅)
 VCS mod:   false ✅
-SHA-256:   0c2e55aa1155ec8c00b4bb4cb26d5c821289589efbc0898ae67376e87e6dc0c6
+SHA-256:   22a9501887bab49ad01169e406996ee4b5eef69fdccfcb0cbd0073f3a1fe3ca9
 ```
 
 ### APK
@@ -66,8 +66,8 @@ SHA-256:   0c2e55aa1155ec8c00b4bb4cb26d5c821289589efbc0898ae67376e87e6dc0c6
 ```
 Build:     EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST unset (production)
            expo prebuild + gradle assembleRelease
-SHA-256:   b007d3d15f3ee1039cb00c3e874c7f30a3040a4940d69b7ecaa75456bed8be4d
-Size:      160,876,019 bytes
+SHA-256:   c34ae0e236d3cec4932570b4c18b3729977468809c85bdd230cb3c9ce6c9b38b
+Size:      160,876,015 bytes
 Assets:    PB_DEVICE_CANDIDATE_SHA.txt + DAEMON_SHA256.txt embedded
 ```
 
