@@ -4,7 +4,16 @@ Initial implementation commit: `680a78f69b5a0cdae737eaf7c630c1c219185617`
 
 R2 implementation commit: `ec41d196de6e5bd2fa1531703d9ced4a69f61d31`
 
-T2 test-correction commit: `519fae7d3`
+Correction chain (all commits after the R2 implementation):
+
+- `d9bbf013ddcb0873fe58c59b66d44d37642340a8` — added the all-payload privacy
+  boundary and T0 field bounds in `contract.go`.
+- `9d97f68abe293459f2776efc7469d2fb44b76f9b` — added test-only digest and T0
+  bound coverage.
+- `519fae7d3b6a0b33b721060b59c6c7ef17fef49a` — corrected the digest pointer
+  aliasing test and its collision assertion.
+- `2f54674fc973c5a4cec91fe5b72783932a5c0057` — recorded the preceding T2
+  test-correction evidence.
 
 ## Scope and dependency boundary
 
@@ -109,6 +118,11 @@ type References struct {
   detail and metadata are intentionally not valid-boundary candidates because
   every payload variant rejects them at the privacy boundary; dedicated tests
   prove that rejection instead.
+- Metadata count and key/value-size regressions use valid payloads. At N-1 and
+  N, the production metadata-bound stage accepts the value and validation then
+  reaches the independent payload privacy rejection; at N+1, validation rejects
+  the metadata bound before privacy. This is the only behavior compatible with
+  the all-payload privacy invariant in `contract.go`.
 
 ## Verification
 
