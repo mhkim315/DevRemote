@@ -1,6 +1,6 @@
 # Post-PA3 Authoritative Roadmap
 
-**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 ACCEPTED; PB automated deletion gates complete; pre-device QR/input remediation pending; device gate not started
+**Status:** AUTHORITATIVE POST-PA3 EXECUTION ORDER — PA4 ACCEPTED; PB implementation candidate frozen; physical device evidence pending; bounded offline CT-PRE planning authorized
 
 **Branch:** `feature/phase10-multi-adapter`
 
@@ -24,6 +24,9 @@ These identities have different meanings and must not be substituted for one ano
 | Future PB device candidate | `ab1884662` | Final production/mobile identity after QR, Input-A, and Input-B acceptance |
 | Future PB automated evidence | `b18123e77` | Evidence-only head after PB.6/PB.7 regeneration |
 | Future PB ACCEPT | **UNSET** | Assigned only by an independent PB verifier |
+| Frozen PB device candidate | `ab18846622327334300de8436aff600db5c08e17` | Immutable production/mobile source for the pending physical matrix |
+| Frozen daemon artifact | `5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580` | SHA-256; matched to the frozen candidate |
+| Frozen APK artifact | `934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d` | SHA-256; matched to the frozen candidate |
 
 | Packet | Status |
 |---|---|
@@ -34,6 +37,7 @@ These identities have different meanings and must not be substituted for one ano
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
 | PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
 | PB | AUTOMATED LEGACY REMOVAL COMPLETE; pre-device remediation planned; device gate not started; ACCEPT unset |
+| CT-PRE | PLAN FROZEN; implementation blocked until independent CT-P0 ACCEPT; production composition forbidden |
 
 ## 2. Mandatory execution order
 
@@ -48,7 +52,8 @@ PA3 COMPLETE
 → Input-B exact-generation acknowledged input and independent ACCEPT
 → PB.6/PB.7 evidence regeneration
 → exact device-candidate freeze and matched daemon/APK builds
-→ SM-S926N device matrix
+→ [parallel-safe, isolated] CT-P0..CT-P5 offline foundation only
+→ SM-S926N device matrix using the exact frozen artifacts
 → independent PB ACCEPT
 → remaining terminal/restart debt remediation
 → remote-pairing hardening under a separate threat model
@@ -60,8 +65,11 @@ PA3 COMPLETE
 ```
 
 No later packet may be pulled forward to justify a shortcut in PA4 or PB. PB
-cannot start from the PA3 SHA, and Canonical Timeline cannot preserve legacy
-discovery while PA4/PB remain incomplete.
+cannot start from the PA3 SHA. The sole additional exception before PB ACCEPT is
+the offline, zero-production-composition CT-PRE foundation governed by
+[`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
+It cannot preserve or revive legacy discovery, change the frozen device
+candidate, write production data, or authorize production shadow-write/cutover.
 
 ## 3. Frozen authority model
 
@@ -96,13 +104,22 @@ The bounded pre-device exception is governed exclusively by
 It is required because usable pairing and truthful input are prerequisites for
 the physical gate; it does not reopen PB legacy-removal scope.
 
+The bounded offline Canonical Timeline foundation exception is governed by
+[`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
+It starts only after independent CT-P0 plan acceptance and stops after offline
+CT-P5. Production shadow-write and every authority/UI cutover remain blocked
+until an exact PB ACCEPT SHA exists.
+
 ## 5. Post-PB direction
 
 The QR renderer/security and exact-generation input packets defined by the
-pre-device plan are the only approved exception before PB acceptance. Remaining
+pre-device plan and the zero-composition CT-PRE offline foundation are the only
+approved exceptions before PB acceptance. Remaining
 empty-terminal/restart debt and any remote-pairing hardening stay in separate
-post-PB reviewed packets. Canonical Timeline follows those bounded remediation
-packets. `AcceptedRecordSource` is not mandated: it may be introduced only if
+post-PB reviewed packets. Canonical Timeline production shadowing and cutover
+follow those bounded remediation packets; only the offline CT-PRE foundation may
+run earlier under its separate contract. `AcceptedRecordSource` is not mandated:
+it may be introduced only if
 multiple surviving provider-native sources demonstrably need a narrow common
 interface, and it must never preserve legacy discovery. The common
 Codex/Claude provider contract follows Timeline; Grok/ACP conformance,
@@ -114,6 +131,7 @@ Navigator/Guard, then durable orchestration and product hardening follow.
 |---|---|
 | This document | **Authoritative execution order and status ledger** |
 | `docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md` | **Authoritative pre-device QR/Input packet contract and device-entry gate** |
+| `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative offline CT-PRE contract; production composition/cutover blocked pending PB ACCEPT** |
 | `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the independently accepted SHA |
 | `docs/PB_LEGACY_REMOVAL_CONTRACT.md` | **Authoritative PB boundary**; implementation starts only after independent PB plan review |
 | `docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md` | Historical rationale only; post-PA3 sequence superseded |
@@ -136,5 +154,9 @@ post-PA3 documents named above control.
 - Stop the device gate until QR, Input-A, and Input-B have independent ACCEPT
   identities, regenerated PB.6/PB.7 evidence is clean, and daemon/APK identities
   equal the frozen production candidate.
+- Stop CT-PRE before CT-P1 until CT-P0 has independent ACCEPT; stop after CT-P5
+  until PB has an exact independent ACCEPT SHA. Any production import,
+  construction, goroutine, filesystem write, route, DTO, mobile dependency, or
+  authority change is an immediate CT-PRE reject.
 - Stop rather than retaining Gemini or legacy discovery as an “accepted
   adapter” without a separately accepted production consumer.
