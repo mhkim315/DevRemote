@@ -2,7 +2,7 @@
 
 **Status:** R4.1 + R4.2 + R4.3 COMPLETE — R4.4 BLOCKED (requires SM-S926N)
 
-**IMPL SHA (candidate):** `c5b179a0a02342a44c468fe3563c6f272feb70f5`
+**IMPL SHA (candidate):** `059bef181c6c2ef312eee421dbf10f12b15b0326`
 **EVID SHA:** (this commit)
 **Branch:** `feature/canonical-timeline-foundation`
 **Date:** 2026-07-23
@@ -57,7 +57,7 @@ Existing 13 Go pairing tests + all mobile pairing tests continue to PASS.
 ### Candidate
 
 ```
-SHA:       c5b179a0a02342a44c468fe3563c6f272feb70f5
+SHA:       059bef181c6c2ef312eee421dbf10f12b15b0326
 Branch:    feature/canonical-timeline-foundation
 Worktree:  0 untracked/modified files (fresh clone)
 ```
@@ -66,9 +66,9 @@ Worktree:  0 untracked/modified files (fresh clone)
 
 ```
 Go:        go1.26.4
-VCS rev:   c5b179a0a02342a44c468fe3563c6f272feb70f5 (exact match ✅)
+VCS rev:   059bef181c6c2ef312eee421dbf10f12b15b0326 (exact match ✅)
 VCS mod:   false ✅
-SHA-256:   529b4f8d0db243a4761918714c493cce9123bc6c3df96d3b93ea07523a46cb02
+SHA-256:   a2753537801536b94d725d274ec94a7f5b0d1b6b7409a2f2e5f5cbbef08e93ea
 ```
 
 ### APK
@@ -76,7 +76,7 @@ SHA-256:   529b4f8d0db243a4761918714c493cce9123bc6c3df96d3b93ea07523a46cb02
 ```
 Build:     EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST unset (production)
            expo prebuild + gradle assembleRelease
-SHA-256:   950d4af5cb480e4757ae834b49aacda306664b967e939b9de0b4e67f24cd383b
+SHA-256:   f5718fcca3f857fcfa1a50f2457ebfc1d7025978d6c0a33f5cbb760a896b37b7
 Size:      160,876,067 bytes
 Assets:    PB_DEVICE_CANDIDATE_SHA.txt + DAEMON_SHA256.txt embedded
 ```
@@ -100,9 +100,9 @@ npx jest            PASS (20/20 pairing client)
 
 ```
 /tmp/pokit-pb-device-artifacts/
-├── PB_DEVICE_CANDIDATE_SHA.txt   (c5b179a0a02342a44c468fe3563c6f272feb70f5)
-├── DAEMON_SHA256.txt             (529b4f8d0db243a4761918714c493cce9123bc6c3df96d3b93ea07523a46cb02)
-├── APK_SHA256.txt                (950d4af5cb480e4757ae834b49aacda306664b967e939b9de0b4e67f24cd383b)
+├── PB_DEVICE_CANDIDATE_SHA.txt   (059bef181c6c2ef312eee421dbf10f12b15b0326)
+├── DAEMON_SHA256.txt             (a2753537801536b94d725d274ec94a7f5b0d1b6b7409a2f2e5f5cbbef08e93ea)
+├── APK_SHA256.txt                (f5718fcca3f857fcfa1a50f2457ebfc1d7025978d6c0a33f5cbb760a896b37b7)
 ├── pokit-daemon                  (12,349,410 bytes)
 └── pokit-app-release.apk         (160,876,067 bytes)
 ```
@@ -111,5 +111,5 @@ npx jest            PASS (20/20 pairing client)
 
 | Identity | Value |
 |----------|-------|
-| `PB_DEVICE_CANDIDATE_SHA` | `c5b179a0a02342a44c468fe3563c6f272feb70f5` |
+| `PB_DEVICE_CANDIDATE_SHA` | `059bef181c6c2ef312eee421dbf10f12b15b0326` |
 | `PB_ACCEPT_SHA` | **UNSET** (only independent verifier assigns) |
