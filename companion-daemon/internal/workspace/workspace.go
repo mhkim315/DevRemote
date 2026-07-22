@@ -30,7 +30,7 @@ const (
 	IsolationRepoProcess   IsolationProfile = "repo+process"
 	IsolationRepoNetwork   IsolationProfile = "repo+network-policy"
 	IsolationContainerized IsolationProfile = "containerized"
-	IsolationVM            IsolationProfile = "vm"
+	IsolationVM            IsolationProfile = "VM-isolated"
 )
 
 // Identity names one repository workspace and the immutable snapshot it is
@@ -55,9 +55,10 @@ func (i Identity) Validate() error {
 	default:
 		return ErrInvalidIdentity
 	}
-	switch i.IsolationProfile {
-	case IsolationRepoOnly, IsolationRepoProcess, IsolationRepoNetwork, IsolationContainerized, IsolationVM:
-	default:
+	// Only repository-level isolation is currently implemented. The other
+	// roadmap vocabulary values remain named for future explicit enforcement,
+	// but accepting one today would overpromise isolation we do not provide.
+	if i.IsolationProfile != IsolationRepoOnly {
 		return ErrInvalidIdentity
 	}
 	return nil

@@ -107,9 +107,11 @@ func TestIdentityRejectsUnsupportedModeAndIsolationClaim(t *testing.T) {
 	if err := i.Validate(); !errors.Is(err, ErrInvalidIdentity) {
 		t.Fatalf("mode = %v", err)
 	}
-	i = identity()
-	i.IsolationProfile = "magic"
-	if err := i.Validate(); !errors.Is(err, ErrInvalidIdentity) {
-		t.Fatalf("profile = %v", err)
+	for _, profile := range []IsolationProfile{IsolationRepoProcess, IsolationRepoNetwork, IsolationContainerized, IsolationVM, "magic"} {
+		i = identity()
+		i.IsolationProfile = profile
+		if err := i.Validate(); !errors.Is(err, ErrInvalidIdentity) {
+			t.Fatalf("profile %q = %v", profile, err)
+		}
 	}
 }
