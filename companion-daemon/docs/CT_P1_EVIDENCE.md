@@ -4,6 +4,8 @@ Initial implementation commit: `680a78f69b5a0cdae737eaf7c630c1c219185617`
 
 R2 implementation commit: `ec41d196de6e5bd2fa1531703d9ced4a69f61d31`
 
+T2 test-correction commit: `519fae7d3`
+
 ## Scope and dependency boundary
 
 The implementation diff from CT-P0 acceptance contains only the new contract
@@ -100,10 +102,17 @@ type References struct {
 - Fixture-derived read limits are 1000 events, 4096 cursor bytes, and 1 MiB raw
   record bytes. R2 has N-1/N/N+1 coverage for those limits plus payload bytes,
   envelope/reference IDs, opaque references, and digest-reference byte counts.
+- The T2 correction deep-copies the digest payload before changing it, proves
+  the canonical digest differs while source-derived EventID remains equal, and
+  asserts `ErrEventIDCollision`. Its valid-envelope N-1/N/N+1 table covers all
+  bounded envelope identity fields plus T0 ID/source/provenance. Wrapped raw
+  detail and metadata are intentionally not valid-boundary candidates because
+  every payload variant rejects them at the privacy boundary; dedicated tests
+  prove that rejection instead.
 
 ## Verification
 
-All passed on the R2 implementation commit:
+All passed on the R2 implementation and T2 test-correction commits:
 
 - `go test -race ./internal/timeline/contract -count=1`
 - `go test ./internal/timeline/contract -run=^$ -fuzz=FuzzEnvelopeValidator -fuzztime=2s`
