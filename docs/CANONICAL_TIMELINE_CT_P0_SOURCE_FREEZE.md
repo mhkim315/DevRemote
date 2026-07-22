@@ -2,7 +2,7 @@
 
 **Status:** IMPLEMENTATION DOCUMENT
 
-**IMPL SHA:** `9688cc687`
+**IMPL SHA:** `7b7f23d0a`
 **Branch:** `feature/phase10-multi-adapter`
 **Freeze baseline:** `ab1884662` (PB_DEVICE_CANDIDATE_SHA)
 **Date:** 2026-07-22
@@ -12,8 +12,11 @@
 ### 1.1 Source Tree
 
 ```
-$ git rev-parse HEAD
-9688cc687... (IMPL commit)
+$ git rev-parse --short=9 7b7f23d0a
+7b7f23d0a
+
+$ git rev-parse --short=9 ab1884662
+ab1884662
 
 $ git status --porcelain --untracked-files=all
 (0 files — clean worktree)
@@ -30,11 +33,11 @@ $ git diff --name-status ab1884662..HEAD
 ```
 $ shasum -a 256 /tmp/pokit-pb-device-artifacts/pokit-daemon
 5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580
-Expected: 5c1470a0d580... ✅ MATCH
+Expected: 5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580 ✅ MATCH
 
 $ shasum -a 256 /tmp/pokit-pb-device-artifacts/pokit-app-release.apk
 934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d
-Expected: 934febb17b... ✅ MATCH
+Expected: 934febb17b8de175816413a1aaa1a17b8d1e8f43c2cbfcb4fe26e20fce433c7d ✅ MATCH
 ```
 
 ## 2. Managed-Native Producer & Consumer Enumeration
@@ -108,7 +111,8 @@ managed-native session lifecycle is owned by the services in `term/`.
 **Classification: FIXTURE-ONLY for production session creation.**
 The adapters are tested via contract harness (`RunParserContract`, `RunDetectorContract`)
 but no production code path goes through them to create sessions or spawn processes.
-All managed-native spawning is direct (T0).
+They are **FIXTURE-ONLY — NOT PRODUCTION-LIVE**; all managed-native spawning is
+directly owned by the managed services.
 
 ### 3.2 Contract/Test-Only
 
@@ -141,8 +145,8 @@ Per `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` §2 and
 | Layer | Contract Definition | Current State |
 |-------|-------------------|---------------|
 | T0 | AgentEvent/contract — the common event model, parser/detector contracts, reusable test harnesses | LIVE — `agent/models.go`, `agent/contract/` |
-| T1 | Codex fixtures — version-pinned parser + detector for `v0_144_1` | LIVE — `agent/adapters/codex/v0_144_1/` (telemetry consumer only) |
-| T2 | Claude fixtures — version-pinned parser + detector for `v2_1_202` | LIVE — `agent/adapters/claude/v2_1_202/` (telemetry consumer only) |
+| T1 | Codex fixtures — version-pinned parser + detector for `v0_144_1` | FIXTURE-ONLY — `agent/adapters/codex/v0_144_1/`; read-only telemetry parsing only, never a live session producer |
+| T2 | Claude fixtures — version-pinned parser + detector for `v2_1_202` | FIXTURE-ONLY — `agent/adapters/claude/v2_1_202/`; read-only telemetry parsing only, never a live session producer |
 | T3 | Transcript — the canonical capture/ingest/replay authority | LIVE — `internal/transcript/` |
 
 ### 4.2 Reuse Matrix
@@ -150,8 +154,8 @@ Per `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` §2 and
 | Layer | Reused By | Reuse Mechanism |
 |-------|----------|----------------|
 | T0 (contract) | T1, T2, telemetry, doctor | `AgentEvent`, `AgentParser`, `AgentDetector` interfaces |
-| T1 (Codex fixtures) | `telemetry_service.go` | `callAcceptedAdapter("codex", ...)` — read-only telemetry |
-| T2 (Claude fixtures) | `telemetry_service.go` | `callAcceptedAdapter("claude", ...)` — read-only telemetry |
+| T1 (Codex fixtures) | `telemetry_service.go` | `callAcceptedAdapter("codex", ...)` — read-only telemetry; not production-live lifecycle |
+| T2 (Claude fixtures) | `telemetry_service.go` | `callAcceptedAdapter("claude", ...)` — read-only telemetry; not production-live lifecycle |
 | T3 (Transcript) | `term/`, `Recorder`, `OwnedPTYRuntime` | Byte-stream projection, generation-bound queue |
 
 ### 4.3 Forbidden Legacy Sources
@@ -218,7 +222,7 @@ gofmt -l .                              CLEAN (0 files)
 git diff --check                        CLEAN
 go test -race ./... -count=1            PASS (12 ok, 3 no-test)
 cd mobile && npx tsc --noEmit           PASS (clean)
-cd mobile && npx jest --runInBand       PASS (519/519, 35 suites)
+cd mobile && npx jest --runInBand       PASS (537/537, 35 suites)
 Secret scan (grep -E)                   CLEAN
 Timeline scan (grep -E, cmd/term/mobile) ZERO
 Legacy symbol scan (grep -E)            ZERO production callers (comments only)
