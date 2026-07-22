@@ -46,8 +46,10 @@
   "devDependencies": {
     "@babel/core": "^7.26.0",
     "@types/jest": "^30.0.0",
+    "@types/node": "^26.1.1",
     "@types/react": "~19.2.0",
     "babel-preset-expo": "~56.0.0",
+    "detox": "^20.51.4",
     "jest": "^30.4.2",
     "react-test-renderer": "^19.2.3",
     "ts-jest": "^29.4.11",
