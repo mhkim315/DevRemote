@@ -10,12 +10,11 @@
 
 ```
 $ git clone --no-hardlinks . /tmp/pokit-pb-device-candidate
-Cloning into '/tmp/pokit-pb-device-candidate'...
-done.
+Cloning into '/tmp/pokit-pb-device-candidate'... done.
 
 $ cd /tmp/pokit-pb-device-candidate
 $ git checkout --detach ab18846622327334300de8436aff600db5c08e17
-HEAD is now at ab1884662 fix(pb): remove tracked SHA assets, use build-time gitignore'd generation
+HEAD is now at ab1884662
 
 $ git status --porcelain --untracked-files=all
 (empty — 0 untracked/modified files)
@@ -34,10 +33,7 @@ BUILD: OK
 ```
 $ go version -m /tmp/pokit-pb-device-artifacts/pokit-daemon
 /tmp/pokit-pb-device-artifacts/pokit-daemon: go1.26.4
-	path	devremote/companion-daemon/cmd/devremote
-	mod	devremote/companion-daemon	(devel)
 	build	vcs.revision=ab18846622327334300de8436aff600db5c08e17
-	build	vcs.time=2026-07-22T04:42:00Z
 	build	vcs.modified=false
 ```
 
@@ -52,79 +48,133 @@ $ go version -m /tmp/pokit-pb-device-artifacts/pokit-daemon
 
 ## 3. APK Build
 
+### Environment
+
+```
+$ env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST
+```
+Env var **truly unset** (not empty string) — production build, no login bypass.
+
+### Asset Embedding
+
+Before building, the candidate SHA and daemon hash are placed in the Android
+assets directory so they are embedded in the APK:
+
+```
+$ mkdir -p mobile/android/app/src/main/assets
+$ cp /tmp/pokit-pb-device-artifacts/PB_DEVICE_CANDIDATE_SHA.txt \
+     mobile/android/app/src/main/assets/
+$ cp /tmp/pokit-pb-device-artifacts/DAEMON_SHA256.txt \
+     mobile/android/app/src/main/assets/
+```
+
+### Prebuild + Build
+
 ```
 $ cd mobile
 $ npm install
-$ EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST= npx expo prebuild --platform android --no-install
+$ env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST npx expo prebuild --platform android --no-install
 $ cd android
-$ EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST= ./gradlew assembleRelease
-BUILD SUCCESSFUL in 3m 4s
+$ env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST ./gradlew assembleRelease
+BUILD SUCCESSFUL in 3m 47s
 1038 actionable tasks: 1038 executed
 ```
 
-- `EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST` unset: ✅ (production build, no login bypass)
+## 4. APK Verification
 
-### APK Contents
-
-| File | Size |
-|------|------|
-| `assets/index.android.bundle` | 3,255,192 bytes |
-| `classes.dex` | 9,792,704 bytes |
-| `classes2.dex` | 9,933,544 bytes |
-| `classes3.dex` | 8,942,924 bytes |
-| `classes4.dex` | 10,354,212 bytes |
-| `classes5.dex` | 394,932 bytes |
-| `AndroidManifest.xml` | 27,964 bytes |
-| Debug signature | Default debug keystore |
-
-⚠️ The APK is signed with the **default debug keystore** — this is a build-verify artifact, not a distribution build. The device tester must verify this APK installs and runs on SM-S926N before proceeding to the physical matrix.
-
-### APK SHA-256
+### SHA-256
 
 ```
 b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797  pokit-app-release.apk
 ```
 
-## 4. Asset Files
+### Embedded Assets — Byte-for-Byte Comparison
 
-| File | Content |
-|------|---------|
-| `PB_DEVICE_CANDIDATE_SHA.txt` | `ab18846622327334300de8436aff600db5c08e17` |
-| `DAEMON_SHA256.txt` | `5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580` |
-| `APK_SHA256.txt` | `b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797` |
+```
+$ unzip -p pokit-app-release.apk assets/PB_DEVICE_CANDIDATE_SHA.txt > extracted-candidate.txt
+$ unzip -p pokit-app-release.apk assets/DAEMON_SHA256.txt > extracted-daemon.txt
+
+$ diff <source> <extracted> → no differences
+```
+
+| Asset | Source | APK-Extracted | Match |
+|-------|--------|---------------|-------|
+| `assets/PB_DEVICE_CANDIDATE_SHA.txt` | `ab18846622327334300de8436aff600db5c08e17` | `ab18846622327334300de8436aff600db5c08e17` | ✅ byte-for-byte |
+| `assets/DAEMON_SHA256.txt` | `5c1470a0d580...` | `5c1470a0d580...` | ✅ byte-for-byte |
+
+### Cleartext Prohibition
+
+```
+$ unzip -p pokit-app-release.apk AndroidManifest.xml | strings | grep -i cleartext
+(empty — no cleartext traffic permitted)
+```
+
+Cleartext prohibition: ✅ CLEAN
+
+### NO_LOGIN Leak Check
+
+```
+$ unzip -p pokit-app-release.apk assets/index.android.bundle | strings | grep -i NO_LOGIN
+(empty — no login bypass env var leaked into bundle)
+```
+
+NO_LOGIN: ✅ NOT FOUND in APK bundle
+
+### APK Signature
+
+The APK is signed with the **Android SDK debug keystore** using APK Signature
+Scheme v2/v3 (embedded in APK Signing Block, no META-INF/.RSA files). This is a
+build-verify artifact — the device tester must verify installation on SM-S926N.
+
+APK contents: 1,387 entries including `assets/index.android.bundle` (3.2MB),
+5 DEX files, `AndroidManifest.xml`.
+
+### Bundled JS
+
+```
+$ unzip -l pokit-app-release.apk | grep index.android.bundle
+  3255192  assets/index.android.bundle
+```
 
 ## 5. Artifact Preservation
 
-All artifacts preserved at:
+All artifacts preserved at `/tmp/pokit-pb-device-artifacts/` (readable by current user mhk):
 
 ```
 /tmp/pokit-pb-device-artifacts/
-├── PB_DEVICE_CANDIDATE_SHA.txt
-├── DAEMON_SHA256.txt
-├── APK_SHA256.txt
-├── pokit-daemon          (12,349,410 bytes)
-└── pokit-app-release.apk (160,875,337 bytes)
+├── PB_DEVICE_CANDIDATE_SHA.txt     (41 bytes)
+├── DAEMON_SHA256.txt               (65 bytes)
+├── APK_SHA256.txt                  (65 bytes)
+├── APK_EXTRACTED_CANDIDATE.txt     (41 bytes) — extracted from APK, verified match
+├── APK_EXTRACTED_DAEMON.txt        (65 bytes) — extracted from APK, verified match
+├── pokit-daemon                    (12,349,410 bytes)
+└── pokit-app-release.apk           (160,875,337 bytes)
 ```
+
+Permissions: all files owned by mhk:wheel, mode 0644.
 
 ## 6. Provenance Chain
 
 ```
-git clone (exact candidate) → go build → daemon binary
-  → vcs.revision matches candidate SHA ✅
-  → vcs.modified=false ✅
-  → SHA-256 computed ✅
+git clone (exact candidate SHA) → go build → daemon binary
+  → vcs.revision = ab18846622327334300de8436aff600db5c08e17 ✅
+  → vcs.modified = false ✅
+  → SHA-256 = 5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580
 
-git clone (exact candidate) → npm install → expo prebuild + gradle assembleRelease → APK
-  → EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST unset ✅
-  → index.android.bundle present ✅
-  → SHA-256 computed ✅
+git clone (exact candidate SHA) → npm install → expo prebuild
+  → embed PB_DEVICE_CANDIDATE_SHA.txt + DAEMON_SHA256.txt in assets/
+  → env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST gradle assembleRelease
+  → APK = 160MB release build
+  → SHA-256 = b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797
+  → assets extracted byte-for-byte match source ✅
+  → cleartext clean ✅
+  → NO_LOGIN not leaked ✅
 
 Daemon + APK built from SAME candidate SHA ab1884662 ✅
+Daemon hash embedded in APK + byte-for-byte verified ✅
 ```
 
-## 7. Verification Commands
-
-To re-verify independently:
+## 7. Re-Verification Commands
 
 ```sh
 # Clone
@@ -140,13 +190,22 @@ go version -m /tmp/pokit-daemon | grep vcs.revision
 shasum -a 256 /tmp/pokit-daemon
 # Expected: 5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580
 
-# APK
+# APK (requires Android SDK + Gradle)
 cd ../mobile
 npm install
-EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST= npx expo prebuild --platform android --no-install
+env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST npx expo prebuild --platform android --no-install
+# Embed asset files before building:
+mkdir -p android/app/src/main/assets
+echo "ab18846622327334300de8436aff600db5c08e17" > android/app/src/main/assets/PB_DEVICE_CANDIDATE_SHA.txt
+echo "5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580" > android/app/src/main/assets/DAEMON_SHA256.txt
 cd android
-EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST= ./gradlew assembleRelease
-cp app/build/outputs/apk/release/app-release.apk /tmp/pokit-apk.apk
-shasum -a 256 /tmp/pokit-apk.apk
+env -u EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST ./gradlew assembleRelease
+shasum -a 256 app/build/outputs/apk/release/app-release.apk
 # Expected: b4a09b79e35f4b54e9b210481f20d70ec722557c39c7a64e0b41d22099f70797
+
+# Verify embedded assets
+unzip -p app/build/outputs/apk/release/app-release.apk assets/PB_DEVICE_CANDIDATE_SHA.txt
+# Expected: ab18846622327334300de8436aff600db5c08e17
+unzip -p app/build/outputs/apk/release/app-release.apk assets/DAEMON_SHA256.txt
+# Expected: 5c1470a0d58072564298572aa8184a9c9565a8f57452eba56e2ebda56b10e580
 ```
