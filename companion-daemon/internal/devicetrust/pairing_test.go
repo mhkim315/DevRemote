@@ -487,9 +487,9 @@ func TestPairing_PathVariantRejection(t *testing.T) {
 
 	// Each rejected variant uses a fresh host so state is independent.
 	for _, tc := range []struct{ method, path string }{
-		{http.MethodPost, "/pair/"},       // trailing slash
-		{http.MethodPost, "/pair/sub"},    // sub-path
-		{http.MethodPost, "/PAIR"},        // wrong case
+		{http.MethodPost, "/pair/"},    // trailing slash
+		{http.MethodPost, "/pair/sub"}, // sub-path
+		{http.MethodPost, "/PAIR"},     // wrong case
 		// before route matching; those are handler-level concerns, not
 		// transport-level path rejection.
 		{http.MethodPost, "/other"},       // wrong path
