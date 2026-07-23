@@ -89,8 +89,8 @@ func (p *Projector) Activity() []ActivityItem {
 	if degraded && stats.Dropped > 0 {
 		last := envelopes[len(envelopes)-1]
 		items = append(items, ActivityItem{
-			EventID: "gap-" + last.EventID,
-			Summary: "degraded",
+			EventID:         "gap-" + last.EventID,
+			Summary:         "degraded",
 			ProjectionOrder: p.order,
 		})
 	}

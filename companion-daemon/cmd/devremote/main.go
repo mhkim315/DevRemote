@@ -79,20 +79,20 @@ func main() {
 	}
 
 	runDaemon(Config{
-		OwnerUUID:              *ownerUUID,
-		SupabaseProjectRef:     *supabaseRef,
-		ListenAddr:             *listenAddr,
-		InsecureLocalOnly:      *insecureLocalOnly,
-		EnableAgentDetection:   *enableAgentDetection,
-		EnableManagedCodex:     *enableManagedCodex,
-		EnableManagedClaude:    *enableManagedClaude,
-		ClaudeDigest:           *claudeDigest,
-		EnableTimelineShadow:   *enableTimelineShadow,
-		TimelineShadowPath:     *timelineShadowPath,
-		EnableWorkspaceLease:   *enableWorkspaceLease,
+		OwnerUUID:                   *ownerUUID,
+		SupabaseProjectRef:          *supabaseRef,
+		ListenAddr:                  *listenAddr,
+		InsecureLocalOnly:           *insecureLocalOnly,
+		EnableAgentDetection:        *enableAgentDetection,
+		EnableManagedCodex:          *enableManagedCodex,
+		EnableManagedClaude:         *enableManagedClaude,
+		ClaudeDigest:                *claudeDigest,
+		EnableTimelineShadow:        *enableTimelineShadow,
+		TimelineShadowPath:          *timelineShadowPath,
+		EnableWorkspaceLease:        *enableWorkspaceLease,
 		EnableProjectionConvergence: *enableProjectionConvergence,
-		EnableFrozenValidation: *enableFrozenValidation,
-		EnableCockpit:          *enableCockpit,
+		EnableFrozenValidation:      *enableFrozenValidation,
+		EnableCockpit:               *enableCockpit,
 	})
 }
 

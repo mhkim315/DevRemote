@@ -48,10 +48,10 @@ func makeEnv(t *testing.T, eventID string, kind contract.EventKind, t0Type agent
 		LaunchGeneration: gen, Provider: "codex", SourceIncarnation: "inc",
 		SourceIdentity: contract.SourceIdentity{Kind: "provider", ID: "sid"},
 		SourcePosition: "pos", RedactionPolicyVersion: "v1",
-		Payload: contract.Payload{Redacted: &contract.RedactedPayload{Summary: safe}},
+		Payload:         contract.Payload{Redacted: &contract.RedactedPayload{Summary: safe}},
 		EvidenceSources: contract.EvidenceSources{Provider: &contract.ProviderEvidenceRef{ID: "e-" + eventID, Scope: s}},
-		References: ref,
-		OccurredAt: ts, ObservedAt: ts.Add(time.Second),
+		References:      ref,
+		OccurredAt:      ts, ObservedAt: ts.Add(time.Second),
 		T0Event: agent.AgentEvent{ID: "t0-" + eventID, SessionID: s.SessionID, AgentKind: "codex", Type: t0Type},
 	})
 	if err != nil {

@@ -28,19 +28,19 @@ import (
 
 // Config holds immutable daemon configuration parsed from CLI flags.
 type Config struct {
-	OwnerUUID              string
-	SupabaseProjectRef     string
-	ListenAddr             string // loopback addr for insecure mode (e.g. 127.0.0.1:0); ignored when InsecureLocalOnly=false
-	InsecureLocalOnly      bool
-	EnableAgentDetection   bool   // Phase A5: default-off agent detection bridge
-	EnableManagedCodex     bool   // SP0: default-off native managed Codex runtime
-	EnableManagedClaude    bool   // C1D: default-off native managed Claude runtime
-	ClaudeDigest           string // C1D: pre-verified SHA-256 of the pinned Claude binary
-	EnableTimelineShadow   bool   // STEP4: default-off, fail-open Timeline shadow sink
-	TimelineShadowPath     string // optional absolute shadow-file override
-	EnableWorkspaceLease   bool   // STEP5: default-off cooperative workspace contract
-	EnableFrozenValidation bool   // STEP7: default-off frozen validation contract
-	EnableCockpit          bool   // STEP8: default-off read-only cockpit route
+	OwnerUUID                   string
+	SupabaseProjectRef          string
+	ListenAddr                  string // loopback addr for insecure mode (e.g. 127.0.0.1:0); ignored when InsecureLocalOnly=false
+	InsecureLocalOnly           bool
+	EnableAgentDetection        bool   // Phase A5: default-off agent detection bridge
+	EnableManagedCodex          bool   // SP0: default-off native managed Codex runtime
+	EnableManagedClaude         bool   // C1D: default-off native managed Claude runtime
+	ClaudeDigest                string // C1D: pre-verified SHA-256 of the pinned Claude binary
+	EnableTimelineShadow        bool   // STEP4: default-off, fail-open Timeline shadow sink
+	TimelineShadowPath          string // optional absolute shadow-file override
+	EnableWorkspaceLease        bool   // STEP5: default-off cooperative workspace contract
+	EnableFrozenValidation      bool   // STEP7: default-off frozen validation contract
+	EnableCockpit               bool   // STEP8: default-off read-only cockpit route
 	EnableProjectionConvergence bool   // STEP9.2: default-off read-only Timeline projection convergence
 }
 
