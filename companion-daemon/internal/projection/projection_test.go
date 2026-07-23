@@ -163,7 +163,7 @@ func TestDualFeedOracleAndRestoredEpoch(t *testing.T) {
 	if b2.EpochOccurrence == b1.EpochOccurrence || r2.Generation == r1.Generation {
 		t.Fatal("restore epoch not distinct")
 	}
-	if report := Compare(r2, NewProjector(w).Snapshot([]FixtureEpochBinding{b2}), []FixtureEpochBinding{b2}); !report.Passed {
+	if report := Compare(r2, NewProjector(w).Snapshot([]FixtureEpochBinding{b1, b2}), []FixtureEpochBinding{b1, b2}); !report.Passed {
 		t.Fatalf("restored report=%#v", report)
 	}
 }

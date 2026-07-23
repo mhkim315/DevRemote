@@ -269,6 +269,9 @@ type EquivalenceReport struct {
 // snapshot. It never mutates either input and reports every non-mapped fact.
 func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []FixtureEpochBinding) EquivalenceReport {
 	r := EquivalenceReport{Collisions: snap.Collisions, Unexplained: snap.Unexplained + snap.Unknown}
+	if response.ContractVersion != "" && response.ContractVersion != transcript.ContractVersion {
+		r.Unexplained++
+	}
 	binding, ok := bindingFor(response, bindings)
 	if !ok {
 		r.GenerationMismatches++
@@ -300,7 +303,7 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		if duplicateBinding(*binding, bindings) {
 			r.GenerationMismatches++
 		}
-		if !bindingEventIDsConsistent(*binding, snap.Transcript) {
+		if !bindingEventIDsConsistent(*binding, bindings, snap.Transcript) {
 			r.GenerationMismatches++
 		}
 		filtered := make([]TranscriptItem, 0, len(items))
@@ -348,7 +351,7 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		r.Extras += len(items) - len(segments)
 	}
 	for _, gap := range snap.Gaps {
-		if binding != nil && gap.EpochOccurrence == binding.EpochOccurrence && hasTranscriptGap(degraded, gap) {
+		if binding != nil && validGapForBinding(gap, *binding) && hasTranscriptGap(degraded, gap) {
 			r.ToleratedGaps++
 		} else {
 			r.Unexplained++
@@ -373,7 +376,7 @@ func duplicateBinding(b FixtureEpochBinding, bs []FixtureEpochBinding) bool {
 	}
 	return n != 1
 }
-func bindingEventIDsConsistent(b FixtureEpochBinding, items []TranscriptItem) bool {
+func bindingEventIDsConsistent(b FixtureEpochBinding, all []FixtureEpochBinding, items []TranscriptItem) bool {
 	seen := make(map[string]bool, len(b.TimelineEventIDs))
 	for _, id := range b.TimelineEventIDs {
 		if id == "" || seen[id] {
@@ -381,12 +384,33 @@ func bindingEventIDsConsistent(b FixtureEpochBinding, items []TranscriptItem) bo
 		}
 		seen[id] = true
 	}
+	bound := make(map[string]bool, len(b.TimelineEventIDs))
+	for _, id := range b.TimelineEventIDs {
+		bound[id] = true
+	}
 	for _, item := range items {
-		if contains(b.TimelineEventIDs, item.EventID) && (item.RuntimeID != b.RuntimeID || item.LaunchGeneration != b.LaunchGeneration) {
+		if bound[item.EventID] {
+			if item.RuntimeID != b.RuntimeID || item.LaunchGeneration != b.LaunchGeneration {
+				return false
+			}
+			continue
+		}
+		if !eventBound(item.EventID, all) {
 			return false
 		}
 	}
 	return true
+}
+func eventBound(id string, all []FixtureEpochBinding) bool {
+	for _, b := range all {
+		if contains(b.TimelineEventIDs, id) {
+			return true
+		}
+	}
+	return false
+}
+func validGapForBinding(g GapMarker, b FixtureEpochBinding) bool {
+	return g.EpochOccurrence == b.EpochOccurrence && g.SessionID == b.SessionID && g.RuntimeID == b.RuntimeID && g.LaunchGeneration == b.LaunchGeneration && g.GlobalDroppedAfter >= g.GlobalDroppedBefore
 }
 func closedSemanticLoss(s transcript.TranscriptSegment) bool {
 	switch s.Kind {
@@ -413,12 +437,25 @@ func hasGapForSegment(gaps []GapMarker, s transcript.TranscriptSegment) bool {
 }
 
 func bindingFor(response transcript.TranscriptResponse, bs []FixtureEpochBinding) (*FixtureEpochBinding, bool) {
+	if !strictOccurrences(bs) {
+		return nil, false
+	}
 	for i := range bs {
 		if bs[i].SessionID == response.SessionID && bs[i].TranscriptGeneration == response.Generation {
 			return &bs[i], true
 		}
 	}
 	return nil, false
+}
+func strictOccurrences(bs []FixtureEpochBinding) bool {
+	last := map[string]uint64{}
+	for _, b := range bs {
+		if b.EpochOccurrence == 0 || b.EpochOccurrence <= last[b.SessionID] {
+			return false
+		}
+		last[b.SessionID] = b.EpochOccurrence
+	}
+	return true
 }
 func contains(a []string, v string) bool {
 	for _, x := range a {
@@ -440,23 +477,35 @@ func boolInt(b bool) int {
 // using timestamps or shared state. Pair identity is the typed Timeline
 // Reference ID, never a display tool name.
 func ValidatePairOrder(items []TranscriptItem) error {
-	seenTool, seenApproval := map[string]bool{}, map[string]bool{}
+	seenTool, seenApproval := map[string]int{}, map[string]int{}
 	for _, it := range items {
 		switch it.EventType {
 		case "tool_call_started":
-			seenTool[it.PairID] = true
+			if it.PairID == "" {
+				return fmt.Errorf("tool start missing reference")
+			}
+			seenTool[it.PairID]++
 		case "tool_call_finished":
-			if it.PairID == "" || !seenTool[it.PairID] {
+			if it.PairID == "" || seenTool[it.PairID] == 0 {
 				return fmt.Errorf("tool finish before start: %s", it.PairID)
 			}
-			delete(seenTool, it.PairID)
+			seenTool[it.PairID]--
+			if seenTool[it.PairID] == 0 {
+				delete(seenTool, it.PairID)
+			}
 		case "approval_requested":
-			seenApproval[it.PairID] = true
+			if it.PairID == "" {
+				return fmt.Errorf("approval request missing reference")
+			}
+			seenApproval[it.PairID]++
 		case "approval_resolved":
-			if it.PairID == "" || !seenApproval[it.PairID] {
+			if it.PairID == "" || seenApproval[it.PairID] == 0 {
 				return fmt.Errorf("approval resolution before request")
 			}
-			delete(seenApproval, it.PairID)
+			seenApproval[it.PairID]--
+			if seenApproval[it.PairID] == 0 {
+				delete(seenApproval, it.PairID)
+			}
 		}
 	}
 	if len(seenTool) != 0 || len(seenApproval) != 0 {
