@@ -1,7 +1,7 @@
 # Step 9.0 Evidence — Post-PB Feature Ledger Reconciliation
 
 **IMPL SHA:** `62a50f0a8`
-**EVID SHA:** `238bd906d`
+**EVID SHA:** `6148aaf57`
 **Date:** 2026-07-23
 
 Step 9.0 is a **zero-code-change** documentation reconciliation. It audits and
