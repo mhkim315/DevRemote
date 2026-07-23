@@ -1,12 +1,13 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `ce730accc`
-**EVID SHA:** `4bee07590` (R3)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix)
+**EVID SHA:** (this commit — R4 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R3 — CONTRACT SHA: 3769d583e → a5e532fd9
+**Revision:** R4 — delivery semantic fix + round counts
+**Round counts:** Contract 3+1, Pre-gate 2, Impl 7, EVID 3, V2 3 = 19 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and
@@ -107,7 +108,7 @@ prohibited to avoid flooding already-notified devices.
 - `dispatch()` — per-device: snapshot all devices + cursors under single RLock,
   `SelectSince` events, per-device `Dedup.Claim`, `Build` locator with generation
   gate, `sender.Send`. Cursor advances only on full success — partial failure
-  preserves old cursor for retry next cycle.
+  preserves old cursor, at-most-once, no retry.
 - `Stop()` — closes done channel, idempotent
 - `SetEnabled(bool)` — controls consumer loop independently of device registration
 - `Dispatch()` — synchronous one-shot for tests/manual trigger
@@ -280,7 +281,7 @@ MOBILE TSC:     PASS
 6. **No blind replay** — ring wrap returns only the latest event, preventing
    flood of already-notified devices.
 7. **Cursor advances on success only** — a failed send preserves the old
-   cursor; events are retried next cycle.
+   cursor, at-most-once, no retry.
 
 ## 6. New files by package
 
