@@ -1144,6 +1144,7 @@ func TestClaudeResume_CertificationAllFieldsAsserted(t *testing.T) {
 		toolUseID: "tur", toolName: "Bash", inputDigest: dgst,
 		expectedDecision: "allow", originalCWD: "/tmp",
 	}
+	orig, _ := svc.Registry().Get(id)
 	rt, err := svc.ResumeForApproval(handle, ctx)
 	if err != nil {
 		t.Fatalf("ResumeForApproval: %v", err)
@@ -1168,9 +1169,12 @@ func TestClaudeResume_CertificationAllFieldsAsserted(t *testing.T) {
 	}
 	// ProcessID is a per-incarnation guarantee — the resume spawn must have a
 	// different opaque identity than the initial spawn.
-	orig, _ := svc.Registry().Get(id)
 	if cert.ProcessID == orig.ProcessID {
 		t.Fatalf("resume ProcessID must differ from initial: cert=%+v orig=%+v", cert, orig)
+	}
+	current, ok := svc.Registry().Get(id)
+	if !ok || current.ProcessID != cert.ProcessID || current.Epoch != cert.Epoch || current.Exited {
+		t.Fatalf("resume incarnation not current in registry: %+v ok=%v", current, ok)
 	}
 	if cert.PokitSessionID != id {
 		t.Fatalf("session id binding: %s != %s", cert.PokitSessionID, id)
@@ -1214,6 +1218,7 @@ func TestClaudeResume_CertificationRecordedPerIncarnation(t *testing.T) {
 		toolUseID: "tu-res", toolName: "Bash", inputDigest: dgst,
 		expectedDecision: "allow", originalCWD: "/tmp",
 	}
+	orig, _ := svc.Registry().Get(id)
 	rt, err := svc.ResumeForApproval(handle, ctx)
 	if err != nil {
 		t.Fatalf("ResumeForApproval: %v", err)
@@ -1230,9 +1235,12 @@ func TestClaudeResume_CertificationRecordedPerIncarnation(t *testing.T) {
 	if cert.PokitSessionID != id || cert.AttestorKind != claudeLaunchAttestorKind {
 		t.Fatalf("resume tuple binding: %+v", cert)
 	}
-	orig, _ := svc.Registry().Get(id)
 	if cert.ProcessID == orig.ProcessID {
 		t.Fatal("resume incarnation must carry its OWN launch identity")
+	}
+	current, ok := svc.Registry().Get(id)
+	if !ok || current.ProcessID != cert.ProcessID || current.Epoch != cert.Epoch || current.Exited {
+		t.Fatalf("resume incarnation not current in registry: %+v ok=%v", current, ok)
 	}
 }
 

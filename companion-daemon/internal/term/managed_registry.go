@@ -107,6 +107,60 @@ func (g *ManagedSessionRegistry) Register(rec ManagedSessionRecord) error {
 	return nil
 }
 
+// RegisterIncarnation atomically replaces one session's current runtime
+// identity with a strictly newer provider incarnation. The caller must name
+// the exact previous epoch it is replacing; concurrent or stale replacements
+// fail closed without changing the registry.
+func (g *ManagedSessionRegistry) RegisterIncarnation(previousEpoch int64, rec ManagedSessionRecord) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return fmt.Errorf("managed registry closed")
+	}
+	previous, ok := g.records[rec.SessionID]
+	if !ok {
+		return fmt.Errorf("managed session %q not found", rec.SessionID)
+	}
+	if previous.Epoch != previousEpoch {
+		return fmt.Errorf("managed session %q stale previous epoch", rec.SessionID)
+	}
+	if rec.Epoch <= previous.Epoch {
+		return fmt.Errorf("managed session %q incarnation epoch is not newer", rec.SessionID)
+	}
+	if rec.Provider != previous.Provider || rec.Version != previous.Version ||
+		rec.ProcessID == "" || rec.ProcessID == previous.ProcessID {
+		return fmt.Errorf("managed session %q incarnation identity mismatch", rec.SessionID)
+	}
+	rec.NativeStatus = ManagedStatusIdle
+	rec.StatusChangedAt = rec.CreatedAt
+	rec.Exited = false
+	g.records[rec.SessionID] = rec
+	return nil
+}
+
+// RestoreIncarnation restores a still-live provider runtime after a transient
+// auxiliary incarnation has exited. It is accepted only when the exact current
+// incarnation is terminal and the saved runtime identity is from the same
+// provider/session. This supports Claude's live-original test/control path;
+// a normally exited deferred original is never restored.
+func (g *ManagedSessionRegistry) RestoreIncarnation(currentEpoch int64, rec ManagedSessionRecord) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return fmt.Errorf("managed registry closed")
+	}
+	current, ok := g.records[rec.SessionID]
+	if !ok || current.Epoch != currentEpoch || !current.Exited {
+		return fmt.Errorf("managed session %q current incarnation is not terminal", rec.SessionID)
+	}
+	if rec.Exited || rec.Provider != current.Provider || rec.Version != current.Version ||
+		rec.ProcessID == "" || rec.ProcessID == current.ProcessID || rec.Epoch >= current.Epoch {
+		return fmt.Errorf("managed session %q restore identity mismatch", rec.SessionID)
+	}
+	g.records[rec.SessionID] = rec
+	return nil
+}
+
 // UpdateNativeStatus applies a native semantic-status transition. It is
 // accepted only when the registry is open, the record exists, the record has
 // not exited, the epoch matches the record's current epoch exactly, and the

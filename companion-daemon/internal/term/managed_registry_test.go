@@ -55,6 +55,65 @@ func TestManagedRegistry_RegisterGetList_DefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestManagedRegistryRegisterIncarnationReplacesExactPreviousEpoch(t *testing.T) {
+	g := NewManagedSessionRegistry(1)
+	original := testRecord("codex_app_server:a", 1)
+	if err := g.Register(original); err != nil {
+		t.Fatal(err)
+	}
+	original, _ = g.Get(original.SessionID)
+	replacement := original
+	replacement.Epoch = 2
+	replacement.ProcessID = "proc-resumed"
+	replacement.CreatedAt = original.CreatedAt.Add(time.Second)
+	replacement.NativeStatus = ManagedStatusExited
+	replacement.Exited = true
+	if err := g.RegisterIncarnation(1, replacement); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := g.Get(original.SessionID)
+	if !ok || got.Epoch != 2 || got.ProcessID != replacement.ProcessID ||
+		got.Exited || got.NativeStatus != ManagedStatusIdle {
+		t.Fatalf("replacement = %+v ok=%v", got, ok)
+	}
+
+	before := got
+	for name, mutate := range map[string]func(*ManagedSessionRecord){
+		"stale previous": func(record *ManagedSessionRecord) {},
+		"same epoch":     func(record *ManagedSessionRecord) { record.Epoch = 2 },
+		"provider":       func(record *ManagedSessionRecord) { record.Provider = "claude" },
+		"process":        func(record *ManagedSessionRecord) { record.ProcessID = replacement.ProcessID },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := replacement
+			candidate.Epoch = 3
+			candidate.ProcessID = "proc-next"
+			mutate(&candidate)
+			previousEpoch := int64(2)
+			if name == "stale previous" {
+				previousEpoch = 1
+			}
+			if err := g.RegisterIncarnation(previousEpoch, candidate); err == nil {
+				t.Fatalf("%s replacement accepted", name)
+			}
+			after, _ := g.Get(original.SessionID)
+			if after != before {
+				t.Fatalf("%s mutated record: before=%+v after=%+v", name, before, after)
+			}
+		})
+	}
+	if !g.MarkExited(original.SessionID, replacement.Epoch) {
+		t.Fatal("replacement did not become terminal")
+	}
+	if err := g.RestoreIncarnation(replacement.Epoch, original); err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := g.Get(original.SessionID)
+	if restored != original {
+		t.Fatalf("restored record = %+v, want %+v", restored, original)
+	}
+}
+
 // TestManagedRegistry_DuplicateAndCapacity_FailWithoutReplacing: a duplicate
 // ID and the capacity+1 registration both fail closed, and every prior record
 // is byte-identical afterwards.

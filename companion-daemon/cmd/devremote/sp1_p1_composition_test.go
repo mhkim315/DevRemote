@@ -40,8 +40,9 @@ const sp1ApprovalRaw = `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/
 // sp1FakeLauncher answers the exact handshake and, on turn/start, emits the
 // turn binding followed by the certified approval request raw line.
 type sp1FakeLauncher struct {
-	mu    sync.Mutex
-	procs int
+	mu     sync.Mutex
+	procs  int
+	latest *sp1FakeProc
 }
 
 type sp1FakeProc struct {
@@ -72,12 +73,13 @@ func (p *sp1FakeProc) PID() int         { return 0 }
 func (p *sp1FakeProc) OpaqueID() string { return "sp1-fake-proc" }
 
 func (l *sp1FakeLauncher) Launch(_ string, _ []string) (term.ManagedProcess, error) {
-	l.mu.Lock()
-	l.procs++
-	l.mu.Unlock()
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
 	p := &sp1FakeProc{stdinR: stdinR, stdinW: stdinW, stdoutR: stdoutR, stdoutW: stdoutW, killed: make(chan struct{})}
+	l.mu.Lock()
+	l.procs++
+	l.latest = p
+	l.mu.Unlock()
 	go func() {
 		sc := bufio.NewScanner(stdinR)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)

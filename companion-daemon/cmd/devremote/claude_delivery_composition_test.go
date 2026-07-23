@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ type compPipeProc struct {
 	StdoutW *io.PipeWriter
 	killCh  chan struct{}
 	once    sync.Once
+	opaque  string
 
 	KillCount int
 	WaitCount int
@@ -58,16 +60,20 @@ func (p *compPipeProc) Wait() error {
 // PID returns a positive fake OS pid (the C3D §12 launch-certification
 // tuple requires a daemon-owned positive process id).
 func (p *compPipeProc) PID() int         { return 4242 }
-func (p *compPipeProc) OpaqueID() string { return "comp-fake" }
+func (p *compPipeProc) OpaqueID() string { return p.opaque }
 
 func (l *compFakeLauncher) Launch(_ string, argv []string) (term.ManagedProcess, error) {
 	l.mu.Lock()
 	l.allArgs = append(l.allArgs, append([]string(nil), argv...))
 	isResume := len(l.allArgs) >= 2
+	ordinal := len(l.allArgs)
 	l.mu.Unlock()
 	_, sw := io.Pipe()
 	pr, pw := io.Pipe()
-	p := &compPipeProc{StdinW: sw, StdoutR: pr, StdoutW: pw, killCh: make(chan struct{})}
+	p := &compPipeProc{
+		StdinW: sw, StdoutR: pr, StdoutW: pw, killCh: make(chan struct{}),
+		opaque: fmt.Sprintf("comp-fake-%d", ordinal),
+	}
 	l.mu.Lock()
 	l.procs = append(l.procs, p)
 	if isResume && l.resumeWCh != nil {

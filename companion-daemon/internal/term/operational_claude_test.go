@@ -51,7 +51,11 @@ func TestManagedClaudeOperationalHooksPostCommitAndRedacted(t *testing.T) {
 		OperationalApprovalRequested,
 		OperationalStreamObserved,
 	)
-	if err := service.Stop(sessionID, 1); err != nil {
+	current, ok := service.Registry().Get(sessionID)
+	if !ok {
+		t.Fatal("registry record missing")
+	}
+	if err := service.Stop(sessionID, current.Epoch); err != nil {
 		t.Fatal(err)
 	}
 	events := waitOperationalKinds(t, sink, OperationalProviderInvocationFinished)
@@ -187,7 +191,11 @@ func TestManagedClaudeOperationalResolvedAndFinishedAreRedactedAndPanicIsolated(
 		OperationalToolCallFinished,
 		OperationalProviderInvocationFinished,
 	)
-	if err := service.Stop(sessionID, 1); err != nil {
+	current, ok := service.Registry().Get(sessionID)
+	if !ok {
+		t.Fatal("resumed registry record missing")
+	}
+	if err := service.Stop(sessionID, current.Epoch); err != nil {
 		t.Fatal(err)
 	}
 	for _, event := range events {

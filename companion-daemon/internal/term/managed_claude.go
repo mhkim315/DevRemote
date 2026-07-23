@@ -119,6 +119,12 @@ type claudeManagedRuntime struct {
 	// never produce a deny witness. The pump is the only reader.
 	resumeCtx *resumeContext
 
+	// A resume incarnation temporarily supersedes the same Pokit session.
+	// These saved values permit restoration only when the original process
+	// was still live; the normal joined-deferred exited original stays exited.
+	resumePreviousRuntime *claudeManagedRuntime
+	resumePreviousRecord  ManagedSessionRecord
+
 	observer       func(stage string)
 	preIngestHook  func() // test seam: before Store ingest
 	postIngestHook func() // test seam: after Store ingest, before active append
@@ -1374,13 +1380,82 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	// bridge (closes the R6-A3 finding). Set before pump() starts.
 	rt.resumeCtx = ctx
 	rt.operational = s.operational
-	// Publish only after every field is set (see CreateDetached).
+	rt.resumePreviousRuntime = s.runtimes[ctx.pokitSessionID]
+	if previous, ok := s.reg.Get(ctx.pokitSessionID); ok {
+		rt.resumePreviousRecord = previous
+	}
+
+	// Register and publish the resumed incarnation before its Started event.
+	// Timeline verification reads this exact provider+ProcessID+epoch tuple;
+	// leaving the original record current would reject every resume event.
+	// Holding s.mu makes registry replacement and current-runtime publication
+	// atomic relative to Shutdown and lifecycle lookups.
+	rec := ManagedSessionRecord{
+		SessionID:       ctx.pokitSessionID,
+		Provider:        "claude",
+		Version:         s.cfg.Version,
+		Epoch:           epoch,
+		ProcessID:       launchCert.ProcessID,
+		OS:              launchCert.OS,
+		Arch:            launchCert.Arch,
+		CreatedAt:       launchCert.SpawnedAt,
+		CertifiedDigest: launchCert.ArtifactDigest,
+		PID:             launchCert.PID,
+		HookDir:         hookDir,
+		AttestorKind:    launchCert.AttestorKind,
+		CertResult:      launchCert.Result,
+		CertReason:      launchCert.Reason,
+	}
+	if err := s.reg.RegisterIncarnation(ctx.originalRuntime.LaunchGen, rec); err != nil {
+		s.mu.Unlock()
+		_ = proc.Kill()
+		_ = proc.Wait()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		cancelEntry()
+		return nil, fmt.Errorf("managed claude resume register: %w", err)
+	}
+	s.runtimes[ctx.pokitSessionID] = rt
+	// Publish only after every field and registry identity is committed.
 	bridge.publishRuntime(rt)
 	s.mu.Unlock()
 
+	s.barrier("post-resume-register")
 	rt.emitOperational(OperationalProviderInvocationStarted, rt.runtimeID, "runtime/resumed", rt.runtimeID)
 	go rt.pump()
 	return rt, nil
+}
+
+// finishApprovalResume terminates the transient resume incarnation. If its
+// original process was still genuinely live (a controlled test/compatibility
+// path), restore that exact registry/runtime identity after the resume Finish
+// event has revoked its capability. Normal joined-deferred originals are
+// already terminal and are never restored.
+func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
+	if rt == nil {
+		return
+	}
+	rt.terminate()
+	previous := rt.resumePreviousRuntime
+	record := rt.resumePreviousRecord
+	if previous == nil || record.SessionID == "" || record.Exited ||
+		previous.atomicTerminated.Load() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || s.runtimes[rt.sessionID] != rt {
+		return
+	}
+	if err := s.reg.RestoreIncarnation(rt.epoch, record); err != nil {
+		return
+	}
+	s.runtimes[rt.sessionID] = previous
+	// Close the race where the original terminated after the pre-check while
+	// its old epoch was temporarily absent from the registry.
+	if previous.atomicTerminated.Load() {
+		s.reg.MarkExited(record.SessionID, record.Epoch)
+	}
 }
 
 // createResumeHookSettings creates settings.json with BOTH PreToolUse

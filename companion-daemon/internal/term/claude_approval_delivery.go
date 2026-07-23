@@ -143,7 +143,7 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		coord.RemoveIdentity(b.ApprovalID)
 		return fail(DeliveryUnavailable)
 	}
-	defer rt.terminate()
+	defer d.svc.finishApprovalResume(rt)
 	if d.barrier != nil {
 		d.barrier("post-resume-spawn")
 	}

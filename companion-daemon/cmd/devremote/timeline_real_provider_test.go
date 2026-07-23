@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/timeline/contract"
 	"devremote/companion-daemon/internal/timeline/writer"
@@ -39,6 +40,28 @@ func TestTimelineRealManagedCodexPathRedactsEveryOutput(t *testing.T) {
 		contract.EventProviderInvocationStarted,
 		contract.EventApprovalRequested,
 	)
+	launcher.mu.Lock()
+	process := launcher.latest
+	launcher.mu.Unlock()
+	if process == nil {
+		t.Fatal("Codex provider process not retained")
+	}
+	for _, raw := range []string{
+		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"` + sp1Thread + `","turnId":"` + sp1Turn + `","item":{"id":"item-4","type":"commandExecution","command":"` + sp1SecretCmd + `"}}}`,
+		`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"` + sp1Thread + `","requestId":7}}`,
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"` + sp1Thread + `","turnId":"` + sp1Turn + `","item":{"id":"item-4","type":"commandExecution","output":"` + sp1SecretCmd + `"}}}`,
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"` + sp1Thread + `","turnId":"` + sp1Turn + `","item":{"id":"message-1","type":"agentMessage","text":"` + sp1SecretCmd + `"}}}`,
+	} {
+		if _, err := process.stdoutW.Write([]byte(raw + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForTimelineKinds(t, app.timelineWriter,
+		contract.EventToolCallStarted,
+		contract.EventApprovalResolved,
+		contract.EventToolCallFinished,
+		contract.EventStreamObserved,
+	)
 	if err := service.Kill(sessionID, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +69,11 @@ func TestTimelineRealManagedCodexPathRedactsEveryOutput(t *testing.T) {
 	assertRealTimelineOutputsRedacted(t, app, path, logs,
 		[]string{sp1SecretCmd, sp1SecretCWD},
 		contract.EventProviderInvocationStarted,
+		contract.EventToolCallStarted,
 		contract.EventApprovalRequested,
+		contract.EventApprovalResolved,
+		contract.EventToolCallFinished,
+		contract.EventStreamObserved,
 		contract.EventProviderInvocationFinished,
 	)
 }
@@ -102,18 +129,119 @@ func TestTimelineRealManagedClaudePathRedactsEveryOutput(t *testing.T) {
 		contract.EventApprovalRequested,
 		contract.EventStreamObserved,
 	)
-	if err := service.Stop(sessionID, 1); err != nil {
+	// The initial deferred process exits, leaving the original approval
+	// identity live for the real --resume delivery.
+	if err := process.StdoutW.Close(); err != nil {
 		t.Fatal(err)
 	}
+	service.WaitExited(sessionID)
 	waitForTimelineKinds(t, app.timelineWriter, contract.EventProviderInvocationFinished)
+
+	records := app.handlers.Approvals.ListSafe(sessionID)
+	if len(records) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(records))
+	}
+	originalRuntime, ok := app.handlers.RuntimeOf(sessionID)
+	if !ok {
+		t.Fatal("joined-deferred original runtime did not resolve")
+	}
+	claim := app.handlers.Approvals.ClaimForExecution(term.ClaimRequest{
+		SessionID: sessionID, ApprovalID: records[0].ID, OptionID: "allow_once",
+		Runtime: originalRuntime,
+		Requester: term.RequesterContext{
+			DeviceID: "device", HostID: "host", BearerSessionID: "bearer", BootID: "boot",
+			Permissions: []string{devicetrust.PermTerminalInput},
+		},
+		IdempotencyKey: "timeline.real.claude.resume",
+	})
+	if claim.Outcome != term.ClaimGranted {
+		t.Fatalf("claim outcome = %s", claim.Outcome)
+	}
+	receiptCh := make(chan term.DeliveryReceipt, 1)
+	go func() {
+		receiptCh <- app.handlers.ApprovalDelivery.Deliver(term.ApprovalDeliveryRequest{
+			ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
+		})
+	}()
+	resumeURL, posttoolURL := captureBridgeURLs(t, launcher)
+	response := fireResumeHook(t, resumeURL,
+		claudeSessionID, toolUseID, "Bash", inputJSON)
+	if !bytesEq(response, term.ClaudeHookResponseBytes("allow")) {
+		t.Fatalf("resume response = %s", response)
+	}
+	firePostToolHook(t, posttoolURL,
+		claudeSessionID, toolUseID, "Bash", inputJSON)
+	launcher.mu.Lock()
+	resumedProcess := launcher.procs[1]
+	launcher.mu.Unlock()
+	if err := resumedProcess.StdoutW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var receipt term.DeliveryReceipt
+	select {
+	case receipt = <-receiptCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Claude resume delivery did not finish")
+	}
+	if receipt.Outcome != term.DeliveryAccepted {
+		t.Fatalf("delivery outcome = %s", receipt.Outcome)
+	}
+	resumedRecord, ok := service.Registry().Get(sessionID)
+	if !ok || resumedRecord.Epoch != 2 || resumedRecord.ProcessID != "comp-fake-2" ||
+		!resumedRecord.Exited {
+		t.Fatalf("resumed incarnation registry binding = %+v ok=%v", resumedRecord, ok)
+	}
+	if !app.handlers.Approvals.RecordDelivery(receipt).Committed {
+		t.Fatal("accepted Claude delivery did not commit")
+	}
+	waitForTimelineRuntimeKinds(t, app.timelineWriter, sessionID, 2,
+		contract.EventProviderInvocationStarted,
+		contract.EventApprovalResolved,
+		contract.EventToolCallFinished,
+		contract.EventProviderInvocationFinished,
+	)
 	assertRealTimelineOutputsRedacted(t, app, path, logs,
 		[]string{sentinel},
 		contract.EventProviderInvocationStarted,
 		contract.EventToolCallStarted,
 		contract.EventApprovalRequested,
+		contract.EventApprovalResolved,
+		contract.EventToolCallFinished,
 		contract.EventStreamObserved,
 		contract.EventProviderInvocationFinished,
 	)
+}
+
+func waitForTimelineRuntimeKinds(
+	t *testing.T,
+	timeline *writer.Writer,
+	sessionID string,
+	generation int64,
+	want ...contract.EventKind,
+) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		seen := make(map[contract.EventKind]bool)
+		for _, event := range timeline.ReadRecent(128) {
+			if event.SessionID == sessionID && event.LaunchGeneration == generation {
+				seen[event.EventKind] = true
+			}
+		}
+		complete := true
+		for _, kind := range want {
+			if !seen[kind] {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("Timeline runtime kinds not observed: session=%s generation=%d want=%v recent=%+v",
+		sessionID, generation, want, timeline.ReadRecent(128))
 }
 
 func newRealTimelineProviderApp(
@@ -200,6 +328,15 @@ func assertRealTimelineOutputsRedacted(
 		for _, secret := range secrets {
 			if bytes.Contains(raw, []byte(secret)) {
 				t.Fatalf("%s leaked provider secret %q: %s", surface, secret, raw)
+			}
+		}
+	}
+	for surface, raw := range map[string][]byte{
+		"jsonl": jsonl, "ring": ring, "cockpit": cockpitJSON,
+	} {
+		for _, kind := range want {
+			if !bytes.Contains(raw, []byte(kind)) {
+				t.Fatalf("%s omitted enabled event class %q: %s", surface, kind, raw)
 			}
 		}
 	}
