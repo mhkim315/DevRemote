@@ -4,12 +4,11 @@
 
 **Planning base:** `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`
 
-**Current execution state:** CT-P1 is independently accepted at
-`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; PB is independently accepted at
-`5354077afcf30343d9666511e259346d9bea0ad6`; the CT-P1 operational-evidence
-amendment is the sole active next packet. CT-P2 and all production Timeline
-wiring remain blocked until the amended CT-P1 contract receives independent
-ACCEPT and the applicable post-PB packet is reviewed.
+**Current execution state:** CT-P1 ACCEPTED (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`).
+PB ACCEPTED (`5354077afcf30343d9666511e259346d9bea0ad6`). CT-P1 operational-evidence
+amendment ACCEPTED (`12135bd8072ae284fbe95c71cddf5f331a5d26f5`). Steps 4-8 operational
+foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
+(separate post-PB packet required).
 
 This document owns the current product definition, authority boundaries, MVP,
 and post-PB execution order. [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md)

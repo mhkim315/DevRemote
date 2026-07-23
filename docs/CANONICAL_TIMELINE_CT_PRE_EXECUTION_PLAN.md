@@ -1,8 +1,6 @@
 # Canonical Timeline CT-PRE Execution Plan
 
-**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0 ACCEPTED, CT-P1 ACCEPTED, CT-P1 Amendment ACCEPTED. Steps 4-8 foundation complete. CT-P2 and production wiring remain BLOCKED (separate post-PB packet).
-PB accepted; operational-evidence amendment is NEXT; CT-P2 and production
-wiring remain blocked pending amendment acceptance and separate authorization
+**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0, CT-P1, CT-P1 Amendment, and Steps 4-8 ACCEPTED. Operational foundation complete. CT-P2 and production wiring remain BLOCKED (separate post-PB packet).
 
 > **Product-direction amendment:** The product, authority model, and post-PB
 > order now live in
@@ -64,9 +62,9 @@ The frozen state is:
 | Accepted PB APK SHA-256 | `9ee0c4763151e080cb50b67b393bae525b4ab79463b24708f3a1cfc57bf97128` |
 | PB physical SM-S926N evidence | **8/8 PASS** |
 | PB ACCEPT SHA | `5354077afcf30343d9666511e259346d9bea0ad6` |
-| CT-PRE | **CT-P0 and CT-P1 accepted; operational amendment is NEXT** |
-| CT-P2 | **BLOCKED pending amended CT-P1 independent ACCEPT and separate post-PB authorization** |
-| Production shadow-write | **BLOCKED until revised CT-P1 independent ACCEPT and a reviewed shadow-wiring packet** |
+| CT-PRE | **CT-P0, CT-P1, CT-P1 Amendment ACCEPTED; Steps 4-8 foundation complete** |
+| CT-P2 | **BLOCKED — separate post-PB packet required** |
+| Production shadow-write | **BLOCKED — CT-P1 Amendment ACCEPTED; separate shadow-wiring authorization required** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
 
 CT-PRE was a bounded pre-PB-ACCEPT exception for offline foundation work only.

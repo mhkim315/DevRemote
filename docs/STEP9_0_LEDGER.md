@@ -15,8 +15,8 @@ starts them automatically.
 |------|---------|------|---------|----------|----------|--------|
 | 4 | Timeline shadow writer | `--enable-timeline-shadow` | `false` | None | Cockpit (polling) | IMPLEMENTED |
 | 5 | Workspace identity/lease | `--enable-workspace-lease` | `false` | None | Coordination (identity) | IMPLEMENTED |
-| 6 | Coordination broker | (standalone `internal/coordination`) | `false` | None | None (broker-only) | IMPLEMENTED |
-| 7 | Frozen validation store | (embedded in cockpit) | `false` | None | Cockpit (polling) | IMPLEMENTED |
+| 6 | Coordination broker | (none — contract-only) | N/A | None | None (broker-only) | IMPLEMENTED |
+| 7 | Frozen validation store | (none — contract-only) | N/A | None | Cockpit (polling) | IMPLEMENTED |
 | 8 | Cockpit projection | `--enable-cockpit` | `false` | None | Mobile UX (GET) | IMPLEMENTED |
 
 **Verification:** `go test -race ./...` passes for every package. No production
@@ -66,7 +66,7 @@ These form the core operational surface. They are not flag-gated.
 | 5 (Workspace) | `404a3e882` | `ad83bae10` | Identity/lease |
 | 6 (Coordination) | `3b1a2c7ed` | `b7eeba499` | Envelope/broker (comment fixes `0dac78ffa`→`6c13aafe7`) |
 | 7 (Validation) | `a753e126c` | `814868b5b` | Validation store |
-| 8 (Cockpit) | `f69d9eb1a` | `093e03f04` | Mobile projection |
+| 8 (Cockpit) | `90cc46c3f` (store) → `44f98dfcb` (handler) → `10432920b` (mobile) → `75be15e91` (mailbox) → `24d6d2d95` (cleanup) | `093e03f04` | Mobile projection |
 | PB ACCEPT | `5354077af` | — | Independent |
 
 ## 5. Next (9.1-9.3)
