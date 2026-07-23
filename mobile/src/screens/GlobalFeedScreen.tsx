@@ -7,9 +7,11 @@ import { EventBubble } from '../components/EventBubble';
 
 interface Props {
   token?: string;
+  session?: string;  // deep-linked session from pokit://activity/<session>
+  eventId?: string;  // deep-linked event from ?event=<id>
 }
 
-export default function GlobalFeedScreen({ token }: Props) {
+export default function GlobalFeedScreen({ token, session, eventId }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
 

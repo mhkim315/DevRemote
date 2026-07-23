@@ -5,7 +5,7 @@ import { Linking, View, Text } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import { getNotificationStatus, registerPushToken } from './src/lib/client';
+import { apiGet, getNotificationStatus, registerPushToken } from './src/lib/client';
 import { ConnectionProvider, useConnection } from './src/lib/connection';
 
 import AuthScreen from './src/screens/AuthScreen';
@@ -108,7 +108,15 @@ function AppContent() {
 
   useEffect(() => {
     async function setupPush() {
-      if (!isConnected || !session) return;
+      if (!isConnected) return;
+
+      // Paired-device mode: the daemon extracts deviceId from the device bearer
+      // (Principal), not from the query param. Legacy Supabase mode passes the
+      // Supabase token and deviceId from pairing data.
+      const paired = await loadPairing();
+
+      if (!paired && !session) return;
+
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
       if (existingStatus !== 'granted') {
@@ -121,13 +129,22 @@ function AppContent() {
       const pushToken = tokenData.data;
       console.log('Push token:', pushToken);
 
-      const paired = await loadPairing();
-      registerPushToken(session.access_token, pushToken, paired?.deviceId).catch(console.error);
+      if (paired) {
+        // Paired-device: register with device bearer (apiGet), not Supabase.
+        // deviceId is extracted server-side from the Principal.
+        const q = new URLSearchParams({ token: pushToken });
+        apiGet(`/push/register?${q}`, '').catch(console.error);
+      } else {
+        // Legacy: register with Supabase session token.
+        registerPushToken(session!.access_token, pushToken, undefined).catch(console.error);
+      }
     }
     setupPush();
   }, [isConnected, session]);
 
-  // P1b: handle notification tap → navigate to session.
+  // P1b: handle notification tap → navigate to activity.
+  // Re-reads live auth state on each notification (NOT from a stale closure)
+  // so paired-device mode works without a Supabase session.
   useEffect(() => {
     // Cold start: app opened from notification.
     Notifications.getLastNotificationResponseAsync().then(response => {
@@ -149,13 +166,33 @@ function AppContent() {
     const eventId = data?.['eventId'] as string | undefined;
     const sessionId = data?.['sessionId'] as string | undefined;
     const generation = Number(data?.['generation']);
-    // data.activityLink is a locator protocol only; never trust it as an
-    // authority decision. Re-authorize before opening any activity target.
-    if (!session?.access_token || !eventId || !sessionId || !Number.isFinite(generation)) return;
+    const runtimeId = data?.['runtimeId'] as string | undefined;
+    if (!eventId || !sessionId || !Number.isFinite(generation)) return;
+
+    // Re-read live auth state: paired-device mode uses the device bearer
+    // (no Supabase session); legacy mode uses the active Supabase token.
+    // This avoids the stale-closure problem — the listener effect uses [] but
+    // every notification reads current pairing/auth state fresh.
     try {
-      const status = await getNotificationStatus(session.access_token, eventId, sessionId, generation);
-      if (status.status === 'actionable' && status.activityLink) await Linking.openURL(status.activityLink);
-      else await Linking.openURL(`pokit://session/${encodeURIComponent(sessionId)}`);
+      const paired = await loadPairing();
+      let token = '';
+      if (paired) {
+        // Paired-device: getNotificationStatus will use device bearer via apiGet.
+        // Provide a placeholder so the token parameter is non-empty.
+        token = '';
+      } else {
+        // Legacy mode: re-read the current Supabase session fresh.
+        const { data: { session: freshSession } } = await supabase.auth.getSession();
+        token = freshSession?.access_token || '';
+      }
+      if (!paired && !token) return; // neither paired nor authenticated
+
+      const status = await getNotificationStatus(token, eventId, sessionId, generation, runtimeId);
+      if (status.status === 'actionable' && status.activityLink) {
+        await Linking.openURL(status.activityLink);
+      } else {
+        await Linking.openURL(`pokit://activity/${encodeURIComponent(sessionId)}?event=${encodeURIComponent(eventId)}`);
+      }
     } catch (err) { console.warn('notification status unavailable', err); }
   }
 

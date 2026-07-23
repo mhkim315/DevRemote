@@ -102,11 +102,17 @@ export function RootTabs({ token, authCtx }: { token?: string; authCtx?: any }) 
           initialParams={{ token, authCtx }}
           options={{ title: 'Dashboard' }} 
         />
-        <Tab.Screen 
-          name="Activity" 
+        <Tab.Screen
+          name="Activity"
           options={{ title: 'Activity' }}
         >
-          {() => <GlobalFeedScreen token={token} />}
+          {(props: any) => (
+            <GlobalFeedScreen
+              token={token}
+              session={props.route.params?.session}
+              eventId={props.route.params?.event}
+            />
+          )}
         </Tab.Screen>
         <Tab.Screen name="Cockpit" options={{ title: 'Cockpit' }}>{() => <CockpitScreen token={token} />}</Tab.Screen>
       </Tab.Navigator>

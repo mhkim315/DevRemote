@@ -44,7 +44,7 @@ export function hasDeviceAuth(): boolean {
 // legacy token. Errors are normalised to PokitError so callers keep the same
 // connectivity classification. An optional AbortSignal REALLY cancels the
 // underlying request (SP0.5-R2: deadline/unmount/session-switch abort).
-async function apiGet(path: string, legacyToken?: string, signal?: AbortSignal): Promise<Response> {
+export async function apiGet(path: string, legacyToken?: string, signal?: AbortSignal): Promise<Response> {
   if (_deviceAuth) {
     // Host-bound fail-closed: the device bearer is transmitted ONLY to the
     // exact paired origin. A userinfo/query/fragment/path variant or a
@@ -679,10 +679,22 @@ export type NotificationStatus = {
 
 // N1 payloads are locators only. The daemon endpoint is authoritative; push
 // delivery is intentionally at-most-once and may be lost by the OS.
-export async function getNotificationStatus(token: string, eventId: string, sessionId: string, generation: number): Promise<NotificationStatus> {
-  const q = new URLSearchParams({ session: sessionId, generation: String(generation) });
-  const res = await checkedFetch(`${_baseURL}/api/notification/${encodeURIComponent(eventId)}/status?${q}`, { headers: authHeaders(token) });
-  if (!res.ok) throw new PokitError('Notification status unavailable', ConnectivityFailure.APIError, res.status);
+// In paired-device mode the request rides the host-bound device bearer (apiGet)
+// and includes the runtime ID from the push payload; in legacy mode it uses the
+// supplied token. The runtime param lets the daemon verify runtime identity.
+export async function getNotificationStatus(
+  token: string,
+  eventId: string,
+  sessionId: string,
+  generation: number,
+  runtimeId?: string,
+): Promise<NotificationStatus> {
+  const params: Record<string, string> = { session: sessionId, generation: String(generation) };
+  if (runtimeId) params.runtime = runtimeId;
+  const q = new URLSearchParams(params);
+  const path = `/api/notification/${encodeURIComponent(eventId)}/status?${q}`;
+  // Host-bound device bearer when paired; legacy token fallback otherwise.
+  const res = await apiGet(path, token);
   return res.json();
 }
 

@@ -1129,12 +1129,15 @@ func (r *n1Resolver) RuntimeID(sessionID string) (string, bool) {
 }
 
 func (r *n1Resolver) IsResolved(sessionID, approvalID string) bool {
+	// Fail-closed: no store at all → treat every approval as already resolved.
 	if r.approvals == nil {
-		return false
+		return true
 	}
 	snap, ok := r.approvals.LookupRecord(sessionID, approvalID)
+	// Fail-closed: absent record → approval is not actionable → treat as resolved.
+	// An approval that was never ingested cannot be acted on.
 	if !ok {
-		return false
+		return true
 	}
 	return !snap.Actionable
 }

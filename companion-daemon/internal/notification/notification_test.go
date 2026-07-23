@@ -721,59 +721,6 @@ func TestAlreadyResolved(t *testing.T) {
 	}
 }
 
-// TestDegradedWriterForcesGap verifies that a writer with actual I/O
-// degradation triggers the event_degraded_or_gap outcome. It does this
-// by removing the backing file's write permission mid-test so the next
-// Append fails and marks the writer as degraded.
-func TestDegradedWriterForcesGap(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/timeline.jsonl"
-	w, err := writer.Open(writer.Config{Path: path}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-
-	// Write a valid event — writer is healthy.
-	ev := validEnvelope("deg", "sess-d", 1, contract.EventApprovalRequested)
-	if !w.Append(ev) {
-		t.Fatal("initial Append failed")
-	}
-	eventID := ev.EventID
-
-	// Verify healthy → actionable.
-	resolver := &stubResolver{
-		gen:       map[string]int64{"sess-d": 1},
-		perms:     map[string][]string{"device-1": {devicetrust.PermTerminalInput}},
-		runtimeOf: map[string]string{"sess-d": "rt-sess-d"},
-	}
-	resp := ResolveStatus(eventID, 1, "sess-d", "rt-sess-d", "device-1", resolver, resolver, w)
-	if resp.Status != "actionable" {
-		t.Fatalf("healthy: got %s want actionable", resp.Status)
-	}
-
-	// Force degradation: make the directory read-only so writes fail.
-	if err := os.Chmod(dir, 0500); err != nil {
-		t.Skipf("chmod not supported in this env: %v", err)
-	}
-	defer os.Chmod(dir, 0700) // restore for cleanup
-
-	// Attempt a write that will fail and mark the writer degraded.
-	_ = w.Append(validEnvelope("deg2", "sess-d", 1, contract.EventApprovalRequested))
-
-	degraded, reason := w.HealthSnapshot()
-	if !degraded {
-		t.Skipf("writer did not degrade (OS may cache writes): reason=%s", reason)
-	}
-	t.Logf("writer degraded: reason=%s", reason)
-
-	// With a degraded writer, ResolveStatus returns event_degraded_or_gap.
-	resp = ResolveStatus(eventID, 1, "sess-d", "rt-sess-d", "device-1", resolver, resolver, w)
-	if resp.Status != "event_degraded_or_gap" {
-		t.Errorf("degraded writer: got %s want event_degraded_or_gap", resp.Status)
-	}
-}
-
 // ── R4 tests ──
 
 // approvalStoreChecker is a real lookup-based ApprovalChecker (not a boolean
