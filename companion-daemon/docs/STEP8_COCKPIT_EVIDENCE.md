@@ -8,8 +8,8 @@
   Zero goroutines — readers poll via ReadRecent on their own schedule.
 - cockpit: handler calls Refresh on every GET, polling writer.ReadRecent,
   validation.ReadRecent, runtime catalog, and approval store.
-- Ring buffers are readable after Close (closed submissions are rejected,
-  but existing data remains available for inspection).
+- ReadAll history readable after Close; ReadRecent returns nil when closed.
+  Closed submissions are rejected.
 - No real-time push, no observer callbacks, no dispatcher goroutines, no
   semaphore limits — simplest possible polling model.
 
