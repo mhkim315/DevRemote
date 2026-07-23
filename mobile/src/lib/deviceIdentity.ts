@@ -41,6 +41,55 @@ export async function signWithDeviceKey(message: Uint8Array): Promise<Uint8Array
   return deviceKey().sign(message);
 }
 
+// ── 9.4-C §4.4: corruption handling ──
+
+// VerifyIdentityResult encodes the three contract-mandated outcomes from
+// verifying the device key against a stored pairing.
+export type VerifyIdentityResult =
+  | { ok: true; deviceId: string }
+  | { ok: false; reason: 'key_missing' | 'key_invalidated' | 'key_inaccessible' | 'key_incompatible' | 'identity_mismatch' | 'keystore_unavailable' };
+
+// verifyDeviceIdentityAgainstPairing checks that the ACTUAL hardware key on
+// THIS device matches the stored pairing's deviceId. Returns the 9.4-C §4.4
+// outcomes:
+//   ok=true                    → key present, identity matches → safe to install bearer
+//   ok=false, key_missing      → no key in Keystore → clear bearer, re-pair
+//   ok=false, key_invalidated  → key was destroyed (lock screen change etc.) → clear bearer, re-pair
+//   ok=false, key_inaccessible → Keystore unreachable → terminal trust failure
+//   ok=false, identity_mismatch→ wrong key → clear bearer, re-pair
+//   ok=false, keystore_unavailable → no hardware Keystore → terminal trust failure
+export async function verifyDeviceIdentityAgainstPairing(
+  expectedDeviceId: string,
+): Promise<VerifyIdentityResult> {
+  let info;
+  try {
+    info = await deviceKey().getKeyInfo();
+  } catch (e: any) {
+    const code = e?.code || '';
+    if (code === 'key_missing') return { ok: false, reason: 'key_missing' };
+    if (code === 'key_invalidated') return { ok: false, reason: 'key_invalidated' };
+    if (code === 'key_inaccessible') return { ok: false, reason: 'key_inaccessible' };
+    if (code === 'key_incompatible') return { ok: false, reason: 'key_incompatible' };
+    if (code === 'hardware_unavailable' || code === 'unsupported') {
+      return { ok: false, reason: 'keystore_unavailable' };
+    }
+    return { ok: false, reason: 'key_inaccessible' };
+  }
+  if (!info || info.deviceId !== expectedDeviceId) {
+    return { ok: false, reason: 'identity_mismatch' };
+  }
+  return { ok: true, deviceId: info.deviceId };
+}
+
+// clearLocalBearerState removes the stored pairing from AsyncStorage so a
+// new pairing can be established. Called on corruption outcomes (key_missing,
+// key_invalidated, identity_mismatch). The Keystore key itself is NOT deleted
+// — only the bearer/pairing state is cleared.
+export async function clearLocalBearerState(): Promise<void> {
+  const { clearPairing } = await import('./pairingStore');
+  await clearPairing();
+}
+
 // ── legacy migration (BLOCKER 5: fail-closed) ──
 
 // ensureLegacyKeyRemoved deletes the old JavaScript software private key.
