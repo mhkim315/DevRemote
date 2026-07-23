@@ -135,7 +135,7 @@ func (s *CockpitStore) Refresh() {
 				for _, approval := range s.sources.Approvals.ListSafe(record.SessionID) {
 					approvals = appendBounded(approvals, Item{
 						Kind: "approval", State: approval.State, Summary: approval.Summary,
-						Origin: Origin{Provider: "unavailable", SessionID: approval.SessionID, Generation: generation},
+						Origin: Origin{Provider: record.Provider, SessionID: approval.SessionID, Generation: generation},
 					})
 				}
 			}
@@ -198,7 +198,14 @@ func appendBounded(items []Item, item Item) []Item {
 func cloneItems(items []Item) []Item { return append([]Item{}, items...) }
 
 func validItem(item Item) bool {
-	for _, value := range []string{item.Kind, item.State, item.Summary, item.Origin.Provider, item.Origin.SessionID, item.Origin.RuntimeID, item.Origin.Generation, item.Origin.Model, item.Origin.SnapshotID, item.Origin.EvidenceReference} {
+	// Mandatory origin fields must be non-empty and bounded.
+	for _, value := range []string{item.Kind, item.State, item.Summary, item.Origin.Provider, item.Origin.SessionID, item.Origin.Generation} {
+		if value == "" || len(value) > MaxFieldBytes {
+			return false
+		}
+	}
+	// Optional origin fields are bounded when present.
+	for _, value := range []string{item.Origin.RuntimeID, item.Origin.Model, item.Origin.SnapshotID, item.Origin.EvidenceReference} {
 		if len(value) > MaxFieldBytes {
 			return false
 		}

@@ -445,7 +445,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
 		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, audit), devicetrust.PermSessionsRead))
 	if cfg.EnableCockpit {
-		validationStore := &validation.ValidationStore{}
+		validationStore := validation.NewValidationStore()
 		cockpitStore = cockpit.NewCockpitStore(cockpit.Sources{
 			Catalog: h.Catalog, Approvals: approvals, Timeline: timelineWriter, Validation: validationStore,
 		})

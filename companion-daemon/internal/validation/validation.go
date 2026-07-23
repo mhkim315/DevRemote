@@ -67,14 +67,34 @@ type Subscriber func(ValidationResult)
 // ValidationStore is a restart-volatile, in-memory record of submitted
 // validation results. It deliberately owns no validator dispatch, repository
 // state, or acceptance authority.
+type subscriberWork struct {
+	fn     Subscriber
+	result ValidationResult
+}
+
 type ValidationStore struct {
 	mu          sync.RWMutex
 	results     []ValidationResult
 	subscribers []Subscriber
+	dispatchCh  chan subscriberWork // bounded worker input
+}
+
+func (s *ValidationStore) startSubscriberLoop() {
+	ch := make(chan subscriberWork, 64)
+	s.dispatchCh = ch
+	go func() {
+		for work := range ch {
+			func() {
+				defer func() { recover() }()
+				work.fn(work.result)
+			}()
+		}
+	}()
 }
 
 // Submit validates and retains one result, then notifies observers
-// asynchronously. An observer cannot delay or change submission.
+// asynchronously. Observers are dispatched through a bounded channel
+// with panic recovery; slow subscribers are dropped silently.
 func (s *ValidationStore) Submit(result ValidationResult) error {
 	if err := result.Validate(); err != nil {
 		return err
@@ -86,8 +106,12 @@ func (s *ValidationStore) Submit(result ValidationResult) error {
 	subscribers := append([]Subscriber(nil), s.subscribers...)
 	s.mu.Unlock()
 
+	captured := cloneResult(result)
 	for _, subscriber := range subscribers {
-		go subscriber(cloneResult(result))
+		select {
+		case s.dispatchCh <- subscriberWork{fn: subscriber, result: captured}:
+		default:
+		}
 	}
 	return nil
 }
@@ -102,6 +126,14 @@ func (s *ValidationStore) ReadAll() []ValidationResult {
 		results[i] = cloneResult(result)
 	}
 	return results
+}
+
+// NewValidationStore returns an initialized store with the subscriber
+// dispatch loop already running. The loop is bounded and recovers panics.
+func NewValidationStore() *ValidationStore {
+	s := &ValidationStore{}
+	s.startSubscriberLoop()
+	return s
 }
 
 // Subscribe adds an observational callback. Nil callbacks are ignored.

@@ -73,7 +73,7 @@ func TestValidationStoreSubmitReadRoundTrip(t *testing.T) {
 }
 
 func TestValidationStoreSubscribeNotifiesAfterSubmit(t *testing.T) {
-	store := &ValidationStore{}
+	store := NewValidationStore()
 	first, second := make(chan ValidationResult, 1), make(chan ValidationResult, 1)
 	store.Subscribe(func(result ValidationResult) { first <- result })
 	store.Subscribe(func(result ValidationResult) { second <- result })
@@ -94,7 +94,7 @@ func TestValidationStoreSubscribeNotifiesAfterSubmit(t *testing.T) {
 }
 
 func TestValidationStoreConcurrentReadSafety(t *testing.T) {
-	store := &ValidationStore{}
+	store := NewValidationStore()
 	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
 	const readers = 32
 	var wg sync.WaitGroup

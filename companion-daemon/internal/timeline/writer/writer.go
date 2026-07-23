@@ -45,13 +45,14 @@ type Subscriber func(contract.Envelope)
 // Writer serializes append records. It is deliberately not a store, queue,
 // authority callback, or recovery state machine.
 type Writer struct {
-	mu          sync.Mutex
-	file        appendFile
-	closed      bool
-	appended    uint64
-	dropped     uint64
-	failures    uint64
-	subscribers []Subscriber
+	mu           sync.Mutex
+	file         appendFile
+	closed       bool
+	appended     uint64
+	dropped      uint64
+	failures     uint64
+	subscribers  []Subscriber
+	subscriberCh chan subscriberWork
 }
 
 // Open constructs a writer for one explicit path. Construction errors are
@@ -70,9 +71,14 @@ func Open(config Config) (*Writer, error) {
 	return newWriter(f), nil
 }
 
-func newWriter(file appendFile) *Writer { return &Writer{file: file} }
+func newWriter(file appendFile) *Writer {
+	w := &Writer{file: file}
+	w.startSubscriberLoop()
+	return w
+}
 
 // Subscribe adds an observational callback. Nil callbacks are ignored.
+// Subscribers must not block; slow subscribers are dropped silently.
 func (w *Writer) Subscribe(fn Subscriber) {
 	if fn == nil {
 		return
@@ -80,6 +86,28 @@ func (w *Writer) Subscribe(fn Subscriber) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.subscribers = append(w.subscribers, fn)
+}
+
+// subscriberWork is a bounded item delivered to the single dispatch goroutine.
+type subscriberWork struct {
+	fn       Subscriber
+	envelope contract.Envelope
+}
+
+// startSubscriberLoop runs a single bounded worker that dispatches to all
+// subscribers with panic recovery. Blocked sends drop the notification
+// without blocking Append.
+func (w *Writer) startSubscriberLoop() {
+	ch := make(chan subscriberWork, 64)
+	go func() {
+		for work := range ch {
+			func() {
+				defer func() { recover() }()
+				work.fn(work.envelope)
+			}()
+		}
+	}()
+	w.subscriberCh = ch
 }
 
 // Append is best-effort and never returns an error to its caller. It validates
@@ -120,8 +148,13 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 	w.appended++
 	subscribers := append([]Subscriber(nil), w.subscribers...)
 	w.mu.Unlock()
+	// Dispatch through bounded channel; non-blocking send drops on overflow.
 	for _, subscriber := range subscribers {
-		go subscriber(envelope)
+		select {
+		case w.subscriberCh <- subscriberWork{fn: subscriber, envelope: envelope}:
+		default:
+			w.recordDrop(false)
+		}
 	}
 	return true
 }
@@ -151,6 +184,9 @@ func (w *Writer) Close() error {
 		return nil
 	}
 	w.closed = true
+	if w.subscriberCh != nil {
+		close(w.subscriberCh)
+	}
 	if w.file == nil {
 		return nil
 	}

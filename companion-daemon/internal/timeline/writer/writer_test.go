@@ -175,11 +175,12 @@ func TestConcurrentAppendIsRaceFree(t *testing.T) {
 	}
 }
 
-func TestWriterStartsNoGoroutines(t *testing.T) {
+func TestWriterStartsSingleBoundedGoroutine(t *testing.T) {
 	before := runtime.NumGoroutine()
 	w := newWriter(&testFile{})
-	if after := runtime.NumGoroutine(); after != before {
-		t.Fatalf("writer started goroutines: before=%d after=%d", before, after)
+	// STEP8: one bounded subscriber dispatch goroutine (replaces per-Append goroutine leak).
+	if after := runtime.NumGoroutine(); after != before+1 {
+		t.Fatalf("writer goroutine count: before=%d after=%d (want +1 for bounded subscriber loop)", before, after)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
