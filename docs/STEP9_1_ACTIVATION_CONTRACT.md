@@ -3,27 +3,27 @@
 **Status:** IMPLEMENTATION CONTRACT — PENDING IMPLEMENTATION
 
 **Branch:** `feature/canonical-timeline-foundation`
-**HEAD:** `301f48544`
-**PREREQUISITE:** Step 9.0 ACCEPTED at `62a50f0a8` (EVID: `STEP9_0_EVIDENCE.md`)
+**HEAD:** `1c69f99ab`
+**PREREQUISITE:** Step 9.0 ACCEPTED at `62a50f0a8`
 
 ## 1. Scope and authority boundary
 
 Step 9.1 activates minimal Operational Canonical Timeline staging — connecting
-bounded, accepted provider-native producers to the existing `--enable-timeline-shadow`
-path with fail-open semantics. This is NOT a production default change; the flag
-remains `false` until staging evidence proves 7-day stable operation.
+bounded, accepted provider-native producers to a non-blocking shadow write path
+with fail-open semantics. The `--enable-timeline-shadow` flag remains `false` until
+staging evidence proves 7-day stable operation.
 
 **What gets activated (event types):**
 - `EventProviderInvocationStarted` — emitted when a managed Codex or Claude runtime starts
 - `EventProviderInvocationFinished` — emitted on managed runtime graceful exit
 - `EventApprovalRequested` — emitted when an approval is requested
-- `EventApprovalResolved` — emitted when an approval is resolved (allow/deny)
-- `EventToolCallStarted` / `EventToolCallFinished` — already present in contract
+- `EventApprovalResolved` — emitted when an approval is resolved
+- `EventToolCallStarted` / `EventToolCallFinished` — already in contract
 - `EventStreamObserved` — thinking/streaming observation
 - `EventDegraded` — degradation indicator (disk full, write failure, drop)
 
 **What stays unchanged:**
-- `ManagedCodexService` and `ManagedClaudeService` lifecycle (create, stop, kill)
+- `ManagedCodexService` and `ManagedClaudeService` lifecycle
 - `OwnedPTYRuntime` session lifecycle
 - `ApprovalAuthority` approval ingestion, storage, delivery, resolution
 - `TerminalTransport` generation-gated input, resize, output
@@ -32,111 +32,182 @@ remains `false` until staging evidence proves 7-day stable operation.
 - Device trust, pairing, permission, bearer, WS ticket authority
 - All existing REST and WebSocket handlers
 
-## 2. Producer connection (bounded, accepted only)
+## 2. Producer connection (bounded, non-blocking, registered only)
 
-Only the already-accepted managed runtimes may emit:
+### 2a. Producer registration
 
-| Producer | Session Prefix | Event Source |
-|----------|---------------|-------------|
-| `ManagedCodexService` | `codex_app_server:` | Runtime lifecycle, tool call, approval |
-| `ManagedClaudeService` | `claude_headless:` | Runtime lifecycle, tool call, approval, stream |
+Define a `ProducerCapability` interface in `internal/timeline/writer/`:
 
-Each producer connects through the existing `writer.Writer.Append()` path.
-The connection is:
+```go
+type ProducerCapability string
 
-```text
-ManagedCodexService (create/stop/approval)
-  → contract.Envelope (validate + marshal)
-  → writer.Writer.Append(envelope)
-  → ring buffer (128 capacity, bounded)
-  → optional shadow file (when --enable-timeline-shadow)
+type ProducerAuth interface {
+    IsRegistered(producer ProducerCapability) bool
+}
 ```
 
-No new goroutines, channels, callbacks, or observer patterns are introduced.
-The ring-buffer mailbox model from Step 8 (R4) is the sole push path.
+The `Writer` accepts a `ProducerAuth` at construction. `Append` rejects envelopes
+from unregistered producers before validation — fail-closed.
+
+Registration occurs at the composition root (`cmd/devremote/app.go`) only.
+No `term/` or `cmd/` import of `timeline/writer` beyond the composition boundary.
+
+### 2b. Non-blocking I/O
+
+`Append` must NOT perform synchronous I/O under the caller's lock or goroutine.
+A hung filesystem (NFS/disk full/frozen volume) must not block the managed runtime.
+
+**Required architecture:**
+
+```text
+Producer goroutine (managed runtime)
+  → Writer.Submit(envelope)       // non-blocking, validates+pushes to channel
+  → bounded chan (capacity 256)   // ring buffer replacement for submission
+  → single I/O worker goroutine   // marshal + write + sync to shadow file
+  → on write success: push to ReadRecent ring buffer (128 cap)
+  → on write failure: increment Stats.Dropped, log, continue
+```
+
+`Submit` returns immediately after pushing to the bounded channel. If the channel
+is full, the envelope is dropped and `Stats.Dropped` increments — no blocking,
+no backpressure to the producer.
+
+**Test requirement:** inject a blocking `write(2)` sink (never-returning Write).
+Prove the runtime continues (session create, input, approval all work) and
+`Shutdown` completes without waiting for the hung I/O worker.
+
+### 2c. I/O worker lifecycle
+
+The I/O worker goroutine starts with the Writer and shuts down on `Close()`.
+`Close` signals the worker, drains remaining items (best-effort, timeout 5s),
+then closes the file. Items not drained before timeout are dropped and counted.
 
 ## 3. Fail-open guarantee
 
-Timeline failure is ALWAYS degradation, never daemon crash or session failure:
+Timeline failure is degradation, never daemon crash:
 
-- `Writer.Append` returns `bool` — false on validation/marshal/write/sync failure
-- The caller logs the failure and continues; the managed runtime is unaffected
-- Drops are counted in `writer.Stats.Dropped` and exposed via cockpit
-- Disk full → drop, continue. Permission denied → drop, continue.
-  Kill -9 restart → empty ring buffer after restart, continue.
-- No production path may call `log.Fatal`, `panic`, or `os.Exit` from Timeline code
-- Timeline initialization failure (missing path, permission) must not block daemon startup
+- `Submit` returns `bool` — false on validation/rejection/channel-full. Caller logs, continues.
+- I/O worker failure (disk full, permission denied) → drop, increment counter, continue.
+- Kill -9 restart → channel and ring buffer empty, new submissions succeed.
+- No production path may call `log.Fatal`, `panic`, or `os.Exit` from Timeline code.
+- Timeline initialization failure must not block daemon startup.
+- `Shutdown` with hung I/O must complete within deadline (5s); remaining items dropped.
 
-**Composition rule:** `Open(Config{Path: ...})` errors are logged at the composition
-root and the shadow writer remains `nil`. All call sites check `if w != nil` before
-calling `Append`.
+## 4. Drop visibility and degradation endpoint
 
-## 4. Mailbox / backpressure
+### 4a. Writer.Stats()
 
-The existing ring buffer (`writer.go`, `recentEnvelopes=128`) is the sole push consumer.
-Overflow is silent drop with counter increment:
+The Writer exposes `Stats{Appended uint64, Dropped uint64, Failures uint64}`.
+`Appended` counts successfully written+synchronized envelopes. `Dropped` counts
+every submission that was lost (channel full, marshal failure, write failure,
+sync failure). `Failures` counts I/O errors only.
 
-- `Append` pushes to ring buffer under mutex — non-blocking
-- `Write` and `Sync` to the shadow file are under the same mutex
-- No backpressure from cockpit consumers (polling, on-demand)
-- Cockpit reads via `writer.ReadRecent(n)` on its own schedule
-- Gaps are explicit: `Stats.Dropped` counter exposes every silent drop
+### 4b. Degradation GET endpoint
 
-## 5. Acceptance tests
+A new authenticated endpoint `GET /api/cockpit/degradation` (device bearer
+`sessions:read`) returns:
 
-Before the implementation is accepted, automated tests must prove:
+```json
+{
+  "timeline": {
+    "enabled": true,
+    "shadowPath": "/path/to/shadow.jsonl",
+    "appended": 12345,
+    "dropped": 7,
+    "failures": 3,
+    "degraded": true
+  }
+}
+```
 
-1. **Graceful degradation on disk full** — `syscall.ENOSPC` on write → drop counted, runtime continues
-2. **Graceful degradation on permission denied** — `syscall.EACCES` → drop counted, runtime continues
-3. **Kill -9 restart** — after abrupt death, ring buffer empty, new appends succeed
-4. **Drop exposure** — `Stats.Dropped` correctly increments on each failure mode
-5. **No authority regression** — all existing tests pass; no production import change
-6. **Bounded producer** — only Codex/Claude managed runtimes connect; generic events rejected
-7. **Gap visibility** — cockpit exposes drops; no event fabricated to conceal gap
-8. **Default-off** — without `--enable-timeline-shadow`, zero Timeline codepaths execute
+`degraded=true` when `dropped > 0` or the shadow writer is nil despite being
+enabled. Cockpit polls this on its own schedule; the endpoint never blocks.
 
-## 6. Staging gate
+**Test requirement:** after inducing disk-full, the degradation endpoint returns
+`degraded:true` with correct `dropped` and `failures` counts.
 
-The implementation is considered staging-complete when:
+## 5. Producer authorization
 
-- [ ] All existing tests pass (`go test -race ./...`, `npx tsc --noEmit`, `npx jest --runInBand`)
-- [ ] No production import regressions (Timeline packages are not imported from new callers)
-- [ ] Staging daemon runs for 7 days with `--enable-timeline-shadow` enabled
-- [ ] Cockpit shows real session/approval/event data from managed runtimes
-- [ ] Zero daemon crashes, panics, or session failures attributed to Timeline code
-- [ ] Drop counter increments on induced failures (disk full, permission denied)
+The `Writer` constructor accepts a `ProducerAuth` interface. Only registered
+producers may submit:
+
+| Producer | Capability | Registration |
+|----------|-----------|-------------|
+| `ManagedCodexService` | `"codex_app_server"` | `cmd/devremote/app.go` |
+| `ManagedClaudeService` | `"claude_headless"` | `cmd/devremote/app.go` |
+
+`Submit` checks `auth.IsRegistered(ProducerCapability(envelope.SessionID prefix))`
+before validation. Unregistered producers are rejected with `Stats.Dropped++`.
+
+**Negative test:** submit an envelope with `Provider: "generic"` → rejected.
+Submit from an unregistered producer → rejected. Registered producer → accepted.
+
+### 5a. Dependency direction
+
+- `internal/timeline/writer/` defines `ProducerAuth` interface — no term/cmd imports.
+- `cmd/devremote/app.go` implements registration (creates auth, passes to Writer).
+- `internal/term/managed_codex.go` and `managed_claude.go` call `Submit` via interface
+  — they do NOT import `timeline/writer` directly. The writer is injected through
+  the composition root.
+- Zero circular dependencies.
+
+## 6. Secret prevention
+
+Every envelope submitted through the staging path MUST use a redacted, digest,
+or opaque payload variant. The existing `contract.Payload` validation enforces
+this (exactly-one variant required). Additionally:
+
+- `RedactedPayload.Summary` must pass `containsSecretMarker` check (reject "bearer " and "sk-")
+- `OpaquePayload.Reference` must pass same check
+- No raw `AgentEvent.Text`, `ToolName`, `ApprovalID`, or `RawRef` may accompany a payload variant
+
+**Sentinel-secret test:** submit an envelope with `RedactedPayload{Summary: "Authorization: Bearer sk-abc"}` → rejected. Submit with `RedactedPayload{Summary: "safe summary"}` → accepted.
+
+These checks are already implemented in `contract.go` (lines 84-86, 307-319) and
+validated in `writer.go Append` (line 90: `envelope.Validate()`).
+
+## 7. Acceptance tests
+
+1. **Non-blocking submission:** blocking I/O sink → runtime continues, shutdown completes
+2. **Drop visibility:** disk-full → `Stats.Dropped` increments, degradation endpoint exposes
+3. **Producer auth:** unregistered producer rejected, registered accepted
+4. **Secret prevention:** sentinel secrets rejected by envelope validation
+5. **No authority regression:** all existing tests pass, no production import changes
+6. **Kill -9 restart:** channel+ring empty, new submissions succeed
+7. **Graceful shutdown:** hung I/O worker → shutdown completes in <5s
+8. **Default-off:** without `--enable-timeline-shadow`, zero Timeline codepaths execute
+
+## 8. Implementation files
+
+**May change:**
+- `internal/timeline/writer/writer.go` — add `Submit`, I/O worker, `ProducerAuth`, `Stats`
+- `internal/timeline/writer/writer_test.go` — staging acceptance tests
+- `cmd/devremote/app.go` — composition wiring (optional, guarded by flag)
+
+**Must NOT change:**
+- Any `internal/term/` file (no term→timeline import)
+- Any `internal/transcript/` file
+- Any `internal/devicetrust/` file
+- Any `mobile/` file
+- `internal/agent/` (fixture-only per CT-P0)
+
+## 9. Staging gate
+
+- [ ] All existing tests pass
+- [ ] 8 acceptance tests pass
+- [ ] No production import regressions
+- [ ] Staging daemon runs 7 days with `--enable-timeline-shadow`
+- [ ] Cockpit shows degradation when drops occur
+- [ ] Zero daemon crashes from Timeline code
 - [ ] Separate evidence commit records staging results
 
-After staging evidence is accepted, a separate reviewed change may alter the
-default flag value. Step 9.1 itself does NOT change the default.
-
-## 7. Implementation bounds
-
-**Files that may change:**
-- `internal/timeline/writer/` — existing ring buffer (already implemented)
-- `cmd/devremote/app.go` — composition wiring (connect managed runtimes to writer)
-- `internal/term/managed_codex.go` — emit envelope on create/stop (guarded by `--enable-timeline-shadow`)
-- `internal/term/managed_claude.go` — emit envelope on create/stop/stream (same guard)
-
-**Files that must NOT change:**
-- `internal/term/pty.go` — terminal transport, recorder
-- `internal/term/input_b_protocol.go` — acknowledged input
-- `internal/transcript/` — Transcript service
-- `internal/devicetrust/` — device trust
-- `mobile/` — any mobile code (cockpit already reads via existing GET)
-- `internal/agent/` — agent adapters (fixture-only per CT-P0)
-
-**Additions:**
-- New test file: `internal/timeline/writer/integration_test.go` — staging acceptance tests
-
-## 8. Stop conditions
+## 10. Stop conditions
 
 Stop and reject if the change:
-- Makes Timeline a daemon startup, session creation, or shutdown prerequisite
-- Changes any existing authority (runtime lifecycle, approval, input, transcript, PTY)
-- Adds a callback, observer, dispatcher goroutine, or blocking channel
-- Increases daemon goroutine count for non-Timeline code paths
-- Introduces a production import of Timeline from `cmd/`, `term/`, `transcript/`, or `devicetrust/`
-- Fails any existing test in the full gate (`go test -race ./...`, `npx tsc`, `npx jest`)
-- Requires a mobile app update to function
-- Changes the default value of `--enable-timeline-shadow`
+- Makes Timeline a daemon startup/session/shutdown prerequisite
+- Blocks the managed runtime on I/O (synchronous write under producer lock)
+- Adds a callback, observer, or blocking channel from producer goroutines
+- Introduces a term→timeline or cmd→timeline import beyond the composition root
+- Fails any existing test
+- Changes `--enable-timeline-shadow` default
+- Exposes raw secrets to the shadow file
