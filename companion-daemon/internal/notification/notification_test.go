@@ -157,10 +157,13 @@ func TestSelectSinceUsesPerDeviceCursorAndRecoversRingWrap(t *testing.T) {
 
 // ── V1 production tests (8) ──
 
-// stubSender records calls for test assertions.
+// stubSender records calls for test assertions. The `sent` channel is
+// signalled on each successful Send so tests can synchronise with the
+// fire-and-forget dispatch goroutines.
 type stubSender struct {
-	mu  sync.Mutex
-	out []Locator
+	mu   sync.Mutex
+	out  []Locator
+	sent chan struct{} // optional: closed for each Send (nil = no signal)
 }
 
 func (s *stubSender) Send(deviceID, pushToken string, payload []byte) error {
@@ -171,6 +174,12 @@ func (s *stubSender) Send(deviceID, pushToken string, payload []byte) error {
 		return err
 	}
 	s.out = append(s.out, loc)
+	if s.sent != nil {
+		select {
+		case s.sent <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -180,6 +189,23 @@ func (s *stubSender) locators() []Locator {
 	out := make([]Locator, len(s.out))
 	copy(out, s.out)
 	return out
+}
+
+// waitForLocators blocks until at least n locators are recorded or deadline.
+func (s *stubSender) waitForLocators(t *testing.T, n int, deadline time.Duration) []Locator {
+	t.Helper()
+	timeout := time.After(deadline)
+	for {
+		locs := s.locators()
+		if len(locs) >= n {
+			return locs
+		}
+		select {
+		case <-timeout:
+			t.Fatalf("timeout waiting for %d locators, got %d", n, len(locs))
+		case <-s.sent:
+		}
+	}
 }
 
 // stubResolver implements AuthResolver for tests.
@@ -235,7 +261,7 @@ func openTestWriter(t *testing.T) *writer.Writer {
 func TestProductionDelivery(t *testing.T) {
 	devices := NewDeviceStore()
 	devices.Bind("device-1", "push-token-abc")
-	sender := &stubSender{}
+	sender := &stubSender{sent: make(chan struct{}, 16)}
 
 	var gen atomic.Int64
 	gen.Store(7)
@@ -250,13 +276,9 @@ func TestProductionDelivery(t *testing.T) {
 		t.Fatal("Append failed")
 	}
 
-	// Synchronous dispatch delivers the locator.
-	n := notifier.Dispatch()
-	if n != 1 {
-		t.Fatalf("delivered %d want 1", n)
-	}
-
-	locs := sender.locators()
+	// Fire-and-forget dispatch. Wait for locator to arrive.
+	notifier.Dispatch()
+	locs := sender.waitForLocators(t, 1, 2*time.Second)
 	if len(locs) != 1 {
 		t.Fatalf("sent %d locators want 1", len(locs))
 	}
@@ -269,9 +291,12 @@ func TestProductionDelivery(t *testing.T) {
 	}
 
 	// Duplicate dispatch must be suppressed by dedup.
-	n2 := notifier.Dispatch()
-	if n2 != 0 {
-		t.Errorf("duplicate dispatch must be suppressed: got %d", n2)
+	time.Sleep(100 * time.Millisecond) // let goroutines finish
+	before := len(sender.locators())
+	notifier.Dispatch()
+	time.Sleep(100 * time.Millisecond) // let goroutines finish
+	if len(sender.locators()) != before {
+		t.Errorf("duplicate dispatch must be suppressed: before=%d after=%d", before, len(sender.locators()))
 	}
 }
 
@@ -572,7 +597,7 @@ func TestFlagOffZeroEffect(t *testing.T) {
 func TestNotificationRestartRecovery(t *testing.T) {
 	devices := NewDeviceStore()
 	devices.Bind("device-1", "push-token")
-	sender := &stubSender{}
+	sender := &stubSender{sent: make(chan struct{}, 16)}
 
 	var gen atomic.Int64
 	gen.Store(1)
@@ -587,18 +612,20 @@ func TestNotificationRestartRecovery(t *testing.T) {
 	if !w.Append(ev1) {
 		t.Fatal("Append ev1 failed")
 	}
-	if n1.Dispatch() != 1 {
-		t.Fatal("first dispatch failed")
-	}
+	n1.Dispatch()
+	sender.waitForLocators(t, 1, 2*time.Second)
 
-	// Simulate restart: fresh Notifier, same device store (cursor persists).
-	sender2 := &stubSender{}
+	// Simulate restart: fresh Notifier, same device store (cursor persists
+	// from the first run's successful delivery).
+	sender2 := &stubSender{sent: make(chan struct{}, 16)}
 	n2 := NewNotifier(w, devices, func(sid string) int64 { return gen.Load() }, sender2)
 	n2.SetEnabled(true)
 
 	// Same events in ring — cursor already past them, so nothing delivered.
-	if n2.Dispatch() != 0 {
-		t.Errorf("restart must not re-deliver already-seen events: got %d", n2.Dispatch())
+	n2.Dispatch()
+	time.Sleep(200 * time.Millisecond) // let goroutines finish
+	if len(sender2.locators()) != 0 {
+		t.Errorf("restart must not re-deliver already-seen events: got %d", len(sender2.locators()))
 	}
 
 	// New event after restart.
@@ -606,10 +633,8 @@ func TestNotificationRestartRecovery(t *testing.T) {
 	if !w.Append(ev2) {
 		t.Fatal("Append ev2 failed")
 	}
-	if n2.Dispatch() != 1 {
-		t.Fatalf("restart must deliver new events: got %d", n2.Dispatch())
-	}
-	locs := sender2.locators()
+	n2.Dispatch()
+	locs := sender2.waitForLocators(t, 1, 2*time.Second)
 	if len(locs) != 1 || locs[0].EventID != ev2.EventID {
 		t.Errorf("restart delivered wrong event: %+v", locs)
 	}
@@ -912,31 +937,31 @@ func TestDegradedWriterFIFO(t *testing.T) {
 	}
 }
 
-// TestHungSenderDoesNotBlockOtherDevices verifies that when one device's
-// PushSender blocks indefinitely, other devices still receive notifications.
-// Per-device goroutines ensure a hung sender on device A never blocks
-// delivery to device B. Dispatch() waits for all goroutines but the fast
-// device finishes immediately.
+// TestHungSenderDoesNotBlockOtherDevices verifies steady-state resilience:
+// when one device's PushSender blocks across poll cycles, other devices
+// continue receiving NEW events. Dispatch() returns immediately (fire-and-
+// forget) so the next poll cycle launches fresh goroutines while the old
+// hung goroutine is still blocked.
 func TestHungSenderDoesNotBlockOtherDevices(t *testing.T) {
 	devices := NewDeviceStore()
 	devices.Bind("device-fast", "token-fast")
 	devices.Bind("device-slow", "token-slow")
 
-	var fastSent atomic.Int64
+	var fastCount atomic.Int64
 	var slowEntered atomic.Bool
-	slowDone := make(chan struct{})
+	slowBlock := make(chan struct{}) // never closed — slow device hangs forever
 
 	sender := &selectiveHangSender{
 		hangDevice: "device-slow",
 		onSend: func(deviceID string) {
 			if deviceID == "device-fast" {
-				fastSent.Add(1)
+				fastCount.Add(1)
 			}
 			if deviceID == "device-slow" {
 				slowEntered.Store(true)
 			}
 		},
-		slowDone: slowDone,
+		slowBlock: slowBlock,
 	}
 
 	var gen atomic.Int64
@@ -947,46 +972,48 @@ func TestHungSenderDoesNotBlockOtherDevices(t *testing.T) {
 	notifier := NewNotifier(w, devices, func(sid string) int64 { return gen.Load() }, sender)
 	notifier.SetEnabled(true)
 
-	ev := validEnvelope("hung-1", "session-1", 1, contract.EventApprovalRequested)
-	if !w.Append(ev) {
-		t.Fatal("Append failed")
+	// ---- Poll 1: both devices get event-1. slow blocks. ----
+	ev1 := validEnvelope("steady-1", "session-1", 1, contract.EventApprovalRequested)
+	if !w.Append(ev1) {
+		t.Fatal("Append ev1 failed")
 	}
+	notifier.Dispatch() // fire-and-forget; returns immediately
 
-	// Dispatch runs per-device goroutines. device-slow blocks forever,
-	// but device-fast completes. We verify device-fast received its
-	// notification before the slow goroutine blocks.
-	done := make(chan int, 1)
-	go func() {
-		done <- notifier.Dispatch()
-	}()
-
-	// Wait for device-fast to finish (its goroutine returns immediately).
-	timeout := time.After(2 * time.Second)
-	for fastSent.Load() < 1 {
+	// Wait for fast to receive event-1 and slow to enter its Send.
+	deadline := time.After(2 * time.Second)
+	for fastCount.Load() < 1 || !slowEntered.Load() {
 		select {
-		case <-timeout:
-			t.Fatal("device-fast did not receive notification within timeout")
+		case <-deadline:
+			t.Fatalf("timeout: fastSent=%d slowEntered=%v", fastCount.Load(), slowEntered.Load())
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
-	if fastSent.Load() < 1 {
-		t.Error("device-fast did not receive notification")
-	}
-	if !slowEntered.Load() {
-		t.Error("device-slow sender was not invoked")
+	// ---- Poll 2: append a second event WHILE slow is still hung. ----
+	// Fast device must receive event-2 in the next dispatch cycle.
+	ev2 := validEnvelope("steady-2", "session-1", 1, contract.EventApprovalRequested)
+	if !w.Append(ev2) {
+		t.Fatal("Append ev2 failed")
 	}
 
-	// Cleanup: unblock the slow goroutine so Dispatch() can return.
-	close(slowDone)
-	select {
-	case n := <-done:
-		if n < 1 {
-			t.Errorf("delivered=%d want at least 1", n)
+	// Start polling for fast to receive event-2.
+	deadline2 := time.After(3 * time.Second)
+	for fastCount.Load() < 2 {
+		notifier.Dispatch() // each call launches fresh goroutines
+		select {
+		case <-deadline2:
+			t.Fatalf("steady-state failed: fastSent=%d want >=2 (slow still hung)", fastCount.Load())
+		default:
+			time.Sleep(50 * time.Millisecond)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Dispatch() did not return after unblocking slow device")
+	}
+
+	if fastCount.Load() < 2 {
+		t.Errorf("fast device should receive 2 events while slow hung: got %d", fastCount.Load())
+	}
+	if !slowEntered.Load() {
+		t.Error("slow device was never invoked")
 	}
 }
 
@@ -994,7 +1021,7 @@ func TestHungSenderDoesNotBlockOtherDevices(t *testing.T) {
 type selectiveHangSender struct {
 	hangDevice string
 	onSend     func(deviceID string)
-	slowDone   chan struct{}
+	slowBlock  chan struct{}
 }
 
 func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) error {
@@ -1002,8 +1029,8 @@ func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) e
 		s.onSend(deviceID)
 	}
 	if deviceID == s.hangDevice {
-		// Simulate hung Expo push — blocks until slowDone is closed.
-		<-s.slowDone
+		// Simulate hung Expo push — blocks forever (channel never closed).
+		<-s.slowBlock
 		return fmt.Errorf("expo push timeout")
 	}
 	return nil

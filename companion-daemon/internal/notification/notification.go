@@ -323,8 +323,12 @@ func (n *Notifier) loop() {
 // Each device has an independent dedup window — device A receiving a
 // notification never prevents device B from receiving the same event.
 // Delivery is at-most-once: dedup claims the event BEFORE send, so a send
-// failure does NOT retry the same locator. The cursor advances only on
-// successful send; a failed send drops the notification silently.
+// failure does NOT retry the same locator.
+//
+// Each device is dispatched in a fire-and-forget goroutine with an individual
+// 10s timeout. A hung PushSender on one device never blocks delivery to
+// another device, and never blocks the next poll cycle — Dispatch() returns
+// immediately after launching goroutines.
 func (n *Notifier) dispatch() int {
 	n.mu.Lock()
 	enabled := n.enabled
@@ -338,23 +342,14 @@ func (n *Notifier) dispatch() int {
 	deviceList, cursors := n.devices.Snapshot()
 	events := n.writer.ReadRecent(128)
 
-	// Each device dispatched in its own goroutine so a hung PushSender on
-	// one device never blocks delivery to another device. A sync.WaitGroup
-	// is used so Dispatch() reports the total delivered count.
-	var wg sync.WaitGroup
-	var deliveredMu sync.Mutex
-	var delivered int
 	for _, dev := range deviceList {
-		wg.Add(1)
 		go func(dev struct{ DeviceID, Token string }, c Cursor) {
-			defer wg.Done()
 			selected, wrapped := SelectSince(events, c)
 			// On wrap, deliver only the latest event to re-establish cursor.
 			// Blind replay of all retained events is prohibited.
 			_ = wrapped
 			dd := n.getOrCreateDedup(dev.DeviceID)
 			var lastSent contract.Envelope
-			var sendFailed bool
 			for _, e := range selected {
 				gen := n.getGen(e.SessionID)
 				loc, ok := Build(e, gen)
@@ -367,24 +362,30 @@ func (n *Notifier) dispatch() int {
 				}
 				b, _ := json.Marshal(loc)
 				if n.sender != nil {
-					if err := n.sender.Send(dev.DeviceID, dev.Token, b); err != nil {
-						sendFailed = true
+					// Individual per-device timeout via a channel send.
+					// PushSender implementations (e.g. expoN1Sender) carry
+					// their own http.Client.Timeout; this is a safety net.
+					done := make(chan error, 1)
+					go func() { done <- n.sender.Send(dev.DeviceID, dev.Token, b) }()
+					var sendErr error
+					select {
+					case sendErr = <-done:
+					case <-time.After(10 * time.Second):
+						sendErr = fmt.Errorf("send timeout for device %s", dev.DeviceID)
+					}
+					if sendErr != nil {
 						break // at-most-once: dedup already claimed, delivery dropped
 					}
 				}
 				lastSent = e
-				deliveredMu.Lock()
-				delivered++
-				deliveredMu.Unlock()
 			}
-			// Only advance cursor when all sends succeeded.
-			if !sendFailed && lastSent.EventID != "" {
+			// Advance cursor after successful delivery.
+			if lastSent.EventID != "" {
 				n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
 			}
 		}(dev, cursors[dev.DeviceID])
 	}
-	wg.Wait()
-	return delivered
+	return len(deviceList) // fire-and-forget: report launched, not delivered
 }
 
 // Dispatch is the synchronous one-shot version (for tests and manual trigger).
