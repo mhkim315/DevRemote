@@ -116,6 +116,8 @@ export function RootTabs({ token, authCtx }: { token?: string; authCtx?: any }) 
               token={token}
               session={props.route.params?.session}
               eventId={props.route.params?.event}
+              generation={Number(props.route.params?.generation)}
+              runtimeId={props.route.params?.runtime}
             />
           )}
         </Tab.Screen>

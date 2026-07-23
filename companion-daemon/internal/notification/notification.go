@@ -389,6 +389,21 @@ type StatusResponse struct {
 	ResolvedBy             string   `json:"resolvedBy,omitempty"`
 	Permissions            []string `json:"permissions"`
 	ActivityLink           string   `json:"activityLink"`
+	// Event is the redacted, locator-only canonical event selected by this
+	// re-authorization. It lets mobile render the exact notification target
+	// without consulting Cockpit or inferring from unrelated session events.
+	Event *StatusEvent `json:"event,omitempty"`
+}
+
+// StatusEvent deliberately contains identity and display-safe metadata only.
+// Timeline payload/content is never exposed through N1.
+type StatusEvent struct {
+	EventID    string             `json:"eventId"`
+	SessionID  string             `json:"sessionId"`
+	RuntimeID  string             `json:"runtimeId"`
+	Generation int64              `json:"generation"`
+	Kind       contract.EventKind `json:"kind"`
+	OccurredAt time.Time          `json:"occurredAt"`
 }
 
 // AuthResolver provides generation lookup and permission checking for
@@ -468,6 +483,7 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 	if w != nil {
 		for _, e := range w.ReadRecent(128) {
 			if e.EventID == eventID && e.SessionID == sessionID && e.LaunchGeneration == notificationGen {
+				resp.Event = &StatusEvent{EventID: e.EventID, SessionID: e.SessionID, RuntimeID: e.RuntimeID, Generation: e.LaunchGeneration, Kind: e.EventKind, OccurredAt: e.OccurredAt}
 				// 6a. Check approval resolution before declaring actionable.
 				if approvals != nil && e.EventKind == contract.EventApprovalRequested && e.References.ApprovalRequest != nil {
 					if approvals.IsResolved(sessionID, e.References.ApprovalRequest.ID) {
@@ -476,7 +492,7 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 					}
 				}
 				resp.Status = "actionable"
-				resp.ActivityLink = fmt.Sprintf("pokit://activity/%s?event=%s", sessionID, eventID)
+				resp.ActivityLink = fmt.Sprintf("pokit://activity/%s?event=%s&generation=%d&runtime=%s", sessionID, eventID, notificationGen, runtimeID)
 				return resp
 			}
 		}

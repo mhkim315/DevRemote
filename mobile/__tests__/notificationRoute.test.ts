@@ -1,5 +1,6 @@
 import { notificationRoute, notificationStartupMessage } from '../src/lib/notificationRoute';
 import type { NotificationStatus } from '../src/lib/client';
+import { exactStatusEvent } from '../src/lib/notificationEvent';
 
 const base = (status: NotificationStatus['status']): NotificationStatus => ({
   eventId: 'event 1', currentGeneration: 7, notificationGeneration: 7, status,
@@ -29,5 +30,12 @@ describe('N1 notification fallback routes', () => {
 
   it('provides explicit cold-start retry feedback', () => {
     expect(notificationStartupMessage).toBe('Starting up, tap again');
+  });
+
+  it('uses only the exact status event and never a different retained session event', () => {
+    const exact = { eventId: 'target', sessionId: 's', runtimeId: 'r', generation: 2, kind: 'approval_requested', occurredAt: '2026-01-01T00:00:00Z' };
+    expect(exactStatusEvent({ ...base('actionable'), event: exact }, 'target')).toEqual(exact);
+    expect(exactStatusEvent({ ...base('actionable'), event: { ...exact, eventId: 'other' } }, 'target')).toBeNull();
+    expect(exactStatusEvent({ ...base('canonical_event_unavailable') }, 'target')).toBeNull();
   });
 });

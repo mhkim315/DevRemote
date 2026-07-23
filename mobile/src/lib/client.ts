@@ -675,6 +675,10 @@ export type NotificationStatus = {
   eventId: string; currentGeneration: number; notificationGeneration: number;
   status: 'actionable'|'already_resolved'|'stale_generation'|'session_unavailable'|'insufficient_permission'|'canonical_event_unavailable'|'event_degraded_or_gap';
   activityLink?: string;
+  event?: {
+    eventId: string; sessionId: string; runtimeId: string; generation: number;
+    kind: string; occurredAt: string;
+  };
 };
 
 // N1 payloads are locators only. The daemon endpoint is authoritative; push

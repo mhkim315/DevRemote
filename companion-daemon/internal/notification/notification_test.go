@@ -392,6 +392,9 @@ func TestResolveStatusSevenOutcomes(t *testing.T) {
 	if resp.ActivityLink == "" {
 		t.Error("activityLink must be set on actionable")
 	}
+	if resp.Event == nil || resp.Event.EventID != eventID || resp.Event.SessionID != "sess-1" || resp.Event.Kind != contract.EventApprovalRequested {
+		t.Fatalf("actionable response must carry the exact safe event: %+v", resp.Event)
+	}
 }
 
 // TestEventDegradedOrGap verifies that ResolveStatus checks writer health
