@@ -384,13 +384,13 @@ func validateDaemonPaths(state *daemonState) error {
 	if err != nil {
 		return err
 	}
-	managedBin := filepath.Join(resolvedStateDir, "bin", "devremote")
+	managedBinPrefix := filepath.Join(resolvedStateDir, "bin", "devremote-")
 	resolvedBin, err := resolve(state.BinPath)
 	if err != nil {
 		return fmt.Errorf("daemon state binPath: %w", err)
 	}
 	currentExe, _ := resolve(daemonBinPath())
-	if resolvedBin != managedBin && resolvedBin != currentExe {
+	if !strings.HasPrefix(resolvedBin, managedBinPrefix) && resolvedBin != currentExe {
 		return fmt.Errorf("daemon state binPath is not a managed binary: %q", state.BinPath)
 	}
 	resolvedOld, err := resolve(state.OldBinPath)
@@ -481,7 +481,7 @@ func installDaemon() error {
 	if existingState != nil && existingState.BinPath != "" {
 		oldBinPath = existingState.BinPath
 	}
-	serviceBinPath := filepath.Join(binDir, "devremote")
+	serviceBinPath := filepath.Join(binDir, "devremote-"+cliVersion)
 	if oldBinPath != "" {
 		serviceBinPath = oldBinPath
 	}
@@ -510,7 +510,7 @@ func installDaemon() error {
 
 	// Persist daemon state for upgrade/rollback/uninstall tracking.
 	state := &daemonState{
-		Version:     "1.0.0", // TODO: embed git version at build time
+		Version:     cliVersion,
 		BinPath:     serviceBinPath,
 		OldBinPath:  serviceBinPath,
 		BackupPath:  backupPath,
@@ -714,7 +714,7 @@ func uninstallDaemon(purgeTrust bool) error {
 		for _, f := range []string{"host_identity.json", "devices.json"} {
 			path := filepath.Join(stateDir, f)
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "uninstall: cannot remove %s: %v\n", path, err)
+				return fmt.Errorf("uninstall: cannot remove trust state %s: %w", path, err)
 			}
 		}
 		fmt.Println("Device trust state purged.")
