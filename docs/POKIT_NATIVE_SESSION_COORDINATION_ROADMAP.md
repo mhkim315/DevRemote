@@ -10,6 +10,13 @@ amendment ACCEPTED (`12135bd8072ae284fbe95c71cddf5f331a5d26f5`). Steps 4-8 opera
 foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
 (separate post-PB packet required).
 
+The current product state is **Post-PB foundation complete, alpha activation
+pending**. The bounded execution plan after Step 9.0 independent ACCEPT is
+authoritative in
+[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md). Step 9.0 has an
+active reconciliation candidate; this document does not certify that candidate
+or authorize Step 9.1 before independent acceptance.
+
 This document owns the current product definition, authority boundaries, MVP,
 and post-PB execution order. [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md)
 retains the accepted PA/PB identity ledger. The bounded CT foundation contract
@@ -291,33 +298,52 @@ CT-P1 establishes an extensible typed source boundary; it must not speculate
 about future workspace or coordination state machines before their authoritative
 producers exist. The coordination broker/store, not Timeline, owns delivery.
 
-## 9. MVP boundary and mobile cockpit
+## 9. Base Alpha boundary and product surfaces
 
-MVP includes:
+The product boundary is:
+
+> **Managed native-session control first, structured operational views second,
+> Terminal as fallback, manual orchestration optional.**
+
+The first Base Alpha includes:
 
 - native Codex and Claude sessions through `pokit run`;
 - explicit provider/model/reasoning configuration;
 - exact runtime/session/generation/configuration provenance;
 - mobile status, notifications, approval/deny, input, stop, and interrupt;
-- Operational Canonical Timeline;
-- repository and clean snapshot identity;
-- manual structured cross-provider request/result delivery;
-- frozen clean-snapshot independent validation and stale detection;
-- bounded handoff and immutable evidence references;
-- emergency terminal access when structured evidence is insufficient.
+- minimal fail-open Operational Canonical Timeline activation;
+- distinct Activity and Transcript projections converging on shared canonical
+  identity;
+- N1 exact-event notification-to-action;
+- secure accountless onboarding;
+- existing Transcript authority, reconnect behavior, and stale-generation
+  rejection;
+- permanently accessible Terminal fallback; and
+- reproducible daemon/APK identity and real-device safety verification.
 
-MVP excludes automatic provider/model routing, automatic validator spawning,
-automatic revision or switching, external parallel execution, forked writable
-recovery, dirty-worktree validation, container/VM orchestration, native subagent
-control, Navigator, generic scorer, unified multi-agent planning, and reasoning
-capture.
+Manual coordination, manual validation, workspace lease activation, frozen
+validation activation, and Cockpit are not Base Alpha prerequisites. They may
+be activated only in a separately accepted later Manual Alpha wave. Automatic
+provider/model routing, validator dispatch, revision/switching, external
+parallel execution, Navigator/Guard/scorer behavior, native subagent control,
+and reasoning capture remain unavailable throughout alpha.
 
-The mobile cockpit is the primary product surface for runtime/session state,
-approval and denial, input-delivery state, blocked/failed/completed
-notifications, snapshot/validation identity, stale findings, manual validation
-and bounded revision requests, evidence navigation, and emergency terminal
-access. Unified conversation is a non-authoritative UX projection and always
-shows its provider/session/generation/model/snapshot/evidence origin.
+Activity is the condensed operational projection and intervention surface.
+Transcript is the detailed chronological conversation and structured execution
+projection. They remain separate views while converging on event identity,
+runtime/session/generation, provenance, ordering/cursor, request/result and
+approval relationships, reconnect continuity, and gap/degraded representation.
+The default per-session view is a dogfood decision. Terminal remains the raw
+PTY detail, diagnosis, recovery, and emergency surface. Cockpit is optional
+cross-session/workspace aggregation; it is neither the primary entry point nor
+a replacement for Activity, Transcript, N1, or Terminal.
+
+N1 is alpha-critical user-visible routing, not autonomous Navigator behavior.
+Its notification locator binds canonical event, session, runtime, exact
+generation, and event kind. Mobile re-queries current server authority and
+permissions on tap and handles actionable, resolved, stale-generation,
+unavailable-session, insufficient-permission, unavailable-event, and
+degraded/gap outcomes without replaying an invalid action.
 
 ## 10. Authoritative implementation order
 
@@ -339,20 +365,37 @@ shows its provider/session/generation/model/snapshot/evidence origin.
    Step 8 (embedded under `--enable-cockpit`). (IMPL `a753e126c`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
-9. **COMPLETE (9.0):** Dogfood readiness review, feature-flag audit, default-off
-   foundation vs production-live distinction, ledger document.
-10. **NEXT (9.1):** Controlled staging enablement — enable default-off flags in
-    isolated test environment, measure overhead, verify no daemon regression.
-11. **NEXT (9.2):** Operational mobile cockpit alpha — deploy APK with cockpit
-    screen enabled, verify live session/approval/finding data via GET.
-12. **NEXT (9.3):** Beta expansion — enable flags in broader staging, collect
-    performance baselines before policy automation.
-13. **FUTURE:** Forked recovery worktrees and policy automation only after measured
-    demand.
+9. **INDEPENDENT CLOSEOUT PENDING (9.0):** Authority reconciliation,
+   foundation/capability/live-state audit, and ledger correction. An active
+   documentation candidate exists; do not start 9.1 until its exact SHA is
+   independently accepted.
+10. **PLANNED (9.1):** Minimal Operational Timeline staging — bounded Activity/N1
+    producer composition, failure isolation, mailbox/backpressure,
+    drop/gap/degraded evidence, restart/filesystem failure, and capability
+    state. No consumer-wide cutover.
+11. **PLANNED (9.2):** Canonical projection convergence — preserve Transcript
+    authority, compare Timeline-derived Transcript/Activity projections, and
+    switch at most one bounded consumer/endpoint per accepted packet with
+    rollback and fallback.
+12. **PLANNED (9.3):** N1 exact-event notification-to-action — exact identity,
+    authority re-query, closed outcomes, contextual actions, and safe fallback.
+13. **PLANNED (9.4):** Secure accountless onboarding — setup, provider/daemon
+    readiness, pairing/restoration, and first managed-session visibility.
+14. **PLANNED (9.5):** Base Alpha candidate — matched daemon/APK artifacts,
+    automated hard gates, SM-S926N onboarding-to-N1 matrix, known issues,
+    release notes, independent acceptance, and dogfood start.
+15. **LATER MANUAL ALPHA:** Explicit user-triggered coordination and frozen
+    validation, workspace snapshot/lease only when required, optional Cockpit
+    expansion, and explicit handoff.
+16. **FUTURE:** Assisted policy, forked recovery worktrees, and any automation
+    only after measured demand and separate authorization.
 
-Steps 1-8 (foundation) are complete. 9.0 (ledger audit) is COMPLETE.
-9.1 (staging enablement) gates 9.2 (operational smoke) which gates 9.3
-(beta expansion). CT-P2 remains blocked as a separate post-PB packet.
+Steps 1–8 are accepted foundations, not proof of product-live composition.
+Step 9.0 must close independently before 9.1. Steps 9.1–9.5 are governed by
+[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md). Do not
+automatically resume the historical full CT-P2 plan: only separately accepted,
+bounded Timeline producer composition, projection comparison, controlled
+consumer cutover, degradation reporting, fallback, and rollback are eligible.
 
 ## 11. Stop and expansion gates
 
@@ -360,10 +403,20 @@ Stop if any packet weakens accepted lifecycle, generation, transport, device
 trust, approval, input, pairing, recovery, or artifact-provenance contracts;
 uses Timeline as authority; sends secrets or unbounded content; overstates
 isolation; treats delivery as comprehension; validates an unidentified or stale
-snapshot; or begins CT-P2/production wiring before the gates above.
+snapshot; hides a Timeline gap; or begins Timeline production composition or a
+consumer cutover outside an independently accepted Step 9 packet.
+
+Base Alpha has no dependency on coordination, validation, lease, or Cockpit.
+There is no global orchestration flag: each capability reports healthy,
+degraded, unavailable, disabled, or unauthorized state where relevant and may
+not activate another authority implicitly. Timeline is intended to become
+default-on only after staging evidence; it always remains fail-open,
+non-authoritative, outside authority locks, and unnecessary for daemon/session
+startup. Existing Transcript and Terminal remain safe fallbacks.
 
 Do not add automatic routing, validators, provider switching, parallel agents,
 Grok/ACP, semantic stagnation detection, forked recovery, or enterprise policy
-until the single-provider mobile control plane has measured repeated use and the
-specific feature has outcome data, bounded failure behavior, authorization,
-provenance, rollback, and independent acceptance evidence.
+until Base Alpha has measured repeated use and the specific feature has outcome
+data, bounded failure behavior, authorization, provenance, rollback, and
+independent acceptance evidence. Automatic orchestration is not a mandatory
+final architecture.

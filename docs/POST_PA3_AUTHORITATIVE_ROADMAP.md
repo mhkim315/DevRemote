@@ -72,8 +72,14 @@ PA3 COMPLETE
 → independent PB ACCEPT
 → CT-P1 operational-evidence amendment ACCEPTED (`12135bd80`)
 → Steps 4-8 foundation COMPLETE (shadow → workspace → coordination → validation → cockpit)
-→ 9.0 DOCS/AUDIT COMPLETE; 9.1 staging; 9.2 smoke; 9.3 beta
-→ CT-P2 deferred (separate post-PB authorization)
+→ 9.0 authority reconciliation independently accepted
+→ 9.1 minimal Timeline staging
+→ 9.2 bounded Transcript/Activity projection convergence
+→ 9.3 N1 exact-event notification-to-action
+→ 9.4 secure accountless onboarding
+→ 9.5 matched Base Alpha candidate and SM-S926N product gate
+→ later optional Manual Alpha coordination/validation
+→ broader CT-P2 and automation deferred (separate authorization)
 ```
 
 No later packet may be pulled forward to justify a shortcut in PA4 or PB. PB
@@ -129,6 +135,12 @@ Steps 4-8 (shadow wiring, workspace identity, coordination broker, frozen
 validation, and mobile cockpit) are independently accepted. CT-P2 and
 authority/UI cutover require a separate post-PB plan and independent authorization gate.
 
+Foundation acceptance is not production-live completion. Base Alpha excludes
+coordination, validation, workspace lease, and Cockpit as prerequisites. The
+bounded post-9.0 activation order, N1, Activity/Transcript convergence,
+Terminal fallback, accountless onboarding, and alpha gates are authoritative in
+[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
+
 ## 5. Post-PB direction
 
 PB is independently accepted at `5354077af`. The pre-device QR/Input
@@ -146,6 +158,7 @@ not an automatic continuation of the accepted PA/PB work.
 |---|---|
 | This document | **Authoritative accepted PA/PB identity and safety ledger** |
 | `docs/POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` | **Authoritative product definition, authority model, MVP, and post-PB order** |
+| `docs/ALPHA_ACTIVATION_ROADMAP.md` | **Authoritative post-9.0 Base Alpha activation order, N1/projection/onboarding contracts, and Manual Alpha boundary** |
 | `docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md` | **Authoritative pre-device QR/Input packet contract and device-entry gate** |
 | `docs/PB_DG_R4_CLOSEOUT_PLAN.md` | **Authoritative final PB device-closeout prerequisite and independent stop gate** |
 | `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative CT foundation contract; CT-P0, CT-P1, CT-P1 Amendment, and Steps 4-8 ACCEPTED; CT-P2 and production composition/cutover remain separately gated** |
@@ -177,13 +190,13 @@ safety boundaries remain controlled by this ledger and its accepted contracts.
 - PB-DG-R4 is complete and independently accepted. Preserve candidate
   `059bef181c6c2ef312eee421dbf10f12b15b0326`, its matched artifacts, and ACCEPT
   `5354077afcf30343d9666511e259346d9bea0ad6` as immutable evidence.
-- Do not begin CT-P2. CT-P0, CT-P1, and the CT-P1 operational-evidence
-  amendment are independently accepted. Foundation Steps 4-8 (shadow wiring,
-  workspace identity, coordination broker, frozen validation, and mobile cockpit)
-  are independently accepted. CT-P2 and authority/UI cutover require a
-  separate post-PB plan and independent authorization gate before any
-  implementation begins. Any premature production import, construction,
-  goroutine, filesystem write, route, DTO, mobile dependency, or authority
-  change is an immediate CT-PRE reject.
+- Do not automatically begin the historical full CT-P2 plan. CT-P0, CT-P1,
+  the CT-P1 operational-evidence amendment, and foundation Steps 4-8 are
+  independently accepted. After Step 9.0 independent closeout, only the
+  separately reviewed bounded work in `ALPHA_ACTIVATION_ROADMAP.md` may compose
+  minimal producers, compare projections, or cut over one consumer/endpoint at
+  a time. Any production import, construction, goroutine, filesystem write,
+  route, DTO, mobile dependency, or authority change outside its accepted wave
+  remains an immediate reject.
 - Stop rather than retaining Gemini or legacy discovery as an “accepted
   adapter” without a separately accepted production consumer.
