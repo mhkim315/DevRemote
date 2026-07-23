@@ -63,8 +63,8 @@ The frozen state is:
 | PB physical SM-S926N evidence | **8/8 PASS** |
 | PB ACCEPT SHA | `5354077afcf30343d9666511e259346d9bea0ad6` |
 | CT-PRE | **CT-P0, CT-P1, CT-P1 Amendment ACCEPTED; Steps 4-8 foundation complete** |
-| CT-P2 | **BLOCKED — separate post-PB packet required** |
-| Production shadow-write | **BLOCKED — CT-P1 Amendment ACCEPTED; separate shadow-wiring authorization required** |
+| CT-P2 | **BLOCKED — separate post-PB plan and authorization gate required** |
+| Production shadow-write | **ACCEPTED — Step 4, independently verified at `58eb55b92`** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
 
 CT-PRE was a bounded pre-PB-ACCEPT exception for offline foundation work only.
@@ -548,17 +548,19 @@ returned early, weakened to logging, or replaced with a nil/vacuous fixture.
 | Wave | Minimum acceptance result | Independent boundary |
 | --- | --- | --- |
 | CT-P0 | artifacts/source/order/docs independently verified; zero code diff | required before any CT code |
-| CT-P1 | **ACCEPT** at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; operational source-boundary amendment still required post-PB | required before any later CT work |
-| CT-P2a | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
-| CT-P2b | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
-| CT-P3a | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
-| CT-P3b | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
-| CT-P4 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
-| CT-P5 | **DEFERRED / NOT AUTHORIZED** | requires a new post-PB packet |
+| CT-P1 | **ACCEPT** at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`; operational source-boundary amendment independently accepted at `12135bd80` | required before any later CT work |
+| CT-P2a | **DEFERRED / NOT AUTHORIZED** | requires a separate post-PB packet |
+| CT-P2b | **DEFERRED / NOT AUTHORIZED** | requires a separate post-PB packet |
+| CT-P3a | **DEFERRED / NOT AUTHORIZED** | requires a separate post-PB packet |
+| CT-P3b | **DEFERRED / NOT AUTHORIZED** | requires a separate post-PB packet |
+| CT-P4 | **DEFERRED / NOT AUTHORIZED** | requires a separate post-PB packet |
+| CT-P5 | **DEFERRED / NOT AUTHORIZED** | requires a separate post-PB packet |
 
-Stop at the accepted CT-P1 foundation except for the now-authorized narrow
-operational-evidence contract amendment. Neither the original CT-P1 acceptance
-nor PB ACCEPT authorizes CT-P2, shadow-write, or cutover.
+Stop at the accepted CT-P1 foundation. CT-P0, CT-P1, and the operational-evidence
+amendment are independently accepted. PB ACCEPT is at `5354077af`. Foundation
+Steps 4-8 (shadow writer, workspace, coordination, validation, cockpit) are
+independently accepted and under separate post-PB authorization. Neither the
+original CT-P1 acceptance nor PB ACCEPT authorizes CT-P2 or authority/UI cutover.
 
 ## 9. Deferred decisions
 
@@ -589,21 +591,24 @@ drop/gap as an invalid equivalence run.
 
 ## 10. Exact transition gate after PB ACCEPT
 
-PB-DG-R4 and its exact matched artifacts have satisfied conditions 1-2 below.
-At the accepted CT-P1 SHA, all Canonical Timeline implementation remains stopped
-except for the narrow contract amendment. Do not begin CT-P2 or create a production
-writer, shadow queue, startup/DI registration, live normalizer callback, route,
-DTO, mobile consumer, or cutover plan until:
+PB-DG-R4 and its exact matched artifacts satisfied the original PB prerequisite
+conditions. CT-P1 was reviewed and narrowly amended; the revised foundation
+received independent acceptance. Steps 4-8 (shadow writer, workspace,
+coordination, validation, cockpit) are independently accepted under separate
+post-PB authorization.
 
 1. **SATISFIED:** PB-DG-R4 passed and the bounded SM-S926N smoke used candidate
    `059bef181c6c2ef312eee421dbf10f12b15b0326` and its matched artifacts;
 2. **SATISFIED:** independent PB ACCEPT is
    `5354077afcf30343d9666511e259346d9bea0ad6`;
-3. CT-P1 is reviewed against the operational-evidence direction in
-   `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and narrowly amended if
-   needed;
-4. the revised CT-P1 foundation is independently accepted; and
-5. a new privacy/retention and production-shadow contract is reviewed.
+3. **SATISFIED:** CT-P1 reviewed against operational-evidence direction and
+   narrowly amended (`12135bd80`);
+4. **SATISFIED:** revised CT-P1 foundation independently accepted;
+5. **SATISFIED:** production-shadow wiring reviewed and independently accepted
+   (`58eb55b92`).
+
+CT-P2 and authority/UI cutover remain blocked pending a separate post-PB plan
+and independent authorization gate. Do not begin CT-P2.
 
 ## 11. Historical CT-P0 executor handoff (COMPLETED)
 

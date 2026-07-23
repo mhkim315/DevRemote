@@ -34,10 +34,9 @@ composition path when `--enable-cockpit` is set. It has no standalone CLI flag.
 |------|---------|-------|
 | 6 | Coordination broker | `internal/coordination` — broker, envelope, types, and tests. Never imported, constructed, or registered from `cmd/` or `term/`. Zero production goroutines or filesystem writes. |
 
-**Verification:** `go test -race ./...` passes for every package. No production
-codepath starts any of these without the corresponding CLI flag set.
+**Verification:** `go test -race ./...` passes for every package.
 
-## 2. Default-Off Production Features (behind CLI flag, implemented but not enabled by default)
+## 2. Default-Off Features (behind CLI flag, implemented but not enabled by default)
 
 These features require an explicit `--enable-*` flag. Without the flag, no
 production codepath starts them.
@@ -46,10 +45,12 @@ production codepath starts them.
 |---------|------|---------|----------|
 | Managed Codex runtime | `--enable-managed-codex` | `internal/term` | `ManagedCodexService` |
 | Managed Claude runtime | `--enable-managed-claude` | `internal/term` | `ManagedClaudeService` |
+| Timeline shadow writer | `--enable-timeline-shadow` | `internal/timeline/writer` | Fail-open |
+| Workspace lease | `--enable-workspace-lease` | `internal/workspace` | Contract |
+| Frozen validation | `--enable-frozen-validation` | `internal/validation` | StalenessCheck |
+| Cockpit + embedded VStore | `--enable-cockpit` | `internal/cockpit` | Read-only route |
 
-## 3. Production-Live Features (always enabled, no CLI gate)
-
-These form the core operational surface. They are not flag-gated.
+## 3. Production-Live (always enabled, no CLI gate)
 
 | Feature | Package | Producer | Consumer |
 |---------|---------|----------|----------|
@@ -58,24 +59,17 @@ These form the core operational surface. They are not flag-gated.
 | Terminal transport | `internal/term` | `TerminalTransport` | WebSocket, IPC |
 | Input-B delivery | `internal/term` | `handleTerminalInput` | WebSocket clients |
 | Transcript engine | `internal/transcript` | `Transcript.Service` | Recorder, timeline |
-
-## 3. Production-Live Foundation (enabled by code structure, not flag-gated)
-
-| Feature | Package | Notes |
-|---------|---------|-------|
-| Session identity (canonical ID) | `internal/sessionid` | Always active |
-| Agent event model (T0) | `internal/agent` | Contract layer |
-| Agent adapters (Codex 0.144.1, Claude 2.1.202) | `internal/agent/adapters/` | Telemetry consumers only |
-| Agent contract tests | `internal/agent/contract/` | Test harness |
-| Doctor (secret scanner) | `internal/agent/doctor/` | Test-only |
-| Watcher (file tail) | `internal/watcher` | Always active |
+| Session identity | `internal/sessionid` | Active at startup | All subsystems |
+| Agent event model (T0) | `internal/agent` | Contract | Adapters, telemetry |
+| Agent adapters | `internal/agent/adapters/` | Telemetry consumers | — |
+| Watcher (file tail) | `internal/watcher` | Active at startup | — |
 
 ## 4. Step SHAs (implementation + evidence)
 
 | Step | IMPL SHA | EVID SHA | Description |
 |------|----------|----------|-------------|
-| CT-P0 | `9688cc687` | `9885caf1f` | Source freeze |
-| CT-P1 | `317bb0cb7` | `317bb0cb7` (self) | Contract ACCEPT |
+| CT-P0 | `7b7f23d0a` (freeze IMPL) | `d4b4d99ba` (ACCEPT EVID) | Source freeze |
+| CT-P1 | `680a78f69` (envelope IMPL) | `317bb0cb7` (ACCEPT EVID) | Timeline contract |
 | CT-P1 Amend | `4698b19a1` | `12135bd80` | Operational evidence |
 | 4 (Shadow) | `6d1a72d35` | `58eb55b92` | Timeline writer |
 | 5 (Workspace) | `404a3e882` (IMPL) | `ad83bae10` (EVID) | Identity/lease (standalone, consumer NONE) |
