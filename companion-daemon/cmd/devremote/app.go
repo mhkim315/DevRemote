@@ -354,7 +354,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// N1 device store: created early so revoke callbacks can clear tokens.
 	n1Devices := notification.NewDeviceStore()
 
-	// Wire session replacement → connection invalidation + N1 token revoke.
+	// Wire session replacement → connection invalidation.
+	// N1 revoke is added after n1Notifier is constructed (below).
 	cb := func(deviceID string) {
 		connRegistry.CloseDevice(deviceID)
 		wsTickets.RevokeForDevice(deviceID)
@@ -473,6 +474,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	serveMux := http.NewServeMux()
 	var validationStore *validation.ValidationStore
 	var cockpitStore *cockpit.CockpitStore
+	var n1Notifier *notification.Notifier // declared early; assigned below when flag+writer enabled
 	pushN := &pushNotifier{send: sendPushNotification, devices: n1Devices}
 
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
@@ -493,6 +495,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			return
 		}
 		n1Devices.Bind(deviceID, token)
+		if n1Notifier != nil {
+			n1Notifier.BindDevice(deviceID)
+		}
 		w.WriteHeader(http.StatusOK)
 	}
 	// N1 status: re-authorization endpoint. Delegates to notification.ResolveStatus.
@@ -540,7 +545,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	}
 
 	// N1 timeline consumer: polls writer ring and dispatches Locator push.
-	var n1Notifier *notification.Notifier
 	if cfg.EnableN1Notifications && timelineWriter != nil {
 		n1Notifier = notification.NewNotifier(timelineWriter, n1Devices, func(sessionID string) int64 {
 			if h.Catalog == nil {
@@ -553,6 +557,19 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			return rt.LaunchGen
 		}, expoN1Sender{})
 		n1Notifier.SetEnabled(true)
+
+		// Extend session revoke callback to mark the device revoked
+		// in the N1 notifier (prevents cursor resurrection).
+		sessionMgr.SetOnRevoke(func(deviceID string) {
+			connRegistry.CloseDevice(deviceID)
+			wsTickets.RevokeForDevice(deviceID)
+			n1Notifier.RevokeDevice(deviceID)
+		})
+		sessionMgr.SetOnReplace(func(deviceID string) {
+			connRegistry.CloseDevice(deviceID)
+			wsTickets.RevokeForDevice(deviceID)
+			n1Notifier.RevokeDevice(deviceID)
+		})
 	}
 
 	// Device bootstrap is public by design. Ticket issuance itself always

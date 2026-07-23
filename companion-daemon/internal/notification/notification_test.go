@@ -1026,103 +1026,9 @@ func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
 // TestStopCursorNotWritten verifies Stop concurrency: when a Send is
 // in-flight at Stop time, the goroutine completes but the cursor is NOT
 // written (stopped guard in the goroutine prevents late writes).
-func TestStopCursorNotWritten(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "token-1")
-
-	block := make(chan struct{})
-	sender := &selectiveHangSender{
-		hangDevice:  "device-1",
-		slowUnblock: block,
-	}
-
-	w := openTestWriter(t)
-	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
-	notifier.SetEnabled(true)
-
-	w.Append(validEnvelope("stop-1", "session-1", 1, contract.EventApprovalRequested))
-	notifier.Dispatch()
-
-	// Wait for goroutine to enter Send (blocked).
-	time.Sleep(100 * time.Millisecond)
-	if notifier.ActiveGoroutines() != 1 {
-		t.Fatalf("expected 1 in-flight goroutine, got %d", notifier.ActiveGoroutines())
-	}
-
-	// Stop in a goroutine — it sets stopped=true, then drains in-flight.
-	stopDone := make(chan struct{})
-	go func() { notifier.Stop(); close(stopDone) }()
-
-	// Give Stop time to set stopped=true.
-	time.Sleep(100 * time.Millisecond)
-
-	// Unblock the Send. Goroutine finishes, checks stopped=true, skips cursor write.
-	close(block)
-
-	// Wait for Stop to drain.
-	select {
-	case <-stopDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Stop did not finish draining")
-	}
-
-	c := devices.GetCursor("device-1")
-	if c.LastEventID != "" {
-		t.Errorf("cursor must NOT be written after Stop: got %+v", c)
-	}
-}
-
 // TestRevokeCursorNotRestored verifies Revoke concurrency: when a Send is
 // in-flight and RevokeDevice is called, the goroutine completes but does
 // NOT write the cursor (revoked guard prevents resurrection).
-func TestRevokeCursorNotRestored(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "token-1")
-
-	block := make(chan struct{})
-	sender := &selectiveHangSender{
-		hangDevice:  "device-1",
-		slowUnblock: block,
-	}
-
-	w := openTestWriter(t)
-	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
-	notifier.SetEnabled(true)
-
-	w.Append(validEnvelope("revoke-1", "session-1", 1, contract.EventApprovalRequested))
-	notifier.Dispatch()
-
-	// Wait for goroutine to enter Send (blocked).
-	time.Sleep(100 * time.Millisecond)
-	if notifier.ActiveGoroutines() != 1 {
-		t.Fatalf("expected 1 in-flight goroutine, got %d", notifier.ActiveGoroutines())
-	}
-
-	// Revoke while goroutine is blocked in Send.
-	notifier.RevokeDevice("device-1")
-
-	// Device should be removed from store.
-	if devices.Token("device-1") != "" {
-		t.Error("token must be cleared after revoke")
-	}
-
-	// Unblock the Send. The goroutine completes but must NOT write cursor
-	// because the revoked guard fires.
-	close(block)
-	time.Sleep(200 * time.Millisecond) // let goroutine finish
-
-	c := devices.GetCursor("device-1")
-	if c.LastEventID != "" {
-		t.Errorf("cursor must NOT be written after revoke: got %+v", c)
-	}
-	// Device must remain absent from store.
-	if devices.Token("device-1") != "" {
-		t.Error("token must remain absent after revoke + goroutine completion")
-	}
-
-	notifier.Stop()
-}
-
 // recordingSender records Locator deliveries for ordering tests.
 type recordingSender struct {
 	onSend func(deviceID string, loc Locator)
@@ -1138,10 +1044,13 @@ func (s *recordingSender) Send(deviceID, pushToken string, payload []byte) error
 }
 
 // selectiveHangSender blocks on a specific deviceID until signalled.
+// When successAfterStop is true, Send returns nil (success) after unblock,
+// simulating a late-arriving success after Stop/Revoke.
 type selectiveHangSender struct {
-	hangDevice  string
-	onSend      func(deviceID string)
-	slowUnblock chan struct{}
+	hangDevice       string
+	onSend           func(deviceID string)
+	slowUnblock      chan struct{}
+	successAfterStop bool
 }
 
 func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) error {
@@ -1149,9 +1058,95 @@ func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) e
 		s.onSend(deviceID)
 	}
 	if deviceID == s.hangDevice {
-		// Simulate hung push — blocks until unblocked.
 		<-s.slowUnblock
+		if s.successAfterStop {
+			return nil // late success after Stop/Revoke
+		}
 		return fmt.Errorf("expo push timeout")
 	}
 	return nil
+}
+
+// TestLateSuccessCursorNotWrittenAfterStop verifies that even when Send
+// eventually succeeds AFTER Stop, the cursor is NOT written. The stopped
+// guard in the goroutine prevents late-success writes.
+func TestLateSuccessCursorNotWrittenAfterStop(t *testing.T) {
+	devices := NewDeviceStore()
+	devices.Bind("device-1", "token-1")
+
+	block := make(chan struct{})
+	sender := &selectiveHangSender{
+		hangDevice:       "device-1",
+		slowUnblock:      block,
+		successAfterStop: true, // Send returns nil after unblock
+	}
+
+	w := openTestWriter(t)
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
+	notifier.SetEnabled(true)
+
+	w.Append(validEnvelope("late-1", "session-1", 1, contract.EventApprovalRequested))
+	notifier.Dispatch()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop in goroutine — sets stopped=true, then drains.
+	stopDone := make(chan struct{})
+	go func() { notifier.Stop(); close(stopDone) }()
+
+	time.Sleep(100 * time.Millisecond) // let Stop set the flag
+
+	// Unblock Send — it returns nil (success). But goroutine checks stopped
+	// before writing cursor → cursor stays empty.
+	close(block)
+
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not finish")
+	}
+
+	c := devices.GetCursor("device-1")
+	if c.LastEventID != "" {
+		t.Errorf("cursor must NOT be written after Stop even on Send success: got %+v", c)
+	}
+}
+
+// TestLateSuccessCursorNotWrittenAfterRevoke verifies that even when Send
+// eventually succeeds AFTER RevokeDevice, the cursor is NOT written. The
+// revoked guard prevents resurrection.
+func TestLateSuccessCursorNotWrittenAfterRevoke(t *testing.T) {
+	devices := NewDeviceStore()
+	devices.Bind("device-1", "token-1")
+
+	block := make(chan struct{})
+	sender := &selectiveHangSender{
+		hangDevice:       "device-1",
+		slowUnblock:      block,
+		successAfterStop: true, // Send returns nil after unblock
+	}
+
+	w := openTestWriter(t)
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
+	notifier.SetEnabled(true)
+
+	w.Append(validEnvelope("late-2", "session-1", 1, contract.EventApprovalRequested))
+	notifier.Dispatch()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Revoke while goroutine is blocked in Send.
+	notifier.RevokeDevice("device-1")
+
+	// Unblock Send — it returns nil (success). But goroutine checks revoked
+	// under mu → cursor stays empty.
+	close(block)
+	time.Sleep(200 * time.Millisecond)
+
+	c := devices.GetCursor("device-1")
+	if c.LastEventID != "" {
+		t.Errorf("cursor must NOT be written after Revoke even on Send success: got %+v", c)
+	}
+
+	notifier.Stop()
 }

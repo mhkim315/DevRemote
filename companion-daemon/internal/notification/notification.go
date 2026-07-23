@@ -301,10 +301,16 @@ func (n *Notifier) Start() {
 // Stop terminates the consumer loop. Sets stopped=true, closes done channel
 // to stop the poll loop, then drains in-flight goroutines. After Stop returns,
 // no dispatch goroutines are running and no cursor writes can occur.
+// A second caller blocks until the first Stop completes.
 func (n *Notifier) Stop() {
 	n.mu.Lock()
 	if n.stopped {
 		n.mu.Unlock()
+		// Another goroutine already called Stop — wait for drain.
+		deadline := time.Now().Add(15 * time.Second)
+		for n.ActiveGoroutines() > 0 && time.Now().Before(deadline) {
+			time.Sleep(50 * time.Millisecond)
+		}
 		return
 	}
 	n.stopped = true
@@ -321,12 +327,20 @@ func (n *Notifier) Stop() {
 	}
 }
 
-// RevokeDevice marks a device as revoked. Any in-flight Send for this device
-// will NOT write its cursor on completion. The device is also removed from
-// the DeviceStore (tokens + cursor cleared).
+// RevokeDevice atomically marks a device as revoked under the notifier lock.
+// Any in-flight Send for this device will NOT write its cursor on completion.
+// The device is also removed from the DeviceStore (tokens + cursor cleared).
 func (n *Notifier) RevokeDevice(deviceID string) {
+	n.mu.Lock()
 	n.revoked.Store(deviceID, true)
+	n.mu.Unlock()
 	n.devices.Revoke(deviceID)
+}
+
+// BindDevice clears the revoked bit for a device (re-registration after
+// revoke). Safe to call from concurrent registration handlers.
+func (n *Notifier) BindDevice(deviceID string) {
+	n.revoked.Delete(deviceID)
 }
 
 // ActiveGoroutines returns the count of in-flight per-device dispatch
@@ -429,18 +443,16 @@ func (n *Notifier) dispatch() int {
 				lastSent = e
 			}
 			// Guard cursor write: do NOT advance if stopped or device revoked.
-			// This prevents a late-arriving goroutine from writing state after
-			// Stop or Revoke has cleaned up.
+			// Both checks are under mu so RevokeDevice (which sets revoked under
+			// mu) synchronises with this goroutine — no cursor resurrection.
 			if lastSent.EventID == "" {
 				return
 			}
 			n.mu.Lock()
 			stopped := n.stopped
+			_, revoked := n.revoked.Load(dev.DeviceID)
 			n.mu.Unlock()
-			if stopped {
-				return
-			}
-			if _, revoked := n.revoked.Load(dev.DeviceID); revoked {
+			if stopped || revoked {
 				return
 			}
 			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
