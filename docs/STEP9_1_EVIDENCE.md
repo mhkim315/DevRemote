@@ -1,11 +1,11 @@
 # Step 9.1 Evidence — Operational Timeline Staging
 
-**IMPL SHA:** `16c350d1f`
-**EVID SHA:** `c5f8c2e47` (R2)
-**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 SHA fix)
+**IMPL SHA:** `dc376f9b7`
+**EVID SHA:** (this commit — R3 revision)
+**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 SHA fix), `c5f8c2e47` (R2), `24476f38b` (R2 SHA fix)
 **CONTRACT SHAs:** ACTIVATION `48d0aa2`, PRODUCER `9bea4a48c`
 **Date:** 2026-07-23
-**Revision:** R2 — fresh `-count=1` test output + staging gate §9 evidence
+**Revision:** R3 — IMPL SHA dc376f9b7, R6-R8 chain, refreshed test output
 
 Step 9.1 implements minimal operational Timeline producer composition with
 fail-open authority isolation and capability-self-auth. All producers operate
@@ -17,40 +17,57 @@ before it.
 
 ## 1. Scope: production code with bounded composition
 
-The exact stdout of `git diff --stat 9bea4a48c..16c350d1f` is:
+The exact stdout of `git diff --stat 9bea4a48c..dc376f9b7` is:
 
 ```
  companion-daemon/cmd/devremote/app.go                              |  55 ++-
  companion-daemon/cmd/devremote/claude_delivery_composition_test.go |  10 +-
  companion-daemon/cmd/devremote/sp1_p1_composition_test.go          |  12 +-
  companion-daemon/cmd/devremote/step4_shadow_wiring_test.go         |   8 +-
- companion-daemon/cmd/devremote/timeline_operational_adapter.go     | 233 +++++++++
- companion-daemon/cmd/devremote/timeline_operational_adapter_test.go | 231 +++++++++
+ companion-daemon/cmd/devremote/timeline_operational_adapter.go     | 272 ++++++++++
+ companion-daemon/cmd/devremote/timeline_operational_adapter_test.go | 353 +++++++++++++
  companion-daemon/cmd/devremote/timeline_real_provider_test.go      | 343 +++++++++++++
  companion-daemon/internal/cockpit/timeline_stats_handler.go        |  35 ++
  companion-daemon/internal/term/claude_approval_delivery.go         |   6 +-
  companion-daemon/internal/term/claude_approval_delivery_test.go    |   4 +-
  companion-daemon/internal/term/managed_approval.go                 |  16 +-
- companion-daemon/internal/term/managed_claude.go                   | 213 ++++++--
- companion-daemon/internal/term/managed_claude_activation_test.go   | 115 ++++-
- companion-daemon/internal/term/managed_codex.go                    |  91 +++-
+ companion-daemon/internal/term/managed_claude.go                   | 285 +++++++++--
+ companion-daemon/internal/term/managed_claude_activation_test.go   | 430 +++++++++++++++-
+ companion-daemon/internal/term/managed_codex.go                    | 103 +++-
  companion-daemon/internal/term/managed_registry.go                 |  54 ++
  companion-daemon/internal/term/managed_registry_test.go            |  59 +++
  companion-daemon/internal/term/operational_claude_test.go          | 269 ++++++++++
  companion-daemon/internal/term/operational_codex_test.go           | 188 +++++++
- companion-daemon/internal/term/operational_events.go               |  52 ++
+ companion-daemon/internal/term/operational_events.go               | 104 ++++
+ companion-daemon/internal/term/operational_events_test.go          |  14 +
  companion-daemon/internal/timeline/writer/writer.go                | 549 ++++++++++++++++++---
  companion-daemon/internal/timeline/writer/writer_test.go           | 378 +++++++++++++-
- 21 files changed, 2768 insertions(+), 153 deletions(-)
+ 22 files changed, 3539 insertions(+), 153 deletions(-)
 ```
 
-All 21 files are under `companion-daemon/`. No mobile changes.
+All 22 files are under `companion-daemon/`. No mobile changes.
+
+R6-R8 go-only diff (`git diff --stat 16c350d1f..dc376f9b7 -- '*.go'`):
+
+```
+ timeline_operational_adapter.go      | 139 +++++----
+ timeline_operational_adapter_test.go | 172 +++++++++--
+ managed_claude.go                    |  86 +++++-
+ managed_claude_activation_test.go    | 315 +++++++++++++++++++++
+ managed_codex.go                     |  14 +-
+ operational_events.go                |  52 ++++
+ operational_events_test.go           |  14 +
+ 7 files changed, 709 insertions(+), 83 deletions(-)
+```
 
 ## 2. Complete implementation chain
 
-The exact stdout of `git log --oneline 9bea4a48c..16c350d1f` is:
+The exact stdout of `git log --oneline 9bea4a48c..dc376f9b7` is:
 
 ```
+dc376f9b7 fix(claude): linearize resume sender replacement
+11b058980 fix(timeline): revoke senders on resume replacement
+fdeea94e2 fix(timeline): bind operational senders per runtime
 16c350d1f fix(claude): preserve resume terminal intent
 1d3d65097 fix(timeline): register Claude resume incarnations
 0eef99c4f fix(timeline): verify live managed runtime tuples
@@ -66,7 +83,7 @@ bcd7ff47e fix(timeline): close step 9.1 runtime blockers
 The Coordinator-designated milestone chain:
 
 ```
-63a070a (Writer) → 9bf4d39b (Codex) → 194a402 (Claude) → bcd7ff4 (R2) → 0eef99c (R3) → 1d3d650 (R4) → 16c350d (R5 ACCEPT)
+63a070a (Writer) → 9bf4d39b (Codex) → 194a402 (Claude) → bcd7ff4 (R2) → 0eef99c (R3) → 1d3d650 (R4) → 16c350d (R5 ACCEPT) → fdeea94e2 (R6) → 11b058980 (R7) → dc376f9b7 (R8 ACCEPT)
 ```
 
 ## 3. Architecture summary
@@ -90,6 +107,10 @@ RuntimeID, LaunchGeneration), opaque source/reference IDs, and a timestamp.
 Provider text, tool input/output, approval material, raw transport bytes,
 prompts, and arbitrary metadata have no field in this type.
 
+**R6-R8 addition:** `OperationalRuntimeIdentity` was added as an immutable
+Provider+SessionID+RuntimeID+LaunchGeneration tuple used by the per-runtime
+sender for identity-gated submission.
+
 ### 3b. ManagedSessionRegistry (`internal/term/managed_registry.go`)
 
 Single semantic-status authority store for managed sessions:
@@ -107,11 +128,37 @@ opaque launcher-derived token — never parsed, never exposed in any DTO.
 
 ### 3c. timelineOperationalAdapter (`cmd/devremote/timeline_operational_adapter.go`)
 
-The composition bridge. Implements `OperationalEventSink`:
+The composition bridge. Implements `OperationalEventSink` but its direct
+`SubmitAfterCommit` is intentionally a no-op — the shared binder rejects direct
+submissions. Only a per-runtime sender returned by `BindOperationalRuntime` can
+reach Timeline authorization.
 
-1. **On Started**: queries `RuntimeVerifier` → exact provider/runtime/session/generation match against registry → `ProducerStore.Bind()` → stores capability
-2. **On events**: `Capability.SubmitAfterCommit(envelope)` — non-blocking, bounded enqueue
-3. **On Finished**: submits final envelope, **always** calls `ProducerStore.Revoke()` (even if envelope construction fails), then deletes capability
+**Per-runtime sender model (R6-R8):**
+
+`BindOperationalRuntime(identity)` creates a `timelineOperationalRuntimeSender`
+that binds:
+- immutable `OperationalRuntimeIdentity` (Provider, SessionID, RuntimeID, LaunchGeneration)
+- one `writer.Capability` scoped to that exact identity
+
+The sender checks every event's identity against its bound identity before
+envelope construction. Mismatch → silent reject (no drop count).
+
+**Lifecycle:**
+
+1. **Bind**: Composition calls `BindOperationalRuntime(identity)` after registry
+   commit. A `RuntimeVerifier` confirms the exact tuple against the
+   provider-owned registry. `ProducerStore.Bind()` creates a capability.
+2. **Events**: `sender.SubmitAfterCommit(event)` — identity-gated, non-blocking
+   enqueue via capability.
+3. **Finished**: On `OperationalProviderInvocationFinished`, the sender submits
+   the final envelope (if valid), then calls `revokeLocked()` → `ProducerStore.Revoke()`.
+   Revocation uses the sender's bound identity, not caller-supplied event fields.
+4. **Resume replacement (R7)**: When Claude resumes, `RevokeOperationalRuntime()`
+   atomically revokes the old sender before a new one is bound. A stale sender
+   racing with replacement is rejected by its own identity gate.
+5. **Linearized replacement (R8)**: Claude's resume sender replacement is
+   serialized under the managed runtime's own mutex — old sender revoked, new
+   sender bound, then installed atomically.
 
 All IDs crossing the seam are SHA-256 domain-separated opaque digests.
 `SubmitAfterCommit` is wrapped in `recover()` at the managed-runtime call site:
@@ -162,41 +209,29 @@ The exact stdout of `go vet ./...` is: (no output — exit 0)
 The exact stdout of `go test -race ./... -count=1 -timeout 300s` is:
 
 ```
-ok  	devremote/companion-daemon/cmd/devremote	33.803s
+ok  	devremote/companion-daemon/cmd/devremote	33.615s
 ?   	devremote/companion-daemon/cmd/signald	[no test files]
-ok  	devremote/companion-daemon/internal/agent	2.886s
-ok  	devremote/companion-daemon/internal/agent/adapters/claude/v2_1_202	4.755s
-ok  	devremote/companion-daemon/internal/agent/adapters/codex/v0_144_1	5.919s
-ok  	devremote/companion-daemon/internal/agent/contract	1.827s
---- FAIL: TestE2E_ManifestsInBundleCorrect (15.26s)
-    doctor_test.go:1449: bundle: recreated workspace digest mismatch
-FAIL
-FAIL	devremote/companion-daemon/internal/agent/doctor	103.728s
-ok  	devremote/companion-daemon/internal/cockpit	4.286s
-ok  	devremote/companion-daemon/internal/coordination	2.200s
-ok  	devremote/companion-daemon/internal/devicetrust	7.899s
+ok  	devremote/companion-daemon/internal/agent	2.353s
+ok  	devremote/companion-daemon/internal/agent/adapters/claude/v2_1_202	2.687s
+ok  	devremote/companion-daemon/internal/agent/adapters/codex/v0_144_1	4.768s
+ok  	devremote/companion-daemon/internal/agent/contract	3.420s
+ok  	devremote/companion-daemon/internal/agent/doctor	104.329s
+ok  	devremote/companion-daemon/internal/cockpit	3.389s
+ok  	devremote/companion-daemon/internal/coordination	3.731s
+ok  	devremote/companion-daemon/internal/devicetrust	8.323s
 ?   	devremote/companion-daemon/internal/models	[no test files]
-ok  	devremote/companion-daemon/internal/sessionid	4.530s
-ok  	devremote/companion-daemon/internal/term	18.936s
-ok  	devremote/companion-daemon/internal/timeline/contract	3.194s
-ok  	devremote/companion-daemon/internal/timeline/writer	2.965s
-ok  	devremote/companion-daemon/internal/transcript	2.221s
-ok  	devremote/companion-daemon/internal/validation	2.171s
-ok  	devremote/companion-daemon/internal/watcher	2.894s
-ok  	devremote/companion-daemon/internal/workspace	2.477s
+ok  	devremote/companion-daemon/internal/sessionid	4.286s
+ok  	devremote/companion-daemon/internal/term	18.886s
+ok  	devremote/companion-daemon/internal/timeline/contract	2.721s
+ok  	devremote/companion-daemon/internal/timeline/writer	2.493s
+ok  	devremote/companion-daemon/internal/transcript	2.855s
+ok  	devremote/companion-daemon/internal/validation	2.755s
+ok  	devremote/companion-daemon/internal/watcher	3.261s
+ok  	devremote/companion-daemon/internal/workspace	2.783s
 ?   	devremote/companion-daemon/scripts	[no test files]
-FAIL
 ```
 
-20 packages total: 16 pass (ok), 3 no-test (`?` — `cmd/signald`, `internal/models`, `scripts`),
-1 failure (`internal/agent/doctor` — see below).
-
-**`agent/doctor` failure classification:** `TestE2E_ManifestsInBundleCorrect`
-fails with a workspace digest mismatch (`original=a12829b7bb5fd587
-recreated=5ee37fadd1e48615`). This is a pre-existing flake in the doctor
-package. The Step 9.1 diff (`9bea4a48c..16c350d1f`) touches zero files under
-`internal/agent/doctor/`. The failure is unrelated to Step 9.1 changes and is
-not a regression.
+20 packages total: 17 pass (ok), 3 no-test (`?` — `cmd/signald`, `internal/models`, `scripts`).
 
 The exact stdout of `test -z "$(gofmt -l .)"` is: (no output — exit 0)
 
@@ -219,7 +254,7 @@ are test fixtures, redaction code, or documentation. Zero active credentials.
 ```
 BUILD:  PASS
 VET:    PASS
-TESTS:  PASS (16/17 step-related; doctor flake pre-existing, unrelated)
+TESTS:  PASS (20 packages, -race -count=1, all ok)
 FMT:    PASS
 M_TSC:  PASS
 INV:    PASS (no vendor branches, no ID inference)
@@ -252,22 +287,26 @@ The following invariants are enforced by the implementation and verified by
 
 ## 6. New test files
 
-| Test file | Purpose |
-|-----------|---------|
-| `timeline_operational_adapter_test.go` | Adapter: bind/revoke/lifecycle, unknown session, nil sink, capability scope |
-| `timeline_real_provider_test.go` | End-to-end: real Codex/Claude paths with redaction verification, Stats/Health |
-| `managed_registry_test.go` | Registry: register/incarnation/restore/status/exit/close/capacity |
-| `operational_codex_test.go` | Codex: operational event emission, nil-sink safety, post-exit silence |
-| `operational_claude_test.go` | Claude: operational event emission, resume incarnation preservation |
+| Test file | Test count | Purpose |
+|-----------|-----------|---------|
+| `timeline_operational_adapter_test.go` | expanded (R6-R8) | Adapter: BindOperationalRuntime, sender-per-runtime identity gate, RevokeOperationalRuntime, nil-sink no-op |
+| `timeline_real_provider_test.go` | 2 | End-to-end: real Codex/Claude paths with redaction verification, Stats/Health |
+| `managed_registry_test.go` | 7 | Registry: register/incarnation/restore/status/exit/close/capacity |
+| `managed_claude_activation_test.go` | expanded (R6-R8) | Claude: resume sender replacement, linearized senders, revoke-on-replace |
+| `operational_codex_test.go` | 2 | Codex: operational event emission, nil-sink safety, post-exit silence |
+| `operational_claude_test.go` | 3 | Claude: operational event emission, resume incarnation preservation |
+| `operational_events_test.go` | new (R6-R8) | Operational event model: identity fields, kind mapping |
 
 ## 7. Production code changes by package
 
 | Package | Files changed | Summary |
 |---------|-------------|---------|
-| `cmd/devremote` | 7 | Composition: adapter, verifier, wiring, existing test alignment |
-| `internal/term` | 10 | Managed registry, operational events, Codex/Claude hooks, registry tests |
+| `cmd/devremote` | 7 | Composition: adapter (per-runtime sender, R6-R8), verifier, wiring, existing test alignment |
+| `internal/term` | 11 | Managed registry, operational events (+identity, R6-R8), operational events test, Codex/Claude hooks (+sender lifecycle, R6-R8), registry tests, Claude activation tests (+resume sender, R6-R8) |
 | `internal/cockpit` | 1 | Timeline stats read-only endpoint |
 | `internal/timeline/writer` | 2 | ProducerStore, Bind/Revoke, Stats/Health, extended test suite |
+
+**R6-R8 additions (7 files, +709/-83):** `timeline_operational_adapter.go` (per-runtime sender model), `timeline_operational_adapter_test.go` (172 lines of sender identity-gate tests), `managed_claude.go` (linearized resume sender replacement), `managed_claude_activation_test.go` (315 lines of resume sender tests), `managed_codex.go` (sender per-runtime hooks), `operational_events.go` (+52 lines: `OperationalRuntimeIdentity`), `operational_events_test.go` (new, 14 lines).
 
 ## 8. Staging gate (Activation Contract §9)
 
@@ -283,7 +322,7 @@ authoritative.
 
 | # | Item | Status | Evidence |
 |---|------|--------|----------|
-| 1 | All existing tests pass | **SATISFIED** | 16/17 step-related packages pass with `-race -count=1`. `agent/doctor` has one pre-existing flake (`TestE2E_ManifestsInBundleCorrect`, workspace digest mismatch) — zero files in the 9.1 diff touch `internal/agent/doctor/`. |
+| 1 | All existing tests pass | **SATISFIED** | All 20 packages pass with `-race -count=1`. Zero failures, zero flakes. |
 | 2 | 8 acceptance tests pass | **SATISFIED** | 35 test functions across 6 new test files covering: non-blocking submission, drop visibility, producer auth (bind/revoke/forged-prefix rejection), secret redaction (real Codex + Claude sentinel scans), authority regression (all existing tests), kill-9 restart (channel+ring empty on open), graceful shutdown (truthful Close outcome, no post-close drain), default-off (nil-sink preserves pre-9.1 behavior). |
 | 3 | No production import regressions | **SATISFIED** | Zero new imports of `timeline/writer` from `internal/term/`. `OperationalEventSink` is term-owned; composition adapter lives in `cmd/devremote`. No circular dependencies. |
 | 4 | Staging daemon runs 7 days with `--enable-timeline-shadow` | **DEFERRED** | Requires a physical staging environment with 7-day continuous runtime. Not satisfiable at ACCEPT time. The `--enable-timeline-shadow` flag remains `false` by default per contract §1: "The `--enable-timeline-shadow` flag remains `false` until staging evidence proves 7-day stable operation." |
