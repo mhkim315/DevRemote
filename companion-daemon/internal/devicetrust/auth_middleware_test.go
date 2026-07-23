@@ -36,7 +36,7 @@ func TestRequirePrincipal_InvalidToken(t *testing.T) {
 
 func TestRequirePrincipal_ValidToken(t *testing.T) {
 	m := NewDeviceSessionManager("b", 20*time.Minute)
-	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestRequirePrincipal_ValidToken(t *testing.T) {
 
 func TestRequirePrincipal_MemberCannotAccessKill(t *testing.T) {
 	m := NewDeviceSessionManager("b", 20*time.Minute)
-	raw, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleMember))
+	raw, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleMember), 0)
 	h := RequirePrincipal(m, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not run")
 	}, PermSessionsKill)
@@ -73,9 +73,9 @@ func TestRequirePrincipal_MemberCannotAccessKill(t *testing.T) {
 
 func TestRequirePrincipal_ReplacementInvalidatesOld(t *testing.T) {
 	m := NewDeviceSessionManager("b", 20*time.Minute)
-	tok1, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	tok1, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	// Replace.
-	tok2, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	tok2, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	h := RequirePrincipal(m, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	}, PermSessionsRead)
@@ -99,7 +99,7 @@ func TestRequirePrincipal_ReplacementInvalidatesOld(t *testing.T) {
 
 func TestRequirePrincipal_ExpiredTokenFails(t *testing.T) {
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 1 * time.Millisecond, MaxSessions: 64})
-	raw, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	raw, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	time.Sleep(10 * time.Millisecond)
 	h := RequirePrincipal(m, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -131,7 +131,7 @@ func TestBearerToken_Extraction(t *testing.T) {
 func TestWSTicketStore_Consume(t *testing.T) {
 	s := NewWSTicketStore()
 	m := NewDeviceSessionManager("b1", 20*time.Minute)
-	rawBearer, sid, exp, _ := m.CreateAfterVerifiedChallenge("d1", "h1", "b1", []string{PermSessionsRead})
+	rawBearer, sid, exp, _ := m.CreateAfterVerifiedChallenge("d1", "h1", "b1", []string{PermSessionsRead}, 0)
 	p := m.AuthenticateBearer(rawBearer)
 	if p == nil || p.BearerSessionID != sid {
 		t.Fatal("bearer setup failed")

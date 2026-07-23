@@ -3,6 +3,8 @@ package devicetrust
 import (
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -199,7 +201,7 @@ func TestEpoch_RevokeVsVerify(t *testing.T) {
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
 
-	tok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	tok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -228,7 +230,7 @@ func TestEpoch_RevokeVsRefresh(t *testing.T) {
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
 
-	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
 	reg.Revoke(dev.DeviceID)
 
 	// Old token (issued before revoke at epoch 0) must be rejected after
@@ -237,7 +239,7 @@ func TestEpoch_RevokeVsRefresh(t *testing.T) {
 		t.Fatal("revoke vs refresh: stale session accepted after revoke")
 	}
 	// New session issued after revoke carries epoch 1 — it must be valid.
-	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), reg.GetEpoch(dev.DeviceID))
 	if err != nil {
 		t.Fatalf("revoke vs refresh: post-revoke session create: %v", err)
 	}
@@ -256,13 +258,13 @@ func TestEpoch_ReplacementVsOldDevice(t *testing.T) {
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
 
-	oldTok, _, _, _ := mgr.CreateAfterVerifiedChallenge(oldDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	oldTok, _, _, _ := mgr.CreateAfterVerifiedChallenge(oldDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), 0)
 	reg.Revoke(oldDev.DeviceID)
 
 	_, newPub, _ := GenKeypair(t)
 	newDev, _ := reg.Add(newPub, "replacement-device")
 
-	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(newDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(newDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("replacement session: %v", err)
 	}
@@ -284,7 +286,7 @@ func TestEpoch_DaemonRestartBootChange(t *testing.T) {
 	mgr1 := NewDeviceSessionManager(bootID1, 1*time.Hour)
 	mgr1.GetEpoch = reg.GetEpoch
 
-	tok, _, _, _ := mgr1.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID1, PermissionsForRole(RoleOwner))
+	tok, _, _, _ := mgr1.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID1, PermissionsForRole(RoleOwner), 0)
 	if p := mgr1.AuthenticateBearer(tok); p == nil {
 		t.Fatal("session valid under boot1")
 	}
@@ -310,10 +312,116 @@ func TestEpoch_PushRegistrationAfterRevoke(t *testing.T) {
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
 
-	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
 	reg.Revoke(dev.DeviceID)
 
 	if p := mgr.AuthenticateBearer(tok); p != nil {
 		t.Fatal("push registration after revoke: stale bearer accepted")
+	}
+}
+
+// ── 9.4-D R3: real concurrent race tests with timing barriers ──
+
+func TestEpoch_ConcurrentRevokeVsIssue(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	var wg sync.WaitGroup
+	var issued int32
+	var revoked int32
+	barrier := make(chan struct{})
+
+	// Goroutine 1: repeatedly issue sessions at the current epoch.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-barrier
+		for i := 0; i < 50; i++ {
+			epoch := reg.GetEpoch(dev.DeviceID)
+			_, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), epoch)
+			if err != nil {
+				return // epoch changed, stop
+			}
+			atomic.AddInt32(&issued, 1)
+		}
+	}()
+
+	// Goroutine 2: repeatedly revoke (which bumps epoch).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-barrier
+		for i := 0; i < 50; i++ {
+			// Re-add + revoke to bump epoch
+			_, _, _ = GenKeypair(t)
+			reg.Revoke(dev.DeviceID)
+			atomic.AddInt32(&revoked, 1)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	close(barrier)
+	wg.Wait()
+	t.Logf("issued=%d revoked=%d", atomic.LoadInt32(&issued), atomic.LoadInt32(&revoked))
+}
+
+func TestEpoch_ConcurrentRevokeVsRefresh(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	var wg sync.WaitGroup
+	var refreshed, revoked int32
+	barrier := make(chan struct{})
+
+	// Issue initial session.
+	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-barrier
+		for i := 0; i < 50; i++ {
+			if p := mgr.AuthenticateBearer(tok); p == nil {
+				return // token rejected by epoch check
+			}
+			atomic.AddInt32(&refreshed, 1)
+			time.Sleep(time.Microsecond)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-barrier
+		for i := 0; i < 20; i++ {
+			reg.Revoke(dev.DeviceID)
+			atomic.AddInt32(&revoked, 1)
+			// Re-add so we can revoke again
+			_, newPub, _ := GenKeypair(t)
+			reg.Add(newPub, "retry")
+			reg.Revoke(dev.DeviceID)
+			atomic.AddInt32(&revoked, 1)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	close(barrier)
+	wg.Wait()
+	t.Logf("refreshed=%d revoked=%d", atomic.LoadInt32(&refreshed), atomic.LoadInt32(&revoked))
+	// After revoke, the old token must be rejected.
+	if p := mgr.AuthenticateBearer(tok); p != nil {
+		t.Errorf("after concurrent revoke, old token must be rejected")
 	}
 }

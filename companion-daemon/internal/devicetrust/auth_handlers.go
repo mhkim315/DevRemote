@@ -247,7 +247,7 @@ func (h *AuthHandler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 	// Issue a session token. The session manager enforces a per-device cap
 	// (one active session per device; new auth revokes the previous).
 	rawToken, sessionID, expiresAt, tokErr := h.Sessions.CreateAfterVerifiedChallenge(
-		dev.DeviceID, ch.HostID, ch.DaemonBootID, perms,
+		dev.DeviceID, ch.HostID, ch.DaemonBootID, perms, dev.Epoch,
 	)
 	if tokErr != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

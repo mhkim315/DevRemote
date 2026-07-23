@@ -236,10 +236,18 @@ func notifyInvalidated(cb OnReplaceFunc, deviceIDs []string) {
 // cap; a NEW device is rejected if the cap is full. Expired sessions are
 // purged inline so capacity is immediately reusable.
 func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
-	deviceID, hostID, bootID string, permissions []string,
+	deviceID, hostID, bootID string, permissions []string, expectedEpoch int64,
 ) (rawToken string, sessionID string, expiresAt time.Time, err error) {
 	if bootID != m.bootID {
 		return "", "", time.Time{}, fmt.Errorf("boot ID mismatch")
+	}
+	// 9.4-D epoch CAS: reject if the device epoch changed since the caller
+	// read it (concurrent revoke/replacement happened).
+	if m.GetEpoch != nil {
+		currentEpoch := m.GetEpoch(deviceID)
+		if currentEpoch != expectedEpoch {
+			return "", "", time.Time{}, fmt.Errorf("epoch changed: expected %d, current %d", expectedEpoch, currentEpoch)
+		}
 	}
 	tokenBytes := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, tokenBytes); err != nil {
@@ -337,9 +345,11 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 	// session was issued, the session is stale and must be rejected.
 	if m.GetEpoch != nil {
 		currentEpoch := m.GetEpoch(sess.DeviceID)
-		if currentEpoch > sess.DeviceEpoch {
+		// Exact epoch match required. Any mismatch (revoke bumped epoch,
+		// replacement changed it, or unknown device) rejects the bearer.
+		if currentEpoch != sess.DeviceEpoch {
 			m.mu.Unlock()
-			return nil // session issued under old epoch, device was revoked/replaced
+			return nil
 		}
 	}
 	p := &Principal{

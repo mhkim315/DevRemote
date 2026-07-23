@@ -809,7 +809,7 @@ func main() {
 	}
 
 	sessions := devicetrust.NewDeviceSessionManager("pb-dg-r4-boot", time.Minute)
-	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(deviceID, identity.HostID, sessions.BootID(), permissions)
+	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(deviceID, identity.HostID, sessions.BootID(), permissions, 0)
 	if err != nil {
 		fail("create paired device session: %v", err)
 	}

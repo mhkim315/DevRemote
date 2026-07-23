@@ -553,7 +553,7 @@ func TestFlagOffZeroEffect(t *testing.T) {
 	// Verify with valid auth the handler reaches the business logic.
 	rawToken, _, _, _ := sessionMgr.CreateAfterVerifiedChallenge(
 		"device-1", "host-1", bootID,
-		[]string{devicetrust.PermSessionsRead},
+		[]string{devicetrust.PermSessionsRead}, 0,
 	)
 	req2 := httptest.NewRequest("GET", "/push/register?token=push-token", nil)
 	req2.Header.Set("Authorization", "Bearer "+rawToken)

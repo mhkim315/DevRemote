@@ -142,7 +142,7 @@ func newC1Fixture(t *testing.T) *c1Fixture {
 	sessions := devicetrust.NewDeviceSessionManager("c1-boot", time.Minute)
 	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(
 		"device-owner", identity.HostID, sessions.BootID(),
-		[]string{devicetrust.PermSessionsRead, devicetrust.PermTerminalInput},
+		[]string{devicetrust.PermSessionsRead, devicetrust.PermTerminalInput}, 0,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -502,7 +502,7 @@ func TestTERM_C1_ViewerDeniedZeroPTYWrite(t *testing.T) {
 	sessions := devicetrust.NewDeviceSessionManager("c1-viewer-boot", time.Minute)
 	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(
 		"device-viewer", identity.HostID, sessions.BootID(),
-		[]string{devicetrust.PermSessionsRead},
+		[]string{devicetrust.PermSessionsRead}, 0,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -593,7 +593,7 @@ func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
 	sessions := devicetrust.NewDeviceSessionManager("c1-viewer-paste-boot", time.Minute)
 	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(
 		"device-viewer", identity.HostID, sessions.BootID(),
-		[]string{devicetrust.PermSessionsRead},
+		[]string{devicetrust.PermSessionsRead}, 0,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -690,7 +690,7 @@ func TestTERM_C1_ViewerDeniedCtrlCThroughAcknowledgedInput(t *testing.T) {
 	sessions := devicetrust.NewDeviceSessionManager("c1-viewer-ctrlc-boot", time.Minute)
 	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(
 		"device-viewer", identity.HostID, sessions.BootID(),
-		[]string{devicetrust.PermSessionsRead},
+		[]string{devicetrust.PermSessionsRead}, 0,
 	)
 	if err != nil {
 		t.Fatal(err)

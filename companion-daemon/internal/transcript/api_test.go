@@ -239,8 +239,7 @@ func TestHandleTranscript_Auth_InvalidToken(t *testing.T) {
 func TestHandleTranscript_Auth_ValidToken(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	m := devicetrust.NewDeviceSessionManager("b", 20*time.Minute)
-	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b",
-		devicetrust.PermissionsForRole(devicetrust.RoleOwner))
+	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", devicetrust.PermissionsForRole(devicetrust.RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -258,8 +257,7 @@ func TestHandleTranscript_Auth_ValidToken(t *testing.T) {
 func TestHandleTranscript_Auth_WrongPermission(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	m := devicetrust.NewDeviceSessionManager("b", 20*time.Minute)
-	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b",
-		devicetrust.PermissionsForRole(devicetrust.RoleMember))
+	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", devicetrust.PermissionsForRole(devicetrust.RoleMember), 0)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}

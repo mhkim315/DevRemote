@@ -331,12 +331,12 @@ func TestSessionCap_ReplacementInvalidatesOld(t *testing.T) {
 func TestSessionCap_GlobalCapBlocksNewDevice(t *testing.T) {
 	// Create a fresh session manager with a very small cap.
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 20 * time.Minute, MaxSessions: 1})
-	_, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	_, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	// Second NEW device must be blocked (cap=1, and d1 is not d2).
-	_, _, _, err = m.CreateAfterVerifiedChallenge("d2", "h", "b", PermissionsForRole(RoleOwner))
+	_, _, _, err = m.CreateAfterVerifiedChallenge("d2", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err == nil {
 		t.Fatal("global cap not enforced")
 	}
@@ -345,12 +345,12 @@ func TestSessionCap_GlobalCapBlocksNewDevice(t *testing.T) {
 
 func TestSessionCap_ReplacementAllowedAtCap(t *testing.T) {
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 20 * time.Minute, MaxSessions: 1})
-	_, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	_, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	// Replacement for same device must succeed even at cap.
-	_, _, _, err = m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	_, _, _, err = m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("replacement at cap blocked: %v", err)
 	}
@@ -362,13 +362,13 @@ func TestSessionCap_ReplacementAllowedAtCap(t *testing.T) {
 
 func TestSessionCap_SlotFreedAfterExpiry(t *testing.T) {
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 1 * time.Millisecond, MaxSessions: 1})
-	tok, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner))
+	tok, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	time.Sleep(10 * time.Millisecond)
 	if m.AuthenticateBearer(tok) != nil {
 		t.Fatal("expired token still valid")
 	}
 	// Slot freed — new device can issue.
-	_, _, _, err := m.CreateAfterVerifiedChallenge("d2", "h", "b", PermissionsForRole(RoleOwner))
+	_, _, _, err := m.CreateAfterVerifiedChallenge("d2", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("slot not freed after expiry: %v", err)
 	}

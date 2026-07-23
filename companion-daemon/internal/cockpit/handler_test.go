@@ -21,7 +21,7 @@ func TestCockpitHandlerReturnsEmptyJSON(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatal(rr.Code)
 	}
-	token, _, _, err := sessions.CreateAfterVerifiedChallenge("device", "host", "boot", []string{devicetrust.PermSessionsRead})
+	token, _, _, err := sessions.CreateAfterVerifiedChallenge("device", "host", "boot", []string{devicetrust.PermSessionsRead}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

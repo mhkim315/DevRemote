@@ -89,7 +89,7 @@ func TestDevicesIPC_RevokeEndToEnd(t *testing.T) {
 	})
 
 	// Active bearer + a registered connection + a pending ticket for the device.
-	rawTok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host", bootID, []string{devicetrust.PermSessionsRead})
+	rawTok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host", bootID, []string{devicetrust.PermSessionsRead}, 0)
 	if err != nil {
 		t.Fatalf("create bearer: %v", err)
 	}

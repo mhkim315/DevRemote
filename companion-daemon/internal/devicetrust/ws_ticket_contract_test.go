@@ -14,7 +14,7 @@ import (
 
 func newTicketPrincipal(t *testing.T, m *DeviceSessionManager, deviceID, hostID string, perms []string) (*Principal, string) {
 	t.Helper()
-	raw, _, _, err := m.CreateAfterVerifiedChallenge(deviceID, hostID, m.BootID(), perms)
+	raw, _, _, err := m.CreateAfterVerifiedChallenge(deviceID, hostID, m.BootID(), perms, 0)
 	if err != nil {
 		t.Fatalf("create bearer: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestWSTicket_BearerReplacementAndRevokeInvalidate(t *testing.T) {
 	s := NewWSTicketStore()
 	p1, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
 	raw1, _, _ := s.Issue(p1, "host", "session")
-	_, _, _, err := m.CreateAfterVerifiedChallenge("device", "host", "boot", []string{PermSessionsRead})
+	_, _, _, err := m.CreateAfterVerifiedChallenge("device", "host", "boot", []string{PermSessionsRead}, 0)
 	if err != nil {
 		t.Fatalf("replace bearer: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestWSTicket_BearerReplacementAndRevokeInvalidate(t *testing.T) {
 	}
 
 	p2 := m.AuthenticateBearer(func() string {
-		raw, _, _, _ := m.CreateAfterVerifiedChallenge("other", "host", "boot", []string{PermSessionsRead})
+		raw, _, _, _ := m.CreateAfterVerifiedChallenge("other", "host", "boot", []string{PermSessionsRead}, 0)
 		return raw
 	}())
 	raw2, _, _ := s.Issue(p2, "host", "session")
@@ -201,7 +201,7 @@ func TestDeviceSessionExpiry_AllRemovalPathsNotify(t *testing.T) {
 		{
 			name: "inline-create-purge",
 			run: func(m *DeviceSessionManager, _ string) {
-				_, _, _, _ = m.CreateAfterVerifiedChallenge("second", "host", m.BootID(), []string{PermSessionsRead})
+				_, _, _, _ = m.CreateAfterVerifiedChallenge("second", "host", m.BootID(), []string{PermSessionsRead}, 0)
 			},
 		},
 		{
@@ -223,7 +223,7 @@ func TestDeviceSessionExpiry_AllRemovalPathsNotify(t *testing.T) {
 				invalidated = append(invalidated, deviceID)
 				mu.Unlock()
 			})
-			raw, _, _, err := m.CreateAfterVerifiedChallenge("device", "host", "boot", []string{PermSessionsRead})
+			raw, _, _, err := m.CreateAfterVerifiedChallenge("device", "host", "boot", []string{PermSessionsRead}, 0)
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}

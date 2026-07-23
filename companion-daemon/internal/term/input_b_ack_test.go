@@ -69,7 +69,7 @@ func newInputBWSFixture(t *testing.T, writer *inputBWriter) *inputBWSFixture {
 		t.Fatal(err)
 	}
 	sessions := devicetrust.NewDeviceSessionManager("input-b-boot", time.Minute)
-	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge("device-owner", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead, devicetrust.PermTerminalInput})
+	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge("device-owner", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead, devicetrust.PermTerminalInput}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

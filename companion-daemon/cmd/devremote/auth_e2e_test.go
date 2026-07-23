@@ -522,7 +522,7 @@ func TestRemoteWSTicketFailsClosedWithoutHostIdentity(t *testing.T) {
 	}
 	p, _ := func() (*devicetrust.Principal, string) {
 		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
-			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead}, 0,
 		)
 		if createErr != nil {
 			t.Fatalf("create bearer: %v", createErr)
@@ -565,7 +565,7 @@ func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T)
 	}
 	issueGrant := func() (*devicetrust.Principal, string) {
 		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
-			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead}, 0,
 		)
 		if createErr != nil {
 			t.Fatalf("create bearer: %v", createErr)
@@ -582,7 +582,7 @@ func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T)
 	closer1 := &authTestCloser{done: make(chan struct{})}
 	app.connRegistry.Register(p1.DeviceID, closer1)
 	_, _, _, err = app.sessionMgr.CreateAfterVerifiedChallenge(
-		p1.DeviceID, p1.HostID, app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+		p1.DeviceID, p1.HostID, app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead}, 0,
 	)
 	if err != nil {
 		t.Fatalf("replace bearer: %v", err)
@@ -598,7 +598,7 @@ func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T)
 
 	p2 := app.sessionMgr.AuthenticateBearer(func() string {
 		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
-			"other", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead},
+			"other", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead}, 0,
 		)
 		if createErr != nil {
 			t.Fatalf("create second bearer: %v", createErr)
