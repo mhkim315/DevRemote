@@ -1,10 +1,12 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `ce730accc`
-**EVID SHA:** `c09791741`
+**EVID SHA:** (this commit — R2 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix)
 **CONTRACT SHA:** `3769d583e` (R2)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
+**Revision:** R2 — file count fix: Backend 6 / Mobile 10 / Docs 4
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and
@@ -42,7 +44,7 @@ The exact stdout of `git diff --stat c82fef47f..ce730accc` is:
  20 files changed, 2596 insertions(+), 109 deletions(-)
 ```
 
-Backend: 7 files. Mobile: 9 files. Documentation: 4 files.
+Backend: 6 files. Mobile: 10 files. Documentation: 4 files.
 
 ## 2. Complete implementation chain
 
