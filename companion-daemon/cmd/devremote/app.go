@@ -18,6 +18,7 @@ import (
 
 	"devremote/companion-daemon/internal/cockpit"
 	"devremote/companion-daemon/internal/devicetrust"
+	"devremote/companion-daemon/internal/projection"
 	"devremote/companion-daemon/internal/term"
 	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
@@ -154,6 +155,7 @@ type App struct {
 	watcher            watcherResource
 	tunnel             tunnelResource              // nil in insecure mode
 	timelineWriter     *writer.Writer              // nil unless the default-off shadow flag is enabled
+	projection         *projection.Projector       // nil unless the default-off convergence flag and writer are enabled
 	workspaceLeases    *workspace.Manager          // nil unless the default-off workspace flag is enabled
 	validationCheck    *validation.StalenessCheck  // nil unless the default-off validation flag is enabled
 	validationStore    *validation.ValidationStore // nil unless the default-off cockpit flag is enabled
@@ -175,6 +177,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	var timelineWriter *writer.Writer
 	var timelineSink term.OperationalEventSink
 	var timelineAuth *writer.ProducerStore
+	var timelineProjection *projection.Projector
 	var workspaceLeases *workspace.Manager
 	var validationCheck *validation.StalenessCheck
 	// Timeline is constructed before several independent, fallible App
@@ -227,6 +230,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		} else {
 			timelineWriter = w
 		}
+	}
+	// STEP 9.2 is a read-only, offline/shadow projection. It owns no goroutine
+	// and remains nil unless both its flag and the optional writer are enabled.
+	if cfg.EnableProjectionConvergence && timelineWriter != nil {
+		timelineProjection = projection.NewProjector(timelineWriter)
 	}
 	// STEP5: this pure cooperative ledger has no filesystem lock, Git command,
 	// or callback into authority paths. It is constructed only behind its
@@ -618,6 +626,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		handlers:        h,
 		ipcPath:         "/tmp/pokit.sock",
 		timelineWriter:  timelineWriter,
+		projection:      timelineProjection,
 		workspaceLeases: workspaceLeases,
 		validationCheck: validationCheck,
 		validationStore: validationStore,

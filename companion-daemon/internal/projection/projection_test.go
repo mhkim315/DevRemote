@@ -6,14 +6,15 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/agent"
+	agentcontract "devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/timeline/contract"
 	"devremote/companion-daemon/internal/timeline/writer"
+	"devremote/companion-daemon/internal/transcript"
 )
 
-func openWriter(t *testing.T) *writer.Writer {
+func testWriter(t *testing.T) *writer.Writer {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "timeline.jsonl")
-	w, err := writer.Open(writer.Config{Path: path}, nil)
+	w, err := writer.Open(writer.Config{Path: filepath.Join(t.TempDir(), "timeline.jsonl")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,184 +22,178 @@ func openWriter(t *testing.T) *writer.Writer {
 	return w
 }
 
-func makeEnv(t *testing.T, eventID string, kind contract.EventKind, t0Type agent.AgentEventType, sid string, gen int64, text string) contract.Envelope {
+func envelope(t *testing.T, id string, kind contract.EventKind, typ agent.AgentEventType, sid string, gen int64) contract.Envelope {
 	t.Helper()
-	s := contract.Scope{SessionID: sid, RuntimeID: "rt-1", LaunchGeneration: gen}
-	ts := contract.Envelope{}.OccurredAt.AddDate(0, 0, 1)
-	safe := text
-	if safe == "" {
-		safe = "safe"
-	}
-	ref := contract.References{}
+	scope := contract.Scope{SessionID: sid, RuntimeID: "runtime-" + sid, LaunchGeneration: gen}
+	refs := contract.References{}
 	switch kind {
 	case contract.EventProviderInvocationStarted, contract.EventProviderInvocationFinished:
-		ref.ProviderInvocation = &contract.TypedReference{Kind: contract.ReferenceProviderInvocation, ID: "r-" + eventID, Scope: s}
+		refs.ProviderInvocation = &contract.TypedReference{Kind: contract.ReferenceProviderInvocation, ID: "provider-" + id, Scope: scope}
 	case contract.EventToolCallStarted, contract.EventToolCallFinished:
-		ref.ToolCall = &contract.TypedReference{Kind: contract.ReferenceToolCall, ID: "r-" + eventID, Scope: s}
+		refs.ToolCall = &contract.TypedReference{Kind: contract.ReferenceToolCall, ID: "tool-" + id, Scope: scope}
 	case contract.EventApprovalRequested, contract.EventApprovalResolved:
-		ref.ApprovalRequest = &contract.TypedReference{Kind: contract.ReferenceApprovalRequest, ID: "r-" + eventID, Scope: s}
+		refs.ApprovalRequest = &contract.TypedReference{Kind: contract.ReferenceApprovalRequest, ID: "approval-" + id, Scope: scope}
 	case contract.EventStreamObserved:
-		ref.Transport = &contract.TypedReference{Kind: contract.ReferenceTransport, ID: "r-" + eventID, Scope: s}
+		refs.Transport = &contract.TypedReference{Kind: contract.ReferenceTransport, ID: "transport-" + id, Scope: scope}
 	case contract.EventEvidenceObserved:
-		ref.Provenance = &contract.TypedReference{Kind: contract.ReferenceProvenance, ID: "r-" + eventID, Scope: s}
+		refs.Provenance = &contract.TypedReference{Kind: contract.ReferenceProvenance, ID: "provenance-" + id, Scope: scope}
 	}
+	t0 := agent.AgentEvent{ID: "agent-" + id, SessionID: sid, AgentKind: "codex", Type: typ, Provenance: "provider_protocol"}
 	e, err := contract.NewEnvelope(contract.Envelope{
 		SchemaVersion: contract.SchemaV1, PayloadVersion: contract.PayloadV1,
-		EventKind: kind, SessionID: s.SessionID, RuntimeID: s.RuntimeID,
-		LaunchGeneration: gen, Provider: "codex", SourceIncarnation: "inc",
-		SourceIdentity: contract.SourceIdentity{Kind: "provider", ID: "sid"},
-		SourcePosition: "pos", RedactionPolicyVersion: "v1",
-		Payload:         contract.Payload{Redacted: &contract.RedactedPayload{Summary: safe}},
-		EvidenceSources: contract.EvidenceSources{Provider: &contract.ProviderEvidenceRef{ID: "e-" + eventID, Scope: s}},
-		References:      ref,
-		OccurredAt:      ts, ObservedAt: ts.Add(time.Second),
-		T0Event: agent.AgentEvent{ID: "t0-" + eventID, SessionID: s.SessionID, AgentKind: "codex", Type: t0Type},
+		EventKind: kind, SessionID: sid, RuntimeID: scope.RuntimeID, LaunchGeneration: gen, Provider: "codex",
+		SourceIncarnation: "incarnation-" + id, SourceIdentity: contract.SourceIdentity{Kind: "fixture", ID: "source-" + id}, SourcePosition: "position-" + id,
+		OccurredAt: time.Unix(int64(len(id)+1), 0), ObservedAt: time.Unix(int64(len(id)+2), 0), RedactionPolicyVersion: "redaction-v1",
+		Payload: contract.Payload{Redacted: &contract.RedactedPayload{Summary: "safe " + id}}, EvidenceSources: contract.EvidenceSources{Provider: &contract.ProviderEvidenceRef{ID: "evidence-" + id, Scope: scope}}, References: refs,
+		T0Event: t0,
 	})
 	if err != nil {
-		t.Fatalf("makeEnv %s: %v", eventID, err)
+		t.Fatalf("envelope %s: %v", id, err)
 	}
 	return e
 }
 
-func TestProjection_1_Empty(t *testing.T) {
-	p := NewProjector(nil)
-	if p.Activity() != nil || p.Transcript() != nil {
-		t.Fatal("expected nil from nil writer")
+func appendEnv(t *testing.T, w *writer.Writer, e contract.Envelope) {
+	t.Helper()
+	if !w.Append(e) {
+		t.Fatal("append rejected")
 	}
 }
 
-func TestProjection_2_InsertionOrder(t *testing.T) {
-	w := openWriter(t)
-	for i := range 5 {
-		w.Append(makeEnv(t, string(rune('a'+i)), contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "tool"))
+func TestProjectionKnownSequenceAndImmutableOrder(t *testing.T) {
+	w := testWriter(t)
+	for _, id := range []string{"one", "two", "three"} {
+		appendEnv(t, w, envelope(t, id, contract.EventToolCallStarted, agent.EventToolCallStarted, "s", 1))
 	}
-	if len(NewProjector(w).Activity()) != 5 {
-		t.Fatal("expected 5")
-	}
-}
-
-func TestProjection_3_ExactReplay(t *testing.T) {
-	w := openWriter(t)
-	e := makeEnv(t, "dup", contract.EventApprovalRequested, agent.EventApprovalRequested, "s1", 1, "app")
-	w.Append(e)
-	w.Append(e)
-	n := len(NewProjector(w).Activity())
-	if n == 0 || n > 2 {
-		t.Errorf("expected 1-2, got %d", n)
+	p := NewProjector(w)
+	a, b := p.Activity(), p.Activity()
+	if len(a) != 3 || a[0].ProjectionOrder != 0 || b[0].ProjectionOrder != 0 || a[2].EventID != b[2].EventID {
+		t.Fatalf("immutable order violated: %#v %#v", a, b)
 	}
 }
 
-func TestProjection_4_Collision(t *testing.T) {
-	w := openWriter(t)
-	w.Append(makeEnv(t, "col", contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "a"))
-	w.Append(makeEnv(t, "col", contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "b"))
-	if len(NewProjector(w).Activity()) == 0 {
-		t.Error("expected at least 1")
+func TestProjectionReplayDedupAndCollision(t *testing.T) {
+	w := testWriter(t)
+	e := envelope(t, "replay", contract.EventApprovalRequested, agent.EventApprovalRequested, "s", 1)
+	appendEnv(t, w, e)
+	appendEnv(t, w, e)
+	s := NewProjector(w).Snapshot(nil)
+	if len(s.Activity) != 1 || s.Collisions != 0 {
+		t.Fatalf("replay = %#v", s)
+	}
+	b := e
+	b.Payload.Redacted = &contract.RedactedPayload{Summary: "different safe summary"}
+	b.EventID = ""
+	b, _ = contract.NewEnvelope(b)
+	appendEnv(t, w, b)
+	if got := NewProjector(w).Snapshot(nil).Collisions; got != 1 {
+		t.Fatalf("collisions=%d", got)
 	}
 }
 
-func TestProjection_5_RingWrap(t *testing.T) {
-	w := openWriter(t)
-	for range 200 {
-		w.Append(makeEnv(t, "x", contract.EventStreamObserved, agent.EventThinking, "s1", 1, "stream"))
+func TestProjectionRingOverwriteRequiresScopedGap(t *testing.T) {
+	w := testWriter(t)
+	ids := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		e := envelope(t, string(rune(0x1000+i)), contract.EventStreamObserved, agent.EventThinking, "s", 1)
+		ids = append(ids, e.EventID)
+		appendEnv(t, w, e)
 	}
-	if len(NewProjector(w).Activity()) > 128 {
-		t.Error("ring overflow")
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", RuntimeID: "runtime-s", LaunchGeneration: 1, TimelineEventIDs: ids}
+	s := NewProjector(w).Snapshot([]FixtureEpochBinding{b})
+	if s.RingOverwritten != 72 || len(s.Gaps) != 1 || s.Gaps[0].Reason != "ring_overwrite" || s.Unexplained != 0 {
+		t.Fatalf("ring snapshot=%#v", s)
 	}
-}
-
-func TestProjection_6_Reconnect(t *testing.T) {
-	w1 := openWriter(t)
-	for range 5 {
-		w1.Append(makeEnv(t, "r", contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "t"))
-	}
-	w1.Close()
-	if len(NewProjector(openWriter(t)).Activity()) != 0 {
-		t.Error("expected 0 after reconnect")
+	if NewProjector(w).Snapshot(nil).Unexplained == 0 {
+		t.Fatal("unscoped overwrite must fail")
 	}
 }
 
-func TestProjection_7_GenerationReset(t *testing.T) {
-	w := openWriter(t)
-	for i := range 3 {
-		w.Append(makeEnv(t, string(rune('a'+i)), contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "g1"))
-	}
-	if NewProjector(w).Activity()[0].LaunchGeneration != 1 {
-		t.Fatal("gen1 mismatch")
-	}
-	for i := range 2 {
-		w.Append(makeEnv(t, string(rune('d'+i)), contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 2, "g2"))
-	}
-	items := NewProjector(w).Activity()
-	if items[3].LaunchGeneration != 2 {
-		t.Error("gen2 not ordered correctly")
+func TestProjectionUnknownKindIsRejected(t *testing.T) {
+	w := testWriter(t)
+	appendEnv(t, w, envelope(t, "unknown", contract.EventEvidenceObserved, agent.EventUnknown, "s", 1))
+	s := NewProjector(w).Snapshot(nil)
+	if s.Unknown != 1 || len(s.Activity) != 0 {
+		t.Fatalf("unknown=%#v", s)
 	}
 }
 
-func TestProjection_8_Missing(t *testing.T) {
-	w := openWriter(t)
-	w.Append(makeEnv(t, "only", contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "t"))
-	if len(NewProjector(w).Activity()) != 1 {
-		t.Error("expected 1")
-	}
-}
-
-func TestProjection_9_RequestResultOrder(t *testing.T) {
-	w := openWriter(t)
-	w.Append(makeEnv(t, "req", contract.EventApprovalRequested, agent.EventApprovalRequested, "s1", 1, "r"))
-	w.Append(makeEnv(t, "res", contract.EventApprovalResolved, agent.EventApprovalResolved, "s1", 1, "s"))
-	items := NewProjector(w).Activity()
-	if len(items) != 2 || items[0].EventKind != contract.EventApprovalRequested {
-		t.Error("request must precede resolved")
-	}
-}
-
-func TestProjection_10_ApprovalBinding(t *testing.T) {
-	w := openWriter(t)
-	w.Append(makeEnv(t, "app", contract.EventApprovalRequested, agent.EventApprovalRequested, "codex_app_server:s1", 7, "a"))
-	it := NewProjector(w).Activity()
-	if len(it) != 1 || it[0].SessionID != "codex_app_server:s1" || it[0].LaunchGeneration != 7 {
-		t.Error("binding mismatch")
-	}
-}
-
-func TestProjection_11_Degradation(t *testing.T) {
-	_, err := writer.Open(writer.Config{Path: "/dev/full"}, nil)
+func TestProjectionActualWriterDropHasSafeGap(t *testing.T) {
+	w, err := writer.Open(writer.Config{Path: "/dev/full"}, nil)
 	if err != nil {
 		t.Skip("/dev/full unavailable")
 	}
-}
-
-func TestProjection_12_UnknownKind(t *testing.T) {
-	w := openWriter(t)
-	w.Append(makeEnv(t, "unk", contract.EventEvidenceObserved, agent.EventUnknown, "s1", 1, "e"))
-	if len(NewProjector(w).Activity()) < 1 {
-		t.Error("expected at least 1")
+	defer w.Close()
+	if w.Append(envelope(t, "drop", contract.EventToolCallStarted, agent.EventToolCallStarted, "s", 1)) {
+		t.Fatal("/dev/full unexpectedly accepted write")
+	}
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", RuntimeID: "runtime-s", LaunchGeneration: 1}
+	s := NewProjector(w).Snapshot([]FixtureEpochBinding{b})
+	if !s.Degraded || s.Stats.Dropped == 0 || len(s.Gaps) != 1 || s.Gaps[0].Reason != "writer_drop" {
+		t.Fatalf("drop snapshot=%#v", s)
+	}
+	if got := NewProjector(w).Activity(); len(got) != 0 {
+		t.Fatalf("degraded empty activity must not panic or fabricate: %#v", got)
 	}
 }
 
-func TestProjection_13_TranscriptMapping(t *testing.T) {
-	w := openWriter(t)
-	w.Append(makeEnv(t, "t1", contract.EventProviderInvocationStarted, agent.EventAgentStarted, "s1", 1, ""))
-	w.Append(makeEnv(t, "t2", contract.EventProviderInvocationFinished, "completed", "s1", 1, ""))
-	w.Append(makeEnv(t, "t3", contract.EventToolCallStarted, agent.EventToolCallStarted, "s1", 1, "cmd"))
-	w.Append(makeEnv(t, "t4", contract.EventApprovalRequested, agent.EventApprovalRequested, "s1", 1, "a"))
-	w.Append(makeEnv(t, "t5", contract.EventApprovalResolved, agent.EventApprovalResolved, "s1", 1, "b"))
-	w.Append(makeEnv(t, "t6", contract.EventStreamObserved, agent.EventThinking, "s1", 1, "t"))
+func TestDualFeedOracleAndRestoredEpoch(t *testing.T) {
+	w := testWriter(t)
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	sid := "s"
+	runEpoch := func(occ uint64, gen int64, events []agent.AgentEvent, envs []contract.Envelope) (transcript.TranscriptResponse, FixtureEpochBinding) {
+		if occ == 1 {
+			svc.EnableQueue(sid)
+		} else {
+			svc.ReplaceTranscript(sid)
+		}
+		svc.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: agentcontract.CorrelationProven, Provider: "codex"})
+		svc.ProjectAgentEvents(sid, events)
+		for _, e := range envs {
+			appendEnv(t, w, e)
+		}
+		resp := svc.BuildResponse(sid, svc.ListTranscript(sid))
+		ids := make([]string, len(envs))
+		for i := range envs {
+			ids[i] = envs[i].EventID
+		}
+		return resp, FixtureEpochBinding{EpochOccurrence: occ, SessionID: sid, TranscriptGeneration: resp.Generation, RuntimeID: "runtime-s", LaunchGeneration: gen, TimelineEventIDs: ids}
+	}
+	e1 := envelope(t, "start", contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, 1)
+	r1, b1 := runEpoch(1, 1, []agent.AgentEvent{e1.T0Event}, []contract.Envelope{e1})
+	if report := Compare(r1, NewProjector(w).Snapshot([]FixtureEpochBinding{b1}), []FixtureEpochBinding{b1}); !report.Passed {
+		t.Fatalf("epoch1 report=%#v", report)
+	}
+	// Restore deliberately reuses runtime ID and Timeline generation, while the
+	// fixture occurrence and Transcript generation are both new.
+	e2 := envelope(t, "restored", contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, 1)
+	r2, b2 := runEpoch(2, 1, []agent.AgentEvent{e2.T0Event}, []contract.Envelope{e2})
+	if b2.EpochOccurrence == b1.EpochOccurrence || r2.Generation == r1.Generation {
+		t.Fatal("restore epoch not distinct")
+	}
+	if report := Compare(r2, NewProjector(w).Snapshot([]FixtureEpochBinding{b2}), []FixtureEpochBinding{b2}); !report.Passed {
+		t.Fatalf("restored report=%#v", report)
+	}
+}
+
+func TestToolAndApprovalPairingAndMisboundVerdict(t *testing.T) {
+	w := testWriter(t)
+	sid := "s"
+	toolStart := envelope(t, "tool-start", contract.EventToolCallStarted, agent.EventToolCallStarted, sid, 1)
+	toolFinish := envelope(t, "tool-finish", contract.EventToolCallFinished, agent.EventToolCallFinished, sid, 1)
+	for _, e := range []contract.Envelope{toolStart, toolFinish, envelope(t, "approval-request", contract.EventApprovalRequested, agent.EventApprovalRequested, sid, 1), envelope(t, "approval-resolve", contract.EventApprovalResolved, agent.EventApprovalResolved, sid, 1)} {
+		appendEnv(t, w, e)
+	}
 	items := NewProjector(w).Transcript()
-	if len(items) != 6 {
-		t.Fatalf("expected 6, got %d", len(items))
+	if err := ValidatePairOrder(items); err != nil {
+		t.Fatal(err)
 	}
-	if items[0].Text != "Agent started" {
-		t.Errorf("0: %q", items[0].Text)
+	if err := ValidatePairOrder([]TranscriptItem{items[1]}); err == nil {
+		t.Fatal("finish without start accepted")
 	}
-	if items[1].Text != "Completed" {
-		t.Errorf("1: %q", items[1].Text)
-	}
-	if items[3].Text != "Approval requested" {
-		t.Errorf("3: %q", items[3].Text)
-	}
-	if items[4].Text != "Approval resolved" {
-		t.Errorf("4: %q", items[4].Text)
+	response := transcript.TranscriptResponse{SessionID: sid, Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "wrong", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: items[2].AgentEventRef, AgentKind: "codex", EventType: items[2].EventType, Text: items[2].Text, Seq: 1}}}
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: 1, TimelineEventIDs: []string{items[2].EventID}}
+	if Compare(response, Snapshot{Transcript: []TranscriptItem{items[2]}}, []FixtureEpochBinding{b}).MisboundApprovals == 0 {
+		t.Fatal("misbound approval not reported")
 	}
 }
