@@ -269,7 +269,7 @@ type EquivalenceReport struct {
 // snapshot. It never mutates either input and reports every non-mapped fact.
 func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []FixtureEpochBinding) EquivalenceReport {
 	r := EquivalenceReport{Collisions: snap.Collisions, Unexplained: snap.Unexplained + snap.Unknown}
-	if response.ContractVersion != "" && response.ContractVersion != transcript.ContractVersion {
+	if response.ContractVersion != transcript.ContractVersion {
 		r.Unexplained++
 	}
 	binding, ok := bindingFor(response, bindings)
@@ -314,11 +314,6 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		}
 		items = filtered
 	}
-	for _, s := range degraded {
-		if !hasGapForSegment(snap.Gaps, s) {
-			r.Unexplained++
-		}
-	}
 	r.ComparedSessions = boolInt(response.SessionID != "")
 	n := len(segments)
 	if len(items) < n {
@@ -350,10 +345,26 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 	if len(items) > len(segments) {
 		r.Extras += len(items) - len(segments)
 	}
+	matchedDegraded := make([]bool, len(degraded))
 	for _, gap := range snap.Gaps {
-		if binding != nil && validGapForBinding(gap, *binding) && hasTranscriptGap(degraded, gap) {
-			r.ToleratedGaps++
+		matched := -1
+		if binding != nil && validGapForBinding(gap, *binding) {
+			for i, s := range degraded {
+				if !matchedDegraded[i] && s.SessionID == gap.SessionID && s.DegradedReason == gap.Reason {
+					matched = i
+					break
+				}
+			}
+		}
+		if matched < 0 {
+			r.Unexplained++
 		} else {
+			matchedDegraded[matched] = true
+			r.ToleratedGaps++
+		}
+	}
+	for i := range degraded {
+		if !matchedDegraded[i] {
 			r.Unexplained++
 		}
 	}
@@ -388,29 +399,36 @@ func bindingEventIDsConsistent(b FixtureEpochBinding, all []FixtureEpochBinding,
 	for _, id := range b.TimelineEventIDs {
 		bound[id] = true
 	}
+	found := map[string]bool{}
 	for _, item := range items {
-		if bound[item.EventID] {
-			if item.RuntimeID != b.RuntimeID || item.LaunchGeneration != b.LaunchGeneration {
-				return false
-			}
-			continue
+		owner, ok := eventOwner(item.EventID, all)
+		if !ok || item.SessionID != owner.SessionID || item.RuntimeID != owner.RuntimeID || item.LaunchGeneration != owner.LaunchGeneration {
+			return false
 		}
-		if !eventBound(item.EventID, all) {
+		found[item.EventID] = true
+	}
+	for id := range bound {
+		if !found[id] {
 			return false
 		}
 	}
 	return true
 }
-func eventBound(id string, all []FixtureEpochBinding) bool {
+func eventOwner(id string, all []FixtureEpochBinding) (FixtureEpochBinding, bool) {
+	var owner FixtureEpochBinding
+	found := false
 	for _, b := range all {
 		if contains(b.TimelineEventIDs, id) {
-			return true
+			if found {
+				return FixtureEpochBinding{}, false
+			}
+			owner, found = b, true
 		}
 	}
-	return false
+	return owner, found
 }
 func validGapForBinding(g GapMarker, b FixtureEpochBinding) bool {
-	return g.EpochOccurrence == b.EpochOccurrence && g.SessionID == b.SessionID && g.RuntimeID == b.RuntimeID && g.LaunchGeneration == b.LaunchGeneration && g.GlobalDroppedAfter >= g.GlobalDroppedBefore
+	return g.Reason != "" && g.EpochOccurrence == b.EpochOccurrence && g.SessionID == b.SessionID && g.RuntimeID == b.RuntimeID && g.LaunchGeneration == b.LaunchGeneration && g.GlobalDroppedAfter > g.GlobalDroppedBefore
 }
 func closedSemanticLoss(s transcript.TranscriptSegment) bool {
 	switch s.Kind {
@@ -481,7 +499,7 @@ func ValidatePairOrder(items []TranscriptItem) error {
 	for _, it := range items {
 		switch it.EventType {
 		case "tool_call_started":
-			if it.PairID == "" {
+			if it.PairID == "" || seenTool[it.PairID] != 0 {
 				return fmt.Errorf("tool start missing reference")
 			}
 			seenTool[it.PairID]++
@@ -494,7 +512,7 @@ func ValidatePairOrder(items []TranscriptItem) error {
 				delete(seenTool, it.PairID)
 			}
 		case "approval_requested":
-			if it.PairID == "" {
+			if it.PairID == "" || seenApproval[it.PairID] != 0 {
 				return fmt.Errorf("approval request missing reference")
 			}
 			seenApproval[it.PairID]++

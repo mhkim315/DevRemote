@@ -222,11 +222,12 @@ func TestCompareMissingAndOrderingFail(t *testing.T) {
 func TestCompareGapRequiresTranscriptMarker(t *testing.T) {
 	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1}
 	gap := GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, Reason: "writer_drop"}
-	without := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
+	gap.GlobalDroppedAfter = 1
+	without := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
 	if without.Passed || without.Unexplained == 0 {
 		t.Fatalf("unmatched gap=%#v", without)
 	}
-	with := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"}}}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
+	with := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"}}}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
 	if !with.Passed || with.ToleratedGaps != 1 {
 		t.Fatalf("matched gap=%#v", with)
 	}
@@ -234,7 +235,7 @@ func TestCompareGapRequiresTranscriptMarker(t *testing.T) {
 
 func TestNonAgentTranscriptIsClosedToleratedLoss(t *testing.T) {
 	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1}
-	r := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindInputBoundary, Source: transcript.SourceByteStream}}}, Snapshot{}, []FixtureEpochBinding{b})
+	r := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindInputBoundary, Source: transcript.SourceByteStream}}}, Snapshot{}, []FixtureEpochBinding{b})
 	if !r.Passed || r.ToleratedLosses != 1 {
 		t.Fatalf("report=%#v", r)
 	}
