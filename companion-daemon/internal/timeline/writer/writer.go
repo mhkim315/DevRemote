@@ -86,30 +86,6 @@ type ProducerStore struct {
 	writer *Writer
 }
 
-// IsManagedSession checks whether the session identity has a bound handle.
-func (s *ProducerStore) IsManagedSession(sessionID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, h := range s.active {
-		if h.sessionID == sessionID {
-			return true
-		}
-	}
-	return false
-}
-
-// RuntimeOf returns the identity of a bound session.
-func (s *ProducerStore) RuntimeOf(sessionID string) (provider, runtimeID string, generation int64, ok bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, h := range s.active {
-		if h.sessionID == sessionID {
-			return h.provider, h.runtimeID, h.generation, true
-		}
-	}
-	return "", "", 0, false
-}
-
 // NewProducerStore returns an empty producer store.
 func NewProducerStore() *ProducerStore {
 	return &ProducerStore{active: make(map[string]producerHandle)}

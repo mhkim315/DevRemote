@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,10 +16,51 @@ import (
 
 const operationalRedactionPolicy = "operational-redaction-v1"
 
-// RuntimeVerifier checks that a session identity belongs to a managed runtime.
+// RuntimeVerifier resolves the exact live managed-runtime identity committed
+// in the provider-owned registry.
 type RuntimeVerifier interface {
-	IsManagedSession(sessionID string) bool
 	RuntimeOf(sessionID string) (provider, runtimeID string, generation int64, ok bool)
+}
+
+type managedOperationalRuntimeVerifier struct {
+	codex  *term.ManagedSessionRegistry
+	claude *term.ManagedSessionRegistry
+}
+
+func newManagedOperationalRuntimeVerifier(
+	codex, claude *term.ManagedSessionRegistry,
+) *managedOperationalRuntimeVerifier {
+	return &managedOperationalRuntimeVerifier{codex: codex, claude: claude}
+}
+
+func (v *managedOperationalRuntimeVerifier) RuntimeOf(sessionID string) (string, string, int64, bool) {
+	if v == nil {
+		return "", "", 0, false
+	}
+	var codexRecord, claudeRecord term.ManagedSessionRecord
+	var inCodex, inClaude bool
+	if v.codex != nil {
+		codexRecord, inCodex = v.codex.Get(sessionID)
+	}
+	if v.claude != nil {
+		claudeRecord, inClaude = v.claude.Get(sessionID)
+	}
+	// Unknown and ambiguous identities fail closed.
+	if inCodex == inClaude {
+		return "", "", 0, false
+	}
+	record := codexRecord
+	expectedProvider, expectedPrefix := "codex", "codex_app_server:"
+	if inClaude {
+		record = claudeRecord
+		expectedProvider, expectedPrefix = "claude", "claude_headless:"
+	}
+	if record.Exited || record.Provider != expectedProvider ||
+		!strings.HasPrefix(record.SessionID, expectedPrefix) ||
+		record.SessionID != sessionID || record.ProcessID == "" || record.Epoch <= 0 {
+		return "", "", 0, false
+	}
+	return record.Provider, record.ProcessID, record.Epoch, true
 }
 
 type timelineOperationalAdapter struct {
@@ -62,10 +104,14 @@ func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEve
 		return
 	}
 	if event.Kind == term.OperationalProviderInvocationStarted {
-		// Verify the session identity against the verifier (managed runtime
-		// registry). No prefix fallback — only registered managed sessions
-		// may produce timeline events.
-		if a.verifier == nil || !a.verifier.IsManagedSession(event.SessionID) {
+		// Bind only the exact tuple already committed in the provider-owned
+		// registry. A matching session ID alone grants no capability.
+		if a.verifier == nil {
+			return
+		}
+		provider, runtimeID, generation, verified := a.verifier.RuntimeOf(event.SessionID)
+		if !verified || provider != event.Provider || runtimeID != event.RuntimeID ||
+			generation != event.LaunchGeneration {
 			return
 		}
 		capability, err := a.producers.Bind(

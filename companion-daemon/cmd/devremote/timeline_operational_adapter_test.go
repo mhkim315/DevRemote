@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"devremote/companion-daemon/internal/timeline/contract"
 	"encoding/json"
 	"log"
 	"os"
@@ -67,18 +66,18 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { timelineWriter.Close() })
-	// Pre-bind test sessions so verifier finds them.
-	_, _ = producers.Bind("codex", "runtime-privacy", "codex_app_server:privacy", 1,
-		contract.EventProviderInvocationStarted, contract.EventProviderInvocationFinished,
-		contract.EventToolCallStarted, contract.EventToolCallFinished,
-		contract.EventApprovalRequested, contract.EventApprovalResolved,
-		contract.EventStreamObserved)
-	_, _ = producers.Bind("codex", "runtime-privacy", "codex_app_server:privacy", 2,
-		contract.EventProviderInvocationStarted, contract.EventProviderInvocationFinished,
-		contract.EventToolCallStarted, contract.EventToolCallFinished,
-		contract.EventApprovalRequested, contract.EventApprovalResolved,
-		contract.EventStreamObserved)
-	adapter := newTimelineOperationalAdapter(producers, producers)
+	codexRegistry := term.NewManagedSessionRegistry(4)
+	for _, record := range []term.ManagedSessionRecord{
+		{SessionID: "codex_app_server:privacy", Provider: "codex", ProcessID: "runtime-privacy", Epoch: 1},
+		{SessionID: "codex_app_server:privacy-two", Provider: "codex", ProcessID: "runtime-privacy", Epoch: 2},
+	} {
+		if err := codexRegistry.Register(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapter := newTimelineOperationalAdapter(
+		producers, newManagedOperationalRuntimeVerifier(codexRegistry, nil),
+	)
 
 	oldLogWriter := log.Writer()
 	var logs bytes.Buffer
@@ -134,6 +133,7 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 	// Revocation is an exit invariant, not contingent on successfully
 	// constructing the optional finish envelope.
 	second := base
+	second.SessionID = "codex_app_server:privacy-two"
 	second.LaunchGeneration = 2
 	second.Kind = term.OperationalProviderInvocationStarted
 	adapter.SubmitAfterCommit(second)
@@ -173,5 +173,59 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		if bytes.Contains(raw, []byte(sentinel)) {
 			t.Fatalf("%s leaked provider secret: %s", name, raw)
 		}
+	}
+}
+
+func TestTimelineOperationalAdapterRequiresExactRegisteredRuntimeTuple(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "timeline.jsonl")
+	producers := writer.NewProducerStore()
+	timelineWriter, err := writer.Open(writer.Config{Path: path}, producers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { timelineWriter.Close() })
+	registry := term.NewManagedSessionRegistry(1)
+	const sessionID = "codex_app_server:exact"
+	if err := registry.Register(term.ManagedSessionRecord{
+		SessionID: sessionID, Provider: "codex", ProcessID: "runtime-exact", Epoch: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := newTimelineOperationalAdapter(
+		producers, newManagedOperationalRuntimeVerifier(registry, nil),
+	)
+	base := term.OperationalEvent{
+		Kind:     term.OperationalProviderInvocationStarted,
+		Provider: "codex", SessionID: sessionID, RuntimeID: "runtime-exact", LaunchGeneration: 7,
+		SourceID: "source", SourcePosition: "position", ReferenceID: "reference",
+		OccurredAt: time.Now().UTC(),
+	}
+	for name, mutate := range map[string]func(*term.OperationalEvent){
+		"provider":   func(event *term.OperationalEvent) { event.Provider = "claude" },
+		"runtime":    func(event *term.OperationalEvent) { event.RuntimeID = "runtime-other" },
+		"generation": func(event *term.OperationalEvent) { event.LaunchGeneration++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			event := base
+			mutate(&event)
+			adapter.SubmitAfterCommit(event)
+			if got := timelineWriter.Stats(); got.Appended != 0 || got.Dropped != 0 {
+				t.Fatalf("mismatched %s tuple reached writer: %+v", name, got)
+			}
+			adapter.mu.Lock()
+			bound := len(adapter.capabilities)
+			adapter.mu.Unlock()
+			if bound != 0 {
+				t.Fatalf("mismatched %s tuple created capability", name)
+			}
+		})
+	}
+	adapter.SubmitAfterCommit(base)
+	deadline := time.Now().Add(time.Second)
+	for timelineWriter.Stats().Appended != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := timelineWriter.Stats(); got.Appended != 1 || got.Dropped != 0 {
+		t.Fatalf("exact tuple did not bind: %+v", got)
 	}
 }

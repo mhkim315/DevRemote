@@ -173,6 +173,7 @@ func NewApp(cfg Config) (*App, error) {
 func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	var timelineWriter *writer.Writer
 	var timelineSink term.OperationalEventSink
+	var timelineAuth *writer.ProducerStore
 	var workspaceLeases *workspace.Manager
 	var validationCheck *validation.StalenessCheck
 	// Timeline is constructed before several independent, fallible App
@@ -218,13 +219,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if openTimeline == nil {
 			openTimeline = writer.Open
 		}
-		timelineAuth := writer.NewProducerStore()
+		timelineAuth = writer.NewProducerStore()
 		w, err := openTimeline(writer.Config{Path: path}, timelineAuth)
 		if err != nil {
 			log.Printf("WARNING: Timeline shadow disabled (fail-open): %v", err)
 		} else {
 			timelineWriter = w
-			timelineSink = newTimelineOperationalAdapter(timelineAuth, timelineAuth)
 		}
 	}
 	// STEP5: this pure cooperative ledger has no filesystem lock, Git command,
@@ -263,11 +263,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managed.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed approval store: %w", err)
 		}
-		if timelineWriter != nil {
-			if err := managed.SetOperationalEventSink(timelineSink); err != nil {
-				log.Printf("WARNING: Managed Codex Timeline producer disabled")
-			}
-		}
 	}
 
 	// C1D: native managed Claude runtime — default-off. The service owns the
@@ -289,7 +284,30 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managedClaude.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed claude approval store: %w", err)
 		}
-		if timelineSink != nil {
+	}
+
+	// Timeline producer authorization and runtime verification are separate
+	// capabilities. The writer store starts empty; the verifier reads only the
+	// provider-owned registries populated before each post-registration start
+	// event. Install the shared adapter before any runtime can be created.
+	if timelineWriter != nil && timelineAuth != nil {
+		var codexRegistry, claudeRegistry *term.ManagedSessionRegistry
+		if managed != nil {
+			codexRegistry = managed.Registry()
+		}
+		if managedClaude != nil {
+			claudeRegistry = managedClaude.Registry()
+		}
+		timelineSink = newTimelineOperationalAdapter(
+			timelineAuth,
+			newManagedOperationalRuntimeVerifier(codexRegistry, claudeRegistry),
+		)
+		if managed != nil {
+			if err := managed.SetOperationalEventSink(timelineSink); err != nil {
+				log.Printf("WARNING: Managed Codex Timeline producer disabled")
+			}
+		}
+		if managedClaude != nil {
 			if err := managedClaude.SetOperationalEventSink(timelineSink); err != nil {
 				log.Printf("WARNING: Managed Claude Timeline producer disabled")
 			}
