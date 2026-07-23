@@ -1,7 +1,7 @@
 # Step 9.1 Evidence — Operational Timeline Staging
 
 **IMPL SHA:** `dc376f9b7`
-**EVID SHA:** (this commit — R7 revision)
+**EVID SHA:** `66824e393` (R7)
 **PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `8348ff5d2` (R4), `a2613ed05` (R4 fix), `ea3922985` (R5), `eb0e304b7` (R5 fix), `2e5d48a80` (R6), `00a8f1394` (R6 fix)
 **CONTRACT SHAs:** ACTIVATION `e857fd13c` (amended §9), PRODUCER `9bea4a48c`
 **Date:** 2026-07-23
