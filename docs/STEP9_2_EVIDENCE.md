@@ -1,13 +1,13 @@
 # Step 9.2 Evidence — Transcript/Activity Projection Convergence
 
 **IMPL SHA:** `c82fef47f`
-**EVID SHA:** `3e9a5fe23` (R2)
-**PRIOR EVID SHA:** `f32be5756` (R1), `af5e76eff` (R1 fix)
+**EVID SHA:** (this commit — R3 revision)
+**PRIOR EVID SHA:** `f32be5756` (R1), `af5e76eff` (R1 fix), `3e9a5fe23` (R2), `6ed826773` (R2 fix)
 **CONTRACT SHA:** `93c337a42` (V1 ACCEPT)
 **IMPLEMENTATION BASE:** `dc376f9b7` (Step 9.1)
 **R3-A ACCEPT:** `a0a0084b4`
 **Date:** 2026-07-23
-**Revision:** R2 — complete 32-test `go test -v` output, no curation
+**Revision:** R3 — full raw `go test -v` stdout (including log lines and ok summary)
 
 Step 9.2 implements a read-only, offline, default-off dual-fed equivalence
 oracle that compares Timeline-derived Activity and Transcript projections
@@ -195,23 +195,24 @@ ok  	devremote/companion-daemon/internal/workspace	2.046s
 
 21 packages total: 18 ok, 3 no-test (`cmd/signald`, `internal/models`, `scripts`).
 
-The exact stdout of `go test -race ./internal/projection -count=1 -v` filtered
-to RUN/PASS/SKIP lines is:
+The exact stdout of `go test -race ./internal/projection -count=1 -v` is:
 
 ```
 === RUN   TestMatrix01EmptyWriter
 --- PASS: TestMatrix01EmptyWriter (0.00s)
 === RUN   TestMatrix02KnownSequenceAndClosedDualFeed
---- PASS: TestMatrix02KnownSequenceAndClosedDualFeed (0.05s)
+--- PASS: TestMatrix02KnownSequenceAndClosedDualFeed (0.06s)
 === RUN   TestMatrix03ExactReplay
 --- PASS: TestMatrix03ExactReplay (0.01s)
 === RUN   TestMatrix04Collision
 --- PASS: TestMatrix04Collision (0.01s)
 === RUN   TestMatrix05RingWrap
---- PASS: TestMatrix05RingWrap (0.85s)
+--- PASS: TestMatrix05RingWrap (0.84s)
 === RUN   TestMatrix06NewWriter
 --- PASS: TestMatrix06NewWriter (0.00s)
 === RUN   TestMatrix07GenerationRestore
+2026/07/23 19:08:11 TRANSCRIPT replace session=restore-m gen=2
+2026/07/23 19:08:11 TRANSCRIPT replace session=restore-m gen=3
 --- PASS: TestMatrix07GenerationRestore (0.02s)
 === RUN   TestMatrix08Missing
 --- PASS: TestMatrix08Missing (0.00s)
@@ -224,7 +225,7 @@ to RUN/PASS/SKIP lines is:
 === RUN   TestMatrix13UnknownEventKind
 --- PASS: TestMatrix13UnknownEventKind (0.00s)
 === RUN   TestProjectionKnownSequenceAndImmutableOrder
---- PASS: TestProjectionKnownSequenceAndImmutableOrder (0.01s)
+--- PASS: TestProjectionKnownSequenceAndImmutableOrder (0.02s)
 === RUN   TestProjectionReplayDedupAndCollision
 --- PASS: TestProjectionReplayDedupAndCollision (0.01s)
 === RUN   TestProjectionRingOverwriteRequiresScopedGap
@@ -234,6 +235,7 @@ to RUN/PASS/SKIP lines is:
 === RUN   TestProjectionActualWriterDropHasSafeGap
 --- PASS: TestProjectionActualWriterDropHasSafeGap (0.00s)
 === RUN   TestDualFeedOracleAndRestoredEpoch
+2026/07/23 19:08:12 TRANSCRIPT replace session=s gen=2
 --- PASS: TestDualFeedOracleAndRestoredEpoch (0.01s)
 === RUN   TestToolAndApprovalPairingAndMisboundVerdict
 --- PASS: TestToolAndApprovalPairingAndMisboundVerdict (0.02s)
@@ -248,7 +250,7 @@ to RUN/PASS/SKIP lines is:
 === RUN   TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder
 --- PASS: TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder (0.81s)
 === RUN   TestMatrix12Degradation
---- PASS: TestMatrix12Degradation (0.98s)
+--- PASS: TestMatrix12Degradation (0.97s)
 === RUN   TestGapReasonAndCounterTaxonomyIsClosed
 --- PASS: TestGapReasonAndCounterTaxonomyIsClosed (0.00s)
 === RUN   TestPairIDCannotBeReusedAfterFullLifecycle
@@ -263,6 +265,8 @@ to RUN/PASS/SKIP lines is:
 --- PASS: TestComparatorWrongRuntimeIsGenerationMismatch (0.00s)
 === RUN   TestComparatorRejectsUnclosedFallback
 --- PASS: TestComparatorRejectsUnclosedFallback (0.00s)
+PASS
+ok  	devremote/companion-daemon/internal/projection	4.858s
 ```
 
 32 tests, 0 SKIP, all PASS. The Coordinator reports `go test -race
