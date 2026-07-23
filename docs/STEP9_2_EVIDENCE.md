@@ -1,7 +1,7 @@
 # Step 9.2 Evidence — Transcript/Activity Projection Convergence
 
 **IMPL SHA:** `c82fef47f`
-**EVID SHA:** (this commit — R3 revision)
+**EVID SHA:** `c8d6eda20` (R3)
 **PRIOR EVID SHA:** `f32be5756` (R1), `af5e76eff` (R1 fix), `3e9a5fe23` (R2), `6ed826773` (R2 fix)
 **CONTRACT SHA:** `93c337a42` (V1 ACCEPT)
 **IMPLEMENTATION BASE:** `dc376f9b7` (Step 9.1)
