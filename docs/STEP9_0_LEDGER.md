@@ -73,6 +73,7 @@ these automatically.
 | 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
 | 9.1 (Timeline staging) | `dc376f9b7` (IMPL) | `66824e393` (EVID R7) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
+| 9.2 (Projection convergence) | `c82fef47f` (IMPL) | `(this commit)` (EVID) | Dual-fed equivalence oracle — read-only, default-off, offline projection |
 
 ## 6. Authoritative sequence
 
@@ -80,11 +81,11 @@ The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA
 
 - **9.0 DOCS/AUDIT — ACCEPTED at `62a50f0a8`.**
 - **9.1** — Minimal Timeline staging — **ACCEPTED at `dc376f9b7`.**
-- **9.2** — Transcript/Activity projection convergence
+- **9.2** — Transcript/Activity projection convergence — **ACCEPTED at `c82fef47f`.**
 - **9.3** — N1 exact-event notification-to-action
 - **9.4** — Secure accountless onboarding
 - **9.5** — Matched Base Alpha candidate + SM-S926N product gate
 - **Beyond** — Manual Alpha coordination, CT-P2, automation (separate authorization)
 
-Historical broad CT-P2 remains blocked. Step 9.2 remains not started until
+Historical broad CT-P2 remains blocked. Step 9.3 remains not started until
 a separate reviewed implementation contract is accepted.
