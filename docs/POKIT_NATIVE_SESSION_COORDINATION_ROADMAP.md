@@ -6,7 +6,7 @@
 
 **Current execution state:** CT-P1 ACCEPTED (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`).
 PB ACCEPTED (`5354077afcf30343d9666511e259346d9bea0ad6`). CT-P1 operational-evidence
-amendment ACCEPTED (`12135bd8072ae284fbe95c71cddf5f331a5d26f5`). Steps 4-8 operational
+amendment ACCEPTED (`12135bd806e069d1487f7b0dad55bbe2bdb804f3`). Steps 4-8 operational
 foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
 (separate post-PB packet required).
 
@@ -352,7 +352,7 @@ degraded/gap outcomes without replaying an invalid action.
    `5354077afcf30343d9666511e259346d9bea0ad6` for candidate
    `059bef181c6c2ef312eee421dbf10f12b15b0326`.
 3. **COMPLETE:** CT-P1 operational-evidence amendment accepted at
-   `12135bd8072ae284fbe95c71cddf5f331a5d26f5`.
+   `12135bd806e069d1487f7b0dad55bbe2bdb804f3`.
 4. **COMPLETE:** Fail-open Timeline shadow writer (IMPL `6d1a72d35`,
    EVID `58eb55b92`). Ring-buffer mailbox model, zero goroutines.
 5. **COMPLETE:** Workspace identity, clean-snapshot contract, cooperative
