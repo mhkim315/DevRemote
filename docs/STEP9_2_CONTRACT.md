@@ -94,7 +94,8 @@ type TranscriptItem struct {
     SessionID         string // Envelope.SessionID
     AgentKind         string // Envelope.T0Event.AgentKind
     EventType         string // Envelope.T0Event.Type
-    ToolName          string // only the safe Transcript projection value
+    Text              string // closed Transcript-projector display mapping below
+    ToolName          string // T0Event.ToolName truncated to the projector's 128-byte bound
     RuntimeID         string
     LaunchGeneration  int64
     SourceIncarnation string
@@ -104,13 +105,13 @@ type TranscriptItem struct {
 
 The closed mappings are:
 
-| Timeline `EventKind` | Required `T0Event.Type` | Authoritative `TranscriptSegment` expectation |
-|---|---|---|
-| `provider_invocation_started` | `agent_started` | `KindAgentEvent` / `SourceAgentEvent`, `EventType=agent_started`, `AgentEventRef=T0Event.ID` |
-| `provider_invocation_finished` | `completed`, `failed`, or `interrupted` | same identity fields and matching event type |
-| `tool_call_started`, `tool_call_finished` | matching tool event type | same identity fields; compare only the Transcript projector’s sanitized `ToolName` |
-| `approval_requested`, `approval_resolved` | matching approval event type | same identity fields and matching event type |
-| `stream_observed` | `thinking` | same identity fields and `EventType=thinking`; no content-text comparison |
+| Timeline `EventKind` | Required `T0Event.Type` | `TranscriptItem.Text` / `ToolName` normalization | Authoritative `TranscriptSegment` expectation |
+|---|---|---|---|
+| `provider_invocation_started` | `agent_started` | `Text="Agent started"`, `ToolName=""` | `KindAgentEvent` / `SourceAgentEvent`, `EventType=agent_started`, `AgentEventRef=T0Event.ID` |
+| `provider_invocation_finished` | `completed`, `failed`, or `interrupted` | `Text="Completed"`, `"Failed"`, or `"Interrupted"` respectively; `ToolName=""` | same identity fields and matching event type |
+| `tool_call_started`, `tool_call_finished` | matching tool event type | `Text=""`; `ToolName` is `T0Event.ToolName` truncated to 128 bytes | same identity fields and matching normalized `ToolName` |
+| `approval_requested`, `approval_resolved` | matching approval event type | `Text="Approval requested"` or `"Approval resolved"`; `ToolName=""` | same identity fields and matching event type |
+| `stream_observed` | `thinking` | `Text=""`, `ToolName=""` | same identity fields and `EventType=thinking` |
 
 No other `contract.EventKind` is in the Step 9.2 dual-fed set. Any mapping
 outside this table, any wrong `T0Event.Type`, missing correlation, missing
@@ -124,11 +125,39 @@ Before comparison, both sources are normalized:
 |-----------|-----------|----------|--------------|
 | Source-event identity | `TranscriptSegment.AgentEventRef` | `Envelope.T0Event.ID` | Direct compare in the dual-fed fixture |
 | Timeline identity | mapped expected event | `Envelope.EventID` | Compare Activity projection to defined expected output |
-| Generation | `TranscriptResponse.Generation` | `Envelope.LaunchGeneration` | Direct compare for the same session incarnation |
+| Epoch/incarnation | `TranscriptResponse.Generation` | `RuntimeID`, `LaunchGeneration`, `SourceIncarnation` | Compare through the explicit fixture binding in §2c.1; never directly compare these unlike domains |
 | Session/provider | `TranscriptSegment.SessionID`, `AgentKind` | `Envelope.SessionID`, `Provider` | Direct compare under explicit provider mapping |
 | Ordering | `TranscriptSegment.Seq` | `ReadRecent` projection order | Exact mapped order; no reorder tolerance |
-| Content | `TranscriptSegment.Text`, `EventType`, `ToolName` | safe payload projection, `T0Event.Type` | Only explicitly declared event-kind mappings compare content |
+| Content | `TranscriptSegment.Text`, `EventType`, `ToolName` | `TranscriptItem.Text`, `EventType`, `ToolName` | Exact closed mapping in §2b.1; Timeline payload is not Transcript display text |
 | Gaps | `KindDegraded` only where the fixture deliberately emits one | `Stats().Dropped`, `HealthSnapshot()` | Explicit gap-marker taxonomy below |
+
+### 2c.1 Fixture epoch-to-incarnation binding
+
+`TranscriptSegment` has no `RuntimeID`, `LaunchGeneration`, or
+`SourceIncarnation`; `TranscriptResponse.Generation` is only the service's
+monotonically increasing per-session Transcript generation. The fixture must
+therefore record the association when it creates each epoch:
+
+```go
+type FixtureEpochBinding struct {
+    SessionID            string
+    TranscriptGeneration int64 // observed from BuildResponse after EnableQueue/ReplaceTranscript
+    RuntimeID            string
+    LaunchGeneration     int64
+    SourceIncarnation    string
+}
+```
+
+The fixture establishes the initial Transcript epoch with `EnableQueue` and
+observes it through `BuildResponse`; it uses `ReplaceTranscript` for every
+later epoch. The binding is one-to-one within a fixture and is the sole
+generation oracle.
+For a restore, the fixture calls `ReplaceTranscript`, observes its next
+monotonic `TranscriptResponse.Generation`, and binds that new Transcript epoch
+to the restored Timeline incarnation. Thus an original N and a restored N may
+share a Timeline generation value but cannot merge: their `SourceIncarnation`
+and their explicitly bound Transcript epochs differ. A missing, duplicate, or
+inconsistent binding is `generation_mismatch` and fails.
 
 ### 2d. Tolerated Loss Taxonomy
 
@@ -179,7 +208,7 @@ No fixture may invent a tolerated-loss category. The complete list is:
 | Mapping name | Exact condition | Comparison treatment |
 |---|---|---|
 | `transcript_fallback_not_dual_fed` | A `TranscriptResponse.Fallback` item whose `Source` is `byte_stream` or `snapshot_delta`, or a semantic `input_boundary`, `ui_omitted`, `unknown`, or existing Transcript `degraded` segment | Excluded before the dual-fed set is formed; report the named mapping, never a Timeline missing event |
-| `stream_text_redacted` | `stream_observed` / `thinking` maps to a correlated `KindAgentEvent` segment | Compare identity, session, generation, type, and order; deliberately do not compare `Text`, because the Transcript projector exposes no thinking body and Timeline payload cannot carry it |
+| `stream_text_redacted` | `stream_observed` / `thinking` maps to a correlated `KindAgentEvent` segment | Compare identity, fixture epoch binding, type, order, and the explicit normalized empty `Text`; no provider thinking body is compared |
 
 All other empty, partial, missing, extra, reordered, duplicate, degraded, or
 unknown-version results fail. In particular, ring overwrite is not an
@@ -275,19 +304,20 @@ realizable sources.
 | 4 | Collision | Same EventID + different digest → FAIL | `contract.ErrEventIDCollision` |
 | 5 | Ring buffer wrap | 200 one-scope envelopes → 128 retained plus explicit `ring_overwrite` marker covering 72; absent/unscopeable marker FAILS | `Stats().Appended` baseline + `ReadRecent` |
 | 6 | New writer | New healthy writer has an empty ring; non-empty dual-fed Transcript comparison FAILS (no restart inference) | `HealthSnapshot()` + new writer |
-| 7 | Generation reset/restore | Claude N→N+1→restored-N: compare the full `(SessionID, RuntimeID, LaunchGeneration, SourceIncarnation)` scope, so the restored-N epoch cannot merge with its earlier N epoch | Three scoped incarnations |
+| 7 | Generation reset/restore | Claude N→N+1→restored-N: bind each `BuildResponse.Generation` explicitly to one Timeline incarnation, so restored-N cannot merge with earlier N | Three `FixtureEpochBinding` records |
 | 8 | Missing events | Transcript has item not in Timeline → FAIL (no gap marker) | Oracle comparison |
-| 9 | Request/result ordering | Approval-requested before approval-resolved | Insertion order |
-| 10 | Approval binding | Approval events carry correct session+generation | Envelope identity |
-| 11 | Degradation | Global `Stats().Dropped` delta + `HealthSnapshot()` → scoped boundary marker; unmatched marker FAILS | actual writer APIs |
-| 12 | Unknown version | Writer rejects an unknown `EventKind` before it reaches `ReadRecent`; a separately injected invalid projection item must fail closed in the oracle | writer validation + oracle unit boundary |
+| 9 | Approval request/result ordering | `approval_requested` precedes its matching `approval_resolved` in both Transcript `Seq` and Timeline `ProjectionOrder` | approval reference + order |
+| 10 | Tool call request/result ordering | `tool_call_started` precedes its matching `tool_call_finished` in both Transcript `Seq` and Timeline `ProjectionOrder`; mismatched or reordered tool pair FAILS | tool-call reference + order |
+| 11 | Approval binding | Approval events carry correct session + `FixtureEpochBinding` | Envelope identity + epoch binding |
+| 12 | Degradation | Global `Stats().Dropped` delta + `HealthSnapshot()` → scoped boundary marker; unmatched marker FAILS | actual writer APIs |
+| 13 | Unknown version | Writer rejects an unknown `EventKind` before it reaches `ReadRecent`; a separately injected invalid projection item must fail closed in the oracle | writer validation + oracle unit boundary |
 
 ## 5. Implementation files
 
 **May create:**
 - `internal/projection/activity.go` — Activity projection from ring buffer
 - `internal/projection/transcript.go` — Transcript projection from ring buffer
-- `internal/projection/equivalence_test.go` — 12 acceptance tests
+- `internal/projection/equivalence_test.go` — 13 acceptance tests
 - `internal/projection/equivalence.go` — oracle, normalization, taxonomy
 - `cmd/devremote/app.go` — add `--enable-projection-convergence` flag (wires nothing)
 
@@ -297,7 +327,7 @@ realizable sources.
 ## 6. Gate
 
 - [ ] All existing tests pass
-- [ ] 12 new acceptance tests pass
+- [ ] 13 new acceptance tests pass
 - [ ] Equivalence report PASS (all FAIL categories zero on clean data)
 - [ ] Default-off flag: zero runtime effect when disabled
 - [ ] Separate evidence commit records equivalence results
