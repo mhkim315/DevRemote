@@ -425,3 +425,62 @@ func TestEpoch_ConcurrentRevokeVsRefresh(t *testing.T) {
 		t.Errorf("after concurrent revoke, old token must be rejected")
 	}
 }
+
+// ── 9.4-D R4: linearization test (preflight→commit atomicity) ──
+
+func TestEpoch_LinearizationCreateAfterRevoke(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	created := make(chan struct{}, 1)
+	var createErr error
+	var createOK bool
+
+	// Goroutine A: preflight (GetActive) → small delay → commit (Create)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		// Preflight: read current device state
+		d, ok := reg.GetActive(dev.DeviceID)
+		if !ok {
+			return
+		}
+		epoch := d.Epoch
+		// Signal that preflight is done, so goroutine B can revoke
+		created <- struct{}{}
+		// Small delay gives goroutine B time to revoke
+		time.Sleep(50 * time.Millisecond)
+		// Commit: create session with the preflight epoch
+		_, _, _, createErr = mgr.CreateAfterVerifiedChallenge(
+			dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), epoch,
+		)
+		createOK = (createErr == nil)
+	}()
+
+	// Goroutine B: wait for preflight to complete, then revoke
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		<-created // wait for goroutine A to finish preflight
+		reg.Revoke(dev.DeviceID)
+	}()
+
+	close(start)
+	wg.Wait()
+
+	// After revoke bumped the epoch, the creation with old epoch must fail.
+	if createOK {
+		t.Fatal("create after revoke must be rejected by epoch CAS")
+	}
+	t.Logf("createErr=%v (expected)", createErr)
+}

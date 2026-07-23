@@ -260,10 +260,7 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	now := time.Now().UTC()
 	sessID := hex.EncodeToString(tokenBytes[:12])
 	exp := now.Add(m.lifetime)
-	epoch := int64(0)
-	if m.GetEpoch != nil {
-		epoch = m.GetEpoch(deviceID)
-	}
+	// Use expectedEpoch — CAS check above confirmed it matches the registry.
 	sess := &DeviceSession{
 		TokenDigest: digest,
 		SessionID:   sessID,
@@ -271,7 +268,7 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 		HostID:      hostID,
 		BootID:      bootID,
 		Permissions: clonePerms(permissions),
-		DeviceEpoch: epoch,
+		DeviceEpoch: expectedEpoch,
 		IssuedAt:    now,
 		ExpiresAt:   exp,
 	}
