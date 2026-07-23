@@ -1,13 +1,13 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
-**IMPL SHA:** `e829299c6`
-**EVID SHA:** `15744d8f2` (R10)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix)
+**IMPL SHA:** `f7033b86c`
+**EVID SHA:** (this commit — R11 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix), `15744d8f2` (R10), `da6997288` (R10 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R10 — round counts + 3-doc sync + PENDING→ACCEPTED
-**Round counts:** Contract 4, Pre-gate 2, Impl 13, EVID 15, V2 3 = 37 total
+**Revision:** R11 — IMPL f7033b86c (R15 ACCEPT), 20 tests, standalone cursor test
+**Round counts:** Contract 4, Pre-gate 2, Impl 15, EVID 15, V2 3 = 39 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and
@@ -53,6 +53,8 @@ Backend: 6 files. Mobile: 10 files. Documentation: 5 files.
 The exact stdout of `git log --oneline c82fef47f..e829299c6` is:
 
 ```
+f7033b86c fix(notification): R15 — standalone partial-failure test, first-send-fail edge, dedup residency doc
+df0de4aa8 fix(notification): R14 — at-most-once cursor doc fix + partial-failure test
 e829299c6 fix(notification): R13 — epoch in DeviceStore, atomic snapshot, wg.Add under lock
 99c2992bf fix(notification): R12 — per-device epoch, real WaitGroup join, epoch-guarded cursor write
 2a35e10b1 fix(notification): R11 — production wiring, atomic RevokeDevice, Stop drain, late-SUCCESS tests
@@ -182,7 +184,7 @@ The push payload is a locator, never authority. On tap, mobile calls
 
 ## 4. Gate result
 
-All commands were run from `companion-daemon/` at commit `e829299c6` with a
+All commands were run from `companion-daemon/` at commit `f7033b86c` with a
 clean working tree.
 
 ### Backend gate
@@ -264,11 +266,13 @@ The exact stdout of `go test -race ./internal/notification -count=1 -v` is:
 --- PASS: TestLateSuccessCursorNotWrittenAfterStop (0.21s)
 === RUN   TestOldSendVsRevokeRebind
 --- PASS: TestOldSendVsRevokeRebind (0.31s)
+=== RUN   TestCursorAdvancesToLastSuccessOnPartialFailure
+--- PASS: TestCursorAdvancesToLastSuccessOnPartialFailure (0.62s)
 PASS
-ok  	devremote/companion-daemon/internal/notification	3.386s
+ok  	devremote/companion-daemon/internal/notification	4.206s
 ```
 
-19 tests, 0 SKIP, all PASS.
+20 tests, 0 SKIP, all PASS.
 
 The exact stdout of `test -z "$(gofmt -l .)"` is: (no output — exit 0)
 
@@ -282,7 +286,7 @@ Per Coordinator manifest: 36 suites / 552 tests PASS, `npx tsc --noEmit` PASS.
 BUILD:          PASS
 VET:            PASS
 TESTS:          PASS (21 packages, -race -count=1)
-NOTIFICATION:   PASS (19 tests, 0 SKIP)
+NOTIFICATION:   PASS (20 tests, 0 SKIP)
 FMT:            PASS
 MOBILE TESTS:   PASS (36 suites / 552 tests)
 MOBILE TSC:     PASS
@@ -312,7 +316,7 @@ MOBILE TSC:     PASS
 | File | Lines | Purpose |
 |------|-------|---------|
 | `internal/notification/notification.go` | 713 | Locator, Token, Build, Dedup, Cursor, SelectSince, DeviceStore, Notifier, ResolveStatus, RegisterHandlers |
-| `internal/notification/notification_test.go` | 1164 | 19 tests: taxonomy, dedup, cursor, delivery, 7 outcomes, degraded, restart, singleflight, ordering, late-SUCCESS, revoke-rebind |
+| `internal/notification/notification_test.go` | 1278 | 20 tests: taxonomy, dedup, cursor, delivery, 7 outcomes, degraded, restart, singleflight, ordering, late-SUCCESS, revoke-rebind, partial-failure |
 | `mobile/src/lib/notificationEvent.ts` | 8 | N1 event types |
 | `mobile/src/lib/notificationRoute.ts` | 33 | Deep-link routing from notification tap |
 | `mobile/src/screens/NotificationSettingsScreen.tsx` | 22 | Push notification settings |

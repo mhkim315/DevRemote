@@ -87,7 +87,7 @@ No retry control. No worker terminal states.
 | **Total** | **22** | |
 
 Post-ACCEPT evidence reconciliation rounds: 15 (EVID R1–R10 + SHA fixes).
-Final all-inclusive total: **37 rounds** (Contract 4 + Pre-gate 2 + Impl 13 + EVID 15 + V2 3).
+Final all-inclusive total: **39 rounds** (Contract 4 + Pre-gate 2 + Impl 15 + EVID 15 + V2 3).
 
 **Pre-gate catches:** 2 (test failure, gofmt)
 **Pre-gate prevented V1 dispatches:** 2
