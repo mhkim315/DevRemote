@@ -52,8 +52,9 @@ func allowed(k contract.EventKind) bool {
 	return false
 }
 
-// Dedup is bounded and deliberately persistent through process restart when
-// callers retain it; fire-and-forget delivery is at-most-once, never ACK-exactly-once.
+// Dedup is bounded and process-local. It is intentionally empty after a daemon
+// restart; the stable locator token lets the receiving device re-authorize a
+// possible replay. Fire-and-forget delivery is at-most-once, never ACK-exactly-once.
 type Dedup struct {
 	mu sync.Mutex
 	l  *list.List

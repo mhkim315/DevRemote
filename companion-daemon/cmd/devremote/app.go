@@ -630,6 +630,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleHTML, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("/push/register",
 			devicetrust.RequirePrincipal(sessionMgr, registerPush, devicetrust.PermSessionsRead))
+		if cfg.EnableN1Notifications {
+			serveMux.HandleFunc("GET /api/notification/{eventId}/status",
+				devicetrust.RequirePrincipal(sessionMgr, n1Status, devicetrust.PermSessionsRead))
+		}
 		// T3 Transcript: session-scoped read API with device-auth.
 		serveMux.HandleFunc("GET /api/sessions/{id}/transcript",
 			devicetrust.RequirePrincipal(sessionMgr, transcript.HandleTranscript(transcriptSvc), devicetrust.PermSessionsRead))
