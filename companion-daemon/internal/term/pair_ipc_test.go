@@ -57,17 +57,24 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 	// CLI: decode the session payload.
 	dec := json.NewDecoder(clientConn)
 	var sess struct {
-		OK             bool   `json:"ok"`
-		SessionID      string `json:"sessionId"`
-		BootstrapToken string `json:"bootstrapToken"`
-		Endpoint       string `json:"endpoint"`
-		Error          string `json:"error"`
+		OK              bool   `json:"ok"`
+		SessionID       string `json:"sessionId"`
+		BootstrapToken  string `json:"bootstrapToken"`
+		Endpoint        string `json:"endpoint"`
+		ProtocolVersion int    `json:"protocolVersion"`
+		Origin          string `json:"origin"`
+		DaemonBootID    string `json:"daemonBootId"`
+		ChallengeID     string `json:"challengeId"`
+		Error           string `json:"error"`
 	}
 	if err := dec.Decode(&sess); err != nil || !sess.OK {
 		t.Fatalf("session decode: err=%v OK=%v error=%s", err, sess.OK, sess.Error)
 	}
 	if sess.BootstrapToken == "" || sess.Endpoint == "" {
 		t.Fatalf("incomplete session payload")
+	}
+	if sess.ProtocolVersion != 1 || sess.Origin != sess.Endpoint || sess.DaemonBootID == "" || sess.ChallengeID == "" {
+		t.Fatalf("incomplete QR bridge metadata: %+v", sess)
 	}
 
 	// Drive the LAN flow to deliver a candidate.
