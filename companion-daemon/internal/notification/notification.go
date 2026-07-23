@@ -412,9 +412,9 @@ func (n *Notifier) loop() {
 // Each device has an independent dedup window — device A receiving a
 // notification never prevents device B from receiving the same event.
 // Delivery is at-most-once: dedup claims the event BEFORE send, so a send
-// failure drops the locator permanently. The cursor advances to the last
-// successfully sent event; a partial failure preserves the cursor at the
-// last successful position, not the failed event.
+// failure drops the locator for the current dedup residency. A process
+// restart or LRU eviction (contract §5) clears the dedup window, making
+// the event eligible again if it is still in the ring buffer.
 //
 // Per-device singleflight prevents goroutine accumulation: if a dispatch is
 // already in-flight for a device, this cycle skips it. Each device goroutine

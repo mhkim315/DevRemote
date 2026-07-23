@@ -1056,27 +1056,6 @@ func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
 	n2.Stop()
 }
 
-// failAfterNSender succeeds for the first N calls, then returns an error.
-type failAfterNSender struct {
-	mu        sync.Mutex
-	count     int
-	failAfter int
-	sent      []Locator
-}
-
-func (s *failAfterNSender) Send(deviceID, pushToken string, payload []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.count++
-	if s.count > s.failAfter {
-		return fmt.Errorf("injected send failure after %d successes", s.failAfter)
-	}
-	var loc Locator
-	json.Unmarshal(payload, &loc)
-	s.sent = append(s.sent, loc)
-	return nil
-}
-
 // TestStopCursorNotWritten verifies Stop concurrency: when a Send is
 // in-flight at Stop time, the goroutine completes but the cursor is NOT
 // written (stopped guard in the goroutine prevents late writes).
@@ -1222,3 +1201,78 @@ func TestOldSendVsRevokeRebind(t *testing.T) {
 // fails, the cursor advances to event1 (the last successful position),
 // NOT to the failed event2. Dedup consumes the failed event, so it is
 // never retried.
+
+// TestCursorAdvancesToLastSuccessOnPartialFailure verifies at-most-once
+// cursor semantics. In the same batch: (a) event1 succeeds, event2 fails
+// → cursor=event1 position, NOT event2. (b) first-send-failure edge:
+// event fails, no prior success → cursor stays at its initial empty value.
+func TestCursorAdvancesToLastSuccessOnPartialFailure(t *testing.T) {
+	// Case A: event1 succeeds, event2 fails.
+	devices := NewDeviceStore()
+	devices.Bind("device-1", "token-1")
+	failSender := &failAfterNSender{failAfter: 1}
+	w := openTestWriter(t)
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, failSender)
+	notifier.SetEnabled(true)
+
+	ev1 := validEnvelope("pf-ok", "session-1", 1, contract.EventApprovalRequested)
+	ev2 := validEnvelope("pf-fail", "session-1", 1, contract.EventApprovalRequested)
+	w.Append(ev1)
+	w.Append(ev2)
+
+	notifier.Dispatch()
+	time.Sleep(300 * time.Millisecond)
+
+	failSender.mu.Lock()
+	sent := len(failSender.sent)
+	failSender.mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("case A: sent %d events, want 1", sent)
+	}
+	c := devices.GetCursor("device-1")
+	if c.LastEventID != ev1.EventID {
+		t.Errorf("case A: cursor should be last success: got %q want %q", c.LastEventID, ev1.EventID)
+	}
+	if c.LastEventID == ev2.EventID {
+		t.Error("case A: cursor must NOT be the failed event")
+	}
+	notifier.Stop()
+
+	// Case B: first send fails → cursor stays empty (no prior success).
+	devices2 := NewDeviceStore()
+	devices2.Bind("device-2", "token-2")
+	failSender2 := &failAfterNSender{failAfter: 0} // first call fails
+	notifier2 := NewNotifier(w, devices2, func(sid string) int64 { return 1 }, failSender2)
+	notifier2.SetEnabled(true)
+
+	w.Append(validEnvelope("pf-firstfail", "session-2", 1, contract.EventApprovalRequested))
+	notifier2.Dispatch()
+	time.Sleep(300 * time.Millisecond)
+
+	c2 := devices2.GetCursor("device-2")
+	if c2.LastEventID != "" {
+		t.Errorf("case B: cursor must be empty after first-send failure: got %+v", c2)
+	}
+	notifier2.Stop()
+}
+
+// failAfterNSender succeeds for the first N calls, then returns an error.
+type failAfterNSender struct {
+	mu        sync.Mutex
+	count     int
+	failAfter int
+	sent      []Locator
+}
+
+func (s *failAfterNSender) Send(deviceID, pushToken string, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.count++
+	if s.count > s.failAfter {
+		return fmt.Errorf("injected send failure after %d successes", s.failAfter)
+	}
+	var loc Locator
+	json.Unmarshal(payload, &loc)
+	s.sent = append(s.sent, loc)
+	return nil
+}
