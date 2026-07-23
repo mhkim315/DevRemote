@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -350,10 +351,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if audit == nil {
 		audit = devicetrust.NopAuditLog{}
 	}
-	// Wire session replacement → connection invalidation.
+	// N1 device store: created early so revoke callbacks can clear tokens.
+	n1Devices := notification.NewDeviceStore()
+
+	// Wire session replacement → connection invalidation + N1 token revoke.
 	cb := func(deviceID string) {
 		connRegistry.CloseDevice(deviceID)
 		wsTickets.RevokeForDevice(deviceID)
+		n1Devices.Revoke(deviceID)
 	}
 	sessionMgr.SetOnReplace(cb)
 	sessionMgr.SetOnRevoke(cb)
@@ -468,7 +473,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	serveMux := http.NewServeMux()
 	var validationStore *validation.ValidationStore
 	var cockpitStore *cockpit.CockpitStore
-	n1Devices := notification.NewDeviceStore()
 	pushN := &pushNotifier{send: sendPushNotification, devices: n1Devices}
 
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
@@ -518,7 +522,18 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			fmt.Fprintf(w, `{"eventId":%q,"currentGeneration":0,"notificationGeneration":%d,"status":"canonical_event_unavailable"}`, eventID, generation)
 			return
 		}
-		resolver := &n1Resolver{catalog: h.Catalog, approvals: h.Approvals, sessionMgr: sessionMgr}
+		var devicePerms []string
+		if principal != nil {
+			devicePerms = principal.Permissions
+		}
+		var codexReg, claudeReg *term.ManagedSessionRegistry
+		if h.Managed != nil {
+			codexReg = h.Managed.Registry()
+		}
+		if h.ManagedClaude != nil {
+			claudeReg = h.ManagedClaude.Registry()
+		}
+		resolver := &n1Resolver{catalog: h.Catalog, approvals: h.Approvals, sessionMgr: sessionMgr, devicePerms: devicePerms, codexReg: codexReg, claudeReg: claudeReg}
 		resp := notification.ResolveStatus(eventID, generation, sessionID, runtimeID, deviceID, resolver, resolver, timelineWriter)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
@@ -536,7 +551,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 				return 0
 			}
 			return rt.LaunchGen
-		}, nil)
+		}, expoN1Sender{})
 		n1Notifier.SetEnabled(true)
 	}
 
@@ -1015,14 +1030,54 @@ func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ s
 	return nil
 }
 
+// ── Expo push sender (N1 locator) ──
+
+// expoN1Sender adapts the notification.PushSender interface to Expo push
+// for N1 Locator payloads. It replaces the no-op logSender in production.
+type expoN1Sender struct{}
+
+func (expoN1Sender) Send(deviceID, pushToken string, payload []byte) error {
+	var loc notification.Locator
+	if err := json.Unmarshal(payload, &loc); err != nil {
+		return err
+	}
+	payloadMap := map[string]interface{}{
+		"to":    pushToken,
+		"title": "Pokit",
+		"body":  "Agent requires your attention",
+		"data": map[string]string{
+			"sessionId": loc.SessionID,
+			"eventId":   loc.EventID,
+			"runtimeId": loc.RuntimeID,
+			"type":      "n1_locator",
+			"url":       fmt.Sprintf("pokit://activity/%s?event=%s", loc.SessionID, loc.EventID),
+		},
+	}
+	payloadBytes, err := json.Marshal(payloadMap)
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post("https://exp.host/--/api/v2/push/send", "application/json", bytes.NewReader(payloadBytes))
+	if err != nil {
+		log.Printf("N1 push failed for device=%s: %v", deviceID, err)
+		return err
+	}
+	defer resp.Body.Close()
+	log.Printf("N1 push sent for session=%s event=%s (Status: %s)", loc.SessionID, loc.EventID, resp.Status)
+	return nil
+}
+
 // ── N1 resolver adapter ──
 
 // n1Resolver adapts the app-level catalog + approval store + session manager
 // to the notification.AuthResolver and notification.ApprovalChecker interfaces.
 type n1Resolver struct {
-	catalog    term.ManagedRuntimeCatalog
-	approvals  *term.AuthoritativeApprovalStore
-	sessionMgr *devicetrust.DeviceSessionManager
+	catalog     term.ManagedRuntimeCatalog
+	approvals   *term.AuthoritativeApprovalStore
+	sessionMgr  *devicetrust.DeviceSessionManager
+	devicePerms []string                     // Principal.Permissions; nil = insecure-local (skip check)
+	codexReg    *term.ManagedSessionRegistry // nil unless EnableManagedCodex
+	claudeReg   *term.ManagedSessionRegistry // nil unless EnableManagedClaude
 }
 
 func (r *n1Resolver) GetGeneration(sessionID string) (int64, bool) {
@@ -1037,19 +1092,31 @@ func (r *n1Resolver) GetGeneration(sessionID string) (int64, bool) {
 }
 
 func (r *n1Resolver) HasPermission(deviceID, perm string) bool {
-	if r.sessionMgr == nil {
-		return false
+	// nil perms = insecure-local mode; AuthMiddleware already gatekeeps.
+	if r.devicePerms == nil {
+		return true
 	}
-	// We can't call AuthenticateBearer here (no raw token), so we check the
-	// principal permissions that were validated at the RequirePrincipal layer.
-	// If the principal has the permission, it passes.
-	return true // gate at RequirePrincipal already enforced PermSessionsRead
+	for _, p := range r.devicePerms {
+		if p == perm {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *n1Resolver) RuntimeID(sessionID string) (string, bool) {
-	// RuntimeRef does not expose RuntimeID; the generation check already
-	// catches stale notifications. Returning "", false skips this gate
-	// so the runtime-id mismatch case degrades to stale_generation.
+	// Look up ProcessID from managed runtime registries. ProcessID is the
+	// opaque runtime identifier set at launch time and carried in the Locator.
+	if r.codexReg != nil {
+		if rec, ok := r.codexReg.Get(sessionID); ok && rec.ProcessID != "" {
+			return rec.ProcessID, true
+		}
+	}
+	if r.claudeReg != nil {
+		if rec, ok := r.claudeReg.Get(sessionID); ok && rec.ProcessID != "" {
+			return rec.ProcessID, true
+		}
+	}
 	return "", false
 }
 

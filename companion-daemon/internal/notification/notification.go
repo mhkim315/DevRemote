@@ -469,7 +469,7 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 					}
 				}
 				resp.Status = "actionable"
-				resp.ActivityLink = fmt.Sprintf("pokit://session/%s?event=%s", sessionID, eventID)
+				resp.ActivityLink = fmt.Sprintf("pokit://activity/%s?event=%s", sessionID, eventID)
 				return resp
 			}
 		}
