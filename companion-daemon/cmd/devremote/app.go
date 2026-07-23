@@ -179,8 +179,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// optional writer immediately rather than leaking its file descriptor.
 	defer func() {
 		if err != nil && timelineWriter != nil {
-			if closeErr := timelineWriter.Close(); closeErr != nil {
-				log.Printf("Timeline shadow rollback close error (ignored): %v", closeErr)
+			if cr := timelineWriter.Close(); !cr.WorkerExited {
+				log.Printf("Timeline shadow rollback close: workerExited=%v pendingDropped=%d", cr.WorkerExited, cr.PendingDropped)
 			}
 		}
 	}()
@@ -795,9 +795,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.cockpitStore.Close()
 	}
 	if a.timelineWriter != nil {
-		if err := a.timelineWriter.Close(); err != nil {
-			log.Printf("Timeline shadow close error (ignored): %v", err)
-		}
+		a.timelineWriter.Close()
 	}
 
 	return errors.Join(errs...)

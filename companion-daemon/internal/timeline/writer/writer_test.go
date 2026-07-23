@@ -91,9 +91,7 @@ func TestAppendSuccessFramesOneCanonicalEnvelope(t *testing.T) {
 	if !w.Append(e) {
 		t.Fatal("Append returned false")
 	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
+	w.Close()
 	record, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -229,10 +227,6 @@ func TestReadRecentClampedToBuffer(t *testing.T) {
 
 func TestCloseIdempotent(t *testing.T) {
 	w := newWriter(&testFile{}, Config{}, nil)
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
+	w.Close()
+	w.Close()
 }
