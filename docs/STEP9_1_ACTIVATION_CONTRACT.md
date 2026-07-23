@@ -6,6 +6,19 @@
 **HEAD:** `1c69f99ab`
 **PREREQUISITE:** Step 9.0 ACCEPTED at `62a50f0a8`
 
+> **SUPERSEDED — producer behavior.** Sections 1 (only its `EventDegraded`
+> activation bullet), 2, 3, 4, 5, 5a, 7 items 1–3 and 7, 8, and 10 are not
+> authoritative for the Step 9.1 producer implementation. They are retained
+> as T1 planning history only. The authoritative replacement is
+> [STEP9_1_PRODUCER_CONTRACT.md](../companion-daemon/docs/STEP9_1_PRODUCER_CONTRACT.md).
+>
+> In particular, prefix-derived `ProducerAuth`, the prohibition on the minimal
+> neutral `internal/term` seam, a claimed unconditional five-second close, and
+> recursive `EventDegraded` persistence are superseded. New implementation and
+> tests must follow the producer contract's composition-owned Bind/revocation,
+> post-commit panic-contained seam, truthful close outcome, and non-recursive
+> in-memory degradation boundary.
+
 ## 1. Scope and authority boundary
 
 Step 9.1 activates minimal Operational Canonical Timeline staging — connecting
