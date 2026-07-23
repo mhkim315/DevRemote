@@ -1046,11 +1046,15 @@ func (expoN1Sender) Send(deviceID, pushToken string, payload []byte) error {
 		"title": "Pokit",
 		"body":  "Agent requires your attention",
 		"data": map[string]string{
-			"sessionId": loc.SessionID,
-			"eventId":   loc.EventID,
-			"runtimeId": loc.RuntimeID,
-			"type":      "n1_locator",
-			"url":       fmt.Sprintf("pokit://activity/%s?event=%s", loc.SessionID, loc.EventID),
+			"sessionId":  loc.SessionID,
+			"eventId":    loc.EventID,
+			"runtimeId":  loc.RuntimeID,
+			"generation": fmt.Sprintf("%d", loc.Generation),
+			"kind":       string(loc.Kind),
+			"timestamp":  loc.Timestamp.Format(time.RFC3339),
+			"n1Token":    loc.N1Token,
+			"type":       "n1_locator",
+			"url":        fmt.Sprintf("pokit://activity/%s?event=%s", loc.SessionID, loc.EventID),
 		},
 	}
 	payloadBytes, err := json.Marshal(payloadMap)
@@ -1063,6 +1067,10 @@ func (expoN1Sender) Send(deviceID, pushToken string, payload []byte) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("N1 push non-2xx for device=%s session=%s event=%s (Status: %s)", deviceID, loc.SessionID, loc.EventID, resp.Status)
+		return fmt.Errorf("expo push: HTTP %d", resp.StatusCode)
+	}
 	log.Printf("N1 push sent for session=%s event=%s (Status: %s)", loc.SessionID, loc.EventID, resp.Status)
 	return nil
 }

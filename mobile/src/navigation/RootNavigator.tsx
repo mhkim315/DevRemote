@@ -13,7 +13,9 @@ import CockpitScreen from '../screens/CockpitScreen';
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
-// P1b: deep link config — routes push notifications to the correct session.
+// N1: deep link config — routes push notifications to the correct activity.
+// pokit://activity/<session>?event=<id> opens Activity tab scoped to session.
+// Legacy pokit://session/<session> still routes to Terminal for back-compat.
 const linking: LinkingOptions<{}> = {
   prefixes: ['pokit://'],
   config: {
@@ -24,6 +26,7 @@ const linking: LinkingOptions<{}> = {
           Terminal: 'session/:session',
         },
       },
+      Activity: 'activity/:session',
     },
   },
 };
