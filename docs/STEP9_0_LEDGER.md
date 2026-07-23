@@ -79,7 +79,7 @@ these automatically.
 The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
 
 - **9.0 DOCS/AUDIT — ACCEPTED at `62a50f0a8`.**
-- **9.1** — Minimal Timeline staging — **ACCEPTED at `16c350d1f`.**
+- **9.1** — Minimal Timeline staging — **ACCEPTED at `dc376f9b7`.**
 - **9.2** — Transcript/Activity projection convergence
 - **9.3** — N1 exact-event notification-to-action
 - **9.4** — Secure accountless onboarding

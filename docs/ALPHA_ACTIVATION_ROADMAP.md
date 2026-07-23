@@ -1,10 +1,10 @@
 # POKIT Base Alpha Activation Roadmap
 
-**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `16c350d1f` (EVID: `STEP9_1_EVIDENCE.md`); STEP 9.2 NOT STARTED
+**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7` (EVID: `STEP9_1_EVIDENCE.md`); STEP 9.2 NOT STARTED
 
 **Prerequisite:** Step 9.0 authority reconciliation received independent
 closeout at `62a50f0a8`. Step 9.1 Operational Timeline staging received
-independent ACCEPT at `16c350d1f`. Step 9.2 remains not started — a separate,
+independent ACCEPT at `dc376f9b7`. Step 9.2 remains not started — a separate,
 reviewed implementation contract is required before Step 9.2 may proceed.
 
 The product boundary is:
