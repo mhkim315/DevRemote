@@ -19,3 +19,10 @@ func TestValidatePaths_RejectsNonBinaryPath(t *testing.T) {
 		t.Fatal("trust-state path accepted as managed daemon binary")
 	}
 }
+
+func TestValidatePaths_RejectsUnknownTransactionPhase(t *testing.T) {
+	state := &daemonState{Phase: "half-installed"}
+	if err := validateDaemonPaths(state); err == nil {
+		t.Fatal("unknown transaction phase accepted")
+	}
+}

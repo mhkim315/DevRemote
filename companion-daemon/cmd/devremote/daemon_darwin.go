@@ -49,6 +49,14 @@ type daemonState struct {
 	PlistPath   string `json:"plistPath"`
 	StateDir    string `json:"stateDir"`
 	InstalledAt string `json:"installedAt"`
+	// Phase is empty for a committed installation and "installing" while an
+	// upgrade is in progress. Recovery data is persisted with that phase so a
+	// process crash cannot leave the service split between two installations.
+	Phase          string       `json:"phase,omitempty"`
+	PriorState     *daemonState `json:"priorState,omitempty"`
+	PriorPlist     []byte       `json:"priorPlist,omitempty"`
+	HadPriorPlist  bool         `json:"hadPriorPlist,omitempty"`
+	PriorWasLoaded bool         `json:"priorWasLoaded,omitempty"`
 }
 
 func readDaemonState() (*daemonState, error) {
@@ -355,6 +363,41 @@ func rollbackInstall(plistPath string, priorPlist []byte, hadPriorPlist bool, st
 	return nil
 }
 
+// rollbackToPriorState recovers an interrupted install recorded by the phase
+// marker. It stops a partially started replacement before restoring the prior
+// files and re-bootstraping the prior LaunchAgent when it was previously live.
+func rollbackToPriorState(state *daemonState) error {
+	if state == nil || state.Phase != "installing" {
+		return fmt.Errorf("rollback: no installing transaction")
+	}
+	if loaded, _ := daemonLoaded(state.PlistPath); loaded {
+		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), state.PlistPath); err != nil {
+			return fmt.Errorf("rollback: stop interrupted daemon: %w", err)
+		}
+	}
+	var priorState []byte
+	hadPriorState := state.PriorState != nil
+	if hadPriorState {
+		var err error
+		priorState, err = json.MarshalIndent(state.PriorState, "", "  ")
+		if err != nil {
+			return fmt.Errorf("rollback: encode prior daemon state: %w", err)
+		}
+	}
+	return rollbackInstall(
+		state.PlistPath,
+		state.PriorPlist,
+		state.HadPriorPlist,
+		filepath.Join(state.StateDir, "daemon_state.json"),
+		priorState,
+		hadPriorState,
+		state.BinPath,
+		state.OldBinPath,
+		state.BackupPath,
+		state.PriorWasLoaded,
+	)
+}
+
 func restoreBackup(destination, backup string) error {
 	if backup == "" {
 		return nil
@@ -373,6 +416,9 @@ func restoreBackup(destination, backup string) error {
 func validateDaemonPaths(state *daemonState) error {
 	if state == nil {
 		return fmt.Errorf("daemon state is nil")
+	}
+	if state.Phase != "" && state.Phase != "installing" {
+		return fmt.Errorf("daemon state phase is invalid: %q", state.Phase)
 	}
 	stateDir := daemonStateDir()
 	resolve := func(path string) (string, error) {
@@ -492,6 +538,20 @@ func installDaemon() error {
 		if err := validateDaemonPaths(existingState); err != nil {
 			return fmt.Errorf("install: daemon state path validation: %w", err)
 		}
+		if existingState.Phase == "installing" {
+			if err := rollbackToPriorState(existingState); err != nil {
+				return fmt.Errorf("install: recover interrupted transaction: %w", err)
+			}
+			existingState, stateErr = readDaemonState()
+			if stateErr != nil && !os.IsNotExist(stateErr) {
+				return fmt.Errorf("install: read recovered daemon state: %w", stateErr)
+			}
+			if existingState != nil {
+				if err := validateDaemonPaths(existingState); err != nil {
+					return fmt.Errorf("install: recovered daemon state path validation: %w", err)
+				}
+			}
+		}
 	}
 	priorPlist, priorPlistErr := os.ReadFile(plistPath)
 	hadPriorPlist := priorPlistErr == nil
@@ -513,14 +573,30 @@ func installDaemon() error {
 	if existingState != nil {
 		oldOldPath = existingState.OldBinPath
 	}
+	priorWasLoaded, _ := daemonLoaded(plistPath)
+	var priorStateCopy *daemonState
+	if existingState != nil {
+		copy := *existingState
+		copy.Phase = ""
+		copy.PriorState = nil
+		copy.PriorPlist = nil
+		copy.HadPriorPlist = false
+		copy.PriorWasLoaded = false
+		priorStateCopy = &copy
+	}
 	state := &daemonState{
-		Version:     cliVersion,
-		BinPath:     serviceBinPath,
-		OldBinPath:  oldBinPath,
-		BackupPath:  backupPath,
-		PlistPath:   plistPath,
-		StateDir:    stateDir,
-		InstalledAt: time.Now().UTC().Format(time.RFC3339),
+		Version:        cliVersion,
+		BinPath:        serviceBinPath,
+		OldBinPath:     oldBinPath,
+		BackupPath:     backupPath,
+		PlistPath:      plistPath,
+		StateDir:       stateDir,
+		InstalledAt:    time.Now().UTC().Format(time.RFC3339),
+		Phase:          "installing",
+		PriorState:     priorStateCopy,
+		PriorPlist:     priorPlist,
+		HadPriorPlist:  hadPriorPlist,
+		PriorWasLoaded: priorWasLoaded,
 	}
 
 	// State is the first install transaction mutation. If it cannot be made
@@ -530,7 +606,6 @@ func installDaemon() error {
 	}
 
 	// The new definition is fully durable before the old service is stopped.
-	priorWasLoaded, _ := daemonLoaded(plistPath)
 	stdoutPath := filepath.Join(logDir, "daemon-stdout.log")
 	stderrPath := filepath.Join(logDir, "daemon-stderr.log")
 	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(serviceBinPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir))
@@ -595,7 +670,18 @@ func installDaemon() error {
 		return errors.Join(fmt.Errorf("install: readiness check failed: %w", err), stopErr)
 	}
 
-	// Best-effort cleanup (state already committed above).
+	// The replacement is now healthy. Clear recovery data only after the
+	// complete transaction is durable, making this state committed.
+	state.Phase = ""
+	state.PriorState = nil
+	state.PriorPlist = nil
+	state.HadPriorPlist = false
+	state.PriorWasLoaded = false
+	if err := writeDaemonState(state); err != nil {
+		return fmt.Errorf("install: commit daemon state: %w", err)
+	}
+
+	// Best-effort cleanup after the state is committed.
 	// Never delete the live binary.
 	if oldOldPath != "" && oldOldPath != serviceBinPath {
 		if err := os.Remove(oldOldPath); err != nil && !os.IsNotExist(err) {
