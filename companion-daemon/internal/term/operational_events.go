@@ -39,6 +39,40 @@ type OperationalEventSink interface {
 	SubmitAfterCommit(OperationalEvent)
 }
 
+// OperationalRuntimeIdentity is the exact provider incarnation to which an
+// optional operational sender is bound. It is constructed by the managed
+// service after it has committed registration; a runtime receives only the
+// sink returned for its own identity.
+type OperationalRuntimeIdentity struct {
+	Provider         string
+	SessionID        string
+	RuntimeID        string
+	LaunchGeneration int64
+}
+
+// OperationalRuntimeBinder is an optional composition-owned extension of the
+// neutral sink. When present, it issues a distinct opaque sender for one
+// committed runtime. Plain sinks remain valid test/observation seams and are
+// used directly.
+type OperationalRuntimeBinder interface {
+	BindOperationalRuntime(OperationalRuntimeIdentity) OperationalEventSink
+}
+
+// bindOperationalRuntime gives a managed runtime its sender. A binder may
+// refuse an identity by returning nil; callers must then remain fail-open with
+// Timeline observation disabled for that incarnation.
+func bindOperationalRuntime(sink OperationalEventSink, identity OperationalRuntimeIdentity) (bound OperationalEventSink) {
+	if binder, ok := sink.(OperationalRuntimeBinder); ok {
+		defer func() {
+			if recover() != nil {
+				bound = nil
+			}
+		}()
+		return binder.BindOperationalRuntime(identity)
+	}
+	return sink
+}
+
 // submitOperationalAfterCommit contains a sink panic at the neutral seam.
 // Timeline observation can never alter an already-committed provider outcome.
 func submitOperationalAfterCommit(sink OperationalEventSink, event OperationalEvent) {

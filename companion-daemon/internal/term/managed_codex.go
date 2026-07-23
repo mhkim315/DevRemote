@@ -1017,7 +1017,6 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
 	rt.actionableActive = s.actionable
-	rt.operational = s.operational
 	s.runtimes[id] = rt // published: from here Shutdown always finds the child
 	s.mu.Unlock()
 
@@ -1054,6 +1053,19 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)
 	}
+	// The registry is committed before composition issues the runtime's opaque
+	// operational sender. Assign under s.mu so Shutdown cannot observe a
+	// partially-installed runtime sender. The runtime never receives the
+	// shared binder.
+	s.mu.Lock()
+	if s.closing || s.runtimes[id] != rt {
+		s.mu.Unlock()
+		return fail("operational bind", fmt.Errorf("managed codex service is shutting down"), true)
+	}
+	rt.operational = bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+		Provider: "codex", SessionID: id, RuntimeID: rt.runtimeID, LaunchGeneration: epoch,
+	})
+	s.mu.Unlock()
 	s.barrier("post-register")
 
 	if certification {

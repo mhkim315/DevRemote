@@ -1172,7 +1172,6 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	// session/epoch at birth and never toggled mid-life.
 	rt.actionableActive = s.actionable
 	rt.launchCert = launchCert
-	rt.operational = s.operational
 	s.runtimes[id] = rt
 	// Publish to the bridge after every identity/authority field is set so
 	// a hook handler that observes a non-nil rt through getRT() sees a
@@ -1220,6 +1219,19 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	if err := s.reg.Register(rec); err != nil {
 		return fail("register", err, false)
 	}
+	// The registry is committed before composition issues the runtime's opaque
+	// operational sender. Assign under s.mu so Shutdown cannot observe a
+	// partially-installed runtime sender. The runtime never receives the
+	// shared binder.
+	s.mu.Lock()
+	if s.closing || s.runtimes[id] != rt {
+		s.mu.Unlock()
+		return fail("operational bind", fmt.Errorf("managed claude service is shutting down"), true)
+	}
+	rt.operational = bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+		Provider: "claude", SessionID: id, RuntimeID: rt.runtimeID, LaunchGeneration: epoch,
+	})
+	s.mu.Unlock()
 	s.barrier("post-register")
 
 	rt.emitOperational(OperationalProviderInvocationStarted, rt.runtimeID, "runtime/registered", rt.runtimeID)
@@ -1383,7 +1395,6 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	// R6-B: the pump reads the runtime-owned immutable context, not the
 	// bridge (closes the R6-A3 finding). Set before pump() starts.
 	rt.resumeCtx = ctx
-	rt.operational = s.operational
 	rt.resumePreviousRuntime = s.runtimes[ctx.pokitSessionID]
 	if previous, ok := s.reg.Get(ctx.pokitSessionID); ok {
 		rt.resumePreviousRecord = previous
@@ -1419,6 +1430,12 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		cancelEntry()
 		return nil, fmt.Errorf("managed claude resume register: %w", err)
 	}
+	// RegisterIncarnation is the commit point for this replacement. Bind the
+	// new opaque sender before publishing the runtime or emitting Started.
+	rt.operational = bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+		Provider: "claude", SessionID: ctx.pokitSessionID,
+		RuntimeID: rt.runtimeID, LaunchGeneration: epoch,
+	})
 	s.runtimes[ctx.pokitSessionID] = rt
 	// Publish only after every field and registry identity is committed.
 	bridge.publishRuntime(rt)

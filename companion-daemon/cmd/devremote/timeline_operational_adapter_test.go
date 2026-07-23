@@ -91,6 +91,13 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		SourceID: "source-" + sentinel, SourcePosition: "position-" + sentinel,
 		ReferenceID: "reference-" + sentinel, OccurredAt: now,
 	}
+	sender := adapter.BindOperationalRuntime(term.OperationalRuntimeIdentity{
+		Provider: base.Provider, SessionID: base.SessionID,
+		RuntimeID: base.RuntimeID, LaunchGeneration: base.LaunchGeneration,
+	})
+	if sender == nil {
+		t.Fatal("runtime sender was not bound")
+	}
 	kinds := []term.OperationalEventKind{
 		term.OperationalProviderInvocationStarted,
 		term.OperationalToolCallStarted,
@@ -104,7 +111,7 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		event := base
 		event.Kind = kind
 		event.SourcePosition += string(rune('a' + i))
-		adapter.SubmitAfterCommit(event)
+		sender.SubmitAfterCommit(event)
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -115,16 +122,10 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		t.Fatalf("Timeline stats = %+v, want all seven events appended", got)
 	}
 
-	adapter.mu.Lock()
-	remaining := len(adapter.capabilities)
-	adapter.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("finished runtime retained %d capabilities", remaining)
-	}
 	late := base
 	late.Kind = term.OperationalToolCallStarted
 	late.SourcePosition = "late-" + sentinel
-	adapter.SubmitAfterCommit(late)
+	sender.SubmitAfterCommit(late)
 	time.Sleep(10 * time.Millisecond)
 	if got := timelineWriter.Stats().Appended; got != uint64(len(kinds)) {
 		t.Fatalf("event appended after producer revoke: appended=%d", got)
@@ -136,7 +137,14 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 	second.SessionID = "codex_app_server:privacy-two"
 	second.LaunchGeneration = 2
 	second.Kind = term.OperationalProviderInvocationStarted
-	adapter.SubmitAfterCommit(second)
+	secondSender := adapter.BindOperationalRuntime(term.OperationalRuntimeIdentity{
+		Provider: second.Provider, SessionID: second.SessionID,
+		RuntimeID: second.RuntimeID, LaunchGeneration: second.LaunchGeneration,
+	})
+	if secondSender == nil {
+		t.Fatal("second runtime sender was not bound")
+	}
+	secondSender.SubmitAfterCommit(second)
 	deadline = time.Now().Add(5 * time.Second)
 	for timelineWriter.Stats().Appended != uint64(len(kinds)+1) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -144,10 +152,10 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 	malformedFinish := second
 	malformedFinish.Kind = term.OperationalProviderInvocationFinished
 	malformedFinish.OccurredAt = time.Time{}
-	adapter.SubmitAfterCommit(malformedFinish)
+	secondSender.SubmitAfterCommit(malformedFinish)
 	late = second
 	late.Kind = term.OperationalToolCallStarted
-	adapter.SubmitAfterCommit(late)
+	secondSender.SubmitAfterCommit(late)
 	time.Sleep(10 * time.Millisecond)
 	if got := timelineWriter.Stats().Appended; got != uint64(len(kinds)+1) {
 		t.Fatalf("malformed finish failed to revoke producer: appended=%d", got)
@@ -200,32 +208,118 @@ func TestTimelineOperationalAdapterRequiresExactRegisteredRuntimeTuple(t *testin
 		SourceID: "source", SourcePosition: "position", ReferenceID: "reference",
 		OccurredAt: time.Now().UTC(),
 	}
-	for name, mutate := range map[string]func(*term.OperationalEvent){
-		"provider":   func(event *term.OperationalEvent) { event.Provider = "claude" },
-		"runtime":    func(event *term.OperationalEvent) { event.RuntimeID = "runtime-other" },
-		"generation": func(event *term.OperationalEvent) { event.LaunchGeneration++ },
+	for name, mutate := range map[string]func(*term.OperationalRuntimeIdentity){
+		"provider":   func(identity *term.OperationalRuntimeIdentity) { identity.Provider = "claude" },
+		"runtime":    func(identity *term.OperationalRuntimeIdentity) { identity.RuntimeID = "runtime-other" },
+		"generation": func(identity *term.OperationalRuntimeIdentity) { identity.LaunchGeneration++ },
 	} {
 		t.Run(name, func(t *testing.T) {
-			event := base
-			mutate(&event)
-			adapter.SubmitAfterCommit(event)
+			identity := term.OperationalRuntimeIdentity{
+				Provider: base.Provider, SessionID: base.SessionID,
+				RuntimeID: base.RuntimeID, LaunchGeneration: base.LaunchGeneration,
+			}
+			mutate(&identity)
+			if sender := adapter.BindOperationalRuntime(identity); sender != nil {
+				t.Fatalf("mismatched %s tuple created sender", name)
+			}
 			if got := timelineWriter.Stats(); got.Appended != 0 || got.Dropped != 0 {
 				t.Fatalf("mismatched %s tuple reached writer: %+v", name, got)
 			}
-			adapter.mu.Lock()
-			bound := len(adapter.capabilities)
-			adapter.mu.Unlock()
-			if bound != 0 {
-				t.Fatalf("mismatched %s tuple created capability", name)
-			}
 		})
 	}
-	adapter.SubmitAfterCommit(base)
+	sender := adapter.BindOperationalRuntime(term.OperationalRuntimeIdentity{
+		Provider: base.Provider, SessionID: base.SessionID,
+		RuntimeID: base.RuntimeID, LaunchGeneration: base.LaunchGeneration,
+	})
+	if sender == nil {
+		t.Fatal("exact tuple did not bind sender")
+	}
+	sender.SubmitAfterCommit(base)
 	deadline := time.Now().Add(time.Second)
 	for timelineWriter.Stats().Appended != 1 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if got := timelineWriter.Stats(); got.Appended != 1 || got.Dropped != 0 {
 		t.Fatalf("exact tuple did not bind: %+v", got)
+	}
+}
+
+func TestTimelineOperationalRuntimeSenderCannotClaimOrRevokeAnotherRuntime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "timeline.jsonl")
+	producers := writer.NewProducerStore()
+	timelineWriter, err := writer.Open(writer.Config{Path: path}, producers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { timelineWriter.Close() })
+	registry := term.NewManagedSessionRegistry(2)
+	for _, record := range []term.ManagedSessionRecord{
+		{SessionID: "codex_app_server:sender-a", Provider: "codex", ProcessID: "runtime-a", Epoch: 1},
+		{SessionID: "codex_app_server:sender-b", Provider: "codex", ProcessID: "runtime-b", Epoch: 2},
+	} {
+		if err := registry.Register(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapter := newTimelineOperationalAdapter(
+		producers, newManagedOperationalRuntimeVerifier(registry, nil),
+	)
+	identityA := term.OperationalRuntimeIdentity{
+		Provider: "codex", SessionID: "codex_app_server:sender-a", RuntimeID: "runtime-a", LaunchGeneration: 1,
+	}
+	identityB := term.OperationalRuntimeIdentity{
+		Provider: "codex", SessionID: "codex_app_server:sender-b", RuntimeID: "runtime-b", LaunchGeneration: 2,
+	}
+	senderA := adapter.BindOperationalRuntime(identityA)
+	senderB := adapter.BindOperationalRuntime(identityB)
+	if senderA == nil || senderB == nil {
+		t.Fatal("runtime senders were not bound")
+	}
+	now := time.Now().UTC()
+	eventA := term.OperationalEvent{
+		Kind: term.OperationalProviderInvocationStarted, Provider: identityA.Provider,
+		SessionID: identityA.SessionID, RuntimeID: identityA.RuntimeID, LaunchGeneration: identityA.LaunchGeneration,
+		SourceID: "sender-a", SourcePosition: "start", ReferenceID: "sender-a", OccurredAt: now,
+	}
+	eventB := term.OperationalEvent{
+		Kind: term.OperationalProviderInvocationStarted, Provider: identityB.Provider,
+		SessionID: identityB.SessionID, RuntimeID: identityB.RuntimeID, LaunchGeneration: identityB.LaunchGeneration,
+		SourceID: "sender-b", SourcePosition: "start", ReferenceID: "sender-b", OccurredAt: now,
+	}
+	senderA.SubmitAfterCommit(eventA)
+	senderB.SubmitAfterCommit(eventB)
+	deadline := time.Now().Add(time.Second)
+	for timelineWriter.Stats().Appended != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := timelineWriter.Stats().Appended; got != 2 {
+		t.Fatalf("initial runtime observations = %d, want 2", got)
+	}
+
+	// Sender A presents B's tuple first to submit, then to finish/revoke. Both
+	// must be rejected before reaching B's capability.
+	stolen := eventB
+	stolen.Kind = term.OperationalToolCallStarted
+	stolen.SourcePosition = "stolen-submit"
+	senderA.SubmitAfterCommit(stolen)
+	stolen.Kind = term.OperationalProviderInvocationFinished
+	stolen.SourcePosition = "stolen-revoke"
+	senderA.SubmitAfterCommit(stolen)
+	time.Sleep(10 * time.Millisecond)
+	if got := timelineWriter.Stats().Appended; got != 2 {
+		t.Fatalf("cross-runtime sender reached Timeline: appended=%d", got)
+	}
+
+	// B remains independently authorized: A's forged finish cannot revoke it.
+	validB := eventB
+	validB.Kind = term.OperationalToolCallStarted
+	validB.SourcePosition = "b-still-bound"
+	senderB.SubmitAfterCommit(validB)
+	deadline = time.Now().Add(time.Second)
+	for timelineWriter.Stats().Appended != 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := timelineWriter.Stats().Appended; got != 3 {
+		t.Fatalf("sender B was revoked by sender A: appended=%d", got)
 	}
 }

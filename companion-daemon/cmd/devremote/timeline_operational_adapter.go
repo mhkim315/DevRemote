@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -64,76 +63,98 @@ func (v *managedOperationalRuntimeVerifier) RuntimeOf(sessionID string) (string,
 }
 
 type timelineOperationalAdapter struct {
-	mu           sync.Mutex
-	producers    *writer.ProducerStore
-	verifier     RuntimeVerifier
-	capabilities map[string]writer.Capability
+	producers *writer.ProducerStore
+	verifier  RuntimeVerifier
 }
 
 func newTimelineOperationalAdapter(producers *writer.ProducerStore, verifier RuntimeVerifier) *timelineOperationalAdapter {
-	return &timelineOperationalAdapter{
-		producers: producers, verifier: verifier, capabilities: make(map[string]writer.Capability),
+	return &timelineOperationalAdapter{producers: producers, verifier: verifier}
+}
+
+// BindOperationalRuntime creates the one sender that may submit for an exact
+// committed managed-runtime tuple. The shared adapter itself is never a
+// submitter: managed runtimes receive only this returned opaque sender.
+func (a *timelineOperationalAdapter) BindOperationalRuntime(identity term.OperationalRuntimeIdentity) term.OperationalEventSink {
+	if a == nil || a.producers == nil || a.verifier == nil {
+		return nil
+	}
+	provider, runtimeID, generation, verified := a.verifier.RuntimeOf(identity.SessionID)
+	if !verified || provider != identity.Provider || runtimeID != identity.RuntimeID ||
+		generation != identity.LaunchGeneration {
+		return nil
+	}
+	capability, err := a.producers.Bind(
+		identity.Provider, identity.RuntimeID, identity.SessionID, identity.LaunchGeneration,
+		contract.EventProviderInvocationStarted,
+		contract.EventProviderInvocationFinished,
+		contract.EventToolCallStarted,
+		contract.EventToolCallFinished,
+		contract.EventApprovalRequested,
+		contract.EventApprovalResolved,
+		contract.EventStreamObserved,
+	)
+	if err != nil {
+		return nil
+	}
+	return &timelineOperationalRuntimeSender{
+		producers: a.producers, capability: capability, identity: identity,
 	}
 }
 
-func operationalKey(event term.OperationalEvent) string {
-	return fmt.Sprintf("%s:%s:%s:%d", event.Provider, event.RuntimeID, event.SessionID, event.LaunchGeneration)
+// SubmitAfterCommit intentionally rejects direct submissions to the shared
+// binder. Only a per-runtime sender returned by BindOperationalRuntime can
+// reach Timeline authorization.
+func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEvent) {
+	_ = event
 }
 
-func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEvent) {
-	if a == nil || a.producers == nil {
+// timelineOperationalRuntimeSender binds a capability to one managed runtime
+// instance. Candidate identity is checked before envelope construction, and
+// finish revokes exactly this sender's capability rather than caller-supplied
+// fields from another runtime.
+type timelineOperationalRuntimeSender struct {
+	mu         sync.Mutex
+	producers  *writer.ProducerStore
+	capability writer.Capability
+	identity   term.OperationalRuntimeIdentity
+	revoked    bool
+}
+
+func (s *timelineOperationalRuntimeSender) SubmitAfterCommit(event term.OperationalEvent) {
+	if s == nil || event.Provider != s.identity.Provider ||
+		event.SessionID != s.identity.SessionID || event.RuntimeID != s.identity.RuntimeID ||
+		event.LaunchGeneration != s.identity.LaunchGeneration {
 		return
 	}
 	envelope, _, validEnvelope := operationalEnvelope(event)
-	key := operationalKey(event)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Exit always revokes the capability even if the optional shadow envelope
-	// cannot be constructed. A malformed observation may be dropped; runtime
-	// authority must never remain live after the post-exit callback.
 	if event.Kind == term.OperationalProviderInvocationFinished {
-		if capability, bound := a.capabilities[key]; bound && validEnvelope {
-			_ = capability.SubmitAfterCommit(envelope)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.revoked {
+			return
 		}
-		a.producers.Revoke(event.Provider, event.RuntimeID, event.SessionID, event.LaunchGeneration)
-		delete(a.capabilities, key)
+		// Exit always revokes the installed capability even when the optional
+		// shadow envelope is malformed. The bound identity, not event fields,
+		// selects what is revoked.
+		if validEnvelope {
+			_ = s.capability.SubmitAfterCommit(envelope)
+		}
+		s.producers.Revoke(
+			s.identity.Provider, s.identity.RuntimeID,
+			s.identity.SessionID, s.identity.LaunchGeneration,
+		)
+		s.revoked = true
 		return
 	}
 	if !validEnvelope {
 		return
 	}
-	if event.Kind == term.OperationalProviderInvocationStarted {
-		// Bind only the exact tuple already committed in the provider-owned
-		// registry. A matching session ID alone grants no capability.
-		if a.verifier == nil {
-			return
-		}
-		provider, runtimeID, generation, verified := a.verifier.RuntimeOf(event.SessionID)
-		if !verified || provider != event.Provider || runtimeID != event.RuntimeID ||
-			generation != event.LaunchGeneration {
-			return
-		}
-		capability, err := a.producers.Bind(
-			event.Provider, event.RuntimeID, event.SessionID, event.LaunchGeneration,
-			contract.EventProviderInvocationStarted,
-			contract.EventProviderInvocationFinished,
-			contract.EventToolCallStarted,
-			contract.EventToolCallFinished,
-			contract.EventApprovalRequested,
-			contract.EventApprovalResolved,
-			contract.EventStreamObserved,
-		)
-		if err != nil {
-			return
-		}
-		a.capabilities[key] = capability
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revoked {
+		return
 	}
-
-	capability, bound := a.capabilities[key]
-	if bound {
-		_ = capability.SubmitAfterCommit(envelope)
-	}
+	_ = s.capability.SubmitAfterCommit(envelope)
 }
 
 func operationalEnvelope(event term.OperationalEvent) (contract.Envelope, contract.EventKind, bool) {
