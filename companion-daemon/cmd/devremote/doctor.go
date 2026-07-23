@@ -12,20 +12,28 @@ import (
 	"time"
 )
 
-// doctorResult holds one diagnostic line.
+// These are set at build time with -ldflags. If unset, report "dev".
+var (
+	cliVersion   = "dev"
+	cliGitSHA    = "unknown"
+	cliBuildTime = "unknown"
+)
+
 type doctorResult struct {
 	Check  string `json:"check"`
 	Status string `json:"status"` // "ok", "warning", "error", "not_installed"
 	Detail string `json:"detail"`
 }
 
-// runDoctorClient implements `pokit doctor`. It reports non-authoritative
-// diagnostics for the full onboarding chain. Tokens, keys, QR material,
-// and bearer credentials are NEVER included in output.
 func runDoctorClient() {
 	var results []doctorResult
 
-	// 1. CLI version and path.
+	// 1. CLI version and build metadata.
+	results = append(results, doctorResult{
+		Check:  "cli.version",
+		Status: "ok",
+		Detail: fmt.Sprintf("%s (sha=%s built=%s)", cliVersion, cliGitSHA, cliBuildTime),
+	})
 	exe, _ := os.Executable()
 	results = append(results, doctorResult{
 		Check:  "cli.path",
@@ -33,7 +41,7 @@ func runDoctorClient() {
 		Detail: exe,
 	})
 
-	// 2. Daemon LaunchAgent state.
+	// 2. Daemon LaunchAgent state (darwin only).
 	if isDarwin() {
 		plistPath := daemonPlistPath()
 		if _, err := os.Stat(plistPath); os.IsNotExist(err) {
@@ -69,16 +77,14 @@ func runDoctorClient() {
 	// 5. Device registry.
 	results = append(results, checkDeviceRegistry()...)
 
-	// 6. Provider readiness (codex/claude).
+	// 6. Provider readiness.
 	results = append(results, checkProviderReadiness()...)
 
-	// Print results.
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(results)
 }
 
-// checkDaemonListener probes the daemon's HTTP listener.
 func checkDaemonListener() []doctorResult {
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:9171", 2*time.Second)
 	if err != nil {
@@ -90,7 +96,6 @@ func checkDaemonListener() []doctorResult {
 	}
 	conn.Close()
 
-	// Quick HTTP probe (no auth — just check reachability).
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("http://127.0.0.1:9171/api/sessions")
 	if err != nil {
@@ -101,19 +106,37 @@ func checkDaemonListener() []doctorResult {
 	}
 	resp.Body.Close()
 
-	// 401 = auth working. 200 = insecure mode.
-	authStatus := "ok"
-	if resp.StatusCode == 200 {
+	// 401/403 = auth working (expected in remote/production mode).
+	// 200 = insecure mode (no auth).
+	// Anything else is unexpected.
+	var authStatus, authDetail string
+	switch {
+	case resp.StatusCode == 401 || resp.StatusCode == 403:
+		authStatus = "ok"
+		authDetail = fmt.Sprintf("auth required (HTTP %d)", resp.StatusCode)
+	case resp.StatusCode == 200:
 		authStatus = "warning"
+		authDetail = "insecure mode — no authentication required"
+	default:
+		authStatus = "warning"
+		authDetail = fmt.Sprintf("unexpected HTTP %d from /api/sessions", resp.StatusCode)
 	}
+
 	return []doctorResult{
 		{Check: "daemon.listener", Status: "ok", Detail: "listening on 127.0.0.1:9171"},
-		{Check: "daemon.auth", Status: authStatus, Detail: fmt.Sprintf("HTTP %d from /api/sessions", resp.StatusCode)},
+		{Check: "daemon.auth", Status: authStatus, Detail: authDetail},
 	}
 }
 
-// checkHostIdentity reads the host identity file and reports its presence.
-// Private key material is NEVER included.
+// hostIdentityDTO matches the schema written by devicetrust.HostIdentity.
+// Only public fields are decoded; privateKey is omitted from the JSON.
+type hostIdentityDTO struct {
+	HostID      string `json:"hostId"`
+	Fingerprint string `json:"fingerprint"`
+	KeyVersion  int    `json:"keyVersion"`
+	CreatedAt   string `json:"createdAt"`
+}
+
 func checkHostIdentity() []doctorResult {
 	home, _ := os.UserHomeDir()
 	path := filepath.Join(home, ".pokit", "host_identity.json")
@@ -127,12 +150,7 @@ func checkHostIdentity() []doctorResult {
 		}}
 	}
 
-	// Parse only public fields; redact private key.
-	var identity struct {
-		HostID      string `json:"hostId"`
-		Fingerprint string `json:"fingerprint"`
-		KeyVersion  int    `json:"keyVersion"`
-	}
+	var identity hostIdentityDTO
 	if err := json.Unmarshal(data, &identity); err != nil {
 		return []doctorResult{{
 			Check:  "trust.host_identity",
@@ -141,16 +159,27 @@ func checkHostIdentity() []doctorResult {
 		}}
 	}
 
+	fp := identity.Fingerprint
+	if len(fp) > 16 {
+		fp = fp[:16] + "..." // redacted fingerprint for safety
+	}
+
 	return []doctorResult{{
 		Check:  "trust.host_identity",
 		Status: "ok",
-		Detail: fmt.Sprintf("host=%s fingerprint=%s version=%d", identity.HostID, identity.Fingerprint, identity.KeyVersion),
+		Detail: fmt.Sprintf("host=%s fingerprint=%s version=%d created=%s",
+			identity.HostID, fp, identity.KeyVersion, identity.CreatedAt),
 	}}
 }
 
-// checkDeviceRegistry reads the device registry and reports paired device
-// count. Device public keys/identifiers are not redacted (they are public).
-// Private keys, tokens, and bearer material are NEVER stored in the registry.
+// deviceRecordDTO matches the registry schema.
+type deviceRecordDTO struct {
+	DeviceID    string `json:"deviceId"`
+	Fingerprint string `json:"fingerprint"`
+	Role        string `json:"role"`
+	RevokedAt   string `json:"revokedAt,omitempty"`
+}
+
 func checkDeviceRegistry() []doctorResult {
 	home, _ := os.UserHomeDir()
 	path := filepath.Join(home, ".pokit", "devices.json")
@@ -164,10 +193,7 @@ func checkDeviceRegistry() []doctorResult {
 		}}
 	}
 
-	var devices []struct {
-		DeviceID string `json:"deviceId"`
-		Role     string `json:"role"`
-	}
+	var devices []deviceRecordDTO
 	if err := json.Unmarshal(data, &devices); err != nil {
 		return []doctorResult{{
 			Check:  "trust.devices",
@@ -176,10 +202,12 @@ func checkDeviceRegistry() []doctorResult {
 		}}
 	}
 
-	// Count active (non-revoked).
 	active := 0
+	revoked := 0
 	for _, d := range devices {
-		if d.DeviceID != "" {
+		if d.RevokedAt != "" {
+			revoked++
+		} else {
 			active++
 		}
 	}
@@ -187,15 +215,13 @@ func checkDeviceRegistry() []doctorResult {
 	return []doctorResult{{
 		Check:  "trust.devices",
 		Status: "ok",
-		Detail: fmt.Sprintf("%d device(s) registered (%d active)", len(devices), active),
+		Detail: fmt.Sprintf("%d total, %d active, %d revoked", len(devices), active, revoked),
 	}}
 }
 
-// checkProviderReadiness checks for known provider toolchain availability.
 func checkProviderReadiness() []doctorResult {
 	var results []doctorResult
 
-	// Codex: check for codex binary.
 	codexPath, err := exec.LookPath("codex")
 	if err != nil {
 		results = append(results, doctorResult{
@@ -211,10 +237,8 @@ func checkProviderReadiness() []doctorResult {
 		})
 	}
 
-	// Claude: check for pinned claude binary.
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
-		// Try Homebrew path.
 		claudePath = "/opt/homebrew/bin/claude"
 		if _, err := os.Stat(claudePath); os.IsNotExist(err) {
 			claudePath = "/usr/local/bin/claude"
@@ -237,9 +261,7 @@ func checkProviderReadiness() []doctorResult {
 	return results
 }
 
-// isDarwin reports whether we're running on macOS.
 func isDarwin() bool {
-	// darwin build tag ensures this is always true, but check anyway.
 	return strings.Contains(os.Getenv("GOOS"), "darwin") || func() bool {
 		_, err := os.Stat("/System/Library/CoreServices/SystemVersion.plist")
 		return err == nil

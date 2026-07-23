@@ -55,11 +55,17 @@ func dispatchSubcommand(cmd string, args []string) bool {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] != "daemon" && !validSubcommands[os.Args[1]] {
-		log.Printf("unknown command: %s", os.Args[1])
-		os.Exit(1)
+	// "pokit daemon install|start|stop|status|uninstall" = CLI dispatch.
+	// "pokit daemon" (no subcommand) = foreground daemon serve.
+	if len(os.Args) > 1 && os.Args[1] == "daemon" && len(os.Args) > 2 {
+		dispatchSubcommand(os.Args[1], os.Args[2:])
+		return
 	}
 	if len(os.Args) > 1 && os.Args[1] != "daemon" {
+		if !validSubcommands[os.Args[1]] {
+			log.Printf("unknown command: %s", os.Args[1])
+			os.Exit(1)
+		}
 		dispatchSubcommand(os.Args[1], os.Args[2:])
 		return
 	}
