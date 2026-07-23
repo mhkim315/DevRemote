@@ -32,7 +32,14 @@ these automatically.
 |------|---------|-------|
 | 6 | Coordination broker | `internal/coordination` — broker, envelope, types, and tests. Never imported, constructed, or registered from `cmd/` or `term/`. Zero production goroutines or filesystem writes. |
 
-## 2. Production-Live (always enabled, no CLI gate)
+## 2. Default-Off Managed Runtimes (behind CLI flag)
+
+| Feature | Flag | Package | Producer |
+|---------|------|---------|----------|
+| Managed Codex runtime | `--enable-managed-codex` | `internal/term` | `ManagedCodexService` |
+| Managed Claude runtime | `--enable-managed-claude` | `internal/term` | `ManagedClaudeService` |
+
+## 3. Production-Live (always enabled, no CLI gate)
 
 | Feature | Package | Producer | Consumer |
 |---------|---------|----------|----------|
@@ -40,19 +47,19 @@ these automatically.
 | Approval authority | `internal/term` | `AuthoritativeApprovalStore` | Push notifications |
 | Terminal transport | `internal/term` | `TerminalTransport` | WebSocket, IPC |
 | Input-B delivery | `internal/term` | `handleTerminalInput` | WebSocket clients |
-| Transcript engine | `internal/transcript` | `Transcript.Service` | Recorder, timeline |
+| Transcript engine | `internal/transcript` | `Transcript.Service` | Recorder |
 | Session identity | `internal/sessionid` | Active at startup | All subsystems |
 | Agent event model (T0) | `internal/agent` | Contract | Adapters, telemetry |
 | Watcher (file tail) | `internal/watcher` | Active at startup | — |
 
-## 3. Fixture / Test-Only (no production caller)
+## 4. Fixture / Test-Only (no production caller)
 
 | Feature | Package | Classification |
 |---------|---------|---------------|
 | Agent adapters (T1 Codex 0.144.1, T2 Claude 2.1.202) | `internal/agent/adapters/` | Fixture-only; no live production caller (per CT-P0 ACCEPT) |
 | Agent doctor (secret scanner) | `internal/agent/doctor/` | Test-only; redacted fixtures |
 
-## 4. Step SHAs (implementation + evidence)
+## 5. Step SHAs (implementation + evidence)
 
 | Step | IMPL SHA | EVID SHA | Description |
 |------|----------|----------|-------------|
@@ -66,7 +73,7 @@ these automatically.
 | 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
 
-## 5. Authoritative sequence
+## 6. Authoritative sequence
 
 - **9.0 DOCS/AUDIT — COMPLETE** at this commit.
 - **9.1 PRODUCER ACTIVATION** — staging; enable flags, fail-open shadow writes, generate
