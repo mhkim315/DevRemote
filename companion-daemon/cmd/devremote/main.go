@@ -71,6 +71,7 @@ func main() {
 	enableFrozenValidation := flag.Bool("enable-frozen-validation", false, "Enable frozen clean-snapshot validation contract (STEP7, experimental)")
 	enableCockpit := flag.Bool("enable-cockpit", false, "Enable read-only operational cockpit route (STEP8, experimental)")
 	enableProjectionConvergence := flag.Bool("enable-projection-convergence", false, "Enable read-only Timeline projection convergence (STEP9.2, experimental)")
+	enableN1Notifications := flag.Bool("enable-n1-notifications", false, "Enable N1 exact-event locator notifications (STEP9.3, experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -91,6 +92,7 @@ func main() {
 		TimelineShadowPath:          *timelineShadowPath,
 		EnableWorkspaceLease:        *enableWorkspaceLease,
 		EnableProjectionConvergence: *enableProjectionConvergence,
+		EnableN1Notifications:       *enableN1Notifications,
 		EnableFrozenValidation:      *enableFrozenValidation,
 		EnableCockpit:               *enableCockpit,
 	})

@@ -5,7 +5,7 @@ import { Linking, View, Text } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import { registerPushToken } from './src/lib/client';
+import { getNotificationStatus, registerPushToken } from './src/lib/client';
 import { ConnectionProvider, useConnection } from './src/lib/connection';
 
 import AuthScreen from './src/screens/AuthScreen';
@@ -121,7 +121,8 @@ function AppContent() {
       const pushToken = tokenData.data;
       console.log('Push token:', pushToken);
 
-      registerPushToken(session.access_token, pushToken).catch(console.error);
+      const paired = await loadPairing();
+      registerPushToken(session.access_token, pushToken, paired?.deviceId).catch(console.error);
     }
     setupPush();
   }, [isConnected, session]);
@@ -143,12 +144,19 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
-  function handleNotificationResponse(response: Notifications.NotificationResponse) {
+  async function handleNotificationResponse(response: Notifications.NotificationResponse) {
     const data = response.notification.request.content.data;
-    const url = data?.['url'] as string | undefined;
-    if (url) {
-      Linking.openURL(url);
-    }
+    const eventId = data?.['eventId'] as string | undefined;
+    const sessionId = data?.['sessionId'] as string | undefined;
+    const generation = Number(data?.['generation']);
+    // data.activityLink is a locator protocol only; never trust it as an
+    // authority decision. Re-authorize before opening any activity target.
+    if (!session?.access_token || !eventId || !sessionId || !Number.isFinite(generation)) return;
+    try {
+      const status = await getNotificationStatus(session.access_token, eventId, sessionId, generation);
+      if (status.status === 'actionable' && status.activityLink) await Linking.openURL(status.activityLink);
+      else await Linking.openURL(`pokit://session/${encodeURIComponent(sessionId)}`);
+    } catch (err) { console.warn('notification status unavailable', err); }
   }
 
   // M3-auth-4A: one authoritative routing decision. A valid paired_device

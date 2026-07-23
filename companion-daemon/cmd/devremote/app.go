@@ -43,6 +43,7 @@ type Config struct {
 	EnableFrozenValidation      bool   // STEP7: default-off frozen validation contract
 	EnableCockpit               bool   // STEP8: default-off read-only cockpit route
 	EnableProjectionConvergence bool   // STEP9.2: default-off read-only Timeline projection convergence
+	EnableN1Notifications       bool   // STEP9.3: default-off exact-event locator notifications
 }
 
 // insecureLocalListenAddr returns the only listener address permitted for the
@@ -467,8 +468,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	notifier := newPushNotifier()
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
-		if token != "" {
-			notifier.SetToken(token)
+		deviceID := r.URL.Query().Get("deviceId")
+		if token != "" && deviceID != "" {
+			notifier.SetToken(deviceID, token)
+		} else if token != "" {
+			http.Error(w, "deviceId is required", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}
@@ -899,30 +904,41 @@ func runDaemon(cfg Config) {
 type pushSender func(token, message, sessionID string)
 
 type pushNotifier struct {
-	mu    sync.RWMutex
-	token string
-	send  pushSender // injectable for tests
+	mu     sync.RWMutex
+	tokens map[string]string // deviceID → token; registrations never overwrite peers
+	send   pushSender        // injectable for tests
 }
 
 func newPushNotifier() *pushNotifier {
-	return &pushNotifier{send: sendPushNotification}
+	return &pushNotifier{send: sendPushNotification, tokens: make(map[string]string)}
 }
 
-func (n *pushNotifier) SetToken(token string) {
+func (n *pushNotifier) SetToken(deviceID, token string) {
+	if deviceID == "" || token == "" {
+		return
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.token = token
+	if n.tokens == nil {
+		n.tokens = make(map[string]string)
+	}
+	n.tokens[deviceID] = token
 }
 
 func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ string) error {
 	n.mu.RLock()
-	token := n.token
+	tokens := make([]string, 0, len(n.tokens))
+	for _, token := range n.tokens {
+		tokens = append(tokens, token)
+	}
 	n.mu.RUnlock()
 	// P1b: redacted push message — no raw screen content.
 	summary := "Interaction required"
 	log.Printf("PUSH: approval for session=%s", sessionID)
-	if token != "" && n.send != nil {
-		go n.send(token, summary, sessionID)
+	if n.send != nil {
+		for _, token := range tokens {
+			go n.send(token, summary, sessionID)
+		}
 	}
 	return nil
 }

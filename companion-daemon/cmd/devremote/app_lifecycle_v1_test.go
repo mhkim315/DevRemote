@@ -216,7 +216,7 @@ func TestAppV1_PushNotifierConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 32 {
 		wg.Add(2)
-		go func() { defer wg.Done(); notifier.SetToken("device-token") }()
+		go func() { defer wg.Done(); notifier.SetToken("device", "device-token") }()
 		go func() { defer wg.Done(); _ = notifier.ApprovalRequired(context.Background(), "s", "") }()
 	}
 	wg.Wait()

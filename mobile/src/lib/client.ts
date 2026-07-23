@@ -661,12 +661,29 @@ export async function resolveApproval(
   return { outcome: parsed.outcome, action };
 }
 
-export async function registerPushToken(token: string, pushToken: string) {
+export async function registerPushToken(token: string, pushToken: string, deviceId?: string) {
+  const params = new URLSearchParams({ token: pushToken });
+  if (deviceId) params.set('deviceId', deviceId);
   const res = await checkedFetch(
-    `${_baseURL}/push/register?token=${encodeURIComponent(pushToken)}`,
+    `${_baseURL}/push/register?${params.toString()}`,
     { headers: authHeaders(token) }
   );
   return res;
+}
+
+export type NotificationStatus = {
+  eventId: string; currentGeneration: number; notificationGeneration: number;
+  status: 'actionable'|'already_resolved'|'stale_generation'|'session_unavailable'|'insufficient_permission'|'canonical_event_unavailable'|'event_degraded_or_gap';
+  activityLink?: string;
+};
+
+// N1 payloads are locators only. The daemon endpoint is authoritative; push
+// delivery is intentionally at-most-once and may be lost by the OS.
+export async function getNotificationStatus(token: string, eventId: string, sessionId: string, generation: number): Promise<NotificationStatus> {
+  const q = new URLSearchParams({ session: sessionId, generation: String(generation) });
+  const res = await checkedFetch(`${_baseURL}/api/notification/${encodeURIComponent(eventId)}/status?${q}`, { headers: authHeaders(token) });
+  if (!res.ok) throw new PokitError('Notification status unavailable', ConnectivityFailure.APIError, res.status);
+  return res.json();
 }
 
 export function terminalURL(sessionID: string, token?: string): string {
