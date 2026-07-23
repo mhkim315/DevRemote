@@ -5,19 +5,34 @@
 **EVID SHA:** (this commit)
 **Date:** 2026-07-23
 
-## 1. Default-Off Foundation Features (implemented, no production producer)
+## 1. Default-Off Foundation Features
 
-These features are coded and tested. Every one is gated behind a CLI flag
-that defaults to `false`. No production code path enables them; no daemon
-starts them automatically.
+Implemented and tested. Every feature is gated behind an explicit CLI flag
+that defaults to `false`. No daemon starts these automatically.
 
-| Step | Feature | Flag | Default | Producer | Consumer | Status |
-|------|---------|------|---------|----------|----------|--------|
-| 4 | Timeline shadow writer | `--enable-timeline-shadow` | `false` | None | Cockpit (polling) | IMPLEMENTED |
-| 5 | Workspace identity/lease | `--enable-workspace-lease` | `false` | None | Coordination (identity) | IMPLEMENTED |
-| 6 | Coordination broker | (none — contract-only) | N/A | None | None (broker-only) | IMPLEMENTED |
-| 7 | Frozen validation store | (none — contract-only) | N/A | None | Cockpit (polling) | IMPLEMENTED |
-| 8 | Cockpit projection | `--enable-cockpit` | `false` | None | Mobile UX (GET) | IMPLEMENTED |
+### 1a. CLI-Gated (independent flag)
+
+| Step | Feature | Flag | Consumer |
+|------|---------|------|----------|
+| 4 | Timeline shadow writer | `--enable-timeline-shadow` | Cockpit (polling) |
+| 5 | Workspace identity/lease | `--enable-workspace-lease` | Coordination (identity) |
+| 7 | Frozen validation store | `--enable-frozen-validation` | Cockpit (polling) |
+| 8 | Cockpit projection | `--enable-cockpit` | Mobile UX (GET) |
+
+### 1b. Embedded Under Another Flag
+
+The ValidationStore is created when `--enable-cockpit` is set (cockpit
+embeds it as a source). It has no standalone CLI flag.
+
+| Step | Feature | Embedded Under | Consumer |
+|------|---------|---------------|----------|
+| — | ValidationStore (submit/read) | `--enable-cockpit` | Cockpit (polling) |
+
+### 1c. Uncomposed Contract-Only (no flag, no production composition)
+
+| Step | Feature | Notes |
+|------|---------|-------|
+| 6 | Coordination broker | `internal/coordination` — broker, envelope, types, and tests. Never imported, constructed, or registered from `cmd/` or `term/`. Zero production goroutines or filesystem writes. |
 
 **Verification:** `go test -race ./...` passes for every package. No production
 codepath starts any of these without the corresponding CLI flag set.
@@ -64,8 +79,8 @@ These form the core operational surface. They are not flag-gated.
 | CT-P1 Amend | `4698b19a1` | `12135bd80` | Operational evidence |
 | 4 (Shadow) | `6d1a72d35` | `58eb55b92` | Timeline writer |
 | 5 (Workspace) | `404a3e882` | `ad83bae10` | Identity/lease |
-| 6 (Coordination) | `3b1a2c7ed` | `b7eeba499` | Envelope/broker (comment fixes `0dac78ffa`→`6c13aafe7`) |
-| 7 (Validation) | `a753e126c` | `814868b5b` | Validation store |
+| 6 (Coordination) | `3b1a2c7ed` (IMPL) | `b7eeba499` (EVID, final: `6c13aafe7`) | Envelope/broker |
+| 7 (Validation) | `a753e126c` (IMPL) | `814868b5b` (EVID) | Validation store |
 | 8 (Cockpit) | `90cc46c3f` (store) → `44f98dfcb` (handler) → `10432920b` (mobile) → `75be15e91` (mailbox) → `24d6d2d95` (cleanup) | `093e03f04` | Mobile projection |
 | PB ACCEPT | `5354077af` | — | Independent |
 

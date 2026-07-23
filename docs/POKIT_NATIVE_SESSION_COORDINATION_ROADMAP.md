@@ -333,9 +333,9 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 5. **COMPLETE:** Workspace identity, clean-snapshot contract, cooperative
    lease (IMPL `404a3e88`, EVID `ad83bae10`).
 6. **COMPLETE:** Coordination envelope + broker with capability-bound auth
-   (IMPL `6c13aafe7`, EVID at `6c13aafe7`).
+   (IMPL `3b1a2c7ed`, EVID `b7eeba499`, final comment fix `6c13aafe7`).
 7. **COMPLETE:** Frozen clean-snapshot validation store with capped history
-   (IMPL `e1cbe7211`→`093e03f04`, EVID `814868b5b`).
+   (IMPL `a753e126c`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
 9. **NEXT (9.0):** Dogfood readiness review, feature-flag audit, default-off
