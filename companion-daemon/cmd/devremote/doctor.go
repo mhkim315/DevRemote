@@ -53,12 +53,18 @@ func runDoctorClient() {
 				Detail: "LaunchAgent plist not found at " + plistPath,
 			})
 		} else {
-			loaded, pid := daemonLoaded(plistPath)
-			if loaded {
+			loaded, err := daemonLoaded(plistPath)
+			if err != nil {
+				results = append(results, doctorResult{
+					Check:  "daemon.launchagent",
+					Status: "warning",
+					Detail: fmt.Sprintf("LaunchAgent state unknown: %v", err),
+				})
+			} else if loaded {
 				results = append(results, doctorResult{
 					Check:  "daemon.launchagent",
 					Status: "ok",
-					Detail: fmt.Sprintf("loaded (PID %s)", pid),
+					Detail: "loaded",
 				})
 			} else {
 				results = append(results, doctorResult{

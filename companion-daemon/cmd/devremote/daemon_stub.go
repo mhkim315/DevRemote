@@ -16,8 +16,8 @@ func stopDaemon() error                     { return unsupportedDaemon() }
 func statusDaemon() error                   { return unsupportedDaemon() }
 func uninstallDaemon(purgeTrust bool) error { return unsupportedDaemon() }
 
-func daemonLoaded(plistPath string) (bool, string) {
-	return false, ""
+func daemonLoaded(plistPath string) (bool, error) {
+	return false, nil
 }
 
 func daemonPlistPath() string { return "" }
