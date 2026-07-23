@@ -220,14 +220,15 @@ func TestCompareMissingAndOrderingFail(t *testing.T) {
 }
 
 func TestCompareGapRequiresTranscriptMarker(t *testing.T) {
-	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1}
-	gap := GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, Reason: "writer_drop"}
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"dropped"}}
+	gap := GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, DegradedReason: "write failure", Reason: "writer_drop"}
 	gap.GlobalDroppedAfter = 1
-	without := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
+	snap := Snapshot{Gaps: []GapMarker{gap}, Stats: writer.Stats{Dropped: 1}, Degraded: true, DegradedReason: "write failure"}
+	without := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-dropped", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1}}}, snap, []FixtureEpochBinding{b})
 	if without.Passed || without.Unexplained == 0 {
 		t.Fatalf("unmatched gap=%#v", without)
 	}
-	with := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"}}}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
+	with := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-dropped", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1}, {SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"}}}, snap, []FixtureEpochBinding{b})
 	if !with.Passed || with.ToleratedGaps != 1 {
 		t.Fatalf("matched gap=%#v", with)
 	}
@@ -292,14 +293,40 @@ func TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder(t *testing.T) {
 }
 
 func TestWriterDropGapSuppressesScopedMissingEvents(t *testing.T) {
-	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"retained", "dropped"}}
-	gap := GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: 2, GlobalDroppedAfter: 3, Reason: "writer_drop"}
-	response := transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{
-		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-retained", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
-		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-dropped", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 2},
-		{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"},
+	const sid = "codex_app_server:writer-drop"
+	const runtimeID = "runtime-codex_app_server:writer-drop"
+	store := writer.NewProducerStore()
+	w, err := writer.Open(writer.Config{Path: filepath.Join(t.TempDir(), "writer-drop.jsonl")}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.Close() })
+	capability, err := store.Bind("codex", runtimeID, sid, 1, contract.EventProviderInvocationStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; ; i++ {
+		e := envelope(t, string(rune(0x3000+i)), contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, 1)
+		if !capability.SubmitAfterCommit(e) {
+			break
+		}
+		if i == 512 {
+			t.Fatal("failed to saturate actual writer submission queue")
+		}
+	}
+	stats := w.Stats()
+	degraded, reason := w.HealthSnapshot()
+	if !degraded || reason == "" || stats.Dropped == 0 {
+		t.Fatalf("actual writer health/stats = (%v, %q) %#v", degraded, reason, stats)
+	}
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: 1, RuntimeID: runtimeID, LaunchGeneration: 1, TimelineEventIDs: []string{"retained", "dropped"}}
+	gap := GapMarker{SessionID: sid, RuntimeID: runtimeID, LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: stats.Dropped - 1, GlobalDroppedAfter: stats.Dropped, DegradedReason: reason, Reason: "writer_drop"}
+	response := transcript.TranscriptResponse{SessionID: sid, Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{
+		{SessionID: sid, Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-retained", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
+		{SessionID: sid, Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-dropped", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 2},
+		{SessionID: sid, Kind: transcript.KindDegraded, DegradedReason: "writer_drop"},
 	}}
-	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "retained", AgentEventRef: "agent-retained", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "r", LaunchGeneration: 1}}, Gaps: []GapMarker{gap}}
+	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "retained", AgentEventRef: "agent-retained", SessionID: sid, AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: runtimeID, LaunchGeneration: 1}}, Gaps: []GapMarker{gap}, Stats: stats, Degraded: degraded, DegradedReason: reason}
 	if report := Compare(response, snap, []FixtureEpochBinding{b}); !report.Passed || report.Missings != 0 || report.ToleratedGaps != 1 {
 		t.Fatalf("writer drop did not suppress scoped missing event: %#v", report)
 	}

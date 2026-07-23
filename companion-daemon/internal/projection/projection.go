@@ -320,7 +320,7 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 			missingSegments = uint64(len(segments) - len(items))
 		}
 		ringOverwriteTolerated = hasMatchingRingOverwriteGap(snap.Gaps, degraded, *binding, snap.RingOverwritten, missingBoundEvents, missingSegments)
-		writerDropTolerated := hasMatchingWriterDropGap(snap.Gaps, degraded, *binding)
+		writerDropTolerated := hasMatchingWriterDropGap(snap, degraded, *binding, missingBoundEvents, missingSegments)
 		allowMissing = ringOverwriteTolerated || writerDropTolerated
 		if !bindingEventIDsConsistent(*binding, bindings, snap.Transcript, allowMissing) {
 			r.GenerationMismatches++
@@ -365,7 +365,7 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 	matchedDegraded := make([]bool, len(degraded))
 	for _, gap := range snap.Gaps {
 		matched := -1
-		if binding != nil && validGapForSnapshot(gap, *binding, snap.RingOverwritten, missingBoundEvents, missingSegments) {
+		if binding != nil && validGapForSnapshot(gap, *binding, snap, missingBoundEvents, missingSegments) {
 			for i, s := range degraded {
 				if !matchedDegraded[i] && s.SessionID == gap.SessionID && s.DegradedReason == gap.Reason {
 					matched = i
@@ -472,28 +472,34 @@ func validGapForBinding(g GapMarker, b FixtureEpochBinding) bool {
 	}
 }
 
-func validGapForSnapshot(g GapMarker, b FixtureEpochBinding, ringOverwritten, missingBoundEvents, missingSegments uint64) bool {
+func validGapForSnapshot(g GapMarker, b FixtureEpochBinding, snap Snapshot, missingBoundEvents, missingSegments uint64) bool {
 	if !validGapForBinding(g, b) {
 		return false
 	}
-	if g.Reason != "ring_overwrite" {
-		return true
+	switch g.Reason {
+	case "ring_overwrite":
+		return snap.RingOverwritten > 0 && missingBoundEvents == snap.RingOverwritten && missingSegments == snap.RingOverwritten
+	case "writer_drop":
+		delta := g.GlobalDroppedAfter - g.GlobalDroppedBefore
+		return snap.Degraded && snap.DegradedReason != "" && g.DegradedReason == snap.DegradedReason && snap.Stats.Dropped > 0 && g.GlobalDroppedAfter == snap.Stats.Dropped && missingBoundEvents == delta && missingSegments == delta
+	default:
+		return false
 	}
-	return ringOverwritten > 0 && missingBoundEvents == ringOverwritten && missingSegments == ringOverwritten
 }
 
 func hasMatchingRingOverwriteGap(gaps []GapMarker, degraded []transcript.TranscriptSegment, b FixtureEpochBinding, ringOverwritten, missingBoundEvents, missingSegments uint64) bool {
 	for _, gap := range gaps {
-		if gap.Reason == "ring_overwrite" && validGapForSnapshot(gap, b, ringOverwritten, missingBoundEvents, missingSegments) && hasTranscriptGap(degraded, gap) {
+		snap := Snapshot{RingOverwritten: ringOverwritten}
+		if gap.Reason == "ring_overwrite" && validGapForSnapshot(gap, b, snap, missingBoundEvents, missingSegments) && hasTranscriptGap(degraded, gap) {
 			return true
 		}
 	}
 	return false
 }
 
-func hasMatchingWriterDropGap(gaps []GapMarker, degraded []transcript.TranscriptSegment, b FixtureEpochBinding) bool {
-	for _, gap := range gaps {
-		if gap.Reason == "writer_drop" && validGapForBinding(gap, b) && hasTranscriptGap(degraded, gap) {
+func hasMatchingWriterDropGap(snap Snapshot, degraded []transcript.TranscriptSegment, b FixtureEpochBinding, missingBoundEvents, missingSegments uint64) bool {
+	for _, gap := range snap.Gaps {
+		if gap.Reason == "writer_drop" && validGapForSnapshot(gap, b, snap, missingBoundEvents, missingSegments) && hasTranscriptGap(degraded, gap) {
 			return true
 		}
 	}
