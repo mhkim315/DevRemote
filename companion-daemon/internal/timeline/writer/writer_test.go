@@ -208,6 +208,73 @@ func TestSubscribeReceivesSuccessfulAppend(t *testing.T) {
 	}
 }
 
+func TestSubscriberTimeoutMovesToNextAndCleansUp(t *testing.T) {
+	before := runtime.NumGoroutine()
+	w := newWriter(&testFile{})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	next := make(chan struct{}, 1)
+	w.Subscribe(func(contract.Envelope) { close(started); <-release })
+	w.Subscribe(func(contract.Envelope) { next <- struct{}{} })
+	if !w.Append(validEnvelope(t)) {
+		t.Fatal("append")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking subscriber did not start")
+	}
+	select {
+	case <-next:
+	case <-time.After(subscriberTimeout + time.Second):
+		t.Fatal("dispatcher did not move past timed-out subscriber")
+	}
+	close(release)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if after := runtime.NumGoroutine(); after > before {
+		t.Fatalf("subscriber goroutine leaked: before=%d after=%d", before, after)
+	}
+}
+
+func TestPanickingSubscriberDoesNotStopDispatch(t *testing.T) {
+	w := newWriter(&testFile{})
+	defer w.Close()
+	next := make(chan struct{}, 1)
+	w.Subscribe(func(contract.Envelope) { panic("test panic") })
+	w.Subscribe(func(contract.Envelope) { next <- struct{}{} })
+	if !w.Append(validEnvelope(t)) {
+		t.Fatal("append")
+	}
+	select {
+	case <-next:
+	case <-time.After(time.Second):
+		t.Fatal("panic stopped dispatcher")
+	}
+}
+
+func TestConcurrentAppendAndCloseIsSafeAndIdempotent(t *testing.T) {
+	w := newWriter(&testFile{})
+	e := validEnvelope(t)
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() { defer wg.Done(); w.Append(e) }()
+	}
+	wg.Add(2)
+	go func() { defer wg.Done(); _ = w.Close() }()
+	go func() { defer wg.Done(); _ = w.Close() }()
+	wg.Wait()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenRejectsImplicitOrRelativePath(t *testing.T) {
 	for _, path := range []string{"", "timeline.jsonl"} {
 		if _, err := Open(Config{Path: path}); !errors.Is(err, ErrInvalidConfig) {

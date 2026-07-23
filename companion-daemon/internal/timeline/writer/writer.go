@@ -1,7 +1,6 @@
 // Package writer provides the explicitly constructed, fail-open shadow sink
 // for Canonical Timeline envelopes. It owns no authority and starts no
-// goroutines; callers must invoke it only after their primary authority has
-// committed.
+// goroutines until a Writer is explicitly constructed.
 package writer
 
 import (
@@ -15,23 +14,18 @@ import (
 	"devremote/companion-daemon/internal/timeline/contract"
 )
 
-const DefaultFileMode os.FileMode = 0o600
+const (
+	DefaultFileMode    os.FileMode = 0o600
+	subscriberQueueCap             = 64
+	maxCallbacks                   = 8
+	subscriberTimeout              = 2 * time.Second
+	closeDeadline                  = 5 * time.Second
+)
 
 var ErrInvalidConfig = errors.New("timeline writer: invalid configuration")
 
-// Config identifies an explicitly selected shadow file. There is no package
-// default path, no global singleton, and no package initialization side effect.
-type Config struct {
-	Path string
-}
-
-// Stats describes outcomes observed by this best-effort writer. A drop or
-// failure makes an equivalence run invalid; it never becomes a daemon error.
-type Stats struct {
-	Appended uint64
-	Dropped  uint64
-	Failures uint64
-}
+type Config struct{ Path string }
+type Stats struct{ Appended, Dropped, Failures uint64 }
 
 type appendFile interface {
 	Write([]byte) (int, error)
@@ -39,27 +33,35 @@ type appendFile interface {
 	Close() error
 }
 
-// Subscriber observes successfully appended envelopes. It is observational
-// only; callbacks run asynchronously and cannot block or alter Append.
+// Subscriber observes a successful shadow append. It is not an authority
+// callback and must not rely on delivery; queue pressure intentionally drops it.
 type Subscriber func(contract.Envelope)
 
-// Writer serializes append records. It is deliberately not a store, queue,
-// authority callback, or recovery state machine.
-type Writer struct {
-	mu           sync.Mutex
-	file         appendFile
-	closed       bool
-	appended     uint64
-	dropped      uint64
-	failures     uint64
-	subscribers  []Subscriber
-	subscriberCh chan subscriberWork
-	subDone      chan struct{} // closed when worker goroutine exits
-	wg           sync.WaitGroup
+type subscriberEntry struct {
+	id uint64
+	fn Subscriber
 }
 
-// Open constructs a writer for one explicit path. Construction errors are
-// returned so the composition root can log and disable this optional sink.
+// Writer serializes append records and owns one bounded observer dispatcher.
+// Observer work is isolated from Append and cannot affect primary authority.
+type Writer struct {
+	mu          sync.Mutex
+	file        appendFile
+	closed      bool
+	appended    uint64
+	dropped     uint64
+	failures    uint64
+	subscribers []subscriberEntry
+	nextSubID   uint64
+
+	subscriberCh   chan contract.Envelope
+	subscriberDone chan struct{}
+	callbackSem    chan struct{}
+	callbacks      sync.WaitGroup
+	closeOnce      sync.Once
+	closeErr       error
+}
+
 func Open(config Config) (*Writer, error) {
 	if config.Path == "" || !filepath.IsAbs(config.Path) {
 		return nil, ErrInvalidConfig
@@ -75,73 +77,76 @@ func Open(config Config) (*Writer, error) {
 }
 
 func newWriter(file appendFile) *Writer {
-	w := &Writer{file: file}
-	w.startSubscriberLoop()
+	w := &Writer{
+		file: file, subscriberCh: make(chan contract.Envelope, subscriberQueueCap),
+		subscriberDone: make(chan struct{}), callbackSem: make(chan struct{}, maxCallbacks),
+	}
+	go w.dispatchSubscribers()
 	return w
 }
 
-// Subscribe adds an observational callback. Nil callbacks are ignored.
-// Subscribers must not block; slow subscribers are dropped silently.
-func (w *Writer) Subscribe(fn Subscriber) {
+// Subscribe adds an observer and returns a cleanup function. Subscription
+// changes are serialized with queue closure, so an observer is never queued
+// after its writer has closed.
+func (w *Writer) Subscribe(fn Subscriber) func() {
 	if fn == nil {
-		return
+		return func() {}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.subscribers = append(w.subscribers, fn)
+	if w.closed {
+		return func() {}
+	}
+	w.nextSubID++
+	id := w.nextSubID
+	w.subscribers = append(w.subscribers, subscriberEntry{id: id, fn: fn})
+	return func() { w.unsubscribe(id) }
 }
 
-// subscriberWork is a bounded item delivered to the single dispatch goroutine.
-type subscriberWork struct {
-	fn       Subscriber
-	envelope contract.Envelope
+func (w *Writer) unsubscribe(id uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, subscriber := range w.subscribers {
+		if subscriber.id == id {
+			w.subscribers = append(w.subscribers[:i], w.subscribers[i+1:]...)
+			return
+		}
+	}
 }
 
-const subscriberTimeout = 2 * time.Second
-
-// startSubscriberLoop runs a single dispatch worker. Each subscriber callback
-// runs in its own goroutine with a 2s timeout; panics are recovered.
-func (w *Writer) startSubscriberLoop() {
-	ch := make(chan subscriberWork, 64)
-	w.subscriberCh = ch
-	w.subDone = make(chan struct{})
-	go func() {
-		for {
+func (w *Writer) dispatchSubscribers() {
+	for envelope := range w.subscriberCh {
+		w.mu.Lock()
+		subscribers := append([]subscriberEntry(nil), w.subscribers...)
+		w.mu.Unlock()
+		for _, subscriber := range subscribers {
+			w.callbackSem <- struct{}{}
+			w.callbacks.Add(1)
+			done := make(chan struct{})
+			go w.invokeSubscriber(subscriber.fn, envelope, done)
 			select {
-			case work, ok := <-ch:
-				if !ok {
-					close(w.subDone)
-					return
-				}
-				w.runSubscriber(work)
-			case <-w.subDone:
-				return
+			case <-done:
+			case <-time.After(subscriberTimeout):
 			}
 		}
-	}()
+	}
+	w.callbacks.Wait()
+	close(w.subscriberDone)
 }
 
-func (w *Writer) runSubscriber(work subscriberWork) {
-	w.wg.Add(1)
-	go func() {
-		defer w.wg.Done()
-		defer func() { recover() }()
-		done := make(chan struct{}, 1)
-		go func() {
-			work.fn(work.envelope)
-			done <- struct{}{}
-		}()
-		select {
-		case <-done:
-		case <-time.After(subscriberTimeout):
-		}
+func (w *Writer) invokeSubscriber(fn Subscriber, envelope contract.Envelope, done chan<- struct{}) {
+	defer w.callbacks.Done()
+	defer func() {
+		<-w.callbackSem
+		close(done)
+		recover()
 	}()
+	fn(envelope)
 }
 
 // Append is best-effort and never returns an error to its caller. It validates
-// and frames an envelope before taking the writer lock, then performs one
-// append and sync while holding only writer-owned state. It must never be
-// called while an authority lock is held.
+// and frames an envelope before taking the writer lock. Observer enqueue is
+// one non-blocking send while holding only writer-owned state.
 func (w *Writer) Append(envelope contract.Envelope) bool {
 	if err := envelope.Validate(); err != nil {
 		w.recordDrop(true)
@@ -174,19 +179,9 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 		return false
 	}
 	w.appended++
-	subscribers := append([]Subscriber(nil), w.subscribers...)
-	// Send under lock so Close cannot close subscriberCh concurrently.
-	// Non-blocking send drops on overflow. After Close, stopped=true and
-	// sends are skipped (channel may be drained).
-	for _, subscriber := range subscribers {
-		if w.closed {
-			break
-		}
-		select {
-		case w.subscriberCh <- subscriberWork{fn: subscriber, envelope: envelope}:
-		default:
-			w.dropped++
-		}
+	select {
+	case w.subscriberCh <- envelope:
+	default: // observer pressure is fail-open and does not change append success
 	}
 	w.mu.Unlock()
 	return true
@@ -201,35 +196,30 @@ func (w *Writer) recordDrop(failure bool) {
 	}
 }
 
-// Stats returns an atomic snapshot under the writer-owned lock.
 func (w *Writer) Stats() Stats {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return Stats{Appended: w.appended, Dropped: w.dropped, Failures: w.failures}
 }
 
-// Close is idempotent. Signals the worker to stop accepting new work,
-// waits for in-flight subscribers to complete, then closes the file.
+// Close rejects new appends, drains the bounded observer queue, and waits at
+// most five seconds for callbacks. A non-cooperative observer is bounded by
+// the semaphore and cannot delay daemon shutdown indefinitely.
 func (w *Writer) Close() error {
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return nil
-	}
-	w.closed = true
-	if w.subscriberCh != nil {
+	w.closeOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
 		close(w.subscriberCh)
-	}
-	w.mu.Unlock()
-	// Wait for dispatch worker and all in-flight subscribers.
-	if w.subDone != nil {
-		<-w.subDone
-	}
-	w.wg.Wait()
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.file == nil {
-		return nil
-	}
-	return w.file.Close()
+		w.mu.Unlock()
+		select {
+		case <-w.subscriberDone:
+		case <-time.After(closeDeadline):
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.file != nil {
+			w.closeErr = w.file.Close()
+		}
+	})
+	return w.closeErr
 }

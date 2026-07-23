@@ -110,3 +110,60 @@ func TestValidationStoreConcurrentReadSafety(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestValidationSubscriberTimeoutMovesToNextAndCleansUp(t *testing.T) {
+	store := NewValidationStore()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	next := make(chan struct{}, 1)
+	store.Subscribe(func(ValidationResult) { close(started); <-release })
+	store.Subscribe(func(ValidationResult) { next <- struct{}{} })
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	if err := store.Submit(result); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking subscriber did not start")
+	}
+	select {
+	case <-next:
+	case <-time.After(subscriberTimeout + time.Second):
+		t.Fatal("dispatcher did not move past timed-out subscriber")
+	}
+	close(release)
+	store.Close()
+	store.Close()
+}
+
+func TestValidationPanickingSubscriberDoesNotStopDispatch(t *testing.T) {
+	store := NewValidationStore()
+	defer store.Close()
+	next := make(chan struct{}, 1)
+	store.Subscribe(func(ValidationResult) { panic("test panic") })
+	store.Subscribe(func(ValidationResult) { next <- struct{}{} })
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	if err := store.Submit(result); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-next:
+	case <-time.After(time.Second):
+		t.Fatal("panic stopped dispatcher")
+	}
+}
+
+func TestValidationConcurrentSubmitAndCloseIsSafe(t *testing.T) {
+	store := NewValidationStore()
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = store.Submit(result) }()
+	}
+	wg.Add(2)
+	go func() { defer wg.Done(); store.Close() }()
+	go func() { defer wg.Done(); store.Close() }()
+	wg.Wait()
+}

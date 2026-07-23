@@ -67,6 +67,8 @@ type CockpitStore struct {
 	findings      []Item
 	notifications []Item
 	sources       Sources
+	unsubscribers []func()
+	closeOnce     sync.Once
 }
 
 // NewCockpitStore constructs the projection and optionally attaches existing
@@ -79,16 +81,16 @@ func NewCockpitStore(sources ...Sources) *CockpitStore {
 	}
 	s.sources = sources[0]
 	if s.sources.Timeline != nil {
-		s.sources.Timeline.Subscribe(func(envelope contract.Envelope) {
+		s.unsubscribers = append(s.unsubscribers, s.sources.Timeline.Subscribe(func(envelope contract.Envelope) {
 			s.AppendNotification(timelineItem(envelope))
-		})
+		}))
 	}
 	if s.sources.Validation != nil {
-		s.sources.Validation.Subscribe(func(result validation.ValidationResult) {
+		s.unsubscribers = append(s.unsubscribers, s.sources.Validation.Subscribe(func(result validation.ValidationResult) {
 			for _, finding := range result.Findings {
 				s.AppendFinding(findingItem(result, finding))
 			}
-		})
+		}))
 	}
 	s.Refresh()
 	return s
@@ -172,6 +174,16 @@ func (s *CockpitStore) ReadAll() CockpitState {
 }
 
 func (s *CockpitStore) ReadOnly() bool { return true }
+
+// Close detaches this restart-volatile read model from its observers. It never
+// closes Timeline or validation stores, which remain owned by composition.
+func (s *CockpitStore) Close() {
+	s.closeOnce.Do(func() {
+		for _, unsubscribe := range s.unsubscribers {
+			unsubscribe()
+		}
+	})
+}
 
 func timelineItem(envelope contract.Envelope) Item {
 	return Item{

@@ -786,6 +786,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// 8. Timeline is a best-effort shadow sink. Its close result is logged but
 	// never joins shutdown errors, so Timeline unavailability cannot block a
 	// primary shutdown path.
+	if a.cockpitStore != nil {
+		a.cockpitStore.Close()
+	}
 	if a.timelineWriter != nil {
 		if err := a.timelineWriter.Close(); err != nil {
 			log.Printf("Timeline shadow close error (ignored): %v", err)

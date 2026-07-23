@@ -6,6 +6,7 @@ package validation
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"devremote/companion-daemon/internal/workspace"
 )
@@ -64,37 +65,73 @@ func (r ValidationResult) Validate() error {
 // acceptance authority.
 type Subscriber func(ValidationResult)
 
-// ValidationStore is a restart-volatile, in-memory record of submitted
-// validation results. It deliberately owns no validator dispatch, repository
-// state, or acceptance authority.
-type subscriberWork struct {
-	fn     Subscriber
-	result ValidationResult
+const (
+	subscriberQueueCap = 64
+	maxCallbacks       = 8
+	subscriberTimeout  = 2 * time.Second
+	closeDeadline      = 5 * time.Second
+)
+
+type subscriberEntry struct {
+	id uint64
+	fn Subscriber
 }
 
 type ValidationStore struct {
-	mu          sync.RWMutex
-	results     []ValidationResult
-	subscribers []Subscriber
-	dispatchCh  chan subscriberWork // bounded worker input
+	mu             sync.RWMutex
+	results        []ValidationResult
+	subscribers    []subscriberEntry
+	nextSubID      uint64
+	subscriberCh   chan ValidationResult
+	subscriberDone chan struct{}
+	callbackSem    chan struct{}
+	callbacks      sync.WaitGroup
+	closed         bool
+	closeOnce      sync.Once
 }
 
-func (s *ValidationStore) startSubscriberLoop() {
-	ch := make(chan subscriberWork, 64)
-	s.dispatchCh = ch
-	go func() {
-		for work := range ch {
-			func() {
-				defer func() { recover() }()
-				work.fn(work.result)
-			}()
+func (s *ValidationStore) dispatchSubscribers() {
+	for result := range s.subscriberCh {
+		s.mu.RLock()
+		subscribers := append([]subscriberEntry(nil), s.subscribers...)
+		s.mu.RUnlock()
+		for _, subscriber := range subscribers {
+			s.callbackSem <- struct{}{}
+			s.callbacks.Add(1)
+			done := make(chan struct{})
+			go s.invokeSubscriber(subscriber.fn, result, done)
+			select {
+			case <-done:
+			case <-time.After(subscriberTimeout):
+			}
 		}
-	}()
+	}
+	s.callbacks.Wait()
+	close(s.subscriberDone)
 }
 
-// Submit validates and retains one result, then notifies observers
-// asynchronously. Observers are dispatched through a bounded channel
-// with panic recovery; slow subscribers are dropped silently.
+func (s *ValidationStore) startSubscriberLoopLocked() {
+	if s.subscriberCh != nil {
+		return
+	}
+	s.subscriberCh = make(chan ValidationResult, subscriberQueueCap)
+	s.subscriberDone = make(chan struct{})
+	s.callbackSem = make(chan struct{}, maxCallbacks)
+	go s.dispatchSubscribers()
+}
+
+func (s *ValidationStore) invokeSubscriber(fn Subscriber, result ValidationResult, done chan<- struct{}) {
+	defer s.callbacks.Done()
+	defer func() {
+		<-s.callbackSem
+		close(done)
+		recover()
+	}()
+	fn(result)
+}
+
+// Submit validates and retains one result, then performs one non-blocking
+// enqueue while holding store-owned state so Close cannot race channel closure.
 func (s *ValidationStore) Submit(result ValidationResult) error {
 	if err := result.Validate(); err != nil {
 		return err
@@ -102,17 +139,21 @@ func (s *ValidationStore) Submit(result ValidationResult) error {
 	result = cloneResult(result)
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrInvalid
+	}
 	s.results = append(s.results, result)
-	subscribers := append([]Subscriber(nil), s.subscribers...)
-	s.mu.Unlock()
-
-	captured := cloneResult(result)
-	for _, subscriber := range subscribers {
+	if len(s.subscribers) > 0 {
+		s.startSubscriberLoopLocked()
+	}
+	if s.subscriberCh != nil {
 		select {
-		case s.dispatchCh <- subscriberWork{fn: subscriber, result: captured}:
+		case s.subscriberCh <- cloneResult(result):
 		default:
 		}
 	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -128,29 +169,57 @@ func (s *ValidationStore) ReadAll() []ValidationResult {
 	return results
 }
 
-// NewValidationStore returns an initialized store with the subscriber
-// dispatch loop already running. The loop is bounded and recovers panics.
+// NewValidationStore returns an empty store. Its bounded worker starts only
+// when a submitted result has an observer, avoiding idle runtime goroutines.
 func NewValidationStore() *ValidationStore {
-	s := &ValidationStore{}
-	s.startSubscriberLoop()
-	return s
+	return &ValidationStore{}
 }
 
-// Close drains the subscriber queue and stops the dispatch goroutine.
+// Close is idempotent. It drains queued results and waits at most five seconds
+// for bounded callback work; validation remains non-authoritative either way.
 func (s *ValidationStore) Close() {
-	if s.dispatchCh != nil {
-		close(s.dispatchCh)
-	}
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		if s.subscriberCh != nil {
+			close(s.subscriberCh)
+		}
+		s.mu.Unlock()
+		if s.subscriberDone == nil {
+			return
+		}
+		select {
+		case <-s.subscriberDone:
+		case <-time.After(closeDeadline):
+		}
+	})
 }
 
-// Subscribe adds an observational callback. Nil callbacks are ignored.
-func (s *ValidationStore) Subscribe(fn Subscriber) {
+// Subscribe adds an observational callback and returns its cleanup function.
+func (s *ValidationStore) Subscribe(fn Subscriber) func() {
 	if fn == nil {
-		return
+		return func() {}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.subscribers = append(s.subscribers, fn)
+	if s.closed {
+		return func() {}
+	}
+	s.nextSubID++
+	id := s.nextSubID
+	s.subscribers = append(s.subscribers, subscriberEntry{id: id, fn: fn})
+	return func() { s.unsubscribe(id) }
+}
+
+func (s *ValidationStore) unsubscribe(id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, subscriber := range s.subscribers {
+		if subscriber.id == id {
+			s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
+			return
+		}
+	}
 }
 
 func cloneResult(result ValidationResult) ValidationResult {
