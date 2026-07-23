@@ -13,8 +13,8 @@
 | 2 | impl-9.4-A | T1 | 1 | DONE | `3931c07e1` | `3931c07e1` | PASS | V1_REJECT | 6 IMPL_REJECT | CLI routing, plist, upgrade, idempotency, build-tag, doctor |
 | 3 | impl-9.4-A-R2 | T1 | 2 | DONE | `f1e1b1912` | `f1e1b1912` | PASS | V1_REJECT | 5 residual (B1 partial, B2/B3/B4/B6 unresolved) | B5 fixed. Blind-retry risk → switch to T2 |
 | 4 | impl-9.4-A-R3 | T2 | 1 | DONE | `aea4eb3bd` | `aea4eb3bd` | PASS* | V1_REJECT | 4 residual (B3-B1, B3-B2, B4-B3, B4-B4) | B1/B2/B6 fixed. T1+T2 both stuck → SPLIT |
-| 5 | SPLIT-A (B3) | T2 | 1 | FIX | 대기중 | — | — | — | B3: transactional upgrade/rollback | Function boundary: replaceBinaryAtomic, performUpgrade, rollbackInstall, checkReadiness |
-| 6 | SPLIT-B (B4) | T1 | 1 | FIX | 대기중 | — | — | — | B4: path safety + error handling | Function boundary: readDaemonState, validateDaemonPaths, stop, rollback, uninstall |
+| 5 | SPLIT-A (B3) | T2 | 1 | MERGED | — | — | — | — | Absorbed into 677f37e2a | Shared worktree: T1 commit included T2 changes |
+| 6 | SPLIT-B (B4) | T1 | 1 | DONE | `677f37e2a` | `677f37e2a` | PASS | V1 재심사중 | — | Integrated A+B: transactional upgrade + path safety + error handling |
 
 ## Operational Rules
 
@@ -27,21 +27,22 @@
 | Phase | Rounds | Details |
 |-------|--------|---------|
 | Contract | 1 | T2 single-shot |
-| Implementation | 3 | T1 R1+R2 + T2 R3 (model switch) |
+| Implementation | 4 | T1 R1+R2 + T2 R3 + SPLIT A+B merged |
 | Pre-gate returns | 0 | |
-| V1 REJECT | 2 | R2: 6 IMPL_REJECT. R3: 5 residual (B1 partial, B2/B3/B4/B6 unresolved) |
+| V1 REJECT | 3 | R2: 6, R3: 5, R4: 4 residual |
+| Task Splits | 1 | R5-6 SPLIT A+B (T1+T2 both stuck → concern boundary) |
 | V1 ACCEPT | 0 | |
 | Evidence | 0 | |
 | V2 Audit | 0 | |
 | Context Guardian | 0 | |
-| **Total** | **3** | |
+| **Total** | **6** | |
 
 ## Defect Classification
 
 | Category | Count | % |
 |----------|-------|---|
 | CONTRACT_REJECT | 0 | — |
-| IMPL_REJECT | 6 | 100% |
+| IMPL_REJECT | 15 | 100% (6→5→4 across 3 V1 rounds) |
 | PRE_GATE_BLOCKED | 0 | — |
 | TECH_EVID_BLOCKED | 0 | — |
 | EVID_SYNC_BLOCKED | 0 | — |
