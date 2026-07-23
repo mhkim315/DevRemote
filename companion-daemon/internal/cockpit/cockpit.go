@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	MaxItems      = 256
-	MaxFieldBytes = 512
+	MaxItems        = 256
+	MaxFieldBytes   = 512
+	recentEnvelopes = 128 // matches writer's ring buffer capacity
+	recentResults   = 64  // matches validation store's ring buffer capacity
 )
 
 type Origin struct {
@@ -67,31 +69,16 @@ type CockpitStore struct {
 	findings      []Item
 	notifications []Item
 	sources       Sources
-	unsubscribers []func()
-	closeOnce     sync.Once
 }
 
-// NewCockpitStore constructs the projection and optionally attaches existing
-// read-only sources. A disabled source is represented by nil and contributes
-// no data.
+// NewCockpitStore constructs the projection from read-only sources.
+// Polls sources on demand via Refresh; zero goroutines, no subscriptions.
 func NewCockpitStore(sources ...Sources) *CockpitStore {
 	s := &CockpitStore{}
 	if len(sources) == 0 {
 		return s
 	}
 	s.sources = sources[0]
-	if s.sources.Timeline != nil {
-		s.unsubscribers = append(s.unsubscribers, s.sources.Timeline.Subscribe(func(envelope contract.Envelope) {
-			s.AppendNotification(timelineItem(envelope))
-		}))
-	}
-	if s.sources.Validation != nil {
-		s.unsubscribers = append(s.unsubscribers, s.sources.Validation.Subscribe(func(result validation.ValidationResult) {
-			for _, finding := range result.Findings {
-				s.AppendFinding(findingItem(result, finding))
-			}
-		}))
-	}
 	s.Refresh()
 	return s
 }
@@ -116,22 +103,20 @@ func (s *CockpitStore) append(dst *[]Item, item Item) bool {
 	return true
 }
 
-// Refresh pulls the current bounded catalog/approval/validation projections.
-// It never modifies those stores and never holds their locks while acquiring
-// the cockpit lock.
+// Refresh polls all sources: catalog (sessions+approvals), validation store
+// (findings), and timeline writer (notifications). It never holds external
+// locks while acquiring the cockpit lock.
 func (s *CockpitStore) Refresh() {
-	var sessions, approvals, findings []Item
+	var sessions, approvals, findings, notifications []Item
 	refreshRuntime := s.sources.Catalog != nil
 	refreshFindings := s.sources.Validation != nil
+	refreshNotifications := s.sources.Timeline != nil
 	if catalog := s.sources.Catalog; catalog != nil {
 		for _, record := range catalog.List() {
 			generation := strconv.FormatInt(record.Epoch, 10)
 			if runtime, ok := catalog.RuntimeOf(record.SessionID); ok {
 				generation = strconv.FormatInt(runtime.LaunchGen, 10)
 			}
-			// STEP8: runtimeId is populated from the catalog when available.
-			// The ManagedRuntimeCatalog does not expose a per-runtime string
-			// identifier; omit the field rather than fabricate from session.
 			sessions = appendBounded(sessions, Item{
 				Kind: "runtime", State: string(record.NativeStatus), Summary: record.SessionID,
 				Origin: Origin{Provider: record.Provider, SessionID: record.SessionID, Generation: generation},
@@ -147,10 +132,15 @@ func (s *CockpitStore) Refresh() {
 		}
 	}
 	if store := s.sources.Validation; store != nil {
-		for _, result := range store.ReadAll() {
+		for _, result := range store.ReadRecent(recentResults) {
 			for _, finding := range result.Findings {
 				findings = appendBounded(findings, findingItem(result, finding))
 			}
+		}
+	}
+	if writer := s.sources.Timeline; writer != nil {
+		for _, envelope := range writer.ReadRecent(recentEnvelopes) {
+			notifications = appendBounded(notifications, timelineItem(envelope))
 		}
 	}
 	s.mu.Lock()
@@ -160,6 +150,9 @@ func (s *CockpitStore) Refresh() {
 	}
 	if refreshFindings {
 		s.findings = findings
+	}
+	if refreshNotifications {
+		s.notifications = notifications
 	}
 	s.mu.Unlock()
 }
@@ -175,15 +168,9 @@ func (s *CockpitStore) ReadAll() CockpitState {
 
 func (s *CockpitStore) ReadOnly() bool { return true }
 
-// Close detaches this restart-volatile read model from its observers. It never
-// closes Timeline or validation stores, which remain owned by composition.
-func (s *CockpitStore) Close() {
-	s.closeOnce.Do(func() {
-		for _, unsubscribe := range s.unsubscribers {
-			unsubscribe()
-		}
-	})
-}
+// Close is a no-op — the ring-buffer model has no subscriptions to clean up.
+// Timeline and validation stores remain owned by composition.
+func (s *CockpitStore) Close() {}
 
 func timelineItem(envelope contract.Envelope) Item {
 	return Item{

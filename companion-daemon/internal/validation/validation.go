@@ -6,7 +6,6 @@ package validation
 import (
 	"errors"
 	"sync"
-	"time"
 
 	"devremote/companion-daemon/internal/workspace"
 )
@@ -16,8 +15,9 @@ var (
 	ErrStale   = errors.New("validation: finding is stale and cannot authorize")
 )
 
+const recentResults = 64
+
 // SnapshotBinding freezes every identity that a validation result may rely on.
-// A clean SnapshotManifest is required; dirty-worktree validation is deferred.
 type SnapshotBinding struct {
 	RepositoryID                                                              string
 	Manifest                                                                  workspace.SnapshotManifest
@@ -36,7 +36,6 @@ func (b SnapshotBinding) Validate() error {
 	return nil
 }
 
-// Finding remains retained history even after it becomes stale.
 type Finding struct {
 	ID, Summary string
 	Binding     SnapshotBinding
@@ -60,78 +59,23 @@ func (r ValidationResult) Validate() error {
 	return nil
 }
 
-// Subscriber observes a successfully submitted validation result. Subscribers
-// are observational only: they do not participate in validation or any
-// acceptance authority.
-type Subscriber func(ValidationResult)
-
-const (
-	subscriberQueueCap = 64
-	maxCallbacks       = 8
-	subscriberTimeout  = 2 * time.Second
-	closeDeadline      = 5 * time.Second
-)
-
-type subscriberEntry struct {
-	id uint64
-	fn Subscriber
-}
-
+// ValidationStore is a restart-volatile, in-memory record with a bounded ring
+// buffer for polling consumers. Zero goroutines — callers read on demand.
 type ValidationStore struct {
-	mu             sync.RWMutex
-	results        []ValidationResult
-	subscribers    []subscriberEntry
-	nextSubID      uint64
-	subscriberCh   chan ValidationResult
-	subscriberDone chan struct{}
-	callbackSem    chan struct{}
-	callbacks      sync.WaitGroup
-	closed         bool
-	closeOnce      sync.Once
+	mu      sync.RWMutex
+	results []ValidationResult // full history for ReadAll
+	ring    []ValidationResult // ring buffer for ReadRecent
+	pos     int
+	full    bool
 }
 
-func (s *ValidationStore) dispatchSubscribers() {
-	for result := range s.subscriberCh {
-		s.mu.RLock()
-		subscribers := append([]subscriberEntry(nil), s.subscribers...)
-		s.mu.RUnlock()
-		for _, subscriber := range subscribers {
-			s.callbackSem <- struct{}{}
-			s.callbacks.Add(1)
-			done := make(chan struct{})
-			go s.invokeSubscriber(subscriber.fn, result, done)
-			select {
-			case <-done:
-			case <-time.After(subscriberTimeout):
-			}
-		}
-	}
-	s.callbacks.Wait()
-	close(s.subscriberDone)
+// NewValidationStore returns an empty store.
+func NewValidationStore() *ValidationStore {
+	return &ValidationStore{ring: make([]ValidationResult, recentResults)}
 }
 
-func (s *ValidationStore) startSubscriberLoopLocked() {
-	if s.subscriberCh != nil {
-		return
-	}
-	s.subscriberCh = make(chan ValidationResult, subscriberQueueCap)
-	s.subscriberDone = make(chan struct{})
-	s.callbackSem = make(chan struct{}, maxCallbacks)
-	go s.dispatchSubscribers()
-}
-
-func (s *ValidationStore) invokeSubscriber(fn Subscriber, result ValidationResult, done chan<- struct{}) {
-	defer s.callbacks.Done()
-	defer func() {
-		<-s.callbackSem
-		close(done)
-		recover()
-	}()
-	fn(result)
-}
-
-// Submit validates and retains one result, then performs one non-blocking
-// enqueue while holding store-owned state so Close cannot race channel closure.
+// Submit validates and retains one result. It pushes into both the full
+// history and the ring buffer for polling readers.
 func (s *ValidationStore) Submit(result ValidationResult) error {
 	if err := result.Validate(); err != nil {
 		return err
@@ -139,26 +83,18 @@ func (s *ValidationStore) Submit(result ValidationResult) error {
 	result = cloneResult(result)
 
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return ErrInvalid
-	}
+	defer s.mu.Unlock()
 	s.results = append(s.results, result)
-	if len(s.subscribers) > 0 {
-		s.startSubscriberLoopLocked()
+	s.ring[s.pos] = cloneResult(result)
+	s.pos++
+	if s.pos >= len(s.ring) {
+		s.pos = 0
+		s.full = true
 	}
-	if s.subscriberCh != nil {
-		select {
-		case s.subscriberCh <- cloneResult(result):
-		default:
-		}
-	}
-	s.mu.Unlock()
 	return nil
 }
 
-// ReadAll returns a defensive snapshot, so cockpit/read-model callers cannot
-// mutate the stored validation history.
+// ReadAll returns a defensive snapshot of full history.
 func (s *ValidationStore) ReadAll() []ValidationResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -169,57 +105,48 @@ func (s *ValidationStore) ReadAll() []ValidationResult {
 	return results
 }
 
-// NewValidationStore returns an empty store. Its bounded worker starts only
-// when a submitted result has an observer, avoiding idle runtime goroutines.
-func NewValidationStore() *ValidationStore {
-	return &ValidationStore{}
+// ReadRecent returns the most recent N results in insertion order.
+// N is clamped to the ring buffer size.
+func (s *ValidationStore) ReadRecent(n int) []ValidationResult {
+	if n <= 0 {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	capacity := len(s.ring)
+	size := s.pos
+	if s.full {
+		size = capacity
+	}
+	if n > capacity {
+		n = capacity
+	}
+	if n > size {
+		n = size
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]ValidationResult, n)
+	if s.full {
+		start := (s.pos - size + capacity) % capacity
+		for i := 0; i < n; i++ {
+			idx := (start + size - n + i) % capacity
+			out[i] = cloneResult(s.ring[idx])
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			out[i] = cloneResult(s.ring[s.pos-n+i])
+		}
+	}
+	return out
 }
 
-// Close is idempotent. It drains queued results and waits at most five seconds
-// for bounded callback work; validation remains non-authoritative either way.
+// Close clears the ring buffer. No goroutines to drain.
 func (s *ValidationStore) Close() {
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		s.closed = true
-		if s.subscriberCh != nil {
-			close(s.subscriberCh)
-		}
-		s.mu.Unlock()
-		if s.subscriberDone == nil {
-			return
-		}
-		select {
-		case <-s.subscriberDone:
-		case <-time.After(closeDeadline):
-		}
-	})
-}
-
-// Subscribe adds an observational callback and returns its cleanup function.
-func (s *ValidationStore) Subscribe(fn Subscriber) func() {
-	if fn == nil {
-		return func() {}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
-		return func() {}
-	}
-	s.nextSubID++
-	id := s.nextSubID
-	s.subscribers = append(s.subscribers, subscriberEntry{id: id, fn: fn})
-	return func() { s.unsubscribe(id) }
-}
-
-func (s *ValidationStore) unsubscribe(id uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, subscriber := range s.subscribers {
-		if subscriber.id == id {
-			s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
-			return
-		}
-	}
+	s.ring = nil
 }
 
 func cloneResult(result ValidationResult) ValidationResult {
@@ -227,8 +154,6 @@ func cloneResult(result ValidationResult) ValidationResult {
 	return result
 }
 
-// StalenessCheck compares a finding/result binding against current explicit
-// identities. Any change is stale; there is no fallback or automatic replay.
 type StalenessCheck struct{ Current SnapshotBinding }
 
 func (s StalenessCheck) Stale(binding SnapshotBinding) bool {
@@ -236,8 +161,6 @@ func (s StalenessCheck) Stale(binding SnapshotBinding) bool {
 }
 func (s StalenessCheck) Apply(f Finding) Finding { f.Stale = s.Stale(f.Binding); return f }
 
-// CanAuthorize is intentionally false for stale findings. Callers still need
-// their own authority; a fresh validation result alone is never authorization.
 func (f Finding) CanAuthorize(current SnapshotBinding) error {
 	if (StalenessCheck{Current: current}).Stale(f.Binding) {
 		return ErrStale

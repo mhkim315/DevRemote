@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 )
 
 func binding() SnapshotBinding {
@@ -56,7 +55,8 @@ func TestInvalidAndMismatchedBindingsFailClosed(t *testing.T) {
 }
 
 func TestValidationStoreSubmitReadRoundTrip(t *testing.T) {
-	store := &ValidationStore{}
+	store := NewValidationStore()
+	defer store.Close()
 	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
 	if err := store.Submit(result); err != nil {
 		t.Fatal(err)
@@ -72,98 +72,58 @@ func TestValidationStoreSubmitReadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestValidationStoreSubscribeNotifiesAfterSubmit(t *testing.T) {
+func TestValidationStoreReadRecentRingBuffer(t *testing.T) {
 	store := NewValidationStore()
-	first, second := make(chan ValidationResult, 1), make(chan ValidationResult, 1)
-	store.Subscribe(func(result ValidationResult) { first <- result })
-	store.Subscribe(func(result ValidationResult) { second <- result })
+	defer store.Close()
 	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
-	if err := store.Submit(result); err != nil {
-		t.Fatal(err)
+	for i := range 5 {
+		r := result
+		r.ID = string(rune('a' + i))
+		store.Submit(r)
 	}
-	for _, received := range []<-chan ValidationResult{first, second} {
-		select {
-		case got := <-received:
-			if got.ID != result.ID {
-				t.Fatalf("subscriber received %#v", got)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("subscriber was not notified")
-		}
+	recent := store.ReadRecent(3)
+	if len(recent) != 3 {
+		t.Fatalf("expected 3, got %d", len(recent))
+	}
+	if recent[0].ID != "c" || recent[1].ID != "d" || recent[2].ID != "e" {
+		t.Fatalf("wrong order: %v %v %v", recent[0].ID, recent[1].ID, recent[2].ID)
+	}
+	if got := store.ReadRecent(0); got != nil {
+		t.Fatal("n=0 should return nil")
+	}
+	if got := store.ReadRecent(10); len(got) != 5 {
+		t.Fatal("n=10 should return 5 items")
+	}
+}
+
+func TestValidationStoreReadRecentClamped(t *testing.T) {
+	store := NewValidationStore()
+	defer store.Close()
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	for range 100 {
+		store.Submit(result)
+	}
+	recent := store.ReadRecent(500)
+	if len(recent) != recentResults {
+		t.Fatalf("expected %d (buffer cap), got %d", recentResults, len(recent))
 	}
 }
 
 func TestValidationStoreConcurrentReadSafety(t *testing.T) {
 	store := NewValidationStore()
-	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
-	const readers = 32
-	var wg sync.WaitGroup
-	for range readers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = store.ReadAll()
-		}()
-	}
-	if err := store.Submit(result); err != nil {
-		t.Fatal(err)
-	}
-	wg.Wait()
-}
-
-func TestValidationSubscriberTimeoutMovesToNextAndCleansUp(t *testing.T) {
-	store := NewValidationStore()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	next := make(chan struct{}, 1)
-	store.Subscribe(func(ValidationResult) { close(started); <-release })
-	store.Subscribe(func(ValidationResult) { next <- struct{}{} })
-	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
-	if err := store.Submit(result); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("blocking subscriber did not start")
-	}
-	select {
-	case <-next:
-	case <-time.After(subscriberTimeout + time.Second):
-		t.Fatal("dispatcher did not move past timed-out subscriber")
-	}
-	close(release)
-	store.Close()
-	store.Close()
-}
-
-func TestValidationPanickingSubscriberDoesNotStopDispatch(t *testing.T) {
-	store := NewValidationStore()
 	defer store.Close()
-	next := make(chan struct{}, 1)
-	store.Subscribe(func(ValidationResult) { panic("test panic") })
-	store.Subscribe(func(ValidationResult) { next <- struct{}{} })
-	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
-	if err := store.Submit(result); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-next:
-	case <-time.After(time.Second):
-		t.Fatal("panic stopped dispatcher")
-	}
-}
-
-func TestValidationConcurrentSubmitAndCloseIsSafe(t *testing.T) {
-	store := NewValidationStore()
 	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = store.Submit(result) }()
+		wg.Add(2)
+		go func() { defer wg.Done(); store.Submit(result) }()
+		go func() { defer wg.Done(); store.ReadRecent(5); store.ReadAll() }()
 	}
-	wg.Add(2)
-	go func() { defer wg.Done(); store.Close() }()
-	go func() { defer wg.Done(); store.Close() }()
 	wg.Wait()
+}
+
+func TestValidationCloseIdempotent(t *testing.T) {
+	store := NewValidationStore()
+	store.Close()
+	store.Close()
 }

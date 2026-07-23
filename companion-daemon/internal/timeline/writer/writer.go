@@ -1,6 +1,6 @@
 // Package writer provides the explicitly constructed, fail-open shadow sink
 // for Canonical Timeline envelopes. It owns no authority and starts no
-// goroutines until a Writer is explicitly constructed.
+// goroutines. Readers poll through a bounded ring buffer.
 package writer
 
 import (
@@ -9,22 +9,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"devremote/companion-daemon/internal/timeline/contract"
 )
 
 const (
-	DefaultFileMode    os.FileMode = 0o600
-	subscriberQueueCap             = 64
-	maxCallbacks                   = 8
-	subscriberTimeout              = 2 * time.Second
-	closeDeadline                  = 5 * time.Second
+	DefaultFileMode os.FileMode = 0o600
+	recentEnvelopes             = 128
 )
 
 var ErrInvalidConfig = errors.New("timeline writer: invalid configuration")
 
+// Config identifies an explicitly selected shadow file.
 type Config struct{ Path string }
+
+// Stats describes outcomes observed by this best-effort writer.
 type Stats struct{ Appended, Dropped, Failures uint64 }
 
 type appendFile interface {
@@ -33,35 +32,22 @@ type appendFile interface {
 	Close() error
 }
 
-// Subscriber observes a successful shadow append. It is not an authority
-// callback and must not rely on delivery; queue pressure intentionally drops it.
-type Subscriber func(contract.Envelope)
-
-type subscriberEntry struct {
-	id uint64
-	fn Subscriber
-}
-
-// Writer serializes append records and owns one bounded observer dispatcher.
-// Observer work is isolated from Append and cannot affect primary authority.
+// Writer serializes append records and exposes a bounded ReadRecent ring buffer.
+// It starts zero goroutines — callers poll ReadRecent on their own schedule.
 type Writer struct {
-	mu          sync.Mutex
-	file        appendFile
-	closed      bool
-	appended    uint64
-	dropped     uint64
-	failures    uint64
-	subscribers []subscriberEntry
-	nextSubID   uint64
+	mu       sync.Mutex
+	file     appendFile
+	closed   bool
+	appended uint64
+	dropped  uint64
+	failures uint64
 
-	subscriberCh   chan contract.Envelope
-	subscriberDone chan struct{}
-	callbackSem    chan struct{}
-	callbacks      sync.WaitGroup
-	closeOnce      sync.Once
-	closeErr       error
+	ring []contract.Envelope
+	pos  int
+	full bool
 }
 
+// Open constructs a writer for one explicit path.
 func Open(config Config) (*Writer, error) {
 	if config.Path == "" || !filepath.IsAbs(config.Path) {
 		return nil, ErrInvalidConfig
@@ -77,76 +63,11 @@ func Open(config Config) (*Writer, error) {
 }
 
 func newWriter(file appendFile) *Writer {
-	w := &Writer{
-		file: file, subscriberCh: make(chan contract.Envelope, subscriberQueueCap),
-		subscriberDone: make(chan struct{}), callbackSem: make(chan struct{}, maxCallbacks),
-	}
-	go w.dispatchSubscribers()
-	return w
+	return &Writer{file: file, ring: make([]contract.Envelope, recentEnvelopes)}
 }
 
-// Subscribe adds an observer and returns a cleanup function. Subscription
-// changes are serialized with queue closure, so an observer is never queued
-// after its writer has closed.
-func (w *Writer) Subscribe(fn Subscriber) func() {
-	if fn == nil {
-		return func() {}
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
-		return func() {}
-	}
-	w.nextSubID++
-	id := w.nextSubID
-	w.subscribers = append(w.subscribers, subscriberEntry{id: id, fn: fn})
-	return func() { w.unsubscribe(id) }
-}
-
-func (w *Writer) unsubscribe(id uint64) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for i, subscriber := range w.subscribers {
-		if subscriber.id == id {
-			w.subscribers = append(w.subscribers[:i], w.subscribers[i+1:]...)
-			return
-		}
-	}
-}
-
-func (w *Writer) dispatchSubscribers() {
-	for envelope := range w.subscriberCh {
-		w.mu.Lock()
-		subscribers := append([]subscriberEntry(nil), w.subscribers...)
-		w.mu.Unlock()
-		for _, subscriber := range subscribers {
-			w.callbackSem <- struct{}{}
-			w.callbacks.Add(1)
-			done := make(chan struct{})
-			go w.invokeSubscriber(subscriber.fn, envelope, done)
-			select {
-			case <-done:
-			case <-time.After(subscriberTimeout):
-			}
-		}
-	}
-	w.callbacks.Wait()
-	close(w.subscriberDone)
-}
-
-func (w *Writer) invokeSubscriber(fn Subscriber, envelope contract.Envelope, done chan<- struct{}) {
-	defer w.callbacks.Done()
-	defer func() {
-		<-w.callbackSem
-		close(done)
-		recover()
-	}()
-	fn(envelope)
-}
-
-// Append is best-effort and never returns an error to its caller. It validates
-// and frames an envelope before taking the writer lock. Observer enqueue is
-// one non-blocking send while holding only writer-owned state.
+// Append validates, frames, and writes one envelope. On success it pushes
+// a copy into the ring buffer for ReadRecent consumers.
 func (w *Writer) Append(envelope contract.Envelope) bool {
 	if err := envelope.Validate(); err != nil {
 		w.recordDrop(true)
@@ -179,12 +100,51 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 		return false
 	}
 	w.appended++
-	select {
-	case w.subscriberCh <- envelope:
-	default: // observer pressure is fail-open and does not change append success
+	w.ring[w.pos] = envelope
+	w.pos++
+	if w.pos >= len(w.ring) {
+		w.pos = 0
+		w.full = true
 	}
 	w.mu.Unlock()
 	return true
+}
+
+// ReadRecent returns the most recent N envelopes in insertion order.
+// N is clamped to the ring buffer size; an empty or 0 request returns nil.
+func (w *Writer) ReadRecent(n int) []contract.Envelope {
+	if n <= 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	capacity := len(w.ring)
+	size := w.pos
+	if !w.full {
+		size = w.pos
+	} else {
+		size = capacity
+	}
+	if n > capacity {
+		n = capacity
+	}
+	if n > size {
+		n = size
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]contract.Envelope, n)
+	if w.full {
+		start := (w.pos - size + capacity) % capacity
+		for i := 0; i < n; i++ {
+			idx := (start + size - n + i) % capacity
+			out[i] = w.ring[idx]
+		}
+	} else {
+		copy(out, w.ring[w.pos-n:w.pos])
+	}
+	return out
 }
 
 func (w *Writer) recordDrop(failure bool) {
@@ -202,24 +162,16 @@ func (w *Writer) Stats() Stats {
 	return Stats{Appended: w.appended, Dropped: w.dropped, Failures: w.failures}
 }
 
-// Close rejects new appends, drains the bounded observer queue, and waits at
-// most five seconds for callbacks. A non-cooperative observer is bounded by
-// the semaphore and cannot delay daemon shutdown indefinitely.
+// Close is idempotent. No goroutines to drain — just closes the file.
 func (w *Writer) Close() error {
-	w.closeOnce.Do(func() {
-		w.mu.Lock()
-		w.closed = true
-		close(w.subscriberCh)
-		w.mu.Unlock()
-		select {
-		case <-w.subscriberDone:
-		case <-time.After(closeDeadline):
-		}
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		if w.file != nil {
-			w.closeErr = w.file.Close()
-		}
-	})
-	return w.closeErr
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	if w.file == nil {
+		return nil
+	}
+	return w.file.Close()
 }
