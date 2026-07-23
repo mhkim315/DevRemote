@@ -389,8 +389,7 @@ func validateDaemonPaths(state *daemonState) error {
 		return filepath.Join(parent, filepath.Base(path)), nil
 	}
 	for _, p := range []struct{ name, value string }{
-		{"binPath", state.BinPath}, {"backupPath", state.BackupPath},
-		{"plistPath", state.PlistPath}, {"stateDir", state.StateDir},
+		{"binPath", state.BinPath}, {"plistPath", state.PlistPath}, {"stateDir", state.StateDir},
 	} {
 		if p.value == "" {
 			return fmt.Errorf("daemon state %s is empty", p.name)
@@ -421,12 +420,16 @@ func validateDaemonPaths(state *daemonState) error {
 			return fmt.Errorf("daemon state oldBinPath is not a managed binary: %q", state.OldBinPath)
 		}
 	}
-	resolvedBackup, err := resolve(state.BackupPath)
-	if err != nil {
-		return fmt.Errorf("daemon state backupPath: %w", err)
-	}
-	if !strings.HasPrefix(resolvedBackup, resolvedBin+".pre-upgrade-") {
-		return fmt.Errorf("daemon state backupPath is not related to binPath: %q", state.BackupPath)
+	// BackupPath is optional: empty on clean install (no backup taken).
+	if state.BackupPath != "" {
+		resolvedBackup, err := resolve(state.BackupPath)
+		if err != nil {
+			return fmt.Errorf("daemon state backupPath: %w", err)
+		}
+		if !strings.HasPrefix(resolvedBackup, resolvedBin+".pre-upgrade-") &&
+			!strings.HasPrefix(resolvedBackup, filepath.Dir(resolvedBin)+"/") {
+			return fmt.Errorf("daemon state backupPath is not related to binPath: %q", state.BackupPath)
+		}
 	}
 	resolvedPlist, err := resolve(state.PlistPath)
 	if err != nil {
@@ -529,8 +532,8 @@ func installDaemon() error {
 		return fmt.Errorf("install: cannot atomically write plist: %w", err)
 	}
 
-	// Build ephemeral state for rollback. The canonical state is written
-	// after readiness (below) with proper BinPath→OldBinPath promotion.
+	// Build initial state. Canonical state is written before bootstrap
+	// (below) with proper BinPath→OldBinPath promotion.
 	state := &daemonState{
 		Version:     cliVersion,
 		BinPath:     serviceBinPath,
@@ -570,6 +573,20 @@ func installDaemon() error {
 		backupPath = actualBackup
 	}
 
+	// Commit state BEFORE bootstrap so tracking info is never lost.
+	// Multi-upgrade promotion: current binary → old, serviceBinPath → new.
+	// BackupPath is kept (cleanup is best-effort after readiness).
+	oldOldPath := ""
+	if existingState != nil {
+		oldOldPath = existingState.OldBinPath
+	}
+	state.OldBinPath = oldBinPath
+	state.BinPath = serviceBinPath
+	state.BackupPath = backupPath // kept until cleanup succeeds
+	if err := writeDaemonState(state); err != nil {
+		return fmt.Errorf("install: cannot write daemon state before bootstrap: %w", err)
+	}
+
 	// Bootstrap with launchctl.
 	if err := runLaunchctl("bootstrap", "gui/"+currentUserUID(), plistPath); err != nil {
 		fmt.Fprintf(os.Stderr, "install: launchctl bootstrap failed: %v\n", err)
@@ -586,22 +603,9 @@ func installDaemon() error {
 		}
 		return errors.Join(fmt.Errorf("install: readiness check failed: %w", err), stopErr)
 	}
-	// Multi-upgrade tracking: promote BinPath → OldBinPath, set new BinPath.
-	// oldOldPath is two generations back (best-effort cleanup only).
-	oldOldPath := ""
-	if existingState != nil {
-		oldOldPath = existingState.OldBinPath
-	}
-	// Promote: the current binary becomes the old binary; serviceBinPath is new.
-	state.OldBinPath = oldBinPath
-	state.BinPath = serviceBinPath
-	state.BackupPath = "" // backup consumed on success
-	if err := writeDaemonState(state); err != nil {
-		return fmt.Errorf("install: cannot write final daemon state: %w", err)
-	}
 
-	// Best-effort: remove two-generations-back binary (may be empty on
-	// clean install or first upgrade). Never delete the live binary.
+	// Best-effort cleanup (state already committed above).
+	// Never delete the live binary.
 	if oldOldPath != "" && oldOldPath != serviceBinPath {
 		if err := os.Remove(oldOldPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("install: old artifact retained at %s: %v", oldOldPath, err)
@@ -610,6 +614,13 @@ func installDaemon() error {
 	if backupPath != "" {
 		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("install: orphan backup retained at %s: %v", backupPath, err)
+		} else {
+			// Backup removed successfully — clear from state so
+			// next install/uninstall doesn't try to re-remove.
+			state.BackupPath = ""
+			if writeErr := writeDaemonState(state); writeErr != nil {
+				log.Printf("install: could not update daemon state: %v", writeErr)
+			}
 		}
 	}
 
