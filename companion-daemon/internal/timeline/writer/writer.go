@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,10 +20,10 @@ import (
 )
 
 const (
-	DefaultFileMode  os.FileMode = 0o600
-	recentEnvelopes              = 128
-	submitBufCap                 = 256
-	closeDrainTimeout            = 5 * time.Second
+	DefaultFileMode   os.FileMode = 0o600
+	recentEnvelopes               = 128
+	submitBufCap                  = 256
+	closeDrainTimeout             = 5 * time.Second
 )
 
 var ErrInvalidConfig = errors.New("timeline writer: invalid configuration")
@@ -37,10 +38,12 @@ type ProducerToken struct {
 	id string
 }
 
-func newProducerToken() ProducerToken {
+func newProducerToken() (ProducerToken, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return ProducerToken{id: hex.EncodeToString(b)}
+	if _, err := rand.Read(b); err != nil {
+		return ProducerToken{}, err
+	}
+	return ProducerToken{id: hex.EncodeToString(b)}, nil
 }
 
 // ProducerHandle identifies one bound managed-runtime generation. Fields
@@ -51,12 +54,13 @@ type producerHandle struct {
 	sessionID  string
 	generation int64
 	token      ProducerToken
+	kinds      map[contract.EventKind]struct{}
 }
 
 // Capability is the interface exposed to managed runtimes for submission.
 type Capability struct {
-	h     producerHandle
-	token ProducerToken
+	h      producerHandle
+	token  ProducerToken
 	writer *Writer
 }
 
@@ -78,6 +82,7 @@ func (c Capability) SubmitAfterCommit(envelope contract.Envelope) bool {
 type ProducerStore struct {
 	mu     sync.RWMutex
 	active map[string]producerHandle
+	writer *Writer
 }
 
 // NewProducerStore returns an empty producer store.
@@ -87,17 +92,41 @@ func NewProducerStore() *ProducerStore {
 
 // Bind creates a capability for a managed runtime generation. The returned
 // Capability carries an opaque token that must match at submission time.
-func (s *ProducerStore) Bind(provider, runtimeID, sessionID string, generation int64) Capability {
+func (s *ProducerStore) Bind(provider, runtimeID, sessionID string, generation int64, kinds ...contract.EventKind) (Capability, error) {
+	if !validBinding(provider, sessionID) || runtimeID == "" || generation <= 0 || len(kinds) == 0 {
+		return Capability{}, ErrInvalidConfig
+	}
+	for _, kind := range kinds {
+		if !isBoundEventKind(kind) {
+			return Capability{}, ErrInvalidConfig
+		}
+	}
+	boundKinds := make(map[contract.EventKind]struct{}, len(kinds))
+	for _, kind := range kinds {
+		boundKinds[kind] = struct{}{}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.writer == nil {
+		return Capability{}, ErrInvalidConfig
+	}
 	key := fmt.Sprintf("%s:%s:%d", provider, sessionID, generation)
-	tok := newProducerToken()
+	tok, err := newProducerToken()
+	if err != nil {
+		return Capability{}, err
+	}
 	h := producerHandle{
 		provider: provider, runtimeID: runtimeID, sessionID: sessionID,
-		generation: generation, token: tok,
+		generation: generation, token: tok, kinds: boundKinds,
 	}
 	s.active[key] = h
-	return Capability{h: h, token: tok}
+	return Capability{h: h, token: tok, writer: s.writer}, nil
+}
+
+func (s *ProducerStore) attach(w *Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writer = w
 }
 
 // Revoke removes a producer by identity. Future submissions with the
@@ -115,7 +144,36 @@ func (s *ProducerStore) IsBound(h producerHandle, tok ProducerToken) bool {
 	defer s.mu.RUnlock()
 	key := fmt.Sprintf("%s:%s:%d", h.provider, h.sessionID, h.generation)
 	stored, ok := s.active[key]
-	return ok && stored.token == tok
+	return ok && stored.provider == h.provider && stored.runtimeID == h.runtimeID &&
+		stored.sessionID == h.sessionID && stored.generation == h.generation && stored.token == tok
+}
+
+func validBinding(provider, sessionID string) bool {
+	switch provider {
+	case "codex":
+		return strings.HasPrefix(sessionID, "codex_app_server:")
+	case "claude":
+		return strings.HasPrefix(sessionID, "claude_headless:")
+	default:
+		return false
+	}
+}
+
+func (h producerHandle) allows(kind contract.EventKind) bool {
+	_, ok := h.kinds[kind]
+	return ok
+}
+
+func isBoundEventKind(kind contract.EventKind) bool {
+	switch kind {
+	case contract.EventProviderInvocationStarted, contract.EventProviderInvocationFinished,
+		contract.EventApprovalRequested, contract.EventApprovalResolved,
+		contract.EventToolCallStarted, contract.EventToolCallFinished,
+		contract.EventStreamObserved:
+		return true
+	default:
+		return false
+	}
 }
 
 // ProducerAuth is the minimal interface for capability checks.
@@ -164,32 +222,35 @@ type submitWork struct {
 
 // CloseResult reports the outcome of a truthful Close.
 type CloseResult struct {
-	WorkerExited  bool
-	InFlight      int
+	WorkerExited   bool
+	InFlight       int
 	PendingDropped uint64
 }
 
 // Writer serializes append records through a non-blocking submission channel
 // and a single I/O worker.
 type Writer struct {
-	mu        sync.Mutex
-	file      appendFile
-	closed    bool
-	closing   bool
-	appended  uint64
-	dropped   uint64
-	failures  uint64
-	ring      []contract.Envelope
-	pos       int
-	full      bool
-	ringMu    sync.RWMutex
-	submitCh  chan submitWork
-	workerWg  sync.WaitGroup
-	closeOnce sync.Once
-	closeErr  error
-	auth      ProducerAuth
-	health    Health
-	config    Config
+	mu          sync.Mutex
+	file        appendFile
+	closed      bool
+	closing     bool
+	inFlight    int
+	appended    uint64
+	dropped     uint64
+	failures    uint64
+	ring        []contract.Envelope
+	pos         int
+	full        bool
+	ringMu      sync.RWMutex
+	submitCh    chan submitWork
+	workerWg    sync.WaitGroup
+	workerDone  chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
+	closeResult CloseResult
+	auth        ProducerAuth
+	health      Health
+	config      Config
 }
 
 func Open(config Config, auth ProducerAuth) (*Writer, error) {
@@ -208,11 +269,15 @@ func Open(config Config, auth ProducerAuth) (*Writer, error) {
 
 func newWriter(file appendFile, config Config, auth ProducerAuth) *Writer {
 	w := &Writer{
-		file:     file,
-		ring:     make([]contract.Envelope, recentEnvelopes),
-		submitCh: make(chan submitWork, submitBufCap),
-		auth:     auth,
-		config:   config,
+		file:       file,
+		ring:       make([]contract.Envelope, recentEnvelopes),
+		submitCh:   make(chan submitWork, submitBufCap),
+		auth:       auth,
+		config:     config,
+		workerDone: make(chan struct{}),
+	}
+	if store, ok := auth.(*ProducerStore); ok {
+		store.attach(w)
 	}
 	w.startWorker()
 	return w
@@ -222,8 +287,32 @@ func (w *Writer) startWorker() {
 	w.workerWg.Add(1)
 	go func() {
 		defer w.workerWg.Done()
+		defer close(w.workerDone)
+		defer func() {
+			w.mu.Lock()
+			file := w.file
+			w.file = nil
+			w.closed = true
+			w.mu.Unlock()
+			if file != nil {
+				_ = file.Close()
+			}
+		}()
 		for work := range w.submitCh {
+			w.mu.Lock()
+			closing := w.closing || w.closed
+			if !closing {
+				w.inFlight++
+			}
+			w.mu.Unlock()
+			if closing {
+				atomic.AddUint64(&w.dropped, 1)
+				return
+			}
 			w.processSubmit(work)
+			w.mu.Lock()
+			w.inFlight--
+			w.mu.Unlock()
 		}
 	}()
 }
@@ -246,28 +335,27 @@ func (w *Writer) processSubmit(work submitWork) {
 	record = append(record, '\n')
 
 	w.mu.Lock()
-	if w.closed || w.file == nil {
+	if w.closed || w.closing || w.file == nil {
 		atomic.AddUint64(&w.dropped, 1)
 		w.mu.Unlock()
 		return
 	}
-	n, err := w.file.Write(record)
+	file := w.file
+	w.mu.Unlock()
+	n, err := file.Write(record)
 	if err != nil || n != len(record) {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
 		w.health.markDegraded(fmt.Sprintf("write failure: %v", err))
-		w.mu.Unlock()
 		return
 	}
-	if err := w.file.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
 		w.health.markDegraded(fmt.Sprintf("sync failure: %v", err))
-		w.mu.Unlock()
 		return
 	}
 	atomic.AddUint64(&w.appended, 1)
-	w.mu.Unlock()
 
 	w.ringMu.Lock()
 	w.ring[w.pos] = work.envelope
@@ -290,7 +378,7 @@ func (w *Writer) submit(envelope contract.Envelope, h producerHandle, tok Produc
 		return false
 	}
 	// Validate envelope identity against handle.
-	if envelope.Provider != h.provider || envelope.SessionID != h.sessionID || envelope.LaunchGeneration != h.generation {
+	if envelope.Provider != h.provider || envelope.SessionID != h.sessionID || envelope.RuntimeID != h.runtimeID || envelope.LaunchGeneration != h.generation || !h.allows(envelope.EventKind) {
 		atomic.AddUint64(&w.dropped, 1)
 		return false
 	}
@@ -300,23 +388,23 @@ func (w *Writer) submit(envelope contract.Envelope, h producerHandle, tok Produc
 		w.mu.Unlock()
 		return false
 	}
-	w.mu.Unlock()
 	select {
 	case w.submitCh <- submitWork{envelope: envelope, handle: h, token: tok}:
+		w.mu.Unlock()
 		return true
 	default:
+		w.mu.Unlock()
 		atomic.AddUint64(&w.dropped, 1)
 		w.health.markDegraded("submission channel full")
 		return false
 	}
 }
 
-// Append is retained for backward compatibility (ring-buffer tests, cockpit).
-// In the activation path, prefer Capability.SubmitAfterCommit.
+// Append is legacy-only. It is rejected when producer authorization is
+// configured, so an activated Timeline path cannot bypass Capability binding.
 func (w *Writer) Append(envelope contract.Envelope) bool {
-	if err := envelope.Validate(); err != nil {
+	if w.auth != nil || envelope.Validate() != nil {
 		atomic.AddUint64(&w.dropped, 1)
-		atomic.AddUint64(&w.failures, 1)
 		return false
 	}
 	record, err := json.Marshal(envelope)
@@ -326,31 +414,28 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 		return false
 	}
 	record = append(record, '\n')
-
 	w.mu.Lock()
-	if w.closed || w.file == nil {
+	if w.closed || w.closing || w.file == nil {
 		atomic.AddUint64(&w.dropped, 1)
 		w.mu.Unlock()
 		return false
 	}
-	n, err := w.file.Write(record)
+	file := w.file
+	w.mu.Unlock()
+	n, err := file.Write(record)
 	if err != nil || n != len(record) {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
-		w.health.markDegraded("write failure")
-		w.mu.Unlock()
+		w.health.markDegraded("legacy write failure")
 		return false
 	}
-	if err := w.file.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
-		w.health.markDegraded("sync failure")
-		w.mu.Unlock()
+		w.health.markDegraded("legacy sync failure")
 		return false
 	}
 	atomic.AddUint64(&w.appended, 1)
-	w.mu.Unlock()
-
 	w.ringMu.Lock()
 	w.ring[w.pos] = envelope
 	w.pos++
@@ -363,15 +448,25 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 }
 
 func (w *Writer) ReadRecent(n int) []contract.Envelope {
-	if n <= 0 { return nil }
+	if n <= 0 {
+		return nil
+	}
 	w.ringMu.RLock()
 	defer w.ringMu.RUnlock()
 	capacity := len(w.ring)
 	size := w.pos
-	if w.full { size = capacity }
-	if n > capacity { n = capacity }
-	if n > size { n = size }
-	if n == 0 { return nil }
+	if w.full {
+		size = capacity
+	}
+	if n > capacity {
+		n = capacity
+	}
+	if n > size {
+		n = size
+	}
+	if n == 0 {
+		return nil
+	}
 	out := make([]contract.Envelope, n)
 	if w.full {
 		start := (w.pos - size + capacity) % capacity
@@ -402,29 +497,24 @@ func (w *Writer) ConfigSnapshot() Config { return w.config }
 // drains pending items, reports outcome, and closes the file. No send-on-
 // closed panic.
 func (w *Writer) Close() CloseResult {
-	var result CloseResult
 	w.closeOnce.Do(func() {
 		w.mu.Lock()
 		w.closing = true
+		w.closeErr = nil
+		w.closeResult.PendingDropped = uint64(len(w.submitCh))
+		atomic.AddUint64(&w.dropped, w.closeResult.PendingDropped)
 		close(w.submitCh)
 		w.mu.Unlock()
-		done := make(chan struct{})
-		go func() {
-			w.workerWg.Wait()
-			close(done)
-		}()
 		select {
-		case <-done:
-			result.WorkerExited = true
+		case <-w.workerDone:
+			w.closeResult.WorkerExited = true
 		case <-time.After(closeDrainTimeout):
-			result.PendingDropped = uint64(len(w.submitCh))
-		}
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		w.closed = true
-		if w.file != nil {
-			w.closeErr = w.file.Close()
+			w.mu.Lock()
+			w.closeResult.InFlight = w.inFlight
+			w.mu.Unlock()
 		}
 	})
-	return result
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closeResult
 }

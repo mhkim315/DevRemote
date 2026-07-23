@@ -79,6 +79,25 @@ func makeEnv() contract.Envelope {
 	return e
 }
 
+func boundEnv(t *testing.T, provider, sessionID, runtimeID string, generation int64, kind contract.EventKind) contract.Envelope {
+	t.Helper()
+	e := makeEnv()
+	e.EventID = ""
+	e.Provider, e.SessionID, e.RuntimeID, e.LaunchGeneration, e.EventKind = provider, sessionID, runtimeID, generation, kind
+	e.T0Event.AgentKind = provider
+	if kind == contract.EventToolCallFinished {
+		e.T0Event.Type = agent.EventToolCallFinished
+	}
+	e.T0Event.SessionID = sessionID
+	e.EvidenceSources.Provider.Scope = contract.Scope{SessionID: sessionID, RuntimeID: runtimeID, LaunchGeneration: generation}
+	e.References.ToolCall.Scope = contract.Scope{SessionID: sessionID, RuntimeID: runtimeID, LaunchGeneration: generation}
+	bound, err := contract.NewEnvelope(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bound
+}
+
 // ── Original Append/write tests (restored from pre-observer baseline) ──
 
 func TestAppendSuccessFramesOneCanonicalEnvelope(t *testing.T) {
@@ -229,4 +248,57 @@ func TestCloseIdempotent(t *testing.T) {
 	w := newWriter(&testFile{}, Config{}, nil)
 	w.Close()
 	w.Close()
+}
+
+func TestCapabilityBindsWriterAndCompleteIdentity(t *testing.T) {
+	store := NewProducerStore()
+	w := newWriter(&testFile{}, Config{}, store)
+	capability, err := store.Bind("codex", "runtime-a", "codex_app_server:one", 7, contract.EventToolCallStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := boundEnv(t, "codex", "codex_app_server:one", "runtime-a", 7, contract.EventToolCallStarted)
+	if !capability.SubmitAfterCommit(e) {
+		t.Fatal("bound submit rejected")
+	}
+	wrongRuntime := boundEnv(t, "codex", "codex_app_server:one", "runtime-b", 7, contract.EventToolCallStarted)
+	if capability.SubmitAfterCommit(wrongRuntime) {
+		t.Fatal("runtime mismatch accepted")
+	}
+	wrongKind := boundEnv(t, "codex", "codex_app_server:one", "runtime-a", 7, contract.EventToolCallFinished)
+	if capability.SubmitAfterCommit(wrongKind) {
+		t.Fatal("unbound event kind accepted")
+	}
+	store.Revoke("codex", "codex_app_server:one", 7)
+	if capability.SubmitAfterCommit(e) {
+		t.Fatal("revoked capability accepted")
+	}
+	if result := w.Close(); !result.WorkerExited {
+		t.Fatalf("close = %+v", result)
+	}
+	if got := w.Stats(); got.Appended != 1 || got.Dropped < 3 {
+		t.Fatalf("stats = %+v", got)
+	}
+}
+
+func TestCapabilityRejectsArbitraryProviderAndConcurrentSubmitClose(t *testing.T) {
+	store := NewProducerStore()
+	w := newWriter(&testFile{}, Config{}, store)
+	if _, err := store.Bind("generic", "r", "generic:x", 1, contract.EventToolCallStarted); err == nil {
+		t.Fatal("arbitrary provider bound")
+	}
+	capability, err := store.Bind("claude", "runtime-a", "claude_headless:one", 1, contract.EventToolCallStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := boundEnv(t, "claude", "claude_headless:one", "runtime-a", 1, contract.EventToolCallStarted)
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() { defer wg.Done(); capability.SubmitAfterCommit(e) }()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); w.Close() }()
+	wg.Wait()
+	_ = w.Close()
 }
