@@ -343,12 +343,7 @@ func validateDaemonPaths(state *daemonState) error {
 	if state == nil {
 		return fmt.Errorf("daemon state is nil")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
 	stateDir := daemonStateDir()
-	installDir := filepath.Join(home, "Library", "Application Support", "pokit")
 	resolve := func(path string) (string, error) {
 		if !filepath.IsAbs(path) {
 			return "", fmt.Errorf("not absolute: %q", path)
@@ -362,10 +357,6 @@ func validateDaemonPaths(state *daemonState) error {
 		}
 		return filepath.Join(parent, filepath.Base(path)), nil
 	}
-	under := func(path, root string) bool {
-		rel, err := filepath.Rel(root, path)
-		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
-	}
 	for _, p := range []struct{ name, value string }{
 		{"binPath", state.BinPath}, {"oldBinPath", state.OldBinPath}, {"backupPath", state.BackupPath},
 		{"plistPath", state.PlistPath}, {"stateDir", state.StateDir},
@@ -378,18 +369,28 @@ func validateDaemonPaths(state *daemonState) error {
 	if err != nil {
 		return err
 	}
-	resolvedInstallDir := filepath.Clean(installDir)
-	if parent, err := filepath.EvalSymlinks(filepath.Dir(installDir)); err == nil {
-		resolvedInstallDir = filepath.Join(parent, filepath.Base(installDir))
+	managedBin := filepath.Join(resolvedStateDir, "bin", "devremote")
+	resolvedBin, err := resolve(state.BinPath)
+	if err != nil {
+		return fmt.Errorf("daemon state binPath: %w", err)
 	}
-	for _, p := range []struct{ name, value string }{{"binPath", state.BinPath}, {"oldBinPath", state.OldBinPath}, {"backupPath", state.BackupPath}} {
-		resolved, err := resolve(p.value)
-		if err != nil {
-			return fmt.Errorf("daemon state %s: %w", p.name, err)
-		}
-		if !under(resolved, resolvedStateDir) && !under(resolved, resolvedInstallDir) {
-			return fmt.Errorf("daemon state %s outside install roots: %q", p.name, p.value)
-		}
+	currentExe, _ := resolve(daemonBinPath())
+	if resolvedBin != managedBin && resolvedBin != currentExe {
+		return fmt.Errorf("daemon state binPath is not a managed binary: %q", state.BinPath)
+	}
+	resolvedOld, err := resolve(state.OldBinPath)
+	if err != nil {
+		return fmt.Errorf("daemon state oldBinPath: %w", err)
+	}
+	if resolvedOld != resolvedBin && !strings.HasPrefix(resolvedOld, resolvedBin+".old-") {
+		return fmt.Errorf("daemon state oldBinPath is not related to binPath: %q", state.OldBinPath)
+	}
+	resolvedBackup, err := resolve(state.BackupPath)
+	if err != nil {
+		return fmt.Errorf("daemon state backupPath: %w", err)
+	}
+	if !strings.HasPrefix(resolvedBackup, resolvedBin+".pre-upgrade-") {
+		return fmt.Errorf("daemon state backupPath is not related to binPath: %q", state.BackupPath)
 	}
 	resolvedPlist, err := resolve(state.PlistPath)
 	if err != nil {
@@ -485,7 +486,9 @@ func installDaemon() {
 	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(serviceBinPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir))
 	if err := writeFileAtomic(plistPath, []byte(plistContent), 0o600); err != nil {
 		if backupPath != "" {
-			_ = os.Remove(backupPath)
+			if removeErr := os.Remove(backupPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				log.Printf("install: backup cleanup after plist failure failed: %v", removeErr)
+			}
 		}
 		log.Fatalf("install: cannot atomically write plist: %v", err)
 	}
@@ -511,7 +514,7 @@ func installDaemon() {
 	// failure restores staged files but never attempts a duplicate bootstrap.
 	if priorWasLoaded {
 		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath); err != nil {
-			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, false); rbErr != nil {
+			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, priorWasLoaded); rbErr != nil {
 				log.Fatalf("install: bootout failed and staged rollback failed: %v", rbErr)
 			}
 			log.Fatalf("install: cannot stop existing daemon for upgrade: %v", err)
@@ -546,7 +549,9 @@ func installDaemon() {
 		os.Exit(1)
 	}
 	if err := checkReadiness(plistPath); err != nil {
-		_ = runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
+		if stopErr := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath); stopErr != nil {
+			log.Fatalf("install: readiness failed and replacement bootout failed: %v", stopErr)
+		}
 		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, priorWasLoaded); rbErr != nil {
 			log.Fatalf("install: readiness failed and rollback failed: %v", rbErr)
 		}
@@ -672,8 +677,7 @@ func uninstallDaemon(purgeTrust bool) {
 			}
 			seen[artifact] = true
 			if err := os.Remove(artifact); err != nil && !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "uninstall: cannot remove daemon artifact %s: %v; preserving daemon state for retry\n", artifact, err)
-				return
+				log.Fatalf("uninstall: cannot remove daemon artifact %s: %v; preserving daemon state for retry", artifact, err)
 			}
 			fmt.Printf("Removed daemon artifact: %s\n", artifact)
 		}
@@ -682,7 +686,7 @@ func uninstallDaemon(purgeTrust bool) {
 	// Remove daemon state JSON (always removed on uninstall).
 	statePath := filepath.Join(daemonStateDir(), "daemon_state.json")
 	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "uninstall: cannot remove daemon state file: %v\n", err)
+		log.Fatalf("uninstall: cannot remove daemon state file: %v", err)
 	}
 
 	// Purge device trust state if requested.
