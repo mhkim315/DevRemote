@@ -30,14 +30,13 @@ Commands:
 }
 
 // runDaemonClient routes the "daemon" subcommand.
-func runDaemonClient(args []string) {
+func runDaemonClient(args []string) error {
 	if len(args) == 0 {
-		daemonUsage()
-		os.Exit(1)
+		return fmt.Errorf("daemon command required")
 	}
 	switch args[0] {
 	case "install":
-		installDaemon()
+		return installDaemon()
 	case "uninstall":
 		purgeTrust := false
 		for _, a := range args[1:] {
@@ -45,16 +44,14 @@ func runDaemonClient(args []string) {
 				purgeTrust = true
 			}
 		}
-		uninstallDaemon(purgeTrust)
+		return uninstallDaemon(purgeTrust)
 	case "start":
-		startDaemon()
+		return startDaemon()
 	case "stop":
-		stopDaemon()
+		return stopDaemon()
 	case "status":
-		statusDaemon()
+		return statusDaemon()
 	default:
-		fmt.Fprintf(os.Stderr, "pokit daemon: unknown command %q\n", args[0])
-		daemonUsage()
-		os.Exit(1)
+		return fmt.Errorf("unknown daemon command %q", args[0])
 	}
 }

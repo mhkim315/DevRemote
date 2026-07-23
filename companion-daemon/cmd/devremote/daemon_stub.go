@@ -4,33 +4,17 @@ package main
 
 import (
 	"fmt"
-	"os"
 )
 
-func installDaemon() {
-	fmt.Fprintln(os.Stderr, "pokit daemon: LaunchAgent management is only supported on macOS.")
-	os.Exit(1)
+func unsupportedDaemon() error {
+	return fmt.Errorf("pokit daemon: LaunchAgent management is only supported on macOS")
 }
 
-func startDaemon() {
-	fmt.Fprintln(os.Stderr, "pokit daemon: LaunchAgent management is only supported on macOS.")
-	os.Exit(1)
-}
-
-func stopDaemon() {
-	fmt.Fprintln(os.Stderr, "pokit daemon: LaunchAgent management is only supported on macOS.")
-	os.Exit(1)
-}
-
-func statusDaemon() {
-	fmt.Fprintln(os.Stderr, "pokit daemon: LaunchAgent management is only supported on macOS.")
-	os.Exit(1)
-}
-
-func uninstallDaemon(purgeTrust bool) {
-	fmt.Fprintln(os.Stderr, "pokit daemon: LaunchAgent management is only supported on macOS.")
-	os.Exit(1)
-}
+func installDaemon() error                  { return unsupportedDaemon() }
+func startDaemon() error                    { return unsupportedDaemon() }
+func stopDaemon() error                     { return unsupportedDaemon() }
+func statusDaemon() error                   { return unsupportedDaemon() }
+func uninstallDaemon(purgeTrust bool) error { return unsupportedDaemon() }
 
 func daemonLoaded(plistPath string) (bool, string) {
 	return false, ""

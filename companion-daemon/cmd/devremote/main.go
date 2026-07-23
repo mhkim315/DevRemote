@@ -44,8 +44,7 @@ func dispatchSubcommand(cmd string, args []string) bool {
 		printShellHook()
 		return true
 	case "daemon":
-		runDaemonClient(args)
-		return true
+		return runDaemonClient(args) == nil
 	case "doctor":
 		runDoctorClient()
 		return true
@@ -58,7 +57,10 @@ func main() {
 	// "pokit daemon install|start|stop|status|uninstall" = CLI dispatch.
 	// "pokit daemon" (no subcommand) = foreground daemon serve.
 	if len(os.Args) > 2 && os.Args[1] == "daemon" && isDaemonLifecycleVerb(os.Args[2]) {
-		dispatchSubcommand(os.Args[1], os.Args[2:])
+		if err := runDaemonClient(os.Args[2:]); err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] != "daemon" {
