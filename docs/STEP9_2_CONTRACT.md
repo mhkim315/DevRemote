@@ -5,136 +5,194 @@
 **Branch:** `feature/canonical-timeline-foundation`
 **PREREQUISITE:** Step 9.1 ACCEPTED at `dc376f9b7`
 
-## 1. Scope and authority boundary
+## 1. Scope and authority
 
-Step 9.2 builds a read-only offline equivalence harness that compares Timeline-derived
-Activity and Transcript projections against the existing authoritative Transcript
-service. No production cutover — the existing Transcript service remains authoritative
-throughout.
-
-This step produces an **equivalence report**, not a migration. It proves that Timeline
-shadow events can faithfully reconstruct the same semantic content the Transcript
-service already provides. Differences are classified, not hidden.
+Step 9.2 builds a dual-fed equivalence oracle that compares Timeline-derived
+Activity and Transcript projections against the authoritative Transcript
+service. The oracle is read-only, offline, and default-off.
 
 **What is NEW:**
-- `internal/projection/` — read-only package that derives Activity and Transcript
-  projections from Timeline envelopes in the ring buffer
+- `internal/projection/` — Activity + Transcript projections from Timeline ring buffer
+- `internal/projection/equivalence_test.go` — dual-fed equivalence oracle
 - `--enable-projection-convergence` — default-off CLI flag
-- Offline equivalence comparator that compares projection output against existing
-  Transcript service API responses
 
 **What stays UNCHANGED:**
-- Existing `internal/transcript/` service, API routes, and consumers
-- `Transcript.Service` authority (sole writer of transcript data)
-- `Recorder` (sole PTY reader)
-- Cockpit (already reads ring buffer — no change needed)
-- All REST/WS handlers, mobile code, device trust, pairing, approval
+- `internal/transcript/` — authoritative Transcript service and API
+- `Recorder` — sole PTY reader; raw bytes are NOT reinterpreted as Timeline events
+- Cockpit, mobile, device trust, approval, terminal transport — unchanged
 
-## 2. Projection definitions
+## 2. Dual-fed Oracle Model
 
-### 2a. Activity projection
+The equivalence oracle compares TWO independently sourced projections:
 
-Derived from Timeline envelopes. A bounded, ordered view of provider-native events:
+### 2a. Transcript Oracle (authoritative)
 
+Source: `Transcript.Service.ListTranscript(sessionID)` API response.
+
+Each `TranscriptResponse` contains:
+- `BuildResponse` — stable structural identity
+- `PrimarySource` — provider/session/runtime provenance
+- `Generation` — generation at observation time
+- `Suppression` — explicit gap/error markers
+- `IDs` — canonical IDs for dedup
+- `Seq` — monotonic sequence
+
+### 2b. Activity Oracle (Timeline-derived, comparison target)
+
+Source: `writer.Writer.ReadRecent(n)` ring buffer → projection pipeline.
+
+Each Activity item maps to a named comparison target:
 ```
-Timeline Envelope → Activity Item:
-  kind:     envelope.EventKind (mapped to display label)
-  state:    derived from event context (started/finished/resolved)
-  summary:  envelope.RedactedPayload.Summary (redacted, safe for display)
-  origin:   {provider, sessionId, runtimeId, generation}
-  time:     envelope.OccurredAt
-```
-
-Activity items are read from the Timeline writer's ring buffer (`ReadRecent`).
-Ordering is insertion order (monotonic by observation time, not guaranteed causal).
-
-### 2b. Transcript projection
-
-Derived from Timeline envelopes. A user-facing conversation transcript:
-
-```
-Timeline Envelope → Transcript Segment:
-  role:      "assistant" (for tool calls, streams) | "system" (for lifecycle)
-  content:   envelope.RedactedPayload.Summary (redacted)
-  timestamp: envelope.OccurredAt
-  source:    {provider, sessionId, generation}
+Timeline envelope → projection.ActivityItem:
+  ID, SessionID, RuntimeID, Generation, Provider,
+  EventKind, Summary, OccurredAt, Seq, Source
 ```
 
-This is NOT a replacement for the existing Transcript service. It is a
-comparison artifact for the equivalence harness only.
+### 2c. Canonical Normalization
 
-## 3. Equivalence harness
+Before comparison, both sources are normalized:
 
-The harness is a standalone Go test helper in `internal/projection/equivalence_test.go`
-(or a separate test binary). It:
+| Dimension | Transcript | Activity | Normalization |
+|-----------|-----------|----------|--------------|
+| ID | `TranscriptResponse.IDs` | `Envelope.EventID` | Sort+dedup |
+| Generation | `TranscriptResponse.Generation` | `Envelope.LaunchGeneration` | Direct compare |
+| Session | `TranscriptResponse.PrimarySource` | `Envelope.SessionID` | Direct compare |
+| Ordering | `TranscriptResponse.Seq` | Insertion order | Monotonic |
+| Content | `TranscriptResponse.BuildResponse` | `Envelope.RedactedPayload.Summary` | Semantic |
+| Gaps | `TranscriptResponse.Suppression` | `Writer.Health().degraded` | Tolerated loss taxonomy |
 
-1. Creates a Timeline writer (in-memory, no filesystem)
-2. Feeds the writer a known sequence of envelopes (replay of recorded events)
-3. Derives Activity and Transcript projections from the ring buffer
-4. Compares against the existing `Transcript.Service.ListTranscript()` API output
-5. Produces a structured equivalence report
+### 2d. Tolerated Loss Taxonomy
 
-**Comparison dimensions:**
-- **Generation reset:** after a new runtime generation, projections must reset
-  (not carry forward stale events)
-- **Reconnect:** after writer restart (empty ring buffer), projections are empty
-- **Ordering:** insertion order preserved; no reordering
-- **Duplicates:** duplicate EventIDs are suppressed (first-wins)
-- **Missing events:** gaps are explicit (not filled with synthetic events)
-- **Degradation:** when writer is degraded (drops), projection exposes gap markers
-- **Request/result pairing:** approval-requested must precede approval-resolved
-- **Approval relationships:** approval events must carry correct session/generation binding
+Not every difference is a failure. The taxonomy:
 
-## 4. Implementation files
+| Category | Meaning | Verdict |
+|----------|---------|---------|
+| `exact_match` | Byte-identical after normalization | PASS |
+| `tolerated_loss` | Timeline projection is empty/partial; Transcript has full data | PASS (expected during shadow) |
+| `tolerated_gap` | Writer drop detected; gap marker present in both | PASS |
+| `ordering_divergence` | Items in different order but same content set | TOLERATED (eventual consistency) |
+| `collision` | Same EventID, different canonical digest | FAIL |
+| `extra` | Timeline has item not in Transcript | FAIL |
+| `missing` | Transcript has item not in Timeline (no gap marker) | FAIL |
+| `generation_mismatch` | Same session, different generation binding | FAIL |
+| `misbound_approval` | Approval events bound to wrong session/generation | FAIL |
+| `unexplained` | Any difference not covered above | FAIL |
+
+### 2e. PASS/FAIL Schema
+
+The oracle produces a structured verdict per comparison run:
+
+```go
+type EquivalenceReport struct {
+    ComparedSessions   int
+    TotalComparisons   int
+    ExactMatches       int
+    ToleratedLosses    int
+    ToleratedGaps      int
+    OrderingDivergences int
+    Collisions         int
+    Extras             int
+    Missings           int
+    GenerationMismatches int
+    MisboundApprovals  int
+    Unexplained        int
+    Passed             bool // true when all FAIL categories are zero
+}
+```
+
+Per roadmap §5: "There is no PASS with unexplained missing, extra, reordered,
+duplicated, misbound, unknown-version, collision, gap, or degraded input."
+
+## 3. Loss Semantics
+
+### 3a. Duplicate EventID
+
+Two cases:
+
+1. **Exact replay (idempotent):** same EventID, same CanonicalDigest.
+   First-wins, subsequent suppressed. Counted as `exact_match`. Not an error.
+
+2. **Collision:** same EventID, DIFFERENT CanonicalDigest.
+   Producer error or corruption. Counted as `collision` → FAIL.
+   Per `contract.SameEvidence()`: returns `ErrEventIDCollision`.
+
+### 3b. Writer restart / empty ring
+
+An empty ring buffer after restart is NOT silent. The `Writer.Health()`
+degradation flag is set on restart (ring buffer empty, no data yet).
+The projection returns:
+
+- `Activity`: empty with `gap_marker: "writer_restart"` metadata
+- `Transcript`: empty with `unavailable: "timeline_restart"` metadata
+
+The equivalence oracle detects this as `tolerated_loss` (Timeline has less
+data than Transcript — expected after restart).
+
+### 3c. Global writer drops
+
+When `Writer.Stats().Dropped > 0`, the writer emits a synthetic
+`EventDegraded` envelope with `metadata: {dropped: N, generation: G, session: S}`.
+This envelope is pushed into the ring buffer so projections can expose an
+explicit gap boundary with session+generation ordering.
+
+```go
+type GapMarker struct {
+    SessionID    string
+    Generation   int64
+    DroppedCount uint64
+    OccurredAt   time.Time
+}
+```
+
+The projection inserts `GapMarker` entries at the drop site (between known
+items). The equivalence oracle counts these as `tolerated_gap` (both
+Transcript and Timeline acknowledge the gap).
+
+## 4. Acceptance Matrix
+
+One acceptance test per dimension. All tests use the existing
+`writer.Writer` ring buffer and `writer.Health()` as the realizable source.
+
+| # | Dimension | Test | Source |
+|---|-----------|------|--------|
+| 1 | Empty writer | Projections return empty, not nil; oracle classifies as `tolerated_loss` | Ring buffer empty |
+| 2 | Known sequence | 10 envelopes → Activity items in insertion order | Ring buffer with 10 items |
+| 3 | Exact replay | Same EventID + same digest → suppressed, not counted as duplicate | `contract.SameEvidence()` |
+| 4 | Collision | Same EventID + different digest → FAIL | `contract.ErrEventIDCollision` |
+| 5 | Ring buffer wrap | 200 items → oldest 72 dropped, 128 retained | Ring capacity 128 |
+| 6 | Reconnect | After writer restart → empty ring → `tolerated_loss` oracle verdict | `Writer.Health()` + new writer |
+| 7 | Generation reset | Claude N→N+1→restored-N: each generation has own ordering | Three generations |
+| 8 | Missing events | Transcript has item not in Timeline → FAIL (no gap marker) | Oracle comparison |
+| 9 | Request/result ordering | Approval-requested before approval-resolved | Insertion order |
+| 10 | Approval binding | Approval events carry correct session+generation | Envelope identity |
+| 11 | Degradation | Writer has drops → gap markers in projection → `tolerated_gap` | `Writer.Health().degraded` |
+| 12 | Unknown version | Unknown EventKind → FAIL in oracle, dropped by writer | `isBoundEventKind` |
+
+## 5. Implementation files
 
 **May create:**
 - `internal/projection/activity.go` — Activity projection from ring buffer
 - `internal/projection/transcript.go` — Transcript projection from ring buffer
-- `internal/projection/equivalence_test.go` — offline equivalence harness
-- `cmd/devremote/app.go` — add `--enable-projection-convergence` flag (wires nothing yet)
+- `internal/projection/equivalence_test.go` — 12 acceptance tests
+- `internal/projection/equivalence.go` — oracle, normalization, taxonomy
+- `cmd/devremote/app.go` — add `--enable-projection-convergence` flag (wires nothing)
 
 **Must NOT change:**
-- Any `internal/transcript/` file
-- Any `internal/term/` file
-- Any `mobile/` file
-- Existing REST/WS handlers
+- `internal/transcript/`, `internal/term/`, `mobile/`, existing REST/WS handlers
 
-## 5. Fail-open guarantee
+## 6. Gate
 
-- Projections are read-only from the ring buffer
-- If the Timeline writer is nil (disabled), projections return empty results
-- If the ring buffer is empty, projections return empty (no synthetic events)
-- Cockpit degradation endpoint already exposes drops; projections mirror that state
-- No projection code may call `log.Fatal`, `panic`, or `os.Exit`
-
-## 6. Acceptance tests
-
-Before the implementation is accepted, automated tests must prove:
-
-1. **Empty writer** → empty projections (both Activity and Transcript)
-2. **Known sequence** → correct Activity items in insertion order
-3. **Duplicates** → first-wins, second suppressed
-4. **Ring buffer wrap** → oldest items dropped, most recent preserved
-5. **Generation reset** → after reset, projections start fresh
-6. **Degradation** → when writer has drops, projections expose gap markers
-7. **Equivalence** → offline comparison against real Transcript API output matches
-8. **Default-off** — without `--enable-projection-convergence`, zero projection code paths execute
-
-## 7. Gate
-
-- [ ] All existing tests pass (`go test -race ./...`, `npx tsc --noEmit`, `npx jest --runInBand`)
-- [ ] New projection tests pass
-- [ ] Equivalence report generated
-- [ ] No production import regressions
-- [ ] `--enable-projection-convergence` default-off, zero runtime effect when disabled
+- [ ] All existing tests pass
+- [ ] 12 new acceptance tests pass
+- [ ] Equivalence report PASS (all FAIL categories zero on clean data)
+- [ ] Default-off flag: zero runtime effect when disabled
 - [ ] Separate evidence commit records equivalence results
 
-## 8. Stop conditions
+## 7. Stop conditions
 
 Stop and reject if the change:
 - Modifies existing Transcript service or API behavior
-- Adds a new production route or mobile screen
-- Introduces a production goroutine, channel, or blocking call in the read path
-- Derives authority from projections (projections are read-only)
-- Requires the writer to be enabled for daemon startup
-- Changes the default value of any existing flag
+- Interprets raw PTY bytes as Timeline events
+- Treats empty ring as silent success (must be explicit gap/unavailable)
+- Treats duplicate EventID with different digest as idempotent (must FAIL)
+- Unexplained difference in oracle output (must classify every difference)
