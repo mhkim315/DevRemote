@@ -63,6 +63,11 @@ func clonePerms(in []string) []string {
 	return out
 }
 
+type AuthorizationState struct {
+	Epoch  uint64
+	Active bool
+}
+
 // ── Principal (handler-independent) ──
 
 type Principal struct {
@@ -99,9 +104,10 @@ type DeviceSessionManager struct {
 	byDevice      map[string]string         // deviceId → token digest (one active per device)
 	bootID        string
 	lifetime      time.Duration
-	onReplace     OnReplaceFunc               // called when a device session is replaced
-	onRevoke      OnReplaceFunc               // called when a device is revoked
-	GetEpoch      func(deviceID string) int64 // 9.4-D: epoch lookup in DeviceRegistry
+	onReplace     OnReplaceFunc                            // called when a device session is replaced
+	onRevoke      OnReplaceFunc                            // called when a device is revoked
+	GetEpoch      func(deviceID string) int64              // 9.4-D: epoch lookup in DeviceRegistry
+	GetAuth       func(deviceID string) AuthorizationState // 9.4-D: authoritative state
 	maxSessions   int
 	purgeStop     chan struct{}
 	purgeDone     chan struct{}
