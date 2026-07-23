@@ -1,6 +1,6 @@
 # Canonical Timeline CT-PRE Execution Plan
 
-**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0, CT-P1, and Steps 4-8 accepted; operational foundation complete;
+**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0 ACCEPTED, CT-P1 ACCEPTED, CT-P1 Amendment ACCEPTED. Steps 4-8 foundation complete. CT-P2 and production wiring remain BLOCKED (separate post-PB packet).
 PB accepted; operational-evidence amendment is NEXT; CT-P2 and production
 wiring remain blocked pending amendment acceptance and separate authorization
 

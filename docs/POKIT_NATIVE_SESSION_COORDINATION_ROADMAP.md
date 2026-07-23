@@ -339,10 +339,15 @@ shows its provider/session/generation/model/snapshot/evidence origin.
    (IMPL `e1cbe7211`→`093e03f04`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
-9. **NEXT (9.0-9.3):** Dogfood readiness review, feature-flag audit, default-off
-   foundation vs production-live distinction, ledger document.
-10. **NEXT (9.1+):** Operational alpha/beta before expanding policy automation.
-11. **NEXT:** Forked recovery worktrees and policy automation only after measured
+9. **NEXT (9.0):** Dogfood readiness review, feature-flag audit, default-off
+   foundation vs production-live distinction, ledger document (DOCS ONLY).
+10. **NEXT (9.1):** Controlled staging enablement — enable default-off flags in
+    isolated test environment, measure overhead, verify no daemon regression.
+11. **NEXT (9.2):** Operational mobile cockpit alpha — deploy APK with cockpit
+    screen enabled, verify live session/approval/finding data via GET.
+12. **NEXT (9.3):** Beta expansion — enable flags in broader staging, collect
+    performance baselines before policy automation.
+13. **FUTURE:** Forked recovery worktrees and policy automation only after measured
     demand.
 
 Steps 1-8 (foundation) are complete. Steps 9.0-9.3 are documentation-only

@@ -15,22 +15,29 @@ starts them automatically.
 |------|---------|------|---------|----------|----------|--------|
 | 4 | Timeline shadow writer | `--enable-timeline-shadow` | `false` | None | Cockpit (polling) | IMPLEMENTED |
 | 5 | Workspace identity/lease | `--enable-workspace-lease` | `false` | None | Coordination (identity) | IMPLEMENTED |
-| 6 | Coordination broker | (embedded in workspace) | `false` | None | None (broker-only) | IMPLEMENTED |
+| 6 | Coordination broker | (standalone `internal/coordination`) | `false` | None | None (broker-only) | IMPLEMENTED |
 | 7 | Frozen validation store | (embedded in cockpit) | `false` | None | Cockpit (polling) | IMPLEMENTED |
 | 8 | Cockpit projection | `--enable-cockpit` | `false` | None | Mobile UX (GET) | IMPLEMENTED |
 
 **Verification:** `go test -race ./...` passes for every package. No production
 codepath starts any of these without the corresponding CLI flag set.
 
-## 2. Production-Live Features (default-on, active producers/consumers)
+## 2. Default-Off Production Features (behind CLI flag, implemented but not enabled by default)
 
-These features are always enabled in production. They have no CLI gate and
-form the core operational surface.
+These features require an explicit `--enable-*` flag. Without the flag, no
+production codepath starts them.
+
+| Feature | Flag | Package | Producer |
+|---------|------|---------|----------|
+| Managed Codex runtime | `--enable-managed-codex` | `internal/term` | `ManagedCodexService` |
+| Managed Claude runtime | `--enable-managed-claude` | `internal/term` | `ManagedClaudeService` |
+
+## 3. Production-Live Features (always enabled, no CLI gate)
+
+These form the core operational surface. They are not flag-gated.
 
 | Feature | Package | Producer | Consumer |
 |---------|---------|----------|----------|
-| Managed Codex runtime | `internal/term` | `ManagedCodexService` | REST API, IPC |
-| Managed Claude runtime | `internal/term` | `ManagedClaudeService` | Approval system |
 | Device trust / pairing | `internal/devicetrust` | `PairingHost` | Mobile app |
 | Approval authority | `internal/term` | `AuthoritativeApprovalStore` | Push notifications |
 | Terminal transport | `internal/term` | `TerminalTransport` | WebSocket, IPC |
@@ -54,13 +61,13 @@ form the core operational surface.
 |------|----------|----------|-------------|
 | CT-P0 | `9688cc687` | `9885caf1f` | Source freeze |
 | CT-P1 | `317bb0cb7` | `317bb0cb7` (self) | Contract ACCEPT |
-| CT-P1 Amend | `12135bd80` | `12135bd80` (self) | Operational evidence |
+| CT-P1 Amend | `4698b19a1` | `12135bd80` | Operational evidence |
 | 4 (Shadow) | `6d1a72d35` | `58eb55b92` | Timeline writer |
-| 5 (Workspace) | `404a3e88` | `ad83bae10` | Identity/lease |
-| 6 (Coordination) | `6c13aafe7` | `6c13aafe7` (self) | Envelope/broker |
-| 7 (Validation) | `e1cbe7211`→`093e03f04` | `814868b5b` | Validation store |
-| 8 (Cockpit) | `75be15e91`→`093e03f04` | `093e03f04` | Mobile projection |
-| PB ACCEPT | `5354077af...` | — | Independent |
+| 5 (Workspace) | `404a3e882` | `ad83bae10` | Identity/lease |
+| 6 (Coordination) | `3b1a2c7ed` | `b7eeba499` | Envelope/broker (comment fixes `0dac78ffa`→`6c13aafe7`) |
+| 7 (Validation) | `a753e126c` | `814868b5b` | Validation store |
+| 8 (Cockpit) | `f69d9eb1a` | `093e03f04` | Mobile projection |
+| PB ACCEPT | `5354077af` | — | Independent |
 
 ## 5. Next (9.1-9.3)
 
