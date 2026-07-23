@@ -136,6 +136,7 @@ func (p *execProcess) OpaqueID() string {
 // touch the child's stdio.
 type codexManagedRuntime struct {
 	sessionID string
+	runtimeID string
 	epoch     int64
 	proc      ManagedProcess
 	reg       *ManagedSessionRegistry
@@ -183,6 +184,11 @@ type codexManagedRuntime struct {
 	// pumped provider message that carries a method, so deterministic tests
 	// can prove a crafted message was consumed WITHOUT affecting status.
 	observer func(method string)
+
+	// operational is the optional neutral post-commit observation seam. It is
+	// copied before the pump starts and never participates in provider state.
+	operational OperationalEventSink
+	finishOnce  sync.Once
 }
 
 func newCodexManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
@@ -378,6 +384,10 @@ func (rt *codexManagedRuntime) pump() {
 		}
 		turnID := turnIDOf(params)
 		switch method {
+		case "item/started":
+			if itemID, itemType, ok := rt.currentItemIdentity(params); ok && itemType == "commandExecution" {
+				rt.emitOperational(OperationalToolCallStarted, itemID, method, itemID)
+			}
 		case "turn/started":
 			// Only the EXACT turn bound at turn/start-response time can enter
 			// working. A ghost/foreign/late turn/started is inert — there is
@@ -424,19 +434,31 @@ func (rt *codexManagedRuntime) pump() {
 				continue
 			}
 			item, _ := params["item"].(map[string]any)
-			if it, _ := item["type"].(string); it == "agentMessage" {
+			it, _ := item["type"].(string)
+			itemID, _ := item["id"].(string)
+			if it == "commandExecution" && itemID != "" && len(itemID) <= maxApprovalParamIDLen {
+				rt.emitOperational(OperationalToolCallFinished, itemID, method, itemID)
+			}
+			if it == "agentMessage" {
 				if text, _ := item["text"].(string); text != "" {
 					rt.appendEvent(ManagedEventAssistant, boundUTF8(text, managedEventTextMax))
+					if itemID != "" && len(itemID) <= maxApprovalParamIDLen {
+						rt.emitOperational(OperationalStreamObserved, itemID, method, itemID)
+					}
 				}
 			}
 		case codexApprovalMethod:
 			// SP1-P1: strict structured NON-ACTIONABLE observation. The raw
 			// line (not the float64 map) carries the lossless top-level id.
-			rt.observeApprovalRequest(raw)
+			if approvalID, admitted := rt.observeApprovalRequest(raw); admitted {
+				rt.emitOperational(OperationalApprovalRequested, approvalID, method, approvalID)
+			}
 		case codexResolvedMethod:
 			// SP1-P1: provider-side resolution drops the pending observation
 			// only — no commit, no success, no provider write.
-			rt.observeApprovalResolved(raw)
+			if approvalID, resolved := rt.observeApprovalResolved(raw); resolved {
+				rt.emitOperational(OperationalApprovalResolved, approvalID, method, approvalID)
+			}
 		}
 	}
 	rt.turnMu.Lock()
@@ -449,6 +471,7 @@ func (rt *codexManagedRuntime) pump() {
 	// and rejects all future arming — a late resolved can never commit.
 	rt.closeResponseWaiters()
 	rt.reg.MarkExited(rt.sessionID, rt.epoch)
+	rt.emitFinished()
 	// SP1-P1: child exit invalidates the session's (non-actionable) approval
 	// records — a dead runtime leaves no pending approval display behind.
 	if rt.approvals != nil {
@@ -463,6 +486,39 @@ func (rt *codexManagedRuntime) appendEvent(kind ManagedEventKind, text string) {
 	if rt.events != nil {
 		rt.events.append(kind, text)
 	}
+}
+
+func (rt *codexManagedRuntime) currentItemIdentity(params map[string]any) (string, string, bool) {
+	turnID := turnIDOf(params)
+	rt.turnMu.Lock()
+	currentTurn := rt.currentTurn
+	active := rt.turnActive
+	rt.turnMu.Unlock()
+	if !active || turnID == "" || turnID != currentTurn {
+		return "", "", false
+	}
+	item, _ := params["item"].(map[string]any)
+	itemID, _ := item["id"].(string)
+	itemType, _ := item["type"].(string)
+	if itemID == "" || len(itemID) > maxApprovalParamIDLen || itemType == "" {
+		return "", "", false
+	}
+	return itemID, itemType, true
+}
+
+func (rt *codexManagedRuntime) emitOperational(kind OperationalEventKind, sourceID, sourcePosition, referenceID string) {
+	submitOperationalAfterCommit(rt.operational, OperationalEvent{
+		Kind: kind, Provider: "codex", SessionID: rt.sessionID,
+		RuntimeID: rt.runtimeID, LaunchGeneration: rt.epoch,
+		SourceID: sourceID, SourcePosition: sourcePosition,
+		ReferenceID: referenceID, OccurredAt: time.Now().UTC(),
+	})
+}
+
+func (rt *codexManagedRuntime) emitFinished() {
+	rt.finishOnce.Do(func() {
+		rt.emitOperational(OperationalProviderInvocationFinished, rt.runtimeID, "runtime/exited", rt.runtimeID)
+	})
 }
 
 // submitPrompt claims the single active turn and delivers one bounded prompt
@@ -576,6 +632,9 @@ type ManagedCodexService struct {
 	// InstallApprovalExecution transition (before the first runtime), copied
 	// per-runtime at create, never toggled mid-life.
 	actionable bool
+	// operational is immutable once the first runtime generation exists.
+	// nil is the default and preserves the pre-Timeline behavior.
+	operational OperationalEventSink
 
 	// pumpObserver is a NARROW test seam (nil in production) copied onto each
 	// runtime before its pump starts.
@@ -701,6 +760,27 @@ func (s *ManagedCodexService) ApprovalExecutionInstalled() bool {
 	return s.actionable
 }
 
+// SetOperationalEventSink installs the optional neutral observer before the
+// first runtime exists. It grants no provider or lifecycle authority.
+func (s *ManagedCodexService) SetOperationalEventSink(sink OperationalEventSink) error {
+	if sink == nil {
+		return fmt.Errorf("operational event sink configure: nil sink")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return fmt.Errorf("operational event sink configure: service is shutting down")
+	}
+	if s.gen != 0 || len(s.runtimes) != 0 {
+		return fmt.Errorf("operational event sink configure: a managed runtime already exists")
+	}
+	if s.operational != nil {
+		return fmt.Errorf("operational event sink configure: a different sink is already configured")
+	}
+	s.operational = sink
+	return nil
+}
+
 // SubmitPrompt is the ONLY prompt entry (local IPC and mobile REST). It
 // validates bounds, binds exact SessionID + current epoch against the live
 // runtime and the owned registry, enforces one-active-turn, and delivers the
@@ -795,6 +875,7 @@ func (s *ManagedCodexService) Stop(sessionID string, epoch int64) error {
 			// directly so a stopped session can never look live (honest
 			// escalation; the pump's late MarkExited is then a no-op).
 			s.reg.MarkExited(sessionID, epoch)
+			rt.emitFinished()
 			return fmt.Errorf("managed session stop: child did not exit within the bound")
 		}
 	}
@@ -820,6 +901,7 @@ func (s *ManagedCodexService) Kill(sessionID string, epoch int64) error {
 	_ = rt.proc.Kill()
 	if !rt.awaitExit(managedStopGraceful) {
 		s.reg.MarkExited(sessionID, epoch)
+		rt.emitFinished()
 		return fmt.Errorf("managed session kill: child did not exit within the bound")
 	}
 	_ = rt.proc.Wait()
@@ -927,6 +1009,7 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	epoch := s.gen
 	rt := newCodexManagedRuntime(proc, epoch, s.reg)
 	rt.sessionID = id
+	rt.runtimeID = proc.OpaqueID()
 	rt.events = newManagedEventStore(id, epoch)
 	// SP1-P1: copy the observation sink + pinned authority version onto the
 	// runtime before its pump can start. SP1-P2B: the activation state is
@@ -934,6 +1017,7 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
 	rt.actionableActive = s.actionable
+	rt.operational = s.operational
 	s.runtimes[id] = rt // published: from here Shutdown always finds the child
 	s.mu.Unlock()
 
@@ -982,6 +1066,7 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 		obs := s.pumpObserver
 		rt.observer = func(method string) { obs(id, method) }
 	}
+	rt.emitOperational(OperationalProviderInvocationStarted, rt.runtimeID, "runtime/registered", rt.runtimeID)
 	go rt.pump()
 	return id, nil
 }

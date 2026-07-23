@@ -319,7 +319,7 @@ func codexApprovalID(epoch int64, idToken string) string {
 // certified request produces the pending entry AND the non-actionable store
 // record as ONE outcome — if the store does not admit the record (missing
 // sink, stale generation, capacity, validation), nothing is armed.
-func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
+func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) (approvalID string, admitted bool) {
 	// Whole-message bound: the first check, on the raw line itself.
 	if len(raw) > maxApprovalMessageBytes {
 		rt.rejectApproval()
@@ -403,7 +403,7 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 		return
 	}
 
-	approvalID := codexApprovalID(rt.epoch, idToken)
+	approvalID = codexApprovalID(rt.epoch, idToken)
 
 	// Linearization point: turn binding + duplicate + capacity + store
 	// admission + arming are ONE critical section under turnMu (the same lock
@@ -447,7 +447,7 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 	// Safe store record: no prompt text, no provider payload. Provenance is
 	// the versioned provider protocol; the mechanical origin vocabulary is
 	// closed, so the structured JSONL stdio protocol records as SourceJSONL.
-	admitted := rt.approvals.IngestObserved(ApprovalIngest{
+	storeAdmitted := rt.approvals.IngestObserved(ApprovalIngest{
 		SessionID: rt.sessionID,
 		LaunchGen: rt.epoch,
 		StreamGen: 0,
@@ -469,7 +469,7 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 			DeliveryMaterial: material,
 		}},
 	})
-	if !admitted {
+	if !storeAdmitted {
 		// Store refusal (stale generation / capacity / validation): zero state.
 		rt.approvalRejects++
 		return
@@ -484,6 +484,7 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 		hasAmendmentPayload: hasAmendment,
 		observedAt:          time.Now(),
 	}
+	return approvalID, true
 }
 
 // observeApprovalResolved handles a provider-side resolution. P2A ordering:
@@ -496,7 +497,7 @@ func (rt *codexManagedRuntime) observeApprovalRequest(raw []byte) {
 // touches any OTHER record. A resolved failing the byte bounds, the strict
 // closed-field decode (jsonrpc=="2.0" REQUIRED), the thread binding, or the
 // integer id grammar is inert for BOTH paths.
-func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
+func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) (approvalID string, resolved bool) {
 	if len(raw) > maxResolvedMessageBytes {
 		return
 	}
@@ -537,12 +538,12 @@ func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
 		rt.turnMu.Lock()
 		if pend, exists := rt.pendingApprovals[idInt]; exists && pend.idToken == token {
 			delete(rt.pendingApprovals, idInt)
+			approvalID = pend.approvalID
 		}
 		rt.turnMu.Unlock()
-		return
+		return approvalID, approvalID != ""
 	}
 	rt.turnMu.Lock()
-	approvalID := ""
 	if pend, exists := rt.pendingApprovals[idInt]; exists && pend.idToken == token {
 		delete(rt.pendingApprovals, idInt)
 		approvalID = pend.approvalID
@@ -552,6 +553,7 @@ func (rt *codexManagedRuntime) observeApprovalResolved(raw []byte) {
 	if approvalID != "" && sink != nil {
 		sink.InvalidateRecord(rt.sessionID, approvalID)
 	}
+	return approvalID, approvalID != ""
 }
 
 // clearPendingForTurnLocked drops pending entries bound to the completed turn
