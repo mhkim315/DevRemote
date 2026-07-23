@@ -34,6 +34,22 @@ type QRPairSession struct {
 	BootstrapValue string
 }
 
+// PairingRequest is the mobile's Phase 1 candidate body. Legacy fields are
+// forwarded to PairingHost; QR metadata fields are verified by the bridge
+// BEFORE the candidate reaches PairingHost.
+type PairingRequest struct {
+	PublicKeyDER   []byte `json:"publicKey"`
+	DisplayName    string `json:"displayName"`
+	PhoneNonce     []byte `json:"phoneNonce"`
+	BootstrapToken string `json:"bootstrapToken"`
+	// QR metadata — echoed by mobile from the QR code. Verified by bridge
+	// before PairingHost sees the candidate.
+	QRHostID       string `json:"qrHostId,omitempty"`
+	QRDaemonBootID string `json:"qrDaemonBootId,omitempty"`
+	QRChallengeID  string `json:"qrChallengeId,omitempty"`
+	QRExpiresAt    string `json:"qrExpiresAt,omitempty"`
+}
+
 type QRPairMetadata struct {
 	ProtocolVersion int
 	Origin          string
