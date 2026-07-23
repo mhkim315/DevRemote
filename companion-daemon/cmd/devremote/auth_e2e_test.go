@@ -313,7 +313,7 @@ func TestRemoteRouteMatrix(t *testing.T) {
 }
 
 func TestLocalOnlyRouteMatrixPreserved(t *testing.T) {
-	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, testDeps())
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true, EnableN1Notifications: true}, testDeps())
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
@@ -326,7 +326,11 @@ func TestLocalOnlyRouteMatrixPreserved(t *testing.T) {
 		{http.MethodGet, "/api/session-profiles", http.StatusOK},
 		{http.MethodGet, "/term/size?session=missing", http.StatusNotFound},
 		{http.MethodGet, "/term/?session=missing", http.StatusOK},
-		{http.MethodGet, "/push/register?token=x", http.StatusOK},
+		{http.MethodGet, "/push/register?token=x&deviceId=device", http.StatusOK},
+		// N1 is registered only behind its default-off flag. With no Timeline
+		// writer in this matrix fixture it must reach the handler and return the
+		// closed canonical-event-unavailable outcome (404), not route 404.
+		{http.MethodGet, "/api/notification/event/status?session=missing&generation=1", http.StatusNotFound},
 		{http.MethodPost, "/debug/dump", http.StatusOK},
 		{http.MethodGet, "/debug/diag", http.StatusOK},
 	} {
