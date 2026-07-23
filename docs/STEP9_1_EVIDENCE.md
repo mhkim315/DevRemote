@@ -1,11 +1,11 @@
 # Step 9.1 Evidence — Operational Timeline Staging
 
 **IMPL SHA:** `dc376f9b7`
-**EVID SHA:** `2e5d48a80` (R6)
-**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `8348ff5d2` (R4), `a2613ed05` (R4 fix), `ea3922985` (R5), `eb0e304b7` (R5 fix)
+**EVID SHA:** (this commit — R7 revision)
+**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `8348ff5d2` (R4), `a2613ed05` (R4 fix), `ea3922985` (R5), `eb0e304b7` (R5 fix), `2e5d48a80` (R6), `00a8f1394` (R6 fix)
 **CONTRACT SHAs:** ACTIVATION `e857fd13c` (amended §9), PRODUCER `9bea4a48c`
 **Date:** 2026-07-23
-**Revision:** R6 — contract provenance e857fd13c, §8 rewritten to mirror amended §9, evidence trail to R5
+**Revision:** R7 — §8c evidence trail R5→R6 (2e5d48a80+00a8f1394)
 
 Step 9.1 implements minimal operational Timeline producer composition with
 fail-open authority isolation and capability-self-auth. All producers operate
@@ -347,10 +347,10 @@ until a separate reviewed change follows successful staging.
 
 ### 8c. Evidence commit trail
 
-Implementation gate ACCEPT evidence chain: `ea3922985` (R5), `eb0e304b7` (R5
-SHA fix). Prior revisions: `8348ff5d2` (R4), `a2613ed05` (R4 fix),
-`1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix),
-`5948b5ab1` (R1), `b67386836` (R1 fix).
+Implementation gate ACCEPT evidence chain: `2e5d48a80` (R6), `00a8f1394` (R6
+SHA fix). Prior revisions: `ea3922985` (R5), `eb0e304b7` (R5 fix),
+`8348ff5d2` (R4), `a2613ed05` (R4 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix),
+`c5f8c2e47` (R2), `24476f38b` (R2 fix), `5948b5ab1` (R1), `b67386836` (R1 fix).
 
 ### 8d. Activation contract stop conditions (§10)
 
