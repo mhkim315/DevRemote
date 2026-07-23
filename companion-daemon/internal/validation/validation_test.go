@@ -122,6 +122,24 @@ func TestValidationStoreConcurrentReadSafety(t *testing.T) {
 	wg.Wait()
 }
 
+func TestValidationHistoryCappedAtMaxItems(t *testing.T) {
+	store := NewValidationStore()
+	defer store.Close()
+	result := ValidationResult{ID: "r", Binding: binding(), Findings: []Finding{{ID: "f", Summary: "s", Binding: binding()}}}
+	// Submit well beyond the cap to prove oldest-half drop.
+	for i := range 5000 {
+		r := result
+		r.ID = string(rune('A'+i%26)) + string(rune('0'+i/26%10))
+		store.Submit(r)
+	}
+	all := store.ReadAll()
+	// After 5000 appends with 1 submit each, oldest half is dropped
+	// so len is between maxHistoryItems/2 and maxHistoryItems.
+	if len(all) < 2048 || len(all) > maxHistoryItems {
+		t.Fatalf("history len = %d, want capped in [2048, %d]", len(all), maxHistoryItems)
+	}
+}
+
 func TestValidationCloseIdempotent(t *testing.T) {
 	store := NewValidationStore()
 	store.Close()

@@ -1,7 +1,7 @@
 # Step 8 Evidence — Mobile Operational Cockpit
 
 **EVID HEAD:** (this commit)
-**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 24d6d2d95 (mailbox model)
+**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 75be15e91 (mailbox model) → 24d6d2d95 (R5 cleanup)
 
 ## Scope
 - timeline/writer and validation: bounded ring buffers (128 envelopes / 64 results).
