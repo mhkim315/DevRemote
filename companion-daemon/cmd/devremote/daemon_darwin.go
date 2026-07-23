@@ -169,26 +169,42 @@ func currentUserUID() string {
 
 // daemonLoaded reports whether the LaunchAgent is registered with launchd.
 // Uses "launchctl print gui/UID/LABEL" which works for both running and
-// loaded-but-stopped jobs. A query error is distinct from an unloaded agent.
-func daemonLoaded(plistPath string) (bool, error) {
-	out, err := captureLaunchctl("print", "gui/"+currentUserUID()+"/"+daemonLabel)
-	if err != nil {
-		// Also try "launchctl list" as fallback.
-		out2, err2 := captureLaunchctl("list", daemonLabel)
-		if err2 != nil {
-			return false, fmt.Errorf("query LaunchAgent: print: %w; list: %v", err, err2)
-		}
-		out = out2
+// loaded-but-stopped jobs. It distinguishes a confirmed absent service from a
+// launchctl query failure, which callers must handle fail-closed.
+func daemonLoaded(plistPath string) (loaded bool, absent bool, queryErr error) {
+	query := func(args ...string) (string, string, error) {
+		cmd := exec.Command("launchctl", args...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 	}
-	if out == "" {
-		return false, nil
+	isAbsent := func(stderr string) bool {
+		return strings.Contains(strings.ToLower(stderr), "could not find service")
+	}
+	out, stderr, err := query("print", "gui/"+currentUserUID()+"/"+daemonLabel)
+	if err != nil {
+		if isAbsent(stderr) {
+			return false, true, nil
+		}
+		out, stderr, err = query("list", daemonLabel)
+		if err != nil {
+			if isAbsent(stderr) {
+				return false, true, nil
+			}
+			return false, false, fmt.Errorf("query LaunchAgent: %w: %s", err, stderr)
+		}
+	}
+	if out == "" || !strings.Contains(out, daemonLabel) {
+		return false, true, nil
 	}
 	// "launchctl list LABEL" prints PID on first line when running, "-" when not.
 	if extractPID(out) != "" {
-		return true, nil
+		return true, false, nil
 	}
 	// "launchctl print" succeeds even for loaded-but-not-running jobs.
-	return strings.Contains(out, daemonLabel), nil
+	return true, false, nil
 }
 
 func extractPID(out string) string {
@@ -281,7 +297,7 @@ func backupBinary(source, backup string) error {
 // daemon. Authentication-required is healthy: it proves the listener and its
 // auth boundary are both live without requiring a bearer in the installer.
 func checkReadiness(plistPath string) error {
-	loaded, err := daemonLoaded(plistPath)
+	loaded, _, err := daemonLoaded(plistPath)
 	if err != nil {
 		return fmt.Errorf("query LaunchAgent readiness: %w", err)
 	}
@@ -374,8 +390,14 @@ func rollbackToPriorState(state *daemonState) error {
 	if state == nil || state.Phase != "installing" {
 		return fmt.Errorf("rollback: no installing transaction")
 	}
-	if err := runLaunchctl("bootout", "gui/"+currentUserUID(), state.PlistPath); err != nil {
-		return fmt.Errorf("rollback: stop interrupted daemon: %w", err)
+	loaded, _, err := daemonLoaded(state.PlistPath)
+	if err != nil {
+		return fmt.Errorf("rollback: query interrupted daemon: %w", err)
+	}
+	if loaded {
+		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), state.PlistPath); err != nil {
+			return fmt.Errorf("rollback: stop interrupted daemon: %w", err)
+		}
 	}
 	var priorState []byte
 	hadPriorState := state.PriorState != nil
@@ -412,9 +434,16 @@ func recoverIfInstalling(state *daemonState) error {
 // after every recoverable artifact has been attempted.
 func rollbackCommittedReplacement(plistPath string, priorPlist []byte, hadPriorPlist bool, statePath string, priorState []byte, hadPriorState bool, newBinPath, oldBinPath, backupPath string, priorWasLoaded bool) error {
 	var rollbackErrs []error
-	bootoutErr := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
-	if bootoutErr != nil {
-		rollbackErrs = append(rollbackErrs, fmt.Errorf("stop replacement daemon: %w", bootoutErr))
+	loaded, _, queryErr := daemonLoaded(plistPath)
+	if queryErr != nil {
+		return fmt.Errorf("query replacement daemon: %w", queryErr)
+	}
+	var bootoutErr error
+	if loaded {
+		bootoutErr = runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
+		if bootoutErr != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("stop replacement daemon: %w", bootoutErr))
+		}
 	}
 	binaryRestored := true
 	if oldBinPath != "" && oldBinPath != newBinPath {
@@ -655,7 +684,7 @@ func installDaemon() error {
 	if existingState != nil {
 		oldOldPath = existingState.OldBinPath
 	}
-	priorWasLoaded, err := daemonLoaded(plistPath)
+	priorWasLoaded, _, err := daemonLoaded(plistPath)
 	if err != nil {
 		return fmt.Errorf("install: query existing daemon: %w", err)
 	}
@@ -813,7 +842,7 @@ func startDaemon() error {
 		return fmt.Errorf("start: LaunchAgent not installed")
 	}
 
-	loaded, err := daemonLoaded(plistPath)
+	loaded, _, err := daemonLoaded(plistPath)
 	if err != nil {
 		return fmt.Errorf("start: query LaunchAgent: %w", err)
 	}
@@ -850,7 +879,7 @@ func stopDaemon() error {
 		return nil
 	}
 
-	loaded, err := daemonLoaded(plistPath)
+	loaded, _, err := daemonLoaded(plistPath)
 	if err != nil {
 		return fmt.Errorf("stop: query LaunchAgent: %w", err)
 	}
@@ -889,7 +918,7 @@ func statusDaemon() error {
 		return nil
 	}
 
-	loaded, err := daemonLoaded(plistPath)
+	loaded, _, err := daemonLoaded(plistPath)
 	if err != nil {
 		return fmt.Errorf("status: query LaunchAgent: %w", err)
 	}
@@ -943,7 +972,7 @@ func uninstallDaemon(purgeTrust bool) error {
 	}
 
 	// Stop the agent if running.
-	loaded, err := daemonLoaded(plistPath)
+	loaded, _, err := daemonLoaded(plistPath)
 	if err != nil {
 		return fmt.Errorf("uninstall: query LaunchAgent: %w", err)
 	}
