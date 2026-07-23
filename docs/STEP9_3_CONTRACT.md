@@ -17,10 +17,18 @@ delivers content, commands, secrets, or approval payloads directly.
 - `internal/notification/` — dedup store, builder, delivery pipeline, cursor
 - `GET /api/notification/<eventId>/status` — authoritative re-authorization endpoint
 - `--enable-n1-notifications` — default-off CLI flag
+- Mobile N1 notification routing: notification-tap handling, exact-event
+  Activity deep links, closed-outcome recovery screens, and cold-start auth retry
+- Per-device push-token registration changes needed to bind an N1 locator to the
+  authenticated mobile device
+
+**Mobile N1 authority boundary:** Mobile may render the exact, locator-only
+event returned by the re-authorization endpoint and choose a safe recovery
+screen. It must re-query that endpoint before acting, must not infer an event
+from session telemetry/Cockpit, and must not receive event content, commands,
+secrets, or approval payloads.
 
 **What stays UNCHANGED:**
-- Existing push notification infrastructure (OS channel, per-device token store)
-- Mobile UI (N1 is a locator payload only — no new screens)
 - All authority services (runtime, lifecycle, approval, input, terminal)
 - Cockpit, Transcript, Timeline writer — read-only
 - `Recorder` (sole PTY reader)
@@ -64,9 +72,24 @@ Returns current authoritative resolution:
   "status": "actionable",
   "resolvedBy": null,
   "permissions": ["sessions:read", "terminal:input"],
-  "activityLink": "pokit://session/<sessionId>?event=<eventId>"
+  "activityLink": "pokit://activity/<sessionId>?event=<eventId>&generation=7",
+  "event": {
+    "eventId": "<eventId>",
+    "sessionId": "<sessionId>",
+    "runtimeId": "<runtimeId>",
+    "generation": 7,
+    "kind": "approval_requested",
+    "occurredAt": "<occurredAt>"
+  }
 }
 ```
+
+`event` is present only when the endpoint located that exact canonical event.
+It is locator/display metadata only; it contains no Timeline payload or user
+content. Mobile renders only an event whose `eventId` exactly matches the
+notification locator. A missing target after ring wrap must show an explicit
+missing-event warning and a safe fallback, never another event from the same
+session.
 
 ### 3a. Seven closed outcomes
 
@@ -173,12 +196,19 @@ The notification payload must never contain:
 - `internal/notification/handler.go` — GET /api/notification/<eventId>/status
 - `internal/notification/notification_test.go` — 12 acceptance tests
 - `cmd/devremote/app.go` — `--enable-n1-notifications` flag + composition wiring
+- `mobile/App.tsx` — notification response handling and auth-ready cold-start retry
+- `mobile/src/navigation/` — `pokit://` Activity/Terminal/Settings routes
+- `mobile/src/screens/GlobalFeedScreen.tsx` — exact status-event rendering and
+  missing-target fallback
+- `mobile/src/screens/NotificationSettingsScreen.tsx` — permission recovery UI
+- `mobile/src/lib/` and `mobile/__tests__/` — status DTO, push registration,
+  route, exact-event, and fallback coverage
 
 **Must NOT change:**
-- `mobile/` — any mobile code
 - `internal/term/` — any terminal/runtime/approval code
 - `internal/transcript/` — Transcript service
-- Existing REST/WS handlers
+- Existing authority REST/WS handlers outside the additive N1 status and
+  push-registration integration
 
 ## 10. Acceptance tests
 
@@ -200,7 +230,10 @@ The notification payload must never contain:
 - [ ] All existing tests pass
 - [ ] 12 new acceptance tests pass
 - [ ] Default-off flag: zero runtime effect when disabled
-- [ ] No mobile UI or push infrastructure changes
+- [ ] Mobile notification routing renders only the exact event returned by
+  re-authorization; ring-wrap/missing targets show an explicit fallback
+- [ ] Mobile deep links, Settings permission recovery, and per-device push
+  registration preserve the locator-only privacy boundary
 - [ ] Separate evidence commit records test results
 
 ## 12. Stop conditions
@@ -210,7 +243,6 @@ Stop and reject if the change:
 - Sends a notification without verifying generation identity
 - Re-delivers a suppressed/stale event
 - Overwrites device B's push token when device A registers
-- Requires mobile app changes
 - Changes any existing authority (runtime, approval, input, terminal)
 - Makes notification delivery a daemon startup or session prerequisite
 - Uses an ephemeral random token that changes across restarts
