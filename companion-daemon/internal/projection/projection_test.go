@@ -233,6 +233,63 @@ func TestCompareGapRequiresTranscriptMarker(t *testing.T) {
 	}
 }
 
+func TestRingOverwriteGapAllowsUnretainedBoundEvents(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"retained", "overwritten"}}
+	gap := GapMarker{
+		SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1,
+		GlobalDroppedBefore: 7, GlobalDroppedAfter: 7, Reason: "ring_overwrite",
+	}
+	response := transcript.TranscriptResponse{
+		SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion,
+		Semantic: []transcript.TranscriptSegment{
+			{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-retained", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
+			{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "ring_overwrite"},
+		},
+	}
+	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "retained", AgentEventRef: "agent-retained", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "r", LaunchGeneration: 1}}, Gaps: []GapMarker{gap}}
+	report := Compare(response, snap, []FixtureEpochBinding{b})
+	if !report.Passed || report.ToleratedGaps != 1 {
+		t.Fatalf("ring overwrite must be a scoped tolerated gap: %#v", report)
+	}
+}
+
+func TestGapReasonAndCounterTaxonomyIsClosed(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", RuntimeID: "r", LaunchGeneration: 1}
+	if !validGapForBinding(GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: 4, GlobalDroppedAfter: 4, Reason: "ring_overwrite"}, b) {
+		t.Fatal("ring overwrite with unchanged writer drops rejected")
+	}
+	for _, gap := range []GapMarker{
+		{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: 4, GlobalDroppedAfter: 4, Reason: "writer_drop"},
+		{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: 4, GlobalDroppedAfter: 5, Reason: "ring_overwrite"},
+		{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: 4, GlobalDroppedAfter: 5, Reason: "other"},
+	} {
+		if validGapForBinding(gap, b) {
+			t.Fatalf("accepted invalid gap: %#v", gap)
+		}
+	}
+}
+
+func TestPairIDCannotBeReusedAfterFullLifecycle(t *testing.T) {
+	tool := []TranscriptItem{
+		{EventType: "tool_call_started", PairID: "tool-1"},
+		{EventType: "tool_call_finished", PairID: "tool-1"},
+		{EventType: "tool_call_started", PairID: "tool-1"},
+		{EventType: "tool_call_finished", PairID: "tool-1"},
+	}
+	if err := ValidatePairOrder(tool); err == nil {
+		t.Fatal("full tool lifecycle pair reuse accepted")
+	}
+	approval := []TranscriptItem{
+		{EventType: "approval_requested", PairID: "approval-1"},
+		{EventType: "approval_resolved", PairID: "approval-1"},
+		{EventType: "approval_requested", PairID: "approval-1"},
+		{EventType: "approval_resolved", PairID: "approval-1"},
+	}
+	if err := ValidatePairOrder(approval); err == nil {
+		t.Fatal("full approval lifecycle pair reuse accepted")
+	}
+}
+
 func TestNonAgentTranscriptIsClosedToleratedLoss(t *testing.T) {
 	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1}
 	r := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindInputBoundary, Source: transcript.SourceByteStream}}}, Snapshot{}, []FixtureEpochBinding{b})

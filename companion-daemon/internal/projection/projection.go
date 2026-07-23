@@ -299,11 +299,13 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		}
 	}
 	items := snap.Transcript
+	allowRingOverwrite := false
 	if binding != nil {
 		if duplicateBinding(*binding, bindings) {
 			r.GenerationMismatches++
 		}
-		if !bindingEventIDsConsistent(*binding, bindings, snap.Transcript) {
+		allowRingOverwrite = hasValidRingOverwrite(snap.Gaps, *binding)
+		if !bindingEventIDsConsistent(*binding, bindings, snap.Transcript, allowRingOverwrite) {
 			r.GenerationMismatches++
 		}
 		filtered := make([]TranscriptItem, 0, len(items))
@@ -340,7 +342,9 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		}
 	}
 	if len(segments) > len(items) {
-		r.Missings += len(segments) - len(items)
+		if !allowRingOverwrite {
+			r.Missings += len(segments) - len(items)
+		}
 	}
 	if len(items) > len(segments) {
 		r.Extras += len(items) - len(segments)
@@ -387,7 +391,7 @@ func duplicateBinding(b FixtureEpochBinding, bs []FixtureEpochBinding) bool {
 	}
 	return n != 1
 }
-func bindingEventIDsConsistent(b FixtureEpochBinding, all []FixtureEpochBinding, items []TranscriptItem) bool {
+func bindingEventIDsConsistent(b FixtureEpochBinding, all []FixtureEpochBinding, items []TranscriptItem, allowMissing bool) bool {
 	seen := make(map[string]bool, len(b.TimelineEventIDs))
 	for _, id := range b.TimelineEventIDs {
 		if id == "" || seen[id] {
@@ -408,7 +412,7 @@ func bindingEventIDsConsistent(b FixtureEpochBinding, all []FixtureEpochBinding,
 		found[item.EventID] = true
 	}
 	for id := range bound {
-		if !found[id] {
+		if !found[id] && !allowMissing {
 			return false
 		}
 	}
@@ -428,7 +432,26 @@ func eventOwner(id string, all []FixtureEpochBinding) (FixtureEpochBinding, bool
 	return owner, found
 }
 func validGapForBinding(g GapMarker, b FixtureEpochBinding) bool {
-	return g.Reason != "" && g.EpochOccurrence == b.EpochOccurrence && g.SessionID == b.SessionID && g.RuntimeID == b.RuntimeID && g.LaunchGeneration == b.LaunchGeneration && g.GlobalDroppedAfter > g.GlobalDroppedBefore
+	if g.EpochOccurrence != b.EpochOccurrence || g.SessionID != b.SessionID || g.RuntimeID != b.RuntimeID || g.LaunchGeneration != b.LaunchGeneration {
+		return false
+	}
+	switch g.Reason {
+	case "writer_drop":
+		return g.GlobalDroppedAfter > g.GlobalDroppedBefore
+	case "ring_overwrite":
+		return g.GlobalDroppedAfter == g.GlobalDroppedBefore
+	default:
+		return false
+	}
+}
+
+func hasValidRingOverwrite(gaps []GapMarker, b FixtureEpochBinding) bool {
+	for _, gap := range gaps {
+		if gap.Reason == "ring_overwrite" && validGapForBinding(gap, b) {
+			return true
+		}
+	}
+	return false
 }
 func closedSemanticLoss(s transcript.TranscriptSegment) bool {
 	switch s.Kind {
@@ -496,10 +519,11 @@ func boolInt(b bool) int {
 // Reference ID, never a display tool name.
 func ValidatePairOrder(items []TranscriptItem) error {
 	seenTool, seenApproval := map[string]int{}, map[string]int{}
+	completedTool, completedApproval := map[string]bool{}, map[string]bool{}
 	for _, it := range items {
 		switch it.EventType {
 		case "tool_call_started":
-			if it.PairID == "" || seenTool[it.PairID] != 0 {
+			if it.PairID == "" || seenTool[it.PairID] != 0 || completedTool[it.PairID] {
 				return fmt.Errorf("tool start missing reference")
 			}
 			seenTool[it.PairID]++
@@ -510,9 +534,10 @@ func ValidatePairOrder(items []TranscriptItem) error {
 			seenTool[it.PairID]--
 			if seenTool[it.PairID] == 0 {
 				delete(seenTool, it.PairID)
+				completedTool[it.PairID] = true
 			}
 		case "approval_requested":
-			if it.PairID == "" || seenApproval[it.PairID] != 0 {
+			if it.PairID == "" || seenApproval[it.PairID] != 0 || completedApproval[it.PairID] {
 				return fmt.Errorf("approval request missing reference")
 			}
 			seenApproval[it.PairID]++
@@ -523,6 +548,7 @@ func ValidatePairOrder(items []TranscriptItem) error {
 			seenApproval[it.PairID]--
 			if seenApproval[it.PairID] == 0 {
 				delete(seenApproval, it.PairID)
+				completedApproval[it.PairID] = true
 			}
 		}
 	}
