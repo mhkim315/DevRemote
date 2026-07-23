@@ -529,7 +529,8 @@ func installDaemon() error {
 		return fmt.Errorf("install: cannot atomically write plist: %w", err)
 	}
 
-	// Persist daemon state for upgrade/rollback/uninstall tracking.
+	// Build ephemeral state for rollback. The canonical state is written
+	// after readiness (below) with proper BinPath→OldBinPath promotion.
 	state := &daemonState{
 		Version:     cliVersion,
 		BinPath:     serviceBinPath,
@@ -538,12 +539,6 @@ func installDaemon() error {
 		PlistPath:   plistPath,
 		StateDir:    stateDir,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := writeDaemonState(state); err != nil {
-		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, false); rbErr != nil {
-			return errors.Join(fmt.Errorf("install: state write: %w", err), rbErr)
-		}
-		return fmt.Errorf("install: cannot atomically write daemon state: %w", err)
 	}
 
 	// Stop the old agent only after the new plist/state are ready. A bootout
@@ -591,26 +586,30 @@ func installDaemon() error {
 		}
 		return errors.Join(fmt.Errorf("install: readiness check failed: %w", err), stopErr)
 	}
-	// Clean up the previous upgrade's old binary. Never delete the live
-	// binary (same-version reinstall: OldBinPath == current service path).
-	// Removal failure returns degraded — the orphan is kept on disk and
-	// state OldBinPath is retained for retry on next upgrade/uninstall.
-	if existingState != nil && existingState.OldBinPath != "" && existingState.OldBinPath != serviceBinPath {
-		if err := os.Remove(existingState.OldBinPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("install: orphan old binary retained at %s: %v", existingState.OldBinPath, err)
-			// Rewrite state to preserve the orphan path so next
-			// upgrade/uninstall can retry removal.
-			state.OldBinPath = existingState.OldBinPath
-			if writeErr := writeDaemonState(state); writeErr != nil {
-				log.Printf("install: could not update daemon state: %v", writeErr)
-			}
-			return fmt.Errorf("install: upgrade succeeded but could not remove previous binary %s: %w", existingState.OldBinPath, err)
+	// Multi-upgrade tracking: promote BinPath → OldBinPath, set new BinPath.
+	// oldOldPath is two generations back (best-effort cleanup only).
+	oldOldPath := ""
+	if existingState != nil {
+		oldOldPath = existingState.OldBinPath
+	}
+	// Promote: the current binary becomes the old binary; serviceBinPath is new.
+	state.OldBinPath = oldBinPath
+	state.BinPath = serviceBinPath
+	state.BackupPath = "" // backup consumed on success
+	if err := writeDaemonState(state); err != nil {
+		return fmt.Errorf("install: cannot write final daemon state: %w", err)
+	}
+
+	// Best-effort: remove two-generations-back binary (may be empty on
+	// clean install or first upgrade). Never delete the live binary.
+	if oldOldPath != "" && oldOldPath != serviceBinPath {
+		if err := os.Remove(oldOldPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("install: old artifact retained at %s: %v", oldOldPath, err)
 		}
 	}
 	if backupPath != "" {
 		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("install: degraded: orphan backup retained at %s: %v", backupPath, err)
-			return fmt.Errorf("install: upgrade succeeded with orphan backup %s: %w", backupPath, err)
+			log.Printf("install: orphan backup retained at %s: %v", backupPath, err)
 		}
 	}
 
