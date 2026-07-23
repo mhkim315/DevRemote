@@ -73,6 +73,7 @@ type Principal struct {
 	BearerExpires   time.Time
 	HostID          string
 	DeviceBootID    string // daemon boot ID at auth time
+	DeviceEpoch     int64  // epoch at which this bearer was issued
 	AuthTime        time.Time
 }
 
@@ -85,6 +86,7 @@ type DeviceSession struct {
 	HostID      string    `json:"-"`
 	BootID      string    `json:"-"`
 	Permissions []string  `json:"-"`
+	DeviceEpoch int64     `json:"-"`
 	IssuedAt    time.Time `json:"-"`
 	ExpiresAt   time.Time `json:"-"`
 }
@@ -97,8 +99,9 @@ type DeviceSessionManager struct {
 	byDevice      map[string]string         // deviceId → token digest (one active per device)
 	bootID        string
 	lifetime      time.Duration
-	onReplace     OnReplaceFunc // called when a device session is replaced
-	onRevoke      OnReplaceFunc // called when a device is revoked
+	onReplace     OnReplaceFunc               // called when a device session is replaced
+	onRevoke      OnReplaceFunc               // called when a device is revoked
+	GetEpoch      func(deviceID string) int64 // 9.4-D: epoch lookup in DeviceRegistry
 	maxSessions   int
 	purgeStop     chan struct{}
 	purgeDone     chan struct{}
@@ -249,6 +252,10 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	now := time.Now().UTC()
 	sessID := hex.EncodeToString(tokenBytes[:12])
 	exp := now.Add(m.lifetime)
+	epoch := int64(0)
+	if m.GetEpoch != nil {
+		epoch = m.GetEpoch(deviceID)
+	}
 	sess := &DeviceSession{
 		TokenDigest: digest,
 		SessionID:   sessID,
@@ -256,6 +263,7 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 		HostID:      hostID,
 		BootID:      bootID,
 		Permissions: clonePerms(permissions),
+		DeviceEpoch: epoch,
 		IssuedAt:    now,
 		ExpiresAt:   exp,
 	}
@@ -325,6 +333,15 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 		notifyInvalidated(cb, []string{deviceID})
 		return nil
 	}
+	// 9.4-D: epoch check — if device was revoked/replaced since this
+	// session was issued, the session is stale and must be rejected.
+	if m.GetEpoch != nil {
+		currentEpoch := m.GetEpoch(sess.DeviceID)
+		if currentEpoch > sess.DeviceEpoch {
+			m.mu.Unlock()
+			return nil // session issued under old epoch, device was revoked/replaced
+		}
+	}
 	p := &Principal{
 		DeviceID:        sess.DeviceID,
 		Permissions:     clonePerms(sess.Permissions),
@@ -333,6 +350,7 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 		BearerExpires:   sess.ExpiresAt,
 		HostID:          sess.HostID,
 		DeviceBootID:    sess.BootID,
+		DeviceEpoch:     sess.DeviceEpoch,
 		AuthTime:        sess.IssuedAt,
 	}
 	m.mu.Unlock()

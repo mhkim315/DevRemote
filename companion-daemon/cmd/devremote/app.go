@@ -755,6 +755,11 @@ func (a *App) Run(ctx context.Context) error {
 	if a.hostIdentity != nil && a.deviceRegistry != nil {
 		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
 	}
+	// 9.4-D: wire epoch lookup so AuthenticateBearer rejects stale sessions
+	// issued under an old epoch (device was revoked/replaced).
+	if a.sessionMgr != nil && a.deviceRegistry != nil {
+		a.sessionMgr.GetEpoch = a.deviceRegistry.GetEpoch
+	}
 	// M2.5-5: wire the local device-admin surface (list/revoke/audit) so the
 	// 0600 socket can revoke a device and read the redacted audit trail.
 	term.SetDeviceAdminContext(a.sessionMgr, a.audit)

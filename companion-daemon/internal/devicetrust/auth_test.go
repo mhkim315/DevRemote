@@ -183,3 +183,137 @@ func bytes32(s string) []byte {
 	copy(b, s)
 	return b
 }
+
+// ── 9.4-D Epoch race tests (§5.2 contract) ──
+
+func TestEpoch_RevokeVsVerify(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, err := reg.Add(pub, "test-device")
+	if err != nil {
+		t.Fatalf("add device: %v", err)
+	}
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	tok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if p := mgr.AuthenticateBearer(tok); p == nil {
+		t.Fatal("session should be valid before revoke")
+	}
+
+	if err := reg.Revoke(dev.DeviceID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if p := mgr.AuthenticateBearer(tok); p != nil {
+		t.Fatal("revoke vs verify: stale session was accepted after revoke")
+	}
+}
+
+func TestEpoch_RevokeVsRefresh(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, err := reg.Add(pub, "test-device")
+	if err != nil {
+		t.Fatalf("add device: %v", err)
+	}
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	reg.Revoke(dev.DeviceID)
+
+	// Old token (issued before revoke at epoch 0) must be rejected after
+	// revoke bumps epoch to 1.
+	if p := mgr.AuthenticateBearer(tok); p != nil {
+		t.Fatal("revoke vs refresh: stale session accepted after revoke")
+	}
+	// New session issued after revoke carries epoch 1 — it must be valid.
+	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	if err != nil {
+		t.Fatalf("revoke vs refresh: post-revoke session create: %v", err)
+	}
+	if p := mgr.AuthenticateBearer(newTok); p == nil {
+		t.Fatal("revoke vs refresh: new session (epoch 1) should be valid")
+	}
+}
+
+func TestEpoch_ReplacementVsOldDevice(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, oldPub, _ := GenKeypair(t)
+	oldDev, _ := reg.Add(oldPub, "old-device")
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	oldTok, _, _, _ := mgr.CreateAfterVerifiedChallenge(oldDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	reg.Revoke(oldDev.DeviceID)
+
+	_, newPub, _ := GenKeypair(t)
+	newDev, _ := reg.Add(newPub, "replacement-device")
+
+	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(newDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	if err != nil {
+		t.Fatalf("replacement session: %v", err)
+	}
+	if p := mgr.AuthenticateBearer(newTok); p == nil {
+		t.Fatal("replacement session should be valid")
+	}
+	if p := mgr.AuthenticateBearer(oldTok); p != nil {
+		t.Fatal("old bearer for revoked device must be rejected")
+	}
+}
+
+func TestEpoch_DaemonRestartBootChange(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	bootID1, _ := NewBootID()
+	mgr1 := NewDeviceSessionManager(bootID1, 1*time.Hour)
+	mgr1.GetEpoch = reg.GetEpoch
+
+	tok, _, _, _ := mgr1.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID1, PermissionsForRole(RoleOwner))
+	if p := mgr1.AuthenticateBearer(tok); p == nil {
+		t.Fatal("session valid under boot1")
+	}
+
+	// Simulate daemon restart with different boot ID.
+	bootID2 := "different-boot-after-restart"
+	mgr2 := NewDeviceSessionManager(bootID2, 1*time.Hour)
+	mgr2.GetEpoch = reg.GetEpoch
+
+	// Boot change: session digest not in new manager's map → nil Principal.
+	if p := mgr2.AuthenticateBearer(tok); p != nil {
+		t.Fatal("restart boot change: old token accepted by new session manager")
+	}
+}
+
+func TestEpoch_PushRegistrationAfterRevoke(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+	mgr.GetEpoch = reg.GetEpoch
+
+	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner))
+	reg.Revoke(dev.DeviceID)
+
+	if p := mgr.AuthenticateBearer(tok); p != nil {
+		t.Fatal("push registration after revoke: stale bearer accepted")
+	}
+}

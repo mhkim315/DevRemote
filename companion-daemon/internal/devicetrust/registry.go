@@ -20,6 +20,11 @@ const (
 
 // Device is a paired-device record. Public keys only — never a phone private
 // key. DisplayName is untrusted presentation metadata.
+//
+// Epoch is a monotonically increasing counter incremented on every Revoke,
+// RecoverOwner, or authority change. Every issued bearer/session is bound to
+// (deviceID, epoch, hostID, bootID). A stale epoch at authentication time
+// means the device was revoked or replaced — the bearer is rejected.
 type Device struct {
 	Version      int        `json:"version"`
 	DeviceID     string     `json:"deviceId"`
@@ -27,6 +32,7 @@ type Device struct {
 	Fingerprint  string     `json:"fingerprint"`
 	DisplayName  string     `json:"displayName"`
 	Role         string     `json:"role"`
+	Epoch        int64      `json:"epoch"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	LastSeenAt   time.Time  `json:"lastSeenAt"`
 	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
@@ -221,7 +227,9 @@ func (r *DeviceRegistry) List() []Device {
 	return out
 }
 
-// Revoke marks a device revoked and persists it. Idempotent. Unknown → error.
+// Revoke marks a device revoked, increments its epoch, and persists.
+// The epoch bump invalidates every session/bearer issued under the old epoch.
+// Idempotent. Unknown → error.
 func (r *DeviceRegistry) Revoke(deviceID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -234,11 +242,26 @@ func (r *DeviceRegistry) Revoke(deviceID string) error {
 	}
 	now := time.Now().UTC()
 	d.RevokedAt = &now
+	prevEpoch := d.Epoch
+	d.Epoch++
 	if err := r.saveLocked(); err != nil {
-		d.RevokedAt = nil // roll back so memory matches persisted state
+		d.RevokedAt = nil
+		d.Epoch = prevEpoch
 		return err
 	}
 	return nil
+}
+
+// GetEpoch returns the current authorization epoch for a device.
+// Returns 0 if the device is unknown (epoch 0 means never paired).
+func (r *DeviceRegistry) GetEpoch(deviceID string) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return 0
+	}
+	return d.Epoch
 }
 
 // TouchLastSeen updates lastSeenAt for an active device and persists it.
@@ -304,17 +327,23 @@ func (r *DeviceRegistry) RecoverOwner(oldOwnerID, newOwnerID string) error {
 		return fmt.Errorf("%w: target %s is already owner", ErrAlreadyOwner, newOwnerID)
 	}
 
-	// Atomic: revoke old + promote new. On save failure, roll back both.
+	// Atomic: revoke old + promote new + bump epochs. On save failure, roll back.
 	now := time.Now().UTC()
 	oldDev.RevokedAt = &now
+	oldPrevEpoch := oldDev.Epoch
+	oldDev.Epoch++
 	oldDevRole := oldDev.Role
 	newDev.Role = RoleOwner
+	newPrevEpoch := newDev.Epoch
+	newDev.Epoch++
 
 	if err := r.saveLocked(); err != nil {
 		// Roll back in-memory to match persisted state.
 		oldDev.RevokedAt = nil
+		oldDev.Epoch = oldPrevEpoch
 		oldDev.Role = oldDevRole
 		newDev.Role = RoleMember
+		newDev.Epoch = newPrevEpoch
 		return err
 	}
 
