@@ -1,12 +1,12 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `f7033b86c`
-**EVID SHA:** `1a4b602bf` (R11)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix), `15744d8f2` (R10), `da6997288` (R10 fix)
+**EVID SHA:** (this commit — R12 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix), `15744d8f2` (R10), `da6997288` (R10 fix), `1a4b602bf` (R11), `5b164e7ab` (R11 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
-**Date:** 2026-07-23
-**Revision:** R11 — IMPL f7033b86c (R15 ACCEPT), 20 tests, standalone cursor test
+**Date:** 2026-07-24
+**Revision:** R12 — 3 syncs to f7033b86c: scope, log, cursor
 **Round counts:** Contract 4, Pre-gate 2, Impl 15, EVID 15, V2 3 = 39 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
@@ -19,20 +19,21 @@ before it.
 
 ## 1. Scope
 
-The output of `git diff --stat c82fef47f..e829299c6`:
+The output of `git diff --stat c82fef47f..f7033b86c`:
 
 ```
  companion-daemon/cmd/devremote/app.go              |  277 ++++-
  .../cmd/devremote/app_lifecycle_v1_test.go         |    6 +-
  companion-daemon/cmd/devremote/auth_e2e_test.go    |    8 +-
  companion-daemon/cmd/devremote/main.go             |    2 +
- .../internal/notification/notification.go          |  713 ++++++++++++
- .../internal/notification/notification_test.go     | 1164 ++++++++++++++++++++
+ .../internal/notification/notification.go          |  715 +++++++++++
+ .../internal/notification/notification_test.go     | 1278 ++++++++++++++++++++
  docs/ALPHA_ACTIVATION_ROADMAP.md                   |    9 +-
- docs/STEP9_0_LEDGER.md                             |    8 +-
- docs/STEP9_2_EVIDENCE.md                           |  320 ++++++
- docs/STEP9_3_CONTRACT.md                           |  248 +++++
- docs/STEP9_3_EVIDENCE.md                           |  300 +++++
+ docs/STEP9_0_LEDGER.md                             |   10 +-
+ docs/STEP9_2_EVIDENCE.md                           |  320 +++++
+ docs/STEP9_3_CONTRACT.md                           |  248 ++++
+ docs/STEP9_3_EVIDENCE.md                           |  324 +++++
+ docs/WORKFLOW_EXPERIMENT_REPORT.md                 |  223 ++++
  mobile/App.tsx                                     |   89 +-
  mobile/__tests__/notificationRoute.test.ts         |   41 +
  mobile/src/lib/client.ts                           |   39 +-
@@ -43,18 +44,31 @@ The output of `git diff --stat c82fef47f..e829299c6`:
  mobile/src/screens/GlobalFeedScreen.tsx            |  115 +-
  mobile/src/screens/NotificationSettingsScreen.tsx  |   22 +
  mobile/src/screens/dashboard/DashboardScreen.tsx   |    6 +-
- 21 files changed, 3332 insertions(+), 109 deletions(-)
+ 22 files changed, 3696 insertions(+), 110 deletions(-)
 ```
 
-Backend: 6 files. Mobile: 10 files. Documentation: 5 files.
+Backend: 6 files. Mobile: 10 files. Documentation: 6 files.
 
 ## 2. Complete implementation chain
 
-The exact stdout of `git log --oneline c82fef47f..e829299c6` is:
+The exact stdout of `git log --oneline c82fef47f..f7033b86c` is:
 
 ```
 f7033b86c fix(notification): R15 — standalone partial-failure test, first-send-fail edge, dedup residency doc
 df0de4aa8 fix(notification): R14 — at-most-once cursor doc fix + partial-failure test
+da6997288 docs: fix STEP9_3 EVID R10 self-referencing SHA, ledger sync
+15744d8f2 docs: STEP 9.3 EVID R10 — round counts, 3-doc sync, PENDING→ACCEPTED
+5c3ef427b docs: fix STEP9_3 EVID R9 self-referencing SHA, ledger sync
+4383353a4 docs: STEP 9.3 EVID R9 — literal git diff --stat, remove 'exact stdout' claim
+e236d8bee docs: fix STEP9_3 EVID R8 self-referencing SHA, ledger sync
+7481ea16c docs: STEP 9.3 EVID R8 — full 38-line git log raw stdout
+1fe58835e docs: fix STEP9_3 EVID R7 self-referencing SHA, ledger sync
+26dc2504f docs: STEP 9.3 EVID R7 — 3 stale refs: log range, gate count, file lines
+d6fa46588 docs: fix STEP9_3 EVID R6 self-referencing SHA, ledger sync
+ef402d482 docs: STEP 9.3 EVID R6 — fresh test stdout, regenerated scope, corrected rounds
+22967ece6 docs: fix STEP9_3 EVID R5 self-referencing SHA, ledger sync
+ad69a5d3b docs: STEP 9.3 EVID R5 — IMPL e829299c6, R7-R13 chain, corrected round counts
+2f185f9b1 docs: add workflow experiment report (Steps 9.1-9.3)
 e829299c6 fix(notification): R13 — epoch in DeviceStore, atomic snapshot, wg.Add under lock
 99c2992bf fix(notification): R12 — per-device epoch, real WaitGroup join, epoch-guarded cursor write
 2a35e10b1 fix(notification): R11 — production wiring, atomic RevokeDevice, Stop drain, late-SUCCESS tests
@@ -131,8 +145,8 @@ prohibited to avoid flooding already-notified devices.
 - `Start()` — background consumer loop, 1s tick, polls `Writer.ReadRecent(128)`
 - `dispatch()` — per-device: snapshot all devices + cursors under single RLock,
   `SelectSince` events, per-device `Dedup.Claim`, `Build` locator with generation
-  gate, `sender.Send`. Cursor advances only on full success — partial failure
-  preserves old cursor, at-most-once, no retry.
+  gate, `sender.Send`. Cursor advances to last success on partial failure;
+  unsent events are not retried.
 - `Stop()` — closes done channel, idempotent
 - `SetEnabled(bool)` — controls consumer loop independently of device registration
 - `Dispatch()` — synchronous one-shot for tests/manual trigger
