@@ -73,7 +73,7 @@ these automatically.
 | 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
 | 9.1 (Timeline staging) | `dc376f9b7` (IMPL) | `66824e393` (EVID R7) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
-| 9.2 (Projection convergence) | `c82fef47f` (IMPL) | `(this commit)` (EVID) | Dual-fed equivalence oracle — read-only, default-off, offline projection |
+| 9.2 (Projection convergence) | `c82fef47f` (IMPL) | `f32be5756` (EVID) | Dual-fed equivalence oracle — read-only, default-off, offline projection |
 
 ## 6. Authoritative sequence
 
