@@ -10,15 +10,16 @@
 Step 9.3 adds a minimal, default-off N1 notification layer that delivers
 exact-event locators to the mobile OS notification channel. N1 is a
 non-authoritative push payload — tapping the notification re-queries
-server authority. N1 never delivers content, commands, secrets, or
-approval payloads directly.
+a dedicated server endpoint for authoritative resolution. N1 never
+delivers content, commands, secrets, or approval payloads directly.
 
 **What is NEW:**
-- `internal/notification/` — notification builder, dedup store, delivery pipeline
+- `internal/notification/` — dedup store, builder, delivery pipeline, cursor
+- `GET /api/notification/<eventId>/status` — authoritative re-authorization endpoint
 - `--enable-n1-notifications` — default-off CLI flag
 
 **What stays UNCHANGED:**
-- Existing push notification infrastructure (OS channel, token store)
+- Existing push notification infrastructure (OS channel, per-device token store)
 - Mobile UI (N1 is a locator payload only — no new screens)
 - All authority services (runtime, lifecycle, approval, input, terminal)
 - Cockpit, Transcript, Timeline writer — read-only
@@ -32,71 +33,123 @@ A delivered notification contains ONLY a locator, never content:
 {
   "eventId": "<canonical event ID>",
   "sessionId": "<managed session ID>",
-  "runtimeId": "<runtime identity>",
   "generation": 7,
-  "kind": "tool_call_finished",
+  "kind": "approval_requested",
   "timestamp": "<occurredAt>",
-  "n1Token": "<opaque dedup token>"
+  "n1Token": "<opaque stable dedup token = SHA256(eventId+generation)>"
 }
 ```
 
-The locator identifies the EXACT event. The mobile app uses the locator
-to re-query the cockpit GET endpoint for authoritative state. No user
-content, command text, approval payload, or secret appears in the payload.
+**Token stability:** `n1Token` is `SHA256(eventId + ":" + generation)`.
+Stable across daemon restarts — the same event+generation always produces
+the same token. The dedup store keys on `(eventId, generation)`, not on
+an ephemeral random token.
 
-**Deep link integrity:** `RuntimeID + LaunchGeneration + SessionID` must
-match the event's envelope identity. No fabricated links. No session-only
-or session+generation-only shortcuts.
+**ACK timing:** delivery is fire-and-forget to the OS push channel. The
+mobile app ACKs via the OS notification API. The daemon does not wait
+for ACK and does not retry push delivery.
 
-## 3. Closed taxonomy
+## 3. Re-authorization endpoint
+
+`GET /api/notification/<eventId>/status?session=<sessionID>&generation=<gen>`
+(device bearer `sessions:read`).
+
+Returns current authoritative resolution:
+
+```json
+{
+  "eventId": "<eventId>",
+  "currentGeneration": 7,
+  "notificationGeneration": 7,
+  "status": "actionable",
+  "resolvedBy": null,
+  "permissions": ["sessions:read", "terminal:input"],
+  "activityLink": "pokit://session/<sessionId>?event=<eventId>"
+}
+```
+
+### 3a. Seven closed outcomes
+
+| Outcome | Condition |
+|---------|-----------|
+| `actionable` | Event exists, generation matches, user has required permissions |
+| `already_resolved` | Event's approval or input was already processed |
+| `stale_generation` | `notificationGeneration != currentGeneration` |
+| `session_unavailable` | Session ID not found in managed runtime catalog |
+| `insufficient_permission` | Authenticated device lacks required permission |
+| `canonical_event_unavailable` | Event ID not found in Timeline writer ring buffer |
+| `event_degraded_or_gap` | Writer is degraded (dropped events) — exact event cannot be confirmed |
+
+Only `actionable` opens the deep-link Activity view. All other outcomes
+display a safe fallback (session list, terminal, or explicit "Event no
+longer available" message).
+
+### 3b. Activity-event navigation
+
+The `activityLink` field uses the `pokit://` custom scheme for in-app
+navigation. The mobile app opens the exact Activity item corresponding
+to the notification's event. If the event is no longer in the Activity
+projection (ring buffer wrap), the link falls back to the session's
+Terminal view.
+
+## 4. Closed taxonomy
 
 Only these event kinds trigger N1 notifications:
 
-| Event Kind | Notification Label |
-|-----------|-------------------|
-| `provider_invocation_finished` | "Agent completed" / "Agent failed" |
-| `approval_requested` | "Approval requested" |
-| `approval_resolved` | "Approval resolved" |
-| `tool_call_finished` | "Tool completed" |
-| `stream_observed` | suppressed (no notification) |
-| Unknown / other | fail-closed (no notification) |
+| Event Kind | Notification Label | Activity link target |
+|-----------|-------------------|---------------------|
+| `provider_invocation_finished` | "Agent completed" / "Agent failed" | Session Activity view |
+| `approval_requested` | "Approval requested" | Approval action sheet |
+| `approval_resolved` | "Approval resolved" | Session Activity view |
+| `tool_call_finished` | "Tool completed" | Session Activity view |
+| Unknown / other | fail-closed (no notification) | — |
 
-Any event kind outside this set is silently ignored. Unknown event kinds
-are never delivered.
+## 5. Exactly-once delivery
 
-## 4. Exactly-once delivery
+Each notification is delivered at most once per `(eventId, generation)`
+pair. The dedup store persists a bounded window.
 
-Each notification is delivered at most once per event. The dedup store
-holds a bounded window of recently delivered `(eventId, n1Token)` pairs.
+**Dedup key:** `(eventId, generation)` — stable across restarts because
+`n1Token = SHA256(eventId + ":" + generation)` is deterministic.
 
-**Dedup window:** 4096 entries, LRU eviction on overflow. Restart
-(daemon crash/reconnect) clears the window — a delivery after restart
-is a new notification, not a duplicate.
+**Dedup window:** 4096 entries, LRU eviction on overflow. After
+eviction, a re-delivered event is treated as a new notification
+(idempotency gap — the mobile app's re-authorize query is the safety net).
 
-**Stale block:** if the event's approval or input has already been
-processed (state is terminal), the notification is suppressed. A
-notification must never re-notify an already-handled action.
+**Stale block:** if `notificationGeneration != currentGeneration`,
+the notification is suppressed before push delivery. No stale-generation
+notification reaches the device.
 
-**Retry/idempotency:** after daemon restart or network recovery, the
-dedup window is empty. A re-delivered event is a new locator, not a
-duplicate. The mobile app's tap → re-query path is the idempotency
-guarantee.
+**Restart:** after daemon restart, the dedup store is empty. A
+re-ingested event (from Timeline ring buffer) produces the same
+`n1Token` but is re-delivered because the dedup store was cleared.
+The mobile app's re-authorize query handles the duplicate gracefully.
 
-## 5. Generation gate
+## 6. Generation gate
 
-Session replacement (new generation launch) blocks notifications from
-the old generation. The notification builder checks:
+The notification builder checks generation identity before delivery:
 
-- `event.LaunchGeneration == currentGeneration(sessionID)` from the
-  managed runtime catalog
-- If generation is stale (old generation), notification is suppressed
-- Reconnect after restart → new generation → old events suppressed
+- `event.LaunchGeneration == managedRuntime.CurrentGeneration(sessionID)`
+- If generation is stale → `stale_generation` outcome, no push delivery
+- Reconnect after restart → new generation → old events suppressed at source
 
-**Multi-device:** last-write-wins for the notification's session-scoped
-state. If two devices produce notifications for the same session and
-generation, the later timestamp wins. Explicit merge is deferred.
+## 7. Multi-device
 
-## 6. Privacy
+**Per-device token store:** push tokens are stored per device (DeviceID),
+not globally overwritten. Multiple paired devices each receive their own
+notification for the same session event.
+
+**Timeline consumption cursor:** each device tracks the last-delivered
+event position in the Timeline ring buffer via a per-device `(deviceID,
+lastEventID, lastGeneration)` cursor. On daemon restart, delivery resumes
+from the oldest event still in the ring buffer (cursor reset). No
+cross-device conflict — each device consumes independently.
+
+**No global overwrite:** registering a new push token for device B does
+not remove device A's token. Device A and Device B both receive
+notifications for events relevant to sessions they are authorized to view.
+
+## 8. Privacy
 
 The notification payload must never contain:
 
@@ -111,27 +164,14 @@ The notification payload must never contain:
 (VisibilityPrivate), the notification content shows only the label
 ("Agent completed", "Approval requested"), never detail.
 
-## 7. Re-authorization
-
-Tapping a notification does NOT trust the payload. The mobile app:
-
-1. Receives the locator from the OS notification
-2. Opens the app with the locator as a deep-link parameter
-3. Queries `GET /api/cockpit` with the session ID and event ID
-4. Server returns authoritative state (the notification payload is
-   verified against the authoritative Timeline projection)
-5. If the event is not found or has been superseded, the app displays
-   a fallback (session list, terminal) — never fabricated state
-
-The notification is a signal, not authority.
-
-## 8. Implementation files
+## 9. Implementation files
 
 **May create:**
-- `internal/notification/dedup.go` — bounded LRU dedup store
+- `internal/notification/dedup.go` — bounded LRU dedup store (4096 entries)
 - `internal/notification/builder.go` — locator construction + generation gate
-- `internal/notification/delivery.go` — push channel adapter
-- `internal/notification/notification_test.go` — 10 acceptance tests
+- `internal/notification/delivery.go` — push channel adapter + per-device cursor
+- `internal/notification/handler.go` — GET /api/notification/<eventId>/status
+- `internal/notification/notification_test.go` — 12 acceptance tests
 - `cmd/devremote/app.go` — `--enable-n1-notifications` flag + composition wiring
 
 **Must NOT change:**
@@ -140,33 +180,37 @@ The notification is a signal, not authority.
 - `internal/transcript/` — Transcript service
 - Existing REST/WS handlers
 
-## 9. Acceptance tests
+## 10. Acceptance tests
 
-1. **Closed taxonomy:** unknown event kind → suppressed (no notification)
-2. **Exactly-once:** same event ID delivered once; second attempt suppressed
-3. **Stale block:** already-processed approval → suppressed
-4. **Generation gate:** old-generation event → suppressed
-5. **Deep link:** locator carries correct RuntimeID+Generation+SessionID
-6. **Privacy:** notification payload contains zero secrets, commands, or content
-7. **Dedup window:** bounded 4096-entry store; overflow evicts oldest
-8. **Restart:** dedup window empty after restart → re-delivery is a new notification
-9. **Re-authorization:** tap → cockpit GET → authoritative state, not payload
-10. **Default-off:** without `--enable-n1-notifications`, zero notification code executes
+1. **Closed taxonomy:** unknown event kind → suppressed
+2. **Exactly-once:** same (eventId, generation) delivered once; second suppressed
+3. **Stable token:** n1Token = SHA256(eventId:generation), same across restarts
+4. **Stale block:** already-processed approval → suppressed before push
+5. **Generation gate:** old-generation event → suppressed
+6. **Deep link:** locator carries correct generation + session ID
+7. **Privacy:** payload contains zero secrets, commands, or content
+8. **Dedup window:** 4096 entries; overflow evicts oldest
+9. **Re-authorization endpoint:** all 7 outcomes return correct resolution
+10. **Multi-device:** per-device tokens, independent cursors, no cross-device overwrite
+11. **Restart:** dedup empty, stable tokens re-deliver, mobile re-query handles
+12. **Default-off:** without `--enable-n1-notifications`, zero notification code executes
 
-## 10. Gate
+## 11. Gate
 
 - [ ] All existing tests pass
-- [ ] 10 new acceptance tests pass
+- [ ] 12 new acceptance tests pass
 - [ ] Default-off flag: zero runtime effect when disabled
 - [ ] No mobile UI or push infrastructure changes
 - [ ] Separate evidence commit records test results
 
-## 11. Stop conditions
+## 12. Stop conditions
 
 Stop and reject if the change:
 - Delivers user content, commands, secrets, or approval payloads in the notification
 - Sends a notification without verifying generation identity
 - Re-delivers a suppressed/stale event
+- Overwrites device B's push token when device A registers
 - Requires mobile app changes
 - Changes any existing authority (runtime, approval, input, terminal)
 - Makes notification delivery a daemon startup or session prerequisite
+- Uses an ephemeral random token that changes across restarts
