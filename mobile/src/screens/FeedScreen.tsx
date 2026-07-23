@@ -32,6 +32,7 @@ interface Props {
   // list response. It is also the deterministic render boundary for the
   // production component; absent data remains fail-closed.
   initialSessionData?: SessionTelemetry;
+  notificationNotice?: 'resolved' | 'stale' | 'degraded' | 'unknown';
 }
 
 // serverCapabilitiesFromControl is the sole parser for the daemon's hello
@@ -98,7 +99,7 @@ export default function FeedScreen(props: Props) {
   return <LegacyFeedScreen {...props} />;
 }
 
-function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'transcript', initialSessionData}: Props) {
+function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'transcript', initialSessionData, notificationNotice}: Props) {
   const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
@@ -862,6 +863,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
             )}
           </View>
         </View>
+        {notificationNotice && <View style={{ backgroundColor: '#17202a', padding: 10 }}><Text style={{ color: '#c9d1d9', textAlign: 'center' }}>
+          {notificationNotice === 'resolved' ? 'This request was already resolved. Showing the latest session state.' :
+           notificationNotice === 'stale' ? 'This notification is from an earlier session generation. Showing the latest state.' :
+           notificationNotice === 'degraded' ? 'Activity history has a gap. Terminal health information may be incomplete.' :
+           'This notification outcome is unknown. Showing the terminal safely.'}
+        </Text></View>}
 
         {/* M3b: managed session lifecycle actions. Rendered ONLY for sessions the
             daemon reports as managedLifecycle; capability/state drive visibility.

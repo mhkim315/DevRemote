@@ -16,6 +16,7 @@ interface Props {
   onSnippets: () => void;
   token?: string;
   authCtx?: any;  // M3-auth-4A
+  notificationNotice?: 'session_unavailable' | 'event_unavailable';
 }
 
 // S1-E: a poll that does not settle within this bound is failed so a hung request
@@ -23,7 +24,7 @@ interface Props {
 // freshness horizon (6000ms) so a hung poll surfaces as non-current promptly.
 const POLL_DEADLINE_MS = 5000;
 
-export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Props) {
+export default function DashboardScreen({ onSelectAgent, onSnippets, token, notificationNotice }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
@@ -189,6 +190,9 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token }: Pr
 
   return (
     <SafeAreaView style={styles.container}>
+      {notificationNotice && <View style={{ backgroundColor: '#17202a', padding: 10 }}><Text style={{ color: '#c9d1d9', textAlign: 'center' }}>
+        {notificationNotice === 'session_unavailable' ? 'That session is no longer available.' : 'That Activity event is no longer retained.'}
+      </Text></View>}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>POKIT AGENTS</Text>
         <View style={{flexDirection:'row', gap:6}}>

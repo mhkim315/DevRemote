@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { Linking, View, Text } from 'react-native';
+import { Alert, Linking, View, Text } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
@@ -14,8 +14,9 @@ import { RootTabs } from './src/navigation/RootNavigator';
 import { TokenManager } from './src/lib/authClient';
 import { loadPairing } from './src/lib/pairingStore';
 import { createPokitDeviceKey } from './modules/pokit-device-key';
-import { getBaseURL, setBaseURL, setDeviceAuth } from './src/lib/client';
+import { getBaseURL, hasDeviceAuth, setBaseURL, setDeviceAuth } from './src/lib/client';
 import { canonicalOrigin, completePairing, selectAppRoute, type AuthContext } from './src/lib/authMode';
+import { notificationRoute, notificationStartupMessage } from './src/lib/notificationRoute';
 
 // E6: explicit test-build gate — does not depend on stored baseURL.
 // Set EXPO_PUBLIC_POKIT_NO_LOGIN_LOCAL_TEST=1 for local test builds.
@@ -169,29 +170,30 @@ function AppContent() {
     const runtimeId = data?.['runtimeId'] as string | undefined;
     if (!eventId || !sessionId || !Number.isFinite(generation)) return;
 
-    // Re-read live auth state: paired-device mode uses the device bearer
-    // (no Supabase session); legacy mode uses the active Supabase token.
-    // This avoids the stale-closure problem — the listener effect uses [] but
-    // every notification reads current pairing/auth state fresh.
-    // Cold-start race: if apiGet returns unauthenticated (device bearer not
-    // yet installed), retry with backoff (max 3 attempts, 500ms between).
+    // Cold start must wait for the stored pairing to install its device bearer.
+    // A notification response can arrive before the App auth effect completes.
     try {
-      const paired = await loadPairing();
-      let token = '';
-      if (paired) {
-        // Paired-device: getNotificationStatus will use device bearer via apiGet.
-        token = '';
-      } else {
-        // Legacy mode: re-read the current Supabase session fresh.
-        const { data: { session: freshSession } } = await supabase.auth.getSession();
-        token = freshSession?.access_token || '';
-      }
-      if (!paired && !token) return; // neither paired nor authenticated
-
       let status: NotificationStatus | null = null;
       let lastErr: unknown = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          // Re-check persisted pairing AND bearer installation every attempt.
+          const paired = await loadPairing();
+          if (paired && !hasDeviceAuth()) {
+            lastErr = new Error('device auth is still installing');
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+          let token = '';
+          if (!paired) {
+            const { data: { session: freshSession } } = await supabase.auth.getSession();
+            token = freshSession?.access_token || '';
+            if (!token) {
+              lastErr = new Error('authentication is still starting');
+              await new Promise(r => setTimeout(r, 500));
+              continue;
+            }
+          }
           status = await getNotificationStatus(token, eventId, sessionId, generation, runtimeId);
           lastErr = null;
           break;
@@ -207,42 +209,12 @@ function AppContent() {
       }
       if (!status) {
         console.warn('notification status unavailable after retries', lastErr);
+        Alert.alert(notificationStartupMessage, 'Authentication is still initializing. Tap the notification again in a moment.');
         return;
       }
 
-      // 7 distinct fallback outcomes — each maps to a different screen.
-      const sid = encodeURIComponent(sessionId);
-      const eid = encodeURIComponent(eventId);
-      switch (status.status) {
-        case 'actionable':
-          if (status.activityLink) await Linking.openURL(status.activityLink);
-          break;
-        case 'already_resolved':
-          // Approval resolved by another device — go to the session terminal.
-          await Linking.openURL(`pokit://session/${sid}`);
-          break;
-        case 'stale_generation':
-          // Runtime replaced or gen mismatch — go to the session for fresh context.
-          await Linking.openURL(`pokit://session/${sid}`);
-          break;
-        case 'session_unavailable':
-        case 'canonical_event_unavailable':
-          // Session ended or event gone — go to sessions list (Dashboard).
-          await Linking.openURL('pokit://dashboard');
-          break;
-        case 'insufficient_permission':
-          // Device lacks terminal:input — go to settings / pairing info.
-          await Linking.openURL('pokit://dashboard');
-          break;
-        case 'event_degraded_or_gap':
-          // Writer is degraded — go to terminal for direct interaction.
-          await Linking.openURL(`pokit://session/${sid}`);
-          break;
-        default:
-          // Unknown status — terminal as safest fallback.
-          await Linking.openURL(`pokit://session/${sid}`);
-          break;
-      }
+      const destination = notificationRoute(status, sessionId, eventId);
+      await Linking.openURL(destination.url);
     } catch (err) { console.warn('notification status unavailable', err); }
   }
 

@@ -1,103 +1,93 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { listSessions } from '../lib/client';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { SessionTelemetry, AgentEvent } from '../components/AgentCard';
-import { EventBubble } from '../components/EventBubble';
+import { getCockpit } from '../lib/client';
 
 interface Props {
   token?: string;
-  session?: string;  // deep-linked session from pokit://activity/<session>
-  eventId?: string;  // deep-linked event from ?event=<id>
+  session?: string;
+  eventId?: string;
+}
+
+type TimelineEvent = {
+  id: string;
+  sessionId: string;
+  runtimeId?: string;
+  generation?: string;
+  kind: string;
+};
+
+// The Cockpit notification projection is backed by the Timeline writer and
+// carries canonical event IDs. SessionTelemetry intentionally has no events,
+// so it must never be used to resolve a notification deep link.
+function timelineEvents(value: unknown): TimelineEvent[] {
+  const notifications = (value as any)?.notifications;
+  if (!Array.isArray(notifications)) return [];
+  return notifications.flatMap((item: any) => {
+    const id = item?.origin?.evidenceRef || item?.summary;
+    const sessionId = item?.origin?.sessionId;
+    if (item?.kind !== 'notification' || typeof id !== 'string' || typeof sessionId !== 'string') return [];
+    return [{ id, sessionId, runtimeId: item.origin.runtimeId, generation: item.origin.generation, kind: String(item.state || 'event') }];
+  });
 }
 
 export default function GlobalFeedScreen({ token, session, eventId }: Props) {
-  const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const listRef = useRef<FlatList>(null);
-
-  const fetchSessions = () => {
-    listSessions(token)
-      .then(data => {
-        const normalized = (data || []).map((s: any) =>
-          typeof s === 'string' ? { id: s, state: 'idle', load: 0 } : s
-        ).sort((a: SessionTelemetry, b: SessionTelemetry) => String(a.id).localeCompare(String(b.id)));
-        setSessions(normalized);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        setLoading(false);
-      });
-  };
 
   useEffect(() => {
-    fetchSessions();
-    const interval = setInterval(fetchSessions, 3000); // Polling every 3s
-    return () => clearInterval(interval);
-  }, []);
+    let live = true;
+    const refresh = () => getCockpit(token)
+      .then(data => { if (live) setEvents(timelineEvents(data)); })
+      .catch(err => console.warn('timeline activity unavailable', err))
+      .finally(() => { if (live) setLoading(false); });
+    refresh();
+    const interval = setInterval(refresh, 3000);
+    return () => { live = false; clearInterval(interval); };
+  }, [token]);
 
-  // When deep-linked via pokit://activity/<session>, scope the display to that
-  // session's events. When eventId is provided, it is highlighted in the list.
-  const scopedToSession = session || undefined;
-  const highlightEventId = eventId || undefined;
-
-  // For now, events are session cards — scope to matching session if provided.
-  const displaySessions = scopedToSession
-    ? sessions.filter(s => s.id === scopedToSession || String(s.id).includes(scopedToSession))
-    : sessions;
+  const scoped = session ? events.filter(e => e.sessionId === session) : events;
+  const ordered = eventId
+    ? [...scoped].sort((a, b) => Number(b.id === eventId) - Number(a.id === eventId))
+    : scoped;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>
-          {scopedToSession ? `ACTIVITY` : 'GLOBAL FEED'}
-        </Text>
-        {scopedToSession && (
-          <Text style={styles.headerSubtitle} numberOfLines={1}>
-            {scopedToSession}{highlightEventId ? ` · event ${highlightEventId.slice(0, 12)}` : ''}
-          </Text>
-        )}
+        <Text style={styles.headerTitle}>{session ? 'ACTIVITY' : 'GLOBAL FEED'}</Text>
+        {session && <Text style={styles.headerSubtitle} numberOfLines={1}>{session}{eventId ? ` · event ${eventId.slice(0, 12)}` : ''}</Text>}
       </View>
-      <View style={styles.content}>
-        {loading && displaySessions.length === 0 ? (
-          <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
-        ) : (
-          <FlatList
-            ref={listRef}
-            data={displaySessions}
-            keyExtractor={(item, idx) => item.id || String(idx)}
-            contentContainerStyle={styles.listContainer}
-            renderItem={({ item }) => {
-              const isHighlighted = highlightEventId
-                ? (item as any).events?.some((e: any) => e.id === highlightEventId)
-                : false;
-              return (
-                <View style={isHighlighted ? styles.highlightedItem : undefined}>
-                  <EventBubble event={item} runnerId={item.runnerId} runnerColor={item.runnerColor} agentKind={item.agentKind} />
-                </View>
-              );
-            }}
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>No activity yet.</Text>
-            }
-          />
-        )}
-      </View>
+      {loading ? <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} /> : (
+        <FlatList
+          data={ordered}
+          keyExtractor={item => item.id}
+          contentContainerStyle={styles.listContainer}
+          renderItem={({ item }) => <View style={[styles.eventCard, item.id === eventId && styles.highlightedItem]}>
+            {item.id === eventId && <Text style={styles.highlightLabel}>NOTIFICATION EVENT</Text>}
+            <Text style={styles.eventKind}>{item.kind}</Text>
+            <Text style={styles.eventID} selectable>{item.id}</Text>
+            <Text style={styles.eventMeta}>{item.sessionId} · generation {item.generation || 'unknown'}</Text>
+          </View>}
+          ListEmptyComponent={<Text style={styles.emptyText}>{eventId ? 'This event is no longer in the retained Activity timeline.' : 'No activity yet.'}</Text>}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
+export { timelineEvents };
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000' },
-  header: {
-    paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#0D2D45',
-    alignItems: 'center'
-  },
+  header: { paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#0D2D45', alignItems: 'center' },
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#ffffff', letterSpacing: 1.2, fontFamily: Platform.OS === 'ios' ? 'HelveticaNeue-CondensedBold' : 'sans-serif-condensed' },
   headerSubtitle: { fontSize: 11, color: '#45EBE9', marginTop: 4, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  content: { flex: 1 },
-  listContainer: { paddingVertical: 16 },
+  listContainer: { padding: 16 },
+  eventCard: { borderWidth: 1, borderColor: '#0D2D45', borderRadius: 10, padding: 14, marginBottom: 10, backgroundColor: '#07131d' },
+  highlightedItem: { borderColor: '#45EBE9', borderWidth: 2 },
+  highlightLabel: { color: '#45EBE9', fontSize: 10, fontWeight: '800', marginBottom: 6 },
+  eventKind: { color: '#ffffff', fontWeight: '700', fontSize: 14 },
+  eventID: { color: '#45EBE9', fontSize: 11, marginTop: 6, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  eventMeta: { color: '#8b949e', fontSize: 11, marginTop: 6 },
   emptyText: { color: '#8b949e', textAlign: 'center', marginTop: 40, fontSize: 14 },
-  highlightedItem: { borderLeftWidth: 3, borderLeftColor: '#45EBE9', paddingLeft: 8 }
 });

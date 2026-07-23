@@ -9,6 +9,7 @@ import FeedScreen from '../screens/FeedScreen';
 import SnippetsScreen from '../screens/SnippetsScreen';
 import GlobalFeedScreen from '../screens/GlobalFeedScreen';
 import CockpitScreen from '../screens/CockpitScreen';
+import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -24,6 +25,7 @@ const linking: LinkingOptions<{}> = {
         screens: {
           DashboardMain: 'dashboard',
           Terminal: 'session/:session',
+          NotificationSettings: 'settings',
         },
       },
       Activity: 'activity/:session',
@@ -42,6 +44,7 @@ function DashboardStackScreen({ route }: any) {
             {...props}
             token={token}
             authCtx={authCtx}
+            notificationNotice={(props.route.params as any)?.notice}
             onSelectAgent={(session) => props.navigation.navigate('Terminal', { session })}
             onSnippets={() => props.navigation.navigate('Snippets')}
           />
@@ -54,6 +57,7 @@ function DashboardStackScreen({ route }: any) {
             session={props.route.params.session}
             token={token}
             authCtx={authCtx}
+            notificationNotice={props.route.params.notice}
             onBack={() => props.navigation.goBack()}
           />
         )}
@@ -66,6 +70,7 @@ function DashboardStackScreen({ route }: any) {
           />
         )}
       </Stack.Screen>
+      <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     </Stack.Navigator>
   );
 }
