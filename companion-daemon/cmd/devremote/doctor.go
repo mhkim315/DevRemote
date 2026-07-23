@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -131,10 +133,10 @@ func checkDaemonListener() []doctorResult {
 // hostIdentityDTO matches the schema written by devicetrust.HostIdentity.
 // Only public fields are decoded; privateKey is omitted from the JSON.
 type hostIdentityDTO struct {
-	HostID      string `json:"hostId"`
-	Fingerprint string `json:"fingerprint"`
-	KeyVersion  int    `json:"keyVersion"`
-	CreatedAt   string `json:"createdAt"`
+	HostID     string `json:"hostId"`
+	KeyVersion int    `json:"keyVersion"`
+	CreatedAt  string `json:"createdAt"`
+	PublicKey  []byte `json:"publicKey"`
 }
 
 func checkHostIdentity() []doctorResult {
@@ -159,7 +161,11 @@ func checkHostIdentity() []doctorResult {
 		}}
 	}
 
-	fp := identity.Fingerprint
+	if identity.HostID == "" || identity.KeyVersion < 1 || len(identity.PublicKey) == 0 {
+		return []doctorResult{{Check: "trust.host_identity", Status: "error", Detail: "host_identity.json missing required public identity fields"}}
+	}
+	sum := sha256.Sum256(identity.PublicKey)
+	fp := hex.EncodeToString(sum[:])
 	if len(fp) > 16 {
 		fp = fp[:16] + "..." // redacted fingerprint for safety
 	}

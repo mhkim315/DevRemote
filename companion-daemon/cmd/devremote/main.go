@@ -57,7 +57,7 @@ func dispatchSubcommand(cmd string, args []string) bool {
 func main() {
 	// "pokit daemon install|start|stop|status|uninstall" = CLI dispatch.
 	// "pokit daemon" (no subcommand) = foreground daemon serve.
-	if len(os.Args) > 1 && os.Args[1] == "daemon" && len(os.Args) > 2 {
+	if len(os.Args) > 2 && os.Args[1] == "daemon" && isDaemonLifecycleVerb(os.Args[2]) {
 		dispatchSubcommand(os.Args[1], os.Args[2:])
 		return
 	}

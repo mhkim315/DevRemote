@@ -3,9 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"log"
 	"os"
@@ -64,7 +66,34 @@ func writeDaemonState(s *daemonState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".daemon_state.*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func xmlEscapeString(value string) string {
+	var b bytes.Buffer
+	_ = xml.EscapeText(&b, []byte(value))
+	return b.String()
 }
 
 // ── XML plist template ──
@@ -138,10 +167,21 @@ func daemonLoaded(plistPath string) (bool, string) {
 
 func extractPID(out string) string {
 	lines := strings.Split(out, "\n")
-	if len(lines) > 0 {
-		fields := strings.Fields(lines[0])
-		if len(fields) >= 2 && fields[0] != "-" {
-			return fields[0]
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		// `launchctl list LABEL`: PID, status, label. Do not interpret the
+		// first token of `launchctl print` as a PID.
+		if len(fields) == 3 && fields[2] == daemonLabel && fields[0] != "-" {
+			allDigits := true
+			for _, r := range fields[0] {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return fields[0]
+			}
 		}
 	}
 	return ""
@@ -152,6 +192,64 @@ func randomSuffix() string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pokit-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// replaceBinaryAtomic copies a new executable beside the tracked destination
+// and renames it into place. The source is never modified.
+func replaceBinaryAtomic(source, destination string) (string, error) {
+	if source == destination {
+		return "", nil
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return "", err
+	}
+	backup := destination + ".pre-upgrade-" + time.Now().UTC().Format("20060102T150405Z")
+	if old, err := os.ReadFile(destination); err == nil {
+		if err := writeFileAtomic(backup, old, 0o700); err != nil {
+			return "", err
+		}
+	}
+	if err := writeFileAtomic(destination, data, 0o700); err != nil {
+		return backup, err
+	}
+	return backup, nil
+}
+
+func restoreBackup(destination, backup string) error {
+	if backup == "" {
+		return nil
+	}
+	data, err := os.ReadFile(backup)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(destination, data, 0o700)
 }
 
 // ── Install ──
@@ -169,58 +267,52 @@ func installDaemon() {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("install: cannot create state directory %s: %v", stateDir, err)
 	}
-	os.Chmod(stateDir, 0o700)
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		log.Fatalf("install: cannot secure state directory: %v", err)
+	}
 
 	logDir := filepath.Join(stateDir, "logs")
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		log.Fatalf("install: cannot create log directory %s: %v", logDir, err)
 	}
-	os.Chmod(logDir, 0o700)
-
-	// Check for existing installation.
-	existingState, _ := readDaemonState()
-	if _, err := os.Stat(plistPath); err == nil && existingState != nil {
-		fmt.Println("LaunchAgent already installed. Use 'pokit daemon start' to start it.")
-		fmt.Printf("Installed at: %s\n", existingState.InstalledAt)
-		fmt.Printf("Binary: %s\n", existingState.BinPath)
-		os.Exit(0)
+	if err := os.Chmod(logDir, 0o700); err != nil {
+		log.Fatalf("install: cannot secure log directory: %v", err)
 	}
+
+	// Preserve every prior artifact before touching it. Corrupt/missing state is
+	// not permission to discard a pre-existing plist on a failed bootstrap.
+	existingState, _ := readDaemonState()
+	priorPlist, priorPlistErr := os.ReadFile(plistPath)
+	hadPriorPlist := priorPlistErr == nil
 
 	// ── Upgrade path: backup existing binary before replacing ──
 	oldBinPath := ""
 	if existingState != nil && existingState.BinPath != "" {
 		oldBinPath = existingState.BinPath
 	}
+	backupPath := ""
 	if oldBinPath != "" && oldBinPath != binPath {
-		backupPath := oldBinPath + ".pre-upgrade-" + time.Now().UTC().Format("20060102T150405Z")
-		if data, err := os.ReadFile(oldBinPath); err == nil {
-			if err := os.WriteFile(backupPath, data, 0o700); err != nil {
-				fmt.Fprintf(os.Stderr, "install: could not backup previous binary: %v\n", err)
-			} else {
-				fmt.Printf("Previous binary backed up to: %s\n", backupPath)
-			}
+		var err error
+		backupPath, err = replaceBinaryAtomic(binPath, oldBinPath)
+		if err != nil {
+			log.Fatalf("install: atomic binary replacement failed: %v", err)
 		}
 	}
 
 	// Stop old daemon if running, before replacing plist.
 	if loaded, _ := daemonLoaded(plistPath); loaded {
-		runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
+		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath); err != nil {
+			log.Fatalf("install: cannot stop existing daemon for upgrade: %v", err)
+		}
 		fmt.Println("Stopped existing daemon for upgrade.")
 	}
 
 	// Build XML plist.
 	stdoutPath := filepath.Join(logDir, "daemon-stdout.log")
 	stderrPath := filepath.Join(logDir, "daemon-stderr.log")
-	plistContent := fmt.Sprintf(plistTemplate, daemonLabel, binPath, stdoutPath, stderrPath, stateDir)
-
-	// Atomic write with unpredictable tmp name.
-	tmpPath := plistPath + ".tmp." + randomSuffix()
-	if err := os.WriteFile(tmpPath, []byte(plistContent), 0o600); err != nil {
-		log.Fatalf("install: cannot write plist: %v", err)
-	}
-	if err := os.Rename(tmpPath, plistPath); err != nil {
-		os.Remove(tmpPath)
-		log.Fatalf("install: cannot rename plist: %v", err)
+	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(binPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir))
+	if err := writeFileAtomic(plistPath, []byte(plistContent), 0o600); err != nil {
+		log.Fatalf("install: cannot atomically write plist: %v", err)
 	}
 
 	// Persist daemon state for upgrade/rollback/uninstall tracking.
@@ -232,7 +324,7 @@ func installDaemon() {
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := writeDaemonState(state); err != nil {
-		fmt.Fprintf(os.Stderr, "install: warning: could not write daemon state: %v\n", err)
+		log.Fatalf("install: cannot atomically write daemon state: %v", err)
 	}
 
 	fmt.Printf("LaunchAgent installed: %s\n", plistPath)
@@ -242,18 +334,26 @@ func installDaemon() {
 	// Bootstrap with launchctl.
 	if err := runLaunchctl("bootstrap", "gui/"+currentUserUID(), plistPath); err != nil {
 		fmt.Fprintf(os.Stderr, "install: launchctl bootstrap failed: %v\n", err)
-		// Rollback: remove plist we just created, restore old binary.
-		os.Remove(plistPath)
-		if oldBinPath != "" && oldBinPath != binPath {
-			backupPath := oldBinPath + ".pre-upgrade-" + time.Now().UTC().Format("20060102T150405Z")
-			if data, err := os.ReadFile(backupPath); err == nil {
-				os.WriteFile(oldBinPath, data, 0o700)
-				os.Remove(backupPath)
-				fmt.Fprintf(os.Stderr, "Rolled back to previous binary: %s\n", oldBinPath)
-			}
+		if hadPriorPlist {
+			_ = writeFileAtomic(plistPath, priorPlist, 0o600)
+		} else {
+			_ = os.Remove(plistPath)
 		}
-		fmt.Fprintf(os.Stderr, "Removed newly created plist. Prior installation is untouched.\n")
+		if err := restoreBackup(oldBinPath, backupPath); err != nil {
+			fmt.Fprintf(os.Stderr, "install: rollback binary failed: %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr, "Rolled back failed bootstrap; prior installation was restored.\n")
 		os.Exit(1)
+	}
+	if loaded, _ := daemonLoaded(plistPath); !loaded {
+		_ = runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
+		if hadPriorPlist {
+			_ = writeFileAtomic(plistPath, priorPlist, 0o600)
+		} else {
+			_ = os.Remove(plistPath)
+		}
+		_ = restoreBackup(oldBinPath, backupPath)
+		log.Fatalf("install: readiness check failed after bootstrap; rollback completed")
 	}
 
 	fmt.Println("LaunchAgent loaded and started.")
@@ -337,7 +437,9 @@ func uninstallDaemon(purgeTrust bool) {
 
 	// Stop the agent if running.
 	if loaded, _ := daemonLoaded(plistPath); loaded {
-		runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
+		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath); err != nil {
+			log.Fatalf("uninstall: launchctl bootout failed; refusing to remove installed files: %v", err)
+		}
 		fmt.Println("Daemon stopped.")
 	}
 
@@ -352,10 +454,7 @@ func uninstallDaemon(purgeTrust bool) {
 
 	// Remove tracked executable (only if we installed it).
 	if state != nil && state.BinPath != "" {
-		currentBin := daemonBinPath()
-		if state.BinPath == currentBin {
-			fmt.Println("Note: current binary is the installed daemon. Remove manually if desired.")
-		} else if _, err := os.Stat(state.BinPath); err == nil {
+		if _, err := os.Stat(state.BinPath); err == nil {
 			if err := os.Remove(state.BinPath); err != nil {
 				fmt.Fprintf(os.Stderr, "uninstall: cannot remove daemon binary: %v\n", err)
 			} else {

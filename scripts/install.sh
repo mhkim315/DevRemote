@@ -8,6 +8,8 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON_DIR="$PROJECT_ROOT/companion-daemon"
 VERSION=$(cd "$DAEMON_DIR" && git describe --tags --always --dirty 2>/dev/null || echo "dev")
+GIT_SHA=$(cd "$DAEMON_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [ "$1" = "--global" ]; then
     INSTALL_DIR="/usr/local/bin"
@@ -33,7 +35,7 @@ echo "Target:  $INSTALL_DIR"
 
 cd "$DAEMON_DIR"
 echo "Building..."
-go build -ldflags="-X main.version=$VERSION" -o "$INSTALL_DIR/devremote" ./cmd/devremote
+go build -ldflags="-X main.cliVersion=$VERSION -X main.cliGitSHA=$GIT_SHA -X main.cliBuildTime=$BUILD_TIME" -o "$INSTALL_DIR/devremote" ./cmd/devremote
 
 echo "Installed: $INSTALL_DIR/devremote ($VERSION)"
 

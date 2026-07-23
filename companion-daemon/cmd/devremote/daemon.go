@@ -8,6 +8,14 @@ import (
 // daemonLabel is the deterministic macOS LaunchAgent label.
 const daemonLabel = "com.pokit.daemon"
 
+func isDaemonLifecycleVerb(arg string) bool {
+	switch arg {
+	case "install", "uninstall", "start", "stop", "status":
+		return true
+	}
+	return false
+}
+
 // daemonUsage prints the daemon subcommand help.
 func daemonUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: pokit daemon <command>
