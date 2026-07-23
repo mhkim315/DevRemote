@@ -1,7 +1,7 @@
 # Step 8 Evidence — Mobile Operational Cockpit
 
 **EVID HEAD:** (this commit)
-**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 793510e07 (observer) → 0a11ef7e1 (validation store) → 117740d1f (integration) → 4f10ea83f (T2 bounded observer concurrency)
+**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 793510e07 (observer) → 0a11ef7e1 (validation store) → 75be15e91 (integration) → 4f10ea83f (T2 bounded observer concurrency)
 
 ## Scope
 - timeline/writer and validation: one bounded queue (64), one dispatcher, and
