@@ -11,8 +11,10 @@ import (
 )
 
 // qrPairBridge adds QR bootstrap metadata and a one-time gate around the
-// production pairing flow. It does not register devices or issue sessions;
-// PairingHost and DeviceRegistry remain those authorities.
+// production pairing flow. It mediates between mobile (which sends QR
+// metadata in request body) and PairingHost (which sees only legacy fields).
+// The bridge does not register devices or issue sessions; PairingHost and
+// DeviceRegistry remain those authorities.
 type qrPairBridge struct {
 	mu         sync.Mutex
 	challenges *devicetrust.ChallengeStore
@@ -23,6 +25,14 @@ type qrPairBridge struct {
 type qrPending struct {
 	challengeID []byte
 	deviceID    string
+	metadata    qrMetadata // stored at Begin, checked at VerifyAndStrip
+}
+
+type qrMetadata struct {
+	hostID       string
+	daemonBootID string
+	challengeID  string
+	expiresAt    time.Time
 }
 
 func newQRPairBridge(challenges *devicetrust.ChallengeStore, bootID string) *qrPairBridge {
@@ -52,7 +62,15 @@ func (b *qrPairBridge) Begin(session term.QRPairSession) (term.QRPairMetadata, e
 		return term.QRPairMetadata{}, fmt.Errorf("store QR challenge: %w", err)
 	}
 	b.mu.Lock()
-	b.pending[session.SessionID] = qrPending{challengeID: challengeID, deviceID: pendingID}
+	b.pending[session.SessionID] = qrPending{
+		challengeID: challengeID, deviceID: pendingID,
+		metadata: qrMetadata{
+			hostID:       session.HostID,
+			daemonBootID: b.bootID,
+			challengeID:  hex.EncodeToString(challengeID),
+			expiresAt:    session.ExpiresAt,
+		},
+	}
 	b.mu.Unlock()
 	return term.QRPairMetadata{
 		ProtocolVersion: 1,
@@ -78,6 +96,42 @@ func (b *qrPairBridge) Consume(sessionID string) error {
 	if _, err := b.challenges.Consume(pending.challengeID, []byte(pending.deviceID)); err != nil {
 		return fmt.Errorf("consume QR challenge: %w", err)
 	}
+	return nil
+}
+
+// VerifyAndStrip validates the QR metadata fields from a mobile LAN request
+// against the bridge's stored metadata. On success, the QR fields are zeroed
+// so PairingHost sees only legacy fields. On failure, the challenge is consumed
+// (one-shot gate closed) and an error is returned.
+func (b *qrPairBridge) VerifyAndStrip(sessionID string, hostID *string, daemonBootID *string, challengeID *string, expiresAt *string) error {
+	b.mu.Lock()
+	pending, ok := b.pending[sessionID]
+	b.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("QR binding: session not found")
+	}
+	m := pending.metadata
+	if *hostID != m.hostID {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: hostId mismatch")
+	}
+	if *daemonBootID != m.daemonBootID {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: daemonBootId mismatch")
+	}
+	if *challengeID != m.challengeID {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: challengeId mismatch")
+	}
+	if t, err := time.Parse(time.RFC3339, *expiresAt); err != nil || !t.Equal(m.expiresAt) {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: expiresAt mismatch")
+	}
+	// Strip QR metadata — PairingHost sees only legacy fields.
+	*hostID = ""
+	*daemonBootID = ""
+	*challengeID = ""
+	*expiresAt = ""
 	return nil
 }
 

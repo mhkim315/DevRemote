@@ -329,8 +329,8 @@ describe('M3-auth-2B iOS integration', () => {
     expect((await run(() => iosThrowingKey('key_missing'))).mode).toBe('pairing_required');
     // a DIFFERENT Secure Enclave key exists → stored deviceId ≠ actual → re-pairable
     expect((await run(() => iosDeviceKey(), { ...pairing, deviceId: 'ff'.repeat(32) })).mode).toBe('pairing_required');
-    // key present but inaccessible/invalidated → explicit security failure
-    expect((await run(() => iosThrowingKey('key_inaccessible'))).mode).toBe('failed');
+    // 9.4-C §4.4: inaccessible/invalidated → clear-and-repair (pairing_required)
+    expect((await run(() => iosThrowingKey('key_inaccessible'))).mode).toBe('pairing_required');
     // valid, matching identity → paired_device
     expect((await run(() => iosDeviceKey())).mode).toBe('paired_device');
   });
