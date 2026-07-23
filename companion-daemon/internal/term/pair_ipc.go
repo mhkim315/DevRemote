@@ -44,10 +44,10 @@ type PairingRequest struct {
 	BootstrapToken string `json:"bootstrapToken"`
 	// QR metadata — echoed by mobile from the QR code. Verified by bridge
 	// before PairingHost sees the candidate.
-	QRHostID       string `json:"qrHostId,omitempty"`
-	QRDaemonBootID string `json:"qrDaemonBootId,omitempty"`
-	QRChallengeID  string `json:"qrChallengeId,omitempty"`
-	QRExpiresAt    string `json:"qrExpiresAt,omitempty"`
+	QRHostID       string `json:"hostId,omitempty"`
+	QRDaemonBootID string `json:"daemonBootId,omitempty"`
+	QRChallengeID  string `json:"challengeId,omitempty"`
+	QRExpiresAt    string `json:"expiresAt,omitempty"`
 }
 
 type QRPairMetadata struct {
@@ -175,7 +175,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		ph.Close()
 		return
 	}
-	if err := bridge.Verify(sess.SessionID, sess.HostID, metadata.DaemonBootID, metadata.ChallengeID, metadata.ExpiresAt.Format(time.RFC3339)); err != nil {
+	if err := bridge.Verify(sess.SessionID, cand.QRHostID, cand.QRDaemonBootID, cand.QRChallengeID, cand.QRExpiresAt); err != nil {
 		writeIPC(conn, map[string]string{"error": "QR binding verification failed: " + err.Error()})
 		ph.Reject()
 		return

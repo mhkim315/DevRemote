@@ -73,10 +73,10 @@ type PairingRequest struct {
 	DisplayName    string `json:"displayName"`
 	PhoneNonce     []byte `json:"phoneNonce"`
 	BootstrapToken string `json:"bootstrapToken"` // QR secret — gates Phase 1
-	QRHostID       string `json:"qrHostId,omitempty"`
-	QRDaemonBootID string `json:"qrDaemonBootId,omitempty"`
-	QRChallengeID  string `json:"qrChallengeId,omitempty"`
-	QRExpiresAt    string `json:"qrExpiresAt,omitempty"`
+	QRHostID       string `json:"hostId,omitempty"`
+	QRDaemonBootID string `json:"daemonBootId,omitempty"`
+	QRChallengeID  string `json:"challengeId,omitempty"`
+	QRExpiresAt    string `json:"expiresAt,omitempty"`
 }
 
 type ChallengeResponse struct {

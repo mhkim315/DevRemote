@@ -12,14 +12,28 @@ import (
 	"devremote/companion-daemon/internal/devicetrust"
 )
 
-type testQRPairBridge struct{ pending map[string]bool }
+type testQRPairBridge struct {
+	pending     map[string]bool
+	hostID      map[string]string
+	bootID      map[string]string
+	challengeID map[string]string
+	expiresAt   map[string]string
+}
 
 func (b *testQRPairBridge) Begin(s QRPairSession) (QRPairMetadata, error) {
 	if b.pending == nil {
 		b.pending = make(map[string]bool)
+		b.hostID = make(map[string]string)
+		b.bootID = make(map[string]string)
+		b.challengeID = make(map[string]string)
+		b.expiresAt = make(map[string]string)
 	}
 	b.pending[s.SessionID] = true
-	return QRPairMetadata{ProtocolVersion: 1, Origin: s.Endpoint, HostPublicKey: s.HostPublicKey, DaemonBootID: "test-boot", ChallengeID: "test-challenge", ExpiresAt: s.ExpiresAt, BootstrapValue: s.BootstrapValue}, nil
+	b.hostID[s.SessionID] = s.HostID
+	b.bootID[s.SessionID] = "test-boot"
+	b.challengeID[s.SessionID] = "test-challenge"
+	b.expiresAt[s.SessionID] = s.ExpiresAt.UTC().Format(time.RFC3339)
+	return QRPairMetadata{ProtocolVersion: 1, Origin: s.Endpoint, HostPublicKey: s.HostPublicKey, DaemonBootID: b.bootID[s.SessionID], ChallengeID: b.challengeID[s.SessionID], ExpiresAt: s.ExpiresAt, BootstrapValue: s.BootstrapValue}, nil
 }
 func (b *testQRPairBridge) Consume(sessionID string) error {
 	if !b.pending[sessionID] {
@@ -31,6 +45,10 @@ func (b *testQRPairBridge) Consume(sessionID string) error {
 func (b *testQRPairBridge) Verify(sessionID, hostID, daemonBootID, challengeID, expiresAt string) error {
 	if !b.pending[sessionID] {
 		return fmt.Errorf("session not found")
+	}
+	if hostID != b.hostID[sessionID] || daemonBootID != b.bootID[sessionID] || challengeID != b.challengeID[sessionID] || expiresAt != b.expiresAt[sessionID] {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR metadata mismatch")
 	}
 	return nil
 }
@@ -65,12 +83,14 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 	var sess struct {
 		OK              bool   `json:"ok"`
 		SessionID       string `json:"sessionId"`
+		HostID          string `json:"hostId"`
 		BootstrapToken  string `json:"bootstrapToken"`
 		Endpoint        string `json:"endpoint"`
 		ProtocolVersion int    `json:"protocolVersion"`
 		Origin          string `json:"origin"`
 		DaemonBootID    string `json:"daemonBootId"`
 		ChallengeID     string `json:"challengeId"`
+		ExpiresAt       string `json:"expiresAt"`
 		Error           string `json:"error"`
 	}
 	if err := dec.Decode(&sess); err != nil || !sess.OK {
@@ -92,10 +112,10 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 		DisplayName:    "ipc-test",
 		PhoneNonce:     phoneNonce,
 		BootstrapToken: sess.BootstrapToken,
-		QRHostID:       "host-placeholder",
+		QRHostID:       sess.HostID,
 		QRDaemonBootID: sess.DaemonBootID,
 		QRChallengeID:  sess.ChallengeID,
-		QRExpiresAt:    time.Now().UTC().Format(time.RFC3339),
+		QRExpiresAt:    sess.ExpiresAt,
 	})
 	resp, _ := http.Post(sess.Endpoint, "application/json", bytes.NewReader(candBody))
 	if resp == nil || resp.StatusCode != http.StatusOK {
@@ -149,6 +169,109 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 	if devs := reg.List(); len(devs) == 0 {
 		t.Fatalf("registry empty after pairing")
 	}
+}
+
+func TestQRPairBridgeMismatchConsumesChallenge(t *testing.T) {
+	b := &testQRPairBridge{pending: map[string]bool{"session": true}}
+	if err := b.Verify("session", "wrong-host", "test-boot", "test-challenge", time.Now().UTC().Format(time.RFC3339)); err == nil {
+		t.Fatal("mismatched QR metadata accepted")
+	}
+	if b.pending["session"] {
+		t.Fatal("mismatched QR metadata did not consume challenge")
+	}
+}
+
+// TestPairingIPC_QRMetadataMismatchRejected verifies the complete LAN and
+// PairingHost flow. The candidate reaches PairingHost, but the cmd-layer
+// bridge rejects its echoed QR binding before local approval or registration.
+func TestPairingIPC_QRMetadataMismatchRejected(t *testing.T) {
+	reg := deviceTrustReg(t)
+	id, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: t.TempDir() + "/id.json"})
+	if err != nil {
+		t.Fatalf("host identity: %v", err)
+	}
+	bridge := &testQRPairBridge{}
+	SetPairingContext(id, reg)
+	SetQRPairBridge(bridge)
+	defer SetQRPairBridge(nil)
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		handlePairSessionStart(serverConn, 5)
+	}()
+
+	dec := json.NewDecoder(clientConn)
+	var sess struct {
+		OK             bool   `json:"ok"`
+		SessionID      string `json:"sessionId"`
+		BootstrapToken string `json:"bootstrapToken"`
+		Endpoint       string `json:"endpoint"`
+		DaemonBootID   string `json:"daemonBootId"`
+		ChallengeID    string `json:"challengeId"`
+		ExpiresAt      string `json:"expiresAt"`
+	}
+	if err := dec.Decode(&sess); err != nil || !sess.OK {
+		t.Fatalf("session decode: err=%v ok=%v", err, sess.OK)
+	}
+
+	priv, pubDER, _ := devicetrust.GenKeypair(t)
+	phoneNonce := make([]byte, 16)
+	phoneNonce[0] = 2
+	body, _ := json.Marshal(devicetrust.PairingRequest{
+		PublicKeyDER:   pubDER,
+		DisplayName:    "mismatch-test",
+		PhoneNonce:     phoneNonce,
+		BootstrapToken: sess.BootstrapToken,
+		QRHostID:       "wrong-host-id",
+		QRDaemonBootID: sess.DaemonBootID,
+		QRChallengeID:  sess.ChallengeID,
+		QRExpiresAt:    sess.ExpiresAt,
+	})
+	resp, err := http.Post(sess.Endpoint, "application/json", bytes.NewReader(body))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		t.Fatalf("phase1: err=%v status=%v", err, responseStatus(resp))
+	}
+	var chall devicetrust.ChallengeResponse
+	json.NewDecoder(resp.Body).Decode(&chall)
+	resp.Body.Close()
+	sig := devicetrust.SignTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, sess.SessionID)
+	confirm, _ := json.Marshal(devicetrust.Confirmation{PhoneSignature: sig})
+	resp, err = http.Post(sess.Endpoint+"/confirm", "application/json", bytes.NewReader(confirm))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		t.Fatalf("confirm: err=%v status=%v", err, responseStatus(resp))
+	}
+	resp.Body.Close()
+
+	var result struct {
+		Error string `json:"error"`
+	}
+	if err := dec.Decode(&result); err != nil || result.Error == "" {
+		t.Fatalf("mismatch result: err=%v error=%q", err, result.Error)
+	}
+	<-handlerDone
+	if bridge.pending[sess.SessionID] {
+		t.Fatal("mismatched QR metadata did not consume challenge")
+	}
+	if devices := reg.List(); len(devices) != 0 {
+		t.Fatalf("mismatch registered device: %d", len(devices))
+	}
+}
+
+func responseStatus(resp *http.Response) interface{} {
+	if resp == nil {
+		return nil
+	}
+	return resp.StatusCode
 }
 
 func TestPairingIPC_FragmentedJSON(t *testing.T) {
