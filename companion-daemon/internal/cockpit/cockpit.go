@@ -1,51 +1,207 @@
-// Package cockpit defines a read-only operational projection. It has no
-// authority callbacks and cannot approve, deliver input, or mutate sessions.
+// Package cockpit defines a bounded, read-only operational projection. It has
+// no authority callbacks and cannot approve, deliver input, or mutate sessions.
 package cockpit
 
-import "sync"
+import (
+	"strconv"
+	"sync"
 
-type Origin struct{ Provider, SessionID, RuntimeID, Generation, Model, SnapshotID, EvidenceReference string }
-type Item struct {
-	Kind, State, Summary string
-	Origin               Origin
-	Stale                bool
+	"devremote/companion-daemon/internal/term"
+	"devremote/companion-daemon/internal/timeline/contract"
+	"devremote/companion-daemon/internal/timeline/writer"
+	"devremote/companion-daemon/internal/validation"
+)
+
+const (
+	MaxItems      = 256
+	MaxFieldBytes = 512
+)
+
+type Origin struct {
+	Provider          string `json:"provider"`
+	SessionID         string `json:"sessionId"`
+	RuntimeID         string `json:"runtimeId"`
+	Generation        string `json:"generation"`
+	Model             string `json:"model,omitempty"`
+	SnapshotID        string `json:"snapshotId,omitempty"`
+	EvidenceReference string `json:"evidenceRef,omitempty"`
 }
-type Projection struct{ Items []Item }
+
+type Item struct {
+	Kind    string `json:"kind"`
+	State   string `json:"state"`
+	Summary string `json:"summary"`
+	Origin  Origin `json:"origin"`
+	Stale   bool   `json:"stale"`
+}
+
+type Projection struct {
+	Items []Item `json:"items"`
+}
 
 func (p Projection) ReadOnly() bool { return true }
 
 // CockpitState is restart-volatile, read-only aggregated operational state.
 type CockpitState struct {
-	Sessions      []Item
-	Approvals     []Item
-	Findings      []Item
-	Notifications []Item
+	Sessions      []Item `json:"sessions"`
+	Approvals     []Item `json:"approvals"`
+	Findings      []Item `json:"findings"`
+	Notifications []Item `json:"notifications"`
 }
 
-// CockpitStore owns only a projection copy; it has no authority callbacks.
+// Sources lists only existing read/observer seams. It deliberately has no
+// authority methods and does not invent a producer state machine.
+type Sources struct {
+	Catalog    term.ManagedRuntimeCatalog
+	Approvals  *term.AuthoritativeApprovalStore
+	Timeline   *writer.Writer
+	Validation *validation.ValidationStore
+}
+
+// CockpitStore owns only a bounded projection copy; it has no authority
+// callbacks. Sources are used only to refresh/read and observe committed data.
 type CockpitStore struct {
 	mu            sync.RWMutex
 	sessions      []Item
 	approvals     []Item
 	findings      []Item
 	notifications []Item
+	sources       Sources
 }
 
-func NewCockpitStore() *CockpitStore                 { return &CockpitStore{} }
-func (s *CockpitStore) AppendSession(session Item)   { s.append(&s.sessions, session) }
-func (s *CockpitStore) AppendApproval(approval Item) { s.append(&s.approvals, approval) }
-func (s *CockpitStore) AppendFinding(finding Item)   { s.append(&s.findings, finding) }
-func (s *CockpitStore) AppendNotification(notification Item) {
-	s.append(&s.notifications, notification)
+// NewCockpitStore constructs the projection and optionally attaches existing
+// read-only sources. A disabled source is represented by nil and contributes
+// no data.
+func NewCockpitStore(sources ...Sources) *CockpitStore {
+	s := &CockpitStore{}
+	if len(sources) == 0 {
+		return s
+	}
+	s.sources = sources[0]
+	if s.sources.Timeline != nil {
+		s.sources.Timeline.Subscribe(func(envelope contract.Envelope) {
+			s.AppendNotification(timelineItem(envelope))
+		})
+	}
+	if s.sources.Validation != nil {
+		s.sources.Validation.Subscribe(func(result validation.ValidationResult) {
+			for _, finding := range result.Findings {
+				s.AppendFinding(findingItem(result, finding))
+			}
+		})
+	}
+	s.Refresh()
+	return s
 }
-func (s *CockpitStore) append(dst *[]Item, item Item) {
+
+func (s *CockpitStore) AppendSession(session Item) bool   { return s.append(&s.sessions, session) }
+func (s *CockpitStore) AppendApproval(approval Item) bool { return s.append(&s.approvals, approval) }
+func (s *CockpitStore) AppendFinding(finding Item) bool   { return s.append(&s.findings, finding) }
+func (s *CockpitStore) AppendNotification(notification Item) bool {
+	return s.append(&s.notifications, notification)
+}
+
+func (s *CockpitStore) append(dst *[]Item, item Item) bool {
+	if !validItem(item) {
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(*dst) >= MaxItems {
+		return false
+	}
 	*dst = append(*dst, item)
+	return true
 }
+
+// Refresh pulls the current bounded catalog/approval/validation projections.
+// It never modifies those stores and never holds their locks while acquiring
+// the cockpit lock.
+func (s *CockpitStore) Refresh() {
+	var sessions, approvals, findings []Item
+	refreshRuntime := s.sources.Catalog != nil
+	refreshFindings := s.sources.Validation != nil
+	if catalog := s.sources.Catalog; catalog != nil {
+		for _, record := range catalog.List() {
+			generation := strconv.FormatInt(record.Epoch, 10)
+			if runtime, ok := catalog.RuntimeOf(record.SessionID); ok {
+				generation = strconv.FormatInt(runtime.LaunchGen, 10)
+			}
+			sessions = appendBounded(sessions, Item{
+				Kind: "runtime", State: string(record.NativeStatus), Summary: record.SessionID,
+				Origin: Origin{Provider: record.Provider, SessionID: record.SessionID, Generation: generation},
+			})
+			if s.sources.Approvals != nil {
+				for _, approval := range s.sources.Approvals.ListSafe(record.SessionID) {
+					approvals = appendBounded(approvals, Item{
+						Kind: "approval", State: approval.State, Summary: approval.Summary,
+						Origin: Origin{Provider: "unavailable", SessionID: approval.SessionID, Generation: generation},
+					})
+				}
+			}
+		}
+	}
+	if store := s.sources.Validation; store != nil {
+		for _, result := range store.ReadAll() {
+			for _, finding := range result.Findings {
+				findings = appendBounded(findings, findingItem(result, finding))
+			}
+		}
+	}
+	s.mu.Lock()
+	if refreshRuntime {
+		s.sessions = sessions
+		s.approvals = approvals
+	}
+	if refreshFindings {
+		s.findings = findings
+	}
+	s.mu.Unlock()
+}
+
 func (s *CockpitStore) ReadAll() CockpitState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return CockpitState{Sessions: append([]Item(nil), s.sessions...), Approvals: append([]Item(nil), s.approvals...), Findings: append([]Item(nil), s.findings...), Notifications: append([]Item(nil), s.notifications...)}
+	return CockpitState{
+		Sessions: cloneItems(s.sessions), Approvals: cloneItems(s.approvals),
+		Findings: cloneItems(s.findings), Notifications: cloneItems(s.notifications),
+	}
 }
+
 func (s *CockpitStore) ReadOnly() bool { return true }
+
+func timelineItem(envelope contract.Envelope) Item {
+	return Item{
+		Kind: "notification", State: string(envelope.EventKind), Summary: envelope.EventID,
+		Origin: Origin{Provider: envelope.Provider, SessionID: envelope.SessionID, RuntimeID: envelope.RuntimeID,
+			Generation: strconv.FormatInt(envelope.LaunchGeneration, 10), EvidenceReference: envelope.EventID},
+	}
+}
+
+func findingItem(result validation.ValidationResult, finding validation.Finding) Item {
+	binding := result.Binding
+	return Item{
+		Kind: "validation", State: result.ID, Summary: finding.Summary, Stale: finding.Stale,
+		Origin: Origin{Provider: binding.ValidatorProvider, SessionID: binding.ValidatorSessionID,
+			RuntimeID: binding.ValidatorRuntimeID, Generation: strconv.FormatUint(binding.ValidatorGeneration, 10),
+			Model: binding.ValidatorModel, SnapshotID: binding.SnapshotID, EvidenceReference: binding.EvidenceDigest},
+	}
+}
+
+func appendBounded(items []Item, item Item) []Item {
+	if len(items) >= MaxItems || !validItem(item) {
+		return items
+	}
+	return append(items, item)
+}
+
+func cloneItems(items []Item) []Item { return append([]Item{}, items...) }
+
+func validItem(item Item) bool {
+	for _, value := range []string{item.Kind, item.State, item.Summary, item.Origin.Provider, item.Origin.SessionID, item.Origin.RuntimeID, item.Origin.Generation, item.Origin.Model, item.Origin.SnapshotID, item.Origin.EvidenceReference} {
+		if len(value) > MaxFieldBytes {
+			return false
+		}
+	}
+	return true
+}

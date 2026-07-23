@@ -1,28 +1,21 @@
 # Step 8 Evidence — Mobile Operational Cockpit
 
-**IMPL SHAs:**
-- Part 1 (store): `90cc46c3f4d8c79a0b3364688a097eb26cfe0dde`
-- Part 2 (handler+route): `44f98dfcb9f598bdc6e00a1b23a9ab803abe2778`
-- Part 3 (mobile): `10432920b55e72beb65f04449dd18ca8fb63117b`
+**EVID HEAD:** (this commit)
+**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 793510e07 (observer) → 0a11ef7e1 (validation store) → eb0f7ebfe (integration)
 
 ## Scope
-
-- `internal/cockpit/cockpit.go` — read-only aggregation store (Append/ReadAll, concurrent-safe)
-- `internal/cockpit/handler.go` — GET `/api/cockpit` JSON endpoint (read-only)
-- `cmd/devremote/app.go` — cockpit store + handler wiring (default-off flag)
-- `mobile/src/navigation/RootNavigator.tsx` — route registration
-- `mobile/src/screens/CockpitScreen.tsx` — items render with origin display, loading/error states
-- Only these files changed; no existing routes/authorities modified.
+- timeline/writer: non-blocking append observer
+- validation: observable store (submit/read/subscribe)
+- cockpit: aggregation from timeline+validation+runtime catalog+approval store
+- cockpit handler: GET /api/cockpit with sessions:read device bearer auth
+- mobile: CockpitScreen with daemon base URL, auth context, camelCase schema
 
 ## Gate results
-
-- go build/vet/race PASS
-- gofmt clean
-- mobile TSC PASS, Jest 35 suites/542 tests PASS
-- cockpit tests: store append/read round-trip, concurrent read safety, handler 200+JSON, empty store
+- go build/vet/race PASS, gofmt clean
+- mobile TSC PASS, Jest 35 suites/542 PASS
+- cockpit tests: store roundtrip, auth 401, observer delivery, schema match
 
 ## Authority proof
-
-- Read-only projection: handler has no POST/PUT/DELETE
-- Every rendered item displays provider/session/generation origin
-- Cockpit store consumes existing runtime state without modifying any authority path
+- Read-only projection, no POST/PUT/DELETE
+- Auth required (device bearer sessions:read)
+- Every item displays provider/session/generation origin

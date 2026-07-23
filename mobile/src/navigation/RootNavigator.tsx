@@ -105,7 +105,7 @@ export function RootTabs({ token, authCtx }: { token?: string; authCtx?: any }) 
         >
           {() => <GlobalFeedScreen token={token} />}
         </Tab.Screen>
-        <Tab.Screen name="Cockpit" component={CockpitScreen} options={{ title: 'Cockpit' }} />
+        <Tab.Screen name="Cockpit" options={{ title: 'Cockpit' }}>{() => <CockpitScreen token={token} />}</Tab.Screen>
       </Tab.Navigator>
     </NavigationContainer>
   );

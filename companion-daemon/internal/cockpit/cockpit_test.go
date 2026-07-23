@@ -1,6 +1,7 @@
 package cockpit
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -8,6 +9,21 @@ import (
 func TestProjectionIsReadOnly(t *testing.T) {
 	if !(Projection{}).ReadOnly() {
 		t.Fatal("projection authoritative")
+	}
+}
+
+func TestCockpitStoreRejectsOversizedAndExcessItems(t *testing.T) {
+	s := NewCockpitStore()
+	if s.AppendSession(Item{Summary: strings.Repeat("x", MaxFieldBytes+1)}) {
+		t.Fatal("oversized item accepted")
+	}
+	for range MaxItems {
+		if !s.AppendSession(Item{Kind: "runtime"}) {
+			t.Fatal("bounded item rejected")
+		}
+	}
+	if s.AppendSession(Item{Kind: "runtime"}) {
+		t.Fatal("N+1 item accepted")
 	}
 }
 

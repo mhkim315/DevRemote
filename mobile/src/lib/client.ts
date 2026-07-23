@@ -257,6 +257,11 @@ export async function listSessions(token?: string): Promise<any[]> {
   return res.json();
 }
 
+export async function getCockpit(token?: string): Promise<unknown> {
+	const res = await apiGet('/api/cockpit', token);
+	return res.json();
+}
+
 // ── M3a: daemon-owned session lifecycle (typed) ──
 
 // SessionProfile is the UI-safe launch profile. Executable paths are resolved

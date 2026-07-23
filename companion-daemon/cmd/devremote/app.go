@@ -154,6 +154,7 @@ type App struct {
 	timelineWriter     *writer.Writer             // nil unless the default-off shadow flag is enabled
 	workspaceLeases    *workspace.Manager         // nil unless the default-off workspace flag is enabled
 	validationCheck    *validation.StalenessCheck // nil unless the default-off validation flag is enabled
+	cockpitStore       *cockpit.CockpitStore      // nil unless the default-off cockpit flag is enabled
 }
 
 // NewApp creates the App with production defaults.
@@ -421,9 +422,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	lifecycle.WireManagedOwners(h.Catalog, codexOwner, claudeOwner)
 
 	serveMux := http.NewServeMux()
-	if cfg.EnableCockpit {
-		cockpit.RegisterCockpitHandler(serveMux, cockpit.NewCockpitStore())
-	}
+	var cockpitStore *cockpit.CockpitStore
 	notifier := newPushNotifier()
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
@@ -445,6 +444,13 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	serveMux.HandleFunc("POST /api/device-auth/verify", authH.HandleVerify)
 	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
 		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, audit), devicetrust.PermSessionsRead))
+	if cfg.EnableCockpit {
+		validationStore := &validation.ValidationStore{}
+		cockpitStore = cockpit.NewCockpitStore(cockpit.Sources{
+			Catalog: h.Catalog, Approvals: approvals, Timeline: timelineWriter, Validation: validationStore,
+		})
+		cockpit.RegisterCockpitHandler(serveMux, cockpitStore, sessionMgr)
+	}
 
 	// M2.5-4: explicit auth mode. In remote (production) mode, operational
 	// REST routes use device bearer auth with permission enforcement. In
@@ -573,6 +579,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		timelineWriter:  timelineWriter,
 		workspaceLeases: workspaceLeases,
 		validationCheck: validationCheck,
+		cockpitStore:    cockpitStore,
 	}, nil
 }
 
