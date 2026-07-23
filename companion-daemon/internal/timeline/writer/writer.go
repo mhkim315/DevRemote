@@ -309,6 +309,18 @@ func newWriter(file appendFile, config Config, auth ProducerAuth) *Writer {
 	return w
 }
 
+// NewWriterForTest constructs a Writer over an injected append target. It is
+// intentionally limited to tests in sibling internal packages that need to
+// exercise the real append/drop/health path without relying on /dev/full.
+// Production construction remains Open.
+func NewWriterForTest(file interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}, config Config, auth ProducerAuth) *Writer {
+	return newWriter(file, config, auth)
+}
+
 func (w *Writer) startWorker() {
 	w.workerWg.Add(1)
 	go func() {

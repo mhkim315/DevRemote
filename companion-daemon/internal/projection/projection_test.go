@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -119,23 +120,27 @@ func TestProjectionUnknownKindIsRejected(t *testing.T) {
 }
 
 func TestProjectionActualWriterDropHasSafeGap(t *testing.T) {
-	w, err := writer.Open(writer.Config{Path: "/dev/full"}, nil)
-	if err != nil {
-		t.Skip("/dev/full unavailable")
-	}
+	w := writer.NewWriterForTest(failingFile{}, writer.Config{}, nil)
 	defer w.Close()
-	if w.Append(envelope(t, "drop", contract.EventToolCallStarted, agent.EventToolCallStarted, "s", 1)) {
-		t.Fatal("/dev/full unexpectedly accepted write")
-	}
 	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", RuntimeID: "runtime-s", LaunchGeneration: 1}
-	s := NewProjector(w).Snapshot([]FixtureEpochBinding{b})
-	if !s.Degraded || s.Stats.Dropped == 0 || len(s.Gaps) != 1 || s.Gaps[0].Reason != "writer_drop" {
+	before := w.Stats()
+	if w.Append(envelope(t, "drop", contract.EventToolCallStarted, agent.EventToolCallStarted, "s", 1)) {
+		t.Fatal("failing append target unexpectedly accepted write")
+	}
+	s := NewProjector(w).SnapshotWithBaseline([]FixtureEpochBinding{b}, before)
+	if !s.Degraded || s.Stats.Dropped == 0 || len(s.Gaps) != 1 || s.Gaps[0].Reason != "writer_drop" || s.Gaps[0].GlobalDroppedBefore != before.Dropped {
 		t.Fatalf("drop snapshot=%#v", s)
 	}
 	if got := NewProjector(w).Activity(); len(got) != 0 {
 		t.Fatalf("degraded empty activity must not panic or fabricate: %#v", got)
 	}
 }
+
+type failingFile struct{}
+
+func (failingFile) Write([]byte) (int, error) { return 0, errors.New("injected write failure") }
+func (failingFile) Sync() error               { return nil }
+func (failingFile) Close() error              { return nil }
 
 func TestDualFeedOracleAndRestoredEpoch(t *testing.T) {
 	w := testWriter(t)
@@ -167,6 +172,9 @@ func TestDualFeedOracleAndRestoredEpoch(t *testing.T) {
 	// Restore deliberately reuses runtime ID and Timeline generation, while the
 	// fixture occurrence and Transcript generation are both new.
 	e2 := envelope(t, "restored", contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, 1)
+	e2.SourceIncarnation = e1.SourceIncarnation // actual restored runtime tuple repeats this evidence field
+	e2.EventID = ""
+	e2, _ = contract.NewEnvelope(e2)
 	r2, b2 := runEpoch(2, 1, []agent.AgentEvent{e2.T0Event}, []contract.Envelope{e2})
 	if b2.EpochOccurrence == b1.EpochOccurrence || r2.Generation == r1.Generation {
 		t.Fatal("restore epoch not distinct")
@@ -181,7 +189,15 @@ func TestToolAndApprovalPairingAndMisboundVerdict(t *testing.T) {
 	sid := "s"
 	toolStart := envelope(t, "tool-start", contract.EventToolCallStarted, agent.EventToolCallStarted, sid, 1)
 	toolFinish := envelope(t, "tool-finish", contract.EventToolCallFinished, agent.EventToolCallFinished, sid, 1)
-	for _, e := range []contract.Envelope{toolStart, toolFinish, envelope(t, "approval-request", contract.EventApprovalRequested, agent.EventApprovalRequested, sid, 1), envelope(t, "approval-resolve", contract.EventApprovalResolved, agent.EventApprovalResolved, sid, 1)} {
+	toolFinish.References.ToolCall.ID = toolStart.References.ToolCall.ID
+	toolFinish.EventID = ""
+	toolFinish, _ = contract.NewEnvelope(toolFinish)
+	approvalRequest := envelope(t, "approval-request", contract.EventApprovalRequested, agent.EventApprovalRequested, sid, 1)
+	approvalResolve := envelope(t, "approval-resolve", contract.EventApprovalResolved, agent.EventApprovalResolved, sid, 1)
+	approvalResolve.References.ApprovalRequest.ID = approvalRequest.References.ApprovalRequest.ID
+	approvalResolve.EventID = ""
+	approvalResolve, _ = contract.NewEnvelope(approvalResolve)
+	for _, e := range []contract.Envelope{toolStart, toolFinish, approvalRequest, approvalResolve} {
 		appendEnv(t, w, e)
 	}
 	items := NewProjector(w).Transcript()
@@ -195,5 +211,67 @@ func TestToolAndApprovalPairingAndMisboundVerdict(t *testing.T) {
 	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: 1, TimelineEventIDs: []string{items[2].EventID}}
 	if Compare(response, Snapshot{Transcript: []TranscriptItem{items[2]}}, []FixtureEpochBinding{b}).MisboundApprovals == 0 {
 		t.Fatal("misbound approval not reported")
+	}
+}
+
+func TestProjectionEmptyWriterIsExplicit(t *testing.T) {
+	s := NewProjector(testWriter(t)).Snapshot(nil)
+	if s.Activity == nil || s.Transcript == nil || len(s.Activity) != 0 || s.Unexplained != 0 {
+		t.Fatalf("empty snapshot=%#v", s)
+	}
+}
+
+func TestCompareMissingAndOrderingFail(t *testing.T) {
+	response := transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{
+		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "a", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 2},
+		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "b", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
+		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "missing", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 3},
+	}}
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"e", "e2"}}
+	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "e", AgentEventRef: "a", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "r", LaunchGeneration: 1, ProjectionOrder: 0}, {EventID: "e2", AgentEventRef: "b", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "r", LaunchGeneration: 1, ProjectionOrder: -1}}}
+	r := Compare(response, snap, []FixtureEpochBinding{b})
+	if r.Passed || r.Missings != 1 || r.OrderingDivergences == 0 {
+		t.Fatalf("report=%#v", r)
+	}
+}
+
+func TestCompareGapRequiresTranscriptMarker(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1}
+	gap := GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, Reason: "writer_drop"}
+	without := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
+	if without.Passed || without.Unexplained == 0 {
+		t.Fatalf("unmatched gap=%#v", without)
+	}
+	with := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"}}}, Snapshot{Gaps: []GapMarker{gap}}, []FixtureEpochBinding{b})
+	if !with.Passed || with.ToleratedGaps != 1 {
+		t.Fatalf("matched gap=%#v", with)
+	}
+}
+
+func TestNonAgentTranscriptIsClosedToleratedLoss(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1}
+	r := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindInputBoundary, Source: transcript.SourceByteStream}}}, Snapshot{}, []FixtureEpochBinding{b})
+	if !r.Passed || r.ToleratedLosses != 1 {
+		t.Fatalf("report=%#v", r)
+	}
+}
+
+func TestBindingDuplicateAndRuntimeMismatchFail(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "expected", LaunchGeneration: 1, TimelineEventIDs: []string{"e"}}
+	response := transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "a", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1}}}
+	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "e", AgentEventRef: "a", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "wrong", LaunchGeneration: 1}}}
+	r := Compare(response, snap, []FixtureEpochBinding{b, b})
+	if r.Passed || r.GenerationMismatches == 0 {
+		t.Fatalf("report=%#v", r)
+	}
+}
+
+func TestActivityIncludesSourceProvenance(t *testing.T) {
+	w := testWriter(t)
+	e := envelope(t, "provenance", contract.EventProviderInvocationStarted, agent.EventAgentStarted, "s", 1)
+	appendEnv(t, w, e)
+	it := NewProjector(w).Activity()[0]
+	if it.SourceIncarnation != e.SourceIncarnation || it.SourcePosition != e.SourcePosition {
+		t.Fatalf("activity=%#v", it)
 	}
 }

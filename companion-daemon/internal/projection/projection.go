@@ -13,15 +13,17 @@ import (
 )
 
 type ActivityItem struct {
-	EventID          string
-	SessionID        string
-	RuntimeID        string
-	LaunchGeneration int64
-	Provider         string
-	EventKind        contract.EventKind
-	Summary          string
-	OccurredAt       time.Time
-	ProjectionOrder  int64
+	EventID           string
+	SessionID         string
+	RuntimeID         string
+	LaunchGeneration  int64
+	Provider          string
+	EventKind         contract.EventKind
+	SourceIncarnation string
+	SourcePosition    string
+	Summary           string
+	OccurredAt        time.Time
+	ProjectionOrder   int64
 }
 
 // TranscriptItem is the Timeline-side equivalent of the safe fields in a
@@ -35,6 +37,7 @@ type TranscriptItem struct {
 	EventType         string
 	Text              string
 	ToolName          string
+	PairID            string
 	RuntimeID         string
 	LaunchGeneration  int64
 	SourceIncarnation string
@@ -91,6 +94,13 @@ func (p *Projector) Transcript() []TranscriptItem { return p.Snapshot(nil).Trans
 // used to scope explicit loss markers; without an unambiguous fixture scope a
 // marker is not guessed and the snapshot is unexplained.
 func (p *Projector) Snapshot(bindings []FixtureEpochBinding) Snapshot {
+	return p.SnapshotWithBaseline(bindings, writer.Stats{})
+}
+
+// SnapshotWithBaseline records the caller-observed global counter before the
+// comparison boundary. Writer counters are global, so the caller must supply
+// this value rather than relying on shared projector state.
+func (p *Projector) SnapshotWithBaseline(bindings []FixtureEpochBinding, before writer.Stats) Snapshot {
 	if p == nil || p.writer == nil {
 		return Snapshot{Activity: []ActivityItem{}, Transcript: []TranscriptItem{}}
 	}
@@ -125,14 +135,14 @@ func (p *Projector) Snapshot(bindings []FixtureEpochBinding) Snapshot {
 	// overwrite observable without falsely calling it Writer.Dropped.
 	if stats.Appended > uint64(len(envs)) {
 		out.RingOverwritten = stats.Appended - uint64(len(envs))
-		if marker, ok := scopedMarker(bindings, "ring_overwrite", stats, reason, int64(len(out.Activity))); ok {
+		if marker, ok := scopedMarker(bindings, "ring_overwrite", before, stats, reason, int64(len(out.Activity))); ok {
 			out.Gaps = append(out.Gaps, marker)
 		} else {
 			out.Unexplained++
 		}
 	}
 	if degraded && stats.Dropped > 0 {
-		if marker, ok := scopedMarker(bindings, "writer_drop", stats, reason, int64(len(out.Activity))); ok {
+		if marker, ok := scopedMarker(bindings, "writer_drop", before, stats, reason, int64(len(out.Activity))); ok {
 			out.Gaps = append(out.Gaps, marker)
 		} else {
 			out.Unexplained++
@@ -141,16 +151,16 @@ func (p *Projector) Snapshot(bindings []FixtureEpochBinding) Snapshot {
 	return out
 }
 
-func scopedMarker(bindings []FixtureEpochBinding, reason string, stats writer.Stats, degradedReason string, order int64) (GapMarker, bool) {
+func scopedMarker(bindings []FixtureEpochBinding, reason string, before, stats writer.Stats, degradedReason string, order int64) (GapMarker, bool) {
 	if len(bindings) != 1 {
 		return GapMarker{}, false
 	}
 	b := bindings[0]
-	return GapMarker{SessionID: b.SessionID, RuntimeID: b.RuntimeID, LaunchGeneration: b.LaunchGeneration, EpochOccurrence: b.EpochOccurrence, GlobalDroppedAfter: stats.Dropped, DegradedReason: degradedReason, Reason: reason, ProjectionOrder: order}, true
+	return GapMarker{SessionID: b.SessionID, RuntimeID: b.RuntimeID, LaunchGeneration: b.LaunchGeneration, EpochOccurrence: b.EpochOccurrence, GlobalDroppedBefore: before.Dropped, GlobalDroppedAfter: stats.Dropped, DegradedReason: degradedReason, Reason: reason, ProjectionOrder: order}, true
 }
 
 func activity(env contract.Envelope, order int64) ActivityItem {
-	return ActivityItem{EventID: env.EventID, SessionID: env.SessionID, RuntimeID: env.RuntimeID, LaunchGeneration: env.LaunchGeneration, Provider: env.Provider, EventKind: env.EventKind, Summary: activitySummary(env), OccurredAt: env.OccurredAt, ProjectionOrder: order}
+	return ActivityItem{EventID: env.EventID, SessionID: env.SessionID, RuntimeID: env.RuntimeID, LaunchGeneration: env.LaunchGeneration, Provider: env.Provider, EventKind: env.EventKind, SourceIncarnation: env.SourceIncarnation, SourcePosition: env.SourcePosition, Summary: activitySummary(env), OccurredAt: env.OccurredAt, ProjectionOrder: order}
 }
 
 func activitySummary(env contract.Envelope) string {
@@ -169,7 +179,17 @@ func activitySummary(env contract.Envelope) string {
 func transcriptItem(env contract.Envelope, order int64) TranscriptItem {
 	t := env.T0Event
 	text, tool := displayFor(env)
-	return TranscriptItem{EventID: env.EventID, AgentEventRef: t.ID, SessionID: env.SessionID, AgentKind: t.AgentKind, EventType: string(t.Type), Text: text, ToolName: tool, RuntimeID: env.RuntimeID, LaunchGeneration: env.LaunchGeneration, SourceIncarnation: env.SourceIncarnation, ProjectionOrder: order}
+	return TranscriptItem{EventID: env.EventID, AgentEventRef: t.ID, SessionID: env.SessionID, AgentKind: t.AgentKind, EventType: string(t.Type), Text: text, ToolName: tool, PairID: pairID(env), RuntimeID: env.RuntimeID, LaunchGeneration: env.LaunchGeneration, SourceIncarnation: env.SourceIncarnation, ProjectionOrder: order}
+}
+
+func pairID(env contract.Envelope) string {
+	if env.References.ToolCall != nil {
+		return env.References.ToolCall.ID
+	}
+	if env.References.ApprovalRequest != nil {
+		return env.References.ApprovalRequest.ID
+	}
+	return ""
 }
 
 func displayFor(env contract.Envelope) (string, string) {
@@ -247,13 +267,21 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		r.GenerationMismatches++
 	}
 	segments := make([]transcript.TranscriptSegment, 0, len(response.Semantic))
+	degraded := make([]transcript.TranscriptSegment, 0)
 	for _, s := range response.Semantic {
 		if s.Kind == transcript.KindAgentEvent && s.Source == transcript.SourceAgentEvent {
 			segments = append(segments, s)
+		} else if s.Kind == transcript.KindDegraded {
+			degraded = append(degraded, s)
+		} else {
+			r.ToleratedLosses++
 		}
 	}
 	items := snap.Transcript
 	if binding != nil {
+		if duplicateBinding(*binding, bindings) {
+			r.GenerationMismatches++
+		}
 		filtered := make([]TranscriptItem, 0, len(items))
 		for _, item := range items {
 			if contains(binding.TimelineEventIDs, item.EventID) {
@@ -270,7 +298,7 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 	for i := 0; i < n; i++ {
 		r.TotalComparisons++
 		s, it := segments[i], items[i]
-		if s.AgentEventRef == it.AgentEventRef && s.SessionID == it.SessionID && s.AgentKind == it.AgentKind && s.EventType == it.EventType && s.Text == it.Text && s.ToolName == it.ToolName && (binding == nil || contains(binding.TimelineEventIDs, it.EventID)) {
+		if s.AgentEventRef == it.AgentEventRef && s.SessionID == it.SessionID && s.AgentKind == it.AgentKind && s.EventType == it.EventType && s.Text == it.Text && s.ToolName == it.ToolName && (binding == nil || contains(binding.TimelineEventIDs, it.EventID)) && (binding == nil || (binding.RuntimeID == it.RuntimeID && binding.LaunchGeneration == it.LaunchGeneration)) {
 			r.ExactMatches++
 		} else {
 			if isApproval(it.EventType) && (s.SessionID != it.SessionID || binding == nil) {
@@ -290,7 +318,7 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		r.Extras += len(items) - len(segments)
 	}
 	for _, gap := range snap.Gaps {
-		if binding != nil && gap.EpochOccurrence == binding.EpochOccurrence {
+		if binding != nil && gap.EpochOccurrence == binding.EpochOccurrence && hasTranscriptGap(degraded, gap) {
 			r.ToleratedGaps++
 		} else {
 			r.Unexplained++
@@ -298,6 +326,24 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 	}
 	r.Passed = r.OrderingDivergences == 0 && r.Collisions == 0 && r.Extras == 0 && r.Missings == 0 && r.GenerationMismatches == 0 && r.MisboundApprovals == 0 && r.Unexplained == 0
 	return r
+}
+
+func duplicateBinding(b FixtureEpochBinding, bs []FixtureEpochBinding) bool {
+	n := 0
+	for _, x := range bs {
+		if x.SessionID == b.SessionID && (x.EpochOccurrence == b.EpochOccurrence || x.TranscriptGeneration == b.TranscriptGeneration) {
+			n++
+		}
+	}
+	return n != 1
+}
+func hasTranscriptGap(segs []transcript.TranscriptSegment, gap GapMarker) bool {
+	for _, s := range segs {
+		if s.SessionID == gap.SessionID && s.DegradedReason == gap.Reason {
+			return true
+		}
+	}
+	return false
 }
 
 func bindingFor(response transcript.TranscriptResponse, bs []FixtureEpochBinding) (*FixtureEpochBinding, bool) {
@@ -325,22 +371,22 @@ func boolInt(b bool) int {
 }
 
 // ValidatePairOrder checks matching tool/approval lifecycle ordering without
-// using timestamps or shared state. Reference identity is the normalized tool
-// name for tools and EventType family for approvals.
+// using timestamps or shared state. Pair identity is the typed Timeline
+// Reference ID, never a display tool name.
 func ValidatePairOrder(items []TranscriptItem) error {
-	seenTool, seenApproval := map[string]bool{}, false
+	seenTool, seenApproval := map[string]bool{}, map[string]bool{}
 	for _, it := range items {
 		switch it.EventType {
 		case "tool_call_started":
-			seenTool[it.ToolName] = true
+			seenTool[it.PairID] = true
 		case "tool_call_finished":
-			if !seenTool[it.ToolName] {
-				return fmt.Errorf("tool finish before start: %s", it.ToolName)
+			if it.PairID == "" || !seenTool[it.PairID] {
+				return fmt.Errorf("tool finish before start: %s", it.PairID)
 			}
 		case "approval_requested":
-			seenApproval = true
+			seenApproval[it.PairID] = true
 		case "approval_resolved":
-			if !seenApproval {
+			if it.PairID == "" || !seenApproval[it.PairID] {
 				return fmt.Errorf("approval resolution before request")
 			}
 		}
