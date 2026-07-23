@@ -1,6 +1,6 @@
 # STEP 9.0 — Post-PB Feature Ledger
 
-**Status:** COMPLETE — default-off foundation audit accepted. Zero code changes.
+**Status:** PENDING INDEPENDENT CLOSEOUT — candidate `9853e3eed`. Zero code changes.
 
 **EVID SHA:** (this commit)
 **Date:** 2026-07-23
@@ -77,7 +77,7 @@ these automatically.
 
 The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
 
-- **9.0 DOCS/AUDIT — COMPLETE**.
+- **9.0 DOCS/AUDIT — PENDING INDEPENDENT CLOSEOUT.*.
 - **9.1** — Minimal Timeline staging (controlled environment, fail-open writes)
 - **9.2** — Transcript/Activity projection convergence
 - **9.3** — N1 exact-event notification-to-action

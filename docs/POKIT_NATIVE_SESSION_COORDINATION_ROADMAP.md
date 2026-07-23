@@ -11,7 +11,7 @@ foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
 (separate post-PB packet required).
 
 The current product state is **Post-PB foundation complete, alpha activation
-pending**. Step 9.0 received independent closeout. The bounded
+pending**. Step 9.0 pending independent closeout. The bounded
 execution plan is authoritative in
 [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md); neither the Step
 9.0 acceptance nor this planning update authorizes Step 9.1 implementation.

@@ -619,7 +619,7 @@ post-PB authorization.
    and require a separate reviewed contract.
 
 Historical broad CT-P2 and authority-wide UI cutover remain blocked. Step 9.0
-independent closeout is COMPLETE. Each later bounded producer,
+independent closeout is PENDING independent closeout. Each later bounded producer,
 projection, N1, onboarding, or consumer-cutover wave defined in
 `ALPHA_ACTIVATION_ROADMAP.md` requires its own implementation/evidence identity
 and independent authorization. Do not treat the Alpha roadmap or this
