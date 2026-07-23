@@ -5,6 +5,7 @@ package validation
 
 import (
 	"errors"
+	"sync"
 
 	"devremote/companion-daemon/internal/workspace"
 )
@@ -56,6 +57,66 @@ func (r ValidationResult) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Subscriber observes a successfully submitted validation result. Subscribers
+// are observational only: they do not participate in validation or any
+// acceptance authority.
+type Subscriber func(ValidationResult)
+
+// ValidationStore is a restart-volatile, in-memory record of submitted
+// validation results. It deliberately owns no validator dispatch, repository
+// state, or acceptance authority.
+type ValidationStore struct {
+	mu          sync.RWMutex
+	results     []ValidationResult
+	subscribers []Subscriber
+}
+
+// Submit validates and retains one result, then notifies observers
+// asynchronously. An observer cannot delay or change submission.
+func (s *ValidationStore) Submit(result ValidationResult) error {
+	if err := result.Validate(); err != nil {
+		return err
+	}
+	result = cloneResult(result)
+
+	s.mu.Lock()
+	s.results = append(s.results, result)
+	subscribers := append([]Subscriber(nil), s.subscribers...)
+	s.mu.Unlock()
+
+	for _, subscriber := range subscribers {
+		go subscriber(cloneResult(result))
+	}
+	return nil
+}
+
+// ReadAll returns a defensive snapshot, so cockpit/read-model callers cannot
+// mutate the stored validation history.
+func (s *ValidationStore) ReadAll() []ValidationResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	results := make([]ValidationResult, len(s.results))
+	for i, result := range s.results {
+		results[i] = cloneResult(result)
+	}
+	return results
+}
+
+// Subscribe adds an observational callback. Nil callbacks are ignored.
+func (s *ValidationStore) Subscribe(fn Subscriber) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscribers = append(s.subscribers, fn)
+}
+
+func cloneResult(result ValidationResult) ValidationResult {
+	result.Findings = append([]Finding(nil), result.Findings...)
+	return result
 }
 
 // StalenessCheck compares a finding/result binding against current explicit

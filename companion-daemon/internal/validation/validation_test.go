@@ -3,7 +3,9 @@ package validation
 import (
 	"devremote/companion-daemon/internal/workspace"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
 
 func binding() SnapshotBinding {
@@ -51,4 +53,60 @@ func TestInvalidAndMismatchedBindingsFailClosed(t *testing.T) {
 	if !errors.Is(r.Validate(), ErrInvalid) {
 		t.Fatal("mismatched finding accepted")
 	}
+}
+
+func TestValidationStoreSubmitReadRoundTrip(t *testing.T) {
+	store := &ValidationStore{}
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	if err := store.Submit(result); err != nil {
+		t.Fatal(err)
+	}
+	result.Findings[0].Summary = "caller mutation"
+	got := store.ReadAll()
+	if len(got) != 1 || got[0].ID != "result" || got[0].Findings[0].Summary != "summary" {
+		t.Fatalf("ReadAll() = %#v", got)
+	}
+	got[0].Findings[0].Summary = "reader mutation"
+	if again := store.ReadAll(); again[0].Findings[0].Summary != "summary" {
+		t.Fatalf("store leaked mutable result: %#v", again)
+	}
+}
+
+func TestValidationStoreSubscribeNotifiesAfterSubmit(t *testing.T) {
+	store := &ValidationStore{}
+	first, second := make(chan ValidationResult, 1), make(chan ValidationResult, 1)
+	store.Subscribe(func(result ValidationResult) { first <- result })
+	store.Subscribe(func(result ValidationResult) { second <- result })
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	if err := store.Submit(result); err != nil {
+		t.Fatal(err)
+	}
+	for _, received := range []<-chan ValidationResult{first, second} {
+		select {
+		case got := <-received:
+			if got.ID != result.ID {
+				t.Fatalf("subscriber received %#v", got)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("subscriber was not notified")
+		}
+	}
+}
+
+func TestValidationStoreConcurrentReadSafety(t *testing.T) {
+	store := &ValidationStore{}
+	result := ValidationResult{ID: "result", Binding: binding(), Findings: []Finding{{ID: "finding", Summary: "summary", Binding: binding()}}}
+	const readers = 32
+	var wg sync.WaitGroup
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = store.ReadAll()
+		}()
+	}
+	if err := store.Submit(result); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
 }
