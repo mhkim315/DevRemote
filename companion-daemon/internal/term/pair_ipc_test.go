@@ -92,6 +92,10 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 		DisplayName:    "ipc-test",
 		PhoneNonce:     phoneNonce,
 		BootstrapToken: sess.BootstrapToken,
+		QRHostID:       "host-placeholder",
+		QRDaemonBootID: sess.DaemonBootID,
+		QRChallengeID:  sess.ChallengeID,
+		QRExpiresAt:    time.Now().UTC().Format(time.RFC3339),
 	})
 	resp, _ := http.Post(sess.Endpoint, "application/json", bytes.NewReader(candBody))
 	if resp == nil || resp.StatusCode != http.StatusOK {

@@ -73,6 +73,10 @@ type PairingRequest struct {
 	DisplayName    string `json:"displayName"`
 	PhoneNonce     []byte `json:"phoneNonce"`
 	BootstrapToken string `json:"bootstrapToken"` // QR secret — gates Phase 1
+	QRHostID       string `json:"qrHostId,omitempty"`
+	QRDaemonBootID string `json:"qrDaemonBootId,omitempty"`
+	QRChallengeID  string `json:"qrChallengeId,omitempty"`
+	QRExpiresAt    string `json:"qrExpiresAt,omitempty"`
 }
 
 type ChallengeResponse struct {
@@ -107,11 +111,15 @@ type HostSigner interface {
 }
 
 type Candidate struct {
-	PubDER      []byte
-	DisplayName string
-	Fingerprint string
-	PhoneNonce  []byte
-	HostNonce   []byte
+	PubDER         []byte
+	DisplayName    string
+	Fingerprint    string
+	PhoneNonce     []byte
+	HostNonce      []byte
+	QRHostID       string
+	QRDaemonBootID string
+	QRChallengeID  string
+	QRExpiresAt    string
 }
 
 // ── PairingHost (daemon-owned, fully serialized) ──
@@ -136,10 +144,14 @@ type PairingHost struct {
 }
 
 type pendingCandidate struct {
-	PublicKeyDER []byte
-	DisplayName  string
-	PhoneNonce   []byte
-	HostNonce    []byte
+	PublicKeyDER   []byte
+	DisplayName    string
+	PhoneNonce     []byte
+	HostNonce      []byte
+	QRHostID       string
+	QRDaemonBootID string
+	QRChallengeID  string
+	QRExpiresAt    string
 }
 
 // StartPairing creates the pairing session and starts the LAN listener.
@@ -274,10 +286,14 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	hostPub := ph.cfg.Identity.Public()
 	ph.candidate = pendingCandidate{
-		PublicKeyDER: append([]byte(nil), req.PublicKeyDER...),
-		DisplayName:  req.DisplayName,
-		PhoneNonce:   append([]byte(nil), req.PhoneNonce...),
-		HostNonce:    append([]byte(nil), hostNonce...),
+		PublicKeyDER:   append([]byte(nil), req.PublicKeyDER...),
+		DisplayName:    req.DisplayName,
+		PhoneNonce:     append([]byte(nil), req.PhoneNonce...),
+		HostNonce:      append([]byte(nil), hostNonce...),
+		QRHostID:       req.QRHostID,
+		QRDaemonBootID: req.QRDaemonBootID,
+		QRChallengeID:  req.QRChallengeID,
+		QRExpiresAt:    req.QRExpiresAt,
 	}
 	ph.mu.Unlock()
 
@@ -417,11 +433,15 @@ func (ph *PairingHost) WaitForCandidate() (Candidate, bool) {
 	case <-ph.proofVerifiedCh:
 		ph.mu.Lock()
 		c := Candidate{
-			PubDER:      ph.candidate.PublicKeyDER,
-			DisplayName: ph.candidate.DisplayName,
-			Fingerprint: Fingerprint(ph.candidate.PublicKeyDER),
-			PhoneNonce:  ph.candidate.PhoneNonce,
-			HostNonce:   ph.candidate.HostNonce,
+			PubDER:         ph.candidate.PublicKeyDER,
+			DisplayName:    ph.candidate.DisplayName,
+			Fingerprint:    Fingerprint(ph.candidate.PublicKeyDER),
+			PhoneNonce:     ph.candidate.PhoneNonce,
+			HostNonce:      ph.candidate.HostNonce,
+			QRHostID:       ph.candidate.QRHostID,
+			QRDaemonBootID: ph.candidate.QRDaemonBootID,
+			QRChallengeID:  ph.candidate.QRChallengeID,
+			QRExpiresAt:    ph.candidate.QRExpiresAt,
 		}
 		ph.mu.Unlock()
 		return c, true
