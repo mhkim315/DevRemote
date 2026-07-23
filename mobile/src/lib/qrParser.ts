@@ -15,6 +15,10 @@ export interface PairingQRPayload {
   bootstrapToken: string;
   endpoint: string;
   expiresAt: Date;
+  protocolVersion: number;
+  origin: string;
+  daemonBootId: string;
+  challengeId: string;
 }
 
 const SESSION_ID_MAX = 128;
@@ -25,6 +29,7 @@ const ENDPOINT_MAX = 256;
 
 const ALLOWED_FIELDS = new Set([
   'sessionId', 'hostId', 'fingerprint', 'hostPubKey', 'bootstrapToken', 'endpoint', 'expiresAt',
+  'protocolVersion', 'origin', 'daemonBootId', 'challengeId',
 ]);
 
 interface ParseError { error: string }
@@ -47,7 +52,9 @@ function _parse(raw: unknown): PairingQRPayload {
 
   for (const k of Object.keys(o)) {
     if (!ALLOWED_FIELDS.has(k)) err(`QR payload contains unknown field: ${k}`);
-    if (typeof o[k] !== 'string') err(`QR field ${k} must be a string`);
+    if (k === 'protocolVersion') {
+      if (typeof o[k] !== 'number') err('QR field protocolVersion must be a number');
+    } else if (typeof o[k] !== 'string') err(`QR field ${k} must be a string`);
   }
 
   const sessionId = strField(o, 'sessionId', 1, SESSION_ID_MAX);
@@ -64,6 +71,13 @@ function _parse(raw: unknown): PairingQRPayload {
 
   const bootstrapToken = strField(o, 'bootstrapToken', 1, BOOTSTRAP_MAX);
   const endpoint = strField(o, 'endpoint', 1, ENDPOINT_MAX);
+  const protocolVersion = o.protocolVersion;
+  if (protocolVersion !== 1) err('unsupported QR protocol version');
+  const origin = strField(o, 'origin', 1, ENDPOINT_MAX);
+  const daemonBootId = strField(o, 'daemonBootId', 32, 64);
+  if (!/^[0-9a-f]+$/.test(daemonBootId)) err('daemonBootId must be lowercase hex');
+  const challengeId = strField(o, 'challengeId', 64, 64);
+  if (!/^[0-9a-f]{64}$/.test(challengeId)) err('challengeId must be 64-char lowercase hex');
 
   let parsed: URL;
   try { parsed = new URL(endpoint); } catch { err('endpoint is not a valid URL'); }
@@ -77,12 +91,13 @@ function _parse(raw: unknown): PairingQRPayload {
   if (!parsed.port) err('endpoint must include an explicit port');
   // Pairing V1 contract: endpoint path must be exactly /pair
   if (parsed.pathname !== '/pair') err('endpoint path must be /pair');
+  if (origin !== endpoint) err('origin must exactly match endpoint');
 
   const expiresAt = new Date(o.expiresAt as string);
   if (isNaN(expiresAt.getTime())) err('expiresAt is not a valid ISO date');
   if (expiresAt <= new Date()) err('QR payload has expired');
 
-  return { sessionId, hostId, fingerprint, hostPubKeyB64, hostPubKeyDer, bootstrapToken, endpoint, expiresAt };
+  return { sessionId, hostId, fingerprint, hostPubKeyB64, hostPubKeyDer, bootstrapToken, endpoint, expiresAt, protocolVersion, origin, daemonBootId, challengeId };
 }
 
 function strField(o: Record<string, unknown>, key: string, min: number, max: number): string {

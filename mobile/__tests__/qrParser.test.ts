@@ -28,6 +28,10 @@ function validPayload(overrides: Record<string, unknown> = {}): string {
     bootstrapToken: 'tok-123',
     endpoint: 'http://192.168.1.10:8765/pair',
     expiresAt: FUTURE,
+    protocolVersion: 1,
+    origin: 'http://192.168.1.10:8765/pair',
+    daemonBootId: '0123456789abcdef0123456789abcdef',
+    challengeId: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     ...overrides,
   });
 }
@@ -93,6 +97,10 @@ describe('qrParser — reject', () => {
       bootstrapToken: 'tok-123',
       endpoint: 'http://192.168.1.10:8765/pair',
       expiresAt: FUTURE,
+      protocolVersion: 1,
+      origin: 'http://192.168.1.10:8765/pair',
+      daemonBootId: '0123456789abcdef0123456789abcdef',
+      challengeId: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     });
     const r = parsePairingQR(daemonPayload);
     expect('error' in r).toBe(false);
