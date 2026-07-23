@@ -142,8 +142,10 @@ func TestMatrix07GenerationRestore(t *testing.T) {
 		} else {
 			svc.ReplaceTranscript(sid)
 		}
-		svc.SetCorrelation(sid, matrixCorrelation(sid))
+		svc.SetCorrelation(sid, matrixCorrelationProvider(sid, "claude"))
 		e := envelope(t, string(rune(0x4300+i)), contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, gen)
+		e.Provider, e.T0Event.AgentKind, e.EventID = "claude", "claude", ""
+		e, _ = contract.NewEnvelope(e)
 		if i == 2 {
 			e.SourceIncarnation = "incarnation-" + string(rune(0x4300))
 			e.EventID = ""
@@ -175,10 +177,11 @@ func TestMatrix09ApprovalPairOrder(t *testing.T) {
 	if !Compare(resp, Snapshot{Transcript: items}, []FixtureEpochBinding{b}).Passed {
 		t.Fatal("approval control")
 	}
-	bad := append([]TranscriptItem(nil), items...)
-	bad[1].ProjectionOrder = -1
-	if r := Compare(resp, Snapshot{Transcript: bad}, []FixtureEpochBinding{b}); r.Passed || r.OrderingDivergences == 0 {
-		t.Fatalf("approval order: %#v", r)
+	badResp := resp
+	badResp.Semantic = append([]transcript.TranscriptSegment(nil), resp.Semantic...)
+	badResp.Semantic[1].Seq = 1
+	if r := Compare(badResp, Snapshot{Transcript: items}, []FixtureEpochBinding{b}); r.Passed || r.OrderingDivergences == 0 {
+		t.Fatalf("approval transcript seq: %#v", r)
 	}
 }
 func TestMatrix10ToolPairOrder(t *testing.T) {
@@ -188,10 +191,12 @@ func TestMatrix10ToolPairOrder(t *testing.T) {
 	if !Compare(resp, Snapshot{Transcript: items}, []FixtureEpochBinding{b}).Passed {
 		t.Fatal("tool control")
 	}
-	bad := append([]TranscriptItem(nil), items...)
-	bad[1].PairID = "wrong"
-	if r := Compare(resp, Snapshot{Transcript: bad}, []FixtureEpochBinding{b}); r.Passed || r.Unexplained == 0 {
-		t.Fatalf("tool pair: %#v", r)
+	badResp := resp
+	badResp.Semantic = append([]transcript.TranscriptSegment(nil), resp.Semantic...)
+	badResp.Semantic[0], badResp.Semantic[1] = badResp.Semantic[1], badResp.Semantic[0]
+	badResp.Semantic[0].Seq, badResp.Semantic[1].Seq = 2, 1
+	if r := Compare(badResp, Snapshot{Transcript: items}, []FixtureEpochBinding{b}); r.Passed || r.OrderingDivergences == 0 || r.Unexplained == 0 {
+		t.Fatalf("tool transcript reorder: %#v", r)
 	}
 }
 func TestMatrix11ApprovalBinding(t *testing.T) {
@@ -210,8 +215,9 @@ func TestMatrix13UnknownEventKind(t *testing.T) {
 		t.Fatal("writer accepted unknown event kind")
 	}
 	b := matrixBinding("s", 1, "unknown")
-	if r := Compare(matrixResponse("s", 1, matrixSegment("s", "agent-unknown-boundary", 1)), NewProjector(w).Snapshot([]FixtureEpochBinding{b}), []FixtureEpochBinding{b}); r.Passed {
-		t.Fatalf("unknown writer boundary reached oracle PASS: %#v", r)
+	invalid := TranscriptItem{EventID: "unknown", AgentEventRef: "agent-unknown-boundary", SessionID: "s", AgentKind: "codex", EventType: "unknown_event", RuntimeID: "runtime-s", LaunchGeneration: 1}
+	if r := Compare(matrixResponse("s", 1, matrixSegment("s", "agent-unknown-boundary", 1)), Snapshot{Transcript: []TranscriptItem{invalid}}, []FixtureEpochBinding{b}); r.Passed || r.Unexplained == 0 || r.Missings != 0 || r.GenerationMismatches != 0 {
+		t.Fatalf("unknown oracle boundary: %#v", r)
 	}
 }
 
@@ -226,4 +232,7 @@ func matrixResponse(s string, gen int64, segs ...transcript.TranscriptSegment) t
 }
 func matrixCorrelation(s string) transcript.CorrelationState {
 	return transcript.CorrelationState{SessionID: s, Correlation: agentcontract.CorrelationProven, Provider: "codex"}
+}
+func matrixCorrelationProvider(s, provider string) transcript.CorrelationState {
+	return transcript.CorrelationState{SessionID: s, Correlation: agentcontract.CorrelationProven, Provider: provider}
 }
