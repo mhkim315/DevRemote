@@ -1,13 +1,13 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `e829299c6`
-**EVID SHA:** `ad69a5d3b` (R5)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix)
+**EVID SHA:** (this commit — R6 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R5 — IMPL SHA e829299c6, R7-R13 chain, corrected round counts
-**Round counts:** Contract 3+1, Pre-gate 2, Impl 12, EVID 4, V2 3 = 22 total
+**Revision:** R6 — fresh test stdout, regenerated scope, corrected round counts
+**Round counts:** Contract 4, Pre-gate 2, Impl 13, EVID 5, V2 3 = 27 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and
@@ -19,19 +19,20 @@ before it.
 
 ## 1. Scope
 
-The exact stdout of `git diff --stat c82fef47f..ce730accc` is:
+The exact stdout of `git diff --stat c82fef47f..e829299c6` is:
 
 ```
- companion-daemon/cmd/devremote/app.go              | 259 +++++-
+ companion-daemon/cmd/devremote/app.go              | 277 ++++-
  companion-daemon/cmd/devremote/app_lifecycle_v1_test.go |   6 +-
  companion-daemon/cmd/devremote/auth_e2e_test.go    |   8 +-
  companion-daemon/cmd/devremote/main.go             |   2 +
- companion-daemon/internal/notification/notification.go  | 582 +++++++++++++
- companion-daemon/internal/notification/notification_test.go | 913 +++++++++++++++++++++
- docs/ALPHA_ACTIVATION_ROADMAP.md                   |   8 +-
- docs/STEP9_0_LEDGER.md                             |   5 +-
- docs/STEP9_2_EVIDENCE.md                           | 320 ++++++++
- docs/STEP9_3_CONTRACT.md                           | 216 +++++
+ companion-daemon/internal/notification/notification.go  | 713 ++++++++++++
+ companion-daemon/internal/notification/notification_test.go | 1164 ++++++++++++++++++++
+ docs/ALPHA_ACTIVATION_ROADMAP.md                   |   9 +-
+ docs/STEP9_0_LEDGER.md                             |   8 +-
+ docs/STEP9_2_EVIDENCE.md                           | 320 ++++++
+ docs/STEP9_3_CONTRACT.md                           | 248 +++++
+ docs/STEP9_3_EVIDENCE.md                           | 300 +++++
  mobile/App.tsx                                     |  89 +-
  mobile/__tests__/notificationRoute.test.ts         |  41 +
  mobile/src/lib/client.ts                           |  39 +-
@@ -39,13 +40,13 @@ The exact stdout of `git diff --stat c82fef47f..ce730accc` is:
  mobile/src/lib/notificationRoute.ts                |  33 +
  mobile/src/navigation/RootNavigator.tsx            |  24 +-
  mobile/src/screens/FeedScreen.tsx                  |   9 +-
- mobile/src/screens/GlobalFeedScreen.tsx            | 115 ++-
+ mobile/src/screens/GlobalFeedScreen.tsx            | 115 +-
  mobile/src/screens/NotificationSettingsScreen.tsx  |  22 +
  mobile/src/screens/dashboard/DashboardScreen.tsx   |   6 +-
- 20 files changed, 2596 insertions(+), 109 deletions(-)
+ 21 files changed, 3332 insertions(+), 109 deletions(-)
 ```
 
-Backend: 6 files (+ R7-R13: 3 files, +551/-149). Mobile: 10 files. Documentation: 4 files.
+Backend: 6 files. Mobile: 10 files. Documentation: 5 files.
 
 ## 2. Complete implementation chain
 
@@ -219,36 +220,38 @@ The exact stdout of `go test -race ./internal/notification -count=1 -v` is:
 === RUN   TestSelectSinceUsesPerDeviceCursorAndRecoversRingWrap
 --- PASS: TestSelectSinceUsesPerDeviceCursorAndRecoversRingWrap (0.00s)
 === RUN   TestProductionDelivery
---- PASS: TestProductionDelivery (0.02s)
+--- PASS: TestProductionDelivery (0.21s)
 === RUN   TestDeviceStorePerDeviceBindRevoke
 --- PASS: TestDeviceStorePerDeviceBindRevoke (0.00s)
-=== RUN   TestDeviceRevokeClearsCursor
---- PASS: TestDeviceRevokeClearsCursor (0.00s)
 === RUN   TestResolveStatusSevenOutcomes
---- PASS: TestResolveStatusSevenOutcomes (0.00s)
+--- PASS: TestResolveStatusSevenOutcomes (0.01s)
 === RUN   TestEventDegradedOrGap
---- PASS: TestEventDegradedOrGap (0.03s)
-=== RUN   TestDeviceIDFromPrincipal
---- PASS: TestDeviceIDFromPrincipal (0.00s)
+--- PASS: TestEventDegradedOrGap (0.01s)
 === RUN   TestInsufficientPermission
 --- PASS: TestInsufficientPermission (0.01s)
 === RUN   TestFlagOffZeroEffect
 --- PASS: TestFlagOffZeroEffect (0.00s)
 === RUN   TestNotificationRestartRecovery
---- PASS: TestNotificationRestartRecovery (0.01s)
-=== RUN   TestSelectSinceUsesDeviceID
---- PASS: TestSelectSinceUsesDeviceID (0.00s)
+--- PASS: TestNotificationRestartRecovery (0.22s)
 === RUN   TestMobileTapSimulation
 --- PASS: TestMobileTapSimulation (0.01s)
 === RUN   TestAlreadyResolved
---- PASS: TestAlreadyResolved (0.00s)
+--- PASS: TestAlreadyResolved (0.01s)
 === RUN   TestAlreadyResolvedRealStore
 --- PASS: TestAlreadyResolvedRealStore (0.01s)
 === RUN   TestDegradedWriterFIFO
-    notification_test.go:901: writer degraded via FIFO EPIPE: reason=legacy write failure
+    notification_test.go:883: writer degraded via FIFO EPIPE: reason=legacy write failure
 --- PASS: TestDegradedWriterFIFO (0.05s)
+=== RUN   TestPerDeviceSingleflight
+--- PASS: TestPerDeviceSingleflight (0.29s)
+=== RUN   TestSameDeviceOrderingAndMonotonicCursor
+--- PASS: TestSameDeviceOrderingAndMonotonicCursor (0.52s)
+=== RUN   TestLateSuccessCursorNotWrittenAfterStop
+--- PASS: TestLateSuccessCursorNotWrittenAfterStop (0.21s)
+=== RUN   TestOldSendVsRevokeRebind
+--- PASS: TestOldSendVsRevokeRebind (0.31s)
 PASS
-ok  	devremote/companion-daemon/internal/notification	1.425s
+ok  	devremote/companion-daemon/internal/notification	3.386s
 ```
 
 19 tests, 0 SKIP, all PASS.
