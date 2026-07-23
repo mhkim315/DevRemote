@@ -24,17 +24,33 @@ export interface PairingResult {
 export function buildPairingTranscript(
   phoneNonce: Uint8Array, hostNonce: Uint8Array,
   hostPubDER: Uint8Array, sessionId: string,
+  hostId = '', daemonBootId = '', challengeId = '', expiresAt = '',
 ): Uint8Array {
   const prefix = new TextEncoder().encode('pokit-pair-v1:');
   const sid = new TextEncoder().encode(sessionId);
-  const out = new Uint8Array(prefix.length + phoneNonce.length + hostNonce.length + hostPubDER.length + sid.length);
+  const binding = [hostId, daemonBootId, challengeId, expiresAt].map(v => new TextEncoder().encode(v));
+  const boundLength = binding.every(v => v.length === 0) ? 0 : binding.reduce((n, v) => n + 1 + v.length, 0);
+  const out = new Uint8Array(prefix.length + phoneNonce.length + hostNonce.length + hostPubDER.length + sid.length + boundLength);
   let o = 0;
   out.set(prefix, o); o += prefix.length;
   out.set(phoneNonce, o); o += phoneNonce.length;
   out.set(hostNonce, o); o += hostNonce.length;
   out.set(hostPubDER, o); o += hostPubDER.length;
   out.set(sid, o);
+  o += sid.length;
+  for (const value of binding) {
+    if (boundLength === 0) break;
+    out[o++] = 0;
+    out.set(value, o); o += value.length;
+  }
   return out;
+}
+
+// Go's time.RFC3339 emits whole seconds when the timestamp has no fractional
+// component. Pairing transcripts must use that exact representation, not the
+// always-millisecond JavaScript ISO form.
+export function formatGoRFC3339(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 // siblingURL derives /pair/confirm and /pair/result from a QR endpoint that
@@ -89,6 +105,11 @@ export async function conductPairing(
       displayName: 'Pokit Mobile',
       phoneNonce: toBase64(phoneNonce),
       bootstrapToken: qr.bootstrapToken,
+      protocolVersion: qr.protocolVersion,
+      hostId: qr.hostId,
+      daemonBootId: qr.daemonBootId,
+      challengeId: qr.challengeId,
+      expiresAt: formatGoRFC3339(qr.expiresAt),
     });
   } catch { return { status: 'network_error', errorDetail: 'phase 1 request failed' }; }
   if (p1.error || !p1.hostNonce || !p1.hostPublicKey) {
@@ -108,7 +129,8 @@ export async function conductPairing(
   }
 
   // 3. Phase 2 — POST /pair/confirm.
-  const transcript = buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionId);
+  const expiresAt = formatGoRFC3339(qr.expiresAt);
+  const transcript = buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionId, qr.hostId, qr.daemonBootId, qr.challengeId, expiresAt);
   let phoneSig: Uint8Array;
   try { phoneSig = await deviceKey.sign(transcript); } catch {
     return { status: 'network_error', errorDetail: 'device signing failed' };
@@ -117,6 +139,11 @@ export async function conductPairing(
   try {
     p2 = await pairingPOST(siblingURL(qr.endpoint, '/pair/confirm'), {
       phoneSignature: toBase64(phoneSig),
+      protocolVersion: qr.protocolVersion,
+      hostId: qr.hostId,
+      daemonBootId: qr.daemonBootId,
+      challengeId: qr.challengeId,
+      expiresAt,
     });
   } catch { return { status: 'network_error', errorDetail: 'phase 2 request failed' }; }
   if (p2.error || p2.status !== 'proof_verified') {

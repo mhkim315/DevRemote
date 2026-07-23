@@ -126,6 +126,18 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		writeIPC(conn, map[string]string{"error": "QR pairing bridge start failed: " + err.Error()})
 		return
 	}
+	if err := ph.BindQRPairing(devicetrust.QRPairBinding{
+		ProtocolVersion: metadata.ProtocolVersion,
+		Origin:          metadata.Origin,
+		DaemonBootID:    metadata.DaemonBootID,
+		ChallengeID:     metadata.ChallengeID,
+		ExpiresAt:       metadata.ExpiresAt,
+	}); err != nil {
+		bridge.Cancel(ph.Session.SessionID)
+		ph.Close()
+		writeIPC(conn, map[string]string{"error": "QR pairing binding failed: " + err.Error()})
+		return
+	}
 	// NO deferred Close() — the grace period in Approve()/Reject() owns the
 	// close after a terminal result. Early exits below close immediately.
 

@@ -59,20 +59,29 @@ func stateForClient(s pairState) PairingState {
 // ── Public types ──
 
 type PairingSession struct {
-	SessionID      string    `json:"sessionId"`
-	HostID         string    `json:"hostId"`
-	Fingerprint    string    `json:"fingerprint"`
-	HostPubKeyB64  string    `json:"hostPubKey"`
-	BootstrapToken string    `json:"bootstrapToken"`
-	Endpoint       string    `json:"endpoint"`
-	ExpiresAt      time.Time `json:"expiresAt"`
+	SessionID       string    `json:"sessionId"`
+	HostID          string    `json:"hostId"`
+	Fingerprint     string    `json:"fingerprint"`
+	HostPubKeyB64   string    `json:"hostPubKey"`
+	BootstrapToken  string    `json:"bootstrapToken"`
+	Endpoint        string    `json:"endpoint"`
+	ExpiresAt       time.Time `json:"expiresAt"`
+	ProtocolVersion int       `json:"protocolVersion,omitempty"`
+	Origin          string    `json:"origin,omitempty"`
+	DaemonBootID    string    `json:"daemonBootId,omitempty"`
+	ChallengeID     string    `json:"challengeId,omitempty"`
 }
 
 type PairingRequest struct {
-	PublicKeyDER   []byte `json:"publicKey"`
-	DisplayName    string `json:"displayName"`
-	PhoneNonce     []byte `json:"phoneNonce"`
-	BootstrapToken string `json:"bootstrapToken"` // QR secret — gates Phase 1
+	PublicKeyDER    []byte `json:"publicKey"`
+	DisplayName     string `json:"displayName"`
+	PhoneNonce      []byte `json:"phoneNonce"`
+	BootstrapToken  string `json:"bootstrapToken"` // QR secret — gates Phase 1
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
+	HostID          string `json:"hostId,omitempty"`
+	DaemonBootID    string `json:"daemonBootId,omitempty"`
+	ChallengeID     string `json:"challengeId,omitempty"`
+	ExpiresAt       string `json:"expiresAt,omitempty"`
 }
 
 type ChallengeResponse struct {
@@ -80,10 +89,27 @@ type ChallengeResponse struct {
 	HostPublicDER   []byte `json:"hostPublicKey"`
 	HostFingerprint string `json:"hostFingerprint"`
 	ExpiresAt       string `json:"expiresAt"`
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
+	HostID          string `json:"hostId,omitempty"`
+	DaemonBootID    string `json:"daemonBootId,omitempty"`
+	ChallengeID     string `json:"challengeId,omitempty"`
 }
 
 type Confirmation struct {
-	PhoneSignature []byte `json:"phoneSignature"` // ECDSA ASN.1 over pairing transcript
+	PhoneSignature  []byte `json:"phoneSignature"` // ECDSA ASN.1 over pairing transcript
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
+	HostID          string `json:"hostId,omitempty"`
+	DaemonBootID    string `json:"daemonBootId,omitempty"`
+	ChallengeID     string `json:"challengeId,omitempty"`
+	ExpiresAt       string `json:"expiresAt,omitempty"`
+}
+
+type QRPairBinding struct {
+	ProtocolVersion int
+	Origin          string
+	DaemonBootID    string
+	ChallengeID     string
+	ExpiresAt       time.Time
 }
 
 type PairingConfig struct {
@@ -220,6 +246,25 @@ func StartPairing(cfg PairingConfig) (*PairingHost, error) {
 	return ph, nil
 }
 
+// BindQRPairing attaches bridge-issued metadata before the QR is exposed.
+// The PairingHost remains the proof/registration authority; this binds that
+// existing proof transcript to the daemon boot and one-time QR challenge.
+func (ph *PairingHost) BindQRPairing(binding QRPairBinding) error {
+	if binding.ProtocolVersion != 1 || binding.Origin == "" || binding.DaemonBootID == "" || binding.ChallengeID == "" || binding.ExpiresAt.IsZero() {
+		return fmt.Errorf("invalid QR pairing binding")
+	}
+	ph.mu.Lock()
+	defer ph.mu.Unlock()
+	if ph.state != pairStatePending || binding.Origin != ph.Session.Endpoint || !binding.ExpiresAt.Equal(ph.Session.ExpiresAt) {
+		return fmt.Errorf("QR pairing binding does not match pending session")
+	}
+	ph.Session.ProtocolVersion = binding.ProtocolVersion
+	ph.Session.Origin = binding.Origin
+	ph.Session.DaemonBootID = binding.DaemonBootID
+	ph.Session.ChallengeID = binding.ChallengeID
+	return nil
+}
+
 // ── LAN endpoints (2-phase) ──
 
 // Phase 1: phone submits candidate → host returns challenge + host proof.
@@ -246,6 +291,10 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	// attacker on the LAN cannot preempt the session.
 	if subtle.ConstantTimeCompare([]byte(req.BootstrapToken), []byte(ph.Session.BootstrapToken)) != 1 {
 		http.Error(w, "invalid bootstrap token", http.StatusUnauthorized)
+		return
+	}
+	if ph.Session.ProtocolVersion != 0 && (req.ProtocolVersion != ph.Session.ProtocolVersion || req.HostID != ph.Session.HostID || req.DaemonBootID != ph.Session.DaemonBootID || req.ChallengeID != ph.Session.ChallengeID || req.ExpiresAt != ph.Session.ExpiresAt.Format(time.RFC3339)) {
+		http.Error(w, "QR binding mismatch", http.StatusForbidden)
 		return
 	}
 
@@ -289,6 +338,10 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 		HostPublicDER:   hostPub.PublicKeyDER,
 		HostFingerprint: hostPub.Fingerprint,
 		ExpiresAt:       ph.Session.ExpiresAt.Format(time.RFC3339),
+		ProtocolVersion: ph.Session.ProtocolVersion,
+		HostID:          ph.Session.HostID,
+		DaemonBootID:    ph.Session.DaemonBootID,
+		ChallengeID:     ph.Session.ChallengeID,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -310,6 +363,10 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "phone signature required", http.StatusBadRequest)
 		return
 	}
+	if ph.Session.ProtocolVersion != 0 && (req.ProtocolVersion != ph.Session.ProtocolVersion || req.HostID != ph.Session.HostID || req.DaemonBootID != ph.Session.DaemonBootID || req.ChallengeID != ph.Session.ChallengeID || req.ExpiresAt != ph.Session.ExpiresAt.Format(time.RFC3339)) {
+		http.Error(w, "QR binding mismatch", http.StatusForbidden)
+		return
+	}
 
 	ph.mu.Lock()
 	if ph.state != pairStateChallenged {
@@ -324,6 +381,11 @@ func (ph *PairingHost) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	// (phoneNonce || hostNonce || hostPubKey || sessionId).
 	transcript := buildPairingTranscript(cand.PhoneNonce, cand.HostNonce,
 		ph.cfg.Identity.Public().PublicKeyDER, ph.Session.SessionID)
+	if ph.Session.ProtocolVersion != 0 {
+		transcript = buildPairingTranscript(cand.PhoneNonce, cand.HostNonce,
+			ph.cfg.Identity.Public().PublicKeyDER, ph.Session.SessionID, ph.Session.HostID,
+			ph.Session.DaemonBootID, ph.Session.ChallengeID, ph.Session.ExpiresAt.Format(time.RFC3339))
+	}
 	pub, err := ParseP256PublicKey(cand.PublicKeyDER)
 	if err != nil {
 		ph.mu.Unlock()
@@ -499,7 +561,7 @@ func (ph *PairingHost) Result() (Device, PairingState) {
 
 // ── helpers ──
 
-func buildPairingTranscript(phoneNonce, hostNonce, hostPubDER []byte, sessionID string) []byte {
+func buildPairingTranscript(phoneNonce, hostNonce, hostPubDER []byte, sessionID string, binding ...string) []byte {
 	prefix := []byte("pokit-pair-v1:")
 	b := make([]byte, 0, len(prefix)+len(phoneNonce)+len(hostNonce)+len(hostPubDER)+len(sessionID))
 	b = append(b, prefix...)
@@ -507,6 +569,10 @@ func buildPairingTranscript(phoneNonce, hostNonce, hostPubDER []byte, sessionID 
 	b = append(b, hostNonce...)
 	b = append(b, hostPubDER...)
 	b = append(b, sessionID...)
+	for _, value := range binding {
+		b = append(b, 0)
+		b = append(b, value...)
+	}
 	return b
 }
 
