@@ -192,7 +192,7 @@ func TestToolAndApprovalPairingAndMisboundVerdict(t *testing.T) {
 		t.Fatal("finish without start accepted")
 	}
 	response := transcript.TranscriptResponse{SessionID: sid, Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "wrong", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: items[2].AgentEventRef, AgentKind: "codex", EventType: items[2].EventType, Text: items[2].Text, Seq: 1}}}
-	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: 1, TimelineEventIDs: []string{items[2].EventID}}
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: 1, RuntimeID: items[2].RuntimeID, LaunchGeneration: items[2].LaunchGeneration, TimelineEventIDs: []string{items[2].EventID}}
 	if Compare(response, Snapshot{Transcript: []TranscriptItem{items[2]}}, []FixtureEpochBinding{b}).MisboundApprovals == 0 {
 		t.Fatal("misbound approval not reported")
 	}
@@ -257,5 +257,22 @@ func TestActivityIncludesSourceProvenance(t *testing.T) {
 	it := NewProjector(w).Activity()[0]
 	if it.SourceIncarnation != e.SourceIncarnation || it.SourcePosition != e.SourcePosition {
 		t.Fatalf("activity=%#v", it)
+	}
+}
+
+func TestComparatorWrongRuntimeIsGenerationMismatch(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "expected", LaunchGeneration: 1, TimelineEventIDs: []string{"event"}}
+	response := transcript.TranscriptResponse{SessionID: "s", Generation: 1, Semantic: []transcript.TranscriptSegment{{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1}}}
+	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "event", AgentEventRef: "agent", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "wrong", LaunchGeneration: 1}}}
+	if got := Compare(response, snap, []FixtureEpochBinding{b}); got.GenerationMismatches == 0 || got.Passed {
+		t.Fatalf("report=%#v", got)
+	}
+}
+
+func TestComparatorRejectsUnclosedFallback(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1}
+	r := Compare(transcript.TranscriptResponse{SessionID: "s", Generation: 1, Fallback: []transcript.TranscriptSegment{{SessionID: "s", Source: transcript.SourceUnknown}}}, Snapshot{}, []FixtureEpochBinding{b})
+	if r.Passed || r.Unexplained == 0 {
+		t.Fatalf("report=%#v", r)
 	}
 }

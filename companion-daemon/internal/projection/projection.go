@@ -280,20 +280,27 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 			segments = append(segments, s)
 		} else if s.Kind == transcript.KindDegraded {
 			degraded = append(degraded, s)
-		} else {
+		} else if closedSemanticLoss(s) {
 			r.ToleratedLosses++
+		} else {
+			r.Unexplained++
 		}
 	}
 	for _, s := range response.Fallback {
 		if s.Kind == transcript.KindDegraded {
 			degraded = append(degraded, s)
-		} else {
+		} else if s.Source == transcript.SourceByteStream || s.Source == transcript.SourceSnapshot {
 			r.ToleratedLosses++
+		} else {
+			r.Unexplained++
 		}
 	}
 	items := snap.Transcript
 	if binding != nil {
 		if duplicateBinding(*binding, bindings) {
+			r.GenerationMismatches++
+		}
+		if !bindingEventIDsConsistent(*binding, snap.Transcript) {
 			r.GenerationMismatches++
 		}
 		filtered := make([]TranscriptItem, 0, len(items))
@@ -317,7 +324,11 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 	for i := 0; i < n; i++ {
 		r.TotalComparisons++
 		s, it := segments[i], items[i]
-		if s.AgentEventRef == it.AgentEventRef && s.SessionID == it.SessionID && s.AgentKind == it.AgentKind && s.EventType == it.EventType && s.Text == it.Text && s.ToolName == it.ToolName && (binding == nil || contains(binding.TimelineEventIDs, it.EventID)) && (binding == nil || (binding.RuntimeID == it.RuntimeID && binding.LaunchGeneration == it.LaunchGeneration)) {
+		if binding != nil && (binding.RuntimeID != it.RuntimeID || binding.LaunchGeneration != it.LaunchGeneration) {
+			r.GenerationMismatches++
+			continue
+		}
+		if s.AgentEventRef == it.AgentEventRef && s.SessionID == it.SessionID && s.AgentKind == it.AgentKind && s.EventType == it.EventType && s.Text == it.Text && s.ToolName == it.ToolName && (binding == nil || contains(binding.TimelineEventIDs, it.EventID)) {
 			r.ExactMatches++
 		} else {
 			if isApproval(it.EventType) && (s.SessionID != it.SessionID || binding == nil) {
@@ -361,6 +372,28 @@ func duplicateBinding(b FixtureEpochBinding, bs []FixtureEpochBinding) bool {
 		}
 	}
 	return n != 1
+}
+func bindingEventIDsConsistent(b FixtureEpochBinding, items []TranscriptItem) bool {
+	seen := make(map[string]bool, len(b.TimelineEventIDs))
+	for _, id := range b.TimelineEventIDs {
+		if id == "" || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	for _, item := range items {
+		if contains(b.TimelineEventIDs, item.EventID) && (item.RuntimeID != b.RuntimeID || item.LaunchGeneration != b.LaunchGeneration) {
+			return false
+		}
+	}
+	return true
+}
+func closedSemanticLoss(s transcript.TranscriptSegment) bool {
+	switch s.Kind {
+	case transcript.KindInputBoundary, transcript.KindUIOmitted, transcript.KindUnknown:
+		return true
+	}
+	return false
 }
 func hasTranscriptGap(segs []transcript.TranscriptSegment, gap GapMarker) bool {
 	for _, s := range segs {
