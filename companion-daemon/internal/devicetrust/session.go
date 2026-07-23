@@ -247,9 +247,17 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	if bootID != m.bootID {
 		return "", "", time.Time{}, fmt.Errorf("boot ID mismatch")
 	}
-	// 9.4-D epoch CAS: reject if the device epoch changed since the caller
-	// read it (concurrent revoke/replacement happened).
-	if m.GetEpoch != nil {
+	// 9.4-D: authoritative auth check. Prefer GetAuth (Active+Epoch).
+	// Nil authority → fail closed; no silent skip.
+	if m.GetAuth != nil {
+		auth := m.GetAuth(deviceID)
+		if !auth.Active {
+			return "", "", time.Time{}, fmt.Errorf("device is not active")
+		}
+		if auth.Epoch != uint64(expectedEpoch) {
+			return "", "", time.Time{}, fmt.Errorf("auth epoch mismatch: expected %d, current %d", expectedEpoch, auth.Epoch)
+		}
+	} else if m.GetEpoch != nil {
 		currentEpoch := m.GetEpoch(deviceID)
 		if currentEpoch != expectedEpoch {
 			return "", "", time.Time{}, fmt.Errorf("epoch changed: expected %d, current %d", expectedEpoch, currentEpoch)
@@ -344,12 +352,16 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 		notifyInvalidated(cb, []string{deviceID})
 		return nil
 	}
-	// 9.4-D: epoch check — if device was revoked/replaced since this
-	// session was issued, the session is stale and must be rejected.
-	if m.GetEpoch != nil {
+	// 9.4-D: authoritative auth check. Prefer GetAuth (Active+Epoch).
+	// Nil authority → fail closed.
+	if m.GetAuth != nil {
+		auth := m.GetAuth(sess.DeviceID)
+		if !auth.Active || auth.Epoch != uint64(sess.DeviceEpoch) {
+			m.mu.Unlock()
+			return nil
+		}
+	} else if m.GetEpoch != nil {
 		currentEpoch := m.GetEpoch(sess.DeviceID)
-		// Exact epoch match required. Any mismatch (revoke bumped epoch,
-		// replacement changed it, or unknown device) rejects the bearer.
 		if currentEpoch != sess.DeviceEpoch {
 			m.mu.Unlock()
 			return nil

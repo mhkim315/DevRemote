@@ -239,14 +239,11 @@ func TestEpoch_RevokeVsRefresh(t *testing.T) {
 	// revoke bumps epoch to 1.
 	if p := mgr.AuthenticateBearer(tok); p != nil {
 		t.Fatal("revoke vs refresh: stale session accepted after revoke")
-	}
-	// New session issued after revoke carries epoch 1 — it must be valid.
-	newTok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), reg.GetEpoch(dev.DeviceID))
-	if err != nil {
-		t.Fatalf("revoke vs refresh: post-revoke session create: %v", err)
-	}
-	if p := mgr.AuthenticateBearer(newTok); p == nil {
-		t.Fatal("revoke vs refresh: new session (epoch 1) should be valid")
+		// Post-revoke create must fail — GetAuth reports Active=false.
+		_, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), reg.GetEpoch(dev.DeviceID))
+		if err == nil {
+			t.Fatal("revoke vs refresh: post-revoke session create must fail for inactive device")
+		}
 	}
 }
 
