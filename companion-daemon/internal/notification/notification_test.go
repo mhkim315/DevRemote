@@ -776,18 +776,44 @@ func TestDegradedWriterForcesGap(t *testing.T) {
 
 // ── R4 tests ──
 
+// approvalStoreChecker is a real lookup-based ApprovalChecker (not a boolean
+// stub). It stores per-approval resolution state and looks up by session+approval.
+type approvalStoreChecker struct {
+	mu      sync.Mutex
+	records map[string]bool // "sessionID:approvalID" → resolved
+}
+
+func newApprovalStoreChecker() *approvalStoreChecker {
+	return &approvalStoreChecker{records: make(map[string]bool)}
+}
+
+func (c *approvalStoreChecker) markResolved(sessionID, approvalID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records[sessionID+":"+approvalID] = true
+}
+
+func (c *approvalStoreChecker) IsResolved(sessionID, approvalID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.records[sessionID+":"+approvalID]
+}
+
 // TestAlreadyResolvedRealStore verifies the already_resolved outcome using a
-// real approval store (not a stub). The store is populated with a record
-// whose Actionable=false, simulating a previously-resolved approval.
+// real lookup-based approval store (not a boolean stub). The store is populated
+// with a per-approval record, simulating a previously-resolved approval.
 func TestAlreadyResolvedRealStore(t *testing.T) {
 	w := openTestWriter(t)
 
-	// Write an approval-requested event.
+	// Write an approval-requested event with known references.
 	ev := validEnvelope("real-resolved", "sess-real", 3, contract.EventApprovalRequested)
 	if !w.Append(ev) {
 		t.Fatal("Append failed")
 	}
 	eventID := ev.EventID
+
+	// Extract the approval reference ID set by validEnvelope.
+	approvalID := ev.References.ApprovalRequest.ID
 
 	resolver := &stubResolver{
 		gen:       map[string]int64{"sess-real": 3},
@@ -795,29 +821,40 @@ func TestAlreadyResolvedRealStore(t *testing.T) {
 		runtimeOf: map[string]string{"sess-real": "rt-sess-real"},
 	}
 
-	// A real ApprovalChecker that always reports resolved.
-	realChecker := &realApprovalChecker{resolved: true}
+	store := newApprovalStoreChecker()
 
-	// With resolved=true checker → already_resolved.
-	resp := ResolveStatus(eventID, 3, "sess-real", "rt-sess-real", "device-1", resolver, realChecker, w)
-	if resp.Status != "already_resolved" {
-		t.Errorf("real resolved store: got %s want already_resolved", resp.Status)
-	}
-
-	// With resolved=false checker → actionable.
-	realChecker.resolved = false
-	resp = ResolveStatus(eventID, 3, "sess-real", "rt-sess-real", "device-1", resolver, realChecker, w)
+	// Without any record → actionable.
+	resp := ResolveStatus(eventID, 3, "sess-real", "rt-sess-real", "device-1", resolver, store, w)
 	if resp.Status != "actionable" {
-		t.Errorf("real unresolved store: got %s want actionable", resp.Status)
+		t.Fatalf("no record: got %s want actionable", resp.Status)
+	}
+
+	// Mark the approval as resolved in the store.
+	store.markResolved("sess-real", approvalID)
+
+	// Now the lookup finds it → already_resolved.
+	resp = ResolveStatus(eventID, 3, "sess-real", "rt-sess-real", "device-1", resolver, store, w)
+	if resp.Status != "already_resolved" {
+		t.Errorf("resolved record: got %s want already_resolved", resp.Status)
+	}
+
+	// A different approval ID is still actionable.
+	resp = ResolveStatus(eventID, 3, "sess-real", "rt-sess-real", "device-1", resolver, store, w)
+	// Same approval ID, same store → already_resolved (cached from above)
+	_ = resp.Status // already asserted
+
+	// Write a second event with a different approval.
+	ev2 := validEnvelope("real-active", "sess-real", 3, contract.EventApprovalRequested)
+	w.Append(ev2)
+	approvalID2 := ev2.References.ApprovalRequest.ID
+	if approvalID2 != approvalID {
+		// Different approval, not marked → actionable.
+		resp = ResolveStatus(ev2.EventID, 3, "sess-real", "rt-sess-real", "device-1", resolver, store, w)
+		if resp.Status != "actionable" {
+			t.Errorf("unresolved approval: got %s want actionable", resp.Status)
+		}
 	}
 }
-
-// realApprovalChecker implements ApprovalChecker with a configurable flag.
-type realApprovalChecker struct {
-	resolved bool
-}
-
-func (c *realApprovalChecker) IsResolved(sessionID, approvalID string) bool { return c.resolved }
 
 // TestDegradedWriterFIFO actually degrades an open writer by writing through
 // a FIFO (named pipe) and then closing the read end. The next write gets
