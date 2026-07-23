@@ -1,11 +1,13 @@
 # Step 9.2 Evidence — Transcript/Activity Projection Convergence
 
 **IMPL SHA:** `c82fef47f`
-**EVID SHA:** `f32be5756`
+**EVID SHA:** (this commit — R2 revision)
+**PRIOR EVID SHA:** `f32be5756` (R1), `af5e76eff` (R1 fix)
 **CONTRACT SHA:** `93c337a42` (V1 ACCEPT)
 **IMPLEMENTATION BASE:** `dc376f9b7` (Step 9.1)
 **R3-A ACCEPT:** `a0a0084b4`
 **Date:** 2026-07-23
+**Revision:** R2 — complete 32-test `go test -v` output, no curation
 
 Step 9.2 implements a read-only, offline, default-off dual-fed equivalence
 oracle that compares Timeline-derived Activity and Transcript projections
@@ -193,31 +195,78 @@ ok  	devremote/companion-daemon/internal/workspace	2.046s
 
 21 packages total: 18 ok, 3 no-test (`cmd/signald`, `internal/models`, `scripts`).
 
-The projection package verbose output confirms 32 tests:
+The exact stdout of `go test -race ./internal/projection -count=1 -v` filtered
+to RUN/PASS/SKIP lines is:
 
 ```
-TestProjectionReplayDedupAndCollision        PASS
-TestProjectionRingOverwriteRequiresScopedGap PASS
-TestProjectionUnknownKindIsRejected          PASS
-TestProjectionActualWriterDropHasSafeGap     PASS
-TestDualFeedOracleAndRestoredEpoch           PASS
-TestToolAndApprovalPairingAndMisboundVerdict PASS
-TestProjectionEmptyWriterIsExplicit          PASS
-TestCompareMissingAndOrderingFail            PASS
-TestCompareGapRequiresTranscriptMarker       PASS
-TestRingOverwriteGapAllowsUnretainedBoundEvents PASS
-TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder PASS
-TestMatrix12Degradation                      PASS
-TestGapReasonAndCounterTaxonomyIsClosed      PASS
-TestPairIDCannotBeReusedAfterFullLifecycle   PASS
-TestNonAgentTranscriptIsClosedToleratedLoss  PASS
-TestBindingDuplicateAndRuntimeMismatchFail   PASS
-TestActivityIncludesSourceProvenance         PASS
-TestComparatorWrongRuntimeIsGenerationMismatch PASS
-TestComparatorRejectsUnclosedFallback        PASS
+=== RUN   TestMatrix01EmptyWriter
+--- PASS: TestMatrix01EmptyWriter (0.00s)
+=== RUN   TestMatrix02KnownSequenceAndClosedDualFeed
+--- PASS: TestMatrix02KnownSequenceAndClosedDualFeed (0.05s)
+=== RUN   TestMatrix03ExactReplay
+--- PASS: TestMatrix03ExactReplay (0.01s)
+=== RUN   TestMatrix04Collision
+--- PASS: TestMatrix04Collision (0.01s)
+=== RUN   TestMatrix05RingWrap
+--- PASS: TestMatrix05RingWrap (0.85s)
+=== RUN   TestMatrix06NewWriter
+--- PASS: TestMatrix06NewWriter (0.00s)
+=== RUN   TestMatrix07GenerationRestore
+--- PASS: TestMatrix07GenerationRestore (0.02s)
+=== RUN   TestMatrix08Missing
+--- PASS: TestMatrix08Missing (0.00s)
+=== RUN   TestMatrix09ApprovalPairOrder
+--- PASS: TestMatrix09ApprovalPairOrder (0.00s)
+=== RUN   TestMatrix10ToolPairOrder
+--- PASS: TestMatrix10ToolPairOrder (0.00s)
+=== RUN   TestMatrix11ApprovalBinding
+--- PASS: TestMatrix11ApprovalBinding (0.00s)
+=== RUN   TestMatrix13UnknownEventKind
+--- PASS: TestMatrix13UnknownEventKind (0.00s)
+=== RUN   TestProjectionKnownSequenceAndImmutableOrder
+--- PASS: TestProjectionKnownSequenceAndImmutableOrder (0.01s)
+=== RUN   TestProjectionReplayDedupAndCollision
+--- PASS: TestProjectionReplayDedupAndCollision (0.01s)
+=== RUN   TestProjectionRingOverwriteRequiresScopedGap
+--- PASS: TestProjectionRingOverwriteRequiresScopedGap (0.83s)
+=== RUN   TestProjectionUnknownKindIsRejected
+--- PASS: TestProjectionUnknownKindIsRejected (0.01s)
+=== RUN   TestProjectionActualWriterDropHasSafeGap
+--- PASS: TestProjectionActualWriterDropHasSafeGap (0.00s)
+=== RUN   TestDualFeedOracleAndRestoredEpoch
+--- PASS: TestDualFeedOracleAndRestoredEpoch (0.01s)
+=== RUN   TestToolAndApprovalPairingAndMisboundVerdict
+--- PASS: TestToolAndApprovalPairingAndMisboundVerdict (0.02s)
+=== RUN   TestProjectionEmptyWriterIsExplicit
+--- PASS: TestProjectionEmptyWriterIsExplicit (0.00s)
+=== RUN   TestCompareMissingAndOrderingFail
+--- PASS: TestCompareMissingAndOrderingFail (0.00s)
+=== RUN   TestCompareGapRequiresTranscriptMarker
+--- PASS: TestCompareGapRequiresTranscriptMarker (0.00s)
+=== RUN   TestRingOverwriteGapAllowsUnretainedBoundEvents
+--- PASS: TestRingOverwriteGapAllowsUnretainedBoundEvents (0.00s)
+=== RUN   TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder
+--- PASS: TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder (0.81s)
+=== RUN   TestMatrix12Degradation
+--- PASS: TestMatrix12Degradation (0.98s)
+=== RUN   TestGapReasonAndCounterTaxonomyIsClosed
+--- PASS: TestGapReasonAndCounterTaxonomyIsClosed (0.00s)
+=== RUN   TestPairIDCannotBeReusedAfterFullLifecycle
+--- PASS: TestPairIDCannotBeReusedAfterFullLifecycle (0.00s)
+=== RUN   TestNonAgentTranscriptIsClosedToleratedLoss
+--- PASS: TestNonAgentTranscriptIsClosedToleratedLoss (0.00s)
+=== RUN   TestBindingDuplicateAndRuntimeMismatchFail
+--- PASS: TestBindingDuplicateAndRuntimeMismatchFail (0.00s)
+=== RUN   TestActivityIncludesSourceProvenance
+--- PASS: TestActivityIncludesSourceProvenance (0.00s)
+=== RUN   TestComparatorWrongRuntimeIsGenerationMismatch
+--- PASS: TestComparatorWrongRuntimeIsGenerationMismatch (0.00s)
+=== RUN   TestComparatorRejectsUnclosedFallback
+--- PASS: TestComparatorRejectsUnclosedFallback (0.00s)
 ```
 
-32 tests, 0 SKIP. The Coordinator reports `go test -race ./internal/projection -count=20` also PASS.
+32 tests, 0 SKIP, all PASS. The Coordinator reports `go test -race
+./internal/projection -count=20` also PASS.
 
 The exact stdout of `test -z "$(gofmt -l .)"` is: (no output — exit 0)
 
