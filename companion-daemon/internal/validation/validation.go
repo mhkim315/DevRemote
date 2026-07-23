@@ -15,7 +15,10 @@ var (
 	ErrStale   = errors.New("validation: finding is stale and cannot authorize")
 )
 
-const recentResults = 64
+const (
+	recentResults   = 64
+	maxHistoryItems = 4096
+)
 
 // SnapshotBinding freezes every identity that a validation result may rely on.
 type SnapshotBinding struct {
@@ -67,6 +70,7 @@ type ValidationStore struct {
 	ring    []ValidationResult // ring buffer for ReadRecent
 	pos     int
 	full    bool
+	closed  bool
 }
 
 // NewValidationStore returns an empty store.
@@ -84,7 +88,15 @@ func (s *ValidationStore) Submit(result ValidationResult) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return ErrInvalid
+	}
 	s.results = append(s.results, result)
+	if len(s.results) > maxHistoryItems {
+		// Drop oldest half to avoid unbounded growth.
+		copy(s.results, s.results[len(s.results)-maxHistoryItems/2:])
+		s.results = s.results[:maxHistoryItems/2]
+	}
 	s.ring[s.pos] = cloneResult(result)
 	s.pos++
 	if s.pos >= len(s.ring) {
@@ -106,13 +118,16 @@ func (s *ValidationStore) ReadAll() []ValidationResult {
 }
 
 // ReadRecent returns the most recent N results in insertion order.
-// N is clamped to the ring buffer size.
+// N is clamped to the ring buffer size. Returns nil when closed.
 func (s *ValidationStore) ReadRecent(n int) []ValidationResult {
 	if n <= 0 {
 		return nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.closed {
+		return nil
+	}
 	capacity := len(s.ring)
 	size := s.pos
 	if s.full {
@@ -142,11 +157,12 @@ func (s *ValidationStore) ReadRecent(n int) []ValidationResult {
 	return out
 }
 
-// Close clears the ring buffer. No goroutines to drain.
+// Close marks the store as closed. Submissions are rejected; reads return nil.
+// The ring buffer and history remain readable for inspection after close.
 func (s *ValidationStore) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ring = nil
+	s.closed = true
 }
 
 func cloneResult(result ValidationResult) ValidationResult {
