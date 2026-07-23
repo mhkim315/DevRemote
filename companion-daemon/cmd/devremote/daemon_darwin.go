@@ -290,22 +290,38 @@ func checkReadiness(plistPath string) error {
 	return fmt.Errorf("daemon listener/auth readiness failed")
 }
 
-func rollbackInstall(plistPath string, priorPlist []byte, hadPriorPlist bool, statePath string, priorState []byte, hadPriorState bool, binaryPath, backupPath string, priorWasLoaded bool) error {
-	if backupPath != "" {
-		if _, err := os.Stat(backupPath); err == nil {
-			if err := restoreBackup(binaryPath, backupPath); err != nil {
-				return fmt.Errorf("restore binary: %w", err)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("stat rollback backup: %w", err)
-		} else if !hadPriorState {
-			if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove new binary: %w", err)
+func rollbackInstall(plistPath string, priorPlist []byte, hadPriorPlist bool, statePath string, priorState []byte, hadPriorState bool, newBinPath, oldBinPath, backupPath string, priorWasLoaded bool) error {
+	// Migration rollback: old and new paths differ (version upgrade).
+	// Restore backup to the old path, remove the new path.
+	if oldBinPath != "" && oldBinPath != newBinPath {
+		if backupPath != "" {
+			if _, err := os.Stat(backupPath); err == nil {
+				if err := restoreBackup(oldBinPath, backupPath); err != nil {
+					return fmt.Errorf("restore old binary: %w", err)
+				}
 			}
 		}
-	} else if !hadPriorState {
-		if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(newBinPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove new binary: %w", err)
+		}
+	} else {
+		// Same-version rollback: restore backup to the same path.
+		if backupPath != "" {
+			if _, err := os.Stat(backupPath); err == nil {
+				if err := restoreBackup(newBinPath, backupPath); err != nil {
+					return fmt.Errorf("restore binary: %w", err)
+				}
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("stat rollback backup: %w", err)
+			} else if !hadPriorState {
+				if err := os.Remove(newBinPath); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("remove new binary: %w", err)
+				}
+			}
+		} else if !hadPriorState {
+			if err := os.Remove(newBinPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove new binary: %w", err)
+			}
 		}
 	}
 	if hadPriorPlist {
@@ -397,8 +413,10 @@ func validateDaemonPaths(state *daemonState) error {
 	if err != nil {
 		return fmt.Errorf("daemon state oldBinPath: %w", err)
 	}
-	if resolvedOld != resolvedBin && !strings.HasPrefix(resolvedOld, resolvedBin+".old-") {
-		return fmt.Errorf("daemon state oldBinPath is not related to binPath: %q", state.OldBinPath)
+	// OldBinPath is the previous version's binary. During migration it differs
+	// from BinPath; both must be within the managed bin directory.
+	if resolvedOld != resolvedBin && !strings.HasPrefix(resolvedOld, managedBinPrefix) {
+		return fmt.Errorf("daemon state oldBinPath is not a managed binary: %q", state.OldBinPath)
 	}
 	resolvedBackup, err := resolve(state.BackupPath)
 	if err != nil {
@@ -519,7 +537,7 @@ func installDaemon() error {
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := writeDaemonState(state); err != nil {
-		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, false); rbErr != nil {
+		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, false); rbErr != nil {
 			return errors.Join(fmt.Errorf("install: state write: %w", err), rbErr)
 		}
 		return fmt.Errorf("install: cannot atomically write daemon state: %w", err)
@@ -529,7 +547,7 @@ func installDaemon() error {
 	// failure restores staged files but never attempts a duplicate bootstrap.
 	if priorWasLoaded {
 		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath); err != nil {
-			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, priorWasLoaded); rbErr != nil {
+			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, priorWasLoaded); rbErr != nil {
 				return errors.Join(fmt.Errorf("install: bootout old: %w", err), rbErr)
 			}
 			return fmt.Errorf("install: cannot stop existing daemon for upgrade: %w", err)
@@ -546,7 +564,7 @@ func installDaemon() error {
 	if serviceBinPath != binPath {
 		actualBackup, err := replaceBinaryAtomicAt(binPath, serviceBinPath, backupPath)
 		if err != nil {
-			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, priorWasLoaded); rbErr != nil {
+			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, priorWasLoaded); rbErr != nil {
 				return errors.Join(fmt.Errorf("install: binary replace: %w", err), rbErr)
 			}
 			return fmt.Errorf("install: atomic binary replacement failed: %w", err)
@@ -557,7 +575,7 @@ func installDaemon() error {
 	// Bootstrap with launchctl.
 	if err := runLaunchctl("bootstrap", "gui/"+currentUserUID(), plistPath); err != nil {
 		fmt.Fprintf(os.Stderr, "install: launchctl bootstrap failed: %v\n", err)
-		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, priorWasLoaded); rbErr != nil {
+		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, priorWasLoaded); rbErr != nil {
 			return errors.Join(fmt.Errorf("install: bootstrap: %w", err), rbErr)
 		}
 		fmt.Fprintf(os.Stderr, "Rolled back failed bootstrap; prior installation was restored.\n")
@@ -565,7 +583,7 @@ func installDaemon() error {
 	}
 	if err := checkReadiness(plistPath); err != nil {
 		stopErr := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath)
-		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, backupPath, priorWasLoaded); rbErr != nil {
+		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, priorWasLoaded); rbErr != nil {
 			return errors.Join(fmt.Errorf("install: readiness: %w", err), stopErr, rbErr)
 		}
 		return errors.Join(fmt.Errorf("install: readiness check failed: %w", err), stopErr)
