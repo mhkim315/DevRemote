@@ -1,6 +1,6 @@
 # STEP 9.0 — Post-PB Feature Ledger
 
-**Status:** DOCUMENTATION-ONLY — zero code changes. Default-off foundation audit complete.
+**Status:** COMPLETE — default-off foundation audit accepted. Zero code changes.
 
 **EVID SHA:** (this commit)
 **Date:** 2026-07-23
@@ -78,18 +78,20 @@ These form the core operational surface. They are not flag-gated.
 | CT-P1 | `317bb0cb7` | `317bb0cb7` (self) | Contract ACCEPT |
 | CT-P1 Amend | `4698b19a1` | `12135bd80` | Operational evidence |
 | 4 (Shadow) | `6d1a72d35` | `58eb55b92` | Timeline writer |
-| 5 (Workspace) | `404a3e882` | `ad83bae10` | Identity/lease |
-| 6 (Coordination) | `3b1a2c7ed` (IMPL) | `b7eeba499` (EVID, final: `6c13aafe7`) | Envelope/broker |
 | 5 (Workspace) | `404a3e882` (IMPL) | `ad83bae10` (EVID) | Identity/lease (standalone, consumer NONE) |
 | 6 (Coordination) | `3b1a2c7ed` (IMPL) | `b7eeba499` (EVID, final `6c13aafe7`) | Envelope/broker (standalone, consumer NONE) |
 | 7 (Validation) | `a753e126c` (IMPL) | `814868b5b` (EVID) | StalenessCheck (standalone, consumer NONE) |
 | 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
 
-## 5. Next (9.1-9.3)
+## 5. Authoritative sequence
 
-- 9.1: Dogfood readiness review. Audit feature-flag off-by-default behavior in production daemon.
-- 9.2: Mobile cockpit alpha release. Operational smoke with real session/approval/finding data.
-- 9.3: Beta expansion. Enable flags in controlled staging environment, measure overhead.
+- **9.0 DOCS/AUDIT — COMPLETE** at this commit.
+- **9.1 PRODUCER ACTIVATION** — staging; enable flags, fail-open shadow writes, generate
+  real Timeline events in controlled environment. Measure overhead.
+- **9.2 OPERATIONAL SMOKE** — SM-S926N physical device; end-to-end validation with
+  live session/approval/finding data flowing through the cockpit.
+- **9.3 BETA** — controlled enablement in broader staging; dogfood before policy
+  automation.
 
 CT-P2 (Timeline operational wiring) remains blocked until independent plan acceptance.

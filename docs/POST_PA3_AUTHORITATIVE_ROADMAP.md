@@ -70,11 +70,10 @@ PA3 COMPLETE
 → replacement device-candidate freeze and matched daemon/APK builds
 → bounded SM-S926N smoke using only those matched artifacts
 → independent PB ACCEPT
-→ CT-P1 operational-evidence amendment and independent ACCEPT
-→ fail-open Operational Canonical Timeline shadow
-→ workspace identity and cooperative write lease
-→ manual coordination and frozen-snapshot validation
-→ mobile operational cockpit and alpha/beta
+→ CT-P1 operational-evidence amendment ACCEPTED (`12135bd80`)
+→ Steps 4-8 foundation COMPLETE (shadow → workspace → coordination → validation → cockpit)
+→ 9.0 DOCS/AUDIT COMPLETE; 9.1 staging; 9.2 smoke; 9.3 beta
+→ CT-P2 deferred (separate post-PB authorization)
 ```
 
 No later packet may be pulled forward to justify a shortcut in PA4 or PB. PB
@@ -124,10 +123,12 @@ pre-R3 candidate for final device evidence and was independently accepted at
 
 The bounded offline Canonical Timeline foundation exception is governed by
 [`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
-CT-P0 and CT-P1 are accepted, and PB ACCEPT now satisfies the amendment's PB
-prerequisite. The CT-P1 operational-evidence amendment is the sole active next
-packet; CT-P2 and later CT waves are not yet authorized. Production shadow-write
-and every authority/UI cutover remain blocked until independent acceptance of
+CT-P0, CT-P1, and CT-P1 operational-evidence amendment are independently
+accepted. PB ACCEPT satisfies the amendment's PB prerequisite. Steps 4-8
+foundation are complete. CT-P2 requires a separate post-PB plan and
+authorization gate. Production shadow wiring received independent acceptance
+at Step 4 (IMPL `6d1a72d35`, EVID `58eb55b92`). Authority/UI cutover remain
+blocked until independent acceptance of
 the revised operational CT-P1 and the applicable separately reviewed packet.
 
 ## 5. Post-PB direction
@@ -149,7 +150,7 @@ automatic continuation of the accepted PA/PB work.
 | `docs/POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` | **Authoritative product definition, authority model, MVP, and post-PB order** |
 | `docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md` | **Authoritative pre-device QR/Input packet contract and device-entry gate** |
 | `docs/PB_DG_R4_CLOSEOUT_PLAN.md` | **Authoritative final PB device-closeout prerequisite and independent stop gate** |
-| `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative CT foundation contract; CT-P1 amendment is next, while CT-P2 and production composition/cutover remain separately gated** |
+| `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative CT foundation contract; CT-P0, CT-P1, CT-P1 Amendment, and Steps 4-8 ACCEPTED; CT-P2 and production composition/cutover remain separately gated** |
 | `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the independently accepted SHA |
 | `docs/PB_LEGACY_REMOVAL_CONTRACT.md` | **Authoritative PB boundary**; implementation starts only after independent PB plan review |
 | `docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md` | Historical rationale only; post-PA3 sequence superseded |
@@ -178,7 +179,9 @@ safety boundaries remain controlled by this ledger and its accepted contracts.
 - PB-DG-R4 is complete and independently accepted. Preserve candidate
   `059bef181c6c2ef312eee421dbf10f12b15b0326`, its matched artifacts, and ACCEPT
   `5354077afcf30343d9666511e259346d9bea0ad6` as immutable evidence.
-- Do not begin CT-P2. Keep CT-P1 production-unwired until the
+- Do not begin CT-P2. CT-P1 was accepted; the amendment is accepted;
+  foundation Steps 4-8 are independently accepted. Shadow wiring is
+  independently accepted at Step 4.
   operational-evidence amendment is independently accepted and a separate
   post-PB packet authorizes the next implementation boundary. Any premature production import,
   construction, goroutine, filesystem write, route, DTO, mobile dependency, or
