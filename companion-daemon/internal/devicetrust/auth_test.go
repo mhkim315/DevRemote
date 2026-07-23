@@ -200,6 +200,7 @@ func TestEpoch_RevokeVsVerify(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	tok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
 	if err != nil {
@@ -229,6 +230,7 @@ func TestEpoch_RevokeVsRefresh(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
 	reg.Revoke(dev.DeviceID)
@@ -257,6 +259,7 @@ func TestEpoch_ReplacementVsOldDevice(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	oldTok, _, _, _ := mgr.CreateAfterVerifiedChallenge(oldDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), 0)
 	reg.Revoke(oldDev.DeviceID)
@@ -311,6 +314,7 @@ func TestEpoch_PushRegistrationAfterRevoke(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
 	reg.Revoke(dev.DeviceID)
@@ -331,6 +335,7 @@ func TestEpoch_ConcurrentRevokeVsIssue(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	var wg sync.WaitGroup
 	var issued int32
@@ -380,6 +385,7 @@ func TestEpoch_ConcurrentRevokeVsRefresh(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	var wg sync.WaitGroup
 	var refreshed, revoked int32
@@ -437,6 +443,7 @@ func TestEpoch_LinearizationCreateAfterRevoke(t *testing.T) {
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
 	mgr.GetEpoch = reg.GetEpoch
+	mgr.GetAuth = reg.GetAuth
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})

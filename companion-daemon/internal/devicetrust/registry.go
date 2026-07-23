@@ -252,6 +252,17 @@ func (r *DeviceRegistry) Revoke(deviceID string) error {
 	return nil
 }
 
+// GetAuth returns the authoritative device authorization state.
+func (r *DeviceRegistry) GetAuth(deviceID string) AuthorizationState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[deviceID]
+	if !ok || d.Revoked() {
+		return AuthorizationState{Active: false}
+	}
+	return AuthorizationState{Epoch: uint64(d.Epoch), Active: true}
+}
+
 // GetEpoch returns the current authorization epoch for a device.
 // Returns 0 if the device is unknown (epoch 0 means never paired).
 func (r *DeviceRegistry) GetEpoch(deviceID string) int64 {

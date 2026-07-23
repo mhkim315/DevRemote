@@ -759,6 +759,7 @@ func (a *App) Run(ctx context.Context) error {
 	// issued under an old epoch (device was revoked/replaced).
 	if a.sessionMgr != nil && a.deviceRegistry != nil {
 		a.sessionMgr.GetEpoch = a.deviceRegistry.GetEpoch
+		a.sessionMgr.GetAuth = a.deviceRegistry.GetAuth
 	}
 	// M2.5-5: wire the local device-admin surface (list/revoke/audit) so the
 	// 0600 socket can revoke a device and read the redacted audit trail.
