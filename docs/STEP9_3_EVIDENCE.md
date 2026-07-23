@@ -1,12 +1,12 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `e829299c6`
-**EVID SHA:** `ef402d482` (R6)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix)
+**EVID SHA:** (this commit — R7 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R6 — fresh test stdout, regenerated scope, corrected round counts
+**Revision:** R7 — 3 stale refs: log range, gate count, file lines
 **Round counts:** Contract 4, Pre-gate 2, Impl 13, EVID 5, V2 3 = 27 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
@@ -50,7 +50,7 @@ Backend: 6 files. Mobile: 10 files. Documentation: 5 files.
 
 ## 2. Complete implementation chain
 
-The exact stdout of `git log --oneline c82fef47f..ce730accc` (implementation
+The exact stdout of `git log --oneline c82fef47f..e829299c6` (implementation
 commits only, excluding prior evidence/docs) is:
 
 ```
@@ -268,7 +268,7 @@ Per Coordinator manifest: 36 suites / 552 tests PASS, `npx tsc --noEmit` PASS.
 BUILD:          PASS
 VET:            PASS
 TESTS:          PASS (21 packages, -race -count=1)
-NOTIFICATION:   PASS (18 tests, 0 SKIP)
+NOTIFICATION:   PASS (19 tests, 0 SKIP)
 FMT:            PASS
 MOBILE TESTS:   PASS (36 suites / 552 tests)
 MOBILE TSC:     PASS
@@ -297,8 +297,8 @@ MOBILE TSC:     PASS
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `internal/notification/notification.go` | 582 | Locator, Token, Build, Dedup, Cursor, SelectSince, DeviceStore, Notifier, ResolveStatus, RegisterHandlers |
-| `internal/notification/notification_test.go` | 913 | 18 tests: taxonomy, dedup, cursor, delivery, 7 outcomes, degraded, restart, mobile simulation |
+| `internal/notification/notification.go` | 713 | Locator, Token, Build, Dedup, Cursor, SelectSince, DeviceStore, Notifier, ResolveStatus, RegisterHandlers |
+| `internal/notification/notification_test.go` | 1164 | 19 tests: taxonomy, dedup, cursor, delivery, 7 outcomes, degraded, restart, singleflight, ordering, late-SUCCESS, revoke-rebind |
 | `mobile/src/lib/notificationEvent.ts` | 8 | N1 event types |
 | `mobile/src/lib/notificationRoute.ts` | 33 | Deep-link routing from notification tap |
 | `mobile/src/screens/NotificationSettingsScreen.tsx` | 22 | Push notification settings |
