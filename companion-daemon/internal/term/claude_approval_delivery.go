@@ -168,6 +168,10 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 	if result.Outcome != TerminalWitnessed {
 		return fail(DeliveryConflict)
 	}
+	rt.emitOperational(OperationalApprovalResolved, b.ApprovalID, "approval/witnessed", b.ApprovalID)
+	if decision == "allow" {
+		rt.emitOperational(OperationalToolCallFinished, ctx.toolUseID, "PostToolUse", ctx.toolUseID)
+	}
 
 	// Allow the resume process to exit naturally within a bounded
 	// window. The witness is committed, but tool_result stdout may

@@ -72,6 +72,7 @@ type activeApproval struct {
 
 type claudeManagedRuntime struct {
 	sessionID string
+	runtimeID string
 	epoch     int64
 	proc      ManagedProcess
 	reg       *ManagedSessionRegistry
@@ -121,6 +122,10 @@ type claudeManagedRuntime struct {
 	observer       func(stage string)
 	preIngestHook  func() // test seam: before Store ingest
 	postIngestHook func() // test seam: after Store ingest, before active append
+
+	operational    OperationalEventSink
+	operationalSeq atomic.Uint64
+	finishOnce     sync.Once
 }
 
 func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry, bridge *claudeHookBridge, hookDir string) *claudeManagedRuntime {
@@ -148,18 +153,19 @@ func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessi
 
 func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSessionID, inputDigest, catalogActionID string) {
 	rt.turnMu.Lock()
-	defer rt.turnMu.Unlock()
-
 	if rt.turnClosed {
 		rt.rejects++
+		rt.turnMu.Unlock()
 		return
 	}
 	if _, dup := rt.pendingObservations[toolUseID]; dup {
 		rt.rejects++
+		rt.turnMu.Unlock()
 		return
 	}
 	if len(rt.pendingObservations) >= maxPendingClaudeObservations {
 		rt.rejects++
+		rt.turnMu.Unlock()
 		return
 	}
 
@@ -171,10 +177,12 @@ func (rt *claudeManagedRuntime) observePreToolUse(toolUseID, toolName, claudeSes
 		catalogActionID: catalogActionID,
 		observedAt:      clockNow(),
 	}
+	rt.turnMu.Unlock()
 
 	if rt.observer != nil {
 		rt.observer("pre_tool_use")
 	}
+	rt.emitOperational(OperationalToolCallStarted, toolUseID, "PreToolUse", toolUseID)
 }
 
 type streamDeferred struct {
@@ -442,7 +450,7 @@ func decodeDenialEntry(dec *json.Decoder) (streamDenialEntry, bool) {
 // joinDeferred matches a tool_deferred result against a pending observation.
 // On match, ingests a non-actionable record. Capacity is checked against
 // maxActiveApprovals; store admission failure rolls back the active entry.
-func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
+func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) (approvalID string, admittedOperational bool) {
 	if d.DeferredToolUse == nil || d.SessionID == "" {
 		return
 	}
@@ -478,7 +486,7 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 		rt.turnMu.Unlock()
 		return
 	}
-	approvalID := "claude-" + approvalToken
+	approvalID = "claude-" + approvalToken
 
 	// C2D-B: preserve private identity before Store admission.
 	// Roll back on admission failure so the capacity is not leaked.
@@ -604,6 +612,7 @@ func (rt *claudeManagedRuntime) joinDeferred(d *streamDeferred) {
 	if rt.observer != nil {
 		rt.observer("deferred_joined")
 	}
+	return approvalID, !term2
 }
 
 func (rt *claudeManagedRuntime) genApprovalToken() (string, error) {
@@ -660,9 +669,18 @@ exit:
 }
 
 func (rt *claudeManagedRuntime) processLine(line []byte) {
+	var streamProbe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(line, &streamProbe) == nil &&
+		(streamProbe.Type == "assistant" || streamProbe.Type == "stream_event") {
+		rt.emitStreamObserved(streamProbe.Type)
+	}
 	var event streamDeferred
 	if err := json.Unmarshal(line, &event); err == nil && event.Type == "result" && event.StopReason == "tool_deferred" {
-		rt.joinDeferred(&event)
+		if approvalID, admitted := rt.joinDeferred(&event); admitted {
+			rt.emitOperational(OperationalApprovalRequested, approvalID, "tool_deferred", approvalID)
+		}
 		return
 	}
 	// R4: denial-shaped events (result lines with permission_denials)
@@ -820,11 +838,33 @@ func (rt *claudeManagedRuntime) terminate() {
 			}
 		}
 		rt.reg.MarkExited(rt.sessionID, rt.epoch)
+		rt.emitFinished()
 		close(rt.exited)
 	})
 }
 
 func (rt *claudeManagedRuntime) stop() { rt.terminate() }
+
+func (rt *claudeManagedRuntime) emitOperational(kind OperationalEventKind, sourceID, sourcePosition, referenceID string) {
+	submitOperationalAfterCommit(rt.operational, OperationalEvent{
+		Kind: kind, Provider: "claude", SessionID: rt.sessionID,
+		RuntimeID: rt.runtimeID, LaunchGeneration: rt.epoch,
+		SourceID: sourceID, SourcePosition: sourcePosition,
+		ReferenceID: referenceID, OccurredAt: clockNow().UTC(),
+	})
+}
+
+func (rt *claudeManagedRuntime) emitStreamObserved(streamType string) {
+	seq := rt.operationalSeq.Add(1)
+	rt.emitOperational(OperationalStreamObserved, rt.runtimeID,
+		fmt.Sprintf("%s/%d", streamType, seq), rt.runtimeID)
+}
+
+func (rt *claudeManagedRuntime) emitFinished() {
+	rt.finishOnce.Do(func() {
+		rt.emitOperational(OperationalProviderInvocationFinished, rt.runtimeID, "runtime/exited", rt.runtimeID)
+	})
+}
 
 // LaunchCertification returns the immutable per-incarnation launch
 // certification tuple (C3D §12). Exported for composition tests.
@@ -848,7 +888,8 @@ type ManagedClaudeService struct {
 	gen       int64
 	runtimes  map[string]*claudeManagedRuntime
 
-	approvals *AuthoritativeApprovalStore
+	approvals   *AuthoritativeApprovalStore
+	operational OperationalEventSink
 
 	// actionable is the C3D-A activation state: set ONLY by the single
 	// InstallApprovalExecution transition, before the first epoch, never
@@ -939,6 +980,27 @@ func (s *ManagedClaudeService) SetApprovalStore(store *AuthoritativeApprovalStor
 		return fmt.Errorf("claude approval store configure: a different approval store is already configured")
 	}
 	s.approvals = store
+	return nil
+}
+
+// SetOperationalEventSink installs the optional neutral observer before the
+// first Claude runtime generation exists.
+func (s *ManagedClaudeService) SetOperationalEventSink(sink OperationalEventSink) error {
+	if sink == nil {
+		return fmt.Errorf("claude operational event sink configure: nil sink")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return fmt.Errorf("claude operational event sink configure: service is shutting down")
+	}
+	if s.gen != 0 || len(s.runtimes) != 0 {
+		return fmt.Errorf("claude operational event sink configure: a managed runtime already exists")
+	}
+	if s.operational != nil {
+		return fmt.Errorf("claude operational event sink configure: a different sink is already configured")
+	}
+	s.operational = sink
 	return nil
 }
 
@@ -1091,6 +1153,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
 	rt.sessionID = id
+	rt.runtimeID = launchCert.ProcessID
 	rt.cwd = cwd
 	rt.approvals = s.approvals
 	rt.authorityVersion = s.cfg.AuthorityVersion
@@ -1099,6 +1162,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	// session/epoch at birth and never toggled mid-life.
 	rt.actionableActive = s.actionable
 	rt.launchCert = launchCert
+	rt.operational = s.operational
 	s.runtimes[id] = rt
 	// Publish to the bridge after every identity/authority field is set so
 	// a hook handler that observes a non-nil rt through getRT() sees a
@@ -1148,6 +1212,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 	}
 	s.barrier("post-register")
 
+	rt.emitOperational(OperationalProviderInvocationStarted, rt.runtimeID, "runtime/registered", rt.runtimeID)
 	go rt.pump()
 	return id, nil
 }
@@ -1298,6 +1363,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	}
 	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
 	rt.sessionID = ctx.pokitSessionID
+	rt.runtimeID = launchCert.ProcessID
 	rt.cwd = cwd
 	rt.coordinator = s.coordinator
 	rt.authorityVersion = s.cfg.AuthorityVersion
@@ -1307,10 +1373,12 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	// R6-B: the pump reads the runtime-owned immutable context, not the
 	// bridge (closes the R6-A3 finding). Set before pump() starts.
 	rt.resumeCtx = ctx
+	rt.operational = s.operational
 	// Publish only after every field is set (see CreateDetached).
 	bridge.publishRuntime(rt)
 	s.mu.Unlock()
 
+	rt.emitOperational(OperationalProviderInvocationStarted, rt.runtimeID, "runtime/resumed", rt.runtimeID)
 	go rt.pump()
 	return rt, nil
 }
