@@ -124,41 +124,74 @@ func SelectSince(events []contract.Envelope, c Cursor) ([]contract.Envelope, boo
 
 // ── Per-device store ──
 
-// DeviceStore manages per-device push tokens and cursors.
+// DeviceStore manages per-device push tokens, cursors, and binding epochs.
+// Epochs make cursor writes conditional: Revoke/Bind bump the epoch, and a
+// cursor write is only committed if the epoch matches the one captured at
+// dispatch start (atomic snapshot under the store lock).
 type DeviceStore struct {
 	mu     sync.RWMutex
 	tokens map[string]string // deviceID → pushToken
 	cursor map[string]Cursor // deviceID → cursor
+	epochs map[string]*int64 // deviceID → epoch pointer (shared with Notifier snapshot)
 }
 
 func NewDeviceStore() *DeviceStore {
-	return &DeviceStore{tokens: make(map[string]string), cursor: make(map[string]Cursor)}
+	return &DeviceStore{
+		tokens: make(map[string]string),
+		cursor: make(map[string]Cursor),
+		epochs: make(map[string]*int64),
+	}
 }
 
-// Bind registers a push token for a device. If the device already has a token,
-// it is replaced (last-write-wins for a re-pair).
+// Bind registers a push token and bumps the binding epoch. Bumping the
+// epoch invalidates any in-flight goroutine that captured the old epoch.
 func (s *DeviceStore) Bind(deviceID, pushToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tokens[deviceID] = pushToken
+	s.bumpEpochLocked(deviceID)
 }
 
-// Revoke removes the device's push token and cursor. Returns true if the
-// device was registered.
+// Revoke removes the device's push token and cursor, and bumps the epoch.
 func (s *DeviceStore) Revoke(deviceID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, had := s.tokens[deviceID]
 	delete(s.tokens, deviceID)
 	delete(s.cursor, deviceID)
+	s.bumpEpochLocked(deviceID)
 	return had
 }
 
-// Cursor updates the read cursor for a device.
-func (s *DeviceStore) Cursor(deviceID string, c Cursor) {
+// bumpEpochLocked increments the epoch under the store lock.
+func (s *DeviceStore) bumpEpochLocked(deviceID string) {
+	e, ok := s.epochs[deviceID]
+	if !ok {
+		var v int64
+		e = &v
+		s.epochs[deviceID] = e
+	}
+	atomic.AddInt64(e, 1)
+}
+
+// Cursor writes the cursor. When commitEpoch > 0, the write is conditional:
+// if the device's current epoch differs from commitEpoch (revoke/rebind
+// happened), the write is silently skipped. commitEpoch=0 means "write
+// unconditionally" (used by tests and direct cursor management).
+func (s *DeviceStore) Cursor(deviceID string, c Cursor, commitEpoch int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if commitEpoch > 0 {
+		e, ok := s.epochs[deviceID]
+		if !ok {
+			return false // device never had an epoch, caller expects one
+		}
+		if atomic.LoadInt64(e) != commitEpoch {
+			return false // epoch bumped: revoke/rebind invalidated this write
+		}
+	}
 	s.cursor[deviceID] = c
+	return true
 }
 
 // GetCursor returns the stored cursor for a device.
@@ -178,10 +211,10 @@ func (s *DeviceStore) ForEach(fn func(deviceID, token string)) {
 	}
 }
 
-// Snapshot returns a copy of all device registrations and cursors under a
-// single read lock. Callers must not call back into DeviceStore methods that
-// acquire the write lock from the returned slice.
-func (s *DeviceStore) Snapshot() (devices []struct{ DeviceID, Token string }, cursors map[string]Cursor) {
+// Snapshot returns a copy of all device registrations, cursors, and epochs
+// under a single read lock. The epoch value is captured atomically with the
+// token+cursor so the goroutine can later commit only if the epoch is unchanged.
+func (s *DeviceStore) Snapshot() (devices []struct{ DeviceID, Token string }, cursors map[string]Cursor, epochs map[string]int64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	devices = make([]struct{ DeviceID, Token string }, 0, len(s.tokens))
@@ -191,6 +224,10 @@ func (s *DeviceStore) Snapshot() (devices []struct{ DeviceID, Token string }, cu
 	cursors = make(map[string]Cursor, len(s.cursor))
 	for id, c := range s.cursor {
 		cursors[id] = c
+	}
+	epochs = make(map[string]int64, len(s.epochs))
+	for id, e := range s.epochs {
+		epochs[id] = atomic.LoadInt64(e)
 	}
 	return
 }
@@ -232,11 +269,6 @@ type Notifier struct {
 	// Per-device singleflight: at most one dispatch goroutine per device.
 	// Prevents goroutine accumulation when PushSender hangs beyond timeout.
 	inFlight sync.Map // deviceID → bool
-
-	// Per-device binding epoch: incremented on every RevokeDevice/BindDevice.
-	// An in-flight goroutine captures the epoch at start; if the epoch has
-	// changed by the time it wants to write the cursor, the write is skipped.
-	epochs sync.Map // deviceID → *int64
 
 	// In-flight goroutine counter. Stop waits on this.
 	wg sync.WaitGroup
@@ -338,37 +370,17 @@ func (n *Notifier) Stop() (err error) {
 	}
 }
 
-// bumpEpoch increments the per-device binding epoch, invalidating any
-// in-flight dispatch goroutine that captured the old epoch.
-func (n *Notifier) bumpEpoch(deviceID string) int64 {
-	val, _ := n.epochs.LoadOrStore(deviceID, new(int64))
-	ptr := val.(*int64)
-	return atomic.AddInt64(ptr, 1)
-}
-
-// loadEpoch returns the current binding epoch for a device.
-func (n *Notifier) loadEpoch(deviceID string) int64 {
-	val, ok := n.epochs.Load(deviceID)
-	if !ok {
-		return 0
-	}
-	return atomic.LoadInt64(val.(*int64))
-}
-
-// RevokeDevice atomically invalidates in-flight goroutines (bumps epoch),
-// removes the device from the DeviceStore (tokens + cursor cleared). Any
-// in-flight Send that captured the old epoch will skip its cursor write.
+// RevokeDevice removes the device from the store (bumps epoch + clears
+// token/cursor under the store lock). Any in-flight goroutine that captured
+// the old epoch will fail the conditional Cursor write.
 func (n *Notifier) RevokeDevice(deviceID string) {
-	n.bumpEpoch(deviceID) // invalidate all in-flight goroutines for this device
 	n.devices.Revoke(deviceID)
 }
 
-// BindDevice bumps the per-device epoch so any in-flight goroutine that
-// captured the old epoch will skip its cursor write. Called on push
-// re-registration (which follows revoke or device replacement).
-func (n *Notifier) BindDevice(deviceID string) {
-	n.bumpEpoch(deviceID)
-}
+// BindDevice is a no-op: epoch bump + token registration is now done
+// atomically in DeviceStore.Bind under the store lock. Retained for
+// backward compatibility with existing callers.
+func (n *Notifier) BindDevice(deviceID string) {}
 
 // ActiveGoroutines returns the count of in-flight per-device dispatch
 // goroutines. For tests: verifies singleflight and Stop cleanup.
@@ -416,9 +428,11 @@ func (n *Notifier) dispatch() int {
 		return 0
 	}
 
-	// Snapshot avoids deadlock: GetCursor + ForEach share a single RLock;
-	// Cursor takes a write lock afterward outside the snapshot window.
-	deviceList, cursors := n.devices.Snapshot()
+	// Atomic snapshot: token + cursor + epoch captured together under the
+	// store read lock. The goroutine uses the captured epoch for conditional
+	// Cursor commit — if the epoch changed (revoke/rebind), the write is
+	// silently skipped.
+	deviceList, cursors, snapEpochs := n.devices.Snapshot()
 	events := n.writer.ReadRecent(128)
 
 	var launched int
@@ -428,10 +442,13 @@ func (n *Notifier) dispatch() int {
 		if _, loaded := n.inFlight.LoadOrStore(dev.DeviceID, true); loaded {
 			continue
 		}
-		// Recheck stopped AFTER acquiring the in-flight slot. If stopped
-		// between the initial check and LoadOrStore, release the slot.
+		// wg.Add under lifecycle lock BEFORE stopped check so Stop()
+		// is guaranteed to wait after Add is committed.
 		n.mu.Lock()
 		stopped := n.stopped
+		if !stopped {
+			n.wg.Add(1)
+		}
 		n.mu.Unlock()
 		if stopped {
 			n.inFlight.Delete(dev.DeviceID)
@@ -439,15 +456,9 @@ func (n *Notifier) dispatch() int {
 		}
 		launched++
 
-		n.wg.Add(1)
-		go func(dev struct{ DeviceID, Token string }, c Cursor) {
+		go func(dev struct{ DeviceID, Token string }, c Cursor, commitEpoch int64) {
 			defer n.wg.Done()
 			defer n.inFlight.Delete(dev.DeviceID)
-
-			// Capture the binding epoch at dispatch start. If RevokeDevice or
-			// BindDevice bumps the epoch before we write the cursor, the write
-			// is skipped (the old epoch is stale).
-			startEpoch := n.loadEpoch(dev.DeviceID)
 
 			selected, wrapped := SelectSince(events, c)
 			// On wrap, deliver only the latest event to re-establish cursor.
@@ -468,16 +479,13 @@ func (n *Notifier) dispatch() int {
 				b, _ := json.Marshal(loc)
 				if n.sender != nil {
 					// PushSender carries its own timeout (e.g. http.Client).
-					// No inner goroutine — if Send hangs, this goroutine
-					// is stuck, but singleflight caps it at one per device.
 					if err := n.sender.Send(dev.DeviceID, dev.Token, b); err != nil {
 						break // at-most-once: dedup already claimed, delivery dropped
 					}
 				}
 				lastSent = e
 			}
-			// Guard cursor write: skip if stopped, or if the epoch changed
-			// (device was revoked or rebound while this goroutine was in-flight).
+			// Commit cursor ONLY if stopped=false AND epoch matches snapshot.
 			if lastSent.EventID == "" {
 				return
 			}
@@ -487,11 +495,10 @@ func (n *Notifier) dispatch() int {
 			if stopped {
 				return
 			}
-			if n.loadEpoch(dev.DeviceID) != startEpoch {
-				return // epoch bumped by RevokeDevice or BindDevice
-			}
-			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
-		}(dev, cursors[dev.DeviceID])
+			// Conditional write: DeviceStore.Cursor checks epoch match under
+			// the store lock. If epoch changed (revoke/rebind), no-op.
+			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration}, commitEpoch)
+		}(dev, cursors[dev.DeviceID], snapEpochs[dev.DeviceID])
 	}
 	return launched
 }

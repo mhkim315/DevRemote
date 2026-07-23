@@ -359,7 +359,7 @@ func TestDeviceStorePerDeviceBindRevoke(t *testing.T) {
 	// Cursor is cleared on revoke.
 	s2 := NewDeviceStore()
 	s2.Bind("device-x", "token-x")
-	s2.Cursor("device-x", Cursor{DeviceID: "device-x", LastEventID: "ev-5", LastGeneration: 3})
+	s2.Cursor("device-x", Cursor{DeviceID: "device-x", LastEventID: "ev-5", LastGeneration: 3}, 0)
 	c := s2.GetCursor("device-x")
 	if c.LastEventID != "ev-5" {
 		t.Fatalf("cursor not stored: %+v", c)
