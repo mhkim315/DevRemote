@@ -170,7 +170,7 @@ function mockPairApprove() {
   mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
     const p1Body = JSON.parse((mockFetch.mock.calls[0][1] as any).body);
     const phoneNonce = fromBase64(p1Body.phoneNonce);
-    const t = buildPairingTranscript(phoneNonce, hostNonce, HOST_SPKI, 'pair-session-001', 'host-001', '0123456789abcdef0123456789abcdef', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', p1Body.expiresAt);
+    const t = buildPairingTranscript(phoneNonce, hostNonce, HOST_SPKI, 'pair-session-001');
     const hostProof = p256.sign(t, HOST_PRIV, { format: 'der', prehash: true });
     return { ok: true, json: async () => ({ status: 'proof_verified', hostProof: toHex(hostProof) }) } as any;
   });

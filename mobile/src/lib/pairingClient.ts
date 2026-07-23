@@ -21,28 +21,21 @@ export interface PairingResult {
 }
 
 // buildPairingTranscript matches the daemon's buildPairingTranscript byte-exact.
+// Only legacy fields are signed — QR metadata (hostId/daemonBootId/challengeId/
+// expiresAt) is sent separately in the request body and verified by the bridge.
 export function buildPairingTranscript(
   phoneNonce: Uint8Array, hostNonce: Uint8Array,
   hostPubDER: Uint8Array, sessionId: string,
-  hostId = '', daemonBootId = '', challengeId = '', expiresAt = '',
 ): Uint8Array {
   const prefix = new TextEncoder().encode('pokit-pair-v1:');
   const sid = new TextEncoder().encode(sessionId);
-  const binding = [hostId, daemonBootId, challengeId, expiresAt].map(v => new TextEncoder().encode(v));
-  const boundLength = binding.every(v => v.length === 0) ? 0 : binding.reduce((n, v) => n + 1 + v.length, 0);
-  const out = new Uint8Array(prefix.length + phoneNonce.length + hostNonce.length + hostPubDER.length + sid.length + boundLength);
+  const out = new Uint8Array(prefix.length + phoneNonce.length + hostNonce.length + hostPubDER.length + sid.length);
   let o = 0;
   out.set(prefix, o); o += prefix.length;
   out.set(phoneNonce, o); o += phoneNonce.length;
   out.set(hostNonce, o); o += hostNonce.length;
   out.set(hostPubDER, o); o += hostPubDER.length;
   out.set(sid, o);
-  o += sid.length;
-  for (const value of binding) {
-    if (boundLength === 0) break;
-    out[o++] = 0;
-    out.set(value, o); o += value.length;
-  }
   return out;
 }
 
@@ -129,8 +122,10 @@ export async function conductPairing(
   }
 
   // 3. Phase 2 — POST /pair/confirm.
+  // Sign only legacy fields. QR metadata (hostId/daemonBootId/challengeId/expiresAt)
+  // is sent separately in the request body and verified by the QR bridge.
   const expiresAt = formatGoRFC3339(qr.expiresAt);
-  const transcript = buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionId, qr.hostId, qr.daemonBootId, qr.challengeId, expiresAt);
+  const transcript = buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionId);
   let phoneSig: Uint8Array;
   try { phoneSig = await deviceKey.sign(transcript); } catch {
     return { status: 'network_error', errorDetail: 'device signing failed' };

@@ -106,7 +106,7 @@ describe('conductPairing — full protocol', () => {
         const phoneNonce = fromBase64(p1Body.phoneNonce);
         const hostNonce = new Uint8Array(32); hostNonce[0] = 0xab;
         // The daemon signs the transcript with the host SPKI (91B) on the wire.
-        const transcript = buildPairingTranscript(phoneNonce, hostNonce, HOST_SPKI, SESSION_ID, 'host-001', '0123456789abcdef0123456789abcdef', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', p1Body.expiresAt);
+        const transcript = buildPairingTranscript(phoneNonce, hostNonce, HOST_SPKI, SESSION_ID);
         const hostProof = p256.sign(transcript, HOST_PRIV, { format: 'der', prehash: true });
         return { status: 'proof_verified', hostProof: toHex(hostProof) };
       },
