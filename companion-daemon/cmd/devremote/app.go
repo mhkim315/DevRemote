@@ -150,11 +150,12 @@ type App struct {
 	handlers           *term.Handlers                         // set after construction for late wiring
 	ipc                ipcResource
 	watcher            watcherResource
-	tunnel             tunnelResource             // nil in insecure mode
-	timelineWriter     *writer.Writer             // nil unless the default-off shadow flag is enabled
-	workspaceLeases    *workspace.Manager         // nil unless the default-off workspace flag is enabled
-	validationCheck    *validation.StalenessCheck // nil unless the default-off validation flag is enabled
-	cockpitStore       *cockpit.CockpitStore      // nil unless the default-off cockpit flag is enabled
+	tunnel             tunnelResource              // nil in insecure mode
+	timelineWriter     *writer.Writer              // nil unless the default-off shadow flag is enabled
+	workspaceLeases    *workspace.Manager          // nil unless the default-off workspace flag is enabled
+	validationCheck    *validation.StalenessCheck  // nil unless the default-off validation flag is enabled
+	validationStore    *validation.ValidationStore // nil unless the default-off cockpit flag is enabled
+	cockpitStore       *cockpit.CockpitStore       // nil unless the default-off cockpit flag is enabled
 }
 
 // NewApp creates the App with production defaults.
@@ -422,6 +423,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	lifecycle.WireManagedOwners(h.Catalog, codexOwner, claudeOwner)
 
 	serveMux := http.NewServeMux()
+	var validationStore *validation.ValidationStore
 	var cockpitStore *cockpit.CockpitStore
 	notifier := newPushNotifier()
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
@@ -445,10 +447,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	serveMux.HandleFunc("POST /api/device-auth/ws-ticket",
 		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, audit), devicetrust.PermSessionsRead))
 	if cfg.EnableCockpit {
-		validationStore := validation.NewValidationStore()
-		// STEP8: ValidationStore is wired as a cockpit source. The cockpit's
-		// Refresh() reads all submitted results via ReadAll(). Producers call
-		// Submit() directly after completing a validation run.
+		validationStore = validation.NewValidationStore()
+		// STEP8: ValidationStore is wired as a cockpit source (cockpit reads
+		// via ReadAll) and exposed on the App struct for future validation
+		// producers. No production Submit caller exists yet — Step 7 was
+		// contract-only. The store accumulates findings as validation
+		// pipelines are added.
 		cockpitStore = cockpit.NewCockpitStore(cockpit.Sources{
 			Catalog: h.Catalog, Approvals: approvals, Timeline: timelineWriter, Validation: validationStore,
 		})
@@ -582,6 +586,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		timelineWriter:  timelineWriter,
 		workspaceLeases: workspaceLeases,
 		validationCheck: validationCheck,
+		validationStore: validationStore,
 		cockpitStore:    cockpitStore,
 	}, nil
 }

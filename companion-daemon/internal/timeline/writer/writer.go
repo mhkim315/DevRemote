@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"devremote/companion-daemon/internal/timeline/contract"
 )
@@ -53,7 +54,8 @@ type Writer struct {
 	failures     uint64
 	subscribers  []Subscriber
 	subscriberCh chan subscriberWork
-	done         chan struct{} // closed by Close, signals worker to exit
+	subDone      chan struct{} // closed when worker goroutine exits
+	wg           sync.WaitGroup
 }
 
 // Open constructs a writer for one explicit path. Construction errors are
@@ -95,29 +97,43 @@ type subscriberWork struct {
 	envelope contract.Envelope
 }
 
-// startSubscriberLoop runs a single bounded worker that dispatches to all
-// subscribers with panic recovery. Blocked sends drop the notification
-// without blocking Append.
+const subscriberTimeout = 2 * time.Second
+
+// startSubscriberLoop runs a single dispatch worker. Each subscriber callback
+// runs in its own goroutine with a 2s timeout; panics are recovered.
 func (w *Writer) startSubscriberLoop() {
 	ch := make(chan subscriberWork, 64)
-	done := make(chan struct{})
 	w.subscriberCh = ch
-	w.done = done
+	w.subDone = make(chan struct{})
 	go func() {
-		defer close(done)
 		for {
 			select {
 			case work, ok := <-ch:
 				if !ok {
+					close(w.subDone)
 					return
 				}
-				func() {
-					defer func() { recover() }()
-					work.fn(work.envelope)
-				}()
-			case <-done:
+				w.runSubscriber(work)
+			case <-w.subDone:
 				return
 			}
+		}
+	}()
+}
+
+func (w *Writer) runSubscriber(work subscriberWork) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		defer func() { recover() }()
+		done := make(chan struct{}, 1)
+		go func() {
+			work.fn(work.envelope)
+			done <- struct{}{}
+		}()
+		select {
+		case <-done:
+		case <-time.After(subscriberTimeout):
 		}
 	}()
 }
@@ -192,9 +208,8 @@ func (w *Writer) Stats() Stats {
 	return Stats{Appended: w.appended, Dropped: w.dropped, Failures: w.failures}
 }
 
-// Close is idempotent. A close failure is observable by the composition root,
-// but cannot change any primary authority outcome. Close signals the worker
-// to drain and exit, then closes the underlying file.
+// Close is idempotent. Signals the worker to stop accepting new work,
+// waits for in-flight subscribers to complete, then closes the file.
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	if w.closed {
@@ -206,10 +221,11 @@ func (w *Writer) Close() error {
 		close(w.subscriberCh)
 	}
 	w.mu.Unlock()
-	// Wait for worker goroutine to exit (drains remaining items).
-	if w.done != nil {
-		<-w.done
+	// Wait for dispatch worker and all in-flight subscribers.
+	if w.subDone != nil {
+		<-w.subDone
 	}
+	w.wg.Wait()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file == nil {
