@@ -128,6 +128,20 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 
 // ── launchctl helpers ──
 
+// Narrow seams keep lifecycle failure paths deterministic in Darwin tests.
+// Production continues to use the concrete helpers below.
+type launchctlOps interface {
+	Bootstrap(string) error
+	Bootout(string) error
+	Print(string) (string, error)
+}
+type fsOps interface {
+	WriteFile(string, []byte, os.FileMode) error
+	ReadFile(string) ([]byte, error)
+	Remove(string) error
+	Rename(string, string) error
+}
+
 func runLaunchctl(args ...string) error {
 	cmd := exec.Command("launchctl", args...)
 	cmd.Stderr = os.Stderr

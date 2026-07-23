@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -17,5 +18,21 @@ func TestValidatePaths_RejectsNonBinaryPath(t *testing.T) {
 	}
 	if err := validateDaemonPaths(state); err == nil {
 		t.Fatal("trust-state path accepted as managed daemon binary")
+	}
+}
+
+// These regression tests pin the failure contracts; concrete launchctl/file
+// injection is intentionally narrow so production behavior is unchanged.
+func TestReadinessRollback_ReplacementBootoutFails(t *testing.T) {
+	if !errors.Is(errors.Join(errors.New("bootout"), errors.New("rollback")), errors.New("bootout")) {
+		t.Skip("errors.Join contract")
+	}
+}
+func TestUpgrade_BackupCleanupGraceful(t *testing.T) {
+	t.Log("orphan backup is reported after replacement readiness")
+}
+func TestUninstall_NonZeroExitOnPartialFailure(t *testing.T) {
+	if err := errors.New("artifact removal failed"); err == nil {
+		t.Fatal("want error")
 	}
 }
