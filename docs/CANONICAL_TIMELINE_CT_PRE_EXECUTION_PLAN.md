@@ -322,9 +322,10 @@ unrelated nullable refs are accepted; secrets/raw payloads are retained.
 
 > CT-P2 and every later wave in this historical CT-PRE decomposition are
 > blocked by the current product roadmap. Their retained contracts are planning
-> inputs only. PB ACCEPT is satisfied, but do not execute them before the CT-P1
-> operational-evidence amendment receives independent ACCEPT and a new reviewed
-> post-PB packet authorizes the wave.
+> inputs only. PB ACCEPT is satisfied and the CT-P1 operational-evidence
+> amendment received independent ACCEPT at `12135bd80`. Do not execute CT-P2
+> until a separate post-PB plan is reviewed and an independent authorization
+> gate is satisfied.
 
 **Purpose:** map only the accepted pinned Codex fixture/native shape into T0 and
 then the Timeline envelope as a pure function.
@@ -602,8 +603,9 @@ post-PB authorization.
 3. **SATISFIED:** CT-P1 reviewed against operational-evidence direction and
    narrowly amended (`12135bd80`);
 4. **SATISFIED:** revised CT-P1 foundation independently accepted;
-5. **PARTIALLY SATISFIED:** production-shadow wiring independently accepted
-   (`58eb55b92`); privacy review, encryption-at-rest, retention policy,
+5. **SATISFIED:** production-shadow wiring independently accepted
+   (`58eb55b92`).
+6. **UNSATISFIED:** privacy review, encryption-at-rest, retention policy,
    access/audit, and deletion/export remain unresolved per Section 9
    and require a separate reviewed contract.
 
