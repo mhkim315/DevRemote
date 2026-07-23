@@ -1,12 +1,12 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `e829299c6`
-**EVID SHA:** `26dc2504f` (R7)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix)
+**EVID SHA:** (this commit — R8 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R7 — 3 stale refs: log range, gate count, file lines
+**Revision:** R8 — full 38-line git log raw stdout, no filtering
 **Round counts:** Contract 4, Pre-gate 2, Impl 13, EVID 5, V2 3 = 27 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
@@ -50,8 +50,7 @@ Backend: 6 files. Mobile: 10 files. Documentation: 5 files.
 
 ## 2. Complete implementation chain
 
-The exact stdout of `git log --oneline c82fef47f..e829299c6` (implementation
-commits only, excluding prior evidence/docs) is:
+The exact stdout of `git log --oneline c82fef47f..e829299c6` is:
 
 ```
 e829299c6 fix(notification): R13 — epoch in DeviceStore, atomic snapshot, wg.Add under lock
@@ -60,7 +59,16 @@ e829299c6 fix(notification): R13 — epoch in DeviceStore, atomic snapshot, wg.A
 4290bbf93 fix(notification): R10 — Stop drain, stopped/revoked cursor guards, concurrency tests
 2a35a7a79 fix(notification): R9 — singleflight, remove inner goroutine, ordering/cleanup tests
 db2d2f82c fix(notification): R8 — fire-and-forget dispatch, per-device 10s timeout, steady-state test
+e9e697e9c docs: fix STEP9_3 EVID R4 self-referencing SHA, ledger sync
+c5cd9722f docs: STEP 9.3 EVID R4 — delivery semantic fix + round counts
 6ea27e01e fix(notification): R7 — at-most-once comments, http.Client timeout, per-device goroutines, hung sender test
+1af27eda6 docs: fix STEP9_3 EVID R3 self-referencing SHA, ledger sync
+4bee07590 docs: STEP 9.3 EVID R3 — CONTRACT SHA 3769d583e → a5e532fd9
+277e00998 docs: fix STEP9_3 EVID R2 self-referencing SHA, ledger sync
+a5e532fd9 docs(notification): amend mobile n1 scope
+41486e1d1 docs: STEP 9.3 EVID R2 — file count fix: Backend 6 / Mobile 10 / Docs 4
+d2f43e29f docs: fix STEP9_3 evidence report self-referencing EVID SHA
+c09791741 docs: STEP 9.3 V1 ACCEPT evidence report, ledger + roadmap update
 ce730accc fix(notification): serve exact event to mobile
 ea83c153a feat(mobile): complete n1 notification recovery UX
 9c0106a39 feat(notification): R6 — 7 fallback screens, runtimeKnown fail-closed, cold-start retry
@@ -77,6 +85,12 @@ f4ec338ed test(notification): cover n1 locator contract
 2bddf7195 feat(notification): add n1 locator foundation
 3769d583e docs(plan): STEP 9.3 R2 — re-auth endpoint, 7 outcomes, stable token, multi-device
 13e858622 docs(plan): STEP 9.3 — N1 Exact-Event Notification-to-Action contract
+26eb2e157 docs: fix STEP9_2 EVID R3 self-referencing SHA, ledger sync
+c8d6eda20 docs: STEP 9.2 EVID R3 — full raw go test -v stdout
+6ed826773 docs: fix STEP9_2 EVID R2 self-referencing SHA, ledger sync
+3e9a5fe23 docs: STEP 9.2 EVID R2 — complete 32-test go test -v output
+af5e76eff docs: fix STEP9_2 evidence report self-referencing EVID SHA
+f32be5756 docs: STEP 9.2 V1 ACCEPT evidence report, ledger + roadmap update
 ```
 
 ## 3. Architecture summary
