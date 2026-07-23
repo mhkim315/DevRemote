@@ -299,13 +299,13 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 		}
 	}
 	items := snap.Transcript
-	allowRingOverwrite := false
+	comparisonSegments := segments
+	allowMissing := false
+	missingBoundEvents := uint64(0)
+	missingSegments := uint64(0)
+	ringOverwriteTolerated := false
 	if binding != nil {
 		if duplicateBinding(*binding, bindings) {
-			r.GenerationMismatches++
-		}
-		allowRingOverwrite = hasValidRingOverwrite(snap.Gaps, *binding)
-		if !bindingEventIDsConsistent(*binding, bindings, snap.Transcript, allowRingOverwrite) {
 			r.GenerationMismatches++
 		}
 		filtered := make([]TranscriptItem, 0, len(items))
@@ -315,15 +315,28 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 			}
 		}
 		items = filtered
+		missingBoundEvents = missingBoundEventIDs(*binding, snap.Transcript)
+		if len(segments) > len(items) {
+			missingSegments = uint64(len(segments) - len(items))
+		}
+		ringOverwriteTolerated = hasMatchingRingOverwriteGap(snap.Gaps, degraded, *binding, snap.RingOverwritten, missingBoundEvents, missingSegments)
+		writerDropTolerated := hasMatchingWriterDropGap(snap.Gaps, degraded, *binding)
+		allowMissing = ringOverwriteTolerated || writerDropTolerated
+		if !bindingEventIDsConsistent(*binding, bindings, snap.Transcript, allowMissing) {
+			r.GenerationMismatches++
+		}
+		if allowMissing {
+			comparisonSegments = segmentsForRetainedItems(segments, items)
+		}
 	}
 	r.ComparedSessions = boolInt(response.SessionID != "")
-	n := len(segments)
+	n := len(comparisonSegments)
 	if len(items) < n {
 		n = len(items)
 	}
 	for i := 0; i < n; i++ {
 		r.TotalComparisons++
-		s, it := segments[i], items[i]
+		s, it := comparisonSegments[i], items[i]
 		if binding != nil && (binding.RuntimeID != it.RuntimeID || binding.LaunchGeneration != it.LaunchGeneration) {
 			r.GenerationMismatches++
 			continue
@@ -337,22 +350,22 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 				r.Unexplained++
 			}
 		}
-		if i > 0 && (s.Seq <= segments[i-1].Seq || it.ProjectionOrder <= items[i-1].ProjectionOrder) {
+		if i > 0 && (s.Seq <= comparisonSegments[i-1].Seq || it.ProjectionOrder <= items[i-1].ProjectionOrder) {
 			r.OrderingDivergences++
 		}
 	}
-	if len(segments) > len(items) {
-		if !allowRingOverwrite {
-			r.Missings += len(segments) - len(items)
+	if len(comparisonSegments) > len(items) {
+		if !allowMissing {
+			r.Missings += len(comparisonSegments) - len(items)
 		}
 	}
-	if len(items) > len(segments) {
-		r.Extras += len(items) - len(segments)
+	if len(items) > len(comparisonSegments) {
+		r.Extras += len(items) - len(comparisonSegments)
 	}
 	matchedDegraded := make([]bool, len(degraded))
 	for _, gap := range snap.Gaps {
 		matched := -1
-		if binding != nil && validGapForBinding(gap, *binding) {
+		if binding != nil && validGapForSnapshot(gap, *binding, snap.RingOverwritten, missingBoundEvents, missingSegments) {
 			for i, s := range degraded {
 				if !matchedDegraded[i] && s.SessionID == gap.SessionID && s.DegradedReason == gap.Reason {
 					matched = i
@@ -418,6 +431,20 @@ func bindingEventIDsConsistent(b FixtureEpochBinding, all []FixtureEpochBinding,
 	}
 	return true
 }
+
+func missingBoundEventIDs(b FixtureEpochBinding, items []TranscriptItem) uint64 {
+	found := make(map[string]bool, len(items))
+	for _, item := range items {
+		found[item.EventID] = true
+	}
+	var missing uint64
+	for _, id := range b.TimelineEventIDs {
+		if !found[id] {
+			missing++
+		}
+	}
+	return missing
+}
 func eventOwner(id string, all []FixtureEpochBinding) (FixtureEpochBinding, bool) {
 	var owner FixtureEpochBinding
 	found := false
@@ -445,13 +472,47 @@ func validGapForBinding(g GapMarker, b FixtureEpochBinding) bool {
 	}
 }
 
-func hasValidRingOverwrite(gaps []GapMarker, b FixtureEpochBinding) bool {
+func validGapForSnapshot(g GapMarker, b FixtureEpochBinding, ringOverwritten, missingBoundEvents, missingSegments uint64) bool {
+	if !validGapForBinding(g, b) {
+		return false
+	}
+	if g.Reason != "ring_overwrite" {
+		return true
+	}
+	return ringOverwritten > 0 && missingBoundEvents == ringOverwritten && missingSegments == ringOverwritten
+}
+
+func hasMatchingRingOverwriteGap(gaps []GapMarker, degraded []transcript.TranscriptSegment, b FixtureEpochBinding, ringOverwritten, missingBoundEvents, missingSegments uint64) bool {
 	for _, gap := range gaps {
-		if gap.Reason == "ring_overwrite" && validGapForBinding(gap, b) {
+		if gap.Reason == "ring_overwrite" && validGapForSnapshot(gap, b, ringOverwritten, missingBoundEvents, missingSegments) && hasTranscriptGap(degraded, gap) {
 			return true
 		}
 	}
 	return false
+}
+
+func hasMatchingWriterDropGap(gaps []GapMarker, degraded []transcript.TranscriptSegment, b FixtureEpochBinding) bool {
+	for _, gap := range gaps {
+		if gap.Reason == "writer_drop" && validGapForBinding(gap, b) && hasTranscriptGap(degraded, gap) {
+			return true
+		}
+	}
+	return false
+}
+
+func segmentsForRetainedItems(segments []transcript.TranscriptSegment, items []TranscriptItem) []transcript.TranscriptSegment {
+	refs := make(map[string]int, len(items))
+	for _, item := range items {
+		refs[item.AgentEventRef]++
+	}
+	retained := make([]transcript.TranscriptSegment, 0, len(items))
+	for _, segment := range segments {
+		if refs[segment.AgentEventRef] > 0 {
+			retained = append(retained, segment)
+			refs[segment.AgentEventRef]--
+		}
+	}
+	return retained
 }
 func closedSemanticLoss(s transcript.TranscriptSegment) bool {
 	switch s.Kind {

@@ -243,13 +243,65 @@ func TestRingOverwriteGapAllowsUnretainedBoundEvents(t *testing.T) {
 		SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion,
 		Semantic: []transcript.TranscriptSegment{
 			{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-retained", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
+			{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-overwritten", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 2},
 			{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "ring_overwrite"},
 		},
 	}
 	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "retained", AgentEventRef: "agent-retained", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "r", LaunchGeneration: 1}}, Gaps: []GapMarker{gap}}
+	snap.RingOverwritten = 1
 	report := Compare(response, snap, []FixtureEpochBinding{b})
 	if !report.Passed || report.ToleratedGaps != 1 {
 		t.Fatalf("ring overwrite must be a scoped tolerated gap: %#v", report)
+	}
+	snap.RingOverwritten = 0
+	if report := Compare(response, snap, []FixtureEpochBinding{b}); report.Passed {
+		t.Fatalf("fabricated ring marker passed: %#v", report)
+	}
+}
+
+func TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder(t *testing.T) {
+	w := testWriter(t)
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	const sid = "ring-session"
+	svc.EnableQueue(sid)
+	svc.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: agentcontract.CorrelationProven, Provider: "codex"})
+	events := make([]agent.AgentEvent, 0, 200)
+	ids := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		e := envelope(t, string(rune(0x2000+i)), contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, 1)
+		events = append(events, e.T0Event)
+		ids = append(ids, e.EventID)
+		appendEnv(t, w, e)
+	}
+	svc.ProjectAgentEvents(sid, events)
+	response := svc.BuildResponse(sid, svc.ListTranscript(sid))
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: response.Generation, RuntimeID: "runtime-" + sid, LaunchGeneration: 1, TimelineEventIDs: ids}
+	snap := NewProjector(w).Snapshot([]FixtureEpochBinding{b})
+	if snap.RingOverwritten != 72 || len(snap.Transcript) != 128 {
+		t.Fatalf("actual writer wrap=%#v", snap)
+	}
+	for i, item := range snap.Transcript {
+		if response.Semantic[i+72].AgentEventRef != item.AgentEventRef {
+			t.Fatalf("retained order[%d]=%q want transcript[%d]=%q", i, item.AgentEventRef, i+72, response.Semantic[i+72].AgentEventRef)
+		}
+	}
+	response.Semantic = append(response.Semantic, transcript.TranscriptSegment{SessionID: sid, Kind: transcript.KindDegraded, DegradedReason: "ring_overwrite"})
+	if report := Compare(response, snap, []FixtureEpochBinding{b}); !report.Passed {
+		t.Fatalf("actual writer overwrite report=%#v", report)
+	}
+}
+
+func TestWriterDropGapSuppressesScopedMissingEvents(t *testing.T) {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"retained", "dropped"}}
+	gap := GapMarker{SessionID: "s", RuntimeID: "r", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: 2, GlobalDroppedAfter: 3, Reason: "writer_drop"}
+	response := transcript.TranscriptResponse{SessionID: "s", Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{
+		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-retained", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
+		{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-dropped", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 2},
+		{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"},
+	}}
+	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "retained", AgentEventRef: "agent-retained", SessionID: "s", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: "r", LaunchGeneration: 1}}, Gaps: []GapMarker{gap}}
+	if report := Compare(response, snap, []FixtureEpochBinding{b}); !report.Passed || report.Missings != 0 || report.ToleratedGaps != 1 {
+		t.Fatalf("writer drop did not suppress scoped missing event: %#v", report)
 	}
 }
 
