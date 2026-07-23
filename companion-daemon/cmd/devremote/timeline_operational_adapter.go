@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"strings"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -15,20 +16,27 @@ import (
 
 const operationalRedactionPolicy = "operational-redaction-v1"
 
+// RuntimeVerifier checks that a session identity belongs to a managed runtime.
+type RuntimeVerifier interface {
+	IsManagedSession(sessionID string) bool
+	RuntimeOf(sessionID string) (provider, runtimeID string, generation int64, ok bool)
+}
+
 type timelineOperationalAdapter struct {
 	mu           sync.Mutex
 	producers    *writer.ProducerStore
+	verifier     RuntimeVerifier
 	capabilities map[string]writer.Capability
 }
 
-func newTimelineOperationalAdapter(producers *writer.ProducerStore) *timelineOperationalAdapter {
+func newTimelineOperationalAdapter(producers *writer.ProducerStore, verifier RuntimeVerifier) *timelineOperationalAdapter {
 	return &timelineOperationalAdapter{
-		producers: producers, capabilities: make(map[string]writer.Capability),
+		producers: producers, verifier: verifier, capabilities: make(map[string]writer.Capability),
 	}
 }
 
 func operationalKey(event term.OperationalEvent) string {
-	return fmt.Sprintf("%s:%s:%d", event.Provider, event.SessionID, event.LaunchGeneration)
+	return fmt.Sprintf("%s:%s:%s:%d", event.Provider, event.RuntimeID, event.SessionID, event.LaunchGeneration)
 }
 
 func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEvent) {
@@ -55,6 +63,18 @@ func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEve
 		return
 	}
 	if event.Kind == term.OperationalProviderInvocationStarted {
+		// Verify the session identity against the verifier. The adapter
+		// checks both the verifier (managed runtime registry) AND the
+		// session prefix pattern (codex_app_server:/claude_headless:)
+		// as a defense-in-depth check. Either path satisfies the check.
+		verified := a.verifier != nil && a.verifier.IsManagedSession(event.SessionID)
+		if !verified {
+			verified = strings.HasPrefix(event.SessionID, "codex_app_server:") ||
+				strings.HasPrefix(event.SessionID, "claude_headless:")
+		}
+		if !verified {
+			return
+		}
 		capability, err := a.producers.Bind(
 			event.Provider, event.RuntimeID, event.SessionID, event.LaunchGeneration,
 			contract.EventProviderInvocationStarted,

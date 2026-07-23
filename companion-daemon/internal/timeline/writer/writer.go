@@ -79,10 +79,35 @@ func (c Capability) SubmitAfterCommit(envelope contract.Envelope) bool {
 
 // ProducerStore is the concrete auth implementation. Only the composition
 // root creates capabilities; managed runtimes receive opaque Capability values.
+// Implements RuntimeVerifier (self-verifying via stored handles).
 type ProducerStore struct {
 	mu     sync.RWMutex
 	active map[string]producerHandle
 	writer *Writer
+}
+
+// IsManagedSession checks whether the session identity has a bound handle.
+func (s *ProducerStore) IsManagedSession(sessionID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, h := range s.active {
+		if h.sessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// RuntimeOf returns the identity of a bound session.
+func (s *ProducerStore) RuntimeOf(sessionID string) (provider, runtimeID string, generation int64, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, h := range s.active {
+		if h.sessionID == sessionID {
+			return h.provider, h.runtimeID, h.generation, true
+		}
+	}
+	return "", "", 0, false
 }
 
 // NewProducerStore returns an empty producer store.

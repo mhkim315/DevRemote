@@ -66,7 +66,7 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { timelineWriter.Close() })
-	adapter := newTimelineOperationalAdapter(producers)
+	adapter := newTimelineOperationalAdapter(producers, producers)
 
 	oldLogWriter := log.Writer()
 	var logs bytes.Buffer

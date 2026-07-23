@@ -224,7 +224,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			log.Printf("WARNING: Timeline shadow disabled (fail-open): %v", err)
 		} else {
 			timelineWriter = w
-			timelineSink = newTimelineOperationalAdapter(timelineAuth)
+			timelineSink = newTimelineOperationalAdapter(timelineAuth, timelineAuth)
 		}
 	}
 	// STEP5: this pure cooperative ledger has no filesystem lock, Git command,
@@ -263,7 +263,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managed.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed approval store: %w", err)
 		}
-		if timelineSink != nil {
+		if timelineWriter != nil {
 			if err := managed.SetOperationalEventSink(timelineSink); err != nil {
 				log.Printf("WARNING: Managed Codex Timeline producer disabled")
 			}
