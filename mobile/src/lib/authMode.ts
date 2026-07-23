@@ -120,22 +120,18 @@ export async function completePairing(deps: PairingCompletionDeps): Promise<Auth
   try { dk = deps.createDeviceKey(); } catch { return { mode: 'failed' }; }
   // 9.4-C §4.4: bind the stored pairing to the ACTUAL hardware key on THIS
   // device. Contract outcomes:
-  //   ok=true                → key matches, proceed to TokenManager
-  //   key_missing / identity_mismatch → clear bearer, require new pairing
-  //   key_invalidated / key_inaccessible / key_incompatible → clear bearer,
-  //     terminal trust failure (failed)
-  //   keystore_unavailable   → terminal trust failure (failed)
-  const verifyResult = await verifyDeviceIdentityAgainstPairing(p.deviceId);
+  //   ok=true                  → key matches, proceed to TokenManager
+  //   key_missing / identity_mismatch / key_invalidated / key_inaccessible /
+  //     key_incompatible       → clear bearer, require new pairing
+  //   keystore_unavailable     → clear bearer, terminal trust failure (failed)
+  const verifyResult = await verifyDeviceIdentityAgainstPairing(p.deviceId, dk);
   if (!verifyResult.ok) {
-    // Clear stale pairing + TokenManager bearer before returning.
-    // Keystore key is NOT deleted — only the authority chain is broken.
-    if (verifyResult.reason === 'key_missing' || verifyResult.reason === 'identity_mismatch') {
-      await clearLocalBearerState();
-      return { mode: 'pairing_required' };
-    }
-    // key_invalidated, key_inaccessible, key_incompatible, keystore_unavailable
+    // Clear stale pairing + TokenManager bearer. Keystore key is NOT deleted.
     await clearLocalBearerState();
-    return { mode: 'failed' };
+    if (verifyResult.reason === 'keystore_unavailable') {
+      return { mode: 'failed' };
+    }
+    return { mode: 'pairing_required' };
   }
   let tokenMgr: TokenManager;
   try { tokenMgr = deps.makeTokenManager(p, dk, base); } catch { return { mode: 'failed' }; }

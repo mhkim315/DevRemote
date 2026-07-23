@@ -17,8 +17,8 @@ func GenKeypair(t interface{ Fatal(...interface{}) }) (*ecdsa.PrivateKey, []byte
 
 // SignTranscript signs the canonical pairing transcript for tests.
 func SignTranscript(t interface{ Fatal(...interface{}) }, priv *ecdsa.PrivateKey,
-	phoneNonce, hostNonce, hostPubDER []byte, sessionID string, binding ...string) []byte {
-	data := buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionID, binding...)
+	phoneNonce, hostNonce, hostPubDER []byte, sessionID string) []byte {
+	data := buildPairingTranscript(phoneNonce, hostNonce, hostPubDER, sessionID)
 	digest := sha256.Sum256(data)
 	sig, _ := ecdsa.SignASN1(rand.Reader, priv, digest[:])
 	return sig

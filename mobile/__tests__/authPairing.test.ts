@@ -57,11 +57,13 @@ describe('completePairing', () => {
     expect(ctx.mode).toBe('pairing_required');
   });
 
-  it('inaccessible/invalidated key → failed (explicit security failure)', async () => {
+  // 9.4-C §4.4: inaccessible/invalidated/incompatible → clear-and-repair.
+  // Only keystore_unavailable is terminal failed.
+  it('inaccessible/invalidated key → pairing_required (clear-and-repair)', async () => {
     const ctx = await completePairing(deps({
       createDeviceKey: () => ({ getKeyInfo: async () => { throw Object.assign(new Error('x'), { code: 'key_inaccessible' }); } } as any),
     }));
-    expect(ctx.mode).toBe('failed');
+    expect(ctx.mode).toBe('pairing_required');
     expect(ctx.tokenMgr).toBeUndefined();
   });
 

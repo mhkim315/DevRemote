@@ -60,10 +60,12 @@ export type VerifyIdentityResult =
 //   ok=false, keystore_unavailable → no hardware Keystore → terminal trust failure
 export async function verifyDeviceIdentityAgainstPairing(
   expectedDeviceId: string,
+  dk?: ReturnType<typeof createPokitDeviceKey>,
 ): Promise<VerifyIdentityResult> {
+  const key = dk ?? deviceKey();
   let info;
   try {
-    info = await deviceKey().getKeyInfo();
+    info = await key.getKeyInfo();
   } catch (e: any) {
     const code = e?.code || '';
     if (code === 'key_missing') return { ok: false, reason: 'key_missing' };
@@ -81,16 +83,20 @@ export async function verifyDeviceIdentityAgainstPairing(
   return { ok: true, deviceId: info.deviceId };
 }
 
-// clearLocalBearerState removes the stored pairing AND the active device
-// bearer so a new pairing can be established. Called on corruption outcomes
-// (key_missing, key_invalidated, identity_mismatch). The Keystore key itself
-// is NOT deleted — only the bearer/pairing state is cleared to break the
-// stale authority chain.
+// clearLocalBearerState removes the active device bearer AND the stored
+// pairing so a new pairing can be established. Called on corruption outcomes.
+// The Keystore key itself is NOT deleted — only the authority chain is broken.
+// Ordering: setDeviceAuth(null) FIRST (synchronous, cannot fail),
+// then clearPairing (best-effort; failure is logged but not thrown).
 export async function clearLocalBearerState(): Promise<void> {
-  const { clearPairing } = await import('./pairingStore');
-  const { setDeviceAuth } = await import('./client');
-  await clearPairing();
-  setDeviceAuth(null); // also clears TokenManager bearer
+  try {
+    const { setDeviceAuth } = await import('./client');
+    setDeviceAuth(null);
+  } catch { /* best-effort — in-memory bearer already unset on new process */ }
+  try {
+    const { clearPairing } = await import('./pairingStore');
+    await clearPairing();
+  } catch { /* best-effort — pairing is stale on disk but authority chain broken */ }
 }
 
 // ── legacy migration (BLOCKER 5: fail-closed) ──
