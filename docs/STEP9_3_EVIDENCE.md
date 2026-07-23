@@ -1,13 +1,13 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
-**IMPL SHA:** `ce730accc`
-**EVID SHA:** `c5cd9722f` (R4)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix)
+**IMPL SHA:** `e829299c6`
+**EVID SHA:** (this commit — R5 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R4 — delivery semantic fix + round counts
-**Round counts:** Contract 3+1, Pre-gate 2, Impl 7, EVID 3, V2 3 = 19 total
+**Revision:** R5 — IMPL SHA e829299c6, R7-R13 chain, corrected round counts
+**Round counts:** Contract 3+1, Pre-gate 2, Impl 12, EVID 4, V2 3 = 22 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and
@@ -45,7 +45,7 @@ The exact stdout of `git diff --stat c82fef47f..ce730accc` is:
  20 files changed, 2596 insertions(+), 109 deletions(-)
 ```
 
-Backend: 6 files. Mobile: 10 files. Documentation: 4 files.
+Backend: 6 files (+ R7-R13: 3 files, +551/-149). Mobile: 10 files. Documentation: 4 files.
 
 ## 2. Complete implementation chain
 
@@ -53,6 +53,13 @@ The exact stdout of `git log --oneline c82fef47f..ce730accc` (implementation
 commits only, excluding prior evidence/docs) is:
 
 ```
+e829299c6 fix(notification): R13 — epoch in DeviceStore, atomic snapshot, wg.Add under lock
+99c2992bf fix(notification): R12 — per-device epoch, real WaitGroup join, epoch-guarded cursor write
+2a35e10b1 fix(notification): R11 — production wiring, atomic RevokeDevice, Stop drain, late-SUCCESS tests
+4290bbf93 fix(notification): R10 — Stop drain, stopped/revoked cursor guards, concurrency tests
+2a35a7a79 fix(notification): R9 — singleflight, remove inner goroutine, ordering/cleanup tests
+db2d2f82c fix(notification): R8 — fire-and-forget dispatch, per-device 10s timeout, steady-state test
+6ea27e01e fix(notification): R7 — at-most-once comments, http.Client timeout, per-device goroutines, hung sender test
 ce730accc fix(notification): serve exact event to mobile
 ea83c153a feat(mobile): complete n1 notification recovery UX
 9c0106a39 feat(notification): R6 — 7 fallback screens, runtimeKnown fail-closed, cold-start retry
@@ -160,7 +167,7 @@ The push payload is a locator, never authority. On tap, mobile calls
 
 ## 4. Gate result
 
-All commands were run from `companion-daemon/` at commit `ce730accc` with a
+All commands were run from `companion-daemon/` at commit `e829299c6` with a
 clean working tree.
 
 ### Backend gate
@@ -244,7 +251,7 @@ PASS
 ok  	devremote/companion-daemon/internal/notification	1.425s
 ```
 
-18 tests, 0 SKIP, all PASS.
+19 tests, 0 SKIP, all PASS.
 
 The exact stdout of `test -z "$(gofmt -l .)"` is: (no output — exit 0)
 

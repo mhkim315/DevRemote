@@ -74,7 +74,7 @@ these automatically.
 | PB ACCEPT | `5354077af` | — | Independent |
 | 9.1 (Timeline staging) | `dc376f9b7` (IMPL) | `66824e393` (EVID R7) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
 | 9.2 (Projection convergence) | `c82fef47f` (IMPL) | `c8d6eda20` (EVID R3) | Dual-fed equivalence oracle — read-only, default-off, offline projection |
-| 9.3 (N1 notifications) | `ce730accc` (IMPL) | `c5cd9722f` (EVID R4) | Exact-event notification-to-action — 7-outcome re-auth, per-device dedup |
+| 9.3 (N1 notifications) | `e829299c6` (IMPL) | `(this commit)` (EVID R5) | Exact-event notification-to-action — 7-outcome re-auth, per-device dedup |
 
 ## 6. Authoritative sequence
 
@@ -83,7 +83,7 @@ The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA
 - **9.0 DOCS/AUDIT — ACCEPTED at `62a50f0a8`.**
 - **9.1** — Minimal Timeline staging — **ACCEPTED at `dc376f9b7`.**
 - **9.2** — Transcript/Activity projection convergence — **ACCEPTED at `c82fef47f`.**
-- **9.3** — N1 exact-event notification-to-action — **ACCEPTED at `ce730accc`.**
+- **9.3** — N1 exact-event notification-to-action — **ACCEPTED at `e829299c6`.**
 - **9.4** — Secure accountless onboarding
 - **9.5** — Matched Base Alpha candidate + SM-S926N product gate
 - **Beyond** — Manual Alpha coordination, CT-P2, automation (separate authorization)
