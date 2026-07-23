@@ -186,6 +186,27 @@ func TestWriterStartsNoGoroutines(t *testing.T) {
 	}
 }
 
+func TestSubscribeReceivesSuccessfulAppend(t *testing.T) {
+	w := newWriter(&testFile{})
+	first, second := make(chan contract.Envelope, 1), make(chan contract.Envelope, 1)
+	w.Subscribe(func(e contract.Envelope) { first <- e })
+	w.Subscribe(func(e contract.Envelope) { second <- e })
+	e := validEnvelope(t)
+	if !w.Append(e) {
+		t.Fatal("append")
+	}
+	for _, received := range []<-chan contract.Envelope{first, second} {
+		select {
+		case got := <-received:
+			if got.EventID != e.EventID {
+				t.Fatal("wrong envelope")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("subscriber not notified")
+		}
+	}
+}
+
 func TestOpenRejectsImplicitOrRelativePath(t *testing.T) {
 	for _, path := range []string{"", "timeline.jsonl"} {
 		if _, err := Open(Config{Path: path}); !errors.Is(err, ErrInvalidConfig) {

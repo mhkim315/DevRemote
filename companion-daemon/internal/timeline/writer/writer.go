@@ -38,15 +38,20 @@ type appendFile interface {
 	Close() error
 }
 
+// Subscriber observes successfully appended envelopes. It is observational
+// only; callbacks run asynchronously and cannot block or alter Append.
+type Subscriber func(contract.Envelope)
+
 // Writer serializes append records. It is deliberately not a store, queue,
 // authority callback, or recovery state machine.
 type Writer struct {
-	mu       sync.Mutex
-	file     appendFile
-	closed   bool
-	appended uint64
-	dropped  uint64
-	failures uint64
+	mu          sync.Mutex
+	file        appendFile
+	closed      bool
+	appended    uint64
+	dropped     uint64
+	failures    uint64
+	subscribers []Subscriber
 }
 
 // Open constructs a writer for one explicit path. Construction errors are
@@ -67,6 +72,16 @@ func Open(config Config) (*Writer, error) {
 
 func newWriter(file appendFile) *Writer { return &Writer{file: file} }
 
+// Subscribe adds an observational callback. Nil callbacks are ignored.
+func (w *Writer) Subscribe(fn Subscriber) {
+	if fn == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.subscribers = append(w.subscribers, fn)
+}
+
 // Append is best-effort and never returns an error to its caller. It validates
 // and frames an envelope before taking the writer lock, then performs one
 // append and sync while holding only writer-owned state. It must never be
@@ -84,23 +99,30 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 	record = append(record, '\n')
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed || w.file == nil {
 		w.dropped++
+		w.mu.Unlock()
 		return false
 	}
 	n, err := w.file.Write(record)
 	if err != nil || n != len(record) {
 		w.dropped++
 		w.failures++
+		w.mu.Unlock()
 		return false
 	}
 	if err := w.file.Sync(); err != nil {
 		w.dropped++
 		w.failures++
+		w.mu.Unlock()
 		return false
 	}
 	w.appended++
+	subscribers := append([]Subscriber(nil), w.subscribers...)
+	w.mu.Unlock()
+	for _, subscriber := range subscribers {
+		go subscriber(envelope)
+	}
 	return true
 }
 
