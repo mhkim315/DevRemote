@@ -124,6 +124,10 @@ type claudeManagedRuntime struct {
 	// was still live; the normal joined-deferred exited original stays exited.
 	resumePreviousRuntime *claudeManagedRuntime
 	resumePreviousRecord  ManagedSessionRecord
+	// terminalIntent is guarded by ManagedClaudeService.mu. Stop/Kill set it
+	// before releasing the current-runtime lookup, and resume cleanup checks
+	// it under the same lock before considering an older-generation restore.
+	terminalIntent bool
 
 	observer       func(stage string)
 	preIngestHook  func() // test seam: before Store ingest
@@ -1430,7 +1434,8 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 // original process was still genuinely live (a controlled test/compatibility
 // path), restore that exact registry/runtime identity after the resume Finish
 // event has revoked its capability. Normal joined-deferred originals are
-// already terminal and are never restored.
+// already terminal and are never restored. An explicit Stop/Kill intent on
+// the resume generation also permanently suppresses restoration.
 func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
 	if rt == nil {
 		return
@@ -1444,7 +1449,7 @@ func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closing || s.runtimes[rt.sessionID] != rt {
+	if s.closing || s.runtimes[rt.sessionID] != rt || rt.terminalIntent {
 		return
 	}
 	if err := s.reg.RestoreIncarnation(rt.epoch, record); err != nil {
@@ -1647,14 +1652,9 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 }
 
 func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
-	s.mu.Lock()
-	rt := s.runtimes[sessionID]
-	s.mu.Unlock()
-	if rt == nil {
-		return fmt.Errorf("managed claude session not found")
-	}
-	if rt.epoch != epoch {
-		return fmt.Errorf("stale session epoch")
+	rt, coord, approvals, err := s.claimTerminalIntent(sessionID, epoch)
+	if err != nil {
+		return err
 	}
 	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
@@ -1664,10 +1664,6 @@ func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
 		// cleared and the Store high-water advances to StreamGen=1, which
 		// supersedes pending AND executing authority (a mid-delivery
 		// commit becomes stale).
-		s.mu.Lock()
-		coord := s.coordinator
-		approvals := s.approvals
-		s.mu.Unlock()
 		if coord != nil {
 			coord.ClearRuntime(sessionID, epoch)
 		}
@@ -1702,24 +1698,15 @@ func (s *ManagedClaudeService) SimulateGracefulExit(sessionID string, epoch int6
 }
 
 func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
-	s.mu.Lock()
-	rt := s.runtimes[sessionID]
-	s.mu.Unlock()
-	if rt == nil {
-		return fmt.Errorf("managed claude session not found")
-	}
-	if rt.epoch != epoch {
-		return fmt.Errorf("stale session epoch")
+	rt, coord, approvals, err := s.claimTerminalIntent(sessionID, epoch)
+	if err != nil {
+		return err
 	}
 	if rec, ok := s.reg.Get(sessionID); !ok {
 		return fmt.Errorf("managed claude session not found")
 	} else if rec.Exited {
 		// Deferred exit preserves the claim window (coordinator identities
 		// + pending record). Explicit Kill revokes both, same as Stop.
-		s.mu.Lock()
-		coord := s.coordinator
-		approvals := s.approvals
-		s.mu.Unlock()
 		if coord != nil {
 			coord.ClearRuntime(sessionID, epoch)
 		}
@@ -1730,6 +1717,27 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 	}
 	rt.terminate()
 	return nil
+}
+
+// claimTerminalIntent resolves the exact current runtime and records that an
+// external lifecycle command owns its terminal state. The write is performed
+// under the same service lock used by finishApprovalResume's restore check, so
+// Stop/Kill and an older-generation restore have one deterministic order.
+func (s *ManagedClaudeService) claimTerminalIntent(
+	sessionID string,
+	epoch int64,
+) (*claudeManagedRuntime, *claudeResumeCoordinator, *AuthoritativeApprovalStore, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rt := s.runtimes[sessionID]
+	if rt == nil {
+		return nil, nil, nil, fmt.Errorf("managed claude session not found")
+	}
+	if rt.epoch != epoch {
+		return nil, nil, nil, fmt.Errorf("stale session epoch")
+	}
+	rt.terminalIntent = true
+	return rt, s.coordinator, s.approvals, nil
 }
 
 func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {

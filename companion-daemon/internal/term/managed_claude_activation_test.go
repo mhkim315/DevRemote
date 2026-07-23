@@ -1244,6 +1244,109 @@ func TestClaudeResume_CertificationRecordedPerIncarnation(t *testing.T) {
 	}
 }
 
+// Stop/Kill can terminate the resume process before delivery's deferred
+// cleanup runs. This deterministic ordering reproduces the R5 race: the
+// terminal resume record is still current in s.runtimes when cleanup decides
+// whether to restore a live original generation. Explicit terminal intent
+// must keep the newer, exited generation current in both the map and registry.
+func TestClaudeResume_StopKillTerminalIntentNeverRestoresOriginal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action func(*ManagedClaudeService, string, int64) error
+	}{
+		{name: "stop", action: (*ManagedClaudeService).Stop},
+		{name: "kill", action: (*ManagedClaudeService).Kill},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launcher := &multiLaunchLauncher{}
+			svc, _, _, runtimeOf := newInstalledClaudeService(t, launcher)
+			t.Cleanup(func() {
+				for _, p := range launcher.procs {
+					_ = p.Kill()
+				}
+			})
+
+			id, err := svc.CreateDetached("/tmp")
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc.mu.Lock()
+			original := svc.runtimes[id]
+			svc.mu.Unlock()
+			if original == nil {
+				t.Fatal("original runtime missing")
+			}
+			t.Cleanup(original.terminate)
+
+			originalRef := RuntimeRef{
+				Adapter: claudeHeadlessAdapter, Version: "2.1.209",
+				LaunchGen: original.epoch, StreamGen: 0,
+			}
+			digest := CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+			approvalID := "claude-resume-terminal-" + tc.name
+			if !svc.Coordinator().ReserveIdentity(
+				approvalID, "claude-session-"+tc.name, "tool-"+tc.name, "Bash",
+				digest, activationCatalogID, id, originalRef,
+			) {
+				t.Fatal("ReserveIdentity")
+			}
+			binding := ApprovalExecutionBinding{
+				ApprovalID: approvalID, SessionID: id, Runtime: originalRef,
+				ActionDigest:   strings.Repeat("b", 64),
+				PayloadDigest:  payloadDigest(claudeHookResponseBytes("allow")),
+				IdempotencyKey: "terminal." + tc.name, OptionID: "allow_once",
+				DeliverySchema: claudeDecisionSchemaV1,
+			}
+			handle, ok := svc.Coordinator().ReserveEntry(strings.Repeat("d", 32), binding)
+			if !ok {
+				t.Fatal("ReserveEntry")
+			}
+			ctx := &resumeContext{
+				coordinator: svc.Coordinator(), claimToken: handle.ClaimToken,
+				resumeNonce: handle.ResumeNonce, originalRuntime: originalRef,
+				pokitSessionID: id, claudeSessionID: "claude-session-" + tc.name,
+				toolUseID: "tool-" + tc.name, toolName: "Bash", inputDigest: digest,
+				expectedDecision: "allow", originalCWD: "/tmp",
+			}
+			resumed, err := svc.ResumeForApproval(handle, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resumed.epoch <= original.epoch {
+				t.Fatalf("resume epoch %d did not supersede original %d",
+					resumed.epoch, original.epoch)
+			}
+
+			// Exact problematic order: lifecycle termination completes first;
+			// delivery's deferred cleanup then observes the exited resume.
+			if err := tc.action(svc, id, resumed.epoch); err != nil {
+				t.Fatal(err)
+			}
+			svc.finishApprovalResume(resumed)
+
+			svc.mu.Lock()
+			current := svc.runtimes[id]
+			intent := resumed.terminalIntent
+			svc.mu.Unlock()
+			if !intent {
+				t.Fatal("terminal intent was not recorded")
+			}
+			if current != resumed || current == original {
+				t.Fatalf("old generation restored: current=%p resumed=%p original=%p",
+					current, resumed, original)
+			}
+			record, ok := svc.Registry().Get(id)
+			if !ok || record.Epoch != resumed.epoch ||
+				record.ProcessID != resumed.runtimeID || !record.Exited {
+				t.Fatalf("registry rolled back from terminal resume: %+v ok=%v", record, ok)
+			}
+			if _, ok := runtimeOf(id); ok {
+				t.Fatal("terminal resume unexpectedly restored runtime authority")
+			}
+		})
+	}
+}
+
 // Reviewer evidence 1b: an uncertified resume fails closed BEFORE the
 // repeated-hook/witness stage — the delivery ends non-success, the entry is
 // cancelled, and nothing is spawned into the witness path.
