@@ -204,15 +204,21 @@ validated in `writer.go Append` (line 90: `envelope.Validate()`).
 - Any `mobile/` file
 - `internal/agent/` (fixture-only per CT-P0)
 
-## 9. Staging gate
+## 9. Implementation gate and deferred staging milestone
 
 - [ ] All existing tests pass
 - [ ] 8 acceptance tests pass
 - [ ] No production import regressions
-- [ ] Staging daemon runs 7 days with `--enable-timeline-shadow`
 - [ ] Cockpit shows degradation when drops occur
 - [ ] Zero daemon crashes from Timeline code
-- [ ] Separate evidence commit records staging results
+
+### Post-implementation operational milestone — DEFERRED to staging phase
+
+The implementation gate does not require evidence produced by the staging run
+that this contract authorizes. After the implementation gate is accepted, the
+staging phase must run a daemon for 7 days with
+`--enable-timeline-shadow`, verify that Timeline code causes zero daemon
+crashes, and record those staging results in a separate evidence commit.
 
 ## 10. Stop conditions
 
