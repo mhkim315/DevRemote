@@ -54,15 +54,19 @@ func runPairClient(args []string) {
 
 	// 1) Decode session payload (immediately after pair-start).
 	var sess struct {
-		OK             bool   `json:"ok"`
-		SessionID      string `json:"sessionId"`
-		HostID         string `json:"hostId"`
-		Fingerprint    string `json:"fingerprint"`
-		HostPubKey     string `json:"hostPubKey"`
-		BootstrapToken string `json:"bootstrapToken"`
-		Endpoint       string `json:"endpoint"`
-		ExpiresAt      string `json:"expiresAt"`
-		Error          string `json:"error"`
+		OK              bool   `json:"ok"`
+		SessionID       string `json:"sessionId"`
+		HostID          string `json:"hostId"`
+		Fingerprint     string `json:"fingerprint"`
+		HostPubKey      string `json:"hostPubKey"`
+		BootstrapToken  string `json:"bootstrapToken"`
+		Endpoint        string `json:"endpoint"`
+		ExpiresAt       string `json:"expiresAt"`
+		ProtocolVersion int    `json:"protocolVersion"`
+		Origin          string `json:"origin"`
+		DaemonBootID    string `json:"daemonBootId"`
+		ChallengeID     string `json:"challengeId"`
+		Error           string `json:"error"`
 	}
 	if err := dec.Decode(&sess); err != nil || sess.Error != "" || !sess.OK {
 		log.Fatalf("Pairing start failed: %s (err=%v)", sess.Error, err)
@@ -73,14 +77,18 @@ func runPairClient(args []string) {
 
 	// Build the QR payload. Payload bytes are NEVER emitted to
 	// stdout, stderr, logs, diagnostics, or process arguments.
-	qrPayload, _ := json.Marshal(map[string]string{
-		"sessionId":      sess.SessionID,
-		"hostId":         sess.HostID,
-		"fingerprint":    sess.Fingerprint,
-		"hostPubKey":     sess.HostPubKey,
-		"bootstrapToken": sess.BootstrapToken,
-		"endpoint":       sess.Endpoint,
-		"expiresAt":      sess.ExpiresAt,
+	qrPayload, _ := json.Marshal(map[string]interface{}{
+		"protocolVersion": sess.ProtocolVersion,
+		"origin":          sess.Origin,
+		"sessionId":       sess.SessionID,
+		"hostId":          sess.HostID,
+		"fingerprint":     sess.Fingerprint,
+		"hostPubKey":      sess.HostPubKey,
+		"bootstrapToken":  sess.BootstrapToken,
+		"endpoint":        sess.Endpoint,
+		"expiresAt":       sess.ExpiresAt,
+		"daemonBootId":    sess.DaemonBootID,
+		"challengeId":     sess.ChallengeID,
 	})
 	fmt.Println()
 	cleanup := renderQR(string(qrPayload))

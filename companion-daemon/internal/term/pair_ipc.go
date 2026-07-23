@@ -18,8 +18,43 @@ var (
 	pairingRegistry *devicetrust.DeviceRegistry
 	pairingSessions *devicetrust.DeviceSessionManager // M2.5-5: revoke → session invalidation
 	pairingAudit    devicetrust.AuditLog              // M2.5-5: local audit (nil ⇒ none)
+	qrPairingBridge QRPairBridge
 	pairingMu       sync.Mutex
 )
+
+// QRPairSession is the non-authoritative metadata supplied to the cmd-layer
+// QR bridge. Device registration and proof verification remain PairingHost's
+// responsibility.
+type QRPairSession struct {
+	SessionID      string
+	HostID         string
+	HostPublicKey  string
+	Endpoint       string
+	ExpiresAt      time.Time
+	BootstrapValue string
+}
+
+type QRPairMetadata struct {
+	ProtocolVersion int
+	Origin          string
+	HostPublicKey   string
+	DaemonBootID    string
+	ChallengeID     string
+	ExpiresAt       time.Time
+	BootstrapValue  string
+}
+
+type QRPairBridge interface {
+	Begin(QRPairSession) (QRPairMetadata, error)
+	Consume(sessionID string) error
+	Cancel(sessionID string)
+}
+
+func SetQRPairBridge(bridge QRPairBridge) {
+	pairingMu.Lock()
+	defer pairingMu.Unlock()
+	qrPairingBridge = bridge
+}
 
 // SetPairingContext stores the daemon-owned trust instances for IPC pair ops.
 func SetPairingContext(id *devicetrust.HostIdentity, reg *devicetrust.DeviceRegistry) {
@@ -48,6 +83,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 	pairingMu.Lock()
 	id := pairingIdentity
 	reg := pairingRegistry
+	bridge := qrPairingBridge
 	pairingMu.Unlock()
 
 	if id == nil || reg == nil {
@@ -72,25 +108,48 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		writeIPC(conn, map[string]string{"error": "pairing start failed: " + err.Error()})
 		return
 	}
+	if bridge == nil {
+		ph.Close()
+		writeIPC(conn, map[string]string{"error": "QR pairing bridge not configured"})
+		return
+	}
+	metadata, err := bridge.Begin(QRPairSession{
+		SessionID:      ph.Session.SessionID,
+		HostID:         ph.Session.HostID,
+		HostPublicKey:  ph.Session.HostPubKeyB64,
+		Endpoint:       ph.Session.Endpoint,
+		ExpiresAt:      ph.Session.ExpiresAt,
+		BootstrapValue: ph.Session.BootstrapToken,
+	})
+	if err != nil {
+		ph.Close()
+		writeIPC(conn, map[string]string{"error": "QR pairing bridge start failed: " + err.Error()})
+		return
+	}
 	// NO deferred Close() — the grace period in Approve()/Reject() owns the
 	// close after a terminal result. Early exits below close immediately.
 
 	// 1) Send session payload immediately (QR data).
 	sess := ph.Session
 	writeIPC(conn, map[string]interface{}{
-		"ok":             true,
-		"sessionId":      sess.SessionID,
-		"hostId":         sess.HostID,
-		"fingerprint":    sess.Fingerprint,
-		"hostPubKey":     sess.HostPubKeyB64,
-		"bootstrapToken": sess.BootstrapToken,
-		"endpoint":       sess.Endpoint,
-		"expiresAt":      sess.ExpiresAt.Format(time.RFC3339),
+		"ok":              true,
+		"sessionId":       sess.SessionID,
+		"hostId":          sess.HostID,
+		"fingerprint":     sess.Fingerprint,
+		"hostPubKey":      sess.HostPubKeyB64,
+		"bootstrapToken":  sess.BootstrapToken,
+		"endpoint":        sess.Endpoint,
+		"expiresAt":       sess.ExpiresAt.Format(time.RFC3339),
+		"protocolVersion": metadata.ProtocolVersion,
+		"origin":          metadata.Origin,
+		"daemonBootId":    metadata.DaemonBootID,
+		"challengeId":     metadata.ChallengeID,
 	})
 
 	// 2) Wait for candidate.
 	cand, gotCand := ph.WaitForCandidate()
 	if !gotCand {
+		bridge.Cancel(sess.SessionID)
 		writeIPC(conn, map[string]string{"error": "session ended without a candidate"})
 		ph.Close()
 		return
@@ -115,18 +174,26 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 	dec2 := json.NewDecoder(conn)
 	if err := dec2.Decode(&decision); err != nil {
 		ph.Reject()
+		bridge.Cancel(sess.SessionID)
 		writeIPC(conn, map[string]string{"error": "invalid decision: " + err.Error()})
 		return // Reject() schedules a 10s grace period; the timer will close
 	}
 
 	if decision.Action != "approve" {
 		ph.Reject()
+		bridge.Cancel(sess.SessionID)
 		writeIPC(conn, map[string]interface{}{"status": "rejected", "state": string(devicetrust.PairingStateRejected)})
 		return
 	}
 
 	// 5) Approve → register device.
+	if err := bridge.Consume(sess.SessionID); err != nil {
+		ph.Reject()
+		writeIPC(conn, map[string]string{"error": "QR challenge rejected: " + err.Error()})
+		return
+	}
 	if err := ph.Approve(); err != nil {
+		bridge.Cancel(sess.SessionID)
 		writeIPC(conn, map[string]string{"error": "approval failed: " + err.Error()})
 		ph.Close() // Approve failed — no grace period; close immediately
 		return

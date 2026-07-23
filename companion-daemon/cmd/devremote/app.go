@@ -364,6 +364,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	sessionMgr.SetOnReplace(cb)
 	sessionMgr.SetOnRevoke(cb)
 	challengeStore := devicetrust.NewChallengeStore()
+	// The QR bridge adds only expiring bootstrap metadata and a single-use
+	// ChallengeStore gate. It does not own device registration or sessions.
+	term.SetQRPairBridge(newQRPairBridge(challengeStore, sessionMgr.BootID()))
 
 	h := &term.Handlers{Verifier: verifier, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Transcript: transcriptSvc, Lifecycle: lifecycle,
 		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}

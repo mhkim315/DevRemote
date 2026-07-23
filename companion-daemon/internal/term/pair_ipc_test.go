@@ -3,6 +3,7 @@ package term
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"testing"
@@ -10,6 +11,24 @@ import (
 
 	"devremote/companion-daemon/internal/devicetrust"
 )
+
+type testQRPairBridge struct{ pending map[string]bool }
+
+func (b *testQRPairBridge) Begin(s QRPairSession) (QRPairMetadata, error) {
+	if b.pending == nil {
+		b.pending = make(map[string]bool)
+	}
+	b.pending[s.SessionID] = true
+	return QRPairMetadata{ProtocolVersion: 1, Origin: s.Endpoint, HostPublicKey: s.HostPublicKey, DaemonBootID: "test-boot", ChallengeID: "test-challenge", ExpiresAt: s.ExpiresAt, BootstrapValue: s.BootstrapValue}, nil
+}
+func (b *testQRPairBridge) Consume(sessionID string) error {
+	if !b.pending[sessionID] {
+		return fmt.Errorf("challenge missing")
+	}
+	delete(b.pending, sessionID)
+	return nil
+}
+func (b *testQRPairBridge) Cancel(sessionID string) { delete(b.pending, sessionID) }
 
 func TestPairingIPC_FullSessionFlow(t *testing.T) {
 	// Create a real host identity + registry.
@@ -20,6 +39,8 @@ func TestPairingIPC_FullSessionFlow(t *testing.T) {
 		t.Fatalf("host identity: %v", err)
 	}
 	SetPairingContext(id, reg)
+	SetQRPairBridge(&testQRPairBridge{})
+	defer SetQRPairBridge(nil)
 
 	// Simulate the CLI side with a socket pair.
 	serverConn, clientConn := net.Pipe()
