@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
@@ -232,9 +233,13 @@ type Notifier struct {
 	// Prevents goroutine accumulation when PushSender hangs beyond timeout.
 	inFlight sync.Map // deviceID → bool
 
-	// Revoked devices: Send may still be in-flight for a revoked device,
-	// but the cursor must NOT be written after revoke.
-	revoked sync.Map // deviceID → bool
+	// Per-device binding epoch: incremented on every RevokeDevice/BindDevice.
+	// An in-flight goroutine captures the epoch at start; if the epoch has
+	// changed by the time it wants to write the cursor, the write is skipped.
+	epochs sync.Map // deviceID → *int64
+
+	// In-flight goroutine counter. Stop waits on this.
+	wg sync.WaitGroup
 
 	// lifecycle
 	mu      sync.Mutex
@@ -299,19 +304,22 @@ func (n *Notifier) Start() {
 }
 
 // Stop terminates the consumer loop. Sets stopped=true, closes done channel
-// to stop the poll loop, then drains in-flight goroutines. After Stop returns,
-// no dispatch goroutines are running and no cursor writes can occur.
-// A second caller blocks until the first Stop completes.
-func (n *Notifier) Stop() {
+// to stop the poll loop, then waits for in-flight goroutines via WaitGroup.
+// Returns an error if the drain times out (goroutines still stuck after 15s).
+func (n *Notifier) Stop() (err error) {
 	n.mu.Lock()
 	if n.stopped {
 		n.mu.Unlock()
-		// Another goroutine already called Stop — wait for drain.
-		deadline := time.Now().Add(15 * time.Second)
-		for n.ActiveGoroutines() > 0 && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
+		// Second caller: wait on the WaitGroup (first caller already
+		// initiated drain). Return nil if drain completed.
+		done := make(chan struct{})
+		go func() { n.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+			return nil
+		case <-time.After(15 * time.Second):
+			return fmt.Errorf("notification stop: drain timed out, %d goroutines still in-flight", n.ActiveGoroutines())
 		}
-		return
 	}
 	n.stopped = true
 	if n.done != nil {
@@ -319,28 +327,47 @@ func (n *Notifier) Stop() {
 	}
 	n.mu.Unlock()
 
-	// Drain in-flight goroutines. Each is expected to finish within its
-	// PushSender's timeout (or sooner). Wait up to 15s total.
-	deadline := time.Now().Add(15 * time.Second)
-	for n.ActiveGoroutines() > 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+	// Real join: wait on WaitGroup with timeout.
+	done := make(chan struct{})
+	go func() { n.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(15 * time.Second):
+		return fmt.Errorf("notification stop: drain timed out, %d goroutines still in-flight", n.ActiveGoroutines())
 	}
 }
 
-// RevokeDevice atomically marks a device as revoked under the notifier lock.
-// Any in-flight Send for this device will NOT write its cursor on completion.
-// The device is also removed from the DeviceStore (tokens + cursor cleared).
+// bumpEpoch increments the per-device binding epoch, invalidating any
+// in-flight dispatch goroutine that captured the old epoch.
+func (n *Notifier) bumpEpoch(deviceID string) int64 {
+	val, _ := n.epochs.LoadOrStore(deviceID, new(int64))
+	ptr := val.(*int64)
+	return atomic.AddInt64(ptr, 1)
+}
+
+// loadEpoch returns the current binding epoch for a device.
+func (n *Notifier) loadEpoch(deviceID string) int64 {
+	val, ok := n.epochs.Load(deviceID)
+	if !ok {
+		return 0
+	}
+	return atomic.LoadInt64(val.(*int64))
+}
+
+// RevokeDevice atomically invalidates in-flight goroutines (bumps epoch),
+// removes the device from the DeviceStore (tokens + cursor cleared). Any
+// in-flight Send that captured the old epoch will skip its cursor write.
 func (n *Notifier) RevokeDevice(deviceID string) {
-	n.mu.Lock()
-	n.revoked.Store(deviceID, true)
-	n.mu.Unlock()
+	n.bumpEpoch(deviceID) // invalidate all in-flight goroutines for this device
 	n.devices.Revoke(deviceID)
 }
 
-// BindDevice clears the revoked bit for a device (re-registration after
-// revoke). Safe to call from concurrent registration handlers.
+// BindDevice bumps the per-device epoch so any in-flight goroutine that
+// captured the old epoch will skip its cursor write. Called on push
+// re-registration (which follows revoke or device replacement).
 func (n *Notifier) BindDevice(deviceID string) {
-	n.revoked.Delete(deviceID)
+	n.bumpEpoch(deviceID)
 }
 
 // ActiveGoroutines returns the count of in-flight per-device dispatch
@@ -412,8 +439,15 @@ func (n *Notifier) dispatch() int {
 		}
 		launched++
 
+		n.wg.Add(1)
 		go func(dev struct{ DeviceID, Token string }, c Cursor) {
+			defer n.wg.Done()
 			defer n.inFlight.Delete(dev.DeviceID)
+
+			// Capture the binding epoch at dispatch start. If RevokeDevice or
+			// BindDevice bumps the epoch before we write the cursor, the write
+			// is skipped (the old epoch is stale).
+			startEpoch := n.loadEpoch(dev.DeviceID)
 
 			selected, wrapped := SelectSince(events, c)
 			// On wrap, deliver only the latest event to re-establish cursor.
@@ -442,18 +476,19 @@ func (n *Notifier) dispatch() int {
 				}
 				lastSent = e
 			}
-			// Guard cursor write: do NOT advance if stopped or device revoked.
-			// Both checks are under mu so RevokeDevice (which sets revoked under
-			// mu) synchronises with this goroutine — no cursor resurrection.
+			// Guard cursor write: skip if stopped, or if the epoch changed
+			// (device was revoked or rebound while this goroutine was in-flight).
 			if lastSent.EventID == "" {
 				return
 			}
 			n.mu.Lock()
 			stopped := n.stopped
-			_, revoked := n.revoked.Load(dev.DeviceID)
 			n.mu.Unlock()
-			if stopped || revoked {
+			if stopped {
 				return
+			}
+			if n.loadEpoch(dev.DeviceID) != startEpoch {
+				return // epoch bumped by RevokeDevice or BindDevice
 			}
 			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
 		}(dev, cursors[dev.DeviceID])

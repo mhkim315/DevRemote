@@ -855,7 +855,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// N1 timeline consumer: stop background dispatch loop.
 	if a.n1Notifier != nil {
-		a.n1Notifier.Stop()
+		if err := a.n1Notifier.Stop(); err != nil {
+			log.Printf("N1 notifier stop: %v", err)
+		}
 	}
 
 	// M2.5-3: stop session purge before telemetry.

@@ -1115,7 +1115,11 @@ func TestLateSuccessCursorNotWrittenAfterStop(t *testing.T) {
 // TestLateSuccessCursorNotWrittenAfterRevoke verifies that even when Send
 // eventually succeeds AFTER RevokeDevice, the cursor is NOT written. The
 // revoked guard prevents resurrection.
-func TestLateSuccessCursorNotWrittenAfterRevoke(t *testing.T) {
+// TestOldSendVsRevokeRebind verifies that when a device is revoked and
+// rebound while an old Send is still in-flight, the old goroutine's epoch
+// check prevents it from writing a stale cursor. The new binding gets a
+// fresh epoch, and the old goroutine's epoch mismatch skips the write.
+func TestOldSendVsRevokeRebind(t *testing.T) {
 	devices := NewDeviceStore()
 	devices.Bind("device-1", "token-1")
 
@@ -1123,29 +1127,37 @@ func TestLateSuccessCursorNotWrittenAfterRevoke(t *testing.T) {
 	sender := &selectiveHangSender{
 		hangDevice:       "device-1",
 		slowUnblock:      block,
-		successAfterStop: true, // Send returns nil after unblock
+		successAfterStop: true,
 	}
 
 	w := openTestWriter(t)
 	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
 	notifier.SetEnabled(true)
 
-	w.Append(validEnvelope("late-2", "session-1", 1, contract.EventApprovalRequested))
+	w.Append(validEnvelope("revrebind-1", "session-1", 1, contract.EventApprovalRequested))
 	notifier.Dispatch()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // goroutine enters Send
 
-	// Revoke while goroutine is blocked in Send.
+	// Revoke + Rebind: bumps epoch, clears store, then re-registers.
 	notifier.RevokeDevice("device-1")
+	devices.Bind("device-1", "token-2") // re-register push token
+	notifier.BindDevice("device-1")     // bump epoch again
 
-	// Unblock Send — it returns nil (success). But goroutine checks revoked
-	// under mu → cursor stays empty.
+	// Unblock the old Send. The old goroutine captured epoch 0; after
+	// RevokeDevice+bumpEpoch+BindDevice+bumpEpoch, the current epoch is 2.
+	// The old goroutine's epoch check fails → cursor NOT written.
 	close(block)
 	time.Sleep(200 * time.Millisecond)
 
 	c := devices.GetCursor("device-1")
 	if c.LastEventID != "" {
-		t.Errorf("cursor must NOT be written after Revoke even on Send success: got %+v", c)
+		t.Errorf("old goroutine must not write cursor after revoke+rebind: got %+v", c)
+	}
+
+	// Token should be the new one.
+	if devices.Token("device-1") != "token-2" {
+		t.Errorf("token should be token-2 after rebind: got %q", devices.Token("device-1"))
 	}
 
 	notifier.Stop()
