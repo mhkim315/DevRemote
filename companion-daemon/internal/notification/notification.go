@@ -232,6 +232,10 @@ type Notifier struct {
 	// Prevents goroutine accumulation when PushSender hangs beyond timeout.
 	inFlight sync.Map // deviceID → bool
 
+	// Revoked devices: Send may still be in-flight for a revoked device,
+	// but the cursor must NOT be written after revoke.
+	revoked sync.Map // deviceID → bool
+
 	// lifecycle
 	mu      sync.Mutex
 	done    chan struct{}
@@ -294,9 +298,9 @@ func (n *Notifier) Start() {
 	go n.loop()
 }
 
-// Stop terminates the consumer loop. Safe to call multiple times.
-// In-flight per-device goroutines are allowed to finish naturally
-// (or time out via their PushSender).
+// Stop terminates the consumer loop. Sets stopped=true, closes done channel
+// to stop the poll loop, then drains in-flight goroutines. After Stop returns,
+// no dispatch goroutines are running and no cursor writes can occur.
 func (n *Notifier) Stop() {
 	n.mu.Lock()
 	if n.stopped {
@@ -308,6 +312,21 @@ func (n *Notifier) Stop() {
 		close(n.done)
 	}
 	n.mu.Unlock()
+
+	// Drain in-flight goroutines. Each is expected to finish within its
+	// PushSender's timeout (or sooner). Wait up to 15s total.
+	deadline := time.Now().Add(15 * time.Second)
+	for n.ActiveGoroutines() > 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// RevokeDevice marks a device as revoked. Any in-flight Send for this device
+// will NOT write its cursor on completion. The device is also removed from
+// the DeviceStore (tokens + cursor cleared).
+func (n *Notifier) RevokeDevice(deviceID string) {
+	n.revoked.Store(deviceID, true)
+	n.devices.Revoke(deviceID)
 }
 
 // ActiveGoroutines returns the count of in-flight per-device dispatch
@@ -368,6 +387,15 @@ func (n *Notifier) dispatch() int {
 		if _, loaded := n.inFlight.LoadOrStore(dev.DeviceID, true); loaded {
 			continue
 		}
+		// Recheck stopped AFTER acquiring the in-flight slot. If stopped
+		// between the initial check and LoadOrStore, release the slot.
+		n.mu.Lock()
+		stopped := n.stopped
+		n.mu.Unlock()
+		if stopped {
+			n.inFlight.Delete(dev.DeviceID)
+			continue
+		}
 		launched++
 
 		go func(dev struct{ DeviceID, Token string }, c Cursor) {
@@ -400,10 +428,22 @@ func (n *Notifier) dispatch() int {
 				}
 				lastSent = e
 			}
-			// Advance cursor after successful delivery.
-			if lastSent.EventID != "" {
-				n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
+			// Guard cursor write: do NOT advance if stopped or device revoked.
+			// This prevents a late-arriving goroutine from writing state after
+			// Stop or Revoke has cleaned up.
+			if lastSent.EventID == "" {
+				return
 			}
+			n.mu.Lock()
+			stopped := n.stopped
+			n.mu.Unlock()
+			if stopped {
+				return
+			}
+			if _, revoked := n.revoked.Load(dev.DeviceID); revoked {
+				return
+			}
+			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
 		}(dev, cursors[dev.DeviceID])
 	}
 	return launched

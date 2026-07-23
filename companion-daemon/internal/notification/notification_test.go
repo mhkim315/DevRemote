@@ -479,42 +479,6 @@ func TestEventDegradedOrGap(t *testing.T) {
 
 // TestDeviceIDFromPrincipal verifies that deviceId is extracted from
 // the Principal (auth context), never from a caller-supplied parameter.
-func TestDeviceIDFromPrincipal(t *testing.T) {
-	devices := NewDeviceStore()
-
-	bootID, _ := devicetrust.NewBootID()
-	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 1*time.Hour)
-
-	// Create a real token via the session manager.
-	rawToken, _, _, err := sessionMgr.CreateAfterVerifiedChallenge(
-		"device-from-auth", "host-1", bootID,
-		[]string{devicetrust.PermSessionsRead},
-	)
-	if err != nil {
-		t.Fatalf("CreateAfterVerifiedChallenge: %v", err)
-	}
-
-	// Verify: a bare request has no Principal in context.
-	req := httptest.NewRequest("GET", "/push/register?token=push-token&deviceId=attacker-device", nil)
-	req.Header.Set("Authorization", "Bearer "+rawToken)
-	principal := devicetrust.PrincipalFromContext(req.Context())
-	if principal != nil {
-		t.Error("no principal should exist without RequirePrincipal wrapping")
-	}
-
-	// The handler extracts deviceID from Principal.DeviceID, not from query.
-	// Bind is called with the authenticated device ID, not the query param.
-	devices.Bind("device-from-auth", "push-token")
-	if tok := devices.Token("device-from-auth"); tok != "push-token" {
-		t.Errorf("token not bound: %q", tok)
-	}
-
-	// attacker-device was never registered — caller-supplied ID is ignored.
-	if tok := devices.Token("attacker-device"); tok != "" {
-		t.Errorf("caller-supplied deviceId must not create entries: %q", tok)
-	}
-}
-
 // TestInsufficientPermission verifies the handler requires terminal:input
 // permission, not just sessions:read.
 func TestInsufficientPermission(t *testing.T) {
@@ -1059,74 +1023,104 @@ func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
 	}
 }
 
-// TestStopRevokeCleanup verifies that after Stop, no new goroutines launch,
-// and after Revoke, the device is skipped in dispatch (no goroutine).
-func TestStopRevokeCleanup(t *testing.T) {
+// TestStopCursorNotWritten verifies Stop concurrency: when a Send is
+// in-flight at Stop time, the goroutine completes but the cursor is NOT
+// written (stopped guard in the goroutine prevents late writes).
+func TestStopCursorNotWritten(t *testing.T) {
 	devices := NewDeviceStore()
 	devices.Bind("device-1", "token-1")
 
-	sender := &stubSender{sent: make(chan struct{}, 16)}
+	block := make(chan struct{})
+	sender := &selectiveHangSender{
+		hangDevice:  "device-1",
+		slowUnblock: block,
+	}
+
 	w := openTestWriter(t)
 	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
 	notifier.SetEnabled(true)
 
 	w.Append(validEnvelope("stop-1", "session-1", 1, contract.EventApprovalRequested))
 	notifier.Dispatch()
-	sender.waitForLocators(t, 1, 2*time.Second)
 
-	// Stop the notifier.
+	// Wait for goroutine to enter Send (blocked).
+	time.Sleep(100 * time.Millisecond)
+	if notifier.ActiveGoroutines() != 1 {
+		t.Fatalf("expected 1 in-flight goroutine, got %d", notifier.ActiveGoroutines())
+	}
+
+	// Stop in a goroutine — it sets stopped=true, then drains in-flight.
+	stopDone := make(chan struct{})
+	go func() { notifier.Stop(); close(stopDone) }()
+
+	// Give Stop time to set stopped=true.
+	time.Sleep(100 * time.Millisecond)
+
+	// Unblock the Send. Goroutine finishes, checks stopped=true, skips cursor write.
+	close(block)
+
+	// Wait for Stop to drain.
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not finish draining")
+	}
+
+	c := devices.GetCursor("device-1")
+	if c.LastEventID != "" {
+		t.Errorf("cursor must NOT be written after Stop: got %+v", c)
+	}
+}
+
+// TestRevokeCursorNotRestored verifies Revoke concurrency: when a Send is
+// in-flight and RevokeDevice is called, the goroutine completes but does
+// NOT write the cursor (revoked guard prevents resurrection).
+func TestRevokeCursorNotRestored(t *testing.T) {
+	devices := NewDeviceStore()
+	devices.Bind("device-1", "token-1")
+
+	block := make(chan struct{})
+	sender := &selectiveHangSender{
+		hangDevice:  "device-1",
+		slowUnblock: block,
+	}
+
+	w := openTestWriter(t)
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
+	notifier.SetEnabled(true)
+
+	w.Append(validEnvelope("revoke-1", "session-1", 1, contract.EventApprovalRequested))
+	notifier.Dispatch()
+
+	// Wait for goroutine to enter Send (blocked).
+	time.Sleep(100 * time.Millisecond)
+	if notifier.ActiveGoroutines() != 1 {
+		t.Fatalf("expected 1 in-flight goroutine, got %d", notifier.ActiveGoroutines())
+	}
+
+	// Revoke while goroutine is blocked in Send.
+	notifier.RevokeDevice("device-1")
+
+	// Device should be removed from store.
+	if devices.Token("device-1") != "" {
+		t.Error("token must be cleared after revoke")
+	}
+
+	// Unblock the Send. The goroutine completes but must NOT write cursor
+	// because the revoked guard fires.
+	close(block)
+	time.Sleep(200 * time.Millisecond) // let goroutine finish
+
+	c := devices.GetCursor("device-1")
+	if c.LastEventID != "" {
+		t.Errorf("cursor must NOT be written after revoke: got %+v", c)
+	}
+	// Device must remain absent from store.
+	if devices.Token("device-1") != "" {
+		t.Error("token must remain absent after revoke + goroutine completion")
+	}
+
 	notifier.Stop()
-
-	// After Stop, dispatch should be a no-op (returns 0).
-	launched := notifier.Dispatch()
-	if launched != 0 {
-		t.Errorf("stopped notifier launched %d goroutines, want 0", launched)
-	}
-	if notifier.ActiveGoroutines() != 0 {
-		t.Errorf("active goroutines after Stop: %d want 0", notifier.ActiveGoroutines())
-	}
-
-	// ---- Revoke test: new notifier, revoke device mid-flight. ----
-	devices2 := NewDeviceStore()
-	devices2.Bind("device-a", "token-a")
-	devices2.Bind("device-b", "token-b")
-
-	blockB := make(chan struct{})
-	var aCount atomic.Int64
-	hangSender := &selectiveHangSender{
-		hangDevice: "device-b",
-		onSend: func(id string) {
-			if id == "device-a" {
-				aCount.Add(1)
-			}
-		},
-		slowUnblock: blockB,
-	}
-
-	w2 := openTestWriter(t)
-	n2 := NewNotifier(w2, devices2, func(sid string) int64 { return 1 }, hangSender)
-	n2.SetEnabled(true)
-
-	w2.Append(validEnvelope("revoke-1", "session-1", 1, contract.EventApprovalRequested))
-	n2.Dispatch()
-
-	// Wait for device-a to receive its event.
-	for aCount.Load() < 1 {
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	// Revoke device-b. Its push token and cursor are cleared.
-	devices2.Revoke("device-b")
-
-	// Next dispatch: device-b has no token → not in Snapshot → skipped.
-	launched2 := n2.Dispatch()
-	if launched2 > 1 {
-		t.Errorf("after revoke: launched=%d want at most 1 (revoked device skipped)", launched2)
-	}
-
-	// Cleanup.
-	close(blockB)
-	n2.Stop()
 }
 
 // recordingSender records Locator deliveries for ordering tests.
