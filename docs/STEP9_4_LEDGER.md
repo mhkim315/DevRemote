@@ -14,7 +14,9 @@
 | 3 | impl-9.4-A-R2 | T1 | 2 | DONE | `f1e1b1912` | `f1e1b1912` | PASS | V1_REJECT | 5 residual (B1 partial, B2/B3/B4/B6 unresolved) | B5 fixed. Blind-retry risk → switch to T2 |
 | 4 | impl-9.4-A-R3 | T2 | 1 | DONE | `aea4eb3bd` | `aea4eb3bd` | PASS* | V1_REJECT | 4 residual (B3-B1, B3-B2, B4-B3, B4-B4) | B1/B2/B6 fixed. T1+T2 both stuck → SPLIT |
 | 5 | SPLIT-A (B3) | T2 | 1 | MERGED | — | — | — | — | Absorbed into 677f37e2a | Shared worktree: T1 commit included T2 changes |
-| 6 | SPLIT-B (B4) | T1 | 1 | DONE | `677f37e2a` | `677f37e2a` | PASS | V1 재심사중 | — | Integrated A+B: transactional upgrade + path safety + error handling |
+| 6 | SPLIT-B (B4) | T1 | 1 | DONE | `677f37e2a` | `677f37e2a` | PASS | V1_REJECT | 4 execution-order | Integrated A+B. Blocker: rollback order, artifact, path validation, fail-closed |
+| 7 | impl-9.4-A-R5 | T2 | 2 | DONE | `1cf105751` | `1cf105751` | PASS | V1_REJECT | 4: path scoping, bootout, backup orphan, uninstall exit | V1: no failure-path tests → leaks undetected |
+| 8 | impl-9.4-A-R6 | T2 | 3 | FIX | 대기중 | — | — | — | 4: path bound, bootout state, backup cleanup, exit code | REQUIRED: 4 failure-path tests to prevent regression |
 
 ## Operational Rules
 
@@ -27,9 +29,9 @@
 | Phase | Rounds | Details |
 |-------|--------|---------|
 | Contract | 1 | T2 single-shot |
-| Implementation | 4 | T1 R1+R2 + T2 R3 + SPLIT A+B merged |
+| Implementation | 6 | T1 R1+R2 + T2 R3-R6 + SPLIT A+B merged |
 | Pre-gate returns | 0 | |
-| V1 REJECT | 3 | R2: 6, R3: 5, R4: 4 residual |
+| V1 REJECT | 5 | R2:6, R3:5, R4:4, R6:4, R7:4 |
 | Task Splits | 1 | R5-6 SPLIT A+B (T1+T2 both stuck → concern boundary) |
 | V1 ACCEPT | 0 | |
 | Evidence | 0 | |
