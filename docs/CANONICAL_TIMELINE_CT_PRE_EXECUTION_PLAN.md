@@ -606,8 +606,9 @@ post-PB authorization.
 3. **SATISFIED:** CT-P1 reviewed against operational-evidence direction and
    narrowly amended (`12135bd80`);
 4. **SATISFIED:** revised CT-P1 foundation independently accepted;
-5. **SATISFIED:** production-shadow wiring independently accepted
-   (`58eb55b92`).
+5. **SATISFIED:** default-off fail-open Timeline writer construction
+   independently accepted at `58eb55b92` (Step 4). Live producer activation
+   (appending real events) is gated to Step 9.1 and requires separate review.
 6. **UNSATISFIED:** privacy review, encryption-at-rest, retention policy,
    access/audit, and deletion/export remain unresolved per Section 9
    and require a separate reviewed contract.
