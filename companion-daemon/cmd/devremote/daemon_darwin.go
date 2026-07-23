@@ -410,8 +410,10 @@ func recoverIfInstalling(state *daemonState) error {
 // after every recoverable artifact has been attempted.
 func rollbackCommittedReplacement(plistPath string, priorPlist []byte, hadPriorPlist bool, statePath string, priorState []byte, hadPriorState bool, newBinPath, oldBinPath, backupPath string, priorWasLoaded bool) error {
 	var rollbackErrs []error
+	bootoutConfirmed := true
 	if loaded, _ := daemonLoaded(plistPath); loaded {
 		if err := runLaunchctl("bootout", "gui/"+currentUserUID(), plistPath); err != nil {
+			bootoutConfirmed = false
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("stop replacement daemon: %w", err))
 		}
 	}
@@ -451,12 +453,20 @@ func rollbackCommittedReplacement(plistPath string, priorPlist []byte, hadPriorP
 	} else if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("remove new plist: %w", err))
 	}
-	if hadPriorState {
+	// A failed phase-clear write leaves the durable state in "installing".
+	// Keep it there if the replacement may still be running so the next install
+	// has complete recovery evidence rather than a falsely committed state.
+	if hadPriorState && bootoutConfirmed {
 		if err := writeFileAtomic(statePath, priorState, 0o600); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore daemon state: %w", err))
 		}
-	} else if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-		rollbackErrs = append(rollbackErrs, fmt.Errorf("remove new daemon state: %w", err))
+	} else if !hadPriorState && bootoutConfirmed {
+		if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("remove new daemon state: %w", err))
+		}
+	}
+	if !bootoutConfirmed {
+		return errors.Join(rollbackErrs...)
 	}
 	if backupPath != "" {
 		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
