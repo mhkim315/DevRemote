@@ -1,6 +1,6 @@
 # STEP 9.3 — N1 Exact-Event Notification-to-Action Contract
 
-**Status:** IMPLEMENTATION CONTRACT — PENDING IMPLEMENTATION
+**Status:** IMPLEMENTATION CONTRACT — ACCEPTED at `e829299c6`
 
 **Branch:** `feature/canonical-timeline-foundation`
 **PREREQUISITE:** Step 9.2 ACCEPTED at `c82fef47f`

@@ -86,6 +86,9 @@ No retry control. No worker terminal states.
 | V2 Audit | 3 | contract scope + counts |
 | **Total** | **22** | |
 
+Post-ACCEPT evidence reconciliation rounds: 15 (EVID R1–R10 + SHA fixes).
+Final all-inclusive total: **37 rounds** (Contract 4 + Pre-gate 2 + Impl 13 + EVID 15 + V2 3).
+
 **Pre-gate catches:** 2 (test failure, gofmt)
 **Pre-gate prevented V1 dispatches:** 2
 **Blind retries:** 1 (T2 R1→R2, escalated to T1)

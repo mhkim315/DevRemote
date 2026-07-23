@@ -1,13 +1,13 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `e829299c6`
-**EVID SHA:** `4383353a4` (R9)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix)
+**EVID SHA:** (this commit — R10 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R9 — literal git diff --stat output, removed 'exact stdout' claim
-**Round counts:** Contract 4, Pre-gate 2, Impl 13, EVID 5, V2 3 = 27 total
+**Revision:** R10 — round counts + 3-doc sync + PENDING→ACCEPTED
+**Round counts:** Contract 4, Pre-gate 2, Impl 13, EVID 15, V2 3 = 37 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and

@@ -1,6 +1,6 @@
 # STEP 9.0 — Post-PB Feature Ledger
 
-**Status:** PENDING INDEPENDENT CLOSEOUT — zero code changes.
+**Status:** ACCEPTED at `e829299c6` — Step 9.3 complete.
 
 **Candidate resolver:** `git log -1 --format=%H -- docs/STEP9_0_LEDGER.md`
 **Date:** 2026-07-23
