@@ -8,12 +8,10 @@
 > This document continues to govern CT foundation safety. CT-P1 was
 > independently accepted at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`.
 > PB received independent ACCEPT at
-> `5354077afcf30343d9666511e259346d9bea0ad6`. CT-P1 must now be reviewed and,
-> if needed, narrowly amended so that
-> Canonical Timeline is operational evidence and does not require every future
-> operational event to be a provider `AgentEvent`. Do not begin CT-P2 until the
-> amendment receives independent ACCEPT and a separate post-PB packet authorizes
-> it.
+> `5354077afcf30343d9666511e259346d9bea0ad6`. CT-P1 was reviewed and narrowly
+> amended; the operational-evidence amendment received independent ACCEPT at
+> `12135bd80`. Do not begin CT-P2 until a separate post-PB plan is reviewed
+> and an independent authorization gate is satisfied.
 
 **Architecture name:** **Canonical Timeline**
 
@@ -604,8 +602,10 @@ post-PB authorization.
 3. **SATISFIED:** CT-P1 reviewed against operational-evidence direction and
    narrowly amended (`12135bd80`);
 4. **SATISFIED:** revised CT-P1 foundation independently accepted;
-5. **SATISFIED:** production-shadow wiring reviewed and independently accepted
-   (`58eb55b92`).
+5. **PARTIALLY SATISFIED:** production-shadow wiring independently accepted
+   (`58eb55b92`); privacy review, encryption-at-rest, retention policy,
+   access/audit, and deletion/export remain unresolved per Section 9
+   and require a separate reviewed contract.
 
 CT-P2 and authority/UI cutover remain blocked pending a separate post-PB plan
 and independent authorization gate. Do not begin CT-P2.
@@ -627,6 +627,8 @@ It is not a current executor authorization:
    commit, push fast-forward, and request independent read-only CT-P0 review.
 
 The historical CT-P0 executor prohibition on CT-P1 was satisfied before CT-P1
-started. Current work follows the stop and transition rules in sections 8-10
-and `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`. Current work is the CT-P1
-operational-evidence amendment; CT-P2 remains blocked.
+started. CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are
+independently accepted. Foundation Steps 1-8 and Step 9.0 ledger reconciliation
+are complete. Current work follows the authoritative sequence in
+`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`. CT-P2 remains blocked pending
+a separate post-PB plan and independent authorization gate.
