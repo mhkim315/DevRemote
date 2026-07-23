@@ -81,6 +81,11 @@ func bindOperationalRuntime(sink OperationalEventSink, identity OperationalRunti
 }
 
 func revokeOperationalRuntime(sink OperationalEventSink) {
+	defer func() {
+		// Observation revocation is best-effort and must never alter the
+		// already-authoritative resume/lifecycle outcome.
+		_ = recover()
+	}()
 	if revoker, ok := sink.(OperationalRuntimeRevoker); ok {
 		revoker.RevokeOperationalRuntime()
 	}

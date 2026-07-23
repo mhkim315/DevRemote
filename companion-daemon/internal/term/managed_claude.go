@@ -1434,7 +1434,24 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		CertResult:      launchCert.Result,
 		CertReason:      launchCert.Reason,
 	}
+	// Revoke before changing the registry current generation. An old submit
+	// that acquired its sender before this point belongs to the still-current
+	// N incarnation; every later submit is stale before N+1 becomes current.
+	previous := rt.resumePreviousRuntime
+	if previous != nil {
+		revokeOperationalRuntime(previous.operationalSink())
+	}
+	s.barrier("post-resume-revoke")
 	if err := s.reg.RegisterIncarnation(ctx.originalRuntime.LaunchGen, rec); err != nil {
+		// Registration did not replace N, so a live original may receive a
+		// fresh sender. Never resurrect one that terminated while the failed
+		// resume was being prepared.
+		if previous != nil {
+			previous.rebindOperationalSinkIfLive(s.operational, OperationalRuntimeIdentity{
+				Provider: "claude", SessionID: previous.sessionID,
+				RuntimeID: previous.runtimeID, LaunchGeneration: previous.epoch,
+			})
+		}
 		s.mu.Unlock()
 		_ = proc.Kill()
 		_ = proc.Wait()
@@ -1442,12 +1459,6 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		os.RemoveAll(hookDir)
 		cancelEntry()
 		return nil, fmt.Errorf("managed claude resume register: %w", err)
-	}
-	// A replacement may never leave the old incarnation's sender active.
-	// Revoke through the old opaque handle before the N+1 sender is installed;
-	// no caller-supplied tuple can select another runtime's capability.
-	if previous := rt.resumePreviousRuntime; previous != nil {
-		revokeOperationalRuntime(previous.operationalSink())
 	}
 	// RegisterIncarnation is the commit point for this replacement. Bind the
 	// new opaque sender before publishing the runtime or emitting Started.
@@ -1485,25 +1496,43 @@ func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closing || s.runtimes[rt.sessionID] != rt || rt.terminalIntent {
+	if previous.atomicTerminated.Load() || s.closing || s.runtimes[rt.sessionID] != rt || rt.terminalIntent {
 		return
 	}
 	if err := s.reg.RestoreIncarnation(rt.epoch, record); err != nil {
 		return
 	}
+	s.barrier("post-resume-restore")
 	// Restore reactivates a live original runtime whose prior sender was
 	// revoked at replacement. It must receive a fresh, generation-bound sender
 	// rather than reusing the stale capability.
-	previous.setOperationalSink(bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+	previousLive := previous.rebindOperationalSinkIfLive(s.operational, OperationalRuntimeIdentity{
 		Provider: "claude", SessionID: record.SessionID,
 		RuntimeID: previous.runtimeID, LaunchGeneration: previous.epoch,
-	}))
+	})
 	s.runtimes[rt.sessionID] = previous
-	// Close the race where the original terminated after the pre-check while
-	// its old epoch was temporarily absent from the registry.
-	if previous.atomicTerminated.Load() {
+	if !previousLive {
+		// The original exited after the outer pre-check. Keep its restored
+		// registry record terminal and never leave a newly-bound sender active.
 		s.reg.MarkExited(record.SessionID, record.Epoch)
 	}
+}
+
+// rebindOperationalSinkIfLive checks original termination and installs a
+// fresh sender under the same slot lock used by emitOperational. If terminate
+// wins immediately after the check, its later Finished emission observes and
+// revokes this new sender; if it won earlier, no sender is installed.
+func (rt *claudeManagedRuntime) rebindOperationalSinkIfLive(
+	sink OperationalEventSink,
+	identity OperationalRuntimeIdentity,
+) bool {
+	rt.operationalMu.Lock()
+	defer rt.operationalMu.Unlock()
+	if rt.atomicTerminated.Load() {
+		return false
+	}
+	rt.operational = bindOperationalRuntime(sink, identity)
+	return true
 }
 
 // createResumeHookSettings creates settings.json with BOTH PreToolUse

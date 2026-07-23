@@ -1401,20 +1401,67 @@ func TestClaudeResumeReplacementRevokesOldSenderAndRestoreRebindsFresh(t *testin
 	if !ok {
 		t.Fatal("ReserveEntry")
 	}
-	resumed, err := svc.ResumeForApproval(handle, &resumeContext{
-		coordinator: svc.Coordinator(), claimToken: handle.ClaimToken,
-		resumeNonce: handle.ResumeNonce, originalRuntime: originalRef,
-		pokitSessionID: id, claudeSessionID: "claude-sender-session",
-		toolUseID: "tool-sender", toolName: "Bash", inputDigest: digest,
-		expectedDecision: "allow", originalCWD: "/tmp",
+	// A submit that wins before replacement is attributed to the still-current
+	// N runtime. Once the old sender is revoked, the registry must remain N
+	// until RegisterIncarnation advances it, and every old-sender loser drops.
+	winningBefore := originalSender.eventCount()
+	original.emitOperational(OperationalToolCallStarted, "old-winner", "before-replacement", "old-winner")
+	if got := originalSender.eventCount(); got != winningBefore+1 {
+		t.Fatalf("old current sender did not submit before replacement: before=%d after=%d", winningBefore, got)
+	}
+	revokeReached := make(chan struct{})
+	allowRegister := make(chan struct{})
+	svc.createBarrier = func(stage string) {
+		if stage == "post-resume-revoke" {
+			close(revokeReached)
+			<-allowRegister
+		}
+	}
+	t.Cleanup(func() { svc.createBarrier = nil })
+	type resumeResult struct {
+		rt  *claudeManagedRuntime
+		err error
+	}
+	resumeCh := make(chan resumeResult, 1)
+	go func() {
+		rt, err := svc.ResumeForApproval(handle, &resumeContext{
+			coordinator: svc.Coordinator(), claimToken: handle.ClaimToken,
+			resumeNonce: handle.ResumeNonce, originalRuntime: originalRef,
+			pokitSessionID: id, claudeSessionID: "claude-sender-session",
+			toolUseID: "tool-sender", toolName: "Bash", inputDigest: digest,
+			expectedDecision: "allow", originalCWD: "/tmp",
+		})
+		resumeCh <- resumeResult{rt: rt, err: err}
+	}()
+	select {
+	case <-revokeReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resume did not reach post-revoke gap")
+	}
+	duringRevoke, ok := svc.Registry().Get(id)
+	if !ok || duringRevoke.Epoch != original.epoch || duringRevoke.Exited {
+		t.Fatalf("registry advanced before old sender revoke completed: %+v ok=%v", duringRevoke, ok)
+	}
+	before := originalSender.eventCount()
+	originalSender.SubmitAfterCommit(OperationalEvent{
+		Kind: OperationalToolCallStarted, Provider: "claude", SessionID: id,
+		RuntimeID: original.runtimeID, LaunchGeneration: original.epoch,
+		SourceID: "old-loser", SourcePosition: "post-revoke", ReferenceID: "old-loser",
+		OccurredAt: clockNow().UTC(),
 	})
+	if got := originalSender.eventCount(); got != before {
+		t.Fatalf("old sender submitted after revoke-before-register: before=%d after=%d", before, got)
+	}
+	close(allowRegister)
+	result := <-resumeCh
+	resumed, err := result.rt, result.err
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !originalSender.isRevoked() {
 		t.Fatal("replacement left original sender active")
 	}
-	before := originalSender.eventCount()
+	before = originalSender.eventCount()
 	originalSender.SubmitAfterCommit(OperationalEvent{
 		Kind: OperationalToolCallStarted, Provider: "claude", SessionID: id,
 		RuntimeID: original.runtimeID, LaunchGeneration: original.epoch,
@@ -1447,6 +1494,98 @@ func TestClaudeResumeReplacementRevokesOldSenderAndRestoreRebindsFresh(t *testin
 	}
 }
 
+func TestClaudeResumeRestoreOriginalExitDoesNotLeaveFreshSender(t *testing.T) {
+	launcher := &multiLaunchLauncher{}
+	svc, _, _, _ := newInstalledClaudeService(t, launcher)
+	binder := &replacementOperationalBinder{}
+	if err := svc.SetOperationalEventSink(binder); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, p := range launcher.procs {
+			_ = p.Kill()
+		}
+	})
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	original := svc.runtimes[id]
+	svc.mu.Unlock()
+	if original == nil {
+		t.Fatal("original runtime missing")
+	}
+	originalRef := RuntimeRef{Adapter: claudeHeadlessAdapter, Version: "2.1.209", LaunchGen: original.epoch}
+	digest := CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+	if !svc.Coordinator().ReserveIdentity(
+		"claude-restore-exit", "claude-restore-exit-session", "tool-restore-exit", "Bash",
+		digest, activationCatalogID, id, originalRef,
+	) {
+		t.Fatal("ReserveIdentity")
+	}
+	binding := ApprovalExecutionBinding{
+		ApprovalID: "claude-restore-exit", SessionID: id, Runtime: originalRef,
+		ActionDigest: strings.Repeat("b", 64), PayloadDigest: payloadDigest(claudeHookResponseBytes("allow")),
+		IdempotencyKey: "restore.exit", OptionID: "allow_once", DeliverySchema: claudeDecisionSchemaV1,
+	}
+	handle, ok := svc.Coordinator().ReserveEntry(strings.Repeat("f", 32), binding)
+	if !ok {
+		t.Fatal("ReserveEntry")
+	}
+	resumed, err := svc.ResumeForApproval(handle, &resumeContext{
+		coordinator: svc.Coordinator(), claimToken: handle.ClaimToken, resumeNonce: handle.ResumeNonce,
+		originalRuntime: originalRef, pokitSessionID: id, claudeSessionID: "claude-restore-exit-session",
+		toolUseID: "tool-restore-exit", toolName: "Bash", inputDigest: digest,
+		expectedDecision: "allow", originalCWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSender := binder.senderFor("claude", id, original.runtimeID, original.epoch)
+	if originalSender == nil || !originalSender.isRevoked() {
+		t.Fatal("replacement did not revoke original sender")
+	}
+	restoreReached := make(chan struct{})
+	allowRebind := make(chan struct{})
+	svc.createBarrier = func(stage string) {
+		if stage == "post-resume-restore" {
+			close(restoreReached)
+			<-allowRebind
+		}
+	}
+	t.Cleanup(func() { svc.createBarrier = nil })
+	done := make(chan struct{})
+	go func() {
+		svc.finishApprovalResume(resumed)
+		close(done)
+	}()
+	select {
+	case <-restoreReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restore did not reach rebind gap")
+	}
+	// The original exits after RestoreIncarnation but before rebind. Its old
+	// sender is revoked; the restore path must not create an orphan fresh one.
+	original.terminate()
+	close(allowRebind)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restore cleanup did not finish")
+	}
+	if got := binder.countFor("claude", id, original.runtimeID, original.epoch); got != 1 {
+		t.Fatalf("terminated original received fresh sender: count=%d", got)
+	}
+	if !originalSender.isRevoked() {
+		t.Fatal("terminated original retained an active sender")
+	}
+	record, ok := svc.Registry().Get(id)
+	if !ok || record.Epoch != original.epoch || !record.Exited {
+		t.Fatalf("restored original was not terminal: %+v ok=%v", record, ok)
+	}
+}
+
 type replacementOperationalBinder struct {
 	mu      sync.Mutex
 	senders []*replacementOperationalSender
@@ -1473,6 +1612,19 @@ func (b *replacementOperationalBinder) senderFor(provider, sessionID, runtimeID 
 		}
 	}
 	return nil
+}
+
+func (b *replacementOperationalBinder) countFor(provider, sessionID, runtimeID string, generation int64) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	count := 0
+	for _, sender := range b.senders {
+		if sender.identity.Provider == provider && sender.identity.SessionID == sessionID &&
+			sender.identity.RuntimeID == runtimeID && sender.identity.LaunchGeneration == generation {
+			count++
+		}
+	}
+	return count
 }
 
 type replacementOperationalSender struct {
