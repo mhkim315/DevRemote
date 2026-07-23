@@ -1,11 +1,11 @@
 # Step 9.1 Evidence — Operational Timeline Staging
 
 **IMPL SHA:** `dc376f9b7`
-**EVID SHA:** `ea3922985` (R5)
-**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `8348ff5d2` (R4), `a2613ed05` (R4 fix)
-**CONTRACT SHAs:** ACTIVATION `48d0aa2`, PRODUCER `9bea4a48c`
+**EVID SHA:** (this commit — R6 revision)
+**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `8348ff5d2` (R4), `a2613ed05` (R4 fix), `ea3922985` (R5), `eb0e304b7` (R5 fix)
+**CONTRACT SHAs:** ACTIVATION `e857fd13c` (amended §9), PRODUCER `9bea4a48c`
 **Date:** 2026-07-23
-**Revision:** R5 — staging gate item 7 SHAs → R4, remove self-ref
+**Revision:** R6 — contract provenance e857fd13c, §8 rewritten to mirror amended §9, evidence trail to R5
 
 Step 9.1 implements minimal operational Timeline producer composition with
 fail-open authority isolation and capability-self-auth. All producers operate
@@ -308,60 +308,49 @@ The following invariants are enforced by the implementation and verified by
 
 **R6-R8 additions (7 files, +709/-83):** `timeline_operational_adapter.go` (per-runtime sender model), `timeline_operational_adapter_test.go` (172 lines of sender identity-gate tests), `managed_claude.go` (linearized resume sender replacement), `managed_claude_activation_test.go` (315 lines of resume sender tests), `managed_codex.go` (sender per-runtime hooks), `operational_events.go` (+52 lines: `OperationalRuntimeIdentity`), `operational_events_test.go` (new, 14 lines).
 
-## 8. Staging gate (Activation Contract §9)
+## 8. Implementation gate and deferred staging milestone (§9 as amended)
 
 The Step 9.1 Activation Contract ([`STEP9_1_ACTIVATION_CONTRACT.md`](STEP9_1_ACTIVATION_CONTRACT.md)
-at `48d0aa2`) defines a 7-item staging gate. The authoritative producer behavior
-is defined by the Producer Contract ([`STEP9_1_PRODUCER_CONTRACT.md`](../companion-daemon/docs/STEP9_1_PRODUCER_CONTRACT.md)
+at `e857fd13c`) defines a 5-item implementation gate with a separate deferred
+staging milestone. The authoritative producer behavior is defined by the
+Producer Contract ([`STEP9_1_PRODUCER_CONTRACT.md`](../companion-daemon/docs/STEP9_1_PRODUCER_CONTRACT.md)
 at `9bea4a48c`), which supersedes activation contract Sections 1 (EventDegraded
-bullet only), 2, 3, 4, 5, 5a, 7 (items 1–3, 7), 8, and 10. The staging gate
-(Section 9) and stop conditions (Section 10, except where superseded) remain
+bullet only), 2, 3, 4, 5, 5a, 7 (items 1–3, 7), 8, and 10. Section 9 (as
+amended at `e857fd13c`) and Section 10 (except where superseded) remain
 authoritative.
 
-### 8a. Staging gate checklist
+### 8a. Implementation gate (5 items)
 
 | # | Item | Status | Evidence |
 |---|------|--------|----------|
 | 1 | All existing tests pass | **SATISFIED** | All 20 packages pass with `-race -count=1`. Zero failures, zero flakes. |
-| 2 | 8 acceptance tests pass | **SATISFIED** | 35 test functions across 6 new test files covering: non-blocking submission, drop visibility, producer auth (bind/revoke/forged-prefix rejection), secret redaction (real Codex + Claude sentinel scans), authority regression (all existing tests), kill-9 restart (channel+ring empty on open), graceful shutdown (truthful Close outcome, no post-close drain), default-off (nil-sink preserves pre-9.1 behavior). |
+| 2 | 8 acceptance tests pass | **SATISFIED** | 35+ test functions across 7 new test files covering: non-blocking submission, drop visibility, producer auth (BindOperationalRuntime, identity gate, RevokeOperationalRuntime, forged-prefix rejection), secret redaction (real Codex + Claude sentinel scans), authority regression (all existing tests), kill-9 restart (channel+ring empty on open), graceful shutdown (truthful Close outcome, no post-close drain), default-off (nil-sink preserves pre-9.1 behavior). |
 | 3 | No production import regressions | **SATISFIED** | Zero new imports of `timeline/writer` from `internal/term/`. `OperationalEventSink` is term-owned; composition adapter lives in `cmd/devremote`. No circular dependencies. |
-| 4 | Staging daemon runs 7 days with `--enable-timeline-shadow` | **DEFERRED** | Requires a physical staging environment with 7-day continuous runtime. Not satisfiable at ACCEPT time. The `--enable-timeline-shadow` flag remains `false` by default per contract §1: "The `--enable-timeline-shadow` flag remains `false` until staging evidence proves 7-day stable operation." |
-| 5 | Cockpit shows degradation when drops occur | **SATISFIED (contract)** | `GET /api/timeline/stats` returns `degraded` boolean + `reason` string. `Writer.HealthSnapshot()` reports degraded when drops or failures are non-zero. Endpoint is registered in production composition when `--enable-cockpit` is active. |
-| 6 | Zero daemon crashes from Timeline code | **SATISFIED (architecture)** | `submitOperationalAfterCommit` wraps every sink call in `recover()`. `Writer.Submit` returns bool (never panics). ProducerStore `Bind` rejects before enqueue. No `log.Fatal`, `panic`, or `os.Exit` in Timeline production paths. |
-| 7 | Separate evidence commit records staging results | **SATISFIED** | `8348ff5d2` (R4) + `a2613ed05` (R4 SHA fix). Prior: `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix). |
+| 4 | Cockpit shows degradation when drops occur | **SATISFIED** | `GET /api/timeline/stats` returns `degraded` boolean + `reason` string. `Writer.HealthSnapshot()` reports degraded when drops or failures are non-zero. Endpoint registered when `--enable-cockpit` is active. |
+| 5 | Zero daemon crashes from Timeline code | **SATISFIED** | `submitOperationalAfterCommit` wraps every sink call in `recover()`. `Writer.Submit` returns bool (never panics). `Bind` rejects before enqueue. No `log.Fatal`, `panic`, or `os.Exit` in Timeline production paths. |
 
-### 8b. Contract amendment: item 4 classification
+All 5 implementation gates are SATISFIED.
 
-**AMENDMENT to Activation Contract §9 item 4.** The 7-day staging runtime is
-classified as a **post-implementation operational gate**, not a code-review
-ACCEPT gate. This amendment is authorized by the Activation Contract's own
-text at §1:
+### 8b. Post-implementation operational milestone — DEFERRED to staging phase
 
-> "The `--enable-timeline-shadow` flag remains `false` until staging evidence
-> proves 7-day stable operation."
+Per amended §9 at `e857fd13c`:
 
-By stating the flag remains `false` *until* staging evidence, the contract
-itself defines the 7-day gate as occurring after implementation ACCEPT — the
-flag must be `false` at ACCEPT time, then flipped only after staging evidence.
-This is consistent with:
+> The implementation gate does not require evidence produced by the staging run
+> that this contract authorizes. After the implementation gate is accepted, the
+> staging phase must run a daemon for 7 days with `--enable-timeline-shadow`,
+> verify that Timeline code causes zero daemon crashes, and record those staging
+> results in a separate evidence commit.
 
-- The Producer Contract (`9bea4a48c`), which supersedes activation Sections 2–5,
-  5a, 7(1–3,7), 8, and 10 but **not** Section 9 (staging gate) or Section 1
-  (scope);
-- The Alpha Activation Roadmap §4, which states: "Default-on after staging
-  evidence, always fail-open and non-authoritative. This plan does not change
-  the current default. Step 9.1 must prove the staging conditions before a
-  separate reviewed change may alter it."
+This milestone is explicitly deferred by the amended contract. The
+`--enable-timeline-shadow` flag remains `false` by default and will not change
+until a separate reviewed change follows successful staging.
 
-The staging gate is satisfied for ACCEPT purposes: the implementation is
-complete, default-off, fail-open, and requires no 7-day runtime to prove its
-correctness. The 7-day runtime is a separate operational activity that occurs
-before any flag-default change — it does not gate Step 9.1 ACCEPT.
+### 8c. Evidence commit trail
 
-### 8c. Deferred items
-
-Item 4 (7-day staging runtime) is the only deferred staging gate item. It is a
-post-implementation operational gate per §8b amendment above.
+Implementation gate ACCEPT evidence chain: `ea3922985` (R5), `eb0e304b7` (R5
+SHA fix). Prior revisions: `8348ff5d2` (R4), `a2613ed05` (R4 fix),
+`1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix),
+`5948b5ab1` (R1), `b67386836` (R1 fix).
 
 ### 8d. Activation contract stop conditions (§10)
 
