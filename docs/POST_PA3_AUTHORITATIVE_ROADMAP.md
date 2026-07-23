@@ -50,7 +50,7 @@ These identities have different meanings and must not be substituted for one ano
 | PA3 | ACCEPT at `34d55e950012e97ccdcb03fd9abba88088ffd9a7` |
 | PA4 | ACCEPT at `74560edd88ef5b53c3b3d8d215f3007efbf468a2` |
 | PB | ACCEPT at `5354077afcf30343d9666511e259346d9bea0ad6`; candidate `059bef181c6c2ef312eee421dbf10f12b15b0326`; matched SM-S926N evidence complete |
-| CT-PRE | CT-P0 and CT-P1 ACCEPT (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`); operational-evidence amendment is NEXT; CT-P2 and production composition remain blocked pending its independent ACCEPT and a reviewed post-PB packet |
+| CT-PRE | CT-P0 ACCEPT. CT-P1 ACCEPT (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`). CT-P1 amendment ACCEPT (`12135bd80`). Foundation Steps 4-8 complete: Shadow (`58eb55b92`), Workspace (`ad83bae10`), Coordination (`6c13aafe7`), Validation (`814868b5b`), Cockpit (`093e03f04`). CT-P2 and production wiring remain blocked pending independent CT-P2 plan acceptance. |
 
 ## 2. Mandatory execution order
 

@@ -322,28 +322,33 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 
 ## 10. Authoritative implementation order
 
-1. **COMPLETE:** CT-P1 finished without disruption and received independent
+1. **COMPLETE:** CT-P1 contract, all-payload privacy boundary, T0 field bounds.
    ACCEPT at `317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`.
-2. **COMPLETE:** PB physical-device evidence received final independent ACCEPT
-   at `5354077afcf30343d9666511e259346d9bea0ad6` for candidate
+2. **COMPLETE:** PB physical-device evidence. ACCEPT at
+   `5354077afcf30343d9666511e259346d9bea0ad6` for candidate
    `059bef181c6c2ef312eee421dbf10f12b15b0326`.
-3. **NEXT:** Review CT-P1 against this operational-evidence direction; add a narrow
-   contract amendment if required and independently accept the revised CT-P1.
-4. Add fail-open Operational Canonical Timeline shadow wiring.
-5. Add workspace identity, clean-snapshot contract, and cooperative repository
-   write lease.
-6. Add the manual inter-session coordination envelope and broker.
-7. Add frozen clean-snapshot independent validation.
-8. Build the mobile operational cockpit.
-9. Dogfood and ship an alpha/beta before expanding policy automation.
-10. Consider forked recovery worktrees and policy automation only after measured
+3. **COMPLETE:** CT-P1 operational-evidence amendment accepted at
+   `12135bd8072ae284fbe95c71cddf5f331a5d26f5`.
+4. **COMPLETE:** Fail-open Timeline shadow writer (IMPL `6d1a72d35`,
+   EVID `58eb55b92`). Ring-buffer mailbox model, zero goroutines.
+5. **COMPLETE:** Workspace identity, clean-snapshot contract, cooperative
+   lease (IMPL `404a3e88`, EVID `ad83bae10`).
+6. **COMPLETE:** Coordination envelope + broker with capability-bound auth
+   (IMPL `6c13aafe7`, EVID at `6c13aafe7`).
+7. **COMPLETE:** Frozen clean-snapshot validation store with capped history
+   (IMPL `e1cbe7211`→`093e03f04`, EVID `814868b5b`).
+8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
+   goroutines (EVID `093e03f04`).
+9. **NEXT (9.0-9.3):** Dogfood readiness review, feature-flag audit, default-off
+   foundation vs production-live distinction, ledger document.
+10. **NEXT (9.1+):** Operational alpha/beta before expanding policy automation.
+11. **NEXT:** Forked recovery worktrees and policy automation only after measured
     demand.
 
-Operational Timeline and workspace identity may be adjacent foundation work,
-but communication and validation cannot precede exact workspace identity.
-CT-P2 is blocked. CT-P1 remains production-unwired through steps 1-3, and no
-production Timeline shadow wiring begins before independent acceptance of the
-revised CT-P1 contract and its separately reviewed shadow-wiring packet.
+Steps 1-8 (foundation) are complete. Steps 9.0-9.3 are documentation-only
+and gate the alpha/beta milestone. CT-P2 remains blocked until independent
+acceptance of the revised CT-P1 operational-evidence contract and its shadow-
+wiring packet.
 
 ## 11. Stop and expansion gates
 
