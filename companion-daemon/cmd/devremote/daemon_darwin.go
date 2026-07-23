@@ -489,7 +489,7 @@ func installDaemon() error {
 	if oldBinPath != "" {
 		backupPath = upgradeBackupPath(serviceBinPath)
 		// Snapshot the old executable before any service definition changes.
-		if err := backupBinary(serviceBinPath, backupPath); err != nil {
+		if err := backupBinary(oldBinPath, backupPath); err != nil {
 			return fmt.Errorf("install: cannot back up existing binary: %w", err)
 		}
 	}
@@ -512,7 +512,7 @@ func installDaemon() error {
 	state := &daemonState{
 		Version:     cliVersion,
 		BinPath:     serviceBinPath,
-		OldBinPath:  serviceBinPath,
+		OldBinPath:  oldBinPath,
 		BackupPath:  backupPath,
 		PlistPath:   plistPath,
 		StateDir:    stateDir,
