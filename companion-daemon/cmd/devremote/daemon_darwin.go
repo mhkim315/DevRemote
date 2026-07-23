@@ -426,8 +426,7 @@ func validateDaemonPaths(state *daemonState) error {
 		if err != nil {
 			return fmt.Errorf("daemon state backupPath: %w", err)
 		}
-		if !strings.HasPrefix(resolvedBackup, resolvedBin+".pre-upgrade-") &&
-			!strings.HasPrefix(resolvedBackup, filepath.Dir(resolvedBin)+"/") {
+		if !strings.HasPrefix(resolvedBackup, resolvedBin+".pre-upgrade-") {
 			return fmt.Errorf("daemon state backupPath is not related to binPath: %q", state.BackupPath)
 		}
 	}
@@ -510,30 +509,10 @@ func installDaemon() error {
 		serviceBinPath = oldBinPath
 	}
 	backupPath := upgradeBackupPath(serviceBinPath)
-	if oldBinPath != "" {
-		backupPath = upgradeBackupPath(serviceBinPath)
-		// Snapshot the old executable before any service definition changes.
-		if err := backupBinary(oldBinPath, backupPath); err != nil {
-			return fmt.Errorf("install: cannot back up existing binary: %w", err)
-		}
+	oldOldPath := ""
+	if existingState != nil {
+		oldOldPath = existingState.OldBinPath
 	}
-
-	// The new definition is fully durable before the old service is stopped.
-	priorWasLoaded, _ := daemonLoaded(plistPath)
-	stdoutPath := filepath.Join(logDir, "daemon-stdout.log")
-	stderrPath := filepath.Join(logDir, "daemon-stderr.log")
-	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(serviceBinPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir))
-	if err := writeFileAtomic(plistPath, []byte(plistContent), 0o600); err != nil {
-		if backupPath != "" {
-			if removeErr := os.Remove(backupPath); removeErr != nil && !os.IsNotExist(removeErr) {
-				log.Printf("install: backup cleanup after plist failure failed: %v", removeErr)
-			}
-		}
-		return fmt.Errorf("install: cannot atomically write plist: %w", err)
-	}
-
-	// Build initial state. Canonical state is written before bootstrap
-	// (below) with proper BinPath→OldBinPath promotion.
 	state := &daemonState{
 		Version:     cliVersion,
 		BinPath:     serviceBinPath,
@@ -542,6 +521,24 @@ func installDaemon() error {
 		PlistPath:   plistPath,
 		StateDir:    stateDir,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// State is the first install transaction mutation. If it cannot be made
+	// durable, none of the service artifacts are touched.
+	if err := writeDaemonState(state); err != nil {
+		return fmt.Errorf("install: cannot write daemon state: %w", err)
+	}
+
+	// The new definition is fully durable before the old service is stopped.
+	priorWasLoaded, _ := daemonLoaded(plistPath)
+	stdoutPath := filepath.Join(logDir, "daemon-stdout.log")
+	stderrPath := filepath.Join(logDir, "daemon-stderr.log")
+	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(serviceBinPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir))
+	if err := writeFileAtomic(plistPath, []byte(plistContent), 0o600); err != nil {
+		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, false); rbErr != nil {
+			return errors.Join(fmt.Errorf("install: cannot atomically write plist: %w", err), rbErr)
+		}
+		return fmt.Errorf("install: cannot atomically write plist: %w", err)
 	}
 
 	// Stop the old agent only after the new plist/state are ready. A bootout
@@ -554,6 +551,14 @@ func installDaemon() error {
 			return fmt.Errorf("install: cannot stop existing daemon for upgrade: %w", err)
 		}
 		fmt.Println("Stopped existing daemon for upgrade.")
+	}
+	if oldBinPath != "" {
+		if err := backupBinary(oldBinPath, backupPath); err != nil {
+			if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, priorWasLoaded); rbErr != nil {
+				return errors.Join(fmt.Errorf("install: cannot back up existing binary: %w", err), rbErr)
+			}
+			return fmt.Errorf("install: cannot back up existing binary: %w", err)
+		}
 	}
 
 	fmt.Printf("LaunchAgent installed: %s\n", plistPath)
@@ -571,20 +576,6 @@ func installDaemon() error {
 			return fmt.Errorf("install: atomic binary replacement failed: %w", err)
 		}
 		backupPath = actualBackup
-	}
-
-	// Commit state BEFORE bootstrap so tracking info is never lost.
-	// Multi-upgrade promotion: current binary → old, serviceBinPath → new.
-	// BackupPath is kept (cleanup is best-effort after readiness).
-	oldOldPath := ""
-	if existingState != nil {
-		oldOldPath = existingState.OldBinPath
-	}
-	state.OldBinPath = oldBinPath
-	state.BinPath = serviceBinPath
-	state.BackupPath = backupPath // kept until cleanup succeeds
-	if err := writeDaemonState(state); err != nil {
-		return fmt.Errorf("install: cannot write daemon state before bootstrap: %w", err)
 	}
 
 	// Bootstrap with launchctl.
