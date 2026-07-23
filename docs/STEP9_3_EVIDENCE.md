@@ -1,12 +1,12 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `ce730accc`
-**EVID SHA:** `41486e1d1` (R2)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix)
-**CONTRACT SHA:** `3769d583e` (R2)
+**EVID SHA:** (this commit — R3 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix)
+**CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-23
-**Revision:** R2 — file count fix: Backend 6 / Mobile 10 / Docs 4
+**Revision:** R3 — CONTRACT SHA: 3769d583e → a5e532fd9
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
 notification system with per-device dedup, 7-outcome re-authorization, and
