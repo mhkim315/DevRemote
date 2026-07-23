@@ -157,8 +157,8 @@ func (s *ValidationStore) ReadRecent(n int) []ValidationResult {
 	return out
 }
 
-// Close marks the store as closed. Submissions are rejected; reads return nil.
-// The ring buffer and history remain readable for inspection after close.
+// Close marks the store as closed. Submissions are rejected; the ring buffer
+// and full history remain readable for post-mortem inspection.
 func (s *ValidationStore) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

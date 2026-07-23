@@ -1,29 +1,28 @@
 # Step 8 Evidence — Mobile Operational Cockpit
 
 **EVID HEAD:** (this commit)
-**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 793510e07 (observer) → 0a11ef7e1 (validation store) → 24d6d2d95 (integration) → 4f10ea83f (T2 bounded observer concurrency)
+**IMPL SHAs:** 90cc46c3f (store) → 44f98dfcb (handler) → 10432920b (mobile) → 24d6d2d95 (mailbox model)
 
 ## Scope
-- timeline/writer and validation: one bounded queue (64), one dispatcher, and
-  at most eight concurrent callback goroutines; enqueue is fail-open and
-  non-blocking.
-- observer callbacks are panic-contained; dispatcher waits at most two seconds
-  before advancing. Shutdown drains queued work but returns after a five-second
-  deadline if a callback is non-cooperative.
-- validation: observable in-memory store (submit/read/subscribe/unsubscribe)
-- cockpit: aggregation from timeline+validation+runtime catalog+approval store
-- cockpit handler: GET /api/cockpit with sessions:read device bearer auth
-- mobile: CockpitScreen with daemon base URL, auth context, camelCase schema
+- timeline/writer and validation: bounded ring buffers (128 envelopes / 64 results).
+  Zero goroutines — readers poll via ReadRecent on their own schedule.
+- cockpit: handler calls Refresh on every GET, polling writer.ReadRecent,
+  validation.ReadRecent, runtime catalog, and approval store.
+- Ring buffers are readable after Close (closed submissions are rejected,
+  but existing data remains available for inspection).
+- No real-time push, no observer callbacks, no dispatcher goroutines, no
+  semaphore limits — simplest possible polling model.
 
 ## Gate results
-- go test ./... and go vet ./... PASS; targeted observer tests pass under -race
+- go test ./... PASS, go vet ./... PASS, all under -race
 - mobile TSC PASS, Jest 35 suites/542 PASS
-- observer tests: blocking callback timeout, panic containment, concurrent
-  append/submit + close, idempotent close, and optional App worker cleanup
+- Ring buffer tests: wrap-around, clamped n, concurrent append+read, empty
+  buffer, Close idempotent. Validation tests: Submit+ReadAll+ReadRecent,
+  capped history (4096 then drop oldest half), concurrent safety.
 
 ## Authority proof
 - Read-only projection, no POST/PUT/DELETE
 - Auth required (device bearer sessions:read)
 - Every item displays provider/session/generation origin
-- No production validation Submit caller exists yet. The validation store is a
-  cockpit observer seam only and does not claim validator execution evidence.
+- The App struct exposes the ValidationStore for future producers. No
+  production Submit caller exists yet — Step 7 was contract-only.

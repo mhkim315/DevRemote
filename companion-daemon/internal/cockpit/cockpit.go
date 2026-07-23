@@ -61,7 +61,8 @@ type Sources struct {
 }
 
 // CockpitStore owns only a bounded projection copy; it has no authority
-// callbacks. Sources are used only to refresh/read and observe committed data.
+// callbacks. Sources are polled on demand via Refresh — zero goroutines,
+// zero subscriptions. Ring buffers remain readable after Close.
 type CockpitStore struct {
 	mu            sync.RWMutex
 	sessions      []Item
