@@ -127,8 +127,7 @@ CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are independently
 accepted. PB ACCEPT satisfied the amendment's PB prerequisite. Foundation
 Steps 4-8 (shadow wiring, workspace identity, coordination broker, frozen
 validation, and mobile cockpit) are independently accepted. CT-P2 and
-authority/UI cutover require a separate post-PB plan and independent
-plan and authorization gate.
+authority/UI cutover require a separate post-PB plan and independent authorization gate.
 
 ## 5. Post-PB direction
 
