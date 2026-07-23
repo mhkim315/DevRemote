@@ -123,13 +123,11 @@ pre-R3 candidate for final device evidence and was independently accepted at
 
 The bounded offline Canonical Timeline foundation exception is governed by
 [`CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md`](CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md).
-CT-P0, CT-P1, and CT-P1 operational-evidence amendment are independently
-accepted. PB ACCEPT satisfies the amendment's PB prerequisite. Steps 4-8
-foundation are complete. CT-P2 requires a separate post-PB plan and
-authorization gate. CT-P0, CT-P1, and CT-P1 operational-evidence amendment are independently
-accepted. Production shadow wiring, workspace identity, coordination,
-validation, and cockpit foundation received independent acceptance
-(Steps 4-8). CT-P2 and authority/UI cutover require a separate post-PB
+CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are independently
+accepted. PB ACCEPT satisfied the amendment's PB prerequisite. Foundation
+Steps 4-8 (shadow wiring, workspace identity, coordination broker, frozen
+validation, and mobile cockpit) are independently accepted. CT-P2 and
+authority/UI cutover require a separate post-PB plan and independent
 plan and authorization gate.
 
 ## 5. Post-PB direction
@@ -180,12 +178,13 @@ safety boundaries remain controlled by this ledger and its accepted contracts.
 - PB-DG-R4 is complete and independently accepted. Preserve candidate
   `059bef181c6c2ef312eee421dbf10f12b15b0326`, its matched artifacts, and ACCEPT
   `5354077afcf30343d9666511e259346d9bea0ad6` as immutable evidence.
-- Do not begin CT-P2. CT-P1 was accepted; the amendment is accepted;
-  foundation Steps 4-8 are independently accepted. Shadow wiring is
-  independently accepted at Step 4.
-  operational-evidence amendment is independently accepted and a separate
-  post-PB packet authorizes the next implementation boundary. Any premature production import,
-  construction, goroutine, filesystem write, route, DTO, mobile dependency, or
-  authority change is an immediate CT-PRE reject.
+- Do not begin CT-P2. CT-P0, CT-P1, and the CT-P1 operational-evidence
+  amendment are independently accepted. Foundation Steps 4-8 (shadow wiring,
+  workspace identity, coordination broker, frozen validation, and mobile cockpit)
+  are independently accepted. CT-P2 and authority/UI cutover require a
+  separate post-PB plan and independent authorization gate before any
+  implementation begins. Any premature production import, construction,
+  goroutine, filesystem write, route, DTO, mobile dependency, or authority
+  change is an immediate CT-PRE reject.
 - Stop rather than retaining Gemini or legacy discovery as an “accepted
   adapter” without a separately accepted production consumer.
