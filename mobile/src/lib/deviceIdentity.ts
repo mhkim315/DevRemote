@@ -81,13 +81,16 @@ export async function verifyDeviceIdentityAgainstPairing(
   return { ok: true, deviceId: info.deviceId };
 }
 
-// clearLocalBearerState removes the stored pairing from AsyncStorage so a
-// new pairing can be established. Called on corruption outcomes (key_missing,
-// key_invalidated, identity_mismatch). The Keystore key itself is NOT deleted
-// — only the bearer/pairing state is cleared.
+// clearLocalBearerState removes the stored pairing AND the active device
+// bearer so a new pairing can be established. Called on corruption outcomes
+// (key_missing, key_invalidated, identity_mismatch). The Keystore key itself
+// is NOT deleted — only the bearer/pairing state is cleared to break the
+// stale authority chain.
 export async function clearLocalBearerState(): Promise<void> {
   const { clearPairing } = await import('./pairingStore');
+  const { setDeviceAuth } = await import('./client');
   await clearPairing();
+  setDeviceAuth(null); // also clears TokenManager bearer
 }
 
 // ── legacy migration (BLOCKER 5: fail-closed) ──
