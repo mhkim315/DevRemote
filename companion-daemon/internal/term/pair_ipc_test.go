@@ -28,7 +28,7 @@ func (b *testQRPairBridge) Consume(sessionID string) error {
 	delete(b.pending, sessionID)
 	return nil
 }
-func (b *testQRPairBridge) Verify(sessionID string) error {
+func (b *testQRPairBridge) Verify(sessionID, hostID, daemonBootID, challengeID, expiresAt string) error {
 	if !b.pending[sessionID] {
 		return fmt.Errorf("session not found")
 	}

@@ -99,17 +99,36 @@ func (b *qrPairBridge) Consume(sessionID string) error {
 	return nil
 }
 
-// Verify validates that the stored QR binding metadata exists and has not
-// expired. Called by pair_ipc after a candidate arrives to confirm the bridge
-// challenge is still valid before proceeding to operator approval.
-func (b *qrPairBridge) Verify(sessionID string) error {
+// Verify checks that the provided QR metadata matches the stored binding
+// for this session. All 4 fields (hostId, daemonBootId, challengeId,
+// expiresAt) must match. Mismatch on any field consumes the one-shot
+// challenge (fail closed). Called by pair_ipc after a candidate arrives
+// to validate the mobile echoed the correct QR data.
+func (b *qrPairBridge) Verify(sessionID, hostID, daemonBootID, challengeID, expiresAt string) error {
 	b.mu.Lock()
 	pending, ok := b.pending[sessionID]
 	b.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("QR binding: session not found")
 	}
-	if time.Now().After(pending.metadata.expiresAt) {
+	m := pending.metadata
+	if hostID != m.hostID {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: hostId mismatch")
+	}
+	if daemonBootID != m.daemonBootID {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: daemonBootId mismatch")
+	}
+	if challengeID != m.challengeID {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: challengeId mismatch")
+	}
+	if t, err := time.Parse(time.RFC3339, expiresAt); err != nil || !t.Equal(m.expiresAt.Truncate(time.Second)) {
+		b.Cancel(sessionID)
+		return fmt.Errorf("QR binding: expiresAt mismatch")
+	}
+	if time.Now().After(m.expiresAt) {
 		b.Cancel(sessionID)
 		return fmt.Errorf("QR binding: expired")
 	}
