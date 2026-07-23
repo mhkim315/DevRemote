@@ -41,6 +41,7 @@ type Config struct {
 	EnableWorkspaceLease   bool   // STEP5: default-off cooperative workspace contract
 	EnableFrozenValidation bool   // STEP7: default-off frozen validation contract
 	EnableCockpit          bool   // STEP8: default-off read-only cockpit route
+	EnableProjectionConvergence bool   // STEP9.2: default-off read-only Timeline projection convergence
 }
 
 // insecureLocalListenAddr returns the only listener address permitted for the

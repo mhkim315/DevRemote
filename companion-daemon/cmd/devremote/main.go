@@ -70,6 +70,7 @@ func main() {
 	enableWorkspaceLease := flag.Bool("enable-workspace-lease", false, "Enable cooperative workspace lease contract (STEP5, experimental)")
 	enableFrozenValidation := flag.Bool("enable-frozen-validation", false, "Enable frozen clean-snapshot validation contract (STEP7, experimental)")
 	enableCockpit := flag.Bool("enable-cockpit", false, "Enable read-only operational cockpit route (STEP8, experimental)")
+	enableProjectionConvergence := flag.Bool("enable-projection-convergence", false, "Enable read-only Timeline projection convergence (STEP9.2, experimental)")
 
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
 		flag.CommandLine.Parse(os.Args[2:])
@@ -89,6 +90,7 @@ func main() {
 		EnableTimelineShadow:   *enableTimelineShadow,
 		TimelineShadowPath:     *timelineShadowPath,
 		EnableWorkspaceLease:   *enableWorkspaceLease,
+		EnableProjectionConvergence: *enableProjectionConvergence,
 		EnableFrozenValidation: *enableFrozenValidation,
 		EnableCockpit:          *enableCockpit,
 	})
