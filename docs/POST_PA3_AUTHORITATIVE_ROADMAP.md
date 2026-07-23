@@ -126,21 +126,22 @@ The bounded offline Canonical Timeline foundation exception is governed by
 CT-P0, CT-P1, and CT-P1 operational-evidence amendment are independently
 accepted. PB ACCEPT satisfies the amendment's PB prerequisite. Steps 4-8
 foundation are complete. CT-P2 requires a separate post-PB plan and
-authorization gate. Production shadow wiring received independent acceptance
-at Step 4 (IMPL `6d1a72d35`, EVID `58eb55b92`). Authority/UI cutover remain
-blocked until independent acceptance of
-the revised operational CT-P1 and the applicable separately reviewed packet.
+authorization gate. CT-P0, CT-P1, and CT-P1 operational-evidence amendment are independently
+accepted. Production shadow wiring, workspace identity, coordination,
+validation, and cockpit foundation received independent acceptance
+(Steps 4-8). CT-P2 and authority/UI cutover require a separate post-PB
+plan and authorization gate.
 
 ## 5. Post-PB direction
 
-The QR renderer/security and exact-generation input packets defined by the
-pre-device plan and bounded zero-composition CT-P1 candidate work are the only
-approved exceptions before PB acceptance. Remaining terminal/restart debt and
-remote-pairing hardening stay in separate reviewed packets. Product and
-architecture direction after PB is exclusively defined by
+PB is independently accepted at `5354077af`. The pre-device QR/Input
+packets and bounded CT foundation work (Steps 1-8) are complete. Remaining
+terminal/restart debt and remote-pairing hardening stay in separate
+reviewed packets. Product and architecture direction after PB is
+exclusively defined by
 [`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`](POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md).
-Grok/ACP, Navigator/Guard, generic adapters, and broad orchestration are not an
-automatic continuation of the accepted PA/PB work.
+Grok/ACP, Navigator/Guard, generic adapters, and broad orchestration are
+not an automatic continuation of the accepted PA/PB work.
 
 ## 6. Document authority
 

@@ -339,8 +339,8 @@ shows its provider/session/generation/model/snapshot/evidence origin.
    Step 8 (embedded under `--enable-cockpit`). (IMPL `a753e126c`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
-9. **NEXT (9.0):** Dogfood readiness review, feature-flag audit, default-off
-   foundation vs production-live distinction, ledger document (DOCS ONLY).
+9. **COMPLETE (9.0):** Dogfood readiness review, feature-flag audit, default-off
+   foundation vs production-live distinction, ledger document.
 10. **NEXT (9.1):** Controlled staging enablement — enable default-off flags in
     isolated test environment, measure overhead, verify no daemon regression.
 11. **NEXT (9.2):** Operational mobile cockpit alpha — deploy APK with cockpit
