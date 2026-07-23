@@ -1,11 +1,11 @@
 # Step 9.1 Evidence — Operational Timeline Staging
 
 **IMPL SHA:** `dc376f9b7`
-**EVID SHA:** `8348ff5d2` (R4)
-**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix)
+**EVID SHA:** (this commit — R5 revision)
+**PRIOR EVID SHA:** `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix), `8348ff5d2` (R4), `a2613ed05` (R4 fix)
 **CONTRACT SHAs:** ACTIVATION `48d0aa2`, PRODUCER `9bea4a48c`
 **Date:** 2026-07-23
-**Revision:** R4 — stale IMPL SHA removal, SHA sync, contract amendment for 7-day staging gate
+**Revision:** R5 — staging gate item 7 SHAs → R4, remove self-ref
 
 Step 9.1 implements minimal operational Timeline producer composition with
 fail-open authority isolation and capability-self-auth. All producers operate
@@ -328,7 +328,7 @@ authoritative.
 | 4 | Staging daemon runs 7 days with `--enable-timeline-shadow` | **DEFERRED** | Requires a physical staging environment with 7-day continuous runtime. Not satisfiable at ACCEPT time. The `--enable-timeline-shadow` flag remains `false` by default per contract §1: "The `--enable-timeline-shadow` flag remains `false` until staging evidence proves 7-day stable operation." |
 | 5 | Cockpit shows degradation when drops occur | **SATISFIED (contract)** | `GET /api/timeline/stats` returns `degraded` boolean + `reason` string. `Writer.HealthSnapshot()` reports degraded when drops or failures are non-zero. Endpoint is registered in production composition when `--enable-cockpit` is active. |
 | 6 | Zero daemon crashes from Timeline code | **SATISFIED (architecture)** | `submitOperationalAfterCommit` wraps every sink call in `recover()`. `Writer.Submit` returns bool (never panics). ProducerStore `Bind` rejects before enqueue. No `log.Fatal`, `panic`, or `os.Exit` in Timeline production paths. |
-| 7 | Separate evidence commit records staging results | **SATISFIED** | This commit (`1bc13eab3` R3) + follow-up (`5efb4f0ab` R3 SHA fix). Prior: `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix). |
+| 7 | Separate evidence commit records staging results | **SATISFIED** | `8348ff5d2` (R4) + `a2613ed05` (R4 SHA fix). Prior: `5948b5ab1` (R1), `b67386836` (R1 fix), `c5f8c2e47` (R2), `24476f38b` (R2 fix), `1bc13eab3` (R3), `5efb4f0ab` (R3 fix). |
 
 ### 8b. Contract amendment: item 4 classification
 
