@@ -331,11 +331,12 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 4. **COMPLETE:** Fail-open Timeline shadow writer (IMPL `6d1a72d35`,
    EVID `58eb55b92`). Ring-buffer mailbox model, zero goroutines.
 5. **COMPLETE:** Workspace identity, clean-snapshot contract, cooperative
-   lease (IMPL `404a3e88`, EVID `ad83bae10`).
+   lease. Standalone; consumer NONE. (IMPL `404a3e882`, EVID `ad83bae10`).
 6. **COMPLETE:** Coordination envelope + broker with capability-bound auth
    (IMPL `3b1a2c7ed`, EVID `b7eeba499`, final comment fix `6c13aafe7`).
-7. **COMPLETE:** Frozen clean-snapshot validation store with capped history
-   (IMPL `a753e126c`, EVID `814868b5b`).
+7. **COMPLETE:** Frozen clean-snapshot staleness check (contract-only,
+   `--enable-frozen-validation`). Consumer NONE. ValidationStore belongs to
+   Step 8 (embedded under `--enable-cockpit`). (IMPL `a753e126c`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
 9. **NEXT (9.0):** Dogfood readiness review, feature-flag audit, default-off
@@ -349,10 +350,9 @@ shows its provider/session/generation/model/snapshot/evidence origin.
 13. **FUTURE:** Forked recovery worktrees and policy automation only after measured
     demand.
 
-Steps 1-8 (foundation) are complete. Steps 9.0-9.3 are documentation-only
-and gate the alpha/beta milestone. CT-P2 remains blocked until independent
-acceptance of the revised CT-P1 operational-evidence contract and its shadow-
-wiring packet.
+Steps 1-8 (foundation) are complete. 9.0 (ledger audit) is COMPLETE.
+9.1 (staging enablement) gates 9.2 (operational smoke) which gates 9.3
+(beta expansion). CT-P2 remains blocked as a separate post-PB packet.
 
 ## 11. Stop and expansion gates
 

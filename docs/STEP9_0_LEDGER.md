@@ -15,18 +15,18 @@ that defaults to `false`. No daemon starts these automatically.
 | Step | Feature | Flag | Consumer |
 |------|---------|------|----------|
 | 4 | Timeline shadow writer | `--enable-timeline-shadow` | Cockpit (polling) |
-| 5 | Workspace identity/lease | `--enable-workspace-lease` | Coordination (identity) |
-| 7 | Frozen validation store | `--enable-frozen-validation` | Cockpit (polling) |
-| 8 | Cockpit projection | `--enable-cockpit` | Mobile UX (GET) |
+| 5 | Workspace identity/lease | `--enable-workspace-lease` | NONE (standalone) |
+| 7 | Frozen validation StalenessCheck | `--enable-frozen-validation` | NONE (standalone contract-only) |
+| 8 | Cockpit projection + ValidationStore | `--enable-cockpit` | Mobile UX (GET) |
 
 ### 1b. Embedded Under Another Flag
 
-The ValidationStore is created when `--enable-cockpit` is set (cockpit
-embeds it as a source). It has no standalone CLI flag.
+ValidationStore (submit/ReadAll/ReadRecent/Close) is created by the cockpit
+composition path when `--enable-cockpit` is set. It has no standalone CLI flag.
 
 | Step | Feature | Embedded Under | Consumer |
 |------|---------|---------------|----------|
-| — | ValidationStore (submit/read) | `--enable-cockpit` | Cockpit (polling) |
+| 8 | ValidationStore | `--enable-cockpit` | Cockpit (polling via ReadRecent) |
 
 ### 1c. Uncomposed Contract-Only (no flag, no production composition)
 
@@ -80,8 +80,10 @@ These form the core operational surface. They are not flag-gated.
 | 4 (Shadow) | `6d1a72d35` | `58eb55b92` | Timeline writer |
 | 5 (Workspace) | `404a3e882` | `ad83bae10` | Identity/lease |
 | 6 (Coordination) | `3b1a2c7ed` (IMPL) | `b7eeba499` (EVID, final: `6c13aafe7`) | Envelope/broker |
-| 7 (Validation) | `a753e126c` (IMPL) | `814868b5b` (EVID) | Validation store |
-| 8 (Cockpit) | `90cc46c3f` (store) → `44f98dfcb` (handler) → `10432920b` (mobile) → `75be15e91` (mailbox) → `24d6d2d95` (cleanup) | `093e03f04` | Mobile projection |
+| 5 (Workspace) | `404a3e882` (IMPL) | `ad83bae10` (EVID) | Identity/lease (standalone, consumer NONE) |
+| 6 (Coordination) | `3b1a2c7ed` (IMPL) | `b7eeba499` (EVID, final `6c13aafe7`) | Envelope/broker (standalone, consumer NONE) |
+| 7 (Validation) | `a753e126c` (IMPL) | `814868b5b` (EVID) | StalenessCheck (standalone, consumer NONE) |
+| 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
 
 ## 5. Next (9.1-9.3)
