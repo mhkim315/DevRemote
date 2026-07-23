@@ -1,85 +1,60 @@
 # Step 9.4 — Secure Accountless Onboarding Ledger
 
-**Status:** IN PROGRESS
+**Status:** 9.4-A FROZEN, 9.4-B + 9.4-C in progress
 **Branch:** `feature/canonical-timeline-foundation`
 **Started:** 2026-07-24
-**CONTRACT SHA:** `609127e29`
 
-## Round Count Ledger
+## Key Identities
 
-| # | Phase | Worker | Attempt | Dispatch | Reported SHA | Verified SHA | Pre-gate | Verdict | Blocker | Notes |
-|---|-------|--------|---------|----------|-------------|-------------|----------|---------|---------|-------|
-| 1 | contract | T2 | 1 | DONE | `609127e29` | `609127e29` | PASS | — | — | 5 packets, epoch model frozen |
-| 2 | impl-9.4-A | T1 | 1 | DONE | `3931c07e1` | `3931c07e1` | PASS | V1_REJECT | 6 IMPL_REJECT | CLI routing, plist, upgrade, idempotency, build-tag, doctor |
-| 3 | impl-9.4-A-R2 | T1 | 2 | DONE | `f1e1b1912` | `f1e1b1912` | PASS | V1_REJECT | 5 residual (B1 partial, B2/B3/B4/B6 unresolved) | B5 fixed. Blind-retry risk → switch to T2 |
-| 4 | impl-9.4-A-R3 | T2 | 1 | DONE | `aea4eb3bd` | `aea4eb3bd` | PASS* | V1_REJECT | 4 residual (B3-B1, B3-B2, B4-B3, B4-B4) | B1/B2/B6 fixed. T1+T2 both stuck → SPLIT |
-| 5 | SPLIT-A (B3) | T2 | 1 | MERGED | — | — | — | — | Absorbed into 677f37e2a | Shared worktree: T1 commit included T2 changes |
-| 6 | SPLIT-B (B4) | T1 | 1 | DONE | `677f37e2a` | `677f37e2a` | PASS | V1_REJECT | 4 execution-order | Integrated A+B. Blocker: rollback order, artifact, path validation, fail-closed |
-| 7 | impl-9.4-A-R5 | T2 | 2 | DONE | `1cf105751` | `1cf105751` | PASS | V1_REJECT | 4: path scoping, bootout, backup orphan, uninstall exit | V1: no failure-path tests → leaks undetected |
-| 8 | impl-9.4-A-R6 | T2 | 3 | DONE | `b64ee7fed` | `b64ee7fed` | PASS | V1_REJECT | 3: B2 regression, B3 orphan, tests | B1/B4 fixed. B2: log.Fatalf 회귀. T2 BLOCKED: void API refactor needed |
-| 9 | impl-9.4-A-R7 | T2 | 4 | AUTHORIZED | 대기중 | — | — | — | lifecycle API void→error, B2+B3, 3 tests | Scope expansion 승인. Root cause fix: 모든 lifecycle이 error return |
+| Packet | Status | SHA |
+|--------|--------|-----|
+| CONTRACT | ACCEPTED | `609127e29` |
+| 9.4-A Daemon Bootstrap | **FROZEN** | `4b55d33e8` |
+| 9.4-B QR Pairing | In progress | T2 |
+| 9.4-C Android Keys | In progress | T1 |
+| 9.4-A Homebrew | Pending | — |
+| 9.4-D Revoke/Recovery | Pending | — |
+| 9.4-E Physical Device | Pending | — |
+
+## 9.4-A Round Summary
+
+33 total rounds, 22 V1 reviews before ACCEPT.
+
+| Phase | Rounds | V1 REJECT |
+|-------|--------|-----------|
+| Contract | 1 | 0 |
+| Implementation | 32 | 21 |
+| **Total** | **33** | **21** |
+
+### Blocker Evolution
+6 (R1) → 5 (R2) → 4 (R3-R6) → 3 (R7-R14) → 2 (R15-R24) → 1 (R25-R32) → **ACCEPT (R33)**
+
+### Key Decisions
+- R1: CONTRACT → T2 (Codex)
+- R2: 9.4-A → T1 (DeepSeek)
+- R4: T1 blind-retry → switch to T2
+- R5-6: T1+T2 both stuck → SPLIT by concern
+- R9: log.Fatalf crisis → lifecycle API void→error (scope expansion)
+- R10-13: T2 version path confusion (4 attempts) → T1 fresh eyes
+- R24: Crash-consistency → transaction Phase field
+- R29: macOS launchctl "not found" ≠ error → 3-way return
+- R33: **V1_ACCEPT** — all edge cases resolved
+
+### Design Evolution
+1. Basic CLI + LaunchAgent (R1-R3)
+2. Transactional upgrade/rollback (R4-R13)
+3. Crash-consistent state machine with Phase (R14-R24)
+4. macOS-specific launchctl behavior (R25-R32)
 
 ## Operational Rules
-
-**Dynamic task splitting:** Ping-pong first (same worker fixes). If both T1 and T2 fail on the same blocker → Coordinator splits task by package boundary. Record SPLIT in round ledger with subtask IDs. Never allow a 3rd blind retry with the same approach.
-
-**Split recording:** Every SPLIT_REQUIRED or coordinator-initiated split gets a row with Dispatch=SPLIT, recording: reason, original task, subtasks, worker assignment.
-
-## Cumulative Counts
-
-| Phase | Rounds | Details |
-|-------|--------|---------|
-| Contract | 1 | T2 single-shot |
-| Implementation | 6 | T1 R1+R2 + T2 R3-R6 + SPLIT A+B merged |
-| Pre-gate returns | 0 | |
-| V1 REJECT | 5 | R2:6, R3:5, R4:4, R6:4, R7:4 |
-| Task Splits | 1 | R5-6 SPLIT A+B (T1+T2 both stuck → concern boundary) |
-| V1 ACCEPT | 0 | |
-| Evidence | 0 | |
-| V2 Audit | 0 | |
-| Context Guardian | 0 | |
-| **Total** | **6** | |
-
-## Defect Classification
-
-| Category | Count | % |
-|----------|-------|---|
-| CONTRACT_REJECT | 0 | — |
-| IMPL_REJECT | 15 | 100% (6→5→4 across 3 V1 rounds) |
-| PRE_GATE_BLOCKED | 0 | — |
-| TECH_EVID_BLOCKED | 0 | — |
-| EVID_SYNC_BLOCKED | 0 | — |
-| CONTEXT_DRIFT_BLOCKED | 0 | — |
-
-## V1 REJECT Detail — Round 2
-
-| Blocker | Category | Description | Root Cause |
-|---------|----------|-------------|------------|
-| B1 | IMPL_REJECT | daemon subcommands unreachable, always enters foreground serve | main.go routing: daemon not excluded from subcommand dispatch |
-| B2 | IMPL_REJECT | .plist is JSON, not valid LaunchAgent property list | Wrong format; need XML plist per launchd.plist(5) |
-| B3 | IMPL_REJECT | upgrade/rollback absent: no backup, no restore, plist short-circuits | Missing feature implementation |
-| B4 | IMPL_REJECT | idempotency/security: loaded detection incomplete, .tmp race, no 0700 repair | Incomplete state checking + TOCTOU |
-| B5 | IMPL_REJECT | GOOS=linux build fails on Darwin-only symbols | Build tag separation incomplete |
-| B6 | IMPL_REJECT | doctor: no CLI version, false trust/auth diagnostics | Wrong schema fields, revoked counted active, non-200 treated OK |
-
-## Decision Log
-
-| Round | Decision | Rationale |
-|-------|----------|-----------|
-| 1 | CONTRACT to T2 (Codex) | Combined contract+impl capability; architecture-first approach |
-| 2 | 9.4-A → T1 (DeepSeek) | Backend Go work (CLI, LaunchAgent); T2 context limits |
-| 3 | V1_REJECT → T1 fix (ping-pong) | First rejection — same worker gets fix chance |
-| 4 | V1_REJECT again → T2 교체 | T1 2회 시도, B2/B3/B4/B6 unresolved. Blind-retry prevention: switch model before considering split. T2 better at precision edge cases (XML escaping, atomic ops, error handling) |
-| 5-6 | V1_REJECT → SPLIT | T1(2회)+T2(1회) both stuck on B3/B4. Split by concern: SPLIT-A (B3 transactional) → T2, SPLIT-B (B4 path safety/error handling) → T1. Function-level boundary: replaceBinaryAtomic/performUpgrade/rollbackInstall/checkReadiness vs readDaemonState/validateDaemonPaths/stop/rollback/uninstall |
-| 9 | T2 BLOCKED → scope expansion 승인 | void lifecycle API가 log.Fatalf를 강제함. 근본 원인 해결: 모든 lifecycle 함수를 error-return으로. daemon_darwin.go + daemon_stub.go + daemon.go + main.go. main만 exit 허용 |
-| — | Coordinator never self-accepts | Accept only via V1/V2 verdict. Coordinator does not judge implementation quality |
+- Ping-pong first → then model switch → then split
+- Coordinator never self-accepts
+- Pre-gate before every V1 dispatch
+- Blind-retry: same signature + same approach > 2 → escalate
 
 ## Update Log
-
-| Date | Event | Detail |
-|------|-------|--------|
-| 2026-07-24 | CONTRACT ACCEPT | `609127e29` — STEP9_4_CONTRACT.md covering A-E |
-| 2026-07-24 | 9.4-A dispatched | T1 daemon bootstrap interface (CLI + LaunchAgent) |
-| 2026-07-24 | 9.4-A R1 DONE | `3931c07e1` — gofmt/build/vet/test 17/17 PASS |
-| 2026-07-24 | V1 REJECT | 6 IMPL_REJECT (B1-B6): routing, plist, upgrade, idempotency, build-tag, doctor |
-| 2026-07-24 | 9.4-A R2 dispatched | T1 fix round — all 6 blockers, ping-pong |
+| Date | Event |
+|------|-------|
+| 2026-07-24 | CONTRACT ACCEPTED at 609127e29 |
+| 2026-07-24 | 9.4-A FROZEN at 4b55d33e8 (33 rounds) |
+| 2026-07-24 | 9.4-B + 9.4-C dispatched in parallel |
