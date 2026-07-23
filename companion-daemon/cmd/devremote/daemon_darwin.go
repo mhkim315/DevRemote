@@ -591,11 +591,20 @@ func installDaemon() error {
 		}
 		return errors.Join(fmt.Errorf("install: readiness check failed: %w", err), stopErr)
 	}
-	// Clean up the previous upgrade's old binary now that migration succeeded.
-	// Removal failure is degraded (migration already complete, cleanup only).
-	if existingState != nil && existingState.OldBinPath != "" {
+	// Clean up the previous upgrade's old binary. Never delete the live
+	// binary (same-version reinstall: OldBinPath == current service path).
+	// Removal failure returns degraded — the orphan is kept on disk and
+	// state OldBinPath is retained for retry on next upgrade/uninstall.
+	if existingState != nil && existingState.OldBinPath != "" && existingState.OldBinPath != serviceBinPath {
 		if err := os.Remove(existingState.OldBinPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("install: could not remove previous old binary %s: %v", existingState.OldBinPath, err)
+			log.Printf("install: orphan old binary retained at %s: %v", existingState.OldBinPath, err)
+			// Rewrite state to preserve the orphan path so next
+			// upgrade/uninstall can retry removal.
+			state.OldBinPath = existingState.OldBinPath
+			if writeErr := writeDaemonState(state); writeErr != nil {
+				log.Printf("install: could not update daemon state: %v", writeErr)
+			}
+			return fmt.Errorf("install: upgrade succeeded but could not remove previous binary %s: %w", existingState.OldBinPath, err)
 		}
 	}
 	if backupPath != "" {
