@@ -124,7 +124,7 @@ the physical gate; it does not reopen PB legacy-removal scope.
 
 The completed device-discovered TERM-C1-R3 and Pairing V1 closeout is governed by
 [`PB_DG_R4_CLOSEOUT_PLAN.md`](PB_DG_R4_CLOSEOUT_PLAN.md). It supersedes the old
-pre-R3 candidate for final device evidence and was pending independent closeout at
+pre-R3 candidate for final device evidence and was independently accepted at
 `5354077afcf30343d9666511e259346d9bea0ad6`.
 
 The bounded offline Canonical Timeline foundation exception is governed by
@@ -132,7 +132,7 @@ The bounded offline Canonical Timeline foundation exception is governed by
 CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are independently
 accepted. PB ACCEPT satisfied the amendment's PB prerequisite. Foundation
 Steps 4-8 (shadow wiring, workspace identity, coordination broker, frozen
-validation, and mobile cockpit) are pending independent closeout. CT-P2 and
+validation, and mobile cockpit) are independently accepted. CT-P2 and
 authority/UI cutover require a separate post-PB plan and independent authorization gate.
 
 Foundation acceptance is not production-live completion. Base Alpha excludes
@@ -143,7 +143,7 @@ Terminal fallback, accountless onboarding, and alpha gates are authoritative in
 
 ## 5. Post-PB direction
 
-PB is pending independent closeout at `5354077af`. The pre-device QR/Input
+PB is independently accepted at `5354077af`. The pre-device QR/Input
 packets and bounded CT foundation work (Steps 1-8) are complete. Remaining
 terminal/restart debt and remote-pairing hardening stay in separate
 reviewed packets. Product and architecture direction after PB is
@@ -162,7 +162,7 @@ not an automatic continuation of the accepted PA/PB work.
 | `docs/PRE_DEVICE_QR_INPUT_REMEDIATION_PLAN.md` | **Authoritative pre-device QR/Input packet contract and device-entry gate** |
 | `docs/PB_DG_R4_CLOSEOUT_PLAN.md` | **Authoritative final PB device-closeout prerequisite and independent stop gate** |
 | `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | **Authoritative CT foundation contract; CT-P0, CT-P1, CT-P1 Amendment, and Steps 4-8 ACCEPTED; CT-P2 and production composition/cutover remain separately gated** |
-| `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the pending independent closeout SHA |
+| `docs/PA4_MANAGED_ISOLATION_CONTRACT.md` | **Frozen authoritative PA4 contract** at the independently accepted SHA |
 | `docs/PB_LEGACY_REMOVAL_CONTRACT.md` | **Authoritative PB boundary**; implementation starts only after independent PB plan review |
 | `docs/POST_CLAUDE_MANAGED_ONLY_RESTRUCTURING_PLAN.md` | Historical rationale only; post-PA3 sequence superseded |
 | `docs/ROADMAP_AFTER_E10B.md` | Historical product roadmap; post-PA3 status/order superseded |
@@ -187,12 +187,12 @@ safety boundaries remain controlled by this ledger and its accepted contracts.
   identities, regenerated PB.6/PB.7 evidence is clean, and daemon/APK identities
   equal the replacement PB-DG-R4 production candidate. The pre-R3 candidate and
   artifacts are historical only.
-- PB-DG-R4 is complete and pending independent closeout. Preserve candidate
+- PB-DG-R4 is complete and independently accepted. Preserve candidate
   `059bef181c6c2ef312eee421dbf10f12b15b0326`, its matched artifacts, and ACCEPT
   `5354077afcf30343d9666511e259346d9bea0ad6` as immutable evidence.
 - Do not automatically begin the historical full CT-P2 plan. CT-P0, CT-P1,
   the CT-P1 operational-evidence amendment, and foundation Steps 4-8 are
-  pending independent closeout. After Step 9.0 independent closeout, only the
+  independently accepted. After Step 9.0 independent closeout, only the
   separately reviewed bounded work in `ALPHA_ACTIVATION_ROADMAP.md` may compose
   minimal producers, compare projections, or cut over one consumer/endpoint at
   a time. Any production import, construction, goroutine, filesystem write,

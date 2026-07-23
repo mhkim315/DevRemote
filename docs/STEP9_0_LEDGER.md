@@ -1,8 +1,8 @@
 # STEP 9.0 — Post-PB Feature Ledger
 
-**Status:** PENDING INDEPENDENT CLOSEOUT — candidate `9853e3eed`. Zero code changes.
+**Status:** PENDING INDEPENDENT CLOSEOUT — zero code changes.
 
-**EVID SHA:** (this commit)
+**Candidate resolver:** `git log -1 --format=%H -- docs/STEP9_0_LEDGER.md`
 **Date:** 2026-07-23
 
 ## 1. Default-Off Foundation Features
@@ -77,7 +77,7 @@ these automatically.
 
 The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
 
-- **9.0 DOCS/AUDIT — PENDING INDEPENDENT CLOSEOUT.*.
+- **9.0 DOCS/AUDIT — PENDING INDEPENDENT CLOSEOUT.**
 - **9.1** — Minimal Timeline staging (controlled environment, fail-open writes)
 - **9.2** — Transcript/Activity projection convergence
 - **9.3** — N1 exact-event notification-to-action
@@ -85,4 +85,6 @@ The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA
 - **9.5** — Matched Base Alpha candidate + SM-S926N product gate
 - **Beyond** — Manual Alpha coordination, CT-P2, automation (separate authorization)
 
-CT-P2 (Timeline operational wiring) remains blocked until independent plan acceptance.
+Historical broad CT-P2 remains blocked. Step 9.1 remains blocked until this
+Step 9.0 reconciliation receives independent ACCEPT and the bounded Step 9.1
+implementation contract is separately reviewed.
