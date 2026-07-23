@@ -16,7 +16,8 @@
 | 5 | SPLIT-A (B3) | T2 | 1 | MERGED | — | — | — | — | Absorbed into 677f37e2a | Shared worktree: T1 commit included T2 changes |
 | 6 | SPLIT-B (B4) | T1 | 1 | DONE | `677f37e2a` | `677f37e2a` | PASS | V1_REJECT | 4 execution-order | Integrated A+B. Blocker: rollback order, artifact, path validation, fail-closed |
 | 7 | impl-9.4-A-R5 | T2 | 2 | DONE | `1cf105751` | `1cf105751` | PASS | V1_REJECT | 4: path scoping, bootout, backup orphan, uninstall exit | V1: no failure-path tests → leaks undetected |
-| 8 | impl-9.4-A-R6 | T2 | 3 | FIX | 대기중 | — | — | — | 4: path bound, bootout state, backup cleanup, exit code | REQUIRED: 4 failure-path tests to prevent regression |
+| 8 | impl-9.4-A-R6 | T2 | 3 | DONE | `b64ee7fed` | `b64ee7fed` | PASS | V1_REJECT | 3: B2 regression, B3 orphan, tests | B1/B4 fixed. B2: log.Fatalf 회귀. T2 BLOCKED: void API refactor needed |
+| 9 | impl-9.4-A-R7 | T2 | 4 | AUTHORIZED | 대기중 | — | — | — | lifecycle API void→error, B2+B3, 3 tests | Scope expansion 승인. Root cause fix: 모든 lifecycle이 error return |
 
 ## Operational Rules
 
@@ -70,6 +71,7 @@
 | 3 | V1_REJECT → T1 fix (ping-pong) | First rejection — same worker gets fix chance |
 | 4 | V1_REJECT again → T2 교체 | T1 2회 시도, B2/B3/B4/B6 unresolved. Blind-retry prevention: switch model before considering split. T2 better at precision edge cases (XML escaping, atomic ops, error handling) |
 | 5-6 | V1_REJECT → SPLIT | T1(2회)+T2(1회) both stuck on B3/B4. Split by concern: SPLIT-A (B3 transactional) → T2, SPLIT-B (B4 path safety/error handling) → T1. Function-level boundary: replaceBinaryAtomic/performUpgrade/rollbackInstall/checkReadiness vs readDaemonState/validateDaemonPaths/stop/rollback/uninstall |
+| 9 | T2 BLOCKED → scope expansion 승인 | void lifecycle API가 log.Fatalf를 강제함. 근본 원인 해결: 모든 lifecycle 함수를 error-return으로. daemon_darwin.go + daemon_stub.go + daemon.go + main.go. main만 exit 허용 |
 | — | Coordinator never self-accepts | Accept only via V1/V2 verdict. Coordinator does not judge implementation quality |
 
 ## Update Log
