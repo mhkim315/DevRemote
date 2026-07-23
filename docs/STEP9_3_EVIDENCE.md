@@ -1,7 +1,7 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `ce730accc`
-**EVID SHA:** (this commit — R4 revision)
+**EVID SHA:** `c5cd9722f` (R4)
 **PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
