@@ -447,10 +447,10 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 
 // NotificationHandlerConfig holds the dependencies for the N1 handler.
 type NotificationHandlerConfig struct {
-	Writer    *writer.Writer
-	Resolver  AuthResolver
-	Sessions  *devicetrust.DeviceSessionManager
-	Devices   *DeviceStore
+	Writer   *writer.Writer
+	Resolver AuthResolver
+	Sessions *devicetrust.DeviceSessionManager
+	Devices  *DeviceStore
 }
 
 // RegisterHandlers adds the N1 re-auth and push-registration routes to the mux.

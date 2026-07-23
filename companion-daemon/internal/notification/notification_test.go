@@ -393,8 +393,8 @@ func TestResolveStatusSevenOutcomes(t *testing.T) {
 // TestEventDegradedOrGap verifies that ResolveStatus checks writer health
 // before scanning the ring buffer. The HealthSnapshot gate is the
 // event_degraded_or_gap contract. Two paths are verified:
-//   1. Nil writer → skips degraded check → falls through to canonical_event_unavailable
-//   2. Active writer → HealthSnapshot() gates the ring-buffer scan
+//  1. Nil writer → skips degraded check → falls through to canonical_event_unavailable
+//  2. Active writer → HealthSnapshot() gates the ring-buffer scan
 func TestEventDegradedOrGap(t *testing.T) {
 	resolver := &stubResolver{
 		gen:       map[string]int64{"sess-1": 5},
