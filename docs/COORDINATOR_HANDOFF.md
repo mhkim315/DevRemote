@@ -1,267 +1,401 @@
 # Coordinator Handoff Document
 
+**Status:** AUTHORITATIVE — complete operational knowledge for seamless
+Coordinator replacement.
+
+**Last updated:** 2026-07-24, Step 9.3 closeout. Step 9.4 contract phase pending.
+
+---
+
 ## 1. Current State
 
 ### Repository
-- **Repo:** `/Users/mhk/orca/DevRemote`
-- **Branch:** `feature/phase10-multi-adapter`
-- **HEAD:** `b4479c64c`
-- **Remote:** `origin/feature/phase10-multi-adapter`
-- **Workdir:** `companion-daemon/`
+
+```
+Repo:    /Users/mhk/orca/DevRemote
+Branch:  feature/canonical-timeline-foundation
+HEAD:    f7033b86c  (Step 9.3 IMPL ACCEPT)
+EVID:    7b322f783   (Step 9.3 EVID ACCEPT)
+Clean:   yes
+```
+
+### Step Completion Ledger
+
+| Step | IMPL SHA | CONTRACT SHA | EVID SHA | Rounds | Date |
+|------|----------|-------------|----------|--------|------|
+| 9.0 | 62a50f0a8 | — | — | 28 | 2026-07-23 |
+| 9.1 | dc376f9b7 | e857fd13c | a25476f03 | 43 | 2026-07-23 |
+| 9.2 | c82fef47f | 93c337a42 | 26eb2e157 | 33 | 2026-07-23 |
+| 9.3 | f7033b86c | a5e532fd9 | 7b322f783 | 49 | 2026-07-24 |
+| **9.4** | **NOT STARTED** | **NOT STARTED** | — | — | — |
 
 ### Frozen Identities
 
 | Identity | SHA | Meaning |
 |----------|-----|---------|
-| PA4 PRODUCTION | `4aaf3b76a` | Frozen managed-isolation implementation |
-| PA4 ACCEPT | `74560edd8` | PA4 independent acceptance |
-| PB PREREQUISITE | `74560edd8` | Required before PB |
-| PB START BASELINE | `abe4df1d6` | Operational rollback anchor |
-| PB DEVICE CANDIDATE | `ab1884662` | Source for daemon + APK build |
-| PB ACCEPT | **UNSET** | Awaiting SM-S926N matrix |
+| PB ACCEPT | `5354077af` | Independent final acceptance after SM-S926N device gate |
+| PB Device Candidate | `059bef181c` | Matched daemon/APK source |
+| CT-P1 ACCEPT | `317bb0cb7` | Timeline envelope contract |
+| CT-P1 Amendment | `12135bd80` | Operational evidence-source boundary |
+| Step 4 Shadow | `58eb55b92` | Fail-open Timeline writer |
+| Step 5 Workspace | `ad83bae10` | Workspace identity/lease |
+| Step 6 Coordination | `6c13aafe7` | Coordination envelope/broker |
+| Step 7 Validation | `814868b5b` | Frozen clean-snapshot staleness |
+| Step 8 Cockpit | `093e03f04` | Mobile cockpit projection |
+| Step 9.1 Activation | `dc376f9b7` | Operational Timeline staging |
+| Step 9.2 Projection | `c82fef47f` | Transcript/Activity convergence |
+| Step 9.3 Notification | `f7033b86c` | N1 exact-event notification |
 
-### Accepted Waves & SHAs
+### Active Team
 
-| Wave | ACCEPT SHA | Content |
-|------|-----------|---------|
-| PA4 | `74560edd8` | Managed isolation |
-| PB.0 | `321cd1a84` | Consumer inventory |
-| PB.1 | `c0f5664d0` | localpty deletion |
-| PB.2a | `359e3853e` | link/attach removal |
-| PB.2b | `3c65b5990` | discovery/resolver removal |
-| PB.3 | `2987b6fe1` | tmux deletion |
-| PB.4 | `ed9bb5468` | cmux + snapshot removal |
-| PB.5a | `4ed0d3dc3` | V1 production cutover |
-| PB.5b-T2 | `0f0d57f30` | Consumer migration |
-| PB.5b-T3 | `c2c0f542a` | Physical deletion |
-| PB.6 | `82e550e9c` | Mobile/daemon cleanup |
-| PB.7 | `b18123e77` | Automated closeout evidence |
-| QR | `b55780c7f` | QR renderer/security |
-| Input-A | `e28964875` | Permission/read-only UX |
-| Input-B | `9b75c1e4a` | Acknowledged input delivery |
-| TERM-G1 | `2d13020ae` | PTY geometry authority |
-| TERM-C1 | `ba78b617a` | Single control bridge |
-| ARTIFACT-ID1 | `68fc09140` | Matched daemon/APK provenance |
-
-### Artifacts (ready for SM-S926N)
-
-| Artifact | Path | SHA-256 |
-|----------|------|---------|
-| Daemon | `/tmp/pokit-pb-device-artifacts/pokit-daemon` | `5c1470a0d580...` |
-| APK | `/tmp/pokit-pb-device-artifacts/pokit-app-release.apk` | `934febb17b...` |
-
-### Sole Remaining Blocker
-Samsung SM-S926N not connected via ADB. Device must show `device` state in `adb devices -l` before matrix can begin.
+| Role | Handle | Model | Status |
+|------|--------|-------|--------|
+| **Coordinator** | `term_9477482c` | Claude | 🟢 |
+| **T1 Executor** | `term_9f142890` | DeepSeek | 🟢 |
+| **T2 Executor** | `term_814699f4` | Codex | 🟢 |
+| **V1 Verifier** | `term_8ca20c76` | Codex | 🟢 |
+| **V2 Auditor** | `term_7f08372e` | Codex | 🟢 (also Context Guardian) |
+| **EVID Agent** | `term_44b79f67` | DeepSeek | 🟢 |
 
 ---
 
-## 2. Team & Terminal Handles
+## 2. Validated Workflow Rules
 
-| Role | Handle | Model | Worktree |
-|------|--------|-------|----------|
-| **Coordinator** | `term_9477482c-0b30-491d-a156-4b3911dc79c9` | — | Main DevRemote |
-| **Executor (Tier 1)** | `term_9f142890-1eae-4509-9dee-3412b1d5f729` | DeepSeek (Claude+DeepSeek) | Main DevRemote |
-| **Executor (Tier 2)** | `term_49048007-d5df-40ce-b084-70d3bd270166` | Codex 5.6 Sol | Main DevRemote |
-| **Verifier** | `term_8ca20c76-b656-4e0a-85d6-1750515b05d2` | Codex | Main DevRemote |
+### Must-Follow (proven effective across 3 steps)
 
-### Executor Tier System
-- **Tier 1 (DeepSeek):** Evidence documents, grep scans, gofmt, simple deletions, test adjustments, build/artifact tasks. Escalates to Tier 2 when stuck (same blocker 2x, compilation 5+ errors, architectural changes needed).
-- **Tier 2 (Codex):** Architecture, large refactoring, V1 contract changes, complex compilation fixes, production cutover. Receives escalated tasks from Tier 1 or direct dispatch from Coordinator.
-- **Ping-pong rule:** After 2 consecutive rejections on same executor, switch to the other tier. After another 2, switch back. Never let one executor fail 5+ times on same blocker.
-
-### Verifier
-- **Read-only.** Never modifies files.
-- Returns ACCEPT or REJECT with exact file:line evidence.
-- ACCEPT means independent acceptance — final authority.
-
----
-
-## 3. Communication Protocol
-
-### Coordinator → Executor (dispatch task)
-```sh
-orca terminal send --terminal <executor-handle> --text "<task description>" --enter --json
-```
-
-### Executor → Coordinator (worker_done)
-```sh
-orca terminal send --terminal term_9477482c-0b30-491d-a156-4b3911dc79c9 --text "worker_done — <summary>" --enter --json
-```
-**Never use `orca orchestration send`.** It is unreliable. Use `orca terminal send` directly.
-
-### Coordinator → Verifier (dispatch verification)
-```sh
-orca terminal send --terminal term_8ca20c76-b656-4e0a-85d6-1750515b05d2 --text '...' --enter --json
-```
-
-### Reading messages from terminals
-Since orchestration is unreliable, check Executor progress via git:
-```sh
-git pull --ff-only && git log --oneline -3
-```
-
-### Executor worker_done format
-```
-worker_done — <TASK NAME>. SHA <commit>. <what changed>. <gate results>. STOP.
-```
-
----
-
-## 4. Coordinator Role
-
-### What Coordinator DOES
-1. **Dispatch tasks** to Tier 1 or Tier 2 Executor based on complexity
-2. **Run pre-gate checks** before sending to Verifier:
-   - `go build ./...` (must pass)
-   - `go vet ./...` (must pass)
-   - `gofmt -l . | wc -l` (must be 0)
-   - `go test -race ./... -count=1` (all must pass; doctor flaky test can be excluded)
-   - git status (must be clean, HEAD==upstream)
-   - Contract-specific checks (zero forbidden symbols, no deleted tests, etc.)
-3. **Gate verdict:** "READY FOR VERIFIER" or "REJECT back to Executor"
-4. **Escalate** between Tier 1 and Tier 2 when needed
-5. **Read Verifier REJECT** and extract exact blockers for Executor
-
-### What Coordinator DOES NOT DO
-- **Never modify production code, tests, or architecture**
-- **Never issue ACCEPT** — only Verifier does that
-- **Never skip pre-gate** — even for "trivial" changes
-- **Never delete terminals** — reuse existing ones
-
-### Pre-gate Checklist (run from companion-daemon/)
-```sh
-cd /Users/mhk/orca/DevRemote/companion-daemon
-
-# 1. Sync
+**Pre-gate (before any V1 dispatch):**
+```bash
+# Run after every worker DONE report:
 git pull --ff-only
+[ "$(git rev-parse HEAD)" = "$(git rev-parse @{upstream})" ] || PRE_GATE_BLOCKED
+[ -z "$(git status --short)" ] || PRE_GATE_BLOCKED
+[ "$(gofmt -l . | wc -l)" -eq 0 ] || PRE_GATE_BLOCKED
+go build ./... && go vet ./... || PRE_GATE_BLOCKED
+# Check claimed SHA matches actual HEAD
+# Check claimed changed files match actual diff
+# Check claimed tests were actually run
+```
 
-# 2. Build
-go build ./... || { echo "REJECT: build"; exit 1; }
+Push missing = `PRE_GATE_BLOCKED`. Do not return to implementation rounds.
+Record every catch. Do not dispatch V1 until pre-gate passes.
 
-# 3. Vet
-go vet ./... || { echo "REJECT: vet"; exit 1; }
+**Blind-retry prevention:**
+- Record blocker signature for every rejection.
+- Same signature + same approach = blind retry.
+- After 2 blind retries: split task, switch model, or return BLOCKED.
+- Never tell the same executor to "try again" without a changed hypothesis.
 
-# 4. Format
-[ "$(gofmt -l . | wc -l)" -eq 0 ] || { echo "REJECT: gofmt"; exit 1; }
+**Micro-task splitting:**
+- Multi-package changes → split by package boundary.
+- Mobile + backend changes → always separate tasks.
+- Single-file changes preferred for Codex (context limit).
+- Multi-round concurrency fixes → consider epoch model or structural redesign.
 
-# 5. Tests (exclude flaky doctor test)
+**Worker terminal states:**
+Every dispatched worker MUST end with exactly one:
+- `DONE. SHA <sha>. <summary>. STOP.`
+- `BLOCKED. <reason, attempts, uncertainty>.`
+- `SPLIT_REQUIRED. <proposed subtasks>.`
+
+Silent workers → query once, then mark `STALLED`. Do not blindly restart.
+
+**Evidence rules:**
+- Generate deterministic manifest from Git + test output (not memory).
+- EVID Agent explains and organizes, never reconstructs machine values.
+- Every code block claiming command output must be byte-exact.
+- Never label curated text as "literal stdout" or "unedited".
+- EVID runs only AFTER V1 ACCEPT and implementation freeze.
+
+**Defect classification (Step 9.4+):**
+| Class | Meaning | Action |
+|-------|---------|--------|
+| `CONTRACT_REJECT` | Contract scope/API mismatch | Return to contract |
+| `IMPL_REJECT` | Production code/behavior defect | Return to impl |
+| `PRE_GATE_BLOCKED` | Push/gofmt/tests/scope failure | Return to worker, no V1 |
+| `TECH_EVID_BLOCKED` | Missing proof/test coverage | Return to impl |
+| `EVID_SYNC_BLOCKED` | SHA/counts/stale headers | Return to EVID |
+| `CONTEXT_DRIFT_BLOCKED` | Cross-step authority conflict | Context Guardian |
+
+**Milestone states (Step 9.4+):**
+```
+IMPLEMENTATION_PENDING → IMPLEMENTATION_ACCEPTED → CLOSEOUT_PENDING → FINAL_ACCEPT
+```
+
+---
+
+## 3. Executor Capability Matrix
+
+Based on observed performance across Steps 9.1-9.3:
+
+| Domain | T1 (DeepSeek) | T2 (Codex) | Notes |
+|--------|---------------|------------|-------|
+| Backend state machines | ✅ | ✅ | |
+| Concurrency primitives | ✅ (epoch) | ✅ (semaphore) | T1 epoch model was elegant |
+| Storage/ring buffer | ✅ | ✅ | |
+| React Native navigation | ❌ (6 rounds) | ✅ | Never assign T1 mobile |
+| Mobile UX/components | ❌ | ✅ (2 rounds) | |
+| Cross-boundary contract | ❌ (blind API refs) | ✅ | T1 must read code first |
+| Architectural redesign | ⚠️ | ✅ | |
+| Evidence generation | ✅ (R5+) | — | With manifest, not memory |
+| gofmt discipline | ❌ (forgets) | ✅ | Pre-gate catches T1 |
+
+**Assignment rules:**
+- Mobile → T2 always.
+- Contract → T2, or T1 only after reading actual code files.
+- Backend concurrency → T1 first, escalate to T2 if 2 structural failures.
+- Evidence → EVID Agent with manifest. Never assign evidence to executors.
+
+---
+
+## 4. Communication Protocol
+
+### Coordinator → Worker (dispatch task)
+```sh
+orca terminal send --terminal <worker-handle> --text "<task description>" --enter --json
+```
+
+Always include at the end: `DONE/BLOCKED/SPLIT_REQUIRED 형식으로 보고. Push 필수.`
+
+### Worker → Coordinator (completion)
+```sh
+orca terminal send --terminal term_9477482c-0b30-491d-a156-4b3911dc79c9 --text "DONE. SHA <sha>. <summary>. STOP." --enter --json
+```
+
+### Reading worker output
+```sh
+orca terminal read --terminal <handle> --limit 20 --json
+```
+
+### Checking all terminals
+```sh
+orca terminal list --worktree id:224412ce-4bad-4ef0-a68d-ce12acb30cbd::/Users/mhk/orca/DevRemote --json
+```
+
+---
+
+## 5. Step 9.4 Execution Plan
+
+### Scope
+
+Accountless Onboarding: Homebrew install → daemon → QR pairing →
+non-exportable device key → authenticated connection → restart/reconnect →
+revoke/reinstall/replacement → physical-device proof.
+
+### Packet Structure
+
+Packets are isolated for defect containment. All packets integrate at ONE
+frozen SHA before V1/V2/Context Guardian.
+
+```
+9.4-A: macOS installation + bootstrap
+  - Homebrew/distribution path
+  - pokit CLI, daemon install, LaunchAgent
+  - upgrade, uninstall, failure rollback
+
+9.4-B: QR pairing + device trust
+  - Single-use challenge, host/device/boot binding
+  - Expiry, replay rejection, QR payload minimization
+  - Pairing cancellation, timeout, concurrent attempts
+
+9.4-C: Android non-exportable key lifecycle
+  - Android Keystore-backed, non-exportable private key
+  - Key gen, proof of possession, restart persistence
+  - Reinstall, corruption, no silent downgrade
+
+9.4-D: Revoke, recovery, replacement
+  - Device revoke, token invalidation
+  - Epoch model (prefer over adding locks)
+  - Replacement device, reinstall, lost-phone recovery
+  - CONCURRENCY CONTRACT MUST BE FROZEN BEFORE IMPLEMENTATION
+
+9.4-E: Physical-device clean-install journey
+  - Complete path on SM-S926N + macOS
+  - Record exact artifacts
+  - USER_ACTION_REQUIRED for physical device steps
+```
+
+### Execution Order
+
+```
+1. CONTRACT: Write docs/STEP9_4_CONTRACT.md covering all packets.
+   Freeze concurrency invariants for 9.4-D in contract.
+2. 9.4-A (daemon bootstrap interface only) → freeze interface SHA
+3. 9.4-B + 9.4-C (parallel: pairing + key lifecycle, after A interface frozen)
+4. 9.4-A (Homebrew packaging, after daemon interface confirmed)
+5. 9.4-D (revoke/recovery, after B+C)
+6. INTEGRATE all packets at one SHA
+7. Fresh V1 (full implementation review)
+8. Deterministic manifest → EVID
+9. Fresh V2 (evidence audit)
+10. Context Guardian (cross-step consistency, persistent V2 Auditor)
+11. 9.4-E (physical-device journey) — USER_ACTION_REQUIRED
+12. FINAL_ACCEPT
+```
+
+### 9.4-A + 9.4-B Parallelization Conditions
+
+Only parallelize if:
+- Common bootstrap/pairing interface is frozen in contract
+- Modified files and writer ownership do not overlap
+- Both do not create independent pairing authorities
+- Integration point and dependency SHA are explicit
+
+If conditions not met: freeze A's daemon/bootstrap interface first, then B.
+
+---
+
+## 6. Context Guardian
+
+The persistent V2 Auditor (`term_7f08372e`) serves as Context Guardian.
+
+**Activation:** Only at milestone closeout (Step 9.4 FINAL_ACCEPT), not per-packet.
+
+**Verification scope:**
+- Consistency with prior POKIT authority decisions
+- No resurrection of removed attach/observer or Registry-style authority
+- No cross-step regression against Steps 9.1-9.3
+- Roadmap and product-scope alignment
+- Correct dependency and final authority state
+
+---
+
+## 7. Round Count Ledger
+
+Round counts come from an orchestration ledger, NOT from `git log` commit count.
+
+**Required fields per round:**
+- Phase (contract/impl/pre-gate/evidence/V2/guardian)
+- Worker (T1/T2/EVID/V1/V2/CG)
+- Attempt number
+- Dispatch state (DONE/BLOCKED/SPLIT_REQUIRED/PRE_GATE_BLOCKED/STALLED)
+- Reported SHA
+- Verified SHA (from pre-gate)
+- Pre-gate result
+- Verifier verdict
+- Blocker signature
+- Superseded attempt
+- Model switch or task split
+
+**Commits without a round:** Amend, rebase, pre-gate return with no new commit.
+
+Keep the ledger in `docs/STEP9_4_LEDGER.md`.
+
+---
+
+## 8. Evidence Manifest Schema
+
+Generated by deterministic tooling, NOT by EVID Agent from memory.
+
+```json
+{
+  "step": "9.4",
+  "contract_sha": "...",
+  "implementation_sha": "...",
+  "evidence_sha": "...",
+  "branch": "feature/canonical-timeline-foundation",
+  "head_equals_upstream": true,
+  "worktree_clean": true,
+  "gates": {
+    "build": "PASS",
+    "vet": "PASS",
+    "fmt": "PASS",
+    "test_race": {"packages": 17, "passed": 17},
+    "mobile_tsc": "PASS",
+    "mobile_jest": {"suites": 36, "tests": 552}
+  },
+  "commands": [
+    {
+      "command": "go test -race ./... -count=1",
+      "candidate_sha": "...",
+      "exit_status": 0,
+      "raw_stdout_path": "/tmp/step9.4-test-output.txt",
+      "raw_stdout_hash": "sha256:...",
+      "byte_count": 12345,
+      "parsed_result": "17 ok, 3 no-test"
+    }
+  ]
+}
+```
+
+EVID Agent role: explain and organize manifest facts. Never invent, infer, or
+manually update machine-derivable values.
+
+---
+
+## 9. Key Documents
+
+| Document | Purpose |
+|----------|---------|
+| `docs/POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` | Authoritative product direction + execution order |
+| `docs/POST_PA3_AUTHORITATIVE_ROADMAP.md` | PA/PB identity ledger |
+| `docs/CANONICAL_TIMELINE_CT_PRE_EXECUTION_PLAN.md` | CT foundation contract |
+| `docs/ALPHA_ACTIVATION_ROADMAP.md` | Base Alpha activation sequence |
+| `docs/STEP9_0_LEDGER.md` | Feature/flag/capability matrix |
+| `docs/WORKFLOW_EXPERIMENT_REPORT.md` | Experiment data + validated controls |
+| `docs/COORDINATOR_HANDOFF.md` | This document |
+
+---
+
+## 10. Experiment Learnings Summary
+
+From Steps 9.1-9.3 (125 total rounds across 3 steps):
+
+**Proven controls:**
+- Pre-gate verification (caught 10+ defects, prevented ~5 wasted V1 rounds)
+- Deterministic manifest (eliminated manual SHA corrections)
+- Blind-retry prevention (0 blind retries in Step 9.2, 1 caught in Step 9.3)
+- Push-missing = PRE_GATE_BLOCKED (4→0 occurrences)
+- DONE/BLOCKED/SPLIT_REQUIRED (silent stops 3→0)
+- Micro-task splitting (mobile/backend separation saved 4+ rounds)
+- Epoch-based atomicity (resolved 7-round concurrency saga in 2 rounds)
+
+**Anti-patterns to avoid:**
+- Observer/callback pattern (Step 8: 11 rounds of concurrency bugs)
+- Self-referential SHA (Step 9.0: 28 rounds of evidence fixes)
+- T1 on mobile (Step 9.3: 6 rounds, minimal progress)
+- Evidence from memory (Steps 9.0-9.1: replaced by manifest)
+- T1 contract without reading code (blind API references)
+- Over-counting rounds (34→19→22→27→37→39 in Step 9.3)
+
+**Executor patterns:**
+- T1: backend state machines, concurrency, evidence. Forgets gofmt, weak on mobile.
+- T2: architecture, combined contract+impl, mobile UX. Push-missing habit (fixed by rule).
+- EVID: needs byte-exact discipline. Manifest + tooling over memory.
+
+---
+
+## 11. Quick Reference
+
+```sh
+# Pre-gate check
+cd /Users/mhk/orca/DevRemote/companion-daemon
+git pull --ff-only && [ "$(git rev-parse HEAD)" = "$(git rev-parse @{upstream})" ] && \
+  [ "$(gofmt -l . | wc -l)" -eq 0 ] && go build ./... && go vet ./...
+
+# Full Go gate
 go test -race ./... -count=1 -timeout 300s
 
-# 6. State
-git status --short  # must be empty
-[ "$(git rev-parse HEAD)" = "$(git rev-parse @{upstream})" ] || { echo "REJECT: not in sync"; exit 1; }
+# Mobile gate
+cd /Users/mhk/orca/DevRemote/mobile && npx tsc --noEmit && npm test -- --runInBand
 
-# 7. Contract-specific checks (vary by task)
-# E.g.: grep "mux.Registry" for Task 2, grep "go:build legacy" for test migration, etc.
-
-echo "READY FOR VERIFIER"
-```
-
-### Verifier Dispatch Format
-```
-<TASK NAME> VERIFICATION — HEAD <sha>
-
-Pre-gate: <summary of what passed>
-
-Verify:
-1. <specific contract requirement>
-2. <specific contract requirement>
-...
-
-ACCEPT or REJECT. Use orca terminal send --terminal term_9477482c-0b30-491d-a156-4b3911dc79c9 to reply.
-```
-
----
-
-## 5. Rejection Handling
-
-### On First Rejection
-1. Read Verifier's exact blockers (file:line:reason)
-2. Forward to Executor with exact blocker list
-3. Do not weaken the contract
-4. Do not ask the wrong-tier Executor to fix code
-
-### On Second Rejection (same blocker)
-1. If Tier 1 (DeepSeek) → escalate to Tier 2 (Codex)
-2. If Tier 2 (Codex) → escalate to Tier 1 (DeepSeek)
-3. Split into smaller task boundary if needed
-
-### Immediate REJECT (don't send to Verifier)
-- Build, test, race, or gofmt fails
-- Old and V1 paths coexist (bridge/wrapper)
-- Evidence claims zero but grep proves otherwise
-- Tests deleted without migration map
-- Production code changed by EVID-only worker
-- HEAD != upstream or worktree dirty
-
----
-
-## 6. Common Patterns & Gotchas
-
-### Evidence files
-- Evidence SHA must be the ACTUAL commit SHA, not "(this commit)" or "TBD"
-- Evidence HEAD must be recorded separately from production candidate
-- All grep commands must use `grep -E` or `grep -rnE`
-- Control: `printf "test" | grep -E "pattern"` exits 0 to prove pattern works
-- Scan commands must use correct relative paths from companion-daemon/
-- Jest count must be reproduced at exact HEAD
-
-### Test requirements
-- Never delete tests without migration map to V1 equivalents
-- Tests must exercise production code paths (not clones/stubs)
-- `//go:build legacy` tag is test hiding — equivalent to deletion
-- Mobile tests: render actual FeedScreen, not just expect(true)
-
-### Common DeepSeek failure patterns
-- Evidence SHA = "(this commit)" instead of real SHA
-- grep without -E flag
-- Wrong paths in scan commands (mobile/src/ vs ../mobile/src/)
-- Tests that don't exercise production code
-- File permission/ownership inaccuracies
-
-### Common Codex failure patterns
-- Bridge/wrapper instead of actual deletion
-- Production security boundary changes for test convenience
-- Missing edge case tests
-
-### Architecture invariants (must never be violated)
-- Zero `mux.Registry`, `mux.Adapter`, `mux.Session`, `GetRecorder` in production
-- `ManagedPTYLauncherV1.Spawn()` is the only controlled-PTY creation path
-- No Registry fallback in managed paths
-- PA3 captured-instance invariant preserved
-- Loopback-only for insecure local mode
-
----
-
-## 7. Quick Reference Commands
-
-```sh
 # List terminals
 orca terminal list --worktree id:224412ce-4bad-4ef0-a68d-ce12acb30cbd::/Users/mhk/orca/DevRemote --json
 
-# Read terminal output
-orca terminal read --terminal <handle> --limit 20 --json
-
-# Send to executor
+# Dispatch to T1
 orca terminal send --terminal term_9f142890-1eae-4509-9dee-3412b1d5f729 --text "..." --enter --json
-orca terminal send --terminal term_49048007-d5df-40ce-b084-70d3bd270166 --text "..." --enter --json
 
-# Send to verifier
+# Dispatch to T2
+orca terminal send --terminal term_814699f4-f6e2-458c-a587-0a467c4a36b1 --text "..." --enter --json
+
+# Dispatch to V1
 orca terminal send --terminal term_8ca20c76-b656-4e0a-85d6-1750515b05d2 --text "..." --enter --json
 
-# Check git state
-git pull --ff-only && git log --oneline -5 && git status --short
+# Dispatch to V2/CG
+orca terminal send --terminal term_7f08372e-889f-4886-bbae-9335f04379c4 --text "..." --enter --json
 
-# Full pre-gate
-go build ./... && go vet ./... && [ "$(gofmt -l . | wc -l)" -eq 0 ] && go test -race ./... -count=1 -timeout 300s
+# Dispatch to EVID
+orca terminal send --terminal term_44b79f67-8fa8-4b9b-bab0-a642fd513e62 --text "..." --enter --json
+
+# Read coordinator messages
+orca terminal read --terminal term_9477482c-0b30-491d-a156-4b3911dc79c9 --limit 20 --json
 ```
-
----
-
-## 8. Next Steps (for new Coordinator)
-
-1. **Verify current state:** `git pull --ff-only && git log --oneline -3 && git status --short`
-2. **Confirm terminals are connected:** list terminals, verify all 4 are `connected=True`
-3. **Wait for user:** SM-S926N ADB connection is the user's responsibility
-4. **When device connected:** Device matrix testing begins — Executor runs diagnostic commands, Verifier independently confirms results
-5. **PB ACCEPT SHA remains UNSET** until physical matrix passes independent verification
