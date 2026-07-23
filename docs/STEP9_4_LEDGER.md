@@ -12,7 +12,9 @@
 | 1 | contract | T2 | 1 | DONE | `609127e29` | `609127e29` | PASS | — | — | 5 packets, epoch model frozen |
 | 2 | impl-9.4-A | T1 | 1 | DONE | `3931c07e1` | `3931c07e1` | PASS | V1_REJECT | 6 IMPL_REJECT | CLI routing, plist, upgrade, idempotency, build-tag, doctor |
 | 3 | impl-9.4-A-R2 | T1 | 2 | DONE | `f1e1b1912` | `f1e1b1912` | PASS | V1_REJECT | 5 residual (B1 partial, B2/B3/B4/B6 unresolved) | B5 fixed. Blind-retry risk → switch to T2 |
-| 4 | impl-9.4-A-R3 | T2 | 1 | FIX | 대기중 | — | — | — | B1/B2/B3/B4/B6 from T1 R2 | Model switch: T1→T2 after 2 attempts |
+| 4 | impl-9.4-A-R3 | T2 | 1 | DONE | `aea4eb3bd` | `aea4eb3bd` | PASS* | V1_REJECT | 4 residual (B3-B1, B3-B2, B4-B3, B4-B4) | B1/B2/B6 fixed. T1+T2 both stuck → SPLIT |
+| 5 | SPLIT-A (B3) | T2 | 1 | FIX | 대기중 | — | — | — | B3: transactional upgrade/rollback | Function boundary: replaceBinaryAtomic, performUpgrade, rollbackInstall, checkReadiness |
+| 6 | SPLIT-B (B4) | T1 | 1 | FIX | 대기중 | — | — | — | B4: path safety + error handling | Function boundary: readDaemonState, validateDaemonPaths, stop, rollback, uninstall |
 
 ## Operational Rules
 
@@ -64,6 +66,7 @@
 | 2 | 9.4-A → T1 (DeepSeek) | Backend Go work (CLI, LaunchAgent); T2 context limits |
 | 3 | V1_REJECT → T1 fix (ping-pong) | First rejection — same worker gets fix chance |
 | 4 | V1_REJECT again → T2 교체 | T1 2회 시도, B2/B3/B4/B6 unresolved. Blind-retry prevention: switch model before considering split. T2 better at precision edge cases (XML escaping, atomic ops, error handling) |
+| 5-6 | V1_REJECT → SPLIT | T1(2회)+T2(1회) both stuck on B3/B4. Split by concern: SPLIT-A (B3 transactional) → T2, SPLIT-B (B4 path safety/error handling) → T1. Function-level boundary: replaceBinaryAtomic/performUpgrade/rollbackInstall/checkReadiness vs readDaemonState/validateDaemonPaths/stop/rollback/uninstall |
 | — | Coordinator never self-accepts | Accept only via V1/V2 verdict. Coordinator does not judge implementation quality |
 
 ## Update Log
