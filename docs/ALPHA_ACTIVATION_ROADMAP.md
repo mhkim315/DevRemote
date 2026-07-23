@@ -1,11 +1,11 @@
 # POKIT Base Alpha Activation Roadmap
 
-**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 PENDING INDEPENDENT CLOSEOUT; STEP 9.1 NOT STARTED
+**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8` (EVID: `STEP9_0_EVIDENCE.md`); STEP 9.1 BLOCKED
 
-**Prerequisite:** Step 9.0 authority reconciliation is PENDING independent
-closeout. Independent closeout must be obtained before Step 9.1 may
-proceed; Step 9.0 acceptance does not by itself authorize Step 9.1
-implementation.
+**Prerequisite:** Step 9.0 authority reconciliation received independent
+closeout at `62a50f0a8`. Step 9.1 remains blocked — a separate, reviewed
+implementation contract is required before Step 9.1 may proceed. Step 9.0
+acceptance does not by itself authorize Step 9.1 implementation.
 
 The product boundary is:
 
