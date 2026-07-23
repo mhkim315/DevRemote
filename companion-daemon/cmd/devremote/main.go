@@ -20,6 +20,7 @@ var validSubcommands = map[string]bool{
 	"audit":   true,
 	"hook":    true,
 	"daemon":  true,
+	"doctor":  true,
 }
 
 // dispatchSubcommand routes recognized subcommands. Returns false when
@@ -41,6 +42,12 @@ func dispatchSubcommand(cmd string, args []string) bool {
 		return true
 	case "hook":
 		printShellHook()
+		return true
+	case "daemon":
+		runDaemonClient(args)
+		return true
+	case "doctor":
+		runDoctorClient()
 		return true
 	default:
 		return false
