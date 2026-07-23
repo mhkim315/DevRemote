@@ -1,6 +1,6 @@
 # Canonical Timeline CT-PRE Execution Plan
 
-**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0, CT-P1, CT-P1 Amendment, and Steps 4-8 ACCEPTED. Operational foundation complete. CT-P2 and production wiring remain BLOCKED (separate post-PB packet).
+**Status:** AUTHORITATIVE CT FOUNDATION CONTRACT — CT-P0, CT-P1, CT-P1 Amendment, and Steps 4-8 ACCEPTED. Operational foundation complete. Historical broad CT-P2 remains BLOCKED; Base Alpha activation is separately bounded.
 
 > **Product-direction amendment:** The product, authority model, and post-PB
 > order now live in
@@ -10,8 +10,10 @@
 > PB received independent ACCEPT at
 > `5354077afcf30343d9666511e259346d9bea0ad6`. CT-P1 was reviewed and narrowly
 > amended; the operational-evidence amendment received independent ACCEPT at
-> `12135bd80`. Do not begin CT-P2 until a separate post-PB plan is reviewed
-> and an independent authorization gate is satisfied.
+> `12135bd80`. Do not begin the historical broad CT-P2 sequence. After Step 9.0
+> independent closeout, only the bounded producer, projection, degradation,
+> fallback, and rollback work separately accepted under
+> [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md) may proceed.
 
 **Architecture name:** **Canonical Timeline**
 
@@ -61,14 +63,17 @@ The frozen state is:
 | PB physical SM-S926N evidence | **8/8 PASS** |
 | PB ACCEPT SHA | `5354077afcf30343d9666511e259346d9bea0ad6` |
 | CT-PRE | **CT-P0, CT-P1, CT-P1 Amendment ACCEPTED; Steps 4-8 foundation complete** |
-| CT-P2 | **BLOCKED — separate post-PB plan and authorization gate required** |
+| Historical broad CT-P2 | **BLOCKED — not automatically resumed by PB or foundation acceptance** |
+| Bounded Base Alpha Timeline activation | **PLANNED — blocked until Step 9.0 independent ACCEPT and wave-specific authorization** |
 | Production shadow-write (default-off construction) | **ACCEPTED — Step 4, independently verified at `58eb55b92`** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
 
 CT-PRE was a bounded pre-PB-ACCEPT exception for offline foundation work only.
-PB is now accepted, but that acceptance authorizes only the CT-P1 contract
-amendment. It does not itself authorize CT-P2, production composition, or
-shadow-write, and no CT work may alter the frozen PB candidate or artifacts.
+PB is now accepted, but that acceptance did not itself authorize CT-P2,
+producer composition, or consumer cutover. Default-off shadow-writer
+construction was accepted separately in Step 4. No further CT work may alter
+the frozen PB candidate or artifacts or proceed outside an accepted Base Alpha
+activation wave.
 
 ## 2. Authority and composition boundary
 
@@ -613,8 +618,12 @@ post-PB authorization.
    access/audit, and deletion/export remain unresolved per Section 9
    and require a separate reviewed contract.
 
-CT-P2 and authority/UI cutover remain blocked pending a separate post-PB plan
-and independent authorization gate. Do not begin CT-P2.
+Historical broad CT-P2 and authority-wide UI cutover remain blocked. Step 9.0
+independent closeout is the prerequisite for any Step 9.1 work; each later
+bounded producer, projection, N1, onboarding, or consumer-cutover wave requires
+its own implementation/evidence identity and independent authorization. Do not
+treat `ALPHA_ACTIVATION_ROADMAP.md` or this reconciliation commit as production
+activation.
 
 ## 11. Historical CT-P0 executor handoff (COMPLETED)
 
@@ -634,7 +643,8 @@ It is not a current executor authorization:
 
 The historical CT-P0 executor prohibition on CT-P1 was satisfied before CT-P1
 started. CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are
-independently accepted. Foundation Steps 1-8 and Step 9.0 ledger reconciliation
-are complete. Current work follows the authoritative sequence in
-`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md`. CT-P2 remains blocked pending
-a separate post-PB plan and independent authorization gate.
+independently accepted. Foundation Steps 1-8 are complete. Step 9.0 has an
+active documentation candidate and remains subject to independent closeout.
+Current work follows the authoritative sequence in
+`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and, after that closeout,
+`ALPHA_ACTIVATION_ROADMAP.md`. Historical broad CT-P2 remains blocked.

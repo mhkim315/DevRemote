@@ -75,12 +75,14 @@ these automatically.
 
 ## 6. Authoritative sequence
 
-- **9.0 DOCS/AUDIT — COMPLETE** at this commit.
-- **9.1 PRODUCER ACTIVATION** — staging; enable flags, fail-open shadow writes, generate
-  real Timeline events in controlled environment. Measure overhead.
-- **9.2 OPERATIONAL SMOKE** — SM-S926N physical device; end-to-end validation with
-  live session/approval/finding data flowing through the cockpit.
-- **9.3 BETA** — controlled enablement in broader staging; dogfood before policy
-  automation.
+The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
+
+- **9.0 DOCS/AUDIT — COMPLETE** at `921804fef`.
+- **9.1** — Minimal Timeline staging (controlled environment, fail-open writes)
+- **9.2** — Transcript/Activity projection convergence
+- **9.3** — N1 exact-event notification-to-action
+- **9.4** — Secure accountless onboarding
+- **9.5** — Matched Base Alpha candidate + SM-S926N product gate
+- **Beyond** — Manual Alpha coordination, CT-P2, automation (separate authorization)
 
 CT-P2 (Timeline operational wiring) remains blocked until independent plan acceptance.
