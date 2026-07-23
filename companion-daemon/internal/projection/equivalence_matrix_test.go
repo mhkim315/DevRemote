@@ -6,7 +6,6 @@ import (
 	"devremote/companion-daemon/internal/agent"
 	agentcontract "devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/timeline/contract"
-	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -100,8 +99,13 @@ func TestMatrix04Collision(t *testing.T) {
 	x.EventID = ""
 	x, _ = contract.NewEnvelope(x)
 	appendEnv(t, w, x)
-	if s := NewProjector(w).Snapshot(nil); s.Collisions != 1 {
+	s := NewProjector(w).Snapshot(nil)
+	if s.Collisions != 1 {
 		t.Fatalf("collision verdict: %#v", s)
+	}
+	b := matrixBinding("s", 1, e.EventID)
+	if r := Compare(matrixResponse("s", 1, matrixSegment("s", e.T0Event.ID, 1)), s, []FixtureEpochBinding{b}); r.Passed || r.Collisions != 1 {
+		t.Fatalf("collision report: %#v", r)
 	}
 }
 func TestMatrix05RingWrap(t *testing.T) {
@@ -128,14 +132,34 @@ func TestMatrix06NewWriter(t *testing.T) {
 	}
 }
 func TestMatrix07GenerationRestore(t *testing.T) {
-	bs := []FixtureEpochBinding{{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1}, {EpochOccurrence: 2, SessionID: "s", TranscriptGeneration: 2, RuntimeID: "r2", LaunchGeneration: 2}, {EpochOccurrence: 3, SessionID: "s", TranscriptGeneration: 3, RuntimeID: "r", LaunchGeneration: 1}}
-	if !strictOccurrences(bs) {
-		t.Fatal("N→N+1→restored-N rejected")
+	w := testWriter(t)
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	sid := "restore-m"
+	bs := make([]FixtureEpochBinding, 0, 3)
+	for i, gen := range []int64{1, 2, 1} {
+		if i == 0 {
+			svc.EnableQueue(sid)
+		} else {
+			svc.ReplaceTranscript(sid)
+		}
+		svc.SetCorrelation(sid, matrixCorrelation(sid))
+		e := envelope(t, string(rune(0x4300+i)), contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, gen)
+		if i == 2 {
+			e.SourceIncarnation = "incarnation-" + string(rune(0x4300))
+			e.EventID = ""
+			e, _ = contract.NewEnvelope(e)
+		}
+		svc.ProjectAgentEvents(sid, []agent.AgentEvent{e.T0Event})
+		appendEnv(t, w, e)
+		resp := svc.BuildResponse(sid, svc.ListTranscript(sid))
+		b := FixtureEpochBinding{EpochOccurrence: uint64(i + 1), SessionID: sid, TranscriptGeneration: resp.Generation, RuntimeID: "runtime-" + sid, LaunchGeneration: gen, TimelineEventIDs: []string{e.EventID}}
+		bs = append(bs, b)
+		if r := Compare(resp, NewProjector(w).Snapshot(bs), bs); !r.Passed {
+			t.Fatalf("epoch %d: %#v", i, r)
+		}
 	}
-	bad := append([]FixtureEpochBinding(nil), bs...)
-	bad[2].EpochOccurrence = 1
-	if strictOccurrences(bad) {
-		t.Fatal("merged restored N accepted")
+	if !strictOccurrences(bs) || bs[0].RuntimeID != bs[2].RuntimeID || bs[0].LaunchGeneration != bs[2].LaunchGeneration || bs[0].TranscriptGeneration == bs[2].TranscriptGeneration {
+		t.Fatal("restore binding invalid")
 	}
 }
 func TestMatrix08Missing(t *testing.T) {
@@ -145,21 +169,29 @@ func TestMatrix08Missing(t *testing.T) {
 	}
 }
 func TestMatrix09ApprovalPairOrder(t *testing.T) {
-	good := []TranscriptItem{{EventType: "approval_requested", PairID: "a"}, {EventType: "approval_resolved", PairID: "a"}}
-	if ValidatePairOrder(good) != nil {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"a1", "a2"}}
+	items := []TranscriptItem{{EventID: "a1", AgentEventRef: "a1", SessionID: "s", AgentKind: "codex", EventType: "approval_requested", Text: "Approval requested", PairID: "a", RuntimeID: "r", LaunchGeneration: 1, ProjectionOrder: 0}, {EventID: "a2", AgentEventRef: "a2", SessionID: "s", AgentKind: "codex", EventType: "approval_resolved", Text: "Approval resolved", PairID: "a", RuntimeID: "r", LaunchGeneration: 1, ProjectionOrder: 1}}
+	resp := matrixResponse("s", 1, transcript.TranscriptSegment{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "a1", AgentKind: "codex", EventType: "approval_requested", Text: "Approval requested", Seq: 1}, transcript.TranscriptSegment{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "a2", AgentKind: "codex", EventType: "approval_resolved", Text: "Approval resolved", Seq: 2})
+	if !Compare(resp, Snapshot{Transcript: items}, []FixtureEpochBinding{b}).Passed {
 		t.Fatal("approval control")
 	}
-	if ValidatePairOrder([]TranscriptItem{good[1], good[0]}) == nil {
-		t.Fatal("approval reorder accepted")
+	bad := append([]TranscriptItem(nil), items...)
+	bad[1].ProjectionOrder = -1
+	if r := Compare(resp, Snapshot{Transcript: bad}, []FixtureEpochBinding{b}); r.Passed || r.OrderingDivergences == 0 {
+		t.Fatalf("approval order: %#v", r)
 	}
 }
 func TestMatrix10ToolPairOrder(t *testing.T) {
-	good := []TranscriptItem{{EventType: "tool_call_started", PairID: "t"}, {EventType: "tool_call_finished", PairID: "t"}}
-	if ValidatePairOrder(good) != nil {
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", TranscriptGeneration: 1, RuntimeID: "r", LaunchGeneration: 1, TimelineEventIDs: []string{"t1", "t2"}}
+	items := []TranscriptItem{{EventID: "t1", AgentEventRef: "t1", SessionID: "s", AgentKind: "codex", EventType: "tool_call_started", ToolName: "x", PairID: "t", RuntimeID: "r", LaunchGeneration: 1, ProjectionOrder: 0}, {EventID: "t2", AgentEventRef: "t2", SessionID: "s", AgentKind: "codex", EventType: "tool_call_finished", ToolName: "x", PairID: "t", RuntimeID: "r", LaunchGeneration: 1, ProjectionOrder: 1}}
+	resp := matrixResponse("s", 1, transcript.TranscriptSegment{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "t1", AgentKind: "codex", EventType: "tool_call_started", ToolName: "x", Seq: 1}, transcript.TranscriptSegment{SessionID: "s", Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "t2", AgentKind: "codex", EventType: "tool_call_finished", ToolName: "x", Seq: 2})
+	if !Compare(resp, Snapshot{Transcript: items}, []FixtureEpochBinding{b}).Passed {
 		t.Fatal("tool control")
 	}
-	if ValidatePairOrder([]TranscriptItem{{EventType: "tool_call_started", PairID: "t"}, {EventType: "tool_call_finished", PairID: "x"}}) == nil {
-		t.Fatal("unmatched tool accepted")
+	bad := append([]TranscriptItem(nil), items...)
+	bad[1].PairID = "wrong"
+	if r := Compare(resp, Snapshot{Transcript: bad}, []FixtureEpochBinding{b}); r.Passed || r.Unexplained == 0 {
+		t.Fatalf("tool pair: %#v", r)
 	}
 }
 func TestMatrix11ApprovalBinding(t *testing.T) {
@@ -170,24 +202,16 @@ func TestMatrix11ApprovalBinding(t *testing.T) {
 		t.Fatalf("approval binding verdict: %#v", r)
 	}
 }
-func TestMatrix12Degradation(t *testing.T) {
-	b := matrixBinding("s", 1, "lost")
-	g := GapMarker{SessionID: "s", RuntimeID: "runtime-s", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedAfter: 1, DegradedReason: "write", Reason: "writer_drop"}
-	s := Snapshot{Gaps: []GapMarker{g}, Stats: writerStats(1), Degraded: true, DegradedReason: "write"}
-	good := matrixResponse("s", 1, matrixSegment("s", "a", 1), transcript.TranscriptSegment{SessionID: "s", Kind: transcript.KindDegraded, DegradedReason: "writer_drop"})
-	if !Compare(good, s, []FixtureEpochBinding{b}).Passed {
-		t.Fatal("gap control")
-	}
-	if Compare(matrixResponse("s", 1, matrixSegment("s", "a", 1)), s, []FixtureEpochBinding{b}).Passed {
-		t.Fatal("unmatched gap passed")
-	}
-}
 func TestMatrix13UnknownEventKind(t *testing.T) {
 	w := testWriter(t)
 	e := envelope(t, "unknown-boundary", contract.EventProviderInvocationStarted, agent.EventAgentStarted, "s", 1)
 	e.EventKind = contract.EventKind("unknown_boundary")
 	if w.Append(e) || w.Stats().Dropped == 0 || len(w.ReadRecent(1)) != 0 {
 		t.Fatal("writer accepted unknown event kind")
+	}
+	b := matrixBinding("s", 1, "unknown")
+	if r := Compare(matrixResponse("s", 1, matrixSegment("s", "agent-unknown-boundary", 1)), NewProjector(w).Snapshot([]FixtureEpochBinding{b}), []FixtureEpochBinding{b}); r.Passed {
+		t.Fatalf("unknown writer boundary reached oracle PASS: %#v", r)
 	}
 }
 
@@ -203,4 +227,3 @@ func matrixResponse(s string, gen int64, segs ...transcript.TranscriptSegment) t
 func matrixCorrelation(s string) transcript.CorrelationState {
 	return transcript.CorrelationState{SessionID: s, Correlation: agentcontract.CorrelationProven, Provider: "codex"}
 }
-func writerStats(d uint64) writer.Stats { return writer.Stats{Dropped: d} }

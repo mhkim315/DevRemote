@@ -293,7 +293,7 @@ func TestActualWriterRingOverwriteAlignsRetainedTranscriptOrder(t *testing.T) {
 	}
 }
 
-func TestWriterDropGapSuppressesScopedMissingEvents(t *testing.T) {
+func TestMatrix12Degradation(t *testing.T) {
 	const sid = "codex_app_server:writer-drop"
 	const runtimeID = "runtime-codex_app_server:writer-drop"
 	store := writer.NewProducerStore()
