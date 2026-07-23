@@ -49,12 +49,19 @@ mapping, never an implicit Timeline loss.
 ### 2a.1 Dual-fed fixture rule
 
 Each fixture creates one ordered set of accepted `agent.AgentEvent` values and
-feeds that same set to `Transcript.Service.ProjectAgentEvents(sessionID, events)`
-and to the Timeline-envelope construction/Writer path. It then reads the
-actual Transcript segments with `ListTranscript(sessionID)` and Timeline
-envelopes with `ReadRecent`. A fixture must state its event-kind mapping before
-comparison; unsupported Timeline-only operational evidence is not silently
-paired with a Transcript segment.
+first calls `Transcript.Service.SetCorrelation(sessionID, CorrelationState{
+SessionID: sessionID, Correlation: contract.CorrelationProven or
+contract.CorrelationManagedLaunch, Provider: provider})`. It then feeds the same set to
+`Transcript.Service.ProjectAgentEvents(sessionID, events)` and to the
+Timeline-envelope construction/Writer path. `ProjectAgentEvents` must not be
+called before `SetCorrelation`: the real service otherwise fail-closes and
+emits no primary semantic segments. The fixture reads actual Transcript
+segments with `ListTranscript(sessionID)` and Timeline envelopes with
+`ReadRecent`.
+
+Every fixture uses the closed event-to-segment mapping in §2b.1 before it can
+compare an event. An unsupported Timeline-only operational event is a FAIL,
+not an implicitly unpaired item.
 
 ### 2b. Activity Oracle (Timeline-derived, comparison target)
 
@@ -74,6 +81,40 @@ Envelope field. The Activity oracle defines the expected output by applying
 this projection to the dual-fed Timeline envelopes, including the closed
 `contract.EventKind` vocabulary. It must not fabricate `Seq`, `Source`, or a
 Transcript response field on an Envelope.
+
+### 2b.1 Timeline-derived Transcript projection
+
+`projection.TranscriptItem` is the Timeline-side comparison output. It does
+not call or replace `internal/transcript`; it makes the mapping used by the
+oracle explicit:
+
+```go
+type TranscriptItem struct {
+    AgentEventRef     string // Envelope.T0Event.ID
+    SessionID         string // Envelope.SessionID
+    AgentKind         string // Envelope.T0Event.AgentKind
+    EventType         string // Envelope.T0Event.Type
+    ToolName          string // only the safe Transcript projection value
+    RuntimeID         string
+    LaunchGeneration  int64
+    SourceIncarnation string
+    ProjectionOrder   int64
+}
+```
+
+The closed mappings are:
+
+| Timeline `EventKind` | Required `T0Event.Type` | Authoritative `TranscriptSegment` expectation |
+|---|---|---|
+| `provider_invocation_started` | `agent_started` | `KindAgentEvent` / `SourceAgentEvent`, `EventType=agent_started`, `AgentEventRef=T0Event.ID` |
+| `provider_invocation_finished` | `completed`, `failed`, or `interrupted` | same identity fields and matching event type |
+| `tool_call_started`, `tool_call_finished` | matching tool event type | same identity fields; compare only the Transcript projector’s sanitized `ToolName` |
+| `approval_requested`, `approval_resolved` | matching approval event type | same identity fields and matching event type |
+| `stream_observed` | `thinking` | same identity fields and `EventType=thinking`; no content-text comparison |
+
+No other `contract.EventKind` is in the Step 9.2 dual-fed set. Any mapping
+outside this table, any wrong `T0Event.Type`, missing correlation, missing
+`AgentEventRef`, or cross-session projection is a failure.
 
 ### 2c. Canonical Normalization
 
@@ -96,7 +137,7 @@ Not every difference is a failure. The taxonomy:
 | Category | Meaning | Verdict |
 |----------|---------|---------|
 | `exact_match` | Exact mapped semantic identity, content, generation, and order | PASS |
-| `tolerated_loss` | Only a declared, intentional mapping: Transcript fallback-only source, or a known Timeline event class that has no Step 9.1 producer mapping | PASS, counted with its mapping name |
+| `tolerated_loss` | Only one of the closed intentional-loss mappings below | PASS, counted with its mapping name |
 | `tolerated_gap` | Writer drop detected; gap marker present in both | PASS |
 | `ordering_divergence` | Same content set in a different order | FAIL |
 | `collision` | Same EventID, different canonical digest | FAIL |
@@ -131,6 +172,19 @@ type EquivalenceReport struct {
 Per roadmap §5: "There is no PASS with unexplained missing, extra, reordered,
 duplicated, misbound, unknown-version, collision, gap, or degraded input."
 
+### 2f. Closed intentional-loss mappings
+
+No fixture may invent a tolerated-loss category. The complete list is:
+
+| Mapping name | Exact condition | Comparison treatment |
+|---|---|---|
+| `transcript_fallback_not_dual_fed` | A `TranscriptResponse.Fallback` item whose `Source` is `byte_stream` or `snapshot_delta`, or a semantic `input_boundary`, `ui_omitted`, `unknown`, or existing Transcript `degraded` segment | Excluded before the dual-fed set is formed; report the named mapping, never a Timeline missing event |
+| `stream_text_redacted` | `stream_observed` / `thinking` maps to a correlated `KindAgentEvent` segment | Compare identity, session, generation, type, and order; deliberately do not compare `Text`, because the Transcript projector exposes no thinking body and Timeline payload cannot carry it |
+
+All other empty, partial, missing, extra, reordered, duplicate, degraded, or
+unknown-version results fail. In particular, ring overwrite is not an
+intentional-loss mapping.
+
 ## 3. Loss Semantics
 
 ### 3a. Duplicate EventID
@@ -144,7 +198,7 @@ Two cases:
    Producer error or corruption. Counted as `collision` → FAIL.
    Per `contract.SameEvidence()`: returns `ErrEventIDCollision`.
 
-### 3b. Writer restart / empty ring
+### 3b. Empty ring and process restart
 
 An empty ring is never itself a pass or a `tolerated_loss`. The projection
 samples the actual writer APIs at its comparison boundary:
@@ -154,13 +208,13 @@ stats := w.Stats()                         // Stats{Appended, Dropped, Failures}
 degraded, reason := w.HealthSnapshot()     // actual public API
 ```
 
-Restart is detected only by the degraded HealthSnapshot state with the
-implementation-defined restart reason; a newly constructed empty writer with
-`degraded == false` is merely an empty input and fails if the dual-fed
-Transcript set is non-empty. A restart observation emits an explicit
-`GapMarker{Reason: "writer_restart"}` into the projection stream for the
-comparison's session and generation. It can pass only as `tolerated_gap` when
-the matching declared marker is present on both sides of the oracle.
+`Writer.Open`/`newWriter` creates a healthy in-memory `Health`, and neither
+Health nor the ring has persisted state. Step 9.2 therefore has no restart
+state source and MUST NOT infer restart from an empty ring or from
+`HealthSnapshot()`. A new writer with an empty ring is simply empty and fails
+when its dual-fed Transcript set is non-empty. Cross-process restart comparison
+is deferred until a separately authorized persisted writer/projection cursor
+exists.
 
 ### 3c. Global writer drops
 
@@ -193,6 +247,20 @@ The equivalence oracle counts it as `tolerated_gap` only if the fixture's
 Transcript side explicitly declares the same boundary; otherwise any missing,
 extra, degraded, or gap input fails under roadmap §5.
 
+### 3d. Ring overwrite is an explicit gap or a failure
+
+`ReadRecent` retains only 128 envelopes and ring overwrite does not increment
+`Stats().Dropped`. The projection must compare its `Stats().Appended` baseline
+with the retained `ReadRecent` result. If retained evidence proves an
+overwrite, it emits `GapMarker{Reason: "ring_overwrite"}` for every affected
+known comparison scope. A single-scope fixture of 200 accepted envelopes must
+therefore emit one scoped marker covering the lost 72 entries.
+
+If an overwrite spans scopes whose lost session/runtime/generation/incarnation
+cannot be determined from the fixture/projection cursor, no marker may guess
+their ownership: the comparison fails as `unexplained`. Ring overwrite without
+the required marker always fails.
+
 ## 4. Acceptance Matrix
 
 One acceptance test per dimension. All tests use the existing
@@ -201,12 +269,12 @@ realizable sources.
 
 | # | Dimension | Test | Source |
 |---|-----------|------|--------|
-| 1 | Empty writer | Empty projection with non-empty dual-fed Transcript is FAIL; only a matching explicit degraded/restart marker may classify `tolerated_gap` | Ring buffer + `HealthSnapshot()` |
+| 1 | Empty writer | Empty projection with non-empty dual-fed Transcript is FAIL; no restart marker is inferred | Ring buffer + `HealthSnapshot()` |
 | 2 | Known sequence | 10 envelopes → Activity items in insertion order | Ring buffer with 10 items |
 | 3 | Exact replay | Same EventID + same digest → suppressed, not counted as duplicate | `contract.SameEvidence()` |
 | 4 | Collision | Same EventID + different digest → FAIL | `contract.ErrEventIDCollision` |
-| 5 | Ring buffer wrap | 200 items → oldest 72 dropped, 128 retained | Ring capacity 128 |
-| 6 | Reconnect | Degraded `HealthSnapshot()` restart state emits a session+runtime+generation gap marker; unmarked empty ring FAILS | `HealthSnapshot()` + new writer |
+| 5 | Ring buffer wrap | 200 one-scope envelopes → 128 retained plus explicit `ring_overwrite` marker covering 72; absent/unscopeable marker FAILS | `Stats().Appended` baseline + `ReadRecent` |
+| 6 | New writer | New healthy writer has an empty ring; non-empty dual-fed Transcript comparison FAILS (no restart inference) | `HealthSnapshot()` + new writer |
 | 7 | Generation reset/restore | Claude N→N+1→restored-N: compare the full `(SessionID, RuntimeID, LaunchGeneration, SourceIncarnation)` scope, so the restored-N epoch cannot merge with its earlier N epoch | Three scoped incarnations |
 | 8 | Missing events | Transcript has item not in Timeline → FAIL (no gap marker) | Oracle comparison |
 | 9 | Request/result ordering | Approval-requested before approval-resolved | Insertion order |
@@ -239,6 +307,6 @@ realizable sources.
 Stop and reject if the change:
 - Modifies existing Transcript service or API behavior
 - Interprets raw PTY bytes as Timeline events
-- Treats empty ring as silent success (must be explicit gap/unavailable)
+- Treats an empty ring as success or infers a restart marker without a persisted state source
 - Treats duplicate EventID with different digest as idempotent (must FAIL)
 - Unexplained difference in oracle output (must classify every difference)
