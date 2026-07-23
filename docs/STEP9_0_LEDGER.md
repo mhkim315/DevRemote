@@ -72,19 +72,19 @@ these automatically.
 | 7 (Validation) | `a753e126c` (IMPL) | `814868b5b` (EVID) | StalenessCheck (standalone, consumer NONE) |
 | 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
+| 9.1 (Timeline staging) | `16c350d1f` (IMPL) | `(this commit)` (EVID) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
 
 ## 6. Authoritative sequence
 
 The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
 
-- **9.0 DOCS/AUDIT — PENDING INDEPENDENT CLOSEOUT.**
-- **9.1** — Minimal Timeline staging (controlled environment, fail-open writes)
+- **9.0 DOCS/AUDIT — ACCEPTED at `62a50f0a8`.**
+- **9.1** — Minimal Timeline staging — **ACCEPTED at `16c350d1f`.**
 - **9.2** — Transcript/Activity projection convergence
 - **9.3** — N1 exact-event notification-to-action
 - **9.4** — Secure accountless onboarding
 - **9.5** — Matched Base Alpha candidate + SM-S926N product gate
 - **Beyond** — Manual Alpha coordination, CT-P2, automation (separate authorization)
 
-Historical broad CT-P2 remains blocked. Step 9.1 remains blocked until this
-Step 9.0 reconciliation receives independent ACCEPT and the bounded Step 9.1
-implementation contract is separately reviewed.
+Historical broad CT-P2 remains blocked. Step 9.2 remains not started until
+a separate reviewed implementation contract is accepted.
