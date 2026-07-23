@@ -11,7 +11,8 @@
 |---|-------|--------|---------|----------|-------------|-------------|----------|---------|---------|-------|
 | 1 | contract | T2 | 1 | DONE | `609127e29` | `609127e29` | PASS | — | — | 5 packets, epoch model frozen |
 | 2 | impl-9.4-A | T1 | 1 | DONE | `3931c07e1` | `3931c07e1` | PASS | V1_REJECT | 6 IMPL_REJECT | CLI routing, plist, upgrade, idempotency, build-tag, doctor |
-| 3 | impl-9.4-A-R2 | T1 | 2 | FIX | 대기중 | — | — | — | same 6 from R2 | ping-pong: T1 fix all 6 before re-review |
+| 3 | impl-9.4-A-R2 | T1 | 2 | DONE | `f1e1b1912` | `f1e1b1912` | PASS | V1_REJECT | 5 residual (B1 partial, B2/B3/B4/B6 unresolved) | B5 fixed. Blind-retry risk → switch to T2 |
+| 4 | impl-9.4-A-R3 | T2 | 1 | FIX | 대기중 | — | — | — | B1/B2/B3/B4/B6 from T1 R2 | Model switch: T1→T2 after 2 attempts |
 
 ## Operational Rules
 
@@ -24,9 +25,9 @@
 | Phase | Rounds | Details |
 |-------|--------|---------|
 | Contract | 1 | T2 single-shot |
-| Implementation | 2 | T1 R1 (REJECT) + R2 fix (진행중) |
+| Implementation | 3 | T1 R1+R2 + T2 R3 (model switch) |
 | Pre-gate returns | 0 | |
-| V1 REJECT | 1 | 6 IMPL_REJECT (routing, plist, upgrade, idempotency, build-tag, doctor) |
+| V1 REJECT | 2 | R2: 6 IMPL_REJECT. R3: 5 residual (B1 partial, B2/B3/B4/B6 unresolved) |
 | V1 ACCEPT | 0 | |
 | Evidence | 0 | |
 | V2 Audit | 0 | |
@@ -61,7 +62,8 @@
 |-------|----------|-----------|
 | 1 | CONTRACT to T2 (Codex) | Combined contract+impl capability; architecture-first approach |
 | 2 | 9.4-A → T1 (DeepSeek) | Backend Go work (CLI, LaunchAgent); T2 context limits |
-| 3 | V1_REJECT → T1 fix (ping-pong) | First rejection — same worker gets fix chance. If T1 fails again with same blockers → escalate to T2 or split |
+| 3 | V1_REJECT → T1 fix (ping-pong) | First rejection — same worker gets fix chance |
+| 4 | V1_REJECT again → T2 교체 | T1 2회 시도, B2/B3/B4/B6 unresolved. Blind-retry prevention: switch model before considering split. T2 better at precision edge cases (XML escaping, atomic ops, error handling) |
 | — | Coordinator never self-accepts | Accept only via V1/V2 verdict. Coordinator does not judge implementation quality |
 
 ## Update Log
