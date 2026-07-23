@@ -20,6 +20,7 @@ import (
 	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/projection"
 	"devremote/companion-daemon/internal/term"
+	"devremote/companion-daemon/internal/timeline/contract"
 	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
 	"devremote/companion-daemon/internal/validation"
@@ -477,6 +478,47 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		}
 		w.WriteHeader(http.StatusOK)
 	}
+	// N1 status is re-authorization, not push authority. The bounded writer
+	// ring is the only event locator source; absence is an explicit recovery
+	// outcome rather than a guessed cursor position.
+	n1Status := func(w http.ResponseWriter, r *http.Request) {
+		if timelineWriter == nil {
+			http.Error(w, `{"status":"canonical_event_unavailable"}`, http.StatusNotFound)
+			return
+		}
+		eventID, sessionID := r.PathValue("eventId"), r.URL.Query().Get("session")
+		var generation int64
+		if _, err := fmt.Sscan(r.URL.Query().Get("generation"), &generation); err != nil || eventID == "" || sessionID == "" {
+			http.Error(w, "bad notification locator", http.StatusBadRequest)
+			return
+		}
+		status := "canonical_event_unavailable"
+		current := int64(0)
+		if h.Catalog == nil {
+			status = "session_unavailable"
+		} else if rt, ok := h.Catalog.RuntimeOf(sessionID); !ok {
+			status = "session_unavailable"
+		} else {
+			current = rt.LaunchGen
+			if current != generation {
+				status = "stale_generation"
+			} else {
+				for _, e := range timelineWriter.ReadRecent(128) {
+					if e.EventID == eventID && e.SessionID == sessionID && e.LaunchGeneration == generation {
+						status = "actionable"
+						if e.EventKind == contract.EventApprovalRequested && h.Approvals != nil && e.References.ApprovalRequest != nil {
+							if a, ok := h.Approvals.LookupRecord(sessionID, e.References.ApprovalRequest.ID); !ok || !a.Actionable {
+								status = "already_resolved"
+							}
+						}
+						break
+					}
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"eventId":%q,"currentGeneration":%d,"notificationGeneration":%d,"status":%q,"activityLink":%q}`, eventID, current, generation, status, "pokit://session/"+sessionID+"?event="+eventID)
+	}
 
 	// Device bootstrap is public by design. Ticket issuance itself always
 	// requires an authenticated device bearer.
@@ -531,6 +573,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		serveMux.HandleFunc("/term/size", h.AuthMiddleware(h.HandleTermSize))
 		serveMux.HandleFunc("/term/", h.AuthMiddleware(h.HandleHTML))
 		serveMux.HandleFunc("/push/register", h.AuthMiddleware(registerPush))
+		if cfg.EnableN1Notifications {
+			serveMux.HandleFunc("GET /api/notification/{eventId}/status", h.AuthMiddleware(n1Status))
+		}
 		serveMux.HandleFunc("/debug/dump", h.AuthMiddleware(term.HandleDump))
 		serveMux.HandleFunc("/debug/cmd", h.AuthMiddleware(h.HandleCmd))
 		serveMux.HandleFunc("/debug/diag", h.AuthMiddleware(h.HandleDiagnostic))
