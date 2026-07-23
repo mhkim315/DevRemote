@@ -409,14 +409,17 @@ func validateDaemonPaths(state *daemonState) error {
 	if !strings.HasPrefix(resolvedBin, managedBinPrefix) && resolvedBin != currentExe {
 		return fmt.Errorf("daemon state binPath is not a managed binary: %q", state.BinPath)
 	}
-	resolvedOld, err := resolve(state.OldBinPath)
-	if err != nil {
-		return fmt.Errorf("daemon state oldBinPath: %w", err)
-	}
-	// OldBinPath is the previous version's binary. During migration it differs
-	// from BinPath; both must be within the managed bin directory.
-	if resolvedOld != resolvedBin && !strings.HasPrefix(resolvedOld, managedBinPrefix) {
-		return fmt.Errorf("daemon state oldBinPath is not a managed binary: %q", state.OldBinPath)
+	// OldBinPath is the previous version's binary. Empty on clean install.
+	if state.OldBinPath != "" {
+		resolvedOld, err := resolve(state.OldBinPath)
+		if err != nil {
+			return fmt.Errorf("daemon state oldBinPath: %w", err)
+		}
+		// During migration it differs from BinPath; both must be within the
+		// managed bin directory.
+		if resolvedOld != resolvedBin && !strings.HasPrefix(resolvedOld, managedBinPrefix) {
+			return fmt.Errorf("daemon state oldBinPath is not a managed binary: %q", state.OldBinPath)
+		}
 	}
 	resolvedBackup, err := resolve(state.BackupPath)
 	if err != nil {
@@ -524,6 +527,14 @@ func installDaemon() error {
 			}
 		}
 		return fmt.Errorf("install: cannot atomically write plist: %w", err)
+	}
+
+	// Clean up the previous upgrade's old binary before tracking the new one.
+	// Without this, repeated upgrades accumulate orphan artifacts.
+	if existingState != nil && existingState.OldBinPath != "" {
+		if err := os.Remove(existingState.OldBinPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("install: could not remove previous old binary %s: %v", existingState.OldBinPath, err)
+		}
 	}
 
 	// Persist daemon state for upgrade/rollback/uninstall tracking.
