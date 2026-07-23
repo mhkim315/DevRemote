@@ -62,7 +62,7 @@ The frozen state is:
 | PB ACCEPT SHA | `5354077afcf30343d9666511e259346d9bea0ad6` |
 | CT-PRE | **CT-P0, CT-P1, CT-P1 Amendment ACCEPTED; Steps 4-8 foundation complete** |
 | CT-P2 | **BLOCKED — separate post-PB plan and authorization gate required** |
-| Production shadow-write | **ACCEPTED — Step 4, independently verified at `58eb55b92`** |
+| Production shadow-write (default-off construction) | **ACCEPTED — Step 4, independently verified at `58eb55b92`** |
 | Canonical Timeline authority/UI cutover | **BLOCKED; not CT-PRE scope** |
 
 CT-PRE was a bounded pre-PB-ACCEPT exception for offline foundation work only.

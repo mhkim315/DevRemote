@@ -32,7 +32,7 @@ these automatically.
 |------|---------|-------|
 | 6 | Coordination broker | `internal/coordination` — broker, envelope, types, and tests. Never imported, constructed, or registered from `cmd/` or `term/`. Zero production goroutines or filesystem writes. |
 
-## 3. Production-Live (always enabled, no CLI gate)
+## 2. Production-Live (always enabled, no CLI gate)
 
 | Feature | Package | Producer | Consumer |
 |---------|---------|----------|----------|
@@ -43,8 +43,14 @@ these automatically.
 | Transcript engine | `internal/transcript` | `Transcript.Service` | Recorder, timeline |
 | Session identity | `internal/sessionid` | Active at startup | All subsystems |
 | Agent event model (T0) | `internal/agent` | Contract | Adapters, telemetry |
-| Agent adapters (T1/T2) | `internal/agent/adapters/` | Fixture-only; no live production caller (per CT-P0) | Test harness |
 | Watcher (file tail) | `internal/watcher` | Active at startup | — |
+
+## 3. Fixture / Test-Only (no production caller)
+
+| Feature | Package | Classification |
+|---------|---------|---------------|
+| Agent adapters (T1 Codex 0.144.1, T2 Claude 2.1.202) | `internal/agent/adapters/` | Fixture-only; no live production caller (per CT-P0 ACCEPT) |
+| Agent doctor (secret scanner) | `internal/agent/doctor/` | Test-only; redacted fixtures |
 
 ## 4. Step SHAs (implementation + evidence)
 
