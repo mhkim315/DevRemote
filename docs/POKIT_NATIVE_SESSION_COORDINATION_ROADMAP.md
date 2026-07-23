@@ -84,7 +84,7 @@ runtime, session, generation, model, snapshot, and evidence provenance.
 | Decision | Capabilities |
 | --- | --- |
 | **KEEP** | Managed native runtime; `OwnedPTYRuntime`; `TerminalTransport`; device trust; approval authority; exact session/runtime/generation identity; crash/reconnect recovery; mobile notification and intervention |
-| **REDESIGN** | Canonical Timeline as operational evidence; Activity/Transcript UI as projections; provider integration as narrow native capabilities; provider registry/adapters around proven managed producers; coordinator as deterministic routing/state component; executor/validator as explicit session purposes rather than fixed roles; failure detection from accepted operational facts; unified conversation as non-authoritative UX |
+| **REDESIGN** | Canonical Timeline as operational evidence; Activity/Transcript UI as projections; provider integration as narrow native capabilities; provider registry/adapters around proven managed producers; Coordinator as an adaptive phase-local reasoning role subordinate to deterministic execution authority; Executor/Verifier as explicit, independently scoped session purposes rather than a fixed product pipeline; failure detection from accepted operational facts; unified conversation as non-authoritative UX |
 | **DEFER** | Automatic provider selection; automatic validator dispatch; external parallel agents; forked recovery worktrees; Grok; ACP; semantic stagnation detection; enterprise governance; container/VM isolation; automatic provider switching and revision loops |
 | **DELETE FROM AUTHORITATIVE ROADMAP** | Custom model provider; generic coding-agent runtime; fixed Planner -> Executor -> Validator product pipeline; autonomous Navigator phase; generic always-on Guard/scorer; provider-native subagent control; universal provider reasoning abstraction; automatic raw-transcript handoff |
 
@@ -421,3 +421,389 @@ until Base Alpha has measured repeated use and the specific feature has outcome
 data, bounded failure behavior, authorization, provenance, rollback, and
 independent acceptance evidence. Automatic orchestration is not a mandatory
 final architecture.
+
+## 12. Post-Alpha orchestration direction
+
+**Status:** AUTHORITATIVE PRODUCT AND SAFETY PRINCIPLES; STAGED FUTURE WORK;
+NON-EXECUTABLE DURING ALPHA.
+
+**Architectural verdict:** `ACCEPT WITH REQUIRED CHANGES`. The corrections in
+this section are part of the accepted direction. Broader automation remains a
+hypothesis until the staged experiments below produce evidence.
+
+This section is the single authority for post-Alpha orchestration direction.
+It does not authorize O0, change Steps 9.1-9.5, alter Base Alpha acceptance,
+or claim that a Control Plane exists today. Current workflow observations are
+dogfood evidence, not proof that every proposed role or mechanism belongs in
+the product.
+
+The target boundary is:
+
+> **POKIT does not control how capable agents must think. POKIT controls which
+> exact local resources they may affect, under which identity and capability,
+> and what independently verified evidence is required before project
+> authority advances.**
+
+### 12.1 Final judgment and product boundary
+
+POKIT should adopt a three-plane separation:
+
+1. **Intelligence plane:** models reason, plan, revise, challenge, implement,
+   verify, and propose changes.
+2. **Control plane:** deterministic state and capability checks decide which
+   effects and authority transitions are valid.
+3. **Resource plane:** repositories, worktrees, provider processes, terminals,
+   tests, networks, secrets, and artifacts on which granted capabilities act.
+
+This separation is useful only when control is enforced at actual tool and
+resource boundaries. A prompt, role label, worker declaration, or Coordinator
+instruction is not a capability grant.
+
+The architecture is not a generic multi-agent hierarchy. Provider-native
+planning, reasoning, model routing, and subagents remain provider-owned.
+POKIT's durable differentiation is exact local execution identity, bounded
+resource authority, reproducible repository state, independent verification,
+evidence lineage, safe interruption/recovery, context rotation, and mobile
+supervision. Native providers are rapidly adding their own subagents,
+parallelism, worktrees, and model selection; POKIT must not duplicate them.
+
+The proposal is accepted only with these corrections:
+
+- start with the smallest deterministic core justified by observed failures;
+- preserve same-scope Coordinator discretion instead of serializing every
+  operational decision through an authority transition;
+- treat the full envelope, policy registry, detailed budgets, automatic
+  routing, and Navigator as staged hypotheses;
+- make worker completion claims explicitly untrusted until repository and
+  artifact pre-gates verify them;
+- separate frozen contract authority, accepted implementation, evidence
+  documentation, and roadmap/milestone authority;
+- preserve original verifier findings and artifact references across context
+  rotation rather than replacing them with summaries; and
+- prohibit self-referential commit-identity requirements.
+
+### 12.2 Minimal future topology
+
+```text
+User
+  ↕ strategic decisions and explicit authority expansion
+Thin Director (intermittent strategic role)
+  ↕ versioned proposals and decisions
+Minimal deterministic Control Plane
+  ↕ one phase-local authority envelope
+Adaptive phase-local Coordinator
+  ├─ one active native Executor (+ provider-native subagents)
+  ├─ fresh independent V1 Verifier
+  └─ bounded Steward evidence mode, then fresh V2 audit when required
+Resource Plane: repository/worktree/runtime/tests/artifacts/network/secrets
+```
+
+Roles persist conceptually; model sessions are disposable. Director,
+Coordinator, Executor, Verifier, and Steward are permission profiles and
+responsibilities, not a permanent agent taxonomy. A secondary Structural
+Worker profile is supported by current workflow evidence. Navigator,
+dedicated Security Verifier classes, and a permanent Plan Steward remain
+experimental.
+
+The Director is thin and intermittent. It handles product direction,
+milestone entry/exit, scope or policy change, authority expansion, user
+choices, and final explanation. It must not consume every worker transcript
+or become a shadow execution database. It cannot override repository facts,
+verdicts, security boundaries, or user authority.
+
+The Coordinator is intelligent and phase-local, not a passive router. Inside
+an existing authority scope it may interpret failure patterns, decompose and
+re-decompose work, classify local/structural/documentary/evidentiary failures,
+propose architectural redesign, switch among pre-approved model profiles,
+stop a silent or stalled worker, require a terminal status, correct trivial
+non-authoritative documentation defects, and choose among permitted recovery
+strategies.
+
+The Executor receives broad technical autonomy inside its enforced envelope.
+It may revise its plan, explore, debug, add tests, change abstractions, discard
+an approach, and use provider-native subagents. It cannot expand its
+capabilities, write outside scope, change the acceptance contract, or accept
+its own result.
+
+The Verifier receives a frozen snapshot, fresh context, separate dispatch
+identity, and no production-write capability. It judges observable contract,
+invariant, scope, failure-path, wiring, and evidence claims. An unfamiliar
+design or style preference is not a REJECT ground. Risk determines verifier
+strength; novel, security, permission, concurrency, protocol, persistence,
+and recovery work requires a strong independent verifier.
+
+### 12.3 Model judgment, deterministic policy, and user authority
+
+| Owner | Decisions |
+| --- | --- |
+| **Model judgment** | Technical exploration; implementation strategy; same-scope task split; root-cause and failure classification; materially different attempt proposal; approved model-profile selection; architectural or policy proposal; test and verification interpretation |
+| **Deterministic policy/state** | Actual Git and artifact identity; worktree and lease validity; dispatch idempotency; capability and path checks; attempt records; required checks; gate identity; verdict chain; immutable evidence references; monotonic/CAS state transitions; expiry/revocation; mismatch detection |
+| **Director or user authority** | Product/roadmap change; writable or security-domain expansion; acceptance-contract/public-API change; unapproved provider/cost profile; production flag change; irreversible external action; policy weakening; final release or baseline acceptance |
+
+Same-scope operational flexibility does not require a new authority revision
+when it stays within the current snapshot, writable domain, acceptance
+contract, security/permission profile, provider/cost profile, and reversible
+action set. A new authority transition is mandatory when any of those
+boundaries changes.
+
+The Coordinator may propose an out-of-policy option but cannot execute it or
+redefine validity. The Control Plane must not prescribe file-edit order,
+technical decomposition, hypotheses, or implementation procedure.
+
+### 12.4 Smallest evidence-backed deterministic core
+
+The first post-Alpha experiment must implement only controls justified by
+observed workflow failures:
+
+1. **Implementation pre-gate**
+   - compare actual HEAD and upstream identity;
+   - inspect tracked and untracked worktree state;
+   - verify prerequisite ancestry;
+   - run required formatting and basic checks;
+   - compare the worker-reported SHA, file list, diff, file content, and test
+     artifacts with actual repository state.
+2. **SHA and verdict ledger**
+   - bind contract authority, implementation attempts, V1 verdicts, frozen
+     implementation, evidence commits, V2 verdicts, ancestry, and the next
+     permitted transition.
+3. **Attempt and failure records**
+   - record normalized blocker category and failure signature;
+   - record Executor/provider/model identity;
+   - record snapshot and diff identity;
+   - record whether new evidence or a new strategy exists;
+   - classify blind versus materially different attempts from stored facts.
+
+A worker completion report is not execution authority or evidence. A mismatch
+prevents Verifier dispatch, creates a normalized failure record, and counts
+against blind-retry policy. Repeated recurrence escalates. The system must call
+the claim untrusted or inconsistent; it must not infer intent.
+
+This minimum is deliberately smaller than the complete proposed Control
+Plane. Detailed token/tool-call budgets, a complete policy registry, automatic
+provider selection, a Director approval pipeline for routine operations, a
+broad specialist catalog, and full event sourcing remain unsupported
+hypotheses.
+
+Transactional current state plus an append-only authority/verdict audit trail
+is sufficient initially. Full event-sourced orchestration is not required
+unless recovery, audit, or concurrency evidence later proves otherwise.
+
+### 12.5 Future autonomy envelope
+
+An autonomy envelope is a versioned, immutable, content-addressed authority
+object enforced by tool/resource boundaries. Its logical target includes:
+
+- envelope, parent, policy, authority-revision, and expiry identity;
+- work-item goal, frozen acceptance-contract reference, and immutable
+  constraints;
+- principal role/provider/runtime/session/generation/configuration identity;
+- repository/base/target/tree/worktree/lease identity;
+- granted read/write/temp paths, commands, network/secret profiles,
+  native-subagent permission, and concurrency;
+- forbidden paths, actions, and external systems;
+- bounded time/cost/attempt/tool/artifact budgets where evidence justifies
+  each bound;
+- required gates, verifier profile, and evidence references; and
+- closed exits: `DONE`, `BLOCKED`, `SPLIT_REQUIRED`,
+  `SCOPE_CHANGE_PROPOSED`, and `POLICY_EXCEPTION_PROPOSED`.
+
+This is a target schema, not a claim of current support and not the mandatory
+scope of the first experiment. Initial enforcement should cover exact
+snapshot/worktree/lease, one writer, path and command scope, dispatch identity,
+required gates, expiration/revocation, and externally visible side effects.
+Network, secret, fine-grained cost, tool-call, and artifact-byte enforcement
+must be added only with a real enforcing proxy and a reviewed failure model.
+
+Provider-native subagents remain inside the parent Executor envelope. POKIT
+records only parent work-item/runtime/session/generation, whether delegation
+occurred, provider child identity when available, provider/model/configuration
+provenance, aggregate cost/time, external capabilities and tools used, file
+and artifact provenance, and child failure/cancellation effect. When the
+provider exposes no child identity, record `opaque_native_delegation`; do not
+infer a child graph or collect chain-of-thought.
+
+### 12.6 Retry and escalation
+
+A blind retry keeps materially the same snapshot, hypothesis, affected area,
+failure signature, evidence, architecture, and provider strategy. Prompt-only
+restatement or an inconsistent completion claim is not a new attempt.
+
+A materially different attempt has stored evidence of at least one of:
+
+- a new root-cause hypothesis;
+- a new failing test or reproducer;
+- task decomposition or reduced blocker scope;
+- a different architecture;
+- new technical evidence;
+- an approved provider/model change; or
+- a substantially different diff identity tied to the failure.
+
+Initial policy:
+
+- no third blind retry;
+- immediately reject inconsistent completion claims at pre-gate;
+- escalate when the same failure class persists across different Executors;
+- continue only with materially new evidence or strategy;
+- allow Coordinator discretion to propose structural redesign when repeated
+  local fixes do not reduce the blocker;
+- allow bounded policy-defined extension for measurable progress; and
+- require Director or user approval above total cost/time or authority ceilings.
+
+The attempt store, not a Coordinator assertion, supports classification.
+Deterministic limits must not terminate a materially advancing attempt merely
+because a raw turn count increased.
+
+### 12.7 Contract, implementation, evidence, and milestone gates
+
+The target flow is:
+
+```text
+Frozen contract
+→ bounded implementation
+→ deterministic implementation pre-gate
+→ fresh V1 contract/code verification
+→ V1 ACCEPT and implementation freeze
+→ deterministic evidence manifest
+→ optional path-restricted Evidence mode
+→ evidence pre-gate
+→ fresh V2 milestone/authority audit
+```
+
+Contract documentation is frozen before implementation and is an input to V1.
+Evidence documentation is produced after V1 ACCEPT from deterministic facts
+and must not rewrite the accepted implementation. Roadmap/milestone authority
+changes at V2 or an equivalent milestone gate and is not re-litigated during
+every implementation round.
+
+V1 and V2 may be modes of one verifier subsystem, but they use separate
+dispatches, fresh contexts, and distinct frozen inputs. Trivial
+non-authoritative corrections do not automatically require a dedicated
+Evidence dispatch.
+
+The deterministic manifest owns changed files, exact SHA chain, commands and
+outcomes, ancestry, worktree/upstream identity, snapshot identity, and
+artifact hashes. A model may explain these facts but must not originate them
+from memory.
+
+> **Self-referential SHA invariant:** no artifact may require its own final
+> commit identity to be embedded in content that determines that same commit
+> identity.
+
+Evidence identifies the frozen implementation. Evidence-commit identity and
+verdict lineage are external ledger facts or are derived from repository
+state; this roadmap does not mandate one resolver implementation.
+
+### 12.8 Context rotation
+
+Roles persist; model instances are replaceable. Rotation requires capability
+revocation from the old principal, compare-and-swap acquisition by the new
+principal, and independent confirmation of repository and authority identity.
+
+Machine-owned handoff facts include current/upstream SHA, branch/worktree
+state, active phase/gate, worker/session/model, contract/implementation/evidence
+identities, attempt count, required gate results, current verdict, and
+current-versus-historical verdict separation.
+
+Model interpretation includes blocker classification, escalation rationale,
+task decomposition rationale, and unresolved architectural tension.
+
+Immutable references must preserve complete verifier findings with exact file
+and line references, complete worker `BLOCKED` or completion reports, the
+accepted SHA/verdict chain, and original test/artifact output. Per-Executor
+failure-signature history and normalized blocker category are mandatory.
+A bounded summary is navigation metadata; it never replaces source findings
+or evidence.
+
+### 12.9 Policy lifecycle and experimental roles
+
+Models may propose but may not mutate active policy:
+
+```text
+Observed friction
+→ PolicyChangeProposal with exact evidence
+→ offline replay/counterfactual evaluation
+→ independent policy review
+→ Director decision
+→ user approval when authority expands or safety weakens
+→ shadow/canary
+→ measured comparison
+→ activation at a future authority revision
+→ rollback and sunset
+```
+
+Policy versions record proposer, rationale, affected envelopes, authority,
+security and cost deltas, evaluations, activation revision, rollback version,
+and review/sunset date. New policy never retroactively changes an ACCEPT.
+
+Scaffolding to test periodically for removal includes fixed decomposition
+templates, mandatory intermediate plans, model-specific prompts, retry
+thresholds, mandatory specialists, command-by-command approval, static routing,
+oversized handoff summaries, and model-generated evidence narratives.
+
+The following invariants do not weaken as models improve: exact snapshot
+identity, one valid writer lease, verifier independence, idempotent dispatch,
+monotonic authority transition, enforced capability scope, and artifact/
+evidence lineage.
+
+Navigator/Challenger remains disabled and experimental. One bounded read-only
+dispatch may be evaluated only after dogfood records structural deadlock: the
+same contract failure twice without a materially new hypothesis; Executor and
+Verifier deadlock; increasing patch size without decreasing blockers;
+repeated local workarounds around one structural defect; a policy-exception
+proposal; recurrence after context rotation; substantial budget consumption
+without new evidence; or implementation/roadmap conflict. It cannot write,
+dispatch, grant capabilities, change policy/gates, or ACCEPT/REJECT.
+
+### 12.10 Staged post-Alpha validation
+
+No stage below has implementation authority until a future independently
+accepted contract explicitly opens it.
+
+| Stage | Scope | Explicitly excluded |
+| --- | --- | --- |
+| **O0 — evaluation baseline** | Build a work-item/failure dataset; measure current coordination cost; define authority-violation and autonomy-versus-rigidity evaluations | Automatic dispatch, routing, or policy mutation |
+| **O1 — minimum deterministic experiment** | One bounded work item, one Coordinator, one Executor, implementation pre-gate, fresh V1, implementation freeze, deterministic evidence manifest, optional Evidence mode, fresh V2, attempt/failure records, safe Coordinator handoff | Full envelope proxy, automatic provider selection, Navigator, specialist catalog |
+| **O2 — enforced envelope pilot** | Enforce exact snapshot/worktree/lease, one writer, path/command capability, dispatch identity, expiry/revocation, required gate, and external-side-effect checks | Broad network/secret/budget enforcement without a real proxy |
+| **O3 — adaptive Coordinator operations** | Same-scope task splits, attempt classification, approved model-profile switching, stall termination, recovery proposals, authority-expansion requests | Gate override or out-of-policy execution |
+| **O4 — context rotation** | CAS state revision, revoke/acquire capabilities, replace Coordinator safely, preserve pending attempts/delivery and exact source references | Summary-only handoff |
+| **O5 — evidence pipeline** | Deterministic manifest, restricted Evidence mode, separate evidence commit when needed, fresh V2 audit | Model-invented facts or implementation amendment |
+| **O6 — native-subagent observability** | Parent attribution, opaque delegation, aggregate resource and side-effect evidence | Reimplementation of provider subagent orchestration |
+| **O7 — policy lifecycle and conditional routing** | Evidence-backed proposals, replay/evaluation, canary, rollback/sunset, initially user-confirmed model routing | Silent policy mutation or automatic authority expansion |
+| **O8 — optional Navigator experiment** | One-shot read-only structural challenge after demonstrated deadlock | Persistent role or execution authority |
+
+The O1 experiment is sufficient to validate the direction's first claim:
+whether verified repository truth, attempt records, deterministic evidence,
+and safe handoff reduce coordination loss more than they add overhead. Compare
+it with the current manual baseline using implementation rounds,
+evidence-only rounds, pre-gate catches, blind retries, inconsistent worker
+claims, avoided Verifier dispatches, handoff loss, and total coordination
+overhead. It is not sufficient to validate automatic routing, a full policy
+registry, Navigator, or full Control Plane enforcement.
+
+### 12.11 Stop conditions and Alpha exclusion
+
+All post-Alpha orchestration work is excluded from Base Alpha Steps 9.1-9.5.
+Do not begin O0 before Base Alpha acceptance and a separate contract. Do not
+reuse accepted foundation code as implied authorization.
+
+Stop a future orchestration packet if it:
+
+- changes Alpha scope or accepted runtime/Terminal/Transcript/approval/input/
+  pairing/generation authority;
+- treats a prompt or report as a capability grant;
+- lets a Coordinator change scope, snapshot, gate meaning, or repository truth;
+- serializes same-scope technical reasoning into Control-Plane approvals;
+- trusts worker claims without repository/artifact comparison;
+- allows an Executor to accept itself or a Verifier to modify production;
+- loses exact source findings during rotation;
+- revives provider-native subagent control or chain-of-thought collection;
+- introduces automatic routing, Navigator, or policy mutation before its
+  measured prerequisite; or
+- claims enforcement that the Resource Plane cannot actually provide.
+
+Post-Alpha product positioning:
+
+> **POKIT is the provider-neutral local execution authority for capable native
+> coding agents: agents retain their intelligence, while POKIT binds their
+> effects to exact identities, resources, repository states, verification, and
+> recoverable evidence.**
