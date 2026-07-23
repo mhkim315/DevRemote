@@ -449,7 +449,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if cfg.EnableCockpit {
 		validationStore = validation.NewValidationStore()
 		// STEP8: ValidationStore is wired as a cockpit source (cockpit reads
-		// via ReadAll) and exposed on the App struct for future validation
+		// via ReadRecent) and exposed on the App struct for future validation
 		// producers. No production Submit caller exists yet — Step 7 was
 		// contract-only. The store accumulates findings as validation
 		// pipelines are added.

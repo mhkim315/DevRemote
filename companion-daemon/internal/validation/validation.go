@@ -66,7 +66,7 @@ func (r ValidationResult) Validate() error {
 // buffer for polling consumers. Zero goroutines — callers read on demand.
 type ValidationStore struct {
 	mu      sync.RWMutex
-	results []ValidationResult // full history for ReadAll
+	results []ValidationResult // capped history for ReadAll (maxHistoryItems, oldest-half drop)
 	ring    []ValidationResult // ring buffer for ReadRecent
 	pos     int
 	full    bool
@@ -106,7 +106,7 @@ func (s *ValidationStore) Submit(result ValidationResult) error {
 	return nil
 }
 
-// ReadAll returns a defensive snapshot of full history.
+// ReadAll returns a defensive snapshot of capped history.
 func (s *ValidationStore) ReadAll() []ValidationResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
