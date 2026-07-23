@@ -327,7 +327,7 @@ func TestCapabilityBindsWriterAndCompleteIdentity(t *testing.T) {
 	if capability.SubmitAfterCommit(wrongKind) {
 		t.Fatal("unbound event kind accepted")
 	}
-	store.Revoke("codex", "codex_app_server:one", 7)
+	store.Revoke("codex", "runtime-a", "codex_app_server:one", 7)
 	if capability.SubmitAfterCommit(e) {
 		t.Fatal("revoked capability accepted")
 	}
@@ -520,7 +520,7 @@ func TestRevokeLinearizesAgainstRacingEnqueue(t *testing.T) {
 	<-entered
 	revoked := make(chan struct{})
 	go func() {
-		store.Revoke("codex", "codex_app_server:one", 7)
+		store.Revoke("codex", "runtime-a", "codex_app_server:one", 7)
 		close(revoked)
 	}()
 	select {

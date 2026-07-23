@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"devremote/companion-daemon/internal/timeline/contract"
 	"encoding/json"
 	"log"
 	"os"
@@ -66,6 +67,17 @@ func TestTimelineOperationalAdapterBindsRevokesAndRedactsEveryProjection(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { timelineWriter.Close() })
+	// Pre-bind test sessions so verifier finds them.
+	_, _ = producers.Bind("codex", "runtime-privacy", "codex_app_server:privacy", 1,
+		contract.EventProviderInvocationStarted, contract.EventProviderInvocationFinished,
+		contract.EventToolCallStarted, contract.EventToolCallFinished,
+		contract.EventApprovalRequested, contract.EventApprovalResolved,
+		contract.EventStreamObserved)
+	_, _ = producers.Bind("codex", "runtime-privacy", "codex_app_server:privacy", 2,
+		contract.EventProviderInvocationStarted, contract.EventProviderInvocationFinished,
+		contract.EventToolCallStarted, contract.EventToolCallFinished,
+		contract.EventApprovalRequested, contract.EventApprovalResolved,
+		contract.EventStreamObserved)
 	adapter := newTimelineOperationalAdapter(producers, producers)
 
 	oldLogWriter := log.Writer()

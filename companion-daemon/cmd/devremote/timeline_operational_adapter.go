@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"strings"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -55,7 +54,7 @@ func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEve
 		if capability, bound := a.capabilities[key]; bound && validEnvelope {
 			_ = capability.SubmitAfterCommit(envelope)
 		}
-		a.producers.Revoke(event.Provider, event.SessionID, event.LaunchGeneration)
+		a.producers.Revoke(event.Provider, event.RuntimeID, event.SessionID, event.LaunchGeneration)
 		delete(a.capabilities, key)
 		return
 	}
@@ -63,16 +62,10 @@ func (a *timelineOperationalAdapter) SubmitAfterCommit(event term.OperationalEve
 		return
 	}
 	if event.Kind == term.OperationalProviderInvocationStarted {
-		// Verify the session identity against the verifier. The adapter
-		// checks both the verifier (managed runtime registry) AND the
-		// session prefix pattern (codex_app_server:/claude_headless:)
-		// as a defense-in-depth check. Either path satisfies the check.
-		verified := a.verifier != nil && a.verifier.IsManagedSession(event.SessionID)
-		if !verified {
-			verified = strings.HasPrefix(event.SessionID, "codex_app_server:") ||
-				strings.HasPrefix(event.SessionID, "claude_headless:")
-		}
-		if !verified {
+		// Verify the session identity against the verifier (managed runtime
+		// registry). No prefix fallback — only registered managed sessions
+		// may produce timeline events.
+		if a.verifier == nil || !a.verifier.IsManagedSession(event.SessionID) {
 			return
 		}
 		capability, err := a.producers.Bind(

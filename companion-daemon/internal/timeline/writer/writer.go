@@ -135,7 +135,7 @@ func (s *ProducerStore) Bind(provider, runtimeID, sessionID string, generation i
 	if s.writer == nil {
 		return Capability{}, ErrInvalidConfig
 	}
-	key := fmt.Sprintf("%s:%s:%d", provider, sessionID, generation)
+	key := fmt.Sprintf("%s:%s:%s:%d", provider, runtimeID, sessionID, generation)
 	tok, err := newProducerToken()
 	if err != nil {
 		return Capability{}, err
@@ -154,12 +154,13 @@ func (s *ProducerStore) attach(w *Writer) {
 	s.writer = w
 }
 
-// Revoke removes a producer by identity. Future submissions with the
-// revoked handle are dropped.
-func (s *ProducerStore) Revoke(provider, sessionID string, generation int64) {
+// Revoke removes a producer by identity (includes runtimeID). Future
+// submissions with the revoked handle are dropped. A mismatched-runtime
+// finish must NOT revoke a legitimate binding.
+func (s *ProducerStore) Revoke(provider, runtimeID, sessionID string, generation int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("%s:%s:%d", provider, sessionID, generation)
+	key := fmt.Sprintf("%s:%s:%s:%d", provider, runtimeID, sessionID, generation)
 	delete(s.active, key)
 }
 
@@ -171,7 +172,7 @@ func (s *ProducerStore) IsBound(h producerHandle, tok ProducerToken) bool {
 }
 
 func (s *ProducerStore) isBoundLocked(h producerHandle, tok ProducerToken) bool {
-	key := fmt.Sprintf("%s:%s:%d", h.provider, h.sessionID, h.generation)
+	key := fmt.Sprintf("%s:%s:%s:%d", h.provider, h.runtimeID, h.sessionID, h.generation)
 	stored, ok := s.active[key]
 	return ok && stored.provider == h.provider && stored.runtimeID == h.runtimeID &&
 		stored.sessionID == h.sessionID && stored.generation == h.generation && stored.token == tok
