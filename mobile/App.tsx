@@ -5,7 +5,7 @@ import { Linking, View, Text } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './src/lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import { apiGet, getNotificationStatus, registerPushToken } from './src/lib/client';
+import { apiGet, getNotificationStatus, registerPushToken, type NotificationStatus } from './src/lib/client';
 import { ConnectionProvider, useConnection } from './src/lib/connection';
 
 import AuthScreen from './src/screens/AuthScreen';
@@ -173,12 +173,13 @@ function AppContent() {
     // (no Supabase session); legacy mode uses the active Supabase token.
     // This avoids the stale-closure problem — the listener effect uses [] but
     // every notification reads current pairing/auth state fresh.
+    // Cold-start race: if apiGet returns unauthenticated (device bearer not
+    // yet installed), retry with backoff (max 3 attempts, 500ms between).
     try {
       const paired = await loadPairing();
       let token = '';
       if (paired) {
         // Paired-device: getNotificationStatus will use device bearer via apiGet.
-        // Provide a placeholder so the token parameter is non-empty.
         token = '';
       } else {
         // Legacy mode: re-read the current Supabase session fresh.
@@ -187,11 +188,60 @@ function AppContent() {
       }
       if (!paired && !token) return; // neither paired nor authenticated
 
-      const status = await getNotificationStatus(token, eventId, sessionId, generation, runtimeId);
-      if (status.status === 'actionable' && status.activityLink) {
-        await Linking.openURL(status.activityLink);
-      } else {
-        await Linking.openURL(`pokit://activity/${encodeURIComponent(sessionId)}?event=${encodeURIComponent(eventId)}`);
+      let status: NotificationStatus | null = null;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          status = await getNotificationStatus(token, eventId, sessionId, generation, runtimeId);
+          lastErr = null;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          // Only retry on auth errors (cold-start race: bearer not yet active).
+          if (err?.failure === 'auth_error' || err?.statusCode === 401) {
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+          break; // non-auth error: don't retry
+        }
+      }
+      if (!status) {
+        console.warn('notification status unavailable after retries', lastErr);
+        return;
+      }
+
+      // 7 distinct fallback outcomes — each maps to a different screen.
+      const sid = encodeURIComponent(sessionId);
+      const eid = encodeURIComponent(eventId);
+      switch (status.status) {
+        case 'actionable':
+          if (status.activityLink) await Linking.openURL(status.activityLink);
+          break;
+        case 'already_resolved':
+          // Approval resolved by another device — go to the session terminal.
+          await Linking.openURL(`pokit://session/${sid}`);
+          break;
+        case 'stale_generation':
+          // Runtime replaced or gen mismatch — go to the session for fresh context.
+          await Linking.openURL(`pokit://session/${sid}`);
+          break;
+        case 'session_unavailable':
+        case 'canonical_event_unavailable':
+          // Session ended or event gone — go to sessions list (Dashboard).
+          await Linking.openURL('pokit://dashboard');
+          break;
+        case 'insufficient_permission':
+          // Device lacks terminal:input — go to settings / pairing info.
+          await Linking.openURL('pokit://dashboard');
+          break;
+        case 'event_degraded_or_gap':
+          // Writer is degraded — go to terminal for direct interaction.
+          await Linking.openURL(`pokit://session/${sid}`);
+          break;
+        default:
+          // Unknown status — terminal as safest fallback.
+          await Linking.openURL(`pokit://session/${sid}`);
+          break;
       }
     } catch (err) { console.warn('notification status unavailable', err); }
   }

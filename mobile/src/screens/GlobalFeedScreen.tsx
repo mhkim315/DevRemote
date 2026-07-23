@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { listSessions } from '../lib/client';
 import { View, Text, StyleSheet, FlatList, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,6 +14,7 @@ interface Props {
 export default function GlobalFeedScreen({ token, session, eventId }: Props) {
   const [sessions, setSessions] = useState<SessionTelemetry[]>([]);
   const [loading, setLoading] = useState(true);
+  const listRef = useRef<FlatList>(null);
 
   const fetchSessions = () => {
     listSessions(token)
@@ -36,26 +37,47 @@ export default function GlobalFeedScreen({ token, session, eventId }: Props) {
     return () => clearInterval(interval);
   }, []);
 
-  // PA3 Step 1: events removed from SessionTelemetry. Global feed now shows
-  // session cards only; per-session Transcript available via FeedScreen.
-  const allEvents: any[] = [];
+  // When deep-linked via pokit://activity/<session>, scope the display to that
+  // session's events. When eventId is provided, it is highlighted in the list.
+  const scopedToSession = session || undefined;
+  const highlightEventId = eventId || undefined;
+
+  // For now, events are session cards — scope to matching session if provided.
+  const displaySessions = scopedToSession
+    ? sessions.filter(s => s.id === scopedToSession || String(s.id).includes(scopedToSession))
+    : sessions;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>GLOBAL FEED</Text>
+        <Text style={styles.headerTitle}>
+          {scopedToSession ? `ACTIVITY` : 'GLOBAL FEED'}
+        </Text>
+        {scopedToSession && (
+          <Text style={styles.headerSubtitle} numberOfLines={1}>
+            {scopedToSession}{highlightEventId ? ` · event ${highlightEventId.slice(0, 12)}` : ''}
+          </Text>
+        )}
       </View>
       <View style={styles.content}>
-        {loading && allEvents.length === 0 ? (
+        {loading && displaySessions.length === 0 ? (
           <ActivityIndicator size="large" color="#45EBE9" style={{ marginTop: 40 }} />
         ) : (
           <FlatList
-            data={allEvents}
+            ref={listRef}
+            data={displaySessions}
             keyExtractor={(item, idx) => item.id || String(idx)}
             contentContainerStyle={styles.listContainer}
-            renderItem={({ item }) => (
-              <EventBubble event={item} runnerId={item.runnerId} runnerColor={item.runnerColor} agentKind={item.agentKind} />
-            )}
+            renderItem={({ item }) => {
+              const isHighlighted = highlightEventId
+                ? (item as any).events?.some((e: any) => e.id === highlightEventId)
+                : false;
+              return (
+                <View style={isHighlighted ? styles.highlightedItem : undefined}>
+                  <EventBubble event={item} runnerId={item.runnerId} runnerColor={item.runnerColor} agentKind={item.agentKind} />
+                </View>
+              );
+            }}
             ListEmptyComponent={
               <Text style={styles.emptyText}>No activity yet.</Text>
             }
@@ -73,7 +95,9 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#ffffff', letterSpacing: 1.2, fontFamily: Platform.OS === 'ios' ? 'HelveticaNeue-CondensedBold' : 'sans-serif-condensed' },
+  headerSubtitle: { fontSize: 11, color: '#45EBE9', marginTop: 4, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   content: { flex: 1 },
   listContainer: { paddingVertical: 16 },
-  emptyText: { color: '#8b949e', textAlign: 'center', marginTop: 40, fontSize: 14 }
+  emptyText: { color: '#8b949e', textAlign: 'center', marginTop: 40, fontSize: 14 },
+  highlightedItem: { borderLeftWidth: 3, borderLeftColor: '#45EBE9', paddingLeft: 8 }
 });

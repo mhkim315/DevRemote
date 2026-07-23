@@ -434,7 +434,14 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 
 	// 3. Runtime identity — the runtime ID must match the session's current
 	//    runtime. A mismatch means the runtime was replaced.
+	//    Fail-closed: when the catalog cannot resolve the runtime (runtimeKnown
+	//    is false) but the notification carried a runtime ID, treat as a
+	//    potential identity mismatch — never proceed to actionable.
 	actualRuntimeID, runtimeKnown := resolver.RuntimeID(sessionID)
+	if !runtimeKnown && runtimeID != "" {
+		resp.Status = "stale_generation"
+		return resp
+	}
 	if runtimeKnown && actualRuntimeID != runtimeID {
 		resp.Status = "stale_generation"
 		return resp
