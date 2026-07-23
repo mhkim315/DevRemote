@@ -1,12 +1,12 @@
 # Step 9.3 Evidence — N1 Exact-Event Notification-to-Action
 
 **IMPL SHA:** `f7033b86c`
-**EVID SHA:** `1c3e5043e` (R12)
-**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix), `15744d8f2` (R10), `da6997288` (R10 fix), `1a4b602bf` (R11), `5b164e7ab` (R11 fix)
+**EVID SHA:** (this commit — R13 revision)
+**PRIOR EVID SHA:** `c09791741` (R1), `d2f43e29f` (R1 fix), `41486e1d1` (R2), `277e00998` (R2 fix), `4bee07590` (R3), `1af27eda6` (R3 fix), `c5cd9722f` (R4), `e9e697e9c` (R4 fix), `ad69a5d3b` (R5), `22967ece6` (R5 fix), `ef402d482` (R6), `d6fa46588` (R6 fix), `26dc2504f` (R7), `1fe58835e` (R7 fix), `7481ea16c` (R8), `e236d8bee` (R8 fix), `4383353a4` (R9), `5c3ef427b` (R9 fix), `15744d8f2` (R10), `da6997288` (R10 fix), `1a4b602bf` (R11), `5b164e7ab` (R11 fix), `1c3e5043e` (R12), `8b3f2412a` (R12 fix)
 **CONTRACT SHA:** `a5e532fd9` (amended mobile N1 scope); prior: `3769d583e` (R2, superseded)
 **IMPL BASE:** `f4ec338ed` (T2 R1, superseded by T1 `d23ff7fb6` + `1a6cf19ef` + `f8b0535f8` + `9c0106a39` + T2 `ea83c153a`)
 **Date:** 2026-07-24
-**Revision:** R12 — 3 syncs to f7033b86c: scope, log, cursor
+**Revision:** R13 — file lines 713→715, cursor qualifier 'during current dedup residency'
 **Round counts:** Contract 4, Pre-gate 2, Impl 15, EVID 15, V2 3 = 39 total
 
 Step 9.3 implements N1 exact-event notification-to-action: a Locator-based push
@@ -145,8 +145,8 @@ prohibited to avoid flooding already-notified devices.
 - `Start()` — background consumer loop, 1s tick, polls `Writer.ReadRecent(128)`
 - `dispatch()` — per-device: snapshot all devices + cursors under single RLock,
   `SelectSince` events, per-device `Dedup.Claim`, `Build` locator with generation
-  gate, `sender.Send`. Cursor advances to last success on partial failure;
-  unsent events are not retried.
+  gate, `sender.Send`. Cursor advances to last success on partial failure
+  during current dedup residency; unsent events are not retried.
 - `Stop()` — closes done channel, idempotent
 - `SetEnabled(bool)` — controls consumer loop independently of device registration
 - `Dispatch()` — synchronous one-shot for tests/manual trigger
@@ -322,14 +322,14 @@ MOBILE TSC:     PASS
    independently.
 6. **No blind replay** — ring wrap returns only the latest event, preventing
    flood of already-notified devices.
-7. **Cursor advances on success only** — a failed send preserves the old
-   cursor, at-most-once, no retry.
+7. **Cursor advances on success only** — advances to last success during
+   current dedup residency; unsent events are not retried.
 
 ## 6. New files by package
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `internal/notification/notification.go` | 713 | Locator, Token, Build, Dedup, Cursor, SelectSince, DeviceStore, Notifier, ResolveStatus, RegisterHandlers |
+| `internal/notification/notification.go` | 715 | Locator, Token, Build, Dedup, Cursor, SelectSince, DeviceStore, Notifier, ResolveStatus, RegisterHandlers |
 | `internal/notification/notification_test.go` | 1278 | 20 tests: taxonomy, dedup, cursor, delivery, 7 outcomes, degraded, restart, singleflight, ordering, late-SUCCESS, revoke-rebind, partial-failure |
 | `mobile/src/lib/notificationEvent.ts` | 8 | N1 event types |
 | `mobile/src/lib/notificationRoute.ts` | 33 | Deep-link routing from notification tap |
