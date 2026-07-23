@@ -911,3 +911,100 @@ func TestDegradedWriterFIFO(t *testing.T) {
 		t.Errorf("degraded writer via FIFO: got %s want event_degraded_or_gap", resp.Status)
 	}
 }
+
+// TestHungSenderDoesNotBlockOtherDevices verifies that when one device's
+// PushSender blocks indefinitely, other devices still receive notifications.
+// Per-device goroutines ensure a hung sender on device A never blocks
+// delivery to device B. Dispatch() waits for all goroutines but the fast
+// device finishes immediately.
+func TestHungSenderDoesNotBlockOtherDevices(t *testing.T) {
+	devices := NewDeviceStore()
+	devices.Bind("device-fast", "token-fast")
+	devices.Bind("device-slow", "token-slow")
+
+	var fastSent atomic.Int64
+	var slowEntered atomic.Bool
+	slowDone := make(chan struct{})
+
+	sender := &selectiveHangSender{
+		hangDevice: "device-slow",
+		onSend: func(deviceID string) {
+			if deviceID == "device-fast" {
+				fastSent.Add(1)
+			}
+			if deviceID == "device-slow" {
+				slowEntered.Store(true)
+			}
+		},
+		slowDone: slowDone,
+	}
+
+	var gen atomic.Int64
+	gen.Store(1)
+
+	w := openTestWriter(t)
+
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return gen.Load() }, sender)
+	notifier.SetEnabled(true)
+
+	ev := validEnvelope("hung-1", "session-1", 1, contract.EventApprovalRequested)
+	if !w.Append(ev) {
+		t.Fatal("Append failed")
+	}
+
+	// Dispatch runs per-device goroutines. device-slow blocks forever,
+	// but device-fast completes. We verify device-fast received its
+	// notification before the slow goroutine blocks.
+	done := make(chan int, 1)
+	go func() {
+		done <- notifier.Dispatch()
+	}()
+
+	// Wait for device-fast to finish (its goroutine returns immediately).
+	timeout := time.After(2 * time.Second)
+	for fastSent.Load() < 1 {
+		select {
+		case <-timeout:
+			t.Fatal("device-fast did not receive notification within timeout")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if fastSent.Load() < 1 {
+		t.Error("device-fast did not receive notification")
+	}
+	if !slowEntered.Load() {
+		t.Error("device-slow sender was not invoked")
+	}
+
+	// Cleanup: unblock the slow goroutine so Dispatch() can return.
+	close(slowDone)
+	select {
+	case n := <-done:
+		if n < 1 {
+			t.Errorf("delivered=%d want at least 1", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Dispatch() did not return after unblocking slow device")
+	}
+}
+
+// selectiveHangSender blocks on a specific deviceID until signalled.
+type selectiveHangSender struct {
+	hangDevice string
+	onSend     func(deviceID string)
+	slowDone   chan struct{}
+}
+
+func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) error {
+	if s.onSend != nil {
+		s.onSend(deviceID)
+	}
+	if deviceID == s.hangDevice {
+		// Simulate hung Expo push — blocks until slowDone is closed.
+		<-s.slowDone
+		return fmt.Errorf("expo push timeout")
+	}
+	return nil
+}

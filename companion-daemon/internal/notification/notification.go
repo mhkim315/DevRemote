@@ -220,6 +220,7 @@ func (logSender) Send(deviceID, pushToken string, payload []byte) error {
 // registered devices. It runs a background consumer loop.
 type Notifier struct {
 	dedup   map[string]*Dedup // per-device dedup (deviceID → Dedup)
+	dedupMu sync.Mutex        // protects dedup map access
 	devices *DeviceStore
 	sender  PushSender
 	writer  *writer.Writer
@@ -252,7 +253,10 @@ func NewNotifier(w *writer.Writer, devices *DeviceStore, getGen func(string) int
 }
 
 // getOrCreateDedup returns the per-device dedup, creating one if needed.
+// Safe for concurrent use from per-device dispatch goroutines.
 func (n *Notifier) getOrCreateDedup(deviceID string) *Dedup {
+	n.dedupMu.Lock()
+	defer n.dedupMu.Unlock()
 	d, ok := n.dedup[deviceID]
 	if !ok {
 		d = NewDedup()
@@ -318,8 +322,9 @@ func (n *Notifier) loop() {
 // dispatch reads recent Timeline events and delivers new ones to each device.
 // Each device has an independent dedup window — device A receiving a
 // notification never prevents device B from receiving the same event.
-// Cursor advances only on successful send; a sender error preserves the
-// cursor so the event is retried next cycle.
+// Delivery is at-most-once: dedup claims the event BEFORE send, so a send
+// failure does NOT retry the same locator. The cursor advances only on
+// successful send; a failed send drops the notification silently.
 func (n *Notifier) dispatch() int {
 	n.mu.Lock()
 	enabled := n.enabled
@@ -333,42 +338,52 @@ func (n *Notifier) dispatch() int {
 	deviceList, cursors := n.devices.Snapshot()
 	events := n.writer.ReadRecent(128)
 
+	// Each device dispatched in its own goroutine so a hung PushSender on
+	// one device never blocks delivery to another device. A sync.WaitGroup
+	// is used so Dispatch() reports the total delivered count.
+	var wg sync.WaitGroup
+	var deliveredMu sync.Mutex
 	var delivered int
 	for _, dev := range deviceList {
-		c := cursors[dev.DeviceID]
-		selected, wrapped := SelectSince(events, c)
-		// On wrap, deliver only the latest event to re-establish cursor.
-		// Blind replay of all retained events is prohibited.
-		_ = wrapped
-		dd := n.getOrCreateDedup(dev.DeviceID)
-		var lastSent contract.Envelope
-		var sendFailed bool
-		for _, e := range selected {
-			gen := n.getGen(e.SessionID)
-			loc, ok := Build(e, gen)
-			if !ok {
-				continue
-			}
-			// Per-device dedup: device A's claim never gates device B.
-			if !dd.Claim(loc.EventID, loc.Generation) {
-				continue
-			}
-			b, _ := json.Marshal(loc)
-			if n.sender != nil {
-				if err := n.sender.Send(dev.DeviceID, dev.Token, b); err != nil {
-					sendFailed = true
-					break // cursor not advanced; retry next cycle
+		wg.Add(1)
+		go func(dev struct{ DeviceID, Token string }, c Cursor) {
+			defer wg.Done()
+			selected, wrapped := SelectSince(events, c)
+			// On wrap, deliver only the latest event to re-establish cursor.
+			// Blind replay of all retained events is prohibited.
+			_ = wrapped
+			dd := n.getOrCreateDedup(dev.DeviceID)
+			var lastSent contract.Envelope
+			var sendFailed bool
+			for _, e := range selected {
+				gen := n.getGen(e.SessionID)
+				loc, ok := Build(e, gen)
+				if !ok {
+					continue
 				}
+				// Per-device dedup: device A's claim never gates device B.
+				if !dd.Claim(loc.EventID, loc.Generation) {
+					continue
+				}
+				b, _ := json.Marshal(loc)
+				if n.sender != nil {
+					if err := n.sender.Send(dev.DeviceID, dev.Token, b); err != nil {
+						sendFailed = true
+						break // at-most-once: dedup already claimed, delivery dropped
+					}
+				}
+				lastSent = e
+				deliveredMu.Lock()
+				delivered++
+				deliveredMu.Unlock()
 			}
-			lastSent = e
-			delivered++
-		}
-		// Only advance cursor when all sends succeeded. A partial failure
-		// preserves the old cursor so events are retried.
-		if !sendFailed && lastSent.EventID != "" {
-			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
-		}
+			// Only advance cursor when all sends succeeded.
+			if !sendFailed && lastSent.EventID != "" {
+				n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
+			}
+		}(dev, cursors[dev.DeviceID])
 	}
+	wg.Wait()
 	return delivered
 }
 

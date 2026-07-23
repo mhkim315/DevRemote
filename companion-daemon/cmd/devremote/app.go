@@ -1061,7 +1061,8 @@ func (expoN1Sender) Send(deviceID, pushToken string, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post("https://exp.host/--/api/v2/push/send", "application/json", bytes.NewReader(payloadBytes))
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post("https://exp.host/--/api/v2/push/send", "application/json", bytes.NewReader(payloadBytes))
 	if err != nil {
 		log.Printf("N1 push failed for device=%s: %v", deviceID, err)
 		return err
