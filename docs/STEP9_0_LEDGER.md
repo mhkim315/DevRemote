@@ -7,22 +7,20 @@
 
 ## 1. Default-Off Foundation Features
 
-Implemented and tested. Every feature is gated behind an explicit CLI flag
-that defaults to `false`. No daemon starts these automatically.
+Implemented and tested. Foundation features are gated behind explicit CLI flags
+that default to `false`, with two exceptions noted below. No daemon starts
+these automatically.
 
 ### 1a. CLI-Gated (independent flag)
 
 | Step | Feature | Flag | Consumer |
 |------|---------|------|----------|
-| 4 | Timeline shadow writer | `--enable-timeline-shadow` | Cockpit (polling) |
+| 4 | Timeline shadow writer | `--enable-timeline-shadow` | Cockpit (polling via ReadRecent) |
 | 5 | Workspace identity/lease | `--enable-workspace-lease` | NONE (standalone) |
 | 7 | Frozen validation StalenessCheck | `--enable-frozen-validation` | NONE (standalone contract-only) |
-| 8 | Cockpit projection + ValidationStore | `--enable-cockpit` | Mobile UX (GET) |
+| 8 | Cockpit projection | `--enable-cockpit` | Mobile UX (GET /api/cockpit) |
 
 ### 1b. Embedded Under Another Flag
-
-ValidationStore (submit/ReadAll/ReadRecent/Close) is created by the cockpit
-composition path when `--enable-cockpit` is set. It has no standalone CLI flag.
 
 | Step | Feature | Embedded Under | Consumer |
 |------|---------|---------------|----------|
@@ -33,22 +31,6 @@ composition path when `--enable-cockpit` is set. It has no standalone CLI flag.
 | Step | Feature | Notes |
 |------|---------|-------|
 | 6 | Coordination broker | `internal/coordination` — broker, envelope, types, and tests. Never imported, constructed, or registered from `cmd/` or `term/`. Zero production goroutines or filesystem writes. |
-
-**Verification:** `go test -race ./...` passes for every package.
-
-## 2. Default-Off Features (behind CLI flag, implemented but not enabled by default)
-
-These features require an explicit `--enable-*` flag. Without the flag, no
-production codepath starts them.
-
-| Feature | Flag | Package | Producer |
-|---------|------|---------|----------|
-| Managed Codex runtime | `--enable-managed-codex` | `internal/term` | `ManagedCodexService` |
-| Managed Claude runtime | `--enable-managed-claude` | `internal/term` | `ManagedClaudeService` |
-| Timeline shadow writer | `--enable-timeline-shadow` | `internal/timeline/writer` | Fail-open |
-| Workspace lease | `--enable-workspace-lease` | `internal/workspace` | Contract |
-| Frozen validation | `--enable-frozen-validation` | `internal/validation` | StalenessCheck |
-| Cockpit + embedded VStore | `--enable-cockpit` | `internal/cockpit` | Read-only route |
 
 ## 3. Production-Live (always enabled, no CLI gate)
 
@@ -61,7 +43,7 @@ production codepath starts them.
 | Transcript engine | `internal/transcript` | `Transcript.Service` | Recorder, timeline |
 | Session identity | `internal/sessionid` | Active at startup | All subsystems |
 | Agent event model (T0) | `internal/agent` | Contract | Adapters, telemetry |
-| Agent adapters | `internal/agent/adapters/` | Telemetry consumers | — |
+| Agent adapters (T1/T2) | `internal/agent/adapters/` | Fixture-only; no live production caller (per CT-P0) | Test harness |
 | Watcher (file tail) | `internal/watcher` | Active at startup | — |
 
 ## 4. Step SHAs (implementation + evidence)

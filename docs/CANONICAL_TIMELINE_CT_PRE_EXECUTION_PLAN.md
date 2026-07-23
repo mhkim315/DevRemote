@@ -582,11 +582,14 @@ CT-PRE:
 - terminal lifecycle reference admission and any cross-provider total-order rule.
 
 Production shadow-write, even fail-open/non-authoritative, changes runtime CPU,
-memory, disk, goroutines, startup/shutdown, and failure behavior. It therefore
-requires PB ACCEPT plus a new reviewed packet. That later design must write only
-after the primary authority commits, never hold authority locks across Timeline
-I/O, never call back into authority, use bounded failure isolation, and treat any
-drop/gap as an invalid equivalence run.
+memory, disk, goroutines, startup/shutdown, and failure behavior. The
+default-off fail-open writer construction is independently accepted at
+`58eb55b92` (Step 4). Live producer activation (appending real Timeline events
+in a controlled staging environment) is gated behind Step 9.1 and requires
+separate review. The writer must write only after the primary authority commits,
+never hold authority locks across Timeline I/O, never call back into authority,
+use bounded failure isolation, and treat any drop/gap as an invalid equivalence
+run.
 
 ## 10. Exact transition gate after PB ACCEPT
 
