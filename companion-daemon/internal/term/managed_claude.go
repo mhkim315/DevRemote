@@ -133,6 +133,7 @@ type claudeManagedRuntime struct {
 	preIngestHook  func() // test seam: before Store ingest
 	postIngestHook func() // test seam: after Store ingest, before active append
 
+	operationalMu  sync.RWMutex
 	operational    OperationalEventSink
 	operationalSeq atomic.Uint64
 	finishOnce     sync.Once
@@ -856,12 +857,24 @@ func (rt *claudeManagedRuntime) terminate() {
 func (rt *claudeManagedRuntime) stop() { rt.terminate() }
 
 func (rt *claudeManagedRuntime) emitOperational(kind OperationalEventKind, sourceID, sourcePosition, referenceID string) {
-	submitOperationalAfterCommit(rt.operational, OperationalEvent{
+	submitOperationalAfterCommit(rt.operationalSink(), OperationalEvent{
 		Kind: kind, Provider: "claude", SessionID: rt.sessionID,
 		RuntimeID: rt.runtimeID, LaunchGeneration: rt.epoch,
 		SourceID: sourceID, SourcePosition: sourcePosition,
 		ReferenceID: referenceID, OccurredAt: clockNow().UTC(),
 	})
+}
+
+func (rt *claudeManagedRuntime) setOperationalSink(sink OperationalEventSink) {
+	rt.operationalMu.Lock()
+	rt.operational = sink
+	rt.operationalMu.Unlock()
+}
+
+func (rt *claudeManagedRuntime) operationalSink() OperationalEventSink {
+	rt.operationalMu.RLock()
+	defer rt.operationalMu.RUnlock()
+	return rt.operational
 }
 
 func (rt *claudeManagedRuntime) emitStreamObserved(streamType string) {
@@ -1228,9 +1241,9 @@ func (s *ManagedClaudeService) CreateDetached(cwd string) (string, error) {
 		s.mu.Unlock()
 		return fail("operational bind", fmt.Errorf("managed claude service is shutting down"), true)
 	}
-	rt.operational = bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+	rt.setOperationalSink(bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
 		Provider: "claude", SessionID: id, RuntimeID: rt.runtimeID, LaunchGeneration: epoch,
-	})
+	}))
 	s.mu.Unlock()
 	s.barrier("post-register")
 
@@ -1430,12 +1443,18 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		cancelEntry()
 		return nil, fmt.Errorf("managed claude resume register: %w", err)
 	}
+	// A replacement may never leave the old incarnation's sender active.
+	// Revoke through the old opaque handle before the N+1 sender is installed;
+	// no caller-supplied tuple can select another runtime's capability.
+	if previous := rt.resumePreviousRuntime; previous != nil {
+		revokeOperationalRuntime(previous.operationalSink())
+	}
 	// RegisterIncarnation is the commit point for this replacement. Bind the
 	// new opaque sender before publishing the runtime or emitting Started.
-	rt.operational = bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+	rt.setOperationalSink(bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
 		Provider: "claude", SessionID: ctx.pokitSessionID,
 		RuntimeID: rt.runtimeID, LaunchGeneration: epoch,
-	})
+	}))
 	s.runtimes[ctx.pokitSessionID] = rt
 	// Publish only after every field and registry identity is committed.
 	bridge.publishRuntime(rt)
@@ -1472,6 +1491,13 @@ func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
 	if err := s.reg.RestoreIncarnation(rt.epoch, record); err != nil {
 		return
 	}
+	// Restore reactivates a live original runtime whose prior sender was
+	// revoked at replacement. It must receive a fresh, generation-bound sender
+	// rather than reusing the stale capability.
+	previous.setOperationalSink(bindOperationalRuntime(s.operational, OperationalRuntimeIdentity{
+		Provider: "claude", SessionID: record.SessionID,
+		RuntimeID: previous.runtimeID, LaunchGeneration: previous.epoch,
+	}))
 	s.runtimes[rt.sessionID] = previous
 	// Close the race where the original terminated after the pre-check while
 	// its old epoch was temporarily absent from the registry.

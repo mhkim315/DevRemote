@@ -310,16 +310,44 @@ func TestTimelineOperationalRuntimeSenderCannotClaimOrRevokeAnotherRuntime(t *te
 		t.Fatalf("cross-runtime sender reached Timeline: appended=%d", got)
 	}
 
+	// Replacement revokes A's old opaque sender. A stale submit cannot use the
+	// replacement's capability, while a fresh bind receives a new sender.
+	revokerA, ok := senderA.(term.OperationalRuntimeRevoker)
+	if !ok {
+		t.Fatal("sender A does not expose opaque revocation")
+	}
+	revokerA.RevokeOperationalRuntime()
+	staleA := eventA
+	staleA.Kind = term.OperationalToolCallStarted
+	staleA.SourcePosition = "a-stale-after-replacement"
+	senderA.SubmitAfterCommit(staleA)
+	time.Sleep(10 * time.Millisecond)
+	if got := timelineWriter.Stats().Appended; got != 2 {
+		t.Fatalf("old sender submitted after replacement: appended=%d", got)
+	}
+	freshA := adapter.BindOperationalRuntime(identityA)
+	if freshA == nil || freshA == senderA {
+		t.Fatal("replacement did not create a fresh sender")
+	}
+	freshA.SubmitAfterCommit(staleA)
+	deadline = time.Now().Add(time.Second)
+	for timelineWriter.Stats().Appended != 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := timelineWriter.Stats().Appended; got != 3 {
+		t.Fatalf("fresh replacement sender did not submit: appended=%d", got)
+	}
+
 	// B remains independently authorized: A's forged finish cannot revoke it.
 	validB := eventB
 	validB.Kind = term.OperationalToolCallStarted
 	validB.SourcePosition = "b-still-bound"
 	senderB.SubmitAfterCommit(validB)
 	deadline = time.Now().Add(time.Second)
-	for timelineWriter.Stats().Appended != 3 && time.Now().Before(deadline) {
+	for timelineWriter.Stats().Appended != 4 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := timelineWriter.Stats().Appended; got != 3 {
+	if got := timelineWriter.Stats().Appended; got != 4 {
 		t.Fatalf("sender B was revoked by sender A: appended=%d", got)
 	}
 }

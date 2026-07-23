@@ -139,11 +139,7 @@ func (s *timelineOperationalRuntimeSender) SubmitAfterCommit(event term.Operatio
 		if validEnvelope {
 			_ = s.capability.SubmitAfterCommit(envelope)
 		}
-		s.producers.Revoke(
-			s.identity.Provider, s.identity.RuntimeID,
-			s.identity.SessionID, s.identity.LaunchGeneration,
-		)
-		s.revoked = true
+		s.revokeLocked()
 		return
 	}
 	if !validEnvelope {
@@ -155,6 +151,28 @@ func (s *timelineOperationalRuntimeSender) SubmitAfterCommit(event term.Operatio
 		return
 	}
 	_ = s.capability.SubmitAfterCommit(envelope)
+}
+
+// RevokeOperationalRuntime revokes only this sender's already-bound
+// capability. It deliberately accepts no identity fields from its caller.
+func (s *timelineOperationalRuntimeSender) RevokeOperationalRuntime() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokeLocked()
+}
+
+func (s *timelineOperationalRuntimeSender) revokeLocked() {
+	if s.revoked {
+		return
+	}
+	s.producers.Revoke(
+		s.identity.Provider, s.identity.RuntimeID,
+		s.identity.SessionID, s.identity.LaunchGeneration,
+	)
+	s.revoked = true
 }
 
 func operationalEnvelope(event term.OperationalEvent) (contract.Envelope, contract.EventKind, bool) {

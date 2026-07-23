@@ -1347,6 +1347,169 @@ func TestClaudeResume_StopKillTerminalIntentNeverRestoresOriginal(t *testing.T) 
 	}
 }
 
+// A resume replacement revokes the original sender before N+1 is bound. When
+// the controlled live-original path restores that original runtime, it must
+// receive a NEW sender; the old one remains permanently stale.
+func TestClaudeResumeReplacementRevokesOldSenderAndRestoreRebindsFresh(t *testing.T) {
+	launcher := &multiLaunchLauncher{}
+	svc, _, _, _ := newInstalledClaudeService(t, launcher)
+	binder := &replacementOperationalBinder{}
+	if err := svc.SetOperationalEventSink(binder); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, p := range launcher.procs {
+			_ = p.Kill()
+		}
+	})
+
+	id, err := svc.CreateDetached("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	original := svc.runtimes[id]
+	svc.mu.Unlock()
+	if original == nil {
+		t.Fatal("original runtime missing")
+	}
+	t.Cleanup(original.terminate)
+	originalSender := binder.senderFor("claude", id, original.runtimeID, original.epoch)
+	if originalSender == nil {
+		t.Fatal("original sender missing")
+	}
+
+	originalRef := RuntimeRef{
+		Adapter: claudeHeadlessAdapter, Version: "2.1.209",
+		LaunchGen: original.epoch, StreamGen: 0,
+	}
+	digest := CanonicalDigest([]byte(`{"command":"echo pokitclaudeapprovalprobe"}`))
+	if !svc.Coordinator().ReserveIdentity(
+		"claude-sender-replacement", "claude-sender-session", "tool-sender", "Bash",
+		digest, activationCatalogID, id, originalRef,
+	) {
+		t.Fatal("ReserveIdentity")
+	}
+	binding := ApprovalExecutionBinding{
+		ApprovalID: "claude-sender-replacement", SessionID: id, Runtime: originalRef,
+		ActionDigest:   strings.Repeat("b", 64),
+		PayloadDigest:  payloadDigest(claudeHookResponseBytes("allow")),
+		IdempotencyKey: "sender.replacement", OptionID: "allow_once",
+		DeliverySchema: claudeDecisionSchemaV1,
+	}
+	handle, ok := svc.Coordinator().ReserveEntry(strings.Repeat("e", 32), binding)
+	if !ok {
+		t.Fatal("ReserveEntry")
+	}
+	resumed, err := svc.ResumeForApproval(handle, &resumeContext{
+		coordinator: svc.Coordinator(), claimToken: handle.ClaimToken,
+		resumeNonce: handle.ResumeNonce, originalRuntime: originalRef,
+		pokitSessionID: id, claudeSessionID: "claude-sender-session",
+		toolUseID: "tool-sender", toolName: "Bash", inputDigest: digest,
+		expectedDecision: "allow", originalCWD: "/tmp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !originalSender.isRevoked() {
+		t.Fatal("replacement left original sender active")
+	}
+	before := originalSender.eventCount()
+	originalSender.SubmitAfterCommit(OperationalEvent{
+		Kind: OperationalToolCallStarted, Provider: "claude", SessionID: id,
+		RuntimeID: original.runtimeID, LaunchGeneration: original.epoch,
+		SourceID: "old-sender", SourcePosition: "replacement", ReferenceID: "old-sender",
+		OccurredAt: clockNow().UTC(),
+	})
+	if got := originalSender.eventCount(); got != before {
+		t.Fatalf("old sender submitted after replacement: before=%d after=%d", before, got)
+	}
+
+	// The live original is intentionally restored by the compatibility path.
+	svc.finishApprovalResume(resumed)
+	svc.mu.Lock()
+	current := svc.runtimes[id]
+	svc.mu.Unlock()
+	if current != original {
+		t.Fatalf("original was not restored: current=%p original=%p", current, original)
+	}
+	freshSender := binder.senderFor("claude", id, original.runtimeID, original.epoch)
+	if freshSender == nil || freshSender == originalSender {
+		t.Fatal("restore did not issue a fresh original sender")
+	}
+	if !originalSender.isRevoked() {
+		t.Fatal("old sender was reactivated instead of replaced")
+	}
+	freshBefore := freshSender.eventCount()
+	original.emitOperational(OperationalToolCallStarted, "fresh-sender", "restored", "fresh-sender")
+	if got := freshSender.eventCount(); got != freshBefore+1 {
+		t.Fatalf("fresh restored sender did not receive original event: before=%d after=%d", freshBefore, got)
+	}
+}
+
+type replacementOperationalBinder struct {
+	mu      sync.Mutex
+	senders []*replacementOperationalSender
+}
+
+func (b *replacementOperationalBinder) SubmitAfterCommit(OperationalEvent) {}
+
+func (b *replacementOperationalBinder) BindOperationalRuntime(identity OperationalRuntimeIdentity) OperationalEventSink {
+	sender := &replacementOperationalSender{identity: identity}
+	b.mu.Lock()
+	b.senders = append(b.senders, sender)
+	b.mu.Unlock()
+	return sender
+}
+
+func (b *replacementOperationalBinder) senderFor(provider, sessionID, runtimeID string, generation int64) *replacementOperationalSender {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := len(b.senders) - 1; i >= 0; i-- {
+		sender := b.senders[i]
+		if sender.identity.Provider == provider && sender.identity.SessionID == sessionID &&
+			sender.identity.RuntimeID == runtimeID && sender.identity.LaunchGeneration == generation {
+			return sender
+		}
+	}
+	return nil
+}
+
+type replacementOperationalSender struct {
+	mu       sync.Mutex
+	identity OperationalRuntimeIdentity
+	events   []OperationalEvent
+	revoked  bool
+}
+
+func (s *replacementOperationalSender) SubmitAfterCommit(event OperationalEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revoked || event.Provider != s.identity.Provider || event.SessionID != s.identity.SessionID ||
+		event.RuntimeID != s.identity.RuntimeID || event.LaunchGeneration != s.identity.LaunchGeneration {
+		return
+	}
+	s.events = append(s.events, event)
+}
+
+func (s *replacementOperationalSender) RevokeOperationalRuntime() {
+	s.mu.Lock()
+	s.revoked = true
+	s.mu.Unlock()
+}
+
+func (s *replacementOperationalSender) isRevoked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revoked
+}
+
+func (s *replacementOperationalSender) eventCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.events)
+}
+
 // Reviewer evidence 1b: an uncertified resume fails closed BEFORE the
 // repeated-hook/witness stage — the delivery ends non-success, the entry is
 // cancelled, and nothing is spawned into the witness path.

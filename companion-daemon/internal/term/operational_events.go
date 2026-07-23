@@ -58,6 +58,13 @@ type OperationalRuntimeBinder interface {
 	BindOperationalRuntime(OperationalRuntimeIdentity) OperationalEventSink
 }
 
+// OperationalRuntimeRevoker is implemented by an opaque per-runtime sender.
+// It takes no caller-supplied identity, so a runtime can revoke only the
+// capability already bound to that sender.
+type OperationalRuntimeRevoker interface {
+	RevokeOperationalRuntime()
+}
+
 // bindOperationalRuntime gives a managed runtime its sender. A binder may
 // refuse an identity by returning nil; callers must then remain fail-open with
 // Timeline observation disabled for that incarnation.
@@ -71,6 +78,12 @@ func bindOperationalRuntime(sink OperationalEventSink, identity OperationalRunti
 		return binder.BindOperationalRuntime(identity)
 	}
 	return sink
+}
+
+func revokeOperationalRuntime(sink OperationalEventSink) {
+	if revoker, ok := sink.(OperationalRuntimeRevoker); ok {
+		revoker.RevokeOperationalRuntime()
+	}
 }
 
 // submitOperationalAfterCommit contains a sink panic at the neutral seam.
