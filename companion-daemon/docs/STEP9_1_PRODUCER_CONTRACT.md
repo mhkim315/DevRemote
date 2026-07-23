@@ -33,12 +33,36 @@ provider, an expired/replaced generation, or a forged look-alike session prefix
 is rejected before any Timeline enqueue. The handle cannot be reconstructed
 from an `Envelope`, serialized, or widened to another session.
 
+### Bind and revoke transition
+
+The handle is not available merely because a sink was injected. Composition
+owns a `Bind` transition with this exact ordering:
+
+1. the managed provider commits registration of the session, runtime ID, and
+   generation;
+2. composition creates the opaque handle from that committed identity;
+3. composition installs that handle into that one managed runtime's neutral
+   sink slot; and
+4. only then can that runtime make post-commit observations visible to the
+   Timeline adapter.
+
+Replacement, exit, kill, and delete revoke the installed handle before the
+old runtime can be observed as current again. Revocation is generation-bound,
+linearized with the provider's runtime replacement transition, and is safe to
+race with a submit: a racing submit either completes against the still-current
+binding or is rejected as stale; it cannot become a submit for the replacement
+runtime. Bind never reuses a handle across runtimes, including two runtimes
+with the same provider and session-like prefix.
+
 Required contract tests:
 
 - forged `codex:` / `claude:` look-alike prefixes are rejected;
 - a Codex handle rejects Claude candidates and vice versa;
 - a valid provider handle rejects another managed session or generation; and
-- replacement/revocation invalidates the old handle.
+- replacement/revocation invalidates the old handle;
+- a handle cannot cross runtime instances; and
+- a stale-handle submit raced with replacement is never accepted for the new
+  generation.
 
 ## 2. Neutral producer seam and minimal wiring
 
@@ -66,35 +90,61 @@ the term call occurs only after the relevant primary commit; it returns no
 result to lifecycle, tool, approval, stream, transport, or recorder authority;
 and it never holds a term authority lock across Timeline I/O.
 
+`SubmitAfterCommit` is specifically a bounded, non-blocking seam operation,
+not a direct filesystem call. The composition-owned implementation recovers a
+sink panic at the seam and performs one bounded enqueue; a full queue becomes
+a health/drop count and returns immediately. Its downstream writer worker may
+block independently, but no term authority goroutine waits for it. A nil sink,
+panic, saturated queue, and blocked downstream sink all have the same
+authority outcome: the already-committed lifecycle, approval, tool, or stream
+operation continues unchanged.
+
 The only permitted initial hooks are post-commit managed Codex and managed
 Claude lifecycle, tool, approval, and stream observations. There is no generic
 term event bus, automatic replay, provider selection, callback into authority,
 or transcript-derived producer. A nil sink is the default and must preserve
 current behavior exactly.
 
+Required seam tests inject a panicking sink, a saturated composition queue, and
+a downstream sink with a blocked write for each lifecycle, approval, tool, and
+stream hook. They prove the producer authority returns its committed outcome
+without panic or Timeline-dependent latency.
+
 ## 3. Shutdown and stuck I/O truthfulness
 
 Go cannot cancel an arbitrary blocked `Write`. STEP 9.1 therefore must not
 claim that `Close` guarantees a five-second worker exit or goroutine baseline.
-The producer queue uses a bounded non-blocking submit; close prevents new
-submits, drains what can run, then waits only until its deadline.
+The producer queue has explicit `open → closing → closed` state, serialized
+with submit. The close transition atomically detaches its queue, counts every
+pending item as dropped, and rejects every subsequent submit. It starts no new
+write after the transition and performs no post-return queue drain or write.
 
 `Close` returns a structured outcome:
 
 ```text
 workerExited: bool
 inFlight:     non-negative count
+pendingDropped: non-negative count
 ```
 
 If I/O exits, `workerExited=true`, `inFlight=0`, and the worker baseline must
 return. If an injected write remains blocked at the deadline, `Close` returns
-with `workerExited=false` and the remaining in-flight count; daemon shutdown
-continues fail-open. It does not falsely report success, recursively emit a
-failure event, or promise that the blocked goroutine disappeared.
+with `workerExited=false`, its remaining in-flight count, and the atomically
+accounted pending drops; daemon shutdown continues fail-open. It does not
+falsely report success, recursively emit a failure event, or promise that the
+blocked goroutine disappeared.
+
+The in-flight worker owns the file close exactly once. If its blocked `Write`
+later returns, it records that write's terminal outcome, exits without reading
+another item, and closes the file exactly once. `Stats` and health state use
+one synchronization boundary with the close state, so post-close submit,
+double-close, worker completion, and health reads are race-free.
 
 Required tests cover normal worker exit and baseline restoration; a stuck write
-that produces the explicit incomplete outcome; concurrent `Submit` + `Close`
-without send-on-closed panic or data race; and idempotent close.
+that produces the explicit incomplete outcome; pending items atomically counted
+as dropped; no post-close submit or post-return drain/write; delayed blocked
+write completion with one file close; concurrent `Submit` + `Close` without
+send-on-closed panic or data race; and idempotent close/health reads.
 
 ## 4. Real-provider translation and privacy sentinel tests
 
