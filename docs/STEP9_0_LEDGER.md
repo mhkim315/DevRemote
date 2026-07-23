@@ -74,7 +74,7 @@ these automatically.
 | PB ACCEPT | `5354077af` | — | Independent |
 | 9.1 (Timeline staging) | `dc376f9b7` (IMPL) | `66824e393` (EVID R7) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
 | 9.2 (Projection convergence) | `c82fef47f` (IMPL) | `c8d6eda20` (EVID R3) | Dual-fed equivalence oracle — read-only, default-off, offline projection |
-| 9.3 (N1 notifications) | `f7033b86c` (IMPL) | `1c3e5043e` (EVID R12) | Exact-event notification-to-action — 7-outcome re-auth, per-device dedup |
+| 9.3 (N1 notifications) | `f7033b86c` (IMPL) | `1ad7ac53f` (EVID R13) | Exact-event notification-to-action — 7-outcome re-auth, per-device dedup |
 
 ## 6. Authoritative sequence
 
