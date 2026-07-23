@@ -72,7 +72,7 @@ PA3 COMPLETE
 → independent PB ACCEPT
 → CT-P1 operational-evidence amendment ACCEPTED (`12135bd80`)
 → Steps 4-8 foundation COMPLETE (shadow → workspace → coordination → validation → cockpit)
-→ 9.0 authority reconciliation independently accepted
+→ 9.0 authority reconciliation independently accepted (`921804fef`)
 → 9.1 minimal Timeline staging
 → 9.2 bounded Transcript/Activity projection convergence
 → 9.3 N1 exact-event notification-to-action

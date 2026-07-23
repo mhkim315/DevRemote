@@ -11,11 +11,10 @@ foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
 (separate post-PB packet required).
 
 The current product state is **Post-PB foundation complete, alpha activation
-pending**. The bounded execution plan after Step 9.0 independent ACCEPT is
-authoritative in
-[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md). Step 9.0 has an
-active reconciliation candidate; this document does not certify that candidate
-or authorize Step 9.1 before independent acceptance.
+pending**. Step 9.0 received independent closeout at `921804fef`. The bounded
+execution plan is authoritative in
+[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md); neither the Step
+9.0 acceptance nor this planning update authorizes Step 9.1 implementation.
 
 This document owns the current product definition, authority boundaries, MVP,
 and post-PB execution order. [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md)
@@ -365,10 +364,9 @@ degraded/gap outcomes without replaying an invalid action.
    Step 8 (embedded under `--enable-cockpit`). (IMPL `a753e126c`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
-9. **INDEPENDENT CLOSEOUT PENDING (9.0):** Authority reconciliation,
-   foundation/capability/live-state audit, and ledger correction. An active
-   documentation candidate exists; do not start 9.1 until its exact SHA is
-   independently accepted.
+9. **COMPLETE (9.0):** Authority reconciliation,
+   foundation/capability/live-state audit, and ledger correction. Independent
+   closeout at `921804fef`.
 10. **PLANNED (9.1):** Minimal Operational Timeline staging — bounded Activity/N1
     producer composition, failure isolation, mailbox/backpressure,
     drop/gap/degraded evidence, restart/filesystem failure, and capability
@@ -391,7 +389,7 @@ degraded/gap outcomes without replaying an invalid action.
     only after measured demand and separate authorization.
 
 Steps 1–8 are accepted foundations, not proof of product-live composition.
-Step 9.0 must close independently before 9.1. Steps 9.1–9.5 are governed by
+Step 9.0 is independently closed. Steps 9.1–9.5 are governed by
 [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md). Do not
 automatically resume the historical full CT-P2 plan: only separately accepted,
 bounded Timeline producer composition, projection comparison, controlled

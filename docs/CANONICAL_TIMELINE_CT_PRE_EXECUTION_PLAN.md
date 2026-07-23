@@ -623,8 +623,7 @@ independent closeout is COMPLETE at `921804fef`. Each later bounded producer,
 projection, N1, onboarding, or consumer-cutover wave defined in
 `ALPHA_ACTIVATION_ROADMAP.md` requires its own implementation/evidence identity
 and independent authorization. Do not treat the Alpha roadmap or this
-reconciliation commit as production
-activation.
+reconciliation commit as production activation.
 
 ## 11. Historical CT-P0 executor handoff (COMPLETED)
 
@@ -644,7 +643,7 @@ It is not a current executor authorization:
 
 The historical CT-P0 executor prohibition on CT-P1 was satisfied before CT-P1
 started. CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are
-independently accepted. Foundation Steps 1-8 and Step 9.0 are complete. Step 9.0 received independent
-closeout at `921804fef`. Current work follows the authoritative sequence in
-`POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and
+independently accepted. Foundation Steps 1-8 and Step 9.0 are complete. Step 9.0
+received independent closeout at `921804fef`. Current work follows the
+authoritative sequence in `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and
 `ALPHA_ACTIVATION_ROADMAP.md`. Historical broad CT-P2 remains blocked.
