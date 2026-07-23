@@ -389,7 +389,7 @@ func validateDaemonPaths(state *daemonState) error {
 		return filepath.Join(parent, filepath.Base(path)), nil
 	}
 	for _, p := range []struct{ name, value string }{
-		{"binPath", state.BinPath}, {"oldBinPath", state.OldBinPath}, {"backupPath", state.BackupPath},
+		{"binPath", state.BinPath}, {"backupPath", state.BackupPath},
 		{"plistPath", state.PlistPath}, {"stateDir", state.StateDir},
 	} {
 		if p.value == "" {
@@ -529,14 +529,6 @@ func installDaemon() error {
 		return fmt.Errorf("install: cannot atomically write plist: %w", err)
 	}
 
-	// Clean up the previous upgrade's old binary before tracking the new one.
-	// Without this, repeated upgrades accumulate orphan artifacts.
-	if existingState != nil && existingState.OldBinPath != "" {
-		if err := os.Remove(existingState.OldBinPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("install: could not remove previous old binary %s: %v", existingState.OldBinPath, err)
-		}
-	}
-
 	// Persist daemon state for upgrade/rollback/uninstall tracking.
 	state := &daemonState{
 		Version:     cliVersion,
@@ -598,6 +590,13 @@ func installDaemon() error {
 			return errors.Join(fmt.Errorf("install: readiness: %w", err), stopErr, rbErr)
 		}
 		return errors.Join(fmt.Errorf("install: readiness check failed: %w", err), stopErr)
+	}
+	// Clean up the previous upgrade's old binary now that migration succeeded.
+	// Removal failure is degraded (migration already complete, cleanup only).
+	if existingState != nil && existingState.OldBinPath != "" {
+		if err := os.Remove(existingState.OldBinPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("install: could not remove previous old binary %s: %v", existingState.OldBinPath, err)
+		}
 	}
 	if backupPath != "" {
 		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
