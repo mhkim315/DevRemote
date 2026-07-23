@@ -48,16 +48,26 @@ mapping, never an implicit Timeline loss.
 
 ### 2a.1 Dual-fed fixture rule
 
-Each fixture creates one ordered set of accepted `agent.AgentEvent` values and
-first calls `Transcript.Service.SetCorrelation(sessionID, CorrelationState{
-SessionID: sessionID, Correlation: contract.CorrelationProven or
-contract.CorrelationManagedLaunch, Provider: provider})`. It then feeds the same set to
-`Transcript.Service.ProjectAgentEvents(sessionID, events)` and to the
-Timeline-envelope construction/Writer path. `ProjectAgentEvents` must not be
-called before `SetCorrelation`: the real service otherwise fail-closes and
-emits no primary semantic segments. The fixture reads actual Transcript
-segments with `ListTranscript(sessionID)` and Timeline envelopes with
-`ReadRecent`.
+Each fixture creates one ordered set of accepted `agent.AgentEvent` values for
+each fixture epoch. The required per-epoch protocol is:
+
+1. Before replacing a non-initial epoch, snapshot the prior
+   `ListTranscript` / `BuildResponse` result.
+2. Establish the initial epoch with `EnableQueue`, or establish a later one
+   with `ReplaceTranscript`.
+3. Call `Transcript.Service.SetCorrelation(sessionID, CorrelationState{
+   SessionID: sessionID, Correlation: contract.CorrelationProven or
+   contract.CorrelationManagedLaunch, Provider: provider})`.
+4. Feed that epoch's same event set to
+   `Transcript.Service.ProjectAgentEvents(sessionID, events)` and to the
+   Timeline-envelope construction/Writer path.
+5. Obtain `BuildResponse(sessionID, ListTranscript(sessionID))` and record the
+   explicit epoch binding.
+
+`ReplaceTranscript` clears the service arbiter, so step 3 is mandatory after
+every replacement. `ProjectAgentEvents` must not be called before
+`SetCorrelation`: the real service otherwise fail-closes and emits no primary
+semantic segments.
 
 Every fixture uses the closed event-to-segment mapping in §2b.1 before it can
 compare an event. An unsupported Timeline-only operational event is a FAIL,
@@ -125,7 +135,7 @@ Before comparison, both sources are normalized:
 |-----------|-----------|----------|--------------|
 | Source-event identity | `TranscriptSegment.AgentEventRef` | `Envelope.T0Event.ID` | Direct compare in the dual-fed fixture |
 | Timeline identity | mapped expected event | `Envelope.EventID` | Compare Activity projection to defined expected output |
-| Epoch/incarnation | `TranscriptResponse.Generation` | `RuntimeID`, `LaunchGeneration`, `SourceIncarnation` | Compare through the explicit fixture binding in §2c.1; never directly compare these unlike domains |
+| Epoch/incarnation | `TranscriptResponse.Generation` | fixture-assigned `EpochOccurrence` | Compare through the explicit fixture binding in §2c.1; never use runtime fields or `SourceIncarnation` as the repeated-incarnation key |
 | Session/provider | `TranscriptSegment.SessionID`, `AgentKind` | `Envelope.SessionID`, `Provider` | Direct compare under explicit provider mapping |
 | Ordering | `TranscriptSegment.Seq` | `ReadRecent` projection order | Exact mapped order; no reorder tolerance |
 | Content | `TranscriptSegment.Text`, `EventType`, `ToolName` | `TranscriptItem.Text`, `EventType`, `ToolName` | Exact closed mapping in §2b.1; Timeline payload is not Transcript display text |
@@ -140,24 +150,26 @@ therefore record the association when it creates each epoch:
 
 ```go
 type FixtureEpochBinding struct {
+    EpochOccurrence      uint64 // fixture-local, strictly increasing per session
     SessionID            string
     TranscriptGeneration int64 // observed from BuildResponse after EnableQueue/ReplaceTranscript
     RuntimeID            string
     LaunchGeneration     int64
-    SourceIncarnation    string
+    TimelineEventIDs     []string // EventIDs submitted during this occurrence
 }
 ```
 
 The fixture establishes the initial Transcript epoch with `EnableQueue` and
 observes it through `BuildResponse`; it uses `ReplaceTranscript` for every
-later epoch. The binding is one-to-one within a fixture and is the sole
-generation oracle.
+later epoch, followed by a new `SetCorrelation` before projection. The binding
+is one-to-one within a fixture and is the sole generation oracle.
 For a restore, the fixture calls `ReplaceTranscript`, observes its next
 monotonic `TranscriptResponse.Generation`, and binds that new Transcript epoch
-to the restored Timeline incarnation. Thus an original N and a restored N may
-share a Timeline generation value but cannot merge: their `SourceIncarnation`
-and their explicitly bound Transcript epochs differ. A missing, duplicate, or
-inconsistent binding is `generation_mismatch` and fails.
+to the new, strictly increasing `EpochOccurrence` and its submitted
+`TimelineEventIDs`. Thus an original N and a restored N may reuse the same
+`RuntimeID`, `LaunchGeneration`, and derived `SourceIncarnation`, but cannot
+merge: their fixture occurrence and Transcript epoch differ. A missing,
+duplicate, or inconsistent binding is `generation_mismatch` and fails.
 
 ### 2d. Tolerated Loss Taxonomy
 
@@ -253,15 +265,16 @@ synthetic `EventDegraded` Envelope or attribute a global counter to a lost
 event. Instead, the projection records its pre/post global counter values and,
 when they differ or HealthSnapshot is degraded, emits a marker at the explicit
 comparison boundary supplied by the dual-fed fixture. That marker identifies
-the fixture's `SessionID`, `RuntimeID`, and `LaunchGeneration`, and preserves
-restored incarnations as distinct epochs even when an earlier generation value
-is restored.
+the fixture's `SessionID`, `RuntimeID`, `LaunchGeneration`, and
+`EpochOccurrence`; `SourceIncarnation` is retained only as envelope evidence,
+never as the repeated-incarnation key.
 
 ```go
 type GapMarker struct {
     SessionID        string
     RuntimeID        string
     LaunchGeneration int64
+    EpochOccurrence  uint64
     SourceIncarnation string
     GlobalDroppedBefore uint64
     GlobalDroppedAfter  uint64
@@ -304,7 +317,7 @@ realizable sources.
 | 4 | Collision | Same EventID + different digest → FAIL | `contract.ErrEventIDCollision` |
 | 5 | Ring buffer wrap | 200 one-scope envelopes → 128 retained plus explicit `ring_overwrite` marker covering 72; absent/unscopeable marker FAILS | `Stats().Appended` baseline + `ReadRecent` |
 | 6 | New writer | New healthy writer has an empty ring; non-empty dual-fed Transcript comparison FAILS (no restart inference) | `HealthSnapshot()` + new writer |
-| 7 | Generation reset/restore | Claude N→N+1→restored-N: bind each `BuildResponse.Generation` explicitly to one Timeline incarnation, so restored-N cannot merge with earlier N | Three `FixtureEpochBinding` records |
+| 7 | Generation reset/restore | Claude N→N+1→restored-N: bind each `BuildResponse.Generation` to a unique, increasing `EpochOccurrence`; restored-N cannot merge with earlier N even if runtimeID/generation/source-incarnation repeat | Three `FixtureEpochBinding` records |
 | 8 | Missing events | Transcript has item not in Timeline → FAIL (no gap marker) | Oracle comparison |
 | 9 | Approval request/result ordering | `approval_requested` precedes its matching `approval_resolved` in both Transcript `Seq` and Timeline `ProjectionOrder` | approval reference + order |
 | 10 | Tool call request/result ordering | `tool_call_started` precedes its matching `tool_call_finished` in both Transcript `Seq` and Timeline `ProjectionOrder`; mismatched or reordered tool pair FAILS | tool-call reference + order |
