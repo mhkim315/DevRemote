@@ -64,6 +64,7 @@ type blockingFile struct {
 	startOnce sync.Once
 	mu        sync.Mutex
 	writes    int
+	syncs     int
 	closes    int
 }
 
@@ -83,7 +84,12 @@ func (f *blockingFile) Write(record []byte) (int, error) {
 	return len(record), nil
 }
 
-func (f *blockingFile) Sync() error { return nil }
+func (f *blockingFile) Sync() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.syncs++
+	return nil
+}
 
 func (f *blockingFile) Close() error {
 	f.mu.Lock()
@@ -92,10 +98,10 @@ func (f *blockingFile) Close() error {
 	return nil
 }
 
-func (f *blockingFile) counts() (writes, closes int) {
+func (f *blockingFile) counts() (writes, syncs, closes int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.writes, f.closes
+	return f.writes, f.syncs, f.closes
 }
 
 var osErrClosed = errors.New("file already closed")
@@ -355,7 +361,7 @@ func TestCapabilityRejectsArbitraryProviderAndConcurrentSubmitClose(t *testing.T
 	_ = w.Close()
 }
 
-func TestCloseAtomicallyDropsPendingAndLetsOnlyInFlightFinish(t *testing.T) {
+func TestCloseAtomicallyDropsPendingAndStopsAfterInFlightWrite(t *testing.T) {
 	store := NewProducerStore()
 	file := newBlockingFile()
 	w := newWriter(file, Config{}, store)
@@ -396,14 +402,181 @@ func TestCloseAtomicallyDropsPendingAndLetsOnlyInFlightFinish(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not exit after blocked write completed")
 	}
-	writes, closes := file.counts()
-	if writes != 1 || closes != 1 {
-		t.Fatalf("file writes=%d closes=%d, want 1/1", writes, closes)
+	writes, syncs, closes := file.counts()
+	if writes != 1 || syncs != 0 || closes != 1 {
+		t.Fatalf("file writes=%d syncs=%d closes=%d, want 1/0/1", writes, syncs, closes)
 	}
-	if got := w.Stats(); got.Appended != 1 || got.Dropped != 4 {
+	if got := w.Stats(); got.Appended != 0 || got.Dropped != 5 {
 		t.Fatalf("final stats = %+v", got)
 	}
 	if repeat := w.Close(); repeat != result {
 		t.Fatalf("idempotent close = %+v, want %+v", repeat, result)
+	}
+}
+
+func TestCloseTimeoutBeforeWritePreventsPostReturnWrite(t *testing.T) {
+	store := NewProducerStore()
+	file := &testFile{}
+	w := newWriter(file, Config{}, store)
+	w.closeWait = 20 * time.Millisecond
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	w.beforeWrite = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	capability, err := store.Bind("codex", "runtime-a", "codex_app_server:one", 7, contract.EventToolCallStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := boundEnv(t, "codex", "codex_app_server:one", "runtime-a", 7, contract.EventToolCallStarted)
+	if !capability.SubmitAfterCommit(e) {
+		t.Fatal("submit rejected")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not reach pre-write boundary")
+	}
+	result := w.Close()
+	if result.WorkerExited || result.InFlight != 0 || result.PendingDropped != 0 {
+		t.Fatalf("close = %+v", result)
+	}
+	close(release)
+	select {
+	case <-w.workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not exit")
+	}
+	file.mu.Lock()
+	contents := file.contents
+	syncs := file.syncs
+	file.mu.Unlock()
+	if contents != "" || syncs != 0 {
+		t.Fatalf("post-close I/O occurred: contents=%q syncs=%d", contents, syncs)
+	}
+}
+
+func TestSubmissionQueueSaturationIsBoundedAndVisible(t *testing.T) {
+	store := NewProducerStore()
+	file := newBlockingFile()
+	w := newWriter(file, Config{}, store)
+	w.closeWait = 20 * time.Millisecond
+	capability, err := store.Bind("claude", "runtime-a", "claude_headless:one", 1, contract.EventToolCallStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := boundEnv(t, "claude", "claude_headless:one", "runtime-a", 1, contract.EventToolCallStarted)
+	if !capability.SubmitAfterCommit(e) {
+		t.Fatal("first submit rejected")
+	}
+	select {
+	case <-file.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not block in Write")
+	}
+	for i := 0; i < submitBufCap; i++ {
+		if !capability.SubmitAfterCommit(e) {
+			t.Fatalf("queue rejected item %d before capacity", i)
+		}
+	}
+	start := time.Now()
+	if capability.SubmitAfterCommit(e) {
+		t.Fatal("queue accepted item beyond capacity")
+	}
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatal("saturated submission blocked")
+	}
+	degraded, reason := w.HealthSnapshot()
+	if !degraded || reason != "submission queue full" {
+		t.Fatalf("health = %v %q", degraded, reason)
+	}
+	result := w.Close()
+	if result.PendingDropped != submitBufCap || result.InFlight != 1 {
+		t.Fatalf("close = %+v", result)
+	}
+	close(file.release)
+	<-w.workerDone
+}
+
+func TestRevokeLinearizesAgainstRacingEnqueue(t *testing.T) {
+	store := NewProducerStore()
+	w := newWriter(&testFile{}, Config{}, store)
+	capability, err := store.Bind("codex", "runtime-a", "codex_app_server:one", 7, contract.EventToolCallStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := boundEnv(t, "codex", "codex_app_server:one", "runtime-a", 7, contract.EventToolCallStarted)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	w.beforeEnqueue = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	submitted := make(chan bool, 1)
+	go func() { submitted <- capability.SubmitAfterCommit(e) }()
+	<-entered
+	revoked := make(chan struct{})
+	go func() {
+		store.Revoke("codex", "codex_app_server:one", 7)
+		close(revoked)
+	}()
+	select {
+	case <-revoked:
+		t.Fatal("Revoke returned before authenticated enqueue linearized")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if !<-submitted {
+		t.Fatal("racing submit did not linearize before Revoke")
+	}
+	select {
+	case <-revoked:
+	case <-time.After(time.Second):
+		t.Fatal("Revoke did not return")
+	}
+	w.beforeEnqueue = nil
+	if capability.SubmitAfterCommit(e) {
+		t.Fatal("stale capability enqueued after Revoke returned")
+	}
+	w.Close()
+}
+
+type panicFile struct{ secret string }
+
+func (f panicFile) Write([]byte) (int, error) { panic(f.secret) }
+func (panicFile) Sync() error                 { return nil }
+func (panicFile) Close() error                { return nil }
+
+func TestHealthReasonNeverContainsRawErrorOrPanic(t *testing.T) {
+	const sentinel = "HEALTH-SECRET-SENTINEL-d1a7"
+	for name, file := range map[string]appendFile{
+		"write_error": &testFile{writeErr: errors.New(sentinel)},
+		"sync_error":  &testFile{syncErr: errors.New(sentinel)},
+		"panic":       panicFile{secret: sentinel},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := NewProducerStore()
+			w := newWriter(file, Config{}, store)
+			capability, err := store.Bind("codex", "runtime-a", "codex_app_server:one", 7, contract.EventToolCallStarted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := boundEnv(t, "codex", "codex_app_server:one", "runtime-a", 7, contract.EventToolCallStarted)
+			if !capability.SubmitAfterCommit(e) {
+				t.Fatal("submit rejected")
+			}
+			deadline := time.Now().Add(time.Second)
+			for w.Stats().Failures == 0 && time.Now().Before(deadline) {
+				runtime.Gosched()
+			}
+			_, reason := w.HealthSnapshot()
+			if strings.Contains(reason, sentinel) {
+				t.Fatalf("health leaked raw failure: %q", reason)
+			}
+			w.Close()
+		})
 	}
 }

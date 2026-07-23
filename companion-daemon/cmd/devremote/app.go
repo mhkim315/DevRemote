@@ -172,6 +172,7 @@ func NewApp(cfg Config) (*App, error) {
 // NewAppWithDeps creates an App with injectable dependencies for testing.
 func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	var timelineWriter *writer.Writer
+	var timelineSink term.OperationalEventSink
 	var workspaceLeases *workspace.Manager
 	var validationCheck *validation.StalenessCheck
 	// Timeline is constructed before several independent, fallible App
@@ -203,11 +204,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	}
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	term.SetTranscriptService(transcriptSvc) // T3: wire byte-stream feed into Recorder
-	// STEP4: Timeline is an optional, explicitly constructed sink. It has no
-	// callback into a primary authority and this composition does not attach it
-	// to terminal, approval, input, lifecycle, or recorder paths. A future
-	// producer must submit only after its authority commits and without holding
-	// an authority lock.
+	// STEP 9.1: Timeline is an optional, explicitly constructed shadow sink.
+	// The composition adapter binds only after a managed runtime emits its
+	// post-registration event and revokes after its post-exit event.
 	if cfg.EnableTimelineShadow {
 		path := cfg.TimelineShadowPath
 		if path == "" {
@@ -225,6 +224,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			log.Printf("WARNING: Timeline shadow disabled (fail-open): %v", err)
 		} else {
 			timelineWriter = w
+			timelineSink = newTimelineOperationalAdapter(timelineAuth)
 		}
 	}
 	// STEP5: this pure cooperative ledger has no filesystem lock, Git command,
@@ -263,6 +263,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managed.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed approval store: %w", err)
 		}
+		if timelineSink != nil {
+			if err := managed.SetOperationalEventSink(timelineSink); err != nil {
+				log.Printf("WARNING: Managed Codex Timeline producer disabled")
+			}
+		}
 	}
 
 	// C1D: native managed Claude runtime — default-off. The service owns the
@@ -283,6 +288,11 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		// observation sink. Same immutability contract as Codex.
 		if err := managedClaude.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed claude approval store: %w", err)
+		}
+		if timelineSink != nil {
+			if err := managedClaude.SetOperationalEventSink(timelineSink); err != nil {
+				log.Printf("WARNING: Managed Claude Timeline producer disabled")
+			}
 		}
 	}
 

@@ -9,14 +9,18 @@ import (
 )
 
 type captureOperationalSink struct {
-	mu     sync.Mutex
-	events []OperationalEvent
+	mu         sync.Mutex
+	events     []OperationalEvent
+	panicAfter bool
 }
 
 func (s *captureOperationalSink) SubmitAfterCommit(event OperationalEvent) {
 	s.mu.Lock()
 	s.events = append(s.events, event)
 	s.mu.Unlock()
+	if s.panicAfter {
+		panic("timeline sink panic")
+	}
 }
 
 func (s *captureOperationalSink) snapshot() []OperationalEvent {
@@ -86,7 +90,7 @@ func TestManagedCodexOperationalHooksPostCommitAndRedacted(t *testing.T) {
 	if err := managed.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
-	sink := &captureOperationalSink{}
+	sink := &captureOperationalSink{panicAfter: true}
 	if err := managed.SetOperationalEventSink(sink); err != nil {
 		t.Fatal(err)
 	}

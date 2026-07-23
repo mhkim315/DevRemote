@@ -79,14 +79,16 @@ func TestClaudeDelivery_NilDeps(t *testing.T) {
 
 type multiLaunchLauncher struct {
 	procs []*fakeClaudeProcess
+	args  [][]string
 }
 
-func (l *multiLaunchLauncher) Launch(_ string, _ []string) (ManagedProcess, error) {
+func (l *multiLaunchLauncher) Launch(_ string, argv []string) (ManagedProcess, error) {
 	pr, pw := io.Pipe()
 	// Unique per-incarnation opaque identity, mirroring the production
 	// launcher's per-spawn OpaqueID (C3D §12 tests rely on it).
 	p := &fakeClaudeProcess{stdin: new(bytes.Buffer), stdout: pr, pipeW: pw,
 		opaque: fmt.Sprintf("multi-proc-%d", len(l.procs)+1)}
 	l.procs = append(l.procs, p)
+	l.args = append(l.args, append([]string(nil), argv...))
 	return p, nil
 }

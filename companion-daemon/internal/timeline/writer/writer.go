@@ -142,10 +142,27 @@ func (s *ProducerStore) Revoke(provider, sessionID string, generation int64) {
 func (s *ProducerStore) IsBound(h producerHandle, tok ProducerToken) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.isBoundLocked(h, tok)
+}
+
+func (s *ProducerStore) isBoundLocked(h producerHandle, tok ProducerToken) bool {
 	key := fmt.Sprintf("%s:%s:%d", h.provider, h.sessionID, h.generation)
 	stored, ok := s.active[key]
 	return ok && stored.provider == h.provider && stored.runtimeID == h.runtimeID &&
 		stored.sessionID == h.sessionID && stored.generation == h.generation && stored.token == tok
+}
+
+// authorizeAnd holds the binding read lock through fn. Revoke takes the write
+// lock, so once Revoke returns no submission authenticated by the old token can
+// still enqueue.
+func (s *ProducerStore) authorizeAnd(h producerHandle, tok ProducerToken, fn func()) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.isBoundLocked(h, tok) {
+		return false
+	}
+	fn()
+	return true
 }
 
 func validBinding(provider, sessionID string) bool {
@@ -179,6 +196,7 @@ func isBoundEventKind(kind contract.EventKind) bool {
 // ProducerAuth is the minimal interface for capability checks.
 type ProducerAuth interface {
 	IsBound(h producerHandle, tok ProducerToken) bool
+	authorizeAnd(h producerHandle, tok ProducerToken, fn func()) bool
 }
 
 var _ ProducerAuth = (*ProducerStore)(nil)
@@ -227,32 +245,34 @@ type CloseResult struct {
 	PendingDropped uint64
 }
 
-// Writer serializes append records through a non-blocking submission channel
+// Writer serializes append records through a non-blocking bounded queue
 // and a single I/O worker.
 type Writer struct {
-	mu          sync.Mutex
-	file        appendFile
-	closed      bool
-	closing     bool
-	inFlight    int
-	appended    uint64
-	dropped     uint64
-	failures    uint64
-	ring        []contract.Envelope
-	pos         int
-	full        bool
-	ringMu      sync.RWMutex
-	submitQueue []submitWork
-	submitCond  *sync.Cond
-	workerWg    sync.WaitGroup
-	workerDone  chan struct{}
-	closeWait   time.Duration
-	closeOnce   sync.Once
-	closeErr    error
-	closeResult CloseResult
-	auth        ProducerAuth
-	health      Health
-	config      Config
+	mu            sync.Mutex
+	file          appendFile
+	closed        bool
+	closing       bool
+	inFlight      int
+	appended      uint64
+	dropped       uint64
+	failures      uint64
+	ring          []contract.Envelope
+	pos           int
+	full          bool
+	ringMu        sync.RWMutex
+	submitQueue   []submitWork
+	submitCond    *sync.Cond
+	workerWg      sync.WaitGroup
+	workerDone    chan struct{}
+	closeWait     time.Duration
+	closeOnce     sync.Once
+	closeErr      error
+	closeResult   CloseResult
+	auth          ProducerAuth
+	health        Health
+	config        Config
+	beforeWrite   func() // deterministic test seam; nil in production
+	beforeEnqueue func() // deterministic test seam; nil in production
 }
 
 func Open(config Config, auth ProducerAuth) (*Writer, error) {
@@ -314,11 +334,9 @@ func (w *Writer) startWorker() {
 			work := w.submitQueue[0]
 			w.submitQueue[0] = submitWork{}
 			w.submitQueue = w.submitQueue[1:]
-			w.inFlight++
 			w.mu.Unlock()
 			w.processSubmit(work)
 			w.mu.Lock()
-			w.inFlight--
 			closing := w.closing
 			w.mu.Unlock()
 			if closing {
@@ -329,11 +347,17 @@ func (w *Writer) startWorker() {
 }
 
 func (w *Writer) processSubmit(work submitWork) {
+	claimed := false
 	defer func() {
+		if claimed {
+			w.mu.Lock()
+			w.inFlight--
+			w.mu.Unlock()
+		}
 		if r := recover(); r != nil {
 			atomic.AddUint64(&w.dropped, 1)
 			atomic.AddUint64(&w.failures, 1)
-			w.health.markDegraded(fmt.Sprintf("worker panic: %v", r))
+			w.health.markDegraded("worker failure")
 		}
 	}()
 	record, err := json.Marshal(work.envelope)
@@ -345,29 +369,47 @@ func (w *Writer) processSubmit(work submitWork) {
 	}
 	record = append(record, '\n')
 
+	if w.beforeWrite != nil {
+		w.beforeWrite()
+	}
 	w.mu.Lock()
-	if w.closed || w.file == nil {
+	if w.closed || w.closing || w.file == nil {
 		atomic.AddUint64(&w.dropped, 1)
 		w.mu.Unlock()
 		return
 	}
+	w.inFlight++
+	claimed = true
 	file := w.file
 	w.mu.Unlock()
 	n, err := file.Write(record)
 	if err != nil || n != len(record) {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
-		w.health.markDegraded(fmt.Sprintf("write failure: %v", err))
+		w.health.markDegraded("write failure")
+		return
+	}
+	w.mu.Lock()
+	closing := w.closing || w.closed
+	w.mu.Unlock()
+	if closing {
+		atomic.AddUint64(&w.dropped, 1)
 		return
 	}
 	if err := file.Sync(); err != nil {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
-		w.health.markDegraded(fmt.Sprintf("sync failure: %v", err))
+		w.health.markDegraded("sync failure")
+		return
+	}
+
+	w.mu.Lock()
+	if w.closing || w.closed {
+		atomic.AddUint64(&w.dropped, 1)
+		w.mu.Unlock()
 		return
 	}
 	atomic.AddUint64(&w.appended, 1)
-
 	w.ringMu.Lock()
 	w.ring[w.pos] = work.envelope
 	w.pos++
@@ -376,14 +418,13 @@ func (w *Writer) processSubmit(work submitWork) {
 		w.full = true
 	}
 	w.ringMu.Unlock()
+	w.inFlight--
+	claimed = false
+	w.mu.Unlock()
 }
 
 // submit is the internal entry point gated by auth.
 func (w *Writer) submit(envelope contract.Envelope, h producerHandle, tok ProducerToken) bool {
-	if w.auth != nil && !w.auth.IsBound(h, tok) {
-		atomic.AddUint64(&w.dropped, 1)
-		return false
-	}
 	if err := envelope.Validate(); err != nil {
 		atomic.AddUint64(&w.dropped, 1)
 		return false
@@ -393,22 +434,34 @@ func (w *Writer) submit(envelope contract.Envelope, h producerHandle, tok Produc
 		atomic.AddUint64(&w.dropped, 1)
 		return false
 	}
-	w.mu.Lock()
-	if w.closing || w.closed {
+	if w.auth == nil {
 		atomic.AddUint64(&w.dropped, 1)
-		w.mu.Unlock()
 		return false
 	}
-	if len(w.submitQueue) == submitBufCap {
-		w.mu.Unlock()
+	enqueued := false
+	authorized := w.auth.authorizeAnd(h, tok, func() {
+		if w.beforeEnqueue != nil {
+			w.beforeEnqueue()
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.closing || w.closed {
+			atomic.AddUint64(&w.dropped, 1)
+			return
+		}
+		if len(w.submitQueue) == submitBufCap {
+			atomic.AddUint64(&w.dropped, 1)
+			w.health.markDegraded("submission queue full")
+			return
+		}
+		w.submitQueue = append(w.submitQueue, submitWork{envelope: envelope, handle: h, token: tok})
+		w.submitCond.Signal()
+		enqueued = true
+	})
+	if !authorized {
 		atomic.AddUint64(&w.dropped, 1)
-		w.health.markDegraded("submission queue full")
-		return false
 	}
-	w.submitQueue = append(w.submitQueue, submitWork{envelope: envelope, handle: h, token: tok})
-	w.submitCond.Signal()
-	w.mu.Unlock()
-	return true
+	return enqueued
 }
 
 // Append is legacy-only. It is rejected when producer authorization is
@@ -506,8 +559,9 @@ func (w *Writer) HealthSnapshot() (bool, string) {
 func (w *Writer) ConfigSnapshot() Config { return w.config }
 
 // Close is truthful: it serializes with submissions, atomically detaches and
-// accounts for pending work, and lets only an already in-flight write finish.
-// The worker owns the one eventual file close.
+// accounts for pending work, and prevents any worker that has not entered file
+// I/O from doing so after the closing transition. The worker owns the one
+// eventual file close.
 func (w *Writer) Close() CloseResult {
 	w.closeOnce.Do(func() {
 		w.mu.Lock()
