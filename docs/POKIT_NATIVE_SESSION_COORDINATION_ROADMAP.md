@@ -11,7 +11,7 @@ foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
 (separate post-PB packet required).
 
 The current product state is **Post-PB foundation complete, alpha activation
-pending**. Step 9.0 received independent closeout at `921804fef`. The bounded
+pending**. Step 9.0 received independent closeout at `b04948ccf`. The bounded
 execution plan is authoritative in
 [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md); neither the Step
 9.0 acceptance nor this planning update authorizes Step 9.1 implementation.
@@ -366,7 +366,7 @@ degraded/gap outcomes without replaying an invalid action.
    goroutines (EVID `093e03f04`).
 9. **COMPLETE (9.0):** Authority reconciliation,
    foundation/capability/live-state audit, and ledger correction. Independent
-   closeout at `921804fef`.
+   closeout at `b04948ccf`.
 10. **PLANNED (9.1):** Minimal Operational Timeline staging — bounded Activity/N1
     producer composition, failure isolation, mailbox/backpressure,
     drop/gap/degraded evidence, restart/filesystem failure, and capability
