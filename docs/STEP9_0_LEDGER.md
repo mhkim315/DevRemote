@@ -72,7 +72,7 @@ these automatically.
 | 7 (Validation) | `a753e126c` (IMPL) | `814868b5b` (EVID) | StalenessCheck (standalone, consumer NONE) |
 | 8 (Cockpit+VStore) | `90cc46c3f`→`44f98dfcb`→`10432920b`→`75be15e91`→`24d6d2d95` | `093e03f04` | Cockpit + embedded ValidationStore |
 | PB ACCEPT | `5354077af` | — | Independent |
-| 9.1 (Timeline staging) | `16c350d1f` (IMPL) | `c5f8c2e47` (EVID R2) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
+| 9.1 (Timeline staging) | `dc376f9b7` (IMPL) | `1bc13eab3` (EVID R3) | Operational Timeline staging — fail-open, capability-self-auth, bounded producer composition |
 
 ## 6. Authoritative sequence
 
