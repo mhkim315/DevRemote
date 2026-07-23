@@ -15,7 +15,7 @@ import (
 func TestSTEP4TimelineShadowIsDefaultOff(t *testing.T) {
 	called := false
 	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, Dependencies{
-		OpenTimelineShadow: func(writer.Config) (*writer.Writer, error) {
+		OpenTimelineShadow: func(writer.Config, writer.ProducerAuth) (*writer.Writer, error) {
 			called = true
 			return nil, errors.New("must not open when disabled")
 		},
@@ -48,7 +48,7 @@ func TestSTEP5WorkspaceLeaseIsDefaultOff(t *testing.T) {
 func TestSTEP4TimelineUnavailableDoesNotBlockDaemonConstruction(t *testing.T) {
 	unavailable := errors.New("timeline path unavailable")
 	deps := v1LifecycleDeps(&appV1Watcher{}, &appV1IPC{})
-	deps.OpenTimelineShadow = func(config writer.Config) (*writer.Writer, error) {
+	deps.OpenTimelineShadow = func(config writer.Config, _ writer.ProducerAuth) (*writer.Writer, error) {
 		if config.Path != "/unavailable/timeline.jsonl" {
 			t.Fatalf("path = %q", config.Path)
 		}
@@ -75,9 +75,9 @@ func TestSTEP4FailedAppConstructionClosesTimelineWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "timeline-shadow.jsonl")
 	var opened *writer.Writer
 	deps := Dependencies{
-		OpenTimelineShadow: func(config writer.Config) (*writer.Writer, error) {
+		OpenTimelineShadow: func(config writer.Config, _ writer.ProducerAuth) (*writer.Writer, error) {
 			var err error
-			opened, err = writer.Open(config)
+			opened, err = writer.Open(config, nil)
 			return opened, err
 		},
 	}

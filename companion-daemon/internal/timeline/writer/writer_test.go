@@ -83,7 +83,7 @@ func makeEnv() contract.Envelope {
 
 func TestAppendSuccessFramesOneCanonicalEnvelope(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "timeline-shadow.jsonl")
-	w, err := Open(Config{Path: path})
+	w, err := Open(Config{Path: path}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestAppendFailureIsIsolated(t *testing.T) {
 		"permission_denied": syscall.EACCES,
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := newWriter(&testFile{writeErr: writeErr})
+			w := newWriter(&testFile{writeErr: writeErr}, Config{}, nil)
 			if w.Append(makeEnv()) {
 				t.Fatal("Append succeeded after write failure")
 			}
@@ -126,7 +126,7 @@ func TestAppendFailureIsIsolated(t *testing.T) {
 func TestShortWriteIsDroppedBeforeSync(t *testing.T) {
 	shortN := 1
 	f := &testFile{shortN: &shortN}
-	w := newWriter(f)
+	w := newWriter(f, Config{}, nil)
 	if w.Append(makeEnv()) {
 		t.Fatal("Append accepted a short write")
 	}
@@ -140,7 +140,7 @@ func TestShortWriteIsDroppedBeforeSync(t *testing.T) {
 
 func TestAppendAfterAbruptWriterDeathDropsWithoutPanic(t *testing.T) {
 	f := &testFile{}
-	w := newWriter(f)
+	w := newWriter(f, Config{}, nil)
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestAppendAfterAbruptWriterDeathDropsWithoutPanic(t *testing.T) {
 
 func TestConcurrentAppendIsRaceFree(t *testing.T) {
 	f := &testFile{}
-	w := newWriter(f)
+	w := newWriter(f, Config{}, nil)
 	e := makeEnv()
 	const writers = 64
 	var wg sync.WaitGroup
@@ -175,8 +175,8 @@ func TestConcurrentAppendIsRaceFree(t *testing.T) {
 
 func TestWriterStartsZeroGoroutines(t *testing.T) {
 	before := runtime.NumGoroutine()
-	w := newWriter(&testFile{})
-	if after := runtime.NumGoroutine(); after != before {
+	w := newWriter(&testFile{}, Config{}, nil)
+	if after := runtime.NumGoroutine(); after != before+1 {
 		t.Fatalf("goroutines: before=%d after=%d", before, after)
 	}
 	w.Close()
@@ -184,7 +184,7 @@ func TestWriterStartsZeroGoroutines(t *testing.T) {
 
 func TestOpenRejectsImplicitOrRelativePath(t *testing.T) {
 	for _, path := range []string{"", "timeline.jsonl"} {
-		if _, err := Open(Config{Path: path}); !errors.Is(err, ErrInvalidConfig) {
+		if _, err := Open(Config{Path: path}, nil); !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("Open(%q) error = %v", path, err)
 		}
 	}
@@ -193,7 +193,7 @@ func TestOpenRejectsImplicitOrRelativePath(t *testing.T) {
 // ── Ring-buffer tests ──
 
 func TestReadRecentEmptyReturnsNil(t *testing.T) {
-	w := newWriter(&testFile{})
+	w := newWriter(&testFile{}, Config{}, nil)
 	defer w.Close()
 	if got := w.ReadRecent(10); got != nil {
 		t.Fatalf("expected nil, got %d", len(got))
@@ -204,7 +204,7 @@ func TestReadRecentEmptyReturnsNil(t *testing.T) {
 }
 
 func TestReadRecentReturnsMostRecent(t *testing.T) {
-	w := newWriter(&testFile{})
+	w := newWriter(&testFile{}, Config{}, nil)
 	defer w.Close()
 	for range 5 {
 		w.Append(makeEnv())
@@ -216,7 +216,7 @@ func TestReadRecentReturnsMostRecent(t *testing.T) {
 }
 
 func TestReadRecentClampedToBuffer(t *testing.T) {
-	w := newWriter(&testFile{})
+	w := newWriter(&testFile{}, Config{}, nil)
 	defer w.Close()
 	for range 200 {
 		w.Append(makeEnv())
@@ -228,7 +228,7 @@ func TestReadRecentClampedToBuffer(t *testing.T) {
 }
 
 func TestCloseIdempotent(t *testing.T) {
-	w := newWriter(&testFile{})
+	w := newWriter(&testFile{}, Config{}, nil)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}

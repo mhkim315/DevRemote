@@ -1,30 +1,77 @@
 // Package writer provides the explicitly constructed, fail-open shadow sink
-// for Canonical Timeline envelopes. It owns no authority and starts no
-// goroutines. Readers poll through a bounded ring buffer.
+// for Canonical Timeline envelopes. It owns no authority and starts exactly
+// one I/O worker goroutine for non-blocking submission.
 package writer
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"devremote/companion-daemon/internal/timeline/contract"
 )
 
 const (
-	DefaultFileMode os.FileMode = 0o600
-	recentEnvelopes             = 128
+	DefaultFileMode   os.FileMode = 0o600
+	recentEnvelopes               = 128
+	submitBufCap                  = 256
+	closeDrainTimeout             = 5 * time.Second
 )
 
 var ErrInvalidConfig = errors.New("timeline writer: invalid configuration")
 
-// Config identifies an explicitly selected shadow file.
-type Config struct{ Path string }
+type Config struct {
+	Path string
+}
 
-// Stats describes outcomes observed by this best-effort writer.
-type Stats struct{ Appended, Dropped, Failures uint64 }
+// ProducerHandle identifies one bound managed-runtime generation.
+type ProducerHandle struct {
+	Provider     string
+	RuntimeID    string
+	SessionID    string
+	Generation   int64
+	Capabilities []string // permitted event kinds
+}
+
+type ProducerAuth interface {
+	IsBound(h ProducerHandle) bool
+}
+
+type ProducerStore struct {
+	mu     sync.RWMutex
+	active map[string]ProducerHandle
+}
+
+func NewProducerStore() *ProducerStore {
+	return &ProducerStore{active: make(map[string]ProducerHandle)}
+}
+
+func (s *ProducerStore) Bind(h ProducerHandle) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%d", h.Provider, h.SessionID, h.Generation)
+	s.active[key] = h
+}
+
+func (s *ProducerStore) Revoke(provider, sessionID string, generation int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%d", provider, sessionID, generation)
+	delete(s.active, key)
+}
+
+func (s *ProducerStore) IsBound(h ProducerHandle) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key := fmt.Sprintf("%s:%s:%d", h.Provider, h.SessionID, h.Generation)
+	_, ok := s.active[key]
+	return ok
+}
 
 type appendFile interface {
 	Write([]byte) (int, error)
@@ -32,8 +79,40 @@ type appendFile interface {
 	Close() error
 }
 
-// Writer serializes append records and exposes a bounded ReadRecent ring buffer.
-// It starts zero goroutines — callers poll ReadRecent on their own schedule.
+// Stats exposes non-blocking submission outcomes. All counters are monotonic.
+type Stats struct {
+	Appended uint64
+	Dropped  uint64
+	Failures uint64
+}
+
+// Health reports degradation state without self-persisting.
+type Health struct {
+	mu       sync.RWMutex
+	degraded bool
+	reason   string
+}
+
+func (h *Health) markDegraded(reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.degraded = true
+	h.reason = reason
+}
+
+func (h *Health) snapshot() (bool, string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.degraded, h.reason
+}
+
+type submitWork struct {
+	envelope contract.Envelope
+	handle   ProducerHandle
+}
+
+// Writer serializes append records through a non-blocking submission channel
+// and a single I/O worker. Zero authority callbacks; no goroutine leaks.
 type Writer struct {
 	mu       sync.Mutex
 	file     appendFile
@@ -42,13 +121,20 @@ type Writer struct {
 	dropped  uint64
 	failures uint64
 
-	ring []contract.Envelope
-	pos  int
-	full bool
+	ring      []contract.Envelope
+	pos       int
+	full      bool
+	ringMu    sync.RWMutex
+	submitCh  chan submitWork
+	workerWg  sync.WaitGroup
+	closeOnce sync.Once
+	closeErr  error
+	auth      ProducerAuth
+	health    Health
+	config    Config
 }
 
-// Open constructs a writer for one explicit path.
-func Open(config Config) (*Writer, error) {
+func Open(config Config, auth ProducerAuth) (*Writer, error) {
 	if config.Path == "" || !filepath.IsAbs(config.Path) {
 		return nil, ErrInvalidConfig
 	}
@@ -59,70 +145,159 @@ func Open(config Config) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newWriter(f), nil
+	return newWriter(f, config, auth), nil
 }
 
-func newWriter(file appendFile) *Writer {
-	return &Writer{file: file, ring: make([]contract.Envelope, recentEnvelopes)}
+func newWriter(file appendFile, config Config, auth ProducerAuth) *Writer {
+	w := &Writer{
+		file:     file,
+		ring:     make([]contract.Envelope, recentEnvelopes),
+		submitCh: make(chan submitWork, submitBufCap),
+		auth:     auth,
+		config:   config,
+	}
+	w.startWorker()
+	return w
 }
 
-// Append validates, frames, and writes one envelope. On success it pushes
-// a copy into the ring buffer for ReadRecent consumers.
+func (w *Writer) startWorker() {
+	w.workerWg.Add(1)
+	go func() {
+		defer w.workerWg.Done()
+		for work := range w.submitCh {
+			w.processSubmit(work)
+		}
+	}()
+}
+
+func (w *Writer) processSubmit(work submitWork) {
+	defer func() { recover() }()
+	record, err := json.Marshal(work.envelope)
+	if err != nil {
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
+		w.health.markDegraded("marshal failure")
+		return
+	}
+	record = append(record, '\n')
+
+	w.mu.Lock()
+	if w.closed || w.file == nil {
+		atomic.AddUint64(&w.dropped, 1)
+		w.mu.Unlock()
+		return
+	}
+	n, err := w.file.Write(record)
+	if err != nil || n != len(record) {
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
+		w.health.markDegraded(fmt.Sprintf("write failure: %v", err))
+		w.mu.Unlock()
+		return
+	}
+	if err := w.file.Sync(); err != nil {
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
+		w.health.markDegraded(fmt.Sprintf("sync failure: %v", err))
+		w.mu.Unlock()
+		return
+	}
+	atomic.AddUint64(&w.appended, 1)
+	w.mu.Unlock()
+
+	// Push to ring buffer for cockpit polling.
+	w.ringMu.Lock()
+	w.ring[w.pos] = work.envelope
+	w.pos++
+	if w.pos >= len(w.ring) {
+		w.pos = 0
+		w.full = true
+	}
+	w.ringMu.Unlock()
+}
+
+// SubmitAfterCommit is the fail-open, non-blocking submission path. Callers
+// must call it AFTER their primary authority has committed. A false return
+// means the envelope was dropped (channel full or closed). The caller never
+// blocks on I/O.
+func (w *Writer) SubmitAfterCommit(envelope contract.Envelope, handle ProducerHandle) bool {
+	if w.auth != nil && !w.auth.IsBound(handle) {
+		atomic.AddUint64(&w.dropped, 1)
+		return false
+	}
+	if err := envelope.Validate(); err != nil {
+		atomic.AddUint64(&w.dropped, 1)
+		return false
+	}
+	select {
+	case w.submitCh <- submitWork{envelope: envelope, handle: handle}:
+		return true
+	default:
+		atomic.AddUint64(&w.dropped, 1)
+		w.health.markDegraded("submission channel full")
+		return false
+	}
+}
+
+// Append is retained for backward compatibility (ring-buffer tests, cockpit).
 func (w *Writer) Append(envelope contract.Envelope) bool {
 	if err := envelope.Validate(); err != nil {
-		w.recordDrop(true)
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
 		return false
 	}
 	record, err := json.Marshal(envelope)
 	if err != nil {
-		w.recordDrop(true)
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
 		return false
 	}
 	record = append(record, '\n')
 
 	w.mu.Lock()
 	if w.closed || w.file == nil {
-		w.dropped++
+		atomic.AddUint64(&w.dropped, 1)
 		w.mu.Unlock()
 		return false
 	}
 	n, err := w.file.Write(record)
 	if err != nil || n != len(record) {
-		w.dropped++
-		w.failures++
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
+		w.health.markDegraded("write failure")
 		w.mu.Unlock()
 		return false
 	}
 	if err := w.file.Sync(); err != nil {
-		w.dropped++
-		w.failures++
+		atomic.AddUint64(&w.dropped, 1)
+		atomic.AddUint64(&w.failures, 1)
+		w.health.markDegraded("sync failure")
 		w.mu.Unlock()
 		return false
 	}
-	w.appended++
+	atomic.AddUint64(&w.appended, 1)
+	w.mu.Unlock()
+
+	w.ringMu.Lock()
 	w.ring[w.pos] = envelope
 	w.pos++
 	if w.pos >= len(w.ring) {
 		w.pos = 0
 		w.full = true
 	}
-	w.mu.Unlock()
+	w.ringMu.Unlock()
 	return true
 }
 
-// ReadRecent returns the most recent N envelopes in insertion order.
-// N is clamped to the ring buffer size; an empty or 0 request returns nil.
 func (w *Writer) ReadRecent(n int) []contract.Envelope {
 	if n <= 0 {
 		return nil
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.ringMu.RLock()
+	defer w.ringMu.RUnlock()
 	capacity := len(w.ring)
 	size := w.pos
-	if !w.full {
-		size = w.pos
-	} else {
+	if w.full {
 		size = capacity
 	}
 	if n > capacity {
@@ -138,8 +313,7 @@ func (w *Writer) ReadRecent(n int) []contract.Envelope {
 	if w.full {
 		start := (w.pos - size + capacity) % capacity
 		for i := 0; i < n; i++ {
-			idx := (start + size - n + i) % capacity
-			out[i] = w.ring[idx]
+			out[i] = w.ring[(start+size-n+i)%capacity]
 		}
 	} else {
 		copy(out, w.ring[w.pos-n:w.pos])
@@ -147,31 +321,40 @@ func (w *Writer) ReadRecent(n int) []contract.Envelope {
 	return out
 }
 
-func (w *Writer) recordDrop(failure bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.dropped++
-	if failure {
-		w.failures++
-	}
-}
-
 func (w *Writer) Stats() Stats {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return Stats{Appended: w.appended, Dropped: w.dropped, Failures: w.failures}
+	return Stats{
+		Appended: atomic.LoadUint64(&w.appended),
+		Dropped:  atomic.LoadUint64(&w.dropped),
+		Failures: atomic.LoadUint64(&w.failures),
+	}
 }
 
-// Close is idempotent. No goroutines to drain — just closes the file.
+func (w *Writer) HealthSnapshot() (degraded bool, reason string) {
+	return w.health.snapshot()
+}
+
+func (w *Writer) ConfigSnapshot() Config { return w.config }
+
+// Close signals the worker, drains pending items (best-effort), then closes the file.
 func (w *Writer) Close() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
-		return nil
-	}
-	w.closed = true
-	if w.file == nil {
-		return nil
-	}
-	return w.file.Close()
+	w.closeOnce.Do(func() {
+		close(w.submitCh)
+		done := make(chan struct{})
+		go func() {
+			w.workerWg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(closeDrainTimeout):
+			atomic.AddUint64(&w.dropped, uint64(len(w.submitCh)))
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.closed = true
+		if w.file != nil {
+			w.closeErr = w.file.Close()
+		}
+	})
+	return w.closeErr
 }

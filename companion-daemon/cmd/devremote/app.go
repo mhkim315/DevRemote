@@ -102,7 +102,8 @@ type Dependencies struct {
 	ManagedClaude *term.ManagedClaudeService
 	// OpenTimelineShadow constructs the optional fail-open Timeline sink. A
 	// failure disables Timeline only; it never prevents daemon construction.
-	OpenTimelineShadow func(writer.Config) (*writer.Writer, error)
+	// auth is the producer authorization store; nil means no producer gating.
+	OpenTimelineShadow func(writer.Config, writer.ProducerAuth) (*writer.Writer, error)
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -218,7 +219,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if openTimeline == nil {
 			openTimeline = writer.Open
 		}
-		w, err := openTimeline(writer.Config{Path: path})
+		timelineAuth := writer.NewProducerStore()
+		w, err := openTimeline(writer.Config{Path: path}, timelineAuth)
 		if err != nil {
 			log.Printf("WARNING: Timeline shadow disabled (fail-open): %v", err)
 		} else {
@@ -457,6 +459,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			Catalog: h.Catalog, Approvals: approvals, Timeline: timelineWriter, Validation: validationStore,
 		})
 		cockpit.RegisterCockpitHandler(serveMux, cockpitStore, sessionMgr)
+		if timelineWriter != nil {
+			cockpit.RegisterTimelineStatsHandler(serveMux, timelineWriter, sessionMgr)
+		}
 	}
 
 	// M2.5-4: explicit auth mode. In remote (production) mode, operational
