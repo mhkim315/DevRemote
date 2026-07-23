@@ -619,7 +619,7 @@ post-PB authorization.
    and require a separate reviewed contract.
 
 Historical broad CT-P2 and authority-wide UI cutover remain blocked. Step 9.0
-independent closeout is COMPLETE at `b04948ccf`. Each later bounded producer,
+independent closeout is COMPLETE. Each later bounded producer,
 projection, N1, onboarding, or consumer-cutover wave defined in
 `ALPHA_ACTIVATION_ROADMAP.md` requires its own implementation/evidence identity
 and independent authorization. Do not treat the Alpha roadmap or this
@@ -644,6 +644,6 @@ It is not a current executor authorization:
 The historical CT-P0 executor prohibition on CT-P1 was satisfied before CT-P1
 started. CT-P0, CT-P1, and the CT-P1 operational-evidence amendment are
 independently accepted. Foundation Steps 1-8 and Step 9.0 are complete. Step 9.0
-received independent closeout at `b04948ccf`. Current work follows the
+received independent closeout. Current work follows the
 authoritative sequence in `POKIT_NATIVE_SESSION_COORDINATION_ROADMAP.md` and
 `ALPHA_ACTIVATION_ROADMAP.md`. Historical broad CT-P2 remains blocked.

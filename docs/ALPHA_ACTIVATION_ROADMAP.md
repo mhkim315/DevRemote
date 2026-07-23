@@ -3,7 +3,7 @@
 **Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED; STEP 9.1 NOT STARTED
 
 **Satisfied prerequisite:** Step 9.0 authority reconciliation received
-independent closeout at `b04948ccf`. That acceptance permits planning to
+independent closeout. That acceptance permits planning to
 proceed; it does not by itself authorize Step 9.1 implementation.
 
 The product boundary is:

@@ -77,7 +77,7 @@ these automatically.
 
 The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md).
 
-- **9.0 DOCS/AUDIT — COMPLETE** at `b04948ccf`.
+- **9.0 DOCS/AUDIT — COMPLETE**.
 - **9.1** — Minimal Timeline staging (controlled environment, fail-open writes)
 - **9.2** — Transcript/Activity projection convergence
 - **9.3** — N1 exact-event notification-to-action
