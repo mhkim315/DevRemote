@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"devremote/companion-daemon/internal/notification"
 	"devremote/companion-daemon/internal/term"
 )
 
@@ -212,11 +213,12 @@ func TestAppV1_InjectedVerifierGuardsComposedRoutes(t *testing.T) {
 }
 
 func TestAppV1_PushNotifierConcurrentAccess(t *testing.T) {
-	notifier := &pushNotifier{send: func(string, string, string) {}}
+	devices := notification.NewDeviceStore()
+	notifier := &pushNotifier{send: func(string, string, string) {}, devices: devices}
 	var wg sync.WaitGroup
 	for range 32 {
 		wg.Add(2)
-		go func() { defer wg.Done(); notifier.SetToken("device", "device-token") }()
+		go func() { defer wg.Done(); devices.Bind("device", "device-token") }()
 		go func() { defer wg.Done(); _ = notifier.ApprovalRequired(context.Background(), "s", "") }()
 	}
 	wg.Wait()

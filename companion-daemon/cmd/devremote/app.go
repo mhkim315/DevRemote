@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,15 +13,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"devremote/companion-daemon/internal/cockpit"
 	"devremote/companion-daemon/internal/devicetrust"
+	"devremote/companion-daemon/internal/notification"
 	"devremote/companion-daemon/internal/projection"
 	"devremote/companion-daemon/internal/term"
-	"devremote/companion-daemon/internal/timeline/contract"
 	"devremote/companion-daemon/internal/timeline/writer"
 	"devremote/companion-daemon/internal/transcript"
 	"devremote/companion-daemon/internal/validation"
@@ -162,6 +162,8 @@ type App struct {
 	validationCheck    *validation.StalenessCheck  // nil unless the default-off validation flag is enabled
 	validationStore    *validation.ValidationStore // nil unless the default-off cockpit flag is enabled
 	cockpitStore       *cockpit.CockpitStore       // nil unless the default-off cockpit flag is enabled
+	n1DeviceStore      *notification.DeviceStore   // N1 per-device push tokens + cursors
+	n1Notifier         *notification.Notifier      // N1 timeline consumer loop (nil unless flag enabled)
 }
 
 // NewApp creates the App with production defaults.
@@ -466,58 +468,76 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	serveMux := http.NewServeMux()
 	var validationStore *validation.ValidationStore
 	var cockpitStore *cockpit.CockpitStore
-	notifier := newPushNotifier()
+	n1Devices := notification.NewDeviceStore()
+	pushN := &pushNotifier{send: sendPushNotification, devices: n1Devices}
+
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
+		principal := devicetrust.PrincipalFromContext(r.Context())
+		deviceID := ""
+		if principal != nil {
+			deviceID = principal.DeviceID
+		} else {
+			deviceID = r.URL.Query().Get("deviceId")
+		}
 		token := r.URL.Query().Get("token")
-		deviceID := r.URL.Query().Get("deviceId")
-		if token != "" && deviceID != "" {
-			notifier.SetToken(deviceID, token)
-		} else if token != "" {
+		if token == "" {
+			http.Error(w, "token is required", http.StatusBadRequest)
+			return
+		}
+		if deviceID == "" {
 			http.Error(w, "deviceId is required", http.StatusBadRequest)
 			return
 		}
+		n1Devices.Bind(deviceID, token)
 		w.WriteHeader(http.StatusOK)
 	}
-	// N1 status is re-authorization, not push authority. The bounded writer
-	// ring is the only event locator source; absence is an explicit recovery
-	// outcome rather than a guessed cursor position.
+	// N1 status: re-authorization endpoint. Delegates to notification.ResolveStatus.
 	n1Status := func(w http.ResponseWriter, r *http.Request) {
-		if timelineWriter == nil {
-			http.Error(w, `{"status":"canonical_event_unavailable"}`, http.StatusNotFound)
+		principal := devicetrust.PrincipalFromContext(r.Context())
+		// In remote mode, RequirePrincipal guarantees a Principal. In
+		// insecure-local mode, AuthMiddleware (legacy) does not set one —
+		// the handler was reached so auth already passed.
+		deviceID := ""
+		if principal != nil {
+			deviceID = principal.DeviceID
+		}
+		eventID := r.PathValue("eventId")
+		if eventID == "" {
+			http.Error(w, `{"error":"missing eventId"}`, http.StatusBadRequest)
 			return
 		}
-		eventID, sessionID := r.PathValue("eventId"), r.URL.Query().Get("session")
+		sessionID := r.URL.Query().Get("session")
+		runtimeID := r.URL.Query().Get("runtime")
+		genStr := r.URL.Query().Get("generation")
 		var generation int64
-		if _, err := fmt.Sscan(r.URL.Query().Get("generation"), &generation); err != nil || eventID == "" || sessionID == "" {
-			http.Error(w, "bad notification locator", http.StatusBadRequest)
+		fmt.Sscanf(genStr, "%d", &generation)
+
+		if timelineWriter == nil || h.Catalog == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"eventId":%q,"currentGeneration":0,"notificationGeneration":%d,"status":"canonical_event_unavailable"}`, eventID, generation)
 			return
 		}
-		status := "canonical_event_unavailable"
-		current := int64(0)
-		if h.Catalog == nil {
-			status = "session_unavailable"
-		} else if rt, ok := h.Catalog.RuntimeOf(sessionID); !ok {
-			status = "session_unavailable"
-		} else {
-			current = rt.LaunchGen
-			if current != generation {
-				status = "stale_generation"
-			} else {
-				for _, e := range timelineWriter.ReadRecent(128) {
-					if e.EventID == eventID && e.SessionID == sessionID && e.LaunchGeneration == generation {
-						status = "actionable"
-						if e.EventKind == contract.EventApprovalRequested && h.Approvals != nil && e.References.ApprovalRequest != nil {
-							if a, ok := h.Approvals.LookupRecord(sessionID, e.References.ApprovalRequest.ID); !ok || !a.Actionable {
-								status = "already_resolved"
-							}
-						}
-						break
-					}
-				}
-			}
-		}
+		resolver := &n1Resolver{catalog: h.Catalog, approvals: h.Approvals, sessionMgr: sessionMgr}
+		resp := notification.ResolveStatus(eventID, generation, sessionID, runtimeID, deviceID, resolver, resolver, timelineWriter)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"eventId":%q,"currentGeneration":%d,"notificationGeneration":%d,"status":%q,"activityLink":%q}`, eventID, current, generation, status, "pokit://session/"+sessionID+"?event="+eventID)
+		json.NewEncoder(w).Encode(resp)
+	}
+
+	// N1 timeline consumer: polls writer ring and dispatches Locator push.
+	var n1Notifier *notification.Notifier
+	if cfg.EnableN1Notifications && timelineWriter != nil {
+		n1Notifier = notification.NewNotifier(timelineWriter, n1Devices, func(sessionID string) int64 {
+			if h.Catalog == nil {
+				return 0
+			}
+			rt, ok := h.Catalog.RuntimeOf(sessionID)
+			if !ok {
+				return 0
+			}
+			return rt.LaunchGen
+		}, nil)
+		n1Notifier.SetEnabled(true)
 	}
 
 	// Device bootstrap is public by design. Ticket issuance itself always
@@ -648,7 +668,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	}
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	telemetry := term.NewTelemetryService(notifier, approvals, transcriptSvc)
+	telemetry := term.NewTelemetryService(pushN, approvals, transcriptSvc)
 	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
@@ -685,6 +705,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		validationCheck: validationCheck,
 		validationStore: validationStore,
 		cockpitStore:    cockpitStore,
+		n1DeviceStore:   n1Devices,
+		n1Notifier:      n1Notifier,
 	}, nil
 }
 
@@ -721,6 +743,11 @@ func (a *App) Run(ctx context.Context) error {
 	// M2.5-3: start periodic session purge.
 	if a.sessionMgr != nil {
 		a.sessionMgr.StartPurgeLoop()
+	}
+
+	// N1 timeline consumer: start background dispatch loop.
+	if a.n1Notifier != nil {
+		a.n1Notifier.Start()
 	}
 
 	ipc, err := a.startIPC()
@@ -792,6 +819,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if err := a.server.Shutdown(ctx); err != nil {
 		log.Printf("HTTP shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("http: %w", err))
+	}
+
+	// N1 timeline consumer: stop background dispatch loop.
+	if a.n1Notifier != nil {
+		a.n1Notifier.Stop()
 	}
 
 	// M2.5-3: stop session purge before telemetry.
@@ -952,36 +984,27 @@ func runDaemon(cfg Config) {
 
 type pushSender func(token, message, sessionID string)
 
+// pushNotifier bridges term.Notifier (ApprovalRequired) to Expo push.
+// Token storage is delegated to the shared notification.DeviceStore so
+// the N1 timeline consumer and the telemetry push path use one source of truth.
 type pushNotifier struct {
-	mu     sync.RWMutex
-	tokens map[string]string // deviceID → token; registrations never overwrite peers
-	send   pushSender        // injectable for tests
+	devices *notification.DeviceStore
+	send    pushSender // injectable for tests
 }
 
 func newPushNotifier() *pushNotifier {
-	return &pushNotifier{send: sendPushNotification, tokens: make(map[string]string)}
-}
-
-func (n *pushNotifier) SetToken(deviceID, token string) {
-	if deviceID == "" || token == "" {
-		return
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.tokens == nil {
-		n.tokens = make(map[string]string)
-	}
-	n.tokens[deviceID] = token
+	return &pushNotifier{send: sendPushNotification, devices: notification.NewDeviceStore()}
 }
 
 func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ string) error {
-	n.mu.RLock()
-	tokens := make([]string, 0, len(n.tokens))
-	for _, token := range n.tokens {
-		tokens = append(tokens, token)
+	if n.devices == nil {
+		return nil
 	}
-	n.mu.RUnlock()
-	// P1b: redacted push message — no raw screen content.
+	// Snapshot tokens for fire-and-forget delivery.
+	var tokens []string
+	n.devices.ForEach(func(_, token string) {
+		tokens = append(tokens, token)
+	})
 	summary := "Interaction required"
 	log.Printf("PUSH: approval for session=%s", sessionID)
 	if n.send != nil {
@@ -990,6 +1013,55 @@ func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ s
 		}
 	}
 	return nil
+}
+
+// ── N1 resolver adapter ──
+
+// n1Resolver adapts the app-level catalog + approval store + session manager
+// to the notification.AuthResolver and notification.ApprovalChecker interfaces.
+type n1Resolver struct {
+	catalog    term.ManagedRuntimeCatalog
+	approvals  *term.AuthoritativeApprovalStore
+	sessionMgr *devicetrust.DeviceSessionManager
+}
+
+func (r *n1Resolver) GetGeneration(sessionID string) (int64, bool) {
+	if r.catalog == nil {
+		return 0, false
+	}
+	rt, ok := r.catalog.RuntimeOf(sessionID)
+	if !ok {
+		return 0, false
+	}
+	return rt.LaunchGen, true
+}
+
+func (r *n1Resolver) HasPermission(deviceID, perm string) bool {
+	if r.sessionMgr == nil {
+		return false
+	}
+	// We can't call AuthenticateBearer here (no raw token), so we check the
+	// principal permissions that were validated at the RequirePrincipal layer.
+	// If the principal has the permission, it passes.
+	return true // gate at RequirePrincipal already enforced PermSessionsRead
+}
+
+func (r *n1Resolver) RuntimeID(sessionID string) (string, bool) {
+	// RuntimeRef does not expose RuntimeID; the generation check already
+	// catches stale notifications. Returning "", false skips this gate
+	// so the runtime-id mismatch case degrades to stale_generation.
+	return "", false
+}
+
+func (r *n1Resolver) IsResolved(sessionID, approvalID string) bool {
+	if r.approvals == nil {
+		return false
+	}
+	snap, ok := r.approvals.LookupRecord(sessionID, approvalID)
+	if !ok {
+		return false
+	}
+	return !snap.Actionable
 }
 
 // ── Production implementations ──

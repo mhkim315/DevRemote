@@ -215,6 +215,8 @@ func (r *stubResolver) RuntimeID(sessionID string) (string, bool) {
 	return id, ok
 }
 
+func (r *stubResolver) IsResolved(sessionID, approvalID string) bool { return false }
+
 // openTestWriter opens a writer for a test.
 func openTestWriter(t *testing.T) *writer.Writer {
 	t.Helper()
@@ -348,37 +350,37 @@ func TestResolveStatusSevenOutcomes(t *testing.T) {
 	}
 
 	// 1. session_unavailable
-	resp := ResolveStatus(eventID, 5, "sess-missing", "rt-sess-missing", "device-1", resolver, w)
+	resp := ResolveStatus(eventID, 5, "sess-missing", "rt-sess-missing", "device-1", resolver, resolver, w)
 	if resp.Status != "session_unavailable" {
 		t.Errorf("missing session: %s", resp.Status)
 	}
 
 	// 2. stale_generation (gen mismatch)
-	resp = ResolveStatus(eventID, 3, "sess-1", "rt-sess-1", "device-1", resolver, w)
+	resp = ResolveStatus(eventID, 3, "sess-1", "rt-sess-1", "device-1", resolver, resolver, w)
 	if resp.Status != "stale_generation" {
 		t.Errorf("stale gen: %s", resp.Status)
 	}
 
 	// 3. stale_generation (runtime mismatch)
-	resp = ResolveStatus(eventID, 5, "sess-1", "rt-old", "device-1", resolver, w)
+	resp = ResolveStatus(eventID, 5, "sess-1", "rt-old", "device-1", resolver, resolver, w)
 	if resp.Status != "stale_generation" {
 		t.Errorf("runtime mismatch: %s", resp.Status)
 	}
 
 	// 4. insufficient_permission
-	resp = ResolveStatus(eventID, 5, "sess-1", "rt-sess-1", "device-no-perm", resolver, w)
+	resp = ResolveStatus(eventID, 5, "sess-1", "rt-sess-1", "device-no-perm", resolver, resolver, w)
 	if resp.Status != "insufficient_permission" {
 		t.Errorf("no perm: %s", resp.Status)
 	}
 
 	// 5. canonical_event_unavailable (event not in ring)
-	resp = ResolveStatus("ev-missing", 5, "sess-1", "rt-sess-1", "device-1", resolver, w)
+	resp = ResolveStatus("ev-missing", 5, "sess-1", "rt-sess-1", "device-1", resolver, resolver, w)
 	if resp.Status != "canonical_event_unavailable" {
 		t.Errorf("missing event: %s", resp.Status)
 	}
 
 	// 6. actionable
-	resp = ResolveStatus(eventID, 5, "sess-1", "rt-sess-1", "device-1", resolver, w)
+	resp = ResolveStatus(eventID, 5, "sess-1", "rt-sess-1", "device-1", resolver, resolver, w)
 	if resp.Status != "actionable" {
 		t.Errorf("actionable: %s (eventID=%s)", resp.Status, eventID)
 	}
@@ -403,7 +405,7 @@ func TestEventDegradedOrGap(t *testing.T) {
 	}
 
 	// Nil writer: skips degraded check + ring scan → canonical_event_unavailable.
-	resp := ResolveStatus("ev-1", 5, "sess-1", "rt-sess-1", "device-1", resolver, nil)
+	resp := ResolveStatus("ev-1", 5, "sess-1", "rt-sess-1", "device-1", resolver, resolver, nil)
 	if resp.Status != "canonical_event_unavailable" {
 		t.Errorf("nil writer: got %s want canonical_event_unavailable", resp.Status)
 	}
@@ -421,7 +423,7 @@ func TestEventDegradedOrGap(t *testing.T) {
 	eventID := recentEvents[len(recentEvents)-1].EventID
 
 	// Healthy writer → actionable.
-	resp = ResolveStatus(eventID, 5, "sess-1", "rt-sess-1", "device-1", resolver, w)
+	resp = ResolveStatus(eventID, 5, "sess-1", "rt-sess-1", "device-1", resolver, resolver, w)
 	if resp.Status != "actionable" {
 		t.Errorf("healthy writer: got %s want actionable", resp.Status)
 	}
@@ -489,14 +491,14 @@ func TestInsufficientPermission(t *testing.T) {
 		runtimeOf: map[string]string{"sess-1": "rt-sess-1"},
 	}
 
-	resp := ResolveStatus(eventID, 3, "sess-1", "rt-sess-1", "device-readonly", resolver, w)
+	resp := ResolveStatus(eventID, 3, "sess-1", "rt-sess-1", "device-readonly", resolver, resolver, w)
 	if resp.Status != "insufficient_permission" {
 		t.Errorf("session:read-only device must get insufficient_permission: got %s", resp.Status)
 	}
 
 	// Device with terminal:input gets actionable.
 	resolver.perms["device-owner"] = []string{devicetrust.PermTerminalInput}
-	resp = ResolveStatus(eventID, 3, "sess-1", "rt-sess-1", "device-owner", resolver, w)
+	resp = ResolveStatus(eventID, 3, "sess-1", "rt-sess-1", "device-owner", resolver, resolver, w)
 	if resp.Status != "actionable" {
 		t.Errorf("terminal:input device must get actionable: got %s", resp.Status)
 	}
@@ -656,7 +658,7 @@ func TestMobileTapSimulation(t *testing.T) {
 		runtimeOf: map[string]string{"sess-mobile": "rt-sess-mobile"},
 	}
 
-	resp := ResolveStatus(loc.EventID, loc.Generation, loc.SessionID, loc.RuntimeID, "mobile-device", resolver, w)
+	resp := ResolveStatus(loc.EventID, loc.Generation, loc.SessionID, loc.RuntimeID, "mobile-device", resolver, resolver, w)
 	if resp.Status != "actionable" {
 		t.Errorf("mobile tap re-auth: %s want actionable (eventID=%s)", resp.Status, eventID)
 	}
@@ -669,7 +671,7 @@ func TestMobileTapSimulation(t *testing.T) {
 
 	// Step 4: Stale tap (generation moved on → rejected).
 	resolver.gen["sess-mobile"] = 3
-	resp = ResolveStatus(loc.EventID, loc.Generation, loc.SessionID, loc.RuntimeID, "mobile-device", resolver, w)
+	resp = ResolveStatus(loc.EventID, loc.Generation, loc.SessionID, loc.RuntimeID, "mobile-device", resolver, resolver, w)
 	if resp.Status != "stale_generation" {
 		t.Errorf("stale tap: %s want stale_generation", resp.Status)
 	}

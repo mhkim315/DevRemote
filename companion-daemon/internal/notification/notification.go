@@ -219,7 +219,7 @@ func (logSender) Send(deviceID, pushToken string, payload []byte) error {
 // Notifier consumes Timeline events and dispatches notifications to
 // registered devices. It runs a background consumer loop.
 type Notifier struct {
-	dedup   *Dedup
+	dedup   map[string]*Dedup // per-device dedup (deviceID → Dedup)
 	devices *DeviceStore
 	sender  PushSender
 	writer  *writer.Writer
@@ -242,13 +242,23 @@ func NewNotifier(w *writer.Writer, devices *DeviceStore, getGen func(string) int
 		sender = logSender{}
 	}
 	return &Notifier{
-		dedup:   NewDedup(),
+		dedup:   make(map[string]*Dedup),
 		devices: devices,
 		sender:  sender,
 		writer:  w,
 		getGen:  getGen,
 		enabled: w != nil && devices != nil,
 	}
+}
+
+// getOrCreateDedup returns the per-device dedup, creating one if needed.
+func (n *Notifier) getOrCreateDedup(deviceID string) *Dedup {
+	d, ok := n.dedup[deviceID]
+	if !ok {
+		d = NewDedup()
+		n.dedup[deviceID] = d
+	}
+	return d
 }
 
 // SetEnabled enables or disables the consumer loop. When disabled, dispatch
@@ -306,6 +316,10 @@ func (n *Notifier) loop() {
 }
 
 // dispatch reads recent Timeline events and delivers new ones to each device.
+// Each device has an independent dedup window — device A receiving a
+// notification never prevents device B from receiving the same event.
+// Cursor advances only on successful send; a sender error preserves the
+// cursor so the event is retried next cycle.
 func (n *Notifier) dispatch() int {
 	n.mu.Lock()
 	enabled := n.enabled
@@ -326,24 +340,33 @@ func (n *Notifier) dispatch() int {
 		// On wrap, deliver only the latest event to re-establish cursor.
 		// Blind replay of all retained events is prohibited.
 		_ = wrapped
+		dd := n.getOrCreateDedup(dev.DeviceID)
+		var lastSent contract.Envelope
+		var sendFailed bool
 		for _, e := range selected {
 			gen := n.getGen(e.SessionID)
 			loc, ok := Build(e, gen)
 			if !ok {
 				continue
 			}
-			if !n.dedup.Claim(loc.EventID, loc.Generation) {
+			// Per-device dedup: device A's claim never gates device B.
+			if !dd.Claim(loc.EventID, loc.Generation) {
 				continue
 			}
 			b, _ := json.Marshal(loc)
 			if n.sender != nil {
-				_ = n.sender.Send(dev.DeviceID, dev.Token, b)
+				if err := n.sender.Send(dev.DeviceID, dev.Token, b); err != nil {
+					sendFailed = true
+					break // cursor not advanced; retry next cycle
+				}
 			}
+			lastSent = e
 			delivered++
 		}
-		if len(selected) > 0 {
-			last := selected[len(selected)-1]
-			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: last.EventID, LastGeneration: last.LaunchGeneration})
+		// Only advance cursor when all sends succeeded. A partial failure
+		// preserves the old cursor so events are retried.
+		if !sendFailed && lastSent.EventID != "" {
+			n.devices.Cursor(dev.DeviceID, Cursor{DeviceID: dev.DeviceID, LastEventID: lastSent.EventID, LastGeneration: lastSent.LaunchGeneration})
 		}
 	}
 	return delivered
@@ -376,6 +399,12 @@ type AuthResolver interface {
 	RuntimeID(sessionID string) (string, bool)
 }
 
+// ApprovalChecker checks whether an approval was already resolved.
+// Implementations delegate to the authoritative approval store.
+type ApprovalChecker interface {
+	IsResolved(sessionID, approvalID string) bool
+}
+
 // ResolveStatus determines the N1 re-authorization outcome. The seven
 // possible status values:
 //
@@ -386,7 +415,7 @@ type AuthResolver interface {
 //   - "canonical_event_unavailable" — event not found in ring buffer
 //   - "actionable" — event found, device has permission, all checks pass
 //   - "already_resolved" — approval was already resolved by another device
-func ResolveStatus(eventID string, notificationGen int64, sessionID string, runtimeID string, deviceID string, resolver AuthResolver, w *writer.Writer) StatusResponse {
+func ResolveStatus(eventID string, notificationGen int64, sessionID string, runtimeID string, deviceID string, resolver AuthResolver, approvals ApprovalChecker, w *writer.Writer) StatusResponse {
 	resp := StatusResponse{EventID: eventID, CurrentGeneration: 0, NotificationGeneration: notificationGen}
 
 	// 1. Session existence.
@@ -428,10 +457,17 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 		}
 	}
 
-	// 6. Event presence in ring buffer.
+	// 6. Event presence in ring buffer — full identity match required.
 	if w != nil {
 		for _, e := range w.ReadRecent(128) {
-			if e.EventID == eventID && e.SessionID == sessionID {
+			if e.EventID == eventID && e.SessionID == sessionID && e.LaunchGeneration == notificationGen {
+				// 6a. Check approval resolution before declaring actionable.
+				if approvals != nil && e.EventKind == contract.EventApprovalRequested && e.References.ApprovalRequest != nil {
+					if approvals.IsResolved(sessionID, e.References.ApprovalRequest.ID) {
+						resp.Status = "already_resolved"
+						return resp
+					}
+				}
 				resp.Status = "actionable"
 				resp.ActivityLink = fmt.Sprintf("pokit://session/%s?event=%s", sessionID, eventID)
 				return resp
@@ -447,10 +483,11 @@ func ResolveStatus(eventID string, notificationGen int64, sessionID string, runt
 
 // NotificationHandlerConfig holds the dependencies for the N1 handler.
 type NotificationHandlerConfig struct {
-	Writer   *writer.Writer
-	Resolver AuthResolver
-	Sessions *devicetrust.DeviceSessionManager
-	Devices  *DeviceStore
+	Writer    *writer.Writer
+	Resolver  AuthResolver
+	Approvals ApprovalChecker
+	Sessions  *devicetrust.DeviceSessionManager
+	Devices   *DeviceStore
 }
 
 // RegisterHandlers adds the N1 re-auth and push-registration routes to the mux.
@@ -514,7 +551,7 @@ func RegisterHandlers(mux *http.ServeMux, cfg NotificationHandlerConfig) {
 					Status:                 "canonical_event_unavailable",
 				}
 			} else {
-				resp = ResolveStatus(eventID, gen, sessionID, runtimeID, deviceID, cfg.Resolver, cfg.Writer)
+				resp = ResolveStatus(eventID, gen, sessionID, runtimeID, deviceID, cfg.Resolver, cfg.Approvals, cfg.Writer)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
