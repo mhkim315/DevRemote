@@ -482,7 +482,7 @@ func installDaemon() error {
 		oldBinPath = existingState.BinPath
 	}
 	serviceBinPath := filepath.Join(binDir, "devremote-"+cliVersion)
-	if oldBinPath != "" {
+	if existingState != nil && existingState.Version == cliVersion && oldBinPath != "" {
 		serviceBinPath = oldBinPath
 	}
 	backupPath := upgradeBackupPath(serviceBinPath)
