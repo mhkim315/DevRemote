@@ -28,3 +28,51 @@ func TestQRPairBridgeSingleUseChallenge(t *testing.T) {
 		t.Fatal("replayed QR challenge was accepted")
 	}
 }
+
+func TestQRPairBridgeVerifySuccess(t *testing.T) {
+	bridge := newQRPairBridge(devicetrust.NewChallengeStore(), "boot-1")
+	session := term.QRPairSession{
+		SessionID: "session-1", HostID: "host-1", HostPublicKey: "host-key",
+		Endpoint: "http://192.168.1.2:9171/pair", ExpiresAt: time.Now().Add(time.Minute), BootstrapValue: "one-time-value",
+	}
+	if _, err := bridge.Begin(session); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := bridge.Verify(session.SessionID); err != nil {
+		t.Fatalf("Verify should succeed: %v", err)
+	}
+}
+
+func TestQRPairBridgeVerifyExpired(t *testing.T) {
+	bridge := newQRPairBridge(devicetrust.NewChallengeStore(), "boot-1")
+	session := term.QRPairSession{
+		SessionID: "session-1", HostID: "host-1", HostPublicKey: "host-key",
+		Endpoint: "http://192.168.1.2:9171/pair", ExpiresAt: time.Now().Add(-time.Minute), BootstrapValue: "one-time-value",
+	}
+	if _, err := bridge.Begin(session); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := bridge.Verify(session.SessionID); err == nil {
+		t.Fatal("Verify should fail for expired session")
+	}
+}
+
+func TestQRPairBridgeVerifyThenConsume(t *testing.T) {
+	bridge := newQRPairBridge(devicetrust.NewChallengeStore(), "boot-1")
+	session := term.QRPairSession{
+		SessionID: "session-1", HostID: "host-1", HostPublicKey: "host-key",
+		Endpoint: "http://192.168.1.2:9171/pair", ExpiresAt: time.Now().Add(time.Minute), BootstrapValue: "one-time-value",
+	}
+	if _, err := bridge.Begin(session); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := bridge.Verify(session.SessionID); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if err := bridge.Consume(session.SessionID); err != nil {
+		t.Fatalf("Consume after Verify: %v", err)
+	}
+	if err := bridge.Verify(session.SessionID); err == nil {
+		t.Fatal("Verify after Consume should fail")
+	}
+}

@@ -25,7 +25,7 @@ type qrPairBridge struct {
 type qrPending struct {
 	challengeID []byte
 	deviceID    string
-	metadata    qrMetadata // stored at Begin, checked at VerifyAndStrip
+	metadata    qrMetadata // stored at Begin, validated by Verify
 }
 
 type qrMetadata struct {
@@ -99,39 +99,20 @@ func (b *qrPairBridge) Consume(sessionID string) error {
 	return nil
 }
 
-// VerifyAndStrip validates the QR metadata fields from a mobile LAN request
-// against the bridge's stored metadata. On success, the QR fields are zeroed
-// so PairingHost sees only legacy fields. On failure, the challenge is consumed
-// (one-shot gate closed) and an error is returned.
-func (b *qrPairBridge) VerifyAndStrip(sessionID string, hostID *string, daemonBootID *string, challengeID *string, expiresAt *string) error {
+// Verify validates that the stored QR binding metadata exists and has not
+// expired. Called by pair_ipc after a candidate arrives to confirm the bridge
+// challenge is still valid before proceeding to operator approval.
+func (b *qrPairBridge) Verify(sessionID string) error {
 	b.mu.Lock()
 	pending, ok := b.pending[sessionID]
 	b.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("QR binding: session not found")
 	}
-	m := pending.metadata
-	if *hostID != m.hostID {
+	if time.Now().After(pending.metadata.expiresAt) {
 		b.Cancel(sessionID)
-		return fmt.Errorf("QR binding: hostId mismatch")
+		return fmt.Errorf("QR binding: expired")
 	}
-	if *daemonBootID != m.daemonBootID {
-		b.Cancel(sessionID)
-		return fmt.Errorf("QR binding: daemonBootId mismatch")
-	}
-	if *challengeID != m.challengeID {
-		b.Cancel(sessionID)
-		return fmt.Errorf("QR binding: challengeId mismatch")
-	}
-	if t, err := time.Parse(time.RFC3339, *expiresAt); err != nil || !t.Equal(m.expiresAt) {
-		b.Cancel(sessionID)
-		return fmt.Errorf("QR binding: expiresAt mismatch")
-	}
-	// Strip QR metadata — PairingHost sees only legacy fields.
-	*hostID = ""
-	*daemonBootID = ""
-	*challengeID = ""
-	*expiresAt = ""
 	return nil
 }
 

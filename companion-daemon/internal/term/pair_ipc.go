@@ -46,6 +46,7 @@ type QRPairMetadata struct {
 
 type QRPairBridge interface {
 	Begin(QRPairSession) (QRPairMetadata, error)
+	Verify(sessionID string) error // validate QR metadata against stored binding
 	Consume(sessionID string) error
 	Cancel(sessionID string)
 }
@@ -146,12 +147,17 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		"challengeId":     metadata.ChallengeID,
 	})
 
-	// 2) Wait for candidate.
+	// 2) Wait for candidate, then verify QR binding through the bridge.
 	cand, gotCand := ph.WaitForCandidate()
 	if !gotCand {
 		bridge.Cancel(sess.SessionID)
 		writeIPC(conn, map[string]string{"error": "session ended without a candidate"})
 		ph.Close()
+		return
+	}
+	if err := bridge.Verify(sess.SessionID); err != nil {
+		writeIPC(conn, map[string]string{"error": "QR binding verification failed: " + err.Error()})
+		ph.Reject()
 		return
 	}
 

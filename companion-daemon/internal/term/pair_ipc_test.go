@@ -28,6 +28,12 @@ func (b *testQRPairBridge) Consume(sessionID string) error {
 	delete(b.pending, sessionID)
 	return nil
 }
+func (b *testQRPairBridge) Verify(sessionID string) error {
+	if !b.pending[sessionID] {
+		return fmt.Errorf("session not found")
+	}
+	return nil
+}
 func (b *testQRPairBridge) Cancel(sessionID string) { delete(b.pending, sessionID) }
 
 func TestPairingIPC_FullSessionFlow(t *testing.T) {
