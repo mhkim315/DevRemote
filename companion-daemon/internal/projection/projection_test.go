@@ -2,6 +2,7 @@ package projection
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -305,8 +306,18 @@ func TestWriterDropGapSuppressesScopedMissingEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	baseline := w.Stats()
+	svc := transcript.NewService(transcript.DefaultStoreConfig())
+	svc.EnableQueue(sid)
+	svc.SetCorrelation(sid, transcript.CorrelationState{SessionID: sid, Correlation: agentcontract.CorrelationProven, Provider: "codex"})
+	events := make([]agent.AgentEvent, 0, 257)
+	ids := make([]string, 0, 257)
+	submitted := 0
 	for i := 0; ; i++ {
 		e := envelope(t, string(rune(0x3000+i)), contract.EventProviderInvocationStarted, agent.EventAgentStarted, sid, 1)
+		events = append(events, e.T0Event)
+		ids = append(ids, e.EventID)
+		submitted++
 		if !capability.SubmitAfterCommit(e) {
 			break
 		}
@@ -314,21 +325,28 @@ func TestWriterDropGapSuppressesScopedMissingEvents(t *testing.T) {
 			t.Fatal("failed to saturate actual writer submission queue")
 		}
 	}
+	svc.ProjectAgentEvents(sid, events)
+	deadline := time.Now().Add(2 * time.Second)
+	for stats := w.Stats(); stats.Appended+stats.Dropped != uint64(submitted) && time.Now().Before(deadline); stats = w.Stats() {
+		runtime.Gosched()
+	}
 	stats := w.Stats()
 	degraded, reason := w.HealthSnapshot()
-	if !degraded || reason == "" || stats.Dropped == 0 {
+	if !degraded || reason == "" || stats.Dropped != 1 || stats.Appended != uint64(submitted-1) {
 		t.Fatalf("actual writer health/stats = (%v, %q) %#v", degraded, reason, stats)
 	}
-	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: 1, RuntimeID: runtimeID, LaunchGeneration: 1, TimelineEventIDs: []string{"retained", "dropped"}}
-	gap := GapMarker{SessionID: sid, RuntimeID: runtimeID, LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: stats.Dropped - 1, GlobalDroppedAfter: stats.Dropped, DegradedReason: reason, Reason: "writer_drop"}
-	response := transcript.TranscriptResponse{SessionID: sid, Generation: 1, ContractVersion: transcript.ContractVersion, Semantic: []transcript.TranscriptSegment{
-		{SessionID: sid, Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-retained", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 1},
-		{SessionID: sid, Kind: transcript.KindAgentEvent, Source: transcript.SourceAgentEvent, AgentEventRef: "agent-dropped", AgentKind: "codex", EventType: "agent_started", Text: "Agent started", Seq: 2},
-		{SessionID: sid, Kind: transcript.KindDegraded, DegradedReason: "writer_drop"},
-	}}
-	snap := Snapshot{Transcript: []TranscriptItem{{EventID: "retained", AgentEventRef: "agent-retained", SessionID: sid, AgentKind: "codex", EventType: "agent_started", Text: "Agent started", RuntimeID: runtimeID, LaunchGeneration: 1}}, Gaps: []GapMarker{gap}, Stats: stats, Degraded: degraded, DegradedReason: reason}
-	if report := Compare(response, snap, []FixtureEpochBinding{b}); !report.Passed || report.Missings != 0 || report.ToleratedGaps != 1 {
-		t.Fatalf("writer drop did not suppress scoped missing event: %#v", report)
+	response := svc.BuildResponse(sid, svc.ListTranscript(sid))
+	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: sid, TranscriptGeneration: response.Generation, RuntimeID: runtimeID, LaunchGeneration: 1, TimelineEventIDs: ids}
+	snap := NewProjector(w).SnapshotWithBaseline([]FixtureEpochBinding{b}, baseline)
+	if !snap.Degraded || snap.Stats != stats || snap.RingOverwritten != stats.Appended-128 || len(snap.Transcript) != 128 {
+		t.Fatalf("actual writer snapshot=%#v", snap)
+	}
+	response.Semantic = append(response.Semantic,
+		transcript.TranscriptSegment{SessionID: sid, Kind: transcript.KindDegraded, DegradedReason: "ring_overwrite"},
+		transcript.TranscriptSegment{SessionID: sid, Kind: transcript.KindDegraded, DegradedReason: "writer_drop"},
+	)
+	if report := Compare(response, snap, []FixtureEpochBinding{b}); !report.Passed || report.Missings != 0 || report.ToleratedGaps != 2 {
+		t.Fatalf("writer drop did not suppress scoped missing event: submitted=%d ids=%d semantic=%d stats=%#v ring=%d retained=%d report=%#v", submitted, len(ids), len(response.Semantic), stats, snap.RingOverwritten, len(snap.Transcript), report)
 	}
 }
 
