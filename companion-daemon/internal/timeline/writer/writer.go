@@ -53,6 +53,7 @@ type Writer struct {
 	failures     uint64
 	subscribers  []Subscriber
 	subscriberCh chan subscriberWork
+	done         chan struct{} // closed by Close, signals worker to exit
 }
 
 // Open constructs a writer for one explicit path. Construction errors are
@@ -99,15 +100,26 @@ type subscriberWork struct {
 // without blocking Append.
 func (w *Writer) startSubscriberLoop() {
 	ch := make(chan subscriberWork, 64)
+	done := make(chan struct{})
+	w.subscriberCh = ch
+	w.done = done
 	go func() {
-		for work := range ch {
-			func() {
-				defer func() { recover() }()
-				work.fn(work.envelope)
-			}()
+		defer close(done)
+		for {
+			select {
+			case work, ok := <-ch:
+				if !ok {
+					return
+				}
+				func() {
+					defer func() { recover() }()
+					work.fn(work.envelope)
+				}()
+			case <-done:
+				return
+			}
 		}
 	}()
-	w.subscriberCh = ch
 }
 
 // Append is best-effort and never returns an error to its caller. It validates
@@ -147,15 +159,20 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 	}
 	w.appended++
 	subscribers := append([]Subscriber(nil), w.subscribers...)
-	w.mu.Unlock()
-	// Dispatch through bounded channel; non-blocking send drops on overflow.
+	// Send under lock so Close cannot close subscriberCh concurrently.
+	// Non-blocking send drops on overflow. After Close, stopped=true and
+	// sends are skipped (channel may be drained).
 	for _, subscriber := range subscribers {
+		if w.closed {
+			break
+		}
 		select {
 		case w.subscriberCh <- subscriberWork{fn: subscriber, envelope: envelope}:
 		default:
-			w.recordDrop(false)
+			w.dropped++
 		}
 	}
+	w.mu.Unlock()
 	return true
 }
 
@@ -176,17 +193,25 @@ func (w *Writer) Stats() Stats {
 }
 
 // Close is idempotent. A close failure is observable by the composition root,
-// but cannot change any primary authority outcome.
+// but cannot change any primary authority outcome. Close signals the worker
+// to drain and exit, then closes the underlying file.
 func (w *Writer) Close() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed {
+		w.mu.Unlock()
 		return nil
 	}
 	w.closed = true
 	if w.subscriberCh != nil {
 		close(w.subscriberCh)
 	}
+	w.mu.Unlock()
+	// Wait for worker goroutine to exit (drains remaining items).
+	if w.done != nil {
+		<-w.done
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.file == nil {
 		return nil
 	}

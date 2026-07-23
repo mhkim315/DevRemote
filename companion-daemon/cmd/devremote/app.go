@@ -446,6 +446,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		devicetrust.RequirePrincipal(sessionMgr, devicetrust.HandleWSTicket(wsTickets, audit), devicetrust.PermSessionsRead))
 	if cfg.EnableCockpit {
 		validationStore := validation.NewValidationStore()
+		// STEP8: ValidationStore is wired as a cockpit source. The cockpit's
+		// Refresh() reads all submitted results via ReadAll(). Producers call
+		// Submit() directly after completing a validation run.
 		cockpitStore = cockpit.NewCockpitStore(cockpit.Sources{
 			Catalog: h.Catalog, Approvals: approvals, Timeline: timelineWriter, Validation: validationStore,
 		})

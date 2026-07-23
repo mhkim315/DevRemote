@@ -14,7 +14,7 @@ func TestProjectionIsReadOnly(t *testing.T) {
 
 func validTestItem(kind string) Item {
 	return Item{Kind: kind, State: "ok", Summary: "test",
-		Origin: Origin{Provider: "test", SessionID: "s1", Generation: "1"}}
+		Origin: Origin{Provider: "test", SessionID: "s1", RuntimeID: "r1", Generation: "1"}}
 }
 
 func TestCockpitStoreRejectsOversizedAndExcessItems(t *testing.T) {
@@ -37,7 +37,7 @@ func TestCockpitStoreAppendReadRoundTrip(t *testing.T) {
 	s.AppendSession(validTestItem("runtime"))
 	s.AppendApproval(validTestItem("approval"))
 	s.AppendFinding(Item{Kind: "validation", State: "ok", Summary: "test", Stale: true,
-		Origin: Origin{Provider: "test", SessionID: "s1", Generation: "1"}})
+		Origin: Origin{Provider: "test", SessionID: "s1", RuntimeID: "r1", Generation: "1"}})
 	state := s.ReadAll()
 	if len(state.Sessions) != 1 || len(state.Approvals) != 1 || len(state.Findings) != 1 || !state.Findings[0].Stale || !s.ReadOnly() {
 		t.Fatal("round trip failed")

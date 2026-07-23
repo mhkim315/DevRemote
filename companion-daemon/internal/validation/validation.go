@@ -136,6 +136,13 @@ func NewValidationStore() *ValidationStore {
 	return s
 }
 
+// Close drains the subscriber queue and stops the dispatch goroutine.
+func (s *ValidationStore) Close() {
+	if s.dispatchCh != nil {
+		close(s.dispatchCh)
+	}
+}
+
 // Subscribe adds an observational callback. Nil callbacks are ignored.
 func (s *ValidationStore) Subscribe(fn Subscriber) {
 	if fn == nil {
