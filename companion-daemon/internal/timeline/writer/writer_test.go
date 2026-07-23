@@ -58,6 +58,46 @@ func (f *testFile) Close() error {
 	return nil
 }
 
+type blockingFile struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+	mu        sync.Mutex
+	writes    int
+	closes    int
+}
+
+func newBlockingFile() *blockingFile {
+	return &blockingFile{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (f *blockingFile) Write(record []byte) (int, error) {
+	f.mu.Lock()
+	f.writes++
+	f.mu.Unlock()
+	f.startOnce.Do(func() { close(f.started) })
+	<-f.release
+	return len(record), nil
+}
+
+func (f *blockingFile) Sync() error { return nil }
+
+func (f *blockingFile) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closes++
+	return nil
+}
+
+func (f *blockingFile) counts() (writes, closes int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.writes, f.closes
+}
+
 var osErrClosed = errors.New("file already closed")
 
 func makeEnv() contract.Envelope {
@@ -96,6 +136,17 @@ func boundEnv(t *testing.T, provider, sessionID, runtimeID string, generation in
 		t.Fatal(err)
 	}
 	return bound
+}
+
+func waitForAppended(t *testing.T, w *Writer, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for w.Stats().Appended < want && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := w.Stats().Appended; got != want {
+		t.Fatalf("appended = %d, want %d", got, want)
+	}
 }
 
 // ── Original Append/write tests (restored from pre-observer baseline) ──
@@ -261,6 +312,7 @@ func TestCapabilityBindsWriterAndCompleteIdentity(t *testing.T) {
 	if !capability.SubmitAfterCommit(e) {
 		t.Fatal("bound submit rejected")
 	}
+	waitForAppended(t, w, 1)
 	wrongRuntime := boundEnv(t, "codex", "codex_app_server:one", "runtime-b", 7, contract.EventToolCallStarted)
 	if capability.SubmitAfterCommit(wrongRuntime) {
 		t.Fatal("runtime mismatch accepted")
@@ -301,4 +353,57 @@ func TestCapabilityRejectsArbitraryProviderAndConcurrentSubmitClose(t *testing.T
 	go func() { defer wg.Done(); w.Close() }()
 	wg.Wait()
 	_ = w.Close()
+}
+
+func TestCloseAtomicallyDropsPendingAndLetsOnlyInFlightFinish(t *testing.T) {
+	store := NewProducerStore()
+	file := newBlockingFile()
+	w := newWriter(file, Config{}, store)
+	w.closeWait = 20 * time.Millisecond
+	capability, err := store.Bind("codex", "runtime-a", "codex_app_server:one", 7, contract.EventToolCallStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := boundEnv(t, "codex", "codex_app_server:one", "runtime-a", 7, contract.EventToolCallStarted)
+	if !capability.SubmitAfterCommit(e) {
+		t.Fatal("in-flight submit rejected")
+	}
+	select {
+	case <-file.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not enter Write")
+	}
+	for range 3 {
+		if !capability.SubmitAfterCommit(e) {
+			t.Fatal("pending submit rejected")
+		}
+	}
+
+	result := w.Close()
+	if result.WorkerExited || result.InFlight != 1 || result.PendingDropped != 3 {
+		t.Fatalf("close = %+v", result)
+	}
+	if got := w.Stats().Dropped; got != 3 {
+		t.Fatalf("dropped before release = %d, want 3", got)
+	}
+	if capability.SubmitAfterCommit(e) {
+		t.Fatal("post-close submit accepted")
+	}
+
+	close(file.release)
+	select {
+	case <-w.workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not exit after blocked write completed")
+	}
+	writes, closes := file.counts()
+	if writes != 1 || closes != 1 {
+		t.Fatalf("file writes=%d closes=%d, want 1/1", writes, closes)
+	}
+	if got := w.Stats(); got.Appended != 1 || got.Dropped != 4 {
+		t.Fatalf("final stats = %+v", got)
+	}
+	if repeat := w.Close(); repeat != result {
+		t.Fatalf("idempotent close = %+v, want %+v", repeat, result)
+	}
 }

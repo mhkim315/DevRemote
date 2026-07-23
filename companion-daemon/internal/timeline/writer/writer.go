@@ -69,7 +69,7 @@ func (c Capability) Token() ProducerToken { return c.token }
 
 // SubmitAfterCommit is the fail-open, non-blocking submission path. Callers
 // must call it AFTER their primary authority has committed. Returns false
-// on drop (channel full, unregistered, invalid envelope).
+// on drop (queue full, unregistered, invalid envelope).
 func (c Capability) SubmitAfterCommit(envelope contract.Envelope) bool {
 	if c.writer == nil {
 		return false
@@ -242,9 +242,11 @@ type Writer struct {
 	pos         int
 	full        bool
 	ringMu      sync.RWMutex
-	submitCh    chan submitWork
+	submitQueue []submitWork
+	submitCond  *sync.Cond
 	workerWg    sync.WaitGroup
 	workerDone  chan struct{}
+	closeWait   time.Duration
 	closeOnce   sync.Once
 	closeErr    error
 	closeResult CloseResult
@@ -269,13 +271,15 @@ func Open(config Config, auth ProducerAuth) (*Writer, error) {
 
 func newWriter(file appendFile, config Config, auth ProducerAuth) *Writer {
 	w := &Writer{
-		file:       file,
-		ring:       make([]contract.Envelope, recentEnvelopes),
-		submitCh:   make(chan submitWork, submitBufCap),
-		auth:       auth,
-		config:     config,
-		workerDone: make(chan struct{}),
+		file:        file,
+		ring:        make([]contract.Envelope, recentEnvelopes),
+		submitQueue: make([]submitWork, 0, submitBufCap),
+		auth:        auth,
+		config:      config,
+		workerDone:  make(chan struct{}),
+		closeWait:   closeDrainTimeout,
 	}
+	w.submitCond = sync.NewCond(&w.mu)
 	if store, ok := auth.(*ProducerStore); ok {
 		store.attach(w)
 	}
@@ -298,21 +302,28 @@ func (w *Writer) startWorker() {
 				_ = file.Close()
 			}
 		}()
-		for work := range w.submitCh {
+		for {
 			w.mu.Lock()
-			closing := w.closing || w.closed
-			if !closing {
-				w.inFlight++
+			for len(w.submitQueue) == 0 && !w.closing {
+				w.submitCond.Wait()
 			}
-			w.mu.Unlock()
-			if closing {
-				atomic.AddUint64(&w.dropped, 1)
+			if w.closing {
+				w.mu.Unlock()
 				return
 			}
+			work := w.submitQueue[0]
+			w.submitQueue[0] = submitWork{}
+			w.submitQueue = w.submitQueue[1:]
+			w.inFlight++
+			w.mu.Unlock()
 			w.processSubmit(work)
 			w.mu.Lock()
 			w.inFlight--
+			closing := w.closing
 			w.mu.Unlock()
+			if closing {
+				return
+			}
 		}
 	}()
 }
@@ -335,7 +346,7 @@ func (w *Writer) processSubmit(work submitWork) {
 	record = append(record, '\n')
 
 	w.mu.Lock()
-	if w.closed || w.closing || w.file == nil {
+	if w.closed || w.file == nil {
 		atomic.AddUint64(&w.dropped, 1)
 		w.mu.Unlock()
 		return
@@ -388,16 +399,16 @@ func (w *Writer) submit(envelope contract.Envelope, h producerHandle, tok Produc
 		w.mu.Unlock()
 		return false
 	}
-	select {
-	case w.submitCh <- submitWork{envelope: envelope, handle: h, token: tok}:
-		w.mu.Unlock()
-		return true
-	default:
+	if len(w.submitQueue) == submitBufCap {
 		w.mu.Unlock()
 		atomic.AddUint64(&w.dropped, 1)
-		w.health.markDegraded("submission channel full")
+		w.health.markDegraded("submission queue full")
 		return false
 	}
+	w.submitQueue = append(w.submitQueue, submitWork{envelope: envelope, handle: h, token: tok})
+	w.submitCond.Signal()
+	w.mu.Unlock()
+	return true
 }
 
 // Append is legacy-only. It is rejected when producer authorization is
@@ -420,22 +431,23 @@ func (w *Writer) Append(envelope contract.Envelope) bool {
 		w.mu.Unlock()
 		return false
 	}
-	file := w.file
-	w.mu.Unlock()
-	n, err := file.Write(record)
+	n, err := w.file.Write(record)
 	if err != nil || n != len(record) {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
 		w.health.markDegraded("legacy write failure")
+		w.mu.Unlock()
 		return false
 	}
-	if err := file.Sync(); err != nil {
+	if err := w.file.Sync(); err != nil {
 		atomic.AddUint64(&w.dropped, 1)
 		atomic.AddUint64(&w.failures, 1)
 		w.health.markDegraded("legacy sync failure")
+		w.mu.Unlock()
 		return false
 	}
 	atomic.AddUint64(&w.appended, 1)
+	w.mu.Unlock()
 	w.ringMu.Lock()
 	w.ring[w.pos] = envelope
 	w.pos++
@@ -493,22 +505,24 @@ func (w *Writer) HealthSnapshot() (bool, string) {
 
 func (w *Writer) ConfigSnapshot() Config { return w.config }
 
-// Close is truthful: it serializes with submissions via mutex, atomically
-// drains pending items, reports outcome, and closes the file. No send-on-
-// closed panic.
+// Close is truthful: it serializes with submissions, atomically detaches and
+// accounts for pending work, and lets only an already in-flight write finish.
+// The worker owns the one eventual file close.
 func (w *Writer) Close() CloseResult {
 	w.closeOnce.Do(func() {
 		w.mu.Lock()
 		w.closing = true
 		w.closeErr = nil
-		w.closeResult.PendingDropped = uint64(len(w.submitCh))
+		w.closeResult.PendingDropped = uint64(len(w.submitQueue))
 		atomic.AddUint64(&w.dropped, w.closeResult.PendingDropped)
-		close(w.submitCh)
+		clear(w.submitQueue)
+		w.submitQueue = nil
+		w.submitCond.Broadcast()
 		w.mu.Unlock()
 		select {
 		case <-w.workerDone:
 			w.closeResult.WorkerExited = true
-		case <-time.After(closeDrainTimeout):
+		case <-time.After(w.closeWait):
 			w.mu.Lock()
 			w.closeResult.InFlight = w.inFlight
 			w.mu.Unlock()
